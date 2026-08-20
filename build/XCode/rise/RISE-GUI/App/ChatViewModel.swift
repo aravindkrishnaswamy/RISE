@@ -3398,7 +3398,11 @@ final class ChatViewModel: ObservableObject {
                 min(attempts - 1, Self.editRetryBackoffMs.count - 1)]
             try? await Task.sleep(nanoseconds: backoffMs * 1_000_000)
             if Task.isCancelled || stopRequested { break }
-            guard viewportBridge != nil else { break }
+            // IDENTITY, not existence (same rule as `waitForChatRenderDrain`):
+            // a scene switch across the backoff detaches this bridge and binds
+            // a fresh one, so a mere non-nil check would keep re-issuing the
+            // edit against the shut-down instance the retry was opened for.
+            guard viewportBridge === vb else { break }
             guard sceneEditable() else { break }
             attempts += 1
             responseLine = vb.agentHandleToolCall(line)

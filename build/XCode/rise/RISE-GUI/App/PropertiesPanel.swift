@@ -296,7 +296,9 @@ final class PainterThumbnailCache {
 /// expression `def` stages (`defIndex >= 0`).  Renders a neutral filled
 /// tile until the async fetch lands, never blocking the row it sits in.
 private struct PainterThumbnailView: View {
-    let bridge: RISEViewportBridge
+    /// Weak for the same reason `PainterPreviewFetcher` is (see its doc):
+    /// a swatch must never keep a shut-down bridge alive past its scene.
+    weak var bridge: RISEViewportBridge?
     let painterName: String
     let defIndex: Int
     var size: CGFloat = 48
@@ -322,6 +324,7 @@ private struct PainterThumbnailView: View {
     }
 
     private func refresh() {
+        guard let bridge else { return }
         var uuid: UInt64 = 0
         var revision: UInt64 = 0
         _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
@@ -349,7 +352,8 @@ private struct PainterThumbnailView: View {
 /// PainterPreview::RenderRampStripPreview's doc comment), so the two
 /// never collide or overwrite each other in the cache.
 private struct RampStripThumbnailView: View {
-    let bridge: RISEViewportBridge
+    /// Weak — see `PainterThumbnailView.bridge`.
+    weak var bridge: RISEViewportBridge?
     let painterName: String
     var width: CGFloat = 220
     var height: CGFloat = 20
@@ -373,6 +377,7 @@ private struct RampStripThumbnailView: View {
     }
 
     private func refresh() {
+        guard let bridge else { return }
         var uuid: UInt64 = 0
         var revision: UInt64 = 0
         _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
@@ -404,7 +409,11 @@ private func defStageIndex(rowName: String) -> Int? {
 }
 
 struct PropertiesPanel: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime, so a nil read means the scene was torn down and this
+    /// panel is leaving the tree — the last-drawn rows stand until it
+    /// does, and every edit routed below is correctly a no-op.
+    weak var bridge: RISEViewportBridge?
     @Binding var refreshTrigger: Int          // increment to force a snapshot reload
 
     // Phase 6.5: the panel's Save / Save-As buttons read these two
@@ -591,13 +600,14 @@ struct PropertiesPanel: View {
         PropertyRowView(
             row: row,
             onCommit: { newValue in
+                guard let bridge else { return false }
                 let accepted = bridge.setProperty(
                     for: selectionCategory, name: row.name, value: newValue)
                 reload()
                 return accepted
             },
-            onScrubBegin: { bridge.beginPropertyScrub() },
-            onScrubEnd:   { bridge.endPropertyScrub()   }
+            onScrubBegin: { bridge?.beginPropertyScrub() },
+            onScrubEnd:   { bridge?.endPropertyScrub()   }
         )
         // Source traceability: reveal THIS param's exact span in the Scene-file
         // editor.  Shown only when the entity resolves to a scene-file chunk
@@ -630,7 +640,7 @@ struct PropertiesPanel: View {
             // that element's own panel.  Resolution happens at menu-build
             // time (right-click), so the item reflects the CURRENT scene
             // -- a dangling reference simply shows no item.
-            if row.kind == .reference {
+            if row.kind == .reference, let bridge {
                 var jumpCat: RISEViewportCategory = .none
                 var jumpName: NSString? = nil
                 if bridge.propertyJumpTarget(atIndex: UInt(row.index),
@@ -684,6 +694,7 @@ struct PropertiesPanel: View {
     private var cameraAffordances: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
+                guard let bridge else { return }
                 _ = bridge.setSelection(.camera, name: selectionName)
                 reload()
             } label: {
@@ -694,6 +705,7 @@ struct PropertiesPanel: View {
             .disabled(selectionName.isEmpty)
 
             Button {
+                guard let bridge else { return }
                 promptForNewCameraName(activeName: bridge.activeName(for: .camera))
             } label: {
                 HStack(spacing: 4) {
@@ -715,6 +727,7 @@ struct PropertiesPanel: View {
     /// successful add per session, also surfaces a caveat alert that
     /// the new camera lives in memory only.
     private func promptForNewCameraName(activeName: String) {
+        guard let bridge else { return }
         if addCameraInFlight { return }
         addCameraInFlight = true
         defer { addCameraInFlight = false }
@@ -826,6 +839,7 @@ struct PropertiesPanel: View {
     }
 
     private func performSceneSave(useLoadedPath: Bool) {
+        guard let bridge else { return }
         // Resolve target path.  If the caller asked for in-place save
         // but no path is known (rare — usually a synthetic scene), fall
         // through to the Save-As panel.
@@ -943,6 +957,7 @@ struct PropertiesPanel: View {
     // MARK: - Reload
 
     private func reload() {
+        guard let bridge else { return }
         bridge.refreshProperties()
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName

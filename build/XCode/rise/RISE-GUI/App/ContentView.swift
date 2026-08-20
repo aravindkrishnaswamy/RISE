@@ -297,7 +297,7 @@ struct ContentView: View {
                     // so the user couldn't clear it, and there's no RegionOverlay
                     // in the N-up panes to even show it.  Clear it on the way out,
                     // mirroring the chip's own clear path.
-                    .onChange(of: viewportLayout) { _, newLayout in
+                    .onChange(of: viewportLayout) { [weak vb] _, newLayout in
                         viewModel.regionDrawLayoutAvailable = (newLayout == .single)
                         if newLayout != .single {
                             // ViewportView owns the sole sceneTime ->
@@ -306,7 +306,11 @@ struct ContentView: View {
                             // the native scrub composite before N-up appears.
                             viewModel.stopPreviewPlay()
                             if viewModel.activeRegion != nil {
-                                vb.clearInteractiveRegion()
+                                // Weak: SwiftUI retains this onChange handler
+                                // across body passes; a torn-down bridge from
+                                // an in-flight scene switch must not be kept
+                                // alive by it.
+                                if let vb { vb.clearInteractiveRegion() }
                                 viewModel.activeRegion = nil
                             }
                             regionArmed = false
@@ -561,10 +565,14 @@ struct ContentView: View {
         let active = viewModel.activeRegion != nil
         let text = regionArmed ? "▧ Cancel Draw" : (active ? "▧ Region active ×" : "▧ Draw Region")
         let color: Color = regionArmed ? Theme.accent : (active ? Theme.warn : Theme.textFaint)
-        return Button {
+        return Button { [weak vb] in
                 if regionArmed {
                     regionArmed = false
                 } else if active {
+                    // Weak: Button retains this action closure past this
+                    // body pass; a torn-down bridge must not be kept alive
+                    // by it.
+                    guard let vb else { return }
                     vb.clearInteractiveRegion()
                     viewModel.activeRegion = nil
                 } else {

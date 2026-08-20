@@ -858,14 +858,19 @@ private:
     // called a second time -- e.g. from `-dealloc` running against an
     // instance some OTHER strong reference kept alive past an explicit
     // `-shutdown` + release (RenderViewModel.loadScene's teardown does
-    // `viewportBridge?.shutdown(); viewportBridge = nil`, but several
-    // SwiftUI views store this class in a plain, non-weak `let bridge:
-    // RISEViewportBridge` property -- e.g. ViewportGizmoOverlay,
-    // ViewportNavOverlay, PropertiesPanel/EnvironmentPanel/NamedViewsPanel/
-    // OutlinerView/MultiPaneViewport row structs -- any of which retaining
-    // a not-yet-discarded body evaluation past the swap is a plausible,
-    // but not individually confirmed, real-app source of exactly this
-    // extra strong reference) -- it unconditionally re-detached the host,
+    // `viewportBridge?.shutdown(); viewportBridge = nil`; several SwiftUI
+    // views HISTORICALLY stored this class in a plain, non-weak `let
+    // bridge: RISEViewportBridge` property -- ViewportView/
+    // ViewportGizmoOverlay/ViewportNavOverlay/PropertiesPanel/
+    // EnvironmentPanel/NamedViewsPanel/OutlinerView/MultiPaneViewport row
+    // structs -- and a body evaluation of any of them not yet discarded at
+    // the swap was a plausible, though never individually confirmed,
+    // real-app source of exactly this extra strong reference.  Those
+    // holders are `weak var bridge: RISEViewportBridge?` as of this change,
+    // so the known enabler is gone; the guard STAYS because a stray strong
+    // reference is reintroducible by any future holder, and
+    // ViewportReattachProbe manufactures one deliberately) -- it
+    // unconditionally re-detached the host,
     // even though by then a BRAND NEW `RISEViewportBridge` for the next
     // scene had already registered ITS controller.  That clobbered the
     // live registration with NULL, so every production render on the new

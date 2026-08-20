@@ -26,7 +26,13 @@ import AppKit
 struct ViewportView: View {
     @EnvironmentObject var viewModel: RenderViewModel
 
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime, so a nil read here means the scene was torn down and
+    /// this view is leaving the tree — every routed event below is
+    /// then correctly a no-op.  Holding it strongly would keep a
+    /// shut-down instance alive past its scene (see
+    /// `-[RISEViewportBridge shutdown]`).
+    weak var bridge: RISEViewportBridge?
     @Binding var image: NSImage?
     let timelineVisible: Bool
     @Binding var sceneTime: Double
@@ -138,7 +144,8 @@ struct ViewportView: View {
                     surfaceDimensionsProvider: { [weak bridge] in
                         bridge?.cameraSurfaceDimensions ?? .zero
                     },
-                    onSurfacePixelSizeChanged: { size in
+                    onSurfacePixelSizeChanged: { [weak bridge] size in
+                        guard let bridge else { return false }
                         guard size.width > 0, size.height > 0 else { return false }
                         let accepted = bridge.setPaneSurfaceDims(
                             0,
@@ -152,8 +159,8 @@ struct ViewportView: View {
                         }
                         return accepted
                     },
-                    onPointerDown: { p in
-                        guard interactionEnabled else { return }
+                    onPointerDown: { [weak bridge] p in
+                        guard let bridge, interactionEnabled else { return }
                         // Every pointer-down starts a NEW physical
                         // gesture — any suppress flag left over from
                         // an earlier interrupted gesture (e.g. the
@@ -179,8 +186,8 @@ struct ViewportView: View {
                         refreshSelectionChip()
                         gizmoRefreshTrigger &+= 1
                     },
-                    onPointerMove: { p in
-                        guard interactionEnabled else { return }
+                    onPointerMove: { [weak bridge] p in
+                        guard let bridge, interactionEnabled else { return }
                         if suppressPointerUntilUp { return }
                         if regionArmed {
                             if regionDragStart != nil { regionDragCurrent = p }
@@ -191,8 +198,8 @@ struct ViewportView: View {
                             gizmoRefreshTrigger &+= 1
                         }
                     },
-                    onPointerUp: { p in
-                        guard interactionEnabled else { return }
+                    onPointerUp: { [weak bridge] p in
+                        guard let bridge, interactionEnabled else { return }
                         if suppressPointerUntilUp {
                             // Last leg of a gesture Esc cancelled
                             // mid-drag (see `suppressPointerUntilUp`'s
@@ -211,7 +218,7 @@ struct ViewportView: View {
                         bridge.pointerUp(x: Double(p.x), y: Double(p.y))
                         gizmoRefreshTrigger &+= 1
                     },
-                    onEscape: {
+                    onEscape: { [weak bridge] in
                         // Design brief A4: Esc while armed disarms;
                         // Esc with an active region clears it.  A
                         // drag already in progress cancels first
@@ -227,7 +234,7 @@ struct ViewportView: View {
                             suppressPointerUntilUp = true
                         } else if regionArmed {
                             regionArmed = false
-                        } else if viewModel.activeRegion != nil, interactionEnabled {
+                        } else if viewModel.activeRegion != nil, interactionEnabled, let bridge {
                             // clearInteractiveRegion -> KickRender takes the
                             // controller mutex a chat/production render holds
                             // for its whole duration; skip the clear while
@@ -275,7 +282,7 @@ struct ViewportView: View {
                     },
                     interactionEnabled: interactionEnabled && !regionArmed,
                     onCommitActiveRegion: { region in
-                        guard interactionEnabled else { return }
+                        guard let bridge, interactionEnabled else { return }
                         let left = UInt32(max(0, Int(region.minX)))
                         let top = UInt32(max(0, Int(region.minY)))
                         let right = UInt32(max(Int(region.minX), Int(region.maxX) - 1))
@@ -292,7 +299,7 @@ struct ViewportView: View {
                         // render; clearInteractiveRegion -> KickRender takes the
                         // controller mutex that render holds, so gate on the
                         // chat-inclusive interactionEnabled.
-                        guard interactionEnabled else { return }
+                        guard let bridge, interactionEnabled else { return }
                         bridge.clearInteractiveRegion()
                         viewModel.activeRegion = nil
                     }
@@ -333,6 +340,7 @@ struct ViewportView: View {
                 refinementPill.padding(12)
             }
             .onChange(of: selectedTool) { _, newValue in
+                guard let bridge else { return }
                 bridge.currentTool = newValue.bridgeValue
                 // Panel mode is derived from the current tool;
                 // bump the refresh so the panel switches between
@@ -370,8 +378,10 @@ struct ViewportView: View {
                 // same box afterward.
                 if !newValue {
                     viewModel.stopPreviewPlay()
-                    viewModel.endManualTimelineScrub(using: bridge)
-                    _ = bridge.finalizeOpenInteractions()
+                    if let bridge {
+                        viewModel.endManualTimelineScrub(using: bridge)
+                        _ = bridge.finalizeOpenInteractions()
+                    }
                     regionDragStart = nil
                     regionDragCurrent = nil
                     suppressPointerUntilUp = false
@@ -398,7 +408,8 @@ struct ViewportView: View {
             // pointer events go to the Select tool.  `.task(id:)`
             // runs on appear AND on id change, so it covers both
             // initial attach and subsequent scene loads.
-            .task(id: ObjectIdentifier(bridge)) {
+            .task(id: bridge.map(ObjectIdentifier.init)) {
+                guard let bridge else { return }
                 bridge.currentTool = selectedTool.bridgeValue
                 onSelectionMayHaveChanged()
                 refreshSelectionChip()
@@ -420,19 +431,19 @@ struct ViewportView: View {
                         onUserScrubBegan()
                     },
                     onJump: { time in
-                        guard interactionEnabled else { return }
+                        guard let bridge, interactionEnabled else { return }
                         viewModel.jumpTimelineSceneTime(to: time, using: bridge)
                     },
                     onScrubBegin: {
-                        guard interactionEnabled else { return }
+                        guard let bridge, interactionEnabled else { return }
                         viewModel.beginManualTimelineScrub(using: bridge)
                     },
                     onScrubMove: { time in
-                        guard interactionEnabled else { return }
+                        guard let bridge, interactionEnabled else { return }
                         viewModel.applyManualTimelineSceneTime(time, using: bridge)
                     },
                     onScrubEnd: {
-                        guard interactionEnabled else { return }
+                        guard let bridge, interactionEnabled else { return }
                         viewModel.endManualTimelineScrub(using: bridge)
                     }
                 )
@@ -440,7 +451,7 @@ struct ViewportView: View {
                 .opacity(interactionEnabled ? 1.0 : 0.5)
                 .onChange(of: sceneTime) { _, newValue in
                     if viewModel.consumePreappliedSceneTime(newValue) { return }
-                    guard interactionEnabled else { return }
+                    guard let bridge, interactionEnabled else { return }
                     // The render gate can win after the slider's enabled
                     // state was sampled. Keep the binding honest when the
                     // controller refuses rather than displaying a time the
@@ -450,6 +461,7 @@ struct ViewportView: View {
                     }
                 }
                 .onDisappear {
+                    guard let bridge else { return }
                     viewModel.endManualTimelineScrub(using: bridge)
                 }
             }
@@ -467,6 +479,7 @@ struct ViewportView: View {
     /// stray click while armed) is treated as "cancel arm" rather
     /// than setting a degenerate 0-1px region.
     private func commitRegionDrag(from a: CGPoint, to b: CGPoint) {
+        guard let bridge else { return }
         guard abs(a.x - b.x) >= 2 || abs(a.y - b.y) >= 2 else { return }
         let dims = bridge.cameraSurfaceDimensions
         guard dims.width > 1, dims.height > 1 else { return }
@@ -490,6 +503,7 @@ struct ViewportView: View {
     // MARK: - Selection chip
 
     private func refreshSelectionChip() {
+        guard let bridge else { return }
         selectionCategory = bridge.selectionCategory
         selectionNameText = bridge.selectionName
     }
@@ -536,7 +550,7 @@ struct ViewportView: View {
                     .tracking(0.6)
                     .foregroundColor(Theme.success)
             }
-            if let region = viewModel.activeRegion {
+            if let region = viewModel.activeRegion, let bridge {
                 let dims = bridge.cameraSurfaceDimensions
                 let framePixels = max(1.0, dims.width * dims.height)
                 let percent = Int((100.0 * region.width * region.height / framePixels).rounded())
@@ -942,7 +956,16 @@ private struct ViewportCanvas: NSViewRepresentable {
         // nil-resolve before SwiftUI tears down our NSView.
         nsView.productionEDRRenderer  = nil
         nsView.interactiveEDRRenderer = nil
+        // Every closure property too: an NSView can outlive this call
+        // (AppKit autorelease, a pending cursor/tracking callback), and
+        // each closure transitively captures viewport state.  Nothing
+        // may route an event into a scene that is going away.
         nsView.onSurfacePixelSizeChanged = nil
+        nsView.onPointerDown = nil
+        nsView.onPointerMove = nil
+        nsView.onPointerUp   = nil
+        nsView.onEscape      = nil
+        nsView.surfaceDimensionsProvider = nil
     }
 }
 
