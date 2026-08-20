@@ -504,6 +504,16 @@ int CheckOracleSpatialCalibrationOutput(const std::filesystem::path& inputDirect
 		results[1].conservative,commonLength,difference56)||!CalibrationOutputDifference(
 		states[1],results[1].conservative,states[2],results[2].conservative,
 		commonLength,difference67))return 161;
+	static const std::array<double,9> expectedDifference56={{
+		6.0315927215682195e-06,5.6457339952424706e-06,0.00010250313448132516,
+		0.00033194873319439803,1.5490014963835757e-06,1.2681669038625223e-06,
+		5.9099354295372759e-19,2.2279131374063514e-19,135.7301690853277}};
+	static const std::array<double,9> expectedDifference67={{
+		5.2927330540405051e-06,4.8468634113535512e-06,5.5189180398912391e-05,
+		0.00017492063460296605,1.6338297167211502e-06,1.3376157338325683e-06,
+		7.8785279713170043e-19,3.0077357103079101e-19,71.259230903712393}};
+	if(difference56.componentVolumeL1!=expectedDifference56||
+		difference67.componentVolumeL1!=expectedDifference67)return 161;
 	static const std::array<double,3> spacing={{0.04894898570785762,
 		0.040790821423214683,0.034963561219898305}};
 	bool asymptotic=true;
