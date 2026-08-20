@@ -522,9 +522,10 @@ struct PropertiesPanel: View {
                 Spacer(minLength: 4)
             }
             // Deliverable 2: the ramp's own gradient, above its `stop[i]`
-            // rows -- detected off the generic "type" row's chunk keyword
-            // rather than a bespoke category, since a ramp_painter is
-            // still Category::Painter like every other painter kind.
+            // rows -- detected off the generic "chunk_type" identity row's
+            // chunk keyword rather than a bespoke category, since a
+            // ramp_painter is still Category::Painter like every other
+            // painter kind.
             if isRampPainter {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Gradient").font(Theme.sans(10, .medium)).foregroundColor(Theme.textDim)
@@ -535,7 +536,7 @@ struct PropertiesPanel: View {
     }
 
     private var isRampPainter: Bool {
-        rows.first(where: { $0.name == "type" })?.initialValue == "ramp_painter"
+        rows.first(where: { $0.name == "chunk_type" })?.initialValue == "ramp_painter"
     }
 
     @ViewBuilder
