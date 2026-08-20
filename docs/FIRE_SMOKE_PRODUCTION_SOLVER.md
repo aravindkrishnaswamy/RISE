@@ -1533,6 +1533,53 @@ projection before either solver or the contract is changed. Long-horizon
 pointwise comparison remains rejected; V-gates, tier-6 empirical rows, and
 prefix integrals own that chaotic-flow regime.
 
+### 7.24 Calibration state-family stop (r107)
+
+The campaign stopped before deriving `B_fp32`, dispatching calibration Metal,
+or creating the full source/`S_div`/schedule campaign manifest. The required
+pre-solver asymptotic-family gate failed on the certified tier-5/6/7 beginning
+states themselves. This is not a production-versus-oracle discrepancy and it
+is not an accepted tolerance.
+
+The preliminary state-family manifest is SHA-256
+`338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5`.
+It explicitly declares `full_campaign_manifest false` and binds tier-state
+hashes `ce0b47fe...`, `7e53de9f...`, and `3f9f1eaf...`. The comparison uses
+one three-tier mutual support,
+`[-1.0524031927189388,1.0524031927189388]^2 x
+[0,3.2306330567186028] m`, exact piecewise-constant cell intersections,
+volume-normalized component-wise `L1`, strict binary64 evaluation, and an
+operation-count-derived `gamma_n` enclosure for overlap-volume closure. Every
+checkpoint hash, shape, spacing, case id, and physical time is checked before
+deserialization can become evidence.
+
+For the actual spacings, a positive generalized Richardson order in
+`0 < p <= 2` requires `D56/D67` between `1.18274896` and `1.65846154`;
+ratios above the upper endpoint are conservatively capped at formal order two.
+The measured pre-solver state-family values are:
+
+| conservative channel | `D56` | `D67` | ratio | classification |
+|---|---:|---:|---:|---|
+| `rho_total_Z` | `6.018864804968335e-6` | `5.281414640766786e-6` | `1.139631181106144` | no positive order |
+| `CH4` | `5.637467554556510e-6` | `4.839896523382141e-6` | `1.164790926277288` | no positive order |
+| `O2` | `1.025170223613745e-4` | `5.513631494231932e-5` | `1.859337579390685` | capped `p=2` |
+| `N2` | `3.315340396405293e-4` | `1.744707933429107e-4` | `1.900226583992894` | capped `p=2` |
+| `CO2` | `1.560922501885089e-6` | `1.643317676329097e-6` | `0.949860470905379` | fine pair grows |
+| `H2O` | `1.277926626285705e-6` | `1.345383522558448e-6` | `0.949860470905379` | fine pair grows |
+| `CO` | `5.853061128955419e-19` | `7.801194947523987e-19` | `0.750277511115540` | near-zero/unidentifiable |
+| `C(gr)` | `2.205510446250908e-19` | `2.977589365311422e-19` | `0.740703359551473` | near-zero/unidentifiable |
+| sensible enthalpy | `135.6919415917949` | `71.16969390509917` | `1.906597234670315` | capped `p=2` |
+
+Because the contract requires a separately derived term for every gated
+channel, the four non-negligible failures (`rho_total_Z`, `CH4`, `CO2`, and
+`H2O`) make the generalized Richardson scheme-distance term undefined. No
+triangle tolerance can therefore be formed. r107 does not substitute a
+fixed-domain synthetic family, discard channels, use a post-hoc order, or
+widen a ceiling. The next admissible work is a cause probe of this tier-family
+failure or an owner-approved calibration-family ruling. Thermo/source-map work
+remains downstream of that decision. The immutable tier-10 checkpoint still
+hashes to `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

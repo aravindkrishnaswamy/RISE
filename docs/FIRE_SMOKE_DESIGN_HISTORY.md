@@ -2576,3 +2576,18 @@ it was already tried and refuted here.
   a short trajectory chains each solver's own state for at most eight steps,
   while long chaotic horizons use only V/empirical/prefix statistical and
   integral gates.
+
+- **r107 (2026-08-19):** calibration stopped at the pre-solver state-family
+  gate. The strict binary64, exact-common-support manifest is
+  `338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5`
+  and explicitly is not the full campaign manifest. It binds certified
+  tier-5/6/7 state hashes `ce0b47fe...`, `7e53de9f...`, and `3f9f1eaf...`.
+  On the one mutual physical support, the admissible ratio for `0<p<=2` is
+  `[1.18274896,1.65846154]`. `rho_total_Z` and `CH4` yield `1.1396311811`
+  and `1.1647909263`; `CO2` and `H2O` both yield `0.9498604709`, with the
+  tier-6/7 difference larger than tier-5/6. O2/N2/enthalpy are capped at
+  formal `p=2`; near-zero CO/C(gr) are unidentifiable. Consequently no
+  all-channel Richardson scheme-distance term exists, the additive triangle
+  tolerance cannot be formed, and neither `B_fp32` Metal confirmation nor
+  eight-slice readmission ran. The checkpoint remains `1b944176...`; no
+  solver or ceiling changed.
