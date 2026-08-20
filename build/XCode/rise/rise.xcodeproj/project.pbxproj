@@ -6426,8 +6426,6 @@
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6437,6 +6435,9 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6487,8 +6488,6 @@
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6498,6 +6497,9 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6547,8 +6549,6 @@
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6558,6 +6558,9 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6731,8 +6734,6 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-ffast-math",
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6742,6 +6743,9 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
