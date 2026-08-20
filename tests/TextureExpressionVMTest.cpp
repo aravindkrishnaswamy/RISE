@@ -25,6 +25,7 @@
 
 #include <iostream>
 #include <cmath>
+#include <limits>
 #include <cstdio>
 #include <string>
 
@@ -46,6 +47,16 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+
+// S3 (P2.1 + P2.2: scalar_painter{painter} bridge, ramp_painter) additions
+// below TestExpressionPainterScalarBroadcastOnColorPipe().
+#include "../src/Library/Painters/PainterChannelScalarPainter.h"
+#include "../src/Library/Painters/RampPainter.h"
+#include "../src/Library/Utilities/Color/RGBSpectra.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/IRasterImageWriter.h"
+#include "../src/Library/Interfaces/IWriteBuffer.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1320,6 +1331,350 @@ static void TestExpressionPainterScalarBroadcastOnColorPipe()
 	job->release();
 }
 
+//======================================================================
+// S3 -- P2.1 (scalar_painter{painter} bridge) + P2.2 (ramp_painter).
+//======================================================================
+namespace S3 {
+
+	// Small mock IPainter with a settable constant RGB + alpha, for
+	// exercising channel selection (incl. A, which no in-tree procedural
+	// painter carries non-trivially without a real RGBA image file).
+	class MockRGBAPainter : public Painter
+	{
+	protected:
+		RISEPel c;
+		Scalar  a;
+		virtual ~MockRGBAPainter() {}
+	public:
+		MockRGBAPainter( const RISEPel& c_, Scalar a_ ) : c( c_ ), a( a_ ) {}
+		RISEPel GetColor( const RayIntersectionGeometric& ) const override { return c; }
+		Scalar  GetAlpha( const RayIntersectionGeometric& ) const override { return a; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) override { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) override {}
+		void RegenerateData() override {}
+	};
+
+	RayIntersectionGeometric MakeHit( Scalar x = 0, Scalar y = 0, Scalar z = 0 )
+	{
+		RayIntersectionGeometric r( Ray(), nullRasterizerState );
+		r.bHit = true;
+		r.ptIntersection = Point3( x, y, z );
+		return r;
+	}
+
+	// Write a tiny solid-colour PNG to TMPDIR using RISE's own raster
+	// image + PNG writer (matches ScalarTexturePainterTest.cpp's helper),
+	// so the `texture` form's channel-A rejection test has a REAL image
+	// painter that actually constructs -- a nonexistent file would fail
+	// at the png_painter step, never reaching the channel-A check.
+	std::string WriteTempPNG( const char* tag, double r, double g, double b )
+	{
+		const char* t = getenv( "TMPDIR" );
+		std::string dir = ( t && t[0] ) ? t : "/tmp/";
+		if( dir[dir.size()-1] != '/' ) dir += '/';
+		const std::string path = dir + "rise_texexprvm_s3_" + tag + ".png";
+
+		IRasterImage* img = 0;
+		RISE_API_CreateRISEColorRasterImage( &img, 4, 4, RISEColor( RISEPel( r, g, b ), 1.0 ) );
+
+		IWriteBuffer* buf = 0;
+		RISE_API_CreateDiskFileWriteBuffer( &buf, path.c_str() );
+
+		IRasterImageWriter* writer = 0;
+		RISE_API_CreatePNGWriter( &writer, *buf, 8, eColorSpace_Rec709RGB_Linear );
+
+		img->DumpImage( writer );
+
+		if( writer ) writer->release();
+		if( buf )    buf->release();
+		if( img )    img->release();
+		return path;
+	}
+
+	// Builds a RampPainter over a constant-R MockRGBAPainter(t,t,t,1) and
+	// returns GetColor -- the golden-value harness for interpolation mode
+	// checks (t is a free parameter per call, unlike a real scene painter).
+	RISEPel RampColorForT( RampPainter::Interpolation interp, const std::vector<RampPainter::Stop>& stops, Scalar t )
+	{
+		MockRGBAPainter* src = new MockRGBAPainter( RISEPel( t, t, t ), Scalar(1) ); src->addref();
+		RampPainter* rp = new RampPainter( *src, RampPainter::Channel_R, interp, stops ); rp->addref();
+		const RISEPel out = rp->GetColor( MakeHit() );
+		rp->release();
+		src->release();
+		return out;
+	}
+
+} // namespace S3
+
+static void TestRampPainterGoldenInterpolation()
+{
+	std::cout << "Test 26: RampPainter -- linear/constant/smooth golden values at/between/outside stops" << std::endl;
+	using S3::RampColorForT;
+	const std::vector<RampPainter::Stop> stops = {
+		RampPainter::Stop( Scalar(0), RISEPel(0,0,0) ),
+		RampPainter::Stop( Scalar(1), RISEPel(10,10,10) ),
+		RampPainter::Stop( Scalar(2), RISEPel(100,100,100) ),
+	};
+
+	// linear
+	{
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(-1) )[0], 0,   1e-9, "linear: below range clamps to first stop" );
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(0)  )[0], 0,   1e-9, "linear: exactly at stop 0" );
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(0.5))[0], 5,   1e-9, "linear: interior of segment 0-1" );
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(1)  )[0], 10,  1e-9, "linear: exactly at stop 1" );
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(1.5))[0], 55,  1e-9, "linear: interior of segment 1-2" );
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(2)  )[0], 100, 1e-9, "linear: exactly at stop 2 (last)" );
+		CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, Scalar(5)  )[0], 100, 1e-9, "linear: above range clamps to last stop" );
+	}
+	// constant (hold-left / step)
+	{
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(-1) )[0], 0,   1e-9, "constant: below range clamps to first stop" );
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(0)  )[0], 0,   1e-9, "constant: exactly at stop 0" );
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(0.5))[0], 0,   1e-9, "constant: interior holds the LOWER stop (0)" );
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(1)  )[0], 10,  1e-9, "constant: exactly at stop 1 jumps to stop 1 (not one interval later)" );
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(1.5))[0], 10,  1e-9, "constant: interior holds the LOWER stop (1)" );
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(2)  )[0], 100, 1e-9, "constant: exactly at stop 2 (last)" );
+		CheckClose( RampColorForT( RampPainter::Interp_Constant, stops, Scalar(5)  )[0], 100, 1e-9, "constant: above range clamps to last stop" );
+	}
+	// smooth (smoothstep-eased lerp) -- exact stop values match linear/constant;
+	// interior values differ from a plain lerp except at the segment midpoint
+	// (smoothstep(0.5) == 0.5 by symmetry, so pick an off-center t to distinguish).
+	{
+		CheckClose( RampColorForT( RampPainter::Interp_Smooth, stops, Scalar(0)  )[0], 0,   1e-9, "smooth: exactly at stop 0" );
+		CheckClose( RampColorForT( RampPainter::Interp_Smooth, stops, Scalar(1)  )[0], 10,  1e-9, "smooth: exactly at stop 1" );
+		CheckClose( RampColorForT( RampPainter::Interp_Smooth, stops, Scalar(2)  )[0], 100, 1e-9, "smooth: exactly at stop 2" );
+		// u=0.25 -> smoothstep(0.25) = 3*0.0625 - 2*0.015625 = 0.15625
+		CheckClose( RampColorForT( RampPainter::Interp_Smooth, stops, Scalar(0.25) )[0], 1.5625, 1e-9, "smooth: off-center interior matches the smoothstep formula" );
+		const Scalar linearAt025 = RampColorForT( RampPainter::Interp_Linear, stops, Scalar(0.25) )[0];
+		const Scalar smoothAt025 = RampColorForT( RampPainter::Interp_Smooth, stops, Scalar(0.25) )[0];
+		Check( std::fabs( linearAt025 - smoothAt025 ) > 1e-6, "smooth differs from linear off-center" );
+	}
+}
+
+static void TestRampPainterSpectralConsistency()
+{
+	std::cout << "Test 27: RampPainter -- GetColorNM at exact stops equals that stop's uplifted spectrum; between stops is the linear blend" << std::endl;
+	const RISEPel colorLo( 0.9, 0.05, 0.05 );
+	const RISEPel colorHi( 0.05, 0.05, 0.9 );
+	const RGBAlbedoSpectrum specLo = RGBAlbedoSpectrum::FromRGB( colorLo );
+	const RGBAlbedoSpectrum specHi = RGBAlbedoSpectrum::FromRGB( colorHi );
+	const Scalar testNMs[3] = { 450, 550, 650 };
+
+	auto colorNMForT = [&]( Scalar t, Scalar nm ) -> Scalar {
+		const std::vector<RampPainter::Stop> stops = {
+			RampPainter::Stop( Scalar(0), colorLo ),
+			RampPainter::Stop( Scalar(1), colorHi ),
+		};
+		S3::MockRGBAPainter* src = new S3::MockRGBAPainter( RISEPel(t,t,t), Scalar(1) ); src->addref();
+		RampPainter* rp = new RampPainter( *src, RampPainter::Channel_R, RampPainter::Interp_Linear, stops ); rp->addref();
+		const Scalar v = rp->GetColorNM( S3::MakeHit(), nm );
+		rp->release();
+		src->release();
+		return v;
+	};
+
+	for( int i = 0; i < 3; ++i ) {
+		const Scalar nm = testNMs[i];
+		CheckClose( colorNMForT( 0, nm ), specLo.Eval( nm ), 1e-9, "GetColorNM at exact stop 0 equals stop 0's own uplifted spectrum" );
+		CheckClose( colorNMForT( 1, nm ), specHi.Eval( nm ), 1e-9, "GetColorNM at exact stop 1 equals stop 1's own uplifted spectrum" );
+		const Scalar expectedMid = Scalar(0.5) * specLo.Eval( nm ) + Scalar(0.5) * specHi.Eval( nm );
+		CheckClose( colorNMForT( 0.5, nm ), expectedMid, 1e-9, "GetColorNM at t=0.5 is the linear blend of the two stops' spectra" );
+	}
+}
+
+static void TestRampPainterChannelSelection()
+{
+	std::cout << "Test 28: RampPainter -- channel selection (R vs A) routes through the correct source field" << std::endl;
+	const std::vector<RampPainter::Stop> stops = {
+		RampPainter::Stop( Scalar(0), RISEPel(0,0,0) ),
+		RampPainter::Stop( Scalar(1), RISEPel(1,1,1) ),
+	};
+	// r = 0.0 (drives Channel_R to the first stop), alpha = 1.0 (drives
+	// Channel_A to the last stop) -- same source, two different channel
+	// selections must land on different stops.
+	S3::MockRGBAPainter* src = new S3::MockRGBAPainter( RISEPel(0,0,0), Scalar(1) ); src->addref();
+	RampPainter* rpR = new RampPainter( *src, RampPainter::Channel_R, RampPainter::Interp_Linear, stops ); rpR->addref();
+	RampPainter* rpA = new RampPainter( *src, RampPainter::Channel_A, RampPainter::Interp_Linear, stops ); rpA->addref();
+	const RISEPel outR = rpR->GetColor( S3::MakeHit() );
+	const RISEPel outA = rpA->GetColor( S3::MakeHit() );
+	CheckClose( outR[0], 0, 1e-9, "Channel_R reads the source's R (0.0) -> first stop" );
+	CheckClose( outA[0], 1, 1e-9, "Channel_A reads the source's alpha (1.0) -> last stop" );
+	Check( outR[0] != outA[0], "R and A channel selections give different results on the same source" );
+	rpR->release(); rpA->release(); src->release();
+}
+
+static void TestPainterChannelScalarPainter()
+{
+	std::cout << "Test 29: PainterChannelScalarPainter -- channel selection (R/G/B/A), scale/bias, uniform triple" << std::endl;
+	using Implementation::PainterChannelScalarPainter;
+	S3::MockRGBAPainter* src = new S3::MockRGBAPainter( RISEPel(0.2,0.5,0.8), Scalar(0.35) ); src->addref();
+
+	{
+		PainterChannelScalarPainter* p = new PainterChannelScalarPainter( *src, PainterChannelScalarPainter::Channel_R, Scalar(1), Scalar(0) ); p->addref();
+		const ScalarTriple t = p->GetValuesAt( S3::MakeHit() );
+		CheckClose( t.v[0], 0.2, 1e-9, "channel R reads source.GetColor().r" );
+		Check( t.IsUniform(), "GetValuesAt is a uniform triple (single channel replicated)" );
+		Check( !p->HasPerChannelVariation(), "HasPerChannelVariation is false" );
+		CheckClose( p->GetValueAtNM( S3::MakeHit(), 500 ), 0.2, 1e-9, "GetValueAtNM matches GetValuesAt.v[0] (wavelength-independent)" );
+		p->release();
+	}
+	{
+		PainterChannelScalarPainter* p = new PainterChannelScalarPainter( *src, PainterChannelScalarPainter::Channel_G, Scalar(1), Scalar(0) ); p->addref();
+		CheckClose( p->GetValuesAt( S3::MakeHit() ).v[0], 0.5, 1e-9, "channel G reads source.GetColor().g" );
+		p->release();
+	}
+	{
+		PainterChannelScalarPainter* p = new PainterChannelScalarPainter( *src, PainterChannelScalarPainter::Channel_B, Scalar(1), Scalar(0) ); p->addref();
+		CheckClose( p->GetValuesAt( S3::MakeHit() ).v[0], 0.8, 1e-9, "channel B reads source.GetColor().b" );
+		p->release();
+	}
+	Scalar chanA = 0, chanR = 0;
+	{
+		PainterChannelScalarPainter* p = new PainterChannelScalarPainter( *src, PainterChannelScalarPainter::Channel_A, Scalar(1), Scalar(0) ); p->addref();
+		chanA = p->GetValuesAt( S3::MakeHit() ).v[0];
+		CheckClose( chanA, 0.35, 1e-9, "channel A reads source.GetAlpha()" );
+		p->release();
+	}
+	{
+		PainterChannelScalarPainter* p = new PainterChannelScalarPainter( *src, PainterChannelScalarPainter::Channel_R, Scalar(1), Scalar(0) ); p->addref();
+		chanR = p->GetValuesAt( S3::MakeHit() ).v[0];
+		p->release();
+	}
+	Check( chanA != chanR, "channel A vs channel R differ on an RGBA source" );
+	{
+		// scale/bias arithmetic: out = bias + scale*raw
+		PainterChannelScalarPainter* p = new PainterChannelScalarPainter( *src, PainterChannelScalarPainter::Channel_R, Scalar(2), Scalar(0.1) ); p->addref();
+		CheckClose( p->GetValuesAt( S3::MakeHit() ).v[0], Scalar(0.1) + Scalar(2)*Scalar(0.2), 1e-9, "scale/bias: out = bias + scale*raw" );
+		p->release();
+	}
+	src->release();
+}
+
+static void TestRampAndPainterChannelParserDiagnostics()
+{
+	std::cout << "Test 30: ramp_painter / scalar_painter{painter} -- diagnostics (missing input, <2 stops, non-ascending stops, mutual exclusion)" << std::endl;
+
+	Check( !S2::ParseBody( "ramp_noinput", "ramp_painter\n{\nname r1\nstop 0 0 0 0\nstop 1 1 1 1\n}\n" ),
+		"ramp_painter missing `input` rejects" );
+	Check( !S2::ParseBody( "ramp_1stop", "ramp_painter\n{\nname r2\ninput bogus\nstop 0 0 0 0\n}\n" ),
+		"ramp_painter with < 2 `stop` lines rejects" );
+	Check( !S2::ParseBody( "ramp_descend", "ramp_painter\n{\nname r3\ninput bogus\nstop 0 0 0 0\nstop 0.5 1 1 1\nstop 0.2 0 0 0\n}\n" ),
+		"ramp_painter with non-ascending stop positions rejects" );
+	Check( S2::ParseBody( "ramp_ok", "perlin3d_painter\n{\nname pn_ramp_ok\n}\nramp_painter\n{\nname r4\ninput pn_ramp_ok\nstop 0 0 0 0\nstop 1 1 1 1\n}\n" ),
+		"ramp_painter with a valid input + 2 ascending stops parses" );
+
+	Check( !S2::ParseBody( "scalpaint_dup1", "scalar_painter\n{\nname dup3\npainter something\ntexture something\n}\n" ),
+		"scalar_painter `painter`+`texture` (mutually exclusive) rejects" );
+	Check( !S2::ParseBody( "scalpaint_dup2", "scalar_painter\n{\nname dup4\npainter something\nvalue 0.5\n}\n" ),
+		"scalar_painter `painter`+`value` (mutually exclusive) rejects" );
+	{
+		const std::string png = S3::WriteTempPNG( "texA", 0.4, 0.6, 0.2 );
+		const std::string body =
+			std::string( "png_painter\n{\nname img\nfile " ) + png + "\ncolor_space Rec709RGB_Linear\n}\n"
+			"scalar_painter\n{\nname badchan\ntexture img\nchannel A\n}\n";
+		Check( !S2::ParseBody( "scalpaint_texA", body ),
+			"scalar_painter `texture` form rejects channel A even with a REAL image painter (TextureScalarPainter has no alpha read)" );
+	}
+}
+
+static void TestRampPainterChunkRegistrationAndBridgeForm()
+{
+	std::cout << "Test 31: ramp_painter registers dual (painter + function2d); scalar_painter{painter} bridges perlin3d_painter into ggx_material.alphax" << std::endl;
+
+	// ramp_painter dual registration (unlike expression_painter's
+	// deliberate single registration -- ramp_painter is a plain
+	// combinator like blend_painter, not a 3D-context source itself).
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname a\ncolor 0 0 0\n}\n"
+			"uniformcolor_painter\n{\nname b\ncolor 1 1 1\n}\n"
+			"blend_painter\n{\nname driver\ncolora a\ncolorb b\nmask a\n}\n"
+			"ramp_painter\n{\nname terrain_ramp\ninput driver\nstop 0 0 0 0\nstop 1 1 1 1\n}\n";
+		Check( S2::ParseBody( "rampreg", body, *job ), "parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			Check( priv->GetPainters()->GetItem( "terrain_ramp" ) != 0, "ramp_painter registered as a colour painter" );
+			Check( priv->GetFunction2Ds()->GetItem( "terrain_ramp" ) != 0, "ramp_painter ALSO registered as an IFunction2D (dual registration, like blend_painter)" );
+		}
+		job->release();
+	}
+
+	// The P2.1 any-painter bridge: bind a perlin3d_painter (a 3D-WORLD-SPACE
+	// noise field, not a raster texture) into a physical-scalar slot
+	// (ggx_material.alphax/alphay) through the REAL parser path.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname pnt_lo\ncolor 0 0 0\n}\n"
+			"uniformcolor_painter\n{\nname pnt_hi\ncolor 1 1 1\n}\n"
+			"perlin3d_painter\n{\nname pnoise\ncolora pnt_lo\ncolorb pnt_hi\n}\n"
+			"scalar_painter\n{\nname roughvar\npainter pnoise\nchannel R\n}\n"
+			"ggx_material\n{\nname mat\nalphax roughvar\nalphay roughvar\n}\n";
+		Check( S2::ParseBody( "bridge", body, *job ), "perlin3d_painter -> scalar_painter{painter} -> ggx_material.alphax parses (derive succeeds)" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* sp = priv->GetScalarPainters()->GetItem( "roughvar" );
+			Check( sp != 0, "scalar_painter{painter} registered" );
+			Check( priv->GetMaterials()->GetItem( "mat" ) != 0, "ggx_material bound to it and registered" );
+			if( sp ) {
+				RayIntersectionGeometric r1( Ray(), nullRasterizerState );
+				r1.bHit = true; r1.ptIntersection = Point3( 1, 2, 3 );
+				RayIntersectionGeometric r2( Ray(), nullRasterizerState );
+				r2.bHit = true; r2.ptIntersection = Point3( 97, 41, 23 );
+				const ScalarTriple v1 = sp->GetValuesAt( r1 );
+				const ScalarTriple v2 = sp->GetValuesAt( r2 );
+				Check( std::isfinite( (double)v1.v[0] ) && std::isfinite( (double)v2.v[0] ), "GetValuesAt finite at both hits" );
+				Check( v1.v[0] != v2.v[0], "GetValuesAt VARIES across two RIs with different ptIntersection (proves the perlin3d field, not a constant, is driving t)" );
+			}
+		}
+		job->release();
+	}
+}
+
+// 32. Review round: RampPainter edge inputs -- duplicate stop positions
+// (parser permits non-decreasing) and a NaN field sample (mapped to the
+// first stop by SampleT rather than poisoning the interpolation weight).
+static void TestRampPainterEdgeInputs()
+{
+	std::cout << "Test 32: RampPainter -- duplicate stop positions + NaN field sample" << std::endl;
+	using S3::RampColorForT;
+
+	// Duplicate position: stops at pos 1 hold two different colours.  The
+	// locate step's "largest j with pos[j] <= t" rule means the LAST
+	// duplicate wins exactly at the shared position, and the zero-width
+	// segment can never be selected as an interpolation bracket.
+	const std::vector<RampPainter::Stop> dup = {
+		RampPainter::Stop( Scalar(0), RISEPel(0,0,0) ),
+		RampPainter::Stop( Scalar(1), RISEPel(10,10,10) ),
+		RampPainter::Stop( Scalar(1), RISEPel(20,20,20) ),
+		RampPainter::Stop( Scalar(2), RISEPel(100,100,100) ),
+	};
+	CheckClose( RampColorForT( RampPainter::Interp_Linear, dup, Scalar(1) )[0], 20, 1e-9,
+	            "duplicate pos: last duplicate wins exactly at the shared position" );
+	CheckClose( RampColorForT( RampPainter::Interp_Linear, dup, Scalar(0.5) )[0], 5, 1e-9,
+	            "duplicate pos: segment BEFORE the duplicate lerps toward the first duplicate" );
+	CheckClose( RampColorForT( RampPainter::Interp_Linear, dup, Scalar(1.5) )[0], 60, 1e-9,
+	            "duplicate pos: segment AFTER the duplicate lerps from the last duplicate" );
+	const RISEPel dupConst = RampColorForT( RampPainter::Interp_Constant, dup, Scalar(1.5) );
+	CheckClose( dupConst[0], 20, 1e-9, "duplicate pos: constant mode holds the last duplicate" );
+
+	// NaN field sample: deterministic first-stop colour, never a NaN pixel.
+	const std::vector<RampPainter::Stop> stops = {
+		RampPainter::Stop( Scalar(0), RISEPel(3,3,3) ),
+		RampPainter::Stop( Scalar(1), RISEPel(9,9,9) ),
+	};
+	const Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
+	for( int mode = 0; mode < 3; ++mode ) {
+		const RISEPel out = RampColorForT( (RampPainter::Interpolation)mode, stops, nan );
+		Check( std::isfinite( (double)out[0] ), "NaN t: output is finite" );
+		CheckClose( out[0], 3, 1e-9, "NaN t: maps to the FIRST stop in every mode" );
+	}
+	// +/-inf clamp through the ordered comparisons (no special-casing).
+	CheckClose( RampColorForT( RampPainter::Interp_Linear, stops,  std::numeric_limits<Scalar>::infinity() )[0], 9, 1e-9, "+inf t clamps to last stop" );
+	CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, -std::numeric_limits<Scalar>::infinity() )[0], 3, 1e-9, "-inf t clamps to first stop" );
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -1348,6 +1703,13 @@ int main( int, char** )
 	TestExpressionPainterSpectralPath();
 	TestScalarExpressionPerChannelInSingleSlotDiagnostic();
 	TestExpressionPainterScalarBroadcastOnColorPipe();
+	TestRampPainterGoldenInterpolation();
+	TestRampPainterSpectralConsistency();
+	TestRampPainterChannelSelection();
+	TestPainterChannelScalarPainter();
+	TestRampAndPainterChannelParserDiagnostics();
+	TestRampPainterChunkRegistrationAndBridgeForm();
+	TestRampPainterEdgeInputs();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

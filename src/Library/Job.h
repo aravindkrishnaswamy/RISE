@@ -683,6 +683,20 @@ namespace RISE
 									const double time
 									);
 
+		//! Adds a ramp_painter (doc 88 P2.2, S3) -- see IJob.h for the
+		//! full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddRampPainter(
+									const char* name,
+									const char* input,
+									const unsigned int channel,
+									const unsigned int interpolation,
+									const double* stopPositions,
+									const double* stopColors,
+									const unsigned int numStops,
+									const char* colorSpace
+									);
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPerlin3DPainter(

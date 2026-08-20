@@ -1,0 +1,171 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           ramp_painter_terrain.RISEscene                                                          #
+#   Description:    S3 regression scene for ramp_painter (doc 88 P2.2) -- an expression_painter fbm         #
+#                   height field colourised by a 4-stop ramp_painter (deep blue -> sand -> grass -> snow)   #
+#                   driving a lambertian sphere.  Demonstrates the "field in the expression, colour in      #
+#                   the ramp" composition-boundary idiom (doc 88 P5): the expression computes a scalar      #
+#                   field only, and ALL colour authoring lives in the ramp's stop list.                     #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-19                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/ramp_painter_terrain
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			480
+	height			480
+}
+
+pinhole_camera
+{
+	location		0 1.8 6
+	lookat			0 -0.3 0
+	up				0 1 0
+	fov				35.0
+}
+
+##################################################
+# Painters
+##################################################
+
+# Fractal-brownian-motion height field, SCALAR-typed (broadcasts to
+# grayscale r=g=b=value on the colour pipe) -- the "field" half of the
+# doc-88 P5 composition idiom.  Raw fbm(P*freq,5,0.5,2.0) over this
+# sphere's surface only spans roughly [-0.37,0.35] (measured); `contrast`
+# stretches that toward the ramp's full [-1,1] stop range so all four
+# terrain bands (deep water / sand / grass / snow) are reachable, and
+# clamp() guards the rare excursion past +-1.
+expression_painter
+{
+	name			elevation
+	param			freq 1.6 min 0.5 max 4.0 step 0.1 label "Terrain frequency"
+	param			contrast 2.6 min 1.0 max 5.0 step 0.1 label "Elevation contrast"
+	def				h fbm(P*freq, 5, 0.5, 2.0)
+	def				t clamp(h*contrast, -1, 1)
+	expr			t
+}
+
+# The colour half: a 4-stop terrain ramp driven by `elevation`'s R channel
+# (all three channels are equal since `elevation` is scalar-typed).
+# `smooth` interpolation avoids hard banding between bands -- deep water,
+# sand, grass, snow cap.
+ramp_painter
+{
+	name			terrain_colors
+	input			elevation
+	channel			R
+	interpolation	smooth
+	stop			-1.0   0.02 0.08 0.35
+	stop			-0.15  0.76 0.70 0.45
+	stop			 0.15  0.20 0.55 0.15
+	stop			 1.0   0.95 0.95 0.98
+	color_space		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			ground_grey
+	color			0.5 0.5 0.5
+	colorspace		Rec709RGB_Linear
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name			mat_terrain
+	reflectance		terrain_colors
+}
+
+lambertian_material
+{
+	name			mat_ground
+	reflectance		ground_grey
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			terrain_sphere
+	radius			1.3
+}
+
+standard_object
+{
+	name			terrain
+	geometry		terrain_sphere
+	orientation		0 0 0
+	position		0 0.2 0
+	material		mat_terrain
+	receives_shadows false
+}
+
+box_geometry
+{
+	name			ground_box
+	width			12
+	height			0.2
+	depth			12
+}
+
+standard_object
+{
+	name			ground
+	geometry		ground_box
+	orientation		0 0 0
+	position		0 -1.2 0
+	material		mat_ground
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.6 0.7 1.0
+}
+
+ambient_light
+{
+	name		amb
+	color		1.0 1.0 1.0
+	power		0.4
+}

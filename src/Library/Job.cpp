@@ -59,6 +59,7 @@
 #include "Interfaces/IPainterManager.h"
 #include "Painters/PainterToScalarAdapter.h"
 #include "Painters/ExpressionPainter.h"	// Implementation::BuildExpressionProgramFromChunkFields (AddExpressionPainter)
+#include "Painters/RampPainter.h"	// Implementation::RampPainter::Stop (AddRampPainter)
 #include "Intersection/RayIntersectionGeometric.h"
 #include <cctype>
 #include <cstdlib>
@@ -1331,6 +1332,66 @@ bool Job::AddExpressionPainter(
 	// freezing any P/Po/N-dependent field to a constant.  See
 	// ExpressionPainter.h's file header comment.
 	const bool ok = RegisterOrDiag( pPntManager, pPainter, name, "painter" );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a ramp_painter (doc 88 P2.2, S3)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddRampPainter(
+							const char* name,
+							const char* input,
+							const unsigned int channel,
+							const unsigned int interpolation,
+							const double* stopPositions,
+							const double* stopColors,
+							const unsigned int numStops,
+							const char* colorSpace
+							)
+{
+	IPainter* pInput = pPntManager->GetItem( input );
+	if( !pInput ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddRampPainter `%s`: input painter `%s` not found", name ? name : "noname", input ? input : "" );
+		return false;
+	}
+	if( numStops < 2 || !stopPositions || !stopColors ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddRampPainter `%s`: needs at least 2 stops", name ? name : "noname" );
+		return false;
+	}
+
+	std::vector<Implementation::RampPainter::Stop> stops;
+	stops.reserve( numStops );
+	for( unsigned int i = 0; i < numStops; ++i ) {
+		const double rgbIn[3] = { stopColors[i * 3 + 0], stopColors[i * 3 + 1], stopColors[i * 3 + 2] };
+		// Same colour-space -> RISEPel conversion switch as
+		// AddUniformColorPainter, applied per stop.
+		RISEPel c;
+		if( colorSpace ) {
+			if( strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) {
+				c = RISEPel( Rec709RGBPel( rgbIn ) );
+			} else if( strcmp( colorSpace, "sRGB" ) == 0 ) {
+				c = RISEPel( sRGBPel( rgbIn ) );
+			} else if( strcmp( colorSpace, "ROMMRGB_Linear" ) == 0 ) {
+				c = RISEPel( ROMMRGBPel( rgbIn ) );
+			} else if( strcmp( colorSpace, "ProPhotoRGB" ) == 0 ) {
+				c = RISEPel( ProPhotoRGBPel( rgbIn ) );
+			} else if( strcmp( colorSpace, "RISERGB" ) == 0 ) {
+				c = RISEPel( rgbIn );
+			} else {
+				GlobalLog()->PrintEx( eLog_Error, "AddRampPainter `%s`: unknown color space `%s`", name ? name : "noname", colorSpace );
+				return false;
+			}
+		} else {
+			c = RISEPel( sRGBPel( rgbIn ) );
+		}
+		stops.push_back( Implementation::RampPainter::Stop( Scalar( stopPositions[i] ), c ) );
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateRampPainter( &pPainter, *pInput, channel, interpolation, stops ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 	return ok;
 }

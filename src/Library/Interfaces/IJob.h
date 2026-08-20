@@ -3917,6 +3917,29 @@ namespace RISE
 									const double time					///< [in] Initial `time` value (keyframeable)
 									) = 0;
 
+		//! Adds a ramp_painter (doc 88 P2.2, S3): the universal scalar ->
+		//! colour remap.  `input`'s channel drives `t`, which is clamped
+		//! to the authored stop range and used to interpolate between the
+		//! bracketing pair of `stopPositions`/`stopColors` (r,g,b
+		//! flattened, `numStops` triples, `stopPositions` non-decreasing,
+		//! at least 2 required -- validated by the chunk parser before
+		//! this call).  `stopColors` triples are interpreted per
+		//! `colorSpace` (same convention/values as uniformcolor_painter's
+		//! `colorspace` field).  Appended after AddExpressionPainter per
+		//! the append-only IJob tail (preserves every prior vtable slot --
+		//! see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddRampPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* input,					///< [in] Named painter whose channel drives t
+									const unsigned int channel,		///< [in] 0=R, 1=G, 2=B, 3=A
+									const unsigned int interpolation,	///< [in] 0=linear, 1=constant, 2=smooth
+									const double* stopPositions,		///< [in] Stop positions, ascending, `numStops` entries
+									const double* stopColors,			///< [in] Stop colours, `numStops` x (r,g,b) flattened
+									const unsigned int numStops,		///< [in] Count of stops (>= 2)
+									const char* colorSpace				///< [in] Interpretation of stopColors triples
+									) = 0;
+
 	};
 
 

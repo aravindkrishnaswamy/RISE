@@ -32,6 +32,10 @@
 		EE990000000000000000001D /* ExpressionPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
 		EE990000000000000000001E /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
 		EE990000000000000000001F /* ExpressionPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
+		994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
+		A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
+		71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
+		E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -1861,6 +1865,8 @@
 		FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
 		FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
 		FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
+		638119AC57041C82DB44A5B1 /* PainterChannelScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
+		B3CF82E5032CA541ADA5A656 /* PainterChannelScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
 		FA9D00010000000000000001 /* FiniteMath.h in Sources */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
 		FA9D00020000000000000001 /* FiniteMath.h in Headers */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
 		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
@@ -1925,6 +1931,8 @@
 		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		EE990000000000000000001A /* ExpressionPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionPainter.h; sourceTree = "<group>"; };
 		EE990000000000000000001B /* ExpressionPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionPainter.cpp; sourceTree = "<group>"; };
+		89A2797DF74BDB70C5D959B9 /* RampPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RampPainter.h; sourceTree = "<group>"; };
+		F204D6F309C3AA61F5300F19 /* RampPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RampPainter.cpp; sourceTree = "<group>"; };
 		6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AmbientOcclusionShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AmbientOcclusionShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AreaLightShaderOp.cpp; sourceTree = "<group>"; };
@@ -2904,6 +2912,7 @@
 		FA1ABFR1000000000000002C /* ScaledScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScaledScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MultiplyScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
+		40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterChannelScalarPainter.h; sourceTree = "<group>"; };
 		FA9D00030000000000000001 /* FiniteMath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FiniteMath.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
@@ -3636,6 +3645,8 @@
 				6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */,
 				EE990000000000000000001A /* ExpressionPainter.h */,
 				EE990000000000000000001B /* ExpressionPainter.cpp */,
+				89A2797DF74BDB70C5D959B9 /* RampPainter.h */,
+				F204D6F309C3AA61F5300F19 /* RampPainter.cpp */,
 				F2ADD1000000000000000001 /* ExpressionParamSpec.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
@@ -3667,6 +3678,7 @@
 				FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */,
 				FA1ABFR1000000000000002C /* ScaledScalarPainter.h */,
 				FA1ABFR10000000000000028 /* TextureScalarPainter.h */,
+				40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */,
 				FA1ABFR10000000000000024 /* Function2DScalarPainter.h */,
 				FA1ABFR10000000000000020 /* Function1DScalarPainter.h */,
 				FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */,
@@ -4629,6 +4641,7 @@
 				6A11B002000000000000C0DE /* ExpressionEval.h in Headers */,
 				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
 				EE990000000000000000001D /* ExpressionPainter.h in Headers */,
+				A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */,
 				F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
@@ -4648,6 +4661,7 @@
 				FA1ABHD10000000000000032 /* MultiplyScalarPainter.h in Headers */,
 				FA1ABHD1000000000000002E /* ScaledScalarPainter.h in Headers */,
 				FA1ABHD1000000000000002A /* TextureScalarPainter.h in Headers */,
+				638119AC57041C82DB44A5B1 /* PainterChannelScalarPainter.h in Headers */,
 				FA1ABHD10000000000000026 /* Function2DScalarPainter.h in Headers */,
 				FA1ABHD10000000000000022 /* Function1DScalarPainter.h in Headers */,
 				FA1ABHD1000000000000001E /* PolynomialScalarPainter.h in Headers */,
@@ -5220,6 +5234,7 @@
 				CC0F0000000000000000000B /* PolynomialFunction2DPainter.cpp in Sources */,
 				DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */,
 				EE990000000000000000001C /* ExpressionPainter.cpp in Sources */,
+				994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */,
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
 				F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */,
@@ -5867,6 +5882,7 @@
 				FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */,
 				FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */,
 				FA1ABSC10000000000000029 /* TextureScalarPainter.h in Sources */,
+				B3CF82E5032CA541ADA5A656 /* PainterChannelScalarPainter.h in Sources */,
 				FA1ABSC10000000000000025 /* Function2DScalarPainter.h in Sources */,
 				FA1ABSC10000000000000021 /* Function1DScalarPainter.h in Sources */,
 				FA1ABSC1000000000000001D /* PolynomialScalarPainter.h in Sources */,
@@ -6269,6 +6285,8 @@
 				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
 				EE990000000000000000001E /* ExpressionPainter.cpp in Sources */,
 				EE990000000000000000001F /* ExpressionPainter.h in Sources */,
+				71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */,
+				E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */,
 				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,

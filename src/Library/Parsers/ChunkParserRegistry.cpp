@@ -1211,10 +1211,17 @@ namespace RISE
 			//                                          → TextureScalarPainter (image map
 			//                                            sampled at surface UV; out = bias +
 			//                                            scale * rawTexel; no JH-uplift)
+			//   expression <body> [param ...] [def ...] [seed <s>]
+			//                                          → ExpressionScalarPainter (doc 88 P1 S2)
+			//   painter <name> [channel R|G|B|A] [scale <s>] [bias <b>]
+			//                                          → PainterChannelScalarPainter (doc 88 P2.1 S3;
+			//                                            ANY colour painter, not just raster images;
+			//                                            channel A reads GetAlpha)
 			//
 			// At most one of {value, values, file, sellmeier, polynomial,
-			// function1d, function2d, base, multiply, texture} may be present.
-			// Mutually exclusive — the parser raises an error otherwise.
+			// function1d, function2d, base, multiply, texture, expression,
+			// painter} may be present.  Mutually exclusive — the parser
+			// raises an error otherwise.
 			//////////////////////////////////////////
 			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -1234,14 +1241,15 @@ namespace RISE
 					const bool hasMultiply    = bag.Has( "multiply" );
 					const bool hasTexture     = bag.Has( "texture" );
 					const bool hasExpression  = bag.Has( "expression" );
+					const bool hasPainter     = bag.Has( "painter" );
 
 					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
 						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
 						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture +
-						(int)hasExpression;
+						(int)hasExpression + (int)hasPainter;
 					if( formCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture, expression)",
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture, expression, painter)",
 							name.c_str() );
 						return false;
 					}
@@ -1438,13 +1446,22 @@ namespace RISE
 								name.c_str(), ref.c_str() );
 							return false;
 						}
-						// channel select: R (default) / G / B.
+						// channel select: R (default) / G / B.  A is rejected
+						// here (TextureScalarPainter has no alpha read) --
+						// use the `painter` form instead, which reads ANY
+						// painter's GetAlpha.
 						unsigned int channel = 0;
 						if( bag.Has( "channel" ) ) {
 							const std::string chs = bag.GetString( "channel" );
 							if(      chs == "R" ) channel = 0;
 							else if( chs == "G" ) channel = 1;
 							else if( chs == "B" ) channel = 2;
+							else if( chs == "A" ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: `texture` form does not support channel A (TextureScalarPainter has no alpha read) -- use `painter %s channel A` instead",
+									name.c_str(), ref.c_str() );
+								return false;
+							}
 							else {
 								GlobalLog()->PrintEx( eLog_Error,
 									"scalar_painter `%s`: unknown channel `%s` (expected R, G, or B)",
@@ -1456,6 +1473,41 @@ namespace RISE
 						const double bias  = bag.GetDouble( "bias",  0.0 );
 						RISE_API_CreateTextureScalarPainterAffine(
 							&painter, pRIA, channel, Scalar( scale ), Scalar( bias ) );
+					}
+					else if( hasPainter ) {
+						// P2.1 (doc 88 S3): the any-painter -> scalar bridge.
+						// Generalizes `texture` (raster-only) to ANY colour
+						// painter -- all 36 painter kinds + expression_painter
+						// become bindable to every physical-scalar slot.  See
+						// PainterChannelScalarPainter.h's file header for the
+						// post-colourspace-value caveat (same one
+						// PainterToScalarAdapter carries).
+						const std::string ref = bag.GetString( "painter" );
+						IPainter* srcPainter = pPriv->GetPainters()->GetItem( ref.c_str() );
+						if( !srcPainter ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: painter `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						unsigned int channel = 0;	// R default
+						if( bag.Has( "channel" ) ) {
+							const std::string chs = bag.GetString( "channel" );
+							if(      chs == "R" ) channel = 0;
+							else if( chs == "G" ) channel = 1;
+							else if( chs == "B" ) channel = 2;
+							else if( chs == "A" ) channel = 3;
+							else {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: unknown channel `%s` (expected R, G, B, or A)",
+									name.c_str(), chs.c_str() );
+								return false;
+							}
+						}
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreatePainterChannelScalarPainter(
+							&painter, *srcPainter, channel, Scalar( scale ), Scalar( bias ) );
 					}
 					else if( hasExpression ) {
 						// Spatially-varying physical scalar driven by the doc-88
@@ -1496,7 +1548,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  The `function2d`, `texture`, and `expression` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { expression <body> } (the doc-88 texture-expression VM; see `expression` below), scalar_painter { function2d <a UV-domain painter or expression_function2d> }, or scalar_painter { texture <image painter> }.  `expression` is also the only form that can yield a genuine per-channel triple (a vec3-typed body sets HasPerChannelVariation) for spatially-varying RGB dispersion.";
+						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  The `function2d`, `texture`, `expression`, and `painter` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { expression <body> } (the doc-88 texture-expression VM; see `expression` below), scalar_painter { function2d <a UV-domain painter or expression_function2d> }, scalar_painter { texture <image painter> }, or scalar_painter { painter <any colour painter> channel <R|G|B|A> } (the any-painter -> scalar bridge -- P2.1: binds ANY of the 36 painter kinds, not just raster images).  `expression` is also the only form that can yield a genuine per-channel triple (a vec3-typed body sets HasPerChannelVariation) for spatially-varying RGB dispersion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }
@@ -1507,15 +1559,16 @@ namespace RISE
 						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; }
 						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; }
 						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, and `function2d`)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, `function2d`, and `painter`)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; }
-						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion)"; }
-						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B"}; p.description = "Which texture channel sources the scalar (companion to `texture`)"; p.defaultValueHint = "R"; }
-						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` forms: out = bias + scale * raw (raw in [0,1])"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion; channel A not supported here -- use `painter` instead)"; }
+						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B","A"}; p.description = "Which channel sources the scalar (companion to `texture` [R/G/B only] and `painter` [R/G/B/A])"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` / `painter` forms: out = bias + scale * raw (raw in [0,1] for texture/painter)"; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "expression"; p.kind = ValueKind::String;     p.description = "Final value expression over the FULL 3D context (u, v, P, Po, N, fw; NOT time -- see `seed` below) (form 11: ExpressionScalarPainter, the doc-88 texture-expression VM).  A scalar-typed body yields a uniform value; a vec3-typed body (x->R, y->G, z->B) yields a genuine per-channel triple, e.g. `vec3(ior_r, ior_g, ior_b)` for spatially-varying RGB dispersion.  No colorspace, no JH uplift, by construction."; }
 						{ auto& p = P(); p.name = "param";      p.kind = ValueKind::String;     p.repeatable = true; p.description = "Companion to `expression`: named numeric constant `<name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` (repeatable)"; }
 						{ auto& p = P(); p.name = "def";        p.kind = ValueKind::String;     p.repeatable = true; p.description = "Companion to `expression`: named sub-expression `<name> <expr>` (repeatable, in order)"; }
 						{ auto& p = P(); p.name = "seed";       p.kind = ValueKind::Double;     p.description = "Companion to `expression`: auto-registered named scalar constant `seed`, for deterministic per-instance variation"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "painter";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named COLOUR painter (any of the 36 kinds, or expression_painter) whose channel sources the scalar -- out = bias + scale * channel(source) (form 12: PainterChannelScalarPainter, the P2.1 any-painter bridge).  CAVEAT: reads a POST-COLORSPACE value (source.GetColor/GetAlpha), same as PainterToScalarAdapter -- fine for procedural masks/fields, not a spectral-fidelity path for a wavelength-varying source."; }
 						return cd;
 					}();
 					return d;
@@ -6070,6 +6123,117 @@ namespace RISE
 						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.required = true; p.description = "The final value expression (vec3 -> RGB colour; scalar -> grayscale broadcast)"; }
 						{ auto& p = P(); p.name = "seed";  p.kind = ValueKind::Double; p.description = "Auto-registered named scalar constant `seed`, for deterministic per-instance variation"; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "time";  p.kind = ValueKind::Double; p.description = "Initial `time` value (keyframeable at the scene level, like gerstnerwave_painter's `time`)"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// ramp_painter -- the universal scalar -> colour remap (doc 88
+			// P2.2, S3).  `input`'s channel at the hit drives `t`, which is
+			// clamped to the authored stop range and interpolated between
+			// the bracketing pair of `stop` lines per `interpolation`.
+			struct RampPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string input = bag.GetString( "input", "" );
+					if( input.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"ramp_painter `%s`: missing `input` (the painter whose channel drives t)",
+							name.c_str() );
+						return false;
+					}
+
+					unsigned int channel = 0;	// R default
+					if( bag.Has( "channel" ) ) {
+						const std::string chs = bag.GetString( "channel" );
+						if(      chs == "R" ) channel = 0;
+						else if( chs == "G" ) channel = 1;
+						else if( chs == "B" ) channel = 2;
+						else if( chs == "A" ) channel = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: unknown channel `%s` (expected R, G, B, or A)",
+								name.c_str(), chs.c_str() );
+							return false;
+						}
+					}
+
+					unsigned int interpolation = 0;	// linear default
+					if( bag.Has( "interpolation" ) ) {
+						const std::string interps = bag.GetString( "interpolation" );
+						if(      interps == "linear" )   interpolation = 0;
+						else if( interps == "constant" ) interpolation = 1;
+						else if( interps == "smooth" )   interpolation = 2;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: unknown interpolation `%s` (expected linear, constant, or smooth)",
+								name.c_str(), interps.c_str() );
+							return false;
+						}
+					}
+
+					const std::vector<std::string>& stopLines = bag.GetRepeatable( "stop" );
+					if( stopLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"ramp_painter `%s`: needs at least 2 `stop` lines (got %u)",
+							name.c_str(), (unsigned int)stopLines.size() );
+						return false;
+					}
+
+					std::vector<double> positions;
+					std::vector<double> colors;
+					positions.reserve( stopLines.size() );
+					colors.reserve( stopLines.size() * 3 );
+					for( std::size_t i = 0; i < stopLines.size(); ++i ) {
+						double pos = 0, r = 0, g = 0, b = 0;
+						if( sscanf( stopLines[i].c_str(), "%lf %lf %lf %lf", &pos, &r, &g, &b ) != 4 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: stop %u (`%s`) must be `<pos> <r> <g> <b>`",
+								name.c_str(), (unsigned int)i, stopLines[i].c_str() );
+							return false;
+						}
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pos ) ||
+							!Implementation::ExpressionProgram::IsFinite( (Scalar)r ) ||
+							!Implementation::ExpressionProgram::IsFinite( (Scalar)g ) ||
+							!Implementation::ExpressionProgram::IsFinite( (Scalar)b ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: stop %u must be finite (nan/inf rejected)",
+								name.c_str(), (unsigned int)i );
+							return false;
+						}
+						if( i > 0 && pos < positions.back() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: stop %u position %g is less than stop %u position %g -- stop positions must be non-decreasing",
+								name.c_str(), (unsigned int)i, pos, (unsigned int)(i - 1), positions.back() );
+							return false;
+						}
+						positions.push_back( pos );
+						colors.push_back( r ); colors.push_back( g ); colors.push_back( b );
+					}
+
+					std::string colorSpace = bag.GetString( "color_space", "Rec709RGB_Linear" );
+
+					return pJob.AddRampPainter(
+						name.c_str(), input.c_str(), channel, interpolation,
+						&positions[0], &colors[0], (unsigned int)positions.size(),
+						colorSpace.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ramp_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "The universal scalar -> COLOUR remap (doc 88 P2.2) -- multi-stop colour ramp driven by `input`'s channel at each hit.  `input` can be ANY colour painter (a perlin3d_painter, worley3d_painter, expression_painter fbm field, etc.); its selected `channel` (R/G/B, or A via GetAlpha) supplies `t`, clamped to [first stop pos, last stop pos], then interpolated between the bracketing pair of `stop <pos> <r> <g> <b>` lines (>= 2 required, positions non-decreasing) per `interpolation`: `linear` (lerp), `constant` (step -- holds the lower stop's exact colour until the next stop's position), or `smooth` (smoothstep-eased lerp).  Every mode returns the exact authored stop colour AT that stop's position.  Stop colours are eagerly JH-uplifted once at construction (`color_space`-aware, like uniformcolor_painter) -- no per-sample uplift.  The composition-boundary idiom from doc 88 P5: put the FIELD in an expression/noise painter, put the COLOUR in the ramp -- e.g. `expression_painter` computing an fbm height field -> `ramp_painter` colourizing it deep-blue/sand/grass/snow for a terrain material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "input";         p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named colour painter whose channel drives t (ANY painter kind)"; }
+						{ auto& p = P(); p.name = "channel";       p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B","A"}; p.description = "Which channel of `input` sources t (A reads GetAlpha)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "interpolation"; p.kind = ValueKind::Enum;       p.enumValues = {"linear","constant","smooth"}; p.description = "Blend shape between bracketing stops"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "stop";          p.kind = ValueKind::String;     p.repeatable = true; p.description = "Colour stop `<pos> <r> <g> <b>` (repeatable, in order; positions must be non-decreasing; at least 2 required)"; }
+						{ auto& p = P(); p.name = "color_space";   p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Interpretation of each stop's r g b (linear default; same value set as uniformcolor_painter's `colorspace`)"; p.defaultValueHint = "Rec709RGB_Linear"; }
 						return cd;
 					}();
 					return d;
@@ -11542,6 +11706,7 @@ namespace RISE
 		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
 		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
 		add( "expression_painter",                    new ExpressionPainterAsciiChunkParser() );
+		add( "ramp_painter",                          new RampPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions

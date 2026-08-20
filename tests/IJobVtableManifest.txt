@@ -290,3 +290,4 @@ SetObjectParent
 ComposeObjectHierarchy
 AddLatheGeometry
 AddExpressionPainter
+AddRampPainter

@@ -4698,6 +4698,8 @@ namespace RISE
 #include "Painters/ExpressionFunction2DPainter.h"
 #include "Painters/ExpressionPainter.h"
 #include "Painters/TextureScalarPainter.h"
+#include "Painters/PainterChannelScalarPainter.h"
+#include "Painters/RampPainter.h"
 #include "Painters/ScaledScalarPainter.h"
 #include "Painters/MultiplyScalarPainter.h"
 #include "Managers/MaterialManager.h"
@@ -4950,6 +4952,33 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateRampPainter(
+		IPainter** ppi,
+		const IPainter& input,
+		const unsigned int channel,
+		const unsigned int interpolation,
+		const std::vector<Implementation::RampPainter::Stop>& stops
+		)
+	{
+		if( !ppi ) return false;
+		if( stops.size() < 2 ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateRampPainter: needs at least 2 stops (got %u)", (unsigned int)stops.size() );
+			return false;
+		}
+		const Implementation::RampPainter::Channel ch =
+			channel == 1 ? Implementation::RampPainter::Channel_G :
+			channel == 2 ? Implementation::RampPainter::Channel_B :
+			channel == 3 ? Implementation::RampPainter::Channel_A :
+			               Implementation::RampPainter::Channel_R;
+		const Implementation::RampPainter::Interpolation interp =
+			interpolation == 1 ? Implementation::RampPainter::Interp_Constant :
+			interpolation == 2 ? Implementation::RampPainter::Interp_Smooth :
+			                     Implementation::RampPainter::Interp_Linear;
+		*ppi = new Implementation::RampPainter( input, ch, interp, stops );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ramp painter" );
+		return true;
+	}
+
 	bool RISE_API_CreateTextureScalarPainter(
 		IScalarPainter** ppi,
 		IRasterImageAccessor* pRIA,
@@ -5021,6 +5050,25 @@ namespace RISE
 		}
 		*ppi = new Implementation::ExpressionScalarPainter( prog, paramSpecs );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreatePainterChannelScalarPainter(
+		IScalarPainter** ppi,
+		const IPainter& source,
+		unsigned int channel,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		const Implementation::PainterChannelScalarPainter::Channel ch =
+			channel == 1 ? Implementation::PainterChannelScalarPainter::Channel_G :
+			channel == 2 ? Implementation::PainterChannelScalarPainter::Channel_B :
+			channel == 3 ? Implementation::PainterChannelScalarPainter::Channel_A :
+			               Implementation::PainterChannelScalarPainter::Channel_R;
+		*ppi = new Implementation::PainterChannelScalarPainter( source, ch, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter channel scalar painter" );
 		return true;
 	}
 

@@ -79,6 +79,7 @@
 #include "Interfaces/ProceduralDescriptors.h"
 #include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
 #include "Painters/ExpressionParamSpec.h"	// Implementation::ParamSpec (expression_painter / scalar_painter{expression} factories)
+#include "Painters/RampPainter.h"	// Implementation::RampPainter::Stop (ramp_painter factory)
 
 namespace RISE
 {
@@ -602,6 +603,22 @@ namespace RISE
 						const Implementation::ExpressionProgram& prog,	///< [in] Compiled expression program (context vars enabled)
 						const std::vector<Implementation::ParamSpec>& paramSpecs,	///< [in] Parsed `param` metadata, for introspection
 						const Scalar time					///< [in] Initial `time` value (keyframeable at the scene level)
+						);
+
+	//! Creates ramp_painter (doc 88 P2.2, S3): the universal scalar ->
+	//! colour remap.  `input`'s channel (R/G/B/A) at the hit drives a
+	//! multi-stop colour ramp; `stops` must already be sorted ascending
+	//! by position with at least 2 entries (validated by the chunk
+	//! parser before this call).  Each stop's colour is eagerly
+	//! JH-uplifted ONCE here (Albedo kind); GetColorNM/GetSpectrum
+	//! never uplift per-sample.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateRampPainter(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const IPainter&      input,		///< [in] Painter whose channel drives t (addref'd)
+						const unsigned int   channel,		///< [in] 0=R, 1=G, 2=B, 3=A
+						const unsigned int   interpolation,	///< [in] 0=linear, 1=constant, 2=smooth
+						const std::vector<Implementation::RampPainter::Stop>& stops	///< [in] Authored (pos,color) stops, ascending, >= 2
 						);
 
 
@@ -1939,6 +1956,21 @@ namespace RISE
 								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
 								const Implementation::ExpressionProgram& prog,	///< [in] Compiled expression program (context vars enabled)
 								const std::vector<Implementation::ParamSpec>& paramSpecs	///< [in] Parsed `param` metadata, for introspection
+								);
+
+	//! Creates the scalar_painter { painter ... } PHYSICAL-SCALAR-pipe
+	//! bridge (doc 88 P2.1, S3): generalizes the raster-only `texture`
+	//! form to ANY colour painter.  Reads one channel of `source`'s
+	//! GetColor (R/G/B) or GetAlpha (A), remapped `out = bias + scale *
+	//! rawChannel` -- no JH-uplift, no colourspace conversion (source's
+	//! own GetColor already carries whatever colourspace it was
+	//! authored in; see PainterChannelScalarPainter.h's caveat).
+	bool RISE_API_CreatePainterChannelScalarPainter(
+								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+								const IPainter&      source,		///< [in] Any colour painter (addref'd)
+								unsigned int         channel,		///< [in] 0=R, 1=G, 2=B, 3=A
+								Scalar               scale,		///< [in] multiplier on the raw channel
+								Scalar               bias			///< [in] additive offset
 								);
 
 	//! Creates a camera manager
