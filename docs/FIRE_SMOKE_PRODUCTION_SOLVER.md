@@ -1729,7 +1729,11 @@ instrument is therefore accepted for its complete declared observable class.
 Production refinement is not yet admissible. The first tier-5 resident step
 uses the sealed target, exact positive-zero sources, sixteen fixed projection
 cycles, the shape-derived exact smoother count, and zero interstage full-grid
-transfers. Its raw conservative payload is finite and gas-positive, with
+transfers. Before the thermochemical stop is considered, the gate requires the
+projection validation contract to pass and byte-pins its published evidence:
+pre-residual `0.18607060611248016`, post-residual
+`6.8208464654162526e-7`, open complementarity `0.011058024130761623`, and
+removed mean `+0`. Its raw conservative payload is finite and gas-positive, with
 SHA-256 `03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50`.
 Nevertheless the payload has maximum certified-row residual
 `5.2451771873310863e-8` (row 2, cell 4915). That is `0.8799947063` binary32

@@ -2691,7 +2691,11 @@ it was already tried and refuted here.
   residual `5.2451771873310863e-8` at cell 4915. This is only `0.879995`
   binary32 unit roundoff, yet it is `57,671.33x` the existing fp64 accepted-
   state envelope, so temperature inversion and the next molecular-viscosity
-  request structurally reject. Exit `190` is the exact monitored r113 stop.
+  request structurally reject. Exit `190` is reachable only after the sole
+  projection passes its validation contract and its exact pre/post residual,
+  open-complementarity, and removed-mean bytes match the recorded first-step
+  evidence (`0.1860706061`, `6.8208464654e-7`, `0.01105802413`, `+0`).
+  Exit `190` is the exact monitored r113 stop.
   No nullspace projection, tolerance widening, solver change, or post-hoc
   continuation was introduced. Production refinement, analytic `B_fp32`,
   Metal confirmation, eight-slice readmission, and thermo/source maps remain

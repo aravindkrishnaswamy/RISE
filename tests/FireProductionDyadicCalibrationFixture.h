@@ -879,6 +879,19 @@ namespace FireProductionDyadicCalibration
 							production.projection.executedJacobiSweepCount),
 						static_cast<unsigned long long>(ExpectedProjectionSweeps(
 							request.force.shape)));return 186;}
+				if(index==0u&&step==0u){std::fprintf(stderr,"dyadic production projection "
+					"pre=%.17g post=%.17g complementarity=%.17g mean=%.17g valid=%d\n",
+					production.projection.maximumPreProjectionResidualPerS,
+					production.projection.maximumPostProjectionResidualPerS,
+					production.projection.maximumOpenComplementarityDiscrepancyMPerS,
+					production.projection.removedFineRightHandSideMean,
+					production.projection.validationPassed?1:0);
+					if(!production.projection.validationPassed||
+						production.projection.maximumPreProjectionResidualPerS!=0x1.7d1296p-3f||
+						production.projection.maximumPostProjectionResidualPerS!=0x1.6e31p-21f||
+						production.projection.maximumOpenComplementarityDiscrepancyMPerS!=
+							0x1.6a596ep-7f||
+						production.projection.removedFineRightHandSideMean!=0.0f)return 189;}
 				if(!ApplyProductionResult(production,states[index],error)){
 					const ProductionAffineResidual residual=MeasureProductionAffineResidual(
 						production,states[index].states.size());
