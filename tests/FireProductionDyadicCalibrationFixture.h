@@ -952,6 +952,7 @@ namespace FireProductionDyadicCalibration
 			static const std::size_t failingProbeCell=2256u;
 			MethaneRunCheckpoint restoredProbeState;
 			bool restoredProbeReady=false;
+			bool restoredProjectionValid=false;
 			double restorationReferenceDeviation=0.0;
 			for(std::size_t step=0u;step<8u;++step){
 				ProductionEOSDeviation beginningDeviation;
@@ -1005,10 +1006,11 @@ namespace FireProductionDyadicCalibration
 						if(!RISE::AdvanceFireProductionResidentStepMetal(restoredRequest,restored,
 							&error)){std::fprintf(stderr,"EOSDRAIN restored step-6 call failed: %s\n",
 								error.c_str());return 202;}
-						if(!restored.projection.validationPassed){std::fprintf(stderr,
+						restoredProjectionValid=restored.projection.validationPassed;
+						if(!restoredProjectionValid)std::fprintf(stderr,
 							"EOSDRAIN restored step-6 projection failed pre=%.17g post=%.17g\n",
 							restored.projection.maximumPreProjectionResidualPerS,
-							restored.projection.maximumPostProjectionResidualPerS);return 202;}
+							restored.projection.maximumPostProjectionResidualPerS);
 						if(restored.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
 							"EOSDRAIN restored step-6 transferred %u full grids\n",
 							restored.interstageFullGridTransferCount);return 202;}
@@ -1030,13 +1032,16 @@ namespace FireProductionDyadicCalibration
 						if(!RISE::AdvanceFireProductionResidentStepMetal(drainedRequest,drained,&error)){
 							std::fprintf(stderr,"EOSDRAIN drained step-7 call failed: %s\n",error.c_str());
 							return 205;}
-						if(!drained.projection.validationPassed||
-							drained.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
+						if(drained.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
 							"EOSDRAIN drained step-7 invalid projection=%d transfers=%u pre=%.17g post=%.17g\n",
 							drained.projection.validationPassed?1:0,
 							drained.interstageFullGridTransferCount,
 							drained.projection.maximumPreProjectionResidualPerS,
 							drained.projection.maximumPostProjectionResidualPerS);return 205;}
+						if(!drained.projection.validationPassed)std::fprintf(stderr,
+							"EOSDRAIN drained step-7 projection failed pre=%.17g post=%.17g\n",
+							drained.projection.maximumPreProjectionResidualPerS,
+							drained.projection.maximumPostProjectionResidualPerS);
 						ProductionEOSDeviation drainedDeviation;
 						if(!MeasureProductionEOSDeviation(drained,states[index].states.size(),
 							failingProbeCell,drainedDeviation,error))return 206;
@@ -1049,10 +1054,13 @@ namespace FireProductionDyadicCalibration
 						if(!std::isfinite(generation)||!std::isfinite(drainedAmount)||
 							!std::isfinite(drainFraction)||drainFraction==0.0||
 							!std::isfinite(predictedPlateau))return 208;
-						std::fprintf(stderr,"EOSDRAIN step=%zu generation=%.17g reference=%.17g "
-							"counterfactual=%.17g drained=%.17g fraction=%.17g plateau=%.17g\n",
-							step+1u,generation,restorationReferenceDeviation,
-							drainedDeviation.signedProbe,drainedAmount,drainFraction,predictedPlateau);
+						std::fprintf(stderr,"EOSDRAIN step=%zu restored_valid=%d drained_valid=%d "
+							"generation=%.17g reference=%.17g counterfactual=%.17g drained=%.17g "
+							"fraction=%.17g plateau=%.17g\n",
+							step+1u,restoredProjectionValid?1:0,
+							drained.projection.validationPassed?1:0,generation,
+							restorationReferenceDeviation,drainedDeviation.signedProbe,
+							drainedAmount,drainFraction,predictedPlateau);
 					}
 				}
 				if(!production.projection.validationPassed)return 188;

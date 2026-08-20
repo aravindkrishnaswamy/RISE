@@ -1847,6 +1847,13 @@ denominators, any projection-validation or residency miss, or any changed
 step-6 conservative byte. No measured value may alter the EOS gate or select a
 fix retroactively.
 
+If the full-gain counterfactual projection misses validation, the primary probe
+is invalid and implementation is barred. A secondary capacity-only readout may
+carry its provisional MAC field through one step-7 transport and evaluate the
+same `G/r` formula, provided it labels both validation bits and preserves every
+residency and conservative-byte check. Such a readout measures the fixed
+schedule's drain response; it is not accepted production evidence.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

@@ -2759,3 +2759,11 @@ it was already tried and refuted here.
   only: it cannot relax the `1.0e-3` gate or authorize a fix.  The golden
   checkpoint remains outside this campaign and must retain SHA-256
   `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+
+  If the full-gain step-6 projection itself misses validation, the primary
+  implementation-qualification probe is invalid and no restoration fix may
+  land. A secondary capacity readout may nevertheless carry that provisional
+  MAC field through exactly one step-7 transport to evaluate the same frozen
+  `G/r` formula. It must label both projection-valid bits and retain the
+  residency/byte-identity checks. Those numbers describe fixed-schedule drain
+  capacity only; they cannot be reclassified as accepted solver evidence.
