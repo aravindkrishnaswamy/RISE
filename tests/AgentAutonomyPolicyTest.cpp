@@ -867,14 +867,15 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 35,
-		       "tools/list under Read STILL lists all 35 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 36,
+		       "tools/list under Read STILL lists all 36 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
 		bool sawInsertMaterialScaffold = false, sawInsertGeometryScaffold = false;
 		bool sawReplaceGeometryScaffold = false;   // R2 (2026-08-10): one-call form revision
 		bool sawCollapseToInstances = false;       // 88 step 2 (2026-08-19): the condition-C rewrite verb
+		bool sawVaryMaterial = false;             // 88 S5 (2026-08-20): the condition-D rewrite verb
 		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
@@ -906,6 +907,10 @@ static void TestMcpLayer()
 			// mutating verb -- never silently hidden, and never left unannotated
 			// because its rewrite happens to be a no-op on the rendered image.
 			if( name == "collapse_to_instances" ) { sawCollapseToInstances = true; Check( annotated, "collapse_to_instances tool description is ANNOTATED under Read" ); }
+			// 88 S5 (2026-08-20): vary_material MUTATES (one composite document
+			// swap), so it must be ANNOTATED under Read like every other mutating
+			// verb -- never silently hidden.
+			if( name == "vary_material" ) { sawVaryMaterial = true; Check( annotated, "vary_material tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )    { sawRemoveChunk    = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
 			// R1a (2026-08-09): the batch remove is a mutating verb like its singular
 			// sibling, so it must be ANNOTATED under Read, never silently hidden.
@@ -922,11 +927,11 @@ static void TestMcpLayer()
 			}
 		}
 		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawInsertMaterialScaffold &&
-		       sawInsertGeometryScaffold && sawReplaceGeometryScaffold && sawCollapseToInstances &&
+		       sawInsertGeometryScaffold && sawReplaceGeometryScaffold && sawCollapseToInstances && sawVaryMaterial &&
 		       sawRemoveChunk && sawRemoveChunks &&
 		       sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 16, "EXACTLY 16 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, S2 (2026-08-11) build_element/place_element, arc 81 (2026-08-12) light_scene, arc 82 (2026-08-12) populate_scene and -- arc 83 slices 5 and 6, 2026-08-13 -- environment_scene and frame_scene, and -- 88 step 2, 2026-08-19 -- collapse_to_instances, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 17, "EXACTLY 17 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, S2 (2026-08-11) build_element/place_element, arc 81 (2026-08-12) light_scene, arc 82 (2026-08-12) populate_scene and -- arc 83 slices 5 and 6, 2026-08-13 -- environment_scene and frame_scene, and -- 88 step 2, 2026-08-19 -- collapse_to_instances, and -- 88 S5, 2026-08-20 -- vary_material, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -936,7 +941,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 35, "tools/list under Commit lists all 35 tools" );
+		Check( tools.isArray() && tools.size() == 36, "tools/list under Commit lists all 36 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -974,7 +979,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 35, "tools/list under Propose lists all 35 tools" );
+		Check( tools.isArray() && tools.size() == 36, "tools/list under Propose lists all 36 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove

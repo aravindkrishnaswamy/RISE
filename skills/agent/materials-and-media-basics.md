@@ -299,6 +299,151 @@ directional_light
 }
 ```
 
+## Roughness is not a number — bind it to an expression
+
+Use this whenever a surface is bigger than a trinket: real objects are
+polished in some places and worn in others, and one constant in
+`roughness`/`alphax`/`facets` is the flat-plastic look no amount of
+lighting fixes.  A `scalar_painter { expression ... }` is the whole fix —
+ONE chunk, no colourspace, no adapter chain.  Note the shape to copy:
+every art-directable number is a `param` with `min`/`max`/`step`/`label`
+(so a human retunes it with a slider, and `propose_patch` retunes it by
+name), and the noise is remapped into `[0,1]` with `clamp` before the
+`mix`, because raw `fbm` runs roughly -0.4 .. 0.4 and an unclamped mix
+would walk the roughness outside the band.
+
+If you would rather not type it, `vary_material` writes exactly this chunk
+for the most prominent bare-number material in the scene and rebinds the
+slot, in one call.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.42 0.46 0.55
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					12
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	112
+	height	112
+}
+
+pinhole_camera
+{
+	location	0 0.7 3.2
+	lookat		0 0 0
+	up			0 1 0
+	fov			38.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_pewter_deep
+	color	0.10 0.10 0.11
+}
+
+uniformcolor_painter
+{
+	name	pnt_pewter_spec
+	color	0.62 0.62 0.60
+}
+
+# THE POINT OF THIS EXAMPLE.  A worley cell field bands the microsurface
+# between polished cell centres and weathered cell edges -- hammered
+# pewter.  `P` is the world intersection point, so this needs no UVs and
+# shows no seams.  No colourspace conversion and no spectral uplift ever
+# touch a scalar_painter, which is why `expression` belongs here and a
+# colour painter does NOT bind to alphax/alphay.
+scalar_painter
+{
+	name		sp_hammered
+	param		cell_freq 4.5 min 0.5 max 12 step 0.25 label "Cell frequency"
+	param		rough_lo 0.06 min 0.001 max 1 step 0.005 label "Polished roughness"
+	param		rough_hi 0.48 min 0.001 max 1 step 0.005 label "Weathered roughness"
+	def			f1 worley_f1(P*cell_freq, 1.0)
+	expression	mix(rough_lo, rough_hi, clamp(f1, 0, 1))
+}
+
+ggx_material
+{
+	name		mat_pewter
+	rd			pnt_pewter_deep
+	rs			pnt_pewter_spec
+	alphax		sp_hammered
+	alphay		sp_hammered
+	ior			2.2
+	extinction	3.4
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.32 0.32 0.34
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+sphere_geometry
+{
+	name	bowl
+	radius	0.85
+}
+
+standard_object
+{
+	name		obj_bowl
+	geometry	bowl
+	material	mat_pewter
+	position	0 0.15 0
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.75 0
+	orientation	-90 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.2
+	color		1 0.98 0.95
+	direction	0.4 0.55 0.8
+}
+```
+
 ## A one-call route to a wired varied material
 
 The four starters above are hand-typed, one painter and one material at
@@ -331,11 +476,12 @@ with units -> `scalar_painter` (forms: `value <x>`, `values <r g b>`,
 
 Note that `read_schema` cannot tell the two apart on its own: a colour
 slot and a scalar slot BOTH report `references:["painter"]`, so read the
-parameter's `description`.  And for a scalar that must VARY across the
-surface (spatially-varying roughness), the only expressible forms are
-`scalar_painter { function2d ... }` and `scalar_painter { texture ... }`
-— see `read_skill {name:"procedural-textures"}`, which has a worked
-example and the sub-trap that catches people.
+parameter's `description`.  For a scalar that must VARY across the surface
+the shortest form is `scalar_painter { expression <body> }` (worked above);
+`scalar_painter { painter <name> channel R }`, `{ function2d ... }` and
+`{ texture ... }` are the other three varying forms — see
+`read_skill {name:"procedural-textures"}` for all four and the sub-trap
+that catches people.
 
 The demo puts the glass sphere in front of a checkered backdrop, under
 a sky dome — remember, glass in a void is black; the backdrop and dome

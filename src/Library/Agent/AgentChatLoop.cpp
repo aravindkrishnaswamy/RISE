@@ -436,6 +436,10 @@ namespace RISE
 				       // the rendered scene: what this streak measures is edits
 				       // the model made without looking, and it looked at nothing.
 				       v == "collapse_to_instances" ||
+				       // 88 S5 (2026-08-20): ONE vary_material call is ONE blind
+				       // mutation on the same argument -- one composite document
+				       // swap, one head bump, one undo step, made without looking.
+				       v == "vary_material" ||
 				       // S2 (2026-08-11): ONE build_element call is ONE blind
 				       // mutation -- it inserts the whole element's chunks with
 				       // no visual observation in between, exactly like one
@@ -1405,6 +1409,7 @@ namespace RISE
 			//!   4b. name == "remove_chunks"                -> "<removed>/<total> removed" (all-or-nothing: `applied` is a BOOL here, counts ride in removed/total)
 			//!   4c. name == "replace_geometry_scaffold"   -> "`<target>` -> <geometryKind> (old geometry removed|kept)" (R2: ONE atomic mutation, so an N/M count would misreport it as a best-effort batch)
 			//!   4d. name == "collapse_to_instances"      -> "<n> copies -> `<source>` + instancing[ (<u>x<v> grid)]", or "refused: <=80 chars of message" (88 step 2: a pre-commit refusal carries an EMPTY status, so it cannot reach rule 2)
+			//!   4e. name == "vary_material"              -> "`<material>` <slot(s)> -> `<painter>` (varying)", or "refused: <=80 chars of message" (88 S5: same empty-status-on-refusal shape as 4d)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1527,6 +1532,29 @@ namespace RISE
 					const long long cu = static_cast<long long>( result.get( "countU" ).asNumber() );
 					if( cv >= 2 ) s += " (" + std::to_string( cu ) + "x" + std::to_string( cv ) + " grid)";
 					return s;
+				}
+
+				// 4b-3. 88 S5 (2026-08-20) vary_material: ONE atomic mutation, and
+				// not a count -- report which material stopped being flat and what
+				// it is now bound to.  Same empty-status-on-refusal shape as
+				// collapse_to_instances above, so the refusal is reported HERE with
+				// its reason rather than falling through to a zero count that reads
+				// like a success.
+				if( call.name == "vary_material" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					std::string slots;
+					const JsonValue& arr = result.get( "slots" );
+					if( arr.isArray() ) {
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !slots.empty() ) slots += "/";
+							slots += arr.at( i ).asString();
+						}
+					}
+					if( slots.empty() ) slots = "roughness";
+					return "`" + result.get( "material" ).asString() + "` " + slots + " -> `" +
+						result.get( "painter" ).asString() + "` (varying)";
 				}
 
 				// 4b. R1a (2026-08-09) remove_chunks: an ALL-OR-NOTHING batch, so

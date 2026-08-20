@@ -1,6 +1,9 @@
 # 88 — Procedural texture expressiveness: candidates
 
-**Status: APPROVED with decisions (user review 2026-08-19, see §7).  Nothing implemented yet; Phase-1 slice plan in §8.**
+**Status: APPROVED with decisions (user review 2026-08-19, see §7); Phase-1
+implementation IN FLIGHT per the §8 slice plan — S1 (d91e5bfd), S2 (01bd9df7),
+S3 (afe1a4cc), S4 (86ebc7a0), S4b (efc54324) shipped; S5 adoption wiring in
+review; S6 eval census pending.  §1's gap table describes the PRE-ARC state.**
 
 This is the texture half of the directive that closed the creative-richness arc
 (CREATIVITY_JOURNAL.md, closing line: *"build even more expressive geometry and
@@ -23,7 +26,10 @@ LLM-authorship literature).  Key citations inline.
 What exists (verified against `ChunkParserRegistry.cpp` and
 `src/Library/Painters/`):
 
-- **36 painter chunk kinds**, including a strong 3D-solid noise family
+- **38 painter chunk kinds** (2026-08-20 recount; several of this doc's own
+  candidates -- `expression_painter`, `ramp_painter`, the
+  `scalar_painter { painter ... }` bridge -- have since shipped and are
+  counted in that total), including a strong 3D-solid noise family
   (perlin/simplex/wavelet/gabor/worley/perlin-worley/turbulence/curl/
   domain-warp/reaction-diffusion/SDF), art-directed voronoi, image painters,
   and combinators (`blend_painter`, `channel_painter`,
@@ -178,8 +184,8 @@ the chunk DAG remains the structural layer, per the VOPs/VEX precedent).
 
 1. **`scalar_painter { painter <name> channel <R|G|B|A> scale bias }`** —
    generalize the existing `texture` form (raster-only) to **any** color
-   painter.  One small form makes all 36 painters + P1 expressions bindable to
-   every physical-scalar slot.  Highest leverage-per-line in this doc.
+   painter.  One small form makes every colour painter + P1 expressions
+   bindable to every physical-scalar slot.  Highest leverage-per-line in this doc.
    Cost: **S**.  (Note: reads `GetColor` channel post-uplift semantics — same
    caveat as `PainterToScalarAdapter`; fine for procedural masks, documented.)
 2. **`ramp_painter`** — multi-stop color ramp (positions + colors +

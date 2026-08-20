@@ -1290,6 +1290,18 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// 88 S5 (2026-08-20): vary_material is the THIRD verb whose
+					// commit is one composite whole-document swap, so it is
+					// excluded from IsProposeSafeVerb for exactly the reason
+					// collapse_to_instances above is, with the same message shape.
+					if( m == "vary_material" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; vary_material "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -3721,6 +3733,60 @@ namespace RISE
 						for( const std::string& nm : cir.removedObjects ) arr.push_back( JsonValue::MakeString( nm ) );
 						result.set( "removedObjects", arr );
 					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// vary_material {material?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,painter,slots:[string,...],
+				//       previousRoughness,qualifying,objects}
+				//   88 S5 (2026-08-20): the VERB half of design-note condition D --
+				//   bind ONE material's roughness slot(s) to a
+				//   `scalar_painter { expression ... }` fbm wear field banded
+				//   around the constant that is already there.  A pre-commit
+				//   refusal comes back as ok=false with the reason in `message` --
+				//   a SUCCESSFUL response, not a JSON-RPC error, because "no
+				//   material here has a readable constant microsurface" is an
+				//   answer rather than a malformed call (the same shape
+				//   collapse_to_instances uses).
+				//--------------------------------------------------------------
+				if( m == "vary_material" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentVaryMaterialResult vr =
+						s->VaryMaterial( materialStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( vr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( vr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( vr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( vr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( vr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( vr.headVersion ) );
+					if( !vr.message.empty() )      result.set( "message",      JsonValue::MakeString( vr.message ) );
+					if( !vr.material.empty() )     result.set( "material",     JsonValue::MakeString( vr.material ) );
+					if( !vr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( vr.materialKind ) );
+					if( !vr.painterChunk.empty() ) result.set( "painter",      JsonValue::MakeString( vr.painterChunk ) );
+					if( !vr.reboundSlots.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : vr.reboundSlots ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "slots", arr );
+					}
+					if( !vr.material.empty() )
+						result.set( "previousRoughness", JsonValue::MakeNumber( vr.previousRoughness ) );
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( vr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( vr.boundObjects ) ) );
 					return MakeSuccess( idValue, result );
 				}
 

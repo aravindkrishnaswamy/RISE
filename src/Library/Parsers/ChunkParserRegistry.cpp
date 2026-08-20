@@ -1477,11 +1477,11 @@ namespace RISE
 					else if( hasPainter ) {
 						// P2.1 (doc 88 S3): the any-painter -> scalar bridge.
 						// Generalizes `texture` (raster-only) to ANY colour
-						// painter -- all 36 painter kinds + expression_painter
-						// become bindable to every physical-scalar slot.  See
-						// PainterChannelScalarPainter.h's file header for the
-						// post-colourspace-value caveat (same one
-						// PainterToScalarAdapter carries).
+						// painter -- every painter kind (expression_painter
+						// included) becomes bindable to every physical-scalar
+						// slot.  See PainterChannelScalarPainter.h's file
+						// header for the post-colourspace-value caveat (same
+						// one PainterToScalarAdapter carries).
 						const std::string ref = bag.GetString( "painter" );
 						IPainter* srcPainter = pPriv->GetPainters()->GetItem( ref.c_str() );
 						if( !srcPainter ) {
@@ -1548,7 +1548,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  The `function2d`, `texture`, `expression`, and `painter` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { expression <body> } (the doc-88 texture-expression VM; see `expression` below), scalar_painter { function2d <a UV-domain painter or expression_function2d> }, scalar_painter { texture <image painter> }, or scalar_painter { painter <any colour painter> channel <R|G|B|A> } (the any-painter -> scalar bridge -- P2.1: binds ANY of the 36 painter kinds, not just raster images).  `expression` is also the only form that can yield a genuine per-channel triple (a vec3-typed body sets HasPerChannelVariation) for spatially-varying RGB dispersion.";
+						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  The `function2d`, `texture`, `expression`, and `painter` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { expression <body> } (the doc-88 texture-expression VM; see `expression` below), scalar_painter { function2d <a UV-domain painter or expression_function2d> }, scalar_painter { texture <image painter> }, or scalar_painter { painter <any colour painter> channel <R|G|B|A> } (the any-painter -> scalar bridge -- P2.1: binds ANY colour painter kind, not just raster images).  `expression` is also the only form that can yield a genuine per-channel triple (a vec3-typed body sets HasPerChannelVariation) for spatially-varying RGB dispersion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }

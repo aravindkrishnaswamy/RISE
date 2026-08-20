@@ -785,6 +785,146 @@ second-angle check from the observe loop confirms all four legs are
 genuinely under the corners, not collapsed into one silhouette from
 the authored camera).
 
+### Recipe 2b: the same table top, painted field -> ramp
+
+Recipe 2 gets its wood from a `perlin3d_painter` interpolating two flat
+colours -- fine, and limited: two endpoints is all a noise painter has.
+When the surface wants MORE than two tones (weathered timber going pale
+grey at the wear lines, terrain, patina, glaze), split the job in two.
+The one-line rule: **field in the expression, colour in the ramp.**
+An `expression_painter` computes a scalar field and makes no
+colour decision at all; a `ramp_painter` turns that field into as many
+stops as the look needs, and the stop list is the thing a human edits.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.44 0.48 0.56
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					12
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	112
+	height	112
+}
+
+pinhole_camera
+{
+	location	0 1.5 2.6
+	lookat		0 0.25 0
+	up			0 1 0
+	fov			45.0
+}
+
+# THE FIELD.  Scalar-typed, anisotropic (tight across the plank, loose
+# along it) so the bands read as grain.  `clamp(...*contrast + 0.5, 0, 1)`
+# is the remap raw fbm always needs -- it spans roughly -0.4 .. 0.4, not
+# [0,1].  Every knob is a `param` with a range, so the panel renders
+# sliders and propose_patch retunes it by name.
+expression_painter
+{
+	name		pnt_grain_field
+	param		across 11.0 min 1.0 max 40.0 step 0.5 label "Grain frequency across"
+	param		along 0.7 min 0.1 max 5.0 step 0.1 label "Grain frequency along"
+	param		contrast 2.2 min 0.5 max 5.0 step 0.05 label "Grain contrast"
+	seed		7.0
+	def			q vec3(P.x*across, P.y*2.0, P.z*along) + vec3(seed, 0, seed*1.3)
+	def			n fbm(q, 4, 0.55, 2.0)
+	expr		clamp(n*contrast + 0.5, 0, 1)
+}
+
+# THE COLOUR.  Four stops instead of two endpoints: dark heartwood, mid
+# oak, pale sapwood, bleached wear line.  Edit HERE, never in the body.
+ramp_painter
+{
+	name			pnt_grain
+	input			pnt_grain_field
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.07 0.030 0.012
+	stop			0.42  0.26 0.130 0.050
+	stop			0.78  0.52 0.310 0.140
+	stop			1.00  0.66 0.520 0.380
+	color_space		Rec709RGB_Linear
+}
+
+lambertian_material
+{
+	name		mat_wood_ramp
+	reflectance	pnt_grain
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.34 0.34 0.36
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+box_geometry
+{
+	name	tabletop
+	width	2.0
+	height	0.12
+	depth	1.1
+}
+
+standard_object
+{
+	name		obj_top
+	geometry	tabletop
+	material	mat_wood_ramp
+	position	0 0.25 0
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.4 0
+	orientation	-90 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 0.98 0.94
+	direction	0.3 0.6 0.75
+}
+```
+
 ## Recipe 3: a lamp (CSG-clipped `sdf_geometry roundcone` for the tapered shade)
 
 No analytic primitive tapers from a wide base to a narrow top, and

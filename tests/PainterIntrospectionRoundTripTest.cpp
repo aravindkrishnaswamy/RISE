@@ -1243,6 +1243,80 @@ static void TestExpressionParamOccurrenceEdit()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 15b (S5): a HAND-AUTHORED `label` with an interior double space is
+// exactly what a scene on disk can carry -- nothing upstream of the
+// inspector enforces single-spacing.  The inspector must read it back
+// SINGLE-spaced (ExpressionParamSpec::ReadQuoted's own normalization: see
+// its doc), even though the raw document text still has two; and a WRITE
+// to that same param line must ALSO end up single-spaced (Cst.cpp's
+// WithParamValue independently collapses via SplitWs), so read and write
+// agree with each other from the very first read, not just after the
+// first edit happens to reflow it.
+//////////////////////////////////////////////////////////////////////
+static void TestLabelWhitespaceNormalized()
+{
+	std::cout << "Test 15b: label whitespace is single-space normalized on read, and stays that way "
+	             "across a write..." << std::endl;
+	const char* tmp = "painterintro_label_ws.RISEscene";
+	static const std::string sceneText =
+		std::string( kScene ).substr( 0, std::string( kScene ).find( "expression_painter" ) )
+		+ "expression_painter\n{\nname ex2\n"
+		  "param ring_scale 4.0 min 0.5 max 20 step 0.25 label \"Vein  frequency\"\n"
+		  "param wob 0.25\n"
+		  "def rings clamp(0.5+0.5*sin(P.x*ring_scale)*wob, 0, 1)\n"
+		  "expr mix(vec3(0,0,0), vec3(1,1,1), rings)\n"
+		  "seed 3.0\ntime 0.0\n}\n"
+		+ std::string( kScene ).substr( std::string( kScene ).find( "expression_painter" ) );
+	Job* j = LoadScene( sceneText.c_str(), tmp );
+	Check( j != nullptr, "scene loads" );
+	if( !j ) return;
+	{
+		TestController c( *j );
+		c.SetSelection( SceneEditController::Category::Painter, String( "ex2" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+		// The raw DOCUMENT still carries the authored double space -- this
+		// scene was hand-written, never round-tripped through a CST write.
+		Check( DocText( *j ).find( "label \"Vein  frequency\"" ) != std::string::npos,
+		       "sanity: the raw document text has the authored double space" );
+
+		// But the INSPECTOR's ParamSpec-derived description reads it SINGLE-
+		// spaced: ReadQuoted normalizes on the way OUT, independent of
+		// whether the document has ever been written by this editor.
+		CameraProperty row;
+		Check( RowFor( InspectPainter( *j, "ex2" ), "param[0]", row )
+		    && DescriptionContains( row, "Vein frequency" ),
+		       "S5 MONEY: the inspector's description reports the label SINGLE-spaced even though "
+		       "the document text itself still has two -- ReadQuoted's normalization applies "
+		       "regardless of write history" );
+		Check( !DescriptionContains( row, "Vein  frequency" ),
+		       "S5: ...and specifically NOT the raw double-spaced form" );
+
+		// A write to this SAME param line (same value, same metadata, same
+		// AUTHORED double-space label) re-serializes through Cst.cpp's
+		// WithParamValue, which collapses the whitespace via SplitWs
+		// independently of ReadQuoted -- so the DOCUMENT itself now agrees
+		// with what the inspector already reported before this write ran.
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "param[0]" ),
+			String( "ring_scale 9.5 min 0.5 max 20 step 0.25 label \"Vein  frequency\"" ) ),
+		       "the write, typed with the SAME double-spaced label, applies" );
+		Check( DocText( *j ).find( "label \"Vein frequency\"" ) != std::string::npos,
+		       "S5 MONEY: the WRITE collapses the double space too -- the document is now "
+		       "single-spaced, matching what the inspector already reported pre-write" );
+		Check( DocText( *j ).find( "label \"Vein  frequency\"" ) == std::string::npos,
+		       "S5: ...the double-spaced form is gone from the document entirely" );
+		Check( RowFor( InspectPainter( *j, "ex2" ), "param[0]", row )
+		    && DescriptionContains( row, "Vein frequency" ),
+		       "...and a re-read after the write still reports the same single-spaced label -- read "
+		       "and write were never going to disagree about this text" );
+	}
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Test 16 (doc 88 S4b): a `def[0]` occurrence edit recompiles, and an
 // INVALID def body is refused by the same full-derivability gate every
 // other painter param edit passes through -- Document byte-identical.
@@ -1774,6 +1848,7 @@ int main()
 	// doc 88 S4b
 	TestOccurrenceEditIsSurgical();
 	TestExpressionParamOccurrenceEdit();
+	TestLabelWhitespaceNormalized();
 	TestDefOccurrenceEditAndRefusal();
 	TestOccurrenceUndoRedo();
 	TestOccurrenceDriftGuard();

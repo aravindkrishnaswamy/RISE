@@ -75,6 +75,28 @@ namespace RISE
 			//! advances `i` past the closing quote.  No escape sequences
 			//! (label text is a display string, not code).  Returns false
 			//! (offset at the opening quote) if the closing quote is missing.
+			//!
+			//! INTERIOR WHITESPACE RUNS ARE COLLAPSED TO A SINGLE SPACE.  This
+			//! is a normalization, not a loss the grammar tries to avoid: the
+			//! CST layer has no atomic quoted-token type, so `label "a  b"` is
+			//! not one protected unit to a param-line WRITE -- `Cst.cpp`'s
+			//! `WithParamValue` rewrites ANY param line (this one included) by
+			//! whitespace-SPLITTING the new value with `SplitWs` and rejoining
+			//! tokens with exactly one space, quote characters and all, because
+			//! `SplitWs` has no concept of "inside quotes".  A double space
+			//! typed into a label therefore already does not survive the FIRST
+			//! CST write to that param line, whether it is this param's own
+			//! value being edited or (Cst.cpp's own param-line replacement is
+			//! whole-line) a sibling metadata field on the same line.  Reading
+			//! it back verbatim here would let a freshly-authored `"a  b"`
+			//! display correctly right up until an unrelated slider drag or
+			//! `propose_patch` silently reflowed it to `"a b"` -- a value that
+			//! reads back differently depending on write history it had no
+			//! part in.  Normalizing on READ makes the two paths agree from the
+			//! start: what this parser returns is always what a CST write of
+			//! the same line would already produce, so label whitespace is
+			//! single-space normalized BY DESIGN, not by accident of which
+			//! code path last touched the line.
 			inline bool ReadQuoted( const std::string& line, size_t& i, std::string& out, ptrdiff_t& errOffset )
 			{
 				const size_t start = i;
@@ -82,8 +104,21 @@ namespace RISE
 				const size_t contentStart = i;
 				while( i < line.size() && line[i] != '"' ) ++i;
 				if( i >= line.size() ) { errOffset = (ptrdiff_t)start; return false; }
-				out = line.substr( contentStart, i - contentStart );
+				const std::string raw = line.substr( contentStart, i - contentStart );
 				++i;	// closing quote
+
+				out.clear();
+				out.reserve( raw.size() );
+				bool prevWasSpace = false;
+				for( char c : raw ) {
+					if( IsSpace( c ) ) {
+						if( !prevWasSpace ) out += ' ';
+						prevWasSpace = true;
+					} else {
+						out += c;
+						prevWasSpace = false;
+					}
+				}
 				return true;
 			}
 
@@ -106,6 +141,13 @@ namespace RISE
 		//! human-readable message, and sets `outErrorOffset` to the byte
 		//! offset within `line` the problem was found at (or -1 when not
 		//! localized to one position).
+		//!
+		//! `label "<text>"`'s interior whitespace is SINGLE-SPACE NORMALIZED:
+		//! `label "a  b"` parses to `spec.label == "a b"`.  This is by design,
+		//! not a shortfall -- see ReadQuoted's own doc for why (the CST layer
+		//! has no atomic quoted-token type, so any write to this param line
+		//! already collapses runs the same way; normalizing on read keeps the
+		//! two paths from disagreeing about the same text).
 		inline bool ParseParamSpecLine( const std::string& line, ParamSpec& out, std::string& outError, ptrdiff_t& outErrorOffset )
 		{
 			using namespace ParamSpecDetail;

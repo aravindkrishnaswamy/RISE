@@ -3019,11 +3019,142 @@ namespace RISE
 			//! B have exactly the same shape, which is why this is still worth
 			//! carrying -- but the note's WORDING must not oversell it as
 			//! prevention.
+			//! 88 S5 (2026-08-20): ONE material whose microsurface is entirely
+			//! CONSTANT -- the qualifying unit shared by design-note condition D
+			//! (which PRICES the rewrite) and `AgentSession::VaryMaterial` (which
+			//! PERFORMS it).
+			//!
+			//! THE PREDICATE IS SHARED, ON PURPOSE, and this is the a105d6ea
+			//! discipline applied to the texture half: condition C and
+			//! CollapseToInstances read one RepeatGroup_ vector out of one scan,
+			//! so the note can never name a run the verb declines to see.  The
+			//! same is true here -- condition D and VaryMaterial read this same
+			//! vector out of the same ComputeDesignNoteConditionsFromDoc_ pass,
+			//! so "3 materials have bare-number roughness" and "there is a
+			//! material I can vary" cannot disagree.  They differ only in POLICY:
+			//! the note gates at kConstantMicrosurfaceGate and disarms when any
+			//! spatially-varying microsurface binding already exists anywhere in
+			//! the document; the verb takes neither gate, because a scene that
+			//! textured its floor may still be shipping five plastic props.
+			struct MicrosurfaceMaterial_
+			{
+				int         itemIndex = -1;      //!< top-level Document item index of the material chunk
+				std::string name;                //!< its `name`
+				std::string kind;                //!< its chunk keyword
+				//! The PRIMARY roughness slot(s) VaryMaterial rebinds -- present
+				//! on the chunk and each carrying a uniform numeric constant.
+				//! Never empty for a qualifying material (a material with no
+				//! spelled-out roughness has nothing to vary AROUND, so it does
+				//! not qualify).
+				std::vector<std::string> roughnessSlots;
+				double      roughness = 0.0;     //!< the constant every primary slot carries (they must agree)
+				int         objectCount = 0;     //!< how many `standard_object`s bind this material
+			};
+
+			//! Condition D's gate: how many all-constant-microsurface materials it
+			//! takes before the note names `vary_material`.
+			//!
+			//! THREE, and like condition C's five it is set against a constraint
+			//! rather than picked.  One or two constant-roughness materials is a
+			//! small scene or a deliberate pair of plastics; three is the point at
+			//! which "every surface in this scene is a bare number" is a fair
+			//! description, and it matches the >= 3 gate condition A already uses
+			//! for the same underlying complaint (the scalar pipe is unused) so the
+			//! two advisories about the same deficit do not assert two different
+			//! private thresholds.
+			static const int kConstantMicrosurfaceGate = 3;
+
+			//! The MICROSURFACE scalar slots each material kind exposes, audited
+			//! against `ChunkParserRegistry.cpp`'s own descriptors (2026-08-20),
+			//! never guessed.
+			//!
+			//! `allSlots` is what the qualifying predicate reads: EVERY one of them
+			//! must be a uniform numeric constant (absent counts -- an omitted slot
+			//! takes the descriptor's constant default) or the material does not
+			//! qualify.  `primarySlots` is the subset VaryMaterial rebinds, and at
+			//! least one of them must be spelled out on the chunk.
+			//!
+			//! WHAT IS DELIBERATELY NOT HERE.  (a) `ior` / `extinction` /
+			//! `film_ior` / `film_extinction` / `film_thickness` are OPTICAL
+			//! constants (Fresnel, thin-film), not microsurface -- varying them
+			//! spatially is a different effect with a different band.  (b)
+			//! `ashikminshirley_anisotropicphong_material`'s `nu`/`nv` and
+			//! `isotropic_phong_material`'s `N` are Phong EXPONENTS: bigger means
+			//! SMOOTHER and honest values run into the hundreds, so the [0,1]
+			//! roughness band this verb writes would be catastrophically wrong for
+			//! them.  They are excluded rather than special-cased, and a scene made
+			//! only of them simply does not fire condition D.  (c)
+			//! `dielectric_material` / `translucent_material` scalars (`tau`,
+			//! `scattering`, `absorption`) are volumetric, not microsurface.
+			struct MicrosurfaceKindSlots_
+			{
+				const char* kind;
+				const char* allSlots[3];        //!< nullptr-terminated
+				const char* primarySlots[3];    //!< nullptr-terminated
+			};
+			const MicrosurfaceKindSlots_ kMicrosurfaceKinds[] = {
+				{ "ggx_material",                    { "alphax", "alphay", nullptr },     { "alphax", "alphay", nullptr } },
+				// ward_anisotropic_material's own descriptor gives alphax and
+				// alphay UNEQUAL constant defaults (0.1 / 0.2 --
+				// ChunkParserRegistry.cpp's WardAnisotropicEllipticalGaussian-
+				// MaterialAsciiChunkParser::Finalize) -- unlike ggx_material
+				// above, whose alphax/alphay share no such asymmetry in
+				// practice (both descriptor defaults equal).  A material of
+				// this kind with ONLY alphax spelled out therefore still
+				// QUALIFIES here (alphay is Absent, which counts as its own
+				// -- different -- constant default, not a value the "two
+				// primary slots must agree" check at line ~3601 ever
+				// compares against): it is read as isotropic at the spelled
+				// alphax value, and VaryMaterial rebinds ONLY alphax, leaving
+				// the unspelled alphay at its descriptor default of 0.2
+				// untouched.  Known and accepted: this verb only ever bands
+				// around a slot the author actually spelled out, and a
+				// partially-spelled ward_anisotropic material is a narrow
+				// enough case that inferring "isotropic at alphax" is a
+				// reasonable read, not a silent anisotropy change.
+				{ "ward_anisotropic_material",       { "alphax", "alphay", nullptr },     { "alphax", "alphay", nullptr } },
+				{ "ward_isotropic_material",         { "alpha", nullptr, nullptr },       { "alpha", nullptr, nullptr } },
+				{ "cooktorrance_material",           { "facets", nullptr, nullptr },      { "facets", nullptr, nullptr } },
+				{ "orennayar_material",              { "roughness", nullptr, nullptr },   { "roughness", nullptr, nullptr } },
+				{ "pbr_metallic_roughness_material", { "roughness", "metallic", nullptr },{ "roughness", nullptr, nullptr } },
+				{ "sheen_material",                  { "sheen_roughness", nullptr, nullptr }, { "sheen_roughness", nullptr, nullptr } },
+				{ "schlick_material",                { "roughness", "isotropy", nullptr },{ "roughness", nullptr, nullptr } },
+			};
+
+			const MicrosurfaceKindSlots_* MicrosurfaceSlotsForKind_( const std::string& kind )
+			{
+				for( const MicrosurfaceKindSlots_& k : kMicrosurfaceKinds )
+					if( kind == k.kind ) return &k;
+				return nullptr;
+			}
+
+			//! "MOST PROMINENT" -- ONE definition, read by design-note condition D
+			//! (which NAMES the material in its clause) and by a bare
+			//! `vary_material` call (which REWRITES it).  If these two ever
+			//! disagreed, the note would advertise a call that then edited a
+			//! different material, which is worse than no note at all.
+			//!
+			//! Most objects bound wins; ties break LEXICOGRAPHICALLY by name
+			//! rather than by document position, so re-ordering two chunks that
+			//! are equally used cannot silently change which one the verb takes.
+			//! Returns nullptr for an empty list.
+			const MicrosurfaceMaterial_* SelectMaterialToVary_( const std::vector<MicrosurfaceMaterial_>& mats )
+			{
+				const MicrosurfaceMaterial_* best = nullptr;
+				for( const MicrosurfaceMaterial_& m : mats ) {
+					if( !best ) { best = &m; continue; }
+					if( m.objectCount > best->objectCount ) { best = &m; continue; }
+					if( m.objectCount == best->objectCount && m.name < best->name ) best = &m;
+				}
+				return best;
+			}
+
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused
 				bool conditionB = false;   //!< no advanced geometry
 				bool conditionC = false;   //!< hand-fanned repetition of one geometry (88)
+				bool conditionD = false;   //!< every material's microsurface is a bare number (88 S5)
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -3036,6 +3167,27 @@ namespace RISE
 				//! Condition C's disarm; the verb ignores it (a document that
 				//! instanced one run may still have hand-fanned another).
 				bool docExpressesInstancing = false;
+
+				//! 88 S5: EVERY material whose microsurface slots are all uniform
+				//! numeric constants AND which spells out at least one primary
+				//! roughness slot, in DOCUMENT order.  Condition D reads it through
+				//! kConstantMicrosurfaceGate plus the disarm below; VaryMaterial
+				//! reads it whole (see MicrosurfaceMaterial_'s doc for why the two
+				//! must not each grow their own idea of "qualifies").
+				std::vector<MicrosurfaceMaterial_> constantMicrosurfaceMaterials;
+				//! How many microsurface slots ANYWHERE in the document are bound to
+				//! something that varies across a surface.  Condition D's disarm:
+				//! the note prices an unreached affordance, and one varying
+				//! microsurface binding proves the author has already reached it.
+				//! VaryMaterial does NOT consult it.
+				int varyingMicrosurfaceBindings = 0;
+				//! Condition D's chosen material (the one the clause names, and the
+				//! one a bare `vary_material` call takes): most objects bound, ties
+				//! broken lexicographically by name.  Empty when D is silent.
+				std::string varyMaterialName;
+				std::string varyMaterialKind;
+				double      varyMaterialRoughness = 0.0;
+				int         constantMicrosurfaceCount = 0;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -3099,11 +3251,164 @@ namespace RISE
 				return out;
 			}
 
+			//! 88 S5: forward declarations of two value-parsing primitives whose
+			//! DEFINITIONS live further down this file, alongside
+			//! collapse_to_instances' fitting helpers (they were written for that
+			//! verb and are reused verbatim here rather than re-implemented --
+			//! "one definition of what a number is" is the same discipline the
+			//! shared group scan follows).  Every `namespace { ... }` block at
+			//! this scope reopens the SAME compiler-unique anonymous namespace,
+			//! so these declare the identical symbols.
+			std::vector<std::string> CollapseSplitWs_( const std::string& v );
+			bool CollapseParseScalar_( const std::string& tok, double& out );
+
+			//! 88 S5: split a param value into whitespace-separated tokens, then
+			//! read it as ONE uniform numeric constant.
+			//!
+			//! Accepts exactly what the engine's own scalar-slot resolver
+			//! (Job.cpp's ResolveScalarPainterArg, mirrored by
+			//! ChunkParserRegistry's ResolveScalarPainter) accepts as an INLINE
+			//! literal, narrowed to the wavelength-uniform case: one finite
+			//! number, or three finite numbers that are all equal.  A
+			//! genuinely per-channel triple (`ior 1.51 1.52 1.53`) is NOT a
+			//! uniform constant and is deliberately rejected -- a dispersive
+			//! slot is authored on purpose and the band this verb writes is a
+			//! single scalar.
+			bool MicrosurfaceParseUniformNumber_( const std::string& value, double& out )
+			{
+				const std::vector<std::string> t = CollapseSplitWs_( value );
+				if( t.empty() || ( t.size() != 1 && t.size() != 3 ) ) return false;
+				double v[3] = { 0.0, 0.0, 0.0 };
+				for( std::size_t i = 0; i < t.size(); ++i )
+					if( !CollapseParseScalar_( t[i], v[i] ) ) return false;
+				if( t.size() == 3 && !( v[0] == v[1] && v[1] == v[2] ) ) return false;
+				out = v[0];
+				return true;
+			}
+
+			//! The painter kinds that are spatially CONSTANT by construction.
+			//! Everything else in the 37-kind painter vocabulary varies with the
+			//! shading point (or, for `iridescent_painter`, the view direction),
+			//! so anything not on this list bound into a microsurface slot counts
+			//! as a spatially-varying binding for condition D's disarm.  Erring
+			//! toward "varying" is the safe direction: it can only SILENCE the
+			//! note, never make it fire on a scene that already textured itself.
+			bool MicrosurfacePainterKindIsConstant_( const std::string& kind )
+			{
+				return kind == "uniformcolor_painter" || kind == "blackbody_painter" ||
+				       kind == "spectral_painter";
+			}
+
+			//! How a microsurface slot's value is bound.
+			enum class MicrosurfaceBinding_
+			{
+				Absent,        //!< the slot is not spelled out (descriptor default -- a constant)
+				Constant,      //!< a uniform numeric constant, inline or via scalar_painter { value | values }
+				Varying,       //!< something that changes across the surface
+				Opaque         //!< a name that resolves to no chunk, or a constant-but-not-numeric form
+			};
+
+			//! Classify ONE microsurface slot value against the document's painter
+			//! chunks.  `scalarPainterForms` maps a `scalar_painter` chunk name to
+			//! its whole param map; `painterKinds` maps EVERY chunk name to its
+			//! keyword.  `depth` bounds the `base` / `multiply` walk (those two
+			//! forms wrap other scalar_painters, so a chain of them is only as
+			//! constant as its operands).
+			MicrosurfaceBinding_ ClassifyMicrosurfaceBinding_(
+				const std::string& value,
+				const std::map<std::string, std::map<std::string, std::string> >& scalarPainterForms,
+				const std::map<std::string, std::string>& painterKinds,
+				double& outConstant,
+				int depth = 0 )
+			{
+				if( value.empty() ) return MicrosurfaceBinding_::Absent;
+				if( MicrosurfaceParseUniformNumber_( value, outConstant ) ) return MicrosurfaceBinding_::Constant;
+				if( value == "none" ) return MicrosurfaceBinding_::Absent;
+				if( depth > 4 ) return MicrosurfaceBinding_::Opaque;   // pathological base/multiply chain
+
+				const std::map<std::string, std::map<std::string, std::string> >::const_iterator sp =
+					scalarPainterForms.find( value );
+				if( sp != scalarPainterForms.end() ) {
+					const std::map<std::string, std::string>& pmap = sp->second;
+					// The four forms the scalar_painter descriptor itself
+					// documents as VARYING ACROSS THE SURFACE.
+					if( pmap.count( "expression" ) || pmap.count( "function2d" ) ||
+					    pmap.count( "texture" )    || pmap.count( "painter" ) )
+						return MicrosurfaceBinding_::Varying;
+					// The two plainly-numeric forms.
+					{
+						const std::map<std::string, std::string>::const_iterator v = pmap.find( "value" );
+						if( v != pmap.end() && MicrosurfaceParseUniformNumber_( v->second, outConstant ) )
+							return MicrosurfaceBinding_::Constant;
+						const std::map<std::string, std::string>::const_iterator vs = pmap.find( "values" );
+						if( vs != pmap.end() && MicrosurfaceParseUniformNumber_( vs->second, outConstant ) )
+							return MicrosurfaceBinding_::Constant;
+					}
+					// `base` (scaled) and `multiply` wrap OTHER scalar_painters --
+					// only as constant as what they wrap, so walk one hop.  A
+					// `base` chain's arithmetic is not reproduced here (the
+					// wrapper's own `scale`/`bias` would have to be folded in),
+					// so a constant operand still reports Opaque rather than a
+					// wrong number: this verb never varies around a value it did
+					// not read directly.
+					{
+						const std::map<std::string, std::string>::const_iterator b = pmap.find( "base" );
+						if( b != pmap.end() ) {
+							double ignored = 0.0;
+							const MicrosurfaceBinding_ inner = ClassifyMicrosurfaceBinding_(
+								b->second, scalarPainterForms, painterKinds, ignored, depth + 1 );
+							return ( inner == MicrosurfaceBinding_::Varying )
+								? MicrosurfaceBinding_::Varying : MicrosurfaceBinding_::Opaque;
+						}
+						const std::map<std::string, std::string>::const_iterator m = pmap.find( "multiply" );
+						if( m != pmap.end() ) {
+							const std::vector<std::string> ops = CollapseSplitWs_( m->second );
+							for( const std::string& op : ops ) {
+								double ignored = 0.0;
+								if( ClassifyMicrosurfaceBinding_( op, scalarPainterForms, painterKinds,
+								                                  ignored, depth + 1 ) == MicrosurfaceBinding_::Varying )
+									return MicrosurfaceBinding_::Varying;
+							}
+							return MicrosurfaceBinding_::Opaque;
+						}
+					}
+					// file / sellmeier / polynomial / function1d: constant across
+					// the SURFACE but not a plain number, so nothing to vary
+					// around.
+					return MicrosurfaceBinding_::Opaque;
+				}
+
+				// Not a scalar_painter.  `pbr_metallic_roughness_material`'s
+				// `roughness`/`metallic` legitimately take a COLOUR painter
+				// (auto-adapted to a scalar internally), so a noise painter here
+				// is a real spatially-varying microsurface binding and must
+				// disarm the note.
+				const std::map<std::string, std::string>::const_iterator pk = painterKinds.find( value );
+				if( pk != painterKinds.end() ) {
+					return MicrosurfacePainterKindIsConstant_( pk->second )
+						? MicrosurfaceBinding_::Opaque : MicrosurfaceBinding_::Varying;
+				}
+				return MicrosurfaceBinding_::Opaque;
+			}
+
 			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc )
 			{
 				DesignNoteConditions_ c;
 				bool hasScalarPainter    = false;
 				bool hasAdvancedGeometry = false;
+
+				// -- Condition D accumulators (88 S5) ----------------------
+				// Collected during the SAME single walk below and resolved
+				// afterwards, because a material's qualification depends on
+				// chunks the walk may not have reached yet in the general case
+				// (declare-before-use is the authoring convention, not a CST
+				// invariant) and on object bindings, which always come later.
+				std::map<std::string, std::map<std::string, std::string> > scalarPainterForms;
+				std::map<std::string, std::string>                          painterKinds;
+				std::map<std::string, int>                                  materialObjectCounts;
+				struct PendingMaterial_ { int itemIndex; std::string name; std::string kind;
+				                          std::map<std::string, std::string> params; };
+				std::vector<PendingMaterial_> pendingMaterials;
 
 				// -- Condition C accumulators (88) -------------------------
 				// Keyed by the object's BINDING signature (every param except
@@ -3158,6 +3463,18 @@ namespace RISE
 						if( pm.count( "source" ) || pm.count( "count_u" ) || pm.count( "count_v" ) )
 							c.docExpressesInstancing = true;
 
+						// (88 S5) Condition D's "most prominent material" input.
+						// An instancing chunk's `count_u` copies all share ONE
+						// `material`, and this counts the CHUNK rather than the
+						// minted copies on purpose: prominence here is a proxy for
+						// "how much of the frame is this material", and one chunk
+						// standing for six posts is still one binding decision.
+						{
+							const std::map<std::string, std::string>::const_iterator mat = pm.find( "material" );
+							if( mat != pm.end() && !mat->second.empty() && mat->second != "none" )
+								++materialObjectCounts[mat->second];
+						}
+
 						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
 						if( geo != pm.end() && !geo->second.empty() && geo->second != "none" ) {
 							std::string bindings, xform;
@@ -3187,7 +3504,18 @@ namespace RISE
 						}
 						continue;
 					}
-					if( role == "scalar_painter" )  { hasScalarPainter = true; continue; }
+					if( role == "scalar_painter" ) {
+						hasScalarPainter = true;
+						// (88 S5) Keep the WHOLE param map: which form a
+						// scalar_painter carries is what decides whether a slot
+						// bound to it is a constant, and re-walking the document
+						// for that later would be a second scan of the same
+						// bytes.
+						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator nm = pm.find( "name" );
+						if( nm != pm.end() && !nm->second.empty() ) scalarPainterForms[nm->second] = pm;
+						continue;
+					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
 					// form here for the same reason the other three do -- it
 					// is one of the geometry kinds whose ABSENCE this note
@@ -3212,10 +3540,113 @@ namespace RISE
 					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
 					if( !d ) continue;
 					if( d->category == ChunkCategory::Geometry ) ++c.geometryCensus[role];
+
+					// (88 S5) Two more per-chunk censuses, both registry-resolved
+					// off the descriptor category rather than a private keyword
+					// list, so a painter or material kind added later is seen
+					// without editing this function.
+					if( d->category == ChunkCategory::Painter ) {
+						const std::string pname = ChunkParamString_( item, "name" );
+						if( !pname.empty() ) painterKinds[pname] = role;
+						continue;
+					}
+					if( d->category == ChunkCategory::Material &&
+					    MicrosurfaceSlotsForKind_( role ) != nullptr ) {
+						PendingMaterial_ pmEntry;
+						pmEntry.itemIndex = i;
+						pmEntry.kind      = role;
+						pmEntry.params    = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator nm = pmEntry.params.find( "name" );
+						pmEntry.name = ( nm != pmEntry.params.end() ) ? nm->second : std::string();
+						if( !pmEntry.name.empty() ) pendingMaterials.push_back( pmEntry );
+					}
 				}
 
 				c.conditionA = c.standardObjectCount >= 3 && !hasScalarPainter;
 				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
+
+				// (88 S5) Condition D's resolution pass -- ONE predicate, read by
+				// the note AND by AgentSession::VaryMaterial.
+				//
+				// A material QUALIFIES when every microsurface slot its kind
+				// exposes is a uniform numeric constant (absent counts: an omitted
+				// slot takes the descriptor's constant default) AND it spells out
+				// at least one PRIMARY roughness slot, all of whose spelled-out
+				// occurrences agree on the same number.  Anything else -- a slot
+				// bound to a varying painter, a per-channel triple, a Sellmeier
+				// curve, a name that resolves to nothing -- drops the material out.
+				// Over-refusing here costs a model one call and a clear reason;
+				// under-refusing would have the verb vary around a number it never
+				// actually read.
+				for( const PendingMaterial_& pm : pendingMaterials ) {
+					const MicrosurfaceKindSlots_* slots = MicrosurfaceSlotsForKind_( pm.kind );
+					if( !slots ) continue;
+
+					// EVERY slot is classified before qualification is decided --
+					// no early exit -- because `varyingMicrosurfaceBindings` is a
+					// document-wide CENSUS, and a loop that stopped at the first
+					// disqualifier would under-count it.
+					bool qualifies = true;
+					for( int s = 0; s < 3 && slots->allSlots[s]; ++s ) {
+						const std::map<std::string, std::string>::const_iterator v =
+							pm.params.find( slots->allSlots[s] );
+						double val = 0.0;
+						const MicrosurfaceBinding_ b = ( v == pm.params.end() )
+							? MicrosurfaceBinding_::Absent
+							: ClassifyMicrosurfaceBinding_( v->second, scalarPainterForms, painterKinds, val );
+						if( b == MicrosurfaceBinding_::Varying ) ++c.varyingMicrosurfaceBindings;
+						if( b != MicrosurfaceBinding_::Absent && b != MicrosurfaceBinding_::Constant )
+							qualifies = false;
+					}
+					if( !qualifies ) continue;
+
+					MicrosurfaceMaterial_ m;
+					m.itemIndex = pm.itemIndex;
+					m.name      = pm.name;
+					m.kind      = pm.kind;
+					bool haveRoughness = false;
+					for( int s = 0; s < 3 && slots->primarySlots[s] && qualifies; ++s ) {
+						const std::map<std::string, std::string>::const_iterator v =
+							pm.params.find( slots->primarySlots[s] );
+						if( v == pm.params.end() ) continue;   // defaulted: nothing to rebind
+						double val = 0.0;
+						if( ClassifyMicrosurfaceBinding_( v->second, scalarPainterForms, painterKinds, val )
+						    != MicrosurfaceBinding_::Constant ) { qualifies = false; break; }
+						// Two primary slots that disagree (an anisotropic
+						// alphax != alphay) are a deliberate authored anisotropy,
+						// not a flat microsurface -- one band around one number
+						// would erase it, so the material drops out.
+						if( haveRoughness && val != m.roughness ) { qualifies = false; break; }
+						m.roughness = val;
+						haveRoughness = true;
+						m.roughnessSlots.push_back( slots->primarySlots[s] );
+					}
+					if( !qualifies || !haveRoughness ) continue;
+
+					const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( m.name );
+					m.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
+					c.constantMicrosurfaceMaterials.push_back( m );
+				}
+				c.constantMicrosurfaceCount = static_cast<int>( c.constantMicrosurfaceMaterials.size() );
+
+				// The note's chosen material is the SAME one a bare `vary_material`
+				// call takes: most objects bound, ties broken lexicographically by
+				// name so the pick is stable against document reordering.  That
+				// tie-break, and the selection itself, live in
+				// SelectMaterialToVary_ (one function, two callers) for the same
+				// reason FormatRepeatedCopiesClause_ exists.
+				{
+					const MicrosurfaceMaterial_* pick =
+						SelectMaterialToVary_( c.constantMicrosurfaceMaterials );
+					if( pick ) {
+						c.varyMaterialName      = pick->name;
+						c.varyMaterialKind      = pick->kind;
+						c.varyMaterialRoughness = pick->roughness;
+					}
+				}
+				c.conditionD = c.constantMicrosurfaceCount >= kConstantMicrosurfaceGate &&
+				               c.varyingMicrosurfaceBindings == 0 &&
+				               !c.varyMaterialName.empty();
 
 				// (88) Condition C: the LARGEST qualifying group wins, so the
 				// note names one concrete geometry rather than a list.  The
@@ -3301,6 +3732,53 @@ namespace RISE
 					"these are meant to stay separate objects, this is fine -- ignore and do not churn.";
 			}
 
+			//! 88 S5: deterministic short decimal for every number this feature
+			//! writes -- into the clause a model reads AND into the chunk text the
+			//! verb emits.  `%g` (6 significant digits) round-trips every roughness
+			//! value an author plausibly types and never emits a 17-digit tail; ONE
+			//! formatter for both carriers, so the number the note quotes is the
+			//! number the chunk gets.
+			std::string MicrosurfaceFmt_( double v )
+			{
+				char buf[64];
+				std::snprintf( buf, sizeof( buf ), "%g", v );
+				return std::string( buf );
+			}
+
+			//! Condition D's whole clause (88 S5), SHARED by the note builder and
+			//! the diagnostic builder -- the FormatRepeatedCopiesClause_ /
+			//! FormatGeometryCensus_ pattern, one function and two callers, so the
+			//! two carriers cannot drift.
+			//!
+			//! IT NAMES A VERB, and that is the whole design.  Condition A has
+			//! named `scalar_painter` in prose since arc 73 and is measured at
+			//! 0/24 lifetime adoptions across two models -- advice asking for a
+			//! multi-chunk hand rewrite of a typing prior ("roughness is a
+			//! number") does not move it.  `collapse_to_instances` is the
+			//! precedent for what does: a zero-argument call the model can make.
+			//! So this clause states the call, its refusal contract (so trying it
+			//! is knowably free), and what it leaves behind -- and, deliberately,
+			//! does NOT spell out the rewrite for hand-authoring.
+			std::string FormatConstantMicrosurfaceClause_( int constantCount,
+			                                               const std::string& materialName,
+			                                               const std::string& materialKind,
+			                                               double roughness )
+			{
+				return std::to_string( constantCount ) + " materials have a microsurface that is a bare "
+					"number -- nothing in this scene's roughness varies across a surface, which is the "
+					"single most recognisable untextured-render signature. `vary_material` fixes the most "
+					"prominent one for you: call it with NO ARGUMENTS and it takes `" + materialName +
+					"` (" + materialKind + ", roughness " + MicrosurfaceFmt_( roughness ) + "), adds one "
+					"`scalar_painter { expression ... }` chunk holding an fbm wear field banded around the "
+					"number that is already there, and rebinds the roughness slot to it -- ONE call, ONE "
+					"undo step, and every knob it writes is a named `param` with a min/max you can retune "
+					"with propose_patch. Pass `material` to choose a different one. It REFUSES -- changing "
+					"nothing, costing one call -- when no material's microsurface is a readable constant. "
+					"For the wider vocabulary (expression_painter fields, ramp_painter colour, the "
+					"any-painter -> scalar bridge) read_skill {\"name\":\"procedural-textures\"}. If a flat, "
+					"stylised look is the point, this is fine -- ignore and do not churn.";
+			}
+
 			//! RETURNS empty iff NO condition fires (the "omit the note
 			//! entirely when clean" convention -- see AgentSkillResult::note
 			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
@@ -3314,7 +3792,7 @@ namespace RISE
 			std::string ComputeDesignNoteFromDoc_( const Document& doc )
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
-				if( !c.conditionA && !c.conditionB && !c.conditionC ) return std::string();
+				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -3362,6 +3840,11 @@ namespace RISE
 				if( c.conditionC ) {
 					note += " " + FormatRepeatedCopiesClause_( c.repeatedCopyCount, c.repeatedCopyGeometry );
 				}
+				if( c.conditionD ) {
+					note += " " + FormatConstantMicrosurfaceClause_( c.constantMicrosurfaceCount,
+					                                                 c.varyMaterialName, c.varyMaterialKind,
+					                                                 c.varyMaterialRoughness );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -3396,7 +3879,7 @@ namespace RISE
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out )
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
-				if( !c.conditionA && !c.conditionB && !c.conditionC ) return;
+				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -3439,6 +3922,21 @@ namespace RISE
 					// built into the shared clause, so BOTH carriers get it and
 					// neither carries two.
 					d.message  = FormatRepeatedCopiesClause_( c.repeatedCopyCount, c.repeatedCopyGeometry );
+					out.push_back( d );
+				}
+				if( c.conditionD ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_CONSTANT_MICROSURFACE;
+					// SHARED formatter, so this message and the note's D clause
+					// cannot drift (88 S5, the FormatRepeatedCopiesClause_
+					// precedent).  No kSelfDisarm here, deliberately, for
+					// condition C's reason: the clause carries its own targeted
+					// "if a flat, stylised look is the point" escape, so BOTH
+					// carriers get one and neither carries two.
+					d.message  = FormatConstantMicrosurfaceClause_( c.constantMicrosurfaceCount,
+					                                                c.varyMaterialName, c.varyMaterialKind,
+					                                                c.varyMaterialRoughness );
 					out.push_back( d );
 				}
 			}
@@ -6383,6 +6881,61 @@ namespace RISE
 				return out;
 			}
 
+			//! 88 S5 (2026-08-20): THE ONE ROUGHNESS-FIELD RECIPE, shared by
+			//! `AgentSession::VaryMaterial` and by the two
+			//! `insert_material_scaffold` families whose roughness field belongs
+			//! in the SAME world-space domain as their colour field.
+			//!
+			//! WHY ONE FUNCTION.  Doc 88 P4.3's instruction was "decide during
+			//! implementation; don't build two recipe systems".  The scaffold's
+			//! five families and this verb both need "a wear field banded between
+			//! two roughness values", and before this they would have needed it
+			//! twice.  One builder, three call sites: the recipe data lives once.
+			//!
+			//! WHY AN EXPRESSION AND NOT `expression_function2d` ->
+			//! `scalar_painter { function2d }`.  That two-chunk adapter chain is
+			//! UV-only (ScaffoldExprFunction2DText's doc records the sub-trap that
+			//! makes it the only safe `function2d` source), so on the two families
+			//! whose COLOUR comes from a world-space 3D noise the roughness field
+			//! could not line up with it -- a real weathered stone is rougher
+			//! exactly where it is darker, and a UV field cannot say that about a
+			//! world-space one.  One `scalar_painter { expression ... }` reading
+			//! `P` puts both fields in one domain, in one chunk instead of two.
+			//!
+			//! WHAT IT EMITS, and the contract it demonstrates (doc 88 P5 Tier 1):
+			//! EVERY art-directable number is a named `param` carrying min/max/
+			//! step/label metadata -- never a literal buried in the body -- so the
+			//! property panel renders sliders and `propose_patch` can retune it by
+			//! name.  This verb's own output follows the rule the skills teach.
+			//! `t` is CLAMPED into [0,1] before the mix, so the emitted roughness
+			//! provably stays inside [rough_lo, rough_hi]: raw `fbm` spans roughly
+			//! [-0.4, 0.4], and an unclamped mix would extrapolate past the band
+			//! the param metadata advertises (and, at a small `rough_lo`, toward
+			//! zero).
+			std::string BuildRoughnessFieldScalarPainterText(
+				const std::string& chunkName, double lo, double hi,
+				double fieldScale, double contrast, double seed )
+			{
+				const double sliderMax = ( hi > 1.0 ) ? hi : 1.0;
+				std::string t = "scalar_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tparam\t\t\trough_lo " + MicrosurfaceFmt_( lo ) +
+					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Smooth roughness\"\n";
+				t += "\tparam\t\t\trough_hi " + MicrosurfaceFmt_( hi ) +
+					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Worn roughness\"\n";
+				t += "\tparam\t\t\tfield_scale " + MicrosurfaceFmt_( fieldScale ) +
+					" min 0.1 max 40 step 0.1 label \"Wear field scale\"\n";
+				t += "\tparam\t\t\tfield_contrast " + MicrosurfaceFmt_( contrast ) +
+					" min 0.2 max 5 step 0.05 label \"Wear contrast\"\n";
+				t += "\tseed\t\t\t" + MicrosurfaceFmt_( seed ) + "\n";
+				t += "\tdef\t\t\t\tq P*field_scale + vec3(seed, seed*1.7, seed*2.3)\n";
+				t += "\tdef\t\t\t\tn fbm(q, 4, 0.5, 2.0)\n";
+				t += "\tdef\t\t\t\tt clamp(n*field_contrast + 0.5, 0, 1)\n";
+				t += "\texpression\t\tmix(rough_lo, rough_hi, t)\n";
+				t += "}\n";
+				return t;
+			}
+
 			std::string ScaffoldScalarFn2DText( const std::string& name, const std::string& fn2d, double scale, double bias )
 			{
 				return ScaffoldChunkText( "scalar_painter", {
@@ -6572,15 +7125,28 @@ namespace RISE
 
 			//! rough_stone: cooktorrance_material, rd bound to a worley3d
 			//! pebble/cell field (colora=tone, colorb="none"), facets bound
-			//! to scalar_painter{function2d} over a jittered
-			//! expression_function2d.  `wear` widens and raises the facet
-			//! band; `scale` sets the pebble frequency.
+			//! to ONE `scalar_painter { expression ... }` fbm wear field.
+			//! `wear` widens and raises the facet band; `scale` sets the
+			//! pebble frequency AND the wear field's.
+			//!
+			//! 88 S5 (2026-08-20) REBASE, and it is a recipe improvement rather
+			//! than a chunk-count saving.  This family used to spend TWO chunks
+			//! on the facet field -- an `expression_function2d` plus a
+			//! `scalar_painter { function2d ... }` wrapper -- and that chain is
+			//! UV-ONLY, while `rd` reads a WORLD-SPACE worley pebble field.  The
+			//! two could not line up: a real weathered stone is rougher exactly
+			//! where its pebble boundaries are, and a UV field cannot say
+			//! anything about a world-space one.  The expression form reads `P`,
+			//! so the wear field now shares the pebbles' domain AND their
+			//! frequency (`axis`), in one chunk instead of two.  The BAND is
+			//! preserved exactly: the old affine was out = bias + scale*f with
+			//! f in [0,1], i.e. [0.04 + 0.05*wear, 0.09 + 0.35*wear], which is
+			//! what `lo`/`hi` below spell out directly.
 			ScaffoldGraph BuildRoughStone( const std::string& name, double r, double g, double b, double wear, double scale )
 			{
 				ScaffoldGraph out;
 				const std::string nTone   = "tmpl_" + name + "_tone";
 				const std::string nPebble = "tmpl_" + name + "_pebble";
-				const std::string nWear   = "tmpl_" + name + "_wearfield";
 				const std::string nFacets = "tmpl_" + name + "_facets";
 				const std::string nMat    = "tmpl_" + name + "_mat";
 
@@ -6595,13 +7161,12 @@ namespace RISE
 				out.chunks.push_back( { "worley3d_painter", nPebble,
 					ScaffoldWorley3DText( nPebble, nTone, "none", jitterAmt, output, axis, shiftX, shiftY, shiftZ ) } );
 
-				const double freqU = ScaffoldJitterRange( name, "stone_frequ", 6.0, 14.0 );
-				const double freqV = ScaffoldJitterRange( name, "stone_freqv", 6.0, 14.0 );
-				const double phase = ScaffoldJitterRange( name, "stone_phase", 0.0, 6.283185 );
-				out.chunks.push_back( { "expression_function2d", nWear,
-					ScaffoldExprFunction2DText( nWear, freqU, freqV, phase ) } );
 				out.chunks.push_back( { "scalar_painter", nFacets,
-					ScaffoldScalarFn2DText( nFacets, nWear, 0.05 + 0.30 * wear, 0.04 + 0.05 * wear ) } );
+					BuildRoughnessFieldScalarPainterText( nFacets,
+						0.04 + 0.05 * wear, 0.09 + 0.35 * wear,
+						axis,
+						ScaffoldJitterRange( name, "stone_wearcontrast", 1.3, 2.1 ),
+						ScaffoldJitterRange( name, "stone_wearseed", 0.0, 100.0 ) ) } );
 
 				out.chunks.push_back( { "cooktorrance_material", nMat,
 					ScaffoldCookTorranceText( nMat, nPebble, "none", nFacets ) } );
@@ -6620,6 +7185,16 @@ namespace RISE
 			//! field differently, not two unrelated noises.  `wear` widens
 			//! both bands (a more-worn brushed surface scatters more in
 			//! both directions); `scale` sets the groove pitch.
+			//!
+			//! 88 S5 (2026-08-20): DELIBERATELY NOT rebased onto the expression
+			//! VM, unlike rough_stone and aged_bronze.  Brushing is a
+			//! TANGENT-FRAME phenomenon -- the grooves run along the surface's
+			//! own u direction, which is exactly what the UV domain expresses and
+			//! what a world-space field cannot.  Rebasing this one would trade a
+			//! correct anisotropy for one fewer chunk; the S5 rebase is scoped to
+			//! the families whose roughness field was in the WRONG domain
+			//! relative to their own colour field, not to every family that has
+			//! two chunks where it could have one.
 			ScaffoldGraph BuildBrushedMetal( const std::string& name, double r, double g, double b, double wear, double scale )
 			{
 				ScaffoldGraph out;
@@ -6657,15 +7232,20 @@ namespace RISE
 			//! deliberately distinct from rough_stone's worley so the two
 			//! families don't read as the same recipe in different paint),
 			//! rs reuses the base tone (a warm specular tint), facets bound
-			//! to scalar_painter{function2d} like rough_stone.  `wear`
-			//! raises the facet band (more pitting); `scale` sets the
-			//! patina blotch frequency.
+			//! to ONE `scalar_painter { expression ... }` like rough_stone.
+			//! `wear` raises the facet band (more pitting); `scale` sets the
+			//! patina blotch frequency AND the pitting field's.
+			//!
+			//! 88 S5 (2026-08-20): REBASED for rough_stone's reason and no
+			//! other -- `rd` is a WORLD-SPACE reaction-diffusion patina, so a
+			//! UV-only facet chain could not put the pitting where the patina
+			//! blooms are.  Band preserved exactly ([0.03 + 0.04*wear,
+			//! 0.06 + 0.24*wear], the old bias/scale affine written out).
 			ScaffoldGraph BuildAgedBronze( const std::string& name, double r, double g, double b, double wear, double scale )
 			{
 				ScaffoldGraph out;
 				const std::string nTone   = "tmpl_" + name + "_tone";
 				const std::string nPatina = "tmpl_" + name + "_patina";
-				const std::string nWear   = "tmpl_" + name + "_wearfield";
 				const std::string nFacets = "tmpl_" + name + "_facets";
 				const std::string nMat    = "tmpl_" + name + "_mat";
 
@@ -6683,13 +7263,12 @@ namespace RISE
 					ScaffoldReactionDiffusion3DText( nPatina, nTone, "none", gridSize, feed, kill, iterations,
 						axis, shiftX, shiftY, shiftZ ) } );
 
-				const double freqU = ScaffoldJitterRange( name, "bronze_frequ", 6.0, 14.0 );
-				const double freqV = ScaffoldJitterRange( name, "bronze_freqv", 6.0, 14.0 );
-				const double phase = ScaffoldJitterRange( name, "bronze_phase", 0.0, 6.283185 );
-				out.chunks.push_back( { "expression_function2d", nWear,
-					ScaffoldExprFunction2DText( nWear, freqU, freqV, phase ) } );
 				out.chunks.push_back( { "scalar_painter", nFacets,
-					ScaffoldScalarFn2DText( nFacets, nWear, 0.03 + 0.20 * wear, 0.03 + 0.04 * wear ) } );
+					BuildRoughnessFieldScalarPainterText( nFacets,
+						0.03 + 0.04 * wear, 0.06 + 0.24 * wear,
+						axis,
+						ScaffoldJitterRange( name, "bronze_wearcontrast", 1.3, 2.1 ),
+						ScaffoldJitterRange( name, "bronze_wearseed", 0.0, 100.0 ) ) } );
 
 				out.chunks.push_back( { "cooktorrance_material", nMat,
 					ScaffoldCookTorranceText( nMat, nPatina, nTone, nFacets ) } );
@@ -6707,6 +7286,14 @@ namespace RISE
 			//! (isotropic, "low-alpha with subtle scalar variation" per the
 			//! family brief).  `wear` nudges the alpha band up slightly;
 			//! `scale` sets the ripple frequency.
+			//!
+			//! 88 S5 (2026-08-20): DELIBERATELY NOT rebased, for brushed_metal's
+			//! reason plus one of its own -- a glaze ripple is a coating on the
+			//! SURFACE (it follows the potter's wheel, not a world grid), and
+			//! this family's colour is a flat uniformcolor, so there is no
+			//! world-space field for the roughness to fail to line up with.  The
+			//! domain mismatch the rebase exists to fix is simply not present
+			//! here.
 			ScaffoldGraph BuildGlazedCeramic( const std::string& name, double r, double g, double b, double wear, double scale )
 			{
 				ScaffoldGraph out;
@@ -27182,6 +27769,415 @@ namespace RISE
 				for( const std::string& nm : chunkNames )
 					AttributeChunkToActiveElement_( nm, "standard_object" );
 			}
+
+			return out;
+		}
+
+		//==============================================================
+		// 88 S5 (2026-08-20) -- vary_material.
+		//
+		// The VERB half of design-note condition D, and the second
+		// application of the collapse_to_instances shape (a105d6ea) to a
+		// deficit that advice demonstrably cannot move.
+		//
+		// THE DEFICIT IS MEASURED, not suspected: doc 88 sec 2 records
+		// 0/24 lifetime adoptions of spatially-varying microsurface
+		// scalars across two models, against advisories that fired up to
+		// 30x/session and were demonstrably read.  The cause is not
+		// ignorance -- the same worked-example lever lifted painter
+		// DIVERSITY -- it is a slot-typing prior ("roughness is a
+		// number") that prose does not override.  So the note names ONE
+		// CALL that performs the rewrite, and this is that call.
+		//
+		// ZERO REQUIRED ARGUMENTS, for collapse_to_instances' reason: a
+		// verb that first asks the model to pick a material reintroduces
+		// exactly the decision the advice already failed to get made.
+		// Called bare it takes the material condition D names -- the note
+		// and the call are one act, over one shared predicate.
+		//
+		// THE CONTRACT IS "BAND AROUND WHAT IS ALREADY THERE": the field
+		// it writes is bounded by params derived from the material's own
+		// authored roughness, so the surface it produces is the surface
+		// the author asked for plus variation -- never a different
+		// material.  It refuses, leaving the document byte-identical,
+		// whenever it cannot read that number.
+		//==============================================================
+		namespace
+		{
+			//! The DETERMINISTIC per-material knobs.  Hashed from the material's
+			//! NAME through the same FNV-1a the material scaffold uses -- no
+			//! wall-clock, no PRNG state, no document-order dependence -- so two
+			//! runs of this verb on the same document produce byte-identical text,
+			//! which is a tested property and not merely a hope.  Distinct WORD
+			//! salts (never a numbered scheme) per ScaffoldFnv1a64's own caveat.
+			double VaryFieldScaleFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "vary_fieldscale", 2.2, 6.5 );
+			}
+			double VaryContrastFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "vary_contrast", 1.3, 2.1 );
+			}
+			double VarySeedFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "vary_seed", 0.0, 100.0 );
+			}
+
+			//! The band, from the roughness that is already authored.
+			//!
+			//! Multiplicative and CONSERVATIVE: roughly 0.7x .. 1.4x of the
+			//! authored value, floored at 0.02 so a nearly-polished surface does
+			//! not wander into a numerically awkward near-zero alpha.  Above an
+			//! authored roughness of 1, the ceiling switches to 1.15x rather
+			//! than capping AT the authored value -- the earlier `cap =
+			//! roughness` collapsed `hi` to exactly `roughness`, i.e. zero
+			//! headroom above 1, which contradicted the "roughly 0.7x .. 1.4x"
+			//! this verb advertises to the model (AgentChatCodecs kToolDefs,
+			//! AgentMcpAdapter's tool description, and this header's own doc
+			//! comment all made that claim for every regime).  1.15x rather than
+			//! 1.4x above 1 is deliberate: the docs already say "roughly", and a
+			//! full 1.4x jump on an already-large roughness reads as swapping in
+			//! a different material rather than texturing the one that is
+			//! there.  A degenerate band (the floor overtaking the ceiling,
+			//! which happens for a very small authored roughness) falls back to
+			//! a narrow absolute band around the same value -- never an
+			//! INVERTED one, which would make `rough_lo`/`rough_hi` lie about
+			//! which end is which.
+			void VaryBandFor_( double roughness, double& lo, double& hi )
+			{
+				const double cap = ( roughness > 1.0 ) ? roughness * 1.15 : 1.0;
+				lo = std::max( 0.02, roughness * 0.7 );
+				hi = std::min( cap, ( roughness > 1.0 ) ? roughness * 1.15 : roughness * 1.4 );
+				if( hi <= lo + 1e-4 ) {
+					lo = std::max( 0.001, roughness * 0.6 );
+					hi = std::min( ( cap > lo + 0.04 ) ? cap : lo + 0.04, lo + 0.04 );
+				}
+			}
+		}
+
+		AgentSession::AgentVaryMaterialResult AgentSession::VaryMaterial(
+			const std::string& material, const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentVaryMaterialResult out;
+			// S1 (2026-08-11): folds a phase give-up notice into out.message
+			// whichever return fires -- see BuildPlanGiveUpFold_'s doc.
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE; the commit re-checks it, so the
+			// candidate can never land on a head that moved underneath it.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "vary_material refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"vary_material refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			// ---- (2) THE SHARED PREDICATE.  The same
+			// ComputeDesignNoteConditionsFromDoc_ scan design-note condition D
+			// reads, so the note can never advertise this call and then have it
+			// edit a different material (or see none at all).  What this verb does
+			// NOT inherit is D's gate of three and its document-wide "somebody
+			// already varied something" disarm: this is a deliberate call about a
+			// named material, and a scene that textured its floor may still be
+			// shipping five plastic props.
+			const DesignNoteConditions_ cond = ComputeDesignNoteConditionsFromDoc_( headDoc );
+			out.qualifyingMaterials = cond.constantMicrosurfaceCount;
+
+			const MicrosurfaceMaterial_* pick = nullptr;
+			if( !material.empty() ) {
+				for( const MicrosurfaceMaterial_& m : cond.constantMicrosurfaceMaterials )
+					if( m.name == material ) { pick = &m; break; }
+				if( !pick ) {
+					// Distinguish "not a material at all" from "a material this
+					// cannot read", because the two need different corrections.
+					const bool exists = ( RISE::Cst::DocFindByNameAnyRole( headDoc, material ) ? true : false );
+					out.message = exists
+						? ( "vary_material refused: `" + material + "` exists but its microsurface is not a "
+						    "readable constant -- either its kind has no roughness-like scalar slot (only "
+						    "ggx / ward_isotropic / ward_anisotropic / cooktorrance / orennayar / "
+						    "pbr_metallic_roughness / sheen / schlick do), or a slot is already bound to "
+						    "something that varies, or it spells no roughness value at all. Call it with no "
+						    "arguments to take the most prominent material that DOES qualify -- document "
+						    "unchanged" )
+						: ( "vary_material refused: no chunk named `" + material + "` is in this document -- "
+						    "`material` must name a material chunk (read_document to see the names), or omit "
+						    "it entirely to take the most prominent qualifying material -- document "
+						    "unchanged" );
+					return out;
+				}
+			}
+			else {
+				pick = SelectMaterialToVary_( cond.constantMicrosurfaceMaterials );
+				if( !pick ) {
+					out.message = "vary_material refused: no material in this document has a microsurface "
+						"this can read -- it needs a ggx / ward_isotropic / ward_anisotropic / cooktorrance "
+						"/ orennayar / pbr_metallic_roughness / sheen / schlick material that spells out a "
+						"roughness-like slot (alphax/alpha/facets/roughness/sheen_roughness) as a plain "
+						"number. Every roughness here is either already varying, absent, or not a number. "
+						"Add such a material first, or bind a `scalar_painter { expression ... }` by hand "
+						"(read_skill {\"name\":\"procedural-textures\"}) -- document unchanged";
+					return out;
+				}
+			}
+
+			out.material     = pick->name;
+			out.materialKind = pick->kind;
+			out.previousRoughness = pick->roughness;
+			out.boundObjects = pick->objectCount;
+
+			// A roughness of zero (or below) is a DELIBERATE mirror-specular
+			// intent, not a flat texture -- banding it would change what the
+			// material IS, which is the one thing this verb must not do.
+			if( pick->roughness <= 0.0 ) {
+				out.message = "vary_material refused: `" + pick->name + "` has roughness " +
+					MicrosurfaceFmt_( pick->roughness ) + ", and a zero (or negative) microsurface is a "
+					"deliberate mirror-specular surface rather than a flat one -- varying it would change "
+					"what the material is, not how it is textured. Pass `material` to name a different one "
+					"-- document unchanged";
+				return out;
+			}
+
+			double lo = 0.0, hi = 0.0;
+			VaryBandFor_( pick->roughness, lo, hi );
+
+			// ---- (3) Name the field chunk (collision-safe).
+			std::string fieldName;
+			for( int attempt = 0; attempt < 64 && fieldName.empty(); ++attempt ) {
+				const std::string cand = pick->name + "_roughfield" +
+					( attempt ? std::to_string( attempt + 1 ) : std::string() );
+				if( CollapseNameIsUsable_( cand ) && !CollapseNameTaken_( headDoc, cand ) ) fieldName = cand;
+			}
+			if( fieldName.empty() ) {
+				out.message = "vary_material refused: could not derive an unused chunk name from `" +
+					pick->name + "` -- rename or remove the colliding `" + pick->name +
+					"_roughfield*` chunks and retry -- document unchanged";
+				return out;
+			}
+			// `fieldName` and the rebound slots stay LOCAL until the commit is
+			// known to have landed.  `out.painterChunk` / `out.reboundSlots`
+			// describe what IS in the document -- a caller that read them on any
+			// of the refusals below (an element-window clause, External
+			// authority, a head that moved, an underivable candidate) and
+			// believed them would go looking for a chunk that does not exist.
+			std::vector<std::string> reboundSlots;
+
+			// ---- (4) Rebind the primary roughness slot(s), THEN splice the field
+			// chunk in ahead of the material.
+			//
+			// That order is load-bearing in both halves.  The param edits are
+			// addressed by the material chunk's NodeId, taken BEFORE any structural
+			// change, so no index bookkeeping is involved at all; and the splice
+			// lands at the material's own item index, which puts the declaration
+			// BEFORE its consumer -- the derive-in-order rule every chunk in this
+			// language obeys.
+			RISE::Cst::Document work = headDoc;
+			{
+				const RISE::Cst::NodeId matId = RISE::Cst::DocNodeIdAt( work, pick->itemIndex );
+				if( !matId ) {
+					out.message = "vary_material refused: internal -- `" + pick->name +
+						"` could not be re-resolved in the document; nothing changed";
+					return out;
+				}
+				for( const std::string& slot : pick->roughnessSlots ) {
+					work = RISE::Cst::DocSetParamValue( work, matId, slot, 0, fieldName );
+					// DocSetParamValue is documented to return `doc` UNCHANGED
+					// when the chunk or param is absent -- a silent no-op -- so
+					// the rebind is READ BACK rather than assumed.  Without this
+					// the verb could splice a field chunk nothing points at and
+					// report success.
+					const RISE::Cst::NodeRef matRef = RISE::Cst::DocResolveNodeId( work, matId );
+					const std::string bound = RISE::Cst::ParamValueAtOccurrence( matRef, slot, 0 );
+					if( bound.find( fieldName ) == std::string::npos ) {
+						out.message = "vary_material refused: internal -- rebinding `" + slot + "` on `" +
+							pick->name + "` did not take; document unchanged";
+						return out;
+					}
+					reboundSlots.push_back( slot );
+				}
+
+				const std::string chunkText = BuildRoughnessFieldScalarPainterText(
+					fieldName, lo, hi,
+					VaryFieldScaleFor_( pick->name ), VaryContrastFor_( pick->name ),
+					VarySeedFor_( pick->name ) );
+				const RISE::Cst::Document spliced =
+					CollapseSpliceChunkAt_( work, pick->itemIndex, chunkText );
+				if( RISE::Cst::DocItemCount( spliced ) == RISE::Cst::DocItemCount( work ) ) {
+					out.message = "vary_material refused: internal -- the generated scalar_painter chunk "
+						"did not parse; nothing changed";
+					return out;
+				}
+				work = spliced;
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "vary_material refused: internal -- the candidate document serialized to "
+					"nothing; document unchanged";
+				return out;
+			}
+
+			// ---- (5) S1 (2026-08-11) the CROSS-ELEMENT arm, over the material.
+			// Deliberately AFTER the candidate build, per CheckBuildPlanGate_'s
+			// rule: a call refused for having nothing to vary must not ALSO burn
+			// one of the three shared phase-refusal slots.
+			{
+				const std::string clause = CheckElementWindowForEdit_( "vary_material", pick->name,
+				                                                       &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (6) COMMIT: ONE whole-document swap, ONE dry-run-guarded
+			// re-derive, ONE head bump, ONE undo step -- the SAME composite
+			// primitive collapse_to_instances and replace_geometry_scaffold use.
+			// That is what makes "one undoable unit" true: the inserted painter
+			// and the rebound slot land together or not at all, so a Cmd-Z can
+			// never leave a material pointing at a chunk that is no longer there.
+			AgentChunkResult commit;
+			commit.name = pick->name;
+			commit.kind = pick->kind;
+
+			if( mAuthority == AgentAuthority::External ) {
+				// NO STAGING PATH, and this MIRRORS collapse_to_instances rather
+				// than inventing a shape: an AgentProposal replays ONE of the four
+				// AgentProposalKind verbs, and a composite whole-document swap is
+				// none of them -- there is no card-by-card approval of "vary this
+				// material" that means anything.  Document byte-identical, and the
+				// refusal names the staged steps that DO exist.
+				out.message = "vary_material refused: this session is External-authority, and this verb has "
+					"no staged-proposal form (it is ONE composite document swap, not a single chunk edit an "
+					"Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk a "
+					"`scalar_painter { expression ... }` field chunk, then propose_patch `" +
+					( pick->roughnessSlots.empty() ? std::string( "roughness" ) : pick->roughnessSlots[0] ) +
+					"` on `" + pick->name + "` to its name -- document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( pick->name.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "vary_material" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "vary_material refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else {
+				// HEADLESS (direct-Job).  Same conflict gate the controller applies
+				// under its lock: the candidate is committed against exactly the
+				// head it was computed from, or not at all.
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"vary_material refused: the head moved (revision %llu) while the rewrite was being "
+						"composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "vary_material" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 )      { commit.applied = true;  commit.status = "applied"; }
+				else if( code == 3 ) { commit.applied = false; commit.status = "diagnosed"; }
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (7) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			// `painterChunk` / `reboundSlots` are PUBLISHED only once the commit
+			// actually touched the document -- the same gate the attribution
+			// bookkeeping below uses, so the two cannot disagree about whether
+			// anything landed.  `material` / `materialKind` / `previousRoughness`
+			// / `qualifyingMaterials` stay set either way: those describe the
+			// DOCUMENT as it stands, which is a fact regardless of the outcome.
+			if( ResultMutatedDocument_( commit ) ) {
+				out.painterChunk = fieldName;
+				out.reboundSlots = reboundSlots;
+			}
+
+			{
+				std::string m;
+				if( commit.applied ) {
+					std::string slots;
+					for( const std::string& s : reboundSlots ) {
+						if( !slots.empty() ) slots += "/";
+						slots += s;
+					}
+					m = "`" + pick->name + "` (" + pick->kind + ") now varies: its " + slots +
+						" is bound to `" + fieldName + "`, a scalar_painter expression whose fbm wear field "
+						"is banded " + MicrosurfaceFmt_( lo ) + " .. " + MicrosurfaceFmt_( hi ) +
+						" around the " + MicrosurfaceFmt_( pick->roughness ) + " that was there -- ONE full "
+						"re-derive, ONE undo step. Retune it with propose_patch on the named params "
+						"(rough_lo, rough_hi, field_scale, field_contrast) or the `seed`; the same idiom "
+						"applies to every other material in the scene.";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "vary_material NOT a clean success: the Document was mutated and the live managers "
+						"were replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT treat as "
+						"applied";
+				}
+				else {
+					m = "vary_material rejected (NOTHING changed): the candidate document would not derive "
+						"-- head unchanged";
+				}
+				// The commit layer's wording belongs to the whole-document-swap
+				// primitive this verb SHARES with replace_geometry_scaffold, so it
+				// says "geometry replacement" -- bracketed and attributed rather
+				// than reworded, because the derive diagnostic it carries is the
+				// useful half.
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
+			// This verb rewrites the document itself instead of routing through
+			// InsertChunk, so nothing else records attribution for the chunk it
+			// landed.  `diagnosed` counts, per ResultMutatedDocument_: code 3 DID
+			// mutate.
+			if( ResultMutatedDocument_( commit ) )
+				AttributeChunkToActiveElement_( fieldName, "scalar_painter" );
 
 			return out;
 		}

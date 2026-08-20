@@ -340,6 +340,19 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! 88 S5 (2026-08-20): vary_material's own annotation under
+			//! AgentAutonomy::Propose SPECIFICALLY -- same rationale as
+			//! kCollapseToInstancesProposeRefusedNote above (it mutates through one
+			//! composite whole-document swap; deliberately excluded from
+			//! AgentRpc.cpp's IsProposeSafeVerb rather than pay the "N mutating
+			//! verbs" prose ripple SourceHygieneTest's verb-parity scan pins;
+			//! refused under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kVaryMaterialProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: vary_material is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -1569,6 +1582,51 @@ namespace RISE
 					tools.push_back( MakeTool( "collapse_to_instances", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// vary_material (88 S5, 2026-08-20) -- the VERB half of design-note
+				// condition D.  Hand-authored HERE and semantically identical to the
+				// chat-codec definition in AgentChatCodecs.cpp's kToolDefs (two texts,
+				// one verb -- a semantic change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to vary. Omit it to take the MOST PROMINENT "
+						"material whose microsurface is still a bare number -- which is what a DESIGN NOTE "
+						"about constant microsurface is pointing at, so the no-argument call is the usual "
+						"one." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason collapse_to_instances is:
+					// this verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kVaryMaterialProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"MAKE ONE MATERIAL'S ROUGHNESS VARY ACROSS THE SURFACE, in one call. Call this the "
+						"moment you notice (or are told) that a scene's materials all carry a bare number in "
+						"their microsurface slot -- `roughness 0.3`, `alphax 0.1`, `facets 0.05`. Real "
+						"surfaces are not uniformly polished, and a scene where every roughness is one "
+						"constant reads as untextured geometry no matter how good the lighting is. It adds "
+						"ONE `scalar_painter { expression ... }` chunk holding an fbm wear field BANDED "
+						"AROUND THE NUMBER THAT IS ALREADY THERE (roughly 0.7x .. 1.4x of it, or 0.7x .. 1.15x "
+						"once that number is already above 1, so the band always keeps headroom) and rebinds the "
+						"material's roughness slot(s) to it -- ONE headVersion bump, ONE undo step. The "
+						"material stays the material you authored: only the microsurface stops being flat. "
+						"Pass NO ARGUMENTS to take the most prominent qualifying material. Pass `material` to "
+						"name a different one. Every knob it writes is a named `param` carrying min/max/step/"
+						"label (rough_lo, rough_hi, field_scale, field_contrast) plus a `seed`, so retuning it "
+						"afterwards is one propose_patch on a named line rather than an edit to expression "
+						"text -- and that is the idiom to COPY when you author varying scalars by hand. It "
+						"REFUSES, changing nothing and costing only this call, when no material's microsurface "
+						"is a readable constant (already varying, absent, a per-channel triple, or a "
+						"deliberate mirror-specular zero). Roughness only -- it never repaints colour. Returns "
+						"{ok,applied,rawCode,status,retriable,headVersion,message,material,materialKind,"
+						"painter,slots,previousRoughness,qualifying,objects}; a PRE-COMMIT refusal is ok=false "
+						"with an EMPTY status, so branch on `applied`. Always pass the headVersion you last "
+						"read as baseHeadVersion." );
+					tools.push_back( MakeTool( "vary_material", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2067,7 +2125,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 35 tool names this adapter recognizes --
+			//! The list of the 36 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -2090,6 +2148,7 @@ namespace RISE
 					"remove_chunk",
 					"remove_chunks",
 					"collapse_to_instances",   // 88 step 2 (2026-08-19): MUTATING, the condition-C rewrite verb
+					"vary_material",           // 88 S5 (2026-08-20): MUTATING, the condition-D rewrite verb
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
@@ -2243,7 +2302,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 35 verbs as MCP tools.
+				// tools/list -> the 36 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

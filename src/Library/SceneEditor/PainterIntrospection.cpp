@@ -62,7 +62,7 @@ namespace
 	//! common case, and why this is a per-class hook rather than an
 	//! interface method: `GetParamSpecs` exists only on the two classes that
 	//! have specs to give, and adding it to IPainter would put a
-	//! metadata accessor on 36 painters that have none.
+	//! metadata accessor on every other painter kind that has none.
 	const std::vector<Implementation::ParamSpec>* ExpressionParamSpecsFor(
 		IJobPriv& job, const String& painterName )
 	{

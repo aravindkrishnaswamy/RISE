@@ -552,6 +552,47 @@ static void TestParamSpec()
 		ParamSpec spec; std::string err; ptrdiff_t off;
 		Check( !ParseParamSpecLine( "", spec, err, off ), "empty line rejected" );
 	}
+	// S5: a label with an interior DOUBLE space parses to a SINGLE space.
+	// This is by design, not a shortfall of ReadQuoted -- see its own doc in
+	// ExpressionParamSpec.h. The CST layer has no atomic quoted-token type,
+	// so Cst.cpp's WithParamValue rewrites ANY param line by whitespace-
+	// splitting the value and rejoining tokens with exactly one space,
+	// quote characters included -- a hand-authored double space in a label
+	// does not survive the FIRST CST write to that line regardless of
+	// which field on the line changed.  Normalizing on read keeps what
+	// this parser reports in sync with what a write would already do to
+	// the same text, rather than reading back one thing and writing back
+	// another.
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( ParseParamSpecLine( "vf 1.0 label \"Vein  frequency\"", spec, err, off ),
+		       "S5: a double-space label still parses" );
+		Check( spec.hasLabel && spec.label == "Vein frequency",
+		       "S5 MONEY: the interior double space COLLAPSES to a single space -- "
+		       "\"Vein  frequency\" (two spaces) reads as \"Vein frequency\" (one), matching "
+		       "what a CST write of this line would already produce" );
+	}
+	// A run of three-plus spaces, and multiple runs in the same label, both
+	// collapse the same way -- pinning "collapses to ONE space", not merely
+	// "stops being exactly two".
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( ParseParamSpecLine( "vf 1.0 label \"a   b    c\"", spec, err, off ),
+		       "S5: multiple multi-space runs still parse" );
+		Check( spec.hasLabel && spec.label == "a b c",
+		       "S5: every interior run -- three spaces, then four -- collapses to exactly one" );
+	}
+	// A label that ALREADY has single spaces is unaffected (the collapse is
+	// idempotent on already-normalized text, so this fix changes nothing
+	// for the common case every other label-bearing case in this file
+	// exercises).
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( ParseParamSpecLine( "ring_scale 4.0 label \"Ring density\"", spec, err, off ),
+		       "S5: an already-single-spaced label still parses" );
+		Check( spec.hasLabel && spec.label == "Ring density",
+		       "S5: ...unchanged -- the collapse is a no-op on text with no run to collapse" );
+	}
 }
 
 //======================================================================

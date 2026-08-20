@@ -342,6 +342,10 @@ namespace
 		    // this limiter meters is document mutations per unit time, and one
 		    // of these replaces N chunks with one.
 		    name == "collapse_to_instances" ||
+		    // 88 S5 (2026-08-20): vary_material rewrites the whole document in one
+		    // call, exactly like collapse_to_instances -- same per-call leverage,
+		    // same rate-limit membership.
+		    name == "vary_material" ||
 		    name == "remove_chunk"   ||
 		    // R1a (2026-08-09): remove_chunks removes N chunks per call --
 		    // strictly MORE per-call leverage than the singular verb, so it

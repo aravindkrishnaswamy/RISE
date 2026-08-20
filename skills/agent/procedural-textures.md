@@ -1,5 +1,5 @@
 # Procedural Textures
-> hook: Read when a surface should look like a real material -- wood, stone, marble, metal wear, water, cloth -- rather than a flat colour, or when picking a spatially-varying painter.
+> hook: Read before authoring any material or texture -- how a surface stops being a flat colour (wood, stone, marble, rust, brushed metal, cloth, worn paint), how roughness and other physical scalars VARY across a surface, and which painter chunk -- noise, expression, ramp, image -- to reach for.
 
 On a bare build prompt, state a one-line design plan -- materials AND forms -- in the reply and proceed; do not ask about style.
 
@@ -26,9 +26,9 @@ Reach for a spatially-varying painter whenever EITHER holds:
   prompt did not ask for it.  Two painters and one extra chunk is a
   cheap edit; a flat hero surface is not recoverable by lighting.
 
-RISE ships 36 painter chunk kinds.  `read_schema {category:"painter"}` is
-a cheap one-line-per-kind listing of all of them; the decision map below
-is the shortcut.
+RISE ships more than three dozen painter chunk kinds.
+`read_schema {category:"painter"}` is a cheap one-line-per-kind listing of
+all of them; the decision map below is the shortcut.
 
 ## Decision map: surface intent -> painter family
 
@@ -47,7 +47,10 @@ is the shortcut.
 | Art-directed cells (mosaic, tile, terrazzo) | `voronoi2d_painter` / `voronoi3d_painter` | Each `gen` line seeds ONE cell with its OWN painter -- placed, not random. |
 | Incandescent / flame / hot metal colour | `blackbody_painter` | A temperature in Kelvin beats a guessed RGB triple. |
 | Combine, tint, or mask two of the above | `blend_painter`, `channel_painter` | See "Composition" below. |
-| A pattern you can write as maths | `expression_function2d` | Full expression language over `u`, `v`.  Also the ONLY route to a spatially-varying physical scalar -- see the trap. |
+| A pattern you can write as maths, in 3D | `expression_painter` (colour) / `scalar_painter { expression ... }` (physical scalar) | The texture-expression VM: one string over `u v P Po N fw time`, with noise builtins.  **The default answer for anything the fixed painters cannot say**, and the only route to spatially-varying roughness that is not an adapter chain -- see "The expression VM" below. |
+| A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  Still the right choice for a `displaced_geometry` `function` slot and the `scalar_painter { function2d ... }` bridge, which take an IFunction2D. |
+| Turn a grey field into real colour (terrain bands, patina, rust-to-metal) | `ramp_painter` | Multi-stop colour ramp driven by any painter's channel.  The universal scalar -> colour remap; see "The composition boundary" below. |
+| Drive a PHYSICAL SCALAR from any colour painter you already have | `scalar_painter { painter <name> channel <R\|G\|B\|A> scale <s> bias <b> }` | The any-painter -> scalar bridge: binds ANY of the painter kinds above (a worley field, an image, an expression) to roughness / IOR / scattering. |
 
 `checker_painter`, `lines_painter` and `mandelbrot_painter` also exist and
 are spatially varying, but they are deliberately synthetic: right for
@@ -80,6 +83,65 @@ Every painter is one or the other, and the chunk name tells you:
   pattern genuinely belongs to the SURFACE -- a label, a decal, a woven
   cloth, a wave field on a water plane, anything authored against a UV
   layout.  It stretches with UV distortion and can show seams.
+
+`expression_painter` and `scalar_painter { expression ... }` are **3D**:
+their bodies see `P` (world position) and `Po` (object position) as well
+as `u`, `v`.  `expression_function2d` is **2D** and sees only `u`, `v` --
+that is the whole difference between the two expression surfaces, and
+getting it backwards is the trap below.
+
+## The expression VM -- one string instead of a painter graph
+
+`expression_painter` (colour pipe) and `scalar_painter { expression ... }`
+(physical-scalar pipe) run the same little language.  Reach for it the
+moment the fixed painters cannot say the thing you mean -- a contrast
+curve, a threshold, a mix of two noises, a scalar that varies -- because
+it costs ONE chunk instead of a graph of them.
+
+The body sees `u`, `v`, `P` (world position, a `vec3`), `Po` (object
+position), `N` (shading normal), `fw` (filter width, reserved -- reads
+0.0 today), and `time`.  Builtins: `perlin`, `fbm(p, octaves, gain,
+lacunarity)`, `turbulence`, `ridged`, `worley_f1/f2/f2f1/id(p, jitter)`,
+`cellhash`, `ramp(t, pos0,val0, ...)`, plus `mix/clamp/smoothstep/step/
+select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
+`vec3()`, `.x/.y/.z`, `dot`, `cross`, `length`, `normalize`.
+
+Three authoring rules, and the first is a contract, not a style note:
+
+1. **Every art-directable number goes in a `param` with a range, never a
+   literal in the body.**  `param ring_scale 4.0 min 0.5 max 20 step 0.1
+   label "Ring density"` -- the compiler ignores the metadata and the
+   property panel turns it into a slider, so a human retunes your texture
+   by scrubbing a named knob and never reads the expression.  A body full
+   of bare constants is not editable by anyone but you.
+2. **Use `def` for stages, not for constants.**  `def` is a let-binding
+   evaluated in order (`def warp ...`, `def grain ...`, `def wear ...`);
+   naming the stages is what makes a long body readable, and each def is
+   its own editable row in the inspector.  (Evaluated-stage previews --
+   seeing the actual noise field each `def` produces, not just its text --
+   are Phase-2 P5.3, not shipped yet.)
+3. **`seed` is a free per-instance knob.**  It is auto-registered as a
+   named scalar constant, so `perlin(P + vec3(seed*17, seed*31, seed*13))`
+   gives two objects sharing one painter chunk different noise -- change
+   one number, not the body.
+
+Domain warping needs no builtin -- it is composition:
+`fbm(P + amp*vec3(fbm(P+o1,4,0.5,2), fbm(P+o2,4,0.5,2), fbm(P+o3,4,0.5,2)), 4, 0.5, 2)`.
+
+**Raw `fbm`/`perlin` do NOT span [0,1]** (roughly -0.4 .. 0.4 measured),
+so remap before you mix: `clamp(n*contrast + 0.5, 0, 1)`.  An unclamped
+`mix(lo, hi, fbm(...))` extrapolates past both ends -- which for a
+roughness slot can walk toward zero and silently turn your surface into a
+mirror.
+
+### The composition boundary: field in the expression, colour in the ramp
+
+Expressions compute scalar **fields**.  Colour decisions belong in
+`ramp_painter`, which takes a `input <painter>` + `channel`, `>= 2`
+`stop <pos> <r> <g> <b>` lines and an `interpolation
+linear|constant|smooth`.  Keep to that split and the thing a human most
+wants to tweak -- the colours -- always has a stop list to edit and never
+requires touching expression text.  Recipe 3 below is the worked form.
 
 ## Recipe 1 -- wood grain on a table top
 
@@ -243,8 +305,9 @@ painter-taking parameter reports the same `references:["painter"]`,
 whether it wants a COLOUR painter or a PHYSICAL SCALAR.**  Read the
 parameter's `description` -- the scalar ones say so -- or use this rule:
 
-- **COLOUR slots take an `IPainter` chunk** -- any of the 36 painter
-  kinds above.  `reflectance`, `base_color`, `rd`, `rs`, `ref`,
+- **COLOUR slots take an `IPainter` chunk** -- any of the painter kinds
+  above (more than three dozen; see `read_schema {category:"painter"}` for
+  the live count).  `reflectance`, `base_color`, `rd`, `rs`, `ref`,
   `emissive`, `colora`/`colorb`/`mask`, a rasterizer `radiance_map`.
   These go through colourspace conversion and, in the spectral
   renderers, Jakob-Hanika spectral uplift.
@@ -264,22 +327,50 @@ this slot now requires a `scalar_painter` (physical scalar, no JH spectral
 uplift).  See docs/ISCALARPAINTER_REFACTOR.md.
 ```
 
-**So how do you get spatially-varying ROUGHNESS?**  Only two
-`scalar_painter` forms vary across a surface at all; the other eight
+**So how do you get spatially-varying ROUGHNESS?**  FOUR of
+`scalar_painter`'s twelve forms vary across a surface; the other eight
 (`value`, `values`, `file`, `sellmeier`, `polynomial`, `function1d`,
 `base`, `multiply`) are spatially constant:
 
-1. `scalar_painter { function2d <name> scale <s> bias <b> }` -- wraps a
+1. `scalar_painter { expression <body> }` -- the texture-expression VM on
+   the scalar pipe, over the full 3D context (`u v P Po N fw`), with the
+   noise builtins.  No colourspace, no uplift, by construction.  **This is
+   the route to take**, and it is ONE chunk:
+
+   ```
+   scalar_painter
+   {
+       name        sp_wear
+       param       cell_freq 3.5 min 0.5 max 12 step 0.25 label "Cell frequency"
+       param       rough_lo 0.04 min 0 max 1 step 0.01 label "Polished"
+       param       rough_hi 0.55 min 0 max 1 step 0.01 label "Weathered"
+       def         f1 worley_f1(P*cell_freq, 1.0)
+       expression  mix(rough_lo, rough_hi, clamp(f1, 0, 1))
+   }
+   ```
+2. `scalar_painter { painter <name> channel <R|G|B|A> scale <s> bias <b> }`
+   -- the any-painter bridge: drive the scalar from ANY colour painter you
+   already declared (a worley field, a `domainwarp3d`, an
+   `expression_painter`), as `out = bias + scale * channel(source)`.  It
+   reads a POST-colourspace value, which is fine for a procedural mask and
+   is not a spectral-fidelity path.
+3. `scalar_painter { function2d <name> scale <s> bias <b> }` -- wraps a
    named `IFunction2D` and evaluates it at the surface UV, as
    `out = bias + scale * f(u,v)`.  Author the field with
-   `expression_function2d` (full maths over `u`, `v`), or use a
-   `polynomial_function2d_painter` / `composite_function2d_painter`.
-   **This is the route to take.**
-2. `scalar_painter { texture <image painter> channel <R|G|B> scale <s>
+   `expression_function2d`, or use a `polynomial_function2d_painter` /
+   `composite_function2d_painter`.  Right when the field genuinely belongs
+   to the UV layout (brush grooves running along the tangent frame).
+4. `scalar_painter { texture <image painter> channel <R|G|B> scale <s>
    bias <b> }` -- samples a declared `png_painter` / `jpg_painter` /
    `hdr_painter` / `exr_painter` / `tiff_painter` at the surface UV, with
    no colourspace conversion.  Use it when you actually have a
    roughness map on disk.
+
+**If you would rather not hand-author it at all, call
+`vary_material`** -- zero required arguments; it finds the material whose
+microsurface is still a bare number, adds exactly the chunk above banded
+around that number, and rebinds the slot, in one call and one undo step.
+Its output is the idiom to copy.
 
 **The trap inside the trap** (verified by render, not by reading): a 3D
 SOLID painter is *accepted* as a `function2d` source -- every painter is
@@ -457,6 +548,170 @@ directional_light
 }
 ```
 
+## Recipe 3 -- rusted iron: one expression field, two consumers
+
+The composition-boundary idiom end to end.  ONE `expression_painter`
+computes a scalar corrosion field (fbm, domain-warped by a second fbm, all
+in world space).  Nothing about that chunk is a colour decision.  Then
+`ramp_painter` turns the field into rust-through-to-metal colour with four
+editable stops, and a `scalar_painter { painter ... }` bridge feeds the
+SAME field into GGX roughness -- so the surface is rough exactly where it
+is rusty, which is what makes it read as corrosion rather than as a
+painted pattern.  Two consumers, one field, no second noise to keep in
+sync.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.40 0.45 0.55
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					12
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	112
+	height	112
+}
+
+pinhole_camera
+{
+	location	0 1.5 3.4
+	lookat		0 0.15 0
+	up			0 1 0
+	fov			42.0
+}
+
+# THE FIELD.  Scalar-typed (it broadcasts to grey on the colour pipe), and
+# deliberately free of any colour decision.  Every knob is a `param` with a
+# range, so the panel renders sliders and propose_patch retunes it by name.
+expression_painter
+{
+	name		pnt_corrosion
+	param		freq 2.6 min 0.5 max 12 step 0.1 label "Corrosion frequency"
+	param		warp 0.55 min 0.0 max 2.0 step 0.05 label "Warp amount"
+	param		contrast 1.9 min 0.5 max 4.0 step 0.05 label "Corrosion contrast"
+	seed		13.0
+	def			o vec3(seed, seed*1.7, seed*2.3)
+	def			w vec3(fbm(P*freq+o, 3, 0.5, 2.0), fbm(P*freq-o, 3, 0.5, 2.0), fbm(P*freq+o*2.0, 3, 0.5, 2.0))
+	def			n fbm(P*freq + w*warp, 5, 0.5, 2.0)
+	expr		clamp(n*contrast + 0.5, 0, 1)
+}
+
+# CONSUMER 1 -- colour.  Four stops: sound metal, darkened metal, active
+# rust, powdery bloom.  This is where a human edits the look.
+ramp_painter
+{
+	name			pnt_rust
+	input			pnt_corrosion
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.30 0.31 0.33
+	stop			0.42  0.20 0.16 0.13
+	stop			0.68  0.42 0.17 0.06
+	stop			1.00  0.55 0.32 0.16
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- the PHYSICAL SCALAR, off the SAME field, through the
+# any-painter bridge: out = bias + scale * R, so roughness sweeps
+# 0.08 (sound metal) .. 0.62 (powdery rust).
+scalar_painter
+{
+	name		sp_rust_rough
+	painter		pnt_corrosion
+	channel		R
+	scale		0.54
+	bias		0.08
+}
+
+uniformcolor_painter
+{
+	name	pnt_iron_spec
+	color	0.45 0.44 0.42
+}
+
+ggx_material
+{
+	name		mat_rusted_iron
+	rd			pnt_rust
+	rs			pnt_iron_spec
+	alphax		sp_rust_rough
+	alphay		sp_rust_rough
+	ior			2.6
+	extinction	3.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.30 0.30 0.32
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+box_geometry
+{
+	name	plate
+	width	2.2
+	height	0.22
+	depth	1.3
+}
+
+standard_object
+{
+	name		obj_plate
+	geometry	plate
+	material	mat_rusted_iron
+	position	0 0.2 0
+	orientation	0 22 0
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.4 0
+	orientation	-90 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 0.98 0.94
+	direction	0.35 0.6 0.75
+}
+```
+
 ## Composition
 
 - **Two colours plus a mask**: `blend_painter { colora colorb mask }`
@@ -489,7 +744,11 @@ above: `perlin3d` lands roughly in the middle half of the interval, and
   this, not a bug.  Do not chase it with more `octaves` -- separate the
   endpoints, or nest a second painter.
 - When you need a genuine contrast curve (`smoothstep`, `pow`,
-  thresholds), you need `expression_function2d`, which is UV-domain.
+  thresholds) or a real remap, write the field as an `expression_painter`
+  (3D, so it can sit in the same domain as the solid noises) and colourise
+  it with `ramp_painter` -- that pair is the contrast and remap control
+  the fixed noise painters lack.  `expression_function2d` does the same
+  job in the UV domain only.
 
 Also: `octaves` costs render time linearly, and
 `reactiondiffusion3d_painter` pays a real simulation at scene-load
@@ -506,11 +765,15 @@ any other setting applies a real conversion and would warp the values.
 
 ## Discovery
 
-- `read_schema {category:"painter"}` -- all 36 kinds, one line each.
+- `read_schema {category:"painter"}` -- every kind, one line each.
   Cheap; do this before guessing a name.
-- `read_schema {keywords:["perlin3d_painter","worley3d_painter",
-  "blend_painter","scalar_painter"]}` -- batch the ones you picked.
+- `read_schema {keywords:["expression_painter","ramp_painter",
+  "scalar_painter","perlin3d_painter","worley3d_painter",
+  "blend_painter"]}` -- batch the ones you picked.
   Each parameter carries its meaning and its real parser default.
+- `vary_material` -- zero required arguments; makes the most prominent
+  bare-number microsurface in the scene vary, in one call.  Its output is
+  a worked example of the `param`-with-a-range contract above.
 - Colour-slot vs scalar-slot wiring, material starters, and the glass /
   metal "needs something to reflect" rule live in
   `read_skill {name:"materials-and-media-basics"}` -- read that one for

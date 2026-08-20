@@ -5640,6 +5640,93 @@ namespace RISE
 			                                         const std::string& name   = std::string(),
 			                                         const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! 88 S5 (2026-08-20): what VaryMaterial did, or the reason it
+			//! declined.
+			//!
+			//! `ok` follows the AgentCollapseResult convention EXACTLY (which
+			//! follows ReplaceGeometryScaffold's): true once the request was
+			//! well-formed AND reached a commit-stage disposition, so `status`
+			//! carries the real outcome ("applied"/"rejected"/"diagnosed"/
+			//! "conflict").  A PRE-COMMIT refusal -- nothing qualifies, the named
+			//! material is not readable, a zero roughness, a name collision, an
+			//! External-authority session -- leaves `ok` false and `status`
+			//! EMPTY, with the whole reason in `message`.  Every one of those
+			//! leaves the document, the head version, the history and the
+			//! proposal queue byte-identical.
+			struct AgentVaryMaterialResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material whose roughness now varies
+				std::string materialKind;    //!< its chunk keyword
+				std::string painterChunk;    //!< the scalar_painter minted (empty unless the commit landed)
+				std::vector<std::string> reboundSlots;   //!< the slot(s) repointed at it (ditto)
+				double      previousRoughness = 0.0;     //!< the constant that was there (the band's centre)
+				int         qualifyingMaterials = 0;     //!< how many materials the shared predicate found
+				int         boundObjects = 0;            //!< how many standard_objects bind the chosen material
+			};
+
+			//! 88 S5 (2026-08-20): give ONE material's microsurface a spatially-
+			//! varying roughness field -- the VERB half of design-note condition D.
+			//!
+			//! WHY A VERB AND NOT MORE ADVICE.  Doc 88 sec 2 records the measured
+			//! result of the advice route: 0/24 lifetime adoptions of
+			//! spatially-varying microsurface scalars, across two models, against
+			//! advisories that fired up to 30x/session and were demonstrably read.
+			//! The barrier is a slot-typing prior ("roughness is a number"), which
+			//! prose and worked examples do not override -- the same shape
+			//! `collapse_to_instances` was built for, and this is the same answer:
+			//! ONE call the model can make.
+			//!
+			//! ZERO REQUIRED ARGUMENTS.  Called bare it takes the material
+			//! design-note condition D names -- most `standard_object`s bound,
+			//! ties broken lexicographically -- so the advice and the call are one
+			//! act.  Note and verb read ONE shared qualifying predicate
+			//! (ComputeDesignNoteConditionsFromDoc_), so the note can never
+			//! advertise a call that then edits a different material.
+			//!
+			//! WHAT IT WRITES.  One `scalar_painter { expression ... }` chunk
+			//! spliced in AHEAD of the material (declare-before-use), holding an
+			//! fbm wear field CLAMPED into a band derived from the roughness that
+			//! is already authored (roughly 0.7x .. 1.4x, floored at 0.02; above
+			//! an authored roughness of 1 the ceiling is 1.15x instead, so the
+			//! band always keeps real headroom past 1 rather than collapsing to
+			//! the authored value itself) -- so the surface it produces is the
+			//! one the author asked for plus variation, never a different
+			//! material.  Every knob is a named `param` with
+			//! min/max/step/label metadata (doc 88 P5 Tier 1), so the property
+			//! panel gets sliders and `propose_patch` can retune it by name; the
+			//! verb's own output obeys the rule the skills teach.  The field
+			//! scale, contrast and `seed` are hashed from the MATERIAL NAME
+			//! (FNV-1a, no clock, no PRNG state), so two runs on the same document
+			//! produce BYTE-IDENTICAL text.
+			//!
+			//! ROUGHNESS ONLY.  Tint variation is deliberately out of scope for
+			//! this slice (doc 88 P4.2 lists it as optional); a verb that also
+			//! repainted base colour would change what the material LOOKS like,
+			//! not just how its microsurface reads.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: no material
+			//! whose microsurface slots are all uniform numeric constants with at
+			//! least one roughness slot spelled out; a named `material` that is
+			//! not such a material (the message distinguishes "no such chunk" from
+			//! "cannot read its microsurface"); a roughness of zero or less (a
+			//! deliberate mirror, not a flat surface); an underivable candidate.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the same
+			//! commit path CollapseToInstances and ReplaceGeometryScaffold use,
+			//! and for the same reason it has no staged-proposal form under
+			//! External authority (there is no AgentProposalKind an Owner could
+			//! approve card-by-card for a composite swap).
+			AgentVaryMaterialResult VaryMaterial( const std::string& material = std::string(),
+			                                      const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Secure-MCP slice 5a: one entry of ListProposals -- a wire-
 			//! friendly flattening of SceneEditController::AgentProposal (see
 			//! that struct's doc for field meaning; `kind` here is the

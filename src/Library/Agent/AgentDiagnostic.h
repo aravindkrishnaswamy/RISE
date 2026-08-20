@@ -114,6 +114,25 @@ namespace RISE
 			//! is the skill prose's job (object-modeling-recipes,
 			//! "Assemblies are subtrees; repeats are one chunk").
 			static const char* const DESIGN_HAND_REPEATED_COPIES  = "DESIGN_HAND_REPEATED_COPIES";
+			//! 88 S5 (2026-08-20), the same advisory family: three or more
+			//! materials expose a microsurface (roughness / alphax / facets /
+			//! ...) whose every slot is a bare numeric constant, and NO
+			//! microsurface slot anywhere in the document is bound to anything
+			//! that varies across a surface.  Distinct from
+			//! DESIGN_SCALAR_PIPE_UNUSED, which asks only whether a
+			//! `scalar_painter` chunk EXISTS: a scene can carry one bound to an
+			//! IOR and still have every roughness flat, and only this condition
+			//! sees that.  Its message NAMES `vary_material` -- the measured
+			//! record (0/24 lifetime adoptions of hand-authored spatially-varying
+			//! roughness, against advice delivered up to 30x/session) is that
+			//! advice alone does not move this deficit, so the clause states a
+			//! CALL rather than a rewrite.  Severity::Info; the clause carries its
+			//! own self-disarm sentence.  Same shared
+			//! ComputeDesignNoteConditionsFromDoc_ scan as its three siblings, and
+			//! the SAME predicate AgentSession::VaryMaterial uses to pick what to
+			//! rewrite -- so the note can never advertise a call that then edits a
+			//! different material.
+			static const char* const DESIGN_CONSTANT_MICROSURFACE = "DESIGN_CONSTANT_MICROSURFACE";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

@@ -401,6 +401,16 @@ struct EnvironmentPanel: View {
         // ±inf or |v| > Int64.max (a scene could carry a huge/degenerate value).
         guard v.isFinite else { return "0" }
         if v == v.rounded() && abs(v) < 1e15 { return String(Int(v)) }
-        return String(format: "%g", v)
+        // (S5) locale-fixed, same as PropertiesPanel's formatValue/kPosixLocale
+        // sibling: this string is written straight into scene text (a CST scale/
+        // orientation param), and `String(format:)` with no explicit locale
+        // follows the CURRENT system locale on Apple platforms -- a comma-decimal
+        // locale (e.g. fr_FR) would format `4.0` as `4,000000`, which
+        // `Double(_:)`'s strict parse on the CST write-back path cannot read,
+        // making the field silently uncommittable.  kPosixLocale is declared
+        // module-visible in PropertiesPanel.swift precisely so this call site
+        // (and any other) shares ONE Locale("en_US_POSIX") rather than each
+        // panel constructing its own.
+        return String(format: "%g", locale: kPosixLocale, v)
     }
 }

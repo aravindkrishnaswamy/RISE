@@ -6898,6 +6898,12 @@ namespace RISE
 										// that collapsed a run before asking must not VACUOUSLY pass
 										// askUserBeforeMutation.
 										"collapse_to_instances",
+										// 88 S5 (2026-08-20): vary_material mutates the
+										// document (one composite swap adding a painter and
+										// rebinding a material slot), so a run that varied a
+										// material before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"vary_material",
 										// G2 (2026-08-10): file_build_plan is DELIBERATELY
 										// absent.  It changes nothing in the document, so
 										// listing it here would fail askUserBeforeMutation

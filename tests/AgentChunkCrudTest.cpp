@@ -5051,9 +5051,25 @@ static double ColorPainterMaxSpread( IPainterManager* mgr, const std::string& na
 	return spread;
 }
 
-//! Scalar-pipe (scalar_painter{function2d expression_function2d}): distinct
-//! `ptCoord` (u,v) points -- mirroring Function2DScalarPainter::GetValuesAt,
-//! which calls `pFunc->Evaluate(ri.ptCoord.x, ri.ptCoord.y)` for real.
+//! Scalar-pipe: distinct `ptCoord` (u,v) AND distinct `ptIntersection`
+//! (world) points at each probe.
+//!
+//! Both, because the scaffold now uses BOTH scalar forms: the UV chain
+//! (`scalar_painter{function2d expression_function2d}`, which mirrors
+//! Function2DScalarPainter::GetValuesAt calling
+//! `pFunc->Evaluate(ri.ptCoord.x, ri.ptCoord.y)`) survives in brushed_metal
+//! and glazed_ceramic, while rough_stone and aged_bronze were rebased in 88
+//! S5 onto `scalar_painter{expression}`, which reads `P` -- the world
+//! intersection point.  Probing only ptCoord would report spread 0.0 for
+//! the latter two and fail them for the wrong reason.
+//!
+//! THE DECOY THIS PINS IS UNAFFECTED by the widening, which is why the
+//! widening is safe rather than a weakening: the landmine is a 3D-solid
+//! COLOUR painter routed through the `function2d` bridge, and that path goes
+//! through Painter::Evaluate(x,y), which synthesises its OWN
+//! RayIntersectionGeometric populating only ptCoord.  The caller's
+//! ptIntersection never reaches it, so it still returns the same value at
+//! every probe -- spread identically 0.0 -- exactly as before.
 static double ScalarPainterMaxSpread( IScalarPainterManager* mgr, const std::string& name )
 {
 	IScalarPainter* p = mgr ? mgr->GetItem( name.c_str() ) : nullptr;
@@ -5063,6 +5079,7 @@ static double ScalarPainterMaxSpread( IScalarPainterManager* mgr, const std::str
 		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
 		ri.bHit = true;
 		ri.ptCoord = Point2( ( i % 8 ) / 8.0, ( ( i * 3 ) % 8 ) / 8.0 );
+		ri.ptIntersection = Point3( i * 0.37, i * 0.71 - 1.3, i * 1.9 + 0.5 );
 		const double v = p->GetValuesAt( ri ).v[0];
 		lo = std::min( lo, v ); hi = std::max( hi, v );
 	}
@@ -5104,14 +5121,20 @@ static void TestMaterialScaffoldFamilies()
 		// 0.35-0.60 factor, easily > 0.01 spread.
 		{ "weathered_wood",  "pbr_metallic_roughness_material", 4, 0.01,  0.0   },
 		// rough_stone: rd (colour, worley pebble) + facets (scalar,
-		// bias 0.04-0.09 + scale 0.05-0.35 at wear=0.6 -> span ~0.23).
-		{ "rough_stone",     "cooktorrance_material",           5, 0.01,  0.01  },
+		// band [0.07, 0.30] at wear=0.6 -> span ~0.23).  FOUR chunks since
+		// 88 S5: the facet field is ONE scalar_painter{expression} reading
+		// `P` at the pebble frequency, replacing the UV-only
+		// expression_function2d + scalar_painter{function2d} pair -- same
+		// band, one fewer chunk, and now in the same world-space domain as
+		// the pebble field it is supposed to track.
+		{ "rough_stone",     "cooktorrance_material",           4, 0.01,  0.01  },
 		// brushed_metal: alphax/alphay (scalar only) -- the NARROWEST
 		// amplitude family by design (alphax span ~0.02 at wear=0.6).
 		{ "brushed_metal",   "ward_anisotropic_material",       5, 0.0,   0.002 },
 		// aged_bronze: rd (colour, reaction-diffusion patina) + facets
-		// (scalar, span ~0.15 at wear=0.6).
-		{ "aged_bronze",     "cooktorrance_material",           5, 0.01,  0.01  },
+		// (scalar, band [0.054, 0.204] at wear=0.6 -> span ~0.15).  FOUR
+		// chunks since 88 S5, rebased for rough_stone's reason.
+		{ "aged_bronze",     "cooktorrance_material",           4, 0.01,  0.01  },
 		// glazed_ceramic: alphax/alphay (scalar only) -- DELIBERATELY
 		// "low-alpha with SUBTLE scalar variation" (span ~0.014 at
 		// wear=0.6) -- the tightest epsilon of the five, honestly so.

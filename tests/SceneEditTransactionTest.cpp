@@ -1163,6 +1163,56 @@ static void TestRollbackRestoresDirtyState()
 }
 
 //////////////////////////////////////////////////////////////////////
+// S5: SceneEditor::Apply()'s dirty-before-refusal sibling of the P3-e fix
+// above.  Apply() used to call MarkEditEntityDirty(edit) BEFORE
+// CaptureForApply / ApplyForwardMutation, either of which can REFUSE with
+// the Document unchanged -- SetMaterialProperty's own arms among them (a
+// composed-material rebind, or (exercised here) a property name that names
+// no slot on the material at all).  A refusal that changed nothing must not
+// flip HasUnsavedChanges() true, the same data-loss-prompt guarantee P3-e
+// already gives Undo()/Redo(); this pins it for the FORWARD Apply() path.
+//////////////////////////////////////////////////////////////////////
+
+static void TestRefusedMaterialEditLeavesCleanState()
+{
+	std::cout << "Test: a REFUSED material-slot edit leaves HasUnsavedChanges false and the entity "
+	              "dirty-snapshot clean (S5 -- Apply()'s MarkEditEntityDirty now runs after the "
+	              "mutation lands, not before)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8};
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddLambertianMaterial( "mat1", "p_white" );
+	pJob->AddSphereGeometry( "geom", 1.0 );
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject( "obj", "geom", "mat1", nullptr, nullptr, nilRMap, ps, o, sc, true, true );
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader( "global", 1, ops );
+
+	SceneEditController ctrl( *pJob, 0 );
+	Check( !ctrl.HasUnsavedChanges(), "[e-refuse] clean baseline (no unsaved changes)" );
+	Check( ctrl.Editor().Dirty().EntityCount() == 0, "[e-refuse] no entities dirty at baseline" );
+
+	// `no_such_slot` names no slot on a lambertian_material -- CaptureForApply's
+	// SetMaterialProperty arm refuses at the "has no slot named" check
+	// (SceneEditor.cpp's CaptureForApply, ~line 2761), BEFORE any mutation:
+	// the Document and the live material are both untouched.
+	SceneEdit e; e.op = SceneEdit::SetMaterialProperty; e.objectName = String( "mat1" );
+	e.propertyName = String( "no_such_slot" ); e.propertyValue = String( "p_white" );
+	Check( !ctrl.Editor().Apply( e ), "[e-refuse] the malformed slot edit is REFUSED" );
+
+	Check( !ctrl.HasUnsavedChanges(),
+	       "[e-refuse] MONEY: HasUnsavedChanges() is still FALSE after the refusal -- the S5 fix "
+	       "(MarkEditEntityDirty moved to AFTER the forward mutation lands in Apply()) means a "
+	       "refusal that changed nothing never flips the dirty bit, closing the same "
+	       "close-without-prompt data-loss gap P3-e already closed for Undo/Redo" );
+	Check( ctrl.Editor().Dirty().EntityCount() == 0,
+	       "[e-refuse] MONEY: the entity dirty-snapshot is still EMPTY -- `mat1` was never marked, so "
+	       "a caller iterating dirty entities after this refusal finds no phantom entry for a "
+	       "material that was never actually touched" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 
 static void TestRollbackRestoresScaleFromAnchorDirty()
 {
@@ -1991,6 +2041,7 @@ int main()
 	TestRollbackSurvivesHistoryCap();
 	TestTransactionRefusesActiveCameraSwitch();
 	TestRollbackRestoresDirtyState();
+	TestRefusedMaterialEditLeavesCleanState();
 	TestRollbackRestoresScaleFromAnchorDirty();
 	TestEditorStateSnapshotRoundTrip();
 	TestRollbackRestoresPerCategorySelection();

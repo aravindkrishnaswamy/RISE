@@ -2928,11 +2928,9 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 	// happened during this whole Apply", surviving composite walks that route multiple params.
 	mCstLiveSceneChanged = false;
 
-	// Route property-shaped edits into the per-category dirty channel up front
-	// (transform ops + composite markers are skipped by the helper).
-	MarkEditEntityDirty( edit );
-
-	// Composite markers: push, adjust depth, no mutation.
+	// Composite markers: push, adjust depth, no mutation.  (MarkEditEntityDirty's
+	// switch has no case for either marker -- it is a no-op on them either way --
+	// so skipping the call here changes nothing observable for this arm.)
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
 		++mCompositeDepth;
@@ -2956,6 +2954,28 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 	// remove+re-add that put a different instance under the same name.
 	edit.capturedTargetSerial = ResolveTargetSerial( edit );
 	if( !ApplyForwardMutation( edit, /*isReplay*/false ) )  return false;   // the ONE creation call site
+
+	// S5 fix (sibling of Undo()/Redo()'s P3-e): route property-shaped edits
+	// into the per-category dirty channel only AFTER the forward mutation has
+	// actually landed, not up front.  CaptureForApply and ApplyForwardMutation
+	// can both refuse (SetMaterialProperty's slot-typing/kind-mismatch arms at
+	// ~2753/2761/2769 among them -- all GUI-reachable from the property panel)
+	// leaving the Document byte-identical; marking dirty before that point
+	// flipped HasUnsavedChanges() on a refusal that changed nothing, the exact
+	// data-loss-prompt gap P3-e already closed for Undo/Redo.  One consequence
+	// worth naming: SetMaterialProperty's arm reads back through
+	// mMaterialManager->GetItem(edit.objectName) inside MarkEditEntityDirty
+	// (-> BumpSceneLightGenerationIfMaterialEmits), so that read now happens
+	// AFTER the property mutation instead of before.  This is invariant for
+	// the light-gen bump either way: GetEmitter()'s emissive-or-not is
+	// TYPE-determined (which IMaterial subclass got constructed), and a
+	// property-slot edit on an EXISTING material instance can never change
+	// its C++ type -- only SetObjectMaterial (a different edit op entirely,
+	// with its own case above) swaps which material an object points at.  So
+	// "emissive before" and "emissive after" always agree for this op, and
+	// reading post-mutation costs nothing beyond making the mark itself
+	// contingent on success, which is the whole point of the fix.
+	MarkEditEntityDirty( edit );
 	mHistory.Push( edit );
 	return true;
 }
@@ -3031,6 +3051,19 @@ bool SceneEditor::Undo()
 			// a test: reaching it needs an inner revert to fail AFTER a later
 			// one succeeded, which needs a captured dependency deliberately
 			// destroyed out of history.
+			//
+			// P3 (S5): every `inner` in `reverted` already had MarkEditEntityDirty
+			// called on it at line ~3034, back when its individual revert landed --
+			// this rollback re-applies the MUTATION but does not (and cannot cheaply)
+			// UN-mark the per-entity dirty channel those calls set.  So a composite
+			// undo that fails partway leaves the touched entities' dirty bits set even
+			// though the net document change, once the rollback re-applies finish, is
+			// zero.  Accepted over-marking, not the under-marking P3-e closed: the
+			// failure path is already the rare, best-effort, untested-by-design branch
+			// documented above, and an entity spuriously flagged dirty costs a redundant
+			// republish -- never a lost edit or a wrong "no unsaved changes" prompt,
+			// which is the failure mode P3-e/S5 exist to prevent.  Symmetric in Redo()'s
+			// composite failure arm below.
 			for( std::vector<SceneEdit>::reverse_iterator it = reverted.rbegin(); it != reverted.rend(); ++it ) {
 				ApplyForwardMutation( *it, /*isReplay*/true );
 			}
@@ -4005,6 +4038,11 @@ bool SceneEditor::Redo()
 			// P1 (symmetric to Undo): re-revert what we applied (reverse forward order),
 			// then move the whole popped group back undo->redo so the composite is intact
 			// + retryable.  Rollback re-reverts are best-effort.
+			//
+			// P3 (S5): symmetric to Undo()'s composite-failure arm above -- each `inner`
+			// in `applied` already had MarkEditEntityDirty called when its own forward
+			// step landed, and this rollback does not retract that mark.  Same accepted
+			// over-marking, same reasoning: see Undo()'s composite-failure comment.
 			for( std::vector<SceneEdit>::reverse_iterator it = applied.rbegin(); it != applied.rend(); ++it ) {
 				ApplyRevertMutation( *it );
 			}

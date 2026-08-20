@@ -811,17 +811,34 @@ private struct ParamSliderCell: View {
     @State private var dragging: Bool = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Slider(
-                value: $value,
-                in: row.rangeMin...row.rangeMax,
-                step: row.rangeStep > 0 ? row.rangeStep : 0.0001,
-                onEditingChanged: { editing in
-                    dragging = editing
-                    if !editing { commit() }
-                }
-            )
-            .controlSize(.small)
+        // (S5) `row` is assembled on the GUI bridge from FOUR separate lock
+        // acquisitions (doc 88 S4b's PropertyRow snapshot construction), not
+        // one atomic read -- a live scene mutation can swap the underlying
+        // snapshot in between two of them, tearing `rangeMin` from one
+        // snapshot and `rangeMax` from a different (older or newer) one.
+        // When that tear happens to invert the pair, `row.rangeMin...
+        // row.rangeMax` is a Swift Range precondition failure (a hard trap,
+        // not a thrown error) the instant SwiftUI builds it.  Compute the
+        // validity ONCE, here, into a local -- never inline the comparison
+        // into the ternary/`in:` argument, where a second torn re-read could
+        // disagree with the first -- and skip the Slider entirely on an
+        // invalid range rather than let it construct one.  A dropped frame's
+        // worth of missing slider (the value text still renders) is a fine
+        // outcome for a one-in-a-million lock race; a crash is not.
+        let hasValidRange = row.rangeMax > row.rangeMin
+        return HStack(spacing: 6) {
+            if hasValidRange {
+                Slider(
+                    value: $value,
+                    in: row.rangeMin...row.rangeMax,
+                    step: row.rangeStep > 0 ? row.rangeStep : 0.0001,
+                    onEditingChanged: { editing in
+                        dragging = editing
+                        if !editing { commit() }
+                    }
+                )
+                .controlSize(.small)
+            }
             Text(formatValue(value, kind: .double))
                 .font(Theme.mono(10))
                 .foregroundColor(Theme.textDim)
@@ -884,7 +901,19 @@ private struct ParamSliderCell: View {
             var j = i
             while j < line.endIndex, !line[j].isWhitespace { j = line.index(after: j) }
             let tok = line[i..<j]
-            if tokenIndex > 0, looksNumeric(tok), let d = Double(tok) { return (i..<j, d) }
+            if tokenIndex > 0, looksNumeric(tok) {
+                // A token that LOOKS numeric (leading sign/digit/`.`) but does not
+                // actually parse (`4.0.1`, a lone `-`, a truncated `1e`) means this
+                // line is not shaped the way this scanner assumes -- bail out with
+                // nil rather than falling through to scan later tokens.  Falling
+                // through would let the scan land on the NEXT numeric-looking
+                // token, which for a `param` line is `min`'s own bound
+                // (`param ring_scale <bad> min 0.5 max 20 ...`) -- so a malformed
+                // value token would silently make the slider scrub and commit
+                // OVER the min bound instead of refusing to drive at all.
+                guard let d = Double(tok) else { return nil }
+                return (i..<j, d)
+            }
             tokenIndex += 1
             i = j
         }
@@ -1424,7 +1453,10 @@ private func scrubRate(name: String, value: Double) -> Double {
 /// locale (e.g. fr_FR) would format `4.0` as `4,000000`, which the scene parser cannot
 /// read back.  Shared by every call site that formats a value for the wire: the
 /// TextWellCell scrub path and ParamSliderCell's drag/commit path both go through here.
-private let kPosixLocale = Locale(identifier: "en_US_POSIX")
+/// Deliberately module-visible (not `private`) -- EnvironmentPanel.swift's own
+/// `trimNumber` writes CST param values the same way and reuses THIS instance (S5)
+/// rather than carrying a second `Locale(identifier: "en_US_POSIX")` construction.
+let kPosixLocale = Locale(identifier: "en_US_POSIX")
 
 private func formatValue(_ v: Double, kind: PropertyKind) -> String {
     switch kind {

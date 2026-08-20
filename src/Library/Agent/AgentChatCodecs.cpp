@@ -606,6 +606,37 @@ namespace RISE
 					"}}"
 				},
 				{
+					"vary_material",
+					"MAKE ONE MATERIAL'S ROUGHNESS VARY ACROSS THE SURFACE, in one call. Call this the moment "
+					"you notice (or are told) that a scene's materials all carry a bare number in their "
+					"microsurface slot -- `roughness 0.3`, `alphax 0.1`, `facets 0.05`. Real surfaces are not "
+					"uniformly polished, and a scene where every roughness is one constant reads as untextured "
+					"geometry no matter how good the lighting is. It adds ONE `scalar_painter { expression ... }` "
+					"chunk holding an fbm wear field BANDED AROUND THE NUMBER THAT IS ALREADY THERE (roughly "
+					"0.7x .. 1.4x of it, or 0.7x .. 1.15x once that number is already above 1, so the band "
+					"always keeps headroom) and rebinds the material's roughness slot(s) to it -- ONE headVersion "
+					"bump, ONE undo step. The material stays the material you authored: only the microsurface "
+					"stops being flat. Pass NO ARGUMENTS to take the most prominent qualifying material -- that "
+					"is the normal way to call it, and it is what a DESIGN NOTE about constant microsurface is "
+					"asking for. Pass `material` to name a different one. Every knob it writes is a named "
+					"`param` carrying min/max/step/label (rough_lo, rough_hi, field_scale, field_contrast) plus "
+					"a `seed`, so retuning it afterwards is one propose_patch on a named line rather than an "
+					"edit to expression text -- and that is the idiom to COPY when you author varying scalars "
+					"by hand. It REFUSES, changing nothing and costing only this call, when no material's "
+					"microsurface is a readable constant (already varying, absent, a per-channel triple, or a "
+					"deliberate mirror-specular zero). Roughness only -- it never repaints colour. A refusal is "
+					"a real answer: read it rather than retrying. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to vary. Omit it to take the most prominent material whose microsurface is still a bare number -- which is what a DESIGN NOTE about constant microsurface is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
 					"remove_chunks",
 					"DELETE SEVERAL entities (whole chunks) in ONE call, ATOMICALLY. Prefer ONE remove_chunks "
 					"call over repeated remove_chunk calls whenever you are deleting more than one chunk: each "

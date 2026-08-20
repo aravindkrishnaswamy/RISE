@@ -615,7 +615,24 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// placement still lost; a model deciding how to build repeated objects
 	// is reading the RECIPES.  A short pointer stays behind in the workflow
 	// skill so the content still has exactly one home.
-	Check( totalSnippets == 20, "the seed skills carry the expected 20 ```rise snippets in total (got " +
+	//
+	// 88 S5 (2026-08-20) took the count 20 -> 23, one snippet per file across
+	// the three-skill re-anchoring, and each one is REGISTERED HERE rather
+	// than merely written: the whole point of the S1-S4b arc was to ship
+	// expression_painter / scalar_painter{expression} / ramp_painter, and a
+	// teaching example for those that renders black or fails to parse would
+	// be worse than no example, because the measured lever is COPYING.  The
+	// three: materials-and-media-basics gains the hammered-pewter
+	// scalar_painter{expression} roughness field (the proven read-set's
+	// spatially-varying-microsurface worked example, the direct attack on the
+	// 0/24 deficit); object-modeling-recipes gains Recipe 2b, the
+	// expression_painter fbm field -> ramp_painter stops -> lambertian
+	// reflectance composition-boundary example ("field in the expression,
+	// colour in the ramp"); procedural-textures gains Recipe 3, rusted iron,
+	// where ONE expression field feeds both a ramp (colour) and the
+	// any-painter -> scalar bridge (roughness), so the rust and the roughness
+	// cannot drift apart.  Per-skill split is now 4/7/3 for those three.
+	Check( totalSnippets == 23, "the seed skills carry the expected 23 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -1208,6 +1225,75 @@ static void TestProceduralTextureTeaching( AgentRpcDispatcher& rpc )
 	       "S3d: MONEY -- materials-and-media-basics cross-links procedural-textures" );
 	Check( pt.find( "materials-and-media-basics" ) != std::string::npos,
 	       "S3d: procedural-textures cross-links back to materials-and-media-basics" );
+
+	// ---- 88 S5 (2026-08-20): THE THREE SHIPPED MECHANISMS ----------------
+	// S1-S4b shipped expression_painter, scalar_painter{expression},
+	// scalar_painter{painter}, and ramp_painter.  Until S5, procedural-
+	// textures said the opposite -- that only `function2d` and `texture`
+	// varied across a surface -- so a model that read the skill was told the
+	// new capability did not exist.  These pin the corrected teaching.
+	// Positive assertions only, same discipline as the block above.
+	static const char* const kMechanisms[] = {
+		"expression_painter", "scalar_painter { expression <body> }", "ramp_painter",
+		"scalar_painter { painter <name> channel <R|G|B|A> scale <s> bias <b> }"
+	};
+	for( size_t i = 0; i < sizeof( kMechanisms ) / sizeof( kMechanisms[0] ); ++i )
+		Check( pt.find( kMechanisms[i] ) != std::string::npos,
+		       ( std::string( "S3d: procedural-textures names the shipped mechanism \"" )
+		         + kMechanisms[i] + "\"" ).c_str() );
+	// The FOUR-varying-forms count is the correction itself: the pre-S5 text
+	// said TWO, which was the false claim a model would have acted on.
+	Check( pt.find( "FOUR of" ) != std::string::npos && pt.find( "vary across a surface" ) != std::string::npos,
+	       "S3d: MONEY -- the trap's prescription now states FOUR varying scalar_painter forms, not two" );
+	// THE HUMAN-EDITABILITY CONTRACT (doc 88 P5 Tier 1).  This is what makes
+	// LLM-authored expression bodies retunable by a person at all, and it is
+	// a rule about EVERY number, not a suggestion about some.
+	Check( pt.find( "never a\n   literal in the body" ) != std::string::npos ||
+	       pt.find( "never a literal in the body" ) != std::string::npos,
+	       "S3d: MONEY -- the param-metadata contract (every art-directable number in a `param` "
+	       "with a range, never a literal in the body) is stated" );
+	Check( pt.find( "min 0.5 max 20" ) != std::string::npos,
+	       "S3d: ...with a worked `param <name> <value> min <a> max <b> step <s> label \"...\"` form" );
+	// The `seed` idiom -- the per-instance knob that costs no extra chunk.
+	Check( pt.find( "`seed`" ) != std::string::npos && pt.find( "per-instance" ) != std::string::npos,
+	       "S3d: procedural-textures teaches the `seed` per-instance-variation idiom" );
+	// THE DOMAIN TRAP, in its NEW form: the two expression surfaces differ
+	// exactly in whether P/Po/N are visible, and a model that reaches for
+	// expression_function2d expecting `P` gets a silently-zero context.
+	Check( pt.find( "`expression_function2d` is **2D**" ) != std::string::npos,
+	       "S3d: MONEY -- the skill states that expression_function2d is UV-only while the new "
+	       "expression surfaces are 3D (the P/Po/N availability split)" );
+	// The composition boundary, stated as the one line a model can carry.
+	Check( pt.find( "field in the expression, colour in the ramp" ) != std::string::npos,
+	       "S3d: MONEY -- procedural-textures states the composition-boundary rule verbatim" );
+	{
+		// C-READ: object-modeling-recipes is the MOST-read skill in the
+		// measured trajectories, so the composition-boundary idiom has to
+		// live there too, with a worked example -- not only in the skill
+		// every advisory points at and that a probe batch showed read 0/6.
+		const std::string obj = fetch( rpc, 402, "object-modeling-recipes" );
+		Check( obj.find( "field in the expression, colour in the ramp" ) != std::string::npos,
+		       "S3d: MONEY -- object-modeling-recipes (the most-read skill) states the same "
+		       "field->ramp rule" );
+		Check( obj.find( "expression_painter" ) != std::string::npos &&
+		       obj.find( "ramp_painter" ) != std::string::npos,
+		       "S3d: ...and carries a worked expression_painter -> ramp_painter example" );
+	}
+	// The unclamped-fbm hazard: raw fbm is not [0,1], and an unclamped mix on
+	// a ROUGHNESS slot walks the value toward a mirror.  Cheap to state, and
+	// the failure is invisible until someone looks at a specular highlight.
+	Check( pt.find( "do NOT span [0,1]" ) != std::string::npos,
+	       "S3d: the skill warns that raw fbm/perlin do not span [0,1] and must be remapped" );
+	// THE VERB.  Per doc 88 sec 2 C-VERB, advice asking for the hand rewrite
+	// is measured dead -- both skills that teach varying roughness must name
+	// the call that performs it.
+	Check( pt.find( "vary_material" ) != std::string::npos,
+	       "S3d: MONEY -- procedural-textures names the `vary_material` verb" );
+	Check( mat.find( "vary_material" ) != std::string::npos,
+	       "S3d: MONEY -- materials-and-media-basics names the `vary_material` verb too" );
+	Check( mat.find( "scalar_painter" ) != std::string::npos && mat.find( "expression" ) != std::string::npos,
+	       "S3d: materials-and-media-basics carries the scalar_painter{expression} worked example "
+	       "in the PROVEN read-set (C-READ: content behind an unmade pull is invisible)" );
 }
 
 //----------------------------------------------------------------------
@@ -1223,7 +1309,7 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (thirty tools, three providers) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (thirty-one tools, three providers) + SetSkillIndex...\n" );
 
 	// The count below is asserted, not narrated: every provider's request
 	// body must carry the SAME kToolDefs table, so a tool added to one codec
@@ -1240,7 +1326,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 30, "anthropic body carries thirty tools" );
+		Check( tools.isArray() && tools.size() == 31, "anthropic body carries thirty-one tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -1269,7 +1355,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 30, "gemini body carries thirty functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 31, "gemini body carries thirty-one functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
@@ -1283,7 +1369,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 30, "openai body carries thirty tools" );
+		Check( tools.isArray() && tools.size() == 31, "openai body carries thirty-one tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "type" ).asString() == "function" &&
