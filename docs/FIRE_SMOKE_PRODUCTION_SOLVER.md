@@ -1533,57 +1533,69 @@ projection before either solver or the contract is changed. Long-horizon
 pointwise comparison remains rejected; V-gates, tier-6 empirical rows, and
 prefix integrals own that chaotic-flow regime.
 
-### 7.24 Calibration state-family stop (r107)
+### 7.24 Calibration state-family diagnostic (r107, superseded as a gate)
 
-The campaign stopped before deriving `B_fp32`, dispatching calibration Metal,
-or creating the full source/`S_div`/schedule campaign manifest. The required
-pre-solver asymptotic-family gate failed on the certified tier-5/6/7 beginning
-states themselves. This is not a production-versus-oracle discrepancy and it
-is not an accepted tolerance.
+The exact-common-support beginning-state comparison remains useful evidence,
+but it is not a calibration gate. r107 initially treated its non-asymptotic
+ratios as a stop. Fresh review found that this was not the r106 contract:
+section 5.1 defines `D56` and `D67` on each solver's evolved outputs, and a
+contractive operator can map a non-asymptotic input family to an admissible
+output family. r108 therefore withdraws the r107 stop without discarding its
+diagnostic data.
 
-The preliminary state-family manifest is SHA-256
+The state-family manifest SHA-256 is
 `338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5`.
-The sealed manifest and its three bound checkpoint files are preserved at
+It and the three exact tier checkpoints are preserved under
 `rendered/fire_production_calibration/r107_state_family/`; obsolete v1/v2
-partial manifests are deliberately absent. The canonical evidence command is
-`./bin/tests/FireSequenceTest --fire-production-calibration-check-input-convergence
-rendered/fire_production_calibration/r107_state_family` and must exit `145`.
-It explicitly declares `full_campaign_manifest false` and binds tier-state
-hashes `ce0b47fe...`, `7e53de9f...`, and `3f9f1eaf...`. The comparison uses
-one three-tier mutual support,
-`[-1.0524031927189388,1.0524031927189388]^2 x
-[0,3.2306330567186028] m`, exact piecewise-constant cell intersections,
-volume-normalized component-wise `L1`, strict binary64 evaluation, and an
-operation-count-derived `gamma_n` enclosure for overlap-volume closure. Every
-checkpoint hash, shape, spacing, case id, and physical time is checked before
-deserialization can become evidence.
+partial manifests remain absent. The command
+`./bin/tests/FireSequenceTest --fire-production-calibration-diagnose-input-family
+rendered/fire_production_calibration/r107_state_family` prints the prior
+ratios and exits zero, explicitly labeling them diagnostic-only.
 
-For the actual spacings, a positive generalized Richardson order in
-`0 < p <= 2` requires `D56/D67` between `1.18274896` and `1.65846154`;
-ratios above the upper endpoint are conservatively capped at formal order two.
-The measured pre-solver state-family values are:
+### 7.25 Certified-oracle output spatial stop (r108)
+
+r108 performs the missing evolved-output test before deriving `B_fp32` or
+dispatching calibration Metal. A no-Metal process advances each exact tier
+state from `0.32 s` to `0.322 s` as four fixed `0.0005 s` certified steps with
+zero source packets and the fuel-bed overlay disabled. It atomically seals all
+twelve resulting `S_div` arrays before the comparison process runs. The scoped
+oracle spatial manifest SHA-256 is
+`a2bb4c834af7f9c839c3e0114dcaa64cac43f915969fce2ab55e0395fe1b20e2`;
+the tier-5/6/7 `S_div` payload hashes are respectively `b629dcde...`,
+`399d7833...`, and `f98ea7f...`. The manifest binds the state family, exact
+time schedule, boundaries, gravity, zero sources, worker count, fuel and
+transport record ids, oracle source digests, metric, support, and formal order.
+The read-only comparison reruns the oracle, byte-compares every `S_div` value
+to the sealed payload, and only then evaluates the evolved conservative state.
+
+The actual oracle-output spatial evidence is:
 
 | conservative channel | `D56` | `D67` | ratio | classification |
 |---|---:|---:|---:|---|
-| `rho_total_Z` | `6.018864804968335e-6` | `5.281414640766786e-6` | `1.139631181106144` | no positive order |
-| `CH4` | `5.637467554556510e-6` | `4.839896523382141e-6` | `1.164790926277288` | no positive order |
-| `O2` | `1.025170223613745e-4` | `5.513631494231932e-5` | `1.859337579390685` | capped `p=2` |
-| `N2` | `3.315340396405293e-4` | `1.744707933429107e-4` | `1.900226583992894` | capped `p=2` |
-| `CO2` | `1.560922501885089e-6` | `1.643317676329097e-6` | `0.949860470905379` | fine pair grows |
-| `H2O` | `1.277926626285705e-6` | `1.345383522558448e-6` | `0.949860470905379` | fine pair grows |
-| `CO` | `5.853061128955419e-19` | `7.801194947523987e-19` | `0.750277511115540` | near-zero/unidentifiable |
-| `C(gr)` | `2.205510446250908e-19` | `2.977589365311422e-19` | `0.740703359551473` | near-zero/unidentifiable |
-| sensible enthalpy | `135.6919415917949` | `71.16969390509917` | `1.906597234670315` | capped `p=2` |
+| `rho_total_Z` | `6.031592721568220e-6` | `5.292733054040505e-6` | `1.139598891533678` | no positive order |
+| `CH4` | `5.645733995242471e-6` | `4.846863411353551e-6` | `1.164822177991978` | no positive order |
+| `O2` | `1.025031344813252e-4` | `5.518918039891239e-5` | `1.857304887306230` | capped `p=2` |
+| `N2` | `3.319487331943980e-4` | `1.749206346029661e-4` | `1.897710547116717` | capped `p=2` |
+| `CO2` | `1.549001496383576e-6` | `1.633829716721150e-6` | `0.948080133768278` | fine pair grows |
+| `H2O` | `1.268166903862522e-6` | `1.337615733832568e-6` | `0.948080133768269` | fine pair grows |
+| `CO` | `5.909935429537276e-19` | `7.878527971317004e-19` | `0.750131934677811` | near-zero/unidentifiable |
+| `C(gr)` | `2.227913137406351e-19` | `3.007735710307910e-19` | `0.740727694182370` | near-zero/unidentifiable |
+| sensible enthalpy | `135.7301690853277` | `71.25923090371239` | `1.904738057989012` | capped `p=2` |
 
-Because the contract requires a separately derived term for every gated
-channel, the four non-negligible failures (`rho_total_Z`, `CH4`, `CO2`, and
-`H2O`) make the generalized Richardson scheme-distance term undefined. No
-triangle tolerance can therefore be formed. r107 does not substitute a
-fixed-domain synthetic family, discard channels, use a post-hoc order, or
-widen a ceiling. The next admissible work is a cause probe of this tier-family
-failure or an owner-approved calibration-family ruling. Thermo/source-map work
-remains downstream of that decision. The immutable tier-10 checkpoint still
-hashes to `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+For the actual spacings, positive order in `0<p<=2` requires a ratio in
+`[1.18274896,1.65846154]`. The evolved certified outputs therefore leave the
+required oracle spatial terms undefined for `rho_total_Z`, `CH4`, `CO2`, and
+`H2O`. One missing addend is sufficient to block the triangle tolerance, so
+production refinement, `B_fp32`, Metal confirmation, velocity/ledger terms,
+and eight-slice readmission do not run. The canonical command is
+`./bin/tests/FireSequenceTest --fire-production-calibration-check-oracle-spatial
+rendered/fire_production_calibration/r107_state_family
+a2bb4c834af7f9c839c3e0114dcaa64cac43f915969fce2ab55e0395fe1b20e2`;
+exit `162` is the monitored calibration stop. The next admissible work is a
+cause probe of the evolved tier family or an owner-approved continuous-input
+calibration-family ruling. No solver, tolerance, or ceiling changed;
+thermo/source maps remain downstream. The tier-10 checkpoint remains
+`1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
 
 ## 8. Rejected directions and future work
 

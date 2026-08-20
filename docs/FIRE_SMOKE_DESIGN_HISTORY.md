@@ -2577,8 +2577,8 @@ it was already tried and refuted here.
   while long chaotic horizons use only V/empirical/prefix statistical and
   integral gates.
 
-- **r107 (2026-08-19):** calibration stopped at the pre-solver state-family
-  gate. The strict binary64, exact-common-support manifest is
+- **r107 (2026-08-19, superseded as a gate by r108):** the strict binary64,
+  exact-common-support beginning-state manifest is
   `338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5`
   and explicitly is not the full campaign manifest. The manifest and its
   three bound checkpoints are preserved under
@@ -2590,7 +2590,21 @@ it was already tried and refuted here.
   and `1.1647909263`; `CO2` and `H2O` both yield `0.9498604709`, with the
   tier-6/7 difference larger than tier-5/6. O2/N2/enthalpy are capped at
   formal `p=2`; near-zero CO/C(gr) are unidentifiable. Consequently no
-  all-channel Richardson scheme-distance term exists, the additive triangle
-  tolerance cannot be formed, and neither `B_fp32` Metal confirmation nor
-  eight-slice readmission ran. The checkpoint remains `1b944176...`; no
-  solver or ceiling changed.
+  beginning-state family is not asymptotic. Fresh review correctly found that
+  this is diagnostic rather than dispositive: r106 applies Richardson to each
+  solver's evolved `U5/U6/U7`, and did not freeze a pre-solver admission gate.
+  The old exit-145 stop was withdrawn before any tolerance was certified.
+
+- **r108 (2026-08-19):** the corrected evolved-output gate legitimately stops
+  calibration. A no-Metal extractor advances the exact tier-5/6/7 certified
+  states through four fixed `0.0005 s` source-free steps and seals every
+  resulting `S_div` byte in manifest `a2bb4c834a...1b20e2`; the comparison
+  process reruns and byte-verifies those targets before inspecting outputs.
+  On the common support, evolved oracle `rho_total_Z` and `CH4` ratios are
+  `1.1395988915` and `1.1648221780`, below the positive-order floor
+  `1.1827489635`; CO2 and H2O ratios are `0.9480801338`, so their fine-pair
+  differences grow. Thus four required oracle spatial addends are undefined.
+  Production refinement, `B_fp32`, Metal confirmation, velocity/ledger terms,
+  and eight-slice readmission do not run. Exit `162` is the monitored stop;
+  no solver, tolerance, or ceiling changed, and the checkpoint remains
+  `1b944176...`.
