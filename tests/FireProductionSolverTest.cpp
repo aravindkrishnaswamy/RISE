@@ -4330,6 +4330,10 @@ int main()
 			"\t@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) "
 			"-fno-fast-math -ffp-contract=off")!=std::string::npos&&
 		CountSubstring(xcodeProject,
+			"FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = "
+			"FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; settings = "
+			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; }; }")==2u&&
+		CountSubstring(xcodeProject,
 			"FireProductionTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = "
 			"FC92000131FF000100000007 /* FireProductionTransport.cpp */; settings = "
 			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; }; }")==2u&&

@@ -780,7 +780,7 @@
 		FA83000131FF000100000004 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; };
 		FA84000131FF000100000001 /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FA84000131FF000100000002 /* FireProductionAdvection.h in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000008 /* FireProductionAdvection.h */; };
-		FA84000131FF000100000003 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; };
+		FA84000131FF000100000003 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FB86000131FF000100000001 /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FB86000131FF000100000002 /* FireProductionProjection.h in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000008 /* FireProductionProjection.h */; };
 		FB86000131FF00010000000A /* FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000009 /* FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -1458,7 +1458,7 @@
 		FA83000131FF000100000008 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; };
 		FA84000131FF000100000004 /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FA84000131FF000100000005 /* FireProductionAdvection.h in Headers */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000008 /* FireProductionAdvection.h */; };
-		FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; };
+		FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FB86000131FF000100000003 /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FB86000131FF000100000004 /* FireProductionProjection.h in Headers */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000008 /* FireProductionProjection.h */; };
 		FB86000131FF00010000000B /* FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000009 /* FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
