@@ -220,7 +220,8 @@ drise_submitter : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_submitter.o
 # diagnostics; use `make -k -jN tests` to keep building past failures (CI
 # still gets a non-zero exit either way).  run_all_tests.sh isolates and
 # logs individual build failures itself.
-TESTBINS = $(addprefix $(PATHTESTDEST),$(notdir $(SRCTESTS:.cpp=)))
+TESTBINS = $(addprefix $(PATHTESTDEST),$(notdir $(SRCTESTS:.cpp=))) \
+	$(PATHTESTDEST)FireProductionCalibrationOracle
 
 tests : $(TESTBINS)
 	@echo "============================================================"
