@@ -2747,14 +2747,15 @@ it was already tried and refuted here.
   contains `(V(Q_n)-1)/dt`, and no r70 counterpart is credited unless the
   target is recomputed from the production transported candidate.
 
-  Drain is measured by one counterfactual, not fitted.  At the end of tier-12
-  step 6, an otherwise byte-identical resident call adds the strict-fp32
+  Drain is measured by one counterfactual, not fitted. At the end of tier-12
+  campaign step 6 (displayed transition 7), an otherwise byte-identical resident call adds the strict-fp32
   absolute-reference term `float(d_n/float(dt))` to each authored target.  Its
   conservative output must be byte-identical to baseline because projection is
   terminal; only its projected MAC state may differ.  That MAC state drives one
-  ordinary step-7 transport with the unchanged sealed step-7 target.  At cell
-  2256, `G=d_7-d_6`, `drain=d_7-d_7^restored`,
-  `r=drain/d_5`, and the diagnosed steady value is `G/r`.  Nonfinite values,
+  ordinary campaign-step-7 transport (the failing displayed transition 8) with
+  the unchanged sealed target. At cell 2256, `G=d_8-d_7`,
+  `drain=d_8-d_8^restored`, `r=drain/d_6`, and the diagnosed steady value is
+  `G/r`. Nonfinite values,
   zero reference/drain, a failed projection, an interstage transfer, or changed
   step-6 conservative bytes invalidate the probe.  This is diagnostic evidence
   only: it cannot relax the `1.0e-3` gate or authorize a fix.  The golden
@@ -2783,14 +2784,17 @@ it was already tried and refuted here.
   8.41544e-4 -> 9.90210e-4 -> 1.14340e-3`; cell 2256 becomes the field maximum
   on transition 3. The target audit finds the known hole reborn: the production
   request copies the sealed oracle target and has neither its own r69 absolute
-  term nor an r70 production-candidate closure. The capacity readout measures
-  `G=1.486658786928885e-4`, `r=1.0031753280821762`, and
-  `G/r=1.4819530996351454e-4` (`0.1482` of the EOS ceiling). The eight-step
-  restoration shadow remains under `3.37e-4` field-wide, agreeing with that
-  prediction, but the fixed single projection validates only transitions
-  2/5/8; the other five post residuals sit at `4.045e-4--4.100e-4`. Therefore
-  r117 is an architecture-capacity stop, not a restoration landing. Gain,
+  term nor an r70 production-candidate closure. The originally recorded
+  one-shot `G/r` used transition 7 and is retired; the failing-transition value
+  must be regenerated before the capacity conclusion is re-admitted. The
+  eight-step shadow and its 3/8 projection-valid bitmap remain diagnostic, but
+  do not substitute for that corrected attribution. Gain,
   manifold-residual-only second projection, and a new derived ceiling remain
-  explicit owner-level alternatives. No solver or gate changed. Durable data
-  and plot hashes are `9383d3e0...e4c2` and `0fb22415...54e`; production
+  explicit owner-level alternatives. No solver or gate changed; production
   Richardson remains stopped.
+
+  Replay is an independently binding outcome. Exact
+  `RISE_FIRE_EOS_DRIFT_PROBE=1` returns `215` only after the frozen arrays,
+  corrected failing-transition capacity values, and both one-off
+  projection-valid bits match. A malformed nonempty activation returns `216`;
+  the ordinary uninstrumented campaign retains exit `191`.

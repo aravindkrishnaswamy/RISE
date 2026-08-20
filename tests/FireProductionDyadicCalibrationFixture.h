@@ -934,6 +934,7 @@ namespace FireProductionDyadicCalibration
 		const char* expectedTargets)
 	{
 		const char* eosProbeEnvironment=std::getenv("RISE_FIRE_EOS_DRIFT_PROBE");
+		if(eosProbeEnvironment&&std::strcmp(eosProbeEnvironment,"1")!=0)return 216;
 		const bool eosProbe=eosProbeEnvironment&&std::strcmp(eosProbeEnvironment,"1")==0;
 		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
 			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
@@ -954,6 +955,7 @@ namespace FireProductionDyadicCalibration
 			MethaneRunCheckpoint restoredTrajectoryState=states[index];
 			bool restoredProbeReady=false;
 			bool restoredProjectionValid=false;
+			bool drainedProjectionValid=false;
 			double restorationReferenceDeviation=0.0;
 			std::array<double,8> observedBaselineProbe={{}};
 			std::array<double,8> observedBaselineMaximum={{}};
@@ -1042,7 +1044,7 @@ namespace FireProductionDyadicCalibration
 					if(!ApplyProductionResult(restoredTrajectory,restoredTrajectoryState,error)){
 						std::fprintf(stderr,"EOSRESTORE step=%zu consumer failure: %s\n",step+1u,
 							error.c_str());return 213;}
-					if(step==5u){
+					if(step==6u){
 						if(!std::isfinite(beginningDeviation.signedProbe)||
 							beginningDeviation.signedProbe==0.0)return 207;
 						RISE::FireProductionResidentStepRequest restoredRequest=request;
@@ -1074,7 +1076,7 @@ namespace FireProductionDyadicCalibration
 						if(!ApplyProductionResult(restored,restoredProbeState,error))return 203;
 						restorationReferenceDeviation=beginningDeviation.signedProbe;
 						restoredProbeReady=true;
-					}else if(step==6u&&restoredProbeReady){
+					}else if(step==7u&&restoredProbeReady){
 						RISE::FireProductionResidentStepRequest drainedRequest;
 						if(!BuildProductionRequest(restoredProbeState,sealed[step],flowThrough/512.0,
 							drainedRequest,error))return 204;
@@ -1092,6 +1094,7 @@ namespace FireProductionDyadicCalibration
 							"EOSDRAIN drained step-7 projection failed pre=%.17g post=%.17g\n",
 							drained.projection.maximumPreProjectionResidualPerS,
 							drained.projection.maximumPostProjectionResidualPerS);
+						drainedProjectionValid=drained.projection.validationPassed;
 						ProductionEOSDeviation drainedDeviation;
 						if(!MeasureProductionEOSDeviation(drained,states[index].states.size(),
 							failingProbeCell,drainedDeviation,error))return 206;
@@ -1110,7 +1113,7 @@ namespace FireProductionDyadicCalibration
 							"generation=%.17g reference=%.17g counterfactual=%.17g drained=%.17g "
 							"fraction=%.17g plateau=%.17g\n",
 							step+1u,restoredProjectionValid?1:0,
-							drained.projection.validationPassed?1:0,generation,
+							drainedProjectionValid?1:0,generation,
 							restorationReferenceDeviation,drainedDeviation.signedProbe,
 							drainedAmount,drainFraction,predictedPlateau);
 					}
@@ -1215,7 +1218,8 @@ namespace FireProductionDyadicCalibration
 						residual.maximumScaled==2.1925594524305645e-07&&
 						residual.cell==134050u&&residual.row==2u&&
 						digest=="e5a8cdfd54772cc58c8d58e3a0c32d650a71f9f428cd27c1be3e52e6a60c5b70"&&
-						error.find("accepted-state EOS gate")!=std::string::npos)return 191;
+						error.find("accepted-state EOS gate")!=std::string::npos)
+						return eosProbe?215:191;
 					return 187;}
 				std::fprintf(stderr,"dyadic production tier=%u step=%zu residual=%.9g valid=%d\n",
 					Tiers[index],step,production.projection.maximumPostProjectionResidualPerS,

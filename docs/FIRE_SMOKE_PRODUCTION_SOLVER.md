@@ -1839,14 +1839,18 @@ r69 only when the production target itself contains `(V(Q^n)-1)/dt`, and r70
 only when the target closes the production transported candidate's advective
 volume anomaly. Reusing an oracle target does not establish either property.
 
-Drain uses the frozen r117 counterfactual: step 6 adds the per-cell fp32 term
+Drain uses the frozen r117 counterfactual: campaign step 6 (displayed transition
+7) adds the per-cell fp32 term
 `float(d_n/float(dt))` to the existing target, requires byte-identical transported
-conservative output, carries only the changed projected MAC state into step 7,
-and measures `r=(d_7-d_7^restored)/d_5`. With `G=d_7-d_6`, the predicted
+conservative output, carries only the changed projected MAC state into campaign
+step 7 (the failing displayed transition 8), and measures
+`r=(d_8-d_8^restored)/d_6`. With `G=d_8-d_7`, the predicted
 steady deviation is `G/r`. The probe must fail for nonfinite or zero diagnostic
-denominators, any projection-validation or residency miss, or any changed
-step-6 conservative byte. No measured value may alter the EOS gate or select a
-fix retroactively.
+denominators, any residency miss, or any changed step-6 conservative byte. Its
+primary implementation reading additionally requires both projections to
+validate; a failed validation leaves only the explicitly provisional capacity
+reading below. No measured value may alter the EOS gate or select a fix
+retroactively.
 
 If the full-gain counterfactual projection misses validation, the primary probe
 is invalid and implementation is barred. A secondary capacity-only readout may
@@ -1863,6 +1867,16 @@ validate, downstream state reconstruction stays total, and the observed
 steady deviation agrees with `G/r` below the unchanged EOS ceiling. Continuing
 a provisional shadow after a validation miss is diagnostic only.
 
+The binding replay is
+`RISE_FIRE_EOS_DRIFT_PROBE=1 ./bin/tests/FireSequenceTest
+--fire-production-calibration-check-dyadic-production
+rendered/fire_production_calibration/r112_dyadic_smooth_open
+42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed
+d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b`.
+It returns `215` only after every r117 pin matches. A malformed nonempty
+activation returns `216`; without activation the certification campaign keeps
+its original exit `191`.
+
 The exact r117 result classifies the original path as secular accumulation.
 At cell 2256 the eight outputs are `1.62435e-4, 2.90527e-4, 4.22101e-4,
 5.57589e-4, 6.97411e-4, 8.41544e-4, 9.90210e-4, 1.14340e-3`; it becomes the
@@ -1871,19 +1885,18 @@ request merely copies the pre-extracted oracle target: it has neither a
 production-state r69 absolute reference nor a production-candidate r70
 advective-anomaly closure.
 
-The step-6/7 capacity readout gives `G=1.486658786928885e-4`,
-`r=1.0031753280821762`, and `G/r=1.4819530996351454e-4`, only `0.1482` of the
-EOS ceiling. The eight-step r69 shadow agrees in state space: its probe remains
+The earlier transition-7 capacity values are retired because they did not
+measure the failing configuration. The corrected transition-8 values are
+re-derived before this conclusion is re-admitted. The eight-step r69 shadow
+remains diagnostic: its probe stays
 `1.04e-4--1.93e-4` and its absolute field maximum `1.56e-4--3.37e-4`. But the
 fixed single projection validates only transitions 2, 5, and 8. The other five
-post residuals plateau at `4.045e-4--4.100e-4`, so the restoration cannot be
-landed under the existing projection contract. This is an architecture-capacity
-finding. Restoration gain, a manifold-residual-only second projection, or a
-new derived production ceiling have different contract consequences and need
-an owner ruling; no solver or gate changes in r117. Exact evidence and its plot
-are stored under `rendered/fire_production_calibration/r117_eos_drift/` with
-SHA-256 `9383d3e0...e4c2` and `0fb22415...54e` respectively. Production
-Richardson and subsequent calibration stages remain stopped.
+post residuals plateau at `4.045e-4--4.100e-4`, so the restoration cannot yet
+be landed under the existing projection contract. The corrected
+failing-transition capacity measurement and its two projection-valid bits are
+regenerated before the architecture classification and durable artifact hashes
+are admitted. No solver or gate changes in r117. Production Richardson and
+subsequent calibration stages remain stopped.
 
 ## 8. Rejected directions and future work
 
