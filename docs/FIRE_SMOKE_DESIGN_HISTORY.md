@@ -2872,3 +2872,14 @@ it was already tried and refuted here.
   directly into the r112/r119 observable norms and are instantiated separately
   for every golden slice. No measurement, feasibility factor, or tier-6 value
   may select or stand in for an analytic radius.
+
+- **r121 burning-state restoration prediction (2026-08-20, frozen before
+  source evidence):** the first nonzero-source capacity campaign is bound to
+  the untouched tier-10 step-3480 checkpoint (`1b944176...4947`). It measures
+  a source-only EOS generation increment `G_src` against an otherwise identical
+  exact-`+0` call and a burning-state self-donor drain `r_burn`; the predicted
+  plateau is `(G_0+G_src)/r_burn`, with signed cell values retained until the
+  final maximum. The future 104-step frozen-source diagnostic must agree with
+  that prediction, validate both projections, transfer no interstage grids,
+  and remain below `1.0e-3`. The existing `G_0` and `r_0` are calibration
+  evidence, not substitutes for the burning-state measurements.

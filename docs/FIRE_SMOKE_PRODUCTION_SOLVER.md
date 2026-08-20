@@ -2057,6 +2057,35 @@ and checks fp32 Metal minus fp64 same-scheme against the already sealed analytic
 radii. Measurements cannot change a radius. Tier-10 golden slices receive
 separate state/topology instantiations; no tier-6 number is copied to them.
 
+### 7.36 Burning-state restoration prediction (r121, pre-source evidence)
+
+The first nonzero-source capacity check is fixed before thermo/source-map
+implementation. It begins from the immutable tier-10 checkpoint
+`rendered/fire_methane_capstone/tier10.run.checkpoint`, SHA-256
+`1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`,
+at accepted step 3480. The production source maps will be evaluated from that
+beginning state, then frozen and repeated only for this controlled capacity
+diagnostic; the result is not a long-horizon physical trajectory.
+
+Let `G_0` be the already measured source-free per-step EOS generation, let
+`G_src` be the signed increment obtained by subtracting an otherwise identical
+exact-`+0` source call from the new-source call before restoration, and let
+`r_burn` be the beginning-deviation drain fraction measured by the same
+one-step self-donor construction at this checkpoint. With deadbeat restoration
+the pre-registered plateau prediction is
+
+`d_plateau = (G_0 + G_src) / r_burn`.
+
+The sign and per-cell values are retained; an absolute maximum is taken only
+after the signed prediction is formed. The source-free calibrating values
+remain `G_0=1.5319163029481331e-4` and `r_0=1.0030530061213276`; they are not
+assumed for `G_src` or `r_burn`. The future 104-step frozen-burning campaign
+must validate both projections on every call, preserve zero interstage
+full-grid transfers, plateau below the unchanged `1.0e-3` EOS ceiling, and
+agree with the independently formed `(G_0+G_src)/r_burn` prediction. A source
+term that makes the predicted plateau exceed the ceiling is an architecture
+finding, not permission to change restoration gain or the ceiling.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
