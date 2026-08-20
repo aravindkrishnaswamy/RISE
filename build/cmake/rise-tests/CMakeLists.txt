@@ -47,6 +47,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(rise_tests CXX)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 if(NOT MSVC)
     message(FATAL_ERROR
@@ -313,6 +314,16 @@ foreach(test_src ${TEST_SOURCES})
 
 	if(test_name STREQUAL "FireProductionCalibrationTest")
 		target_compile_options(${test_name} PRIVATE /fp:strict)
+	endif()
+	if(test_name STREQUAL "FireSequenceTest")
+		target_compile_options(${test_name} PRIVATE /fp:strict)
+	endif()
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
+		add_custom_command(TARGET ${test_name} PRE_BUILD
+			COMMAND ${Python3_EXECUTABLE}
+				"${RISE_ROOT}/tools/generate_fire_production_fp64_mirror.py" --check
+			WORKING_DIRECTORY "${RISE_ROOT}")
 	endif()
 
     # Per-config libraries via generator expressions.

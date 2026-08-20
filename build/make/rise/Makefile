@@ -41,6 +41,15 @@ SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
 OBJTESTS = $(SRCTESTS:.cpp=.o)
 FIREPRODUCTIONFP64SOURCES = $(wildcard $(PATHTESTS)fire_production_fp64/*.cpp)
 FIREPRODUCTIONFP64OBJECTS = $(FIREPRODUCTIONFP64SOURCES:.cpp=.o)
+FIREPRODUCTIONFP64ORIGINALS = \
+	$(PATHLIBRARY)Utilities/FireProductionAdvection.h \
+	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp \
+	$(PATHLIBRARY)Utilities/FireProductionProjection.h \
+	$(PATHLIBRARY)Utilities/FireProductionProjection.cpp \
+	$(PATHLIBRARY)Utilities/FireProductionTransport.h \
+	$(PATHLIBRARY)Utilities/FireProductionTransport.cpp \
+	$(PATHLIBRARY)Utilities/FireProductionForce.h \
+	$(PATHLIBRARY)Utilities/FireProductionForce.cpp
 
 # Tool source and output lists. Tools are standalone CLI utilities
 # (image diff, firefly inspection, etc.) that link against librise.a
@@ -214,16 +223,24 @@ $(PATHTESTS)FireProductionCalibrationTest.o : $(PATHTESTS)FireProductionCalibrat
 	@echo Compiling strict calibration gate: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+$(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
+	@echo Compiling strict calibration owner: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-$(PATHTESTDEST)FireProductionCalibrationTest : $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
+.PHONY: check-fire-production-fp64
+check-fire-production-fp64 : ../../../tools/generate_fire_production_fp64_mirror.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONFP64SOURCES)
+	@python3 ../../../tools/generate_fire_production_fp64_mirror.py --check
+
+$(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB) $(LDLIBS)
 
-$(PATHTESTDEST)FireSequenceTest : $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
+$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB) $(LDLIBS)

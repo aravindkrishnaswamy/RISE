@@ -1,4 +1,5 @@
 #include "fire_production_fp64/SourceManifest.h"
+#include "FireProductionCalibrationMath.h"
 
 int RunProductionCalibrationStateGeneration(const std::filesystem::path& outputDirectory)
 {
@@ -102,21 +103,31 @@ int SealExistingProductionCalibrationInputs(const std::filesystem::path& inputDi
 		commonY=std::min(commonY,states[index].cellWidthM*states[index].dimensions[1]);
 		commonZ=std::min(commonZ,states[index].cellWidthM*states[index].dimensions[2]);
 	}
-	const std::filesystem::path manifest=inputDirectory/"input_manifest.v2";
-	const std::filesystem::path partial=inputDirectory/"input_manifest.v2.partial";
+	const std::filesystem::path manifest=inputDirectory/"state_family_manifest.v3";
+	const std::filesystem::path partial=inputDirectory/"state_family_manifest.v3.partial";
 	if(std::filesystem::exists(manifest)||std::filesystem::exists(partial))return 138;
 	std::ofstream output(partial,std::ios::binary|std::ios::trunc);
 	if(!output)return 139;
-	output<<"fire_production_calibration_input_v2\n"
+	output<<"fire_production_calibration_state_family_v3\n"
+		"scope pre_solver_asymptotic_family_gate\n"
+		"full_campaign_manifest false\n"
 		"physical_time_s 0.32\n"
-		"baseline_horizon_s 0.002\n"
-		"temporal_steps_s 0.002 0.001 0.0005\n"
-		"formal_order production_space 2 production_time 1 oracle_space 2 oracle_time 2\n"
+		"formal_spatial_order 2\n"
+		"evaluation_fp binary64_strict_no_contract\n"
 		"horizontal_alignment domain_center\n"
 		"vertical_alignment common_floor\n"
 		"common_support_m "<<std::setprecision(17)<<-0.5*commonX<<' '<<0.5*commonX<<' '
 		<<-0.5*commonY<<' '<<0.5*commonY<<" 0 "<<commonZ<<"\n"
-		"metric_registry component_volume_l1,component_integral,velocity_volume_l2,projection_residual\n"
+		"overlap_topology piecewise_constant_exact_cell_intersection_v1\n"
+		"metric 0 rho_total_Z kg_per_m3 volume_normalized_L1\n"
+		"metric 1 CH4 kg_per_m3 volume_normalized_L1\n"
+		"metric 2 O2 kg_per_m3 volume_normalized_L1\n"
+		"metric 3 N2 kg_per_m3 volume_normalized_L1\n"
+		"metric 4 CO2 kg_per_m3 volume_normalized_L1\n"
+		"metric 5 H2O kg_per_m3 volume_normalized_L1\n"
+		"metric 6 CO kg_per_m3 volume_normalized_L1\n"
+		"metric 7 C_gr kg_per_m3 volume_normalized_L1\n"
+		"metric 8 sensible_enthalpy J_per_m3 volume_normalized_L1\n"
 		"golden_checkpoint_sha256 1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947\n"
 		"mirror_generator_sha256 "<<RISEFireProductionFP64::SourceManifest::Generator<<"\n"
 		"advection_source_sha256 "<<RISEFireProductionFP64::SourceManifest::FireProductionAdvectionSource<<"\n"
@@ -140,18 +151,16 @@ int SealExistingProductionCalibrationInputs(const std::filesystem::path& inputDi
 struct CalibrationOverlapDifference
 {
 	std::array<double,9> componentVolumeL1;
-	double velocityVolumeL2;
-	CalibrationOverlapDifference() : velocityVolumeL2(0.0){componentVolumeL1.fill(0.0);}
+	CalibrationOverlapDifference(){componentVolumeL1.fill(0.0);}
 };
 
 template<class Accumulator>
 bool VisitCalibrationOverlaps(const MethaneRunCheckpoint& first,
-	const MethaneRunCheckpoint& second,Accumulator accumulate,double& commonVolume)
+	const MethaneRunCheckpoint& second,const std::array<double,3>& commonLength,
+	Accumulator accumulate,double& commonVolume,std::size_t& overlapCount)
 {
 	const double h1=first.cellWidthM,h2=second.cellWidthM;
-	const double lx=std::min(h1*first.dimensions[0],h2*second.dimensions[0]);
-	const double ly=std::min(h1*first.dimensions[1],h2*second.dimensions[1]);
-	const double lz=std::min(h1*first.dimensions[2],h2*second.dimensions[2]);
+	const double lx=commonLength[0],ly=commonLength[1],lz=commonLength[2];
 	const std::array<double,3> low={{-0.5*lx,-0.5*ly,0.0}};
 	const std::array<double,3> high={{0.5*lx,0.5*ly,lz}};
 	const std::array<double,3> firstOrigin={{-0.5*h1*first.dimensions[0],
@@ -159,6 +168,7 @@ bool VisitCalibrationOverlaps(const MethaneRunCheckpoint& first,
 	const std::array<double,3> secondOrigin={{-0.5*h2*second.dimensions[0],
 		-0.5*h2*second.dimensions[1],0.0}};
 	commonVolume=lx*ly*lz;
+	overlapCount=0u;
 	for(std::size_t z=0u;z<first.dimensions[2];++z)
 		for(std::size_t y=0u;y<first.dimensions[1];++y)
 			for(std::size_t x=0u;x<first.dimensions[0];++x){
@@ -199,6 +209,7 @@ bool VisitCalibrationOverlaps(const MethaneRunCheckpoint& first,
 									std::max(firstLow[axis],secondLow));
 							}
 							if(volume>0.0){
+								++overlapCount;
 								const std::size_t secondCell=(bz*second.dimensions[1]+by)*
 									second.dimensions[0]+bx;
 								accumulate(firstCell,secondCell,volume);
@@ -208,77 +219,87 @@ bool VisitCalibrationOverlaps(const MethaneRunCheckpoint& first,
 	return commonVolume>0.0;
 }
 
-std::array<double,3> CalibrationCellVelocity(const MethaneRunCheckpoint& state,
-	const std::size_t cell)
-{
-	PeriodicMACShape shape;shape.nx=state.dimensions[0];shape.ny=state.dimensions[1];
-	shape.nz=state.dimensions[2];shape.cellWidthM=state.cellWidthM;
-	std::array<double,3> velocity={{}};
-	for(unsigned int axis=0u;axis<3u;++axis){
-		const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
-		const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
-		velocity[axis]=0.5*(state.velocity.component[axis][lower]+
-			state.velocity.component[axis][upper]);
-	}
-	return velocity;
-}
-
 bool CalibrationDifference(const MethaneRunCheckpoint& first,
-	const MethaneRunCheckpoint& second,CalibrationOverlapDifference& difference)
+	const MethaneRunCheckpoint& second,const std::array<double,3>& commonLength,
+	CalibrationOverlapDifference& difference)
 {
-	difference=CalibrationOverlapDifference();double volume=0.0;long double visitedVolume=0.0L;
-	const bool visited=VisitCalibrationOverlaps(first,second,
+	difference=CalibrationOverlapDifference();double volume=0.0,visitedVolume=0.0;
+	double volumeCompensation=0.0;std::size_t overlapCount=0u;
+	const bool visited=VisitCalibrationOverlaps(first,second,commonLength,
 		[&](const std::size_t firstCell,const std::size_t secondCell,const double weight){
-			visitedVolume+=static_cast<long double>(weight);
+			const double corrected=weight-volumeCompensation;
+			const double updated=visitedVolume+corrected;
+			volumeCompensation=(updated-visitedVolume)-corrected;visitedVolume=updated;
 			const ConservativeVector firstValue=ToConservativeVector(first.states[firstCell]);
 			const ConservativeVector secondValue=ToConservativeVector(second.states[secondCell]);
 			for(std::size_t component=0u;component<9u;++component)
 				difference.componentVolumeL1[component]+=weight*
 					std::fabs(firstValue[component]-secondValue[component]);
-			const std::array<double,3> firstVelocity=CalibrationCellVelocity(first,firstCell);
-			const std::array<double,3> secondVelocity=CalibrationCellVelocity(second,secondCell);
-			for(unsigned int axis=0u;axis<3u;++axis){
-				const double delta=firstVelocity[axis]-secondVelocity[axis];
-				difference.velocityVolumeL2+=weight*delta*delta;
-			}
-		},volume);
-	if(!visited||!(volume>0.0)||std::fabs(static_cast<double>(visitedVolume)-volume)>
-		64.0*std::numeric_limits<double>::epsilon()*volume)return false;
+		},volume,overlapCount);
+	const double volumeDifference=std::fabs(visitedVolume-volume);
+	const double operationCount=20.0*static_cast<double>(overlapCount)+3.0;
+	const double unitRoundoff=std::numeric_limits<double>::epsilon()*0.5;
+	if(!(operationCount*unitRoundoff<1.0))return false;
+	const double coverageBound=std::nextafter(operationCount*unitRoundoff/
+		(1.0-operationCount*unitRoundoff)*volume,
+		std::numeric_limits<double>::infinity());
+	if(!visited||!(volume>0.0)||volumeDifference>coverageBound){
+		std::fprintf(stderr,"calibration overlap coverage expected=%.17g visited=%.17g "
+			"difference=%.17g bound=%.17g overlaps=%zu\n",volume,visitedVolume,
+			volumeDifference,coverageBound,overlapCount);return false;
+	}
 	for(double& value:difference.componentVolumeL1)value/=volume;
-	difference.velocityVolumeL2=std::sqrt(difference.velocityVolumeL2/volume);
 	return std::all_of(difference.componentVolumeL1.begin(),
-		difference.componentVolumeL1.end(),[](double value){return std::isfinite(value);})&&
-		std::isfinite(difference.velocityVolumeL2);
+		difference.componentVolumeL1.end(),[](double value){return std::isfinite(value);});
 }
 
 int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inputDirectory,
-	const char* expectedManifestDigest=
-		"2c19f5c0750674196ecdf0fe1c0317b51b7d33ed440ec60c8c7bba2342e2b416")
+	const char* expectedManifestDigest=nullptr)
 {
 	if(!expectedManifestDigest||std::strlen(expectedManifestDigest)!=64u||
-		DigestFile(inputDirectory/"input_manifest.v2")!=expectedManifestDigest)return 142;
+		DigestFile(inputDirectory/"state_family_manifest.v3")!=expectedManifestDigest)return 142;
 	std::array<MethaneRunCheckpoint,3> states;std::string error;
+	static const std::array<const char*,3> checkpointDigests={{
+		"ce0b47fe2bfff897d3c9327e1207583243825ac70291b26e09216d2b55d04970",
+		"7e53de9f426bca9d07e5d9c94cf7c78f947b94e00247a0fb3d1d075ea866b8d3",
+		"3f9f1eaf9636dd0217b4804592a6dc6d467b2966680ded8756dc8f75ccda5571"}};
+	static const std::array<std::array<std::size_t,3>,3> dimensions={{{{43u,43u,66u}},
+		{{52u,52u,80u}},{{61u,61u,93u}}}};
+	static const std::array<double,3> spacing={{0.04894898570785762,
+		0.040790821423214683,0.034963561219898305}};
+	static const std::array<const char*,3> cases={{
+		"fe43358bbc0994b9f4a1a2414255d990136da28337fc473f81fe8e5852dec38c",
+		"69673466269cda5ae65e18ea16dfd3a04d5eedf588fc7a3012a460e4357f171f",
+		"b1518c2737bbc8cae3a96cbc7c4961f22f81cf0385a71d5baf30cc0a70960e32"}};
 	for(std::size_t index=0u;index<3u;++index){
 		const std::filesystem::path path=inputDirectory/(std::string("tier")+
 			std::to_string(index+5u)+"_t0p32.checkpoint");
-		if(!LoadMethaneRunCheckpoint(path,states[index],error))return 143;
+		if(DigestFile(path)!=checkpointDigests[index]||
+			!LoadMethaneRunCheckpoint(path,states[index],error)||
+			states[index].dimensions!=dimensions[index]||
+			states[index].cellWidthM!=spacing[index]||states[index].caseRecordId!=cases[index]||
+			states[index].simulationTimeS!=0.32)return 143;
 	}
+	std::array<double,3> commonLength={{
+		std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity(),
+		std::numeric_limits<double>::infinity()}};
+	for(const MethaneRunCheckpoint& state:states)for(unsigned int axis=0u;axis<3u;++axis)
+		commonLength[axis]=std::min(commonLength[axis],state.cellWidthM*state.dimensions[axis]);
 	CalibrationOverlapDifference difference56,difference67;
-	if(!CalibrationDifference(states[0],states[1],difference56)||
-		!CalibrationDifference(states[1],states[2],difference67))return 144;
-	bool asymptotic=difference56.velocityVolumeL2>difference67.velocityVolumeL2&&
-		difference67.velocityVolumeL2>0.0;
-	std::fprintf(stderr,"calibration input velocity_l2 D56=%.17g D67=%.17g ratio=%.17g\n",
-		difference56.velocityVolumeL2,difference67.velocityVolumeL2,
-		difference56.velocityVolumeL2/difference67.velocityVolumeL2);
+	if(!CalibrationDifference(states[0],states[1],commonLength,difference56)||
+		!CalibrationDifference(states[1],states[2],commonLength,difference67))return 144;
+	bool asymptotic=true;
 	for(std::size_t component=0u;component<9u;++component){
-		const bool componentAsymptotic=difference56.componentVolumeL1[component]>
-			difference67.componentVolumeL1[component]&&difference67.componentVolumeL1[component]>0.0;
+		double order=0.0,distance=0.0;
+		const bool componentAsymptotic=FireProductionCalibration::GeneralizedGridRichardson(
+			difference56.componentVolumeL1[component],difference67.componentVolumeL1[component],
+			spacing[0],spacing[1],spacing[2],2.0,order,distance);
 		asymptotic=asymptotic&&componentAsymptotic;
 		std::fprintf(stderr,"calibration input component=%zu L1_D56=%.17g L1_D67=%.17g "
-			"ratio=%.17g asymptotic=%d\n",component,difference56.componentVolumeL1[component],
+			"ratio=%.17g asymptotic=%d order=%.17g E6=%.17g\n",component,
+			difference56.componentVolumeL1[component],
 			difference67.componentVolumeL1[component],difference56.componentVolumeL1[component]/
-			difference67.componentVolumeL1[component],componentAsymptotic?1:0);
+			difference67.componentVolumeL1[component],componentAsymptotic?1:0,order,distance);
 	}
 	return asymptotic?0:145;
 }

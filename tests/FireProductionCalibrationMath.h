@@ -54,7 +54,7 @@ namespace FireProductionCalibration
 		double lower=0x1p-20,upper=formalOrder;
 		const double lowerRatio=GridRatioForOrder(lower,h5,h6,h7);
 		const double upperRatio=GridRatioForOrder(upper,h5,h6,h7);
-		if(target<lowerRatio||target>NextUp(upperRatio))return false;
+		if(target<lowerRatio)return false;
 		if(target>=upperRatio){
 			measuredOrder=formalOrder;
 			const double denominator=1.0-std::pow(h7/h6,measuredOrder);
