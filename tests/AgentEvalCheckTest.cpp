@@ -6248,6 +6248,267 @@ static void TestMaterialRichnessCheckpoints()
 }
 
 //----------------------------------------------------------------------
+// T-s6: doc 88 S6 eval-census checkpoints -- the two NEW checks added to
+// rich_material_closeup.json and, as a PURE metric, to the two
+// bare_prompt_build scenarios: (1) any_param_references_kind:scalar_painter
+// EXERCISED SPECIFICALLY against the S1/S2 `scalar_painter { expression
+// <body> }` FORM (T-mr above only ever exercises the pre-S1
+// `function2d`/inline-number forms -- this closes that gap for the form the
+// 0/24 deficit is actually about); (2) distinct_chunk_kinds over
+// kinds:["expression_painter","ramp_painter"] -- the "expression/ramp family
+// used anywhere" adoption census.  Every scene here is read-only
+// (kReadThenDoneFixture), so the checked document is the scene TEXT
+// verbatim, same idiom as T-mr.
+//----------------------------------------------------------------------
+
+// PASS case for both S6 checks at once: a ggx_material's alphax/alphay are
+// bound to a scalar_painter using the `expression` FORM (not `function2d`),
+// and an expression_painter feeds the material's diffuse reflectance --
+// mirrors rich_material_closeup.fixture.jsonl's sp_rough/pnt_patina shape at
+// a minimal scale.
+static const char* const kExpressionFormScalarScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"expression_painter\n{\n\tname pnt_field\n\tdef n fbm(P*3.0, 3, 0.5, 2.0)\n\tdef t clamp(0.5+0.5*n, 0, 1)\n\texpr mix(vec3(0.1,0.1,0.1), vec3(0.9,0.7,0.4), t)\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"scalar_painter\n{\n\tname sp_rough\n\tdef f1 worley_f1(P*4.0, 1.0)\n\texpression mix(0.05, 0.6, clamp(f1, 0, 1))\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_field\n\trs pnt_spec\n\talphax sp_rough\n\talphay sp_rough\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+// PASS case for the expression/ramp family check via ramp_painter ALONE --
+// no expression_painter chunk anywhere -- proving the family checkpoint is a
+// genuine "EITHER kind" test (distinct_chunk_kinds over a 2-entry "kinds"
+// list, distinctMin:1), not silently keyed to only one of the two.  The
+// ramp's `input` is a plain uniformcolor_painter -- ramp_painter accepts any
+// colour-pipe painter as its driving field, and using the plainest one keeps
+// this scene isolated to exactly the one new kind under test.
+static const char* const kRampOnlyFamilyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_field\n\tcolor 0.4 0.4 0.4\n}\n\n"
+	"ramp_painter\n{\n\tname pnt_ramp\n\tinput pnt_field\n\tchannel R\n\tinterpolation smooth\n\tstop 0.0  0.1 0.1 0.1\n\tstop 1.0  0.9 0.9 0.9\n\tcolor_space Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_a\n\treflectance pnt_ramp\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_a\n}\n";
+
+// P2-a (review round 1): the any_param_references_kind headline op EXERCISED
+// SPECIFICALLY against the S3 `scalar_painter { painter <name> channel R }`
+// bridge FORM (PainterChannelScalarPainter, form 12 -- P2.1's any-painter ->
+// scalar bridge).  T-mr only ever exercises the pre-S1 function2d/inline-
+// number forms; the T-s6 block above closes the S1/S2 `expression` form gap;
+// this scene closes the remaining named form -- a scalar_painter whose ONLY
+// content is `painter <colour painter> channel <R|G|B|A>`, bound to
+// mat_ggx's alphax/alphay, reaching obj_ggx.
+static const char* const kPainterChannelBridgeScalarScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_field\n\tcolor 0.3 0.6 0.9\n}\n\n"
+	"scalar_painter\n{\n\tname sp_bridge\n\tpainter pnt_field\n\tchannel R\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_spec\n\trs pnt_spec\n\talphax sp_bridge\n\talphay sp_bridge\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+// Negative twin: BYTE-IDENTICAL to kPainterChannelBridgeScalarScene except
+// mat_ggx's alphax/alphay are inline numeric constants -- the bridge-form
+// scalar_painter chunk still EXISTS (sp_bridge) but is now orphaned (no
+// referrer anywhere), so any_param_references_kind:scalar_painter must FAIL.
+static const char* const kPainterChannelBridgeScalarOrphanScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_field\n\tcolor 0.3 0.6 0.9\n}\n\n"
+	"scalar_painter\n{\n\tname sp_bridge\n\tpainter pnt_field\n\tchannel R\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_spec\n\trs pnt_spec\n\talphax 0.2\n\talphay 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+static void TestExpressionRampFamilyAndScalarExpressionFormCheckpoints()
+{
+	std::printf( "T-s6: doc 88 S6 census checks -- scalar_painter{expression} form + expression/ramp family...\n" );
+	const std::string dir = ScratchRunDir( "t_s6_census" );
+
+	auto makeHandle = [&]( const char* id, const char* sceneText ) -> AgentEvalRunHandle {
+		AgentEvalScenario s = MakeScenario( id, sceneText, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", std::string( id ) + ": run reached final_text" );
+		Check( h.dispatcher != nullptr, std::string( id ) + ": run has a live dispatcher" );
+		return h;
+	};
+
+	const AgentEvalRunHandle hExprScalar = makeHandle( "s6_expr_scalar", kExpressionFormScalarScene );
+	const AgentEvalRunHandle hRampOnly    = makeHandle( "s6_ramp_only", kRampOnlyFamilyScene );
+	// Reuses T-mr's kFlatPainterScene (uniformcolor-only: no scalar_painter,
+	// no expression_painter, no ramp_painter at all) as the shared "nothing
+	// here" FAIL substrate for both checks below.
+	const AgentEvalRunHandle hFlat        = makeHandle( "s6_flat", kFlatPainterScene );
+	// T-mr's kMaterialRichnessSceneOrphanScalar: a scalar_painter EXISTS
+	// (via the pre-S1 function2d form) but mat_ggx's alphax/alphay are
+	// INLINE numbers -- "all-numeric microsurface slots", the FAIL case the
+	// task brief names explicitly, distinct from "no such chunk exists".
+	const AgentEvalRunHandle hOrphanScalar = makeHandle( "s6_orphan_scalar", kMaterialRichnessSceneOrphanScalar );
+	// P2-a (review round 1): the S3 `scalar_painter { painter <name> channel
+	// R }` bridge form, bound (PASS) and orphaned (FAIL negative twin).
+	const AgentEvalRunHandle hPainterBridge       = makeHandle( "s6_painter_bridge", kPainterChannelBridgeScalarScene );
+	const AgentEvalRunHandle hPainterBridgeOrphan = makeHandle( "s6_painter_bridge_orphan", kPainterChannelBridgeScalarOrphanScene );
+
+	auto checkAgainst = [&]( const AgentEvalRunHandle& h, const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, label + ": exactly one checkpoint result" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		}
+	};
+
+	// ---- any_param_references_kind:scalar_painter, specifically against the
+	// `expression` form (the rich_material_closeup headline checkpoint) ----
+
+	checkAgainst( hExprScalar,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		true, "any_param_references_kind: scalar_painter{expression} bound to ggx_material.alphax/alphay PASSES" );
+
+	checkAgainst( hOrphanScalar,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: all-numeric microsurface slots (scalar_painter exists but unbound) FAILS" );
+
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: no scalar_painter chunk at all FAILS" );
+
+	// ---- P2-a (review round 1): the S3 painter-channel bridge form,
+	// PASS + negative-twin FAIL ----
+
+	checkAgainst( hPainterBridge,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		true, "any_param_references_kind: scalar_painter{painter pnt_field channel R} bound to ggx_material.alphax/alphay PASSES" );
+
+	checkAgainst( hPainterBridgeOrphan,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: painter-channel-bridge scalar_painter exists but is orphaned (numeric alphax/alphay) FAILS" );
+
+	// ---- review round 1 P1 fix: any_param_references_kind now populates
+	// CheckOutcome::metricValue as a 1.0/0.0 pass indicator on every
+	// substantive evaluation, so rich_material_closeup.json's headline
+	// "spatially_varying_scalar" metricLabel actually reaches results.jsonl
+	// (previously hasMetricValue was never set on this op, so the label --
+	// and the whole §10 gate-(a) reading instruction -- was dead).  Checked
+	// in both directions, with an explicit metricLabel (the
+	// rich_material_closeup.json shape) and label-less (the
+	// bare_prompt_build_courtyard/cozy_study shape, weight:0.5, no
+	// metricLabel), mirroring T-mr's "default metricLabel == op name"
+	// pattern for the pre-existing metric ops above.
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse(
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\","
+			"\"metricLabel\":\"spatially_varying_scalar\"}]", cps, err ),
+			"any_param_references_kind metric: labeled checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hExprScalar, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"any_param_references_kind: hasMetricValue is true on PASS" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].metricValue == 1.0,
+				"any_param_references_kind: metricValue == 1.0 on PASS (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			Check( r.checkpoints[0].metricLabel == "spatially_varying_scalar",
+				"any_param_references_kind: explicit metricLabel carried through on PASS (got '" + r.checkpoints[0].metricLabel + "')" );
+		}
+	}
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse(
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\","
+			"\"metricLabel\":\"spatially_varying_scalar\"}]", cps, err ),
+			"any_param_references_kind metric: labeled checkpoint JSON parses (no-such-chunk case) (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hFlat, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"any_param_references_kind: hasMetricValue is true on FAIL too (no chunk of kind exists at all)" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].metricValue == 0.0,
+				"any_param_references_kind: metricValue == 0.0 when no chunk of the kind exists (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			Check( r.checkpoints[0].metricLabel == "spatially_varying_scalar",
+				"any_param_references_kind: explicit metricLabel carried through on FAIL too" );
+		}
+	}
+	{
+		// hOrphanScalar: the chunk EXISTS but every referrer slot is numeric
+		// -- the third substantive outcome branch (chunks non-empty, none has
+		// a referrer), distinct from "no chunk of that kind at all" above.
+		// Deliberately LABEL-LESS -- the bare_prompt_build_courtyard/
+		// cozy_study shape (weight:0.5, no explicit metricLabel) -- to prove
+		// the fallback resolves to the op name, never an empty string, per
+		// the no-empty-label-row guarantee eval_report.py's per-label
+		// breakdown depends on.
+		JsonValue cps; std::string err;
+		Check( JsonParse(
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+			cps, err ), "any_param_references_kind metric: label-less checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hOrphanScalar, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"any_param_references_kind: hasMetricValue is true when the chunk exists but is orphaned" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].metricValue == 0.0,
+				"any_param_references_kind: metricValue == 0.0 when orphaned (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			Check( r.checkpoints[0].metricLabel == "any_param_references_kind",
+				"any_param_references_kind: label-less checkpoint resolves metricLabel to the op name, not empty (got '" + r.checkpoints[0].metricLabel + "')" );
+			Check( !r.checkpoints[0].metricLabel.empty(),
+				"any_param_references_kind: metricLabel is never empty when hasMetricValue is true" );
+		}
+	}
+
+	// ---- distinct_chunk_kinds over kinds:[expression_painter,ramp_painter]
+	// ("used anywhere" family census) ----
+
+	checkAgainst( hExprScalar,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":1}]",
+		true, "expression/ramp family: expression_painter alone (no ramp_painter) PASSES distinctMin:1" );
+
+	checkAgainst( hRampOnly,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":1}]",
+		true, "expression/ramp family: ramp_painter alone (no expression_painter) PASSES distinctMin:1 -- proves EITHER kind satisfies it" );
+
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":1}]",
+		false, "expression/ramp family: neither kind present FAILS distinctMin:1" );
+
+	// The bare_prompt_build family's ADDITIVE metric use of this same
+	// checkpoint shape is weight:0/distinctMin:0 -- vacuously true on ANY
+	// document, including one with neither kind (a mutation deleting that
+	// vacuous-pass guard would flip a "never gates" metric into a silent new
+	// gate on two committed baseline-series scenarios).  Red-proved here
+	// directly against hFlat, independent of scenario-file parsing.
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":0,\"weight\":0}]",
+		true, "expression/ramp family: distinctMin:0 (the bare_prompt_build additive-metric shape) PASSES vacuously even with neither kind present" );
+}
+
+//----------------------------------------------------------------------
 // T-pb: eval-harness S0.1's "param_binding" document op -- whether specific
 // NAMED PARAMETERS on specific chunk kinds are bound to a referenceable
 // chunk (a painter, typically) rather than left at a numeric constant.
@@ -7623,6 +7884,7 @@ int main()
 	TestScenarioContentHashAskUserResponsesSensitivity();
 	TestAdversarialControlNeverAsksStillBuilds();
 	TestMaterialRichnessCheckpoints();
+	TestExpressionRampFamilyAndScalarExpressionFormCheckpoints();
 	TestParamBindingCheckpoint();
 	TestChunkNamePrefixCountCheckpoint();
 	TestChunkNamePrefixCountGeometryCategoryRedProof();

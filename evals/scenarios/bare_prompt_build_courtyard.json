@@ -138,6 +138,15 @@
       "metricLabel": "expressive_geometry"
     },
     {
+      "//": "S6 census metric (doc 88 §8): expression/ramp family adoption -- expression_painter|ramp_painter used ANYWHERE in the document (existence, not reachability), the second half of the P4.4 gate-(b) census alongside the any_param_references_kind scalar_painter checkpoint above (the 0/24 headline metric). PURE metric, never gates: weight 0 and distinctMin 0 so it passes vacuously on any document, mirroring the expressive_geometry precedent below -- this fixture predates S1-S3 (expression_painter/ramp_painter landed 2026-08-19/20, after this baseline fixture was captured) so it reads 0 here today by construction. Deliberately ADDITIVE, not a widening of any existing checkpoint's kinds/exclude list, for the same reason expressive_geometry is a second checkpoint rather than a widened advanced_geometry: this scenario anchors a banked baseline series, and widening an existing gating checkpoint could only ever move its score upward -- exactly the direction that would masquerade as a model improvement rather than a genuine one.",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": ["expression_painter", "ramp_painter"],
+      "distinctMin": 0,
+      "weight": 0,
+      "metricLabel": "expression_family"
+    },
+    {
       "kind": "render",
       "samples": 512,
       "width": 32,

@@ -1352,9 +1352,10 @@ namespace RISE
 			//! (CheckScenario's own reader), plus the OPTIONAL "metricLabel"
 			//! string every kind shares too (geometry scope expansion) --
 			//! type-checked generically here since a checkpoint of ANY kind may
-			//! in principle carry one, even though today only four "document" ops
+			//! in principle carry one, even though today only five "document" ops
 			//! (distinct_chunk_kinds / objects_reaching_kinds / param_binding /
-			//! chunk_name_prefix_count) ever populate a metricValue for it to
+			//! chunk_name_prefix_count / any_param_references_kind, the S6 fix)
+			//! ever populate a metricValue for it to
 			//! label.  An unrecognized kind name is
 			//! left unchecked here too -- CheckOneCheckpoint already fails it
 			//! loudly at runtime ("unknown checkpoint kind").
@@ -1620,8 +1621,9 @@ namespace RISE
 
 				// Geometry scope expansion / metric labeling: every METRIC-CARRYING
 				// checkpoint (today: "document" ops "distinct_chunk_kinds",
-				// "objects_reaching_kinds", "param_binding" (S0.1), and
-				// "chunk_name_prefix_count" (S2.3) -- the FOUR CheckOneCheckpoint
+				// "objects_reaching_kinds", "param_binding" (S0.1),
+				// "chunk_name_prefix_count" (S2.3), and "any_param_references_kind"
+				// (S6 fix) -- the FIVE CheckOneCheckpoint
 				// populates CheckOutcome::metricValue from) resolves to an
 				// EFFECTIVE label --
 				// its explicit "metricLabel" string when present and non-empty, else
@@ -1643,7 +1645,7 @@ namespace RISE
 						const std::string cpOp   = ( cp.has( "op" )   && cp.get( "op" ).isString() )   ? cp.get( "op" ).asString()   : std::string();
 						const bool carriesMetric = cpKind == "document" &&
 							( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" || cpOp == "param_binding" ||
-							  cpOp == "chunk_name_prefix_count" );
+							  cpOp == "chunk_name_prefix_count" || cpOp == "any_param_references_kind" );
 						if( !carriesMetric ) continue;
 						std::string label = cpOp;
 						if( cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() && !cp.get( "metricLabel" ).asString().empty() )
@@ -4510,14 +4512,17 @@ namespace RISE
 				//! minus "exclude", and grades against distinctMin/distinctMax (both
 				//! bounds INCLUSIVE; loader enforces distinctMin >= 0 and
 				//! distinctMax >= distinctMin); it is
-				//! one of TWO ops that populate CheckOutcome::metricValue (the
+				//! one of FIVE ops that populate CheckOutcome::metricValue (the
 				//! distinct count; the metric's effective LABEL -- "metricLabel" when
 				//! present, else the op name -- is loader-guarded against collision,
 				//! see LoadEvalScenario's metricLabel dedupe pass).
 				//! {op:"any_param_references_kind",referencedKind}
 				//! passes iff a chunk of that kind exists AND has >=1 referrer
 				//! anywhere in the document (the FORWARD-existential sibling of
-				//! param_references_kind, which needs a known target).
+				//! param_references_kind, which needs a known target); populates
+				//! metricValue as a 1.0/0.0 pass indicator (S6 fix, review round 1
+				//! P1) -- the FIFTH metricValue emitter, and the one whose metric IS
+				//! its pass/fail rather than a distinct count.
 				//! {op:"no_orphan_chunks",kindSuffix?|kinds?|category?,exclude?}
 				//! passes iff EVERY chunk matching the filter has >=1 referrer
 				//! (vacuously true when zero chunks match -- absence is
@@ -4532,7 +4537,7 @@ namespace RISE
 				//! mitigation distinct_chunk_kinds/no_orphan_chunks cannot express
 				//! (both only see EXISTENCE + boundness, not WHICH object a binding
 				//! reaches); grades the qualifying-root count against min/max (both
-				//! bounds INCLUSIVE); one of FOUR metricValue emitters.
+				//! bounds INCLUSIVE); one of FIVE metricValue emitters.
 				//! {op:"param_binding",slots:[{chunkKind,params:[...]}],
 				//! excludeReferencedKinds?,min,max?} (eval-harness S0.1) counts CHUNK
 				//! INSTANCES (never twice, even when several of a chunk's listed
@@ -4545,7 +4550,7 @@ namespace RISE
 				//! specifically a scalar_painter).  A numeric literal, an inline
 				//! `r g b`, "none", or a name that resolves to nothing are all NOT a
 				//! binding.  Grades the qualifying-instance count against min
-				//! (required) / max (optional), both bounds INCLUSIVE; one of FOUR
+				//! (required) / max (optional), both bounds INCLUSIVE; one of FIVE
 				//! metricValue emitters.
 				//! {op:"chunk_name_prefix_count",prefix,kindSuffix?|kinds?|category?,
 				//! min,max?} (Arc-75 S2.3, provenance metrics) counts chunks whose
@@ -4564,7 +4569,7 @@ namespace RISE
 				//! expansion's chunks span several different kinds (one material,
 				//! several painters) under one shared prefix.  Grades the count
 				//! against min (required) / max (optional), both bounds INCLUSIVE;
-				//! the FOURTH metricValue emitter.
+				//! the FOURTH of FIVE metricValue emitters.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -5101,27 +5106,53 @@ namespace RISE
 					// param_references_kind needs a known TARGET+param; this needs
 					// none).  Passes iff a chunk with role == referencedKind exists AND
 					// has >=1 referrer in RISE::Cst::BuildReferenceGraph(doc).dependents
-					// (some param, somewhere in the document, names it).
+					// (some param, somewhere in the document, names it).  Populates
+					// CheckOutcome::metricValue as a 1.0/0.0 pass indicator on every
+					// SUBSTANTIVE evaluation (the S6 fix -- rich_material_closeup.json's
+					// headline "spatially_varying_scalar" metricLabel needs a live
+					// metricValue to reach results.jsonl at all; see the "FIFTH
+					// metricValue emitter" doc comment on CheckDocumentKind above
+					// and LoadEvalScenario's metricLabel dedupe pass).  The one
+					// early-return that does NOT set it is the malformed-checkpoint case
+					// (missing/empty "referencedKind"), matching distinct_chunk_kinds'
+					// own missing-"distinctMin" convention -- an authoring error is not
+					// a measurement.
 					if( op == "any_param_references_kind" ) {
 						if( !cp.has( "referencedKind" ) || !cp.get( "referencedKind" ).isString() || cp.get( "referencedKind" ).asString().empty() )
 							return { false, "any_param_references_kind requires a non-empty string \"referencedKind\"" };
 						const std::string kind = cp.get( "referencedKind" ).asString();
 
 						const std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> chunks = CheckerCollectChunkIdsOfKind( doc, kind );
-						if( chunks.empty() )
-							return { false, "any_param_references_kind: no chunk of kind '" + kind + "' exists in the document" };
+						if( chunks.empty() ) {
+							CheckOutcome oc;
+							oc.hasMetricValue = true;
+							oc.metricValue = 0.0;
+							oc.passed = false;
+							oc.detail = "any_param_references_kind: no chunk of kind '" + kind + "' exists in the document";
+							return oc;
+						}
 
 						const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc );
 						for( const auto& kv : chunks ) {
 							const auto it = graph.dependents.find( kv.first );
 							if( it != graph.dependents.end() && !it->second.empty() ) {
 								const std::string nm = CheckerChunkName( kv.second );
-								return { true, "any_param_references_kind: '" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) +
-									"' (kind '" + kind + "') has " + std::to_string( it->second.size() ) + " referrer(s)" };
+								CheckOutcome oc;
+								oc.hasMetricValue = true;
+								oc.metricValue = 1.0;
+								oc.passed = true;
+								oc.detail = "any_param_references_kind: '" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) +
+									"' (kind '" + kind + "') has " + std::to_string( it->second.size() ) + " referrer(s)";
+								return oc;
 							}
 						}
-						return { false, "any_param_references_kind: " + std::to_string( chunks.size() ) + " chunk(s) of kind '" +
-							kind + "' exist, but NONE has a referrer (all orphaned)" };
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = 0.0;
+						oc.passed = false;
+						oc.detail = "any_param_references_kind: " + std::to_string( chunks.size() ) + " chunk(s) of kind '" +
+							kind + "' exist, but NONE has a referrer (all orphaned)";
+						return oc;
 					}
 
 					// no_orphan_chunks: {kindSuffix?|kinds?|category?, exclude?} --

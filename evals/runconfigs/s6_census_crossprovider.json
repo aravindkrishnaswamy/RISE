@@ -1,0 +1,13 @@
+{
+  "//": "doc 88 S6 eval census, CROSS-PROVIDER CHECK (2026-08-20). Same three scenarios as s6_census_gemini.json, on a second lab's model (openai/gpt-5.6-terra, same model id used in full_baseline_hosted.json) -- run this before believing any gemini-only null per C-MEAS (docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md §2 'cross-provider before believing a null'). Not a full re-baseline: just enough to distinguish 'the mechanism doesn't work' from 'gemini-3.5-flash specifically doesn't reach for it'.",
+  "scenarios": [
+    "evals/scenarios/rich_material_closeup.json",
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/bare_prompt_build_cozy_study.json"
+  ],
+  "providers": [
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/s6_census_crossprovider"
+}

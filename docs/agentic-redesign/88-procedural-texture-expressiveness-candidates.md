@@ -2,8 +2,14 @@
 
 **Status: APPROVED with decisions (user review 2026-08-19, see §7); Phase-1
 implementation IN FLIGHT per the §8 slice plan — S1 (d91e5bfd), S2 (01bd9df7),
-S3 (afe1a4cc), S4 (86ebc7a0), S4b (efc54324) shipped; S5 adoption wiring in
-review; S6 eval census pending.  §1's gap table describes the PRE-ARC state.**
+S3 (afe1a4cc), S4 (86ebc7a0), S4b (efc54324), S5 (1161e66d) shipped; S6's
+OFFLINE half (rich_material_closeup scenario + fixture, the additive
+expression-family census metric on both bare_prompt_build scenarios, harness
+unit coverage, T10 + full suite green) shipped 2026-08-20 — see §10 for the
+run protocol.  The LIVE half (actually running the census against a hosted
+model and reading the §5 gates) has NOT run in this environment (no API
+keys) and is the next action item in §10.  §1's gap table describes the
+PRE-ARC state.**
 
 This is the texture half of the directive that closed the creative-richness arc
 (CREATIVITY_JOURNAL.md, closing line: *"build even more expressive geometry and
@@ -409,7 +415,10 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
 - **S6 — eval census** (haiku for runs, Fable arbitration).
   `rich_material_closeup` scenario + checkpoint extensions; N=3
   gemini-3.5-flash + one cross-provider check; evaluate the §5 gates; write
-  the arc log.
+  the arc log.  **Offline half shipped 2026-08-20** (scenario + fixture +
+  checkpoint extensions + harness coverage, all keyless/replay-only — see
+  §10); the live half (actually running N=3 against a hosted model and
+  reading the gates) is the pending next action, tracked in §10.
 
 Sequencing: S1→S2 strictly ordered; S3 can overlap S2 reviews; S4 after S2;
 S5 after S2+S3 (examples must parse against shipped chunks); S6 last.
@@ -423,3 +432,150 @@ factual claims (ExpressionEval, UVTransformPainter, scalar_painter forms,
 (MaterialX/OSL/SeExpr specs, Heitz & Neyret 2018, Burley 2019, Lagae 2010,
 Quilez, MatFormer 2022, VLMaterial 2025, arXiv 2409.00856) are listed in the
 review artifact for this doc.
+
+## 10. S6 census protocol
+
+The handoff for whoever runs the live half (a keyed session, or a human)
+with zero rediscovery.  Everything below the live-run commands has already
+been built and gated keylessly in this environment (no API keys were
+available here) — see the "offline half shipped 2026-08-20" status line at
+the top of this doc.
+
+### What's already in place
+
+- **`evals/scenarios/rich_material_closeup.json`** — the new gate-(a)
+  scenario (macro brass-doorknob-on-a-wooden-plinth product shot; texture
+  richness IS the task, no mechanism named in the prompt).  Its checkpoint
+  battery carries the three P4.4 checks as GATING, weighted checkpoints:
+  `any_param_references_kind:scalar_painter` (metricLabel
+  `spatially_varying_scalar`, weight 3 — the headline), `distinct_chunk_kinds`
+  over `["expression_painter","ramp_painter"]` (metricLabel
+  `expression_family`, weight 2), and painter-kind diversity (metricLabel
+  `painter_kinds`, `distinctMin:3`, weight 1.5) — plus the same
+  render/diagnostics/trajectory structural checks the
+  `build_watch_scene`/`build_stilllife_scene` family uses.  Paired fixture:
+  `evals/fixtures/rich_material_closeup.fixture.jsonl` (a scripted build that
+  satisfies every checkpoint — proven by T10 below).
+- **`evals/scenarios/bare_prompt_build_courtyard.json` and
+  `bare_prompt_build_cozy_study.json`** — each gained one ADDITIVE, non-
+  gating checkpoint (`weight:0`, `distinctMin:0`, metricLabel
+  `expression_family`) that counts `expression_painter`/`ramp_painter`
+  presence without disturbing either scenario's existing pass criteria — the
+  `any_param_references_kind:scalar_painter` checkpoint these two scenarios
+  need for gate (b) already existed before this slice (S0/material-richness
+  P0); only the expression/ramp half was missing.
+- **`tests/AgentEvalCheckTest.cpp`** — `TestExpressionRampFamilyAndScalarExpressionFormCheckpoints`
+  (T-s6) exercises both new checkpoint shapes against synthetic pass/fail
+  documents (the `scalar_painter { expression ... }` FORM specifically, not
+  just the pre-S1 `function2d` form T-mr already covered; `expression_painter`
+  alone; `ramp_painter` alone, proving the family check is genuinely
+  either-kind; the `distinctMin:0` vacuous-pass shape the two bare_prompt
+  scenarios rely on).  T10 (`TestSeedScenariosCheckpointsAreTrue`) dynamically
+  enumerates every `evals/scenarios/*.json` and proves each one's checkpoints
+  are ALL literally true of its own committed fixture — `rich_material_closeup`
+  and the two edited bare_prompt scenarios are covered automatically, no
+  hard-coded id list to update.
+- **`evals/runconfigs/s6_census_gemini.json`** and
+  **`s6_census_crossprovider.json`** — the two runconfigs below, already
+  written and JSON-valid.
+
+### Commands
+
+Primary instrument, N=3, gemini-3.5-flash (the same instrument
+`bare_prompt_baseline.json` was measured on — comparable to that prior
+series):
+
+```sh
+export GEMINI_API_KEY=...
+./bin/rise --agent-eval evals/runconfigs/s6_census_gemini.json
+python3 tools/eval_report.py report evals/runs/s6_census_gemini
+```
+
+Cross-provider check — run this BEFORE concluding any gate below read a
+genuine null (C-MEAS: "cross-provider before believing a null"), not only
+when a gate looks surprising:
+
+```sh
+export OPENAI_API_KEY=...
+./bin/rise --agent-eval evals/runconfigs/s6_census_crossprovider.json
+python3 tools/eval_report.py report evals/runs/s6_census_crossprovider
+```
+
+Both runconfigs are idempotent-resumable (`evals/README.md` "Resume /
+skip-if-completed") — re-running the same command after a partial/crashed
+run only executes the missing cells.  Read the `spatially_varying_scalar`,
+`expression_family`, and `painter_kinds` metric columns from
+`tools/eval_report.py`'s per-checkpoint breakdown (or the raw
+`<runDir>/.../results.jsonl` `checkpoints[].metricValue`/`metricLabel`
+fields) — these are the census numbers the three gates below read, not the
+scenarios' `allPassed`/pass@1 (which also folds in the unrelated structural
+checks).
+
+### The three pre-committed gates (§5, verbatim)
+
+> (a) `rich_material_closeup` — ≥2/3 runs bind ≥1 spatially-varying
+> microsurface scalar without being told to; (b) bare-prompt build —
+> painter-kind diversity floor holds ≥3 and ≥1 run uses a new kind; (c)
+> `vary_material` — when the note fires, the verb is called in ≥1/3 runs
+> (the collapse_to_instances hypothesis, currently unmeasured).  Miss all
+> three → the mechanism is wrong, stop and re-diagnose before adding chunks.
+
+Reading each gate off the census output:
+
+- **Gate (a)**: over the 3 `rich_material_closeup` repeats (gemini arm),
+  count how many have `spatially_varying_scalar` (the
+  `any_param_references_kind:scalar_painter` checkpoint) passing —
+  `checkpoints[].passed` where `metricLabel=="spatially_varying_scalar"`.
+  Need ≥2/3.
+- **Gate (b)**: over the 6 bare-prompt repeats (3 courtyard + 3 cozy_study,
+  gemini arm), the `painter_kinds` checkpoint's `metricValue` (the distinct
+  qualifying-painter-kind count) must hold `>= 3` on every run that was
+  already passing before this slice (this is a PRE-EXISTING gate — the S6
+  slice added no new obligation here), AND at least 1 run across the 6 must
+  show a NEW kind — read the `expression_family` metric's `metricValue`
+  (`0`, `1`, or `2`): any run with `metricValue >= 1` is a "new kind used"
+  hit, since these scenarios' fixtures predate `expression_painter`/
+  `ramp_painter` and read `0` today by construction (see the checkpoint's
+  own inline comment in both scenario files).
+- **Gate (c)**: `vary_material` census is OUT OF SCOPE for this slice — it
+  needs its own scenario exercising the verb-naming note + verb call, not
+  built here.  Tracked as a follow-up; do not read it off `s6_census_*`.
+
+### What to do on each outcome
+
+- **All measured gates ((a) and (b)) hit their bar on the gemini arm**: run
+  the cross-provider check.  If it agrees (same qualitative verdict, not
+  necessarily the same exact fraction), the offline harness's job is done —
+  write the arc log entry (mirror the style of the 73–85 arc logs already in
+  this repo: what was measured, the numbers, the verdict) and update this
+  doc's status line.  Phase 1's adoption-wiring mechanism is validated;
+  Phase 2 breadth work (§5) can proceed.
+- **A measured gate misses on the gemini arm**: run the cross-provider check
+  BEFORE concluding anything (C-MEAS).  If the second provider ALSO misses,
+  this is very likely a real null, not an instrument quirk — do not add more
+  chunks or expand the vocabulary (§6's rejected-alternatives discipline);
+  instead re-diagnose why the mechanism (verb + naming note, painter
+  diversity already proven to move on worked examples per C-TYPE) isn't
+  reaching this specific gate, the same way the 2026-05/06 VCM-MIS arc
+  re-diagnosed instead of re-guessing.  If the second provider PASSES where
+  gemini missed, this is a single-instrument artifact — widen the
+  cross-provider run to N=3 there too before treating either number as the
+  headline, and consider whether gemini-3.5-flash specifically needs its own
+  worked example (mirroring the `procedural-textures.md` 0/6-read lesson:
+  the fix is usually in the read-set, not the mechanism).
+- **Both measured gates miss on BOTH providers**: this is strong evidence
+  the mechanism is wrong, but it is NOT §5's stop condition on its own —
+  §5 reads "miss all three", and gate (c) is unmeasured by this slice (it
+  is out of scope per the note above, tracked as a follow-up).  Do not
+  invoke the stop rule off two gates.  The correct next action is to build
+  and run the gate-(c) scenario (the `vary_material` census follow-up
+  flagged above) BEFORE deciding whether all three have actually missed —
+  only then does §5 literally apply.  Surface the (a)+(b) double-miss to
+  the user either way (it is worth flagging on its own merits, gate (c)
+  notwithstanding); do not silently sit on it while gate (c) is pending,
+  and do not weaken §5's own three-gate wording to match a two-gate
+  reading.
+- **Gate (c) is separately tracked**: build its scenario (a note-fires-then-
+  verb-called census over a scene with an all-numeric-microsurface material,
+  matching the `collapse_to_instances` precedent's measurement shape) as a
+  follow-up slice; it does not block reading (a)/(b) above.

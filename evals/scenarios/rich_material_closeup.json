@@ -1,0 +1,78 @@
+{
+  "id": "rich_material_closeup",
+  "title": "Macro product close-up -- texture richness IS the task (doc 88 S6 census)",
+  "//": "Phase-1 gate (a) from docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md §5: 'rich_material_closeup -- >=2/3 runs bind >=1 spatially-varying microsurface scalar without being told to.' The prompt summons material work (a macro product shot, studio lighting) without naming any mechanism -- no 'use scalar_painter', no 'vary the roughness'. Unlike the bare_prompt_build family (a whole furnished scene where material richness is ONE of several things being measured), this scenario is a SINGLE hero object at macro scale, where texture IS the deliverable -- the closest analogue to what a materials/product-shot prompt actually asks an artist for. Checkpoint battery mirrors the build_watch_scene/build_stilllife_scene/build_study_scene family's structural checks (chunk_count/render/diagnostics/trajectory) plus the THREE doc-88 P4.4 gate checks: (1) any_param_references_kind:scalar_painter -- the headline 0/24 metric, weighted as the dominant signal; (2) distinct_chunk_kinds over [expression_painter,ramp_painter] -- 'used anywhere', the P1/P2.2 adoption census; (3) painter-kind diversity (distinct_chunk_kinds category:painter, distinctMin 3) -- the G1-adjacent diversity floor already used by the bare_prompt_build family. All three are GATING here (nonzero weight, and T10 requires them literally TRUE of the committed fixture) because for THIS scenario texture richness is the whole point, unlike the bare_prompt_build family where they ride as an additive, non-distorting metric on a scenario whose primary grade is build completeness.",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "A close-up product shot of a weathered brass doorknob resting on a dark wooden plinth, studio lighting."
+  ],
+  "budgets": {
+    "//": "Matches the furnished build-scenario family (build_watch_scene et al) and the bare-prompt family -- deliberately loose so a budget exhaustion never masquerades as the flat-materials signal this scenario exists to measure.",
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/rich_material_closeup.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 2,
+      "max": 20
+    },
+    {
+      "//": "HEADLINE gate: doc 88's 0/24 deficit metric. Passes iff a scalar_painter chunk exists AND is bound to >=1 param anywhere in the document -- the direct attack on 'roughness is a number' (C-TYPE). Weighted well above the other checkpoints so its contribution to the report's weighted score dominates; the raw pass/fail is what the doc-88 §5 gate (a) actually reads.",
+      "kind": "document",
+      "op": "any_param_references_kind",
+      "referencedKind": "scalar_painter",
+      "weight": 3,
+      "metricLabel": "spatially_varying_scalar"
+    },
+    {
+      "//": "Second P4.4 gate check: the expression/ramp family (P1's expression_painter, P2.2's ramp_painter) used ANYWHERE in the document -- existence, not reachability (distinct_chunk_kinds has no reachability filter; objects_reaching_kinds would be the closer but is not needed here since the scenario has only two hero objects and no decoy-gaming surface). A document using EITHER kind satisfies this (distinctMin 1 over a 2-kind list) -- an agent that reaches for `ramp_painter` alone without ever writing an `expression` body still counts, matching the doc's framing of P1+P2.2 as one adoption census.",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": ["expression_painter", "ramp_painter"],
+      "distinctMin": 1,
+      "weight": 2,
+      "metricLabel": "expression_family"
+    },
+    {
+      "//": "Painter-kind diversity floor, same shape as the bare_prompt_build family's painter_kinds checkpoint (category:painter, excluding the two 'always available, proves nothing' kinds).",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "category": "painter",
+      "exclude": ["uniformcolor_painter", "scalar_painter"],
+      "distinctMin": 3,
+      "weight": 1.5,
+      "metricLabel": "painter_kinds"
+    },
+    {
+      "//": "Indoor macro product shot, single studio panel light -- same recipe and band as the build_watch_scene/build_stilllife_scene/build_study_scene family (meanLumaMax 0.35, channelBalanceMax 4.0). Sanity that whatever texture richness landed is actually LIT and visible, not a red herring on a black or blown-out frame. Review round 1 P3: measured against the committed fixture (samples=512, 32x24) after the P2-c draft-render move -- meanLuma=0.034141 (meanR=0.047782, meanG=0.031856, meanB=0.016601), a 2.28x margin over meanLumaMin 0.015 (channelBalanceMax's 4.0 has ~1.4x headroom too, at an observed ratio of 2.88). The studio luminaire's mat_emit `scale` was raised 16.0 -> 48.0 in the fixture to reach this margin -- at 16.0 (and even at the pre-P2-c chunk order) the measured meanLuma sat at ~1.1-1.3x over the floor, too tight for MC-noise safety; moving the draft render after object placement (P2-c) further reduced the pre-fix margin because reordering the chunk-insertion sequence changes each object's index-derived QMC dimension offsets, which measurably shifted this scene's low-sample-count (512 spp) noise/bias pattern even though the FINAL scene graph is identical either way.",
+      "kind": "render",
+      "samples": 512,
+      "width": 32,
+      "height": 24,
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 4.0
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "//": "Tool-call sanity, mirroring the build_watch_scene/build_stilllife_scene/build_study_scene family: reads before building, renders before declaring done, and never falls into the mechanical-loop failure mode.",
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": ["read_document", "render"]
+    }
+  ]
+}
