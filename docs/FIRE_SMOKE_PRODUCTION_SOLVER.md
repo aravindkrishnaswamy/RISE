@@ -1665,6 +1665,21 @@ unchanged. This all-channel excitation is frozen before r110 output. The r109
 artifacts and numbers remain a diagnostic record and cannot be used for a
 tolerance.
 
+### 7.28 Affine-admissible all-channel state (r111 protocol freeze)
+
+r110's direct species authoring was rejected before its first advance by the
+certified elemental-affine rows; it produced no output evidence. r111 repairs
+the instrument formulation rather than loosening that gate. Each cell starts
+on the exact ambient/injected mixture line at `Z=0.04+0.01 m0`, applies `0.2`
+of the limiting primary methane reaction direction from the immutable record,
+then partitions `0.02` of CO2 into the reverse CO-oxidation direction and
+`0.01` of the remainder into the reverse soot-oxidation direction. Those two
+record-molecular-weight constructions preserve mass and C/H/O/N rows while
+making CO and `C(gr)` strictly positive. Sensible energy is recomputed at the
+same smooth temperature. All r109 geometry, horizon, filter, order, and
+decision bytes remain unchanged. This v3 analytic state is sealed before any
+r111 advance.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

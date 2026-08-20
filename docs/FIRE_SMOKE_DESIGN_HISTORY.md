@@ -2637,3 +2637,12 @@ it was already tried and refuted here.
   all seven species, with N2 the exact remainder, while retaining every other
   r109 choice and the already committed decision rule. The under-excited r109
   artifacts remain diagnostic-only; no tolerance or solver changes.
+
+- **r110 structural rejection / r111 freeze (2026-08-19):** r110's directly
+  authored product fractions correctly failed the certified elemental-affine
+  input gate before the first advance. r111 constructs the fully excited state
+  only from affine-admissible directions: the ambient/injected mixture line,
+  `0.2` limiting primary reaction, then small reverse CO- and soot-oxidation
+  partitions using record molecular weights. No solver evidence exists for
+  r110. The dyadic pairs, short horizon, mollifier, `p=1.8`, and independent
+  limit-ball rule remain frozen and unchanged.

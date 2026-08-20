@@ -96,17 +96,14 @@ namespace FireProductionDyadicCalibration
 					const double py=2.0*Pi*(static_cast<double>(y)+0.5)/result.dimensions[1];
 					const double pz=2.0*Pi*(static_cast<double>(z)+0.5)/result.dimensions[2];
 					const double mode0=std::sin(px)*std::sin(py)*std::sin(pz);
-					const double mode1=std::cos(px)*std::sin(py)*std::cos(pz);
-					const double mode2=std::sin(px)*std::cos(py)*std::cos(pz);
 					const double mixture=0.04+0.01*mode0;
 					MethaneCellState state;state.temperatureK=330.0+
 						20.0*std::cos(px)*std::cos(py)*std::cos(pz);
-					std::array<double,MethaneSpeciesCount> mass={{
-						0.025+0.003*mode0,0.215,0.0,0.012+0.001*mode1,
-						0.009+0.001*mode2,0.0015+0.0002*mode0,0.0005+0.0001*mode1}};
-					mass[2]=1.0-(mass[0]+mass[1]+mass[3]+mass[4]+mass[5]+mass[6]);
-					double inverseWeight=0.0;
+					std::array<double,MethaneSpeciesCount> mass={{}};double inverseWeight=0.0;
 					for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
+						const double ambientMass=ambient.constituent[species]/ambient.GasDensity();
+						const double injectedMass=injected.constituent[species]/injected.GasDensity();
+						mass[species]=(1.0-mixture)*ambientMass+mixture*injectedMass;
 						if(species<MethaneCarbon){const FireThermochemistrySpecies* speciesRecord=
 							fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
 							if(speciesRecord)inverseWeight+=mass[species]/
@@ -116,7 +113,29 @@ namespace FireProductionDyadicCalibration
 						state.temperatureK*inverseWeight);
 					for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
 						state.constituent[species]=density*mass[species];
-					state.rhoTotalZ=density*mixture;
+					const double reacted=0.2*std::min(state.constituent[MethaneCH4],
+						state.constituent[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+					const std::vector<double>& reaction=fuel.PrimaryReactionDelta();
+					for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+						state.constituent[species]+=reacted*reaction[species];
+					const FireThermochemistrySpecies* co=fuel.FindSpecies("CO");
+					const FireThermochemistrySpecies* co2=fuel.FindSpecies("CO2");
+					const FireThermochemistrySpecies* o2=fuel.FindSpecies("O2");
+					const FireThermochemistrySpecies* carbon=fuel.FindSpecies("C(gr)");
+					if(!co||!co2||!o2||!carbon)return false;
+					const double co2ToCO=0.02*state.constituent[MethaneCO2];
+					state.constituent[MethaneCO2]-=co2ToCO;
+					state.constituent[MethaneCO]+=co2ToCO*co->molecularWeightKGPerKMol/
+						co2->molecularWeightKGPerKMol;
+					state.constituent[MethaneO2]+=co2ToCO*0.5*o2->molecularWeightKGPerKMol/
+						co2->molecularWeightKGPerKMol;
+					const double co2ToCarbon=0.01*state.constituent[MethaneCO2];
+					state.constituent[MethaneCO2]-=co2ToCarbon;
+					state.constituent[MethaneCarbon]+=co2ToCarbon*carbon->molecularWeightKGPerKMol/
+						co2->molecularWeightKGPerKMol;
+					state.constituent[MethaneO2]+=co2ToCarbon*o2->molecularWeightKGPerKMol/
+						co2->molecularWeightKGPerKMol;
+					state.rhoTotalZ=mixture*state.TotalDensity();
 					if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(state),
 						state.temperatureK,state.sensibleEnergyJPerM3,&error))return false;
 					result.states[CellIndex(result,x,y,z)]=state;
@@ -293,15 +312,12 @@ namespace FireProductionDyadicCalibration
 			<<"domain_Dstar 4 4 6\nDstar_m "<<dStar<<"\n"
 			<<"tiers 5 10 6 12\nbase_dimensions 4 4 6\n"
 			<<"boundary periodic periodic periodic periodic periodic periodic\n"
-			<<"state analytic_all_channel_smooth_taylor_green_v2\n"
+			<<"state analytic_affine_admissible_all_channel_taylor_green_v3\n"
 			<<"mixture_fraction 0.04_plus_0.01_sinX_sinY_sinZ\n"
-			<<"mass_fraction CH4 0.025_plus_0.003_mode0\n"
-			<<"mass_fraction O2 0.215\n"
-			<<"mass_fraction CO2 0.012_plus_0.001_mode1\n"
-			<<"mass_fraction H2O 0.009_plus_0.001_mode2\n"
-			<<"mass_fraction CO 0.0015_plus_0.0002_mode0\n"
-			<<"mass_fraction C_gr 0.0005_plus_0.0001_mode1\n"
-			<<"mass_fraction N2 one_minus_other_channels\n"
+			<<"composition ambient_injected_mixture_line\n"
+			<<"primary_reaction_extent 0.2_of_limiting_reactant\n"
+			<<"reverse_CO2_to_CO_fraction 0.02\n"
+			<<"reverse_CO2_to_C_gr_fraction 0.01_after_CO_partition\n"
 			<<"temperature_K 330_plus_20_cosX_cosY_cosZ\n"
 			<<"velocity taylor_green_xy_amplitude_0.05_sqrt_gDstar\n"
 			<<"sources exact_positive_zero\n"
