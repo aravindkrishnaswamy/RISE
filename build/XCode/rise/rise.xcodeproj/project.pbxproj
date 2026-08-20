@@ -6406,12 +6406,15 @@
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6438,6 +6441,11 @@
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6468,12 +6476,15 @@
 				GCC_OPTIMIZATION_LEVEL = 3;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6500,6 +6511,11 @@
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6529,12 +6545,15 @@
 				GCC_OPTIMIZATION_LEVEL = 3;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6561,6 +6580,11 @@
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6713,12 +6737,15 @@
 				GCC_OPTIMIZATION_LEVEL = 3;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6746,6 +6773,11 @@
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
