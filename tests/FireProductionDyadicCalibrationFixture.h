@@ -120,27 +120,19 @@ namespace FireProductionDyadicCalibration
 		const double amplitude=0.05*std::sqrt(Gravity*dStar),h=result.cellWidthM;
 		for(unsigned int axis=0u;axis<3u;++axis){
 			const std::size_t nx=result.dimensions[0],ny=result.dimensions[1],nz=result.dimensions[2];
-			const std::size_t faces=axis==0u?(nx+1u)*ny*nz:
-				(axis==1u?nx*(ny+1u)*nz:nx*ny*(nz+1u));
-			result.momentum.component[axis].resize(faces);
-			result.velocity.component[axis].resize(faces);
-			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
-				ez=axis==2u?nz+1u:nz;
-			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
-				for(std::size_t x=0u;x<ex;++x){
-					const std::size_t face=(z*ey+y)*ex+x;
-					const std::size_t normal=axis==0u?x:(axis==1u?y:z);
-					const std::size_t extent=result.dimensions[axis];
-					const std::size_t high=normal==extent?0u:normal;
-					const std::size_t low=normal==0u?extent-1u:normal-1u;
-					std::array<std::size_t,3> lower={{x%nx,y%ny,z%nz}},upper=lower;
-					lower[axis]=low;upper[axis]=high;
+			result.momentum.component[axis].resize(cells);
+			result.velocity.component[axis].resize(cells);
+			for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
+				for(std::size_t x=0u;x<nx;++x){
+					const std::size_t face=CellIndex(result,x,y,z);
+					std::array<std::size_t,3> lower={{x,y,z}},upper=lower;
+					upper[axis]=(upper[axis]+1u)%result.dimensions[axis];
 					const double density=0.5*(result.states[CellIndex(result,lower[0],lower[1],
 						lower[2])].GasDensity()+result.states[CellIndex(result,upper[0],upper[1],
 						upper[2])].GasDensity());
-					const double fx=(static_cast<double>(x)+(axis==0u?0.0:0.5))*h;
-					const double fy=(static_cast<double>(y)+(axis==1u?0.0:0.5))*h;
-					const double fz=(static_cast<double>(z)+(axis==2u?0.0:0.5))*h;
+					const double fx=(static_cast<double>(x)+(axis==0u?1.0:0.5))*h;
+					const double fy=(static_cast<double>(y)+(axis==1u?1.0:0.5))*h;
+					const double fz=(static_cast<double>(z)+(axis==2u?1.0:0.5))*h;
 					const double velocity=AnalyticVelocity(axis,fx,fy,fz,lx,ly,lz,amplitude);
 					result.velocity.component[axis][face]=velocity;
 					result.momentum.component[axis][face]=density*velocity;
@@ -322,15 +314,19 @@ namespace FireProductionDyadicCalibration
 
 	int SealTargets(const std::filesystem::path& directory,const char* expectedProtocol)
 	{
+		std::fprintf(stderr,"dyadic target extraction begins\n");
 		if(!expectedProtocol||std::strlen(expectedProtocol)!=64u||
 			DigestFile(directory/"dyadic_protocol.v1")!=expectedProtocol)return 167;
 		std::array<std::string,4> targetDigests;std::string error;
 		for(std::size_t index=0u;index<Tiers.size();++index){MethaneRunCheckpoint state;
 			if(!BuildAnalyticState(Tiers[index],state,error))return 168;
+			std::fprintf(stderr,"dyadic target tier %u advancing cells=%zu\n",Tiers[index],
+				state.states.size());
 			const double flowThrough=6.0*std::sqrt(state.values.characteristicDiameterM/Gravity);
 			OracleSpatialCalibrationResult result;
-			if(!RunOracleSpatialCalibrationTrajectory(state,flowThrough/512.0,8u,result,error,true))
-				return 169;
+			if(!RunOracleSpatialCalibrationTrajectory(state,flowThrough/512.0,8u,result,error,true)){
+				std::fprintf(stderr,"dyadic target tier %u failed: %s\n",Tiers[index],
+					error.c_str());return 169;}
 			const std::filesystem::path path=directory/(std::string("oracle_tier")+
 				std::to_string(Tiers[index])+"_sdiv_x8.f64");
 			if(!WriteCalibrationDoublePayload(path,result.divergenceTargetsPerS))return 170;
