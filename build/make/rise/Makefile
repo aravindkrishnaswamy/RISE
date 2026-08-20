@@ -31,6 +31,30 @@ include Filelist
 # .o so the .mm's object lands in the library + gets a tracked .d.
 OBJLIB = $(patsubst %.mm,%.o,$(SRCLIB:.cpp=.o))
 
+# r108 calibration derivation must execute in a process that cannot dispatch
+# Metal.  The dedicated link keeps the ordinary CPU library objects, replaces
+# all four production Metal legs with their honest unsupported stubs, and
+# removes the Metal framework itself.  The post-link symbol/framework audit is
+# part of the target, not an optional source-hygiene test.
+ifdef IS_MACOS_BUILD
+FIREPRODUCTIONNOMETALSTUBS = \
+	$(PATHLIBRARY)Utilities/FireProductionComputeUnsupported.o \
+	$(PATHLIBRARY)Utilities/FireProductionAdvectionUnsupported.o \
+	$(PATHLIBRARY)Utilities/FireProductionProjectionUnsupported.o \
+	$(PATHLIBRARY)Utilities/FireProductionForceUnsupported.o
+OBJLIB_NOMETAL = $(filter-out \
+	$(PATHLIBRARY)Utilities/FireProductionComputeMac.o \
+	$(PATHLIBRARY)Utilities/FireProductionAdvectionMac.o \
+	$(PATHLIBRARY)Utilities/FireProductionProjectionMac.o \
+	$(PATHLIBRARY)Utilities/FireProductionForceMac.o,$(OBJLIB)) \
+	$(FIREPRODUCTIONNOMETALSTUBS)
+LDLIBS_NOMETAL = $(subst -framework Metal,,$(LDLIBS))
+else
+FIREPRODUCTIONNOMETALSTUBS =
+OBJLIB_NOMETAL = $(OBJLIB)
+LDLIBS_NOMETAL = $(LDLIBS)
+endif
+
 # Make the object list for DRISE
 OBJDRISE = $(SRCDRISE:.cpp=.o)
 
@@ -86,7 +110,7 @@ OBJSTANDALONE = \
 # back in via the `-include $(ALL_DEPS)` near the bottom of this file. Result:
 # editing a header invalidates exactly the .o files that included it -- no
 # more `make clean` after touching IJob.h or any other interface header.
-ALL_OBJS = $(OBJLIB) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
+ALL_OBJS = $(OBJLIB) $(FIREPRODUCTIONNOMETALSTUBS) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
 ALL_DEPS = $(ALL_OBJS:.o=.d)
 
 # -MMD: emit a Make-format header-dependency snippet alongside each .o,
@@ -244,6 +268,17 @@ $(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 $(PATHTESTS)FireSeq
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB) $(LDLIBS)
+
+$(PATHTESTDEST)FireProductionCalibrationOracle : check-fire-production-fp64 $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB_NOMETAL)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking no-Metal calibration owner: $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB_NOMETAL) $(LDLIBS_NOMETAL)
+ifdef IS_MACOS_BUILD
+	@if otool -L $@ | grep -q 'Metal.framework'; then \
+		echo 'calibration owner unexpectedly links Metal.framework'; rm -f $@; exit 1; fi
+	@if nm $@ | grep -q 'ProjectFireProductionMetalImpl'; then \
+		echo 'calibration owner unexpectedly contains a production Metal implementation'; rm -f $@; exit 1; fi
+endif
 
 $(PATHTESTDEST)% : $(PATHTESTS)%.o $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)

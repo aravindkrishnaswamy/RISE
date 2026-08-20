@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 namespace
@@ -24,6 +26,12 @@ namespace
 	{
 		return (n+1u)*lines;
 	}
+
+	std::string ReadText(const char* path)
+	{
+		std::ifstream input(path,std::ios::binary);std::ostringstream output;
+		output<<input.rdbuf();return output.str();
+	}
 }
 
 int main()
@@ -34,6 +42,18 @@ int main()
 		std::strlen(RISEFireProductionFP64::SourceManifest::FireProductionForceSource)==64u&&
 		std::strlen(RISEFireProductionFP64::SourceManifest::Generator)==64u,
 		"fp64 mirror carries source and generator SHA-256 identities");
+	const std::string makeRules=ReadText("build/make/rise/Makefile");
+	const std::size_t noMetalTarget=makeRules.find(
+		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
+	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
+	Check(noMetalTarget!=std::string::npos&&genericTestTarget!=std::string::npos&&
+		noMetalTarget<genericTestTarget&&makeRules.find("OBJLIB_NOMETAL = $(filter-out")!=
+		std::string::npos&&makeRules.find("FireProductionForceMac.o,$(OBJLIB))")!=
+		std::string::npos&&makeRules.find("FireProductionForceUnsupported.o")!=
+		std::string::npos&&makeRules.find("LDLIBS_NOMETAL = $(subst -framework Metal,,$(LDLIBS))")!=
+		std::string::npos&&makeRules.find("otool -L $@ | grep -q 'Metal.framework'")!=
+		std::string::npos&&makeRules.find("nm $@ | grep -q 'ProjectFireProductionMetalImpl'")!=
+		std::string::npos,"calibration oracle target is source-bound to a no-Metal link audit");
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};
