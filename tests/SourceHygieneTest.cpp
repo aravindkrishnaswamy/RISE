@@ -48,6 +48,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <cstdlib>   // std::getenv -- IJob vtable manifest regen-mode trigger
 #include <cstring>   // std::strlen -- read_schema batch-cap parity scan
 #include <cctype>
 #include <filesystem>
@@ -153,6 +154,277 @@ static std::string StripCommentsPreservingLayout( const std::string& src )
 			continue;
 		}
 		++i;
+	}
+	return out;
+}
+
+// ---- IJob vtable-manifest extraction (hardened to full signatures) -------
+// IJob is a public abstract interface: its virtual DECLARATION ORDER *and*
+// each virtual's exact parameter list are the vtable ABI.  A name-only diff
+// is blind to a trailing DEFAULTED parameter appended to an EXISTING
+// virtual -- that still changes the caller-visible signature (and, if it
+// were ever a real overload resolution change, the vtable slot's calling
+// convention) without moving its position in the list.  This is not
+// hypothetical: the doc-88 S7 review (2026-08-20) found two IJob virtuals
+// that had grown a trailing defaulted parameter with the name-only manifest
+// staying green throughout.  See docs/VITREOUS_ENAMEL.md:894-899 and
+// docs/gui/RENDER_COORDINATOR.md:1237-1239 for why any pure-virtual
+// signature change on a shipped interface is an ABI event.
+//
+// A single IJob virtual: its NAME (identifier before '(', used for the
+// classified diagnostics below) and its FULL NORMALIZED SIGNATURE (used for
+// the actual equality check).
+struct IJobVirtualDecl
+{
+	std::string name;
+	std::string signature;
+};
+
+// Normalize a raw (possibly multi-line, arbitrarily indented) declaration
+// into one canonical single-line string: collapse every whitespace run to a
+// single space, trim the ends, then delete spaces adjacent to structural
+// punctuation.  This makes the signature comparison invariant to reflow/
+// reindent -- IJob.h writes one parameter per line with a trailing
+// `///< [in] ...` doxygen comment (already blanked by the caller via
+// StripCommentsPreservingLayout), but nothing about the ABI depends on that
+// layout, so the pin must not either.
+static std::string NormalizeDeclSignature( const std::string& raw )
+{
+	std::string collapsed;
+	collapsed.reserve( raw.size() );
+	bool inSpace = false;
+	for( char c : raw ) {
+		if( isspace( (unsigned char)c ) ) {
+			if( !inSpace && !collapsed.empty() ) { collapsed += ' '; }
+			inSpace = true;
+		} else {
+			collapsed += c;
+			inSpace = false;
+		}
+	}
+	while( !collapsed.empty() && collapsed.back() == ' ' ) { collapsed.pop_back(); }
+
+	static const std::string kTight = "()[],=;*&";
+	std::string out;
+	out.reserve( collapsed.size() );
+	for( size_t i = 0; i < collapsed.size(); ++i ) {
+		if( collapsed[i] == ' ' ) {
+			const bool prevTight = !out.empty() && kTight.find( out.back() ) != std::string::npos;
+			const bool nextTight = ( i + 1 < collapsed.size() )
+			                       && kTight.find( collapsed[i + 1] ) != std::string::npos;
+			if( prevTight || nextTight ) { continue; }
+		}
+		out += collapsed[i];
+	}
+	return out;
+}
+
+// Step over a string/char literal starting at s[p] (if any), honoring
+// backslash escapes, and return the index just past its closing quote
+// (clamped to s.size() if unterminated); otherwise return p unchanged.
+// WHY: StripCommentsPreservingLayout deliberately preserves literal
+// CONTENTS (only comments are blanked), so a `)`, `;`, or `{` inside a
+// default-argument string/char literal (e.g. `const char* s = ")print;"`)
+// is a LIVE character to the bracket/terminator scans below -- without
+// stepping over the whole literal atomically, that character desyncs the
+// walk exactly the way an un-skipped comment byte would (round-20's
+// concern, mirrored here one abstraction lower).
+//
+// DISCLOSED RESIDUAL: this helper has no notion of C++14 digit separators
+// (`1'000'000`) -- an ODD count of `'` in a declaration would open a bogus
+// char literal and swallow text up to the next quote elsewhere.  Verified
+// fail-LOUD, never fail-silent (round-2 review harness): the desync grosses
+// out extraction into a count/prefix mismatch or a failed >200 sanity
+// check; it cannot keep the gate green while hiding a change.  IJob.h has
+// no digit separators today.  If one ever lands in a default argument,
+// teach this helper that a `'` following a digit is a separator, not a
+// literal delimiter.
+static size_t SkipLiteral( const std::string& s, size_t p )
+{
+	if( p >= s.size() || ( s[p] != '"' && s[p] != '\'' ) ) { return p; }
+	const char quote = s[p];
+	++p;
+	while( p < s.size() ) {
+		if( s[p] == '\\' ) { p += 2; continue; }
+		if( s[p] == quote ) { return p + 1; }
+		++p;
+	}
+	return s.size();
+}
+
+// Extract the ordered virtual-method declarations from `strippedText`, which
+// must already have comments blanked (StripCommentsPreservingLayout) so a
+// brace or the word `virtual` inside a comment cannot desynchronize the
+// walk (round-20 concern, mirrored here for this parser).
+//
+// Not every IJob virtual is a bare `= 0;` pure virtual -- a substantial
+// minority (the append-only-tail conveniences, e.g. `ExchangeProgress`,
+// `GetCstDocument`, `GetSuppressFileRasterizerOutputs`) carry an inline
+// DEFAULT BODY instead: `virtual T Name( ... ) { return x; }`.  A first
+// version of this parser accumulated raw declaration text up to the FIRST
+// `;` it saw -- which, for a bodied virtual, is the `;` INSIDE `return x;`,
+// truncating the declaration before its closing `}` and corrupting both the
+// name-adjacent text and the normalized signature.  The fix: find the
+// parameter list's own closing `)` by bracket-depth matching (`(`/`)` and
+// `[`/`]` share one counter, so a nested call or an array-size parameter
+// inside a default value doesn't end the list early), then from there scan
+// for the declaration's TRUE terminator -- a bare `;`, or a `{ ... }` body
+// matched by brace depth and its optional trailing `;`.
+static std::vector<IJobVirtualDecl> ExtractVirtualDecls( const std::string& strippedText )
+{
+	std::vector<IJobVirtualDecl> out;
+	const size_t n = strippedText.size();
+
+	// Locate `class IJob`'s body.  Skip a forward declaration (`;` reached
+	// before `{`) and keep searching -- defensive, real headers don't do
+	// this, but it costs nothing to handle.  Brace-match from the opening
+	// `{` to find the body's end.
+	size_t bodyStart = std::string::npos, bodyEnd = std::string::npos;
+	size_t searchFrom = 0;
+	while( searchFrom < n ) {
+		const size_t k = strippedText.find( "class IJob", searchFrom );
+		if( k == std::string::npos ) { break; }
+		const size_t afterName = k + 10;
+		searchFrom = afterName;
+		if( afterName < n && ( isalnum( (unsigned char)strippedText[afterName] )
+		                        || strippedText[afterName] == '_' ) ) {
+			continue;   // e.g. "class IJobFoo" -- not our class
+		}
+		size_t p = afterName;
+		while( p < n && strippedText[p] != '{' && strippedText[p] != ';' ) { ++p; }
+		if( p >= n || strippedText[p] != '{' ) { continue; }   // forward decl; keep looking
+		bodyStart = p;
+		int depth = 0;
+		for( ; p < n; ++p ) {
+			if( strippedText[p] == '"' || strippedText[p] == '\'' ) {
+				p = SkipLiteral( strippedText, p ) - 1;   // -1: the for's ++p resumes just past it
+				continue;
+			}
+			if( strippedText[p] == '{' ) { ++depth; }
+			else if( strippedText[p] == '}' ) { --depth; if( depth == 0 ) { bodyEnd = p; break; } }
+		}
+		break;
+	}
+	if( bodyStart == std::string::npos || bodyEnd == std::string::npos ) { return out; }
+
+	size_t i = bodyStart + 1;
+	while( i < bodyEnd ) {
+		const size_t b = strippedText.find_first_not_of( " \t\r\n", i );
+		if( b == std::string::npos || b >= bodyEnd ) { break; }
+
+		// Match an optional leading `inline` token, then a mandatory
+		// `virtual` token, each followed by ANY whitespace character -- not
+		// just the literal byte ' '.  The original check compared 8 literal
+		// bytes ("virtual "), which silently skipped `virtual\t...` (tab)
+		// and `inline virtual ...` (the `inline` prefix moves `virtual` off
+		// the declaration's first byte).  A skipped virtual today only
+		// fails loudly because dropping a mid-list entry shifts every later
+		// slot -- don't rely on that side effect; match the tokens properly.
+		size_t cursor = b;
+		if( strippedText.compare( cursor, 6, "inline" ) == 0
+		    && cursor + 6 < bodyEnd && isspace( (unsigned char)strippedText[cursor + 6] ) ) {
+			cursor += 6;
+			while( cursor < bodyEnd && isspace( (unsigned char)strippedText[cursor] ) ) { ++cursor; }
+		}
+		if( strippedText.compare( cursor, 7, "virtual" ) != 0
+		    || cursor + 7 >= bodyEnd || !isspace( (unsigned char)strippedText[cursor + 7] ) ) {
+			// Not a declaration start -- skip to the next line so we don't
+			// rescan the same non-virtual content byte by byte.
+			const size_t nl = strippedText.find( '\n', b );
+			i = ( nl == std::string::npos || nl >= bodyEnd ) ? bodyEnd : nl + 1;
+			continue;
+		}
+
+		const size_t paren = strippedText.find( '(', b );
+		if( paren == std::string::npos || paren >= bodyEnd ) { break; }   // malformed tail
+
+		size_t nameEnd = paren;
+		while( nameEnd > b && ( strippedText[nameEnd - 1] == ' ' || strippedText[nameEnd - 1] == '\t' ) ) {
+			--nameEnd;
+		}
+		size_t nameStart = nameEnd;
+		while( nameStart > b && ( isalnum( (unsigned char)strippedText[nameStart - 1] )
+		                          || strippedText[nameStart - 1] == '_' ) ) {
+			--nameStart;
+		}
+
+		// Destructor detection: a `~` DIRECTLY ahead of the extracted name
+		// (whitespace allowed between).  The earlier rule -- "any `~` between
+		// the declaration start and the `(`" -- would also have classified a
+		// hypothetical `virtual X& operator~()` as a destructor and dropped
+		// it silently untracked (round-2 review).  No operator overload
+		// exists on IJob today; if one ever lands, it extracts with an EMPTY
+		// name (an operator's token ends in punctuation, not an identifier
+		// char) but its FULL signature still pins below -- the name only
+		// feeds the classified diagnostics, the gate compares signatures.
+		size_t beforeName = nameStart;
+		while( beforeName > b && ( strippedText[beforeName - 1] == ' '
+		                           || strippedText[beforeName - 1] == '\t' ) ) {
+			--beforeName;
+		}
+		const bool isDtor = ( nameStart < nameEnd )
+		                    && ( beforeName > b && strippedText[beforeName - 1] == '~' );
+
+		// Find the parameter list's matching close paren.  `(`/`)` and
+		// `[`/`]` share one depth counter -- a nested call or an array-size
+		// parameter inside a default value must not end the list early.
+		size_t p = paren;
+		int bracketDepth = 0;
+		for( ; p < bodyEnd; ++p ) {
+			const char c = strippedText[p];
+			if( c == '"' || c == '\'' ) {
+				p = SkipLiteral( strippedText, p ) - 1;   // -1: the for's ++p resumes just past it
+				continue;
+			}
+			if( c == '(' || c == '[' ) { ++bracketDepth; }
+			else if( c == ')' || c == ']' ) {
+				--bracketDepth;
+				if( bracketDepth == 0 ) { ++p; break; }
+			}
+		}
+
+		// From just past the parameter list, find the TRUE terminator: a
+		// bare `;` (the `= 0;` pure-virtual case), or a `{ ... }` body
+		// matched by brace depth, plus its optional trailing `;`.
+		size_t declEnd = std::string::npos;
+		for( ; p < bodyEnd; ++p ) {
+			const char c = strippedText[p];
+			if( c == '"' || c == '\'' ) {
+				p = SkipLiteral( strippedText, p ) - 1;   // -1: the for's ++p resumes just past it
+				continue;
+			}
+			if( c == '{' ) {
+				int braceDepth = 1;
+				++p;
+				for( ; p < bodyEnd; ++p ) {
+					if( strippedText[p] == '"' || strippedText[p] == '\'' ) {
+						p = SkipLiteral( strippedText, p ) - 1;
+						continue;
+					}
+					if( strippedText[p] == '{' ) { ++braceDepth; }
+					else if( strippedText[p] == '}' ) {
+						--braceDepth;
+						if( braceDepth == 0 ) { ++p; break; }
+					}
+				}
+				const size_t q = strippedText.find_first_not_of( " \t\r\n", p );
+				if( q != std::string::npos && q < bodyEnd && strippedText[q] == ';' ) { p = q + 1; }
+				declEnd = p;
+				break;
+			}
+			if( c == ';' ) { declEnd = p + 1; break; }
+		}
+		if( declEnd == std::string::npos || declEnd > bodyEnd ) { break; }   // malformed; stop
+
+		if( !isDtor ) {
+			// An empty name (operator overload) is still PUSHED: its full
+			// signature is what the gate compares, so a change to it cannot
+			// go silently green.
+			const std::string name = strippedText.substr( nameStart, nameEnd - nameStart );
+			out.push_back( IJobVirtualDecl{
+				name, NormalizeDeclSignature( strippedText.substr( b, declEnd - b ) ) } );
+		}
+		i = declEnd;
 	}
 	return out;
 }
@@ -2261,103 +2533,434 @@ int main()
 		       "Windows MainWindow has one ordered shutdown path" );
 	}
 
-	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----
-	// IJob is a public abstract interface: its virtual DECLARATION ORDER is
-	// the vtable ABI.  The append-only convention lived only in tail comments
-	// and was violated (a new virtual landed mid-vtable next to its semantic
-	// sibling, shifting every later slot).  This makes the convention
-	// MECHANICAL: extract the ordered virtual names from IJob.h and compare
-	// against tests/IJobVtableManifest.txt.  A legal tail append = one new
-	// line at the END of the manifest, same commit.  A mid-insert / reorder /
-	// removal mismatches at some index and fails the suite.
+	// ---- IJob vtable-manifest extractor self-coverage (2026-08-20) -------
+	// Prove ExtractVirtualDecls/NormalizeDeclSignature on synthetic text
+	// BEFORE trusting them against the real header.  Self-test (d) below is
+	// the actual regression guard for the doc-88 S7 blindness: a trailing
+	// defaulted parameter appended to an EXISTING virtual must change the
+	// pinned signature even though the name and position do not move --
+	// exactly what the old name-only manifest could not see.  Self-tests
+	// (g)-(h) guard the QUOTE-UNAWARE-SCAN fix (a `)`, `;`, or `{` inside a
+	// string/char literal default value desynchronizing the walk);
+	// (i)-(j) guard the WHITESPACE/`inline` widening (a literal 8-byte
+	// "virtual " match silently skipping `virtual\t...` and
+	// `inline virtual ...`).  Letters are sequential in FILE ORDER (one per
+	// Check() call, not grouped by fixture) so the prose maps directly to
+	// the call it names.
+	{
+		const std::string synth =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"protected:\n"
+			"\tIJob(){};\n"
+			"\tvirtual ~IJob(){};\n"
+			"public:\n"
+			"\t//! Adds a pinhole camera\n"
+			"\tvirtual bool AddPinholeCamera(\n"
+			"\t\tconst char* name,                          ///< [in] Camera name\n"
+			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
+			"\t\tconst double fstop = 0.0                   ///< [in] F-stop\n"
+			"\t\t) = 0;\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::string kExpectedPinhole =
+			"virtual bool AddPinholeCamera(const char*name,const double ptLocation[3],"
+			"const double fstop=0.0)=0;";
+		const std::string kExpectedActiveCameraName =
+			"virtual std::string GetActiveCameraName()const=0;";
+
+		const std::vector<IJobVirtualDecl> decls =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( synth ) );
+		Check( decls.size() == 2,
+		       "self-test (a): synthetic IJob yields exactly the two pure virtuals "
+		       "(protected ctor and destructor excluded)" );
+		Check( decls.size() >= 1 && decls[0].name == "AddPinholeCamera"
+		       && decls[0].signature == kExpectedPinhole,
+		       "self-test (b): a multi-line decl with ///< trailers and a defaulted "
+		       "param normalizes to the exact expected canonical string" );
+		bool sawDestructorLeak = false;
+		for( const IJobVirtualDecl& d : decls ) { if( d.name == "IJob" ) sawDestructorLeak = true; }
+		Check( decls.size() >= 2 && decls[1].name == "GetActiveCameraName"
+		       && decls[1].signature == kExpectedActiveCameraName && !sawDestructorLeak,
+		       "self-test (c): the destructor is skipped (never leaks in under its "
+		       "'~'-stripped name) and a single-line `const = 0;` decl is extracted" );
+
+		// (d) THE REGRESSION GUARD: append a trailing DEFAULTED parameter to
+		// the SAME existing virtual.  Name and slot must stay identical; the
+		// signature MUST differ.
+		const std::string synthWithTail =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"protected:\n"
+			"\tIJob(){};\n"
+			"\tvirtual ~IJob(){};\n"
+			"public:\n"
+			"\tvirtual bool AddPinholeCamera(\n"
+			"\t\tconst char* name,                          ///< [in] Camera name\n"
+			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
+			"\t\tconst double fstop = 0.0,                  ///< [in] F-stop\n"
+			"\t\tconst double zz = 0.0                      ///< [in] NEW trailing default\n"
+			"\t\t) = 0;\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTail =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( synthWithTail ) );
+		Check( declsTail.size() >= 1 && declsTail[0].name == "AddPinholeCamera"
+		       && declsTail[0].signature != kExpectedPinhole,
+		       "self-test (d, S7 REGRESSION GUARD): a trailing defaulted parameter "
+		       "appended to an EXISTING virtual keeps its name and slot but changes "
+		       "the pinned signature -- the exact mutation a name-only manifest "
+		       "missed in the doc-88 S7 review (2026-08-20)" );
+
+		// (e) A reflow/reindent of the SAME declaration -- different
+		// indentation, parameters folded onto fewer lines -- must normalize
+		// to the IDENTICAL string.
+		const std::string reflowed =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"  virtual bool AddPinholeCamera(\n"
+			"      const char*   name,\n"
+			"      const double  ptLocation[3], const double fstop = 0.0 ) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsReflow =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( reflowed ) );
+		Check( declsReflow.size() == 1 && declsReflow[0].signature == kExpectedPinhole,
+		       "self-test (e): reflowing/reindenting the same declaration normalizes "
+		       "to the IDENTICAL signature string" );
+
+		// (f) A comment containing a brace or the word `virtual` must not
+		// desynchronize extraction (mirrors the existing round-20 concern).
+		const std::string withTrickyComment =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\t// a decoy: virtual void Evil() { trap(); } ;\n"
+			"\t/* another decoy -- virtual int AlsoEvil() = 0; { } */\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTricky =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( withTrickyComment ) );
+		bool sawEvil = false;
+		for( const IJobVirtualDecl& d : declsTricky ) {
+			if( d.name == "Evil" || d.name == "AlsoEvil" ) sawEvil = true;
+		}
+		Check( declsTricky.size() == 1 && declsTricky[0].name == "GetActiveCameraName" && !sawEvil,
+		       "self-test (f): a comment containing a brace or the word `virtual` does "
+		       "not desynchronize extraction" );
+
+		// (g)-(h) THE QUOTE-UNAWARE-SCAN REGRESSION GUARD.
+		// ExtractVirtualDecls' bracket/terminator scans walk strippedText
+		// character-by-character; StripCommentsPreservingLayout deliberately
+		// preserves string/char LITERAL CONTENTS (only comments are blanked),
+		// so a `)`, `;`, or `{` inside a default-argument literal is a LIVE
+		// character to those scans.  Without SkipLiteral, the `)` inside
+		// ");evil;" closes the parameter list early, the `;` inside it
+		// terminates the decl, and `after` -- the real trailing parameter --
+		// is silently dropped from the captured signature.  Cover a char
+		// literal (`';'`) alongside the string literal in the same fixture,
+		// since a char literal can just as easily contain `)` or `;`.
+		const std::string trickyDefault =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual bool TrickyDefault(\n"
+			"\t\tconst char* s = \");evil;\",\n"
+			"\t\tconst char c = ';',\n"
+			"\t\tconst double after = 1.0\n"
+			"\t\t) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTrickyDefault =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefault ) );
+		Check( declsTrickyDefault.size() == 1 && declsTrickyDefault[0].name == "TrickyDefault"
+		       && declsTrickyDefault[0].signature.find( "after" ) != std::string::npos,
+		       "self-test (g): a `)`/`;` inside a string or char literal default value "
+		       "does not truncate the declaration -- the trailing `after` parameter is "
+		       "captured in full" );
+
+		const std::string trickyDefaultWithTail =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual bool TrickyDefault(\n"
+			"\t\tconst char* s = \");evil;\",\n"
+			"\t\tconst char c = ';',\n"
+			"\t\tconst double after = 1.0,\n"
+			"\t\tconst double zzz = 2.0\n"
+			"\t\t) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTrickyDefaultTail =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefaultWithTail ) );
+		Check( declsTrickyDefaultTail.size() == 1
+		       && declsTrickyDefaultTail[0].name == declsTrickyDefault[0].name
+		       && declsTrickyDefaultTail[0].signature != declsTrickyDefault[0].signature,
+		       "self-test (h): appending a further trailing defaulted parameter past "
+		       "the tricky literals keeps the name equal but changes the captured "
+		       "signature -- proves the earlier capture wasn't accidentally already "
+		       "full-width" );
+
+		// (i)-(j) THE WHITESPACE/`inline` WIDENING.  The walker used to
+		// require the literal 8-byte prefix "virtual " (a space); a tab,
+		// newline, or an `inline` token ahead of `virtual` silently dropped
+		// the declaration.
+		const std::string tabAndInline =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual\tbool TabDecl( const double x ) = 0;\n"
+			"\tinline virtual bool InlineDecl() = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTabInline =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( tabAndInline ) );
+		bool sawTabDecl = false, sawInlineDecl = false;
+		std::string inlineDeclSignature;
+		for( const IJobVirtualDecl& d : declsTabInline ) {
+			if( d.name == "TabDecl" ) { sawTabDecl = true; }
+			if( d.name == "InlineDecl" ) { sawInlineDecl = true; inlineDeclSignature = d.signature; }
+		}
+		std::string tabDeclSignature;
+		for( const IJobVirtualDecl& d : declsTabInline ) {
+			if( d.name == "TabDecl" ) { tabDeclSignature = d.signature; }
+		}
+		Check( declsTabInline.size() == 2 && sawTabDecl
+		       && tabDeclSignature == "virtual bool TabDecl(const double x)=0;",
+		       "self-test (i): `virtual` followed by a TAB (not just a literal space) "
+		       "is still recognized as a declaration start AND captures the exact "
+		       "normalized signature" );
+		Check( sawInlineDecl && inlineDeclSignature == "inline virtual bool InlineDecl()=0;",
+		       "self-test (j): a leading `inline` token ahead of `virtual` is still "
+		       "recognized as a declaration start, and normalizes with the `inline` "
+		       "prefix intact" );
+
+		// (k) THE `operator~` / EMPTY-NAME CASE.  The destructor filter used
+		// to treat ANY `~` ahead of the `(` as "this is the destructor",
+		// which would have dropped a hypothetical `virtual X& operator~()`
+		// silently and permanently untracked (round-2 review).  The rule is
+		// now `~` directly ahead of the NAME; an operator overload (whose
+		// token ends in punctuation, so no identifier name extracts) must
+		// still pin its full signature, and the real destructor must still
+		// be skipped.
+		const std::string operatorTilde =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual ~IJob(){};\n"
+			"\tvirtual IJob& operator~() = 0;\n"
+			"\tvirtual bool Bar() = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsOpTilde =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( operatorTilde ) );
+		bool opTildePinned = false, dtorLeaked = false;
+		for( const IJobVirtualDecl& d : declsOpTilde ) {
+			if( d.signature == "virtual IJob&operator~()=0;" ) { opTildePinned = true; }
+			if( d.name == "IJob" ) { dtorLeaked = true; }
+		}
+		Check( declsOpTilde.size() == 2 && opTildePinned && !dtorLeaked,
+		       "self-test (k): a `virtual operator~()` overload is NOT mistaken for the "
+		       "destructor -- its full signature pins (empty name) while the real "
+		       "destructor stays skipped" );
+	}
+
+	// ---- IJob vtable append-only + full-signature manifest ---------------
+	// (round-4 review, 2026-07-22; hardened to pin FULL SIGNATURES rather
+	// than names alone, 2026-08-20, per the doc-88 S7 review finding above.)
+	// IJob is a public abstract interface: its virtual DECLARATION ORDER
+	// *and* each virtual's exact parameter list are the vtable ABI.
+	// Extract the ordered (name, normalized-signature) pairs from IJob.h
+	// and compare against tests/IJobVtableManifest.txt (format v2: one full
+	// normalized signature per line).  A legal tail append = one new line
+	// at the END of the manifest, same commit.  A mid-insert / reorder /
+	// rename / removal / in-place signature change (including a merely
+	// APPENDED default parameter) mismatches at some index and fails the
+	// suite with a classified diagnostic.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path header = repoRoot / "src" / "Library" / "Interfaces" / "IJob.h";
 		const fs::path manifestPath = testsDir / "IJobVtableManifest.txt";
 
-		// Extract the ordered virtual-method names from `class IJob`'s body.
-		// Brace-count CODE only (strip comments first -- doc text contains
-		// braces); skip the destructor (a `~` before the name).  Round 20:
-		// this uses the shared stripper, so a `/* */` block carrying a brace
-		// or a `virtual` cannot desynchronise the walk either.
-		std::vector<std::string> extracted;
+		std::vector<IJobVirtualDecl> extracted;
 		{
 			std::ifstream raw( header );
-			std::istringstream in( StripCommentsPreservingLayout(
+			extracted = ExtractVirtualDecls( StripCommentsPreservingLayout(
 				std::string( std::istreambuf_iterator<char>( raw ),
 				             std::istreambuf_iterator<char>() ) ) );
-			std::string line;
-			bool inClass = false, started = false;
-			int depth = 0;
-			while( std::getline( in, line ) ) {
-				const std::string& code = line;
-				if( !inClass ) {
-					const size_t k = code.find( "class IJob" );
-					if( k != std::string::npos
-					 && ( code.size() <= k + 10 || !isalnum( (unsigned char)code[k + 10] ) )
-					 && code.find( ';' ) == std::string::npos ) {
-						inClass = true;
-						for( char c : code ) { if( c == '{' ) ++depth; else if( c == '}' ) --depth; }
-						started = depth > 0;
-					}
-					continue;
-				}
-				for( char c : code ) { if( c == '{' ) ++depth; else if( c == '}' ) --depth; }
-				if( !started && depth > 0 ) started = true;
-				if( started && depth <= 0 ) break;
-				// A declaration line: first token after stripping tabs is `virtual`.
-				size_t b = code.find_first_not_of( " \t" );
-				if( b == std::string::npos ) continue;
-				if( code.compare( b, 8, "virtual " ) != 0 ) continue;
-				const size_t paren = code.find( '(', b );
-				if( paren == std::string::npos ) continue;
-				if( code.rfind( '~', paren ) != std::string::npos
-				 && code.rfind( '~', paren ) > b ) continue;   // destructor
-				size_t e = paren;
-				while( e > b && ( code[e-1] == ' ' || code[e-1] == '\t' ) ) --e;
-				size_t s = e;
-				while( s > b && ( isalnum( (unsigned char)code[s-1] ) || code[s-1] == '_' ) ) --s;
-				if( s < e ) extracted.push_back( code.substr( s, e - s ) );
-			}
 		}
 		Check( extracted.size() > 200,
-		       "IJob.h parsed: extracted the virtual-method order (sanity: >200 methods)" );
+		       "IJob.h parsed: extracted the virtual-method order + signatures "
+		       "(sanity: >200 methods)" );
 
-		std::vector<std::string> manifest;
+		// The manifest's header comment: rewritten in full by regen mode, so
+		// generator and checker can never drift apart from each other.
+		static const char* const kManifestHeader =
+			"# IJob vtable manifest -- FULL NORMALIZED SIGNATURE per virtual, in\n"
+			"# declaration order (the vtable ABI).  Format v2 (2026-08-20).  Each\n"
+			"# non-comment line below is one entire pure-virtual declaration\n"
+			"# collapsed to a single canonical line by NormalizeDeclSignature in\n"
+			"# tests/SourceHygieneTest.cpp -- NOT just the method name.  The name is\n"
+			"# derivable by parsing the identifier before the first '(', so nothing\n"
+			"# here restates it separately.\n"
+			"#\n"
+			"# WHY FULL SIGNATURES, NOT JUST NAMES.  A name-only manifest cannot see\n"
+			"# a trailing DEFAULTED parameter appended to an EXISTING virtual -- that\n"
+			"# is still a vtable/ABI break: changing a pure virtual's signature on a\n"
+			"# shipped abstract interface changes the vtable layout and breaks\n"
+			"# out-of-tree overriders (docs/VITREOUS_ENAMEL.md:894-899,\n"
+			"# docs/gui/RENDER_COORDINATOR.md:1237-1239).  It is not hypothetical: the\n"
+			"# doc-88 S7 review (2026-08-20) found exactly this -- two IJob virtuals\n"
+			"# had grown a trailing defaulted parameter while the name-only v1\n"
+			"# manifest stayed green throughout.  This file exists so that can never\n"
+			"# happen silently again.\n"
+			"#\n"
+			"# CONSUMED BY: SourceHygieneTest (tests/SourceHygieneTest.cpp, the \"IJob\n"
+			"# vtable append-only + full-signature manifest\" block).  The header's\n"
+			"# virtuals must match this sequence EXACTLY, signature and all.\n"
+			"#\n"
+			"# A LEGAL CHANGE is a tail append: a brand-new virtual goes at the END of\n"
+			"# IJob's class body, and its normalized signature is added as ONE new\n"
+			"# line at the END of this file, in the SAME commit -- a conscious,\n"
+			"# reviewable ABI decision.  A mid-list insert / reorder / rename /\n"
+			"# removal / in-place signature change (including a merely-appended\n"
+			"# default parameter) fails the suite: it moves or changes a vtable slot\n"
+			"# and breaks out-of-tree binaries (see the abi-preserving-api-evolution\n"
+			"# skill).\n"
+			"#\n"
+			"# REGEN PROCEDURE.  After a reviewed, intentional signature migration or\n"
+			"# a legal tail append, regenerate this file mechanically instead of\n"
+			"# hand-editing it -- generator and checker must never drift apart:\n"
+			"#\n"
+			"#     RISE_REGEN_IJOB_VTABLE_MANIFEST=1 ./bin/tests/SourceHygieneTest\n"
+			"#\n"
+			"# This REWRITES the whole file (including this header) from IJob.h's\n"
+			"# CURRENT virtuals, then the same run's comparison passes.  Regen is for\n"
+			"# LEGAL changes ONLY -- a tail append, or a signature edit you have\n"
+			"# already reviewed as an intentional ABI break -- never a shortcut to\n"
+			"# turn a red suite green.  The `git diff` this produces on this file IS\n"
+			"# the ABI review: read every changed/added line before committing it.\n";
+
+		if( const char* regen = std::getenv( "RISE_REGEN_IJOB_VTABLE_MANIFEST" ) ) {
+			// Unset, empty, and the literal string "0" are all OFF -- only a
+			// truthy value (canonically "1", per the manifest's own header
+			// comment) triggers regen.  A bare non-empty check treated
+			// `=0` as ON, which is the opposite of every other env-var
+			// convention in this repo and an easy accidental trigger.
+			const std::string regenStr( regen );
+			if( !regenStr.empty() && regenStr != "0" ) {
+				std::ofstream out( manifestPath, std::ios::trunc );
+				out << kManifestHeader;
+				for( const IJobVirtualDecl& d : extracted ) { out << d.signature << '\n'; }
+				out.close();
+				std::cout << std::endl
+				          << "  ***** REGENERATED tests/IJobVtableManifest.txt from "
+				          << "src/Library/Interfaces/IJob.h (" << extracted.size()
+				          << " signatures). *****" << std::endl
+				          << "  Regen is for a LEGAL tail append or a consciously-reviewed "
+				          << "signature migration ONLY -- never a shortcut to turn a red "
+				          << "suite green.  `git diff tests/IJobVtableManifest.txt` IS the "
+				          << "ABI review: read every changed line before committing it."
+				          << std::endl << std::endl;
+			}
+		}
+
+		// Parse the identifier before a normalized signature's first '(' --
+		// normalization guarantees no space sits between them.
+		auto nameFromSignature = []( const std::string& sig ) -> std::string {
+			const size_t paren = sig.find( '(' );
+			if( paren == std::string::npos ) { return std::string(); }
+			size_t s = paren;
+			while( s > 0 && ( isalnum( (unsigned char)sig[s-1] ) || sig[s-1] == '_' ) ) { --s; }
+			return sig.substr( s, paren - s );
+		};
+
+		std::vector<IJobVirtualDecl> manifest;
 		{
 			std::ifstream in( manifestPath );
 			std::string line;
 			while( std::getline( in, line ) ) {
 				if( line.empty() || line[0] == '#' ) continue;
-				manifest.push_back( line );
+				IJobVirtualDecl d;
+				d.signature = line;
+				d.name = nameFromSignature( line );
+				manifest.push_back( d );
 			}
 		}
 		Check( !manifest.empty(), "tests/IJobVtableManifest.txt loaded" );
 
+		std::vector<std::string> headerNames, manifestNames;
+		for( const IJobVirtualDecl& d : extracted ) { headerNames.push_back( d.name ); }
+		for( const IJobVirtualDecl& d : manifest ) { manifestNames.push_back( d.name ); }
+		auto inList = []( const std::vector<std::string>& v, const std::string& n ) {
+			return std::find( v.begin(), v.end(), n ) != v.end();
+		};
+
 		size_t firstDiff = 0;
 		const size_t common = std::min( extracted.size(), manifest.size() );
-		while( firstDiff < common && extracted[firstDiff] == manifest[firstDiff] ) ++firstDiff;
+		while( firstDiff < common
+		       && extracted[firstDiff].signature == manifest[firstDiff].signature ) { ++firstDiff; }
 		if( firstDiff < common ) {
-			std::cout << "  IJob VTABLE ORDER MISMATCH at slot " << firstDiff
-			          << ": header has `" << extracted[firstDiff]
-			          << "`, manifest has `" << manifest[firstDiff] << "`" << std::endl
-			          << "  A new IJob virtual must be APPENDED at the class tail (append-only"
-			          << " vtable ABI); a rename/removal is an ABI break -- see"
-			          << " abi-preserving-api-evolution." << std::endl;
+			const IJobVirtualDecl& h = extracted[firstDiff];
+			const IJobVirtualDecl& m = manifest[firstDiff];
+			if( h.name == m.name ) {
+				std::cout << "  IJob SIGNATURE CHANGE at slot " << firstDiff << " (`" << h.name
+				          << "`):" << std::endl
+				          << "    header:   " << h.signature << std::endl
+				          << "    manifest: " << m.signature << std::endl
+				          << "  Appending even a trailing DEFAULTED parameter to an EXISTING "
+				          << "IJob virtual is a vtable/ABI break.  If reviewed and intentional, "
+				          << "update this manifest line in the same commit (or regen: "
+				          << "RISE_REGEN_IJOB_VTABLE_MANIFEST=1 ./bin/tests/SourceHygieneTest)."
+				          << std::endl;
+				if( extracted.size() != manifest.size() ) {
+					const long long countDiff =
+						(long long)extracted.size() - (long long)manifest.size();
+					std::cout << "  NOTE: the total virtual count also differs by " << countDiff
+					          << " (header " << extracted.size() << " vs manifest "
+					          << manifest.size() << ") -- this may be an ADDED/REMOVED OVERLOAD "
+					          << "of `" << h.name << "` rather than an in-place signature edit "
+					          << "(deleting one overload shifts a later same-named overload into "
+					          << "this slot, which reads here as a SIGNATURE CHANGE).  Check the "
+					          << "tail-mismatch messages below too." << std::endl;
+				}
+			} else {
+				const bool hInManifest = inList( manifestNames, h.name );
+				const bool mInHeader = inList( headerNames, m.name );
+				if( !hInManifest && mInHeader ) {
+					std::cout << "  IJob MID-VTABLE INSERT at slot " << firstDiff << ": `" << h.name
+					          << "` is new and lands before `" << m.name << "` -- it must be "
+					          << "APPENDED at the class tail instead (append-only vtable ABI)."
+					          << std::endl;
+				} else if( !mInHeader && hInManifest ) {
+					std::cout << "  IJob REMOVAL at slot " << firstDiff << ": manifest's `" << m.name
+					          << "` no longer exists in the header -- removing a shipped virtual "
+					          << "is an ABI break." << std::endl;
+				} else if( !hInManifest && !mInHeader ) {
+					std::cout << "  IJob RENAME at slot " << firstDiff << ": `" << m.name << "` -> `"
+					          << h.name << "` -- an out-of-tree caller/overrider sees this as an "
+					          << "ABI break." << std::endl;
+				} else {
+					std::cout << "  IJob REORDER at slot " << firstDiff << ": header has `" << h.name
+					          << "`, manifest has `" << m.name << "` (both known elsewhere, just "
+					          << "at different positions)." << std::endl;
+				}
+			}
+			std::cout << "  See the abi-preserving-api-evolution skill." << std::endl;
 		}
 		Check( firstDiff == common,
-		       "IJob virtual order matches the manifest prefix (no mid-vtable insert/reorder)" );
+		       "IJob virtual order+signature matches the manifest prefix exactly (no "
+		       "mid-vtable insert/reorder/rename/signature-change)" );
 		if( extracted.size() < manifest.size() ) {
-			std::cout << "  IJob.h is MISSING manifest tail entries (removal = ABI break):"
-			          << " first missing `" << manifest[extracted.size()] << "`" << std::endl;
+			std::cout << "  IJob.h is MISSING manifest tail entries (removal = ABI break): "
+			          << "first missing `" << manifest[extracted.size()].signature << "`"
+			          << std::endl;
 		} else if( extracted.size() > manifest.size() ) {
 			std::cout << "  NEW IJob tail virtual(s) not yet in the manifest -- append `"
-			          << extracted[manifest.size()]
-			          << "` (and any after it) to tests/IJobVtableManifest.txt in this commit."
-			          << std::endl;
+			          << extracted[manifest.size()].signature
+			          << "` (and any after it) to tests/IJobVtableManifest.txt in this commit "
+			          << "(or regen -- RISE_REGEN_IJOB_VTABLE_MANIFEST=1, see the manifest's "
+			          << "own header comment)." << std::endl;
 		}
 		Check( extracted.size() == manifest.size(),
-		       "IJob virtual count matches the manifest (tail appends update the manifest consciously)" );
+		       "IJob virtual count matches the manifest (tail appends update the manifest "
+		       "consciously)" );
 	}
 
 	// ---- Agent verb-set enumeration parity (fix rounds 17, 20) ---------

@@ -896,7 +896,10 @@ This is **G6** in §5; prerequisite for the §10.1 oracle's `R_glass→metal` te
 virtual on an abstract interface (`IBSDF`) changes the vtable layout and **breaks
 out-of-tree subclasses that override it**, so it follows the **`abi-preserving-api-evolution`
 skill** (invoke via the Skill tool; no `docs/skills/` companion exists — the playbook
-lives in the skill itself). Practically: add the ambient-IOR parameter with a
+lives in the skill itself). For `IJob` specifically this is mechanically gated: SourceHygieneTest
+pins every `IJob` virtual's FULL NORMALIZED SIGNATURE (not just its name) against
+`tests/IJobVtableManifest.txt`, so even a trailing defaulted parameter added to an existing
+virtual fails the suite (2026-08-20, doc-88 S7 hardening). Practically: add the ambient-IOR parameter with a
 default-valued overload or a new virtual that the base implements by delegating, so
 existing overriders keep compiling; audit every `IBSDF` subclass and every call site.
 (The SPF-side reads are **not** ABI events — the stack is already a parameter; just
