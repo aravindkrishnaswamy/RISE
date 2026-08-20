@@ -1789,11 +1789,12 @@ structural rejection. Temperature inversion, EOS evaluation, positive-part
 property availability, and molecular-viscosity reconstruction all enter the
 same metadata-selected predicate; no stored conservative byte is repaired.
 Temperature inversion certifies the signed mixture-energy bracket, including
-the fp32-envelope endpoint; EOS evaluates the positive gas subset after the
-same gate; positive-part availability maps an envelope-negative trace
-constituent to zero only for property evaluation; and molecular transport uses
-those positive-part gas fractions and remains finite and positive. The 1-D and
-3-D FCT paths, divergence identity, and open-boundary stage propagate the same
+the fp32-envelope endpoint; EOS, rate and finite-increment divergence,
+source-expansion, and radiation evaluate the positive gas subset after the same
+gate; positive-part availability maps an envelope-negative trace constituent to
+zero only for property evaluation; and molecular transport uses those
+positive-part gas fractions and remains finite and positive. The 1-D and 3-D
+FCT paths, divergence identity, and open-boundary stage propagate the same
 producer precision through their raw-vector configuration or parameter. Run
 checkpoint v9 persists one homogeneous producer class across every accepted
 cell and rejects mixed-class publication; resume derives the composed owner

@@ -2712,8 +2712,9 @@ it was already tried and refuted here.
   pre-thermo seam. The former cell-4915 observation is `0.8799947063` ULP,
   equivalently `0.4399973532 epsilon32` under r60's convention, and
   `2327.2867x` inside the derived unit-scale envelope; an above-envelope RED
-  still fails closed. Temperature, EOS, positive-part properties, and molecular
-  viscosity all consume the state's precision metadata. No state repair,
+  still fails closed. Temperature, EOS, positive-part divergence/source-
+  expansion and radiation properties, and molecular viscosity all consume the
+  state's precision metadata. No state repair,
   resident promotion, or fp64 widening is permitted, and the feasibility
   envelope remains separate from the future accuracy term `B_fp32`. Run
   checkpoint v9 persists one homogeneous producer precision across the grid,

@@ -747,6 +747,44 @@ int main()
 	fp32TransportConfig.adiabaticTemperatureK=5000.0;
 	fp32TransportConfig.ambientGasDensityKGPerM3=fp32EnvelopeState.GasDensity();
 	fp32TransportConfig.producerPrecision=FireStateProducerPrecision::Binary32;
+	MethaneCellState fp32PositiveGasReference=PhysicalMixtureLineState(
+		fuel,thermochemistry,0.0,300.0);
+	fp32PositiveGasReference.producerPrecision=FireStateProducerPrecision::Binary32;
+	const ConservativeVector fp32NegativeGasRaw=ToConservativeVector(fp32NegativeConstituent);
+	const ConservativeVector fp32PositiveGasRaw=ToConservativeVector(fp32PositiveGasReference);
+	ConservativeVector fp32ThermalRate;fp32ThermalRate[MethaneMassStateDimension]=1.0;
+	double fp32NegativeRate=0.0,fp32PositiveRate=0.0;
+	double fp32NegativeVolume=0.0,fp32PositiveVolume=0.0;
+	double fp32NegativeIncrement=0.0,fp32PositiveIncrement=0.0;
+	double fp32NegativeExpansion=1.0,fp32PositiveExpansion=1.0;
+	MethaneSourcePacket fp32NegativeZeroPacket;
+	Check(DivergenceFromDiscreteRate(fp32NegativeGasRaw,fp32ThermalRate,
+		fp32NegativeConstituent.temperatureK,fuel,FireStateProducerPrecision::Binary32,
+		fp32NegativeRate,&error)&&
+		DivergenceFromDiscreteRate(fp32PositiveGasRaw,fp32ThermalRate,
+			fp32PositiveGasReference.temperatureK,fuel,FireStateProducerPrecision::Binary32,
+			fp32PositiveRate,&error)&&fp32NegativeRate==fp32PositiveRate&&
+		AcceptedConservativeVolumeRatio(fp32NegativeGasRaw,fuel,
+			FireStateProducerPrecision::Binary32,fp32NegativeVolume,&error)&&
+		AcceptedConservativeVolumeRatio(fp32PositiveGasRaw,fuel,
+			FireStateProducerPrecision::Binary32,fp32PositiveVolume,&error)&&
+		fp32NegativeVolume==fp32PositiveVolume&&
+		DivergenceFromDiscreteIncrement(fp32NegativeGasRaw,zeroConservative,
+			fp32NegativeConstituent.temperatureK,fp32TransportConfig.deltaTimeS,fuel,
+			FireStateProducerPrecision::Binary32,fp32NegativeIncrement,&error)&&
+		DivergenceFromDiscreteIncrement(fp32PositiveGasRaw,zeroConservative,
+			fp32PositiveGasReference.temperatureK,fp32TransportConfig.deltaTimeS,fuel,
+			FireStateProducerPrecision::Binary32,fp32PositiveIncrement,&error)&&
+		fp32NegativeIncrement==fp32PositiveIncrement&&
+		FrozenSourcePacketExpansionAdmissible(fp32NegativeGasRaw,
+			fp32NegativeConstituent.temperatureK,fp32NegativeZeroPacket,
+			fp32TransportConfig.deltaTimeS,fuel,FireStateProducerPrecision::Binary32,
+			&fp32NegativeExpansion,&error)&&
+		FrozenSourcePacketExpansionAdmissible(fp32PositiveGasRaw,
+			fp32PositiveGasReference.temperatureK,fp32NegativeZeroPacket,
+			fp32TransportConfig.deltaTimeS,fuel,FireStateProducerPrecision::Binary32,
+			&fp32PositiveExpansion,&error)&&fp32NegativeExpansion==fp32PositiveExpansion,
+		"fp32 envelope-negative gas uses positive-part divergence and expansion properties");
 	std::vector<ConservativeVector> fp32Line(3u,fp32RawState),fp32ZeroLine(3u,zeroConservative),
 		fp32LineResult;
 	PeriodicFluxPair fp32LineFlux;fp32LineFlux.low=fp32ZeroLine;fp32LineFlux.high=fp32ZeroLine;

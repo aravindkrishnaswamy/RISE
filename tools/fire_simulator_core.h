@@ -1629,11 +1629,13 @@ namespace RISE
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(stateVector,lowerEnthalpy,upperEnthalpy,
 					thermochemistry,producerPrecision,error))return false;
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
 			double gasDensity = 0.0, inverseMeanWeightSum = 0.0;
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
 				const FireThermochemistrySpecies* property = thermochemistry.FindSpecies(names[species]);
 				if( !property ) return Fail(error,"fire solver divergence identity lacks a gas species");
-				const double density = state.constituent[species];
+				const double density = propertyDensities[species];
 				gasDensity += density;
 				inverseMeanWeightSum += density/property->molecularWeightKGPerKMol;
 			}
@@ -1649,7 +1651,7 @@ namespace RISE
 				if( !thermochemistry.CpJPerKGK(names[species],temperatureK,cp,error) ||
 					!thermochemistry.SensibleEnthalpyJPerKG(names[species],temperatureK,
 						enthalpy[species],error) ) return false;
-				heatCapacity += state.constituent[species]*cp;
+				heatCapacity += propertyDensities[species]*cp;
 			}
 			if( heatCapacity <= 0.0 || !std::isfinite(heatCapacity) ) {
 				return Fail(error,"fire solver divergence identity lacks positive C_T");
@@ -1692,11 +1694,13 @@ namespace RISE
 			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(state,
 				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
 				thermochemistry,temperatureK,error))return false;
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
 			double molarDensity=0.0;
 			for(std::size_t species=0;species<MethaneCarbon;++species){
 				const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(names[species]);
 				if(!property)return Fail(error,"fire solver finite-increment divergence lacks a gas species");
-				molarDensity+=state.constituent[species]/property->molecularWeightKGPerKMol;
+				molarDensity+=propertyDensities[species]/property->molecularWeightKGPerKMol;
 			}
 			ratio=molarDensity*8314.46261815324*temperatureK/
 				thermochemistry.ThermodynamicPressurePa();
