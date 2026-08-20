@@ -260,9 +260,10 @@ Scalar RISE::Implementation::NoiseCore::WorleyIdOf( int cellX, int cellY, int ce
 
 Scalar RISE::Implementation::NoiseCore::CellHash( Scalar x )
 {
-	// Same mix formula as Noise1D::Evaluate (Noise/Noise.h), remapped from
-	// its (-1,1) noise range to a [0,1) hash range -- this is a hash
-	// utility (per-cell pseudo-random attribute), not a noise sample.
+	// Same integer mix formula as Noise1D::Evaluate (Noise/Noise.h), but
+	// with the masked 31-bit hash scaled directly to [0,1) instead of
+	// Noise1D's final (-1,1) normalization -- this is a hash utility
+	// (per-cell pseudo-random attribute), not a noise sample.
 	// P1-C: SafeFloorToInt clamps in Scalar space before the cast, so
 	// cellhash(1e20) (or a nan/inf param, already filtered by SafeParam
 	// but harmless to keep) can never hit the UB a bare (int)floor(x)

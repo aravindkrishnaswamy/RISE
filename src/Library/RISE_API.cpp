@@ -4917,6 +4917,13 @@ namespace RISE
 			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionFunction2D: invalid program (%s)", prog.Error().c_str() );
 			return false;
 		}
+		// This surface contracts "one number per (u,v)"; a vec3-typed final
+		// expression would silently evaluate as its .x (the same gap
+		// EvalExprBody / LocalEvalExprBody reject explicitly).
+		if( prog.ResultType() != Implementation::ExpressionProgram::kScalar ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionFunction2D: expression result is vec3; this surface requires a scalar (use a component, e.g. `.x`)" );
+			return false;
+		}
 		*ppi = new Implementation::ExpressionFunction2DPainter( prog );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression function2d painter" );
 		return true;

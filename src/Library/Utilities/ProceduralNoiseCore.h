@@ -13,8 +13,9 @@
 //  bit-for-bit.  The point of this file is to make that math callable
 //  without a heap-allocated, Reference-counted IFunction3D object, so
 //  it can run inside the allocation-free expression VM as well as
-//  behind the two painters -- see ProceduralNoiseCoreParityTest.cpp for
-//  the pre/post-factoring parity proof.
+//  behind the two painters -- see TestNoiseFactoringParity() in
+//  tests/TextureExpressionVMTest.cpp for the pre/post-factoring parity
+//  proof.
 //
 //  Layered noise (fbm/turbulence/ridged) is a NEW composition of the
 //  single-octave primitive with a RUNTIME-configurable lacunarity (the
