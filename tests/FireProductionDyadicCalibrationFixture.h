@@ -955,6 +955,16 @@ namespace FireProductionDyadicCalibration
 			bool restoredProbeReady=false;
 			bool restoredProjectionValid=false;
 			double restorationReferenceDeviation=0.0;
+			std::array<double,8> observedBaselineProbe={{}};
+			std::array<double,8> observedBaselineMaximum={{}};
+			std::array<std::size_t,8> observedBaselineMaximumCell={{}};
+			std::array<double,8> observedRestoredProbe={{}};
+			std::array<double,8> observedRestoredMaximum={{}};
+			std::array<std::size_t,8> observedRestoredMaximumCell={{}};
+			std::array<double,8> observedRestoredPostResidual={{}};
+			std::array<unsigned int,8> observedRestoredValid={{}};
+			double observedGeneration=0.0,observedDrainFraction=0.0;
+			double observedPredictedPlateau=0.0;
 			for(std::size_t step=0u;step<8u;++step){
 				ProductionEOSDeviation beginningDeviation;
 				std::vector<double> beginningDeviationField;
@@ -988,6 +998,9 @@ namespace FireProductionDyadicCalibration
 				if(eosProbe&&index==3u){
 					if(!MeasureProductionEOSDeviation(production,states[index].states.size(),
 						failingProbeCell,outputDeviation,error))return 201;
+					observedBaselineProbe[step]=outputDeviation.signedProbe;
+					observedBaselineMaximum[step]=outputDeviation.signedAtMaximum;
+					observedBaselineMaximumCell[step]=outputDeviation.maximumCell;
 					std::fprintf(stderr,"EOSPROBE step=%zu begin_probe=%.17g output_probe=%.17g "
 						"begin_max=%.17g begin_max_cell=%zu output_max=%.17g output_max_cell=%zu\n",
 						step+1u,beginningDeviation.signedProbe,outputDeviation.signedProbe,
@@ -1014,6 +1027,12 @@ namespace FireProductionDyadicCalibration
 					if(!MeasureProductionEOSDeviation(restoredTrajectory,
 						restoredTrajectoryState.states.size(),failingProbeCell,restoredOutput,error))
 						return 212;
+					observedRestoredProbe[step]=restoredOutput.signedProbe;
+					observedRestoredMaximum[step]=restoredOutput.signedAtMaximum;
+					observedRestoredMaximumCell[step]=restoredOutput.maximumCell;
+					observedRestoredPostResidual[step]=
+						restoredTrajectory.projection.maximumPostProjectionResidualPerS;
+					observedRestoredValid[step]=restoredTrajectory.projection.validationPassed?1u:0u;
 					std::fprintf(stderr,"EOSRESTORE step=%zu valid=%d post=%.17g begin_probe=%.17g "
 						"output_probe=%.17g output_max=%.17g output_max_cell=%zu\n",step+1u,
 						restoredTrajectory.projection.validationPassed?1:0,
@@ -1085,6 +1104,8 @@ namespace FireProductionDyadicCalibration
 						if(!std::isfinite(generation)||!std::isfinite(drainedAmount)||
 							!std::isfinite(drainFraction)||drainFraction==0.0||
 							!std::isfinite(predictedPlateau))return 208;
+						observedGeneration=generation;observedDrainFraction=drainFraction;
+						observedPredictedPlateau=predictedPlateau;
 						std::fprintf(stderr,"EOSDRAIN step=%zu restored_valid=%d drained_valid=%d "
 							"generation=%.17g reference=%.17g counterfactual=%.17g drained=%.17g "
 							"fraction=%.17g plateau=%.17g\n",
@@ -1092,6 +1113,48 @@ namespace FireProductionDyadicCalibration
 							drained.projection.validationPassed?1:0,generation,
 							restorationReferenceDeviation,drainedDeviation.signedProbe,
 							drainedAmount,drainFraction,predictedPlateau);
+					}
+					if(step==7u){
+						static const std::array<double,8> expectedBaselineProbe={{
+							0.00016243467070786721,0.00029052657505035384,
+							0.00042210147392696129,0.00055758879737477507,
+							0.000697411360109923,0.00084154390100632526,
+							0.00099020977969921375,0.0011434014099940271}};
+						static const std::array<double,8> expectedBaselineMaximum={{
+							0.00026066224468057619,0.00029600029902177027,
+							0.00042210147392696129,0.00055758879737477507,
+							0.000697411360109923,0.00084154390100632526,
+							0.00099020977969921375,0.0011434014099940271}};
+						static const std::array<std::size_t,8> expectedBaselineMaximumCell={{
+							79206u,165408u,2256u,2256u,2256u,2256u,2256u,2256u}};
+						static const std::array<double,8> expectedRestoredProbe={{
+							0.00016243467070786721,0.00015037720940047627,
+							0.00011897516933578878,0.0001042666254813529,
+							0.00012638825416666499,0.00016850838371063048,
+							0.00019317846996003141,0.00018037112652735665}};
+						static const std::array<double,8> expectedRestoredMaximum={{
+							0.00026066224468057619,0.00015617602691020416,
+							-0.0001726687005174643,-0.00026126028448991701,
+							0.00021308223822247285,0.00029048005142096045,
+							0.00033686677751032512,0.00026469334070777784}};
+						static const std::array<std::size_t,8> expectedRestoredMaximumCell={{
+							79206u,165408u,39755u,86706u,40u,1u,79200u,47u}};
+						static const std::array<double,8> expectedRestoredPostResidual={{
+							0x1.ac94p-12,0x1.35p-16,0x1.ac8658p-12,0x1.adf6p-12,
+							0x1.3dc8p-16,0x1.a8263p-12,0x1.ace4p-12,0x1.57fp-16}};
+						static const std::array<unsigned int,8> expectedRestoredValid={{
+							0u,1u,0u,0u,1u,0u,0u,1u}};
+						if(observedBaselineProbe!=expectedBaselineProbe||
+							observedBaselineMaximum!=expectedBaselineMaximum||
+							observedBaselineMaximumCell!=expectedBaselineMaximumCell||
+							observedRestoredProbe!=expectedRestoredProbe||
+							observedRestoredMaximum!=expectedRestoredMaximum||
+							observedRestoredMaximumCell!=expectedRestoredMaximumCell||
+							observedRestoredPostResidual!=expectedRestoredPostResidual||
+							observedRestoredValid!=expectedRestoredValid||
+							observedGeneration!=0.0001486658786928885||
+							observedDrainFraction!=1.0031753280821762||
+							observedPredictedPlateau!=0.00014819530996351454)return 214;
 					}
 				}
 				if(!production.projection.validationPassed)return 188;

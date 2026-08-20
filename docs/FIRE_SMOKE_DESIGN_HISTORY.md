@@ -2737,9 +2737,10 @@ it was already tried and refuted here.
 - **r117 EOS-drift probe protocol (2026-08-20, frozen before evidence):** the
   exit-191 campaign is instrumented without changing the solver, divergence
   target, EOS ceiling, or accepted-state gate.  On the tier-12 trajectory the
-  signed observable is `d_n = V(Q_n)-1`; every step records the fixed failing
-  cell 2256 and the independently searched field maximum before and after the
-  resident step.  Monotone near-linear growth classifies secular accumulation;
+  signed observable is `d_n = V(Q_n)-1`; all eight transitions (campaign
+  indices 0--7, with index 7 the failure) record the fixed failing cell 2256
+  and the independently searched field maximum before and after the resident
+  step.  Monotone near-linear growth classifies secular accumulation;
   a fast nonzero plateau classifies per-step generation against finite drain.
   The target audit is structural: an opaque pre-extracted oracle target is not
   credited as production restoration unless the production request itself
@@ -2776,3 +2777,20 @@ it was already tried and refuted here.
   consumer-total, and its measured plateau agrees with the independently
   defined `G/r` value while staying below `1.0e-3`. A provisional shadow may be
   continued after a validation miss for diagnosis, but cannot authorize a fix.
+
+  Evidence: the baseline probe grows monotonically
+  `1.62435e-4 -> 2.90527e-4 -> 4.22101e-4 -> 5.57589e-4 -> 6.97411e-4 ->
+  8.41544e-4 -> 9.90210e-4 -> 1.14340e-3`; cell 2256 becomes the field maximum
+  on transition 3. The target audit finds the known hole reborn: the production
+  request copies the sealed oracle target and has neither its own r69 absolute
+  term nor an r70 production-candidate closure. The capacity readout measures
+  `G=1.486658786928885e-4`, `r=1.0031753280821762`, and
+  `G/r=1.4819530996351454e-4` (`0.1482` of the EOS ceiling). The eight-step
+  restoration shadow remains under `3.37e-4` field-wide, agreeing with that
+  prediction, but the fixed single projection validates only transitions
+  2/5/8; the other five post residuals sit at `4.045e-4--4.100e-4`. Therefore
+  r117 is an architecture-capacity stop, not a restoration landing. Gain,
+  manifold-residual-only second projection, and a new derived ceiling remain
+  explicit owner-level alternatives. No solver or gate changed. Durable data
+  and plot hashes are `9383d3e0...e4c2` and `0fb22415...54e`; production
+  Richardson remains stopped.

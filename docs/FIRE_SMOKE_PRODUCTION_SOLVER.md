@@ -1831,7 +1831,8 @@ was changed.
 
 The exit-191 diagnosis is a read-only resident campaign. It records the signed
 EOS-volume deviation `d=V(Q)-1` at tier-12 cell 2256 and the independently
-searched field maximum for steps 1--7. Linear monotone growth means missing or
+searched field maximum for all eight transitions (campaign indices 0--7; index
+7 is exit 191). Linear monotone growth means missing or
 ineffective absolute restoration; a fast plateau means per-step production
 exceeds the single projection's drain capacity. The target audit recognizes
 r69 only when the production target itself contains `(V(Q^n)-1)/dt`, and r70
@@ -1861,6 +1862,28 @@ maximum. It can qualify r69 for implementation only if all eight projections
 validate, downstream state reconstruction stays total, and the observed
 steady deviation agrees with `G/r` below the unchanged EOS ceiling. Continuing
 a provisional shadow after a validation miss is diagnostic only.
+
+The exact r117 result classifies the original path as secular accumulation.
+At cell 2256 the eight outputs are `1.62435e-4, 2.90527e-4, 4.22101e-4,
+5.57589e-4, 6.97411e-4, 8.41544e-4, 9.90210e-4, 1.14340e-3`; it becomes the
+field maximum on transition 3 and remains so through failure. The production
+request merely copies the pre-extracted oracle target: it has neither a
+production-state r69 absolute reference nor a production-candidate r70
+advective-anomaly closure.
+
+The step-6/7 capacity readout gives `G=1.486658786928885e-4`,
+`r=1.0031753280821762`, and `G/r=1.4819530996351454e-4`, only `0.1482` of the
+EOS ceiling. The eight-step r69 shadow agrees in state space: its probe remains
+`1.04e-4--1.93e-4` and its absolute field maximum `1.56e-4--3.37e-4`. But the
+fixed single projection validates only transitions 2, 5, and 8. The other five
+post residuals plateau at `4.045e-4--4.100e-4`, so the restoration cannot be
+landed under the existing projection contract. This is an architecture-capacity
+finding. Restoration gain, a manifold-residual-only second projection, or a
+new derived production ceiling have different contract consequences and need
+an owner ruling; no solver or gate changes in r117. Exact evidence and its plot
+are stored under `rendered/fire_production_calibration/r117_eos_drift/` with
+SHA-256 `9383d3e0...e4c2` and `0fb22415...54e` respectively. Production
+Richardson and subsequent calibration stages remain stopped.
 
 ## 8. Rejected directions and future work
 

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+  <rect width="900" height="520" fill="#0b1020"/>
+  <text x="55" y="35" fill="#f7fafc" font-family="sans-serif" font-size="20">r117 tier-12 EOS deviation trajectory</text>
+  <text x="55" y="58" fill="#a0aec0" font-family="sans-serif" font-size="12">Campaign indices 0–7 are displayed as transitions 1–8; transition 8 is exit 191.</text>
+  <line x1="70" y1="440" x2="840" y2="440" stroke="#718096"/>
+  <line x1="70" y1="80" x2="70" y2="440" stroke="#718096"/>
+  <line x1="70" y1="140" x2="840" y2="140" stroke="#f56565" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="690" y="133" fill="#fc8181" font-family="sans-serif" font-size="12">EOS ceiling 1.0e-3</text>
+  <line x1="70" y1="395.5" x2="840" y2="395.5" stroke="#68d391" stroke-dasharray="4 5"/>
+  <text x="600" y="389" fill="#68d391" font-family="sans-serif" font-size="12">G/r = 1.48195e-4</text>
+  <polyline points="90,391.3 190,352.8 290,313.4 390,272.7 490,230.8 590,187.5 690,142.9 790,97.0" fill="none" stroke="#f6ad55" stroke-width="3"/>
+  <polyline points="90,361.8 190,351.2 290,313.4 390,272.7 490,230.8 590,187.5 690,142.9 790,97.0" fill="none" stroke="#fbd38d" stroke-width="2" stroke-dasharray="6 4"/>
+  <polyline points="90,391.3 190,394.9 290,404.3 390,408.7 490,402.1 590,389.4 690,382.0 790,385.9" fill="none" stroke="#63b3ed" stroke-width="3"/>
+  <polyline points="90,361.8 190,393.1 290,388.2 390,361.6 490,376.1 590,352.9 690,338.9 790,360.6" fill="none" stroke="#90cdf4" stroke-width="2" stroke-dasharray="6 4"/>
+  <g fill="#f6ad55"><circle cx="90" cy="391.3" r="4"/><circle cx="190" cy="352.8" r="4"/><circle cx="290" cy="313.4" r="4"/><circle cx="390" cy="272.7" r="4"/><circle cx="490" cy="230.8" r="4"/><circle cx="590" cy="187.5" r="4"/><circle cx="690" cy="142.9" r="4"/><circle cx="790" cy="97" r="4"/></g>
+  <g fill="#63b3ed"><circle cx="90" cy="391.3" r="4"/><circle cx="190" cy="394.9" r="4"/><circle cx="290" cy="404.3" r="4"/><circle cx="390" cy="408.7" r="4"/><circle cx="490" cy="402.1" r="4"/><circle cx="590" cy="389.4" r="4"/><circle cx="690" cy="382" r="4"/><circle cx="790" cy="385.9" r="4"/></g>
+  <g font-family="sans-serif" font-size="12" fill="#cbd5e0">
+    <text x="37" y="444">0</text><text x="23" y="344">3.3e-4</text><text x="23" y="244">6.7e-4</text><text x="23" y="144">1.0e-3</text><text x="23" y="84">1.2e-3</text>
+    <text x="86" y="460">1</text><text x="186" y="460">2</text><text x="286" y="460">3</text><text x="386" y="460">4</text><text x="486" y="460">5</text><text x="586" y="460">6</text><text x="686" y="460">7</text><text x="786" y="460">8</text>
+    <text x="390" y="490">resident transition</text>
+  </g>
+  <g font-family="sans-serif" font-size="12">
+    <line x1="90" y1="70" x2="120" y2="70" stroke="#f6ad55" stroke-width="3"/><text x="128" y="74" fill="#f6ad55">baseline cell 2256</text>
+    <line x1="280" y1="70" x2="310" y2="70" stroke="#fbd38d" stroke-width="2" stroke-dasharray="6 4"/><text x="318" y="74" fill="#fbd38d">baseline field max</text>
+    <line x1="475" y1="70" x2="505" y2="70" stroke="#63b3ed" stroke-width="3"/><text x="513" y="74" fill="#63b3ed">r69 shadow cell</text>
+    <line x1="650" y1="70" x2="680" y2="70" stroke="#90cdf4" stroke-width="2" stroke-dasharray="6 4"/><text x="688" y="74" fill="#90cdf4">shadow |field max|</text>
+  </g>
+  <g font-family="sans-serif" font-size="11">
+    <text x="70" y="510" fill="#a0aec0">Shadow projection validity: </text>
+    <text x="220" y="510" fill="#fc8181">fail</text><text x="257" y="510" fill="#68d391">pass</text><text x="294" y="510" fill="#fc8181">fail fail</text><text x="348" y="510" fill="#68d391">pass</text><text x="385" y="510" fill="#fc8181">fail fail</text><text x="439" y="510" fill="#68d391">pass</text>
+  </g>
+</svg>
