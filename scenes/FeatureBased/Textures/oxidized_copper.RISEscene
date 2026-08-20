@@ -1,0 +1,347 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           oxidized_copper.RISEscene                                                              #
+#   Description:    Textures showcase 2/3 (doc 88 Phase 1+2 arc) -- per-channel scalars, blend modes, and   #
+#                   the voronoi3d_painter `space` param.  Two copper spheres share ONE ggx_material:         #
+#                   * sp_copper_extinction is a vec3-typed scalar_painter{expression} (HasPerChannelVariation)#
+#                     driving the material's `extinction` slot directly -- a genuine per-channel triple      #
+#                     shifting the conductor Fresnel colour from warm clean copper toward a duller patina    #
+#                     tint, with NO colourspace/JH uplift (the IScalarPainter contract).                     #
+#                   * sp_alphax/sp_alphay bridge DIFFERENT channels (R, G) of one vec3-typed expr_hammer_field#
+#                     expression_painter into alphax/alphay via two scalar_painter{painter channel} bridges  #
+#                     -- visible anisotropy that follows the field, the documented fallback for slots that   #
+#                     don't take a triple directly.                                                          #
+#                   * voronoi3d_painter{space world} scatters verdigris patina cells; because it is WORLD    #
+#                     space, the same painter bound to both spheres reads as ONE continuous patina field      #
+#                     carved through both objects, not two independent per-object patterns.                  #
+#                   * blend_painter{mode overlay} composites the patina cells over clean copper for `rs`.     #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-20                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+# Declared before the rasterizer chunk below (which references it as
+# `radiance_map`) -- ordinary declare-before-use, same idiom as
+# weathered_workbench.RISEscene / receding_pier.RISEscene.  Kept dim and
+# cool-grey (rather than the pier's brighter daylight blue) so the sky's
+# own contribution doesn't wash out the copper/patina detail the two
+# spheres exist to show off -- it reads as ambient fill, not a bright
+# window.
+uniformcolor_painter
+{
+	name			pnt_sky
+	color			0.32 0.36 0.42
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	samples				14
+	lum_samples			1
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/oxidized_copper
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			640
+	height			400
+}
+
+pinhole_camera
+{
+	location		0 1.6 4.4
+	lookat			0 1.0 0
+	up				0 1 0
+	fov				38.0
+}
+
+##################################################
+# Painters -- verdigris patina, space WORLD (continuous across both spheres)
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_copper_warm
+	color			0.60 0.28 0.10
+}
+
+uniformcolor_painter
+{
+	name			pnt_patina_a
+	color			0.08 0.55 0.38
+}
+
+uniformcolor_painter
+{
+	name			pnt_patina_b
+	color			0.05 0.48 0.35
+}
+
+uniformcolor_painter
+{
+	name			pnt_patina_c
+	color			0.12 0.60 0.42
+}
+
+uniformcolor_painter
+{
+	name			pnt_patina_border
+	color			0.03 0.08 0.06
+}
+
+# space world (P2.5, doc 88): these gen x/y/z are WORLD coordinates, and
+# they deliberately span BOTH sphere centres (x = -2.1 .. 2.1) so the
+# cell pattern reads as one continuous verdigris field carved through
+# both objects -- the demo of `space world`. With the (object-space)
+# default, each sphere would show the SAME cell layout re-centred on
+# its own origin instead, and the pattern would visibly jump at the
+# seam between the two spheres.
+voronoi3d_painter
+{
+	name			voronoi_patina
+	gen				-2.0  0.3  0.4  pnt_patina_a
+	gen				-1.4  1.4 -0.5  pnt_patina_b
+	gen				-0.6  0.6  0.6  pnt_patina_c
+	gen				 0.0  1.6 -0.3  pnt_patina_a
+	gen				 0.6  0.5  0.5  pnt_patina_b
+	gen				 1.3  1.5 -0.4  pnt_patina_c
+	gen				 2.0  0.4  0.3  pnt_patina_a
+	gen				-0.2  0.2 -0.6  pnt_patina_b
+	gen				 1.8  1.3  0.5  pnt_patina_c
+	border			pnt_patina_border
+	bordersize		0.12
+	space			world
+}
+
+# Patina coverage mask: more patina low on the sphere (a verdigris drip
+# look), fbm-broken so the coverage edge isn't a hard band.  Refinement
+# pass: the first render's threshold/soft pair left coverage near zero
+# over the visible (upper) hemisphere -- the patina never crossed the
+# camera's view.  Widened so roughly half the visible surface carries
+# at least partial coverage.
+expression_painter
+{
+	name			expr_patina_mask
+	param			mask_freq 1.6 min 0.3 max 6 step 0.1 label "Patina blotch frequency"
+	param			mask_threshold -0.25 min -1 max 1 step 0.05 label "Patina coverage threshold"
+	param			mask_soft 0.5 min 0.05 max 1 step 0.05 label "Patina edge softness"
+	seed			11.0
+	def				h fbm(P*mask_freq+vec3(seed,0,0), 4, 0.55, 2.0)
+	def				height_bias (1.0-clamp(P.y*0.5,0,1))*0.5
+	expr			smoothstep(mask_threshold, mask_threshold+mask_soft, h+height_bias)
+}
+
+# mode overlay: copper's R channel (0.6) is on overlay's "darken" branch
+# (b > 0.5: out = 1-2(1-a)(1-b)) while its G/B channels (0.28, 0.10) are
+# on the "brighten" branch (out = 2ab) -- so a LOW-red, high-green patina
+# colour simultaneously pulls R down and nudges G up, which is what
+# actually reads as verdigris against a warm copper base.  (`screen` was
+# tried first: screen(a,b) >= b always, so it can only BRIGHTEN every
+# channel -- a dark border colour meant to read as a crack came out
+# warm/orange instead of dark, and the light patina cells mostly just
+# blew out toward white.  overlay is the mode that gets both right.)
+blend_painter
+{
+	name			blend_patina
+	colora			voronoi_patina
+	colorb			pnt_copper_warm
+	mask			expr_patina_mask
+	mode			overlay
+}
+
+uniformcolor_painter
+{
+	name			pnt_copper_diffuse
+	color			0.03 0.02 0.015
+}
+
+##################################################
+# Painters -- hammered anisotropy: one vec3 field, two channel bridges
+##################################################
+
+# Per-channel triple (x/y differ): the field a human would reach for to
+# drive alphax/alphay from DIFFERENT axes of ONE painter instead of
+# authoring two unrelated noise fields.
+expression_painter
+{
+	name			expr_hammer_field
+	param			hammer_freq 9.0 min 2 max 25 step 0.5 label "Hammer-mark frequency"
+	param			hammer_jitter 1.0 min 0.2 max 2.0 step 0.1 label "Hammer-mark jitter"
+	param			hammer_freq2 5.0 min 2 max 25 step 0.5 label "Secondary facet frequency"
+	seed			21.0
+	def				f1 worley_f1(P*hammer_freq+vec3(seed,0,0), hammer_jitter)
+	def				f1b worley_f1(P*hammer_freq2+vec3(0,seed,0), hammer_jitter)
+	expr			vec3(f1, f1b, 0.5)
+}
+
+# alphax from channel R, alphay from channel G of the SAME field -- the
+# axes stretch differently and by construction stay correlated with one
+# shared hammer pattern instead of two independent noises.
+scalar_painter
+{
+	name			sp_alphax
+	painter			expr_hammer_field
+	channel			R
+	scale			0.32
+	bias			0.03
+}
+
+scalar_painter
+{
+	name			sp_alphay
+	painter			expr_hammer_field
+	channel			G
+	scale			0.32
+	bias			0.03
+}
+
+##################################################
+# Painters -- per-channel conductor extinction (THE per-channel demo)
+##################################################
+
+# vec3-typed scalar_painter{expression}: x/y/z are three INDEPENDENT
+# mixes, so HasPerChannelVariation is set -- a genuine per-channel
+# triple, not a broadcast scalar. Feeds `extinction` directly: clean
+# copper reads warm (high R extinction relative to B); patina-affected
+# copper reads duller/greener (extinction shifts toward B). No
+# colourspace conversion, no JH spectral uplift -- the IScalarPainter
+# contract -- so this is the SAME physical magnitude the conductor
+# Fresnel term consumes, not a colour decision.
+scalar_painter
+{
+	name			sp_copper_extinction
+	param			patina_freq 1.6 min 0.3 max 6 step 0.1 label "Extinction shift frequency"
+	param			ext_r_clean 2.85 min 0.5 max 4 step 0.05 label "Clean copper extinction R"
+	param			ext_g_clean 2.55 min 0.5 max 4 step 0.05 label "Clean copper extinction G"
+	param			ext_b_clean 1.95 min 0.5 max 4 step 0.05 label "Clean copper extinction B"
+	param			ext_r_patina 1.90 min 0.5 max 4 step 0.05 label "Patina extinction R"
+	param			ext_g_patina 2.35 min 0.5 max 4 step 0.05 label "Patina extinction G"
+	param			ext_b_patina 2.60 min 0.5 max 4 step 0.05 label "Patina extinction B"
+	seed			11.0
+	def				t clamp(fbm(P*patina_freq+vec3(seed,0,0),4,0.55,2.0)+0.4, 0, 1)
+	expression		vec3(mix(ext_r_clean,ext_r_patina,t), mix(ext_g_clean,ext_g_patina,t), mix(ext_b_clean,ext_b_patina,t))
+}
+
+scalar_painter
+{
+	name			sp_copper_ior
+	values			0.44 1.10 1.22
+}
+
+##################################################
+# Materials
+##################################################
+
+ggx_material
+{
+	name			mat_copper
+	rd				pnt_copper_diffuse
+	rs				blend_patina
+	alphax			sp_alphax
+	alphay			sp_alphay
+	ior				sp_copper_ior
+	extinction		sp_copper_extinction
+	fresnel_mode	conductor
+}
+
+uniformcolor_painter
+{
+	name			pnt_floor2
+	color			0.18 0.18 0.2
+}
+
+lambertian_material
+{
+	name			mat_floor2
+	reflectance		pnt_floor2
+}
+
+##################################################
+# Objects -- two instances sharing ONE material/painter graph
+##################################################
+
+sphere_geometry
+{
+	name			geo_copper_sphere
+	radius			1.0
+}
+
+standard_object
+{
+	name				obj_copper_a
+	geometry			geo_copper_sphere
+	material			mat_copper
+	position			-1.1 1.0 0
+	receives_shadows	false
+}
+
+standard_object
+{
+	name				obj_copper_b
+	geometry			geo_copper_sphere
+	material			mat_copper
+	position			1.1 1.0 0
+	receives_shadows	false
+}
+
+infiniteplane_geometry
+{
+	name			floor2
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name				obj_floor2
+	geometry			floor2
+	material			mat_floor2
+	position			0 0 0
+	orientation			-90 0 0
+	receives_shadows	false
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.4
+	color		1.0 0.97 0.9
+	direction	0.5 0.65 0.6
+}
+
+directional_light
+{
+	name		fill
+	power		1.0
+	color		0.75 0.85 1.0
+	direction	-0.5 0.4 0.55
+}

@@ -1,0 +1,481 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           weathered_workbench.RISEscene                                                          #
+#   Description:    Textures showcase 1/3 (doc 88 Phase 1+2 arc) -- a wooden workbench with a clamped-on   #
+#                   iron vise and a de-tiled diamond-plate tool tray.  The wood top's colour AND roughness  #
+#                   are driven from the SAME expression_painter grain field (ramp_painter for colour,       #
+#                   scalar_painter{painter} bridge for roughness -- gloss follows grain).  scatter_painter  #
+#                   scatters oil stains that blend_painter{mode multiply} darkens onto the wood.  The vise  #
+#                   is worley-pitted iron whose colour field is reprojected with mapping_painter{projection #
+#                   world}, and its roughness is a standalone scalar_painter{expression} worley field.      #
+#                   The tool tray is a checker_painter hex-tiled via stochastic_tile_painter to break its   #
+#                   grid repeat.  No tileable photo/scan asset exists in-repo, so this demo substitutes a   #
+#                   procedural checker source to exercise the de-tiling MECHANISM; the intended use of      #
+#                   stochastic_tile_painter is a small tiling photo/scan, per the skill.                    #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-20                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+# Declared before the rasterizer chunk below (which references it as
+# `radiance_map`) -- ordinary declare-before-use.  Refinement pass: the
+# first render left an unlit white void above the bench; a soft workshop-
+# window sky reads far better and costs nothing extra to render.
+uniformcolor_painter
+{
+	name			pnt_sky
+	color			0.58 0.60 0.64
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion			4
+	samples					12
+	lum_samples				1
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/weathered_workbench
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			640
+	height			480
+}
+
+pinhole_camera
+{
+	location		0 1.6 3.4
+	lookat			0 0.75 0
+	up				0 1 0
+	fov				42.0
+}
+
+##################################################
+# Painters -- wood top: one grain field, two consumers
+##################################################
+
+# The FIELD.  Anisotropic domain-warped fbm: high frequency across the
+# plank (X, via `grain_across`) and low along it (Y/Z), nested inside a
+# domain warp so the rings wander instead of reading as plain noise.
+# Every art-directable number is a `param` with a range (the doc-88
+# human-editability contract).
+expression_painter
+{
+	name			expr_grain
+	param			grain_along 3.0 min 0.5 max 12 step 0.25 label "Grain frequency (along plank)"
+	param			grain_across 14.0 min 2 max 40 step 1 label "Grain frequency (across plank)"
+	param			ring_warp 0.35 min 0.0 max 1.5 step 0.05 label "Ring warp strength"
+	param			contrast 2.2 min 1.0 max 5.0 step 0.1 label "Grain contrast"
+	seed			4.0
+	def				warp_p vec3(P.x*grain_across + seed, P.y*grain_along + seed*1.7, P.z*grain_along + seed*2.3) + ring_warp*vec3(fbm(P*grain_along+vec3(0,0,0),3,0.5,2.0), fbm(P*grain_along+vec3(5.2,1.3,7.7),3,0.5,2.0), fbm(P*grain_along+vec3(9.1,2.6,4.4),3,0.5,2.0))
+	def				grain fbm(warp_p, 5, 0.55, 2.1)
+	expr			clamp(grain*contrast+0.5, 0, 1)
+}
+
+# CONSUMER 1 -- colour: dark heartwood -> pale sapwood.
+ramp_painter
+{
+	name			ramp_wood
+	input			expr_grain
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.10 0.055 0.02
+	stop			0.35  0.32 0.17  0.07
+	stop			0.70  0.55 0.33  0.15
+	stop			1.00  0.78 0.55  0.30
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- the PHYSICAL SCALAR, off the SAME field: roughness sweeps
+# 0.05 (pale/polished) .. 0.47 (dark grain/weathered) -- gloss follows grain.
+scalar_painter
+{
+	name			sp_wood_rough
+	painter			expr_grain
+	channel			R
+	scale			0.42
+	bias			0.05
+}
+
+##################################################
+# Painters -- oil stains: scatter_painter + blend_painter{mode multiply}
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_white_full
+	color			1.0 1.0 1.0
+	colorspace		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			pnt_stain_dark
+	color			0.12 0.08 0.05
+	colorspace		Rec709RGB_Linear
+}
+
+# Scattered oil-stain stamps: dark blobs over a WHITE background, so this
+# painter alone is a multiply-darkening MASK (white = no stain, dark = stain).
+scatter_painter
+{
+	name				scatter_stains
+	source				pnt_stain_dark
+	background			pnt_white_full
+	cell_scale			9.0
+	stamp_scale			0.45
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.3
+	probability			0.28
+	seed				7
+}
+
+# mode multiply: blend(a,b) = a*b, then mask (full white -> selects the
+# multiplied combination everywhere) interpolates toward colorb -- net
+# effect: scatter_stains darkens ramp_wood wherever a stain stamp landed.
+blend_painter
+{
+	name			blend_wood_stained
+	colora			scatter_stains
+	colorb			ramp_wood
+	mask			pnt_white_full
+	mode			multiply
+}
+
+uniformcolor_painter
+{
+	name			pnt_wood_spec
+	color			0.4 0.35 0.28
+}
+
+##################################################
+# Painters -- iron vise: worley pitting, reprojected with mapping_painter
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_iron_dark
+	color			0.05 0.05 0.06
+}
+
+uniformcolor_painter
+{
+	name			pnt_iron_bright
+	color			0.55 0.55 0.58
+}
+
+worley3d_painter
+{
+	name			worley_pits_raw
+	colora			pnt_iron_dark
+	colorb			pnt_iron_bright
+	jitter			1.0
+	output			f1
+	scale			14 14 14
+}
+
+# Reproject the pit colour field 30 degrees about Y, independent of the
+# worley painter's own scale/shift -- the vise jaw's pitting reads as if
+# struck at an angle to the bench, not axis-aligned with the world grid.
+mapping_painter
+{
+	name			pit_color_mapped
+	source			worley_pits_raw
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 30 0
+	translate		0 0 0
+}
+
+# A standalone worley roughness field (same idea as the wood's grain
+# roughness, driven directly through the expression VM this time --
+# polished where the metal is unmarred, rough at the pit boundaries).
+scalar_painter
+{
+	name			sp_pit_rough
+	param			pit_freq 12.0 min 2 max 30 step 0.5 label "Pit frequency"
+	param			rough_polished 0.06 min 0 max 1 step 0.01 label "Polished roughness"
+	param			rough_pitted 0.5 min 0 max 1 step 0.01 label "Pitted roughness"
+	def				f1 worley_f1(P*pit_freq, 1.0)
+	expression		mix(rough_polished, rough_pitted, clamp(f1, 0, 1))
+}
+
+##################################################
+# Painters -- tool tray: stochastic_tile_painter de-tiling a checker source
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_plate_dark
+	color			0.08 0.08 0.09
+}
+
+uniformcolor_painter
+{
+	name			pnt_plate_bright
+	color			0.75 0.75 0.78
+}
+
+# No tileable photo/scan asset (bark/plaster/rust) exists in-repo, so this
+# substitutes a procedural checker source to exercise the de-tiling
+# MECHANISM.  stochastic_tile_painter's intended use is a small tiling
+# photo/scan, per the skill -- this is not that, just a stand-in source.
+checker_painter
+{
+	name			plate_checker_src
+	colora			pnt_plate_dark
+	colorb			pnt_plate_bright
+	size			0.09
+}
+
+stochastic_tile_painter
+{
+	name			plate_stochastic
+	source			plate_checker_src
+	tile_scale		10.0
+	seed			3
+	mean			0.42 0.42 0.43
+	blend_gamma		7.0
+	color_space		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			pnt_tray_spec
+	color			0.5 0.5 0.5
+}
+
+##################################################
+# Painters -- floor
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.22 0.22 0.24
+}
+
+##################################################
+# Materials
+##################################################
+
+ggx_material
+{
+	name			mat_wood_top
+	rd				blend_wood_stained
+	rs				pnt_wood_spec
+	alphax			sp_wood_rough
+	alphay			sp_wood_rough
+	ior				1.5
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_vise
+	rd				pnt_iron_dark
+	rs				pit_color_mapped
+	alphax			sp_pit_rough
+	alphay			sp_pit_rough
+	ior				2.9
+	extinction		3.4
+}
+
+ggx_material
+{
+	name			mat_tray
+	rd				plate_stochastic
+	rs				pnt_tray_spec
+	alphax			0.25
+	alphay			0.25
+	ior				2.5
+	extinction		3.0
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		pnt_floor
+}
+
+##################################################
+# Objects -- bench
+##################################################
+
+box_geometry
+{
+	name			geo_bench_top
+	width			3.0
+	height			0.12
+	depth			1.1
+}
+
+standard_object
+{
+	name			obj_bench_top
+	geometry		geo_bench_top
+	material		mat_wood_top
+	position		0 0.85 0
+}
+
+box_geometry
+{
+	name			geo_leg
+	width			0.12
+	height			0.8
+	depth			0.12
+}
+
+standard_object
+{
+	name			obj_leg_fl
+	geometry		geo_leg
+	material		mat_wood_top
+	position		-1.35 0.4 -0.45
+}
+
+standard_object
+{
+	name			obj_leg_fr
+	geometry		geo_leg
+	material		mat_wood_top
+	position		1.35 0.4 -0.45
+}
+
+standard_object
+{
+	name			obj_leg_bl
+	geometry		geo_leg
+	material		mat_wood_top
+	position		-1.35 0.4 0.45
+}
+
+standard_object
+{
+	name			obj_leg_br
+	geometry		geo_leg
+	material		mat_wood_top
+	position		1.35 0.4 0.45
+}
+
+##################################################
+# Objects -- vise (clamped on the right end of the bench)
+##################################################
+
+box_geometry
+{
+	name			geo_vise_base
+	width			0.40
+	height			0.16
+	depth			0.30
+}
+
+standard_object
+{
+	name			obj_vise_base
+	geometry		geo_vise_base
+	material		mat_vise
+	position		1.15 0.99 0
+}
+
+box_geometry
+{
+	name			geo_vise_jaw
+	width			0.42
+	height			0.30
+	depth			0.09
+}
+
+standard_object
+{
+	name			obj_vise_jaw
+	geometry		geo_vise_jaw
+	material		mat_vise
+	position		1.15 1.22 0.11
+}
+
+##################################################
+# Objects -- tool tray (left end of the bench)
+##################################################
+
+box_geometry
+{
+	name			geo_tray
+	width			0.7
+	height			0.04
+	depth			0.5
+}
+
+standard_object
+{
+	name			obj_tray
+	geometry		geo_tray
+	material		mat_tray
+	position		-0.95 0.93 0
+}
+
+##################################################
+# Objects -- floor
+##################################################
+
+infiniteplane_geometry
+{
+	name			floor
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_floor
+	geometry		floor
+	material		mat_floor
+	position		0 0 0
+	orientation		-90 0 0
+	receives_shadows	false
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.2
+	color		1.0 0.95 0.85
+	direction	0.5 0.7 0.6
+}
+
+directional_light
+{
+	name		fill
+	power		0.9
+	color		0.8 0.85 1.0
+	direction	-0.4 0.35 0.5
+}

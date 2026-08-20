@@ -1,0 +1,188 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           receding_pier.RISEscene                                                                #
+#   Description:    Textures showcase 3/3 (doc 88 Phase 1+2 arc, S9 ray-differential footprint) -- a long   #
+#                   plank deck receding to the horizon under a low, grazing pinhole camera.  The plank      #
+#                   texture is a HIGH-frequency expression_painter fbm field (grain frequency runs along Z, #
+#                   the receding axis).  `fbm` fades its own octaves against the per-sample world-space      #
+#                   filter width `fw` -- real only on a PRIMARY hit against TRIANGLE-MESH geometry (see      #
+#                   TextureFootprintCompute.h / ComputeTextureFootprint, called from                         #
+#                   TriangleMeshGeometry{,Indexed}Specializations.h only).  `box_geometry` alone is an       #
+#                   analytic intersection with no footprint, so the deck is a `box_geometry` wrapped in      #
+#                   `displaced_geometry` (zero displacement -- the chunk is used purely for the tessellation #
+#                   it performs unconditionally, baking to a real ITriangleMeshGeometryIndexed) instead of   #
+#                   an `infiniteplane_geometry`, which is also analytic.  Expect crisp grain within a few    #
+#                   metres of the camera and a smooth, shimmer-free fade toward the horizon.                #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-20                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+# Declared before the rasterizer chunk below (which references it as
+# `radiance_map`) -- ordinary declare-before-use, ahead of this file's
+# otherwise-conventional shader/rasterizer/output/film/camera preamble.
+uniformcolor_painter
+{
+	name			pnt_sky
+	color			0.55 0.65 0.78
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion			3
+	samples					16
+	lum_samples				1
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/receding_pier
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			640
+	height			360
+}
+
+pinhole_camera
+{
+	location		0 0.4 3.5
+	lookat			0 0.05 -70
+	up				0 1 0
+	fov				55.0
+}
+
+##################################################
+# Painters -- plank deck: high-frequency grain along the receding axis
+##################################################
+
+# `grain_freq` multiplies P.z (the axis the deck recedes along), so the
+# fine wood-fibre detail repeats many times per world unit in depth --
+# exactly the content fw's octave fade is meant to catch as the camera's
+# per-pixel world-space footprint grows with distance.
+expression_painter
+{
+	name			expr_pier_boards
+	param			board_freq 1.2 min 0.3 max 5 step 0.1 label "Plank width frequency"
+	param			seam_width 0.06 min 0.005 max 0.3 step 0.005 label "Seam width"
+	param			grain_freq 55.0 min 10 max 150 step 1 label "Wood-grain frequency (along length)"
+	param			grain_contrast 2.4 min 1.0 max 5.0 step 0.1 label "Grain contrast"
+	seed			5.0
+	def				bx frac(P.x*board_freq)
+	def				seam smoothstep(0.0, seam_width, bx) * (1.0-smoothstep(1.0-seam_width, 1.0, bx))
+	def				board_id floor(P.x*board_freq)
+	def				grain fbm(vec3(P.x*board_freq*3.0+board_id*13.7, P.y*4.0+seed, P.z*grain_freq), 5, 0.5, 2.0)
+	def				shade clamp(grain*grain_contrast+0.5, 0, 1)
+	def				plank_tone mix(vec3(0.16,0.11,0.07), vec3(0.42,0.30,0.19), shade)
+	expr			mix(0.22, 1.0, seam)*plank_tone
+}
+
+lambertian_material
+{
+	name			mat_pier_boards
+	reflectance		expr_pier_boards
+}
+
+##################################################
+# Painters -- water either side of the deck (flat, for context only)
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_water
+	color			0.10 0.22 0.30
+}
+
+lambertian_material
+{
+	name			mat_water
+	reflectance		pnt_water
+}
+
+##################################################
+# Geometry -- the deck, tessellated so ray differentials populate a
+# real texture footprint (see file header)
+##################################################
+
+box_geometry
+{
+	name			geo_pier_base
+	width			4.0
+	height			0.15
+	depth			80.0
+}
+
+displaced_geometry
+{
+	name			geo_pier_mesh
+	base_geometry	geo_pier_base
+	detail			24
+}
+
+standard_object
+{
+	name				obj_pier
+	geometry			geo_pier_mesh
+	material			mat_pier_boards
+	position			0 0 -37
+	receives_shadows	false
+}
+
+box_geometry
+{
+	name			geo_water
+	width			30.0
+	height			0.05
+	depth			90.0
+}
+
+standard_object
+{
+	name				obj_water
+	geometry			geo_water
+	material			mat_water
+	position			0 -0.15 -37
+	receives_shadows	false
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 0.85 0.65
+	direction	0.35 0.55 0.75
+}
+
+directional_light
+{
+	name		fill
+	power		0.9
+	color		0.75 0.85 1.0
+	direction	-0.3 0.4 0.5
+}

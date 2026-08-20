@@ -31,6 +31,44 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
+- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- three scenes,
+  each earning its keep on different mechanisms.
+
+  `weathered_workbench.RISEscene` is the composition hero: a wooden workbench whose top
+  is driven by ONE `expression_painter` grain field consumed twice -- a `ramp_painter`
+  for wood colour and a `scalar_painter{painter}` bridge for GGX roughness, so gloss
+  follows grain. `scatter_painter` scatters oil-stain stamps that a `blend_painter{mode
+  multiply}` darkens onto the wood. A clamped-on iron vise is worley-pitted, with its
+  colour field reprojected via `mapping_painter{projection world}` and its roughness a
+  standalone `scalar_painter{expression}` worley field. A tool tray demonstrates
+  `stochastic_tile_painter` de-tiling a `checker_painter` source -- no tileable photo/scan
+  asset exists in-repo, so the scene substitutes a procedural checker source to exercise
+  the de-tiling mechanism; `stochastic_tile_painter`'s intended use is a small tiling
+  photo or scan, per the skill.
+
+  `oxidized_copper.RISEscene` exercises per-channel scalars, blend modes, and the
+  `voronoi3d_painter` `space` parameter on two copper spheres sharing one material.
+  A vec3-typed `scalar_painter{expression}` (`HasPerChannelVariation`) drives the
+  material's `extinction` slot directly with three independent per-channel mixes,
+  shifting the conductor Fresnel colour between clean copper and a duller patina tint --
+  no colourspace conversion, no JH uplift. A second vec3-typed `expression_painter`
+  feeds `alphax`/`alphay` from its R and G channels through two separate
+  `scalar_painter{painter channel}` bridges, producing anisotropy that visibly follows
+  the field. `voronoi3d_painter{space world}` scatters verdigris patina cells across
+  world-space coordinates spanning both sphere centres, so the SAME painter bound to
+  both objects reads as one continuous patina field carved through both of them rather
+  than two independent per-object patterns; `blend_painter{mode overlay}` composites
+  the patina over the clean-copper base.
+
+  `receding_pier.RISEscene` demonstrates the S9 ray-differential texture footprint: a
+  long plank deck, tessellated via `displaced_geometry` (zero displacement -- used
+  purely for the unconditional bake to a real `ITriangleMeshGeometryIndexed`, since
+  `box_geometry`/`infiniteplane_geometry` alone are analytic and never populate
+  `txFootprint`), viewed from a low, grazing pinhole camera. Its `expression_painter`
+  plank texture runs a high-frequency `fbm` field along the receding (Z) axis; `fbm`
+  fades its own octaves against the per-sample world-space filter width `fw`, which
+  grows with distance, so the render shows crisp wood grain within a few metres of the
+  camera and a smooth, shimmer-free fade toward the horizon with no extra code.
 - `VCM/`: vertex-connection-and-merging showpieces.
   `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
   than a picture: emissive SDF geometry inside a dielectric bell inside a scattering
