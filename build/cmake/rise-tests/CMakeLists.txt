@@ -280,6 +280,15 @@ foreach(test_src ${TEST_SOURCES})
 
     add_executable(${test_name} "${test_src}")
 
+    if(test_name STREQUAL "FireProductionCalibrationTest" OR
+       test_name STREQUAL "FireSequenceTest")
+        file(GLOB FIRE_PRODUCTION_FP64_SOURCES CONFIGURE_DEPENDS
+            "${RISE_TESTS_DIR}/fire_production_fp64/*.cpp")
+        target_sources(${test_name} PRIVATE ${FIRE_PRODUCTION_FP64_SOURCES})
+        set_source_files_properties(${FIRE_PRODUCTION_FP64_SOURCES} PROPERTIES
+            COMPILE_OPTIONS "/fp:strict")
+    endif()
+
     target_include_directories(${test_name} PRIVATE
         "${RISE_LIB_INCLUDE}"
         "${RISE_TESTS_DIR}"        # ProceduralTestHelpers.h, StandaloneTestReporting.h, etc.
@@ -301,6 +310,10 @@ foreach(test_src ${TEST_SOURCES})
         /UNDEBUG                    # legacy assert() oracles stay active in Release
         /wd4250                    # 'inherits via dominance' - benign with diamond inheritance
     )
+
+	if(test_name STREQUAL "FireProductionCalibrationTest")
+		target_compile_options(${test_name} PRIVATE /fp:strict)
+	endif()
 
     # Per-config libraries via generator expressions.
     target_link_libraries(${test_name} PRIVATE

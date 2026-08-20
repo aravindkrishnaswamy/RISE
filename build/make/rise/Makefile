@@ -39,6 +39,8 @@ PATHTESTS = ../../../tests/
 PATHTESTDEST = $(PATHDEST)tests/
 SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
 OBJTESTS = $(SRCTESTS:.cpp=.o)
+FIREPRODUCTIONFP64SOURCES = $(wildcard $(PATHTESTS)fire_production_fp64/*.cpp)
+FIREPRODUCTIONFP64OBJECTS = $(FIREPRODUCTIONFP64SOURCES:.cpp=.o)
 
 # Tool source and output lists. Tools are standalone CLI utilities
 # (image diff, firefly inspection, etc.) that link against librise.a
@@ -207,6 +209,24 @@ build-test/% : $(PATHTESTDEST)%
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTS)FireProductionCalibrationTest.o : $(PATHTESTS)FireProductionCalibrationTest.cpp
+	@echo Compiling strict calibration gate: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTS)fire_production_fp64/%.o : $(PATHTESTS)fire_production_fp64/%.cpp
+	@echo Compiling strict fp64 calibration mirror: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTDEST)FireProductionCalibrationTest : $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB) $(LDLIBS)
+
+$(PATHTESTDEST)FireSequenceTest : $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB) $(LDLIBS)
 
 $(PATHTESTDEST)% : $(PATHTESTS)%.o $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
