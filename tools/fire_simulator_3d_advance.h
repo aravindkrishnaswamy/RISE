@@ -440,7 +440,7 @@
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
 				if(!AcceptedStateAdmissible(beginning[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 				low[cell] = beginning[cell]+frozenSourceDelta[cell];
 				for( unsigned int axis=0; axis<3; ++axis ) {
 					const std::size_t previous = PeriodicPrevious(shape,cell,axis);
@@ -451,7 +451,7 @@
 						flux.low[axis][cell]);
 				}
 				if(!AcceptedStateAdmissible(low[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 			}
 			const std::size_t inequalityCount = 4+MethaneSpeciesCount;
 			std::vector<double> ratio(count*inequalityCount,1.0);
@@ -516,7 +516,7 @@
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
 				if(!AcceptedStateAdmissible(candidate[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 			}
 			result.swap(candidate);
 			return true;
@@ -1545,7 +1545,8 @@
 				for(std::size_t cell=first;cell<last;++cell){
 					std::string localError;
 					if(!AcceptedStateAdmissible(beginning[cell],ambientEnthalpy,
-						adiabaticEnthalpy,fuel,&localError)){failureCell[worker]=cell;
+						adiabaticEnthalpy,fuel,config.producerPrecision,&localError)){
+						failureCell[worker]=cell;
 						failureMessage[worker]=localError;break;}
 					low[cell]=beginning[cell]+sourceDelta[cell];
 				for(unsigned int axis=0;axis<3;++axis){
@@ -1556,7 +1557,7 @@
 					correction[2*axis+1][cell]=-scale*(flux.high[axis][upper]-flux.low[axis][upper]);
 				}
 				if(!AcceptedStateAdmissible(low[cell],ambientEnthalpy,adiabaticEnthalpy,
-					fuel,&localError)){std::ostringstream message;message << localError <<
+					fuel,config.producerPrecision,&localError)){std::ostringstream message;message << localError <<
 					": cell=" << cell << " values=";
 					for(std::size_t component=0;component<MethaneConservativeDimension;++component)
 						message << (component?",":"") << low[cell][component];
@@ -1647,7 +1648,7 @@
 			for(std::thread& thread:threads)thread.join();threads.clear();
 			for(std::size_t cell=0;cell<count;++cell){
 				if(!AcceptedStateAdmissible(candidate[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 			}
 			result.swap(candidate);return true;
 		}

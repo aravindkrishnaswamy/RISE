@@ -33,6 +33,16 @@ namespace
 		return std::fabs(actual-expected) <= relative*std::max(1.0,std::fabs(expected));
 	}
 
+	bool SameConservativeVectors(const std::vector<ConservativeVector>& left,
+		const std::vector<ConservativeVector>& right)
+	{
+		if(left.size()!=right.size())return false;
+		for(std::size_t cell=0;cell<left.size();++cell)for(std::size_t component=0;
+			component<MethaneConservativeDimension;++component)if(
+			left[cell][component]!=right[cell][component])return false;
+		return true;
+	}
+
 	MethaneCellState StateAtTemperature(
 		const std::array<double,MethaneSpeciesCount>& constituentWeights,
 		const double mixtureFraction,
@@ -630,6 +640,98 @@ int main()
 		fp32Molecular.molecularViscosityPaS>0.0;
 	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport,
 		"fp32-envelope states remain total through temperature, EOS, and viscosity consumers");
+	MethaneCellState spoofedPrecisionState=fp32EnvelopeState;
+	spoofedPrecisionState.producerPrecision=FireStateProducerPrecision::Binary64;
+	double spoofedTemperature=0.0;
+	Check(!InvertMethaneTemperatureWithinAcceptedEnvelope(spoofedPrecisionState,
+		fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,
+		FireStateProducerPrecision::Binary32,spoofedTemperature,&error)&&
+		!EquationOfStateResidual(spoofedPrecisionState,fuel,
+			FireStateProducerPrecision::Binary32,fp32EOSResidual,&error)&&
+		!EvaluateCellMolecularTransport(spoofedPrecisionState,fuel,transport,
+			FireStateProducerPrecision::Binary32,fp32Molecular,&error)&&
+		!InvertMethaneTemperatureWithinAcceptedEnvelope(fp32EnvelopeState,
+			fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,
+			FireStateProducerPrecision::Binary64,spoofedTemperature,&error),
+		"state consumers reject both directions of producer-precision metadata mismatch");
+	MethaneCellState fp32NegativeConstituent=eosFixture;
+	fp32NegativeConstituent.producerPrecision=FireStateProducerPrecision::Binary32;
+	double carbonEnthalpy=0.0;
+	const double negativeCarbon=-0.25*AcceptedStateRoundoffFactor(r60Envelope,
+		FireStateProducerPrecision::Binary32);
+	Check(fuel.SensibleEnthalpyJPerKG("C(gr)",fp32NegativeConstituent.temperatureK,
+		carbonEnthalpy,&error),"fp32 consumer fixture obtains the carbon enthalpy");
+	const double originalCarbon=fp32NegativeConstituent.constituent[MethaneCarbon];
+	fp32NegativeConstituent.constituent[MethaneCarbon]=negativeCarbon;
+	fp32NegativeConstituent.sensibleEnergyJPerM3+=(negativeCarbon-originalCarbon)*carbonEnthalpy;
+	std::array<double,MethaneSpeciesCount> fp32Available;
+	double fp32NegativeTemperature=0.0;
+	const bool fp32NegativeAdmissible=AcceptedMethaneCellStateAdmissible(
+		fp32NegativeConstituent,fuel,&error);
+	const bool fp32PositivePart=PositivePartThermochemicalDensitiesOrdered(
+		fp32NegativeConstituent,fp32Available,&error)&&fp32Available[MethaneCarbon]==0.0;
+	const bool fp32NegativeInverts=InvertMethaneTemperatureWithinAcceptedEnvelope(
+		fp32NegativeConstituent,fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,
+		fp32NegativeTemperature,&error)&&std::isfinite(fp32NegativeTemperature);
+	const bool fp32NegativeTransport=EvaluateCellMolecularTransport(fp32NegativeConstituent,
+		fuel,transport,fp32Molecular,&error)&&fp32Molecular.molecularViscosityPaS>0.0;
+	Check(fp32NegativeAdmissible,"fp32 envelope-negative inventory is admissible");
+	Check(fp32PositivePart,"fp32 envelope-negative inventory has total positive-part availability");
+	Check(fp32NegativeInverts,"fp32 envelope-negative inventory has a total temperature inversion");
+	Check(fp32NegativeTransport,"fp32 envelope-negative inventory has total molecular transport");
+	MethaneCellState fp32EnergyEndpoint=PhysicalMixtureLineState(fuel,thermochemistry,0.2,
+		fuel.TemperatureMinK());
+	fp32EnergyEndpoint.producerPrecision=FireStateProducerPrecision::Binary32;
+	const double fp32EnergyEnvelope=AcceptedStateRoundoffFactor(r60Envelope,
+		FireStateProducerPrecision::Binary32)*AcceptedStateEnergyScale(
+		ToConservativeVector(fp32EnergyEndpoint),r60LowerEnthalpy,r60UpperEnthalpy);
+	fp32EnergyEndpoint.sensibleEnergyJPerM3-=0.25*fp32EnergyEnvelope;
+	double fp32EndpointTemperature=0.0;
+	Check(InvertMethaneTemperatureWithinAcceptedEnvelope(fp32EnergyEndpoint,
+		fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,fp32EndpointTemperature,&error)&&
+		fp32EndpointTemperature==fuel.TemperatureMinK()&&
+		EvaluateCellMolecularTransport(fp32EnergyEndpoint,fuel,transport,fp32Molecular,&error)&&
+		fp32Molecular.molecularViscosityPaS>0.0,
+		"fp32 energy-row envelope excursion uses the certified endpoint and keeps viscosity total");
+	const ConservativeVector fp32RawState=ToConservativeVector(fp32EnvelopeState);
+	ConservativeVector zeroConservative;
+	PeriodicTransportConfig fp32TransportConfig;fp32TransportConfig.cellWidthM=0.1;
+	fp32TransportConfig.deltaTimeS=0.01;fp32TransportConfig.ambientTemperatureK=300.0;
+	fp32TransportConfig.adiabaticTemperatureK=5000.0;
+	fp32TransportConfig.producerPrecision=FireStateProducerPrecision::Binary32;
+	std::vector<ConservativeVector> fp32Line(3u,fp32RawState),fp32ZeroLine(3u,zeroConservative),
+		fp32LineResult;
+	PeriodicFluxPair fp32LineFlux;fp32LineFlux.low=fp32ZeroLine;fp32LineFlux.high=fp32ZeroLine;
+	std::vector<double> fp32Alpha;
+	const bool fp32LineTotal=ApplyPeriodicSharedFCT(fp32Line,fp32LineFlux,fp32ZeroLine,
+		fp32TransportConfig,fuel,thermochemistry,fp32LineResult,fp32Alpha,&error)&&
+		SameConservativeVectors(fp32LineResult,fp32Line);
+	PeriodicMACShape fp32Shape;fp32Shape.nx=4u;fp32Shape.ny=4u;fp32Shape.nz=4u;
+	fp32Shape.cellWidthM=0.1;const std::size_t fp32Cells=fp32Shape.CellCount();
+	std::vector<ConservativeVector> fp32Volume(fp32Cells,fp32RawState),
+		fp32ZeroVolume(fp32Cells,zeroConservative),fp32VolumeResult;
+	PeriodicFluxPair3D fp32PeriodicFlux;for(unsigned int axis=0u;axis<3u;++axis){
+		fp32PeriodicFlux.low[axis]=fp32ZeroVolume;fp32PeriodicFlux.high[axis]=fp32ZeroVolume;}
+	std::array<std::vector<double>,3> fp32FaceAlpha;
+	const bool fp32PeriodicTotal=ApplyPeriodicSharedFCT3D(fp32Shape,fp32Volume,
+		fp32PeriodicFlux,fp32ZeroVolume,fp32TransportConfig,fuel,thermochemistry,
+		fp32VolumeResult,fp32FaceAlpha,&error)&&
+		SameConservativeVectors(fp32VolumeResult,fp32Volume);
+	OpenFluxPair3D fp32OpenFlux;for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+		OpenMACFaceCount3D(fp32Shape,axis);fp32OpenFlux.low[axis].assign(faces,zeroConservative);
+		fp32OpenFlux.high[axis].assign(faces,zeroConservative);
+		fp32OpenFlux.nonadvectiveMass[axis].assign(faces,
+			std::array<double,MethaneMassStateDimension>());
+		fp32OpenFlux.nonadvectiveEnergy[axis].assign(faces,0.0);}
+	const bool fp32OpenTotal=ApplyOpenSharedFCT3D(fp32Shape,fp32Volume,fp32OpenFlux,
+		fp32ZeroVolume,fp32TransportConfig,fuel,thermochemistry,fp32VolumeResult,
+		fp32FaceAlpha,&error,1u)&&SameConservativeVectors(fp32VolumeResult,fp32Volume);
+	double fp32Divergence=1.0;
+	const bool fp32DivergenceTotal=DivergenceFromDiscreteRate(fp32RawState,
+		zeroConservative,fp32EnvelopeState.temperatureK,fuel,
+		FireStateProducerPrecision::Binary32,fp32Divergence,&error)&&fp32Divergence==0.0;
+	Check(fp32LineTotal&&fp32PeriodicTotal&&fp32OpenTotal&&fp32DivergenceTotal,
+		"all raw-vector FCT and divergence consumers propagate the binary32 precision class");
 	fp32EnvelopeState.rhoTotalZ+=1.5*fp32StateEnvelope;
 	Check(!AcceptedStateAdmissible(ToConservativeVector(fp32EnvelopeState),
 		r60LowerEnthalpy,r60UpperEnthalpy,fuel,FireStateProducerPrecision::Binary32,&error),
@@ -756,7 +858,8 @@ int main()
 		relativeBuoyancyRate3D,std::vector<double>(openShape3D.CellCount(),0.0),
 		std::vector<double>(openShape3D.CellCount(),0.01),
 		std::vector<double>(openShape3D.CellCount(),0.1),openBoundary3D,300.0,300.0,
-		0.01,1.0e-10,fuel,thermochemistry,ambientOpenStage3D,&error);
+		0.01,1.0e-10,fuel,thermochemistry,FireStateProducerPrecision::Binary64,
+		ambientOpenStage3D,&error);
 	for( unsigned int axis=0; endToEndAmbientRest && axis<3; ++axis ) for(
 		const double value : relativeBuoyancyRate3D.component[axis] ) {
 		endToEndAmbientRest=endToEndAmbientRest && value==0.0;
@@ -782,13 +885,26 @@ int main()
 		ambientOpenStage3D.boundaryFlux.side[side].size()==
 		OpenBoundaryFaceCount3D(openShape3D,side),
 		"V1 production boundary stage returns every conservative boundary face");
+	OpenBoundaryStage3DResult fp32OpenStage3D;
+	const bool fp32OpenStageTotal=BuildOpenBoundaryStage3D(openShape3D,
+		std::vector<ConservativeVector>(openShape3D.CellCount(),fp32RawState),
+		std::vector<double>(openShape3D.CellCount(),fp32EnvelopeState.temperatureK),
+		zeroOpenMomentum3D,zeroOpenMomentum3D,
+		std::vector<double>(openShape3D.CellCount(),0.0),
+		std::vector<double>(openShape3D.CellCount(),0.0),
+		std::vector<double>(openShape3D.CellCount(),0.0),openBoundary3D,300.0,300.0,
+		0.01,1.0e-8,fuel,thermochemistry,FireStateProducerPrecision::Binary32,
+		fp32OpenStage3D,&error);
+	Check(fp32OpenStageTotal,
+		"open boundary-stage consumer remains total on a binary32-envelope state");
 	OpenBoundaryStage3DResult expandingOpenStage3D;
 	bool owningExpansionOK=BuildOpenBoundaryStage3D(openShape3D,ambientCells3D,
 		std::vector<double>(openShape3D.CellCount(),300.0),zeroOpenMomentum3D,
 		relativeBuoyancyRate3D,std::vector<double>(openShape3D.CellCount(),0.05),
 		std::vector<double>(openShape3D.CellCount(),0.0),
 		std::vector<double>(openShape3D.CellCount(),0.0),openBoundary3D,300.0,300.0,
-		0.01,2.0e-8,fuel,thermochemistry,expandingOpenStage3D,&error);
+		0.01,2.0e-8,fuel,thermochemistry,FireStateProducerPrecision::Binary64,
+		expandingOpenStage3D,&error);
 	double owningExpansionResidual=0.0;
 	for( std::size_t z=0; owningExpansionOK && z<openShape3D.nz; ++z ) for(
 		std::size_t y=0; y<openShape3D.ny; ++y ) for( std::size_t x=0;
@@ -821,7 +937,8 @@ int main()
 			imposedMomentumRate3D,std::vector<double>(openShape3D.CellCount(),0.0),
 			std::vector<double>(openShape3D.CellCount(),0.0),
 			std::vector<double>(openShape3D.CellCount(),0.0),forcedBoundary3D,300.0,300.0,
-			0.01,2.0e-8,fuel,thermochemistry,forcedOpenStage3D,&error) &&
+			0.01,2.0e-8,fuel,thermochemistry,FireStateProducerPrecision::Binary64,
+			forcedOpenStage3D,&error) &&
 			ProjectPressureOpenMACVelocity3D(openShape3D,
 			std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
 			independentlyUnprojected3D,std::vector<double>(openShape3D.CellCount(),0.0),
@@ -1649,7 +1766,8 @@ int main()
 		relativeBuoyancyRate3D,std::vector<double>(openShape3D.CellCount(),0.0),
 		std::vector<double>(openShape3D.CellCount(),0.0),
 		std::vector<double>(openShape3D.CellCount(),0.0),openBoundary3D,300.0,300.0,
-		0.01,1.0e-8,fuel,thermochemistry,rejectedOpenStage,&error),
+		0.01,1.0e-8,fuel,thermochemistry,FireStateProducerPrecision::Binary64,
+		rejectedOpenStage,&error),
 		"V1 production boundary stage rejects negative constituents despite a positive sum");
 	PeriodicMACShape oddOpenShape;
 	oddOpenShape.nx=65;oddOpenShape.ny=65;oddOpenShape.nz=65;oddOpenShape.cellWidthM=0.025;

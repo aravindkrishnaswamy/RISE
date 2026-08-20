@@ -205,6 +205,22 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
                 body,
                 r"(?:row_result|rowResult|result_scale|resultScale)",
                 name + " adds a result-scaled feasibility envelope")
+        for name in ("ApplyPeriodicSharedFCT",):
+            self.assertIn("config.producerPrecision", inline_body(core, name),
+                          name + " drops the raw state's producer precision")
+        for name in ("ApplyPeriodicSharedFCT3D", "ApplyOpenSharedFCT3D"):
+            self.assertIn("config.producerPrecision", inline_body(advance, name),
+                          name + " drops the raw state's producer precision")
+        for name in ("DivergenceFromDiscreteRate", "BuildOpenBoundaryStage3D"):
+            self.assertIn("producerPrecision", inline_body(core, name),
+                          name + " hardcodes a raw-state precision class")
+        for name in ("InvertMethaneTemperatureWithinAcceptedEnvelope",
+                     "EquationOfStateResidual", "EvaluateCellMolecularTransport"):
+            self.assertIn("producerPrecision!=state.producerPrecision",
+                          inline_body(core, name),
+                          name + " permits a mixed producer/state precision gate")
+        self.assertEqual(4, core.count("producerPrecision!=state.producerPrecision"),
+                         "a MethaneCellState consumer lost the metadata mismatch gate")
         self.assertIn("EvaluateCellMolecularTransport(",
                       inline_body(core, "EvaluateCellTransport"))
         self.assertIn("CanonicalApplySourcePacket(",

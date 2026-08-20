@@ -1737,7 +1737,9 @@ removed mean `+0`. Its raw conservative payload is finite and gas-positive, with
 SHA-256 `03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50`.
 Nevertheless the payload has maximum certified-row residual
 `5.2451771873310863e-8` (row 2, cell 4915). That is `0.8799947063` binary32
-unit roundoff but `57,671.3331` times the record's current fp64 admissibility
+ULP, equivalently `0.4399973532 epsilon32` under r60's
+`numeric_limits<float>::epsilon()` convention, but `57,671.3331` times the
+record's current fp64 admissibility
 envelope `9.0949470177292824e-13`. The next step cannot invert temperature or
 derive molecular viscosity without either an unruled state projection or a
 new analytically derived fp32 feasibility envelope. The canonical command
@@ -1779,12 +1781,20 @@ next-power-of-two rule gives `kappa32=1024`. Nonzero thermo/source maps must add
 their own derived producer term before they may publish a binary32 state.
 
 The original tier-5 observation is confirmation only: its maximum scaled
-affine excursion is `5.2451771873310863e-8`, or `0.8799947063 eps32`, at cell
-4915 row 2. The derived envelope is `0.0001220703125` at unit scale, a
+affine excursion is `5.2451771873310863e-8`, or `0.8799947063` ULP and
+`0.4399973532 epsilon32` under r60's convention, at cell 4915 row 2. The
+derived envelope is `0.0001220703125` at unit scale, a
 `2327.2867272213789` margin. A mutation above `kappa32*eps32*scale_r` remains a
 structural rejection. Temperature inversion, EOS evaluation, positive-part
 property availability, and molecular-viscosity reconstruction all enter the
 same metadata-selected predicate; no stored conservative byte is repaired.
+Temperature inversion certifies the signed mixture-energy bracket, including
+the fp32-envelope endpoint; EOS evaluates the positive gas subset after the
+same gate; positive-part availability maps an envelope-negative trace
+constituent to zero only for property evaluation; and molecular transport uses
+those positive-part gas fractions and remains finite and positive. The 1-D and
+3-D FCT paths, divergence identity, and open-boundary stage propagate the same
+producer precision through their raw-vector configuration or parameter.
 
 The ruling explicitly rejects three alternatives: projecting or clamping each
 resident state would mutate conservation ledgers and hide producer defects;

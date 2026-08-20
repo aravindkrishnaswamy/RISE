@@ -2689,7 +2689,8 @@ it was already tried and refuted here.
   positive conservative payload whose exact digest is
   `03faf5aad21e...64e50`, but its certified affine row 2 has maximum scaled
   residual `5.2451771873310863e-8` at cell 4915. This is only `0.879995`
-  binary32 unit roundoff, yet it is `57,671.33x` the existing fp64 accepted-
+  binary32 ULP, or `0.4399973532 epsilon32` under r60's
+  `numeric_limits<float>::epsilon()` convention, yet it is `57,671.33x` the existing fp64 accepted-
   state envelope, so temperature inversion and the next molecular-viscosity
   request structurally reject. Exit `190` is reachable only after the sole
   projection passes its validation contract and its exact pre/post residual,
@@ -2708,7 +2709,8 @@ it was already tried and refuted here.
   `kappa64=4096`. The resident binary32 producer union is remap `256`, composed
   force `64` (subsuming r93's `8`), and projection `256` eps32 units: union
   `576`, rounded by the r60 rule to `kappa32=1024`. Source is exact +0 at this
-  pre-thermo seam. The former cell-4915 observation is `0.8799947063 eps32`,
+  pre-thermo seam. The former cell-4915 observation is `0.8799947063` ULP,
+  equivalently `0.4399973532 epsilon32` under r60's convention, and
   `2327.2867x` inside the derived unit-scale envelope; an above-envelope RED
   still fails closed. Temperature, EOS, positive-part properties, and molecular
   viscosity all consume the state's precision metadata. No state repair,

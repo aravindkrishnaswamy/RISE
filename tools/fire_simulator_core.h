@@ -370,6 +370,8 @@ namespace RISE
 			double& result,
 			std::string* error=0 )
 		{
+			if(producerPrecision!=state.producerPrecision)return Fail(error,
+				"fire solver temperature inversion precision metadata mismatch");
 			if(!std::isfinite(lowerTemperatureK)||!std::isfinite(upperTemperatureK)||
 				lowerTemperatureK>=upperTemperatureK) return Fail(error,
 					"fire solver thermochemical inversion bounds are invalid");
@@ -444,6 +446,8 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
+			if(producerPrecision!=state.producerPrecision)return Fail(error,
+				"fire solver EOS precision metadata mismatch");
 			static const char* names[MethaneCarbon] = {
 				"CH4", "O2", "N2", "CO2", "H2O", "CO"
 			};
@@ -522,6 +526,8 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
+			if(producerPrecision!=state.producerPrecision)return Fail(error,
+				"fire solver molecular transport precision metadata mismatch");
 			if(!ValidateCellState(state,error)||
 				!AcceptedMethaneCellStateAdmissible(state,thermochemistry,producerPrecision,error)||
 				!thermochemistry.IsValid()||!transport.IsValid())return false;
@@ -1063,9 +1069,11 @@ namespace RISE
 			double adiabaticTemperatureK;
 			double ambientGasDensityKGPerM3;
 			double gravityMPerS2;
+			FireStateProducerPrecision producerPrecision;
 			PeriodicTransportConfig() : cellWidthM(0.0), deltaTimeS(0.0),
 				ambientTemperatureK(0.0), adiabaticTemperatureK(0.0),
-				ambientGasDensityKGPerM3(0.0), gravityMPerS2(0.0) {}
+				ambientGasDensityKGPerM3(0.0), gravityMPerS2(0.0),
+				producerPrecision(FireStateProducerPrecision::Binary64) {}
 		};
 
 		struct PeriodicFluxPair
@@ -1383,6 +1391,8 @@ namespace RISE
 			const FireStateProducerPrecision producerPrecision,
 			std::string* error )
 		{
+			if(producerPrecision!=state.producerPrecision)return Fail(error,
+				"fire solver accepted-state precision metadata mismatch");
 			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
 			return fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
 				lowerEnthalpy.data(),lowerEnthalpy.size(),error)&&
@@ -1435,7 +1445,7 @@ namespace RISE
 			const double scale = config.deltaTimeS/config.cellWidthM;
 			for( std::size_t cell=0; cell<count; ++cell ) {
 				if(!AcceptedStateAdmissible(beginning[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 				const std::size_t leftFace = (cell+count-1)%count;
 				const std::size_t rightFace = cell;
 				low[cell] = beginning[cell]+config.deltaTimeS*sourcePerS[cell]+
@@ -1443,7 +1453,7 @@ namespace RISE
 				leftCorrection[cell] = scale*(flux.high[leftFace]-flux.low[leftFace]);
 				rightCorrection[cell] = -scale*(flux.high[rightFace]-flux.low[rightFace]);
 				if(!AcceptedStateAdmissible(low[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 			}
 			const std::size_t inequalityCount = 4+MethaneSpeciesCount;
 			std::vector<std::vector<double> > ratio(count,
@@ -1501,7 +1511,7 @@ namespace RISE
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
 				if(!AcceptedStateAdmissible(result[cell],ambientEnthalpy,
-					adiabaticEnthalpy,fuel,error))return false;
+					adiabaticEnthalpy,fuel,config.producerPrecision,error))return false;
 			}
 			return true;
 		}
@@ -1601,6 +1611,7 @@ namespace RISE
 			const ConservativeVector& nonadvectiveAndSourceRate,
 			const double temperatureK,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			double& result,
 			std::string* error = 0
 			)
@@ -1608,14 +1619,14 @@ namespace RISE
 			static const char* names[MethaneSpeciesCount] = {
 				"CH4", "O2", "N2", "CO2", "H2O", "CO", "C(gr)"
 			};
-			const MethaneCellState state = FromConservativeVector(stateVector);
+			const MethaneCellState state = FromConservativeVector(stateVector,producerPrecision);
 			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
 			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
 				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
 				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(stateVector,lowerEnthalpy,upperEnthalpy,
-					thermochemistry,error))return false;
+					thermochemistry,producerPrecision,error))return false;
 			double gasDensity = 0.0, inverseMeanWeightSum = 0.0;
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
 				const FireThermochemistrySpecies* property = thermochemistry.FindSpecies(names[species]);
@@ -1654,6 +1665,15 @@ namespace RISE
 				nonadvectiveAndSourceRate[1+MethaneCarbon];
 			return std::isfinite(result) ||
 				Fail(error,"fire solver divergence identity overflowed");
+		}
+
+		inline bool DivergenceFromDiscreteRate(const ConservativeVector& stateVector,
+			const ConservativeVector& nonadvectiveAndSourceRate,const double temperatureK,
+			const FireSimulationMethaneRecord& thermochemistry,double& result,
+			std::string* error=0)
+		{
+			return DivergenceFromDiscreteRate(stateVector,nonadvectiveAndSourceRate,
+				temperatureK,thermochemistry,FireStateProducerPrecision::Binary64,result,error);
 		}
 
 		inline bool AcceptedConservativeVolumeRatio(
@@ -4047,6 +4067,7 @@ namespace RISE
 			const double absoluteTolerancePerS,
 			const FireSimulationMethaneRecord& fuel,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			OpenBoundaryStage3DResult& result,
 			std::string* error = 0
 			)
@@ -4065,11 +4086,11 @@ namespace RISE
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error))
 				return false;
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				MethaneCellState physical=FromConservativeVector(cellState[cell]);
+				MethaneCellState physical=FromConservativeVector(cellState[cell],producerPrecision);
 				physical.temperatureK=temperatureK[cell];
 				if( !ValidateCellState(physical,error) ||
 					!AcceptedStateAdmissible(cellState[cell],lowerEnthalpy,upperEnthalpy,
-						thermochemistry,error) ||
+						thermochemistry,producerPrecision,error) ||
 					!std::isfinite(rhoDiffusivityKGPerMS[cell]) ||
 					rhoDiffusivityKGPerMS[cell]<0.0 ||
 					!std::isfinite(conductivityWPerMK[cell]) || conductivityWPerMK[cell]<0.0 ) {
@@ -5730,9 +5751,14 @@ namespace RISE
 				for( const FireThermochemistrySegment& segment : species->segments ) {
 					if( segment.temperatureMaxK >= lowerK && segment.temperatureMinK <= upperK ) {
 						speciesLower = std::min(speciesLower,segment.certifiedCpLowerJPerKGK);
+						const double boundedLower=std::max(lowerK,segment.temperatureMinK);
 						const double boundedUpper=std::min(upperK,segment.temperatureMaxK);
-						double power=1.0,absolutePolynomial=0.0;
-						for(std::size_t coefficient=0;coefficient<5;++coefficient){
+						double absolutePolynomial=
+							std::fabs(segment.coefficients[0])/(boundedLower*boundedLower)+
+							std::fabs(segment.coefficients[1])/boundedLower+
+							std::fabs(segment.coefficients[2]);
+						double power=boundedUpper;
+						for(std::size_t coefficient=3;coefficient<7;++coefficient){
 							absolutePolynomial+=std::fabs(segment.coefficients[coefficient])*power;
 							power*=boundedUpper;
 						}
