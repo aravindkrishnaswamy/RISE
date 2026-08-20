@@ -302,11 +302,16 @@ struct PropertiesPanel: View {
                 // identity row on a chunk that also declares a genuine
                 // `type` parameter (sdf3d_painter, polynomial_function2d_painter)
                 // used to jump to that param's line instead of the chunk.
-                let revealParam = row.id == "chunk_type" ? "" : row.name
+                let isIdentityRow = row.id == "chunk_type"
+                let revealParam = isIdentityRow ? "" : row.name
                 Button {
                     viewModel.revealSourceSpan(category: selectionCategory, name: selectionName, param: revealParam)
                 } label: {
-                    Label("Reveal “\(row.name)” in Scene File", systemImage: "text.magnifyingglass")
+                    // Label matches the action: the identity row reveals the
+                    // whole chunk, not a param named "chunk_type".
+                    Label(isIdentityRow ? "Reveal chunk in Scene File"
+                                        : "Reveal “\(row.name)” in Scene File",
+                          systemImage: "text.magnifyingglass")
                 }
             }
             // Jump-to-definition (GUI redesign 2026-07-22): a Reference

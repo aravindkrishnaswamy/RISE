@@ -1078,13 +1078,17 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
     // chunk that also declares a genuine `type` parameter (sdf3d_painter,
     // polynomial_function2d_painter) used to jump to that param's line
     // instead of the chunk.
-    const QString revealParamName = (paramName == QStringLiteral("chunk_type")) ? QString() : paramName;
+    const bool isIdentityRow = (paramName == QStringLiteral("chunk_type"));
+    const QString revealParamName = isIdentityRow ? QString() : paramName;
     connect(row, &QWidget::customContextMenuRequested, this,
-            [this, row, paramName, revealParamName](const QPoint& pos) {
+            [this, row, paramName, revealParamName, isIdentityRow](const QPoint& pos) {
                 if (!m_sourceLineKnown) return;
                 QMenu menu(this);
-                QAction* reveal = menu.addAction(
-                    tr("Reveal \xE2\x80\x9C%1\xE2\x80\x9D in Scene File").arg(paramName));   // “<param>”
+                // Label matches the action: the identity row reveals the
+                // whole chunk, not a param named "chunk_type".
+                QAction* reveal = menu.addAction(isIdentityRow
+                    ? tr("Reveal chunk in Scene File")
+                    : tr("Reveal \xE2\x80\x9C%1\xE2\x80\x9D in Scene File").arg(paramName));   // “<param>”
                 connect(reveal, &QAction::triggered, this, [this, revealParamName]() {
                     emit revealParamRequested(m_currentSelectionCat, m_currentSelectionName, revealParamName);
                 });
