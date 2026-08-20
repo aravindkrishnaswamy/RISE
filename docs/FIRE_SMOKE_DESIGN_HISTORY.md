@@ -2580,8 +2580,11 @@ it was already tried and refuted here.
 - **r107 (2026-08-19):** calibration stopped at the pre-solver state-family
   gate. The strict binary64, exact-common-support manifest is
   `338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5`
-  and explicitly is not the full campaign manifest. It binds certified
-  tier-5/6/7 state hashes `ce0b47fe...`, `7e53de9f...`, and `3f9f1eaf...`.
+  and explicitly is not the full campaign manifest. The manifest and its
+  three bound checkpoints are preserved under
+  `rendered/fire_production_calibration/r107_state_family/`; obsolete v1/v2
+  artifacts are excluded. It binds certified tier-5/6/7 state hashes
+  `ce0b47fe...`, `7e53de9f...`, and `3f9f1eaf...`.
   On the one mutual physical support, the admissible ratio for `0<p<=2` is
   `[1.18274896,1.65846154]`. `rho_total_Z` and `CH4` yield `1.1396311811`
   and `1.1647909263`; `CO2` and `H2O` both yield `0.9498604709`, with the

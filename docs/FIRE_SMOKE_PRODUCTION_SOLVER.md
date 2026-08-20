@@ -1543,6 +1543,11 @@ is not an accepted tolerance.
 
 The preliminary state-family manifest is SHA-256
 `338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5`.
+The sealed manifest and its three bound checkpoint files are preserved at
+`rendered/fire_production_calibration/r107_state_family/`; obsolete v1/v2
+partial manifests are deliberately absent. The canonical evidence command is
+`./bin/tests/FireSequenceTest --fire-production-calibration-check-input-convergence
+rendered/fire_production_calibration/r107_state_family` and must exit `145`.
 It explicitly declares `full_campaign_manifest false` and binds tier-state
 hashes `ce0b47fe...`, `7e53de9f...`, and `3f9f1eaf...`. The comparison uses
 one three-tier mutual support,
