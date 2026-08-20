@@ -1679,12 +1679,13 @@ namespace RISE
 		inline bool AcceptedConservativeVolumeRatio(
 			const ConservativeVector& stateVector,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			double& ratio,
 			std::string* error = 0
 			)
 		{
 			static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
-			MethaneCellState state=FromConservativeVector(stateVector);
+			MethaneCellState state=FromConservativeVector(stateVector,producerPrecision);
 			double temperatureK=0.0;
 			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(state,
 				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
@@ -1701,12 +1702,21 @@ namespace RISE
 				"fire solver finite-increment volume ratio is invalid");
 		}
 
+		inline bool AcceptedConservativeVolumeRatio(const ConservativeVector& stateVector,
+			const FireSimulationMethaneRecord& thermochemistry,double& ratio,
+			std::string* error=0)
+		{
+			return AcceptedConservativeVolumeRatio(stateVector,thermochemistry,
+				FireStateProducerPrecision::Binary64,ratio,error);
+		}
+
 		inline bool DivergenceFromDiscreteIncrement(
 			const ConservativeVector& stateVector,
 			const ConservativeVector& nonadvectiveAndSourceIncrement,
 			const double temperatureK,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			double& result,
 			std::string* error = 0
 			)
@@ -1721,7 +1731,7 @@ namespace RISE
 			}
 			ConservativeVector candidateVector=stateVector+nonadvectiveAndSourceIncrement;
 			double candidateVolume=0.0;
-			if(!AcceptedConservativeVolumeRatio(candidateVector,thermochemistry,
+			if(!AcceptedConservativeVolumeRatio(candidateVector,thermochemistry,producerPrecision,
 				candidateVolume,error))return false;
 			// The constrained cell represents one fixed Eulerian volume.  Refer the
 			// finite update to that p0 manifold, rather than preserving a prior
@@ -1732,11 +1742,22 @@ namespace RISE
 				"fire solver finite-increment divergence overflowed");
 		}
 
+		inline bool DivergenceFromDiscreteIncrement(const ConservativeVector& stateVector,
+			const ConservativeVector& nonadvectiveAndSourceIncrement,const double temperatureK,
+			const double deltaTimeS,const FireSimulationMethaneRecord& thermochemistry,
+			double& result,std::string* error=0)
+		{
+			return DivergenceFromDiscreteIncrement(stateVector,nonadvectiveAndSourceIncrement,
+				temperatureK,deltaTimeS,thermochemistry,FireStateProducerPrecision::Binary64,
+				result,error);
+		}
+
 		inline bool ManifoldExactDivergenceTarget(
 			const std::vector<double>& currentTargetPerS,
 			const std::vector<ConservativeVector>& acceptedCandidate,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& result,
 			std::string* error = 0,
 			const bool enforcePeriodicCompatibility = false
@@ -1750,6 +1771,7 @@ namespace RISE
 			for(std::size_t cell=0;cell<acceptedCandidate.size();++cell){
 				double volumeRatio=0.0;
 				if(!AcceptedConservativeVolumeRatio(acceptedCandidate[cell],thermochemistry,
+					producerPrecision,
 					volumeRatio,error))return false;
 				result[cell]=currentTargetPerS[cell]+(volumeRatio-1.0)/deltaTimeS;
 				if(!std::isfinite(result[cell]))return Fail(error,
@@ -1764,12 +1786,24 @@ namespace RISE
 			return true;
 		}
 
+		inline bool ManifoldExactDivergenceTarget(
+			const std::vector<double>& currentTargetPerS,
+			const std::vector<ConservativeVector>& acceptedCandidate,const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,std::vector<double>& result,
+			std::string* error=0,const bool enforcePeriodicCompatibility=false)
+		{
+			return ManifoldExactDivergenceTarget(currentTargetPerS,acceptedCandidate,deltaTimeS,
+				thermochemistry,FireStateProducerPrecision::Binary64,result,error,
+				enforcePeriodicCompatibility);
+		}
+
 		inline bool FrozenSourcePacketExpansionAdmissible(
 			const ConservativeVector& beginning,
 			const double beginningTemperatureK,
 			const MethaneSourcePacket& packet,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			double* scaledDivergence = 0,
 			std::string* error = 0
 			)
@@ -1781,7 +1815,7 @@ namespace RISE
 				packet.pilotEnergyDeltaJPerM3;
 			double divergencePerS=0.0;
 			if(!DivergenceFromDiscreteIncrement(beginning,increment,beginningTemperatureK,
-				deltaTimeS,thermochemistry,divergencePerS,error))return false;
+				deltaTimeS,thermochemistry,producerPrecision,divergencePerS,error))return false;
 			const double scaled=deltaTimeS*divergencePerS+packet.pilotExpansionIntegral;
 			if(scaledDivergence)*scaledDivergence=scaled;
 			if(!std::isfinite(scaled)||scaled>0.5){
@@ -1793,6 +1827,16 @@ namespace RISE
 			return true;
 		}
 
+		inline bool FrozenSourcePacketExpansionAdmissible(const ConservativeVector& beginning,
+			const double beginningTemperatureK,const MethaneSourcePacket& packet,
+			const double deltaTimeS,const FireSimulationMethaneRecord& thermochemistry,
+			double* scaledDivergence=0,std::string* error=0)
+		{
+			return FrozenSourcePacketExpansionAdmissible(beginning,beginningTemperatureK,packet,
+				deltaTimeS,thermochemistry,FireStateProducerPrecision::Binary64,
+				scaledDivergence,error);
+		}
+
 		inline bool PeriodicDivergenceTargetFromPhysicalFlux(
 			const std::vector<ConservativeVector>& state,
 			const std::vector<double>& temperatureK,
@@ -1801,6 +1845,7 @@ namespace RISE
 			const double cellWidthM,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& result,
 			std::string* error = 0
 			)
@@ -1822,10 +1867,21 @@ namespace RISE
 				increment[MethaneMassStateDimension] += deltaTimeS*(flux.nonadvectiveEnergy[leftFace]-
 					flux.nonadvectiveEnergy[cell])/cellWidthM;
 				if( !DivergenceFromDiscreteIncrement(state[cell],increment,temperatureK[cell],
-					deltaTimeS,
-					thermochemistry,result[cell],error) ) return false;
+					deltaTimeS,thermochemistry,producerPrecision,result[cell],error) ) return false;
 			}
 			return true;
+		}
+
+		inline bool PeriodicDivergenceTargetFromPhysicalFlux(
+			const std::vector<ConservativeVector>& state,
+			const std::vector<double>& temperatureK,const PeriodicFluxPair& flux,
+			const std::vector<ConservativeVector>& frozenSourcePerS,const double cellWidthM,
+			const double deltaTimeS,const FireSimulationMethaneRecord& thermochemistry,
+			std::vector<double>& result,std::string* error=0)
+		{
+			return PeriodicDivergenceTargetFromPhysicalFlux(state,temperatureK,flux,
+				frozenSourcePerS,cellWidthM,deltaTimeS,thermochemistry,
+				FireStateProducerPrecision::Binary64,result,error);
 		}
 
 		// Test-only one-dimensional reference.  Production state is owned only by
@@ -1845,7 +1901,9 @@ namespace RISE
 			)
 		{
 			std::vector<double> temperature0, temperature1;
-			if( !InvertPeriodicTemperatures(beginning,thermochemistry,temperature0,error) ) return false;
+			if( !InvertPeriodicTemperaturesWithinBounds(beginning,thermochemistry,
+				config.ambientTemperatureK,config.adiabaticTemperatureK,
+				config.producerPrecision,temperature0,error) ) return false;
 			PeriodicFluxPair flux0;
 			if( !BuildPeriodicFluxPair(beginning,temperature0,faceVelocityMPerS,
 				diffusivityM2PerS,conductivityWPerMK,config.cellWidthM,fuel,
@@ -1854,7 +1912,9 @@ namespace RISE
 			std::vector<double> predictorAlpha;
 			if( !ApplyPeriodicSharedFCT(beginning,flux0,frozenSourcePerS,config,
 				fuel,thermochemistry,predictor,predictorAlpha,error) ||
-				!InvertPeriodicTemperatures(predictor,thermochemistry,temperature1,error) ) return false;
+				!InvertPeriodicTemperaturesWithinBounds(predictor,thermochemistry,
+					config.ambientTemperatureK,config.adiabaticTemperatureK,
+					config.producerPrecision,temperature1,error) ) return false;
 			PeriodicFluxPair flux1;
 			if( !BuildPeriodicFluxPair(predictor,temperature1,faceVelocityMPerS,
 				diffusivityM2PerS,conductivityWPerMK,config.cellWidthM,fuel,
@@ -5176,6 +5236,7 @@ namespace RISE
 			const bool dns,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& diffusivityM2PerS,
 			std::vector<double>& conductivityWPerMK,
 			std::vector<double>& dynamicViscosityPaS,
@@ -5193,14 +5254,14 @@ namespace RISE
 			dynamicViscosityPaS.assign(count,0.0);
 			const double widths[3] = {cellWidthM,cellWidthM,cellWidthM};
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				MethaneCellState physical = FromConservativeVector(state[cell]);
+				MethaneCellState physical = FromConservativeVector(state[cell],producerPrecision);
 				physical.temperatureK = temperatureK[cell];
 				double gradient[3][3] = {};
 				gradient[0][0] = (faceVelocityMPerS[cell]-
 					faceVelocityMPerS[(cell+count-1)%count])/cellWidthM;
 				CellTransportEvaluation evaluation;
 				if( !EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
-					transport,evaluation,error) ) return false;
+					transport,producerPrecision,evaluation,error) ) return false;
 				diffusivityM2PerS[cell] = evaluation.totalDiffusivityM2PerS;
 				conductivityWPerMK[cell] = evaluation.effectiveConductivityWPerMK;
 				dynamicViscosityPaS[cell] = evaluation.effectiveViscosityPaS;
@@ -5227,7 +5288,9 @@ namespace RISE
 			)
 		{
 			std::vector<double> temperature;
-			if( !InvertPeriodicTemperatures(state,thermochemistry,temperature,error) ) return false;
+			if( !InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
+				config.ambientTemperatureK,config.adiabaticTemperatureK,
+				config.producerPrecision,temperature,error) ) return false;
 			std::vector<double> target(state.size(),0.0), priorMassFlux(state.size(),0.0);
 			std::vector<double> priorDiffusivity(state.size(),0.0),
 				priorConductivity(state.size(),0.0),priorViscosity(state.size(),0.0);
@@ -5262,7 +5325,8 @@ namespace RISE
 					projectionTolerancePerS,projection,error) ) return false;
 				std::vector<double> diffusivityM2PerS, conductivityWPerMK, dynamicViscosityPaS;
 				if( !BuildPeriodicStageTransport(state,temperature,projection.velocityMPerS,
-					config.cellWidthM,dns,thermochemistry,transport,diffusivityM2PerS,
+					config.cellWidthM,dns,thermochemistry,transport,config.producerPrecision,
+					diffusivityM2PerS,
 					conductivityWPerMK,dynamicViscosityPaS,error) ) return false;
 				PeriodicFluxPair flux;
 				if( !BuildPeriodicFluxPair(state,temperature,projection.velocityMPerS,
@@ -5275,9 +5339,10 @@ namespace RISE
 				if(iteration==0u||!scalarAcceptanceStage){
 					if( !PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,flux,
 						frozenSourcePerS,config.cellWidthM,config.deltaTimeS,thermochemistry,
-						nextTarget,error) ) return false;
+						config.producerPrecision,nextTarget,error) ) return false;
 				}else if(!ManifoldExactDivergenceTarget(target,stageCandidate,
-					config.deltaTimeS,thermochemistry,nextTarget,error,true))return false;
+					config.deltaTimeS,thermochemistry,config.producerPrecision,nextTarget,error,true))
+					return false;
 				double residual = 0.0, massFluxResidual = 0.0,
 					coefficientResidual = 0.0;
 				for( std::size_t cell=0; cell<state.size(); ++cell ) {
@@ -5318,7 +5383,8 @@ namespace RISE
 							projectionTolerancePerS,acceptedProjection,error) ) return false;
 						std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 						if(!BuildPeriodicStageTransport(state,temperature,acceptedProjection.velocityMPerS,
-							config.cellWidthM,dns,thermochemistry,transport,acceptedDiffusivity,
+							config.cellWidthM,dns,thermochemistry,transport,config.producerPrecision,
+							acceptedDiffusivity,
 							acceptedConductivity,acceptedViscosity,error)) return false;
 						PeriodicFluxPair acceptedFlux;
 						if(!BuildPeriodicFluxPair(state,temperature,acceptedProjection.velocityMPerS,
@@ -5329,10 +5395,11 @@ namespace RISE
 						if(scalarAcceptanceStage){
 							if(!acceptedCandidate(acceptedFlux,verifiedCandidate,verifiedAlpha)||
 								!ManifoldExactDivergenceTarget(target,verifiedCandidate,
-									config.deltaTimeS,thermochemistry,verifiedTarget,error,true))return false;
+									config.deltaTimeS,thermochemistry,config.producerPrecision,
+									verifiedTarget,error,true))return false;
 						}else if(!PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,
 							acceptedFlux,frozenSourcePerS,config.cellWidthM,config.deltaTimeS,
-							thermochemistry,verifiedTarget,error))return false;
+							thermochemistry,config.producerPrecision,verifiedTarget,error))return false;
 						double verification=0.0;
 						if(!PicardContinuousVerificationResidual(verifiedTarget,target,
 							acceptedProjection.momentumKGPerM2S,projection.momentumKGPerM2S,
@@ -5352,7 +5419,8 @@ namespace RISE
 								&result.faceAlpha)) return false;
 							std::vector<double> certifiedTarget;
 							if(!ManifoldExactDivergenceTarget(target,certifiedPredictor,
-								config.deltaTimeS,thermochemistry,certifiedTarget,error,true))return false;
+								config.deltaTimeS,thermochemistry,config.producerPrecision,
+								certifiedTarget,error,true))return false;
 							double certifiedResidual=0.0;
 							for(std::size_t cell=0;cell<target.size();++cell)certifiedResidual=std::max(
 								certifiedResidual,std::fabs(certifiedTarget[cell]-target[cell]));
@@ -5450,11 +5518,13 @@ namespace RISE
 				fuel,thermochemistry,result.conservative,result.faceAlpha,error,
 				&result.r1.faceAlpha) ) return false;
 			std::vector<double> heunTemperature;
-			if( !InvertPeriodicTemperatures(result.conservative,thermochemistry,
-				heunTemperature,error) || !PeriodicDivergenceTargetFromPhysicalFlux(
-					result.conservative,heunTemperature,averaged,frozenSourcePerS,
-					config.cellWidthM,config.deltaTimeS,thermochemistry,
-					result.divergenceHeunPerS,error) ) return false;
+			if( !InvertPeriodicTemperaturesWithinBounds(result.conservative,thermochemistry,
+				config.ambientTemperatureK,config.adiabaticTemperatureK,
+				config.producerPrecision,heunTemperature,error) ||
+				!PeriodicDivergenceTargetFromPhysicalFlux(
+				result.conservative,heunTemperature,averaged,frozenSourcePerS,
+				config.cellWidthM,config.deltaTimeS,thermochemistry,
+				config.producerPrecision,result.divergenceHeunPerS,error) ) return false;
 			std::vector<double> low1, high1, diffusion1;
 			GasPrimalSubfluxes(result.r1.flux,low1,high1,diffusion1);
 			std::vector<double> accepted0(count), accepted1(count);
@@ -6176,7 +6246,8 @@ namespace RISE
 			result.radiativeCoolingWPerM3 = signedCoolingWPerM3;
 			return ValidateFrozenMethaneSourcePacketLedger(beginning,reactionStep,fuel,result,error)&&
 				FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning),
-					beginning.temperatureK,result,reactionStep.deltaTimeS,thermochemistry,0,error);
+					beginning.temperatureK,result,reactionStep.deltaTimeS,thermochemistry,
+					beginning.producerPrecision,0,error);
 		}
 
 		inline bool BuildFrozenMethaneSourcePackets(
@@ -6277,7 +6348,7 @@ namespace RISE
 				}
 				if(!FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning[cell]),
 					beginning[cell].temperatureK,candidateResult[cell],reactionStep[cell].deltaTimeS,
-					thermochemistry,0,&cellError)) {
+					thermochemistry,beginning[cell].producerPrecision,0,&cellError)) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				}

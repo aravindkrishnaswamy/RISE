@@ -311,6 +311,7 @@
 			const std::vector<MethaneSourcePacket>& packet,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			const unsigned int workerCount,
 			std::string* error = 0
 			)
@@ -321,7 +322,7 @@
 			std::vector<double> temperatureK;
 			if(!InvertPeriodicTemperaturesWithinBounds(beginning,thermochemistry,
 				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
-				temperatureK,error,workerCount))return false;
+				producerPrecision,temperatureK,error,workerCount))return false;
 			const unsigned int workers=std::max(1u,std::min(workerCount,
 				static_cast<unsigned int>(count)));
 			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
@@ -333,7 +334,7 @@
 				for(std::size_t cell=first;cell<last;++cell){
 					std::string cellError;
 					if(!FrozenSourcePacketExpansionAdmissible(beginning[cell],temperatureK[cell],
-						packet[cell],deltaTimeS,thermochemistry,0,&cellError)){
+						packet[cell],deltaTimeS,thermochemistry,producerPrecision,0,&cellError)){
 						failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 					}
 				}
@@ -541,7 +542,9 @@
 			)
 		{
 			std::vector<double> temperature0, temperature1;
-			if( !InvertPeriodicTemperatures(beginning,thermochemistry,temperature0,error) )
+			if( !InvertPeriodicTemperaturesWithinBounds(beginning,thermochemistry,
+				config.ambientTemperatureK,config.adiabaticTemperatureK,
+				config.producerPrecision,temperature0,error) )
 				return false;
 			PeriodicFluxPair3D flux0;
 			if( !BuildPeriodicFluxPair3D(shape,beginning,temperature0,velocity,diffusivity,
@@ -553,7 +556,9 @@
 			std::array<std::vector<double>,3> predictorAlpha;
 			if( !ApplyPeriodicSharedFCT3D(shape,beginning,flux0,frozenSourceDelta,config,fuel,
 				thermochemistry,predictor,predictorAlpha,error) ||
-				!InvertPeriodicTemperatures(predictor,thermochemistry,temperature1,error) )
+				!InvertPeriodicTemperaturesWithinBounds(predictor,thermochemistry,
+					config.ambientTemperatureK,config.adiabaticTemperatureK,
+					config.producerPrecision,temperature1,error) )
 				return false;
 			PeriodicFluxPair3D flux1, averaged;
 			if( !BuildPeriodicFluxPair3D(shape,predictor,temperature1,velocity,diffusivity,
@@ -747,6 +752,7 @@
 			const bool dns,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& diffusivityM2PerS,
 			std::vector<double>& conductivityWPerMK,
 			std::vector<double>& dynamicViscosityPaS,
@@ -771,7 +777,7 @@
 			dynamicViscosityPaS.assign(count,0.0);
 			const double widths[3] = {shape.cellWidthM,shape.cellWidthM,shape.cellWidthM};
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				MethaneCellState physical = FromConservativeVector(state[cell]);
+				MethaneCellState physical = FromConservativeVector(state[cell],producerPrecision);
 				physical.temperatureK = temperatureK[cell];
 				double gradient[3][3] = {};
 				for( unsigned int derivative=0; derivative<3; ++derivative ) {
@@ -784,12 +790,25 @@
 				}
 				CellTransportEvaluation evaluation;
 				if( !EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
-					transport,evaluation,error) ) return false;
+					transport,producerPrecision,evaluation,error) ) return false;
 				diffusivityM2PerS[cell] = evaluation.totalDiffusivityM2PerS;
 				conductivityWPerMK[cell] = evaluation.effectiveConductivityWPerMK;
 				dynamicViscosityPaS[cell] = evaluation.effectiveViscosityPaS;
 			}
 			return true;
+		}
+
+		inline bool BuildPeriodicStageTransport3D(const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& state,const std::vector<double>& temperatureK,
+			const PeriodicMACField& faceVelocityMPerS,const bool dns,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,std::vector<double>& diffusivityM2PerS,
+			std::vector<double>& conductivityWPerMK,std::vector<double>& dynamicViscosityPaS,
+			std::string* error=0)
+		{
+			return BuildPeriodicStageTransport3D(shape,state,temperatureK,faceVelocityMPerS,dns,
+				thermochemistry,transport,FireStateProducerPrecision::Binary64,diffusivityM2PerS,
+				conductivityWPerMK,dynamicViscosityPaS,error);
 		}
 
 		inline bool PeriodicDivergenceTargetFromPhysicalFlux3D(
@@ -800,6 +819,7 @@
 			const std::vector<ConservativeVector>& sourceDelta,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& result,
 			std::string* error = 0,
 			const unsigned int workerCount = 1u,
@@ -844,7 +864,7 @@
 				}
 				std::string cellError;
 				if(!DivergenceFromDiscreteIncrement(state[cell],increment,temperatureK[cell],
-					deltaTimeS,thermochemistry,candidate[cell],&cellError)) {
+					deltaTimeS,thermochemistry,producerPrecision,candidate[cell],&cellError)) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				if(projectionExpansionIntegral)candidate[cell]+=
@@ -859,6 +879,21 @@
 			if(firstFailure!=noFailure) return Fail(error,failureMessage[failedWorker]);
 			result.swap(candidate);
 			return true;
+		}
+
+		inline bool PeriodicDivergenceTargetFromPhysicalFlux3D(
+			const PeriodicMACShape& shape,const std::vector<ConservativeVector>& state,
+			const std::vector<double>& temperatureK,const PeriodicFluxPair3D& flux,
+			const std::vector<ConservativeVector>& sourceDelta,const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,std::vector<double>& result,
+			std::string* error=0,const unsigned int workerCount=1u,
+			const std::vector<double>* projectionEnergyDeltaJPerM3=0,
+			const std::vector<double>* projectionExpansionIntegral=0)
+		{
+			return PeriodicDivergenceTargetFromPhysicalFlux3D(shape,state,temperatureK,flux,
+				sourceDelta,deltaTimeS,thermochemistry,FireStateProducerPrecision::Binary64,
+				result,error,workerCount,projectionEnergyDeltaJPerM3,
+				projectionExpansionIntegral);
 		}
 
 		inline void GasPrimalSubfluxes3D(
@@ -1061,6 +1096,7 @@
 			const std::vector<double>& temperatureK,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<CellMolecularTransportEvaluation>& evaluations,
 			std::string* error,
 			const unsigned int workerCount
@@ -1078,16 +1114,27 @@
 			ParallelFireSlices(workers,workers,[&](const std::size_t worker){
 				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
 				for(std::size_t cell=first;cell<last;++cell){
-					MethaneCellState physical=FromConservativeVector(state[cell]);
+					MethaneCellState physical=FromConservativeVector(state[cell],producerPrecision);
 					physical.temperatureK=temperatureK[cell];std::string cellError;
 					if(!EvaluateCellMolecularTransport(physical,thermochemistry,transport,
-						evaluations[cell],&cellError)){failureCell[worker]=cell;
+						producerPrecision,evaluations[cell],&cellError)){failureCell[worker]=cell;
 						failureMessage[worker]=cellError;break;}}
 			});
 			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
 			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
 				firstFailure=failureCell[worker];failedWorker=worker;}
 			return firstFailure==noFailure||Fail(error,failureMessage[failedWorker]);
+		}
+
+		inline bool BuildCellMolecularTransportEvaluations3D(
+			const std::vector<ConservativeVector>& state,const std::vector<double>& temperatureK,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			std::vector<CellMolecularTransportEvaluation>& evaluations,std::string* error,
+			const unsigned int workerCount)
+		{
+			return BuildCellMolecularTransportEvaluations3D(state,temperatureK,thermochemistry,
+				transport,FireStateProducerPrecision::Binary64,evaluations,error,workerCount);
 		}
 
 		inline bool BuildOpenStageTransportEvaluations3D(
@@ -1099,6 +1146,7 @@
 			const bool dns,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<CellTransportEvaluation>& evaluations,
 			std::string* error=0,
 			const unsigned int workerCount=1u,
@@ -1149,7 +1197,7 @@
 			for(unsigned int worker=0;worker<workers;++worker)threads.emplace_back([&,worker](){
 				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
 				for(std::size_t cell=first;cell<last;++cell){
-				MethaneCellState physical=FromConservativeVector(state[cell]);
+				MethaneCellState physical=FromConservativeVector(state[cell],producerPrecision);
 				physical.temperatureK=temperatureK[cell];
 				double gradient[3][3]={};
 				for(unsigned int derivative=0;derivative<3;++derivative){
@@ -1182,7 +1230,7 @@
 					EvaluateCellTransportFromMolecular((*molecularEvaluations)[cell],gradient,
 						widths,dns,transport,evaluations[cell],&cellError):
 					EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
-						transport,evaluations[cell],&cellError);
+						transport,producerPrecision,evaluations[cell],&cellError);
 				if(!evaluated){
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
@@ -1197,6 +1245,20 @@
 			return true;
 		}
 
+		inline bool BuildOpenStageTransportEvaluations3D(const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& state,const std::vector<double>& temperatureK,
+			const OpenMACField3D& faceVelocity,const OpenBoundaryConfig3D& boundary,const bool dns,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			std::vector<CellTransportEvaluation>& evaluations,std::string* error=0,
+			const unsigned int workerCount=1u,
+			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0)
+		{
+			return BuildOpenStageTransportEvaluations3D(shape,state,temperatureK,faceVelocity,
+				boundary,dns,thermochemistry,transport,FireStateProducerPrecision::Binary64,
+				evaluations,error,workerCount,molecularEvaluations);
+		}
+
 		inline bool BuildOpenStageTransport3D(
 			const PeriodicMACShape& shape,
 			const std::vector<ConservativeVector>& state,
@@ -1206,6 +1268,7 @@
 			const bool dns,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& diffusivity,
 			std::vector<double>& conductivity,
 			std::vector<double>& viscosity,
@@ -1218,7 +1281,7 @@
 			FireProfileScopedNs profileTimer(FireProfile().nsTransport);
 			std::vector<CellTransportEvaluation> evaluations;
 			if(!BuildOpenStageTransportEvaluations3D(shape,state,temperatureK,faceVelocity,
-				boundary,dns,thermochemistry,transport,evaluations,error,workerCount,
+				boundary,dns,thermochemistry,transport,producerPrecision,evaluations,error,workerCount,
 				molecularEvaluations)) return false;
 			diffusivity.resize(evaluations.size());
 			conductivity.resize(evaluations.size());
@@ -1229,6 +1292,20 @@
 				viscosity[cell]=evaluations[cell].effectiveViscosityPaS;
 			}
 			return true;
+		}
+
+		inline bool BuildOpenStageTransport3D(const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& state,const std::vector<double>& temperatureK,
+			const OpenMACField3D& faceVelocity,const OpenBoundaryConfig3D& boundary,const bool dns,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,std::vector<double>& diffusivity,
+			std::vector<double>& conductivity,std::vector<double>& viscosity,std::string* error=0,
+			const unsigned int workerCount=1u,
+			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0)
+		{
+			return BuildOpenStageTransport3D(shape,state,temperatureK,faceVelocity,boundary,dns,
+				thermochemistry,transport,FireStateProducerPrecision::Binary64,diffusivity,
+				conductivity,viscosity,error,workerCount,molecularEvaluations);
 		}
 
 		inline bool BuildOpenFluxPair3D(
@@ -1661,6 +1738,7 @@
 			const std::vector<ConservativeVector>& sourceDelta,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& result,
 			std::string* error=0,
 			const unsigned int workerCount=1u,
@@ -1704,7 +1782,7 @@
 				}
 				std::string cellError;
 				if(!DivergenceFromDiscreteIncrement(state[cell],increment,temperature[cell],
-					deltaTimeS,thermochemistry,candidate[cell],&cellError)){
+					deltaTimeS,thermochemistry,producerPrecision,candidate[cell],&cellError)){
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				if(projectionExpansionIntegral)candidate[cell]+=
@@ -1719,6 +1797,21 @@
 			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
 			result.swap(candidate);
 			return true;
+		}
+
+		inline bool OpenDivergenceTargetFromPhysicalFlux3D(
+			const PeriodicMACShape& shape,const std::vector<ConservativeVector>& state,
+			const std::vector<double>& temperature,const OpenFluxPair3D& flux,
+			const std::vector<ConservativeVector>& sourceDelta,const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,std::vector<double>& result,
+			std::string* error=0,const unsigned int workerCount=1u,
+			const std::vector<double>* projectionEnergyDeltaJPerM3=0,
+			const std::vector<double>* projectionExpansionIntegral=0)
+		{
+			return OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
+				sourceDelta,deltaTimeS,thermochemistry,FireStateProducerPrecision::Binary64,
+				result,error,workerCount,projectionEnergyDeltaJPerM3,
+				projectionExpansionIntegral);
 		}
 
 		inline OpenMACField3D OpenCompatibleMomentumFluxDivergence3D(
@@ -1912,7 +2005,7 @@
 			std::vector<double> temperature;
 			if( !InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
 				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
-				temperature,error,config.workerCount) ) return false;
+				config.transport.producerPrecision,temperature,error,config.workerCount) ) return false;
 			std::vector<double> target(count,0.0), priorMassFlux(3*count,0.0);
 			std::vector<double> priorDiffusivity(count,0.0),priorConductivity(count,0.0),
 				priorViscosity(count,0.0);
@@ -1955,7 +2048,8 @@
 					config.projectionTolerancePerS,projection,error) ) return false;
 				std::vector<double> diffusivity, conductivity, viscosity;
 				if( !BuildPeriodicStageTransport3D(shape,state,temperature,projection.velocityMPerS,
-					config.dns,thermochemistry,transport,diffusivity,conductivity,viscosity,error) )
+					config.dns,thermochemistry,transport,config.transport.producerPrecision,
+					diffusivity,conductivity,viscosity,error) )
 					return false;
 				PeriodicFluxPair3D flux;
 				if( !BuildPeriodicFluxPair3D(shape,state,temperature,projection.velocityMPerS,
@@ -1967,11 +2061,13 @@
 				std::vector<double> nextTarget;
 				if(iteration==0u||!scalarAcceptanceStage){
 					if( !PeriodicDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
-						frozenSourceDelta,config.transport.deltaTimeS,thermochemistry,nextTarget,error,
+						frozenSourceDelta,config.transport.deltaTimeS,thermochemistry,
+						config.transport.producerPrecision,nextTarget,error,
 						config.workerCount,projectionEnergyDeltaJPerM3,projectionExpansionIntegral) )
 						return false;
 				}else if(!ManifoldExactDivergenceTarget(target,stageCandidate,
-					config.transport.deltaTimeS,thermochemistry,nextTarget,error,true))return false;
+					config.transport.deltaTimeS,thermochemistry,config.transport.producerPrecision,
+					nextTarget,error,true))return false;
 				double targetResidual = 0.0, massResidual = 0.0,
 					coefficientResidual = 0.0;
 				for( std::size_t cell=0; cell<count; ++cell ) {
@@ -2003,6 +2099,7 @@
 						config.projectionTolerancePerS,result.projection,error) ||
 						!BuildPeriodicStageTransport3D(shape,state,temperature,
 							result.projection.velocityMPerS,config.dns,thermochemistry,transport,
+							config.transport.producerPrecision,
 							result.diffusivityM2PerS,result.conductivityWPerMK,
 							result.dynamicViscosityPaS,error) ) return false;
 					if(!BuildPeriodicFluxPair3D(shape,state,temperature,
@@ -2015,11 +2112,13 @@
 					if(scalarAcceptanceStage){
 						if(!acceptedCandidate(result.flux,verifiedCandidate,verifiedAlpha)||
 							!ManifoldExactDivergenceTarget(target,verifiedCandidate,
-								config.transport.deltaTimeS,thermochemistry,verifiedTarget,error,true))
+								config.transport.deltaTimeS,thermochemistry,
+								config.transport.producerPrecision,verifiedTarget,error,true))
 							return false;
 					}else if(!PeriodicDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,
 						result.flux,frozenSourceDelta,config.transport.deltaTimeS,thermochemistry,
-						verifiedTarget,error,config.workerCount,projectionEnergyDeltaJPerM3,
+						config.transport.producerPrecision,verifiedTarget,error,config.workerCount,
+						projectionEnergyDeltaJPerM3,
 						projectionExpansionIntegral))return false;
 					std::vector<double> acceptedMass;
 					acceptedMass.reserve(3u*count);
@@ -2046,7 +2145,8 @@
 							error,&limiterAcceptance.faceAlpha)) return false;
 						std::vector<double> certifiedTarget;
 						if(!ManifoldExactDivergenceTarget(target,certifiedPredictor,
-							config.transport.deltaTimeS,thermochemistry,certifiedTarget,error,true))return false;
+							config.transport.deltaTimeS,thermochemistry,
+							config.transport.producerPrecision,certifiedTarget,error,true))return false;
 						double certifiedResidual=0.0;
 						for(std::size_t cell=0;cell<count;++cell)certifiedResidual=std::max(
 							certifiedResidual,std::fabs(certifiedTarget[cell]-target[cell]));
@@ -2295,6 +2395,7 @@
 			const std::vector<ConservativeVector>& acceptedCandidate,
 			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& result,
 			std::string* error,
 			const unsigned int workerCount
@@ -2302,11 +2403,11 @@
 		{
 			if(currentTargetPerS.size()!=acceptedCandidate.size()||acceptedCandidate.empty())
 				return ManifoldExactDivergenceTarget(currentTargetPerS,acceptedCandidate,
-					deltaTimeS,thermochemistry,result,error);
+					deltaTimeS,thermochemistry,producerPrecision,result,error);
 			const unsigned int workers=std::max(1u,std::min(workerCount,
 				static_cast<unsigned int>(acceptedCandidate.size())));
 			if(workers==1u)return ManifoldExactDivergenceTarget(currentTargetPerS,
-				acceptedCandidate,deltaTimeS,thermochemistry,result,error);
+				acceptedCandidate,deltaTimeS,thermochemistry,producerPrecision,result,error);
 			std::vector<std::vector<double> > targetChunk(workers),resultChunk(workers);
 			std::vector<std::vector<ConservativeVector> > candidateChunk(workers);
 			for(unsigned int worker=0;worker<workers;++worker){
@@ -2320,7 +2421,8 @@
 			std::vector<unsigned char> success(workers,0u);std::vector<std::string> message(workers);
 			FireWorkerPool().Run(workers,[&](const unsigned int worker){
 				success[worker]=ManifoldExactDivergenceTarget(targetChunk[worker],
-					candidateChunk[worker],deltaTimeS,thermochemistry,resultChunk[worker],
+					candidateChunk[worker],deltaTimeS,thermochemistry,producerPrecision,
+					resultChunk[worker],
 					&message[worker]);});
 			for(unsigned int worker=0;worker<workers;++worker)if(!success[worker])
 				return Fail(error,message[worker]);
@@ -2356,7 +2458,7 @@
 			const std::size_t count=shape.CellCount();std::vector<double> temperature;
 			if(!InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
 				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
-				temperature,error,config.workerCount)) return false;
+				config.transport.producerPrecision,temperature,error,config.workerCount)) return false;
 			OpenBoundaryConfig3D stageBoundary=config.openBoundary;
 			if(activeSetSeed) stageBoundary.priorInflow=*activeSetSeed;
 			std::vector<double> target(count,0.0),priorMass;
@@ -2443,11 +2545,13 @@
 				if(!projectionOK) return false;
 				observeActiveSet(projection);
 				if(molecularTransport.empty()&&!BuildCellMolecularTransportEvaluations3D(state,
-					temperature,thermochemistry,transport,molecularTransport,error,
+					temperature,thermochemistry,transport,config.transport.producerPrecision,
+					molecularTransport,error,
 					config.workerCount))return false;
 				std::vector<double> diffusivity,conductivity,viscosity;
 				if(!BuildOpenStageTransport3D(shape,state,temperature,projection.velocityMPerS,
-					stageBoundary,config.dns,thermochemistry,transport,diffusivity,conductivity,
+					stageBoundary,config.dns,thermochemistry,transport,
+					config.transport.producerPrecision,diffusivity,conductivity,
 					viscosity,error,config.workerCount,&molecularTransport))
 					return false;
 				OpenMACField3D evaluatedNonpressure;
@@ -2467,11 +2571,13 @@
 				std::vector<double> nextTarget;
 				if(iteration==0u||!scalarAcceptanceStage){
 					if(!OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
-						sourceDelta,config.transport.deltaTimeS,thermochemistry,nextTarget,error,
+						sourceDelta,config.transport.deltaTimeS,thermochemistry,
+						config.transport.producerPrecision,nextTarget,error,
 						config.workerCount,projectionEnergyDeltaJPerM3,projectionExpansionIntegral))
 						return false;
 				}else if(!ParallelOpenManifoldExactDivergenceTarget3D(target,stageCandidate,
-					config.transport.deltaTimeS,thermochemistry,nextTarget,error,
+					config.transport.deltaTimeS,thermochemistry,config.transport.producerPrecision,
+					nextTarget,error,
 					config.workerCount))return false;
 				double residual=0.0,massResidual=0.0,
 					coefficientResidual=0.0;bool activeSetChanged=false;std::size_t offset=0;
@@ -2581,7 +2687,8 @@
 					std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
 						acceptedProjection.velocityMPerS,acceptedBoundary,config.dns,thermochemistry,transport,
-						acceptedDiffusivity,acceptedConductivity,acceptedViscosity,error,
+						config.transport.producerPrecision,acceptedDiffusivity,acceptedConductivity,
+						acceptedViscosity,error,
 						config.workerCount,&molecularTransport)) return false;
 					OpenFluxPair3D acceptedFlux;
 					if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedProjection,
@@ -2598,11 +2705,13 @@
 					}
 					if(scalarAcceptanceStage){
 						if(!ParallelOpenManifoldExactDivergenceTarget3D(target,verifiedCandidate,
-							config.transport.deltaTimeS,thermochemistry,verifiedTarget,error,
+							config.transport.deltaTimeS,thermochemistry,
+							config.transport.producerPrecision,verifiedTarget,error,
 							config.workerCount))return false;
 					}else if(!OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,
 						acceptedFlux,sourceDelta,config.transport.deltaTimeS,thermochemistry,
-						verifiedTarget,error,config.workerCount,projectionEnergyDeltaJPerM3,
+						config.transport.producerPrecision,verifiedTarget,error,config.workerCount,
+						projectionEnergyDeltaJPerM3,
 						projectionExpansionIntegral))return false;
 					std::vector<double> acceptedMass,iterationMass;
 					for(unsigned int axis=0;axis<3;++axis){
@@ -2632,7 +2741,8 @@
 							config.workerCount,&limiterAcceptance.faceAlpha)) return false;
 						std::vector<double> certifiedTarget;
 						if(!ParallelOpenManifoldExactDivergenceTarget3D(target,certifiedPredictor,
-							config.transport.deltaTimeS,thermochemistry,certifiedTarget,error,
+							config.transport.deltaTimeS,thermochemistry,
+							config.transport.producerPrecision,certifiedTarget,error,
 							config.workerCount))return false;
 						double certifiedResidual=0.0;
 						for(std::size_t cell=0;cell<count;++cell)certifiedResidual=std::max(
@@ -2703,7 +2813,8 @@
 				"fire solver owning 3-D momentum shape is invalid");
 			std::vector<ConservativeVector> sourceDelta;
 			if(!FrozenPacketExpansionAdmissible3D(beginning,frozenPacket,
-				config.transport.deltaTimeS,thermochemistry,config.workerCount,error)||
+				config.transport.deltaTimeS,thermochemistry,config.transport.producerPrecision,
+				config.workerCount,error)||
 				!FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,config.workerCount,error))return false;
 			std::vector<double> projectionEnergyDeltaJPerM3,projectionExpansionIntegral;
 			FrozenPacketProjectionPairs3D(frozenPacket,projectionEnergyDeltaJPerM3,
@@ -2779,9 +2890,11 @@
 			std::vector<double> acceptedTemperature;
 			if( !InvertPeriodicTemperaturesWithinBounds(candidate.conservative,thermochemistry,
 				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
-				acceptedTemperature,error,config.workerCount) || !PeriodicDivergenceTargetFromPhysicalFlux3D(shape,
+				config.transport.producerPrecision,acceptedTemperature,error,config.workerCount) ||
+				!PeriodicDivergenceTargetFromPhysicalFlux3D(shape,
 				candidate.conservative,acceptedTemperature,averaged,sourceDelta,
-				config.transport.deltaTimeS,thermochemistry,candidate.divergenceHeunPerS,error,
+				config.transport.deltaTimeS,thermochemistry,config.transport.producerPrecision,
+				candidate.divergenceHeunPerS,error,
 				config.workerCount,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral) )
 				return false;
 			std::array<std::vector<double>,3> low1, high1, diffusion1, accepted0, accepted1;
@@ -2852,7 +2965,8 @@
 				"fire solver owning open momentum shape is invalid");
 			std::vector<ConservativeVector> sourceDelta;
 			if(!FrozenPacketExpansionAdmissible3D(beginning,frozenPacket,
-				config.transport.deltaTimeS,thermochemistry,config.workerCount,error)||
+				config.transport.deltaTimeS,thermochemistry,config.transport.producerPrecision,
+				config.workerCount,error)||
 				!FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,config.workerCount,error))return false;
 			std::vector<double> projectionEnergyDeltaJPerM3,projectionExpansionIntegral;
 			FrozenPacketProjectionPairs3D(frozenPacket,projectionEnergyDeltaJPerM3,
@@ -2926,9 +3040,11 @@
 			std::vector<double> acceptedTemperature;
 			if(!InvertPeriodicTemperaturesWithinBounds(candidate.conservative,thermochemistry,
 				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
-				acceptedTemperature,error,config.workerCount) || !OpenDivergenceTargetFromPhysicalFlux3D(shape,
+				config.transport.producerPrecision,acceptedTemperature,error,config.workerCount) ||
+				!OpenDivergenceTargetFromPhysicalFlux3D(shape,
 				candidate.conservative,acceptedTemperature,averaged,sourceDelta,
-				config.transport.deltaTimeS,thermochemistry,candidate.divergenceHeunPerS,error,
+				config.transport.deltaTimeS,thermochemistry,config.transport.producerPrecision,
+				candidate.divergenceHeunPerS,error,
 				config.workerCount,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral))
 				return false;
 			const OpenMACField3D advection0=OpenCompatibleMomentumFluxDivergence3D(shape,

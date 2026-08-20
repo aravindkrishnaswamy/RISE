@@ -1794,7 +1794,10 @@ same gate; positive-part availability maps an envelope-negative trace
 constituent to zero only for property evaluation; and molecular transport uses
 those positive-part gas fractions and remains finite and positive. The 1-D and
 3-D FCT paths, divergence identity, and open-boundary stage propagate the same
-producer precision through their raw-vector configuration or parameter.
+producer precision through their raw-vector configuration or parameter. Run
+checkpoint v9 persists that producer class for every accepted cell; historical
+v5--v8 checkpoints decode as `Binary64`, so the immutable v8 golden checkpoint
+and its bytes remain unchanged.
 
 The ruling explicitly rejects three alternatives: projecting or clamping each
 resident state would mutate conservation ledgers and hide producer defects;
@@ -1813,10 +1816,11 @@ limit. The payload digest is
 `e5a8cdfd54772cc58c8d58e3a0c32d650a71f9f428cd27c1be3e52e6a60c5b70`;
 its maximum affine excursion `2.1925594524305645e-7` remains far inside the
 binary32 feasibility envelope, so the EOS miss cannot be charged to r115 or
-absorbed into it. Exact monitored exit `191` records this stop. Production
-Richardson and all later calibration stages remain unrun until the EOS drift is
-instrumented under the budget-probe discipline; neither solver nor the `0.001`
-EOS contract was changed.
+absorbed into it. Exact monitored exit `191` records this stop. The four-tier
+production campaign is incomplete and admits no Richardson distance; `B_fp32`
+and all later calibration stages remain unrun until the EOS drift is instrumented
+under the budget-probe discipline. Neither solver nor the `0.001` EOS contract
+was changed.
 
 ## 8. Rejected directions and future work
 

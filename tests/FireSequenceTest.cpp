@@ -503,6 +503,10 @@ namespace
 	{
 		const std::uint64_t count=states.size();if(!writer.Pod(count))return false;
 		for(const MethaneCellState& state:states){
+			const unsigned char producerPrecision=static_cast<unsigned char>(state.producerPrecision);
+			if((state.producerPrecision!=FireStateProducerPrecision::Binary64&&
+				state.producerPrecision!=FireStateProducerPrecision::Binary32)||
+				!writer.Pod(producerPrecision))return false;
 			if(!writer.Pod(state.rhoTotalZ))return false;
 			for(const double value:state.constituent)if(!writer.Pod(value))return false;
 			if(!writer.Pod(state.sensibleEnergyJPerM3)||!writer.Pod(state.temperatureK))return false;
@@ -510,11 +514,19 @@ namespace
 		return true;
 	}
 
-	bool ReadCellStates(CheckpointReader& reader,std::vector<MethaneCellState>& states)
+	bool ReadCellStates(CheckpointReader& reader,std::vector<MethaneCellState>& states,
+		const std::uint64_t version)
 	{
 		std::uint64_t count=0u;if(!reader.Pod(count)||count>100000000u)return false;
 		states.resize(static_cast<std::size_t>(count));
 		for(MethaneCellState& state:states){
+			if(version>=9u){unsigned char producerPrecision=0u;
+				if(!reader.Pod(producerPrecision)||(producerPrecision!=
+					static_cast<unsigned char>(FireStateProducerPrecision::Binary64)&&
+					producerPrecision!=static_cast<unsigned char>(
+						FireStateProducerPrecision::Binary32)))return false;
+				state.producerPrecision=static_cast<FireStateProducerPrecision>(producerPrecision);
+			}else state.producerPrecision=FireStateProducerPrecision::Binary64;
 			if(!reader.Pod(state.rhoTotalZ))return false;
 			for(double& value:state.constituent)if(!reader.Pod(value))return false;
 			if(!reader.Pod(state.sensibleEnergyJPerM3)||!reader.Pod(state.temperatureK))return false;
@@ -572,7 +584,8 @@ namespace
 		for(std::size_t& dimension:checkpoint.dimensions){std::uint64_t encoded=0u;
 			if(!reader.Pod(encoded)||encoded>std::numeric_limits<std::size_t>::max())return false;
 			dimension=static_cast<std::size_t>(encoded);}
-		const bool decoded=reader.Pod(checkpoint.cellWidthM)&&ReadCellStates(reader,checkpoint.states)&&
+		const bool decoded=reader.Pod(checkpoint.cellWidthM)&&
+			ReadCellStates(reader,checkpoint.states,version)&&
 			ReadMACField(reader,checkpoint.momentum)&&ReadMACField(reader,checkpoint.velocity)&&
 			ReadSolverFrameValues(reader,checkpoint.values)&&
 			ReadArithmeticVector(reader,checkpoint.centerlineTemperatureIntegral)&&
@@ -665,7 +678,7 @@ namespace
 		const std::filesystem::path temporary=path.string()+".tmp."+std::to_string(processId);
 		CheckpointWriter writer(temporary);if(!writer.Good()){error="cannot open run checkpoint";return false;}
 		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
-		const std::uint64_t version=8u,endian=0x0102030405060708ull,zero=0u;
+		const std::uint64_t version=9u,endian=0x0102030405060708ull,zero=0u;
 		auto rejectTemporary=[&temporary](){std::error_code ignored;
 			std::filesystem::remove(temporary,ignored);};
 		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
@@ -713,7 +726,7 @@ namespace
 		const char expected[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
 		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
 			!reader.HeaderBytes(&version,sizeof(version))||
-				(version!=5u&&version!=6u&&version!=7u&&version!=8u)||
+				(version!=5u&&version!=6u&&version!=7u&&version!=8u&&version!=9u)||
 			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
 			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
@@ -3198,6 +3211,18 @@ int main(int argc,char** argv)
 			std::vector<std::uint64_t>({2u,4u})&&
 		resumedCheckpointMetadata.values.reductionMode=="fixed_order_tree_v1",
 		"r61 checkpoint plus hard kill plus different-thread resume is frame-bit-transparent and records run events");
+	MethaneRunCheckpoint precisionRoundTrip=resumedCheckpointMetadata;
+	if(!precisionRoundTrip.states.empty())precisionRoundTrip.states.front().producerPrecision=
+		FireStateProducerPrecision::Binary32;
+	const std::filesystem::path precisionCheckpoint=checkpointFixture/"precision_class.checkpoint";
+	MethaneRunCheckpoint loadedPrecisionRoundTrip;
+	Check(!precisionRoundTrip.states.empty()&&SaveMethaneRunCheckpoint(precisionCheckpoint,
+		precisionRoundTrip,checkpointFixtureError)&&LoadMethaneRunCheckpoint(precisionCheckpoint,
+		loadedPrecisionRoundTrip,checkpointFixtureError)&&
+		loadedPrecisionRoundTrip.checkpointFormatVersion==9u&&
+		loadedPrecisionRoundTrip.states.front().producerPrecision==
+			FireStateProducerPrecision::Binary32,
+		"r115 checkpoint round-trip preserves the accepted state's producer precision class");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
 	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
 	const std::filesystem::path corruptedCheckpointPath=checkpointFixture/"corrupt.checkpoint";

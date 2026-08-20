@@ -214,6 +214,35 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         for name in ("DivergenceFromDiscreteRate", "BuildOpenBoundaryStage3D"):
             self.assertIn("producerPrecision", inline_body(core, name),
                           name + " hardcodes a raw-state precision class")
+        for name in ("AcceptedConservativeVolumeRatio", "DivergenceFromDiscreteIncrement",
+                     "ManifoldExactDivergenceTarget",
+                     "FrozenSourcePacketExpansionAdmissible",
+                     "PeriodicDivergenceTargetFromPhysicalFlux"):
+            self.assertIn("producerPrecision", inline_body(core, name),
+                          name + " drops precision in the finite-increment chain")
+        for name in ("BuildPeriodicStageTransport3D",
+                     "PeriodicDivergenceTargetFromPhysicalFlux3D",
+                     "BuildCellMolecularTransportEvaluations3D",
+                     "BuildOpenStageTransportEvaluations3D",
+                     "OpenDivergenceTargetFromPhysicalFlux3D"):
+            self.assertIn("producerPrecision", inline_body(advance, name),
+                          name + " drops precision in the owning 3-D chain")
+        for name in ("SolveConservativeStage3D", "SolveOpenConservativeStage3D",
+                     "AdvancePeriodicConservative3DImplementation",
+                     "AdvanceOpenConservative3DImplementation"):
+            self.assertIn("config.transport.producerPrecision", inline_body(advance, name),
+                          name + " selects a compatibility precision overload")
+        for name in ("ReferenceAdvancePeriodicTransportHeun1D",
+                     "SolvePeriodicCoupledStage", "ReferenceAdvancePeriodicProjectedHeun1D"):
+            self.assertIn("config.producerPrecision", inline_body(core, name),
+                          name + " selects a compatibility precision overload")
+        self.assertIn("config.producerPrecision",
+                      inline_body(advance, "ReferenceAdvancePeriodicTransportHeun3DWithSource"),
+                      "the 3-D reference owner selects a compatibility precision overload")
+        for name in ("BuildFrozenMethaneSourcePacket", "BuildFrozenMethaneSourcePackets"):
+            self.assertIn("beginning", inline_body(core, name))
+            self.assertIn("producerPrecision", inline_body(core, name),
+                          name + " drops accepted-state producer metadata")
         for name in ("InvertMethaneTemperatureWithinAcceptedEnvelope",
                      "EquationOfStateResidual", "EvaluateCellMolecularTransport"):
             self.assertIn("producerPrecision!=state.producerPrecision",

@@ -2715,7 +2715,10 @@ it was already tried and refuted here.
   still fails closed. Temperature, EOS, positive-part properties, and molecular
   viscosity all consume the state's precision metadata. No state repair,
   resident promotion, or fp64 widening is permitted, and the feasibility
-  envelope remains separate from the future accuracy term `B_fp32`.
+  envelope remains separate from the future accuracy term `B_fp32`. Run
+  checkpoint v9 persists producer precision per cell; historical v5--v8
+  checkpoints decode as binary64, leaving the immutable v8 golden artifact
+  byte-untouched.
 
   Exit `190` is retired by the derived ruling. The production campaign chains
   31 additional states before exact monitored exit `191`: tier 12 step 7 cell
@@ -2724,4 +2727,5 @@ it was already tried and refuted here.
   the unchanged `0.001` gate. Payload digest is `e5a8cdfd...c5b70`; maximum
   affine excursion `2.1925594524305645e-7` is inside the fp32 envelope. This is
   a new EOS-consistency finding, not a feasibility or `B_fp32` term. The
-  campaign stops before production Richardson pending targeted instrumentation.
+  four-tier campaign is incomplete and admits no production Richardson distance
+  pending targeted instrumentation.
