@@ -136,7 +136,7 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 	// keyword has no registered descriptor, so the panel isn't blank.
 	{
 		CameraProperty row;
-		row.name        = String( "type" );
+		row.name        = String( "chunk_type" );
 		row.kind         = ValueKind::String;
 		row.value        = keyword;
 		row.description  = String( typeRowDescription ? typeRowDescription : "Chunk keyword" );
@@ -265,7 +265,7 @@ void CstIntrospection::AugmentWithCstRows(
 
 	for( const CameraProperty& g : generic )
 	{
-		if( g.name == String( "type" ) ) continue;   // live modules carry their own identity rows
+		if( g.name == String( "chunk_type" ) ) continue;   // live modules carry their own identity rows
 
 		CameraProperty* existing = nullptr;
 		for( CameraProperty& r : rows )

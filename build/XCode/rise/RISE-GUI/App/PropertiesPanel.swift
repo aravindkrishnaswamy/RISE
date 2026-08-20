@@ -51,7 +51,11 @@ struct PropertyPreset: Identifiable, Hashable {
 /// Properties displayed in the right panel.  Built from
 /// RISEViewportProperty instances via `from(_:)`.
 struct PropertyRow: Identifiable {
-    let id: String                // parameter name (unique per entity)
+    let id: String                // parameter name -- unique per entity: the synthetic
+                                   // leading identity row is "chunk_type" (never a real
+                                   // descriptor param name), so it can't collide with a
+                                   // chunk that happens to declare a real `type` param
+                                   // (e.g. sdf3d_painter, polynomial_function2d_painter)
     let name: String
     let initialValue: String
     let description: String
@@ -289,8 +293,18 @@ struct PropertiesPanel: View {
         // (sourceLine != nil) — the same gate as the whole-entity ⌗ chip.
         .contextMenu {
             if sourceLine != nil {
+                // The synthetic leading identity row ("chunk_type") has no
+                // param span of its own -- it's the chunk's keyword, not a
+                // descriptor parameter -- so reveal the WHOLE chunk (empty
+                // param, per ResolveSourceSpan's documented convention)
+                // rather than name-matching "chunk_type" against a real
+                // descriptor param.  Without this, right-clicking the
+                // identity row on a chunk that also declares a genuine
+                // `type` parameter (sdf3d_painter, polynomial_function2d_painter)
+                // used to jump to that param's line instead of the chunk.
+                let revealParam = row.id == "chunk_type" ? "" : row.name
                 Button {
-                    viewModel.revealSourceSpan(category: selectionCategory, name: selectionName, param: row.name)
+                    viewModel.revealSourceSpan(category: selectionCategory, name: selectionName, param: revealParam)
                 } label: {
                     Label("Reveal “\(row.name)” in Scene File", systemImage: "text.magnifyingglass")
                 }

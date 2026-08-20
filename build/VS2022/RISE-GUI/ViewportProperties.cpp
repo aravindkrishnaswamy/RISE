@@ -1070,14 +1070,23 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
     // selection change, so they always match this row's entity).
     row->setContextMenuPolicy(Qt::CustomContextMenu);
     const QString paramName = p.name;
+    // The synthetic leading identity row ("chunk_type") has no param span of
+    // its own -- it's the chunk's keyword, not a descriptor parameter -- so
+    // reveal the WHOLE chunk (empty param, per ResolveSourceSpan's documented
+    // convention) instead of name-matching "chunk_type" against a real
+    // descriptor param.  Without this, right-clicking the identity row on a
+    // chunk that also declares a genuine `type` parameter (sdf3d_painter,
+    // polynomial_function2d_painter) used to jump to that param's line
+    // instead of the chunk.
+    const QString revealParamName = (paramName == QStringLiteral("chunk_type")) ? QString() : paramName;
     connect(row, &QWidget::customContextMenuRequested, this,
-            [this, row, paramName](const QPoint& pos) {
+            [this, row, paramName, revealParamName](const QPoint& pos) {
                 if (!m_sourceLineKnown) return;
                 QMenu menu(this);
                 QAction* reveal = menu.addAction(
                     tr("Reveal \xE2\x80\x9C%1\xE2\x80\x9D in Scene File").arg(paramName));   // “<param>”
-                connect(reveal, &QAction::triggered, this, [this, paramName]() {
-                    emit revealParamRequested(m_currentSelectionCat, m_currentSelectionName, paramName);
+                connect(reveal, &QAction::triggered, this, [this, revealParamName]() {
+                    emit revealParamRequested(m_currentSelectionCat, m_currentSelectionName, revealParamName);
                 });
                 menu.exec(row->mapToGlobal(pos));
             });

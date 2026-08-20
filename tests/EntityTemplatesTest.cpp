@@ -329,8 +329,8 @@ namespace
 				}
 			}
 			Check( found, "CstIntrospection::Inspect surfaces a `color` row for uniformcolor_painter" );
-			Check( !rows.empty() && std::string( rows[0].name.c_str() ) == "type" && !rows[0].editable,
-				"CstIntrospection::Inspect's leading row is a read-only `type` identity row" );
+			Check( !rows.empty() && std::string( rows[0].name.c_str() ) == "chunk_type" && !rows[0].editable,
+				"CstIntrospection::Inspect's leading row is a read-only `chunk_type` identity row" );
 		}
 
 		// Path B: the GUI-facing SetSelection + SetProperty(Category::Painter)
