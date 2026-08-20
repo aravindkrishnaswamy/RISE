@@ -886,12 +886,15 @@ namespace FireProductionDyadicCalibration
 					production.projection.maximumOpenComplementarityDiscrepancyMPerS,
 					production.projection.removedFineRightHandSideMean,
 					production.projection.validationPassed?1:0);
+					std::uint32_t removedMeanBits=0u;std::memcpy(&removedMeanBits,
+						&production.projection.removedFineRightHandSideMean,
+						sizeof(removedMeanBits));
 					if(!production.projection.validationPassed||
 						production.projection.maximumPreProjectionResidualPerS!=0x1.7d1296p-3f||
 						production.projection.maximumPostProjectionResidualPerS!=0x1.6e31p-21f||
 						production.projection.maximumOpenComplementarityDiscrepancyMPerS!=
 							0x1.6a596ep-7f||
-						production.projection.removedFineRightHandSideMean!=0.0f)return 189;}
+						removedMeanBits!=0u)return 189;}
 				if(!ApplyProductionResult(production,states[index],error)){
 					const ProductionAffineResidual residual=MeasureProductionAffineResidual(
 						production,states[index].states.size());
