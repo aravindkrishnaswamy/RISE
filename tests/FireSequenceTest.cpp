@@ -568,7 +568,8 @@ namespace
 		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
 		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
 			if(!writer.Pod(encoded))return false;}
-		return writer.Pod(checkpoint.cellWidthM)&&WriteCellStates(writer,checkpoint.states,version)&&
+		const bool baseWritten=writer.Pod(checkpoint.cellWidthM)&&
+			WriteCellStates(writer,checkpoint.states,version)&&
 			WriteMACField(writer,checkpoint.momentum)&&WriteMACField(writer,checkpoint.velocity)&&
 			WriteSolverFrameValues(writer,checkpoint.values)&&
 			WriteArithmeticVector(writer,checkpoint.centerlineTemperatureIntegral)&&
@@ -576,21 +577,27 @@ namespace
 			WriteArithmeticVector(writer,checkpoint.planeHeatReleaseIntegral)&&
 			writer.Pod(checkpoint.centerlineStatisticsDurationS)&&
 			writer.Pod(checkpoint.simulationTimeS)&&writer.Pod(checkpoint.previousStepS)&&
-			writer.Pod(checkpoint.lastAcceptedStepS)&&writer.Pod(checkpoint.acceptedSteps)&&
+			writer.Pod(checkpoint.lastAcceptedStepS)&&writer.Pod(checkpoint.acceptedSteps);
+		if(!baseWritten)return false;
+		if(version<6u)return true;
+		const bool migrationWritten=
 			WriteArithmeticVector(writer,checkpoint.values.acceptedMaximumTemperatureHistoryK)&&
 			writer.String(checkpoint.values.migrationCertificateId)&&
 			writer.String(checkpoint.values.migrationOldBuildId)&&
 			writer.String(checkpoint.values.migrationNewBuildId)&&
 			writer.Pod(checkpoint.values.migrationAcceptedStepCount)&&
-			writer.Pod(checkpoint.values.migrationResumedFromStep)&&
-			writer.String(checkpoint.values.activeSetAlgorithmVersion)&&
+			writer.Pod(checkpoint.values.migrationResumedFromStep);
+		if(!migrationWritten)return false;
+		if(version<7u)return true;
+		const bool activeSetWritten=writer.String(checkpoint.values.activeSetAlgorithmVersion)&&
 			writer.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)&&
 			writer.Pod(checkpoint.values.discontinuousActiveSetEvents)&&
 			writer.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
 			writer.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
 			writer.Pod(checkpoint.values.activeSetThreadIdentity)&&
-			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked)&&
-			writer.String(checkpoint.values.priorActiveSetAlgorithmVersion);
+			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
+		if(!activeSetWritten)return false;
+		return version<8u||writer.String(checkpoint.values.priorActiveSetAlgorithmVersion);
 	}
 
 	bool ReadCheckpointPayload(CheckpointReader& reader,MethaneRunCheckpoint& checkpoint,
@@ -686,7 +693,7 @@ namespace
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
 		const std::uint64_t version=9u)
 	{
-		if(version!=8u&&version!=9u){error="run checkpoint output version is invalid";return false;}
+		if(version<5u||version>9u){error="run checkpoint output version is invalid";return false;}
 		if(path.has_parent_path())std::filesystem::create_directories(path.parent_path());
 #if defined(_WIN32)
 		const long long processId=static_cast<long long>(::_getpid());
@@ -3250,16 +3257,22 @@ int main(int argc,char** argv)
 	Check(HomogeneousStateProducerPrecision(resumedCheckpointMetadata.states,resumedPrecision)&&
 		resumedPrecision==FireStateProducerPrecision::Binary64,
 		"r115 ordinary binary64 checkpoints retain one authoritative producer class");
-	const std::filesystem::path legacyPrecisionCheckpoint=
-		checkpointFixture/"precision_class_legacy_v8.checkpoint";
-	MethaneRunCheckpoint loadedLegacyPrecision;
-	Check(SaveMethaneRunCheckpoint(legacyPrecisionCheckpoint,resumedCheckpointMetadata,
-		checkpointFixtureError,8u)&&LoadMethaneRunCheckpoint(legacyPrecisionCheckpoint,
-		loadedLegacyPrecision,checkpointFixtureError)&&
-		loadedLegacyPrecision.checkpointFormatVersion==8u&&
-		HomogeneousStateProducerPrecision(loadedLegacyPrecision.states,resumedPrecision)&&
-		resumedPrecision==FireStateProducerPrecision::Binary64,
-		"r115 legacy v5-v8 checkpoint cells decode in the binary64 producer class");
+	for(std::uint64_t legacyVersion=5u;legacyVersion<=8u;++legacyVersion){
+		const std::filesystem::path legacyPrecisionCheckpoint=checkpointFixture/
+			("precision_class_legacy_v"+std::to_string(legacyVersion)+".checkpoint");
+		MethaneRunCheckpoint loadedLegacyPrecision;
+		loadedLegacyPrecision.states.assign(resumedCheckpointMetadata.states.size(),MethaneCellState());
+		for(MethaneCellState& state:loadedLegacyPrecision.states)
+			state.producerPrecision=FireStateProducerPrecision::Unknown;
+		Check(SaveMethaneRunCheckpoint(legacyPrecisionCheckpoint,resumedCheckpointMetadata,
+			checkpointFixtureError,legacyVersion)&&
+			LoadMethaneRunCheckpoint(legacyPrecisionCheckpoint,loadedLegacyPrecision,
+				checkpointFixtureError)&&
+			loadedLegacyPrecision.checkpointFormatVersion==legacyVersion&&
+			HomogeneousStateProducerPrecision(loadedLegacyPrecision.states,resumedPrecision)&&
+			resumedPrecision==FireStateProducerPrecision::Binary64,
+			"r115 every legacy v5-v8 checkpoint decodes in the binary64 producer class");
+	}
 	MethaneRunCheckpoint mixedPrecisionCheckpoint=resumedCheckpointMetadata;
 	if(!mixedPrecisionCheckpoint.states.empty())mixedPrecisionCheckpoint.states.front().producerPrecision=
 		FireStateProducerPrecision::Binary32;
