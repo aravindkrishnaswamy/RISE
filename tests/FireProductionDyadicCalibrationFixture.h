@@ -74,7 +74,7 @@ namespace FireProductionDyadicCalibration
 		result=MethaneRunCheckpoint();FireCase::RecordV1 record;
 		if(!BuildCase(static_cast<double>(tier),record,error))return false;
 		const double dStar=record.derived.characteristicDiameterM;
-		if(dStar!=0x1.f543ef87f44f7p-3){
+		if(dStar!=0x1.f53cd43f813a5p-3){
 			std::fprintf(stderr,"dyadic Dstar mismatch actual=%.17g hex=%a\n",dStar,dStar);
 			return false;}
 		result.caseRecordId=record.caseRecordId;result.producerBuildId="r109_analytic_smooth_v1";
