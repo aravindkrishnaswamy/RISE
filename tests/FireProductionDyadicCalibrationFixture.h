@@ -951,6 +951,7 @@ namespace FireProductionDyadicCalibration
 			const double flowThrough=6.0*std::sqrt(states[index].values.characteristicDiameterM/Gravity);
 			static const std::size_t failingProbeCell=2256u;
 			MethaneRunCheckpoint restoredProbeState;
+			MethaneRunCheckpoint restoredTrajectoryState=states[index];
 			bool restoredProbeReady=false;
 			bool restoredProjectionValid=false;
 			double restorationReferenceDeviation=0.0;
@@ -992,6 +993,36 @@ namespace FireProductionDyadicCalibration
 						step+1u,beginningDeviation.signedProbe,outputDeviation.signedProbe,
 						beginningDeviation.signedAtMaximum,beginningDeviation.maximumCell,
 						outputDeviation.signedAtMaximum,outputDeviation.maximumCell);
+					ProductionEOSDeviation restoredBeginning;
+					std::vector<double> restoredBeginningField;
+					if(!MeasureCheckpointEOSDeviation(restoredTrajectoryState,failingProbeCell,
+						restoredBeginning,&restoredBeginningField,error))return 209;
+					RISE::FireProductionResidentStepRequest restoredTrajectoryRequest;
+					if(!BuildProductionRequest(restoredTrajectoryState,sealed[step],flowThrough/512.0,
+						restoredTrajectoryRequest,error))return 210;
+					for(std::size_t cell=0u;cell<restoredBeginningField.size();++cell){
+						const float absoluteReference=static_cast<float>(restoredBeginningField[cell]/
+							static_cast<double>(restoredTrajectoryRequest.force.timeStepS));
+						restoredTrajectoryRequest.divergenceTargetPerS[cell]=
+							restoredTrajectoryRequest.divergenceTargetPerS[cell]+absoluteReference;
+					}
+					RISE::FireProductionResidentStepResult restoredTrajectory;
+					if(!RISE::AdvanceFireProductionResidentStepMetal(restoredTrajectoryRequest,
+						restoredTrajectory,&error)||restoredTrajectory.interstageFullGridTransferCount!=0u)
+						return 211;
+					ProductionEOSDeviation restoredOutput;
+					if(!MeasureProductionEOSDeviation(restoredTrajectory,
+						restoredTrajectoryState.states.size(),failingProbeCell,restoredOutput,error))
+						return 212;
+					std::fprintf(stderr,"EOSRESTORE step=%zu valid=%d post=%.17g begin_probe=%.17g "
+						"output_probe=%.17g output_max=%.17g output_max_cell=%zu\n",step+1u,
+						restoredTrajectory.projection.validationPassed?1:0,
+						restoredTrajectory.projection.maximumPostProjectionResidualPerS,
+						restoredBeginning.signedProbe,restoredOutput.signedProbe,
+						restoredOutput.signedAtMaximum,restoredOutput.maximumCell);
+					if(!ApplyProductionResult(restoredTrajectory,restoredTrajectoryState,error)){
+						std::fprintf(stderr,"EOSRESTORE step=%zu consumer failure: %s\n",step+1u,
+							error.c_str());return 213;}
 					if(step==5u){
 						if(!std::isfinite(beginningDeviation.signedProbe)||
 							beginningDeviation.signedProbe==0.0)return 207;

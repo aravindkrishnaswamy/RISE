@@ -2767,3 +2767,12 @@ it was already tried and refuted here.
   `G/r` formula. It must label both projection-valid bits and retain the
   residency/byte-identity checks. Those numbers describe fixed-schedule drain
   capacity only; they cannot be reclassified as accepted solver evidence.
+
+  Before implementation, a separate eight-step shadow starts from the same
+  immutable analytic tier-12 state and adds that identical absolute-reference
+  term at every step. It records the signed probe and field maximum, projection
+  validation and residual, and residency count after each call. The shadow is
+  viable only if all eight projections validate, every published state remains
+  consumer-total, and its measured plateau agrees with the independently
+  defined `G/r` value while staying below `1.0e-3`. A provisional shadow may be
+  continued after a validation miss for diagnosis, but cannot authorize a fix.

@@ -1854,6 +1854,14 @@ same `G/r` formula, provided it labels both validation bits and preserves every
 residency and conservative-byte check. Such a readout measures the fixed
 schedule's drain response; it is not accepted production evidence.
 
+A distinct eight-step shadow applies the same absolute term from the analytic
+tier-12 beginning rather than injecting it only at step 6. It records every
+projection-validation bit/residual, residency count, probe deviation, and field
+maximum. It can qualify r69 for implementation only if all eight projections
+validate, downstream state reconstruction stays total, and the observed
+steady deviation agrees with `G/r` below the unchanged EOS ceiling. Continuing
+a provisional shadow after a validation miss is diagnostic only.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
