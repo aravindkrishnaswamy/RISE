@@ -86,6 +86,7 @@ namespace FireProductionCalibration
 		FP64::FireProductionFrozenForceAdvanceResult force;
 		FP64::FireProductionCellPalindromeResult cell;
 		FP64::FireProductionDualMomentumResult dual;
+		FP64::FireProductionProjectionResult physicalProjection;
 		FP64::FireProductionProjectionResult projection;
 	};
 
@@ -132,7 +133,11 @@ namespace FireProductionCalibration
 		}
 		projection.provisionalMomentumKGPerM2S=computed.dual.momentum;
 		projection.divergenceTargetPerS=Promote(request.divergenceTargetPerS);
-		if(!FP64::ProjectFireProductionCPU(projection,computed.projection,error))return false;
+		if(!FP64::ProjectFireProductionResidentPhysicalCPU(projection,
+			computed.physicalProjection,error))return false;
+		projection.provisionalMomentumKGPerM2S=computed.physicalProjection.momentumKGPerM2S;
+		projection.divergenceTargetPerS=Promote(request.restorationDivergenceTargetPerS);
+		if(!FP64::ProjectFireProductionRestorationCPU(projection,computed.projection,error))return false;
 		result=std::move(computed);return true;
 	}
 }

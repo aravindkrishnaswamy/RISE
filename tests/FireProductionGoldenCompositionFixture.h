@@ -225,8 +225,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}
 		request.cellSourceIncrement.assign(9u*cells,0.0f);
 		request.divergenceTargetPerS.resize(cells);
-		for(std::size_t cell=0u;cell<cells;++cell)
+		request.restorationDivergenceTargetPerS.resize(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){
 			request.divergenceTargetPerS[cell]=static_cast<float>(oracle.divergenceHeunPerS[cell]);
+			double volumeRatio=0.0;
+			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(beginning.states[cell]),fuel,
+				beginning.states[cell].producerPrecision,volumeRatio,&error))return 117;
+			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
+				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
+		}
 		RISE::FireProductionResidentStepResult production;
 		if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}

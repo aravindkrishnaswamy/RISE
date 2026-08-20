@@ -132,7 +132,7 @@ namespace RISE
 				if( !AddMetalBufferBytes(xFaces,sizeof(float),total)||
 					!AddMetalBufferBytes(yFaces,sizeof(float),total)||
 					!AddMetalBufferBytes(zFaces,sizeof(float),total)||
-					!AddMetalBufferBytes(84u,1u,total) ) return false;
+					!AddMetalBufferBytes(88u,1u,total) ) return false;
 				if( nx<=4u&&ny<=4u&&nz<=4u ) break;
 				nx=nx>4u?(nx+1u)/2u:nx;ny=ny>4u?(ny+1u)/2u:ny;
 				nz=nz>4u?(nz+1u)/2u:nz;
@@ -491,6 +491,21 @@ namespace RISE
 		withinBand=maximumResidualPerS<=tolerance;return true;
 	}
 
+	bool FireProductionRestorationProjectionResidualWithinBand(
+		float maximumResidualPerS,float maximumRestorationTargetPerS,bool& withinBand )
+	{
+		withinBand=false;
+		if( !std::isfinite(maximumResidualPerS)||maximumResidualPerS<0.0f||
+			!std::isfinite(maximumRestorationTargetPerS)||
+			maximumRestorationTargetPerS<0.0f ) return false;
+		// The main certificate is 0.5% of its characteristic divergence U/L.
+		// The restoration pass's independently derived characteristic divergence
+		// is max |(V(Q^n)-1)/dt|; no physical-pass velocity scale enters here.
+		const float tolerance=0.005f*maximumRestorationTargetPerS;
+		if( !std::isfinite(tolerance) ) return false;
+		withinBand=maximumResidualPerS<=tolerance;return true;
+	}
+
 	bool ValidateFireProductionProjectionRequest( const FireProductionProjectionRequest& request,
 		std::string* error )
 	{
@@ -550,8 +565,16 @@ namespace RISE
 		return true;
 	}
 
+	enum CPUProjectionExecution
+	{
+		CPUProjectionStandalone,
+		CPUProjectionResidentPhysical,
+		CPUProjectionRestoration
+	};
+
 	bool ProjectFireProductionCPUImplementation( const FireProductionProjectionRequest& request,
-		FireProductionProjectionResult& result, std::string* error )
+		CPUProjectionExecution execution,FireProductionProjectionResult& result,
+		std::string* error )
 	{
 		result=FireProductionProjectionResult();
 		if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
@@ -617,8 +640,8 @@ namespace RISE
 							const float value=CellCenteredVelocity(request,result.velocityMPerS,
 								tangent,cx,cy,cz);speed2+=value*value;
 						}
-						boundaryPressure[side][index]=-
-							0.5f*request.ambientDensityKGPerM3*speed2;
+						boundaryPressure[side][index]=execution==CPUProjectionRestoration?
+							0.0f:-0.5f*request.ambientDensityKGPerM3*speed2;
 					}
 				}
 		}
@@ -638,8 +661,9 @@ namespace RISE
 		for( std::size_t z=0;z<nz;++z ) for( std::size_t y=0;y<ny;++y )
 			for( std::size_t x=0;x<nx;++x ) {
 				const std::size_t cell=CellIndex(nx,ny,x,y,z);
-				const float residual=divergence(result.velocityMPerS,x,y,z)-
-					request.divergenceTargetPerS[cell];
+				const float residual=execution==CPUProjectionRestoration?
+					-request.divergenceTargetPerS[cell]:
+					divergence(result.velocityMPerS,x,y,z)-request.divergenceTargetPerS[cell];
 				result.maximumPreProjectionResidualPerS=std::max(
 					result.maximumPreProjectionResidualPerS,std::fabs(residual));
 				fine.rhs[cell]=-residual/request.timeStepS;
@@ -647,7 +671,8 @@ namespace RISE
 				const std::size_t extent[3]={nx,ny,nz};
 				for( unsigned int axis=0;axis<3u;++axis ) for( unsigned int high=0;high<2u;++high ) {
 					const unsigned int side=2u*axis+high;
-					if( request.boundary[side]!=FireProductionProjectionPressureOpen||
+					if( execution==CPUProjectionRestoration||
+						request.boundary[side]!=FireProductionProjectionPressureOpen||
 						coordinate[axis]!=(high?extent[axis]-1u:0u) ) continue;
 					std::size_t fx=x,fy=y,fz=z;if( axis==0u&&high ) ++fx;
 					if( axis==1u&&high ) ++fy;if( axis==2u&&high ) ++fz;
@@ -681,7 +706,8 @@ namespace RISE
 			coarse.temporary.assign(count,0.0f);coarse.residual.assign(count,0.0f);
 			hierarchy.push_back(std::move(coarse));
 		}
-		const unsigned int cycleCount=HasOpenBoundary(request.boundary)?16u:12u;
+		const unsigned int cycleCount=HasOpenBoundary(request.boundary)?
+			(execution==CPUProjectionResidentPhysical?17u:16u):12u;
 		for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
 			VCycle(hierarchy,0u,request.boundary,nullspace,
 				result.executedJacobiSweepCount);
@@ -755,12 +781,35 @@ namespace RISE
 			for( const float value : result.velocityMPerS[axis] )
 				maximumVelocity=std::max(maximumVelocity,std::fabs(value));
 		}
+		std::array<std::vector<float>,3> beginningVelocity;
+		if( execution==CPUProjectionRestoration ) {
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t ex=axis==0u?nx+1u:nx;
+				const std::size_t ey=axis==1u?ny+1u:ny;
+				const std::size_t ez=axis==2u?nz+1u:nz;
+				beginningVelocity[axis].resize(FireProductionProjectionFaceCount(shape,axis));
+				for( std::size_t z=0u;z<ez;++z ) for( std::size_t y=0u;y<ey;++y )
+					for( std::size_t x=0u;x<ex;++x ) {
+						const std::size_t face=FaceIndex(nx,ny,axis,x,y,z);
+						const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+						const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
+						const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
+						beginningVelocity[axis][face]=(coordinate==0u||coordinate==extent)&&
+							request.boundary[side]==FireProductionProjectionWall?0.0f:
+							request.provisionalMomentumKGPerM2S[axis][face]/
+							result.faceDensityKGPerM3[axis][face];
+					}
+			}
+		}
 		for( std::size_t z=0;z<nz;++z ) for( std::size_t y=0;y<ny;++y )
 			for( std::size_t x=0;x<nx;++x ) {
 				const std::size_t cell=CellIndex(nx,ny,x,y,z);
+				const float residual=execution==CPUProjectionRestoration?
+					divergence(result.velocityMPerS,x,y,z)-
+					divergence(beginningVelocity,x,y,z)-request.divergenceTargetPerS[cell]:
+					divergence(result.velocityMPerS,x,y,z)-request.divergenceTargetPerS[cell];
 				result.maximumPostProjectionResidualPerS=std::max(
-					result.maximumPostProjectionResidualPerS,std::fabs(
-						divergence(result.velocityMPerS,x,y,z)-request.divergenceTargetPerS[cell]));
+					result.maximumPostProjectionResidualPerS,std::fabs(residual));
 			}
 		for( unsigned int side=0;side<6u;++side ) {
 			if( request.boundary[side]!=FireProductionProjectionPressureOpen ) continue;
@@ -786,9 +835,17 @@ namespace RISE
 		}
 		const float length=shape.cellWidthM*static_cast<float>(
 			std::max(nx,std::max(ny,nz)));
-		if( !FireProductionProjectionResidualWithinBand(
-			result.maximumPostProjectionResidualPerS,maximumVelocity,length,
-			result.validationPassed) ) {
+		float maximumRestorationTarget=0.0f;
+		if( execution==CPUProjectionRestoration ) for( const float value:
+			request.divergenceTargetPerS ) maximumRestorationTarget=
+				std::max(maximumRestorationTarget,std::fabs(value));
+		const bool validBand=execution==CPUProjectionRestoration?
+			FireProductionRestorationProjectionResidualWithinBand(
+				result.maximumPostProjectionResidualPerS,maximumRestorationTarget,
+				result.validationPassed):FireProductionProjectionResidualWithinBand(
+				result.maximumPostProjectionResidualPerS,maximumVelocity,length,
+				result.validationPassed);
+		if( !validBand ) {
 			result=FireProductionProjectionResult();
 			return Fail(error,"production projection validation band overflowed");
 		}
@@ -827,7 +884,8 @@ namespace RISE
 		FireProductionProjectionResult& result, std::string* error )
 	{
 		try {
-			return ProjectFireProductionCPUImplementation(request,result,error);
+			return ProjectFireProductionCPUImplementation(request,CPUProjectionStandalone,
+				result,error);
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionProjectionResult();
 			if( error ) {
@@ -836,5 +894,25 @@ namespace RISE
 			}
 			return false;
 		}
+	}
+
+	bool ProjectFireProductionResidentPhysicalCPU(
+		const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		try {return ProjectFireProductionCPUImplementation(request,
+			CPUProjectionResidentPhysical,result,error);}
+		catch( const std::bad_alloc& ) {result=FireProductionProjectionResult();
+			return Fail(error,"production projection allocation failed");}
+	}
+
+	bool ProjectFireProductionRestorationCPU(
+		const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		try {return ProjectFireProductionCPUImplementation(request,
+			CPUProjectionRestoration,result,error);}
+		catch( const std::bad_alloc& ) {result=FireProductionProjectionResult();
+			return Fail(error,"production projection allocation failed");}
 	}
 }

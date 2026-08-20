@@ -2834,3 +2834,29 @@ it was already tried and refuted here.
   controlled capacity trajectory and byte-untouched. Production Richardson,
   `B_fp32`, Metal confirmation, eight-slice readmission, and thermo/source maps
   remain sequenced after this gate.
+
+- **r118 restoration evidence:** the predeclared 104-step campaign validates
+  both projection passes on every step and observes zero full-grid interstage
+  transfers. Cell 2256 has final-32 maximum absolute deviation
+  `1.5435381821271577e-4`, within 1.0663% of the independent r117 `G/r`
+  prediction and 6.4786 times below the unchanged ceiling. The independently
+  searched field maximum is `6.524281258450948e-4`. The exact diagnostic and
+  payload trace digest is `2b7071e6...2fc68`; final state is
+  `b3e17108...dc76e`. Allocation is 229,518,420 observed-upper bytes against
+  248,479,780 certified bytes. After eight warm-ups, 96 calls measure 27.8510
+  ms device p95 and 71.2383 ms wall p95 against the 200 ms step allocation.
+  The durable evidence artifact hashes to `adaa3fc4...fa5b7`. The architecture
+  is admitted; the sequence resumes at production Richardson without changing
+  the EOS ceiling or introducing r70 closure.
+
+- **r119 production dyadic spatial evidence (2026-08-20):** after r118, the
+  sealed eight-step resident campaign completes at tiers 5, 10, 6, and 12.
+  The predeclared fixed-physical B-spline observable and verified order 1.8
+  accept all nine scalar channels, filtered MAC velocity, and all nine
+  inventory channels: both independent dyadic limit balls overlap and both
+  fine solutions approach the opposite pair's extrapolated limit. Exact
+  `D5_10`, `D6_12`, and limit-difference values are source-bound and preserved
+  in `r119_production_spatial/production_spatial_evidence.v1` (SHA-256
+  `10229d0f...345f4`). This defines
+  only `E_h,prod`; temporal refinement and analytic `B_fp32` remain separate,
+  subsequent gates.

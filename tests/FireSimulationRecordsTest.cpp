@@ -274,7 +274,7 @@ int main()
 		feasibility.remapFactorEpsilon32==256.0&&
 		feasibility.composedForceFactorEpsilon32==64.0&&
 		feasibility.projectionFactorEpsilon32==256.0&&
-		feasibility.derivedUnionFactorEpsilon32==576.0&&
+		feasibility.derivedUnionFactorEpsilon32==832.0&&
 		feasibility.kappaEpsilon32==1024.0&&
 		feasibility.limiterOutwardFactorEpsilon64+
 		feasibility.rowAccumulationFactorEpsilon64+

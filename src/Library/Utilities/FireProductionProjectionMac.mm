@@ -26,6 +26,7 @@ namespace RISE
 		enum ProjectionHostAccessKind
 		{
 			ProjectionMetadataAccess,
+			ProjectionDiagnosticAccess,
 			ProjectionInterstageFullGridAccess,
 			ProjectionTerminalAccess
 		};
@@ -97,10 +98,11 @@ namespace RISE
 			std::uint32_t nx,ny,nz,nullspace;
 			float sx,sy,sz,ambientDensity;
 			float timeStepS;
+			std::uint32_t restoration;
 			std::uint32_t boundary[6];
 			std::uint32_t sideOffset[6];
 		};
-		static_assert(sizeof(MetalLevelParameters)==84u,
+		static_assert(sizeof(MetalLevelParameters)==88u,
 			"P2 working-set certificate binds the serialized Metal level payload");
 
 		struct MetalAxisParameters
@@ -137,7 +139,7 @@ namespace RISE
 #include <metal_stdlib>
 using namespace metal;
 struct LevelParams {
- uint nx,ny,nz,nullspace;float sx,sy,sz,ambient,dt;uint boundary[6];uint sideOffset[6];
+ uint nx,ny,nz,nullspace;float sx,sy,sz,ambient,dt;uint restoration;uint boundary[6];uint sideOffset[6];
 };
 struct AxisParams {uint axis,storeDensity,side,padding;};
 struct ReductionParams {uint count,width,offset,diagnosticIndex;};
@@ -230,7 +232,7 @@ kernel void classify_open(device const float* vx [[buffer(0)]],device const floa
  float normal=vel[axis][face_index(p,axis,x,y,z)],outward=positive?normal:-normal;
  uint cx=axis==0u?(positive?p.nx-1u:0u):x,cy=axis==1u?(positive?p.ny-1u:0u):y;
  uint cz=axis==2u?(positive?p.nz-1u:0u):z;bool inside=outward<0.0f;inflow[p.sideOffset[side]+gid]=inside?1u:0u;
- float pressure=0.0f;if(inside){float speed2=normal*normal;for(uint t=0u;t<3u;++t)if(t!=axis){
+ float pressure=0.0f;if(inside&&p.restoration==0u){float speed2=normal*normal;for(uint t=0u;t<3u;++t)if(t!=axis){
   float q=centered_velocity(vel[t],p,t,cx,cy,cz);speed2+=q*q;}pressure=-0.5f*p.ambient*speed2;}
  pb[p.sideOffset[side]+gid]=pressure;
 }
@@ -244,10 +246,11 @@ kernel void build_rhs(device const float* vx [[buffer(0)]],device const float* v
  float divergence=(vx[face_index(p,0u,x+1u,y,z)]-vx[face_index(p,0u,x,y,z)]+
   vy[face_index(p,1u,x,y+1u,z)]-vy[face_index(p,1u,x,y,z)]+
   vz[face_index(p,2u,x,y,z+1u)]-vz[face_index(p,2u,x,y,z)])/p.sx;
- float residual=divergence-target[gid],value=-residual/p.dt;absoluteResidual[gid]=abs(residual);
+ float residual=p.restoration!=0u?-target[gid]:divergence-target[gid];
+ float value=-residual/p.dt;absoluteResidual[gid]=abs(residual);
  device const float* beta[3]={bx,by,bz};uint coordinate[3]={x,y,z},extent[3]={p.nx,p.ny,p.nz};
  for(uint axis=0u;axis<3u;++axis)for(uint high=0u;high<2u;++high){uint side=2u*axis+high;
-  if(p.boundary[side]!=1u||coordinate[axis]!=(high?extent[axis]-1u:0u))continue;
+  if(p.restoration!=0u||p.boundary[side]!=1u||coordinate[axis]!=(high?extent[axis]-1u:0u))continue;
   uint fx=x,fy=y,fz=z;if(axis==0u&&high!=0u)++fx;if(axis==1u&&high!=0u)++fy;if(axis==2u&&high!=0u)++fz;
   uint sideIndex=side<2u?z*p.ny+y:(side<4u?z*p.nx+x:y*p.nx+x);
   float spacing=axis==0u?p.sx:(axis==1u?p.sy:p.sz);
@@ -356,14 +359,54 @@ kernel void copy_periodic_seam(device float* stored [[buffer(0)]],device float* 
  if(a.axis==2u){z1=p.nz;x0=x1=u;y0=y1=v;}uint lo=face_index(p,a.axis,x0,y0,z0),hi=face_index(p,a.axis,x1,y1,z1);
  stored[hi]=stored[lo];momentum[hi]=momentum[lo];velocity[hi]=velocity[lo];
 }
+inline float prescribed_provisional_velocity(device const float* momentum,device const float* stored,
+ constant LevelParams& p,uint axis,uint x,uint y,uint z){
+ uint coordinate=axis==0u?x:(axis==1u?y:z),extent=axis==0u?p.nx:(axis==1u?p.ny:p.nz);
+ uint side=2u*axis+(coordinate==extent?1u:0u);
+ return (coordinate==0u||coordinate==extent)&&p.boundary[side]==2u?0.0f:
+  momentum[face_index(p,axis,x,y,z)]/stored[face_index(p,axis,x,y,z)];
+}
 kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const float* vy [[buffer(1)]],
  device const float* vz [[buffer(2)]],device const float* target [[buffer(3)]],device float* output [[buffer(4)]],
- constant LevelParams& p [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ constant LevelParams& p [[buffer(5)]],device const float* px [[buffer(6)]],
+ device const float* py [[buffer(7)]],device const float* pz [[buffer(8)]],
+ device const float* dx [[buffer(9)]],device const float* dy [[buffer(10)]],
+ device const float* dz [[buffer(11)]],uint gid [[thread_position_in_grid]]){
  uint count=p.nx*p.ny*p.nz;if(gid>=count)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
  float divergence=(vx[face_index(p,0u,x+1u,y,z)]-vx[face_index(p,0u,x,y,z)]+
   vy[face_index(p,1u,x,y+1u,z)]-vy[face_index(p,1u,x,y,z)]+
   vz[face_index(p,2u,x,y,z+1u)]-vz[face_index(p,2u,x,y,z)])/p.sx;
- output[gid]=abs(divergence-target[gid]);
+ if(p.restoration==0u){output[gid]=abs(divergence-target[gid]);return;}
+ float beginning=(prescribed_provisional_velocity(px,dx,p,0u,x+1u,y,z)-
+  prescribed_provisional_velocity(px,dx,p,0u,x,y,z)+
+  prescribed_provisional_velocity(py,dy,p,1u,x,y+1u,z)-
+  prescribed_provisional_velocity(py,dy,p,1u,x,y,z)+
+  prescribed_provisional_velocity(pz,dz,p,2u,x,y,z+1u)-
+  prescribed_provisional_velocity(pz,dz,p,2u,x,y,z))/p.sx;
+ output[gid]=abs((divergence-beginning)-target[gid]);
+}
+kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
+ device const float* py [[buffer(1)]],device const float* pz [[buffer(2)]],
+ device const float* dx [[buffer(3)]],device const float* dy [[buffer(4)]],
+ device const float* dz [[buffer(5)]],device const float* vx [[buffer(6)]],
+ device const float* vy [[buffer(7)]],device const float* vz [[buffer(8)]],
+ device const uchar* inflow [[buffer(9)]],device float* maximumVelocity [[buffer(10)]],
+ device float* complementarity [[buffer(11)]],constant LevelParams& p [[buffer(12)]],
+ uint gid [[thread_position_in_grid]]){
+ uint count=p.nx*p.ny*p.nz;if(gid>=count)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
+ device const float* provisional[3]={px,py,pz};device const float* stored[3]={dx,dy,dz};
+ device const float* velocity[3]={vx,vy,vz};uint coordinate[3]={x,y,z},extent[3]={p.nx,p.ny,p.nz};
+ float mv=0.0f,mc=0.0f;for(uint axis=0u;axis<3u;++axis)for(uint high=0u;high<2u;++high){
+  uint fx=x,fy=y,fz=z;if(axis==0u&&high!=0u)++fx;if(axis==1u&&high!=0u)++fy;if(axis==2u&&high!=0u)++fz;
+  uint face=face_index(p,axis,fx,fy,fz),side=2u*axis+high;
+  bool endpoint=coordinate[axis]==(high?extent[axis]-1u:0u),wall=endpoint&&p.boundary[side]==2u;
+  if(!wall)mv=max(mv,abs(provisional[axis][face]/stored[axis][face]));
+  float finalVelocity=velocity[axis][face];mv=max(mv,abs(finalVelocity));
+  if(endpoint&&p.boundary[side]==1u){uint sideIndex=side<2u?z*p.ny+y:(side<4u?z*p.nx+x:y*p.nx+x);
+   bool inside=inflow[p.sideOffset[side]+sideIndex]!=0u;float outward=(high?1.0f:-1.0f)*finalVelocity;
+   mc=max(mc,inside?max(0.0f,outward):max(0.0f,-outward));}
+ }
+ maximumVelocity[gid]=mv;complementarity[gid]=mc;
 }
 )METAL";
 		}
@@ -375,14 +418,14 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			id<MTLComputePipelineState> buildFaces,buildDiagonal,restrictAverage,
 				setupVelocity,classifyOpen,buildRHS,jacobi,computeResidual,
 				prolongate,clearValues,copyReduction,sumPass,maxPass,subtractMean,
-				storeRoot,correctFaces,copySeam,postResidual;
+				storeRoot,correctFaces,copySeam,postResidual,validationMetrics;
 			std::string error;
 
 			MetalProjectionContext() : device(nil),queue(nil),buildFaces(nil),buildDiagonal(nil),
 				restrictAverage(nil),setupVelocity(nil),classifyOpen(nil),buildRHS(nil),
 				jacobi(nil),computeResidual(nil),prolongate(nil),clearValues(nil),
 				copyReduction(nil),sumPass(nil),maxPass(nil),subtractMean(nil),storeRoot(nil),
-				correctFaces(nil),copySeam(nil),postResidual(nil)
+				correctFaces(nil),copySeam(nil),postResidual(nil),validationMetrics(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -405,10 +448,11 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					sumPass=make("sum_pass");maxPass=make("max_pass");subtractMean=make("subtract_mean");
 					storeRoot=make("store_root");correctFaces=make("correct_faces");
 					copySeam=make("copy_periodic_seam");postResidual=make("cell_post_residual");
+					validationMetrics=make("cell_validation_metrics");
 					if( !buildFaces||!buildDiagonal||!restrictAverage||!setupVelocity||!classifyOpen||
 						!buildRHS||!jacobi||!computeResidual||!prolongate||!clearValues||!copyReduction||
 						!sumPass||!maxPass||!subtractMean||!storeRoot||!correctFaces||!copySeam||
-						!postResidual ) {
+						!postResidual||!validationMetrics ) {
 						error=MetalError("production fire projection pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];
 					if( !queue ) error="production fire projection command queue allocation failed";
@@ -429,6 +473,14 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			const char* value=std::getenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
 			return value&&std::strcmp(value,stage)==0;
 		}
+
+		enum ProjectionExecutionKind
+		{
+			ProjectionStandaloneTerminal,
+			ProjectionResidentTerminal,
+			ProjectionResidentStateOnly,
+			ProjectionResidentRestorationTerminal
+		};
 
 		std::size_t NextPowerOfTwo( std::size_t value )
 		{
@@ -474,7 +526,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 		}
 
 		MetalLevelParameters Parameters( const MetalLevel& level,
-			const FireProductionProjectionRequest& request )
+			const FireProductionProjectionRequest& request,bool restoration )
 		{
 			MetalLevelParameters p={};p.nx=static_cast<std::uint32_t>(level.nx);
 			p.ny=static_cast<std::uint32_t>(level.ny);p.nz=static_cast<std::uint32_t>(level.nz);
@@ -482,6 +534,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				FireProductionProjectionPressureOpen)==request.boundary.end()?1u:0u;
 			p.sx=level.spacing[0];p.sy=level.spacing[1];p.sz=level.spacing[2];
 			p.ambientDensity=request.ambientDensityKGPerM3;p.timeStepS=request.timeStepS;
+			p.restoration=restoration?1u:0u;
 			std::uint32_t offset=0u;
 			for( unsigned int side=0;side<6u;++side ) {
 				p.boundary[side]=static_cast<std::uint32_t>(request.boundary[side]);p.sideOffset[side]=offset;
@@ -604,9 +657,12 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 
 	bool ProjectFireProductionMetalImpl( const FireProductionProjectionRequest& request,
 		const FireProductionMetalProjectionResidentInput* residentInput,
+		ProjectionExecutionKind execution,
+		FireProductionMetalProjectionResidentState* residentState,
 		FireProductionProjectionResult& result, std::string* error )
 	{
 		result=FireProductionProjectionResult();
+		if( residentState ) *residentState=FireProductionMetalProjectionResidentState();
 		try {
 			std::uint32_t observedUploadStaging=0u,observedTerminalStaging=0u;
 			const std::uint64_t beginningCommandCommits=projectionCommandCommitCount;
@@ -638,18 +694,37 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					return false;
 				}
 				std::size_t expectedOffset=0u;
+				const bool packedMomentum=
+					residentInput->provisionalMomentumKGPerM2S[1]==packed&&
+					residentInput->provisionalMomentumKGPerM2S[2]==packed;
+				const bool separateMomentum=
+					residentInput->provisionalMomentumKGPerM2S[1]!=packed&&
+					residentInput->provisionalMomentumKGPerM2S[2]!=packed&&
+					residentInput->provisionalMomentumKGPerM2S[1]!=
+						residentInput->provisionalMomentumKGPerM2S[2];
+				if( !packedMomentum&&!separateMomentum ) {
+					if( error ) *error="production fire projection resident momentum ownership is invalid";
+					return false;
+				}
 				for( unsigned int axis=0u;axis<3u;++axis ) {
 					const std::size_t bytes=FireProductionProjectionFaceCount(request.shape,axis)*sizeof(float);
-					if( residentInput->provisionalMomentumKGPerM2S[axis]!=packed||
-						residentInput->provisionalMomentumByteOffset[axis]!=expectedOffset||
-						expectedOffset>[packed length]||bytes>[packed length]-expectedOffset ) {
+					id<MTLBuffer> axisBuffer=residentInput->provisionalMomentumKGPerM2S[axis];
+					const std::size_t requiredOffset=packedMomentum?expectedOffset:0u;
+					if( !axisBuffer||[axisBuffer storageMode]!=MTLStorageModePrivate||
+						residentInput->provisionalMomentumByteOffset[axis]!=requiredOffset||
+						requiredOffset>[axisBuffer length]||bytes>[axisBuffer length]-requiredOffset ) {
 						if( error ) *error="production fire projection resident momentum packing is invalid";
 						return false;
 					}
 					expectedOffset+=bytes;
 				}
-				if( [packed length]<expectedOffset||packed==residentInput->gasDensityKGPerM3||
-					packed==residentInput->divergenceTargetPerS||
+				bool aliasesCellBuffer=false;
+				for( unsigned int axis=0u;axis<3u;++axis ) aliasesCellBuffer=
+					aliasesCellBuffer||residentInput->provisionalMomentumKGPerM2S[axis]==
+						residentInput->gasDensityKGPerM3||
+					residentInput->provisionalMomentumKGPerM2S[axis]==
+						residentInput->divergenceTargetPerS;
+				if( (packedMomentum&&[packed length]<expectedOffset)||aliasesCellBuffer||
 					residentInput->gasDensityKGPerM3==residentInput->divergenceTargetPerS ) {
 					if( error ) *error="production fire projection resident buffer ownership is invalid";
 					return false;
@@ -659,6 +734,11 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
 			@autoreleasepool {
 				const bool resident=residentInput!=0;
+				const bool terminal=execution!=ProjectionResidentStateOnly;
+				const bool restoration=execution==ProjectionResidentRestorationTerminal;
+				if( resident!=(execution!=ProjectionStandaloneTerminal)||
+					(execution==ProjectionResidentStateOnly&&!residentState)||
+					(execution!=ProjectionResidentStateOnly&&residentState) ) return false;
 				const FireProductionProjectionShape& shape=request.shape;
 				const std::size_t cells=shape.CellCount(),finePadded=NextPowerOfTwo(cells);
 				std::vector<MetalLevel> hierarchy;MetalLevel fine={};fine.nx=shape.nx;fine.ny=shape.ny;fine.nz=shape.nz;
@@ -687,7 +767,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					FireProductionProjectionShape local;local.nx=level.nx;local.ny=level.ny;local.nz=level.nz;
 					for( unsigned int axis=0;axis<3u;++axis ) level.beta[axis]=NewBuffer(context.device,
 						FireProductionProjectionFaceCount(local,axis)*sizeof(float));
-					const MetalLevelParameters parameters=Parameters(level,request);
+					const MetalLevelParameters parameters=Parameters(level,request,restoration);
 					level.parameters=NewBufferWithBytes(context.device,&parameters,sizeof(parameters));
 				}
 				std::array<id<MTLBuffer>,3> provisional,provisionalUpload,stored,momentum,velocity;
@@ -771,8 +851,10 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					for( id<MTLBuffer> buffer:faceResident ) if( !addAllocation(buffer,residentBytes) ) return false;
 				}
 				if( resident ) {
-					// All three axis views are byte ranges of one packed force-owned buffer.
 					if( !addAllocation(provisional[0],residentBytes) ) return false;
+					for( unsigned int axis=1u;axis<3u;++axis ) if(
+						provisional[axis]!=provisional[0]&&
+						!addAllocation(provisional[axis],residentBytes) ) return false;
 				} else for( id<MTLBuffer> buffer:provisional )
 					if( !addAllocation(buffer,residentBytes) ) return false;
 				if( !resident ) {
@@ -783,8 +865,9 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				}
 				std::uint64_t faceValues=0u;for( unsigned int axis=0u;axis<3u;++axis )
 					faceValues+=FireProductionProjectionFaceCount(shape,axis);
-				const std::uint64_t hostBytes=(3u*static_cast<std::uint64_t>(cells)+4u*faceValues)*
-					sizeof(float)+2u*static_cast<std::uint64_t>(boundaryCount);
+				const std::uint64_t hostBytes=terminal?
+					(3u*static_cast<std::uint64_t>(cells)+4u*faceValues)*sizeof(float)+
+						2u*static_cast<std::uint64_t>(boundaryCount):0u;
 				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
 					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes )
 					return false;
@@ -889,7 +972,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				std::uint32_t executedCycles=0u;std::uint64_t executedSweeps=0u;
 				unsigned int cycleCount=12u;
 				for( FireProductionProjectionBoundary boundary:request.boundary )
-					if( boundary==FireProductionProjectionPressureOpen ) cycleCount=16u;
+					if( boundary==FireProductionProjectionPressureOpen )
+						cycleCount=execution==ProjectionResidentStateOnly?17u:16u;
 				for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
 					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,
 						executedSweeps,error) ) return false;
@@ -917,8 +1001,28 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				if( !Begin(command,encoder,error,"post residual") ) return false;
 				for( unsigned int axis=0;axis<3u;++axis ) [encoder setBuffer:velocity[axis] offset:0 atIndex:axis];
 				[encoder setBuffer:target offset:0 atIndex:3];[encoder setBuffer:fineLevel.residual offset:0 atIndex:4];
-				[encoder setBuffer:fineLevel.parameters offset:0 atIndex:5];Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
+				[encoder setBuffer:fineLevel.parameters offset:0 atIndex:5];
+				for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:provisional[axis]
+					offset:provisionalOffset[axis] atIndex:6u+axis];
+				for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:stored[axis]
+					offset:0 atIndex:9u+axis];
+				Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,1u,true,error) ) return false;
+				if( !Begin(command,encoder,error,"validation metrics") ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:provisional[axis]
+					offset:provisionalOffset[axis] atIndex:axis];
+				for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:stored[axis]
+					offset:0 atIndex:3u+axis];
+				for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:velocity[axis]
+					offset:0 atIndex:6u+axis];
+				[encoder setBuffer:inflow offset:0 atIndex:9];
+				[encoder setBuffer:fineLevel.residual offset:0 atIndex:10];
+				[encoder setBuffer:fineLevel.temporary offset:0 atIndex:11];
+				[encoder setBuffer:fineLevel.parameters offset:0 atIndex:12];
+				Dispatch(encoder,context.validationMetrics,cells);[encoder endEncoding];
+				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,
+					2u,true,error)||!EncodeReduction(context,command,fineLevel.temporary,cells,scratch,
+					diagnostics,3u,true,error) ) return false;
 				id<MTLBuffer> injectedInterstageStage=nil;
 				if( InjectedFailure("interstage_transfer") ) {
 					injectedInterstageStage=NewSharedBuffer(context.device,cells*sizeof(float));
@@ -951,6 +1055,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				if( [command status]!=MTLCommandBufferStatusCompleted||InjectedFailure("command") ) {
 					if( error ) *error=MetalError("production fire projection command failed",[command error]);return false;}
 				if( InjectedFailure("second_projection") ) ObserveProjectionInvocation();
+				std::uint64_t stagingBytes=0u;
+				if( terminal ) {
 				id<MTLBuffer> pressureStage=InjectedFailure("staging_buffer")?
 					nil:NewSharedBuffer(context.device,cells*sizeof(float));
 				std::array<id<MTLBuffer>,3> storedStage,momentumStage,velocityStage,provisionalStage;
@@ -977,7 +1083,6 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					if( error ) *error="production fire projection staging storage topology changed";
 					return false;
 				}
-				std::uint64_t stagingBytes=0u;
 				if( !addAllocation(pressureStage,stagingBytes) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !addAllocation(storedStage[axis],stagingBytes)||
@@ -1039,50 +1144,18 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 						inflow,ProjectionTerminalAccess))+parameter.sideOffset[side];
 					result.pressureOpenInflow[side].assign(values,values+count);
 				}
-				const float* d=static_cast<const float*>(ProjectionBufferContents(
-					diagnostics,ProjectionTerminalAccess));
-				result.maximumPreProjectionResidualPerS=d[0];result.maximumPostProjectionResidualPerS=d[1];
-				result.removedFineRightHandSideMean=fp->nullspace!=0u?d[11]:0.0f;
-				std::array<const float*,3> residentProvisional={};
-				if( resident ) for( unsigned int axis=0u;axis<3u;++axis )
-					residentProvisional[axis]=static_cast<const float*>(ProjectionBufferContents(
-						provisionalStage[axis],ProjectionTerminalAccess));
-				float maximumVelocity=0.0f;
-				for( unsigned int axis=0;axis<3u;++axis )
-					for( std::size_t face=0;face<result.velocityMPerS[axis].size();++face ) {
-						const std::size_t coordinate=axis==0u?face%(shape.nx+1u):
-							(axis==1u?(face/shape.nx)%(shape.ny+1u):face/(shape.nx*shape.ny));
-						const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
-						const bool wall=(coordinate==0u||coordinate==extent)&&
-							request.boundary[2u*axis+(coordinate?1u:0u)]==
-								FireProductionProjectionWall;
-						const float provisionalMomentum=resident?residentProvisional[axis][face]:
-							request.provisionalMomentumKGPerM2S[axis][face];
-						if( !wall ) maximumVelocity=std::max(maximumVelocity,std::fabs(
-							provisionalMomentum/
-							result.faceDensityKGPerM3[axis][face]));
-						maximumVelocity=std::max(maximumVelocity,
-							std::fabs(result.velocityMPerS[axis][face]));
-					}
-				result.maximumOpenComplementarityDiscrepancyMPerS=0.0f;
-				for( unsigned int side=0;side<6u;++side ) if( request.boundary[side]==FireProductionProjectionPressureOpen ) {
-					const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
-					const std::size_t firstCount=axis==0u?shape.ny:shape.nx;
-					const std::size_t secondCount=axis==2u?shape.ny:shape.nz;
-					for( std::size_t second=0;second<secondCount;++second ) for( std::size_t first=0;first<firstCount;++first ) {
-						std::size_t x=0u,y=0u,z=0u;if( axis==0u ){x=positive?shape.nx:0u;y=first;z=second;}
-						if( axis==1u ){x=first;y=positive?shape.ny:0u;z=second;}
-						if( axis==2u ){x=first;y=second;z=positive?shape.nz:0u;}
-						const std::size_t face=axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
-							(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:(z*shape.ny+y)*shape.nx+x);
-						const float outward=(positive?1.0f:-1.0f)*result.velocityMPerS[axis][face];
-						const std::size_t index=second*firstCount+first;
-						const bool inside=result.pressureOpenInflow[side][index]!=0u;
-						result.maximumOpenComplementarityDiscrepancyMPerS=std::max(
-							result.maximumOpenComplementarityDiscrepancyMPerS,
-							inside?std::max(0.0f,outward):std::max(0.0f,-outward));
+				} else {
+					for( unsigned int axis=0u;axis<3u;++axis ) {
+						residentState->momentumKGPerM2S[axis]=momentum[axis];
+						residentState->momentumByteOffset[axis]=0u;
 					}
 				}
+				const float* d=static_cast<const float*>(ProjectionBufferContents(
+					diagnostics,ProjectionDiagnosticAccess));
+				result.maximumPreProjectionResidualPerS=d[0];result.maximumPostProjectionResidualPerS=d[1];
+				result.removedFineRightHandSideMean=fp->nullspace!=0u?d[11]:0.0f;
+				const float maximumVelocity=d[2];
+				result.maximumOpenComplementarityDiscrepancyMPerS=d[3];
 				result.executedVCycleCount=executedCycles;
 				result.executedJacobiSweepCount=executedSweeps;
 				result.residentUploadStagingCount=observedUploadStaging;
@@ -1109,9 +1182,17 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				}
 				std::uint64_t borrowedBytes=0u;
 				if( resident ) {
-					const id<MTLBuffer> borrowed[]={fine.density,target,provisional[0]};
-					for( id<MTLBuffer> buffer:borrowed ) {
+					const id<MTLBuffer> borrowedBase[]={fine.density,target,provisional[0]};
+					for( id<MTLBuffer> buffer:borrowedBase ) {
 						const std::uint64_t bytes=[buffer allocatedSize];
+						if( borrowedBytes>std::numeric_limits<std::uint64_t>::max()-bytes ) {
+							result=FireProductionProjectionResult();return false;
+						}
+						borrowedBytes+=bytes;
+					}
+					for( unsigned int axis=1u;axis<3u;++axis ) if(
+						provisional[axis]!=provisional[0] ) {
+						const std::uint64_t bytes=[provisional[axis] allocatedSize];
 						if( borrowedBytes>std::numeric_limits<std::uint64_t>::max()-bytes ) {
 							result=FireProductionProjectionResult();return false;
 						}
@@ -1122,21 +1203,35 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					beginningAllocationCount;
 				const std::uint64_t trackedBytes=projectionBufferAllocationBytes-
 					beginningAllocationBytes;
-				const std::uint64_t expectedCount=10u*hierarchy.size()+(resident?25u:32u);
+				const std::uint64_t expectedCount=10u*hierarchy.size()+
+					(resident?(terminal?25u:12u):32u);
 				if( residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
 					residentBytes+uploadBytes>std::numeric_limits<std::uint64_t>::max()-stagingBytes||
 					trackedBytes>std::numeric_limits<std::uint64_t>::max()-borrowedBytes||
 					trackedCount!=expectedCount||
 					trackedBytes+borrowedBytes!=residentBytes+uploadBytes+stagingBytes ) {
 					result=FireProductionProjectionResult();
-					if( error ) *error="production fire projection allocation topology changed";
+					if( error ) *error="production fire projection allocation topology changed: count="+
+						std::to_string(trackedCount)+" expected="+std::to_string(expectedCount)+
+						" tracked="+std::to_string(trackedBytes)+" borrowed="+
+						std::to_string(borrowedBytes)+" resident="+std::to_string(residentBytes)+
+						" upload="+std::to_string(uploadBytes)+" staging="+
+						std::to_string(stagingBytes);
 					return false;
 				}
 				result.residentCertifiedWorkingSetBytes=certifiedWorkingSetBytes;
 				result.residentActualMetalAllocationBytes=observedActualMetalBytes;
 				const float length=shape.cellWidthM*static_cast<float>(std::max(shape.nx,std::max(shape.ny,shape.nz)));
-				if( !FireProductionProjectionResidualWithinBand(result.maximumPostProjectionResidualPerS,
-					maximumVelocity,length,result.validationPassed) ) {
+				float maximumRestorationTarget=0.0f;
+				if( restoration ) for( const float value:request.divergenceTargetPerS )
+					maximumRestorationTarget=std::max(maximumRestorationTarget,std::fabs(value));
+				const bool validBand=restoration?
+					FireProductionRestorationProjectionResidualWithinBand(
+						result.maximumPostProjectionResidualPerS,maximumRestorationTarget,
+						result.validationPassed):FireProductionProjectionResidualWithinBand(
+						result.maximumPostProjectionResidualPerS,maximumVelocity,length,
+						result.validationPassed);
+				if( !validBand ) {
 					result=FireProductionProjectionResult();if( error ) *error="production fire projection validation band overflowed";return false;}
 				result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
 				if( InjectedFailure("output")&&!result.pressurePa.empty() )
@@ -1162,13 +1257,41 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 	bool ProjectFireProductionMetal( const FireProductionProjectionRequest& request,
 		FireProductionProjectionResult& result, std::string* error )
 	{
-		return ProjectFireProductionMetalImpl(request,0,result,error);
+		return ProjectFireProductionMetalImpl(request,0,ProjectionStandaloneTerminal,0,
+			result,error);
 	}
 
 	bool ProjectFireProductionMetalResident( const FireProductionProjectionRequest& request,
 		const FireProductionMetalProjectionResidentInput& input,
 		FireProductionProjectionResult& result,std::string* error )
 	{
-		return ProjectFireProductionMetalImpl(request,&input,result,error);
+		return ProjectFireProductionMetalImpl(request,&input,ProjectionResidentTerminal,0,
+			result,error);
+	}
+
+	bool ProjectFireProductionMetalResidentState(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		FireProductionMetalProjectionResidentState& state,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		return ProjectFireProductionMetalImpl(request,&input,ProjectionResidentStateOnly,
+			&state,result,error);
+	}
+
+	bool ProjectFireProductionMetalRestorationResident(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		id<MTLBuffer> expectedRestorationTargetPerS,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		if( !expectedRestorationTargetPerS||
+			input.divergenceTargetPerS!=expectedRestorationTargetPerS ) {
+			result=FireProductionProjectionResult();
+			if( error ) *error="production restoration projection target ownership is invalid";
+			return false;
+		}
+		return ProjectFireProductionMetalImpl(request,&input,
+			ProjectionResidentRestorationTerminal,0,result,error);
 	}
 }

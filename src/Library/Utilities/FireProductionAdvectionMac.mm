@@ -2041,8 +2041,20 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.cellTransport.conservativeValues.size()!=9u*cells||
 				request.cellSourceIncrement.size()!=9u*cells||
 				request.divergenceTargetPerS.size()!=cells||
+				request.restorationDivergenceTargetPerS.size()!=cells||
 				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError)||
 				!ValidateFireProductionDualMomentumRequest(request.dualTransport,structuredError) ) return false;
+			for( const float value:request.divergenceTargetPerS ) if( !std::isfinite(value) ) {
+				if( structuredError ) *structuredError=
+					"production resident step physical divergence target is nonfinite";
+				return false;
+			}
+			for( const float value:request.restorationDivergenceTargetPerS ) if(
+				!std::isfinite(value) ) {
+				if( structuredError ) *structuredError=
+					"production resident step restoration divergence target is nonfinite";
+				return false;
+			}
 			for( std::size_t cell=0u;cell<cells;++cell ) {
 				float gas=request.cellTransport.conservativeValues[cells+cell];
 				for( std::size_t component=2u;component<=6u;++component )
@@ -2111,8 +2123,12 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				id<MTLBuffer> faceSourcePrivate=privateBuffer(packedFaceBytes);
 				id<MTLBuffer> targetStage=stage(request.divergenceTargetPerS.data(),cells*sizeof(float));
 				id<MTLBuffer> targetPrivate=privateBuffer(cells*sizeof(float));
+				id<MTLBuffer> restorationTargetStage=stage(
+					request.restorationDivergenceTargetPerS.data(),cells*sizeof(float));
+				id<MTLBuffer> restorationTargetPrivate=privateBuffer(cells*sizeof(float));
 				if( !cellStage||!cellPrivate||!ambientStage||!ambientPrivate||!cellSourceStage||
-					!cellSourcePrivate||!faceSourceStage||!faceSourcePrivate||!targetStage||!targetPrivate )
+					!cellSourcePrivate||!faceSourceStage||!faceSourcePrivate||!targetStage||!targetPrivate||
+					!restorationTargetStage||!restorationTargetPrivate )
 					return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
@@ -2126,7 +2142,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				if( !recordOwner(cellStage)||!recordOwner(cellPrivate)||!recordOwner(ambientStage)||
 					!recordOwner(ambientPrivate)||!recordOwner(cellSourceStage)||
 					!recordOwner(cellSourcePrivate)||!recordOwner(faceSourceStage)||
-					!recordOwner(faceSourcePrivate)||!recordOwner(targetStage)||!recordOwner(targetPrivate) )
+					!recordOwner(faceSourcePrivate)||!recordOwner(targetStage)||!recordOwner(targetPrivate)||
+					!recordOwner(restorationTargetStage)||!recordOwner(restorationTargetPrivate) )
 					return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) if(
 					!recordOwner(velocityStage[axis])||!recordOwner(velocityPrivate[axis]) ) return false;
@@ -2140,6 +2157,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				[blit copyFromBuffer:cellSourceStage sourceOffset:0 toBuffer:cellSourcePrivate destinationOffset:0 size:cellValueBytes];
 				[blit copyFromBuffer:faceSourceStage sourceOffset:0 toBuffer:faceSourcePrivate destinationOffset:0 size:packedFaceBytes];
 				[blit copyFromBuffer:targetStage sourceOffset:0 toBuffer:targetPrivate destinationOffset:0 size:cells*sizeof(float)];
+				[blit copyFromBuffer:restorationTargetStage sourceOffset:0 toBuffer:
+					restorationTargetPrivate destinationOffset:0 size:cells*sizeof(float)];
 				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
 				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
 				FireProductionMetalFrozenForceResidentState force;
@@ -2202,9 +2221,31 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				projectionInput.provisionalMomentumKGPerM2S.fill(dual.packedMomentum);
 				projectionInput.provisionalMomentumByteOffset=dual.faceByteOffset;
 				projectionInput.divergenceTargetPerS=targetPrivate;
-				FireProductionProjectionResult projection;
-				if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,projection,
-					structuredError) ) return false;
+				const char* restorationTest=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
+				const bool restorationRemoved=restorationTest&&
+					std::strcmp(restorationTest,"removed")==0;
+				const bool restorationFullTarget=restorationTest&&
+					std::strcmp(restorationTest,"full-target")==0;
+				FireProductionProjectionResult physicalProjection,projection;
+				if( restorationRemoved ) {
+					if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,
+						projection,structuredError) ) return false;
+				} else {
+					FireProductionMetalProjectionResidentState physicalState;
+					if( !ProjectFireProductionMetalResidentState(projectionRequest,projectionInput,
+						physicalState,physicalProjection,structuredError) ) return false;
+					FireProductionProjectionRequest restorationRequest=projectionRequest;
+					restorationRequest.divergenceTargetPerS=
+						request.restorationDivergenceTargetPerS;
+					FireProductionMetalProjectionResidentInput restorationInput;
+					restorationInput.gasDensityKGPerM3=projectedDensity;
+					restorationInput.provisionalMomentumKGPerM2S=physicalState.momentumKGPerM2S;
+					restorationInput.provisionalMomentumByteOffset=physicalState.momentumByteOffset;
+					restorationInput.divergenceTargetPerS=restorationFullTarget?
+						targetPrivate:restorationTargetPrivate;
+					if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
+						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
+				}
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:
 					(cellValueBytes+2u*packedFaceBytes) options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> terminalCommand=TrackedMetalCommandBuffer(context.queue);
@@ -2245,30 +2286,40 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					computed.transportedDual.momentum[axis].assign(values+9u*cells+allFaces+beginning,
 						values+9u*cells+allFaces+beginning+faceCounts[axis]);
 				}
+				computed.physicalProjection=std::move(physicalProjection);
 				computed.projection=std::move(projection);computed.forceSchedule=force.schedule;
 				computed.forceDiagnostics=force.diagnostics;computed.cellSubmapCount=cell.executedSubmapCount;
 				computed.dualSubmapCount=dual.executedSubmapCount;computed.sourceCommandCommitCount=
 					static_cast<std::uint32_t>(sourceCommits);
 				computed.residentProjectionInvocationCount=
-					computed.projection.residentProjectionInvocationCount;
+					restorationRemoved?computed.projection.residentProjectionInvocationCount:
+					computed.physicalProjection.residentProjectionInvocationCount+
+						computed.projection.residentProjectionInvocationCount;
 				computed.interstageFullGridTransferCount=
 					force.diagnostics.substepLoopDeviceToHostTransferCount+
 					cell.interstageFullGridTransferCount+dual.interstageFullGridTransferCount+
-					computed.projection.residentInterstageDeviceToHostTransferCount;
+					(restorationRemoved?computed.projection.residentInterstageDeviceToHostTransferCount:
+						computed.physicalProjection.residentInterstageDeviceToHostTransferCount+
+							computed.projection.residentInterstageDeviceToHostTransferCount);
 				computed.terminalStagingCount=
-					computed.projection.residentTerminalStagingCount+1u;
+					(restorationRemoved?computed.projection.residentTerminalStagingCount:
+						computed.physicalProjection.residentTerminalStagingCount+
+							computed.projection.residentTerminalStagingCount)+1u;
 				computed.combinedCertifiedWorkingSetBytes=certified;
 				computed.combinedActualMetalAllocationBytes=ownerActualMetalBytes+
 					force.diagnostics.actualMetalAllocationBytes+
 					cell.actualMetalAllocationBytes+dual.actualMetalAllocationBytes+
-					computed.projection.residentActualMetalAllocationBytes;
+					(restorationRemoved?computed.projection.residentActualMetalAllocationBytes:
+						computed.physicalProjection.residentActualMetalAllocationBytes+
+							computed.projection.residentActualMetalAllocationBytes);
 				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+cell.deviceElapsedMS+
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
-					computed.projection.deviceElapsedMS;
+					(restorationRemoved?computed.projection.deviceElapsedMS:
+						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS);
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=1u||
-					computed.residentProjectionInvocationCount!=1u||
+					computed.residentProjectionInvocationCount!=(restorationRemoved?1u:2u)||
 					computed.interstageFullGridTransferCount!=0u||
 					computed.combinedActualMetalAllocationBytes>certified||
 					!std::isfinite(computed.deviceElapsedMS) ) return false;

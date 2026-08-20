@@ -267,12 +267,14 @@ namespace RISE
 		std::vector<float> cellSourceIncrement;
 		std::array<std::vector<float>,3> momentumSourceIncrement;
 		std::vector<float> divergenceTargetPerS;
+		std::vector<float> restorationDivergenceTargetPerS;
 	};
 
 	struct FireProductionResidentStepResult
 	{
 		std::vector<float> conservativeValues;
 		FireProductionDualMomentumResult transportedDual;
+		FireProductionProjectionResult physicalProjection;
 		FireProductionProjectionResult projection;
 		FireProductionViscousSchedule forceSchedule;
 		FireProductionResidentForceDiagnostics forceDiagnostics;
@@ -296,8 +298,9 @@ namespace RISE
 	};
 
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,
-	//! explicit source operands, and exactly one P2 projection. Full-grid host
-	//! access is limited to the terminal step-boundary oracle tap.
+	//! explicit source operands, one physical P2 projection, and one deadbeat
+	//! manifold-restoration projection. Full-grid host access is limited to the
+	//! terminal step-boundary oracle tap after restoration.
 	bool AdvanceFireProductionResidentStepMetal(
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,

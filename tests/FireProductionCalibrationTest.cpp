@@ -177,6 +177,7 @@ int main()
 	}
 	step.cellSourceIncrement.assign(9u*64u,0.0f);
 	step.divergenceTargetPerS.assign(64u,0.0f);
+	step.restorationDivergenceTargetPerS.assign(64u,0.0f);
 	FireProductionCalibration::ResidentStep64Result step64;
 	Check(FireProductionCalibration::AdvanceResidentStep64(step,0.0,step64,&error)&&
 		step64.force.schedule.substepCount==1u&&step64.cell.executedSubmapCount==5u&&

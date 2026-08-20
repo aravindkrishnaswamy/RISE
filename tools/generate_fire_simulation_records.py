@@ -1062,6 +1062,7 @@ def accepted_state_binary32_feasibility_extension() -> dict:
         "remap_factor_epsilon32": 256.0,
         "composed_force_factor_epsilon32": 64.0,
         "projection_factor_epsilon32": 256.0,
+        "restoration_projection_factor_epsilon32": 256.0,
     }
     return {
         "certificate_version": "accepted_state_binary32_extension_v1",
@@ -1071,11 +1072,12 @@ def accepted_state_binary32_feasibility_extension() -> dict:
             "remap": "3e-5/epsilon32<252<256",
             "composed_force": "r96_ordinary_ulp<=64;subsumes_r93_kernel_ulp<=8",
             "projection": "3e-5/epsilon32<252<256",
+            "restoration_projection": "3e-5/epsilon32<252<256",
             "source": "pre_thermo_resident_source_increment_is_positive_zero",
         },
         "derived_union_factor_epsilon32": sum(terms.values()),
         "kappa_epsilon32": 1024.0,
-        "kappa_derivation": "next_power_of_two(576)=1024",
+        "kappa_derivation": "next_power_of_two(832)=1024",
     }
 
 
@@ -1084,7 +1086,7 @@ def validate_accepted_state_binary32_feasibility_extension(certificate: dict) ->
         raise ValueError("binary32 accepted-state extension is not the canonical derivation")
     union = certificate["derived_union_factor_epsilon32"]
     kappa = certificate["kappa_epsilon32"]
-    if union != 576.0 or not (union <= kappa < 2.0 * union):
+    if union != 832.0 or not (union <= kappa < 2.0 * union):
         raise ValueError("binary32 accepted-state extension derivation changed")
 
 

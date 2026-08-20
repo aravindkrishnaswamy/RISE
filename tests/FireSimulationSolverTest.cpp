@@ -451,7 +451,7 @@ int main()
 		r60Envelope.remapFactorEpsilon32==256.0&&
 		r60Envelope.composedForceFactorEpsilon32==64.0&&
 		r60Envelope.projectionFactorEpsilon32==256.0&&
-		r60Envelope.derivedUnionFactorEpsilon32==576.0&&
+		r60Envelope.derivedUnionFactorEpsilon32==832.0&&
 		r60Envelope.kappaEpsilon32==1024.0,
 		"precision-class accepted-state envelope retains r60 and derives the fp32 producer union");
 	std::array<double,MethaneSpeciesCount> r60LowerEnthalpy,r60UpperEnthalpy;

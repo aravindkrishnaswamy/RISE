@@ -269,12 +269,14 @@ namespace RISEFireProductionFP64
 		std::vector<double> cellSourceIncrement;
 		std::array<std::vector<double>,3> momentumSourceIncrement;
 		std::vector<double> divergenceTargetPerS;
+		std::vector<double> restorationDivergenceTargetPerS;
 	};
 
 	struct FireProductionResidentStepResult
 	{
 		std::vector<double> conservativeValues;
 		FireProductionDualMomentumResult transportedDual;
+		FireProductionProjectionResult physicalProjection;
 		FireProductionProjectionResult projection;
 		FireProductionViscousSchedule forceSchedule;
 		FireProductionResidentForceDiagnostics forceDiagnostics;
@@ -298,8 +300,9 @@ namespace RISEFireProductionFP64
 	};
 
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,
-	//! explicit source operands, and exactly one P2 projection. Full-grid host
-	//! access is limited to the terminal step-boundary oracle tap.
+	//! explicit source operands, one physical P2 projection, and one deadbeat
+	//! manifold-restoration projection. Full-grid host access is limited to the
+	//! terminal step-boundary oracle tap after restoration.
 	bool AdvanceFireProductionResidentStepMetal(
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,

@@ -274,12 +274,18 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
     def test_precision_class_extension_is_derived_and_keeps_one_gate(self) -> None:
         extension = records.accepted_state_binary32_feasibility_extension()
         records.validate_accepted_state_binary32_feasibility_extension(extension)
-        self.assertEqual(576.0, extension["derived_union_factor_epsilon32"])
+        self.assertEqual(832.0, extension["derived_union_factor_epsilon32"])
         self.assertEqual(1024.0, extension["kappa_epsilon32"])
         mutated = copy.deepcopy(extension)
         mutated["producer_bounds"]["projection_factor_epsilon32"] = 255.0
         with self.assertRaisesRegex(ValueError, "canonical derivation"):
             records.validate_accepted_state_binary32_feasibility_extension(mutated)
+        restoration_mutated = copy.deepcopy(extension)
+        restoration_mutated["producer_bounds"][
+            "restoration_projection_factor_epsilon32"] = 255.0
+        with self.assertRaisesRegex(ValueError, "canonical derivation"):
+            records.validate_accepted_state_binary32_feasibility_extension(
+                restoration_mutated)
         core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
         self.assertEqual(2, core.count("inline double AcceptedStateRoundoffFactor("))
         self.assertIn("FireStateProducerPrecision::Binary64", core)

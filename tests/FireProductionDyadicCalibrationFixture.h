@@ -21,6 +21,30 @@ namespace FireProductionDyadicCalibration
 		{{5.7907549732782678e-09,4.2319238834949294e-09,8.0499273845640977e-11}},
 		{{3.0335881874780171,2.1990585236198967,0.062040384087595157}}
 	}};
+	static const std::array<std::array<double,3>,9> ExpectedProductionScalarEvidence={{
+		{{2.7851990348363993e-05,1.9427319999681218e-05,6.5356608245750555e-07}},
+		{{2.2281636234865962e-05,1.5542015862467438e-05,5.228759329782421e-07}},
+		{{4.1658167971001657e-05,2.9348761419887533e-05,1.4178467521848632e-06}},
+		{{8.8669996502703475e-05,6.3935281112802704e-05,4.4452705530853003e-06}},
+		{{1.482601163529923e-05,1.0341457039123518e-05,3.47986839112617e-07}},
+		{{1.2510883380785839e-05,8.7266649065345203e-06,2.9354274317721736e-07}},
+		{{1.9451898679532878e-07,1.3568110002410778e-07,4.5662575133497111e-09}},
+		{{4.0870837816313034e-08,2.8508293612840997e-08,9.593138934565624e-10}},
+		{{27.362509614068905,19.19314077269485,0.60267226196132961}}
+	}};
+	static const std::array<double,3> ExpectedProductionVelocityEvidence={{
+		0.0050309330830369779,0.0041988863756097731,0.00054172469945656628}};
+	static const std::array<std::array<double,3>,9> ExpectedProductionInventoryEvidence={{
+		{{4.3003371683891789e-06,3.4039960469869901e-06,2.5074860157681123e-07}},
+		{{3.4402878760983469e-06,2.723177742691707e-06,2.0060483436890042e-07}},
+		{{7.4924031893408571e-06,5.9068428257535999e-06,4.1817756896156411e-07}},
+		{{1.3490075245425892e-05,1.0597573831816476e-05,7.2302922771161349e-07}},
+		{{2.2891683426375098e-06,1.8119336222498228e-06,1.3341737607405757e-07}},
+		{{1.931659566859617e-06,1.5290131586097322e-06,1.1261318754243743e-07}},
+		{{3.0033833960845316e-08,2.3773419468968177e-08,1.7509790883386313e-09}},
+		{{6.3102930501716795e-09,4.9951138534088941e-09,3.6801403444823924e-10}},
+		{{3.2317766520209261,2.5743976169178495,0.20385408542642836}}
+	}};
 
 	bool BuildCase(const double tier,FireCase::RecordV1& record,std::string& error)
 	{
@@ -762,8 +786,15 @@ namespace FireProductionDyadicCalibration
 		}
 		request.cellSourceIncrement.assign(9u*cells,0.0f);
 		request.divergenceTargetPerS.resize(cells);
-		for(std::size_t cell=0u;cell<cells;++cell)
+		request.restorationDivergenceTargetPerS.resize(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){
 			request.divergenceTargetPerS[cell]=static_cast<float>(divergenceTarget[cell]);
+			double volumeRatio=0.0;
+			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(state.states[cell]),fuel,
+				state.states[cell].producerPrecision,volumeRatio,&error))return false;
+			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
+				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
+		}
 		return RISE::ValidateFireProductionFrozenForceRequest(request.force,&error)&&
 			RISE::ValidateFireProductionCellPalindromeRequest(request.cellTransport,&error)&&
 			RISE::ValidateFireProductionDualMomentumRequest(request.dualTransport,&error);
@@ -930,18 +961,127 @@ namespace FireProductionDyadicCalibration
 		return 16u*(32u+6u*(levels-1u));
 	}
 
+	double Percentile95(std::vector<double> values)
+	{
+		std::sort(values.begin(),values.end());
+		return values[(95u*values.size()+99u)/100u-1u];
+	}
+
+	int CheckRestorationLong(const std::filesystem::path& directory,
+		const std::array<std::string,4>& targetDigests)
+	{
+		static const std::size_t StepCount=104u,WarmupCount=8u,PlateauCount=32u;
+		static const std::size_t FailingProbeCell=2256u;
+		MethaneRunCheckpoint state;std::string error;
+		if(!BuildAnalyticState(12u,state,error))return 217;
+		std::vector<std::vector<double> > sealed;const std::filesystem::path target=
+			directory/"oracle_tier12_sdiv_x8.f64";
+		if(DigestFile(target)!=targetDigests[3]||!ReadCalibrationDoublePayload(target,
+			state.states.size(),8u,sealed))return 218;
+		const double flowThrough=6.0*std::sqrt(
+			state.values.characteristicDiameterM/Gravity);
+		std::vector<double> probe(StepCount),fieldMaximum(StepCount),deviceTimes,wallTimes;
+		RISECBOR64::Bytes trace;
+		std::uint64_t maximumCertified=0u,maximumActual=0u;
+		for(std::size_t step=0u;step<StepCount;++step){
+			RISE::FireProductionResidentStepRequest request;
+			if(!BuildProductionRequest(state,sealed[step%sealed.size()],flowThrough/512.0,
+				request,error))return 219;
+			RISE::FireProductionResidentStepResult production;
+			const std::chrono::steady_clock::time_point beginning=
+				std::chrono::steady_clock::now();
+			if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){
+				std::fprintf(stderr,"r118 long step=%zu failed: %s\n",step,error.c_str());return 220;}
+			const double wall=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-beginning).count();
+			if(production.interstageFullGridTransferCount!=0u||
+				production.residentProjectionInvocationCount!=2u||
+				production.physicalProjection.executedVCycleCount!=17u||
+				production.physicalProjection.executedJacobiSweepCount!=
+					17u*ExpectedProjectionSweeps(request.force.shape)/16u||
+				production.projection.executedVCycleCount!=16u||
+				production.projection.executedJacobiSweepCount!=
+					ExpectedProjectionSweeps(request.force.shape)||
+				!production.physicalProjection.validationPassed||
+				!production.projection.validationPassed)return 221;
+			ProductionEOSDeviation deviation;
+			if(!MeasureProductionEOSDeviation(production,state.states.size(),FailingProbeCell,
+				deviation,error))return 222;
+			const ProductionAffineResidual affine=MeasureProductionAffineResidual(
+				production,state.states.size());
+			probe[step]=deviation.signedProbe;fieldMaximum[step]=deviation.signedAtMaximum;
+			maximumCertified=std::max(maximumCertified,
+				production.combinedCertifiedWorkingSetBytes);
+			maximumActual=std::max(maximumActual,production.combinedActualMetalAllocationBytes);
+			AppendInteger(trace,step);AppendDouble(trace,deviation.signedProbe);
+			AppendDouble(trace,deviation.signedAtMaximum);AppendInteger(trace,deviation.maximumCell);
+			auto appendFloat=[&](const float value){std::uint32_t bits=0u;
+				std::memcpy(&bits,&value,sizeof(bits));AppendInteger(trace,bits);};
+			appendFloat(production.physicalProjection.maximumPreProjectionResidualPerS);
+			appendFloat(production.physicalProjection.maximumPostProjectionResidualPerS);
+			appendFloat(production.projection.maximumPreProjectionResidualPerS);
+			appendFloat(production.projection.maximumPostProjectionResidualPerS);
+			AppendInteger(trace,production.physicalProjection.validationPassed?1u:0u);
+			AppendInteger(trace,production.projection.validationPassed?1u:0u);
+			AppendInteger(trace,production.interstageFullGridTransferCount);
+			AppendInteger(trace,production.residentProjectionInvocationCount);
+			AppendDouble(trace,affine.maximumScaled);AppendInteger(trace,affine.cell);
+			AppendInteger(trace,affine.row);
+			const std::string payload=ProductionConservativeDigest(production);
+			trace.insert(trace.end(),payload.begin(),payload.end());
+			if(step>=WarmupCount){deviceTimes.push_back(production.deviceElapsedMS);
+				wallTimes.push_back(wall);}
+			if(!ApplyProductionResult(production,state,error)){
+				std::fprintf(stderr,"r118 long consumer step=%zu failed: %s\n",step,error.c_str());
+				return 223;}
+		}
+		double plateau=0.0,fieldPlateau=0.0;
+		for(std::size_t step=StepCount-PlateauCount;step<StepCount;++step){
+			plateau=std::max(plateau,std::fabs(probe[step]));
+			fieldPlateau=std::max(fieldPlateau,std::fabs(fieldMaximum[step]));}
+		const double deviceP95=Percentile95(deviceTimes),wallP95=Percentile95(wallTimes);
+		const std::string traceDigest=RISECBOR64::SHA256Hex(trace);
+		std::fprintf(stderr,"r118 long steps=%zu plateau=%.17g field_plateau=%.17g "
+			"last_probe=%.17g last_field=%.17g device_p95_ms=%.17g wall_p95_ms=%.17g "
+			"certified=%llu actual=%llu trace=%s final=%s\n",StepCount,plateau,fieldPlateau,
+			probe.back(),fieldMaximum.back(),deviceP95,wallP95,
+			static_cast<unsigned long long>(maximumCertified),
+			static_cast<unsigned long long>(maximumActual),traceDigest.c_str(),
+			AnalyticStateDigest(state).c_str());
+		if(plateau!=0.00015435381821271577||
+			fieldPlateau!=0.0006524281258450948||
+			probe.back()!=0.00011215264457620222||
+			fieldMaximum.back()!=-0.0004060346667688064||
+			maximumCertified!=248479780u||maximumActual!=229518420u||
+			traceDigest!="2b7071e64f1203c749f2813c8b4a766f862ebcee9b4a78a77257f6addb72fc68"||
+			AnalyticStateDigest(state)!=
+				"b3e1710842b98f7f40580270b3fd857ed1bc1c1a81a567309c62b14981ddc76e"||
+			!(plateau<0.001)||!(fieldPlateau<0.001)||
+			!std::isfinite(deviceP95)||!std::isfinite(wallP95)||wallP95>200.0)return 224;
+		return 228;
+	}
+
 	int CheckProduction(const std::filesystem::path& directory,const char* expectedProtocol,
 		const char* expectedTargets)
 	{
 		const char* eosProbeEnvironment=std::getenv("RISE_FIRE_EOS_DRIFT_PROBE");
 		if(eosProbeEnvironment&&std::strcmp(eosProbeEnvironment,"1")!=0)return 216;
 		const bool eosProbe=eosProbeEnvironment&&std::strcmp(eosProbeEnvironment,"1")==0;
+		const char* restorationProbeEnvironment=std::getenv("RISE_FIRE_EOS_RESTORATION_PROBE");
+		if(restorationProbeEnvironment&&std::strcmp(restorationProbeEnvironment,"1")!=0)return 226;
+		const bool restorationProbe=restorationProbeEnvironment&&
+			std::strcmp(restorationProbeEnvironment,"1")==0;
+		if(eosProbe&&restorationProbe)return 227;
 		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
 			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
 			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 180;
 		std::array<std::string,4> targetDigests;if(!ReadTargetDigests(
 			directory/"dyadic_targets.v1",targetDigests))return 181;
+		if(restorationProbe)return CheckRestorationLong(directory,targetDigests);
+		if(eosProbe)setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed",1);
 		std::array<MethaneRunCheckpoint,4> states;std::array<FilteredField,4> filtered;
+		std::array<FilteredVelocityField,4> productionVelocity;
+		std::array<std::array<double,9>,4> productionInventory;
 		std::string error;
 		for(std::size_t index=0u;index<Tiers.size();++index){
 			if(!BuildAnalyticState(Tiers[index],states[index],error))return 182;
@@ -986,11 +1126,19 @@ namespace FireProductionDyadicCalibration
 					std::fprintf(stderr,"dyadic production tier %u step %zu failed: %s commits=%llu\n",
 						Tiers[index],step,error.c_str(),static_cast<unsigned long long>(
 							RISE::FireProductionResidentStepMetalCommandCommitCount()-commitsBefore));return 185;}
-				if(production.interstageFullGridTransferCount!=0u||
-					production.residentProjectionInvocationCount!=1u||
-					production.projection.executedVCycleCount!=16u||
-					production.projection.executedJacobiSweepCount!=
-						ExpectedProjectionSweeps(request.force.shape)){
+				const bool expectedTopology=eosProbe?
+					(production.residentProjectionInvocationCount==1u&&
+					production.projection.executedVCycleCount==16u&&
+					production.projection.executedJacobiSweepCount==
+						ExpectedProjectionSweeps(request.force.shape)):
+					(production.residentProjectionInvocationCount==2u&&
+					production.physicalProjection.executedVCycleCount==17u&&
+					production.physicalProjection.executedJacobiSweepCount==
+						(17u*ExpectedProjectionSweeps(request.force.shape)/16u)&&
+					production.projection.executedVCycleCount==16u&&
+					production.projection.executedJacobiSweepCount==
+						ExpectedProjectionSweeps(request.force.shape));
+				if(production.interstageFullGridTransferCount!=0u||!expectedTopology){
 					std::fprintf(stderr,"dyadic production topology tier=%u step=%zu transfers=%u "
 						"projection=%u cycles=%u sweeps=%llu expected=%llu\n",Tiers[index],step,
 						production.interstageFullGridTransferCount,
@@ -1177,22 +1325,32 @@ namespace FireProductionDyadicCalibration
 							observedOneOffDrainedPostResidual!=0x1.acbf72p-12f)return 214;
 					}
 				}
-				if(!production.projection.validationPassed)return 188;
-				if(index==0u&&step==0u){std::fprintf(stderr,"dyadic production projection "
-					"pre=%.17g post=%.17g complementarity=%.17g mean=%.17g valid=%d\n",
+				if((!eosProbe&&!production.physicalProjection.validationPassed)||
+					!production.projection.validationPassed){std::fprintf(stderr,
+					"dyadic projection validation tier=%u step=%zu physical_valid=%d "
+					"physical_pre=%.9g physical_post=%.9g restoration_valid=%d "
+					"restoration_pre=%.9g restoration_post=%.9g\n",Tiers[index],step,
+					production.physicalProjection.validationPassed?1:0,
+					production.physicalProjection.maximumPreProjectionResidualPerS,
+					production.physicalProjection.maximumPostProjectionResidualPerS,
+					production.projection.validationPassed?1:0,
 					production.projection.maximumPreProjectionResidualPerS,
-					production.projection.maximumPostProjectionResidualPerS,
-					production.projection.maximumOpenComplementarityDiscrepancyMPerS,
-					production.projection.removedFineRightHandSideMean,
-					production.projection.validationPassed?1:0);
+					production.projection.maximumPostProjectionResidualPerS);return 188;}
+				if(!eosProbe&&index==0u&&step==0u){std::fprintf(stderr,"dyadic production projection "
+					"pre=%.17g post=%.17g complementarity=%.17g mean=%.17g valid=%d\n",
+					production.physicalProjection.maximumPreProjectionResidualPerS,
+					production.physicalProjection.maximumPostProjectionResidualPerS,
+					production.physicalProjection.maximumOpenComplementarityDiscrepancyMPerS,
+					production.physicalProjection.removedFineRightHandSideMean,
+					production.physicalProjection.validationPassed?1:0);
 					std::uint32_t removedMeanBits=0u;std::memcpy(&removedMeanBits,
-						&production.projection.removedFineRightHandSideMean,
+						&production.physicalProjection.removedFineRightHandSideMean,
 						sizeof(removedMeanBits));
-					if(!production.projection.validationPassed||
-						production.projection.maximumPreProjectionResidualPerS!=0x1.7d1296p-3f||
-						production.projection.maximumPostProjectionResidualPerS!=0x1.6e31p-21f||
-						production.projection.maximumOpenComplementarityDiscrepancyMPerS!=
-							0x1.6a596ep-7f||
+					if(!production.physicalProjection.validationPassed||
+						production.physicalProjection.maximumPreProjectionResidualPerS!=0x1.7d1296p-3f||
+						production.physicalProjection.maximumPostProjectionResidualPerS!=0x1.eb74p-22f||
+						production.physicalProjection.maximumOpenComplementarityDiscrepancyMPerS!=
+							0x1.6a5972p-7f||
 						removedMeanBits!=0u)return 189;
 					const ProductionAffineResidual calibratingResidual=
 						MeasureProductionAffineResidual(production,states[index].states.size());
@@ -1247,6 +1405,9 @@ namespace FireProductionDyadicCalibration
 				conservative[cell]=ToConservativeVector(states[index].states[cell]);
 			if(!FilterConservative(states[index],conservative,
 				states[index].values.characteristicDiameterM,filtered[index]))return 188;
+			if(!FilterVelocity(states[index],states[index].velocity,
+				states[index].values.characteristicDiameterM,productionVelocity[index]))return 229;
+			productionInventory[index]=ComponentInventoryDensity(conservative);
 		}
 		const std::array<double,9> dA=FieldDistance(filtered[0],filtered[1]);
 		const std::array<double,9> dB=FieldDistance(filtered[2],filtered[3]);
@@ -1268,13 +1429,77 @@ namespace FireProductionDyadicCalibration
 				limitDifference[component],estimateA,estimateB);
 			const bool approaches=coarseAToB[component]>fineAToB[component]&&
 				coarseBToA[component]>fineBToA[component];
-			accepted=accepted&&overlap&&approaches;
+			const bool exact=dA[component]==ExpectedProductionScalarEvidence[component][0]&&
+				dB[component]==ExpectedProductionScalarEvidence[component][1]&&
+				limitDifference[component]==ExpectedProductionScalarEvidence[component][2];
+			accepted=accepted&&exact&&overlap&&approaches;
 			std::fprintf(stderr,"dyadic production component=%zu D5_10=%.17g D6_12=%.17g "
 				"limit_delta=%.17g radius_sum=%.17g approachA=%d approachB=%d accepted=%d\n",
 				component,dA[component],dB[component],limitDifference[component],estimated?
 				estimateA.fineRadius+estimateB.fineRadius:0.0,
 				coarseAToB[component]>fineAToB[component]?1:0,
-				coarseBToA[component]>fineBToA[component]?1:0,overlap&&approaches?1:0);
+				coarseBToA[component]>fineBToA[component]?1:0,
+				exact&&overlap&&approaches?1:0);
+		}
+		const double velocityA=VelocityDistance(productionVelocity[0],productionVelocity[1]);
+		const double velocityB=VelocityDistance(productionVelocity[2],productionVelocity[3]);
+		const FilteredVelocityField velocityLimitA=ExtrapolateVelocity(
+			productionVelocity[0],productionVelocity[1]);
+		const FilteredVelocityField velocityLimitB=ExtrapolateVelocity(
+			productionVelocity[2],productionVelocity[3]);
+		FireProductionCalibration::DyadicDistanceEstimate velocityEstimateA,velocityEstimateB;
+		const bool velocityEstimated=FireProductionCalibration::DyadicDistanceAtVerifiedOrder(
+			velocityA,VerifiedOrder,velocityEstimateA)&&
+			FireProductionCalibration::DyadicDistanceAtVerifiedOrder(velocityB,VerifiedOrder,
+				velocityEstimateB);
+		const double velocityLimitDelta=VelocityDistance(velocityLimitA,velocityLimitB);
+		const bool velocityOverlap=velocityEstimated&&
+			FireProductionCalibration::DyadicLimitBallsOverlap(velocityLimitDelta,
+				velocityEstimateA,velocityEstimateB);
+		const bool velocityApproach=VelocityDistance(productionVelocity[0],velocityLimitB)>
+			VelocityDistance(productionVelocity[1],velocityLimitB)&&
+			VelocityDistance(productionVelocity[2],velocityLimitA)>
+			VelocityDistance(productionVelocity[3],velocityLimitA);
+		const bool velocityExact=velocityA==ExpectedProductionVelocityEvidence[0]&&
+			velocityB==ExpectedProductionVelocityEvidence[1]&&
+			velocityLimitDelta==ExpectedProductionVelocityEvidence[2];
+		accepted=accepted&&velocityExact&&velocityOverlap&&velocityApproach;
+		std::fprintf(stderr,"dyadic production velocity D5_10=%.17g D6_12=%.17g "
+			"limit_delta=%.17g radius_sum=%.17g approach=%d accepted=%d\n",velocityA,
+			velocityB,velocityLimitDelta,velocityEstimated?
+			velocityEstimateA.fineRadius+velocityEstimateB.fineRadius:0.0,
+			velocityApproach?1:0,velocityExact&&velocityOverlap&&velocityApproach?1:0);
+		const double factor=std::pow(2.0,VerifiedOrder),denominator=factor-1.0;
+		for(std::size_t component=0u;component<9u;++component){
+			const double inventoryA=std::fabs(productionInventory[0][component]-
+				productionInventory[1][component]);
+			const double inventoryB=std::fabs(productionInventory[2][component]-
+				productionInventory[3][component]);
+			const double limitA=(factor*productionInventory[1][component]-
+				productionInventory[0][component])/denominator;
+			const double limitB=(factor*productionInventory[3][component]-
+				productionInventory[2][component])/denominator;
+			FireProductionCalibration::DyadicDistanceEstimate estimateA,estimateB;
+			const bool estimated=FireProductionCalibration::DyadicDistanceAtVerifiedOrder(
+				inventoryA,VerifiedOrder,estimateA)&&
+				FireProductionCalibration::DyadicDistanceAtVerifiedOrder(inventoryB,
+					VerifiedOrder,estimateB);
+			const double limitDelta=std::fabs(limitA-limitB);
+			const bool overlap=estimated&&FireProductionCalibration::DyadicLimitBallsOverlap(
+				limitDelta,estimateA,estimateB);
+			const bool approach=std::fabs(productionInventory[0][component]-limitB)>
+				std::fabs(productionInventory[1][component]-limitB)&&
+				std::fabs(productionInventory[2][component]-limitA)>
+				std::fabs(productionInventory[3][component]-limitA);
+			const bool exact=inventoryA==ExpectedProductionInventoryEvidence[component][0]&&
+				inventoryB==ExpectedProductionInventoryEvidence[component][1]&&
+				limitDelta==ExpectedProductionInventoryEvidence[component][2];
+			accepted=accepted&&exact&&overlap&&approach;
+			std::fprintf(stderr,"dyadic production ledger component=%zu D5_10=%.17g "
+				"D6_12=%.17g limit_delta=%.17g radius_sum=%.17g approach=%d accepted=%d\n",
+				component,inventoryA,inventoryB,limitDelta,estimated?
+				estimateA.fineRadius+estimateB.fineRadius:0.0,approach?1:0,
+				exact&&overlap&&approach?1:0);
 		}
 		return accepted?0:189;
 	}

@@ -1979,6 +1979,55 @@ terms `2*256 = 512`, total `832 epsilon32`; the r60 power-of-two rule therefore
 keeps `kappa32=1024`. This feasibility envelope remains distinct from the
 future accuracy term `B_fp32`.
 
+The sealed r118 run admits the architecture. All 104 physical and all 104
+restoration projections validate, with zero full-grid interstage transfers.
+The final-32 cell-2256 maximum absolute deviation is
+`1.5435381821271577e-4`, 1.01066 times the independently predicted `G/r` and
+15.4354% of the unchanged EOS ceiling (6.4786-fold margin). The independently
+searched final-32 field maximum is `6.524281258450948e-4`, also below the
+ceiling. The final signed probe/field observations are respectively
+`1.1215264457620222e-4` and `-4.060346667688064e-4`. The exact 104-step
+diagnostic/payload trace hashes to
+`2b7071e64f1203c749f2813c8b4a766f862ebcee9b4a78a77257f6addb72fc68`;
+the final state hashes to
+`b3e1710842b98f7f40580270b3fd857ed1bc1c1a81a567309c62b14981ddc76e`.
+The maximum certified/observed allocation upper bounds are 248,479,780 and
+229,518,420 bytes. Over 96 post-warmup calls, combined force/transport/two-P2
+device p95 is 27.8510 ms and completed-call wall p95 is 71.2383 ms, 35.62% of
+the 200 ms production wall allocation.
+
+The binding replay is
+`RISE_FIRE_EOS_RESTORATION_PROBE=1 ./bin/tests/FireSequenceTest
+--fire-production-calibration-check-dyadic-production
+rendered/fire_production_calibration/r112_dyadic_smooth_open
+42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed
+d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b`.
+It returns `228` only after the exact deterministic evidence and the 200 ms
+wall gate match. Malformed activation returns `226`; simultaneous r117/r118
+activation returns `227`. Durable evidence is
+`rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1`
+(SHA-256 `adaa3fc412f9c10a4ce99967ca5d95f54bd02f44be070db9f2178a21a16fa5b7`).
+
+### 7.34 Production dyadic spatial term (r119)
+
+With r118 admitted, the exact eight-step resident campaign completes on all
+four dyadic tiers. The production observable uses the already sealed smooth
+state, horizon, filter, order `p=1.8`, and `{5,10}` / `{6,12}` decision rule;
+no metric or decision rule changed after output inspection. Every physical and
+restoration projection validates, and every interstage full-grid transfer
+count is zero. All nine filtered scalar channels, filtered MAC velocity, and
+all nine inventory channels have overlapping independent Richardson limit
+balls and approach the opposite pair's limit from coarse to fine.
+
+The exact `D5_10`, `D6_12`, and independent-limit differences are bound in
+`ExpectedProduction*Evidence` and in the durable artifact
+`rendered/fire_production_calibration/r119_production_spatial/production_spatial_evidence.v1`
+(SHA-256 `10229d0f0508787912e0ef4986ad9743de7d4fc62bab5b0c9cdaf7c38a4345f4`).
+This admits the production **spatial** scheme-distance term only. It is not a
+temporal term, not `B_fp32`, and not an eight-slice production-versus-oracle
+acceptance band. The fp32 feasibility envelope remains a consumer-totality
+condition and contributes no accuracy allowance.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

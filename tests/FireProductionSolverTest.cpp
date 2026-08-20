@@ -2476,6 +2476,7 @@ int main()
 		composedStep.momentumSourceIncrement[axis].assign(
 			FireProductionProjectionFaceCount(mixedDual.shape,axis),0.0f);
 	composedStep.divergenceTargetPerS.assign(mixedDual.shape.CellCount(),0.0f);
+	composedStep.restorationDivergenceTargetPerS.assign(mixedDual.shape.CellCount(),0.0f);
 	FireProductionFrozenForceAdvanceResult composedForceCPU;
 	FireProductionCellPalindromeResult composedCellCPU;
 	FireProductionDualMomentumResult composedDualCPU;
@@ -2508,7 +2509,7 @@ int main()
 			composedProjectionCPU,&error);
 	}
 	Check(composedCPU,
-		"independent CPU composition constructs the force, transport, zero-source, and sole-P2 oracle");
+		"independent CPU composition constructs the force, transport, zero-source, and physical-P2 oracle");
 	bool dualBoundaryMatrixMatches=true,dualBoundaryMatrixChanges=true;
 	bool dualBoundaryRoleVisited[3][3][2][3]={};
 	std::vector<float> positiveSignMomentum[3][2][3];
@@ -3790,9 +3791,13 @@ int main()
 	bool composedMatches=composedCPU&&composedMetal&&composedMetalRepeat&&
 		composedGPU.cellSubmapCount==5u&&composedGPU.dualSubmapCount==15u&&
 		composedGPU.sourceCommandCommitCount==1u&&
-		composedGPU.residentProjectionInvocationCount==1u&&
+		composedGPU.residentProjectionInvocationCount==2u&&
 		composedGPU.interstageFullGridTransferCount==0u&&
 		composedGPU.terminalStagingCount==2u&&composedGPU.deviceElapsedMS>0.0&&
+		composedGPU.physicalProjection.validationPassed&&
+		composedGPU.projection.validationPassed&&
+		composedGPU.physicalProjection.executedVCycleCount==17u&&
+		composedGPU.projection.executedVCycleCount==16u&&
 		composedGPU.conservativeValues==composedGPURepeat.conservativeValues&&
 		composedGPU.transportedDual.momentum==composedGPURepeat.transportedDual.momentum&&
 		composedGPU.projection.momentumKGPerM2S==composedGPURepeat.projection.momentumKGPerM2S&&
@@ -3806,25 +3811,29 @@ int main()
 		SameFloatVectorsWithin(composedGPU.projection.momentumKGPerM2S[axis],
 			composedProjectionCPU.momentumKGPerM2S[axis],3.0e-5f);
 	Check(composedMatches,
-		"full resident force, transport, explicit zero-source, and sole-projection step matches "
+		"full resident force, transport, explicit zero-source, and two-projection step matches "
 		"the independent CPU composition with no interstage transfer");
 	auto seedFullStepResult=[&](FireProductionResidentStepResult& seeded) {
 		seeded.conservativeValues.push_back(1.0f);seedDualResult(seeded.transportedDual);
 		FireProductionResidentForceProjectionResult nested;seedResidentResult(nested);
-		seeded.projection=std::move(nested.projection);seeded.forceSchedule=nested.forceSchedule;
+		seeded.projection=nested.projection;seeded.physicalProjection=std::move(nested.projection);
+		seeded.forceSchedule=nested.forceSchedule;
 		seeded.forceDiagnostics=nested.forceDiagnostics;seeded.cellSubmapCount=1u;
 		seeded.dualSubmapCount=1u;seeded.sourceCommandCommitCount=1u;
-		seeded.residentProjectionInvocationCount=1u;seeded.interstageFullGridTransferCount=1u;
+		seeded.residentProjectionInvocationCount=2u;seeded.interstageFullGridTransferCount=1u;
 		seeded.terminalStagingCount=1u;seeded.combinedCertifiedWorkingSetBytes=1u;
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
 		seeded.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 	};
-	auto fullStepResultIsDefault=[&](const FireProductionResidentStepResult& rejected) {
+		auto fullStepResultIsDefault=[&](const FireProductionResidentStepResult& rejected) {
 		FireProductionResidentForceProjectionResult nested;
 		nested.projection=rejected.projection;nested.forceSchedule=rejected.forceSchedule;
 		nested.forceDiagnostics=rejected.forceDiagnostics;
+		FireProductionResidentForceProjectionResult physicalNested;
+		physicalNested.projection=rejected.physicalProjection;
 		return rejected.conservativeValues.empty()&&dualResultIsDefault(rejected.transportedDual)&&
-			residentResultEmpty(nested)&&rejected.cellSubmapCount==0u&&
+			residentResultEmpty(nested)&&residentResultEmpty(physicalNested)&&
+			rejected.cellSubmapCount==0u&&
 			rejected.dualSubmapCount==0u&&rejected.sourceCommandCommitCount==0u&&
 			rejected.residentProjectionInvocationCount==0u&&
 			rejected.interstageFullGridTransferCount==0u&&rejected.terminalStagingCount==0u&&
@@ -3855,12 +3864,20 @@ int main()
 	unsetenv("RISE_FIRE_PRODUCTION_STEP_FAILURE");
 	Check(terminalNonfiniteRejected&&fullStepResultIsDefault(rejectedFullStep),
 		"full resident step rejects a terminal nonfinite scalar after real work without publication");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","full-target",1);
+	const bool restorationMiswireRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
+	Check(restorationMiswireRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		error.find("restoration projection target ownership")!=std::string::npos,
+		"restoration P2 rejects a physical-target miswire before its command and publishes nothing");
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;
-	fullStepUnderShape.nx=88u;fullStepUnderShape.ny=128u;fullStepUnderShape.nz=150u;
+	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=268u;
 	fullStepUnderShape.cellWidthM=0.01f;
-	fullStepOverShape.nx=78u;fullStepOverShape.ny=88u;fullStepOverShape.nz=246u;
+	fullStepOverShape.nx=65u;fullStepOverShape.ny=80u;fullStepOverShape.nz=277u;
 	fullStepOverShape.cellWidthM=0.01f;
 	std::uint64_t fullStepUnderBytes=0u,fullStepOverBytes=0u;
 	const bool fullStepBoundaryQuery=
@@ -3868,8 +3885,8 @@ int main()
 			fullStepAdmissionBoundary,fullStepUnderBytes)&&
 		FireProductionResidentStepWorkingSetBytes(fullStepOverShape,
 			fullStepAdmissionBoundary,fullStepOverBytes)&&
-		fullStepUnderBytes==UINT64_C(2147479300)&&
-		fullStepOverBytes==UINT64_C(2147484668);
+		fullStepUnderBytes==UINT64_C(2147482404)&&
+		fullStepOverBytes==UINT64_C(2147486388);
 	auto makeEmptyFullStepAdmission=[&](const FireProductionProjectionShape& admissionShape) {
 		FireProductionResidentStepRequest admission;
 		admission.force.shape=admissionShape;admission.force.timeStepS=0.01f;
@@ -4014,6 +4031,8 @@ int main()
 		9u*tier10ResidentForce.shape.CellCount(),0.0f);
 	tier10FullStep.divergenceTargetPerS.assign(
 		tier10ResidentForce.shape.CellCount(),0.0f);
+	tier10FullStep.restorationDivergenceTargetPerS.assign(
+		tier10ResidentForce.shape.CellCount(),0.0f);
 	std::vector<double> residentStepDeviceMS,residentStepWallMS;
 	FireProductionResidentStepResult tier10ResidentStepResult;
 	for( unsigned int trial=0u;trial<3u;++trial ) {
@@ -4027,10 +4046,14 @@ int main()
 				FireStateProducerPrecision::Binary32&&
 			tier10ResidentStepResult.cellSubmapCount==5u&&
 			tier10ResidentStepResult.dualSubmapCount==15u&&
-			tier10ResidentStepResult.residentProjectionInvocationCount==1u&&
+			tier10ResidentStepResult.residentProjectionInvocationCount==2u&&
 			tier10ResidentStepResult.interstageFullGridTransferCount==0u&&
-			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1235662396)&&
-			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1233957860)&&
+			tier10ResidentStepResult.physicalProjection.validationPassed&&
+			tier10ResidentStepResult.projection.validationPassed&&
+			tier10ResidentStepResult.physicalProjection.executedVCycleCount==12u&&
+			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1439303780)&&
+			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1338301072)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
 			"tier-10 resident full-step timing trial preserves the exact schedule and resource gate");
@@ -4050,7 +4073,7 @@ int main()
 	Check(residentStepDeviceMS.size()==2u&&residentStepWallMS.size()==2u&&
 		residentStepDeviceP95>0.0&&residentStepDeviceP95<=200.0&&
 		residentStepWallP95>0.0&&std::isfinite(residentStepWallP95),
-		"tier-10 N8 force, transport, source, and single-P2 resident interval meets 200 ms; "
+		"tier-10 N8 force, transport, source, and two-P2 resident interval meets 200 ms; "
 		"the deliberately staged oracle wrapper reports timing without defining the production budget");
 	const bool constantMetal=RemapFireProductionMetal(constant,constantGPU,&error);
 	if( !constantMetal ) std::cerr << "Metal remap detail: " << error << '\n';

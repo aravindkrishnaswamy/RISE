@@ -102,12 +102,35 @@ namespace RISEFireProductionFP64
 		double domainLengthM,
 		bool& withinBand );
 
+	//! Restoration is independently validated against its own characteristic
+	//! divergence scale. It deliberately does not borrow the physical
+	//! projection's validation result or U/L scale.
+	bool FireProductionRestorationProjectionResidualWithinBand(
+		double maximumResidualPerS,
+		double maximumRestorationTargetPerS,
+		bool& withinBand );
+
 	bool ValidateFireProductionProjectionRequest(
 		const FireProductionProjectionRequest& request,
 		std::string* error=0 );
 
 	//! Strict-binary32 comparator implementing the stored P2 schedule.
 	bool ProjectFireProductionCPU(
+		const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
+	//! CPU calibration owner for the 17-cycle pressure-open physical pass used
+	//! only inside the two-projection resident composition.
+	bool ProjectFireProductionResidentPhysicalCPU(
+		const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
+	//! CPU calibration mirror of the correction-only restoration invocation.
+	//! The request target is an authored divergence increment, not an absolute
+	//! final divergence target.
+	bool ProjectFireProductionRestorationCPU(
 		const FireProductionProjectionRequest& request,
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
@@ -128,10 +151,40 @@ namespace RISEFireProductionFP64
 		}
 	};
 
+	struct FireProductionMetalProjectionResidentState
+	{
+		std::array<id<MTLBuffer>,3> momentumKGPerM2S;
+		std::array<std::size_t,3> momentumByteOffset;
+
+		FireProductionMetalProjectionResidentState()
+		{
+			momentumKGPerM2S.fill(nil);momentumByteOffset.fill(0u);
+		}
+	};
+
 	//! Internal full-grid Private-buffer seam for the composed resident P3 step.
 	bool ProjectFireProductionMetalResident(
 		const FireProductionProjectionRequest& request,
 		const FireProductionMetalProjectionResidentInput& input,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
+	//! Main physical projection without full-grid terminal staging. The returned
+	//! momentum remains Private and is the sole admissible input to the resident
+	//! restoration projection.
+	bool ProjectFireProductionMetalResidentState(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		FireProductionMetalProjectionResidentState& state,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
+	//! Terminal resident restoration pass. Its target and validation result are
+	//! owned by this invocation and are never shared with the physical pass.
+	bool ProjectFireProductionMetalRestorationResident(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		id<MTLBuffer> expectedRestorationTargetPerS,
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
 #endif

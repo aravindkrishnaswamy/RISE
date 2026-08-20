@@ -283,8 +283,10 @@ namespace RISEFireProductionFP64
 		std::uint64_t& bytes )
 	{
 		bytes=0u;
-		std::uint64_t forceProjectionBytes=0u,cellBytes=0u,dualBytes=0u;
+		std::uint64_t forceProjectionBytes=0u,restorationProjectionBytes=0u,
+			cellBytes=0u,dualBytes=0u;
 		if( !FireProductionResidentForceProjectionWorkingSetBytes(shape,forceProjectionBytes)||
+			!FireProductionProjectionWorkingSetBytes(shape,restorationProjectionBytes)||
 			!FireProductionCellPalindromeWorkingSetBytes(shape,9u,cellBytes)||
 			!FireProductionDualMomentumResidentWorkingSetBytes(shape,boundary,dualBytes) )
 			return false;
@@ -294,12 +296,21 @@ namespace RISEFireProductionFP64
 			static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
 		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/19u ) return false;
 		const std::uint64_t extraValues=19u*cells+3u*allFaces;
+		const std::uint64_t rawTarget=cells*sizeof(double),alignment=UINT64_C(16384);
+		if( rawTarget>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
+		const std::uint64_t targetAllocation=(rawTarget+alignment-1u)&~(alignment-1u);
 		if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(double)||
 			forceProjectionBytes>std::numeric_limits<std::uint64_t>::max()-cellBytes||
 			forceProjectionBytes+cellBytes>std::numeric_limits<std::uint64_t>::max()-dualBytes||
 			forceProjectionBytes+cellBytes+dualBytes>
-				std::numeric_limits<std::uint64_t>::max()-extraValues*sizeof(double) ) return false;
-		bytes=forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double);return true;
+				std::numeric_limits<std::uint64_t>::max()-extraValues*sizeof(double)||
+			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)>
+				std::numeric_limits<std::uint64_t>::max()-restorationProjectionBytes||
+			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)+
+				restorationProjectionBytes>std::numeric_limits<std::uint64_t>::max()-
+					2u*targetAllocation ) return false;
+		bytes=forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)+
+			restorationProjectionBytes+2u*targetAllocation;return true;
 	}
 
 	bool ValidateFireProductionFrozenForceRequest(

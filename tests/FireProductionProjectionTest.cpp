@@ -1156,6 +1156,16 @@ int main()
 		FireProductionProjectionResidualWithinBand(std::nextafter(exactBand,
 			std::numeric_limits<float>::infinity()),2.0f,4.0f,justAbove)&&!justAbove,
 		"P2 validation band straddles the exact 0.005 U/L boundary");
+	bool restorationBelow=false,restorationAbove=true,restorationZero=false;
+	const float exactRestorationBand=0.005f*0.125f;
+	Check(FireProductionRestorationProjectionResidualWithinBand(
+		std::nextafter(exactRestorationBand,0.0f),0.125f,restorationBelow)&&
+		restorationBelow&&FireProductionRestorationProjectionResidualWithinBand(
+		std::nextafter(exactRestorationBand,std::numeric_limits<float>::infinity()),
+		0.125f,restorationAbove)&&!restorationAbove&&
+		FireProductionRestorationProjectionResidualWithinBand(0.0f,0.0f,
+			restorationZero)&&restorationZero,
+		"restoration P2 owns its target-relative band and exact-zero target rule");
 	for( const float speed : {47.0f,49.0f} ) {
 		FireProductionProjectionRequest wiredBand=EmptyRequest(6u,5u,4u);
 		SetBoundary(wiredBand,FireProductionProjectionPeriodic);
@@ -1392,7 +1402,7 @@ int main()
 	const std::string residentProjectionBody=residentProjectionBeginning==std::string::npos?
 		std::string():metalSource.substr(residentProjectionBeginning);
 	Check(Count(source,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
-		Count(source,"HasOpenBoundary(request.boundary)?16u:12u")==1u&&
+		Count(source,"(execution==CPUProjectionResidentPhysical?17u:16u):12u")==1u&&
 		Count(source,"HasOpenBoundary(boundary)?0.75f:1.0f")==1u&&
 		Count(source,"Smooth(level,boundary,3u,nullspace,sweepCounter)")==2u&&
 		Count(source,"Smooth(level,boundary,32u,nullspace,sweepCounter)")==1u&&
@@ -1400,9 +1410,15 @@ int main()
 		Count(source,"VCycle(hierarchy,0u,request.boundary,nullspace,")==1u&&
 		cycleBody.find("break") == std::string::npos&&
 		source.find("const float mean=BlellochSum(values)")!=std::string::npos,
-		"P2 source guard binds 12 cycles or 16 damped open cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
+		"P2 source guard binds 12 periodic, 17 physical-open, or 16 restoration-open cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
 	Check(Count(metalSource,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
-		Count(metalSource,"cycleCount=16u")==1u&&
+		Count(metalSource,"cycleCount=execution==ProjectionResidentStateOnly?17u:16u")==1u&&
+		metalSource.find("p.restoration!=0u?-target[gid]:divergence-target[gid]")!=
+			std::string::npos&&
+		metalSource.find("abs((divergence-beginning)-target[gid])")!=std::string::npos&&
+		metalSource.find("inside&&p.restoration==0u")!=std::string::npos&&
+		metalSource.find("input.divergenceTargetPerS!=expectedRestorationTargetPerS")!=
+			std::string::npos&&
 		Count(metalSource,"(pressureOpen?0.75f:1.0f)*value")==1u&&
 		metalSource.find("return EncodeSmooth(context,command,level,32u")!=std::string::npos&&
 		Count(metalSource,"EncodeSmooth(context,command,level,3u")==2u&&
@@ -1449,7 +1465,9 @@ int main()
 			"beginningInterstageReads")!=std::string::npos&&
 		residentProjectionBody.find("[residentInput->gasDensityKGPerM3 storageMode]!="
 			"MTLStorageModePrivate")!=std::string::npos&&
-		residentProjectionBody.find("residentInput->provisionalMomentumKGPerM2S[axis]!=packed")!=
+		residentProjectionBody.find("const bool separateMomentum=")!=
+			std::string::npos&&
+		residentProjectionBody.find("const std::size_t requiredOffset=packedMomentum?expectedOffset:0u")!=
 			std::string::npos&&
 		residentProjectionBody.find("[stored[axis] storageMode]==MTLStorageModePrivate")!=
 			std::string::npos&&
