@@ -341,6 +341,10 @@ $(PATHLIBRARY)Utilities/FireProductionForce.o : $(PATHLIBRARY)Utilities/FireProd
 	@echo "Compiling (safe fp32): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+$(PATHLIBRARY)Utilities/FireProductionAdvectionMac.o : $(PATHLIBRARY)Utilities/FireProductionAdvectionMac.mm
+	@echo "Compiling (safe fp32 ObjC++): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
 $(PATHLIBRARY)Utilities/FireProductionProjectionMac.o : $(PATHLIBRARY)Utilities/FireProductionProjectionMac.mm
 	@echo "Compiling (safe fp32 ObjC++): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@

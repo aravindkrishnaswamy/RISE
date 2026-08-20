@@ -4324,6 +4324,11 @@ int main()
 			"$(PATHLIBRARY)Utilities/FireProductionTransport.cpp\n\t@echo \"Compiling "
 			"(safe fp32): $<\"\n\t@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) "
 			"-fno-fast-math -ffp-contract=off")!=std::string::npos&&
+		makeRules.find("Utilities/FireProductionAdvectionMac.o : "
+			"$(PATHLIBRARY)Utilities/FireProductionAdvectionMac.mm\n"
+			"\t@echo \"Compiling (safe fp32 ObjC++): $<\"\n"
+			"\t@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) "
+			"-fno-fast-math -ffp-contract=off")!=std::string::npos&&
 		CountSubstring(xcodeProject,
 			"FireProductionTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = "
 			"FC92000131FF000100000007 /* FireProductionTransport.cpp */; settings = "

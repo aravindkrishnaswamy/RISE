@@ -2017,7 +2017,11 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.force.timeStepS!=request.dualTransport.timeStepS||
 				request.force.boundary!=request.cellTransport.boundary||
 				request.force.boundary!=request.dualTransport.boundary||
-				request.cellTransport.componentCount!=9u ) return false;
+				request.cellTransport.componentCount!=9u ) {
+				if( structuredError ) *structuredError=
+					"production resident step ownership metadata does not match";
+				return false;
+			}
 			std::uint64_t certified=0u;
 			if( !FireProductionResidentStepWorkingSetBytes(shape,request.force.boundary,certified)||
 				certified>(UINT64_C(1)<<31u) ) {
@@ -2043,20 +2047,36 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				float gas=request.cellTransport.conservativeValues[cells+cell];
 				for( std::size_t component=2u;component<=6u;++component )
 					gas+=request.cellTransport.conservativeValues[component*cells+cell];
-				if( gas!=request.force.cellGasDensityKGPerM3[cell] ) return false;
+				if( gas!=request.force.cellGasDensityKGPerM3[cell] ) {
+					if( structuredError ) *structuredError=
+						"production resident step packed gas density does not match force input";
+					return false;
+				}
 			}
 			for( unsigned int axis=0u;axis<3u;++axis ) if(
 				request.momentumSourceIncrement[axis].size()!=faceCounts[axis]||
 				request.dualTransport.beginningFaceDensity[axis]!=request.force.faceDensityKGPerM3[axis]||
 				request.dualTransport.beginningMomentum[axis]!=request.force.beginningMomentumKGPerM2S[axis]||
 				request.dualTransport.frozenVelocityMPerS[axis]!=
-					request.cellTransport.frozenVelocityMPerS[axis] ) return false;
+					request.cellTransport.frozenVelocityMPerS[axis] ) {
+				if( structuredError ) *structuredError=
+					"production resident step dual ownership does not match force/cell input";
+				return false;
+			}
 			auto positiveZero=[](float value) {
 				std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));return bits==0u;
 			};
-			for( const float value : request.cellSourceIncrement ) if( !positiveZero(value) ) return false;
+			for( const float value : request.cellSourceIncrement ) if( !positiveZero(value) ) {
+				if( structuredError ) *structuredError=
+					"production resident step cell source is not positive zero";
+				return false;
+			}
 			for( const std::vector<float>& source : request.momentumSourceIncrement )
-				for( const float value : source ) if( !positiveZero(value) ) return false;
+				for( const float value : source ) if( !positiveZero(value) ) {
+					if( structuredError ) *structuredError=
+						"production resident step momentum source is not positive zero";
+					return false;
+				}
 			FireProductionMetalDualMomentumStaticState dualStatic;
 			if( !PrepareFireProductionDualMomentumMetalStaticState(request.dualTransport,
 				dualStatic,structuredError) ) return false;
