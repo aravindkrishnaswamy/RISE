@@ -2797,6 +2797,7 @@ namespace
 #include "FireProductionGoldenProjectionFixture.h"
 #include "FireProductionGoldenCompositionFixture.h"
 #include "FireProductionCalibrationFixture.h"
+#include "FireProductionDyadicCalibrationFixture.h"
 
 	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
@@ -2983,6 +2984,12 @@ int main(int argc,char** argv)
 		return SealOracleSpatialCalibrationInputs(argv[2]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-calibration-check-oracle-spatial")==0)
 		return CheckOracleSpatialCalibrationOutput(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-calibration-seal-dyadic-protocol")==0)
+		return FireProductionDyadicCalibration::SealProtocol(argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-calibration-seal-dyadic-targets")==0)
+		return FireProductionDyadicCalibration::SealTargets(argv[2],argv[3]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-check-dyadic-oracle")==0)
+		return FireProductionDyadicCalibration::CheckOracle(argv[2],argv[3],argv[4]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;

@@ -270,7 +270,7 @@ struct OracleSpatialCalibrationResult
 
 bool RunOracleSpatialCalibrationTrajectory(const MethaneRunCheckpoint& beginning,
 	const double timeStepS,const unsigned int stepCount,OracleSpatialCalibrationResult& result,
-	std::string& error)
+	std::string& error,const bool periodicBoundaries=false)
 {
 	result=OracleSpatialCalibrationResult();
 	if(!(timeStepS>0.0)||stepCount==0u)return false;
@@ -315,7 +315,8 @@ bool RunOracleSpatialCalibrationTrajectory(const MethaneRunCheckpoint& beginning
 	config.transport.deltaTimeS=timeStepS;config.transport.ambientTemperatureK=300.0;
 	config.transport.adiabaticTemperatureK=2300.0;
 	config.transport.ambientGasDensityKGPerM3=ambient.GasDensity();
-	config.gravityMPerS2={{0.0,0.0,-9.80665}};config.periodicBoundaries=false;
+	config.gravityMPerS2={{0.0,0.0,-9.80665}};
+	config.periodicBoundaries=periodicBoundaries;
 	config.dns=false;config.retainStageDiagnostics=true;config.injectedTemperatureK=300.0;
 	config.openBoundary.ambientDensityKGPerM3=ambient.GasDensity();
 	config.openBoundary.injectedGasDensityKGPerM3=injected.GasDensity();

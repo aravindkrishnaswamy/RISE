@@ -1615,7 +1615,7 @@ frozen as follows.
 - The common periodic box is exactly `4 D* x 4 D* x 6 D*`. Tier `r` has
   dimensions `(4r,4r,6r)` and `h=D*/r`, so `{5,10}` and `{6,12}` are exact
   factor-two pairs with identical physical domains. The capstone methane
-  `D*=0.2447449285392881 m` is derived from the unchanged case record.
+  `D*=0.24474492853928811 m` is derived from the unchanged case record.
 - Every tier samples the same analytic thermochemical state: a smooth periodic
   convex ambient/injected mixture, smooth temperature, and a divergence-free
   Taylor--Green MAC velocity. Sources are exact positive zero and all six
