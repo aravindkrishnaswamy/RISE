@@ -229,6 +229,16 @@ static std::string Obj( const std::string& name, const std::string& mat, double 
 	       "\n\tposition " + buf + " 0 0\n}\n\n";
 }
 
+//! pbr_metallic_roughness_material -- 88 S6.  `roughness` resolves through
+//! the COLOUR painter manager (Job::AddPBRMetallicRoughnessMaterial calls
+//! pPntManager->GetItem() on it), unlike every other qualifying kind's
+//! primary roughness slot.
+static std::string Pbr( const std::string& name, const std::string& roughness )
+{
+	return "pbr_metallic_roughness_material\n{\n\tname " + name + "\n\tbase_color pnt_dark\n"
+	       "\tmetallic 0.0\n\troughness " + roughness + "\n}\n\n";
+}
+
 //! Three qualifying ggx materials.  `mat_b` is bound to THREE objects,
 //! `mat_a` to two and `mat_c` to one, so the bare call has a unique
 //! most-prominent answer that is NOT the first in document order -- a
@@ -1021,6 +1031,165 @@ static void TestPostVaryDisarmsCensus()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// I: pbr_metallic_roughness_material -- 88 S6 (2026-08-20).  The live
+// census log caught this: `roughness` resolves through the COLOUR painter
+// manager (`Job::AddPBRMetallicRoughnessMaterial` calls
+// `pPntManager->GetItem()` on it, then bridges the composed IPainter graph
+// back to the material's scalar alpha slots via `PainterToScalarAdapter`),
+// unlike every other qualifying kind's primary roughness slot, which lives
+// in the SCALAR painter manager.  Before the fix, this verb always minted a
+// `scalar_painter` -- a name invisible to `pPntManager` -- so
+// `Job::AddPBRMetallicRoughnessMaterial` fell through to `atof()` on a
+// non-numeric name and refused ("`roughness` must be a finite scalar or a
+// painter name"), and the whole candidate document failed to derive.
+//----------------------------------------------------------------------
+static ScalarProbe ProbeColourPainterAsScalar( Job& j, const std::string& name )
+{
+	ScalarProbe out;
+	IPainterManager* mgr = j.GetPainters();
+	IPainter* p = mgr ? mgr->GetItem( name.c_str() ) : nullptr;
+	if( !p ) return out;
+	out.found = true;
+	for( int i = 0; i < 24; ++i ) {
+		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+		ri.bHit = true;
+		ri.ptCoord = Point2( ( i % 7 ) / 7.0, ( ( i * 3 ) % 5 ) / 5.0 );
+		ri.ptIntersection = Point3( i * 0.41 - 2.0, i * 0.73 - 1.3, i * 1.17 + 0.5 );
+		const double v = p->GetColor( ri )[0];
+		out.lo = std::min( out.lo, v );
+		out.hi = std::max( out.hi, v );
+	}
+	return out;
+}
+
+static void TestPbrColourPipe()
+{
+	std::printf( "I: pbr_metallic_roughness_material -- roughness resolves through the COLOUR "
+	             "painter manager, so this verb must mint an expression_painter, never a "
+	             "scalar_painter\n" );
+
+	std::string body = Preamble();
+	body += Pbr( "pbr_mat", "0.35" );
+	body += Obj( "o1", "pbr_mat", 0 );
+	const std::string tmp = TempPath( "varymat_i.RISEscene" );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, "I: pbr fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string docBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentVaryMaterialResult r = sess->VaryMaterial();
+	Check( r.ok && r.applied,
+	       std::string( "I MONEY: the no-argument call APPLIED on a pbr-only scene (the live census "
+	       "log's derive-refusal is fixed) -- " ) + r.message );
+	Check( r.status == "applied", "I: status is \"applied\"" );
+	Check( r.material == "pbr_mat", "I: it took the sole qualifying pbr material" );
+	Check( r.materialKind == "pbr_metallic_roughness_material", "I: kind reported correctly" );
+	Check( r.reboundSlots.size() == 1 && r.reboundSlots[0] == "roughness",
+	       "I: only the primary `roughness` slot was rebound (metallic is left alone)" );
+	Check( !r.painterChunk.empty(), "I: it names the painter chunk it minted" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docBefore != docAfter, "I: the document really changed" );
+	Check( docAfter.find( "expression_painter" ) != std::string::npos,
+	       "I MONEY: an expression_painter chunk landed -- NOT a scalar_painter, which pbr's "
+	       "roughness slot cannot see" );
+	Check( docAfter.find( "expr\t\t\tmix(" ) != std::string::npos,
+	       "I: ...using the `expr` field (expression_painter's final-value keyword, distinct from "
+	       "scalar_painter's `expression`) -- so it actually parses" );
+	Check( docAfter.find( "scalar_painter" ) == std::string::npos,
+	       "I: no scalar_painter chunk landed anywhere in this pbr-only fixture" );
+	Check( docAfter.find( "roughness " + r.painterChunk ) != std::string::npos,
+	       "I MONEY: the DOCUMENT's roughness slot names the minted chunk, read back out of the "
+	       "text rather than assumed from the result struct" );
+	// The human-editability contract still holds on the colour-pipe form.
+	Check( docAfter.find( "min " ) != std::string::npos && docAfter.find( "max " ) != std::string::npos &&
+	       docAfter.find( "step " ) != std::string::npos && docAfter.find( "label " ) != std::string::npos,
+	       "I: every emitted `param` still carries min/max/step/label metadata" );
+
+	// THE ROOT-CAUSE REGRESSION, through the REAL parser path (not just CST
+	// text manipulation): before the fix, AddPBRMetallicRoughnessMaterial
+	// rejected the rebound `roughness` before the painter-existence check
+	// ever ran, and the whole candidate document failed to derive.
+	Check( pJob->GetScene() != nullptr,
+	       "I MONEY: the rewritten document DERIVES through the real parser path -- "
+	       "Job::AddPBRMetallicRoughnessMaterial actually resolved the minted chunk" );
+
+	// The minted chunk lives in the COLOUR painter manager (GetPainters()),
+	// not the scalar one, and is genuinely spatially varying there, inside
+	// the advertised band -- the same three properties case A pins for the
+	// native scalar_painter form.
+	{
+		const ScalarProbe p = ProbeColourPainterAsScalar( *pJob, r.painterChunk );
+		Check( p.found, "I: the minted painter resolved in the live COLOUR painter manager" );
+		bool okLo = false, okHi = false;
+		const double lo = ParamValueInChunk( docAfter, r.painterChunk, "rough_lo", okLo );
+		const double hi = ParamValueInChunk( docAfter, r.painterChunk, "rough_hi", okHi );
+		Check( okLo && okHi, "I: both band params are readable out of the emitted chunk" );
+		std::printf( "    I: band [%g, %g], observed [%g, %g], spread %g\n",
+		             lo, hi, p.lo, p.hi, p.Spread() );
+		Check( p.Spread() > 0.01,
+		       "I MONEY: the minted painter is GENUINELY spatially varying (spread " +
+		       std::to_string( p.Spread() ) + " over 24 distinct world points, evaluated through "
+		       "IPainter::GetColor -- the SAME accessor PainterToScalarAdapter reads, so no JH "
+		       "spectral uplift reaches it: that adapter calls ONLY GetColor, never GetColorNM)" );
+		Check( p.lo >= lo - 1e-9 && p.hi <= hi + 1e-9,
+		       "I MONEY: every sample lands INSIDE the band the emitted params advertise" );
+		Check( lo > 0.0 && hi > lo,
+		       "I: the band is well-formed (positive, non-inverted) around the authored 0.35" );
+	}
+
+	// It renders, with the roughness genuinely varying across the sphere.
+	{
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, "I: the rewritten pbr scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0, "I: ...and is non-black" );
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! I2: DETERMINISM for the pbr colour-pipe form specifically -- the same
+//! byte-identical guarantee case C pins for the scalar_painter form, so the
+//! new emission branch is not exempt from it.
+static void TestPbrDeterminism()
+{
+	std::printf( "I2: pbr colour-pipe determinism -- two runs on the same document are "
+	             "BYTE-IDENTICAL\n" );
+
+	auto run = [&]( const char* tag ) -> std::string {
+		const std::string tmp = TempPath( ( std::string( "varymat_i2_" ) + tag + ".RISEscene" ).c_str() );
+		std::string body = Preamble();
+		body += Pbr( "pbr_mat", "0.35" );
+		body += Obj( "o1", "pbr_mat", 0 );
+		Job* pJob = LoadScene( body, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentVaryMaterialResult r = sess->VaryMaterial();
+		Check( r.applied, std::string( "I2(" ) + tag + "): applied" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string one = run( "one" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
+	const std::string two = run( "two" );
+
+	Check( !one.empty() && !two.empty(), "I2: both runs produced a document" );
+	Check( one == two,
+	       "I2 MONEY: two runs on the SAME input document produce BYTE-IDENTICAL output on the "
+	       "colour-pipe emission branch too" );
+}
+
 static void TestWireSurface()
 {
 	std::printf( "H: wire surface -- RPC dispatch, chat-codec table, MCP advertised AND routable\n" );
@@ -1110,6 +1279,8 @@ int main()
 	TestNote();
 	TestOpaqueTripleDisqualifies();
 	TestPostVaryDisarmsCensus();
+	TestPbrColourPipe();
+	TestPbrDeterminism();
 	TestWireSurface();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;

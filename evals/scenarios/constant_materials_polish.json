@@ -1,0 +1,72 @@
+{
+  "id": "constant_materials_polish",
+  "title": "Three flat-roughness materials -- doc 88 S6 gate (c): does the note's own verb get called (2026-08-20)",
+  "//": "Phase-1 gate (c) from docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md §5: 'vary_material -- when the note fires, the verb is called in >=1/3 runs'. Unlike rich_material_closeup (gate a, an EMPTY starting scene the model must build from scratch) and the bare_prompt_build family (gate b), this scenario starts from an ALREADY-BUILT scene carrying THREE ggx_material chunks whose alphax/alphay are bare numeric constants (0.3/0.25/0.4) bound to three standard_objects -- exactly AgentSession's MicrosurfaceKindSlots_ constant-microsurface predicate (see src/Library/Agent/AgentSession.cpp's ComputeDesignNoteConditionsFromDoc_ and kConstantMicrosurfaceGate=3), so design-note condition D fires on the VERY FIRST render (a property of the document, not something that accumulates turn over turn). The prompt names neither the mechanism nor the verb -- it only describes the visual complaint a materials-polish request would actually voice. Reading the gate: over N repeats of this scenario, the toolCallCount checkpoint below (metricLabel vary_material_calls) reports, per run, how many times vary_material was actually called -- count how many of the N runs have that checkpoint PASSING (equivalently metricValue >= 1); need >=1/3. See docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md §10 for the full reading instructions and how this combines with gates (a)/(b).",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0.3 6.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\nuniformcolor_painter\n{\n\tname pnt_dark\n\tcolor 0.12 0.10 0.09\n}\n\nuniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.6 0.6 0.6\n}\n\nggx_material\n{\n\tname mat_a\n\trd pnt_dark\n\trs pnt_spec\n\talphax 0.3\n\talphay 0.3\n\tior 1.5\n\textinction 0.0\n}\n\nggx_material\n{\n\tname mat_b\n\trd pnt_dark\n\trs pnt_spec\n\talphax 0.25\n\talphay 0.25\n\tior 1.5\n\textinction 0.0\n}\n\nggx_material\n{\n\tname mat_c\n\trd pnt_dark\n\trs pnt_spec\n\talphax 0.4\n\talphay 0.4\n\tior 1.5\n\textinction 0.0\n}\n\nsphere_geometry\n{\n\tname sph\n\tradius 0.7\n}\n\nstandard_object\n{\n\tname obj_a\n\tgeometry sph\n\tmaterial mat_a\n\tposition -1.8 0 0\n}\n\nstandard_object\n{\n\tname obj_b\n\tgeometry sph\n\tmaterial mat_b\n\tposition 0 0 0\n}\n\nstandard_object\n{\n\tname obj_c\n\tgeometry sph\n\tmaterial mat_c\n\tposition 1.8 0 0\n}\n\nuniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\nlambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 9.0\n\tmaterial none\n}\n\nclippedplane_geometry\n{\n\tname quad_emit\n\tpta -1.4 1.4 6.5\n\tptb 1.4 1.4 6.5\n\tptc 1.4 -1.4 6.5\n\tptd -1.4 -1.4 6.5\n}\n\nstandard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "The materials in this scene feel flat and uniform -- make them feel physically real."
+  ],
+  "budgets": {
+    "//": "Matches the sibling S6 census scenario (rich_material_closeup) -- deliberately loose so a budget exhaustion never masquerades as the gate-(c) null this scenario exists to measure.",
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/constant_materials_polish.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 3,
+      "max": 10
+    },
+    {
+      "//": "HEADLINE gate-(c) metric: how many times vary_material was called in THIS run. min:1 makes the checkpoint's own pass/fail literally BE 'was the verb called at least once' -- across N repeats, the fraction of runs where this checkpoint passes (equivalently metricValue >= 1) is exactly the number §5 gate (c) reads ('>=1/3 runs'). Non-vacuous even on a refusal: toolCallCount counts the CALL, not the outcome, matching §5's literal wording ('the verb is called'), not 'the verb succeeds'.",
+      "kind": "trajectory",
+      "toolCallCount": {
+        "name": "vary_material",
+        "min": 1
+      },
+      "metricLabel": "vary_material_calls",
+      "weight": 3
+    },
+    {
+      "//": "Post-run document evidence that a spatially-varying microsurface binding actually landed -- the SAME check (op, referencedKind, metricLabel) rich_material_closeup uses for gate (a), so the two scenarios' census numbers read on one shared vocabulary. For this scenario's ggx_material fixtures, vary_material mints a scalar_painter (see BuildRoughnessFieldScalarPainterText's asColourPipe=false branch) -- the pbr_metallic_roughness_material colour-pipe branch (asColourPipe=true, emitting expression_painter) does not apply here since none of this scene's materials are pbr.",
+      "kind": "document",
+      "op": "any_param_references_kind",
+      "referencedKind": "scalar_painter",
+      "weight": 2,
+      "metricLabel": "spatially_varying_scalar"
+    },
+    {
+      "//": "Sanity that the scene is actually lit and visible, not a red herring on a black/blown-out frame -- same band shape as the build_watch_scene/build_stilllife_scene/rich_material_closeup family (meanLumaMax 0.35, channelBalanceMax 4.0), widened on the low end since this scene has THREE objects instead of one hero object (more surface catching less light per-object on average). Measured against the committed fixture (T10) at samples=256, 32x24: meanLuma ~= 0.18 (the luminaire's `scale` was tuned 30.0 -> 9.0 to land here -- the initial 30.0 draft measured 0.599345, well over meanLumaMax) -- roughly centered in [0.01, 0.35], ~18x margin over the floor and ~2x under the ceiling.",
+      "kind": "render",
+      "samples": 256,
+      "width": 32,
+      "height": 24,
+      "meanLumaMin": 0.01,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 4.0
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "//": "Tool-call sanity: the model rendered (to SEE the note), then called vary_material (to ACT on it) -- the literal 'when the note fires, the verb is called' sequencing §5 gate (c) describes -- and never fell into the mechanical-loop failure mode.",
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": [
+        "render",
+        "vary_material"
+      ]
+    }
+  ]
+}

@@ -3128,6 +3128,28 @@ namespace RISE
 				return nullptr;
 			}
 
+			//! Does material KIND's primary roughness slot resolve in the COLOUR
+			//! painter manager rather than the scalar one?  SHARED (88 S6,
+			//! 2026-08-20) by `FormatConstantMicrosurfaceClause_` (which NAMES the
+			//! field-chunk kind the note promises) and `AgentSession::VaryMaterial`
+			//! (which actually EMITS it) so the two can never disagree about what
+			//! the verb will do -- the same discipline every other note/verb pair
+			//! in this file follows.
+			//!
+			//! `pbr_metallic_roughness_material` is the one exception among the
+			//! qualifying kinds: `Job::AddPBRMetallicRoughnessMaterial` resolves
+			//! `roughness` via `pPntManager->GetItem()` (the colour manager), not
+			//! the scalar one every other kind's primary slot uses, then bridges
+			//! the composed IPainter graph back to the material's scalar alpha
+			//! slots via `PainterToScalarAdapter` (channel-0 `GetColor` read, never
+			//! `GetColorNM` -- no JH uplift reaches it either way).  See
+			//! `BuildRoughnessFieldScalarPainterText`'s `asColourPipe` doc comment
+			//! for the full traced evidence.
+			bool MicrosurfaceKindUsesColourPipe_( const std::string& materialKind )
+			{
+				return materialKind == "pbr_metallic_roughness_material";
+			}
+
 			//! "MOST PROMINENT" -- ONE definition, read by design-note condition D
 			//! (which NAMES the material in its clause) and by a bare
 			//! `vary_material` call (which REWRITES it).  If these two ever
@@ -3764,12 +3786,14 @@ namespace RISE
 			                                               const std::string& materialKind,
 			                                               double roughness )
 			{
+				const std::string fieldKind = MicrosurfaceKindUsesColourPipe_( materialKind )
+					? "expression_painter { expr ... }" : "scalar_painter { expression ... }";
 				return std::to_string( constantCount ) + " materials have a microsurface that is a bare "
 					"number -- nothing in this scene's roughness varies across a surface, which is the "
 					"single most recognisable untextured-render signature. `vary_material` fixes the most "
 					"prominent one for you: call it with NO ARGUMENTS and it takes `" + materialName +
 					"` (" + materialKind + ", roughness " + MicrosurfaceFmt_( roughness ) + "), adds one "
-					"`scalar_painter { expression ... }` chunk holding an fbm wear field banded around the "
+					"`" + fieldKind + "` chunk holding an fbm wear field banded around the "
 					"number that is already there, and rebinds the roughness slot to it -- ONE call, ONE "
 					"undo step, and every knob it writes is a named `param` with a min/max you can retune "
 					"with propose_patch. Pass `material` to choose a different one. It REFUSES -- changing "
@@ -6912,12 +6936,40 @@ namespace RISE
 			//! [-0.4, 0.4], and an unclamped mix would extrapolate past the band
 			//! the param metadata advertises (and, at a small `rough_lo`, toward
 			//! zero).
+			//!
+			//! `asColourPipe` (88 S6, 2026-08-20): `pbr_metallic_roughness_material`'s
+			//! `roughness` slot is NOT a native IScalarPainter slot like every
+			//! other qualifying kind's primary roughness slot -- its descriptor
+			//! text says so directly ("Roughness painter or scalar string"), and
+			//! `Job::AddPBRMetallicRoughnessMaterial` resolves it via
+			//! `pPntManager->GetItem()`, the COLOUR painter manager, before
+			//! wrapping the result in a `PainterToScalarAdapter` to reach the
+			//! composed GGX material's scalar alpha slots (Job.cpp's own comment
+			//! at the adapter call site: "PBR's internal composition lives in the
+			//! IPainter graph... We adapt each composed IPainter back into an
+			//! IScalarPainter here").  A `scalar_painter`-named chunk lives in the
+			//! SEPARATE scalar-painter manager (`ChunkParserRegistry.cpp`'s
+			//! `ScalarPainterAsciiChunkParser` registers into
+			//! `pPriv->GetScalarPainters()`) and is invisible there -- exactly the
+			//! failure the live census caught: `roughness` fell through to
+			//! `atof()` on a name that isn't a number and got refused before the
+			//! painter-existence check ever ran.  When true, this emits an
+			//! `expression_painter` (registered in the COLOUR manager) with the
+			//! SAME body and a scalar-typed final `expr` instead of `expression`
+			//! -- `ExpressionPainter::GetColor` returns the raw evaluated RGB with
+			//! no JH spectral uplift (that only happens on the `GetColorNM` path,
+			//! see ExpressionPainter.cpp), and `PainterToScalarAdapter` (the
+			//! bridge PBR's alpha slots go through) calls ONLY `GetColor` --
+			//! never `GetColorNM` -- by design (its own header comment: "Do NOT
+			//! call source.GetColorNM(ri, nm) here"), so no uplift distortion
+			//! reaches the broadcast scalar either way.
 			std::string BuildRoughnessFieldScalarPainterText(
 				const std::string& chunkName, double lo, double hi,
-				double fieldScale, double contrast, double seed )
+				double fieldScale, double contrast, double seed,
+				bool asColourPipe )
 			{
 				const double sliderMax = ( hi > 1.0 ) ? hi : 1.0;
-				std::string t = "scalar_painter\n{\n";
+				std::string t = asColourPipe ? "expression_painter\n{\n" : "scalar_painter\n{\n";
 				t += "\tname\t\t\t" + chunkName + "\n";
 				t += "\tparam\t\t\trough_lo " + MicrosurfaceFmt_( lo ) +
 					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Smooth roughness\"\n";
@@ -6931,7 +6983,8 @@ namespace RISE
 				t += "\tdef\t\t\t\tq P*field_scale + vec3(seed, seed*1.7, seed*2.3)\n";
 				t += "\tdef\t\t\t\tn fbm(q, 4, 0.5, 2.0)\n";
 				t += "\tdef\t\t\t\tt clamp(n*field_contrast + 0.5, 0, 1)\n";
-				t += "\texpression\t\tmix(rough_lo, rough_hi, t)\n";
+				t += asColourPipe ? "\texpr\t\t\tmix(rough_lo, rough_hi, t)\n"
+				                  : "\texpression\t\tmix(rough_lo, rough_hi, t)\n";
 				t += "}\n";
 				return t;
 			}
@@ -7166,7 +7219,7 @@ namespace RISE
 						0.04 + 0.05 * wear, 0.09 + 0.35 * wear,
 						axis,
 						ScaffoldJitterRange( name, "stone_wearcontrast", 1.3, 2.1 ),
-						ScaffoldJitterRange( name, "stone_wearseed", 0.0, 100.0 ) ) } );
+						ScaffoldJitterRange( name, "stone_wearseed", 0.0, 100.0 ), false ) } );
 
 				out.chunks.push_back( { "cooktorrance_material", nMat,
 					ScaffoldCookTorranceText( nMat, nPebble, "none", nFacets ) } );
@@ -7268,7 +7321,7 @@ namespace RISE
 						0.03 + 0.04 * wear, 0.06 + 0.24 * wear,
 						axis,
 						ScaffoldJitterRange( name, "bronze_wearcontrast", 1.3, 2.1 ),
-						ScaffoldJitterRange( name, "bronze_wearseed", 0.0, 100.0 ) ) } );
+						ScaffoldJitterRange( name, "bronze_wearseed", 0.0, 100.0 ), false ) } );
 
 				out.chunks.push_back( { "cooktorrance_material", nMat,
 					ScaffoldCookTorranceText( nMat, nPatina, nTone, nFacets ) } );
@@ -27975,6 +28028,15 @@ namespace RISE
 			// believed them would go looking for a chunk that does not exist.
 			std::vector<std::string> reboundSlots;
 
+			// Which chunk kind to emit -- MicrosurfaceKindUsesColourPipe_ is the
+			// SAME predicate FormatConstantMicrosurfaceClause_ uses to name it in
+			// the design note, so the two can never disagree about what this call
+			// actually does. Declared at this scope (not inside the splice block
+			// below) because the External-authority refusal message and the
+			// success/attribution paths after the commit also need it.
+			const bool colourPipe = MicrosurfaceKindUsesColourPipe_( pick->kind );
+			const std::string fieldChunkKind = colourPipe ? "expression_painter" : "scalar_painter";
+
 			// ---- (4) Rebind the primary roughness slot(s), THEN splice the field
 			// chunk in ahead of the material.
 			//
@@ -28012,12 +28074,12 @@ namespace RISE
 				const std::string chunkText = BuildRoughnessFieldScalarPainterText(
 					fieldName, lo, hi,
 					VaryFieldScaleFor_( pick->name ), VaryContrastFor_( pick->name ),
-					VarySeedFor_( pick->name ) );
+					VarySeedFor_( pick->name ), colourPipe );
 				const RISE::Cst::Document spliced =
 					CollapseSpliceChunkAt_( work, pick->itemIndex, chunkText );
 				if( RISE::Cst::DocItemCount( spliced ) == RISE::Cst::DocItemCount( work ) ) {
-					out.message = "vary_material refused: internal -- the generated scalar_painter chunk "
-						"did not parse; nothing changed";
+					out.message = "vary_material refused: internal -- the generated `" + fieldChunkKind +
+						"` chunk did not parse; nothing changed";
 					return out;
 				}
 				work = spliced;
@@ -28062,8 +28124,9 @@ namespace RISE
 				// refusal names the staged steps that DO exist.
 				out.message = "vary_material refused: this session is External-authority, and this verb has "
 					"no staged-proposal form (it is ONE composite document swap, not a single chunk edit an "
-					"Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk a "
-					"`scalar_painter { expression ... }` field chunk, then propose_patch `" +
+					"Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk a `" +
+					fieldChunkKind + " { " + ( colourPipe ? "expr" : "expression" ) + " ... }` field chunk, "
+					"then propose_patch `" +
 					( pick->roughnessSlots.empty() ? std::string( "roughness" ) : pick->roughnessSlots[0] ) +
 					"` on `" + pick->name + "` to its name -- document unchanged";
 				return out;
@@ -28147,8 +28210,8 @@ namespace RISE
 						slots += s;
 					}
 					m = "`" + pick->name + "` (" + pick->kind + ") now varies: its " + slots +
-						" is bound to `" + fieldName + "`, a scalar_painter expression whose fbm wear field "
-						"is banded " + MicrosurfaceFmt_( lo ) + " .. " + MicrosurfaceFmt_( hi ) +
+						" is bound to `" + fieldName + "`, a " + fieldChunkKind + " expression whose fbm wear "
+						"field is banded " + MicrosurfaceFmt_( lo ) + " .. " + MicrosurfaceFmt_( hi ) +
 						" around the " + MicrosurfaceFmt_( pick->roughness ) + " that was there -- ONE full "
 						"re-derive, ONE undo step. Retune it with propose_patch on the named params "
 						"(rough_lo, rough_hi, field_scale, field_contrast) or the `seed`; the same idiom "
@@ -28177,7 +28240,7 @@ namespace RISE
 			// landed.  `diagnosed` counts, per ResultMutatedDocument_: code 3 DID
 			// mutate.
 			if( ResultMutatedDocument_( commit ) )
-				AttributeChunkToActiveElement_( fieldName, "scalar_painter" );
+				AttributeChunkToActiveElement_( fieldName, fieldChunkKind );
 
 			return out;
 		}

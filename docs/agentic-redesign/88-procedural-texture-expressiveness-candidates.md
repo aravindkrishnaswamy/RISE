@@ -6,10 +6,15 @@ S3 (afe1a4cc), S4 (86ebc7a0), S4b (efc54324), S5 (1161e66d) shipped; S6's
 OFFLINE half (rich_material_closeup scenario + fixture, the additive
 expression-family census metric on both bare_prompt_build scenarios, harness
 unit coverage, T10 + full suite green) shipped 2026-08-20 — see §10 for the
-run protocol.  The LIVE half (actually running the census against a hosted
-model and reading the §5 gates) has NOT run in this environment (no API
-keys) and is the next action item in §10.  §1's gap table describes the
-PRE-ARC state.**
+run protocol.  Gate (c)'s OWN scenario (`constant_materials_polish` — a
+starting scene with three flat-roughness materials, a prompt naming neither
+the mechanism nor the verb, and a `toolCallCount` trajectory checkpoint that
+census-counts `vary_material` calls) shipped 2026-08-20 too — gate (c) is no
+longer "out of scope for this slice" (§10's earlier text); it is measurable
+by the same live run as (a)/(b), see §10.  The LIVE half (actually running
+the census against a hosted model and reading the §5 gates) has NOT run in
+this environment (no API keys) and is the next action item in §10.  §1's
+gap table describes the PRE-ARC state.**
 
 This is the texture half of the directive that closed the creative-richness arc
 (CREATIVITY_JOURNAL.md, closing line: *"build even more expressive geometry and
@@ -417,8 +422,12 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
   gemini-3.5-flash + one cross-provider check; evaluate the §5 gates; write
   the arc log.  **Offline half shipped 2026-08-20** (scenario + fixture +
   checkpoint extensions + harness coverage, all keyless/replay-only — see
+  §10).  **Gate (c)'s scenario shipped 2026-08-20 too** (`constant_materials_polish`
+  + its fixture + the new `toolCallCount` trajectory checkpoint op, wired
+  into both `s6_census_gemini.json` and `s6_census_crossprovider.json` — see
   §10); the live half (actually running N=3 against a hosted model and
-  reading the gates) is the pending next action, tracked in §10.
+  reading all three gates, now including (c)) is the pending next action,
+  tracked in §10.
 
 Sequencing: S1→S2 strictly ordered; S3 can overlap S2 reviews; S4 after S2;
 S5 after S2+S3 (examples must parse against shipped chunks); S6 last.
@@ -439,7 +448,12 @@ The handoff for whoever runs the live half (a keyed session, or a human)
 with zero rediscovery.  Everything below the live-run commands has already
 been built and gated keylessly in this environment (no API keys were
 available here) — see the "offline half shipped 2026-08-20" status line at
-the top of this doc.
+the top of this doc.  **All THREE §5 gates are now measurable off one live
+run** (2026-08-20 update): gate (c)'s own scenario shipped alongside (a)/(b)'s
+and is wired into both runconfigs below — the "gate (c) out of scope for
+this slice" / "gate (c) separately tracked" language from the original
+version of this section is gone; read all three off the SAME
+`s6_census_gemini`/`s6_census_crossprovider` run.
 
 ### What's already in place
 
@@ -475,9 +489,59 @@ the top of this doc.
   are ALL literally true of its own committed fixture — `rich_material_closeup`
   and the two edited bare_prompt scenarios are covered automatically, no
   hard-coded id list to update.
+- **`evals/scenarios/constant_materials_polish.json`** — the new gate-(c)
+  scenario.  Unlike `rich_material_closeup` (an EMPTY starting scene the
+  model builds from scratch), this one's `scene.inline` is an
+  ALREADY-BUILT scene carrying three `ggx_material` chunks whose
+  `alphax`/`alphay` are bare numeric constants (0.3/0.25/0.4), each bound to
+  its own `standard_object` — exactly `AgentSession`'s
+  `kMicrosurfaceKinds`/`kConstantMicrosurfaceGate=3` predicate
+  (`src/Library/Agent/AgentSession.cpp`'s `ComputeDesignNoteConditionsFromDoc_`),
+  so design-note condition D fires on the document's VERY FIRST render — no
+  build-up needed across turns.  The prompt ("The materials in this scene
+  feel flat and uniform — make them feel physically real.") names neither
+  the mechanism nor the verb.  Checkpoint battery: the HEADLINE is a
+  `trajectory` checkpoint with the new `toolCallCount` field
+  (`{"name":"vary_material","min":1}`, metricLabel `vary_material_calls`,
+  weight 3) — this is the literal gate-(c) measurement, "was `vary_material`
+  called at least once in this run"; alongside it, an
+  `any_param_references_kind:scalar_painter` document checkpoint (metricLabel
+  `spatially_varying_scalar`, the SAME check gate (a) uses, so the two
+  scenarios' census numbers read on one vocabulary) proving a
+  spatially-varying binding actually landed, plus the usual chunk_count/
+  render/diagnostics/trajectory structural battery (`requiredToolInOrder:
+  ["render","vary_material"]` — the literal "note fires, then the verb is
+  called" sequencing).  Paired fixture:
+  `evals/fixtures/constant_materials_polish.fixture.jsonl` (render → note
+  fires → `vary_material` → render → done — proven by T10 below; the
+  luminaire's `scale` was tuned 30.0 → 9.0 to land the render checkpoint's
+  meanLuma band, see the checkpoint's own inline comment).
+- **`src/Library/Agent/AgentEvalRunner.cpp`**'s `trajectory` checkpoint kind gained the
+  `toolCallCount` field (`{name, min, max?}`) — the gate-(c) census
+  primitive, generalizing the existing `askUserMin`/`askUserMax` counting
+  shape to any named tool.  It is the ONE `trajectory` field that populates
+  `CheckOutcome::metricValue` (an explicit, non-empty `metricLabel` is
+  REQUIRED on it for exactly that reason — unlike a `document` op it has no
+  `op` name for the cross-checkpoint metricLabel-dedupe pass to fall back
+  to).  Both the per-field doc comment on
+  `ValidateTrajectoryCheckpointTypes` and the metric-op enumeration comment
+  above `ValidateCheckpointFieldTypes` (previously "today only five
+  `document` ops ... populate a metricValue") now name it.
+- **`tests/AgentEvalCheckTest.cpp`** — `TestToolCallCountLoaderValidation`
+  (T-tcc(a)) exercises every load-time validation rule the new field carries
+  (missing/empty/wrong-typed `name`, missing/negative `min`, an inverted
+  `max<min` band, the required `metricLabel`, and a metricLabel-collision
+  RED case mirroring `param_binding`'s); `TestTrajectoryToolCallCountAssertion`
+  (T-tcc(b)) drives it through REAL `RunScenario` runs (one call, zero calls,
+  two calls; min/max bounds both directions; metricValue reported on BOTH
+  the pass and the fail branch, mirroring `any_param_references_kind`'s
+  CheckDocumentKind precedent; a DIFFERENT tool name observing zero, proving
+  the count is keyed on `name`).
 - **`evals/runconfigs/s6_census_gemini.json`** and
-  **`s6_census_crossprovider.json`** — the two runconfigs below, already
-  written and JSON-valid.
+  **`s6_census_crossprovider.json`** — the two runconfigs below, now
+  carrying FOUR scenarios each (rich_material_closeup,
+  bare_prompt_build_courtyard, bare_prompt_build_cozy_study,
+  constant_materials_polish), already written and JSON-valid.
 
 ### Commands
 
@@ -504,8 +568,8 @@ python3 tools/eval_report.py report evals/runs/s6_census_crossprovider
 Both runconfigs are idempotent-resumable (`evals/README.md` "Resume /
 skip-if-completed") — re-running the same command after a partial/crashed
 run only executes the missing cells.  Read the `spatially_varying_scalar`,
-`expression_family`, and `painter_kinds` metric columns from
-`tools/eval_report.py`'s per-checkpoint breakdown (or the raw
+`expression_family`, `painter_kinds`, and `vary_material_calls` metric
+columns from `tools/eval_report.py`'s per-checkpoint breakdown (or the raw
 `<runDir>/.../results.jsonl` `checkpoints[].metricValue`/`metricLabel`
 fields) — these are the census numbers the three gates below read, not the
 scenarios' `allPassed`/pass@1 (which also folds in the unrelated structural
@@ -520,7 +584,10 @@ checks).
 > (the collapse_to_instances hypothesis, currently unmeasured).  Miss all
 > three → the mechanism is wrong, stop and re-diagnose before adding chunks.
 
-Reading each gate off the census output:
+Reading each gate off the census output — **all three are now measured by
+the SAME `s6_census_gemini`/`s6_census_crossprovider` run** (gate (c)'s
+"currently unmeasured" parenthetical above is the pre-2026-08-20 state; the
+scenario now exists):
 
 - **Gate (a)**: over the 3 `rich_material_closeup` repeats (gemini arm),
   count how many have `spatially_varying_scalar` (the
@@ -537,45 +604,89 @@ Reading each gate off the census output:
   hit, since these scenarios' fixtures predate `expression_painter`/
   `ramp_painter` and read `0` today by construction (see the checkpoint's
   own inline comment in both scenario files).
-- **Gate (c)**: `vary_material` census is OUT OF SCOPE for this slice — it
-  needs its own scenario exercising the verb-naming note + verb call, not
-  built here.  Tracked as a follow-up; do not read it off `s6_census_*`.
+- **Gate (c)**: over the 3 `constant_materials_polish` repeats (gemini arm),
+  count how many have `vary_material_calls` (the `toolCallCount` trajectory
+  checkpoint, `{"name":"vary_material","min":1}`) passing —
+  `checkpoints[].passed` where `metricLabel=="vary_material_calls"`, which is
+  identical to reading `metricValue >= 1` on that same checkpoint (the
+  checkpoint's own `min:1` bound IS the ">= 1 call" test).  Need ≥1/3.  This
+  scenario's starting scene already carries three all-numeric-microsurface
+  `ggx_material` chunks, so design-note condition D — and therefore the
+  note naming `vary_material` — fires on the run's FIRST `render` call, not
+  something that has to accumulate across a multi-turn build; a run that
+  never calls `vary_material` after that first render is a genuine miss, not
+  an artifact of the note not having fired yet.
 
 ### What to do on each outcome
 
-- **All measured gates ((a) and (b)) hit their bar on the gemini arm**: run
-  the cross-provider check.  If it agrees (same qualitative verdict, not
-  necessarily the same exact fraction), the offline harness's job is done —
-  write the arc log entry (mirror the style of the 73–85 arc logs already in
-  this repo: what was measured, the numbers, the verdict) and update this
-  doc's status line.  Phase 1's adoption-wiring mechanism is validated;
-  Phase 2 breadth work (§5) can proceed.
-- **A measured gate misses on the gemini arm**: run the cross-provider check
-  BEFORE concluding anything (C-MEAS).  If the second provider ALSO misses,
-  this is very likely a real null, not an instrument quirk — do not add more
-  chunks or expand the vocabulary (§6's rejected-alternatives discipline);
-  instead re-diagnose why the mechanism (verb + naming note, painter
-  diversity already proven to move on worked examples per C-TYPE) isn't
-  reaching this specific gate, the same way the 2026-05/06 VCM-MIS arc
-  re-diagnosed instead of re-guessing.  If the second provider PASSES where
-  gemini missed, this is a single-instrument artifact — widen the
-  cross-provider run to N=3 there too before treating either number as the
-  headline, and consider whether gemini-3.5-flash specifically needs its own
-  worked example (mirroring the `procedural-textures.md` 0/6-read lesson:
-  the fix is usually in the read-set, not the mechanism).
-- **Both measured gates miss on BOTH providers**: this is strong evidence
-  the mechanism is wrong, but it is NOT §5's stop condition on its own —
-  §5 reads "miss all three", and gate (c) is unmeasured by this slice (it
-  is out of scope per the note above, tracked as a follow-up).  Do not
-  invoke the stop rule off two gates.  The correct next action is to build
-  and run the gate-(c) scenario (the `vary_material` census follow-up
-  flagged above) BEFORE deciding whether all three have actually missed —
-  only then does §5 literally apply.  Surface the (a)+(b) double-miss to
-  the user either way (it is worth flagging on its own merits, gate (c)
-  notwithstanding); do not silently sit on it while gate (c) is pending,
-  and do not weaken §5's own three-gate wording to match a two-gate
-  reading.
-- **Gate (c) is separately tracked**: build its scenario (a note-fires-then-
-  verb-called census over a scene with an all-numeric-microsurface material,
-  matching the `collapse_to_instances` precedent's measurement shape) as a
-  follow-up slice; it does not block reading (a)/(b) above.
+- **All three gates hit their bar on the gemini arm**: run the cross-provider
+  check.  If it agrees (same qualitative verdict, not necessarily the same
+  exact fraction), the offline harness's job is done — write the arc log
+  entry (mirror the style of the 73–85 arc logs already in this repo: what
+  was measured, the numbers, the verdict) and update this doc's status line.
+  Phase 1's adoption-wiring mechanism is validated; Phase 2 breadth work (§5)
+  can proceed.
+- **A gate misses on the gemini arm**: run the cross-provider check BEFORE
+  concluding anything (C-MEAS).  If the second provider ALSO misses, this is
+  very likely a real null, not an instrument quirk — do not add more chunks
+  or expand the vocabulary (§6's rejected-alternatives discipline); instead
+  re-diagnose why the mechanism (verb + naming note, painter diversity
+  already proven to move on worked examples per C-TYPE) isn't reaching this
+  specific gate, the same way the 2026-05/06 VCM-MIS arc re-diagnosed
+  instead of re-guessing.  If the second provider PASSES where gemini
+  missed, this is a single-instrument artifact — widen the cross-provider
+  run to N=3 there too before treating either number as the headline, and
+  consider whether gemini-3.5-flash specifically needs its own worked
+  example (mirroring the `procedural-textures.md` 0/6-read lesson: the fix
+  is usually in the read-set, not the mechanism).  A gate-(c) miss
+  specifically ("the note fired zero `vary_material` calls across all 3
+  repeats") is the `collapse_to_instances`-style null §5's parenthetical
+  anticipated — read it exactly like an (a)/(b) miss, not as some lesser
+  signal, now that it carries the same N=3-repeats measurement shape.
+- **All three gates miss on BOTH providers**: §5's literal stop condition —
+  "miss all three → the mechanism is wrong, stop and re-diagnose before
+  adding chunks."  This is no longer a two-gate reading propped up by a
+  pending follow-up (the pre-2026-08-20 state of this section, when gate
+  (c) had no scenario yet): all three gates now come off the SAME run, so a
+  clean triple-miss on both providers is the real, fully-measured signal §5
+  describes.  Do not add more chunks or expand the vocabulary; re-diagnose
+  the mechanism itself per §6's discipline.
+- **Some gates miss, some hit, on BOTH providers**: NOT §5's stop condition
+  (that reads "miss all three").  Surface the partial result to the user —
+  which gate(s) hit, which missed, on which provider — and treat each
+  missing gate per the "a gate misses" bullet above.  A mechanism that lands
+  gate (a) (the model reaches for the scalar pipe when texture richness IS
+  the task) but misses gate (c) (the model doesn't reach for `vary_material`
+  specifically when a design note names it) is real, actionable information
+  about WHICH half of the adoption story needs work, not a reason to invoke
+  the all-three stop rule.
+
+## 11. Census results
+
+**Round 1 (2026-08-20, gemini-3.5-flash, N=3, gemini-only per user
+scoping; run dir `evals/runs/s6_census_gemini`):**
+
+- **Gate (a): PASS 3/3.**  `rich_material_closeup`
+  `metric[spatially_varying_scalar] = 1.00` — every run bound a
+  spatially-varying microsurface scalar unprompted.  The 0/24 lifetime
+  deficit is closed when the task summons material work.
+- **Gate (b): MISS, provisional.**  Both bare-prompt builds read
+  `metric[expression_family] = 0.00` (no spontaneous expression/ramp use)
+  and `metric[painter_kinds]` mean 2.33 (< the ≥3 floor).  Provisional
+  because §10's own protocol requires a cross-provider check before
+  believing a null and this round was scoped to gemini only.  Consistent
+  with the summoned-category law (generic prompts don't summon texture
+  work).
+- **Gate (c): unmeasured in round 1** (scenario shipped after the run);
+  `constant_materials_polish` is wired into the runconfig for round 2.
+- **Bonus finding:** one run drove `vary_material` against a
+  `pbr_metallic_roughness_material` and the derive gate refused — pbr
+  resolves `roughness` in the COLOUR painter manager, so the verb's
+  scalar_painter emission was invisible to it.  Refusal semantics held
+  (document byte-identical).  Fixed same-day: the verb emits an
+  `expression_painter` for pbr (colour pipe; PainterToScalarAdapter reads
+  only GetColor, so no uplift distortion), shared-predicate-consistent
+  with condition D's clause text.
+- Per the pre-committed rules, gate (a)'s pass means Phase 2 proceeds;
+  gate (b)'s tuning continues via measurement, and the toll decision
+  (§7 decision 2) still waits on gate (c).

@@ -1073,7 +1073,20 @@ namespace RISE
 			//!    -- OR an ARRAY of such spec objects,
 			//!  askUserMin?/askUserMax?:number (whole, >= 0),
 			//!  askUserBeforeMutation?:bool,
-			//!  askUserQuestionContainsAny?:non-empty string array}.  toolOutcomes.expect (and
+			//!  askUserQuestionContainsAny?:non-empty string array,
+			//!  toolCallCount?: {name:string, min:number, max?:number}}.  88 S6
+			//!  (2026-08-20): `toolCallCount` is the doc-88 §5 gate-(c) census
+			//!  primitive -- "how many times was tool `name` called in this
+			//!  trajectory" -- generalizing the askUserMin/askUserMax counting
+			//!  shape to any named tool.  `name` is REQUIRED (a missing name never
+			//!  matches); `min` is REQUIRED (an unbounded count checkpoint asserts
+			//!  nothing, same rule `objects_reaching_kinds`'s "min" enforces);
+			//!  `max`, when present, must be >= min.  Unlike every other
+			//!  trajectory field, `toolCallCount` POPULATES CheckOutcome's
+			//!  metricValue (the observed count) -- see the carriesMetric dedupe
+			//!  pass in LoadEvalScenario and the metric-op enumeration comment
+			//!  above ValidateCheckpointFieldTypes, BOTH of which this field
+			//!  extends alongside the five "document" ops. toolOutcomes.expect (and
 			//!  the optional toolCallAfterUserTurn.expect) is one of
 			//!  applied|staged|rejected|error|conflict; argsContains (when
 			//!  present) is a non-empty string OR a non-empty array of non-empty
@@ -1121,6 +1134,57 @@ namespace RISE
 							      "].askUserQuestionContainsAny[" + std::to_string( i ) + "] must be a non-empty string";
 							return false;
 						}
+					}
+				}
+
+				// toolCallCount: {name:string (required), min:number (required),
+				// max?:number} -- the gate-(c) census primitive (88 S6).  `name`
+				// missing/empty never matches anything, so it is REQUIRED; `min` is
+				// REQUIRED for the identical reason `objects_reaching_kinds`' "min"
+				// is required -- an unbounded count checkpoint asserts nothing and
+				// would vacuously pass every trajectory.  `max`, when present, must
+				// be >= min (an inverted band can never pass).
+				if( cp.has( "toolCallCount" ) ) {
+					const JsonValue& tcc = cp.get( "toolCallCount" );
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].toolCallCount";
+					if( !tcc.isObject() ) {
+						err = pfx + " must be an object (got " + JsonTypeName( tcc.type() ) + ")";
+						return false;
+					}
+					if( !tcc.has( "name" ) || !tcc.get( "name" ).isString() || tcc.get( "name" ).asString().empty() ) {
+						err = pfx + ".name must be a non-empty string";
+						return false;
+					}
+					if( !tcc.has( "min" ) || !tcc.get( "min" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"min\" (an unbounded count checkpoint asserts nothing)";
+						return false;
+					}
+					if( tcc.get( "min" ).asNumber() < 0 ) {
+						err = pfx + ".min must be >= 0 (a call COUNT can never be negative)";
+						return false;
+					}
+					if( tcc.has( "max" ) ) {
+						if( !tcc.get( "max" ).isNumber() ) {
+							err = pfx + ".max, when present, must be a number";
+							return false;
+						}
+						if( tcc.get( "max" ).asNumber() < tcc.get( "min" ).asNumber() ) {
+							err = pfx + ".max must be >= .min (an inverted band can never pass)";
+							return false;
+						}
+					}
+					// Unlike a "document" op, a "trajectory" checkpoint has no "op"
+					// name for the metricLabel dedupe pass (LoadEvalScenario) to fall
+					// back to -- so an explicit, non-empty "metricLabel" is REQUIRED
+					// here (never optional) to keep the census metric this field
+					// exists to report nameable and to keep two toolCallCount
+					// checkpoints in one scenario from silently colliding on an
+					// empty label.
+					if( !cp.has( "metricLabel" ) || !cp.get( "metricLabel" ).isString() || cp.get( "metricLabel" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "] carries \"toolCallCount\" but no non-empty \"metricLabel\" -- required (trajectory "
+						      "checkpoints have no \"op\" name to fall back to)";
+						return false;
 					}
 				}
 
@@ -1355,6 +1419,8 @@ namespace RISE
 			//! in principle carry one, even though today only five "document" ops
 			//! (distinct_chunk_kinds / objects_reaching_kinds / param_binding /
 			//! chunk_name_prefix_count / any_param_references_kind, the S6 fix)
+			//! plus the "trajectory" kind's "toolCallCount" field (88 S6, the
+			//! doc-88 §5 gate-(c) census primitive)
 			//! ever populate a metricValue for it to
 			//! label.  An unrecognized kind name is
 			//! left unchecked here too -- CheckOneCheckpoint already fails it
@@ -1623,12 +1689,17 @@ namespace RISE
 				// checkpoint (today: "document" ops "distinct_chunk_kinds",
 				// "objects_reaching_kinds", "param_binding" (S0.1),
 				// "chunk_name_prefix_count" (S2.3), and "any_param_references_kind"
-				// (S6 fix) -- the FIVE CheckOneCheckpoint
+				// (S6 fix) -- the FIVE document ops -- PLUS the "trajectory" kind's
+				// "toolCallCount" field (88 S6, the gate-(c) census primitive) --
+				// the ones CheckOneCheckpoint
 				// populates CheckOutcome::metricValue from) resolves to an
 				// EFFECTIVE label --
 				// its explicit "metricLabel" string when present and non-empty, else
 				// its "op" name (so a single such checkpoint needs no metricLabel at
-				// all).  Two metric-carrying checkpoints in the SAME scenario that
+				// all; "toolCallCount" has no "op" to fall back to, so its own
+				// load-time validation REQUIRES an explicit metricLabel -- see
+				// ValidateTrajectoryCheckpointTypes).  Two metric-carrying checkpoints
+				// in the SAME scenario that
 				// resolve to the same effective label is a load-time HARD ERROR: with
 				// only one metric-carrying op, eval_report.py pooling every
 				// metricValue in a group was a documented latent limitation; with more
@@ -1643,9 +1714,10 @@ namespace RISE
 						const JsonValue& cp = cps.at( i );
 						const std::string cpKind = ( cp.has( "kind" ) && cp.get( "kind" ).isString() ) ? cp.get( "kind" ).asString() : std::string();
 						const std::string cpOp   = ( cp.has( "op" )   && cp.get( "op" ).isString() )   ? cp.get( "op" ).asString()   : std::string();
-						const bool carriesMetric = cpKind == "document" &&
+						const bool carriesMetric = ( cpKind == "document" &&
 							( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" || cpOp == "param_binding" ||
-							  cpOp == "chunk_name_prefix_count" || cpOp == "any_param_references_kind" );
+							  cpOp == "chunk_name_prefix_count" || cpOp == "any_param_references_kind" ) ) ||
+							( cpKind == "trajectory" && cp.has( "toolCallCount" ) );
 						if( !carriesMetric ) continue;
 						std::string label = cpOp;
 						if( cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() && !cp.get( "metricLabel" ).asString().empty() )
@@ -6658,6 +6730,13 @@ namespace RISE
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
 					std::vector<std::string> failures;
+					// toolCallCount's observed count, populated inside the
+					// needsRecords block below when the field is present -- read
+					// again at the function's end to set CheckOutcome::metricValue,
+					// since this is the ONE trajectory field that reports a metric
+					// (88 S6, the gate-(c) census primitive).  -1 means "not computed"
+					// (the field was absent).
+					long long toolCallCountObserved = -1;
 
 					if( cp.has( "maxToolCalls" ) && cp.get( "maxToolCalls" ).isNumber() ) {
 						const double m = cp.get( "maxToolCalls" ).asNumber();
@@ -6679,12 +6758,13 @@ namespace RISE
 						cp.has( "noMechanicalLoop" ) || cp.has( "expectAutonomyRefusal" ) ||
 						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" ) ||
 						cp.has( "askUserMin" ) || cp.has( "askUserMax" ) || cp.has( "askUserBeforeMutation" ) ||
-						cp.has( "askUserQuestionContainsAny" );
+						cp.has( "askUserQuestionContainsAny" ) || cp.has( "toolCallCount" );
 					if( needsRecords ) {
 						if( handle.trajectoryPath.empty() ) {
 							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
 								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/expectAutonomyRefusal/"
-								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation/askUserQuestionContainsAny" );
+								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation/"
+								"askUserQuestionContainsAny/toolCallCount" );
 						} else {
 							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
 							if( !f ) {
@@ -6807,6 +6887,37 @@ namespace RISE
 												"' repeated consecutively (calls " + std::to_string( ti ) + "," + std::to_string( ti + 1 ) + ")" );
 											break;
 										}
+									}
+								}
+
+								// toolCallCount (88 S6, the doc-88 §5 gate-(c) census
+								// primitive): count tool records named `toolCallCount.name`
+								// -- the SAME counting shape askUserMin/askUserMax use
+								// below, generalized to any tool.  Unlike every other
+								// trajectory assertion, this ALSO populates
+								// toolCallCountObserved so the function's final return can
+								// set CheckOutcome::metricValue -- the mechanism gate (c)
+								// reads per-run ("was vary_material called") before an
+								// external pass counts how many of N repeats hit it.
+								if( cp.has( "toolCallCount" ) && cp.get( "toolCallCount" ).isObject() ) {
+									const JsonValue& tcc = cp.get( "toolCallCount" );
+									const std::string wantName = tcc.get( "name" ).asString();
+									long long count = 0;
+									for( const auto& t : toolRecords )
+										if( t.get( "name" ).asString() == wantName ) ++count;
+									toolCallCountObserved = count;
+
+									if( tcc.has( "min" ) && tcc.get( "min" ).isNumber() ) {
+										const long long wantMin = static_cast<long long>( tcc.get( "min" ).asNumber() );
+										if( count < wantMin )
+											failures.push_back( "toolCallCount: '" + wantName + "' observed " + std::to_string( count ) +
+												" call(s), want >= " + std::to_string( wantMin ) );
+									}
+									if( tcc.has( "max" ) && tcc.get( "max" ).isNumber() ) {
+										const long long wantMax = static_cast<long long>( tcc.get( "max" ).asNumber() );
+										if( count > wantMax )
+											failures.push_back( "toolCallCount: '" + wantName + "' observed " + std::to_string( count ) +
+												" call(s), want <= " + std::to_string( wantMax ) );
 									}
 								}
 
@@ -7102,11 +7213,23 @@ namespace RISE
 						}
 					}
 
+					// toolCallCount is the ONE trajectory field that reports a
+					// metric (88 S6) -- populate CheckOutcome::metricValue on BOTH
+					// the pass and fail branches below (mirrors
+					// any_param_references_kind's CheckDocumentKind branches:
+					// the census number is worth reporting even when this
+					// checkpoint's OTHER assertions, if any, failed).
 					if( !failures.empty() ) {
 						std::string detail; for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
-						return { false, detail };
+						CheckOutcome oc; oc.passed = false; oc.detail = detail;
+						if( toolCallCountObserved >= 0 ) { oc.hasMetricValue = true; oc.metricValue = static_cast<double>( toolCallCountObserved ); }
+						return oc;
 					}
-					return { true, "trajectory assertion(s) satisfied" };
+					{
+						CheckOutcome oc; oc.passed = true; oc.detail = "trajectory assertion(s) satisfied";
+						if( toolCallCountObserved >= 0 ) { oc.hasMetricValue = true; oc.metricValue = static_cast<double>( toolCallCountObserved ); }
+						return oc;
+					}
 				}
 
 				//! "finalText": {containsAll?/containsAny?/absent?:string array,

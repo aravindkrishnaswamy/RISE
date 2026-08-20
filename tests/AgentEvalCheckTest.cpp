@@ -5344,6 +5344,278 @@ static void TestTrajectoryAskUserAssertions()
 }
 
 //----------------------------------------------------------------------
+// T-tcc(a): "trajectory" checkpoint's "toolCallCount" field -- 88 S6, the
+// doc-88 §5 gate-(c) census primitive ("when the note fires, the verb is
+// called in >=1/3 runs").  LoadEvalScenario validation: name/min required,
+// min/max sign+ordering guards (mirrors objects_reaching_kinds' "min"), and
+// the metricLabel requirement THIS field carries that no other trajectory
+// field does (no "op" name to fall back to for the cross-checkpoint dedupe
+// pass -- see the field's own doc comment on ValidateTrajectoryCheckpointTypes).
+//----------------------------------------------------------------------
+static void TestToolCallCountLoaderValidation()
+{
+	std::printf( "T-tcc(a): LoadEvalScenario validates the trajectory \"toolCallCount\" field LOUDLY...\n" );
+	const std::string dir = ScratchRunDir( "t_tcc_loader" );
+
+	auto writeAndLoad = [&]( const std::string& id, const std::string& checkpointsJson, std::string& err ) -> bool {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		if( !JsonParse( checkpointsJson, cps, perr ) ) { err = "checkpoints JSON itself does not parse: " + perr; return false; }
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		AgentEvalScenario s;
+		return LoadEvalScenario( path, s, err );
+	};
+
+	// toolCallCount must be an OBJECT.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_not_object",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":\"nope\",\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount as a bare string FAILS to load" );
+		Check( err.find( "toolCallCount" ) != std::string::npos,
+			"the load error names \"toolCallCount\" (got: " + err + ")" );
+	}
+	// name missing entirely.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_missing_name",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"min\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount missing \"name\" FAILS to load" );
+		Check( err.find( "name" ) != std::string::npos,
+			"the load error names \"name\" (got: " + err + ")" );
+	}
+	// name empty string.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_empty_name",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"\",\"min\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with an EMPTY \"name\" FAILS to load" );
+		Check( err.find( "name" ) != std::string::npos,
+			"the load error names \"name\" (got: " + err + ")" );
+	}
+	// name wrong type.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_wrong_type_name",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":5,\"min\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with a NUMBER \"name\" FAILS to load" );
+	}
+	// min missing entirely -- an unbounded count checkpoint asserts nothing.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_missing_min",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\"},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount missing \"min\" FAILS to load" );
+		Check( err.find( "min" ) != std::string::npos,
+			"the load error names \"min\" (got: " + err + ")" );
+	}
+	// min negative -- a call COUNT can never be negative.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_negative_min",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":-1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with a NEGATIVE \"min\" FAILS to load" );
+		Check( err.find( "never be negative" ) != std::string::npos,
+			"the load error explains a count can never be negative (got: " + err + ")" );
+	}
+	// max < min -- an inverted band can never pass.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_inverted_band",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":3,\"max\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with max(1) < min(3) FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// max wrong type.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_max_wrong_type",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":\"lots\"},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with a STRING \"max\" FAILS to load" );
+	}
+	// metricLabel REQUIRED -- unlike every other trajectory field, toolCallCount
+	// has no "op" name for the dedupe pass to fall back to.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_missing_metriclabel",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1}}]", err ),
+			"toolCallCount with NO metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// metricLabel present but empty -- same rule as absent.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_empty_metriclabel",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"\"}]", err ),
+			"toolCallCount with an EMPTY metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// The fully-correct checkpoint loads cleanly.
+	{
+		std::string err;
+		Check( writeAndLoad( "tcc_good",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},"
+			"\"metricLabel\":\"vary_material_calls\",\"weight\":0}]", err ),
+			"a correctly-shaped toolCallCount checkpoint loads cleanly (" + err + ")" );
+	}
+	// The fully-correct checkpoint with an explicit max loads cleanly too.
+	{
+		std::string err;
+		Check( writeAndLoad( "tcc_good_with_max",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":5},"
+			"\"metricLabel\":\"vary_material_calls\"}]", err ),
+			"a correctly-shaped toolCallCount checkpoint with max loads cleanly (" + err + ")" );
+	}
+	// metricLabel COLLISION: two toolCallCount checkpoints in the same
+	// scenario resolving to the SAME effective label is a hard load error
+	// (the SAME cross-checkpoint dedupe pass distinct_chunk_kinds/
+	// param_binding/etc. participate in).
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_label_collision",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0},\"metricLabel\":\"dup\"},"
+			"{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"collapse_to_instances\",\"min\":0},\"metricLabel\":\"dup\"}]", err ),
+			"two toolCallCount checkpoints with the SAME metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Two toolCallCount checkpoints with DISTINCT metricLabels load fine.
+	{
+		std::string err;
+		Check( writeAndLoad( "tcc_distinct_labels",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0},\"metricLabel\":\"a\"},"
+			"{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"collapse_to_instances\",\"min\":0},\"metricLabel\":\"b\"}]", err ),
+			"two toolCallCount checkpoints with DISTINCT metricLabels load cleanly (" + err + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-tcc(b): "toolCallCount" driven through a REAL RunScenario run --
+// counts a NAMED tool's occurrences, reports the count as metricValue
+// (the ONE trajectory field that does), and min/max bound it the same way
+// askUserMin/askUserMax bound "ask_user".  This is the gate-(c) mechanism:
+// a scenario that reproduces "the note fired, was the verb called" reads
+// this checkpoint's metricValue per run, then a report tool counts how
+// many of N repeats have metricValue >= 1.
+//----------------------------------------------------------------------
+static void TestTrajectoryToolCallCountAssertion()
+{
+	std::printf( "T-tcc(b): \"trajectory\" checkpoint toolCallCount, driven through a REAL run...\n" );
+	const std::string dir = ScratchRunDir( "t_tcc_trajectory" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& base, const std::string& cpJson,
+	                      bool expectPass, const std::string& label,
+	                      bool expectMetric = false, double expectMetricValue = 0.0,
+	                      const std::string& expectMetricLabel = std::string() ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = base; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() != 1 ) { Check( false, label + ": expected exactly one checkpoint result" ); return; }
+		Check( r.checkpoints[0].passed == expectPass,
+			label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+			" (detail: " + r.checkpoints[0].detail + ")" );
+		if( expectMetric ) {
+			Check( r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+			Check( r.checkpoints[0].metricValue == expectMetricValue,
+				label + ": metricValue == " + std::to_string( expectMetricValue ) +
+				" (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			if( !expectMetricLabel.empty() )
+				Check( r.checkpoints[0].metricLabel == expectMetricLabel,
+					label + ": metricLabel == '" + expectMetricLabel + "' (got '" + r.checkpoints[0].metricLabel + "')" );
+		}
+	};
+
+	// Run A: exactly ONE vary_material call (a bare, no-argument call --
+	// kScene's sole material is lambertian_material, which has no
+	// microsurface slot, so this call REFUSES -- toolCallCount counts the
+	// CALL, not the outcome, mirroring what gate (c) actually reads: "the
+	// verb is called", not "the verb succeeded").
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Varying the material.",
+			{ { "vary_material", EmptyInput() } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "tcc_one_call", kScene, "Make the materials feel less flat", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "tcc_one_call: run reached final_text" );
+		Check( h.result.toolCalls == 1, "tcc_one_call: exactly 1 tool call (vary_material)" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"vmc\"}]",
+			true, "min:1 PASSES with exactly one vary_material call", true, 1.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":2},\"metricLabel\":\"vmc\"}]",
+			false, "min:2 FAILS with only one vary_material call -- but the metric is STILL reported",
+			true, 1.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":1},\"metricLabel\":\"vmc\"}]",
+			true, "min:0/max:1 PASSES with exactly one call", true, 1.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":0},\"metricLabel\":\"vmc\"}]",
+			false, "max:0 FAILS with one call", true, 1.0, "vmc" );
+		// A DIFFERENT tool name observes zero -- proves the count is really
+		// keyed on "name", not "any tool call at all".
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"collapse_to_instances\",\"min\":0,\"max\":0},\"metricLabel\":\"cti\"}]",
+			true, "a DIFFERENT tool name counts zero (collapse_to_instances was never called)", true, 0.0, "cti" );
+	}
+
+	// Run B: ZERO vary_material calls -- the metric reads 0, min:1 fails.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Just rendering.",
+			{ { "render", EmptyInput() } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "tcc_zero_calls", kScene, "Render the scene", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "tcc_zero_calls: run reached final_text" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"vmc\"}]",
+			false, "min:1 FAILS -- zero vary_material calls occurred", true, 0.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0},\"metricLabel\":\"vmc\"}]",
+			true, "min:0 PASSES trivially on zero calls", true, 0.0, "vmc" );
+	}
+
+	// Run C: MULTIPLE vary_material calls in one trajectory -- the count is
+	// a real tally, not a presence flag.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "First pass.",
+			{ { "vary_material", EmptyInput() } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Second pass.",
+			{ { "vary_material", EmptyInput() } }, "tool_use" );
+		const std::string r3 = AnthropicBody( "msg_3", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "tcc_two_calls", kScene, "Vary it twice", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) + JsonlLine( "anthropic", r3 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "tcc_two_calls: run reached final_text" );
+		Check( h.result.toolCalls == 2, "tcc_two_calls: exactly 2 tool calls (both vary_material)" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"vmc\"}]",
+			true, "min:1 PASSES (2 >= 1)", true, 2.0, "vmc" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T-ask(d): ScenarioContentHash sensitivity to askUserResponses.
 // ScenarioContentHash itself is file-local (anonymous namespace) to
 // AgentEvalRunner.cpp, so this drives it BLACK-BOX through the one place
@@ -7881,6 +8153,8 @@ int main()
 	TestAskUserScriptedResponderMatching();
 	TestAskUserLoaderValidation();
 	TestTrajectoryAskUserAssertions();
+	TestToolCallCountLoaderValidation();
+	TestTrajectoryToolCallCountAssertion();
 	TestScenarioContentHashAskUserResponsesSensitivity();
 	TestAdversarialControlNeverAsksStillBuilds();
 	TestMaterialRichnessCheckpoints();

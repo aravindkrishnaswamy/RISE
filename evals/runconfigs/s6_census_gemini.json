@@ -1,9 +1,10 @@
 {
-  "//": "doc 88 S6 eval census, primary instrument (2026-08-20). gemini-3.5-flash is the SAME instrument bare_prompt_baseline.json was measured on (2026-07-29 user decision) -- keeping this comparable to that prior series. Scores the three Phase-1 gate-relevant scenarios: rich_material_closeup (gate a), and the two bare_prompt_build scenarios (gate b, painter-kind diversity floor + the additive expression_family/spatially_varying_scalar metrics). Run this FIRST; if any gate reads a surprising null (0/3), run s6_census_crossprovider.json on a second provider before concluding the mechanism failed -- see docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md §10.",
+  "//": "doc 88 S6 eval census, primary instrument (2026-08-20, gate (c) added 2026-08-20). gemini-3.5-flash is the SAME instrument bare_prompt_baseline.json was measured on (2026-07-29 user decision) -- keeping this comparable to that prior series. Scores the four Phase-1 gate-relevant scenarios: rich_material_closeup (gate a), the two bare_prompt_build scenarios (gate b, painter-kind diversity floor + the additive expression_family/spatially_varying_scalar metrics), and constant_materials_polish (gate c -- 'when the note fires, the verb is called in >=1/3 runs'; read its \"vary_material_calls\" toolCallCount checkpoint's pass/fail, or metricValue, across the repeats below). Run this FIRST; if any gate reads a surprising null (0/3), run s6_census_crossprovider.json on a second provider before concluding the mechanism failed -- see docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md §10.",
   "scenarios": [
     "evals/scenarios/rich_material_closeup.json",
     "evals/scenarios/bare_prompt_build_courtyard.json",
-    "evals/scenarios/bare_prompt_build_cozy_study.json"
+    "evals/scenarios/bare_prompt_build_cozy_study.json",
+    "evals/scenarios/constant_materials_polish.json"
   ],
   "providers": [
     { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
