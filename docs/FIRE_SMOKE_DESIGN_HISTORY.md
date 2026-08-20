@@ -2709,7 +2709,9 @@ it was already tried and refuted here.
   `kappa64=4096`. The resident binary32 producer union is remap `256`, composed
   force `64` (subsuming r93's `8`), and projection `256` eps32 units: union
   `576`, rounded by the r60 rule to `kappa32=1024`. Source is exact +0 at this
-  pre-thermo seam. The former cell-4915 observation is `0.8799947063` ULP,
+  pre-thermo seam; nonzero or negative-zero Binary32 source application is
+  structurally rejected until thermo/source maps derive their producer term.
+  The former cell-4915 observation is `0.8799947063` ULP,
   equivalently `0.4399973532 epsilon32` under r60's convention, and
   `2327.2867x` inside the derived unit-scale envelope; an above-envelope RED
   still fails closed. Temperature, EOS, positive-part divergence/source-

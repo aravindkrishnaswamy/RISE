@@ -641,11 +641,28 @@ int main()
 	MethaneReactionStep fp32SourceStep;fp32SourceStep.deltaTimeS=0.01;
 	fp32SourceStep.mixingTimeS=0.01;
 	MethaneSourcePacket fp32BuiltSource;
-	const bool fp32SourceTotal=BuildFrozenMethaneSourcePacket(fp32EnvelopeState,
+	const bool fp32SourceBlockedUntilCertified=!BuildFrozenMethaneSourcePacket(fp32EnvelopeState,
 		fp32SourceStep,300.0,0.0,fuel,thermochemistry,opacity,fp32BuiltSource,&error);
+	MethaneSourcePacket fp32CertifiedZeroSource;
+	MethaneCellState fp32ZeroSourceResult;
+	const bool fp32ZeroSourceTotal=CanonicalApplySourcePacket(fp32EnvelopeState,
+		fp32CertifiedZeroSource,fuel,fp32ZeroSourceResult,&error)&&
+		SameConservativeVectors(
+			std::vector<ConservativeVector>(1u,ToConservativeVector(fp32ZeroSourceResult)),
+			std::vector<ConservativeVector>(1u,ToConservativeVector(fp32EnvelopeState)));
+	MethaneSourcePacket fp32UncertifiedSource;
+	fp32UncertifiedSource.constituentDelta[MethaneCH4]=
+		std::numeric_limits<double>::denorm_min();
+	MethaneCellState fp32RejectedSourceState=eosFixture;
+	const bool fp32UncertifiedSourceRejects=!CanonicalApplySourcePacket(fp32EnvelopeState,
+		fp32UncertifiedSource,fuel,fp32RejectedSourceState,&error);
+	MethaneSourcePacket fp32NegativeZeroSource;
+	fp32NegativeZeroSource.sensibleEnergyDeltaJPerM3=-0.0;
+	const bool fp32NegativeZeroSourceRejects=!CanonicalApplySourcePacket(fp32EnvelopeState,
+		fp32NegativeZeroSource,fuel,fp32RejectedSourceState,&error);
 	std::vector<MethaneSourcePacket> fp32MixedSource;
 	RadiationEscapeFactor fp32MixedEscape;
-	const bool fp32MixedSourceTotal=BuildFrozenMethaneSourcePackets(
+	const bool fp32MixedSourceBlockedUntilCertified=!BuildFrozenMethaneSourcePackets(
 		{eosFixture,fp32EnvelopeState},{fp32SourceStep,fp32SourceStep},{1.0,1.0},300.0,
 		1.0,0.0,false,fuel,thermochemistry,opacity,fp32MixedSource,fp32MixedEscape,&error,1u);
 	MethaneCellState unsafeBinary64Source=fp32EnvelopeState;
@@ -654,9 +671,11 @@ int main()
 		{fp32EnvelopeState,unsafeBinary64Source},{fp32SourceStep,fp32SourceStep},{1.0,1.0},
 		300.0,1.0,0.0,false,fuel,thermochemistry,opacity,fp32MixedSource,
 		fp32MixedEscape,&error,1u);
-	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport&&fp32SourceTotal&&
-		fp32MixedSourceTotal&&fp32MixedSourceRejectsWidening,
-		"fp32-envelope states remain total through temperature, EOS, viscosity, and source consumers");
+	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport&&
+		fp32ZeroSourceTotal&&fp32SourceBlockedUntilCertified&&fp32UncertifiedSourceRejects&&
+		fp32NegativeZeroSourceRejects&&
+		fp32MixedSourceBlockedUntilCertified&&fp32MixedSourceRejectsWidening,
+		"fp32-envelope states keep physical consumers total and uncertified sources fail closed");
 	MethaneCellState spoofedPrecisionState=fp32EnvelopeState;
 	spoofedPrecisionState.producerPrecision=FireStateProducerPrecision::Binary64;
 	double spoofedTemperature=0.0;
@@ -792,6 +811,11 @@ int main()
 	const bool fp32LineTotal=ApplyPeriodicSharedFCT(fp32Line,fp32LineFlux,fp32ZeroLine,
 		fp32TransportConfig,fuel,thermochemistry,fp32LineResult,fp32Alpha,&error)&&
 		SameConservativeVectors(fp32LineResult,fp32Line);
+	std::vector<ConservativeVector> fp32UncertifiedLineSource=fp32ZeroLine;
+	fp32UncertifiedLineSource[0][1+MethaneCH4]=std::numeric_limits<double>::denorm_min();
+	const bool fp32UncertifiedLineRejects=!ApplyPeriodicSharedFCT(fp32Line,fp32LineFlux,
+		fp32UncertifiedLineSource,fp32TransportConfig,fuel,thermochemistry,fp32LineResult,
+		fp32Alpha,&error);
 	PeriodicMACShape fp32Shape;fp32Shape.nx=4u;fp32Shape.ny=4u;fp32Shape.nz=4u;
 	fp32Shape.cellWidthM=0.1;const std::size_t fp32Cells=fp32Shape.CellCount();
 	std::vector<ConservativeVector> fp32Volume(fp32Cells,fp32RawState),
@@ -806,6 +830,11 @@ int main()
 		fp32PeriodicFlux,fp32ZeroVolume,fp32TransportConfig,fuel,thermochemistry,
 		fp32VolumeResult,fp32FaceAlpha,&error)&&
 		SameConservativeVectors(fp32VolumeResult,fp32Volume);
+	std::vector<ConservativeVector> fp32UncertifiedVolumeSource=fp32ZeroVolume;
+	fp32UncertifiedVolumeSource[0][1+MethaneCH4]=std::numeric_limits<double>::denorm_min();
+	const bool fp32UncertifiedPeriodicRejects=!ApplyPeriodicSharedFCT3D(fp32Shape,fp32Volume,
+		fp32PeriodicFlux,fp32UncertifiedVolumeSource,fp32TransportConfig,fuel,thermochemistry,
+		fp32VolumeResult,fp32FaceAlpha,&error);
 	OpenFluxPair3D fp32OpenFlux;for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
 		OpenMACFaceCount3D(fp32Shape,axis);fp32OpenFlux.low[axis].assign(faces,zeroConservative);
 		fp32OpenFlux.high[axis].assign(faces,zeroConservative);
@@ -815,6 +844,9 @@ int main()
 	const bool fp32OpenTotal=ApplyOpenSharedFCT3D(fp32Shape,fp32Volume,fp32OpenFlux,
 		fp32ZeroVolume,fp32TransportConfig,fuel,thermochemistry,fp32VolumeResult,
 		fp32FaceAlpha,&error,1u)&&SameConservativeVectors(fp32VolumeResult,fp32Volume);
+	const bool fp32UncertifiedOpenRejects=!ApplyOpenSharedFCT3D(fp32Shape,fp32Volume,
+		fp32OpenFlux,fp32UncertifiedVolumeSource,fp32TransportConfig,fuel,thermochemistry,
+		fp32VolumeResult,fp32FaceAlpha,&error,1u);
 	double fp32Divergence=1.0;
 	const bool fp32DivergenceTotal=DivergenceFromDiscreteRate(fp32RawState,
 		zeroConservative,fp32EnvelopeState.temperatureK,fuel,
@@ -823,6 +855,10 @@ int main()
 	const bool fp32OneDimensionalOwnerTotal=ReferenceAdvancePeriodicProjectedHeun1D(fp32Line,
 		std::vector<double>(fp32Line.size(),0.0),fp32ZeroLine,fp32TransportConfig,1.0e-8,
 		true,fuel,thermochemistry,transport,fp32OneDimensionalResult,&error);
+	const bool fp32UncertifiedOneDimensionalRejects=!ReferenceAdvancePeriodicProjectedHeun1D(
+		fp32Line,std::vector<double>(fp32Line.size(),0.0),fp32UncertifiedLineSource,
+		fp32TransportConfig,1.0e-8,true,fuel,thermochemistry,transport,
+		fp32OneDimensionalResult,&error);
 	double fp32VolumeRatio=0.0,fp32IncrementDivergence=0.0,fp32FrozenExpansion=1.0;
 	MethaneSourcePacket fp32ZeroPacket;
 	const bool fp32FiniteIncrementTotal=AcceptedConservativeVolumeRatio(fp32RawState,fuel,
@@ -858,15 +894,22 @@ int main()
 	const bool fp32OwningAdvanceTotal=AdvanceConservative3D(fp32Shape,fp32Volume,
 		fp32PeriodicVelocity,std::vector<MethaneSourcePacket>(fp32Cells),fp32OwnerConfig,
 		fuel,thermochemistry,transport,fp32OwnerResult,&error);
-	Check(fp32LineTotal&&fp32PeriodicTotal&&fp32OpenTotal&&fp32DivergenceTotal,
+	std::vector<MethaneSourcePacket> fp32UncertifiedPackets(fp32Cells);
+	fp32UncertifiedPackets[0]=fp32UncertifiedSource;
+	const bool fp32UncertifiedOwnerRejects=!AdvanceConservative3D(fp32Shape,fp32Volume,
+		fp32PeriodicVelocity,fp32UncertifiedPackets,fp32OwnerConfig,fuel,thermochemistry,
+		transport,fp32OwnerResult,&error);
+	Check(fp32LineTotal&&fp32PeriodicTotal&&fp32OpenTotal&&fp32DivergenceTotal&&
+		fp32UncertifiedLineRejects&&fp32UncertifiedPeriodicRejects&&
+		fp32UncertifiedOpenRejects,
 		"all raw-vector FCT and divergence consumers propagate the binary32 precision class");
 	Check(fp32FiniteIncrementTotal,
 		"finite-increment consumers propagate binary32 precision");
 	Check(fp32TransportOwnersTotal,
 		"transport consumers propagate binary32 precision");
-	Check(fp32OwningAdvanceTotal,
+	Check(fp32OwningAdvanceTotal&&fp32UncertifiedOwnerRejects,
 		"owning 3-D consumer propagates binary32 precision");
-	Check(fp32OneDimensionalOwnerTotal,
+	Check(fp32OneDimensionalOwnerTotal&&fp32UncertifiedOneDimensionalRejects,
 		"owning 1-D consumer propagates binary32 precision");
 	fp32EnvelopeState.rhoTotalZ+=1.5*fp32StateEnvelope;
 	Check(!AcceptedStateAdmissible(ToConservativeVector(fp32EnvelopeState),

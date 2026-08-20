@@ -730,6 +730,33 @@ namespace RISE
 			}
 		};
 
+		inline bool CertifiedPositiveZeroSourceValue(const double value)
+		{
+			return value==0.0&&!std::signbit(value);
+		}
+
+		inline bool CertifiedBinary32ZeroSource(const ConservativeVector& source)
+		{
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+				if(!CertifiedPositiveZeroSourceValue(source[component]))return false;
+			return true;
+		}
+
+		inline bool CertifiedBinary32ZeroSourcePacket(const MethaneSourcePacket& packet)
+		{
+			for(const double value:packet.constituentDelta)
+				if(!CertifiedPositiveZeroSourceValue(value))return false;
+			return CertifiedPositiveZeroSourceValue(packet.sensibleEnergyDeltaJPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.reactedFuelKGPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.oxidizedCarbonKGPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.grossCarbonFormedKGPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.gasHeatReleaseWPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.sootHeatReleaseWPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.pilotEnergyDeltaJPerM3)&&
+				CertifiedPositiveZeroSourceValue(packet.pilotExpansionIntegral)&&
+				CertifiedPositiveZeroSourceValue(packet.radiativeCoolingWPerM3);
+		}
+
 		struct MethaneReactionStep
 		{
 			double deltaTimeS;
@@ -833,6 +860,9 @@ namespace RISE
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
 					upperEnthalpy,thermochemistry,beginning.producerPrecision,error))return false;
+			if(beginning.producerPrecision==FireStateProducerPrecision::Binary32&&
+				!CertifiedBinary32ZeroSourcePacket(packet))return Fail(error,
+					"fire solver binary32 source producer is not yet certified");
 			bool identity=packet.sensibleEnergyDeltaJPerM3==0.0;
 			for(const double delta:packet.constituentDelta)identity=identity&&delta==0.0;
 			if(identity) {
@@ -1440,6 +1470,10 @@ namespace RISE
 				config.cellWidthM <= 0.0 ) {
 				return Fail(error,"fire solver FCT input is malformed");
 			}
+			if(config.producerPrecision==FireStateProducerPrecision::Binary32)
+				for(const ConservativeVector& source:sourcePerS)
+					if(!CertifiedBinary32ZeroSource(source))return Fail(error,
+						"fire solver binary32 source producer is not yet certified");
 			std::array<double,MethaneSpeciesCount> ambientEnthalpy, adiabaticEnthalpy;
 			if( !FireSimulationEnthalpyBounds(config,thermochemistry,
 				ambientEnthalpy,adiabaticEnthalpy,error) ) return false;

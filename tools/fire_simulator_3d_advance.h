@@ -425,6 +425,10 @@
 				config.deltaTimeS <= 0.0 ) {
 				return Fail(error,"fire solver 3-D FCT input is malformed");
 			}
+			if(config.producerPrecision==FireStateProducerPrecision::Binary32)
+				for(const ConservativeVector& source:frozenSourceDelta)
+					if(!CertifiedBinary32ZeroSource(source))return Fail(error,
+						"fire solver binary32 source producer is not yet certified");
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				if( flux.low[axis].size() != count || flux.high[axis].size() != count ) {
 					return Fail(error,"fire solver 3-D FCT flux shape is invalid");
@@ -1597,7 +1601,11 @@
 			if(beginning.size()!=count || sourceDelta.size()!=count ||
 				!std::isfinite(config.deltaTimeS) || config.deltaTimeS<=0.0 ||
 				!std::isfinite(shape.cellWidthM) || shape.cellWidthM<=0.0) return Fail(error,
-				"fire solver open FCT state shape is invalid");
+					"fire solver open FCT state shape is invalid");
+			if(config.producerPrecision==FireStateProducerPrecision::Binary32)
+				for(const ConservativeVector& source:sourceDelta)
+					if(!CertifiedBinary32ZeroSource(source))return Fail(error,
+						"fire solver binary32 source producer is not yet certified");
 			for(unsigned int axis=0;axis<3;++axis){const std::size_t faceCount=
 				OpenMACFaceCount3D(shape,axis);if(flux.low[axis].size()!=faceCount ||
 				flux.high[axis].size()!=faceCount || flux.nonadvectiveMass[axis].size()!=faceCount ||
@@ -3099,6 +3107,10 @@
 		{
 			if(config.workerCount==0u) return Fail(error,
 				"fire solver owning 3-D worker count is invalid");
+			if(config.transport.producerPrecision==FireStateProducerPrecision::Binary32)
+				for(const MethaneSourcePacket& packet:frozenPacket)
+					if(!CertifiedBinary32ZeroSourcePacket(packet))return Fail(error,
+						"fire solver binary32 source producer is not yet certified");
 			if(config.periodicBoundaries) return AdvancePeriodicConservative3DImplementation(
 				shape,beginning,beginningMomentum,frozenPacket,config,fuel,thermochemistry,
 				transport,result,error);

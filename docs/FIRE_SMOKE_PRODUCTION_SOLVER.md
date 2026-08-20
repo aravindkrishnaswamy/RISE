@@ -1778,7 +1778,10 @@ eps32` and subsumes r93's per-kernel `8` ULP result; the one projection
 contributes another `256 eps32`. The pre-thermo source operand is exact positive
 zero and contributes no term. Thus the union is `576`, and r60's
 next-power-of-two rule gives `kappa32=1024`. Nonzero thermo/source maps must add
-their own derived producer term before they may publish a binary32 state.
+their own derived producer term before they may publish a binary32 state. Until
+that ruling lands, the cell, 1-D FCT, and owning periodic/open 3-D application
+seams accept only bit-exact positive-zero source packets in the Binary32 class;
+nonzero and negative-zero inputs fail closed before publication.
 
 The original tier-5 observation is confirmation only: its maximum scaled
 affine excursion is `5.2451771873310863e-8`, or `0.8799947063` ULP and

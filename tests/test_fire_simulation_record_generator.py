@@ -211,6 +211,14 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         for name in ("ApplyPeriodicSharedFCT3D", "ApplyOpenSharedFCT3D"):
             self.assertIn("config.producerPrecision", inline_body(advance, name),
                           name + " drops the raw state's producer precision")
+            self.assertIn("CertifiedBinary32ZeroSource", inline_body(advance, name),
+                          name + " admits an uncertified binary32 source")
+        self.assertIn("CertifiedBinary32ZeroSource", inline_body(core,
+                      "ApplyPeriodicSharedFCT"))
+        self.assertIn("CertifiedBinary32ZeroSourcePacket", inline_body(core,
+                      "CanonicalApplySourcePacket"))
+        self.assertIn("CertifiedBinary32ZeroSourcePacket", inline_body(advance,
+                      "AdvanceConservative3D"))
         for name in ("DivergenceFromDiscreteRate", "BuildOpenBoundaryStage3D"):
             self.assertIn("producerPrecision", inline_body(core, name),
                           name + " hardcodes a raw-state precision class")
