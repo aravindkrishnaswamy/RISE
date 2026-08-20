@@ -2860,3 +2860,15 @@ it was already tried and refuted here.
   `10229d0f...345f4`). This defines
   only `E_h,prod`; temporal refinement and analytic `B_fp32` remain separate,
   subsequent gates.
+
+- **r120 two-projection `B_fp32` protocol (2026-08-20, frozen before
+  evidence):** r106's trace/topology derivation is extended to the exact r118
+  stage graph: force substeps, 5 cell maps, 15 dual maps, source addition,
+  physical P2(17), and correction-only restoration P2(16). The two projections
+  own separate local terms. A no-Metal derivation must reconcile an arithmetic
+  trace with an independent topology walker and reject unresolved branch
+  margins or `n*u>=1`; only then may a separate Metal process compare identical
+  fp32 request bytes with the generated fp64 same-scheme mirror. Bounds reduce
+  directly into the r112/r119 observable norms and are instantiated separately
+  for every golden slice. No measurement, feasibility factor, or tier-6 value
+  may select or stand in for an analytic radius.

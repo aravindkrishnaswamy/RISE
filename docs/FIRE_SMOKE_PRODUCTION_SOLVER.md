@@ -2028,6 +2028,35 @@ temporal term, not `B_fp32`, and not an eight-slice production-versus-oracle
 acceptance band. The fp32 feasibility envelope remains a consumer-totality
 condition and contributes no accuracy allowance.
 
+### 7.35 Two-projection roundoff certificate protocol (r120, pre-evidence)
+
+The r106 `B_fp32` protocol is instantiated for the r118 graph before any
+fp32-versus-fp64 value is inspected. Its ordered stages are frozen force with
+the selected one-to-eight substeps, five cell palindrome maps, fifteen dual
+maps, explicit source addition, the 17-cycle physical pressure-open solve, and
+the 16-cycle correction-only restoration solve. The restoration target is an
+input operand derived from the beginning state; its feasibility factor is not
+an accuracy allowance. The physical and restoration projections have distinct
+topology records and distinct local roundoff terms.
+
+The derivation process cannot link Metal. A test-only arithmetic trace records
+operation kind, dependency depth, absolute operands, denominator/domain lower
+bounds, and branch margin for every executed kernel. A separately authored
+topology walker must reproduce its counts and depths from shape, boundary roles,
+substep count, multigrid hierarchy, and fixed schedules without reading trace
+counts. Any mismatch, unresolved limiter/open-inflow/floor branch, `n*u>=1`,
+or nonfinite outward recurrence fails before a Metal result exists. Local
+`(kappa_k,beta_k)` terms compose only through
+`B_(k+1)=nextUp(kappa_k*B_k+beta_k)`.
+
+The emitted radii are reduced into the same nine filtered scalar L1 channels,
+filtered MAC velocity L2, and nine inventory channels used by r112/r119. The
+sealed tier-6 confirmation then promotes the identical fp32 request bytes into
+the generated binary64 mirror, requires identical substep and branch topology,
+and checks fp32 Metal minus fp64 same-scheme against the already sealed analytic
+radii. Measurements cannot change a radius. Tier-10 golden slices receive
+separate state/topology instantiations; no tier-6 number is copied to them.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
