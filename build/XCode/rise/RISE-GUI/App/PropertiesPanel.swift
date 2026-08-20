@@ -59,6 +59,15 @@ struct PropertyRow: Identifiable {
     let editable: Bool
     let presets: [PropertyPreset] // empty when descriptor declared no presets
     let unitLabel: String         // empty for dimensionless / unlabelled fields
+    /// doc 88 S4b (Tier-1 param sliders): the row's authored numeric
+    /// range.  `hasRange` is true only when BOTH bounds are known; the
+    /// text field stays either way, because the range is a presentation
+    /// hint and the scene language still accepts values outside it.
+    /// `rangeStep` is 0 for "continuous".
+    let hasRange: Bool
+    let rangeMin: Double
+    let rangeMax: Double
+    let rangeStep: Double
     /// Snapshot position -- the C-ABI property index this row was built
     /// from (jump-to-definition queries the core by index).
     let index: Int
@@ -76,6 +85,10 @@ struct PropertyRow: Identifiable {
             editable: src.editable,
             presets: presets,
             unitLabel: src.unitLabel,
+            hasRange: src.hasRange,
+            rangeMin: src.rangeMin,
+            rangeMax: src.rangeMax,
+            rangeStep: src.rangeStep,
             index: index
         )
     }
@@ -735,8 +748,27 @@ private struct PropertyRowView: View {
         }
     }
 
+    // doc 88 S4b (Tier-1 param sliders): a row that carries an authored
+    // numeric range gets a Slider ABOVE its ordinary cell — never INSTEAD
+    // of it.  The range is a presentation hint, not a validation rule: the
+    // scene language accepts values outside it, an expression `param` line
+    // carries metadata the slider does not touch, and the text field is the
+    // only way to reach either.  So: slider for the common gesture, field
+    // for everything the slider cannot say.
     @ViewBuilder
     private var valueCell: some View {
+        if row.hasRange && row.editable {
+            VStack(alignment: .leading, spacing: 4) {
+                ParamSliderCell(row: row, onCommit: onCommit)
+                defaultValueCell
+            }
+        } else {
+            defaultValueCell
+        }
+    }
+
+    @ViewBuilder
+    private var defaultValueCell: some View {
         switch row.kind {
         case .bool:
             BoolPillCell(row: row, onCommit: onCommit)
@@ -753,6 +785,110 @@ private struct PropertyRowView: View {
             // editor yet, and free-text is the honest fallback.
             TextWellCell(row: row, onCommit: onCommit, onScrubBegin: onScrubBegin, onScrubEnd: onScrubEnd)
         }
+    }
+}
+
+// MARK: - Authored-range slider (doc 88 S4b, Tier 1)
+
+/// A slider over a row's authored `min`/`max`(/`step`) range.
+///
+/// The row's VALUE is not necessarily a bare number: an expression
+/// painter's `param[i]` row reads `ring_scale 4.0 min 0.5 max 20 label
+/// "Ring density"`, and a commit must send the WHOLE line back (that is
+/// the line the CST write replaces).  So the slider rewrites exactly the
+/// first token that parses as a number and leaves every other byte of the
+/// line alone — the param's own name, and all of its metadata, survive a
+/// scrub untouched.  A bare-number row (`4.0`) is the same rule with the
+/// first token being the only token.
+///
+/// Commits on RELEASE, not per tick: each commit is a real CST edit +
+/// re-derive + undo entry, and a continuous drag would push one per frame.
+private struct ParamSliderCell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Bool
+
+    @State private var value: Double = 0
+    @State private var dragging: Bool = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Slider(
+                value: $value,
+                in: row.rangeMin...row.rangeMax,
+                step: row.rangeStep > 0 ? row.rangeStep : 0.0001,
+                onEditingChanged: { editing in
+                    dragging = editing
+                    if !editing { commit() }
+                }
+            )
+            .controlSize(.small)
+            Text(formatValue(value, kind: .double))
+                .font(Theme.mono(10))
+                .foregroundColor(Theme.textDim)
+                .frame(width: 46, alignment: .trailing)
+        }
+        .onAppear { value = Self.numericToken(row.initialValue)?.1 ?? row.rangeMin }
+        .onChange(of: row.initialValue) { _, newValue in
+            // Don't fight the user's own drag; re-sync from the snapshot
+            // once the gesture is over (an Undo, or an edit through the
+            // text field, moves the row underneath us).
+            if !dragging { value = Self.numericToken(newValue)?.1 ?? row.rangeMin }
+        }
+    }
+
+    private func commit() {
+        guard let (range, _) = Self.numericToken(row.initialValue) else { return }
+        var line = row.initialValue
+        line.replaceSubrange(range, with: formatValue(value, kind: .double))
+        _ = onCommit(line)
+    }
+
+    /// The first whitespace-delimited token, SKIPPING token 0, that looks and
+    /// parses as a Double, as (its range in `line`, its value).  nil when the
+    /// line has no such token — the slider then has nothing to drive and the
+    /// caller falls back to the range minimum / skips the commit.
+    ///
+    /// Two deliberate departures from "just try `Double(token)` on every token":
+    ///
+    /// 1. Token 0 is SKIPPED.  `hasRange` (the sole gate that puts a row through
+    ///    ParamSliderCell rather than TextWellCell) is set only for an
+    ///    expression painter's `param[i]` rows.  The CST line is
+    ///    `param <paramName> <value> [min ... max ... step ... label ...]`,
+    ///    and `initialValue` here is everything AFTER the `param` role token
+    ///    -- so its OWN token 0 is `<paramName>` (the expression parameter's
+    ///    own identifier, e.g. `wob` or `ring_scale`), never a value the
+    ///    slider should scrub.  A parameter literally named `4` (or, see
+    ///    point 2, `inf`/`nan`) would otherwise get its name token silently
+    ///    overwritten by the slider.
+    ///
+    /// 2. A token must LOOK numeric (optional sign, then a digit or `.`) before
+    ///    `Double(_:)` is even tried.  `Double("inf")`, `Double("nan")`, and
+    ///    `Double("0x1p3")` (C99 hex float) all successfully parse in Swift, so
+    ///    without this guard a param named exactly `inf`/`nan`/`infinity` (rare,
+    ///    but not disallowed by the scene grammar) would still be misread as a
+    ///    numeric value by the naive scan — the token-0 skip above only rules
+    ///    out the FIRST token, not a same-shaped later one on a multi-token
+    ///    value line.
+    private static func numericToken(_ line: String) -> (Range<String.Index>, Double)? {
+        func looksNumeric(_ s: Substring) -> Bool {
+            var s = s
+            if let f = s.first, f == "+" || f == "-" { s = s.dropFirst() }
+            guard let f = s.first else { return false }
+            return f.isNumber || f == "."
+        }
+        var i = line.startIndex
+        var tokenIndex = 0
+        while i < line.endIndex {
+            while i < line.endIndex, line[i].isWhitespace { i = line.index(after: i) }
+            guard i < line.endIndex else { return nil }
+            var j = i
+            while j < line.endIndex, !line[j].isWhitespace { j = line.index(after: j) }
+            let tok = line[i..<j]
+            if tokenIndex > 0, looksNumeric(tok), let d = Double(tok) { return (i..<j, d) }
+            tokenIndex += 1
+            i = j
+        }
+        return nil
     }
 }
 
@@ -1282,14 +1418,22 @@ private func scrubRate(name: String, value: Double) -> Double {
     return max(abs(value), 1e-3) * 0.005
 }
 
+/// POSIX locale, fixed regardless of the user's system locale: this string is written
+/// straight into scene text (a CST param value), and `String(format:)` without an
+/// explicit locale follows the CURRENT locale on Apple platforms -- a comma-decimal
+/// locale (e.g. fr_FR) would format `4.0` as `4,000000`, which the scene parser cannot
+/// read back.  Shared by every call site that formats a value for the wire: the
+/// TextWellCell scrub path and ParamSliderCell's drag/commit path both go through here.
+private let kPosixLocale = Locale(identifier: "en_US_POSIX")
+
 private func formatValue(_ v: Double, kind: PropertyKind) -> String {
     switch kind {
     case .uint:
         let n = max(0, Int(v.rounded()))
         return String(n)
     case .double:
-        return String(format: "%.6g", v)
+        return String(format: "%.6g", locale: kPosixLocale, v)
     default:
-        return String(format: "%g", v)
+        return String(format: "%g", locale: kPosixLocale, v)
     }
 }

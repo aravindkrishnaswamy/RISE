@@ -24,48 +24,6 @@ namespace RISE
 
 namespace
 {
-	//! The value tokens of the `occ`-th occurrence of `pname` on `chunk`,
-	//! joined EXACTLY as Cst::ParamValueAsParsed joins them (once the first
-	//! `pvalue` Token is seen, every later kid's text -- Trivia and Token
-	//! alike -- is appended verbatim, so `1 0.5 0` comes back with its
-	//! separators intact rather than as `10.50`).
-	//!
-	//! Cst exports a LAST-occurrence reader (ParamValueAsParsed) and an
-	//! occurrence COUNT (ParamOccurrenceCount) but no occurrence-indexed
-	//! reader, and a repeatable param needs each occurrence separately --
-	//! `stop` lines are an ordered list, not a last-wins scalar.  Kept
-	//! local (rather than exported from Cst) because it is a pure green-node
-	//! tree read with no Document state, and because the ONLY consumer is a
-	//! read-only panel row: nothing pairs it with a write, so it carries
-	//! none of the capture/write-lockstep obligations that make
-	//! AgentReadFirstParamValue's first-occurrence semantics load-bearing.
-	std::string ParamValueAtOccurrence( const RISE::Cst::NodeRef& chunk,
-	                                    const std::string& pname, int occ )
-	{
-		if( !chunk || occ < 0 ) return std::string();
-		int seen = 0;
-		for( const auto& kid : chunk->kids )
-		{
-			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-			if( kid->role != pname ) continue;
-			if( seen++ != occ ) continue;
-			std::string val;
-			bool inVal = false;
-			bool sawName = false;
-			for( const auto& tk : kid->kids )
-			{
-				if( !tk ) continue;
-				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token
-				 && tk->role == "pname" && !sawName ) { sawName = true; continue; }
-				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token
-				 && tk->role == "pvalue" ) inVal = true;
-				if( inVal ) val += tk->text;
-			}
-			return val;
-		}
-		return std::string();
-	}
-
 	std::string TrimAscii( const std::string& s )
 	{
 		size_t b = 0, e = s.size();
@@ -174,6 +132,33 @@ bool PainterIntrospection::IsOccurrenceRowName( const String& rowName )
 	return s.find( '[' ) != std::string::npos && s[s.size()-1] == ']';
 }
 
+bool PainterIntrospection::ParseOccurrenceRowName(
+	const String& rowName, std::string& outRole, int& outOccurrence )
+{
+	if( rowName.size() <= 1 ) return false;
+	const std::string s( rowName.c_str() );
+	const std::size_t lb = s.find( '[' );
+	if( lb == std::string::npos || lb == 0 ) return false;   // no bracket, or an empty role
+	if( s.empty() || s[s.size()-1] != ']' ) return false;    // must END at the bracket -- no trailing text
+	const std::size_t digitsBegin = lb + 1;
+	const std::size_t digitsEnd   = s.size() - 1;            // index of ']'
+	if( digitsEnd <= digitsBegin ) return false;             // "role[]"
+	// DECIMAL DIGITS ONLY.  No sign (a negative occurrence is meaningless and
+	// would sail past a `< count` bound), no whitespace, no second bracket, and
+	// no trailing junk -- std::atoi would happily read "2junk" as 2 and route
+	// the edit to a line the user never named.
+	unsigned long long acc = 0;
+	for( std::size_t i = digitsBegin; i < digitsEnd; ++i ) {
+		const char c = s[i];
+		if( c < '0' || c > '9' ) return false;
+		acc = acc * 10ull + (unsigned long long)( c - '0' );
+		if( acc > 1000000ull ) return false;                 // absurd index; refuse rather than wrap
+	}
+	outRole       = s.substr( 0, lb );
+	outOccurrence = (int)acc;
+	return true;
+}
+
 std::vector<CameraProperty> PainterIntrospection::Inspect(
 	const RISE::Cst::Document* doc, IJobPriv& job, const String& painterName )
 {
@@ -218,7 +203,7 @@ std::vector<CameraProperty> PainterIntrospection::Inspect(
 		rows.insert( rows.begin() + 1, row );
 	}
 
-	// ---- rows 4: one read-only row per REPEATABLE-param occurrence ----
+	// ---- rows 4: one EDITABLE row per REPEATABLE-param occurrence ----
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 		*doc, painterName.c_str(), nullptr, "painter", /*uniqueFallback=*/false );
 	if( id == 0 ) return rows;
@@ -236,7 +221,8 @@ std::vector<CameraProperty> PainterIntrospection::Inspect(
 		const int n = RISE::Cst::ParamOccurrenceCount( chunk, p.name );
 		for( int i = 0; i < n; ++i )
 		{
-			const std::string raw = TrimAscii( ParamValueAtOccurrence( chunk, p.name, i ) );
+			const std::string raw = TrimAscii(
+				RISE::Cst::ParamValueAtOccurrence( chunk, p.name, i ) );
 
 			CameraProperty row;
 			{
@@ -246,7 +232,11 @@ std::vector<CameraProperty> PainterIntrospection::Inspect(
 			}
 			row.kind     = p.kind;
 			row.value    = String( raw.c_str() );
-			row.editable = false;   // see the header's editability contract
+			// doc 88 S4b: EDITABLE.  A write to this row name is parsed back into
+			// (role, occurrence) by SceneEditController's Painter arm and routed
+			// with that `occ` through the same checked CST pathway every other
+			// painter param uses -- see the header's editability contract.
+			row.editable = true;
 			row.unitLabel = String( p.unitLabel.c_str() );
 
 			std::string desc = p.description;
@@ -258,14 +248,31 @@ std::vector<CameraProperty> PainterIntrospection::Inspect(
 				for( std::size_t s = 0; s < specs->size(); ++s )
 				{
 					if( (*specs)[s].name != pname ) continue;
-					desc += ParamSpecSuffix( (*specs)[s] );
+					const Implementation::ParamSpec& spec = (*specs)[s];
+					// S4b: the range as FIRST-CLASS row fields, so a shell can
+					// draw a slider.  BOTH bounds required -- a half-open range
+					// has no slider track, and inventing the missing end would
+					// clamp values the language accepts.  `step` rides along
+					// independently (0 = continuous).
+					if( spec.hasMin && spec.hasMax && spec.max > spec.min ) {
+						row.hasRange  = true;
+						row.rangeMin  = spec.min;
+						row.rangeMax  = spec.max;
+						row.rangeStep = spec.hasStep ? spec.step : Scalar( 0 );
+					}
+					// The description fold STAYS even though the fields now
+					// carry the same numbers: it is the only surface a shell
+					// that does not (yet) read the range fields shows -- the Qt
+					// panel today, and every text/AX rendering of a row -- and
+					// it also carries `label`, which has no field of its own.
+					desc += ParamSpecSuffix( spec );
 					break;
 				}
 			}
-			desc += "  [READ-ONLY in this build: `" + p.name + "` is a REPEATABLE parameter, and the "
-			        "shared CST edit route addresses occurrence 0 only (SceneEdit carries no occurrence "
-			        "index, so an Undo could not restore the right line).  Edit these in the scene text; "
-			        "occurrence-addressed editing is a scoped follow-up.]";
+			desc += "  [Occurrence " + std::to_string( i ) + " of the REPEATABLE parameter `" + p.name +
+			        "`.  Editing this row rewrites THAT line only; the value is the WHOLE line after the "
+			        "parameter name, so keep every token (an expression `param` line keeps its own name "
+			        "first, then the value, then any min/max/step/label metadata).]";
 			row.description = String( desc.c_str() );
 
 			rows.push_back( row );

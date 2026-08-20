@@ -65,6 +65,43 @@ namespace RISE
 		// order ComputeChunkRefs uses) and hands back a UI Category to
 		// SetSelection on.
 		std::vector<ChunkCategory>   referenceCategories;
+
+		// doc 88 S4b (Tier-1 param sliders): an authored NUMERIC RANGE for this
+		// row, so a shell can render a slider instead of a bare text field.
+		// `hasRange` is true only when BOTH bounds are known — a one-sided bound
+		// cannot drive a slider, and silently inventing the missing end is how a
+		// panel comes to clamp a value the scene language accepts.  The only
+		// producer today is PainterIntrospection's expression `param[i]` rows,
+		// which read `min` / `max` / `step` off the ParamSpec the painter parsed
+		// at construction (ExpressionParamSpec.h); every other row leaves
+		// `hasRange` false and the shells keep drawing the field they already do.
+		//
+		// `rangeStep` is 0 when the author declared none — "continuous", i.e. the
+		// slider's own default granularity.  It is NOT a sentinel for "no range";
+		// that is `hasRange` alone.
+		//
+		// NOT the descriptor-level `range`/`softRange` hint MATERIAL_EDITOR.md
+		// §2.2 still wants: this carries an AUTHOR's per-param intent out of the
+		// scene text.  A future descriptor hint can populate these same three
+		// fields for rows that have no ParamSpec without either shell changing.
+		bool                         hasRange;
+		Scalar                       rangeMin;
+		Scalar                       rangeMax;
+		Scalar                       rangeStep;
+
+		// Every producer sets name/kind/value/description/editable explicitly;
+		// this ctor exists so the S4b range trio (and `editable`, historically
+		// indeterminate until assigned) has a defined value on a default-
+		// constructed row — a row that reaches a shell with an indeterminate
+		// `hasRange` would draw a slider over garbage bounds.
+		CameraProperty()
+		: kind( ValueKind::String )
+		, editable( false )
+		, hasRange( false )
+		, rangeMin( 0 )
+		, rangeMax( 0 )
+		, rangeStep( 0 )
+		{}
 	};
 
 	class CameraIntrospection

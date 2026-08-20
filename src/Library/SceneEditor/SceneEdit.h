@@ -438,6 +438,37 @@ namespace RISE
 		//! prior value; `prevPropertyValue` is meaningless when this is true.
 		bool           prevValueWasAbsent;
 
+		//! doc 88 S4b (SetAgentCstParam only): WHICH occurrence of
+		//! `propertyName` this edit wrote, counted from the front (0 = first) --
+		//! the convention Cst::WithParamValue / WithParamRemovedOcc write with
+		//! and Cst::ParamValueAtOccurrence reads with.  DEFAULTS TO 0, which is
+		//! exactly what every pre-S4b push site meant, so those sites are
+		//! unchanged in source AND in behaviour.  Non-zero only for an edit that
+		//! came in through an occurrence-addressed row (`stop[2]`, `param[1]`).
+		int            cstParamOcc;
+
+		//! doc 88 S4b (SetAgentCstParam only): this edit was addressed BY
+		//! OCCURRENCE (a repeatable param's `<role>[<index>]` row), as opposed to
+		//! naming a param that occurs once.  It is NOT `cstParamOcc != 0` --
+		//! `stop[0]` is occurrence-addressed and still has occ 0.
+		//!
+		//! What it gates is the UNDO/REDO DRIFT GUARD.  A repeatable param's
+		//! occurrence LAYOUT is not stable across time: an agent chunk-CRUD verb
+		//! or another occurrence edit can add, remove or rewrite lines between
+		//! this edit and its Undo, and none of that invalidates the history
+		//! entry (chunk CRUD does not touch mHistory at all -- see
+		//! SceneEditor::RouteCstParamEditChecked_'s doc).  Blindly writing
+		//! "occurrence N" at Undo time would then clobber a DIFFERENT line --
+		//! the U2 lesson (blind index trust) applied to a param line rather than
+		//! a document index.  When this flag is set, SceneEditor::
+		//! OccurrenceEditStillAddressable_ re-checks that occurrence N still
+		//! exists AND still holds the value this direction expects to overwrite,
+		//! and refuses the Undo/Redo honestly if not (history entry stays put).
+		//!
+		//! A non-occurrence-addressed edit (every pre-S4b caller) leaves this
+		//! false and keeps the historical unguarded behaviour.
+		bool           cstParamOccAddressed;
+
 		//! Shared-undo U2 (AgentRemoveChunk only): the top-level document index the removed chunk (and, if
 		//! tidied away with it, its own trailing separator) occupied at capture time -- the EXACT position
 		//! Undo's Job::ApplyCstRestoreChunkAt splices `propertyValue` back at.  See the op's own doc for the
@@ -506,6 +537,8 @@ namespace RISE
 		, allowONBPoseEdit( false )
 		, cstEntityKind()
 		, prevValueWasAbsent( false )
+		, cstParamOcc( 0 )
+		, cstParamOccAddressed( false )
 		, agentChunkIndex( 0 )
 		, agentChunkWasRasterizer( false )
 		, historySeq( 0 )

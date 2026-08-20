@@ -11657,32 +11657,22 @@ namespace {
 	}
 
 	// Model-B F5 slice S2: the value of a chunk's first `pname` param (e.g. "name" / "variant"), "" if absent.
-	// Mirrors the CST tree shape ParseChunk builds: a Param kid whose first Token kid is the pname (role
-	// "pname") and whose subsequent kids are the pvalue Token(s) interleaved with inter-value Trivia.
 	//
-	// P1-1 sibling fix (round 1): this is the IDENTICAL first-token-only bug found in
-	// SceneEditController.cpp's AgentReadFirstParamValue -- a multi-token value (`color 1 1 1`) is several
+	// P1-1 sibling fix (round 1): this used to be a hand-rolled kid-walk with the IDENTICAL first-token-only
+	// bug found in the editor's capture-before-edit reader -- a multi-token value (`color 1 1 1`) is several
 	// pvalue Token kids, and the old walk kept only the first ("1" instead of "1 1 1"). Both call sites today
-	// pass "variant" (a single-token tag by convention), so the bug is currently latent -- but fixed anyway
-	// per the audit-by-bug-pattern doctrine (a future multi-token param read through this helper would silently
-	// truncate). Matches Cst::ParamNodeValue's join semantics exactly: once the first pvalue Token is seen,
-	// every subsequent kid's `text` (Trivia and Token alike) is appended verbatim.
+	// pass "variant" (a single-token tag by convention), so the bug was latent -- but fixed anyway per the
+	// audit-by-bug-pattern doctrine.
+	//
+	// P3-c fix (round 1): that hand-fix left this as a FOURTH independent copy of the same occurrence-0 walk
+	// Cst::ParamValueAtOccurrence already exists to be the single source of truth for (see its doc in Cst.cpp
+	// for the other three: PainterIntrospection's read-only occurrence rows, SceneEditController's
+	// capture-before-agent-edit, and SceneEditor's undo/redo drift guard -- Cst.cpp's own comment undercounted
+	// itself at "three call sites" before this fix folded the fourth in). Delegate instead of re-deriving the
+	// same join semantics a fifth time.
 	std::string S2ChunkParamValue( const RISE::Cst::NodeRef& chunk, const char* pname )
 	{
-		if( !chunk ) return std::string();
-		for( const auto& kid : chunk->kids ) {
-			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-			std::string nm, val;
-			bool inVal = false;
-			for( const auto& tk : kid->kids ) {
-				if( !tk ) continue;
-				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
-				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
-				if( inVal ) val += tk->text;
-			}
-			if( nm == pname ) return val;
-		}
-		return std::string();
+		return RISE::Cst::ParamValueAtOccurrence( chunk, pname ? std::string( pname ) : std::string(), 0 );
 	}
 }
 

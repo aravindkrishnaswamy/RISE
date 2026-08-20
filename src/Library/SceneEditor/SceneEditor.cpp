@@ -2063,10 +2063,10 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 // prevValueWasAbsent case) -- removes the param instead of re-setting a (nonexistent) prior value.  Mirrors
 // RouteCstParamEdit_ exactly (rebind on >=2, mCstLiveSceneChanged on != 0); only the Job entry point differs
 // (ApplyCstParamRemoveChecked, always full-derivability-gated -- agent-originated Document mutations never take
-// the ungated fast path).  `occ` (P1-2 fix, round 1) selects WHICH occurrence to remove (0 = first) -- the sole
-// caller (ApplyRevertMutation's SetAgentCstParam arm) always passes 0, matching the agent path's fixed occ=0
-// edit convention, but the plumbing is occ-aware end to end (Job::ApplyCstParamRemoveChecked ->
-// Cst::DocRemoveParamOcc) rather than hardcoding "remove every occurrence".
+// the ungated fast path).  `occ` (P1-2 fix, round 1) selects WHICH occurrence to remove (0 = first).  The sole
+// caller (ApplyRevertMutation's SetAgentCstParam arm) passes the edit's OWN recorded occurrence
+// (SceneEdit::cstParamOcc, doc 88 S4b) -- 0 for every param the document spells once, which is what that caller
+// hardcoded before S4b, and the real index for an occurrence-addressed row edit.
 //
 // P1-3 fix (round 1): the return is keyed on MUTATION, not cleanliness -- r==1 (incremental), r==2 (clean full
 // re-derive), and r==3 (full re-derive that DIAGNOSED) ALL mutated + rebound the retained Document (a code-3
@@ -2110,14 +2110,126 @@ bool SceneEditor::RouteCstParamRemove_( const char* entityName, const char* enti
 // revert/redo happened" for the history-stack bookkeeping, even though it is reported to the CALLER of the
 // forward-path ApplyAgentParamEdit as a failure).  `outDiagnosed` (non-null only where the caller logs it)
 // reports the code-3 case; the return value alone answers "did the mutation land".
-bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, bool* outDiagnosed )
+bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, int occ, bool* outDiagnosed )
 {
 	if( outDiagnosed ) *outDiagnosed = false;
-	const int r = mJob->ApplyCstParamEditChecked( entityName, entityKind, role, 0, value );
+	const int r = mJob->ApplyCstParamEditChecked( entityName, entityKind, role, occ, value );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
 	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
 	return r >= 1;
+}
+
+namespace {
+// doc 88 S4b round 1 (P1 fix): whitespace-NORMALISE a param value the same way a Document WRITE does, not
+// just trim its ends.  Cst::WithParamValue (the sole writer behind ApplyCstParamEditChecked) re-tokenises
+// the incoming value on ANY whitespace run and re-emits the tokens joined by a SINGLE space -- so interior
+// spacing is not preserved by a write and therefore cannot carry drift information either.  A column-aligned
+// value (`stop 0.5   0.44 0.54 0.64`) or a slider commit that sends the rest-of-line bytes verbatim reads
+// back with its ORIGINAL interior spacing (the read side, ParamValueAtOccurrence, is a pure token-join over
+// whatever trivia the Document actually holds -- untouched until the next write), while `expectedValue` was
+// captured before that first write already went through the single-space join.  Comparing those two
+// verbatim -- as an ends-only trim did -- makes Undo/Redo of a perfectly legitimate, unchanged column-aligned
+// or slider-committed line refuse as "drifted".  The fix: split both sides into whitespace-delimited tokens
+// and rejoin with a single space each -- exactly what a write would have produced -- before comparing.  This
+// keeps TOKEN-level drift detection fully intact (a token added, removed, or changed still fails the
+// comparison); only the whitespace BETWEEN tokens, which no write path preserves, stops being load-bearing.
+std::string NormalizeParamValueWs_( const std::string& s )
+{
+	std::string out;
+	size_t i = 0, n = s.size();
+	bool first = true;
+	while( i < n ) {
+		while( i < n && ( s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' ) ) ++i;
+		const size_t st = i;
+		while( i < n && !( s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' ) ) ++i;
+		if( i > st ) {
+			if( !first ) out += ' ';
+			out.append( s, st, i - st );
+			first = false;
+		}
+	}
+	return out;
+}
+}  // namespace
+
+// doc 88 S4b: the occurrence-addressed undo/redo drift guard -- see the header doc for the contract.
+// Resolution is CaptureAgentPriorParamValue_'s / ApplyCstParamEditImpl_'s verbatim (same
+// DocFindByNameAnyRole call, same kind-addressed-singleton fallback rule, same DocTransformOwnerId owner
+// walk), because a guard that resolved a DIFFERENT chunk than the write would either wave through a real
+// drift or refuse a perfectly good Undo.  The camera-unique fallback is deliberately NOT reproduced: this
+// guard only ever runs for an occurrence-addressed edit, which today is reachable only from the Painter
+// category (SceneEditController's bracket parser is scoped there), and a painter chunk is always named.
+// The `entityName[0]=='\0' && kind` singleton arm IS reproduced, so a future occurrence-addressed edit on
+// an unnamed singleton chunk resolves the same way the write would.
+bool SceneEditor::OccurrenceEditStillAddressable_( const SceneEdit& edit, const char* expectedValue, const char* direction ) const
+{
+	if( !edit.cstParamOccAddressed ) return true;   // every pre-S4b edit: unguarded, exactly as before
+	if( !mJob ) return false;
+	const RISE::Cst::Document* doc = mJob->GetCstDocument();
+	if( !doc ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditor::%s:: occurrence-addressed edit on `%s`.`%s[%d]` cannot be verified -- no retained CST "
+			"Document; refused rather than writing blind.",
+			direction, edit.objectName.c_str(), edit.propertyName.c_str(), edit.cstParamOcc );
+		return false;
+	}
+
+	const std::string ekind( edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : "" );
+	const char* bareName = edit.objectName.size() > 1 ? edit.objectName.c_str() : "";
+	const bool uniqueFallback = ( bareName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, bareName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditor::%s:: occurrence-addressed edit on `%s`.`%s[%d]` refused -- the entity no longer resolves "
+			"in the CST Document (removed or renamed since the edit).",
+			direction, edit.objectName.c_str(), edit.propertyName.c_str(), edit.cstParamOcc );
+		return false;
+	}
+	const std::string role( edit.propertyName.c_str() );
+	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *doc, id, role );
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+	if( !chunk ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditor::%s:: occurrence-addressed edit on `%s`.`%s[%d]` refused -- the owning chunk no longer "
+			"resolves.", direction, edit.objectName.c_str(), edit.propertyName.c_str(), edit.cstParamOcc );
+		return false;
+	}
+
+	// (a) EXISTENCE.  `stop[2]` on a chunk that now has two stops has nowhere to land: DocSetOrAddParamValue
+	// would no-op (its INSERT arm is occurrence-0-only), Job would report code 0, and the caller would already
+	// fail -- but silently, and only after the derive gate had run.  Say so here instead.
+	const int count = RISE::Cst::ParamOccurrenceCount( chunk, role );
+	if( edit.cstParamOcc < 0 || edit.cstParamOcc >= count ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditor::%s:: occurrence-addressed edit on `%s`.`%s[%d]` refused -- `%s` now has %d occurrence(s) "
+			"on that chunk, so occurrence %d no longer exists.  The repeatable parameter's LAYOUT changed since "
+			"the edit (an agent chunk edit, or another occurrence edit); refusing rather than writing a "
+			"neighbouring line.",
+			direction, edit.objectName.c_str(), edit.propertyName.c_str(), edit.cstParamOcc,
+			role.c_str(), count, edit.cstParamOcc );
+		return false;
+	}
+
+	// (b) IDENTITY.  Existence alone is not enough: an INSERT before this occurrence keeps the count high
+	// while shifting every later line down by one, so occurrence N exists and is the WRONG line.  Compare
+	// against the value this direction is entitled to overwrite -- the U2 expectedChunkBytes philosophy, at
+	// param-line granularity.  Whitespace-normalised (token-split + single-space rejoin) on both sides
+	// because a Document write re-tokenises and single-space-joins the value while the captured string and
+	// the live-read string each carry whatever separators their own origin left in place -- see
+	// NormalizeParamValueWs_'s doc above for why interior spacing cannot be a drift signal.
+	const std::string current = NormalizeParamValueWs_( RISE::Cst::ParamValueAtOccurrence( chunk, role, edit.cstParamOcc ) );
+	const std::string expect  = NormalizeParamValueWs_( expectedValue ? expectedValue : "" );
+	if( current != expect ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditor::%s:: occurrence-addressed edit on `%s`.`%s[%d]` refused -- that line now reads `%s` but "
+			"this %s expected `%s`.  The repeatable parameter drifted since the edit; refusing rather than "
+			"overwriting a line this history entry never wrote.",
+			direction, edit.objectName.c_str(), edit.propertyName.c_str(), edit.cstParamOcc,
+			current.c_str(), direction, expect.c_str() );
+		return false;
+	}
+	return true;
 }
 
 // Shared-undo U2: route an AgentInsertChunk/AgentRemoveChunk Undo or Redo through Job's chunk-CRUD
@@ -2723,7 +2835,8 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 // via Job::ApplyCstParamEditChecked before calling this), so there is nothing left to capture or mutate here.
 void SceneEditor::PushAgentCstParamEdit(
 	const String& entityName, const String& entityKind, const String& param,
-	const String& newValue, const String& prevValue, bool prevValueWasAbsent )
+	const String& newValue, const String& prevValue, bool prevValueWasAbsent,
+	int occ, bool occAddressed )
 {
 	SceneEdit edit;
 	edit.op                 = SceneEdit::SetAgentCstParam;
@@ -2733,6 +2846,11 @@ void SceneEditor::PushAgentCstParamEdit(
 	edit.propertyValue      = newValue;
 	edit.prevPropertyValue  = prevValue;
 	edit.prevValueWasAbsent = prevValueWasAbsent;
+	// doc 88 S4b: which occurrence the forward mutation wrote, and whether it was
+	// addressed BY occurrence (which arms the undo/redo drift guard).  Both default
+	// to the pre-S4b meaning for every caller that does not pass them.
+	edit.cstParamOcc          = occ;
+	edit.cstParamOccAddressed = occAddressed;
 	// capturedTargetSerial stays 0 (default): SetAgentCstParam is a CST-routed op (IsCstRoutedOp), so
 	// ApplyForwardMutation/ApplyRevertMutation's identity-serial guard is skipped for it regardless -- it
 	// applies/reverts/redoes BY NAME, like every other CST-routed property op.
@@ -2848,11 +2966,24 @@ bool SceneEditor::Undo()
 	SceneEdit edit;
 	if( !mHistory.PopForUndo( edit ) ) return false;
 
-	// Phase B: re-mark the (single-edit) entity dirty — undo after a
-	// save must put the touched entity back into the dirty set.
-	// Composite inner edits are marked inside the walk-back loop.
-	MarkEditEntityDirty( edit );
-
+	// Phase B: re-mark the (single-edit) entity dirty — undo after a save
+	// must put the touched entity back into the dirty set.  Composite inner
+	// edits are marked inside the walk-back loop.
+	//
+	// P3-e fix (round 1): the mark is made AFTER ApplyRevertMutation actually
+	// lands, not before (both here and in the composite inner loop below,
+	// and symmetrically in Redo()).  S4b's occurrence drift guard made a
+	// REFUSED revert a designed, non-exceptional outcome (a legitimately
+	// stale occurrence index, not a bug) rather than the rare corrupted-
+	// history case this path previously assumed -- marking dirty before the
+	// attempt flipped HasUnsavedChanges() on a refusal that changed nothing,
+	// which meant closing the app after a refused Undo prompted "unsaved
+	// changes" for a Document that was, in fact, byte-identical to what was
+	// last saved.  `edit` itself (the CompositeEnd/CompositeBegin trigger
+	// record popped just above, when this IS a composite) carries no case in
+	// MarkEditEntityDirty's switch either way, so deferring its mark changes
+	// nothing about that arm.
+	//
 	// Walk back through composite groups: if the popped entry is a
 	// CompositeEnd marker, repeatedly undo until and including the
 	// matching CompositeBegin.
@@ -2879,8 +3010,8 @@ bool SceneEditor::Undo()
 			// backward; only the matching OUTER CompositeBegin (depth 0) ends the walk.
 			if( inner.op == SceneEdit::CompositeEnd )   { ++depth; continue; }
 			if( inner.op == SceneEdit::CompositeBegin ) { if( --depth == 0 ) break; continue; }
-			MarkEditEntityDirty( inner );
 			if( !ApplyRevertMutation( inner ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			MarkEditEntityDirty( inner );   // P3-e: only after the revert actually landed
 			reverted.push_back( inner );
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
@@ -2913,12 +3044,15 @@ bool SceneEditor::Undo()
 
 	// Single edit -> the shared revert dispatcher (same one the composite loop uses).
 	// P1: PopForUndo already moved this edit to the redo stack.  If the revert FAILS
-	// (e.g. a captured prior dependency vanished), restore it to the undo stack -- a
-	// failed undo must NOT advance the depth or make the un-reverted edit redo-able.
+	// (e.g. a captured prior dependency vanished, or the S4b occurrence drift guard
+	// refused), restore it to the undo stack -- a failed undo must NOT advance the
+	// depth, make the un-reverted edit redo-able, or (P3-e) mark anything dirty: the
+	// Document did not change, so HasUnsavedChanges() must not either.
 	if( !ApplyRevertMutation( edit ) ) {
 		mHistory.RestoreLastUndoFromRedo();
 		return false;
 	}
+	MarkEditEntityDirty( edit );   // P3-e: only after the revert actually landed
 	return true;
 }
 
@@ -3276,12 +3410,21 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !mJob ) return false;
 		const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
 		bool diagnosed = false;
-		// P1-2 fix (round 1): occ=0 -- the agent path's fixed occ convention (ApplyAgentParamEdit always
-		// edits/removes occurrence 0; see AgentReadFirstParamValue's matching capture).
+		// doc 88 S4b (drift guard): for an OCCURRENCE-ADDRESSED edit, verify that occurrence
+		// `edit.cstParamOcc` still exists AND still holds the value this edit wrote, BEFORE routing a
+		// write at that index.  A repeatable param's layout can move between the edit and this Undo with
+		// nothing invalidating the history entry (agent chunk CRUD leaves no record; another occurrence
+		// edit does not touch this one), and writing occurrence N blindly would then clobber a neighbour.
+		// Refuse honestly instead: returning false makes Undo() restore this entry to the undo stack, so
+		// the history keeps the edit and the user can retry once the drift is resolved.  A NON-occurrence-
+		// addressed edit (every pre-S4b caller) short-circuits to true inside the guard.
+		if( !OccurrenceEditStillAddressable_( edit, edit.propertyValue.c_str(), "Undo" ) ) return false;
+		// `occ` -- pre-S4b this was hardcoded 0 (the agent path's fixed convention); the field carries the
+		// same 0 for every one of those edits, and the real occurrence for a `<role>[<index>]` row edit.
 		if( edit.prevValueWasAbsent ) {
-			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), /*occ*/0, &diagnosed ) ) return false;
+			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.cstParamOcc, &diagnosed ) ) return false;
 		} else {
-			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), &diagnosed ) ) return false;
+			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), edit.cstParamOcc, &diagnosed ) ) return false;
 		}
 		if( diagnosed )
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent edit on `%s`.`%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
@@ -3731,9 +3874,17 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 		if( !mJob ) return false;
 		{
 			bool diagnosed = false;
+			// doc 88 S4b (drift guard, Redo direction): the state this Redo is entitled to overwrite is
+			// what the Undo left behind -- the PRIOR value for an ordinary edit.  (An edit whose param was
+			// ABSENT before it cannot be occurrence-addressed: an occ>0 line has no INSERT arm and an
+			// occurrence row only exists for a line the document already spells, so `prevValueWasAbsent`
+			// and `cstParamOccAddressed` are never both true; the guard is still correct if they ever were
+			// -- an absent param reads as the empty string, which is what prevPropertyValue holds.)
+			if( !OccurrenceEditStillAddressable_( edit, edit.prevPropertyValue.c_str(), "Redo" ) ) return false;
 			if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
 			                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
-			                                 edit.propertyName.c_str(), edit.propertyValue.c_str(), &diagnosed ) ) return false;
+			                                 edit.propertyName.c_str(), edit.propertyValue.c_str(),
+			                                 edit.cstParamOcc, &diagnosed ) ) return false;
 			if( diagnosed )
 				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent edit on `%s`.`%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
 				                       edit.objectName.c_str(), edit.propertyName.c_str() );
@@ -3817,9 +3968,13 @@ bool SceneEditor::Redo()
 	SceneEdit edit;
 	if( !mHistory.PopForRedo( edit ) ) return false;
 
-	// Phase B: re-mark the (single-edit) entity dirty on redo.
-	// Composite inner edits are marked inside the replay loop.
-	MarkEditEntityDirty( edit );
+	// Phase B: re-mark the (single-edit) entity dirty on redo.  Composite
+	// inner edits are marked inside the replay loop.
+	//
+	// P3-e fix (round 1): symmetric to Undo() -- the mark happens AFTER
+	// ApplyForwardMutation actually lands, not before; see Undo()'s doc for
+	// the full rationale (a refused replay -- e.g. the S4b occurrence drift
+	// guard -- must not flip HasUnsavedChanges() when nothing changed).
 
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
@@ -3837,8 +3992,8 @@ bool SceneEditor::Redo()
 			// forward; only the matching OUTER CompositeEnd (depth 0) ends the replay.
 			if( inner.op == SceneEdit::CompositeBegin ) { ++depth; continue; }
 			if( inner.op == SceneEdit::CompositeEnd )   { if( --depth == 0 ) break; continue; }
-			MarkEditEntityDirty( inner );
 			if( !ApplyForwardMutation( inner, /*isReplay*/true ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			MarkEditEntityDirty( inner );   // P3-e: only after the replay actually landed
 			applied.push_back( inner );
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
@@ -3874,6 +4029,7 @@ bool SceneEditor::Redo()
 		mHistory.RestoreLastRedoFromUndo();
 		return false;
 	}
+	MarkEditEntityDirty( edit );   // P3-e: only after the replay actually landed
 	return true;
 }
 void SceneEditor::BeginComposite( const char* label )

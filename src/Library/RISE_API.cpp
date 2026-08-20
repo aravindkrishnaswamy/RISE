@@ -9329,6 +9329,34 @@ namespace RISE
 		return true;
 	}
 
+	// doc 88 S4b (Tier-1 param sliders).  No idx pre-check needed: the controller's
+	// own readers bounds-check and answer false/0, which is exactly the value a
+	// missing row should report -- and unlike the string readers there is no output
+	// buffer to leave untouched.
+	bool RISE_API_SceneEditController_PropertyHasRange(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyHasRange( idx ) : false;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMin(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMin( idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMax(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMax( idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeStep(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyRangeStep( idx ) : 0.0;
+	}
+
 	bool RISE_API_SceneEditController_PropertyJumpTarget(
 		SceneEditController* p, unsigned int idx,
 		int* outCategory, char* nameBuf, unsigned int nameBufLen )
@@ -9935,6 +9963,35 @@ namespace RISE
 		CopyToBuf( p->PropertyUnitLabelFor(
 			static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
 		return true;
+	}
+
+	// doc 88 S4b: per-category twins of the range trio.
+	bool RISE_API_SceneEditController_PropertyHasRangeFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyHasRangeFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : false;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMinFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMinFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMaxFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMaxFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeStepFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyRangeStepFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
 	}
 
 	bool RISE_API_SceneEditController_SetPropertyForCategory(

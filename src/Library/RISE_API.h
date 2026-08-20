@@ -4230,6 +4230,25 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, unsigned int idx,
 		char* buf, unsigned int bufLen );
 
+	//! doc 88 S4b (Tier-1 param sliders): the row's authored numeric range.
+	//! `PropertyHasRange` is true only when BOTH bounds are known -- a shell
+	//! must not draw a slider otherwise, and keeps its text field either way
+	//! (the range is a presentation hint, not a validation rule).  The
+	//! min/max/step readers answer 0 for a row with no range and for an
+	//! out-of-range index, which is why "has a range" is its own call rather
+	//! than an in-band 0/0.  Step is 0 when the author declared none
+	//! ("continuous").  Populated today only for an expression painter's
+	//! `param[i]` rows, from the `min`/`max`/`step` metadata on the scene
+	//! text's `param` line.
+	bool   RISE_API_SceneEditController_PropertyHasRange(
+		SceneEditController* p, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMin(
+		SceneEditController* p, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMax(
+		SceneEditController* p, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeStep(
+		SceneEditController* p, unsigned int idx );
+
 	//! Jump-to-definition (GUI redesign, 2026-07-22): for a Reference-kind
 	//! row whose value names another element, resolve which UI category
 	//! that element lives in (probing the descriptor's declared target
@@ -4554,6 +4573,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_PropertyUnitLabelFor(
 		SceneEditController* p, int category, unsigned int idx,
 		char* buf, unsigned int bufLen );
+	//! doc 88 S4b: per-category twins of the range trio -- the form both GUI
+	//! shells read (they snapshot by category).  Same contract as the
+	//! single-selection readers above.
+	bool   RISE_API_SceneEditController_PropertyHasRangeFor(
+		SceneEditController* p, int category, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMinFor(
+		SceneEditController* p, int category, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMaxFor(
+		SceneEditController* p, int category, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeStepFor(
+		SceneEditController* p, int category, unsigned int idx );
 
 	//! Phase 4b — per-category SetProperty.  Routes the edit through
 	//! `category`'s per-section selection (matches the panel's

@@ -99,7 +99,11 @@ NSString* NamedViewDisplayName( const char* bytes )
                         kind:(NSInteger)kind
                     editable:(BOOL)editable
                      presets:(NSArray<RISEViewportPropertyPreset *> *)presets
-                   unitLabel:(NSString *)unitLabel;
+                   unitLabel:(NSString *)unitLabel
+                    hasRange:(BOOL)hasRange
+                    rangeMin:(double)rangeMin
+                    rangeMax:(double)rangeMax
+                   rangeStep:(double)rangeStep;
 @end
 
 // Class extension: private initializer for RISEViewportPropertyPreset.
@@ -2249,13 +2253,26 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
             if( u ) unitLabel = u;
         }
 
+        // doc 88 S4b: the row's authored numeric range, when it declared one
+        // (an expression painter's `param[i]` line today).  The min/max/step
+        // readers answer 0 for a row with no range, so `hasRange` is the only
+        // thing that decides whether the panel draws a slider.
+        const BOOL hasRange = RISE_API_SceneEditController_PropertyHasRange(_controller, i) ? YES : NO;
+        const double rangeMin  = RISE_API_SceneEditController_PropertyRangeMin(_controller, i);
+        const double rangeMax  = RISE_API_SceneEditController_PropertyRangeMax(_controller, i);
+        const double rangeStep = RISE_API_SceneEditController_PropertyRangeStep(_controller, i);
+
         RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
                                                                        value:[NSString stringWithUTF8String:valBuf]
                                                                   describing:[NSString stringWithUTF8String:descBuf]
                                                                         kind:kind
                                                                     editable:editable ? YES : NO
                                                                      presets:presets
-                                                                   unitLabel:unitLabel];
+                                                                   unitLabel:unitLabel
+                                                                    hasRange:hasRange
+                                                                    rangeMin:rangeMin
+                                                                    rangeMax:rangeMax
+                                                                   rangeStep:rangeStep];
         [out addObject:p];
     }
     return out;
@@ -2362,13 +2379,24 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
             if( u ) unitLabel = u;
         }
 
+        // doc 88 S4b: the row's authored numeric range (see the selection-scoped
+        // snapshot above).  This is the path the panel actually reads.
+        const BOOL hasRange = RISE_API_SceneEditController_PropertyHasRangeFor(_controller, cat, i) ? YES : NO;
+        const double rangeMin  = RISE_API_SceneEditController_PropertyRangeMinFor(_controller, cat, i);
+        const double rangeMax  = RISE_API_SceneEditController_PropertyRangeMaxFor(_controller, cat, i);
+        const double rangeStep = RISE_API_SceneEditController_PropertyRangeStepFor(_controller, cat, i);
+
         RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
                                                                        value:[NSString stringWithUTF8String:valBuf]
                                                                   describing:[NSString stringWithUTF8String:descBuf]
                                                                         kind:kind
                                                                     editable:editable ? YES : NO
                                                                      presets:presets
-                                                                   unitLabel:unitLabel];
+                                                                   unitLabel:unitLabel
+                                                                    hasRange:hasRange
+                                                                    rangeMin:rangeMin
+                                                                    rangeMax:rangeMax
+                                                                   rangeStep:rangeStep];
         [out addObject:p];
     }
     return out;
@@ -2796,6 +2824,11 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     BOOL _editable;
     NSArray<RISEViewportPropertyPreset *> *_presets;
     NSString *_unitLabel;
+    // doc 88 S4b: the authored numeric range (see the header doc).
+    BOOL _hasRange;
+    double _rangeMin;
+    double _rangeMax;
+    double _rangeStep;
 }
 
 - (instancetype)initWithName:(NSString *)name
@@ -2805,6 +2838,10 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
                     editable:(BOOL)editable
                      presets:(NSArray<RISEViewportPropertyPreset *> *)presets
                    unitLabel:(NSString *)unitLabel
+                    hasRange:(BOOL)hasRange
+                    rangeMin:(double)rangeMin
+                    rangeMax:(double)rangeMax
+                   rangeStep:(double)rangeStep
 {
     self = [super init];
     if (self) {
@@ -2815,6 +2852,13 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         _editable = editable;
         _presets = [presets copy] ?: @[];
         _unitLabel = [unitLabel copy] ?: @"";
+        // A range is only usable when BOTH bounds arrived and they are ordered;
+        // the core already enforces that, and re-checking here means a future
+        // producer cannot hand the panel a degenerate slider track.
+        _hasRange = (hasRange && rangeMax > rangeMin) ? YES : NO;
+        _rangeMin = rangeMin;
+        _rangeMax = rangeMax;
+        _rangeStep = rangeStep;
     }
     return self;
 }
@@ -2826,6 +2870,10 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (BOOL)editable          { return _editable; }
 - (NSArray<RISEViewportPropertyPreset *> *)presets { return _presets; }
 - (NSString *)unitLabel   { return _unitLabel; }
+- (BOOL)hasRange          { return _hasRange; }
+- (double)rangeMin        { return _rangeMin; }
+- (double)rangeMax        { return _rangeMax; }
+- (double)rangeStep       { return _rangeStep; }
 
 @end
 

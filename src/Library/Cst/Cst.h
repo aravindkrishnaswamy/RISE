@@ -497,12 +497,36 @@ namespace RISE
 		//!
 		//! `*outPresent` (if non-null) reports whether the param appears AT ALL,
 		//! distinct from "present but empty".  DELIBERATELY NOT the same question as
-		//! "which occurrence does an occ=0 edit address" -- that one is answered by
-		//! occurrence ZERO (SceneEditController.cpp's AgentReadFirstParamValue, whose
-		//! call sites implement the agent capture/restore convention).  Do not
-		//! substitute one for the other.  O(chunk kids).
+		//! "which occurrence does an occ=N edit address" -- that one is answered by
+		//! ParamValueAtOccurrence below, whose call sites implement the editor's
+		//! capture/restore convention.  Do not substitute one for the other.
+		//! O(chunk kids).
 		std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role,
 		                                bool* outPresent = nullptr );
+
+		//! Value of the `occ`-th Param named `role` on `chunk`, counted from the
+		//! FRONT (0 = first) -- the SAME counting convention every occurrence-
+		//! addressed WRITE uses (WithParamValue / WithParamRemovedOcc, hence
+		//! DocSetOrAddParamValue / DocRemoveParamOcc).  Multi-token values are
+		//! joined exactly as ParamValueAsParsed joins them (ParamNodeValue: every
+		//! kid from the first `pvalue` Token to the end of the Param, Trivia
+		//! included), so `stop 0 0.1 0.2 0.3` reads back whole rather than as its
+		//! first token -- the historical truncation bug on the capture side of an
+		//! undo pair.
+		//!
+		//! This is the READ half of an occurrence-addressed edit: a caller that
+		//! captures a prior value for an `occ`-th write MUST read through here, or
+		//! capture and write address different lines and Undo restores the wrong
+		//! one.  Do NOT reach for ParamValueAsParsed there -- it answers "what does
+		//! the PARSE see" (last occurrence wins), a different question that only
+		//! coincides when the param appears once.
+		//!
+		//! `*outPresent` (if non-null) reports whether an `occ`-th occurrence
+		//! exists at all, distinct from "exists but empty".  Returns the empty
+		//! string (and present = false) for a null chunk, a negative `occ`, or an
+		//! `occ` past the occurrence count.  O(chunk kids).
+		std::string ParamValueAtOccurrence( const NodeRef& chunk, const std::string& role,
+		                                    int occ, bool* outPresent = nullptr );
 
 		//! How many Params named `role` the chunk carries.  `> 1` on a param the
 		//! chunk's descriptor declares NON-repeatable is a malformed-but-accepted

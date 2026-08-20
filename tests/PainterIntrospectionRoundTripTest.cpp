@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PainterIntrospectionRoundTripTest.cpp - doc 88 S4: prove a painter's
+//  PainterIntrospectionRoundTripTest.cpp - doc 88 S4 + S4b: prove a painter's
 //    own parameters round-trip -- enumerated as typed rows, edited
 //    through the ONE CST edit pathway, persisted to the retained
 //    Document, marked dirty in a first-class channel, and reverted by
@@ -50,6 +50,25 @@
 //       suffix) is refused by the same route that refuses the
 //       bracketed occurrence rows, with a non-repeatable control param
 //       on the same chunk still applying (review round 1, P2-a).
+//
+//  doc 88 S4b (occurrence-addressed editing + slider row metadata) adds:
+//    9  (rewritten) the BOUNDARY of the bracketed vocabulary -- out of
+//       range, malformed index, bracket on a non-repeatable param.
+//    14 `stop[1]` rewrites EXACTLY that line, byte-exactly, and the live
+//       painter changes.
+//    15 `param[1]` value edit: evaluation changes, `param[0]` and its
+//       ParamSpec metadata untouched.
+//    16 `def[0]` edit recompiles; an INVALID def body is refused with the
+//       Document byte-identical.
+//    17 Undo/Redo at an occurrence restores the right LINE, whole.
+//    18 The DRIFT GUARD: an occurrence layout that moved under a pending
+//       Undo produces an honest refusal, not a clobbered neighbour.
+//    19 Row range metadata (hasRange/min/max/step) through both the
+//       introspection rows and the per-category snapshot.
+//    20 (round-1 P1) The drift guard's WHITESPACE NORMALISATION: a
+//       column-aligned original / a slider-style commit that resends
+//       untouched bytes verbatim must not read as drift, while a real
+//       token-level value change still must.
 //
 //  Self-contained: no RISE_MEDIA_PATH, an inline native-v7 scene, and a
 //  mock DoOneRenderPass so the render thread cycles without a rasterizer.
@@ -141,6 +160,15 @@ static const char* kScene =
 		"seed 3.0\ntime 0.0\n}\n"
 	"ramp_painter\n{\nname rmp\ninput noise\nchannel R\ninterpolation linear\n"
 		"stop 0.0 0.1 0.2 0.3\nstop 1.0 0.9 0.8 0.7\n}\n"
+	// doc 88 S4b: a THREE-stop ramp -- the occurrence-addressed edit tests need
+	// a middle occurrence (so a write to [1] has a neighbour on each side to
+	// prove untouched) and the drift tests need a layout that can lose a line
+	// and still have an occurrence 1.
+	"ramp_painter\n{\nname rmp3\ninput noise\nchannel R\ninterpolation linear\n"
+		// Values deliberately DISTINCT from `rmp`'s: the occurrence tests probe the
+		// serialized Document by substring, and shared literals would make "stop 0
+		// is untouched" pass on the other ramp's line.
+		"stop 0.0 0.11 0.21 0.31\nstop 0.5 0.44 0.54 0.64\nstop 1.0 0.91 0.81 0.71\n}\n"
 	"scalar_painter\n{\nname sp_rough\nexpression 0.3\n}\n"
 	"lambertian_luminaire_material\n{\nname lum\nexitance basecol\nscale 5.0\nmaterial none\n}\n"
 	"sphere_geometry\n{\nname s\nradius 1\n}\n"
@@ -205,6 +233,51 @@ static bool DescriptionContains( const CameraProperty& row, const char* needle )
 	return std::string( row.description.c_str() ).find( needle ) != std::string::npos;
 }
 
+//! Split a serialized Document into lines (keeping empties) so a test can
+//! assert that an occurrence edit touched EXACTLY one line and left every
+//! other byte alone.  A whole-Document string compare proves "something
+//! changed"; this proves "this line and only this line".
+static std::vector<std::string> SplitLines( const std::string& s )
+{
+	std::vector<std::string> out;
+	std::string cur;
+	for( std::size_t i = 0; i < s.size(); ++i ) {
+		if( s[i] == '\n' ) { out.push_back( cur ); cur.clear(); }
+		else cur += s[i];
+	}
+	out.push_back( cur );
+	return out;
+}
+
+//! Indices of the lines that differ between two serialized Documents.
+//! Returns {-1} when the line COUNTS differ -- a caller asserting "one line
+//! changed" must fail on an insert/remove too, and a positional diff would
+//! otherwise report every line after the splice.
+static std::vector<int> ChangedLineIndices( const std::string& before, const std::string& after )
+{
+	const std::vector<std::string> a = SplitLines( before );
+	const std::vector<std::string> b = SplitLines( after );
+	std::vector<int> out;
+	if( a.size() != b.size() ) { out.push_back( -1 ); return out; }
+	for( std::size_t i = 0; i < a.size(); ++i )
+		if( a[i] != b[i] ) out.push_back( (int)i );
+	return out;
+}
+
+//! The one line at `idx` of a serialized Document (empty for out of range).
+static std::string LineAt( const std::string& doc, int idx )
+{
+	const std::vector<std::string> ls = SplitLines( doc );
+	return ( idx >= 0 && (std::size_t)idx < ls.size() ) ? ls[idx] : std::string();
+}
+
+static bool PelsDiffer( const RISEPel& a, const RISEPel& b, double eps = 1e-6 )
+{
+	return std::abs( (double)a.r - (double)b.r ) > eps
+	    || std::abs( (double)a.g - (double)b.g ) > eps
+	    || std::abs( (double)a.b - (double)b.b ) > eps;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Test 1: the rows themselves.
 //////////////////////////////////////////////////////////////////////
@@ -267,8 +340,9 @@ static void TestInspectRows()
 
 		// The repeatable rows -- invisible before this module.
 		Check( RowFor( rows, "param[0]", row ), "repeatable `param` occurrence 0 surfaces as a row" );
-		Check( RowFor( rows, "param[0]", row ) && !row.editable,
-		       "an occurrence row is READ-ONLY (occ-addressed editing is deferred)" );
+		// doc 88 S4b flipped this: occurrence rows are EDITABLE now.
+		Check( RowFor( rows, "param[0]", row ) && row.editable,
+		       "an occurrence row is EDITABLE (S4b: occ-addressed editing)" );
 		Check( RowFor( rows, "param[0]", row )
 		    && std::string( row.value.c_str() ).find( "ring_scale 4.0" ) != std::string::npos,
 		       "occurrence 0's value is the FULL `param` line, token join intact" );
@@ -308,9 +382,9 @@ static void TestInspectRows()
 		Check( RowFor( rows, "param[1]", row ) && !DescriptionContains( row, "Ring density" )
 		    && !DescriptionContains( row, "Range:" ),
 		       "a metadata-free param does NOT inherit its sibling's ParamSpec (name-matched, not index-drifted)" );
-		Check( RowFor( rows, "def[0]", row ) && !row.editable
+		Check( RowFor( rows, "def[0]", row ) && row.editable
 		    && std::string( row.value.c_str() ).find( "rings" ) != std::string::npos,
-		       "repeatable `def` occurrence surfaces read-only" );
+		       "repeatable `def` occurrence surfaces editable" );
 		Check( !RowFor( rows, "param[2]", row ),
 		       "no phantom occurrence row past the authored count" );
 	}
@@ -323,14 +397,17 @@ static void TestInspectRows()
 		       "ramp `interpolation` is an editable Enum row with its 3 values as presets" );
 		Check( RowFor( rows, "channel", row ) && row.editable && row.presets.size() == 4,
 		       "ramp `channel` is an editable Enum row with 4 presets" );
-		Check( RowFor( rows, "stop[0]", row ) && !row.editable
+		Check( RowFor( rows, "stop[0]", row ) && row.editable
 		    && std::string( row.value.c_str() ).find( "0.0 0.1 0.2 0.3" ) != std::string::npos,
-		       "ramp `stop[0]` surfaces read-only with its full 4-token value" );
+		       "ramp `stop[0]` surfaces editable with its full 4-token value" );
 		Check( RowFor( rows, "stop[1]", row )
 		    && std::string( row.value.c_str() ).find( "1.0 0.9 0.8 0.7" ) != std::string::npos,
 		       "ramp `stop[1]` is the SECOND stop, not a repeat of the first" );
-		Check( RowFor( rows, "stop[0]", row ) && DescriptionContains( row, "REPEATABLE" ),
-		       "the occurrence row says WHY it is read-only" );
+		Check( RowFor( rows, "stop[0]", row ) && DescriptionContains( row, "Occurrence 0" )
+		    && DescriptionContains( row, "REPEATABLE" ),
+		       "the occurrence row names WHICH occurrence it is and that the param is repeatable" );
+		Check( RowFor( rows, "stop[0]", row ) && !DescriptionContains( row, "READ-ONLY" ),
+		       "the S4 read-only disclaimer is GONE from the occurrence row (it would now be a lie)" );
 	}
 
 	// ---- the scalar pipe + the unknown name ----
@@ -701,11 +778,18 @@ static void TestSaveThenUndoRedoDirty()
 }
 
 //////////////////////////////////////////////////////////////////////
-// Test 9: the edit route refuses a synthetic occurrence row name.
+// Test 9 (doc 88 S4b): the edit route accepts a WELL-FORMED, IN-RANGE
+// occurrence row name and refuses everything else that wears brackets.
+//
+// S4 refused the whole bracketed vocabulary; S4b gives it a meaning, so
+// what has to be pinned now is the BOUNDARY -- an out-of-range index, a
+// malformed index, and a bracketed name on a NON-repeatable param must
+// all still leave the Document byte-identical rather than inserting a
+// line the descriptor never declared.
 //////////////////////////////////////////////////////////////////////
 static void TestOccurrenceRowRefused()
 {
-	std::cout << "Test 9: occurrence row names refused by the edit route..." << std::endl;
+	std::cout << "Test 9: malformed / out-of-range occurrence names refused..." << std::endl;
 	const char* tmp = "painterintro_occ.RISEscene";
 	Job* j = LoadScene( kScene, tmp );
 	Check( j != nullptr, "scene loads" );
@@ -717,12 +801,52 @@ static void TestOccurrenceRowRefused()
 		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
 
 		const std::string before = DocText( *j );
+
+		// OUT OF RANGE: `rmp` has exactly two stops.
 		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
-			String( "stop[1]" ), String( "1.0 0.0 0.0 0.0" ) ),
-		       "an occurrence row name is refused" );
+			String( "stop[99]" ), String( "1.0 0.0 0.0 0.0" ) ),
+		       "an out-of-range occurrence index is refused" );
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[2]" ), String( "1.0 0.0 0.0 0.0" ) ),
+		       "the first index PAST the authored count is refused (off-by-one boundary)" );
+
+		// MALFORMED: bracket shape, no usable index.
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[]" ), String( "1.0 0.0 0.0 0.0" ) ), "an empty index is refused" );
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[x]" ), String( "1.0 0.0 0.0 0.0" ) ), "a non-numeric index is refused" );
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[-1]" ), String( "1.0 0.0 0.0 0.0" ) ), "a negative index is refused" );
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[0]junk" ), String( "1.0 0.0 0.0 0.0" ) ),
+		       "trailing text after the bracket is refused (no loose parse to 0)" );
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[0" ), String( "1.0 0.0 0.0 0.0" ) ),
+		       "an unterminated bracket is refused" );
+
+		// BRACKET ON A NON-REPEATABLE PARAM: `channel` occurs once, so it has
+		// no occurrences to address; the index must not be honoured as 0.
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "channel[0]" ), String( "G" ) ),
+		       "a bracketed name on a NON-repeatable param is refused" );
+
+		// BRACKET ON A NAME THAT IS NOT A PARAM AT ALL.
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "nosuch[0]" ), String( "1" ) ),
+		       "a bracketed name that is not a parameter of this chunk kind is refused" );
+
 		Check( DocText( *j ) == before,
-		       "the refused occurrence edit left the Document byte-identical (no `stop[1]` line inserted)" );
-		Check( !c.HasUnsavedChanges(), "no dirty mark from the refused occurrence edit" );
+		       "every refused bracketed edit left the Document byte-identical (no phantom line inserted)" );
+		Check( !c.HasUnsavedChanges(), "no dirty mark from any refused occurrence edit" );
+
+		// ...and the CONTROL: a well-formed, in-range occurrence DOES apply on
+		// the same chunk, so the refusals above are keyed on the boundary and
+		// not on a blanket lockout.
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[1]" ), String( "1.0 0.0 0.25 0.5" ) ),
+		       "control: a well-formed IN-RANGE occurrence edit applies" );
+		Check( DocText( *j ).find( "stop 1.0 0.0 0.25 0.5" ) != std::string::npos,
+		       "control: the Document carries the occurrence edit" );
 	}
 	j->release();
 	std::remove( tmp );
@@ -760,7 +884,7 @@ static void TestBridgeSnapshotPath()
 		Check( n > 0, "the Painter category snapshot is non-empty (the shells' read path)" );
 
 		bool sawType = false, sawPipe = false, sawExpr = false, sawParamOcc = false;
-		bool exprEditable = false, paramOccEditable = true;
+		bool exprEditable = false, paramOccEditable = false;
 		for( unsigned int i = 0; i < n; ++i ) {
 			const String nm = c.PropertyNameFor( SceneEditController::Category::Painter, i );
 			const bool ed   = c.PropertyEditableFor( SceneEditController::Category::Painter, i );
@@ -772,8 +896,8 @@ static void TestBridgeSnapshotPath()
 		Check( sawType && sawPipe, "identity + pipe rows reach the snapshot" );
 		Check( sawExpr && exprEditable,
 		       "the editable `expr` row reaches the snapshot MARKED EDITABLE (the shells render a field)" );
-		Check( sawParamOcc && !paramOccEditable,
-		       "the `param[0]` occurrence row reaches the snapshot MARKED READ-ONLY (the shells render it inert)" );
+		Check( sawParamOcc && paramOccEditable,
+		       "the `param[0]` occurrence row reaches the snapshot MARKED EDITABLE (S4b: the shells render a field/slider)" );
 
 		// ...and a write through the same category surface round-trips.
 		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
@@ -968,9 +1092,671 @@ static void TestBareRepeatableRoleRefused()
 	}
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Test 14 (doc 88 S4b): a `stop[1]` edit rewrites THAT line and nothing
+// else -- byte-exactly -- and the change reaches the live scene.
+//
+// The whole-Document compare in the other tests proves "something
+// changed".  This one proves the surgical claim the slice actually
+// makes: exactly ONE line of the serialized Document differs, it is the
+// SECOND `stop` of a three-stop ramp, and the neighbours on both sides
+// are byte-identical.  A capture/write pair that disagreed on the
+// occurrence would land on stop 1 or stop 3 and fail here.
+//////////////////////////////////////////////////////////////////////
+static void TestOccurrenceEditIsSurgical()
+{
+	std::cout << "Test 14: `stop[1]` edit rewrites exactly that line..." << std::endl;
+	const char* tmp = "painterintro_occ_surgical.RISEscene";
+	Job* j = LoadScene( kScene, tmp );
+	Check( j != nullptr, "scene loads" );
+	if( !j ) return;
+	{
+		TestController c( *j );
+		c.SetSelection( SceneEditController::Category::Painter, String( "rmp3" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+		Check( !c.HasUnsavedChanges(), "clean before the edit" );
+
+		const std::string before = DocText( *j );
+		RISEPel wasColor;
+		const bool hadColor = PainterColorAt( *j, "rmp3", 0.37, wasColor );
+		Check( hadColor, "rmp3 evaluates before the edit" );
+
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ),
+		       "the middle stop's occurrence row applies" );
+
+		const std::string after = DocText( *j );
+		const std::vector<int> changed = ChangedLineIndices( before, after );
+		Check( changed.size() == 1,
+		       "EXACTLY ONE line of the whole Document changed (not zero, not two, no insert)" );
+		if( changed.size() == 1 ) {
+			Check( LineAt( before, changed[0] ) == "stop 0.5 0.44 0.54 0.64",
+			       "the changed line was the SECOND stop of the three (occurrence 1)" );
+			Check( LineAt( after, changed[0] ) == "stop 0.5 1.0 0.0 0.0",
+			       "the changed line now carries the full four-token new value" );
+		}
+		// The neighbours, stated positively rather than inferred from the count.
+		Check( after.find( "stop 0.0 0.11 0.21 0.31" ) != std::string::npos,
+		       "occurrence 0 is byte-identical after the edit" );
+		Check( after.find( "stop 1.0 0.91 0.81 0.71" ) != std::string::npos,
+		       "occurrence 2 is byte-identical after the edit" );
+		// ...and the two-stop `rmp` in the same document, which shares the role
+		// name, must not have been touched either.
+		Check( after.find( "name rmp\ninput" ) != std::string::npos
+		    || after.find( "name rmp\n" ) != std::string::npos,
+		       "the OTHER ramp painter is still present" );
+
+		// The derive really ran: the live painter evaluates differently.
+		RISEPel nowColor;
+		Check( PainterColorAt( *j, "rmp3", 0.37, nowColor ), "rmp3 evaluates after the edit" );
+		Check( PelsDiffer( wasColor, nowColor ),
+		       "the LIVE painter changed -- the occurrence edit re-derived, it did not only touch text" );
+
+		Check( c.HasUnsavedChanges(), "the occurrence edit marks the editor dirty" );
+		{
+			const std::vector<DirtyEntity> ents = c.Editor().Dirty().EntitySnapshot();
+			Check( ents.size() == 1
+			    && ents[0].first == EntityCategory::Painter
+			    && ents[0].second == "rmp3",
+			       "the dirty mark is (Painter, \"rmp3\") -- the occurrence row reuses the painter channel" );
+		}
+	}
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 15 (doc 88 S4b): an expression `param[1]` value edit changes the
+// evaluation, leaves `param[0]` alone, and does not disturb param[0]'s
+// ParamSpec metadata (the slider bounds must survive a sibling's edit).
+//////////////////////////////////////////////////////////////////////
+static void TestExpressionParamOccurrenceEdit()
+{
+	std::cout << "Test 15: expression `param[1]` occurrence edit..." << std::endl;
+	const char* tmp = "painterintro_occ_param.RISEscene";
+	// A body that READS both params, so an edit to either is observable.
+	static const std::string sceneText =
+		std::string( kScene ).substr( 0, std::string( kScene ).find( "expression_painter" ) )
+		+ "expression_painter\n{\nname ex2\n"
+		  "param ring_scale 4.0 min 0.5 max 20 step 0.25 label \"Ring density\"\n"
+		  "param wob 0.25\n"
+		  "def rings clamp(0.5+0.5*sin(P.x*ring_scale)*wob, 0, 1)\n"
+		  "expr mix(vec3(0,0,0), vec3(1,1,1), rings)\n"
+		  "seed 3.0\ntime 0.0\n}\n"
+		+ std::string( kScene ).substr( std::string( kScene ).find( "expression_painter" ) );
+	Job* j = LoadScene( sceneText.c_str(), tmp );
+	Check( j != nullptr, "scene loads" );
+	if( !j ) return;
+	{
+		TestController c( *j );
+		c.SetSelection( SceneEditController::Category::Painter, String( "ex2" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+		RISEPel was;
+		Check( PainterColorAt( *j, "ex2", 0.41, was ), "ex2 evaluates before" );
+		const std::string before = DocText( *j );
+
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "param[1]" ), String( "wob 0.9" ) ),
+		       "`param[1]` (the metadata-free param) applies" );
+
+		const std::string after = DocText( *j );
+		const std::vector<int> changed = ChangedLineIndices( before, after );
+		Check( changed.size() == 1 && LineAt( after, changed[0] ) == "param wob 0.9",
+		       "exactly the second `param` line changed" );
+		Check( after.find( "param ring_scale 4.0 min 0.5 max 20 step 0.25 label \"Ring density\"" ) != std::string::npos,
+		       "`param[0]` -- name, value AND its min/max/step/label metadata -- is byte-identical" );
+
+		RISEPel now;
+		Check( PainterColorAt( *j, "ex2", 0.41, now ), "ex2 evaluates after" );
+		Check( PelsDiffer( was, now ),
+		       "the recompiled program evaluates differently (the param edit reached the VM)" );
+
+		// The ParamSpec metadata still reaches the row -- as fields AND prose.
+		CameraProperty row;
+		Check( RowFor( InspectPainter( *j, "ex2" ), "param[0]", row ) && row.hasRange,
+		       "`param[0]` still carries its authored range after a SIBLING param was edited" );
+		Check( row.hasRange && std::abs( (double)row.rangeMin - 0.5 ) < 1e-12
+		    && std::abs( (double)row.rangeMax - 20.0 ) < 1e-12
+		    && std::abs( (double)row.rangeStep - 0.25 ) < 1e-12,
+		       "`param[0]`'s min/max/step survived the sibling edit unchanged" );
+		Check( RowFor( InspectPainter( *j, "ex2" ), "param[1]", row )
+		    && std::string( row.value.c_str() ).find( "wob 0.9" ) != std::string::npos,
+		       "the `param[1]` row re-reads the edited value" );
+
+		// And a `param[0]` VALUE edit that keeps the metadata keeps the range.
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "param[0]" ),
+			String( "ring_scale 9.5 min 0.5 max 20 step 0.25 label \"Ring density\"" ) ),
+		       "`param[0]` applies with its metadata carried through the write" );
+		Check( DocText( *j ).find( "param ring_scale 9.5 min 0.5 max 20 step 0.25 label \"Ring density\"" ) != std::string::npos,
+		       "the re-tokenised write preserved the quoted label and every metadata token" );
+		Check( RowFor( InspectPainter( *j, "ex2" ), "param[0]", row ) && row.hasRange
+		    && std::abs( (double)row.rangeMax - 20.0 ) < 1e-12,
+		       "the range survives a value edit that carries the metadata (the slider does not vanish mid-scrub)" );
+	}
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 16 (doc 88 S4b): a `def[0]` occurrence edit recompiles, and an
+// INVALID def body is refused by the same full-derivability gate every
+// other painter param edit passes through -- Document byte-identical.
+//////////////////////////////////////////////////////////////////////
+static void TestDefOccurrenceEditAndRefusal()
+{
+	std::cout << "Test 16: `def[0]` occurrence edit + invalid-body refusal..." << std::endl;
+	const char* tmp = "painterintro_occ_def.RISEscene";
+	Job* j = LoadScene( kScene, tmp );
+	Check( j != nullptr, "scene loads" );
+	if( !j ) return;
+	{
+		TestController c( *j );
+		c.SetSelection( SceneEditController::Category::Painter, String( "ex" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+		RISEPel was;
+		Check( PainterColorAt( *j, "ex", 0.29, was ), "ex evaluates before" );
+
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "def[0]" ), String( "rings clamp(0.5+0.5*sin(P.x*ring_scale*3.0), 0, 1)" ) ),
+		       "a `def[0]` body edit applies" );
+		Check( DocText( *j ).find( "ring_scale*3.0" ) != std::string::npos,
+		       "the Document carries the new def body" );
+
+		RISEPel now;
+		Check( PainterColorAt( *j, "ex", 0.29, now ), "ex evaluates after" );
+		Check( PelsDiffer( was, now ),
+		       "the def edit RECOMPILED the program (a text-only edit would evaluate identically)" );
+
+		// INVALID body: the derive gate must refuse, leaving the Document alone.
+		const std::string before = DocText( *j );
+		const bool wasDirty = c.HasUnsavedChanges();
+		Check( !c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "def[0]" ), String( "rings this is not an expression ((((" ) ),
+		       "an INVALID def body is refused" );
+		Check( DocText( *j ) == before,
+		       "the refused def edit left the Document byte-identical (the derive gate ran before the commit)" );
+		Check( c.HasUnsavedChanges() == wasDirty,
+		       "the refused def edit did not move the dirty state" );
+
+		RISEPel stillNow;
+		Check( PainterColorAt( *j, "ex", 0.29, stillNow ), "ex still evaluates after the refusal" );
+		Check( !PelsDiffer( now, stillNow ),
+		       "the LIVE program is untouched by the refused edit" );
+	}
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 17 (doc 88 S4b): Undo/Redo of an occurrence edit restores the
+// right LINE, whole.
+//
+// The capture half reads occurrence N and the write half writes
+// occurrence N; if they ever disagree, an Undo silently restores a
+// neighbour.  Pinned positionally (which line changed) rather than by
+// substring, because "the value is somewhere in the document" is
+// exactly what a wrong-line restore also satisfies.
+//////////////////////////////////////////////////////////////////////
+static void TestOccurrenceUndoRedo()
+{
+	std::cout << "Test 17: undo/redo at an occurrence restores the right line..." << std::endl;
+	const char* tmp = "painterintro_occ_undo.RISEscene";
+	Job* j = LoadScene( kScene, tmp );
+	Check( j != nullptr, "scene loads" );
+	if( !j ) return;
+	{
+		TestController c( *j );
+		c.SetSelection( SceneEditController::Category::Painter, String( "rmp3" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+		const std::string pristine = DocText( *j );
+
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ), "occurrence edit applies" );
+		const std::string edited = DocText( *j );
+
+		c.Undo();
+		const std::string undone = DocText( *j );
+		Check( undone == pristine,
+		       "Undo restored the Document BYTE-EXACTLY -- the whole four-token stop line, at its own "
+		       "occurrence (a first-token-only capture would land `stop 0.5` here)" );
+
+		c.Redo();
+		Check( DocText( *j ) == edited, "Redo re-applied the occurrence edit byte-exactly" );
+		{
+			const std::vector<DirtyEntity> ents = c.Editor().Dirty().EntitySnapshot();
+			bool found = false;
+			for( std::size_t i = 0; i < ents.size(); ++i )
+				if( ents[i].first == EntityCategory::Painter && ents[i].second == "rmp3" ) found = true;
+			Check( found, "Redo re-marks the (Painter, \"rmp3\") channel" );
+		}
+
+		// A SECOND occurrence, edited and undone while the first stays edited --
+		// proves the two history entries address their own lines independently.
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+			String( "stop[2]" ), String( "1.0 0.2 0.3 0.4" ) ), "a second occurrence edit applies" );
+		c.Undo();
+		const std::string afterSecondUndo = DocText( *j );
+		Check( afterSecondUndo == edited,
+		       "undoing the SECOND occurrence edit left the FIRST one's line intact" );
+	}
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 18 (doc 88 S4b): the DRIFT GUARD.
+//
+// The U2 lesson at param-line granularity: an occurrence index captured
+// at edit time is not a promise about the document later.  Both halves
+// below move the occurrence layout out from under a pending Undo through
+// the SAME checked Job primitives an agent-originated edit uses -- and,
+// exactly like an agent chunk-CRUD verb, they leave no EditHistory record
+// of their own, so nothing invalidates the param edit's entry.  That is
+// the real-world shape of this hazard, not a contrivance.
+//
+//   (a) IDENTITY -- occurrence 1 still EXISTS, but now holds a value no
+//       history entry wrote.  Without the identity check the Undo
+//       overwrites that line with the edit's prior value.
+//   (b) EXISTENCE -- occurrence 1 is gone entirely.
+//
+// Both assert the Job returned code 2 (D2: a FULL re-derive, rebuilding the
+// Scene's managers from the mutated Document).  A `stop`/`param` edit through
+// ApplyCstParamEditChecked / ApplyCstParamRemoveChecked always goes through the
+// full-derivability gate -- it is never the code-1 incremental fast path -- so
+// asserting `rc == 2` pins that shape rather than merely tolerating it under
+// `rc >= 1`.  The refusal path that follows (SceneEditor::Undo/Redo's drift
+// guard) never dereferences the STALE cached manager pointers a D2 leaves
+// behind on the editor side: the guard's own checks (existence, identity) all
+// run against the CST Document alone -- the very thing the drift-inducing
+// call just rebuilt from -- and a refusal short-circuits before any manager
+// pointer is ever touched, so a test that leaves those pointers stale is safe
+// by construction.  If a future change made either call incremental instead,
+// this assertion is the one that would need to move, not a `>= 1` that would
+// have silently absorbed the shift.
+//
+// RED-PROVE (a): disabling the identity comparison in
+// SceneEditor::OccurrenceEditStillAddressable_ makes the "Document is
+// byte-identical after the refused Undo" assertion fail, with the
+// drifted line clobbered by `stop 0.5 0.4 0.5 0.6`.
+//////////////////////////////////////////////////////////////////////
+static void TestOccurrenceDriftGuard()
+{
+	std::cout << "Test 18: occurrence drift guard refuses a shifted Undo..." << std::endl;
+
+	// ---- (a) IDENTITY drift: the index survives, the line underneath changed.
+	{
+		const char* tmp = "painterintro_occ_drift.RISEscene";
+		Job* j = LoadScene( kScene, tmp );
+		Check( j != nullptr, "scene loads" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "rmp3" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ), "occurrence edit applies" );
+
+			// Someone else rewrites that very line, with no history record.
+			const int rc = j->ApplyCstParamEditChecked( "rmp3", "painter", "stop", 1, "0.5 0.3 0.3 0.3" );
+			Check( rc == 2, "the drift-inducing rewrite landed (D2: full re-derive)" );
+
+			const std::string drifted = DocText( *j );
+			Check( drifted.find( "stop 0.5 0.3 0.3 0.3" ) != std::string::npos,
+			       "occurrence 1 now holds a value NO history entry wrote" );
+
+			c.Undo();
+			Check( DocText( *j ) == drifted,
+			       "the Undo was REFUSED -- Document byte-identical, the drifted line not clobbered" );
+			Check( DocText( *j ).find( "stop 0.5 0.44 0.54 0.64" ) == std::string::npos,
+			       "the edit's PRIOR value was not written over the drifted line" );
+			Check( c.Editor().History().UndoDepth() >= 1,
+			       "the history entry STAYS after an honest refusal (the user can retry, not lose the edit)" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+
+	// ---- (a2) The same drift shape produced by an INSERT-BEFORE, which is
+	// what actually shifts every later occurrence down: remove occurrence 0.
+	// Occurrence 1 then names what used to be occurrence 2 -- it exists, it is
+	// simply somebody else's line.
+	{
+		const char* tmp = "painterintro_occ_drift_shift.RISEscene";
+		Job* j = LoadScene( kScene, tmp );
+		Check( j != nullptr, "scene loads (shift drift)" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "rmp3" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ), "occurrence edit applies" );
+
+			const int rc = j->ApplyCstParamRemoveChecked( "rmp3", "painter", "stop", 0 );
+			Check( rc == 2, "the leading-stop removal landed (D2: full re-derive)" );
+
+			const std::string drifted = DocText( *j );
+			Check( drifted.find( "stop 0.0 0.11 0.21 0.31" ) == std::string::npos,
+			       "the leading stop is gone -- every later occurrence shifted down by one" );
+			Check( drifted.find( "stop 1.0 0.91 0.81 0.71" ) != std::string::npos,
+			       "the final stop -- now occurrence 1 -- is present and unedited" );
+
+			c.Undo();
+			Check( DocText( *j ) == drifted,
+			       "the shifted Undo was REFUSED -- no neighbouring stop clobbered" );
+			Check( DocText( *j ).find( "stop 1.0 0.91 0.81 0.71" ) != std::string::npos,
+			       "the line occurrence 1 now names survived intact" );
+			Check( DocText( *j ).find( "stop 0.5 0.44 0.54 0.64" ) == std::string::npos,
+			       "the edit's prior value was not written anywhere" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+
+	// ---- (b) EXISTENCE drift: occurrence 1 is gone entirely.  Uses the
+	// expression painter's `param` rather than a ramp `stop`, because
+	// ramp_painter REFUSES to derive with fewer than two stops -- so a ramp can
+	// never actually lose its occurrence 1.  `param wob` is unreferenced by the
+	// fixture's def/expr, so removing it derives cleanly.
+	{
+		const char* tmp = "painterintro_occ_drift2.RISEscene";
+		Job* j = LoadScene( kScene, tmp );
+		Check( j != nullptr, "scene loads (existence half)" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "ex" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "param[1]" ), String( "wob 0.9" ) ), "occurrence edit applies" );
+			Check( j->ApplyCstParamRemoveChecked( "ex", "painter", "param", 1 ) == 2,
+			       "the EDITED param occurrence was removed out of band (D2: full re-derive)" );
+
+			const std::string drifted = DocText( *j );
+			Check( drifted.find( "param wob" ) == std::string::npos,
+			       "occurrence 1 of `param` no longer exists" );
+
+			c.Undo();
+			Check( DocText( *j ) == drifted,
+			       "an Undo whose occurrence no longer EXISTS is refused, Document byte-identical" );
+			Check( DocText( *j ).find( "param wob 0.25" ) == std::string::npos,
+			       "the prior value was not re-inserted as a phantom line" );
+			Check( c.Editor().History().UndoDepth() >= 1,
+			       "the history entry stays on the existence refusal too" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 19 (doc 88 S4b): the row RANGE metadata both bridges now carry.
+//
+// The Mac panel decides "slider or not" from `hasRange` alone, so the
+// three questions that matter are: does an authored min/max/step reach
+// the row as FIELDS, does a param with no metadata correctly report NO
+// range (rather than a 0..0 track), and do the fields survive the trip
+// through the per-category snapshot the shells actually read.
+//////////////////////////////////////////////////////////////////////
+static void TestRowRangeMetadata()
+{
+	std::cout << "Test 19: param rows carry hasRange/min/max/step..." << std::endl;
+	const char* tmp = "painterintro_range.RISEscene";
+	Job* j = LoadScene( kScene, tmp );
+	Check( j != nullptr, "scene loads" );
+	if( !j ) return;
+	{
+		CameraProperty row;
+		const std::vector<CameraProperty> rows = InspectPainter( *j, "ex" );
+
+		Check( RowFor( rows, "param[0]", row ) && row.hasRange,
+		       "the metadata-carrying `param[0]` row reports hasRange" );
+		Check( row.hasRange && std::abs( (double)row.rangeMin  -  0.5  ) < 1e-12,
+		       "rangeMin matches the authored `min 0.5`" );
+		Check( row.hasRange && std::abs( (double)row.rangeMax  - 20.0  ) < 1e-12,
+		       "rangeMax matches the authored `max 20`" );
+		Check( row.hasRange && std::abs( (double)row.rangeStep -  0.25 ) < 1e-12,
+		       "rangeStep matches the authored `step 0.25`" );
+
+		Check( RowFor( rows, "param[1]", row ) && !row.hasRange,
+		       "a param with NO authored metadata reports hasRange = false (no 0..0 slider track)" );
+		Check( !row.hasRange && (double)row.rangeMin == 0.0 && (double)row.rangeMax == 0.0
+		    && (double)row.rangeStep == 0.0,
+		       "...and its range numbers are a defined 0, not indeterminate" );
+
+		// Rows that are not expression params carry no range at all.
+		Check( RowFor( rows, "seed", row ) && !row.hasRange,
+		       "an ordinary single-occurrence row carries no range" );
+		Check( RowFor( InspectPainter( *j, "rmp3" ), "stop[0]", row ) && !row.hasRange,
+		       "a ramp `stop` occurrence row carries no range (only expression params do)" );
+
+		// ...and the same facts through the per-category snapshot the two GUI
+		// bridges read (RISEViewportBridge.mm / ViewportBridge.cpp both call the
+		// *For accessors; this is what "the panel can draw a slider" rests on).
+		TestController c( *j );
+		c.SetSelection( SceneEditController::Category::Painter, String( "ex" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+		c.RefreshProperties();
+
+		const SceneEditController::Category cat = SceneEditController::Category::Painter;
+		const unsigned int n = c.PropertyCountFor( cat );
+		bool sawRanged = false, sawUnranged = false, occEditable = false;
+		for( unsigned int i = 0; i < n; ++i ) {
+			const String nm = c.PropertyNameFor( cat, i );
+			if( nm == String( "param[0]" ) ) {
+				occEditable = c.PropertyEditableFor( cat, i );
+				sawRanged = c.PropertyHasRangeFor( cat, i )
+				         && std::abs( c.PropertyRangeMinFor(  cat, i ) -  0.5  ) < 1e-12
+				         && std::abs( c.PropertyRangeMaxFor(  cat, i ) - 20.0  ) < 1e-12
+				         && std::abs( c.PropertyRangeStepFor( cat, i ) -  0.25 ) < 1e-12;
+			}
+			if( nm == String( "param[1]" ) ) sawUnranged = !c.PropertyHasRangeFor( cat, i );
+		}
+		Check( sawRanged,
+		       "the range reaches the per-category snapshot with all three numbers intact (the shells' read path)" );
+		Check( sawUnranged, "the metadata-free param reports no range through the snapshot too" );
+		Check( occEditable,
+		       "the occurrence row reaches the snapshot EDITABLE, so the panel offers the slider AND the field" );
+		Check( !c.PropertyHasRangeFor( cat, n + 100 ),
+		       "an out-of-range property index answers 'no range' rather than reading past the snapshot" );
+	}
+	j->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 20 (round-1 P1 fix): the drift guard's WHITESPACE NORMALISATION.
+//
+// Cst::WithParamValue -- the sole writer any occurrence edit and its
+// Undo/Redo route through -- re-tokenises the incoming value on ANY
+// whitespace run and re-emits the tokens joined by a SINGLE space,
+// discarding whatever separators the caller sent.  So a column-aligned
+// authored line (`stop 0.5   0.44  0.54  0.64`) or a commit that resends
+// the rest-of-line bytes verbatim (a slider's `commit()` pattern: replace
+// one token's range in the captured line, leave the rest byte-for-byte)
+// carries INTERIOR whitespace no write path preserves.  Comparing the
+// live Document's read (post-write: single-spaced) against a captured
+// value (pre-write: whatever separators its origin used) byte-for-byte
+// -- what an ends-only trim did -- refuses a perfectly legitimate,
+// unchanged Undo/Redo as "drifted".  OccurrenceEditStillAddressable_ must
+// whitespace-NORMALISE (token-split + single-space rejoin) both sides
+// before comparing -- see NormalizeParamValueWs_'s doc in SceneEditor.cpp.
+//
+//   (a) COLUMN-ALIGNED fixture: edit occurrence 1, Undo, then REDO.
+//       Redo's drift check compares the CURRENT (post-Undo, single-spaced
+//       -- Undo's own revert-write goes through WithParamValue too) line
+//       against `edit.prevPropertyValue`, captured VERBATIM from the
+//       column-aligned original -- this is where an ends-only trim
+//       refused a legitimate Redo.
+//   (b) A commit that changes ONE token but resends every other byte of
+//       the line verbatim (the slider `commit()` shape): the value SENT
+//       for the edit itself carries the original's interior spacing on
+//       the untouched tokens, so even the FIRST Undo (no Redo needed)
+//       hits the mismatch.
+//   (c) CONTROL: a genuine token-level drift (an out-of-band rewrite that
+//       changes an actual VALUE, not just spacing) must still be
+//       refused -- normalisation must narrow to whitespace, not swallow
+//       real drift.
+//////////////////////////////////////////////////////////////////////
+static void TestOccurrenceDriftGuardWhitespace()
+{
+	std::cout << "Test 20: occurrence drift guard normalises whitespace, not tokens..." << std::endl;
+
+	// A column-aligned ramp: interior spacing pads every stop's tokens to
+	// line up visually, exactly the authoring style a human (or a
+	// well-formatted external tool) produces.  Self-contained (not kScene)
+	// so its extra interior spaces cannot ripple into other tests' exact
+	// substring checks.
+	static const char* kSceneAligned =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname basecol\ncolor 0.25 0.5 0.75\n}\n"
+		"perlin3d_painter\n{\nname noise\ncolora white\ncolorb basecol\noctaves 4\npersistence 0.5\nscale 2 2 2\n}\n"
+		"ramp_painter\n{\nname rmpA\ninput noise\nchannel R\ninterpolation linear\n"
+			"stop 0.0   0.11  0.21  0.31\n"
+			"stop 0.5   0.44  0.54  0.64\n"
+			"stop 1.0   0.91  0.81  0.71\n}\n"
+		"scalar_painter\n{\nname sp_rough\nexpression 0.3\n}\n"
+		"lambertian_luminaire_material\n{\nname lum\nexitance basecol\nscale 5.0\nmaterial none\n}\n"
+		"sphere_geometry\n{\nname s\nradius 1\n}\n"
+		"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+	// ---- (a) column-aligned original: edit, Undo, then REDO.
+	{
+		const char* tmp = "painterintro_occ_drift_ws_a.RISEscene";
+		Job* j = LoadScene( kSceneAligned, tmp );
+		Check( j != nullptr, "scene loads (aligned fixture)" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "rmpA" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			const std::string original = DocText( *j );
+			Check( original.find( "stop 0.5   0.44  0.54  0.64" ) != std::string::npos,
+			       "the fixture's column-aligned stop[1] line is present, spacing intact" );
+
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ), "occurrence edit applies" );
+			const std::string edited = DocText( *j );
+			Check( edited.find( "stop 0.5 1.0 0.0 0.0" ) != std::string::npos,
+			       "the edit landed, single-spaced (as every write is)" );
+
+			// Undo's own revert-WRITE goes through the same WithParamValue
+			// single-space re-tokenisation as any other write, so it does NOT
+			// restore the original's column alignment -- only its TOKENS.  The
+			// byte-exact expectation is therefore `original` with just the
+			// stop[1] line's spacing collapsed, not `original` verbatim.
+			std::string expectedAfterUndo = original;
+			{
+				const std::string alignedLine  = "stop 0.5   0.44  0.54  0.64";
+				const std::string collapsedLine = "stop 0.5 0.44 0.54 0.64";
+				const std::size_t pos = expectedAfterUndo.find( alignedLine );
+				Check( pos != std::string::npos, "the aligned stop[1] line is findable in `original`" );
+				if( pos != std::string::npos )
+					expectedAfterUndo.replace( pos, alignedLine.size(), collapsedLine );
+			}
+
+			c.Undo();
+			Check( DocText( *j ) == expectedAfterUndo,
+			       "Undo was NOT refused -- restores the prior TOKENS exactly (single-spaced, as any "
+			       "write re-emits them), everything else byte-identical to the original "
+			       "(pre-fix: an ends-only trim compared the single-spaced post-Undo line against "
+			       "the captured multi-spaced original and refused this Undo as drifted)" );
+
+			c.Redo();
+			Check( DocText( *j ) == edited,
+			       "Redo re-applies -- NOT refused by the aligned original's interior spacing "
+			       "(pre-fix: an ends-only trim compared the single-spaced post-Undo line against "
+			       "the captured multi-spaced original and refused this Redo as drifted)" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+
+	// ---- (b) a commit that changes one token, resending the rest of the
+	// line's bytes -- including interior alignment spacing -- verbatim.
+	{
+		const char* tmp = "painterintro_occ_drift_ws_b.RISEscene";
+		Job* j = LoadScene( kSceneAligned, tmp );
+		Check( j != nullptr, "scene loads (aligned fixture, single-token-change half)" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "rmpA" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			// Only the second token changes (0.44 -> 0.20); the rest of the value,
+			// spacing included, is exactly what was authored -- the slider
+			// `commit()` shape (`line.replaceSubrange` on the captured line).
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "stop[1]" ), String( "0.5   0.20  0.54  0.64" ) ),
+			       "single-token-change occurrence edit applies" );
+
+			const std::string edited = DocText( *j );
+			Check( edited.find( "stop 0.5 0.20 0.54 0.64" ) != std::string::npos,
+			       "the write itself is single-spaced regardless of what was sent" );
+
+			// Undo's own revert-write re-tokenises + single-spaces the restored
+			// value too (see (a)'s note), so the line reads back single-spaced
+			// even though the ORIGINAL was column-aligned -- the TOKENS (the
+			// prior value) are what must match, not the original's bytes.
+			c.Undo();
+			Check( DocText( *j ).find( "stop 0.5 0.44 0.54 0.64" ) != std::string::npos,
+			       "Undo was NOT refused -- the prior value's tokens are back "
+			       "(pre-fix: comparing the verbatim-spaced sent value against the "
+			       "single-spaced Document line refused this Undo outright)" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+
+	// ---- (c) CONTROL: a real token-level drift is still refused.
+	{
+		const char* tmp = "painterintro_occ_drift_ws_c.RISEscene";
+		Job* j = LoadScene( kSceneAligned, tmp );
+		Check( j != nullptr, "scene loads (aligned fixture, control half)" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "rmpA" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ), "occurrence edit applies" );
+
+			// Someone else rewrites that line's VALUE out of band -- a real
+			// drift, not just spacing.
+			const int rc = j->ApplyCstParamEditChecked( "rmpA", "painter", "stop", 1, "0.5 0.3 0.3 0.3" );
+			Check( rc == 2, "the drift-inducing rewrite landed (D2: full re-derive)" );
+			const std::string drifted = DocText( *j );
+
+			c.Undo();
+			Check( DocText( *j ) == drifted,
+			       "the Undo is STILL refused -- a genuine token-level value change is drift "
+			       "regardless of spacing, and normalisation must not swallow it" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+}
+
 int main()
 {
-	std::cout << "=== PainterIntrospectionRoundTripTest (doc 88 S4) ===" << std::endl;
+	std::cout << "=== PainterIntrospectionRoundTripTest (doc 88 S4 + S4b) ===" << std::endl;
 
 	TestInspectRows();
 	TestScalarParamEditRoundTrip();
@@ -985,6 +1771,14 @@ int main()
 	TestExpressionBodyUndo();
 	TestScalarPainterPanelParity();
 	TestBareRepeatableRoleRefused();
+	// doc 88 S4b
+	TestOccurrenceEditIsSurgical();
+	TestExpressionParamOccurrenceEdit();
+	TestDefOccurrenceEditAndRefusal();
+	TestOccurrenceUndoRedo();
+	TestOccurrenceDriftGuard();
+	TestRowRangeMetadata();
+	TestOccurrenceDriftGuardWhitespace();
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

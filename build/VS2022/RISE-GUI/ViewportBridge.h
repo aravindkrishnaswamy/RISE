@@ -52,6 +52,22 @@ struct ViewportProperty {
     QVector<ViewportPropertyPreset> presets;   // empty when descriptor declared no presets
     QString unitLabel;                         // short suffix shown next to the field — "mm", "°", "scene units", or empty
     int     index = -1;                        // snapshot position (the C-ABI property index) — jump-to-definition queries by index
+    // doc 88 S4b (Tier-1 param sliders): the row's authored numeric range,
+    // mirroring RISEViewportProperty on the macOS side and CameraProperty in
+    // the core.  `hasRange` is true only when BOTH bounds are known.
+    // `rangeStep` is 0 for "continuous".  Populated today only for an
+    // expression painter's `param[i]` rows, from the `min`/`max`/`step`
+    // metadata on the scene text's `param` line.
+    //
+    // CARRIED, NOT YET RENDERED.  `buildPropertyRow` below still draws the
+    // ordinary field for these rows; the Qt slider affordance is owed and
+    // needs an MSVC build to land (this checkout is macOS-only).  Populating
+    // the field now keeps the two bridges structurally identical, so the Qt
+    // work is a widget change with no plumbing behind it.
+    bool    hasRange = false;
+    double  rangeMin = 0.0;
+    double  rangeMax = 0.0;
+    double  rangeStep = 0.0;
 };
 
 /// Tool enum mirroring SceneEditController::Tool and the C-API

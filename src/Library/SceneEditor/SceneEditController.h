@@ -3076,6 +3076,10 @@ namespace RISE
 		String       PropertyPresetLabelFor( Category cat, unsigned int idx, unsigned int presetIdx ) const;
 		String       PropertyPresetValueFor( Category cat, unsigned int idx, unsigned int presetIdx ) const;
 		String       PropertyUnitLabelFor( Category cat, unsigned int idx ) const;
+		bool         PropertyHasRangeFor( Category cat, unsigned int idx ) const;
+		double       PropertyRangeMinFor( Category cat, unsigned int idx ) const;
+		double       PropertyRangeMaxFor( Category cat, unsigned int idx ) const;
+		double       PropertyRangeStepFor( Category cat, unsigned int idx ) const;
 
 		//! Quick-pick preset accessors for the editor combo box.
 		//! Empty for parameters whose descriptor declares no presets.
@@ -3089,6 +3093,25 @@ namespace RISE
 		//! dimensionless / unlabelled parameters.  Pure presentation
 		//! hint; the parser ignores it.
 		String PropertyUnitLabel( unsigned int idx ) const;
+
+		//! doc 88 S4b (Tier-1 param sliders): the row's authored numeric
+		//! RANGE, if it declared one.  `PropertyHasRange` is true only
+		//! when BOTH bounds are known -- a shell must not draw a slider
+		//! otherwise, and must keep its text field either way (the
+		//! range is a presentation hint, not a validation rule: the
+		//! value still round-trips as text through SetProperty, and the
+		//! scene language accepts values outside the hint).  Step is 0
+		//! when the author declared none ("continuous").  The min/max/
+		//! step readers return 0 for a row with no range, which is why
+		//! `HasRange` is a separate question and not an in-band 0/0.
+		//!
+		//! Populated today only for an expression painter's `param[i]`
+		//! rows, from the `min` / `max` / `step` metadata on the scene
+		//! text's `param` line (ExpressionParamSpec).
+		bool   PropertyHasRange( unsigned int idx ) const;
+		double PropertyRangeMin( unsigned int idx ) const;
+		double PropertyRangeMax( unsigned int idx ) const;
+		double PropertyRangeStep( unsigned int idx ) const;
 
 		//! Jump-to-definition (GUI redesign, 2026-07-22): for a
 		//! ValueKind::Reference row whose value names another element,
@@ -3973,9 +3996,13 @@ namespace RISE
 		//! (same hold as the coming apply -- no TOCTOU).  Returns false (no
 		//! output written) if there is no retained Document or the entity does
 		//! not resolve.  See SceneEditController.cpp for the full contract.
+		//! doc 88 S4b: `occ` selects WHICH occurrence to capture (0 = first) and
+		//! MUST equal the occurrence the coming write addresses -- capture and
+		//! write reading different lines is exactly how an Undo comes to restore
+		//! the wrong one.  Defaults to 0, the pre-S4b convention.
 		bool CaptureAgentPriorParamValue_(
 			const String& entityName, const String& entityKind, const String& param,
-			String& outPrevValue, bool& outWasAbsent );
+			String& outPrevValue, bool& outWasAbsent, int occ = 0 );
 
 		//! Shared-undo U2: capture the EXACT verbatim bytes + top-level document index of the chunk
 		//! `ApplyAgentRemoveChunk` is about to erase, BEFORE the coming `Job::ApplyCstRemoveChunk` call runs --
@@ -5292,9 +5319,21 @@ namespace RISE
 		bool SetSelectionInner_( Category cat, const String& entityName );
 		void UndoInner_();
 		void RedoInner_();
+		//! doc 88 S4b: `occ` is WHICH occurrence of `param` to write (0 = first),
+		//! and `occAddressed` says the caller reached this param through an
+		//! occurrence-addressed row (`stop[2]`) rather than by naming a param the
+		//! chunk spells once.  The pair travels together all the way into the
+		//! history record (SceneEdit::cstParamOcc / cstParamOccAddressed), where
+		//! `occAddressed` arms the undo/redo drift guard.  Both default to the
+		//! pre-S4b meaning, so the agent surface (propose_patch) and every other
+		//! caller stay occurrence-0 with no behaviour change.  The caller is
+		//! responsible for bounding `occ` against the chunk's actual occurrence
+		//! count; an out-of-range `occ` here just makes the Document edit a no-op
+		//! and reports a plain rejection.
 		AgentCommitResult ApplyAgentParamEditInner_(
 			const String& entityName, const String& entityKind, const String& param,
-			const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+			const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			int occ = 0, bool occAddressed = false );
 
 		//! External-review round 3 (2026-07-22): the UNLOCKED bodies of the
 		//! category-enumeration getters.  REQUIRE a stable manager set: either

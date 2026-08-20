@@ -39,8 +39,8 @@
 //         CONTENT: a `ramp_painter`'s `stop` lines ARE the ramp, and an
 //         `expression_painter`'s `param` / `def` lines ARE the
 //         authored knobs.  Those rows are surfaced here, ONE ROW PER
-//         OCCURRENCE, named "<param>[<i>]" -- and READ-ONLY, see the
-//         editability contract below.
+//         OCCURRENCE, named "<param>[<index>]" -- and, since S4b,
+//         individually EDITABLE; see the editability contract below.
 //
 //      3. PARAM-SPEC UI METADATA.  An `expression_painter` /
 //         `scalar_painter { expression ... }` `param` line may carry
@@ -48,34 +48,46 @@
 //         The compiler ignores it; it exists for this panel.  The
 //         painter object parsed it once at construction and keeps it
 //         (ExpressionPainter::GetParamSpecs), so it is merged onto the
-//         matching `param[i]` row rather than re-parsed here.
+//         matching `param[i]` row rather than re-parsed here -- since
+//         S4b as FIRST-CLASS row fields (CameraProperty::hasRange /
+//         rangeMin / rangeMax / rangeStep) that both shells carry, not
+//         only as description prose.  That is doc 88's Tier-1 payoff:
+//         the human scrubs the knobs the author (often an LLM) named.
 //
-//  EDITABILITY CONTRACT (scoped deferral, doc 88 S4).  Every
-//  SINGLE-OCCURRENCE painter parameter -- `expr`, `seed`, `time`,
-//  `interpolation`, `channel`, `input`, `color`, `octaves`,
-//  `persistence`, `scale`, ... -- is FULLY EDITABLE and round-trips
-//  through the one CST edit pathway (SceneEditController::
-//  SetPropertyForCategory(Category::Painter) ->
-//  ApplyAgentParamEditInner_ -> Job::ApplyCstParamEditChecked), with
-//  prior-value capture, inverse-patch undo/redo, dirty marking and a
-//  re-render kick, exactly like a material-slot edit.
+//  EDITABILITY CONTRACT (doc 88 S4 + S4b).  Every SINGLE-OCCURRENCE
+//  painter parameter -- `expr`, `seed`, `time`, `interpolation`,
+//  `channel`, `input`, `color`, `octaves`, `persistence`, `scale`, ...
+//  -- is FULLY EDITABLE and round-trips through the one CST edit
+//  pathway (SceneEditController::SetPropertyForCategory(
+//  Category::Painter) -> ApplyAgentParamEditInner_ ->
+//  Job::ApplyCstParamEditChecked), with prior-value capture,
+//  inverse-patch undo/redo, dirty marking and a re-render kick, exactly
+//  like a material-slot edit.
 //
-//  REPEATABLE-OCCURRENCE parameters are surfaced READ-ONLY
-//  (`editable = false`).  They are NOT editable because the entire
-//  agent/undo chain is fixed at occurrence 0 BY DOCUMENTED INVARIANT
-//  -- SceneEditController::ApplyAgentParamEditInner_ passes `occ = 0`,
-//  CaptureAgentPriorParamValue_'s AgentReadFirstParamValue reads the
-//  FIRST occurrence precisely so capture and write address the same
-//  line, SceneEdit carries no occurrence field, and
-//  SceneEditor::ApplyRevertMutation's SetAgentCstParam arm passes 0 to
-//  Job::ApplyCstParamRemoveChecked.  Making occurrence N editable means
-//  threading `occ` through all five, i.e. changing the shared-undo op's
-//  capture/restore pairing -- a change that earns its own review round,
-//  not a side effect of this slice.  Offering occurrence 0 alone would
-//  be exactly the half-support that produces a panel where the first
-//  ramp stop edits and the rest silently do not.  So the rows are
-//  VISIBLE (they were invisible before this module) and honestly
-//  marked non-editable, with the reason in each row's description.
+//  REPEATABLE-OCCURRENCE rows are EDITABLE TOO as of S4b.  S4 shipped
+//  them read-only because the whole capture/write/undo chain was pinned
+//  at occurrence 0 by documented invariant; S4b threads `occ` through
+//  it end to end -- SceneEditController::SetPropertyForCategory parses
+//  the `<role>[<index>]` row name (Painter category ONLY) and validates
+//  `0 <= i < ParamOccurrenceCount`, ApplyAgentParamEditInner_ and
+//  CaptureAgentPriorParamValue_ take an `occ`, SceneEdit carries it
+//  (`cstParamOcc`), and both mutation arms route it to
+//  Job::ApplyCstParamEditChecked / ApplyCstParamRemoveChecked.  A write
+//  to `stop[2]` edits the third `stop` line and nothing else; Undo
+//  restores that same line, whole (multi-token values included).
+//
+//  What an occurrence row does NOT get is a blind Undo.  The layout of
+//  a repeatable param can move between the edit and its Undo (an agent
+//  `insert`/`remove_chunk`, another occurrence edit), so occurrence N
+//  at undo time need not be the line the edit wrote.  SceneEditor's
+//  drift guard (OccurrenceEditStillAddressable_) therefore re-checks
+//  BOTH that an occurrence N still exists AND that it still holds the
+//  value this edit last wrote, and refuses honestly rather than
+//  clobbering a neighbour.  See SceneEdit::cstParamOccAddressed.
+//
+//  BARE repeatable role names (`stop`, `param` with no index) stay
+//  REFUSED: they carry no occurrence, so honouring one would silently
+//  mean "occurrence 0" -- exactly the half-support S4 refused.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -91,6 +103,7 @@
 #include "../Interfaces/IJobPriv.h"
 #include "../Utilities/RString.h"
 #include "CameraIntrospection.h"   // CameraProperty (panel-row struct)
+#include <string>
 #include <vector>
 
 namespace RISE
@@ -129,11 +142,12 @@ namespace RISE
 		//!      value read from the retained Document (or the
 		//!      descriptor's default hint when the scene omits it) --
 		//!      straight from CstIntrospection::Inspect,
-		//!   4. every REPEATABLE descriptor parameter, one READ-ONLY row
-		//!      per occurrence, named "<param>[<i>]" (see the header's
+		//!   4. every REPEATABLE descriptor parameter, one EDITABLE row
+		//!      per occurrence, named "<param>[<index>]" (see the header's
 		//!      editability contract), with ExpressionParamSpec
-		//!      min/max/step/label folded into the description for the
-		//!      expression painters' `param` lines.
+		//!      min/max/step carried as the row's range FIELDS -- and
+		//!      min/max/step/label ALSO folded into the description --
+		//!      for the expression painters' `param` lines.
 		//!
 		//! Returns an empty vector when `doc` is null, the name does not
 		//! resolve to a painter-kind chunk, or the keyword has no
@@ -144,17 +158,30 @@ namespace RISE
 			IJobPriv& job,
 			const String& painterName );
 
-		//! True iff `rowName` is one of this module's synthetic
-		//! occurrence-addressed row names ("stop[1]", "param[0]", ...).
-		//! The edit route consults it as a belt-and-braces refusal: such
-		//! a name is not a CST param role, so routing it would ask
-		//! DocSetOrAddParamValue to INSERT a line the descriptor does not
-		//! declare.  (The full-derivability dry-run inside
-		//! Job::ApplyCstParamEditChecked already rejects that, and both
-		//! shells honour `editable = false` and never offer the edit --
-		//! this is the third layer, so a future loosening of either
-		//! cannot turn a read-only row into a chunk-corrupting write.)
+		//! True iff `rowName` has this module's synthetic occurrence-row
+		//! SHAPE ("stop[1]", "param[0]", ...).  A real CST param role
+		//! never contains a bracket, so the bracket alone discriminates.
+		//! Says nothing about whether the name is well-formed or in
+		//! range -- ParseOccurrenceRowName answers that.
 		static bool IsOccurrenceRowName( const String& rowName );
+
+		//! Split a synthetic occurrence-row name into its role and
+		//! index: "stop[2]" -> ("stop", 2).  Returns false -- leaving
+		//! the outputs untouched -- for anything that is not EXACTLY
+		//! `<non-empty role>[<decimal digits>]`: no bracket, an empty or
+		//! non-numeric or negative index, trailing text after `]`, a
+		//! nested bracket, or an index that overflows.  The caller must
+		//! still bound the index against the chunk's actual occurrence
+		//! count (Cst::ParamOccurrenceCount) and confirm the role is
+		//! `repeatable` on the chunk's descriptor -- this function only
+		//! parses the NAME, it cannot know the document.
+		//!
+		//! Deliberately strict: an occurrence index that parses loosely
+		//! ("stop[2junk]" -> 2) would route an edit to a line the user
+		//! never named.  Refuse instead.
+		static bool ParseOccurrenceRowName( const String& rowName,
+		                                    std::string& outRole,
+		                                    int& outOccurrence );
 	};
 }
 

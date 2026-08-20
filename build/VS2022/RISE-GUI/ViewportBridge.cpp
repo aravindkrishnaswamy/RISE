@@ -1916,6 +1916,13 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
             p.unitLabel = QString::fromUtf8(unitLabelBuf);
         }
 
+        // doc 88 S4b — the row's authored numeric range (see ViewportProperty's
+        // own doc for the carried-not-yet-rendered caveat).
+        p.hasRange  = RISE_API_SceneEditController_PropertyHasRange(m_controller, i);
+        p.rangeMin  = RISE_API_SceneEditController_PropertyRangeMin(m_controller, i);
+        p.rangeMax  = RISE_API_SceneEditController_PropertyRangeMax(m_controller, i);
+        p.rangeStep = RISE_API_SceneEditController_PropertyRangeStep(m_controller, i);
+
         out.append(p);
     }
     return out;
@@ -1973,6 +1980,13 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
         if (RISE_API_SceneEditController_PropertyUnitLabelFor(m_controller, catInt, i, unitLabelBuf, sizeof(unitLabelBuf))) {
             p.unitLabel = QString::fromUtf8(unitLabelBuf);
         }
+
+        // doc 88 S4b — same as the selection-scoped snapshot above; this is the
+        // path the properties panel actually reads.
+        p.hasRange  = RISE_API_SceneEditController_PropertyHasRangeFor(m_controller, catInt, i);
+        p.rangeMin  = RISE_API_SceneEditController_PropertyRangeMinFor(m_controller, catInt, i);
+        p.rangeMax  = RISE_API_SceneEditController_PropertyRangeMaxFor(m_controller, catInt, i);
+        p.rangeStep = RISE_API_SceneEditController_PropertyRangeStepFor(m_controller, catInt, i);
 
         out.append(p);
     }

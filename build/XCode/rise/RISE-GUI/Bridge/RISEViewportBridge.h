@@ -1505,6 +1505,19 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// camera sensor / focal / shift, "°" for angles, "scene units" for
 /// focus_distance.  Empty when the descriptor declared no unit.
 @property (nonatomic, readonly) NSString *unitLabel;
+/// doc 88 S4b (Tier-1 param sliders): the row's authored numeric range.
+/// `hasRange` is YES only when BOTH bounds are known — the panel draws a
+/// slider then, and keeps the text field either way (the range is a
+/// presentation hint, not a validation rule: the scene language still
+/// accepts values outside it, and the row still round-trips as text).
+/// `rangeStep` is 0 when the author declared none ("continuous").
+/// Populated today only for an expression painter's `param[i]` rows,
+/// from the `min` / `max` / `step` metadata on the scene text's `param`
+/// line.
+@property (nonatomic, readonly) BOOL hasRange;
+@property (nonatomic, readonly) double rangeMin;
+@property (nonatomic, readonly) double rangeMax;
+@property (nonatomic, readonly) double rangeStep;
 @end
 
 NS_ASSUME_NONNULL_END

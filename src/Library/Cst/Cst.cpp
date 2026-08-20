@@ -4743,15 +4743,42 @@ bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string
 // hand-rolled copies of this kid-walk outside this TU and they did NOT agree: two
 // returned the FIRST occurrence, one the LAST.  One of the first-occurrence readers
 // was the properties panel, which is how the panel came to display a value the
-// renderer had never used.  (The surviving first-occurrence reader,
-// SceneEditController's AgentReadFirstParamValue, is deliberate -- it answers "which
-// occurrence does an occ=0 edit address", not "what does the parse see".)
+// renderer had never used.  (The occurrence-addressed question -- "which line does an
+// occ=N edit write" -- is a DIFFERENT one, answered by ParamValueAtOccurrence below;
+// it too delegates to ParamNodeValue so the two cannot disagree about the token join.)
 std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role, bool* outPresent )
 {
 	std::string v;
 	const bool found = ParamValue( chunk.get(), role, v );
 	if( outPresent ) *outPresent = found;
 	return found ? v : std::string();
+}
+
+// The occurrence-addressed read (see the header doc).  Counts Params by `role` from the
+// FRONT, exactly as WithParamValue / WithParamRemovedOcc count them for a write, and
+// delegates the token join to the SAME file-local ParamNodeValue the derive reads
+// through -- so an occurrence's captured prior value is byte-identical to what the
+// parse would have seen for that line, multi-token values included.  Doc-88 S4b made
+// this an export: before it, THREE call sites outside this TU hand-rolled the walk
+// (PainterIntrospection's read-only occurrence rows, SceneEditController's
+// capture-before-agent-edit, and -- newly needed -- SceneEditor's undo/redo drift
+// guard), and a capture/write pair that disagreed on the join is precisely the class
+// of bug an occurrence-addressed undo cannot survive.  Round-1 P3-c correction: the
+// count was actually FOUR -- Job.cpp's S2ChunkParamValue (occurrence-0 read of a
+// chunk's `name`/`variant` tag for agent chunk-CRUD) was the identical walk under a
+// different name and was missed at S4b export time.  It now delegates here too.
+std::string ParamValueAtOccurrence( const NodeRef& chunk, const std::string& role, int occ, bool* outPresent )
+{
+	if( outPresent ) *outPresent = false;
+	if( !chunk || occ < 0 ) return std::string();
+	int seen = 0;
+	for( const auto& p : chunk->kids ) {
+		if( !p || p->kind != NodeKind::Param || p->role != role ) continue;
+		if( seen++ != occ ) continue;
+		if( outPresent ) *outPresent = true;
+		return ParamNodeValue( p.get() );
+	}
+	return std::string();
 }
 
 int ParamOccurrenceCount( const NodeRef& chunk, const std::string& role )

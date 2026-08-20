@@ -5801,62 +5801,6 @@ void SceneEditController::CancelAgentRender_()
 	mCancelProgress.RequestCancel();
 }
 
-namespace {
-
-// Shared-undo U1: the value of a chunk's first `pname` param, mirroring the exact CST tree shape ParseChunk
-// builds (a Param kid whose first Token kid is the pname/role and whose subsequent kids are the pvalue Token(s)
-// interleaved with inter-value Trivia) -- this is the SAME shape Job.cpp's file-local S2ChunkParamValue walks;
-// duplicated here (rather than exposed from Job.cpp) because it is a pure Cst::Node tree read with no Job state
-// dependency, and the controller already holds a `const RISE::Cst::Document*` via IJob::GetCstDocument().
-// `*outPresent` reports whether the param was found AT ALL (distinct from "found but empty" -- occ=0 only,
-// matching the agent path's fixed occ=0 convention).
-//
-// P1-1 fix (round 1): a multi-token value (e.g. `color 1 1 1`, a vector/tuple) is SEVERAL pvalue Token kids, one
-// per whitespace-separated token, each preceded by an inter-value Trivia kid holding the separating whitespace
-// (see the anonymous-namespace ParseChunk loop in Cst.cpp ~150-161). The old walk kept only the FIRST pvalue
-// token ("1" out of "1 1 1"), so an Undo of a multi-token param re-set it to a truncated single-component value
-// (measured: a `color 1 1 1` emitter param round-tripped through capture+undo landed as r=5 g=0 b=0 instead of
-// 5 5 5). This walk therefore matches Cst::ParamNodeValue's join semantics EXACTLY, token-by-token: once the
-// first pvalue Token is seen, every subsequent kid's `text` (Trivia AND Token alike) is appended verbatim until
-// the Param node ends, reproducing "1 1 1" (not "111" or "1") for a 3-token value.
-//
-// WHY THIS STILL EXISTS.  The original reason was reachability -- Cst's accessors were file-local to that TU --
-// and since the 2026-08-16 export (c18f5a66) that reason is GONE: Cst::ParamValueAsParsed does this join for you.
-// What survives is the SEMANTIC difference, which is the whole point: that one returns the LAST occurrence
-// (what the PARSER reads), this one returns the FIRST (which occurrence an occ=0 edit will address).  This
-// function is the capture half of the agent's occ=0 capture/restore pair -- CaptureAgentPriorParamValue_ below
-// is its ONLY caller, and it must stay in lockstep with the occ=0 write in Job::ApplyCstParamEditImpl_, not with
-// the parse.  Do NOT "simplify" it away to ParamValueAsParsed: that would make an Undo restore the prior value
-// of a DIFFERENT occurrence than the one the edit wrote.  (A duplicated non-repeatable param is the only input
-// where the two disagree, and that case is refused at the edit boundary -- so this pairing is never exercised
-// against a document the two would answer differently, and it must stay that way.)
-std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
-{
-	if( outPresent ) *outPresent = false;
-	if( !chunk ) return std::string();
-	for( const auto& kid : chunk->kids )
-	{
-		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-		std::string nm, val;
-		bool inVal = false;
-		for( const auto& tk : kid->kids )
-		{
-			if( !tk ) continue;
-			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
-			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
-			if( inVal ) val += tk->text;
-		}
-		if( nm == pname )
-		{
-			if( outPresent ) *outPresent = true;
-			return val;
-		}
-	}
-	return std::string();
-}
-
-}  // namespace
-
 // Shared-undo U1: capture the CURRENT value of `param` on the entity resolved by (entityName, entityKind) from
 // the retained CST Document -- BEFORE an agent edit mutates it.  `*outPresent` = false means the param is
 // ABSENT (a defaulted slot the scene text omits; the coming edit will INSERT it, so the inverse is a REMOVE, not
@@ -5869,7 +5813,7 @@ std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const cha
 // caller's ApplyCstParamEditChecked will independently reject with code 0, so no mutation happens either).
 bool SceneEditController::CaptureAgentPriorParamValue_(
 	const String& entityName, const String& entityKind, const String& param,
-	String& outPrevValue, bool& outWasAbsent )
+	String& outPrevValue, bool& outWasAbsent, int occ )
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
@@ -5897,7 +5841,20 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
 	if( !chunk ) return false;
 	bool present = false;
-	const std::string val = AgentReadFirstParamValue( chunk, param.c_str(), &present );
+	// OCCURRENCE-ADDRESSED read, in lockstep with the coming write.  This is
+	// deliberately NOT Cst::ParamValueAsParsed: that one answers "what does the
+	// PARSE see" (a repeated param's LAST occurrence wins), while the question
+	// here is "which line will Job::ApplyCstParamEditImpl_'s occ-th write land
+	// on".  The two only coincide when the param appears once.  Reading through
+	// the parse-flavoured accessor would make an Undo restore the prior value of
+	// a DIFFERENT occurrence than the edit wrote -- silently, and only on
+	// repeated params, which is exactly where S4b now edits.  `occ` is 0 for the
+	// agent surface and for every single-occurrence panel edit; a painter's
+	// `<role>[<index>]` row passes its own index.  The multi-token join is
+	// ParamNodeValue's (`color 1 1 1` reads back whole, not as its first token) --
+	// the historical truncation P1, now unforgeable because there is one reader.
+	const std::string val = RISE::Cst::ParamValueAtOccurrence(
+		chunk, std::string( param.c_str() ), occ, &present );
 	outWasAbsent = !present;
 	outPrevValue = present ? String( val.c_str() ) : String();
 	return true;
@@ -5914,9 +5871,9 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 // container), or no retained Document all answer FALSE, leaving the edit to the
 // checks that already exist.
 namespace {
-// AgentReadFirstParamValue concatenates the value TOKENS verbatim, so a value
-// can arrive with the separating / trailing trivia attached.  Compare on the
-// bare word.
+// The Cst param readers concatenate the value TOKENS verbatim, so a value can
+// arrive with the separating / trailing trivia attached.  Compare on the bare
+// word.
 std::string TrimAsciiSpace_( const std::string& s )
 {
 	size_t b = 0, e = s.size();
@@ -5931,11 +5888,11 @@ namespace {
 // not the first -- is Cst::ParamValueAsParsed, which this file used to carry its own
 // copy of.  Exported (2026-08-16) so the properties panel could stop reading occurrence
 // 0 and start agreeing with the renderer; the copy is gone rather than kept in sync.
-// The distinction it turns on still matters here: AgentReadFirstParamValue above
-// answers a DIFFERENT question -- "which occurrence does an occ=0 edit address" -- and
-// using it to predict the parse is a two-line bypass (`material none` followed by
-// `material mv` reads as a clear and derives as a bind), so the two must not be
-// swapped for each other.
+// The distinction it turns on still matters here: Cst::ParamValueAtOccurrence (the
+// reader CaptureAgentPriorParamValue_ uses) answers a DIFFERENT question -- "which
+// occurrence does an occ=N edit address" -- and using it to predict the parse is a
+// two-line bypass (`material none` followed by `material mv` reads as a clear and
+// derives as a bind), so the two must not be swapped for each other.
 
 // 87: does this candidate INSERT text declare a CONTAINER `standard_object`
 // (no `geometry`, or `geometry none`) that ALSO names a surface binding?
@@ -6083,7 +6040,9 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	const String& entityKind,
 	const String& param,
 	const String& value,
-	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	int occ,
+	bool occAddressed )
 {
 	AgentCommitResult r;
 
@@ -6223,9 +6182,12 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// entity does not resolve -- in that case ApplyCstParamEditChecked below
 	// will independently reject with code 0 (no mutation, so no history push
 	// either); the capture failing is never itself a reason to refuse the edit.
+	//
+	// doc 88 S4b: captured at the SAME `occ` the write below addresses -- the
+	// lockstep the whole occurrence-addressed undo pair rests on.
 	String prevValue;
 	bool   prevWasAbsent = false;
-	const bool haveCapture = CaptureAgentPriorParamValue_( entityName, entityKind, param, prevValue, prevWasAbsent );
+	const bool haveCapture = CaptureAgentPriorParamValue_( entityName, entityKind, param, prevValue, prevWasAbsent, occ );
 
 	// The SAME edit the GUI property panel makes, but routed directly (we
 	// already hold the park the GUI path takes via mEditor.Apply) and through
@@ -6235,14 +6197,17 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// validation cannot see -- the head's bytes would fail to reload).  The
 	// GUI SetProperty / gizmo path (mEditor.Apply -> ApplyCstParamEdit) keeps
 	// the UNGATED fast path: its edits are value-only and latency-sensitive.
-	// `occ = 0` = the first occurrence of the param on the entity.  The call
+	// `occ` = which occurrence of the param on the entity (0 = first, the
+	// default every caller but the painter occurrence-row route uses).  The call
 	// re-derives the live Job itself (incremental or D2 full re-derive) and
-	// bumps the head revision on success.
+	// bumps the head revision on success.  An out-of-range `occ` makes
+	// DocSetOrAddParamValue a no-op (its INSERT arm is occurrence-0-only), which
+	// surfaces here as code 0 -- a plain rejection with the head untouched.
 	const int code = mJob.ApplyCstParamEditChecked(
 		entityName.c_str(),
 		entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
 		param.c_str(),
-		/*occ=*/0,
+		occ,
 		value.c_str() );
 
 	// A D2 full re-derive (codes 2 AND 3) ClearAll'd + rebuilt the Scene +
@@ -6356,7 +6321,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		// skip-with-log guards against ever pushing a garbage/empty capture.
 		if( haveCapture )
 		{
-			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent );
+			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent,
+			                               occ, occAddressed );
 		}
 		else
 		{
@@ -10817,6 +10783,33 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 	return mUi.properties[idx].unitLabel;
 }
 
+// doc 88 S4b: the range trio.  Same leaf-lock + bounds-check shape as every other
+// per-row reader above; an out-of-range index answers "no range" / 0 rather than
+// throwing, matching PropertyUnitLabel's empty-string convention.
+bool SceneEditController::PropertyHasRange( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() && mUi.properties[idx].hasRange;
+}
+
+double SceneEditController::PropertyRangeMin( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeMin : 0.0;
+}
+
+double SceneEditController::PropertyRangeMax( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeMax : 0.0;
+}
+
+double SceneEditController::PropertyRangeStep( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeStep : 0.0;
+}
+
 // -------------------------------------------------------------------
 // Jump-to-definition (GUI redesign, 2026-07-22).  See the header doc.
 // -------------------------------------------------------------------
@@ -11112,6 +11105,37 @@ String SceneEditController::PropertyUnitLabelFor( Category cat, unsigned int idx
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].unitLabel : String();
+}
+
+// doc 88 S4b: the per-category twins of the range trio -- the form BOTH GUI shells
+// actually read (they snapshot by category, not through the legacy single-selection
+// list).  Same "absent answers 0 / false" convention as PropertyUnitLabelFor.
+bool SceneEditController::PropertyHasRangeFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].hasRange : false;
+}
+
+double SceneEditController::PropertyRangeMinFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeMin : 0.0;
+}
+
+double SceneEditController::PropertyRangeMaxFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeMax : 0.0;
+}
+
+double SceneEditController::PropertyRangeStepFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeStep : 0.0;
 }
 
 namespace {
@@ -15438,55 +15462,122 @@ bool SceneEditController::SetPropertyInner_(
 		// generation if needed, and kicks the re-render itself, so no
 		// separate park/SceneEdit/Apply dance is needed here.
 		if( targetName.size() <= 1 ) return false;
-		// doc 88 S4: refuse this module's synthetic occurrence-addressed row
-		// names ("stop[1]", "param[0]").  They are NOT CST param roles, so
-		// routing one would ask DocSetOrAddParamValue to INSERT a `stop[1]
-		// ...` line the descriptor never declares.  Job::ApplyCstParamEditChecked's
-		// full-derivability dry-run already rejects that (code 0, head
-		// untouched), and both shells honour the rows' `editable = false` and
-		// never offer the edit -- this is the third layer, so a future
-		// loosening of either cannot turn a read-only row into a
-		// chunk-corrupting write.
+		// doc 88 S4b: OCCURRENCE-ADDRESSED editing of a repeatable painter
+		// parameter.  `name` arrives either as a plain param role (`octaves`) or
+		// as one of PainterIntrospection's synthetic occurrence-row names
+		// (`stop[2]`, `param[1]`, `def[0]`).  This block resolves which, and --
+		// for the bracketed form -- validates the pair before anything mutates.
+		//
+		// SCOPED TO PAINTER ON PURPOSE.  Occurrence rows exist only on the
+		// Painter panel today (PainterIntrospection is the only producer), so
+		// the bracket vocabulary lives in this arm alone.  Do NOT hoist it above
+		// the switch: a bracketed name reaching, say, the Object arm should keep
+		// failing as the nonsense param role it is there, not acquire a meaning
+		// no introspection surface ever offered.
+		//
+		// ASYMMETRY WITH THE AGENT SURFACE, stated rather than left to be
+		// discovered: `propose_patch` (SceneEditController::ApplyAgentParamEdit
+		// -> ApplyAgentParamEditInner_ with the default occ = 0) is UNCHANGED by
+		// this slice -- an agent still addresses occurrence 0 and knows nothing
+		// about `[i]` names.  That is deliberate: an agent that wants a
+		// different ramp has the whole-chunk verbs, whereas a human scrubbing
+		// one authored knob needs exactly this.  Giving the agent an occurrence
+		// vocabulary is S5+ scope and would need its own schema + teaching.
+		std::string occRole;
+		int         occIndex   = 0;
+		bool        occAddressed = false;
 		if( PainterIntrospection::IsOccurrenceRowName( name ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditController: painter property edit of `%s`.`%s` refused -- that is a read-only "
-				"occurrence row for a REPEATABLE parameter, and the shared CST edit route addresses "
-				"occurrence 0 only.  Edit repeated lines in the scene text.",
-				targetName.c_str(), name.c_str() );
-			return false;
+			if( !PainterIntrospection::ParseOccurrenceRowName( name, occRole, occIndex ) ) {
+				// Has the bracket SHAPE but is not well-formed (`stop[]`,
+				// `stop[x]`, `stop[1]x`, `stop[-1]`).  Refuse rather than
+				// salvage an index: a loose parse would route the edit to a line
+				// the user never named.
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditController: painter property edit of `%s`.`%s` refused -- that is not a "
+					"well-formed occurrence row name (expected `<param>[<index>]` with a decimal index).",
+					targetName.c_str(), name.c_str() );
+				return false;
+			}
+			occAddressed = true;
 		}
-		// Review-round fix (P2-a): the bracketed occurrence-row check above is
-		// not the only door onto a repeatable param -- `SetPropertyForCategory(
-		// Painter, "stop", ...)` with the BARE role name (no "[i]" suffix) would
-		// fall straight through to the generic CST param-edit route below, which
-		// silently writes OCCURRENCE 0 (ApplyAgentParamEditInner_ always passes
-		// occ = 0; see PainterIntrospection.h's editability contract).  That
-		// contradicts this module's read-only-repeatables promise just as much
-		// as editing "stop[1]" would -- the row being read-only means nothing if
-		// the same content is one bare-name write away.  Resolve the chunk's
-		// descriptor and refuse when `name` names a `repeatable` parameter,
-		// mirroring WouldPersistDanglingReference_'s resolve-then-classify
-		// pattern.  A short, self-contained mMutex hold: only a doc/descriptor
-		// read, released before the heavier edit route below takes its own lock.
+
+		// Descriptor + document validation for BOTH shapes, under one short
+		// mMutex hold (a doc/descriptor read only, released before the heavier
+		// edit route below takes its own lock).
+		//
+		// P3-d fix (round 1): that short mMutex hold is NOT what keeps this
+		// validation from going stale before ApplyAgentParamEditInner_ actually
+		// writes a few lines down -- mMutex is released well before then.  The
+		// real guarantee is mRenderAdmissionMutex, which SetPropertyInner_'s
+		// caller (SetPropertyForCategory / SetProperty) holds RECURSIVELY across
+		// this entire function body -- see their bodies above.  Every OTHER
+		// Document-mutating entry point (Undo, Redo, ApplyAgentParamEdit, the
+		// chunk-CRUD verbs) takes that same admission mutex before touching the
+		// Document, so none of them can land a layout-shifting edit (an insert
+		// that changes which line occurrence `occIndex` names, or a remove that
+		// drops it) between the validation block below and the write it guards.
+		// The short mMutex hold only protects the READ itself (GetCstDocument /
+		// GetObjects) from tearing against the render thread's own concurrent
+		// access; it has nothing to do with same-caller-serialized TOCTOU safety.
+		//
+		//   bracketed   -- the role must be REPEATABLE on this chunk kind, and
+		//                  the index must be within the occurrences the document
+		//                  actually spells.  Out of range is a clean refusal
+		//                  here rather than a silent no-op inside
+		//                  DocSetOrAddParamValue (whose INSERT arm is
+		//                  occurrence-0-only, so `stop[99]` would just do
+		//                  nothing and report a bare code 0).
+		//   bare        -- unchanged from S4 (review fix P2-a): a repeatable
+		//                  role with NO index is still refused, because
+		//                  honouring it would silently mean "occurrence 0" and
+		//                  the panel would edit the first ramp stop while the
+		//                  user meant the list.
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			const RISE::Cst::Document* doc = mJob.GetCstDocument();
+			if( occAddressed && !doc ) return false;   // cannot validate the index; refuse rather than write blind
 			if( doc ) {
 				const RISE::Cst::NodeId id = ResolveSourceChunkId(
 					*doc, Category::Painter, std::string( targetName.c_str() ), std::string(),
 					mJob.GetActiveCameraName(), mJob.GetObjects() );
 				const RISE::Cst::NodeRef chunk = id != 0 ? RISE::Cst::DocResolveNodeId( *doc, id ) : nullptr;
 				const ChunkDescriptor* cd = chunk ? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
-				if( cd ) {
+				if( occAddressed ) {
+					if( !cd ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"SceneEditController: painter property edit of `%s`.`%s` refused -- the chunk or its "
+							"descriptor did not resolve, so the occurrence index cannot be validated.",
+							targetName.c_str(), name.c_str() );
+						return false;
+					}
+					const ParameterDescriptor* pd = nullptr;
+					for( const ParameterDescriptor& p : cd->parameters )
+						if( p.name == occRole ) { pd = &p; break; }
+					if( !pd || !pd->repeatable ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` is %s on "
+							"chunk kind `%s`, so it has no occurrences to address.",
+							targetName.c_str(), name.c_str(), occRole.c_str(),
+							pd ? "NOT a repeatable parameter" : "not a parameter", chunk->role.c_str() );
+						return false;
+					}
+					const int count = RISE::Cst::ParamOccurrenceCount( chunk, occRole );
+					if( occIndex < 0 || occIndex >= count ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` has %d "
+							"occurrence(s) on this chunk, so index %d is out of range.",
+							targetName.c_str(), name.c_str(), occRole.c_str(), count, occIndex );
+						return false;
+					}
+				} else if( cd ) {
 					const std::string want( name.c_str() );
 					for( const ParameterDescriptor& p : cd->parameters ) {
 						if( p.name != want ) continue;
 						if( p.repeatable ) {
 							GlobalLog()->PrintEx( eLog_Warning,
 								"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` is "
-								"a REPEATABLE parameter on this chunk kind, and the shared CST edit route "
-								"addresses occurrence 0 only.  Use the occurrence-addressed row (`%s[i]`, "
-								"read-only) to inspect it, or edit repeated lines in the scene text.",
+								"a REPEATABLE parameter on this chunk kind, so a bare name does not say WHICH "
+								"line to edit.  Use the occurrence-addressed row (`%s[i]`) instead.",
 								targetName.c_str(), name.c_str(), name.c_str(), name.c_str() );
 							return false;
 						}
@@ -15496,7 +15587,9 @@ bool SceneEditController::SetPropertyInner_(
 			}
 		}
 		const AgentCommitResult r = ApplyAgentParamEditInner_(
-			targetName, String( "painter" ), name, valueStr, nullptr );
+			targetName, String( "painter" ),
+			occAddressed ? String( occRole.c_str() ) : name,
+			valueStr, nullptr, occAddressed ? occIndex : 0, occAddressed );
 		return r.applied;
 	}
 

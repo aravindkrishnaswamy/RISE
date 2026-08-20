@@ -148,7 +148,12 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 	for( const ParameterDescriptor& p : cd->parameters )
 	{
 		if( p.name == "name" ) continue;      // covered by the identity row above; renaming is a dedicated affordance
-		if( p.repeatable ) continue;          // see header doc -- occ-0 editing doesn't fit a repeated param
+		// Repeatable params are NOT surfaced by the generic surface: one row per
+		// role cannot represent an ordered list, and this surface's edit route
+		// addresses occurrence 0.  A family that needs them enumerates its own
+		// occurrence rows on top of this one and routes them with an explicit
+		// `occ` -- PainterIntrospection does exactly that (doc 88 S4 + S4b).
+		if( p.repeatable ) continue;
 
 		// LAST occurrence, not first: this row has to say what the LIVE entity is,
 		// and the parse this panel sits on top of is last-wins (Cst::

@@ -435,9 +435,18 @@ namespace RISE
 		//! `entityKind` may be empty (agents can target CST kinds outside the
 		//! GUI's Category taxonomy).  Clears the redo stack (ordinary new-edit
 		//! semantics — Push does this).
+		//!
+		//! doc 88 S4b: `occ` records WHICH occurrence of `param` the forward
+		//! mutation wrote (0 = first, the convention Cst writes and reads with),
+		//! and `occAddressed` records that the edit was addressed BY OCCURRENCE
+		//! (a repeatable param's `<role>[<index>]` row) and therefore arms the
+		//! undo/redo drift guard — see SceneEdit::cstParamOcc /
+		//! cstParamOccAddressed.  Both DEFAULT to the pre-S4b meaning, so every
+		//! existing call site keeps its exact behaviour.
 		void PushAgentCstParamEdit(
 			const String& entityName, const String& entityKind, const String& param,
-			const String& newValue, const String& prevValue, bool prevValueWasAbsent );
+			const String& newValue, const String& prevValue, bool prevValueWasAbsent,
+			int occ = 0, bool occAddressed = false );
 
 		//! Shared-undo U2: push an EditHistory record for an agent chunk-CRUD commit (insert OR remove) that
 		//! has ALREADY been applied to the retained Document (via Job::ApplyCstInsertChunk /
@@ -962,7 +971,31 @@ namespace RISE
 		//! Shared-undo U1: full-derivability-gated twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
 		//! Undo/Redo -- see SceneEditor.cpp for why the agent op cannot safely share the ungated GUI-property route.
 		//! P1-3 fix (round 1): same mutation-keyed return + `outDiagnosed` as RouteCstParamRemove_ above.
-		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, bool* outDiagnosed = nullptr );
+		//! doc 88 S4b: `occ` selects which occurrence to write (0 = first) -- the argument position mirrors
+		//! RouteCstParamRemove_'s so the two inverse halves of one edit read the same way at their call sites.
+		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, int occ, bool* outDiagnosed = nullptr );
+
+		//! doc 88 S4b (occurrence-addressed undo/redo DRIFT GUARD).  Answers: is `edit`'s occurrence STILL the
+		//! line this direction is entitled to overwrite?  Two independent checks against the CURRENT retained
+		//! Document, resolving the entity EXACTLY as the coming write will:
+		//!   (a) EXISTENCE -- the chunk still resolves and still carries an `edit.cstParamOcc`-th occurrence of
+		//!       `edit.propertyName` (Cst::ParamOccurrenceCount);
+		//!   (b) IDENTITY -- that occurrence's CURRENT value still equals `expectedValue`, i.e. the value this
+		//!       direction last wrote there (Undo expects the edit's post-value; Redo expects the prior value
+		//!       Undo restored).  Compared on a whitespace-NORMALISED copy (token-split + single-space rejoin,
+		//!       not merely ends-trimmed -- round-1 P1 fix): a write always re-tokenises and single-space-joins
+		//!       the value, so INTERIOR separators (a column-aligned scene, a slider commit that resends the
+		//!       untouched tokens verbatim) are never preserved by any write path and cannot carry drift
+		//!       information; only the TOKENS matter.  See NormalizeParamValueWs_ in SceneEditor.cpp.
+		//! Returns true when both hold, or when `edit.cstParamOccAddressed` is false (every pre-S4b edit --
+		//! unguarded, exactly as before).  On a mismatch it LOGS which check failed and what it found, and
+		//! returns false so the caller refuses; the caller's refusal leaves the history entry in place.
+		//! `direction` is a diagnostics-only label ("Undo" / "Redo").
+		//!
+		//! This is the U2 lesson (an index captured at edit time is not a promise about the document later)
+		//! applied to a param LINE rather than a document item: an agent chunk-CRUD verb leaves no history
+		//! record at all, so nothing invalidates this entry when the occurrence layout moves underneath it.
+		bool OccurrenceEditStillAddressable_( const SceneEdit& edit, const char* expectedValue, const char* direction ) const;
 
 		//! Shared-undo U2: route a chunk-CRUD Undo/Redo through Job's chunk-CRUD primitives.  `forInsertOp`
 		//! selects which op's inverse/redo table applies (AgentInsertChunk vs AgentRemoveChunk); `forward`
@@ -1048,12 +1081,22 @@ namespace RISE
 		//! shadow / interior-medium binding) into the DirtyTracker's
 		//! per-category channel.  Called from Apply / Undo / Redo.
 		//! Transform ops are NOT handled here — they mark the object-
-		//! transform channel inline.  Over-marking is harmless: the
-		//! channels only feed HasUnsavedChanges(), and save is an
-		//! unconditional whole-Document SerializeCst that NoOps on
-		//! byte-equality (the byte-splice engine's property pass that
-		//! diffed marked entities went with Slice 6d), so a
+		//! transform channel inline.  Over-marking a mutation that DID
+		//! land is harmless: the channels only feed HasUnsavedChanges(),
+		//! and save is an unconditional whole-Document SerializeCst that
+		//! NoOps on byte-equality (the byte-splice engine's property pass
+		//! that diffed marked entities went with Slice 6d), so a
 		//! marked-but-unchanged entity at worst lights the Save button.
+		//!
+		//! P3-e fix (round 1): that "harmless" reasoning does NOT extend to
+		//! marking a mutation that was REFUSED.  Undo()/Redo() call this
+		//! ONLY after ApplyRevertMutation/ApplyForwardMutation actually
+		//! succeeds -- never on a refusal (e.g. the S4b occurrence drift
+		//! guard) -- because a refused revert changes nothing in the
+		//! Document, and lighting the Save button for it is not a harmless
+		//! over-mark, it is HasUnsavedChanges() reporting a real falsehood
+		//! (and, at quit time, an unsaved-changes prompt over a Document
+		//! that is in fact byte-identical to what was last saved).
 		void MarkEditEntityDirty( const SceneEdit& edit );
 
 		//! Compute whether the loaded scene has any populated photon map.
