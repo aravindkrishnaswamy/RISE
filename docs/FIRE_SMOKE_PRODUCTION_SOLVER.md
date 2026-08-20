@@ -1795,9 +1795,10 @@ constituent to zero only for property evaluation; and molecular transport uses
 those positive-part gas fractions and remains finite and positive. The 1-D and
 3-D FCT paths, divergence identity, and open-boundary stage propagate the same
 producer precision through their raw-vector configuration or parameter. Run
-checkpoint v9 persists that producer class for every accepted cell; historical
-v5--v8 checkpoints decode as `Binary64`, so the immutable v8 golden checkpoint
-and its bytes remain unchanged.
+checkpoint v9 persists one homogeneous producer class across every accepted
+cell and rejects mixed-class publication; resume derives the composed owner
+configuration from that class. Historical v5--v8 checkpoints decode as
+`Binary64`, so the immutable v8 golden checkpoint and its bytes remain unchanged.
 
 The ruling explicitly rejects three alternatives: projecting or clamping each
 resident state would mutate conservation ledgers and hide producer defects;

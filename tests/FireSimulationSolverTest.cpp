@@ -643,7 +643,19 @@ int main()
 	MethaneSourcePacket fp32BuiltSource;
 	const bool fp32SourceTotal=BuildFrozenMethaneSourcePacket(fp32EnvelopeState,
 		fp32SourceStep,300.0,0.0,fuel,thermochemistry,opacity,fp32BuiltSource,&error);
-	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport&&fp32SourceTotal,
+	std::vector<MethaneSourcePacket> fp32MixedSource;
+	RadiationEscapeFactor fp32MixedEscape;
+	const bool fp32MixedSourceTotal=BuildFrozenMethaneSourcePackets(
+		{eosFixture,fp32EnvelopeState},{fp32SourceStep,fp32SourceStep},{1.0,1.0},300.0,
+		1.0,0.0,false,fuel,thermochemistry,opacity,fp32MixedSource,fp32MixedEscape,&error,1u);
+	MethaneCellState unsafeBinary64Source=fp32EnvelopeState;
+	unsafeBinary64Source.producerPrecision=FireStateProducerPrecision::Binary64;
+	const bool fp32MixedSourceRejectsWidening=!BuildFrozenMethaneSourcePackets(
+		{fp32EnvelopeState,unsafeBinary64Source},{fp32SourceStep,fp32SourceStep},{1.0,1.0},
+		300.0,1.0,0.0,false,fuel,thermochemistry,opacity,fp32MixedSource,
+		fp32MixedEscape,&error,1u);
+	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport&&fp32SourceTotal&&
+		fp32MixedSourceTotal&&fp32MixedSourceRejectsWidening,
 		"fp32-envelope states remain total through temperature, EOS, viscosity, and source consumers");
 	MethaneCellState spoofedPrecisionState=fp32EnvelopeState;
 	spoofedPrecisionState.producerPrecision=FireStateProducerPrecision::Binary64;
@@ -686,6 +698,34 @@ int main()
 	Check(fp32PositivePart,"fp32 envelope-negative inventory has total positive-part availability");
 	Check(fp32NegativeInverts,"fp32 envelope-negative inventory has a total temperature inversion");
 	Check(fp32NegativeTransport,"fp32 envelope-negative inventory has total molecular transport");
+	MethaneCellState fp32NegativeEmitters=PhysicalMixtureLineState(
+		fuel,thermochemistry,0.0,800.0);
+	fp32NegativeEmitters.producerPrecision=FireStateProducerPrecision::Binary32;
+	const MethaneCellState fp32EmitterReference=fp32NegativeEmitters;
+	const double negativeEmitter=-0.125*AcceptedStateRoundoffFactor(r60Envelope,
+		FireStateProducerPrecision::Binary32);
+	for(const std::size_t emitter:{static_cast<std::size_t>(MethaneCO2),
+		static_cast<std::size_t>(MethaneH2O)}){
+		double emitterEnthalpy=0.0;
+		Check(fuel.SensibleEnthalpyJPerKG(fuel.SpeciesOrder()[emitter].c_str(),
+			fp32NegativeEmitters.temperatureK,emitterEnthalpy,&error),
+			"fp32 emitter fixture obtains its sensible enthalpy");
+		fp32NegativeEmitters.constituent[emitter]=negativeEmitter;
+		fp32NegativeEmitters.sensibleEnergyJPerM3+=negativeEmitter*emitterEnthalpy;
+	}
+	double fp32EmitterEOS=0.0,fp32EmitterReferenceEOS=0.0;
+	GasExchangeEvaluation fp32EmitterExchange;
+	double fp32EmitterDerivativeLower=1.0;
+	Check(AcceptedMethaneCellStateAdmissible(fp32NegativeEmitters,fuel,&error)&&
+		EquationOfStateResidual(fp32NegativeEmitters,fuel,fp32EmitterEOS,&error)&&
+		EquationOfStateResidual(fp32EmitterReference,fuel,fp32EmitterReferenceEOS,&error)&&
+		fp32EmitterEOS==fp32EmitterReferenceEOS&&
+		EvaluateGasExchange(fp32NegativeEmitters,fp32NegativeEmitters.temperatureK,300.0,
+			fuel,opacity,fp32EmitterExchange,&error)&&fp32EmitterExchange.exchangeWPerM3==0.0&&
+		fp32EmitterExchange.temperatureDerivativeWPerM3K==0.0&&
+		CertifiedGasExchangeDerivativeLower(fp32NegativeEmitters,700.0,900.0,300.0,
+			fuel,opacity,fp32EmitterDerivativeLower,&error)&&fp32EmitterDerivativeLower==0.0,
+		"fp32 envelope-negative emitters have zero EOS and radiation availability");
 	MethaneCellState fp32EnergyEndpoint=PhysicalMixtureLineState(fuel,thermochemistry,0.2,
 		fuel.TemperatureMinK());
 	fp32EnergyEndpoint.producerPrecision=FireStateProducerPrecision::Binary32;

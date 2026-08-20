@@ -499,14 +499,28 @@ namespace
 		std::uint64_t acceptedSteps=0u;
 	};
 
-	bool WriteCellStates(CheckpointWriter& writer,const std::vector<MethaneCellState>& states)
+	bool HomogeneousStateProducerPrecision(const std::vector<MethaneCellState>& states,
+		FireStateProducerPrecision& precision)
 	{
+		if(states.empty())return false;
+		precision=states.front().producerPrecision;
+		if(precision!=FireStateProducerPrecision::Binary64&&
+			precision!=FireStateProducerPrecision::Binary32)return false;
+		return std::all_of(states.begin(),states.end(),[precision](const MethaneCellState& state){
+			return state.producerPrecision==precision;
+		});
+	}
+
+	bool WriteCellStates(CheckpointWriter& writer,const std::vector<MethaneCellState>& states,
+		const std::uint64_t version)
+	{
+		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+		if(version>=9u&&!HomogeneousStateProducerPrecision(states,precision))return false;
 		const std::uint64_t count=states.size();if(!writer.Pod(count))return false;
 		for(const MethaneCellState& state:states){
-			const unsigned char producerPrecision=static_cast<unsigned char>(state.producerPrecision);
-			if((state.producerPrecision!=FireStateProducerPrecision::Binary64&&
-				state.producerPrecision!=FireStateProducerPrecision::Binary32)||
-				!writer.Pod(producerPrecision))return false;
+			if(version>=9u){const unsigned char producerPrecision=
+				static_cast<unsigned char>(state.producerPrecision);
+				if(!writer.Pod(producerPrecision))return false;}
 			if(!writer.Pod(state.rhoTotalZ))return false;
 			for(const double value:state.constituent)if(!writer.Pod(value))return false;
 			if(!writer.Pod(state.sensibleEnergyJPerM3)||!writer.Pod(state.temperatureK))return false;
@@ -531,7 +545,8 @@ namespace
 			for(double& value:state.constituent)if(!reader.Pod(value))return false;
 			if(!reader.Pod(state.sensibleEnergyJPerM3)||!reader.Pod(state.temperatureK))return false;
 		}
-		return true;
+		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+		return HomogeneousStateProducerPrecision(states,precision);
 	}
 
 	template<typename Field> bool WriteMACField(CheckpointWriter& writer,const Field& field)
@@ -547,12 +562,13 @@ namespace
 		return true;
 	}
 
-	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint)
+	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint,
+		const std::uint64_t version)
 	{
 		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
 		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
 			if(!writer.Pod(encoded))return false;}
-		return writer.Pod(checkpoint.cellWidthM)&&WriteCellStates(writer,checkpoint.states)&&
+		return writer.Pod(checkpoint.cellWidthM)&&WriteCellStates(writer,checkpoint.states,version)&&
 			WriteMACField(writer,checkpoint.momentum)&&WriteMACField(writer,checkpoint.velocity)&&
 			WriteSolverFrameValues(writer,checkpoint.values)&&
 			WriteArithmeticVector(writer,checkpoint.centerlineTemperatureIntegral)&&
@@ -667,8 +683,10 @@ namespace
 	}
 
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
-		const MethaneRunCheckpoint& checkpoint,std::string& error)
+		const MethaneRunCheckpoint& checkpoint,std::string& error,
+		const std::uint64_t version=9u)
 	{
+		if(version!=8u&&version!=9u){error="run checkpoint output version is invalid";return false;}
 		if(path.has_parent_path())std::filesystem::create_directories(path.parent_path());
 #if defined(_WIN32)
 		const long long processId=static_cast<long long>(::_getpid());
@@ -678,12 +696,12 @@ namespace
 		const std::filesystem::path temporary=path.string()+".tmp."+std::to_string(processId);
 		CheckpointWriter writer(temporary);if(!writer.Good()){error="cannot open run checkpoint";return false;}
 		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
-		const std::uint64_t version=9u,endian=0x0102030405060708ull,zero=0u;
+		const std::uint64_t endian=0x0102030405060708ull,zero=0u;
 		auto rejectTemporary=[&temporary](){std::error_code ignored;
 			std::filesystem::remove(temporary,ignored);};
 		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
 			!writer.HeaderBytes(&endian,sizeof(endian))||!writer.HeaderBytes(&zero,sizeof(zero))||
-			!writer.HeaderBytes(&zero,sizeof(zero))||!WriteCheckpointPayload(writer,checkpoint)){
+			!writer.HeaderBytes(&zero,sizeof(zero))||!WriteCheckpointPayload(writer,checkpoint,version)){
 			error="cannot serialize complete run checkpoint";rejectTemporary();return false;}
 		const std::uint64_t payloadBytes=writer.PayloadBytes(),checksum=writer.Checksum();
 		if(!writer.SeekHeader(32)||!writer.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
@@ -970,6 +988,7 @@ namespace
 		config.transport.deltaTimeS=reaction.deltaTimeS; config.transport.ambientTemperatureK=300.0;
 		config.transport.adiabaticTemperatureK=caseRecord.derived.maximumAcceptedTemperatureK;
 		config.transport.ambientGasDensityKGPerM3=rho;
+		config.transport.producerPrecision=FireStateProducerPrecision::Binary64;
 		Check(config.transport.adiabaticTemperatureK==2300.0&&
 			config.transport.adiabaticTemperatureK<
 				FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().TemperatureMaxK(),
@@ -1098,6 +1117,7 @@ namespace
 				(checkpoint.values.priorActiveSetAlgorithmVersion.empty()||
 					checkpoint.values.priorActiveSetAlgorithmVersion==
 						LegacyActiveSetAlgorithmVersion());
+			FireStateProducerPrecision checkpointPrecision=FireStateProducerPrecision::Unknown;
 			if(checkpoint.caseRecordId!=caseRecord.caseRecordId||
 				(!sameBuild&&!isolatedProbe&&!certifiedMigration)||
 				checkpoint.values.reductionMode!="fixed_order_tree_v1"||
@@ -1108,7 +1128,8 @@ namespace
 				checkpoint.acceptedSteps>std::numeric_limits<unsigned int>::max()||
 				checkpoint.centerlineTemperatureIntegral.size()!=shape.nz||
 				checkpoint.centerlineVelocityIntegral.size()!=shape.nz||
-				checkpoint.planeHeatReleaseIntegral.size()!=shape.nz){
+				checkpoint.planeHeatReleaseIntegral.size()!=shape.nz||
+				!HomogeneousStateProducerPrecision(checkpoint.states,checkpointPrecision)){
 				if(error.empty())error="checkpoint build migration is not certified";
 				values.structuredError="checkpoint_resume_failure:"+error;return values;
 			}
@@ -1119,6 +1140,7 @@ namespace
 				return values;
 			}
 			states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
+			config.transport.producerPrecision=checkpointPrecision;
 			advanced.velocityMPerS=std::move(checkpoint.velocity);
 			values=std::move(checkpoint.values);
 			if(legacyActiveSetCheckpoint)values.priorActiveSetAlgorithmVersion=
@@ -1188,7 +1210,8 @@ namespace
 			std::vector<CellTransportEvaluation> cellTransportEvaluations;
 			advancedOK=BuildOpenStageTransportEvaluations3D(shape,currentConservative,
 				currentTemperature,currentVelocity,config.openBoundary,config.dns,fuel,
-				FireSimulationTransportRecord::OpenV1(),cellTransportEvaluations,&error,workerCount);
+				FireSimulationTransportRecord::OpenV1(),config.transport.producerPrecision,
+				cellTransportEvaluations,&error,workerCount);
 			if(!advancedOK) break;
 			double maximumReducedGravity=0.0,maximumActiveDiffusivity=0.0;
 			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
@@ -1262,7 +1285,8 @@ namespace
 					std::vector<double> trialTemperature;
 					advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 						config.transport.ambientTemperatureK,
-						caseRecord.derived.maximumAcceptedTemperatureK,trialTemperature,&error,
+						caseRecord.derived.maximumAcceptedTemperatureK,
+						config.transport.producerPrecision,trialTemperature,&error,
 						workerCount);
 					if(advancedOK&&std::any_of(trialTemperature.begin(),trialTemperature.end(),
 						[&caseRecord](const double temperatureK){return !std::isfinite(temperatureK)||
@@ -1369,7 +1393,8 @@ namespace
 				std::vector<double> acceptedTemperature;
 				advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 					config.transport.ambientTemperatureK,
-					caseRecord.derived.maximumAcceptedTemperatureK,acceptedTemperature,&error,
+					caseRecord.derived.maximumAcceptedTemperatureK,
+					config.transport.producerPrecision,acceptedTemperature,&error,
 					workerCount);
 				const bool measurePilotApproach=!values.pilotApproachComplete&&
 					simulationTimeS<pilotEndS;
@@ -1386,7 +1411,8 @@ namespace
 				for(std::size_t acceptedCell=0;advancedOK&&acceptedCell<advanced.conservative.size();
 					++acceptedCell) {
 					const ConservativeVector& conservative=advanced.conservative[acceptedCell];
-					MethaneCellState accepted=FromConservativeVector(conservative);
+					MethaneCellState accepted=FromConservativeVector(conservative,
+						config.transport.producerPrecision);
 					accepted.temperatureK=acceptedTemperature[acceptedCell];
 					double acceptedEOSResidual=0.0;
 					if(!EquationOfStateResidual(accepted,fuel,acceptedEOSResidual,&error)){
@@ -2598,13 +2624,18 @@ namespace
 	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
-		if(mode!="baseline"&&mode!="kill"&&mode!="resume"&&mode!="syncfail")return 96;
+		if(mode!="baseline"&&mode!="kill"&&mode!="resume"&&mode!="resume-final"&&
+			mode!="resume-one"&&
+			mode!="syncfail")return 96;
 		forcePostRenameDirectorySyncFailureForTest=mode=="syncfail";
 		RunPersistenceOptions persistence;
 		if(mode!="baseline"){
 			persistence.checkpointPath=checkpointPath;
 			persistence.checkpointCadenceWallS=0.0;
-			persistence.resume=mode=="resume";
+			persistence.resume=mode=="resume"||mode=="resume-final"||mode=="resume-one";
+			if(mode=="resume-final"||mode=="resume-one")
+				persistence.finalCheckpointPath=checkpointPath;
+			if(mode=="resume-one")persistence.stopAfterAdditionalAcceptedSteps=1u;
 			persistence.killAfterFirstCheckpoint=mode=="kill"||mode=="syncfail";
 		}
 		SolverFrameValues result=RunMethaneFrameProbe(workerCount,3u,0.0,1.0,4.0,6.0,
@@ -3181,6 +3212,10 @@ int main(int argc,char** argv)
 		streamedPrefixPublished&&DigestFile(streamedPrefixFrame)==DigestFile(baselineCheckpointFrame)&&
 		std::filesystem::exists(checkpointPath)&&!std::filesystem::exists(resumedCheckpointFrame),
 		"r61 streamed prefix survives a hard kill before the final frame is published");
+	MethaneRunCheckpoint oneStepCheckpointMetadata;
+	Check(LoadMethaneRunCheckpoint(checkpointPath,oneStepCheckpointMetadata,
+		checkpointFixtureError)&&oneStepCheckpointMetadata.acceptedSteps==1u,
+		"r115 binary32 resume fixture captures the immutable one-step beginning");
 	const int resumedCheckpointExit=RunCheckpointSubprocess(self,"resume",checkpointPath,
 		resumedCheckpointFrame,4u);
 	MethaneRunCheckpoint resumedCheckpointMetadata;
@@ -3211,18 +3246,97 @@ int main(int argc,char** argv)
 			std::vector<std::uint64_t>({2u,4u})&&
 		resumedCheckpointMetadata.values.reductionMode=="fixed_order_tree_v1",
 		"r61 checkpoint plus hard kill plus different-thread resume is frame-bit-transparent and records run events");
-	MethaneRunCheckpoint precisionRoundTrip=resumedCheckpointMetadata;
-	if(!precisionRoundTrip.states.empty())precisionRoundTrip.states.front().producerPrecision=
+	FireStateProducerPrecision resumedPrecision=FireStateProducerPrecision::Unknown;
+	Check(HomogeneousStateProducerPrecision(resumedCheckpointMetadata.states,resumedPrecision)&&
+		resumedPrecision==FireStateProducerPrecision::Binary64,
+		"r115 ordinary binary64 checkpoints retain one authoritative producer class");
+	const std::filesystem::path legacyPrecisionCheckpoint=
+		checkpointFixture/"precision_class_legacy_v8.checkpoint";
+	MethaneRunCheckpoint loadedLegacyPrecision;
+	Check(SaveMethaneRunCheckpoint(legacyPrecisionCheckpoint,resumedCheckpointMetadata,
+		checkpointFixtureError,8u)&&LoadMethaneRunCheckpoint(legacyPrecisionCheckpoint,
+		loadedLegacyPrecision,checkpointFixtureError)&&
+		loadedLegacyPrecision.checkpointFormatVersion==8u&&
+		HomogeneousStateProducerPrecision(loadedLegacyPrecision.states,resumedPrecision)&&
+		resumedPrecision==FireStateProducerPrecision::Binary64,
+		"r115 legacy v5-v8 checkpoint cells decode in the binary64 producer class");
+	MethaneRunCheckpoint mixedPrecisionCheckpoint=resumedCheckpointMetadata;
+	if(!mixedPrecisionCheckpoint.states.empty())mixedPrecisionCheckpoint.states.front().producerPrecision=
 		FireStateProducerPrecision::Binary32;
+	const std::filesystem::path rejectedMixedPrecision=
+		checkpointFixture/"mixed_precision.checkpoint";
+	Check(mixedPrecisionCheckpoint.states.size()>1u&&
+		!SaveMethaneRunCheckpoint(rejectedMixedPrecision,mixedPrecisionCheckpoint,
+			checkpointFixtureError)&&!std::filesystem::exists(rejectedMixedPrecision),
+		"r115 a composed checkpoint rejects mixed producer precision before publication");
+	MethaneRunCheckpoint precisionRoundTrip=oneStepCheckpointMetadata;
+	const FireSimulationMethaneRecord& checkpointFuel=FireSimulationMethaneRecord::PhysicalV1();
+	MethaneCellState checkpointAmbient;checkpointAmbient.temperatureK=300.0;
+	double checkpointInvW=0.0;
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+		checkpointAmbient.constituent[species]=checkpointFuel.AmbientMassFractions()[species];
+		if(species<MethaneCarbon){const FireThermochemistrySpecies* property=
+			checkpointFuel.FindSpecies(checkpointFuel.SpeciesOrder()[species].c_str());
+			if(property)checkpointInvW+=checkpointAmbient.constituent[species]/
+				property->molecularWeightKGPerKMol;}
+	}
+	const double checkpointRho=checkpointFuel.ThermodynamicPressurePa()/(8314.46261815324*
+		checkpointAmbient.temperatureK*checkpointInvW);
+	for(double& density:checkpointAmbient.constituent)density*=checkpointRho;
+	checkpointAmbient.rhoTotalZ=0.0;
+	Check(checkpointFuel.MixtureSensibleEnergyJPerM3(
+		ThermochemicalDensities(checkpointAmbient),checkpointAmbient.temperatureK,
+		checkpointAmbient.sensibleEnergyJPerM3,&checkpointFixtureError),
+		"r115 binary32 resume fixture reconstructs the canonical ambient state");
+	checkpointAmbient.producerPrecision=FireStateProducerPrecision::Binary32;
+	precisionRoundTrip.states.assign(precisionRoundTrip.states.size(),checkpointAmbient);
+	for(unsigned int axis=0;axis<3u;++axis){
+		std::fill(precisionRoundTrip.momentum.component[axis].begin(),
+			precisionRoundTrip.momentum.component[axis].end(),0.0);
+		std::fill(precisionRoundTrip.velocity.component[axis].begin(),
+			precisionRoundTrip.velocity.component[axis].end(),0.0);
+	}
+	precisionRoundTrip.centerlineTemperatureIntegral.assign(
+		precisionRoundTrip.centerlineTemperatureIntegral.size(),0.0);
+	precisionRoundTrip.centerlineVelocityIntegral.assign(
+		precisionRoundTrip.centerlineVelocityIntegral.size(),0.0);
+	precisionRoundTrip.planeHeatReleaseIntegral.assign(
+		precisionRoundTrip.planeHeatReleaseIntegral.size(),0.0);
+	precisionRoundTrip.centerlineStatisticsDurationS=0.0;
+	precisionRoundTrip.simulationTimeS=0.0;precisionRoundTrip.previousStepS=0.0;
+	precisionRoundTrip.lastAcceptedStepS=0.0;precisionRoundTrip.acceptedSteps=0u;
+	if(!precisionRoundTrip.states.empty()){
+		const double excursion=0.5*AcceptedStateRoundoffFactor(
+			checkpointFuel.AcceptedStateFeasibilityEnvelope(),FireStateProducerPrecision::Binary32)*
+			AcceptedStateMassScale(ToConservativeVector(precisionRoundTrip.states.front()));
+		precisionRoundTrip.states.front().rhoTotalZ+=excursion;
+	}
+	MethaneCellState binary64View=precisionRoundTrip.states.front();
+	binary64View.producerPrecision=FireStateProducerPrecision::Binary64;
 	const std::filesystem::path precisionCheckpoint=checkpointFixture/"precision_class.checkpoint";
+	const std::filesystem::path precisionFrame=checkpointFixture/"precision_class.vdb";
 	MethaneRunCheckpoint loadedPrecisionRoundTrip;
-	Check(!precisionRoundTrip.states.empty()&&SaveMethaneRunCheckpoint(precisionCheckpoint,
+	const bool precisionSave=!precisionRoundTrip.states.empty()&&
+		AcceptedMethaneCellStateAdmissible(precisionRoundTrip.states.front(),checkpointFuel,
+			&checkpointFixtureError)&&
+		!AcceptedMethaneCellStateAdmissible(binary64View,checkpointFuel,&checkpointFixtureError)&&
+		SaveMethaneRunCheckpoint(precisionCheckpoint,
 		precisionRoundTrip,checkpointFixtureError)&&LoadMethaneRunCheckpoint(precisionCheckpoint,
-		loadedPrecisionRoundTrip,checkpointFixtureError)&&
+		loadedPrecisionRoundTrip,checkpointFixtureError);
+	FireStateProducerPrecision loadedPrecision=FireStateProducerPrecision::Unknown;
+	const int precisionResumeExit=precisionSave?RunCheckpointSubprocess(self,"resume-one",
+		precisionCheckpoint,precisionFrame,4u):-1;
+	MethaneRunCheckpoint resumedPrecisionRoundTrip;
+	Check(precisionSave&&
 		loadedPrecisionRoundTrip.checkpointFormatVersion==9u&&
-		loadedPrecisionRoundTrip.states.front().producerPrecision==
-			FireStateProducerPrecision::Binary32,
-		"r115 checkpoint round-trip preserves the accepted state's producer precision class");
+		HomogeneousStateProducerPrecision(loadedPrecisionRoundTrip.states,loadedPrecision)&&
+		loadedPrecision==FireStateProducerPrecision::Binary32&&precisionResumeExit==0&&
+		LoadMethaneRunCheckpoint(precisionCheckpoint,resumedPrecisionRoundTrip,
+			checkpointFixtureError)&&
+		HomogeneousStateProducerPrecision(resumedPrecisionRoundTrip.states,loadedPrecision)&&
+		loadedPrecision==FireStateProducerPrecision::Binary32&&
+		resumedPrecisionRoundTrip.acceptedSteps==precisionRoundTrip.acceptedSteps+1u,
+		"r115 homogeneous binary32 checkpoint metadata survives serialization and an actual resumed step");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
 	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
 	const std::filesystem::path corruptedCheckpointPath=checkpointFixture/"corrupt.checkpoint";

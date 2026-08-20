@@ -2716,9 +2716,10 @@ it was already tried and refuted here.
   viscosity all consume the state's precision metadata. No state repair,
   resident promotion, or fp64 widening is permitted, and the feasibility
   envelope remains separate from the future accuracy term `B_fp32`. Run
-  checkpoint v9 persists producer precision per cell; historical v5--v8
-  checkpoints decode as binary64, leaving the immutable v8 golden artifact
-  byte-untouched.
+  checkpoint v9 persists one homogeneous producer precision across the grid,
+  rejects mixed-class publication, and restores that class into the resumed
+  owner; historical v5--v8 checkpoints decode as binary64, leaving the
+  immutable v8 golden artifact byte-untouched.
 
   Exit `190` is retired by the derived ruling. The production campaign chains
   31 additional states before exact monitored exit `191`: tier 12 step 7 cell

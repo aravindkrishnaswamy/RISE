@@ -243,6 +243,11 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
             self.assertIn("beginning", inline_body(core, name))
             self.assertIn("producerPrecision", inline_body(core, name),
                           name + " drops accepted-state producer metadata")
+        for name in ("EquationOfStateResidual", "EvaluateGasExchange",
+                     "CertifiedGasExchangeDerivativeLower"):
+            self.assertIn("PositivePartThermochemicalDensitiesOrdered",
+                          inline_body(core, name),
+                          name + " consumes signed property availability")
         for name in ("InvertMethaneTemperatureWithinAcceptedEnvelope",
                      "EquationOfStateResidual", "EvaluateCellMolecularTransport"):
             self.assertIn("producerPrecision!=state.producerPrecision",

@@ -463,12 +463,14 @@ namespace RISE
 					upperEnthalpy,thermochemistry,producerPrecision,error))return false;
 			double gasDensity = 0.0;
 			double molarDensityKMolPerM3 = 0.0;
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
 				const FireThermochemistrySpecies* property =
 					thermochemistry.FindSpecies(names[species]);
 				if( !property ) return Fail(error,"fire solver EOS lacks a gas species");
-				gasDensity += state.constituent[species];
-				molarDensityKMolPerM3 += state.constituent[species]/
+				gasDensity += propertyDensities[species];
+				molarDensityKMolPerM3 += propertyDensities[species]/
 					property->molecularWeightKGPerKMol;
 			}
 			if( gasDensity <= 0.0 || molarDensityKMolPerM3 <= 0.0 ) {
@@ -5768,16 +5770,18 @@ namespace RISE
 				return Fail(error,"fire solver gas exchange state is outside its record domain");
 			}
 			result = GasExchangeEvaluation();
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
 			const char* ids[2] = {"CO2", "H2O"};
 			const std::size_t indices[2] = {MethaneCO2,MethaneH2O};
 			for( std::size_t speciesIndex=0; speciesIndex<2; ++speciesIndex ) {
 				// The cold ambient occupies almost the entire plume lattice and
 				// contains neither modeled emitter.  Its contribution is exactly
 				// zero, so do not perform four table interpolations per empty cell.
-				if( state.constituent[indices[speciesIndex]] == 0.0 ) continue;
+				if( propertyDensities[indices[speciesIndex]] == 0.0 ) continue;
 				const FireThermochemistrySpecies* species = thermochemistry.FindSpecies(ids[speciesIndex]);
 				if( !species ) return Fail(error,"fire solver gas opacity species lacks thermochemistry");
-				const double moleculesPerM3 = state.constituent[indices[speciesIndex]]/
+				const double moleculesPerM3 = propertyDensities[indices[speciesIndex]]/
 					species->molecularWeightKGPerKMol*1000.0*avogadro;
 				double hot = 0.0, hotGasDerivative = 0.0, hotRadiationDerivative = 0.0;
 				double ambient = 0.0, ambientGasDerivative = 0.0;
@@ -5894,10 +5898,12 @@ namespace RISE
 			const double upper4 = upper2*upper2;
 			const double ambient2 = ambientTemperatureK*ambientTemperatureK;
 			const double ambient4 = ambient2*ambient2;
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
 			for( std::size_t speciesIndex=0; speciesIndex<2; ++speciesIndex ) {
 				const FireThermochemistrySpecies* species = thermochemistry.FindSpecies(ids[speciesIndex]);
 				if( !species ) return Fail(error,"fire solver gas opacity species lacks thermochemistry");
-				const double moleculesPerM3 = state.constituent[indices[speciesIndex]]/
+				const double moleculesPerM3 = propertyDensities[indices[speciesIndex]]/
 					species->molecularWeightKGPerKMol*1000.0*avogadro;
 				double hot = 0.0, hotGasPoint = 0.0, hotRadiationPoint = 0.0;
 				double ambient = 0.0, ambientGasPoint = 0.0, ambientRadiationPoint = 0.0;
