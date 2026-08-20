@@ -226,9 +226,10 @@ std::array<double,3> CalibrationCellVelocity(const MethaneRunCheckpoint& state,
 bool CalibrationDifference(const MethaneRunCheckpoint& first,
 	const MethaneRunCheckpoint& second,CalibrationOverlapDifference& difference)
 {
-	difference=CalibrationOverlapDifference();double volume=0.0;
+	difference=CalibrationOverlapDifference();double volume=0.0;long double visitedVolume=0.0L;
 	const bool visited=VisitCalibrationOverlaps(first,second,
 		[&](const std::size_t firstCell,const std::size_t secondCell,const double weight){
+			visitedVolume+=static_cast<long double>(weight);
 			const ConservativeVector firstValue=ToConservativeVector(first.states[firstCell]);
 			const ConservativeVector secondValue=ToConservativeVector(second.states[secondCell]);
 			for(std::size_t component=0u;component<9u;++component)
@@ -241,7 +242,8 @@ bool CalibrationDifference(const MethaneRunCheckpoint& first,
 				difference.velocityVolumeL2+=weight*delta*delta;
 			}
 		},volume);
-	if(!visited||!(volume>0.0))return false;
+	if(!visited||!(volume>0.0)||std::fabs(static_cast<double>(visitedVolume)-volume)>
+		64.0*std::numeric_limits<double>::epsilon()*volume)return false;
 	for(double& value:difference.componentVolumeL1)value/=volume;
 	difference.velocityVolumeL2=std::sqrt(difference.velocityVolumeL2/volume);
 	return std::all_of(difference.componentVolumeL1.begin(),
@@ -249,11 +251,12 @@ bool CalibrationDifference(const MethaneRunCheckpoint& first,
 		std::isfinite(difference.velocityVolumeL2);
 }
 
-int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inputDirectory)
+int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inputDirectory,
+	const char* expectedManifestDigest=
+		"2c19f5c0750674196ecdf0fe1c0317b51b7d33ed440ec60c8c7bba2342e2b416")
 {
-	static const char* manifestDigest=
-		"2c19f5c0750674196ecdf0fe1c0317b51b7d33ed440ec60c8c7bba2342e2b416";
-	if(DigestFile(inputDirectory/"input_manifest.v2")!=manifestDigest)return 142;
+	if(!expectedManifestDigest||std::strlen(expectedManifestDigest)!=64u||
+		DigestFile(inputDirectory/"input_manifest.v2")!=expectedManifestDigest)return 142;
 	std::array<MethaneRunCheckpoint,3> states;std::string error;
 	for(std::size_t index=0u;index<3u;++index){
 		const std::filesystem::path path=inputDirectory/(std::string("tier")+
