@@ -26,6 +26,8 @@
 		6A11B002000000000000C0DE /* ExpressionEval.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
 		6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
 		6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
+		F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
+		F2ADD1000000000000000003 /* ExpressionParamSpec.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -772,6 +774,8 @@
 		F24B743F2F52A632008304C4 /* Plane.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A34069C42900069C9E5 /* Plane.h */; };
 		F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */; };
 		F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */; };
+		F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
+		F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
 		F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A37069C42900069C9E5 /* RandomNumbers.h */; };
 		F24B74432F52A632008304C4 /* Ray.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F24B74442F52A632008304C4 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
@@ -1419,6 +1423,8 @@
 		F27F0C8D069C42910069C9E5 /* Plane.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A34069C42900069C9E5 /* Plane.h */; };
 		F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */; };
 		F27F0C8F069C42910069C9E5 /* ProbabilityDensityFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */; };
+		F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
+		F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
 		F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A37069C42900069C9E5 /* RandomNumbers.h */; };
 		F27F0C91069C42910069C9E5 /* Ray.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
@@ -1912,6 +1918,7 @@
 		6A10E005000000000000C0DE /* Function2DColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DColorPainter.h; sourceTree = "<group>"; };
 		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
 		6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionFunction2DPainter.h; sourceTree = "<group>"; };
+		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AmbientOcclusionShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AmbientOcclusionShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AreaLightShaderOp.cpp; sourceTree = "<group>"; };
@@ -2606,6 +2613,8 @@
 		F27F0A34069C42900069C9E5 /* Plane.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Plane.h; sourceTree = "<group>"; };
 		F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ProbabilityDensityFunction.cpp; sourceTree = "<group>"; };
 		F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProbabilityDensityFunction.h; sourceTree = "<group>"; };
+		F2ADD0000000000000000001 /* ProceduralNoiseCore.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProceduralNoiseCore.h; sourceTree = "<group>"; };
+		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
 		F27F0A37069C42900069C9E5 /* RandomNumbers.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RandomNumbers.h; sourceTree = "<group>"; };
 		F27F0A38069C42900069C9E5 /* Ray.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Ray.h; sourceTree = "<group>"; };
 		F27F0A39069C42900069C9E5 /* Reference.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Reference.cpp; sourceTree = "<group>"; };
@@ -3619,6 +3628,7 @@
 				6A10E005000000000000C0DE /* Function2DColorPainter.h */,
 				6A11E001000000000000C0DE /* ExpressionEval.h */,
 				6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */,
+				F2ADD1000000000000000001 /* ExpressionParamSpec.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
 				F27F093B069C42900069C9E5 /* IridescentPainter.h */,
@@ -4056,6 +4066,8 @@
 				F27F0A34069C42900069C9E5 /* Plane.h */,
 				F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */,
 				F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */,
+				F2ADD0000000000000000001 /* ProceduralNoiseCore.h */,
+				F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */,
 				F27F0A37069C42900069C9E5 /* RandomNumbers.h */,
 				F27F0A38069C42900069C9E5 /* Ray.h */,
 				F2EE004000000000000000A1 /* RayDifferentials.h */,
@@ -4608,6 +4620,7 @@
 				6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */,
 				6A11B002000000000000C0DE /* ExpressionEval.h in Headers */,
 				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
+				F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
 				F27F0BA1069C42910069C9E5 /* LinesPainter.h in Headers */,
@@ -4850,6 +4863,7 @@
 				F27F0C8C069C42910069C9E5 /* PiecewiseLinearFunction.h in Headers */,
 				F27F0C8D069C42910069C9E5 /* Plane.h in Headers */,
 				F27F0C8F069C42910069C9E5 /* ProbabilityDensityFunction.h in Headers */,
+				F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */,
 				F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */,
 				F27F0C91069C42910069C9E5 /* Ray.h in Headers */,
 				F27F0C93069C42910069C9E5 /* Reference.h in Headers */,
@@ -5333,6 +5347,7 @@
 				F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
+				F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */,
 				F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */,
 				F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */,
 				F27F0C9B069C42910069C9E5 /* ThreadsPTHREADs.cpp in Sources */,
@@ -5808,6 +5823,7 @@
 				6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */,
 				6A11B001000000000000C0DE /* ExpressionEval.h in Sources */,
 				6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */,
+				F2ADD1000000000000000003 /* ExpressionParamSpec.h in Sources */,
 				F24B73262F52A632008304C4 /* Function1DSpectralPainter.h in Sources */,
 				F24B73272F52A632008304C4 /* IridescentPainter.cpp in Sources */,
 				F24B73282F52A632008304C4 /* IridescentPainter.h in Sources */,
@@ -6239,6 +6255,8 @@
 				F24B743F2F52A632008304C4 /* Plane.h in Sources */,
 				F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */,
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
+				F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */,
+				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
 				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,

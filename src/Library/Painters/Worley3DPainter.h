@@ -40,7 +40,11 @@ namespace RISE
 			WorleyDistanceMetric	eMetric;
 			WorleyOutputMode		eOutput;
 
-			WorleyNoise3D*					pFunc;
+			//! Evaluates the configured (metric, output mode) via the shared
+			//! ProceduralNoiseCore free functions -- see EvaluateField's
+			//! definition for the bit-identity note.
+			Scalar							EvaluateField( const Scalar x, const Scalar y, const Scalar z ) const;
+
 			ISimpleInterpolator<Scalar>*	pInterp;
 			ISimpleInterpolator<RISEPel>*	pColorInterp;
 

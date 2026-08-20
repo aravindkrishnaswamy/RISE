@@ -285,6 +285,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -1254,6 +1257,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1672,6 +1678,9 @@
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionParamSpec.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h">

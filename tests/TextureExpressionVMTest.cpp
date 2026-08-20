@@ -1,0 +1,950 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  TextureExpressionVMTest.cpp - Slice S1 of the texture-expressions
+//  arc (docs/agentic-redesign/88-procedural-texture-expressiveness-
+//  candidates.md): the ExpressionEval VM's new vec3 type system,
+//  context variables (P, Po, N, fw, time), noise builtins (factored
+//  into ProceduralNoiseCore.h, shared with Perlin3DPainter/
+//  Worley3DPainter), the variadic `ramp` builtin, offset-carrying
+//  compile errors, and the param-metadata line grammar
+//  (ExpressionParamSpec.h).  No scene chunks are exercised here (S1 is
+//  headless VM work; S2 wires chunk surfaces).
+//
+//  Golden values for the noise builtins were computed by an
+//  INDEPENDENT Python re-implementation of ProceduralNoiseCore's
+//  documented formulas (LatticeHash3D's hash chain, the 26-neighbor
+//  smoothing weights, trilinear blend, the Worley 3x3x3 jittered-grid
+//  search) and cross-checked against the actual C++ output before
+//  being pasted in below -- see the arc's implementation notes.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <iostream>
+#include <cmath>
+#include <cstdio>
+#include <string>
+
+#include "../src/Library/Painters/ExpressionEval.h"
+#include "../src/Library/Painters/ExpressionParamSpec.h"
+#include "../src/Library/Utilities/ProceduralNoiseCore.h"
+#include "../src/Library/Noise/PerlinNoise.h"
+#include "../src/Library/Noise/WorleyNoise.h"
+#include "../src/Library/Utilities/SimpleInterpolators.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static int passCount = 0;
+static int failCount = 0;
+
+static void Check( bool cond, const std::string& name )
+{
+	if( cond ) { ++passCount; }
+	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
+}
+static void CheckClose( Scalar got, Scalar want, Scalar tol, const std::string& name )
+{
+	if( std::fabs( got - want ) <= tol ) { ++passCount; }
+	else {
+		++failCount;
+		std::cout.precision( 15 );
+		std::cout << "  FAIL: " << name << "  got " << got << "  want " << want << "  |d| " << std::fabs(got-want) << std::endl;
+	}
+}
+
+//======================================================================
+// Small harness around ExpressionProgram::Builder for one-shot compiles.
+// Context vars (P, Po, N, fw, time) are opt-in (EnableContextVars, P2-A,
+// review round 1) -- this harness exercises the full language, so it
+// turns them on unconditionally.  (The two document-level `expr(...)`
+// surfaces -- Cst.cpp's EvalExprBody, AgentSession.cpp's
+// LocalEvalExprBody -- deliberately leave them OFF; see those files.)
+//======================================================================
+struct Prog
+{
+	ExpressionProgram prog;
+	ExpressionProgram::Builder builder;
+	bool ok;
+
+	explicit Prog( const std::string& expr ) : prog( ExpressionProgram::Invalid() )
+	{
+		builder.EnableContextVars( true );
+		ok = builder.Finalize( expr, prog );
+	}
+};
+
+static size_t Find( const std::string& hay, const std::string& needle )
+{
+	const size_t p = hay.find( needle );
+	Check( p != std::string::npos, "test bug: `" + needle + "` not found in `" + hay + "`" );
+	return p;
+}
+
+//======================================================================
+// 1. vec3 construction, swizzles, arithmetic (incl. scalar broadcast),
+//    dot/cross/length/normalize, vec3-mix.
+//======================================================================
+static void TestVec3Arithmetic()
+{
+	std::cout << "Test 1: vec3 construction / swizzle / arithmetic / dot,cross,length,normalize" << std::endl;
+
+	{
+		Prog p( "vec3(1,2,3).x + vec3(1,2,3).y*10 + vec3(1,2,3).z*100" );
+		Check( p.ok, "vec3 ctor + swizzle compiles" );
+		if( p.ok ) CheckClose( p.prog.Eval(0,0), 1+20+300, 1e-12, "vec3 ctor + swizzle values" );
+	}
+	{
+		Prog p( "vec3(1,2,3) + vec3(4,5,6)" );
+		Check( p.ok && p.prog.ResultType()==ExpressionProgram::kVec3, "vec3+vec3 result type" );
+		const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+		CheckClose( v.x, 5, 1e-12, "vec3+vec3 .x" ); CheckClose( v.y, 7, 1e-12, "vec3+vec3 .y" ); CheckClose( v.z, 9, 1e-12, "vec3+vec3 .z" );
+	}
+	{
+		Prog p( "vec3(1,2,3) - vec3(0.5,0.5,0.5)" );
+		Check( p.ok, "vec3-vec3 compiles" );
+		const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+		CheckClose( v.x, 0.5, 1e-12, "vec3-vec3 .x" ); CheckClose( v.y, 1.5, 1e-12, "vec3-vec3 .y" ); CheckClose( v.z, 2.5, 1e-12, "vec3-vec3 .z" );
+	}
+	{
+		// scalar broadcast both directions: vec3*scalar and scalar*vec3
+		Prog p1( "(vec3(1,2,3) * 2).y" );
+		Check( p1.ok, "vec3*scalar compiles" );
+		if( p1.ok ) CheckClose( p1.prog.Eval(0,0), 4, 1e-12, "vec3*scalar broadcast" );
+		Prog p2( "(2 * vec3(1,2,3)).y" );
+		Check( p2.ok, "scalar*vec3 compiles" );
+		if( p2.ok ) CheckClose( p2.prog.Eval(0,0), 4, 1e-12, "scalar*vec3 broadcast" );
+		Prog p3( "(10 / vec3(2,5,10)).z" );
+		Check( p3.ok, "scalar/vec3 compiles" );
+		if( p3.ok ) CheckClose( p3.prog.Eval(0,0), 1, 1e-12, "scalar/vec3 broadcast" );
+		Prog p4( "(vec3(1,2,3) / vec3(2,2,2)).y" );
+		Check( p4.ok, "vec3/vec3 compiles" );
+		if( p4.ok ) CheckClose( p4.prog.Eval(0,0), 1, 1e-12, "vec3/vec3 componentwise" );
+	}
+	{
+		Prog p( "(-vec3(1,-2,3)).y" );
+		Check( p.ok, "unary minus on vec3 compiles" );
+		if( p.ok ) CheckClose( p.prog.Eval(0,0), 2, 1e-12, "unary minus on vec3" );
+	}
+	{
+		Prog p( "dot(vec3(1,2,3), vec3(4,5,6))" );
+		Check( p.ok, "dot compiles" );
+		if( p.ok ) CheckClose( p.prog.Eval(0,0), 32, 1e-12, "dot value" );
+	}
+	{
+		Prog p( "cross(vec3(1,0,0), vec3(0,1,0))" );
+		Check( p.ok && p.prog.ResultType()==ExpressionProgram::kVec3, "cross compiles, vec3 result" );
+		const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+		CheckClose( v.x, 0, 1e-12, "cross .x" ); CheckClose( v.y, 0, 1e-12, "cross .y" ); CheckClose( v.z, 1, 1e-12, "cross .z" );
+	}
+	{
+		Prog p( "length(vec3(3,4,0))" );
+		Check( p.ok, "length compiles" );
+		if( p.ok ) CheckClose( p.prog.Eval(0,0), 5, 1e-12, "length value" );
+	}
+	{
+		Prog p( "normalize(vec3(3,4,0))" );
+		Check( p.ok, "normalize compiles" );
+		const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+		CheckClose( v.x, 0.6, 1e-12, "normalize .x" ); CheckClose( v.y, 0.8, 1e-12, "normalize .y" ); CheckClose( v.z, 0, 1e-12, "normalize .z" );
+	}
+	{
+		Prog p( "normalize(vec3(0,0,0))" );
+		Check( p.ok, "normalize(0) compiles" );
+		const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+		CheckClose( v.x, 0, 1e-12, "normalize(0) .x safe" ); CheckClose( v.y, 0, 1e-12, "normalize(0) .y safe" ); CheckClose( v.z, 0, 1e-12, "normalize(0) .z safe" );
+	}
+	{
+		Prog p( "mix(vec3(0,0,0), vec3(10,20,30), 0.25)" );
+		Check( p.ok && p.prog.ResultType()==ExpressionProgram::kVec3, "vec3 mix compiles, vec3 result" );
+		const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+		CheckClose( v.x, 2.5, 1e-12, "vec3 mix .x" ); CheckClose( v.y, 5, 1e-12, "vec3 mix .y" ); CheckClose( v.z, 7.5, 1e-12, "vec3 mix .z" );
+	}
+	{
+		Prog p( "mix(1,5,0.5)" );
+		Check( p.ok && p.prog.ResultType()==ExpressionProgram::kScalar, "scalar mix still scalar" );
+		if( p.ok ) CheckClose( p.prog.Eval(0,0), 3, 1e-12, "scalar mix value" );
+	}
+	{
+		// context vec3 vars: P, Po, N
+		Prog p( "P.x + P.y + P.z" );
+		Check( p.ok, "P.x+P.y+P.z compiles" );
+		if( p.ok ) {
+			ExprEvalContext ctx; ctx.P = Vector3(1,2,3);
+			CheckClose( p.prog.Eval( ctx ), 6, 1e-12, "P components sum" );
+		}
+	}
+	{
+		Prog p( "length(N)" );
+		Check( p.ok, "length(N) compiles" );
+		if( p.ok ) {
+			ExprEvalContext ctx; ctx.N = Vector3(3,4,0);
+			CheckClose( p.prog.Eval( ctx ), 5, 1e-12, "length(N) value" );
+		}
+	}
+}
+
+//======================================================================
+// 2. Noise builtins: golden values cross-checked against an independent
+//    Python reimplementation of the documented formulas.
+//======================================================================
+static void TestNoiseBuiltins()
+{
+	std::cout << "Test 2: noise builtins (perlin/fbm/turbulence/ridged/worley_*/cellhash) golden values" << std::endl;
+
+	auto evalExpr = []( const std::string& e ) -> Scalar {
+		Prog p( e );
+		if( !p.ok ) { Check( false, "compile: " + e + " :: " + p.builder.Error() ); return 0; }
+		return p.prog.Eval(0,0);
+	};
+
+	CheckClose( evalExpr( "perlin(vec3(0.3,0.7,1.4))" ), -0.067849004290997939, 1e-9, "perlin golden A" );
+	CheckClose( evalExpr( "perlin(vec3(-2.25,5.5,-0.1))" ), -0.25459063579910429, 1e-9, "perlin golden B" );
+	CheckClose( evalExpr( "fbm(vec3(0.3,0.7,1.4), 4, 0.5, 2.0)" ), -0.19859653334474803, 1e-9, "fbm golden" );
+	CheckClose( evalExpr( "turbulence(vec3(0.3,0.7,1.4), 4, 0.5, 2.0)" ), 0.12500609165612192, 1e-9, "turbulence golden" );
+	CheckClose( evalExpr( "ridged(vec3(0.3,0.7,1.4), 4, 0.5, 2.0)" ), 0.77670332638038786, 1e-9, "ridged golden" );
+	CheckClose( evalExpr( "worley_f1(vec3(0.3,0.7,1.4), 1.0)" ), 0.58925369798313076, 1e-9, "worley_f1 golden" );
+	CheckClose( evalExpr( "worley_f2(vec3(0.3,0.7,1.4), 1.0)" ), 0.57872695943945174, 1e-9, "worley_f2 golden" );
+	CheckClose( evalExpr( "worley_f2f1(vec3(0.3,0.7,1.4), 1.0)" ), 0.37178232156806246, 1e-9, "worley_f2f1 golden" );
+	CheckClose( evalExpr( "worley_id(vec3(0.3,0.7,1.4), 1.0)" ), 685014.0, 1e-6, "worley_id golden" );
+	CheckClose( evalExpr( "cellhash(worley_id(vec3(0.3,0.7,1.4), 1.0))" ), 0.939578743185848, 1e-9, "cellhash(worley_id) golden" );
+	CheckClose( evalExpr( "cellhash(3)" ), 0.62859259406104684, 1e-9, "cellhash(3) golden" );
+	CheckClose( evalExpr( "cellhash(-1)" ), 0.049936855677515268, 1e-9, "cellhash(-1) golden" );
+
+	// perlin() is a convex combination of hash samples in [-1,1] -- exact bound, not just "roughly".
+	{
+		bool inRange = true;
+		for( int i = -25; i <= 25 && inRange; ++i ) {
+			for( int j = -25; j <= 25 && inRange; ++j ) {
+				char buf[128];
+				snprintf( buf, sizeof(buf), "perlin(vec3(%f,%f,%f))", i*0.173, j*0.211, (i-j)*0.091 );
+				const Scalar v = evalExpr( buf );
+				if( v < Scalar(-1.0000001) || v > Scalar(1.0000001) ) inRange = false;
+			}
+		}
+		Check( inRange, "perlin() stays within [-1,1]" );
+	}
+}
+
+//======================================================================
+// 3. Compile-time type errors: failure + correct byte offset.
+//======================================================================
+static void TestTypeErrorOffsets()
+{
+	std::cout << "Test 3: compile errors carry the right byte offset" << std::endl;
+
+	// unknown identifier
+	{
+		const std::string e = "nope + 1";
+		Prog p( e );
+		Check( !p.ok, "unknown identifier rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"nope"), "unknown identifier offset" );
+	}
+	// type mismatch: scalar-only function given a vec3
+	{
+		const std::string e = "sin(vec3(1,2,3))";
+		Prog p( e );
+		Check( !p.ok, "sin(vec3) rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"vec3(1,2,3)"), "sin(vec3) offset points at the argument" );
+	}
+	// type mismatch: dot() given scalars instead of vec3
+	{
+		const std::string e = "dot(1,2)";
+		Prog p( e );
+		Check( !p.ok, "dot(scalar,scalar) rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"1"), "dot() arg-type offset" );
+	}
+	// type mismatch: comparison operands must be scalar
+	{
+		const std::string e = "1 < vec3(1,2,3)";
+		Prog p( e );
+		Check( !p.ok, "scalar<vec3 rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"<"), "comparison type-error offset" );
+	}
+	// type mismatch: `^` requires scalar
+	{
+		const std::string e = "vec3(1,2,3) ^ 2";
+		Prog p( e );
+		Check( !p.ok, "vec3 ^ scalar rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"^"), "`^` type-error offset" );
+	}
+	// type mismatch: swizzle on a scalar
+	{
+		const std::string e = "u.x";
+		Prog p( e );
+		Check( !p.ok, "scalar.x rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"."), "swizzle-on-scalar offset" );
+	}
+	// malformed: not a valid swizzle component
+	{
+		const std::string e = "P.q";
+		Prog p( e );
+		Check( !p.ok, "P.q (invalid component) rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"."), "invalid swizzle component offset" );
+	}
+	// malformed call arity: too many args
+	{
+		const std::string e = "sin(1,2)";
+		Prog p( e );
+		Check( !p.ok, "sin(1,2) rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"sin"), "too-many-args offset" );
+	}
+	// malformed call arity: too few args
+	{
+		const std::string e = "dot(vec3(1,2,3))";
+		Prog p( e );
+		Check( !p.ok, "dot() with 1 arg rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"dot"), "too-few-args offset" );
+	}
+	// unexpected token: nothing follows a binary operator
+	{
+		const std::string e = "1 +";
+		Prog p( e );
+		Check( !p.ok, "trailing operator rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)e.size(), "unexpected-token (EOF) offset" );
+	}
+	// unexpected token: ')' where an expression was expected
+	{
+		const std::string e = "vec3(1,2)";
+		Prog p( e );
+		Check( !p.ok, "vec3(1,2) (missing 3rd arg) rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,")"), "unexpected-token ')' offset" );
+	}
+	// unknown function
+	{
+		const std::string e = "foo(1)";
+		Prog p( e );
+		Check( !p.ok, "unknown function rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"foo"), "unknown function offset" );
+	}
+}
+
+//======================================================================
+// 4. Back-compat: Eval(u,v) vs Eval(context) agree when context extras
+//    are zero; a same-named param SHADOWS a context var (real-scene
+//    `param N <value>` regression guard, see ExpressionEval.h Builder()).
+//======================================================================
+static void TestBackCompat()
+{
+	std::cout << "Test 4: Eval(u,v) back-compat + param/context-var shadowing" << std::endl;
+
+	{
+		Prog p( "sin(u*6.2831853)+cos(v*6.2831853)*2.0" );
+		Check( p.ok, "legacy-style expression compiles" );
+		if( p.ok ) {
+			for( int i = 0; i < 5; ++i ) {
+				const Scalar u = i*0.173, v = i*0.311;
+				const Scalar viaOld = p.prog.Eval( u, v );
+				ExprEvalContext ctx; ctx.u = u; ctx.v = v;	// P/Po/N/fw/time default to 0
+				const Scalar viaNew = p.prog.Eval( ctx );
+				CheckClose( viaOld, viaNew, 0, "Eval(u,v) == Eval(context) with zeroed extras" );
+			}
+		}
+	}
+	{
+		// an expression that reads every context var: the 2-arg Eval must
+		// behave as if they're all exactly zero.
+		Prog p( "u + v + P.x + Po.y + N.z + fw + time" );
+		Check( p.ok, "all-context-vars expression compiles" );
+		if( p.ok ) {
+			CheckClose( p.prog.Eval( 2, 3 ), 5, 1e-12, "Eval(u,v) zeros every extra context var" );
+			ExprEvalContext ctx; ctx.u=2; ctx.v=3; ctx.P=Vector3(10,0,0); ctx.Po=Vector3(0,20,0); ctx.N=Vector3(0,0,30); ctx.fw=1; ctx.time=1;
+			CheckClose( p.prog.Eval( ctx ), 2+3+10+20+30+1+1, 1e-12, "Eval(context) actually threads the extras" );
+		}
+	}
+	{
+		// Real-scene regression: `param N 85` (enamel_watch.RISEscene,
+		// enamel_dial_dimpled.RISEscene) must keep meaning "the constant
+		// 85", not get silently clobbered by (or bound to) the new vec3
+		// shading-normal context variable of the same name.
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		ExpressionProgram::Builder b;
+		b.AddParam( "N", 85 );
+		Check( b.Finalize( "N + u", prog ), "param `N` shadows context N: compiles" );
+		if( prog.IsValid() ) {
+			CheckClose( prog.Eval( 1, 0 ), 86, 1e-12, "param N=85 used, Eval(u,v)" );
+			ExprEvalContext ctx; ctx.u = 1; ctx.N = Vector3(7,7,7);	// must NOT leak into `N`
+			CheckClose( prog.Eval( ctx ), 86, 1e-12, "param N=85 still used even with a nonzero context N" );
+		}
+	}
+}
+
+//======================================================================
+// 5. ramp(): clamped ends, interior lerp, multi-stop, vec3 stops, and
+//    its own compile-error cases.
+//======================================================================
+static void TestRamp()
+{
+	std::cout << "Test 5: ramp() clamping / interpolation / vec3 stops / errors" << std::endl;
+
+	{
+		ExpressionProgram::Builder b0; ExpressionProgram pr0 = ExpressionProgram::Invalid();
+		b0.AddParam( "t", 0 );
+		Check( b0.Finalize( "ramp(t, 0,0, 1,10)", pr0 ), "ramp(2 stops) compiles" );
+
+		// re-evaluate by rebuilding per-t (AddParam is compile-time only)
+		auto evalAt = []( Scalar tval ) -> Scalar {
+			ExpressionProgram::Builder b; ExpressionProgram pr = ExpressionProgram::Invalid();
+			b.AddParam( "t", tval );
+			b.Finalize( "ramp(t, 0,0, 1,10)", pr );
+			return pr.Eval(0,0);
+		};
+		CheckClose( evalAt( -0.5 ), 0, 1e-12, "ramp clamps below first stop" );
+		CheckClose( evalAt( 1.5 ), 10, 1e-12, "ramp clamps above last stop" );
+		CheckClose( evalAt( 0.5 ), 5, 1e-12, "ramp interior lerp" );
+		CheckClose( evalAt( 0 ), 0, 1e-12, "ramp exactly at first stop" );
+		CheckClose( evalAt( 1 ), 10, 1e-12, "ramp exactly at last stop" );
+	}
+	{
+		auto evalAt = []( Scalar tval ) -> Scalar {
+			ExpressionProgram::Builder b; ExpressionProgram pr = ExpressionProgram::Invalid();
+			b.AddParam( "t", tval );
+			b.Finalize( "ramp(t, 0,0, 1,10, 2,100)", pr );
+			return pr.Eval(0,0);
+		};
+		CheckClose( evalAt( 1.5 ), 55, 1e-12, "3-stop ramp, second segment" );
+		CheckClose( evalAt( -1 ), 0, 1e-12, "3-stop ramp clamps below" );
+		CheckClose( evalAt( 5 ), 100, 1e-12, "3-stop ramp clamps above" );
+	}
+	{
+		ExpressionProgram::Builder b; ExpressionProgram pr = ExpressionProgram::Invalid();
+		b.AddParam( "t", 0.5 );
+		Check( b.Finalize( "ramp(t, 0,vec3(0,0,0), 1,vec3(10,20,30))", pr ), "vec3-stop ramp compiles" );
+		if( pr.IsValid() ) {
+			Check( pr.ResultType()==ExpressionProgram::kVec3, "vec3-stop ramp result type" );
+			const Vector3 v = pr.EvalVec3( ExprEvalContext() );
+			CheckClose( v.x, 5, 1e-12, "vec3 ramp .x" ); CheckClose( v.y, 10, 1e-12, "vec3 ramp .y" ); CheckClose( v.z, 15, 1e-12, "vec3 ramp .z" );
+		}
+	}
+	// errors
+	{
+		const std::string e = "ramp(0.5, 1,10, 0,20)";	// descending literal positions
+		Prog p( e );
+		Check( !p.ok, "ramp() with descending literal positions rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"0,20"), "ramp() descending-position offset" );
+	}
+	{
+		const std::string e = "ramp(0.5, 1,10)";	// only 1 stop
+		Prog p( e );
+		Check( !p.ok, "ramp() with <2 stops rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"ramp"), "ramp() too-few-stops offset" );
+	}
+	{
+		const std::string e = "ramp(0.5, 0,1, 1,vec3(1,2,3))";	// stop value type mismatch
+		Prog p( e );
+		Check( !p.ok, "ramp() mixed scalar/vec3 stop values rejected" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"vec3(1,2,3)"), "ramp() value-type-mismatch offset" );
+	}
+}
+
+//======================================================================
+// 6. fbm/turbulence/ridged octave: compile-time literal validation,
+//    runtime clamp otherwise.
+//======================================================================
+static void TestOctaveValidation()
+{
+	std::cout << "Test 6: fbm/turbulence/ridged octave compile-time literal check + runtime clamp" << std::endl;
+
+	{
+		const std::string e = "fbm(vec3(0,0,0), 15, 0.5, 2.0)";	// literal, out of [1,10]
+		Prog p( e );
+		Check( !p.ok, "fbm() literal octaves=15 rejected at compile time" );
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"15"), "fbm() octave-literal offset" );
+	}
+	{
+		const std::string e = "fbm(vec3(0,0,0), 0, 0.5, 2.0)";	// literal, below range
+		Prog p( e );
+		Check( !p.ok, "fbm() literal octaves=0 rejected at compile time" );
+	}
+	{
+		// non-literal octave count: compiles fine, clamps at runtime.
+		ExpressionProgram::Builder b1; ExpressionProgram p1 = ExpressionProgram::Invalid();
+		b1.AddParam( "octParam", 20 );	// way above the cap, but not a literal token
+		Check( b1.Finalize( "fbm(vec3(0.3,0.7,1.4), octParam, 0.5, 2.0)", p1 ), "fbm() with a non-literal octave param compiles" );
+
+		ExpressionProgram::Builder b2; ExpressionProgram p2 = ExpressionProgram::Invalid();
+		b2.Finalize( "fbm(vec3(0.3,0.7,1.4), 10, 0.5, 2.0)", p2 );
+
+		if( p1.IsValid() && p2.IsValid() ) {
+			CheckClose( p1.Eval(0,0), p2.Eval(0,0), 1e-12, "runtime octave clamp matches the literal cap" );
+		}
+	}
+}
+
+//======================================================================
+// 7. Param-metadata line grammar (ExpressionParamSpec.h).
+//======================================================================
+static void TestParamSpec()
+{
+	std::cout << "Test 7: param-metadata grammar (min/max/step/label)" << std::endl;
+
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( ParseParamSpecLine( "ring_scale 4.0 min 0.5 max 20 label \"Ring density\"", spec, err, off ), "all fields parse" );
+		Check( spec.name=="ring_scale", "name" );
+		CheckClose( spec.value, 4.0, 1e-12, "value" );
+		Check( spec.hasMin && std::fabs(spec.min-0.5)<1e-12, "min" );
+		Check( spec.hasMax && std::fabs(spec.max-20)<1e-12, "max" );
+		Check( !spec.hasStep, "step absent" );
+		Check( spec.hasLabel && spec.label=="Ring density", "label" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( ParseParamSpecLine( "k 5", spec, err, off ), "minimal name+value parses" );
+		Check( spec.name=="k" && !spec.hasMin && !spec.hasMax && !spec.hasStep && !spec.hasLabel, "minimal has no metadata" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( ParseParamSpecLine( "step_test 1 step 0.25", spec, err, off ), "step field parses" );
+		Check( spec.hasStep && std::fabs(spec.step-0.25)<1e-12, "step value" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "k", spec, err, off ), "missing value rejected" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "k abc", spec, err, off ), "malformed number rejected" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "k 5 bogus 1", spec, err, off ), "unknown keyword rejected" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "k 5 min 1 min 2", spec, err, off ), "duplicate min rejected" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "k 5 label \"unterminated", spec, err, off ), "unterminated label rejected" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "k 5 min 10 max 1", spec, err, off ), "min>=max rejected" );
+	}
+	{
+		ParamSpec spec; std::string err; ptrdiff_t off;
+		Check( !ParseParamSpecLine( "", spec, err, off ), "empty line rejected" );
+	}
+}
+
+//======================================================================
+// 8. fbm determinism: two independent Builder/Program instances agree.
+//======================================================================
+static void TestFbmDeterminism()
+{
+	std::cout << "Test 8: fbm determinism across independent VM instances" << std::endl;
+
+	ExpressionProgram::Builder b1; ExpressionProgram p1 = ExpressionProgram::Invalid();
+	Check( b1.Finalize( "fbm(vec3(u,v,0.37), 6, 0.55, 2.13)", p1 ), "instance 1 compiles" );
+
+	ExpressionProgram::Builder b2; ExpressionProgram p2 = ExpressionProgram::Invalid();
+	Check( b2.Finalize( "fbm(vec3(u,v,0.37), 6, 0.55, 2.13)", p2 ), "instance 2 compiles" );
+
+	if( p1.IsValid() && p2.IsValid() ) {
+		bool allEqual = true;
+		for( int i = -10; i <= 10; ++i ) {
+			const Scalar u = i*0.091, v = -i*0.133;
+			const Scalar a = p1.Eval( u, v );
+			const Scalar b = p2.Eval( u, v );
+			if( a != b ) { allEqual = false; break; }
+		}
+		Check( allEqual, "two independently compiled/evaluated fbm programs agree exactly" );
+	}
+}
+
+//======================================================================
+// 9. Noise-factoring parity: the shared ProceduralNoiseCore primitives,
+//    composed the same way Perlin3DPainter::EvaluateField /
+//    Worley3DPainter::EvaluateField now do, reproduce the historical
+//    PerlinNoise3D / WorleyNoise3D engines (still in Noise/, untouched,
+//    and still used by SDFPrimitives/DomainWarp/Curl/PerlinWorley)
+//    bit-for-bit.  This is the pre/post-factoring proof for the painter
+//    rewrite in this slice.
+//======================================================================
+static Scalar PerlinPainterStyleField( Scalar x, Scalar y, Scalar z, Scalar persistence, unsigned int nOctaves )
+{
+	const unsigned int cappedOctaves = ( nOctaves < 32 ) ? nOctaves : 32;
+	const int n = (int)cappedOctaves - 1;
+	Scalar total = 0;
+	for( int i = 0; i < n; ++i ) {
+		const Scalar frequency = std::pow( 2.0, Scalar(i) );
+		const Scalar amplitude = std::pow( persistence, Scalar(i) );
+		total += NoiseCore::PerlinOctave3D( x*frequency, y*frequency, z*frequency ) * amplitude;
+	}
+	return total;
+}
+
+static void TestNoiseFactoringParity()
+{
+	std::cout << "Test 9: ProceduralNoiseCore parity vs the historical PerlinNoise3D/WorleyNoise3D engines" << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+
+	const Scalar persistences[] = { 0.35, 0.5, 0.75 };
+	const unsigned int octaveCounts[] = { 1, 3, 6, 9 };
+	bool allMatch = true;
+	for( size_t pi = 0; pi < sizeof(persistences)/sizeof(persistences[0]) && allMatch; ++pi ) {
+		for( size_t oi = 0; oi < sizeof(octaveCounts)/sizeof(octaveCounts[0]) && allMatch; ++oi ) {
+			PerlinNoise3D* legacy = new PerlinNoise3D( *interp, persistences[pi], (int)octaveCounts[oi] );
+			for( int i = -8; i <= 8 && allMatch; ++i ) {
+				const Scalar x = i*0.219, y = -i*0.147+0.5, z = i*0.083-1.1;
+				const Scalar want = legacy->Evaluate( x, y, z );
+				const Scalar got = PerlinPainterStyleField( x, y, z, persistences[pi], octaveCounts[oi] );
+				// 1 ULP tolerance, not exact ==: pAmplitudesLUT[i]=pow(persistence,i)
+				// is computed in PerlinNoise3D.cpp's translation unit (the legacy
+				// path) vs this file's (the factored path) -- under
+				// -ffast-math, libm pow() call sites in different TUs are not
+				// guaranteed bit-identical even for byte-identical source
+				// (confirmed empirically: diff was exactly 1.11e-16 at one
+				// sample, i.e. exactly 1 ULP of a ~0.14 value). The formula is
+				// identical; this is TU-codegen noise, not a logic difference.
+				if( std::fabs( want - got ) > Scalar(1e-12) ) {
+					allMatch = false;
+					std::cout.precision(20);
+					std::cout << "  FAIL: perlin parity persistence=" << persistences[pi] << " octaves=" << octaveCounts[oi]
+							  << " at (" << x << "," << y << "," << z << ")  legacy=" << want << " core=" << got << " diff=" << (want-got) << std::endl;
+				}
+			}
+			legacy->release();
+		}
+	}
+	Check( allMatch, "Perlin3DPainter-style octave sum is bit-identical to legacy PerlinNoise3D" );
+
+	interp->release();
+
+	struct WCase { Scalar jitter; WorleyDistanceMetric metric; WorleyOutputMode mode; NoiseCore::WorleyMetric coreMetric; NoiseCore::WorleyMode coreMode; };
+	const WCase wcases[] = {
+		{ 1.0, eWorley_Euclidean, eWorley_F1,        NoiseCore::eMetricEuclidean, NoiseCore::eModeF1 },
+		{ 1.0, eWorley_Euclidean, eWorley_F2,        NoiseCore::eMetricEuclidean, NoiseCore::eModeF2 },
+		{ 0.5, eWorley_Manhattan, eWorley_F2minusF1, NoiseCore::eMetricManhattan, NoiseCore::eModeF2MinusF1 },
+		{ 1.0, eWorley_Chebyshev, eWorley_F1,        NoiseCore::eMetricChebyshev, NoiseCore::eModeF1 },
+	};
+	bool worleyMatch = true;
+	for( size_t ci = 0; ci < sizeof(wcases)/sizeof(wcases[0]) && worleyMatch; ++ci ) {
+		WorleyNoise3D* legacy = new WorleyNoise3D( wcases[ci].jitter, wcases[ci].metric, wcases[ci].mode );
+		for( int i = -8; i <= 8 && worleyMatch; ++i ) {
+			const Scalar x = i*0.271-2.0, y = -i*0.183+1.0, z = i*0.097;
+			const Scalar want = legacy->Evaluate( x, y, z );
+
+			Scalar f1, f2; int cx,cy,cz;
+			NoiseCore::WorleySample3D( x, y, z, wcases[ci].jitter, wcases[ci].coreMetric, f1, f2, cx, cy, cz );
+			Scalar raw;
+			switch( wcases[ci].coreMode ) {
+			case NoiseCore::eModeF2: raw = f2; break;
+			case NoiseCore::eModeF2MinusF1: raw = f2-f1; break;
+			default: raw = f1; break;
+			}
+			const Scalar got = NoiseCore::WorleyNormalize( raw, wcases[ci].coreMetric, wcases[ci].coreMode );
+
+			if( want != got ) {
+				worleyMatch = false;
+				std::cout << "  FAIL: worley parity case " << ci << " at (" << x << "," << y << "," << z << ")  legacy=" << want << " core=" << got << std::endl;
+			}
+		}
+		legacy->release();
+	}
+	Check( worleyMatch, "Worley3DPainter-style evaluation is bit-identical to legacy WorleyNoise3D" );
+}
+
+//======================================================================
+// 10. Review round 1, P1-A: a duplicate param/def name whose TYPE
+//     doesn't match the earlier registration is a compile error (both
+//     orders), instead of Slot() silently reusing the earlier slot
+//     type-blind (env clobber / type confusion / an ASan-confirmed
+//     stack-buffer overflow at BindEnv).  A SAME-type duplicate (e.g.
+//     two `param a` lines) stays ALLOWED as "last wins" -- Cst.cpp's
+//     `let` chunk semantics (CollectLetBindings feeds every binding,
+//     duplicates included, through Builder::AddParam) depend on it, and
+//     CstLetTest locks that in independently.
+//======================================================================
+static void TestDuplicateNames()
+{
+	std::cout << "Test 10: cross-type duplicate param/def names are a compile error (P1-A); same-type is last-wins" << std::endl;
+
+	// order: param (scalar) then def (vec3) -- TYPE MISMATCH, rejected
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( b.AddParam( "a", 1 ), "param `a` compiles" );
+		Check( b.AddParam( "b", 7 ), "param `b` compiles" );
+		Check( !b.AddDef( "a", "vec3(4,5,6)" ), "def `a` (vec3) after param `a` (scalar): rejected by AddDef" );
+		Check( !b.Finalize( "b", p ), "cross-type duplicate (param then def): Finalize also fails (sticky)" );
+	}
+	// order: def (vec3) then param (scalar) -- TYPE MISMATCH, rejected
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( b.AddDef( "a", "vec3(4,5,6)" ), "def `a` compiles" );
+		Check( !b.AddParam( "a", 1 ), "param `a` (scalar) after def `a` (vec3): rejected by AddParam" );
+		Check( !b.Finalize( "a", p ), "cross-type duplicate (def then param): Finalize also fails (sticky)" );
+	}
+	// the exact reviewer-reported repro (param a / param b / def a(vec3) / expr b,
+	// which used to silently read b=5 due to the env clobber) is now caught before
+	// Finalize can ever succeed.
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		b.AddParam( "a", 1 );
+		b.AddParam( "b", 7 );
+		b.AddDef( "a", "vec3(4,5,6)" );	// rejected; sets the sticky error
+		Check( !b.Finalize( "b", p ), "P1-A repro (param a / param b / def a(vec3) / expr b) rejected, not silently misread" );
+	}
+
+	// SAME-type duplicate: allowed, last value wins.  This is not a gap in
+	// the P1-A fix -- Slot() returns the already-correctly-sized existing
+	// slot either way when the type matches, so there is no env clobber to
+	// guard against; rejecting it would break Cst.cpp's `let` "duplicate
+	// name is last-wins" semantics (CstLetTest).
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( b.AddParam( "a", 1 ), "param `a`=1 compiles" );
+		Check( b.AddParam( "a", 2 ), "param `a`=2 (same type, same name) is ALLOWED -- last wins" );
+		Check( b.Finalize( "a", p ), "Finalize succeeds after a same-type duplicate param" );
+		if( p.IsValid() ) CheckClose( p.Eval(0,0), 2, 1e-12, "the LATER param value (2) wins, matching CollectLetBindings' `let` semantics" );
+	}
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( b.AddDef( "a", "vec3(1,2,3)" ), "def `a`=vec3(1,2,3) compiles" );
+		Check( b.AddDef( "a", "vec3(7,8,9)" ), "def `a`=vec3(7,8,9) (same type, same name) is ALLOWED -- last wins" );
+		Check( b.Finalize( "a", p ), "Finalize succeeds after a same-type duplicate def" );
+		if( p.IsValid() ) {
+			const Vector3 v = p.EvalVec3( ExprEvalContext() );
+			CheckClose( v.x, 7, 1e-12, "the LATER def's value wins .x" ); CheckClose( v.y, 8, 1e-12, "..y" ); CheckClose( v.z, 9, 1e-12, "..z" );
+		}
+	}
+}
+
+//======================================================================
+// 11. Review round 1: P1-B (compound-octave-argument UB) is now a
+//     runtime clamp, not a compile-time-literal-only check; P1-C
+//     (cellhash float->int UB) stays finite on extreme inputs.
+//======================================================================
+static void TestOctaveAndCellhashRuntimeSafety()
+{
+	std::cout << "Test 11: P1-B compound-octave runtime clamp + P1-C cellhash extreme-input safety" << std::endl;
+
+	// P1-B: a COMPOUND octave argument (not a single Num token) compiles --
+	// it is no longer literal-checkable at compile time, so it is clamped
+	// at RUNTIME instead (OctavesFromScalar), matching the literal-10 result.
+	{
+		Prog p( "fbm(vec3(0.3,0.7,1.4), 2*1e20, 0.5, 2.0)" );
+		Check( p.ok, "fbm() with a compound octave expression (2*1e20) compiles" );
+		Prog p10( "fbm(vec3(0.3,0.7,1.4), 10, 0.5, 2.0)" );
+		Check( p10.ok, "fbm() octaves=10 literal reference compiles" );
+		if( p.ok && p10.ok ) {
+			CheckClose( p.prog.Eval(0,0), p10.prog.Eval(0,0), 1e-12, "compound octave 2e20 clamps to the same result as literal 10 (no UB)" );
+		}
+	}
+
+	// P1-C: cellhash on an extreme-magnitude argument stays finite and in [0,1).
+	{
+		Prog p1( "cellhash(1e20)" );
+		Check( p1.ok, "cellhash(1e20) compiles" );
+		if( p1.ok ) {
+			const Scalar v = p1.prog.Eval(0,0);
+			Check( ExpressionProgram::IsFinite(v) && v >= Scalar(0) && v < Scalar(1), "cellhash(1e20) finite in [0,1)" );
+		}
+		Prog p2( "cellhash(0-1e20)" );
+		Check( p2.ok, "cellhash(0-1e20) compiles" );
+		if( p2.ok ) {
+			const Scalar v = p2.prog.Eval(0,0);
+			Check( ExpressionProgram::IsFinite(v) && v >= Scalar(0) && v < Scalar(1), "cellhash(0-1e20) finite in [0,1)" );
+		}
+	}
+}
+
+//======================================================================
+// 12. Review round 1, P2-B: a deep chain of leading unary signs is a
+//     compile error, not a C++ call-stack crash.  Plus: compile-time
+//     stack-cap rejection for a deeply-nested value-stack peak.
+//======================================================================
+static void TestParseDepthAndStackCap()
+{
+	std::cout << "Test 12: deep unary chain + stack-cap rejection (compile-time bounds)" << std::endl;
+
+	// P2-B: a long run of leading unary signs used to recurse straight into
+	// itself, bypassing ParseCmp's depth guard, and blew the C++ call stack
+	// (ASan-confirmed).  Now bounded exactly like every other nesting form.
+	{
+		std::string e( 100000, '-' );
+		e += "1";
+		Prog p( e );
+		Check( !p.ok, "100k-deep unary chain rejected at compile time (not a crash)" );
+	}
+
+	// Stack-cap rejection: a maximal-width vec3-stop ramp() (64 stops * (1
+	// pos + 3 val) + t == 257 scalars pushed and NOT reduced until its own
+	// kRamp instruction fires) nested as the LAST stop's value of another
+	// such ramp, several levels deep -- each level's own peak stacks on top
+	// of the outer levels' already-pushed-and-not-yet-reduced stops, so the
+	// compile-time stack simulation's peak grows past kStackCap (512) by the
+	// 3rd level.  Built programmatically (the exact nesting needed depends
+	// on ramp's per-stop cost), not hand-authored.
+	{
+		auto wideRamp = []( const std::string& lastVal ) -> std::string {
+			std::string s = "ramp(0.5";
+			for( int i = 0; i < 63; ++i ) { s += "," + std::to_string(i) + ",vec3(1,1,1)"; }
+			s += "," + std::to_string(63) + "," + lastVal + ")";
+			return s;
+		};
+		std::string expr = "vec3(1,1,1)";
+		for( int level = 0; level < 4; ++level ) expr = wideRamp( expr );
+		Prog p( expr );
+		Check( !p.ok, "deeply-nested max-width ramp() rejected: compile-time stack peak exceeds the cap" );
+		if( !p.ok ) Check( p.builder.Error().find( "too large" ) != std::string::npos, "stack-cap rejection carries the expected diagnostic" );
+	}
+}
+
+//======================================================================
+// 13. Review round 1: left-compound broadcast splicing (P1-D regression
+//     coverage -- BroadcastAt's fixed comment now correctly describes
+//     which operand it targets) + lexer edge cases + EvalVec3/Eval
+//     broadcast on the "other" result type.
+//======================================================================
+static void TestSpliceAndLexerEdges()
+{
+	std::cout << "Test 13: left-compound broadcast splicing + lexer edge cases + EvalVec3/Eval broadcast" << std::endl;
+
+	{
+		ExprEvalContext ctx; ctx.P = Vector3(10,20,30);
+		Prog p1( "((1+P)*2).y" );
+		Check( p1.ok, "((1+P)*2).y compiles" );
+		if( p1.ok ) CheckClose( p1.prog.Eval( ctx ), 42, 1e-12, "((1+P)*2).y == 2*(1+P.y) == 42" );
+
+		Prog p2( "1+2+P" );
+		Check( p2.ok && p2.prog.ResultType()==ExpressionProgram::kVec3, "1+2+P compiles, vec3 result" );
+		if( p2.ok ) {
+			const Vector3 v = p2.prog.EvalVec3( ctx );
+			CheckClose( v.x, 13, 1e-12, "1+2+P .x" ); CheckClose( v.y, 23, 1e-12, "1+2+P .y" ); CheckClose( v.z, 33, 1e-12, "1+2+P .z" );
+		}
+
+		Prog p3( "P+1+2" );
+		Check( p3.ok && p3.prog.ResultType()==ExpressionProgram::kVec3, "P+1+2 compiles, vec3 result" );
+		if( p3.ok ) {
+			const Vector3 v = p3.prog.EvalVec3( ctx );
+			CheckClose( v.x, 13, 1e-12, "P+1+2 .x (matches 1+2+P: broadcast splicing is associative)" );
+			CheckClose( v.y, 23, 1e-12, "P+1+2 .y" ); CheckClose( v.z, 33, 1e-12, "P+1+2 .z" );
+		}
+	}
+
+	// lexer edges
+	{
+		Prog p( "3.x" );
+		Check( !p.ok, "3.x rejected (strtod consumes `3.`; trailing `x` is an unexpected token, not a swizzle)" );
+	}
+	{
+		Prog p( ".x" );
+		Check( !p.ok, ".x alone rejected (nothing to swizzle)" );
+	}
+	{
+		// whitespace between an identifier and its swizzle: tokenizes
+		// identically to `v.y` (Tokenize skips whitespace generically before
+		// each token, including right before the '.'), so this COMPILES.
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( b.AddDef( "v", "vec3(7,8,9)" ), "def v = vec3(7,8,9) compiles" );
+		Check( b.Finalize( "v .y", p ), "`v .y` (space before the dot) compiles identically to `v.y`" );
+		if( p.IsValid() ) CheckClose( p.Eval(0,0), 8, 1e-12, "`v .y` evaluates to 8" );
+	}
+	{
+		Prog p( "vec3(1,2,3).x.y" );
+		Check( !p.ok, "vec3(1,2,3).x.y rejected (.x already reduced to scalar; .y on a scalar is an error)" );
+	}
+
+	// EvalVec3 on a scalar-typed program broadcasts to (s,s,s); Eval(u,v) on
+	// a vec3-typed program returns .x (the first component) -- both per the
+	// documented header contract, exercised here on the "other" overload
+	// each wasn't yet directly tested against.
+	{
+		Prog p( "2+3" );
+		Check( p.ok && p.prog.ResultType()==ExpressionProgram::kScalar, "2+3 compiles, scalar result" );
+		if( p.ok ) {
+			const Vector3 v = p.prog.EvalVec3( ExprEvalContext() );
+			CheckClose( v.x, 5, 1e-12, "EvalVec3 on scalar-typed program: .x" );
+			CheckClose( v.y, 5, 1e-12, "EvalVec3 on scalar-typed program: .y broadcasts" );
+			CheckClose( v.z, 5, 1e-12, "EvalVec3 on scalar-typed program: .z broadcasts" );
+		}
+	}
+	{
+		Prog p( "vec3(7,8,9)" );
+		Check( p.ok && p.prog.ResultType()==ExpressionProgram::kVec3, "vec3(7,8,9) compiles, vec3 result" );
+		if( p.ok ) CheckClose( p.prog.Eval(0,0), 7, 1e-12, "Eval(u,v) on vec3-typed program returns .x" );
+	}
+}
+
+//======================================================================
+// 14. ramp() >64 stops / vec3 t rejected; mix(vec3,scalar,scalar)
+//     rejected (only (s,s,s) and (v,v,s) are valid mix() forms).
+//======================================================================
+static void TestRampMoreEdgesAndMixRejection()
+{
+	std::cout << "Test 14: ramp() >64 stops / vec3 t rejected; mix(vec3,scalar,scalar) rejected" << std::endl;
+
+	{
+		std::string e = "ramp(0.5";
+		for( int i = 0; i < 65; ++i ) { e += "," + std::to_string(i) + "," + std::to_string(i*10); }
+		e += ")";
+		Prog p( e );
+		Check( !p.ok, "ramp() with 65 stops rejected (limit 64)" );
+	}
+	{
+		const std::string e = "ramp(vec3(0,0,0), 0,1, 1,2)";
+		Prog p( e );
+		Check( !p.ok, "ramp() with a vec3 t argument rejected" );
+		// ParseRampCall reports this specific error at the `ramp` identifier's
+		// own offset (nameOff), not the argument's -- unlike most other
+		// type-mismatch diagnostics in this file, which point at the argument.
+		Check( p.prog.ErrorOffset() == (ptrdiff_t)Find(e,"ramp"), "ramp() vec3-t offset points at `ramp` itself" );
+	}
+	{
+		const std::string e = "mix(vec3(1,2,3), 1, 0.5)";
+		Prog p( e );
+		Check( !p.ok, "mix(vec3,scalar,scalar) rejected" );
+	}
+}
+
+//======================================================================
+// 15. Review round 1, P2-A: context vars are opt-in (EnableContextVars);
+//     u,v are never gated.
+//======================================================================
+static void TestContextVarGating()
+{
+	std::cout << "Test 15: context vars are opt-in (P2-A, EnableContextVars)" << std::endl;
+
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( !b.Finalize( "time*2+1", p ), "context vars OFF by default: `time` is an unknown identifier" );
+	}
+	{
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		b.EnableContextVars( true );
+		Check( b.Finalize( "time*2+1", p ), "EnableContextVars(true): `time` resolves to the context var" );
+	}
+	{
+		// u, v are never gated -- available with or without EnableContextVars.
+		ExpressionProgram::Builder b; ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( b.Finalize( "u+v", p ), "u, v are never gated by EnableContextVars" );
+	}
+}
+
+int main( int, char** )
+{
+	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
+	TestVec3Arithmetic();
+	TestNoiseBuiltins();
+	TestTypeErrorOffsets();
+	TestBackCompat();
+	TestRamp();
+	TestOctaveValidation();
+	TestParamSpec();
+	TestFbmDeterminism();
+	TestNoiseFactoringParity();
+	TestDuplicateNames();
+	TestOctaveAndCellhashRuntimeSafety();
+	TestParseDepthAndStackCap();
+	TestSpliceAndLexerEdges();
+	TestRampMoreEdgesAndMixRejection();
+	TestContextVarGating();
+	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
+	return failCount > 0 ? 1 : 0;
+}

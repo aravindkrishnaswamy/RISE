@@ -81,6 +81,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
+	$(PATHLIBRARY)Utilities/ProceduralNoiseCore.cpp			\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\

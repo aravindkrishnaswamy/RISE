@@ -17,7 +17,6 @@
 #define PERLIN_3D_PAINTER_
 
 #include "Painter.h"
-#include "../Noise/PerlinNoise.h"
 #include "../Interfaces/ISimpleInterpolator.h"
 
 namespace RISE
@@ -38,7 +37,11 @@ namespace RISE
 			Scalar					dPersistence;
 			unsigned int			nOctaves;
 
-			PerlinNoise3D*					pFunc;
+			//! Layered-octave sum matching the historical PerlinNoise3D
+			//! engine's LUT construction bit-for-bit (see
+			//! ProceduralNoiseCore.h for the shared single-octave primitive).
+			Scalar							EvaluateField( const Scalar x, const Scalar y, const Scalar z ) const;
+
 			ISimpleInterpolator<Scalar>*	pInterp;
 			ISimpleInterpolator<RISEPel>*	pColorInterp;
 

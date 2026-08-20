@@ -12511,6 +12511,15 @@ namespace RISE
 		//! expr (unlike an instancing chunk's component) has no per-instance
 		//! coordinate.  Returns false (never a silent 0) on a compile error or
 		//! a non-finite result.
+		//!
+		//! P2-A (review round 1, S1 texture-expressions VM): the Builder below
+		//! does NOT call EnableContextVars, so it mirrors Cst.cpp's
+		//! EvalExprBody exactly -- `time`/`P`/`Po`/`N`/`fw` stay hard "unknown
+		//! variable" compile errors (pre-vec3-VM behaviour) unless the caller
+		//! let-binds a same-named param, which shadows via the normal
+		//! m_index-first lookup regardless of this flag.  A vec3-typed final
+		//! expr (`expr(vec3(...))`) is also rejected below -- this surface only
+		//! ever meant one scalar.
 		bool LocalEvalExprBody( const std::string& body, const LocalLetBindings& lets, double& outVal )
 		{
 			RISE::Implementation::ExpressionProgram::Builder b;
@@ -12521,6 +12530,7 @@ namespace RISE
 			b.AddParam( "E",  static_cast<RISE::Scalar>( 2.71828182845904523536 ) );
 			RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
 			if( !b.Finalize( body, prog ) || !prog.IsValid() ) return false;
+			if( prog.ResultType() != RISE::Implementation::ExpressionProgram::kScalar ) return false;
 			const RISE::Scalar r = prog.Eval( RISE::Scalar( 0 ), RISE::Scalar( 0 ) );
 			if( !RISE::Implementation::ExpressionProgram::IsFinite( r ) ) return false;
 			outVal = static_cast<double>( r );

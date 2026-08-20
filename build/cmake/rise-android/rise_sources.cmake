@@ -52,6 +52,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/OrthonormalBasis3D.cpp"
     "${RISE_LIB}/Utilities/Primes.cpp"
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
+    "${RISE_LIB}/Utilities/ProceduralNoiseCore.cpp"
     "${RISE_LIB}/Utilities/Reference.cpp"
     "${RISE_LIB}/Utilities/PSSMLTSampler.cpp"
     "${RISE_LIB}/Utilities/Profiling.cpp"

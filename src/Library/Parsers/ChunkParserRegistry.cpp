@@ -5917,6 +5917,16 @@ namespace RISE
 					}
 
 					Implementation::ExpressionProgram::Builder builder;
+					// Context vars stay OFF here (doc 88 decision 5:
+					// expression_function2d stays as-is).  This chunk is a pure
+					// (u,v) surface -- it is consumed through
+					// IFunction2D::Evaluate(u,v) (displacement, bumpmap,
+					// scalar_painter{function2d}), where P/Po/N/fw/time have no
+					// values; enabling them here would make e.g. `fbm(P*4,...)`
+					// compile and silently evaluate to a constant.  The 3D
+					// context surface is the S2 `expression_painter` chunk,
+					// whose painter evaluation supplies a real context.  See
+					// EnableContextVars' doc comment in ExpressionEval.h.
 					// named numeric constants (all params precede all defs)
 					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
 					for( std::size_t i = 0; i < params.size(); ++i ) {
@@ -5929,7 +5939,14 @@ namespace RISE
 							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s` must be finite (nan/inf rejected)", name.c_str(), pn );
 							return false;
 						}
-						builder.AddParam( pn, (Scalar)pv );
+						// P1-A: AddParam now rejects a duplicate name (e.g. a second
+						// `param a ...` or a `param a ...` that collides with an
+						// earlier `def a ...`) instead of silently reusing --
+						// type-blind -- the earlier slot.
+						if( !builder.AddParam( pn, (Scalar)pv ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s`: %s", name.c_str(), pn, builder.Error().c_str() );
+							return false;
+						}
 					}
 					// named sub-expressions (let-bindings), in input order
 					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );

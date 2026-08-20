@@ -1144,10 +1144,26 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 {
 	RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
 	RISE::Implementation::ExpressionProgram::Builder b;
+	// P2-A (review round 1, S1 texture-expressions VM): this Builder does NOT
+	// call EnableContextVars, so it stays at the default OFF -- `time`, `P`,
+	// `Po`, `N`, `fw` are ordinary "unknown variable" compile errors here,
+	// exactly as before the S1 VM extension added those five names at all.
+	// u/v are unaffected (never gated) and mean the query coordinates below.
+	// Do NOT flip this on: this surface (document-level `expr(...)` / `let`)
+	// has no shading context to supply P/N/etc. from, and enabling it would
+	// silently start accepting names that mean nothing here.
 	for( const std::pair<std::string,double>& L : lets ) b.AddParam( L.first, (Scalar)L.second );
 	b.AddParam( "PI", (Scalar)3.14159265358979323846 );
 	b.AddParam( "E",  (Scalar)2.71828182845904523536 );
 	if( !b.Finalize( body, prog ) || !prog.IsValid() ) { err = "failed to compile: " + prog.Error(); return false; }
+	// P2-A: the S1 VM added a vec3 type -- this surface only ever meant ONE
+	// scalar (the whole point of `expr(...)` is "compute a number"), so a
+	// vec3-typed final expression (reachable via `expr(vec3(...))` even with
+	// context vars off) must be a hard error too, not a silent .x derive.
+	if( prog.ResultType() != RISE::Implementation::ExpressionProgram::kScalar ) {
+		err = "expr(...) must evaluate to a scalar, not vec3";
+		return false;
+	}
 	const Scalar r = prog.Eval( (Scalar)u, (Scalar)v );   // u/v = the query coordinates (instance vars for a counted `source`; 0 for a constant expr)
 	char buf[64];
 	// %.17g round-trips the double EXACTLY (C-locale '.' decimal, shared with the sscanf("%lf")/strtod
@@ -1164,6 +1180,19 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 //! silently clobbered by Eval), and the math constants pi/e/tau (ExpressionProgram lexer constants)
 //! + PI/E (the reserved uppercase built-ins).  Rejecting them keeps every math constant + coordinate
 //! un-shadowable and avoids the u/v clobber.
+//!
+//! P2-A NOTE (review round 1, S1 texture-expressions VM): P, Po, N, fw, time
+//! are deliberately NOT in this list, even though the VM added them as
+//! context-var names.  EvalExprBody's Builder keeps EnableContextVars OFF on
+//! this surface (see its call site), so those five names are not otherwise
+//! bound to anything here -- there is nothing for a `let` to shadow, so
+//! `let { time 1.5 }` is a perfectly ordinary user param like any other, and
+//! a later `expr(time*2+1)` resolves it via the normal m_index lookup
+//! (Builder::ParseAtom checks m_index before context vars regardless of this
+//! flag).  Without that let, `time` stays a hard "unknown variable" compile
+//! error, matching the pre-vec3-VM behaviour this surface is pinned to.  Do
+//! NOT add P/Po/N/fw/time here -- that would only make them un-let-able for
+//! no benefit, since they mean nothing on this surface either way.
 static bool IsReservedExprName( const std::string& n )
 {
 	return n == "u" || n == "v" || n == "i" || n == "j" ||

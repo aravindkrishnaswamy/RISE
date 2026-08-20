@@ -480,6 +480,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\PathGuidingField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Primes.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Profiling.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PSSMLTSampler.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RandomWalkSSS.cpp" />
@@ -796,6 +797,7 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionParamSpec.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />
@@ -1018,6 +1020,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Plane.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Primes.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RayDifferentials.h" />
