@@ -144,7 +144,7 @@ int SealExistingProductionCalibrationInputs(const std::filesystem::path& inputDi
 	output.flush();output.close();if(!output)return 140;
 	std::error_code renameError;std::filesystem::rename(partial,manifest,renameError);
 	if(renameError)return 141;
-	std::fprintf(stderr,"calibration inputs v2 sealed manifest_sha256=%s\n",
+	std::fprintf(stderr,"calibration state family v3 sealed manifest_sha256=%s\n",
 		DigestFile(manifest).c_str());return 0;
 }
 
@@ -254,7 +254,8 @@ bool CalibrationDifference(const MethaneRunCheckpoint& first,
 }
 
 int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inputDirectory,
-	const char* expectedManifestDigest=nullptr)
+	const char* expectedManifestDigest=
+		"338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5")
 {
 	if(!expectedManifestDigest||std::strlen(expectedManifestDigest)!=64u||
 		DigestFile(inputDirectory/"state_family_manifest.v3")!=expectedManifestDigest)return 142;
