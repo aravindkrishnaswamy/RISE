@@ -2975,10 +2975,14 @@ int main(int argc,char** argv)
 		return RunProductionCalibrationStateGeneration(argv[2]);
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-calibration-seal-inputs")==0)
 		return SealExistingProductionCalibrationInputs(argv[2]);
-	if(argc==3&&std::strcmp(argv[1],"--fire-production-calibration-check-input-convergence")==0)
-		return CheckProductionCalibrationInputConvergence(argv[2]);
-	if(argc==4&&std::strcmp(argv[1],"--fire-production-calibration-diagnose-input-convergence")==0)
-		return CheckProductionCalibrationInputConvergence(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-calibration-diagnose-input-family")==0)
+		return DiagnoseProductionCalibrationInputFamily(argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-calibration-diagnose-input-family")==0)
+		return DiagnoseProductionCalibrationInputFamily(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-calibration-seal-oracle-spatial")==0)
+		return SealOracleSpatialCalibrationInputs(argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-calibration-check-oracle-spatial")==0)
+		return CheckOracleSpatialCalibrationOutput(argv[2],argv[3]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;

@@ -198,13 +198,9 @@ bool CalibrationDifference(const MethaneRunCheckpoint& first,
 		difference.componentVolumeL1.end(),[](double value){return std::isfinite(value);});
 }
 
-int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inputDirectory,
-	const char* expectedManifestDigest=
-		"338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5")
+bool LoadPinnedCalibrationStateFamily(const std::filesystem::path& inputDirectory,
+	std::array<MethaneRunCheckpoint,3>& states,std::string& error)
 {
-	if(!expectedManifestDigest||std::strlen(expectedManifestDigest)!=64u||
-		DigestFile(inputDirectory/"state_family_manifest.v3")!=expectedManifestDigest)return 142;
-	std::array<MethaneRunCheckpoint,3> states;std::string error;
 	static const std::array<const char*,3> checkpointDigests={{
 		"ce0b47fe2bfff897d3c9327e1207583243825ac70291b26e09216d2b55d04970",
 		"7e53de9f426bca9d07e5d9c94cf7c78f947b94e00247a0fb3d1d075ea866b8d3",
@@ -224,8 +220,21 @@ int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inpu
 			!LoadMethaneRunCheckpoint(path,states[index],error)||
 			states[index].dimensions!=dimensions[index]||
 			states[index].cellWidthM!=spacing[index]||states[index].caseRecordId!=cases[index]||
-			states[index].simulationTimeS!=0.32)return 143;
+			states[index].simulationTimeS!=0.32)return false;
 	}
+	return true;
+}
+
+int DiagnoseProductionCalibrationInputFamily(const std::filesystem::path& inputDirectory,
+	const char* expectedManifestDigest=
+		"338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5")
+{
+	if(!expectedManifestDigest||std::strlen(expectedManifestDigest)!=64u||
+		DigestFile(inputDirectory/"state_family_manifest.v3")!=expectedManifestDigest)return 142;
+	std::array<MethaneRunCheckpoint,3> states;std::string error;
+	static const std::array<double,3> spacing={{0.04894898570785762,
+		0.040790821423214683,0.034963561219898305}};
+	if(!LoadPinnedCalibrationStateFamily(inputDirectory,states,error))return 143;
 	std::array<double,3> commonLength={{
 		std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity(),
 		std::numeric_limits<double>::infinity()}};
@@ -247,5 +256,268 @@ int CheckProductionCalibrationInputConvergence(const std::filesystem::path& inpu
 			difference67.componentVolumeL1[component],difference56.componentVolumeL1[component]/
 			difference67.componentVolumeL1[component],componentAsymptotic?1:0,order,distance);
 	}
-	return asymptotic?0:145;
+	std::fprintf(stderr,"calibration input family diagnostic asymptotic=%d "
+		"(diagnostic only; solver outputs own Richardson acceptance)\n",asymptotic?1:0);
+	return 0;
+}
+
+struct OracleSpatialCalibrationResult
+{
+	std::vector<ConservativeVector> conservative;
+	PeriodicMACField momentumKGPerM2S,velocityMPerS;
+	std::vector<std::vector<double> > divergenceTargetsPerS;
+};
+
+bool RunOracleSpatialCalibrationTrajectory(const MethaneRunCheckpoint& beginning,
+	const double timeStepS,const unsigned int stepCount,OracleSpatialCalibrationResult& result,
+	std::string& error)
+{
+	result=OracleSpatialCalibrationResult();
+	if(!(timeStepS>0.0)||stepCount==0u)return false;
+	PeriodicMACShape shape;shape.nx=beginning.dimensions[0];shape.ny=beginning.dimensions[1];
+	shape.nz=beginning.dimensions[2];shape.cellWidthM=beginning.cellWidthM;
+	const std::size_t cells=shape.CellCount();if(beginning.states.size()!=cells)return false;
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
+	MethaneCellState ambient;ambient.temperatureK=300.0;
+	for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+		ambient.constituent[species]=fuel.AmbientMassFractions()[species];
+	double ambientInverseWeight=0.0;
+	for(std::size_t species=0u;species<MethaneCarbon;++species){
+		const FireThermochemistrySpecies* record=fuel.FindSpecies(
+			fuel.SpeciesOrder()[species].c_str());
+		if(record)ambientInverseWeight+=ambient.constituent[species]/
+			record->molecularWeightKGPerKMol;
+	}
+	const double ambientDensity=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+		ambient.temperatureK*ambientInverseWeight);
+	for(double& value:ambient.constituent)value*=ambientDensity;
+	ambient.rhoTotalZ=0.0;
+	if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(ambient),
+		ambient.temperatureK,ambient.sensibleEnergyJPerM3,&error))return false;
+	MethaneCellState injected;injected.temperatureK=300.0;
+	for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+		injected.constituent[species]=fuel.InjectedMassFractions()[species];
+	double injectedInverseWeight=0.0;
+	for(std::size_t species=0u;species<MethaneCarbon;++species){
+		const FireThermochemistrySpecies* record=fuel.FindSpecies(
+			fuel.SpeciesOrder()[species].c_str());
+		if(record)injectedInverseWeight+=injected.constituent[species]/
+			record->molecularWeightKGPerKMol;
+	}
+	const double injectedDensity=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+		injected.temperatureK*injectedInverseWeight);
+	for(double& value:injected.constituent)value*=injectedDensity;
+	injected.rhoTotalZ=injected.TotalDensity();
+	if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(injected),
+		injected.temperatureK,injected.sensibleEnergyJPerM3,&error))return false;
+	ConservativeAdvance3DConfig config;config.transport.cellWidthM=shape.cellWidthM;
+	config.transport.deltaTimeS=timeStepS;config.transport.ambientTemperatureK=300.0;
+	config.transport.adiabaticTemperatureK=2300.0;
+	config.transport.ambientGasDensityKGPerM3=ambient.GasDensity();
+	config.gravityMPerS2={{0.0,0.0,-9.80665}};config.periodicBoundaries=false;
+	config.dns=false;config.retainStageDiagnostics=true;config.injectedTemperatureK=300.0;
+	config.openBoundary.ambientDensityKGPerM3=ambient.GasDensity();
+	config.openBoundary.injectedGasDensityKGPerM3=injected.GasDensity();
+	config.openBoundary.ambientState=ToConservativeVector(ambient);
+	config.openBoundary.injectedState=ToConservativeVector(injected);
+	config.openBoundary.bottomFuelMask.clear();
+	config.openBoundary.bottomFuelMassFluxKGPerM2S.clear();
+	const double referenceVelocity=std::sqrt(9.80665*beginning.values.characteristicDiameterM);
+	const double referenceLength=shape.cellWidthM*std::max({shape.nx,shape.ny,shape.nz});
+	config.projectionTolerancePerS=1.0e-3*referenceVelocity/referenceLength;
+	config.openBoundary.velocityToleranceMPerS=config.projectionTolerancePerS*referenceLength;
+	config.openBoundary.pressureTolerancePa=ambient.GasDensity()*referenceVelocity*
+		config.openBoundary.velocityToleranceMPerS;config.workerCount=16u;
+	std::vector<ConservativeVector> conservative(cells);
+	for(std::size_t cell=0u;cell<cells;++cell)
+		conservative[cell]=ToConservativeVector(beginning.states[cell]);
+	PeriodicMACField momentum=beginning.momentum;
+	const std::vector<MethaneSourcePacket> zeroPackets(cells);
+	result.divergenceTargetsPerS.reserve(stepCount);
+	for(unsigned int step=0u;step<stepCount;++step){
+		ConservativeAdvance3DResult advanced;
+		if(!AdvanceConservative3D(shape,conservative,momentum,zeroPackets,config,
+			fuel,fuel,transport,advanced,&error))return false;
+		if(advanced.divergenceHeunPerS.size()!=cells)return false;
+		result.divergenceTargetsPerS.push_back(advanced.divergenceHeunPerS);
+		conservative=std::move(advanced.conservative);
+		momentum=std::move(advanced.momentumKGPerM2S);
+		result.velocityMPerS=std::move(advanced.velocityMPerS);
+	}
+	result.conservative=std::move(conservative);result.momentumKGPerM2S=std::move(momentum);
+	return result.conservative.size()==cells;
+}
+
+bool WriteCalibrationDoublePayload(const std::filesystem::path& path,
+	const std::vector<std::vector<double> >& slices)
+{
+	const std::filesystem::path partial=path.string()+".partial";
+	if(std::filesystem::exists(path)||std::filesystem::exists(partial))return false;
+	std::ofstream output(partial,std::ios::binary|std::ios::trunc);if(!output)return false;
+	for(const std::vector<double>& slice:slices)if(!slice.empty())output.write(
+		reinterpret_cast<const char*>(slice.data()),static_cast<std::streamsize>(
+			slice.size()*sizeof(double)));
+	output.flush();output.close();if(!output)return false;
+	std::error_code renameError;std::filesystem::rename(partial,path,renameError);
+	return !renameError;
+}
+
+bool ReadCalibrationDoublePayload(const std::filesystem::path& path,
+	const std::size_t sliceSize,const unsigned int sliceCount,
+	std::vector<std::vector<double> >& slices)
+{
+	slices.clear();if(sliceSize==0u||sliceCount==0u)return false;
+	std::ifstream input(path,std::ios::binary|std::ios::ate);if(!input)return false;
+	const std::uintmax_t expected=static_cast<std::uintmax_t>(sliceSize)*sliceCount*sizeof(double);
+	if(input.tellg()!=static_cast<std::streamoff>(expected))return false;
+	input.seekg(0);slices.assign(sliceCount,std::vector<double>(sliceSize));
+	for(std::vector<double>& slice:slices)input.read(reinterpret_cast<char*>(slice.data()),
+		static_cast<std::streamsize>(slice.size()*sizeof(double)));
+	return static_cast<bool>(input);
+}
+
+int SealOracleSpatialCalibrationInputs(const std::filesystem::path& inputDirectory)
+{
+	if(DigestFile(inputDirectory/"state_family_manifest.v3")!=
+		"338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5")return 146;
+	std::array<MethaneRunCheckpoint,3> states;std::string error;
+	if(!LoadPinnedCalibrationStateFamily(inputDirectory,states,error))return 147;
+	static const double timeStepS=0.0005;static const unsigned int stepCount=4u;
+	std::array<std::filesystem::path,3> targetPaths;
+	for(std::size_t tier=0u;tier<3u;++tier){
+		OracleSpatialCalibrationResult result;
+		if(!RunOracleSpatialCalibrationTrajectory(states[tier],timeStepS,stepCount,
+			result,error)){std::fprintf(stderr,"oracle spatial target tier %zu failed: %s\n",
+			tier+5u,error.c_str());return 148;}
+		targetPaths[tier]=inputDirectory/(std::string("oracle_tier")+
+			std::to_string(tier+5u)+"_sdiv_dt0p0005_x4.f64");
+		if(!WriteCalibrationDoublePayload(targetPaths[tier],result.divergenceTargetsPerS))
+			return 149;
+	}
+	const std::filesystem::path manifest=inputDirectory/"oracle_spatial_input.v1";
+	const std::filesystem::path partial=inputDirectory/"oracle_spatial_input.v1.partial";
+	if(std::filesystem::exists(manifest)||std::filesystem::exists(partial))return 150;
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
+	std::ofstream output(partial,std::ios::binary|std::ios::trunc);if(!output)return 151;
+	output<<"fire_production_oracle_spatial_input_v1\n"
+		"scope oracle_output_spatial_richardson\n"
+		"physical_begin_s 0.32\nphysical_end_s 0.322\n"
+		"dt_s 0.00050000000000000001\nstep_count 4\nworker_count 16\n"
+		"sources exact_positive_zero\nbottom_fuel_overlay disabled_restore_wall\n"
+		"boundary pressure_open pressure_open pressure_open pressure_open wall pressure_open\n"
+		"gravity_m_per_s2 0 0 -9.8066500000000008\n"
+		"metric component_volume_normalized_L1\nformal_spatial_order 2\n"
+		"common_support inherited_state_family_v3\n"
+		"state_family_manifest_sha256 338d7c66ee83c1c43e8f12d311389261af320335b70476203c42ff85dc66c3f5\n"
+		"fuel_record_id "<<fuel.RecordId()<<"\ntransport_record_id "<<transport.RecordId()<<"\n"
+		"oracle_core_sha256 "<<DigestFile("tools/fire_simulator_core.h")<<"\n"
+		"oracle_advance_sha256 "<<DigestFile("tools/fire_simulator_3d_advance.h")<<"\n"
+		"record_header_sha256 "<<DigestFile("src/Library/Utilities/FireSimulationRecords.h")<<"\n"
+		"record_source_sha256 "<<DigestFile("src/Library/Utilities/FireSimulationRecords.cpp")<<"\n";
+	for(std::size_t tier=0u;tier<3u;++tier)output<<"tier "<<tier+5u<<" sdiv_sha256 "
+		<<DigestFile(targetPaths[tier])<<"\n";
+	output.flush();output.close();if(!output)return 152;
+	std::error_code renameError;std::filesystem::rename(partial,manifest,renameError);
+	if(renameError)return 153;
+	std::fprintf(stderr,"oracle spatial inputs sealed manifest_sha256=%s\n",
+		DigestFile(manifest).c_str());return 0;
+}
+
+bool CalibrationOutputDifference(const MethaneRunCheckpoint& firstGeometry,
+	const std::vector<ConservativeVector>& first,const MethaneRunCheckpoint& secondGeometry,
+	const std::vector<ConservativeVector>& second,const std::array<double,3>& commonLength,
+	CalibrationOverlapDifference& difference)
+{
+	if(first.size()!=firstGeometry.states.size()||second.size()!=secondGeometry.states.size())
+		return false;
+	difference=CalibrationOverlapDifference();double volume=0.0,visitedVolume=0.0;
+	double compensation=0.0;std::size_t overlapCount=0u;
+	const bool visited=VisitCalibrationOverlaps(firstGeometry,secondGeometry,commonLength,
+		[&](const std::size_t firstCell,const std::size_t secondCell,const double weight){
+			const double corrected=weight-compensation,updated=visitedVolume+corrected;
+			compensation=(updated-visitedVolume)-corrected;visitedVolume=updated;
+			for(std::size_t component=0u;component<9u;++component)
+				difference.componentVolumeL1[component]+=weight*std::fabs(
+					first[firstCell][component]-second[secondCell][component]);
+		},volume,overlapCount);
+	const double operationCount=20.0*static_cast<double>(overlapCount)+3.0;
+	const double unitRoundoff=std::numeric_limits<double>::epsilon()*0.5;
+	if(!visited||!(volume>0.0)||!(operationCount*unitRoundoff<1.0))return false;
+	const double bound=std::nextafter(operationCount*unitRoundoff/
+		(1.0-operationCount*unitRoundoff)*volume,std::numeric_limits<double>::infinity());
+	if(std::fabs(visitedVolume-volume)>bound)return false;
+	for(double& value:difference.componentVolumeL1)value/=volume;
+	return std::all_of(difference.componentVolumeL1.begin(),
+		difference.componentVolumeL1.end(),[](double value){return std::isfinite(value);});
+}
+
+int CheckOracleSpatialCalibrationOutput(const std::filesystem::path& inputDirectory,
+	const char* expectedManifestDigest)
+{
+	if(!expectedManifestDigest||std::strlen(expectedManifestDigest)!=64u||
+		DigestFile(inputDirectory/"oracle_spatial_input.v1")!=expectedManifestDigest)return 154;
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
+	if(fuel.RecordId()!=
+		"dfb8a9f09556f82e2206bcb02a5ed9e231e92a0acc9c3ba566fff53e8dea575d"||
+		transport.RecordId()!=
+		"0b5c719e47b6a708b79c4a1c583d14fc2e17b0cd119c7fc20f13420622e7cd1a"||
+		DigestFile("tools/fire_simulator_core.h")!=
+		"8995d96f4104fa7b9ca5d6e54108221ac121dd3478ac800766e51d8b0da13a29"||
+		DigestFile("tools/fire_simulator_3d_advance.h")!=
+		"bc7a78f5006f78ba2a8fd5fd7dbf305d797a6c5b6655a93b2421537dca6adfd7"||
+		DigestFile("src/Library/Utilities/FireSimulationRecords.h")!=
+		"8040567e2d679086845dbae2d9de0600d2b4755ee532b1bec76c63522968677d"||
+		DigestFile("src/Library/Utilities/FireSimulationRecords.cpp")!=
+		"071ea4eade818946c613bad6e443c30b3037e0d20980e14db571b3062bd5ae9a")
+		return 155;
+	std::array<MethaneRunCheckpoint,3> states;std::string error;
+	if(!LoadPinnedCalibrationStateFamily(inputDirectory,states,error))return 156;
+	static const std::array<const char*,3> targetDigests={{
+		"b629dcdeca6fb3ffcbb3cad99fa0729490d57117840dbd23be099c1bd14d9b90",
+		"399d7833d37fee379953c6d5692e5fe3a609484046f19e9b31e153d99f5b3640",
+		"f98ea7f84c43569e1e76df25cde225707e51170651734803f2e5e2ffbc7935ef"}};
+	std::array<OracleSpatialCalibrationResult,3> results;
+	for(std::size_t tier=0u;tier<3u;++tier){
+		const std::filesystem::path targetPath=inputDirectory/(std::string("oracle_tier")+
+			std::to_string(tier+5u)+"_sdiv_dt0p0005_x4.f64");
+		std::vector<std::vector<double> > sealedTargets;
+		if(DigestFile(targetPath)!=targetDigests[tier]||!ReadCalibrationDoublePayload(
+			targetPath,states[tier].states.size(),4u,sealedTargets))return 157;
+		if(!RunOracleSpatialCalibrationTrajectory(states[tier],0.0005,4u,results[tier],error))
+			return 158;
+		if(results[tier].divergenceTargetsPerS.size()!=sealedTargets.size())return 159;
+		for(std::size_t step=0u;step<sealedTargets.size();++step)if(
+			results[tier].divergenceTargetsPerS[step].size()!=sealedTargets[step].size()||
+			std::memcmp(results[tier].divergenceTargetsPerS[step].data(),
+				sealedTargets[step].data(),sealedTargets[step].size()*sizeof(double))!=0)return 159;
+	}
+	std::array<double,3> commonLength={{
+		std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity(),
+		std::numeric_limits<double>::infinity()}};
+	for(const MethaneRunCheckpoint& state:states)for(unsigned int axis=0u;axis<3u;++axis)
+		commonLength[axis]=std::min(commonLength[axis],state.cellWidthM*state.dimensions[axis]);
+	CalibrationOverlapDifference difference56,difference67;
+	if(!CalibrationOutputDifference(states[0],results[0].conservative,states[1],
+		results[1].conservative,commonLength,difference56)||!CalibrationOutputDifference(
+		states[1],results[1].conservative,states[2],results[2].conservative,
+		commonLength,difference67))return 161;
+	static const std::array<double,3> spacing={{0.04894898570785762,
+		0.040790821423214683,0.034963561219898305}};
+	bool asymptotic=true;
+	for(std::size_t component=0u;component<9u;++component){
+		double order=0.0,distance=0.0;
+		const bool componentAsymptotic=FireProductionCalibration::GeneralizedGridRichardson(
+			difference56.componentVolumeL1[component],difference67.componentVolumeL1[component],
+			spacing[0],spacing[1],spacing[2],2.0,order,distance);
+		asymptotic=asymptotic&&componentAsymptotic;
+		std::fprintf(stderr,"oracle output component=%zu L1_D56=%.17g L1_D67=%.17g "
+			"ratio=%.17g asymptotic=%d order=%.17g E6=%.17g\n",component,
+			difference56.componentVolumeL1[component],difference67.componentVolumeL1[component],
+			difference56.componentVolumeL1[component]/difference67.componentVolumeL1[component],
+			componentAsymptotic?1:0,order,distance);
+	}
+	return asymptotic?0:162;
 }
