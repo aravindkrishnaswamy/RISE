@@ -1694,7 +1694,7 @@ B-spline support lies wholly inside the physical domain, so only physical cell
 integrals contribute. This boundary/window choice is sealed before any r112
 advance.
 
-### 7.30 Dyadic oracle acceptance and fp32 state-admissibility stop (r113)
+### 7.30 Complete dyadic oracle acceptance and fp32 state-admissibility stop (r113/r114)
 
 The durable r112 directory is
 `rendered/fire_production_calibration/r112_dyadic_smooth_open/`. Its protocol
@@ -1704,11 +1704,27 @@ its eight-step target manifest SHA-256 is
 `d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b`.
 The dedicated no-Metal comparison byte-verifies every sealed `S_div` payload
 and exact-binds all 27 scalar evidence values (`D_5,10`, `D_6,12`, and the
-extrapolated-limit difference). Every conservative channel passes both the
-independent-limit-ball and cross-pair-approach rules. The direct tier-6 oracle
-distance terms range from `4.0730194870657798e-8` for `C(gr)` through
-`27.496545640537025` for sensible enthalpy. The redesigned dyadic,
-short-horizon, mollified oracle instrument is therefore accepted.
+extrapolated-limit difference). A fresh boundary review found that the first
+r113 gate had not replay-checked the analytic-state digests and had not judged
+the velocity or inventory channels. Before inspecting those missing values,
+r114 sealed `dyadic_metrics.v1` with SHA-256
+`86369b69d37fabc9aaa1dfe24d054b543a35f66f48fa268acc99bb203659ba09`.
+It fixes velocity as the arithmetic MAC-to-cell average followed by the same
+physical tensor cubic B-spline, its norm as volume-RMS vector L2, and each
+inventory ledger as the Kahan-reduced final component inventory per physical
+volume. The checker now reconstructs and SHA-checks all four analytic states.
+
+Every conservative, velocity, and inventory channel passes both the
+independent-limit-ball and cross-pair-approach rules. The filtered velocity
+distances are `0.0039631780862326585` and `0.0032641652172793294`, with
+extrapolated-limit difference `0.00040722205192891077`. Inventory distances
+range from `5.7907549732782678e-9 / 4.2319238834949294e-9` for `C(gr)` to
+`3.0335881874780171 / 2.1990585236198967` for sensible enthalpy. The direct
+tier-6 filtered-scalar distance terms range from `4.0730194870657798e-8` for
+`C(gr)` through `27.496545640537025` for sensible enthalpy. All 57
+load-bearing scalar, velocity, and inventory values are exact-pinned; drift cannot pass merely by preserving
+the acceptance class. The redesigned dyadic, short-horizon, mollified oracle
+instrument is therefore accepted for its complete declared observable class.
 
 Production refinement is not yet admissible. The first tier-5 resident step
 uses the sealed target, exact positive-zero sources, sixteen fixed projection
@@ -1731,6 +1747,12 @@ transport outputs become accepted thermochemical beginnings, derive its bound
 before confirmation, and preserve conservative ledgers. Until then the
 production Richardson, `B_fp32`, Metal confirmation, eight-slice, and source-
 map campaigns remain blocked. The tier-10 checkpoint remains byte-untouched.
+
+The host arithmetic that creates the packed resident gas field is now compiled
+with `-fno-fast-math -ffp-contract=off` on make and on both Xcode source phases.
+This is load-bearing: the former inherited fast-math path changed the ownership
+sum by one binary32 ULP. A source-local test binds both Xcode entries, including
+the shipping Opto configuration.
 
 ## 8. Rejected directions and future work
 

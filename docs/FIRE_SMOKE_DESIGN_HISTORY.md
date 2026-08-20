@@ -2656,9 +2656,9 @@ it was already tried and refuted here.
   wrap. No r111 solver evidence exists; all numerical acceptance rules remain
   unchanged.
 
-- **r112 oracle acceptance / r113 production stop (2026-08-19):** the sealed
-  dyadic open-boundary instrument is now asymptotic in all nine filtered
-  conservative channels. Its protocol and target manifests are respectively
+- **r112 oracle acceptance / r113 production stop / r114 completeness repair
+  (2026-08-19):** the sealed dyadic open-boundary instrument is now asymptotic
+  in all nine filtered conservative channels. Its protocol and target manifests are respectively
   `42185c882c52...15a4ed` and `d4947cb8eedb...e958b`; both independent
   limit-ball and cross-pair-approach tests pass. Representative tier-pair
   distances are `2.7470874096e-5 / 1.9110121791e-5` for `rho_total_Z`,
@@ -2667,12 +2667,25 @@ it was already tried and refuted here.
   redesigned oracle instrument and retires r108's adjacent-tier refusal as an
   instrument-design result.
 
+  Fresh milestone review found that r113 had written but not replay-checked the
+  four analytic-state digests and had omitted the already-contracted velocity
+  and inventory observable classes. Before those values were inspected, r114
+  sealed supplemental metric manifest `86369b69d37f...9ba09`: arithmetic
+  MAC-to-cell velocity followed by the fixed physical B-spline and vector RMS
+  L2, plus Kahan-reduced final component inventory per physical volume. The
+  complete no-Metal rerun SHA-checks every reconstructed analytic state. Its
+  velocity pair is `0.00396317808623 / 0.00326416521728` with limit difference
+  `0.000407222051929`; every one of the nine inventory channels also passes
+  the independent-limit-ball and cross-pair-approach rules. All 57 scalar,
+  velocity, and inventory evidence values are exact-bound.
+
   The first strict-fp32 resident production step then exposed two production
   integration defects before a production Richardson term could be formed.
   First, the make path had omitted the source-local strict-FP rule for
   `FireProductionAdvectionMac.mm`; `-ffast-math` changed the host packed-gas
-  ownership sum by one ULP. The rule and a path-bound RED now match the other
-  production TUs. With that repaired, tier-5 step zero returns a finite,
+  ownership sum by one ULP. The make rule and both Xcode source phases now own
+  `-fno-fast-math -ffp-contract=off`; a path-bound RED covers the shipping Opto
+  entries as well. With that repaired, tier-5 step zero returns a finite,
   positive conservative payload whose exact digest is
   `03faf5aad21e...64e50`, but its certified affine row 2 has maximum scaled
   residual `5.2451771873310863e-8` at cell 4915. This is only `0.879995`

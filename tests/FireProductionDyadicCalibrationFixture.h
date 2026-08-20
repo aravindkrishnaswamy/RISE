@@ -8,6 +8,19 @@ namespace FireProductionDyadicCalibration
 	static constexpr double VerifiedOrder=1.8;
 	static const std::array<unsigned int,4> Tiers={{5u,10u,6u,12u}};
 	static const std::array<std::size_t,3> BaseDimensions={{4u,4u,6u}};
+	static const std::array<double,3> ExpectedOracleVelocityEvidence={{
+		0.0039631780862326585,0.0032641652172793294,0.00040722205192891077}};
+	static const std::array<std::array<double,3>,9> ExpectedOracleInventoryEvidence={{
+		{{3.9462242692744898e-06,2.8839280563353054e-06,5.4857818981846052e-08}},
+		{{3.1569794154140407e-06,2.3071424450696321e-06,4.3886255171599053e-08}},
+		{{6.9891011217348975e-06,5.0936897178499585e-06,1.1226331092517583e-07}},
+		{{1.2751139269795431e-05,9.2725341582777787e-06,2.2700562130051338e-07}},
+		{{2.1006248485631873e-06,1.5351512035952086e-06,2.9201507514148295e-08}},
+		{{1.7726043301004302e-06,1.2954315344350376e-06,2.4641581625878262e-08}},
+		{{2.7560395701080667e-08,2.0141328262775898e-08,3.831265268147005e-10}},
+		{{5.7907549732782678e-09,4.2319238834949294e-09,8.0499273845640977e-11}},
+		{{3.0335881874780171,2.1990585236198967,0.062040384087595157}}
+	}};
 
 	bool BuildCase(const double tier,FireCase::RecordV1& record,std::string& error)
 	{
@@ -279,6 +292,85 @@ namespace FireProductionDyadicCalibration
 		for(double& value:result)value/=static_cast<double>(a.value.size());return result;
 	}
 
+	struct FilteredVelocityField
+	{
+		std::array<std::size_t,3> dimensions={{0u,0u,0u}};
+		std::vector<std::array<double,3> > value;
+	};
+
+	bool FilterVelocity(const MethaneRunCheckpoint& geometry,const PeriodicMACField& source,
+		const double dStar,FilteredVelocityField& result)
+	{
+		result=FilteredVelocityField();result.dimensions={{16u,16u,26u}};
+		const std::size_t nx=geometry.dimensions[0],ny=geometry.dimensions[1],
+			nz=geometry.dimensions[2],cells=nx*ny*nz;
+		std::vector<std::array<double,3> > centered(cells);
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
+				ez=axis==2u?nz+1u:nz;if(source.component[axis].size()!=ex*ey*ez)return false;
+			for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
+				for(std::size_t x=0u;x<nx;++x){const std::size_t low=(z*ey+y)*ex+x;
+					const std::size_t high=low+(axis==0u?1u:(axis==1u?ex:ex*ey));
+					centered[(z*ny+y)*nx+x][axis]=
+						0.5*source.component[axis][low]+0.5*source.component[axis][high];}
+		}
+		const std::array<double,3> lengths={{4.0*dStar,4.0*dStar,6.0*dStar}};
+		const double width=dStar/5.0;
+		std::array<std::vector<std::vector<std::pair<std::size_t,double> > >,3> weights;
+		for(unsigned int axis=0u;axis<3u;++axis)if(!AxisWeights(result.dimensions[axis],
+			geometry.dimensions[axis],lengths[axis],width,weights[axis]))return false;
+		const std::size_t sx=result.dimensions[0],sy=result.dimensions[1],sz=result.dimensions[2];
+		std::vector<std::array<double,3> > xStage(sx*ny*nz),yStage(sx*sy*nz);
+		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
+			for(std::size_t x=0u;x<sx;++x)for(const auto& entry:weights[0][x])
+				for(unsigned int axis=0u;axis<3u;++axis)xStage[(z*ny+y)*sx+x][axis]+=
+					entry.second*centered[(z*ny+y)*nx+entry.first][axis];
+		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<sy;++y)
+			for(std::size_t x=0u;x<sx;++x)for(const auto& entry:weights[1][y])
+				for(unsigned int axis=0u;axis<3u;++axis)yStage[(z*sy+y)*sx+x][axis]+=
+					entry.second*xStage[(z*ny+entry.first)*sx+x][axis];
+		result.value.assign(sx*sy*sz,std::array<double,3>{{0.0,0.0,0.0}});
+		for(std::size_t z=0u;z<sz;++z)for(std::size_t y=0u;y<sy;++y)
+			for(std::size_t x=0u;x<sx;++x)for(const auto& entry:weights[2][z])
+				for(unsigned int axis=0u;axis<3u;++axis)result.value[(z*sy+y)*sx+x][axis]+=
+					entry.second*yStage[(entry.first*sy+y)*sx+x][axis];
+		return std::all_of(result.value.begin(),result.value.end(),[](const std::array<double,3>& v){
+			return std::all_of(v.begin(),v.end(),[](const double x){return std::isfinite(x);});});
+	}
+
+	double VelocityDistance(const FilteredVelocityField& a,const FilteredVelocityField& b)
+	{
+		if(a.dimensions!=b.dimensions||a.value.size()!=b.value.size()||a.value.empty())
+			return std::numeric_limits<double>::infinity();
+		double sum=0.0;for(std::size_t cell=0u;cell<a.value.size();++cell)
+			for(unsigned int axis=0u;axis<3u;++axis){const double difference=
+				a.value[cell][axis]-b.value[cell][axis];sum+=difference*difference;}
+		return std::sqrt(sum/static_cast<double>(a.value.size()));
+	}
+
+	FilteredVelocityField ExtrapolateVelocity(const FilteredVelocityField& coarse,
+		const FilteredVelocityField& fine)
+	{
+		FilteredVelocityField result;result.dimensions=coarse.dimensions;
+		if(coarse.dimensions!=fine.dimensions||coarse.value.size()!=fine.value.size())return result;
+		const double factor=std::pow(2.0,VerifiedOrder),denominator=factor-1.0;
+		result.value.resize(coarse.value.size());
+		for(std::size_t cell=0u;cell<coarse.value.size();++cell)
+			for(unsigned int axis=0u;axis<3u;++axis)result.value[cell][axis]=
+				(factor*fine.value[cell][axis]-coarse.value[cell][axis])/denominator;
+		return result;
+	}
+
+	std::array<double,9> ComponentInventoryDensity(const std::vector<ConservativeVector>& state)
+	{
+		std::array<double,9> result={{}},compensation={{}};
+		for(const ConservativeVector& cell:state)for(std::size_t component=0u;component<9u;++component){
+			const double corrected=cell[component]-compensation[component];
+			const double updated=result[component]+corrected;
+			compensation[component]=(updated-result[component])-corrected;result[component]=updated;}
+		for(double& value:result)value/=static_cast<double>(state.size());return result;
+	}
+
 	FilteredField Extrapolate(const FilteredField& coarse,const FilteredField& fine)
 	{
 		FilteredField result;result.dimensions=coarse.dimensions;
@@ -386,6 +478,40 @@ namespace FireProductionDyadicCalibration
 			return digest.size()==64u;});
 	}
 
+	bool ReadProtocolStateDigests(const std::filesystem::path& path,
+		std::array<std::string,4>& digests)
+	{
+		std::ifstream input(path);std::string token;std::size_t found=0u;
+		while(input>>token)if(token=="tier"){unsigned int tier=0u;std::string label,digest,
+			caseLabel,caseDigest;if(!(input>>tier>>label>>digest>>caseLabel>>caseDigest)||
+				label!="analytic_state_sha256"||caseLabel!="case_record_id")return false;
+			auto it=std::find(Tiers.begin(),Tiers.end(),tier);if(it==Tiers.end())return false;
+			digests[static_cast<std::size_t>(it-Tiers.begin())]=digest;++found;}
+		return found==4u&&std::all_of(digests.begin(),digests.end(),[](const std::string& digest){
+			return digest.size()==64u;});
+	}
+
+	int SealSupplementalMetrics(const std::filesystem::path& directory,const char* expectedProtocol,
+		const char* expectedTargets)
+	{
+		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
+			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
+			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 191;
+		std::ostringstream manifest;manifest<<
+			"fire_production_dyadic_metrics_v1\n"
+			"protocol_sha256 "<<expectedProtocol<<"\n"
+			"targets_sha256 "<<expectedTargets<<"\n"
+			"velocity cell_centered_arithmetic_MAC_then_tensor_cubic_bspline_v1\n"
+			"velocity_norm volume_RMS_vector_L2\n"
+			"ledger final_component_inventory_density_kahan_sum_all_cells\n"
+			"ledger_norm componentwise_absolute_difference\n"
+			"verified_order 1.8\n"
+			"decision independent_limit_balls_overlap_and_cross_pair_refinement\n";
+		if(!WriteTextAtomically(directory/"dyadic_metrics.v1",manifest.str()))return 192;
+		std::fprintf(stderr,"dyadic supplemental metrics sealed manifest_sha256=%s\n",
+			DigestFile(directory/"dyadic_metrics.v1").c_str());return 0;
+	}
+
 	int CheckOracle(const std::filesystem::path& directory,const char* expectedProtocol,
 		const char* expectedTargets)
 	{
@@ -394,10 +520,13 @@ namespace FireProductionDyadicCalibration
 			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 173;
 		std::array<std::string,4> targetDigests;if(!ReadTargetDigests(
 			directory/"dyadic_targets.v1",targetDigests))return 174;
+		std::array<std::string,4> stateDigests;if(!ReadProtocolStateDigests(
+			directory/"dyadic_protocol.v1",stateDigests))return 174;
 		std::array<MethaneRunCheckpoint,4> states;std::array<FilteredField,4> filtered;
 		std::array<OracleSpatialCalibrationResult,4> outputs;std::string error;
 		for(std::size_t index=0u;index<Tiers.size();++index){
 			if(!BuildAnalyticState(Tiers[index],states[index],error))return 175;
+			if(AnalyticStateDigest(states[index])!=stateDigests[index])return 175;
 			const double flowThrough=6.0*std::sqrt(states[index].values.characteristicDiameterM/Gravity);
 			std::vector<std::vector<double> > sealed;
 			const std::filesystem::path target=directory/(std::string("oracle_tier")+
@@ -459,6 +588,91 @@ namespace FireProductionDyadicCalibration
 				overlap&&approaches?1:0);
 		}
 		return accepted?0:179;
+	}
+
+	int CheckSupplementalOracleMetrics(const std::filesystem::path& directory,
+		const char* expectedProtocol,const char* expectedTargets,const char* expectedMetrics)
+	{
+		if(!expectedMetrics||std::strlen(expectedMetrics)!=64u||
+			DigestFile(directory/"dyadic_metrics.v1")!=expectedMetrics)return 193;
+		const int scalarStatus=CheckOracle(directory,expectedProtocol,expectedTargets);
+		if(scalarStatus!=0)return scalarStatus;
+		std::array<std::string,4> targetDigests,stateDigests;
+		if(!ReadTargetDigests(directory/"dyadic_targets.v1",targetDigests)||
+			!ReadProtocolStateDigests(directory/"dyadic_protocol.v1",stateDigests))return 194;
+		std::array<MethaneRunCheckpoint,4> states;
+		std::array<OracleSpatialCalibrationResult,4> outputs;
+		std::array<FilteredVelocityField,4> velocity;
+		std::array<std::array<double,9>,4> inventory;std::string error;
+		for(std::size_t index=0u;index<Tiers.size();++index){
+			if(!BuildAnalyticState(Tiers[index],states[index],error)||
+				AnalyticStateDigest(states[index])!=stateDigests[index])return 195;
+			std::vector<std::vector<double> > sealed;const std::filesystem::path target=
+				directory/(std::string("oracle_tier")+std::to_string(Tiers[index])+"_sdiv_x8.f64");
+			const double flowThrough=6.0*std::sqrt(states[index].values.characteristicDiameterM/Gravity);
+			if(DigestFile(target)!=targetDigests[index]||!ReadCalibrationDoublePayload(target,
+				states[index].states.size(),8u,sealed)||!RunOracleSpatialCalibrationTrajectory(
+				states[index],flowThrough/512.0,8u,outputs[index],error,false))return 196;
+			for(std::size_t step=0u;step<sealed.size();++step)if(sealed[step].size()!=
+				outputs[index].divergenceTargetsPerS[step].size()||std::memcmp(sealed[step].data(),
+				outputs[index].divergenceTargetsPerS[step].data(),sealed[step].size()*sizeof(double))!=0)
+				return 197;
+			if(!FilterVelocity(states[index],outputs[index].velocityMPerS,
+				states[index].values.characteristicDiameterM,velocity[index]))return 198;
+			inventory[index]=ComponentInventoryDensity(outputs[index].conservative);
+		}
+		const double velocityA=VelocityDistance(velocity[0],velocity[1]);
+		const double velocityB=VelocityDistance(velocity[2],velocity[3]);
+		const FilteredVelocityField velocityLimitA=ExtrapolateVelocity(velocity[0],velocity[1]);
+		const FilteredVelocityField velocityLimitB=ExtrapolateVelocity(velocity[2],velocity[3]);
+		FireProductionCalibration::DyadicDistanceEstimate velocityEstimateA,velocityEstimateB;
+		const bool velocityEstimated=FireProductionCalibration::DyadicDistanceAtVerifiedOrder(
+			velocityA,VerifiedOrder,velocityEstimateA)&&
+			FireProductionCalibration::DyadicDistanceAtVerifiedOrder(velocityB,VerifiedOrder,
+				velocityEstimateB);
+		const double velocityLimitDelta=VelocityDistance(velocityLimitA,velocityLimitB);
+		const bool velocityOverlap=velocityEstimated&&
+			FireProductionCalibration::DyadicLimitBallsOverlap(velocityLimitDelta,
+				velocityEstimateA,velocityEstimateB);
+		const bool velocityApproach=VelocityDistance(velocity[0],velocityLimitB)>
+			VelocityDistance(velocity[1],velocityLimitB)&&
+			VelocityDistance(velocity[2],velocityLimitA)>
+			VelocityDistance(velocity[3],velocityLimitA);
+		const bool velocityExact=velocityA==ExpectedOracleVelocityEvidence[0]&&
+			velocityB==ExpectedOracleVelocityEvidence[1]&&
+			velocityLimitDelta==ExpectedOracleVelocityEvidence[2];
+		std::fprintf(stderr,"dyadic oracle velocity D5_10=%.17g D6_12=%.17g "
+			"limit_delta=%.17g radius_sum=%.17g approach=%d accepted=%d\n",velocityA,
+			velocityB,velocityLimitDelta,velocityEstimated?
+			velocityEstimateA.fineRadius+velocityEstimateB.fineRadius:0.0,
+			velocityApproach?1:0,velocityExact&&velocityOverlap&&velocityApproach?1:0);
+		bool accepted=velocityExact&&velocityOverlap&&velocityApproach;
+		const double factor=std::pow(2.0,VerifiedOrder),denominator=factor-1.0;
+		for(std::size_t component=0u;component<9u;++component){
+			const double dA=std::fabs(inventory[0][component]-inventory[1][component]);
+			const double dB=std::fabs(inventory[2][component]-inventory[3][component]);
+			const double limitA=(factor*inventory[1][component]-inventory[0][component])/denominator;
+			const double limitB=(factor*inventory[3][component]-inventory[2][component])/denominator;
+			FireProductionCalibration::DyadicDistanceEstimate estimateA,estimateB;
+			const bool estimated=FireProductionCalibration::DyadicDistanceAtVerifiedOrder(dA,
+				VerifiedOrder,estimateA)&&FireProductionCalibration::DyadicDistanceAtVerifiedOrder(
+				dB,VerifiedOrder,estimateB);
+			const bool overlap=estimated&&FireProductionCalibration::DyadicLimitBallsOverlap(
+				std::fabs(limitA-limitB),estimateA,estimateB);
+			const bool approach=std::fabs(inventory[0][component]-limitB)>
+				std::fabs(inventory[1][component]-limitB)&&std::fabs(inventory[2][component]-limitA)>
+				std::fabs(inventory[3][component]-limitA);
+			const double limitDelta=std::fabs(limitA-limitB);
+			const bool exact=dA==ExpectedOracleInventoryEvidence[component][0]&&
+				dB==ExpectedOracleInventoryEvidence[component][1]&&
+				limitDelta==ExpectedOracleInventoryEvidence[component][2];
+			accepted=accepted&&exact&&overlap&&approach;
+			std::fprintf(stderr,"dyadic oracle ledger component=%zu D5_10=%.17g D6_12=%.17g "
+				"limit_delta=%.17g radius_sum=%.17g approach=%d accepted=%d\n",component,dA,dB,
+				limitDelta,estimated?estimateA.fineRadius+estimateB.fineRadius:0.0,
+				approach?1:0,exact&&overlap&&approach?1:0);
+		}
+		return accepted?0:199;
 	}
 
 	bool BuildProductionRequest(const MethaneRunCheckpoint& state,
