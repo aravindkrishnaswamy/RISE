@@ -392,6 +392,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/DirtyTracker.cpp"
     "${RISE_LIB}/SceneEditor/SaveEngine.cpp"
     "${RISE_LIB}/SceneEditor/CstIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/PainterIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/EntityTemplates.cpp"
 
     # SRCLIBMISC

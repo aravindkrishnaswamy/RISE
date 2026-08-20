@@ -34,6 +34,7 @@
 #include "../Objects/CSGObject.h"   // container-vs-CSG discrimination on the runtime binders
 #include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
+#include "ChunkDescriptorRegistry.h"   // doc 88 S4: ClassifyCstEntityKind's painter arm consults the descriptor category
 #include "ObjectIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
 #include "../Utilities/Transformable.h"
@@ -177,6 +178,45 @@ bool SceneEditor::ClassifyCstEntityKind( const std::string& kind, EntityCategory
 		outCategory = EntityCategory::Medium;
 		return true;
 	}
+	// doc 88 S4: painters.  Two arms, for two genuinely different callers.
+	//
+	// The BARE "painter" form is not defensive padding -- it is the form the
+	// GUI property panel actually sends.  SceneEditController::
+	// SetPropertyInner_'s Category::Painter arm calls ApplyAgentParamEditInner_
+	// with entityKind = "painter", i.e. the ROLE-KIND SUFFIX that
+	// DocFindByNameAnyRole narrows on, not a chunk keyword -- so a
+	// suffix-only test misses EVERY panel-originated painter edit and drops it
+	// back into the coarse CST-head boolean.  (Same shape as the `camera` and
+	// `material` arms above, which accept their bare form for the same
+	// reason.)  The "*_painter" suffix covers the ~30 real keywords, which is
+	// what the AGENT surface passes.
+	if( kind == "painter" || endsWith( kind, "_painter" ) ) {
+		outCategory = EntityCategory::Painter;
+		return true;
+	}
+	// ...and the DESCRIPTOR CATEGORY is the authority for a painter whose
+	// keyword does not carry the suffix.  `expression_function2d` is
+	// registered ChunkCategory::Painter and IS reachable as a painter through
+	// every other surface (Cst::RoleMatchesKindConstraint, the
+	// Category::Painter panel list), so stopping at the suffix would classify
+	// it "unknown" -- the exact divergence CstIntrospection's own defensive
+	// re-check comment warns about, one layer down.
+	//
+	// Deliberately NARROWER than Cst::RoleMatchesKindConstraint(role,
+	// "painter"), which matches the Painter|Function UI UNION: a
+	// `piecewise_linear_function` is an IFunction1D, never registered in
+	// either painter manager, so tagging it Painter would name a dirty entity
+	// that PainterIntrospection::PipesFor reports as "(not registered)".
+	// Functions stay unrecognized and keep the conservative fallbacks their
+	// callers already apply.
+	if( !kind.empty() ) {
+		if( const ChunkDescriptor* cd = DescriptorForKeyword( String( kind.c_str() ) ) ) {
+			if( cd->category == ChunkCategory::Painter ) {
+				outCategory = EntityCategory::Painter;
+				return true;
+			}
+		}
+	}
 	return false;   // empty / unrecognized -- caller applies its own fallback policy
 }
 
@@ -203,10 +243,30 @@ void SceneEditor::BumpSceneLightGenerationForAgentParamEdit(
 				mMaterialManager->GetItem( entityName ) );
 		}
 	}
-	else if( !isKnown )
+	else if( !isKnown || category == EntityCategory::Painter )
 	{
 		// Empty / unrecognized kind: bump conservatively (see the tradeoff
 		// note above and in the header doc comment).
+		//
+		// doc 88 S4 -- PAINTER RIDES THE CONSERVATIVE ARM ON PURPOSE, and this
+		// clause is the whole reason the S4 dirty-category change is not a
+		// silent rendering regression.  Before S4 a painter kind was
+		// UNRECOGNIZED, so it fell here and bumped.  Making it a KNOWN
+		// category would otherwise have moved it to the "known but not
+		// Material -> no bump" path -- and a painter is precisely the thing
+		// that can change emission without being a material: an emissive
+		// material's `exitance` slot is BOUND TO A PAINTER, so editing that
+		// painter's `color` (or an expression painter's body, or a ramp's
+		// input) changes Le while the material chunk itself never moves.
+		// The LightSampler's alias-table weight is baked at Prepare() from
+		// that emission footprint, so a missed bump leaves light SELECTION
+		// biased toward the pre-edit brightness.  Resolving painter->material
+		// emissiveness properly means walking every material's slots for a
+		// binding to this painter name (and through intermediate painter
+		// graphs -- blend/ramp/scalar chains), which is exactly the kind of
+		// reverse-dependency walk the asymmetric tradeoff above exists to
+		// avoid paying: one spurious alias-table rebuild is cheap, a stale
+		// one is a correctness bug.
 		BumpSceneLightGeneration();
 	}
 }

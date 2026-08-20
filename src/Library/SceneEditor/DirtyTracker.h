@@ -56,8 +56,23 @@ namespace RISE
         Camera,    ///< camera transform + property edits
         Light,     ///< light property edits
         Material,  ///< material slot edits
-        Medium     ///< participating-medium property edits
+        Medium,    ///< participating-medium property edits
+        Painter    ///< painter chunk parameter edits (doc 88 S4) -- see below
     };
+    // `Painter` (appended, so the prior enumerators keep their values) is
+    // the deferred follow-up the Model-B F5 CST-head channel below names in
+    // its own doc comment: painter edits were the headline "kind the
+    // tracker's categories don't cover", so every one of them -- a colour
+    // swatch, a noise octave count, an expression body -- landed in the
+    // coarse uncategorized boolean instead of a per-entity channel.  That
+    // was never a data-LOSS bug (the boolean flips HasAnyDirty() just as
+    // well, and Save has no dirty gate) but it made the channel unable to
+    // answer "which painter changed", which is what the panel's
+    // per-entity dirty affordances and the round-trip tests need.  Painter
+    // edits reach it through the SAME classifier as every other known kind
+    // (SceneEditor::ClassifyCstEntityKind), so the forward commit, the
+    // Undo and the Redo all mark identically -- see MarkEditEntityDirty's
+    // SetAgentCstParam arm, which is the one call site all three share.
 
     /// One dirty entity: (category, manager-registered name).
     using DirtyEntity = std::pair<EntityCategory, std::string>;
@@ -141,8 +156,13 @@ namespace RISE
         // ---- CST-head channel (Model-B F5) --------------------------
         // Boolean "the retained CST Document head was mutated" flag
         // for edits that map onto NONE of the per-entity categories
-        // above — agent commits on painters / functions / rasterizer
-        // params / shaders, or a commit whose entity name is empty.
+        // above — agent commits on functions / rasterizer params /
+        // shaders (e.g. advanced_shader), or a commit whose entity
+        // name is empty.  Painters do NOT belong on this list since
+        // doc 88 S4: SceneEditor::ClassifyCstEntityKind's painter arm
+        // (a "*_painter" / bare "painter" suffix match, plus a
+        // ChunkCategory::Painter descriptor fallback) routes them to
+        // their own EntityCategory::Painter per-entity channel.
         // SaveEngine::Save has NO dirty gate — it serializes the
         // whole Document unconditionally and NoOps on byte-equality;
         // the aggregate dirty bit (HasAnyDirty()) gates only the GUI

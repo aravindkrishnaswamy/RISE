@@ -47,6 +47,7 @@
 #include "MaterialIntrospection.h"
 #include "MediaIntrospection.h"
 #include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
+#include "PainterIntrospection.h"     // Painter rows: pipe + repeatable occurrences + ParamSpec metadata -- doc 88 S4
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
@@ -10652,9 +10653,19 @@ void SceneEditController::RefreshProperties()
 			// Entity-creation slice: rows are CST-chunk-sourced (there is
 			// no live per-parameter getter surface on IPainter/
 			// IScalarPainter) -- see CstIntrospection.h's header doc.
+			//
+			// doc 88 S4: routed through PainterIntrospection rather than
+			// straight at the generic surface.  Same generic rows underneath
+			// (PainterIntrospection::Inspect CALLS CstIntrospection::Inspect
+			// -- one descriptor consumer, not two), plus the three things
+			// that need to know this is a painter: the pipe row, one
+			// read-only row per REPEATABLE-param occurrence (a ramp's `stop`
+			// lines and an expression's `param`/`def` lines are the chunk's
+			// actual content, and the generic surface skips every repeatable
+			// param), and the ExpressionParamSpec min/max/step/label
+			// metadata folded onto the `param` rows.
 			if( selName.size() <= 1 ) break;
-			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
-				"painter", "Painter chunk keyword" );
+			out = PainterIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName );
 			break;
 		}
 		case Category::Geometry: {
@@ -15427,6 +15438,63 @@ bool SceneEditController::SetPropertyInner_(
 		// generation if needed, and kicks the re-render itself, so no
 		// separate park/SceneEdit/Apply dance is needed here.
 		if( targetName.size() <= 1 ) return false;
+		// doc 88 S4: refuse this module's synthetic occurrence-addressed row
+		// names ("stop[1]", "param[0]").  They are NOT CST param roles, so
+		// routing one would ask DocSetOrAddParamValue to INSERT a `stop[1]
+		// ...` line the descriptor never declares.  Job::ApplyCstParamEditChecked's
+		// full-derivability dry-run already rejects that (code 0, head
+		// untouched), and both shells honour the rows' `editable = false` and
+		// never offer the edit -- this is the third layer, so a future
+		// loosening of either cannot turn a read-only row into a
+		// chunk-corrupting write.
+		if( PainterIntrospection::IsOccurrenceRowName( name ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: painter property edit of `%s`.`%s` refused -- that is a read-only "
+				"occurrence row for a REPEATABLE parameter, and the shared CST edit route addresses "
+				"occurrence 0 only.  Edit repeated lines in the scene text.",
+				targetName.c_str(), name.c_str() );
+			return false;
+		}
+		// Review-round fix (P2-a): the bracketed occurrence-row check above is
+		// not the only door onto a repeatable param -- `SetPropertyForCategory(
+		// Painter, "stop", ...)` with the BARE role name (no "[i]" suffix) would
+		// fall straight through to the generic CST param-edit route below, which
+		// silently writes OCCURRENCE 0 (ApplyAgentParamEditInner_ always passes
+		// occ = 0; see PainterIntrospection.h's editability contract).  That
+		// contradicts this module's read-only-repeatables promise just as much
+		// as editing "stop[1]" would -- the row being read-only means nothing if
+		// the same content is one bare-name write away.  Resolve the chunk's
+		// descriptor and refuse when `name` names a `repeatable` parameter,
+		// mirroring WouldPersistDanglingReference_'s resolve-then-classify
+		// pattern.  A short, self-contained mMutex hold: only a doc/descriptor
+		// read, released before the heavier edit route below takes its own lock.
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			const RISE::Cst::Document* doc = mJob.GetCstDocument();
+			if( doc ) {
+				const RISE::Cst::NodeId id = ResolveSourceChunkId(
+					*doc, Category::Painter, std::string( targetName.c_str() ), std::string(),
+					mJob.GetActiveCameraName(), mJob.GetObjects() );
+				const RISE::Cst::NodeRef chunk = id != 0 ? RISE::Cst::DocResolveNodeId( *doc, id ) : nullptr;
+				const ChunkDescriptor* cd = chunk ? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
+				if( cd ) {
+					const std::string want( name.c_str() );
+					for( const ParameterDescriptor& p : cd->parameters ) {
+						if( p.name != want ) continue;
+						if( p.repeatable ) {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` is "
+								"a REPEATABLE parameter on this chunk kind, and the shared CST edit route "
+								"addresses occurrence 0 only.  Use the occurrence-addressed row (`%s[i]`, "
+								"read-only) to inspect it, or edit repeated lines in the scene text.",
+								targetName.c_str(), name.c_str(), name.c_str(), name.c_str() );
+							return false;
+						}
+						break;
+					}
+				}
+			}
+		}
 		const AgentCommitResult r = ApplyAgentParamEditInner_(
 			targetName, String( "painter" ), name, valueStr, nullptr );
 		return r.applied;

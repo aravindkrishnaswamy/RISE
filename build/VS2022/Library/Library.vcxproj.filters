@@ -834,6 +834,9 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CstIntrospection.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\EntityTemplates.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
@@ -2116,6 +2119,9 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CstIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\EntityTemplates.h">

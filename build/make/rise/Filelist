@@ -452,6 +452,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/DirtyTracker.cpp						\
 	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp						\
 	$(PATHLIBRARY)SceneEditor/CstIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/PainterIntrospection.cpp			\
 	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp
 
 # Miscellaneous stuff

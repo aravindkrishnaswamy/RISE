@@ -334,12 +334,16 @@ namespace RISE
 			} else if( isKnown ) {
 				mDirtyTracker.MarkEntityDirty( category, name );
 			} else {
-				// UNKNOWN / uncategorized kind (painter, function,
-				// rasterizer, shader): set the first-class CST-head
-				// boolean channel -- a coarse "the retained Document
-				// changed" mark that keeps uncategorized names OUT of
-				// the object-transform set (the pre-A1 semantic
-				// overload parked them in mNames).
+				// UNKNOWN / uncategorized kind (function, rasterizer,
+				// shader -- e.g. advanced_shader): set the first-class
+				// CST-head boolean channel -- a coarse "the retained
+				// Document changed" mark that keeps uncategorized names
+				// OUT of the object-transform set (the pre-A1 semantic
+				// overload parked them in mNames).  Painters are NOT an
+				// example of this case since doc 88 S4:
+				// ClassifyCstEntityKind's painter arm (below) classifies
+				// them as KNOWN, so they land in the per-entity
+				// EntityCategory::Painter channel above instead.
 				mDirtyTracker.MarkCstHeadDirty();
 			}
 			FireDirtyChangedIfTransitioned();

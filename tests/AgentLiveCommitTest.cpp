@@ -1347,24 +1347,49 @@ static void TestAgentEditMarksDirty()
 		       "empty-name mark does NOT touch the per-entity channel" );
 
 		//------------------------------------------------------------------
-		// A1 (first-class CST-head channel): an UNKNOWN kind -- the agent
-		// can edit painters, and "uniformcolor_painter" maps to none of the
-		// tracker's per-entity categories -- must ALSO set the boolean
-		// channel, NOT park the painter name in the object-transform set
-		// (the pre-A1 semantic overload).  Clear first so this probe
+		// A1 (first-class CST-head channel): an UNKNOWN kind -- one that maps
+		// to none of the tracker's per-entity categories -- must ALSO set the
+		// boolean channel, NOT park the entity name in the object-transform
+		// set (the pre-A1 semantic overload).  Clear first so this probe
 		// observes its own mark only.
+		//
+		// The probe kind was "uniformcolor_painter" until doc 88 S4 gave
+		// painters their own EntityCategory, at which point painters stopped
+		// being an example of this case -- they now route to the per-entity
+		// channel like materials (pinned by PainterIntrospectionRoundTripTest
+		// Test 2).  "advanced_shader" is the replacement: a SHADER is one of
+		// the kinds MarkCstHeadDirty's own doc still names as uncategorized,
+		// and this arm has to keep working for whatever remains outside the
+		// taxonomy -- that is the whole point of the boolean channel.
 		//------------------------------------------------------------------
 		c.Editor().ClearDirtyState();
 		Check( !c.HasUnsavedChanges(), "clean before the unknown-kind mark probe" );
-		c.Editor().MarkCstHeadDirty( "grey", "uniformcolor_painter" );
+		c.Editor().MarkCstHeadDirty( "sh", "advanced_shader" );
 		Check( c.HasUnsavedChanges(),
-		       "MarkCstHeadDirty(painter name, UNKNOWN kind) flips dirty via the CST-head boolean channel" );
+		       "MarkCstHeadDirty(shader name, UNKNOWN kind) flips dirty via the CST-head boolean channel" );
 		Check( c.Editor().Dirty().CstHeadDirty(),
 		       "unknown-kind mark sets the CST-head boolean channel" );
-		Check( !c.Editor().Dirty().Contains( "grey" ) && c.Editor().Dirty().Count() == 0,
-		       "unknown-kind mark does NOT park the painter name in the object-transform channel" );
+		Check( !c.Editor().Dirty().Contains( "sh" ) && c.Editor().Dirty().Count() == 0,
+		       "unknown-kind mark does NOT park the entity name in the object-transform channel" );
 		Check( c.Editor().Dirty().EntityCount() == 0,
 		       "unknown-kind mark does NOT touch the per-entity channel" );
+
+		// ...and the S4 counterpart, pinned HERE so the two arms of the same
+		// dispatch are asserted side by side: a PAINTER kind is now KNOWN and
+		// must land in the per-entity channel instead.  Without this, a
+		// regression that reverted the classifier would only show up as a
+		// failure in a different test file.
+		c.Editor().ClearDirtyState();
+		c.Editor().MarkCstHeadDirty( "grey", "uniformcolor_painter" );
+		Check( !c.Editor().Dirty().CstHeadDirty(),
+		       "a PAINTER kind is KNOWN post-S4 -- it does NOT fall to the CST-head boolean" );
+		{
+			const std::vector<DirtyEntity> ents = c.Editor().Dirty().EntitySnapshot();
+			Check( ents.size() == 1
+			    && ents[0].first == EntityCategory::Painter
+			    && ents[0].second == "grey",
+			       "a painter mark lands in the per-entity channel as (Painter, \"grey\")" );
+		}
 
 		//------------------------------------------------------------------
 		// A1 review round 1 P2 (OR-merge across restore): a mid-transaction
@@ -1382,7 +1407,9 @@ static void TestAgentEditMarksDirty()
 		c.Editor().ClearDirtyState();
 		Check( !c.HasUnsavedChanges(), "clean before the restore-survival probe" );
 		const auto cleanSnap = c.Editor().CaptureDirtyState();
-		c.Editor().MarkCstHeadDirty( "grey", "uniformcolor_painter" );
+		// Same S4 note as the probe above: this arm is about the BOOLEAN
+		// channel's OR-merge, so it needs a kind that still routes there.
+		c.Editor().MarkCstHeadDirty( "sh", "advanced_shader" );
 		Check( c.HasUnsavedChanges(), "agent mark applied after the clean capture" );
 		c.Editor().RestoreDirtyState( cleanSnap );
 		Check( c.Editor().Dirty().CstHeadDirty(),
