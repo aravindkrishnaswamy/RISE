@@ -95,14 +95,18 @@ namespace FireProductionDyadicCalibration
 					const double px=2.0*Pi*(static_cast<double>(x)+0.5)/result.dimensions[0];
 					const double py=2.0*Pi*(static_cast<double>(y)+0.5)/result.dimensions[1];
 					const double pz=2.0*Pi*(static_cast<double>(z)+0.5)/result.dimensions[2];
-					const double mixture=0.03+0.01*std::sin(px)*std::sin(py)*std::sin(pz);
+					const double mode0=std::sin(px)*std::sin(py)*std::sin(pz);
+					const double mode1=std::cos(px)*std::sin(py)*std::cos(pz);
+					const double mode2=std::sin(px)*std::cos(py)*std::cos(pz);
+					const double mixture=0.04+0.01*mode0;
 					MethaneCellState state;state.temperatureK=330.0+
 						20.0*std::cos(px)*std::cos(py)*std::cos(pz);
-					std::array<double,MethaneSpeciesCount> mass={{}};double inverseWeight=0.0;
+					std::array<double,MethaneSpeciesCount> mass={{
+						0.025+0.003*mode0,0.215,0.0,0.012+0.001*mode1,
+						0.009+0.001*mode2,0.0015+0.0002*mode0,0.0005+0.0001*mode1}};
+					mass[2]=1.0-(mass[0]+mass[1]+mass[3]+mass[4]+mass[5]+mass[6]);
+					double inverseWeight=0.0;
 					for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
-						const double ambientMass=ambient.constituent[species]/ambient.GasDensity();
-						const double injectedMass=injected.constituent[species]/injected.GasDensity();
-						mass[species]=(1.0-mixture)*ambientMass+mixture*injectedMass;
 						if(species<MethaneCarbon){const FireThermochemistrySpecies* speciesRecord=
 							fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
 							if(speciesRecord)inverseWeight+=mass[species]/
@@ -289,8 +293,15 @@ namespace FireProductionDyadicCalibration
 			<<"domain_Dstar 4 4 6\nDstar_m "<<dStar<<"\n"
 			<<"tiers 5 10 6 12\nbase_dimensions 4 4 6\n"
 			<<"boundary periodic periodic periodic periodic periodic periodic\n"
-			<<"state analytic_smooth_mixture_taylor_green_v1\n"
-			<<"mixture_fraction 0.03_plus_0.01_sinX_sinY_sinZ\n"
+			<<"state analytic_all_channel_smooth_taylor_green_v2\n"
+			<<"mixture_fraction 0.04_plus_0.01_sinX_sinY_sinZ\n"
+			<<"mass_fraction CH4 0.025_plus_0.003_mode0\n"
+			<<"mass_fraction O2 0.215\n"
+			<<"mass_fraction CO2 0.012_plus_0.001_mode1\n"
+			<<"mass_fraction H2O 0.009_plus_0.001_mode2\n"
+			<<"mass_fraction CO 0.0015_plus_0.0002_mode0\n"
+			<<"mass_fraction C_gr 0.0005_plus_0.0001_mode1\n"
+			<<"mass_fraction N2 one_minus_other_channels\n"
 			<<"temperature_K 330_plus_20_cosX_cosY_cosZ\n"
 			<<"velocity taylor_green_xy_amplitude_0.05_sqrt_gDstar\n"
 			<<"sources exact_positive_zero\n"

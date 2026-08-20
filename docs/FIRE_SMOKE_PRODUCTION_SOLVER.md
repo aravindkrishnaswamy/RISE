@@ -1645,6 +1645,26 @@ may inspect output. If any required channel fails, production refinement,
 pass, the remaining r106 triangle campaign resumes. No solver, ceiling, or
 tolerance changes as part of this instrument redesign.
 
+### 7.27 All-channel analytic excitation (r110 protocol freeze)
+
+The first r109 run was rejected as an instrument, before judging the oracle.
+Its ambient/injected convex blend left CO2, H2O, CO, and `C(gr)` algebraically
+unexcited. Their independent-limit checks failed only at `1.08e-21--7.48e-21`
+absolute scale while all five excited channels passed. Treating those trace
+roundoff values as a continuum-regime failure would contradict the purpose of
+the redesign.
+
+r110 changes only the sealed analytic composition. It uses smooth, strictly
+positive mass fractions in every channel: CH4 `0.025+0.003 m0`, O2 `0.215`,
+CO2 `0.012+0.001 m1`, H2O `0.009+0.001 m2`, CO `0.0015+0.0002 m0`, and
+`C(gr)` `0.0005+0.0001 m1`; N2 is the exact remainder. Here
+`m0=sin X sin Y sin Z`, `m1=cos X sin Y cos Z`, and
+`m2=sin X cos Y cos Z`. The mixture tag is `0.04+0.01 m0` and temperature,
+velocity, tiers, domain, horizon, filter, verified order, and decision rule are
+unchanged. This all-channel excitation is frozen before r110 output. The r109
+artifacts and numbers remain a diagnostic record and cannot be used for a
+tolerance.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

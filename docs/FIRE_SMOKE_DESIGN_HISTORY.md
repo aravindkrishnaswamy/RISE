@@ -2627,3 +2627,13 @@ it was already tried and refuted here.
   production refinement, analytic `B_fp32`, Metal confirmation, and the
   eight-slice gate. The tier-10 checkpoint is not an input to this instrument
   and remains byte-untouched.
+
+- **r109 instrument rejection / r110 freeze (2026-08-19):** r109's dyadic,
+  short-horizon, mollified run made the instrument defect explicit. The five
+  excited channels passed independent-limit overlap and cross-pair approach;
+  CO2, H2O, CO, and `C(gr)` failed only at `1e-21` because the convex
+  ambient/injected state gave them no physical signal. This is not admitted as
+  an oracle finding. r110 freezes strictly positive smooth mass fractions for
+  all seven species, with N2 the exact remainder, while retaining every other
+  r109 choice and the already committed decision rule. The under-excited r109
+  artifacts remain diagnostic-only; no tolerance or solver changes.
