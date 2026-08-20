@@ -1,0 +1,134 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           scalar_painter_expression_roughness.RISEscene                                           #
+#   Description:    S2 regression scene for the scalar_painter { expression ... } form (doc 88 P1) -- a     #
+#                   worley-driven, spatially-varying GGX roughness field authored entirely as a scene       #
+#                   expression, with NO colorspace / JH uplift (the G1 fix: spatially-varying roughness      #
+#                   is one string on a chunk the model already writes).                                     #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-19                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/scalar_painter_expression_roughness
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			480
+	height			480
+}
+
+pinhole_camera
+{
+	location		0 0 4
+	lookat			0 0 0
+	up				0 1 0
+	fov				30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name		color_dark
+	color		0.02 0.02 0.02
+}
+
+uniformcolor_painter
+{
+	name		color_gold
+	color		0.9 0.7 0.3
+}
+
+# Cellular, worley-driven roughness field: F1 distance maps polish
+# (smooth cell centres, low roughness) to weathering (rough cell
+# boundaries, high roughness) -- a hammered/worn-metal look, entirely
+# in-scene, no colorspace, no JH uplift (IScalarPainter contract).
+scalar_painter
+{
+	name			rough
+	param			cell_freq 3.5 min 0.5 max 12 step 0.25 label "Cell frequency"
+	param			roughness_lo 0.04 min 0.0 max 1.0 step 0.01 label "Polished roughness"
+	param			roughness_hi 0.55 min 0.0 max 1.0 step 0.01 label "Weathered roughness"
+	def				f1 worley_f1(P*cell_freq, 1.0)
+	expression		mix(roughness_lo, roughness_hi, clamp(f1, 0, 1))
+}
+
+##################################################
+# Materials
+##################################################
+
+ggx_material
+{
+	name			mat_ggx
+	rd				color_dark
+	rs				color_gold
+	alphax			rough
+	alphay			rough
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			sphere_base
+	radius			1.0
+}
+
+standard_object
+{
+	name			ball
+	geometry		sphere_base
+	orientation		0 0 0
+	position		0 0 0
+	material		mat_ggx
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		4.5
+	color		1.0 1.0 1.0
+	direction	0.6 0.6 1.0
+}
+
+ambient_light
+{
+	name		amb
+	color		1.0 1.0 1.0
+	power		0.4
+}

@@ -96,6 +96,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Painters/CompositeFunction2DPainter.cpp"
     "${RISE_LIB}/Painters/PolynomialFunction2DPainter.cpp"
     "${RISE_LIB}/Painters/GerstnerWavePainter.cpp"
+    "${RISE_LIB}/Painters/ExpressionPainter.cpp"
     "${RISE_LIB}/Painters/Perlin3DPainter.cpp"
     "${RISE_LIB}/Painters/Turbulence3DPainter.cpp"
     "${RISE_LIB}/Painters/Worley3DPainter.cpp"

@@ -61,6 +61,7 @@
 #include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
+#include "../Painters/ExpressionPainter.h"		// BuildExpressionProgramFromChunkFields (expression_painter, scalar_painter{expression})
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObjectPriv.h"
@@ -1232,13 +1233,15 @@ namespace RISE
 					const bool hasBase        = bag.Has( "base" );
 					const bool hasMultiply    = bag.Has( "multiply" );
 					const bool hasTexture     = bag.Has( "texture" );
+					const bool hasExpression  = bag.Has( "expression" );
 
 					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
 						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
-						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture;
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture +
+						(int)hasExpression;
 					if( formCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture)",
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture, expression)",
 							name.c_str() );
 						return false;
 					}
@@ -1454,6 +1457,29 @@ namespace RISE
 						RISE_API_CreateTextureScalarPainterAffine(
 							&painter, pRIA, channel, Scalar( scale ), Scalar( bias ) );
 					}
+					else if( hasExpression ) {
+						// Spatially-varying physical scalar driven by the doc-88
+						// texture-expression VM -- the G1 fix (no colorspace, no
+						// JH uplift, by construction).  Same param/def/seed
+						// grammar as expression_painter (BuildExpressionProgramFromChunkFields
+						// is the shared builder), full 3D context (u,v,P,Po,N,fw)
+						// enabled.  `time` is NOT exposed here -- IScalarPainter
+						// has no IKeyframable hook (see ExpressionScalarPainter's
+						// class doc comment in ExpressionPainter.h).
+						const std::string finalExpr = bag.GetString( "expression", "" );
+						const double seed = bag.GetDouble( "seed", 0.0 );
+						const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+						const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+
+						const std::string context = "scalar_painter `" + name + "` (expression)";
+						Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+						std::vector<Implementation::ParamSpec> specs;
+						if( !Implementation::BuildExpressionProgramFromChunkFields(
+								context, params, defs, Scalar( seed ), finalExpr, prog, specs ) ) {
+							return false;
+						}
+						RISE_API_CreateExpressionScalarPainter( &painter, prog, specs );
+					}
 
 					if( !painter ) {
 						GlobalLog()->PrintEx( eLog_Error,
@@ -1470,7 +1496,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  Only the `function2d` and `texture` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { function2d <a UV-domain painter or expression_function2d> } or scalar_painter { texture <image painter> }.";
+						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  The `function2d`, `texture`, and `expression` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { expression <body> } (the doc-88 texture-expression VM; see `expression` below), scalar_painter { function2d <a UV-domain painter or expression_function2d> }, or scalar_painter { texture <image painter> }.  `expression` is also the only form that can yield a genuine per-channel triple (a vec3-typed body sets HasPerChannelVariation) for spatially-varying RGB dispersion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }
@@ -1486,6 +1512,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion)"; }
 						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B"}; p.description = "Which texture channel sources the scalar (companion to `texture`)"; p.defaultValueHint = "R"; }
 						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` forms: out = bias + scale * raw (raw in [0,1])"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "expression"; p.kind = ValueKind::String;     p.description = "Final value expression over the FULL 3D context (u, v, P, Po, N, fw; NOT time -- see `seed` below) (form 11: ExpressionScalarPainter, the doc-88 texture-expression VM).  A scalar-typed body yields a uniform value; a vec3-typed body (x->R, y->G, z->B) yields a genuine per-channel triple, e.g. `vec3(ior_r, ior_g, ior_b)` for spatially-varying RGB dispersion.  No colorspace, no JH uplift, by construction."; }
+						{ auto& p = P(); p.name = "param";      p.kind = ValueKind::String;     p.repeatable = true; p.description = "Companion to `expression`: named numeric constant `<name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` (repeatable)"; }
+						{ auto& p = P(); p.name = "def";        p.kind = ValueKind::String;     p.repeatable = true; p.description = "Companion to `expression`: named sub-expression `<name> <expr>` (repeatable, in order)"; }
+						{ auto& p = P(); p.name = "seed";       p.kind = ValueKind::Double;     p.description = "Companion to `expression`: auto-registered named scalar constant `seed`, for deterministic per-instance variation"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -5996,6 +6026,50 @@ namespace RISE
 						{ auto& p = P(); p.name = "param"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Named numeric constant `<name> <number>` (repeatable); visible to every def and the final expr"; }
 						{ auto& p = P(); p.name = "def";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Named sub-expression `<name> <expr>` (repeatable, in order); a let-binding referencing u, v, params, and earlier defs"; }
 						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.description = "The final value expression over u, v, params and defs"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ExpressionPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string finalExpr = bag.GetString( "expr", "" );
+					const double seed = bag.GetDouble( "seed", 0.0 );
+					const double time = bag.GetDouble( "time", 0.0 );
+
+					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+
+					std::vector<const char*> paramPtrs;
+					paramPtrs.reserve( params.size() );
+					for( std::size_t i = 0; i < params.size(); ++i ) paramPtrs.push_back( params[i].c_str() );
+					std::vector<const char*> defPtrs;
+					defPtrs.reserve( defs.size() );
+					for( std::size_t i = 0; i < defs.size(); ++i ) defPtrs.push_back( defs[i].c_str() );
+
+					return pJob.AddExpressionPainter(
+						name.c_str(), finalExpr.c_str(),
+						paramPtrs.empty() ? nullptr : &paramPtrs[0], (unsigned int)paramPtrs.size(),
+						defPtrs.empty() ? nullptr : &defPtrs[0], (unsigned int)defPtrs.size(),
+						seed, time );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "expression_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "A procedural COLOUR field authored as a MATH EXPRESSION with the FULL 3D shading context -- the doc-88 texture-expression VM on the colour pipe.  Unlike expression_function2d (UV-only), the body sees u, v, P (world position), Po (object position), N (shading normal), fw (filter width, reserved at 0.0 until Phase 2), and time.  A vec3-typed final expr is Rec.709 linear RGB; a scalar-typed expr broadcasts to grayscale.  Spectral rasterizers JH-uplift the evaluated RGB per-sample, same cost class as a texture lookup.  Declare `param <name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` constants (repeatable; the min/max/step/label metadata is ignored by evaluation and exists for a future property-panel slider), `def <name> <expr>` named sub-expressions (repeatable, in order), then the final `expr`.  `seed` is auto-registered as a named scalar constant the body can reference for per-instance jitter without a separate param, e.g. `perlin(P + vec3(seed*17.0, seed*31.0, seed*13.0))`.  Noise builtins: perlin/fbm/turbulence/ridged/worley_f1/f2/f2f1/id/cellhash/ramp (see ExpressionEval.h); vec3 ops dot/cross/length/normalize/.x/.y/.z.  Registered ONLY as a colour painter -- NOT usable as a displaced_geometry `function` or any other IFunction2D slot (this is a 3D-context surface; use expression_function2d for a UV-only displacement/mask field).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "param"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Named numeric constant `<name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` (repeatable); visible to every def and the final expr"; }
+						{ auto& p = P(); p.name = "def";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Named sub-expression `<name> <expr>` (repeatable, in order); a let-binding referencing u, v, P, Po, N, fw, time, params, and earlier defs"; }
+						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.required = true; p.description = "The final value expression (vec3 -> RGB colour; scalar -> grayscale broadcast)"; }
+						{ auto& p = P(); p.name = "seed";  p.kind = ValueKind::Double; p.description = "Auto-registered named scalar constant `seed`, for deterministic per-instance variation"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "time";  p.kind = ValueKind::Double; p.description = "Initial `time` value (keyframeable at the scene level, like gerstnerwave_painter's `time`)"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -11467,6 +11541,7 @@ namespace RISE
 		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
 		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
 		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
+		add( "expression_painter",                    new ExpressionPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions

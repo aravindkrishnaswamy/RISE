@@ -286,6 +286,7 @@
     <ClCompile Include="..\..\..\src\Library\Painters\CompositeFunction2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\PolynomialFunction2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\GerstnerWavePainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\ExpressionPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Turbulence3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Worley3DPainter.cpp" />
@@ -798,6 +799,7 @@
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionParamSpec.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />

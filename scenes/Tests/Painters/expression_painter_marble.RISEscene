@@ -1,0 +1,121 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           expression_painter_marble.RISEscene                                                     #
+#   Description:    S2 regression scene for the expression_painter chunk (doc 88 P1) -- a domain-warped     #
+#                   fbm marble field authored ENTIRELY as a scene expression, driving a lambertian sphere.  #
+#                   Exercises the full 3D context (P), the noise builtins (fbm), the vec3 type (mix,        #
+#                   vec3()), and the param-metadata grammar.                                                 #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-19                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/expression_painter_marble
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			480
+	height			480
+}
+
+pinhole_camera
+{
+	location		0 0 4
+	lookat			0 0 0
+	up				0 1 0
+	fov				30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+# Domain-warped fbm marble.  `warp_p` perturbs the sample position by a
+# vec3 of three independently-offset fbm fields before the final vein
+# fbm reads it -- the standard "noise warps noise" marble recipe,
+# entirely in-scene, zero new C++.  `ring_scale`/`warp_amount` carry
+# param UI metadata (min/max/step/label) for the S4 property-panel slider.
+expression_painter
+{
+	name			marble
+	param			ring_scale 3.0 min 0.5 max 10 step 0.25 label "Vein frequency"
+	param			warp_amount 0.5 min 0.0 max 2.0 step 0.05 label "Domain warp strength"
+	def				warp_p P*ring_scale + warp_amount*vec3(fbm(P*ring_scale+vec3(0,0,0),4,0.5,2.0), fbm(P*ring_scale+vec3(5.2,1.3,7.7),4,0.5,2.0), fbm(P*ring_scale+vec3(9.1,2.6,4.4),4,0.5,2.0))
+	def				vein fbm(warp_p, 5, 0.55, 2.1)
+	def				t clamp(0.5+0.5*sin(vein*6.0), 0, 1)
+	expr			mix(vec3(0.04,0.04,0.06), vec3(0.88,0.86,0.82), t)
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name			mat_marble
+	reflectance		marble
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			sphere_base
+	radius			1.0
+}
+
+standard_object
+{
+	name			ball
+	geometry		sphere_base
+	orientation		0 0 0
+	position		0 0 0
+	material		mat_marble
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.6 0.6 1.0
+}
+
+ambient_light
+{
+	name		amb
+	color		1.0 1.0 1.0
+	power		0.4
+}

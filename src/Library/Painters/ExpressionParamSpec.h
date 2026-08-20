@@ -10,10 +10,13 @@
 //  compiler ignores this metadata entirely (ExpressionEval's
 //  Builder::AddParam only ever sees `name`/`value`), it exists purely
 //  for a future inspector to render a param as a slider/field with a
-//  sensible range instead of a bare text box.  Not wired into any
-//  chunk parser yet -- ChunkParserRegistry.cpp's expression_function2d
-//  parser still calls the plain `<name> <number>` scanner; S2 decides
-//  where this plugs in.
+//  sensible range instead of a bare text box.  Wired into two chunk
+//  parsers as of S2: the `expression_painter` chunk and the
+//  `expression` form of `scalar_painter` (both in
+//  ChunkParserRegistry.cpp, via BuildExpressionProgramFromChunkFields
+//  in ExpressionPainter.h/.cpp), both of which parse `param` lines with
+//  this scanner.  expression_function2d still calls the plain
+//  `<name> <number>` scanner and does not carry this metadata.
 //
 //  Tabs: 4
 //
@@ -96,8 +99,8 @@ namespace RISE
 			}
 		}
 
-		//! Parses `line` as `<name> <value> [min <a>] [max <b>] [step <s>]
-		//! [label "<text>"]`, in any order after the first two positional
+		//! Parses `line` as `<name> <value> [min <minval>] [max <maxval>]
+		//! [step <stepval>] [label "<text>"]`, in any order after the first two positional
 		//! fields, each keyword at most once.  On success returns true and
 		//! fills `out`.  On failure returns false, fills `outError` with a
 		//! human-readable message, and sets `outErrorOffset` to the byte

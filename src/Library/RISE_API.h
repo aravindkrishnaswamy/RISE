@@ -78,6 +78,7 @@
 #include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
 #include "Interfaces/ProceduralDescriptors.h"
 #include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
+#include "Painters/ExpressionParamSpec.h"	// Implementation::ParamSpec (expression_painter / scalar_painter{expression} factories)
 
 namespace RISE
 {
@@ -586,6 +587,21 @@ namespace RISE
 	bool RISE_API_CreateExpressionFunction2D(
 						IPainter**           ppi,			///< [out] Pointer to receive the painter
 						const Implementation::ExpressionProgram& prog	///< [in] Compiled expression program
+						);
+
+	//! Creates the expression_painter COLOUR-pipe surface (doc 88 P1, S2):
+	//! a compiled expression evaluated with the FULL 3D context (u, v, P,
+	//! Po, N, fw, time) -- unlike RISE_API_CreateExpressionFunction2D's
+	//! (u,v)-only surface.  vec3-typed programs are Rec.709 linear RGB;
+	//! scalar-typed programs broadcast to grayscale.  `paramSpecs` carries
+	//! the parsed `param` UI metadata (min/max/step/label) for later
+	//! introspection; it does not affect evaluation.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateExpressionPainter(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const Implementation::ExpressionProgram& prog,	///< [in] Compiled expression program (context vars enabled)
+						const std::vector<Implementation::ParamSpec>& paramSpecs,	///< [in] Parsed `param` metadata, for introspection
+						const Scalar time					///< [in] Initial `time` value (keyframeable at the scene level)
 						);
 
 
@@ -1910,6 +1926,19 @@ namespace RISE
 								IScalarPainter** ppi,
 								IScalarPainter* pA,				///< [in] Painter A (addref'd)
 								IScalarPainter* pB				///< [in] Painter B (addref'd)
+								);
+
+	//! Creates the scalar_painter { expression ... } PHYSICAL-SCALAR-pipe
+	//! surface (doc 88 P1, S2): no colorspace, no JH uplift, by
+	//! construction.  A scalar-typed program yields a uniform
+	//! ScalarTriple; a vec3-typed program yields a genuine per-channel
+	//! (x->R, y->G, z->B) triple with HasPerChannelVariation() == true.
+	//! `time` is fixed at 0 (IScalarPainter has no IKeyframable hook; see
+	//! ExpressionScalarPainter's class doc comment).
+	bool RISE_API_CreateExpressionScalarPainter(
+								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+								const Implementation::ExpressionProgram& prog,	///< [in] Compiled expression program (context vars enabled)
+								const std::vector<Implementation::ParamSpec>& paramSpecs	///< [in] Parsed `param` metadata, for introspection
 								);
 
 	//! Creates a camera manager

@@ -35,6 +35,18 @@
 #include "../src/Library/Noise/WorleyNoise.h"
 #include "../src/Library/Utilities/SimpleInterpolators.h"
 
+// S2 (chunk surfaces) additions below TestContextVarGating() -- drives the
+// two new chunks (expression_painter, scalar_painter{expression}) through a
+// real Job via the CST loader, exactly like GuillocheChunkParseTest does for
+// expression_function2d.
+#include <fstream>
+#include <cstdio>
+#include <cstdlib>
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Painters/ExpressionPainter.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -927,6 +939,387 @@ static void TestContextVarGating()
 	}
 }
 
+//======================================================================
+// S2 -- chunk surfaces (expression_painter, scalar_painter{expression}).
+// Small scene-parse harness, modeled on GuillocheChunkParseTest.cpp.
+//======================================================================
+namespace S2 {
+
+	std::string WriteTempScene( const std::string& tag, const std::string& body )
+	{
+		const char* tmp = getenv( "TMPDIR" );
+		std::string dir = tmp ? tmp : "/tmp/";
+		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
+		std::string path = dir + "rise_texexprvm_s2_" + tag + ".RISEscene";
+		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
+		f << body;
+		f.close();
+		return path;
+	}
+
+	// Parse an inline chunk body (no leading header) through the canonical
+	// CST load path into `job`.  Returns the load verdict.
+	bool ParseBody( const std::string& tag, const std::string& body, Job& job )
+	{
+		const std::string path = WriteTempScene( tag, "RISE ASCII SCENE 7\n" + body );
+		const bool ok = job.LoadAsciiSceneViaCst( path.c_str() );
+		remove( path.c_str() );
+		return ok;
+	}
+
+	bool ParseBody( const std::string& tag, const std::string& body )
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( tag, body, *job );
+		job->release();
+		return ok;
+	}
+
+} // namespace S2
+
+static void TestExpressionPainterChunkRegistration()
+{
+	std::cout << "Test 16: expression_painter parses and registers ONLY as a colour painter (never IFunction2D)" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body =
+		"expression_painter\n{\nname marble\nparam k 4.0\ndef n perlin(P*k)\nexpr vec3(0.5+0.5*n, 0.4, 0.3)\n}\n";
+	Check( S2::ParseBody( "epaint1", body, *job ), "expression_painter parses" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	Check( priv != 0, "IJobPriv available" );
+	if( priv ) {
+		Check( priv->GetPainters()->GetItem( "marble" ) != 0, "registered as a colour painter" );
+		Check( priv->GetFunction2Ds()->GetItem( "marble" ) == 0,
+			"NOT registered as an IFunction2D (avoids the silently-zero P/Po/N trap)" );
+	}
+	job->release();
+}
+
+static void TestExpressionPainterContextVaries()
+{
+	std::cout << "Test 17: expression_painter body sees P -- two hits at different P give different GetColor" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body = "expression_painter\n{\nname field\nexpr vec3(P.x, P.y, P.z)\n}\n";
+	Check( S2::ParseBody( "epaint2", body, *job ), "parses" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		IPainter* p = priv->GetPainters()->GetItem( "field" );
+		Check( p != 0, "registered" );
+		if( p ) {
+			RayIntersectionGeometric r1( Ray(), nullRasterizerState );
+			r1.bHit = true; r1.ptIntersection = Point3( 1, 2, 3 );
+			RayIntersectionGeometric r2( Ray(), nullRasterizerState );
+			r2.bHit = true; r2.ptIntersection = Point3( 9, 8, 7 );
+			const RISEPel c1 = p->GetColor( r1 );
+			const RISEPel c2 = p->GetColor( r2 );
+			CheckClose( c1[0], 1.0, 1e-9, "GetColor(r1).r == P.x" );
+			CheckClose( c1[1], 2.0, 1e-9, "GetColor(r1).g == P.y" );
+			CheckClose( c1[2], 3.0, 1e-9, "GetColor(r1).b == P.z" );
+			Check( c1[0]!=c2[0] || c1[1]!=c2[1] || c1[2]!=c2[2], "GetColor varies with P (r1 != r2)" );
+		}
+	}
+	job->release();
+}
+
+static void TestScalarExpressionPerChannelAndUniform()
+{
+	std::cout << "Test 18: scalar_painter{expression} -- vec3 body is a per-channel triple, scalar body is uniform" << std::endl;
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "scalar_painter\n{\nname disp\nexpression vec3(1.1, 2.2, 3.3)\n}\n";
+		Check( S2::ParseBody( "sexpr1", body, *job ), "vec3-body parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* sp = priv->GetScalarPainters()->GetItem( "disp" );
+			Check( sp != 0, "registered" );
+			if( sp ) {
+				Check( sp->HasPerChannelVariation(), "vec3-typed body reports HasPerChannelVariation" );
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const ScalarTriple t = sp->GetValuesAt( r );
+				CheckClose( t.v[0], 1.1, 1e-9, "triple.x -> R" );
+				CheckClose( t.v[1], 2.2, 1e-9, "triple.y -> G" );
+				CheckClose( t.v[2], 3.3, 1e-9, "triple.z -> B" );
+				// Mirrors RGBScalarPainter's NM mapping exactly (450/550/650nm).
+				CheckClose( sp->GetValueAtNM( r, 650 ), 1.1, 1e-9, "GetValueAtNM(650) == R" );
+				CheckClose( sp->GetValueAtNM( r, 550 ), 2.2, 1e-9, "GetValueAtNM(550) == G" );
+				CheckClose( sp->GetValueAtNM( r, 450 ), 3.3, 1e-9, "GetValueAtNM(450) == B" );
+			}
+		}
+		job->release();
+	}
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "scalar_painter\n{\nname s1\nexpression 0.42\n}\n";
+		Check( S2::ParseBody( "sexpr2", body, *job ), "scalar-body parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* sp = priv->GetScalarPainters()->GetItem( "s1" );
+			Check( sp != 0, "registered" );
+			if( sp ) {
+				Check( !sp->HasPerChannelVariation(), "scalar-typed body reports NO per-channel variation" );
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const ScalarTriple t = sp->GetValuesAt( r );
+				Check( t.IsUniform(), "triple is uniform" );
+				CheckClose( t.v[0], 0.42, 1e-9, "value" );
+				CheckClose( sp->GetValueAtNM( r, 700 ), 0.42, 1e-9, "GetValueAtNM is wavelength-independent" );
+			}
+		}
+		job->release();
+	}
+}
+
+static void TestExpressionPainterParamMetadataRoundTrip()
+{
+	std::cout << "Test 19: expression_painter param metadata round-trips to GetParamSpecs()" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body =
+		"expression_painter\n{\nname pspec\n"
+		"param ring_scale 4.0 min 0.5 max 20 step 0.5 label \"Ring density\"\n"
+		"expr vec3(ring_scale, ring_scale, ring_scale)\n}\n";
+	Check( S2::ParseBody( "epspec", body, *job ), "parses" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		IPainter* p = priv->GetPainters()->GetItem( "pspec" );
+		Implementation::ExpressionPainter* ep = dynamic_cast<Implementation::ExpressionPainter*>( p );
+		Check( ep != 0, "registered painter is an ExpressionPainter" );
+		if( ep ) {
+			const std::vector<ParamSpec>& specs = ep->GetParamSpecs();
+			Check( specs.size() == 1, "one param spec captured" );
+			if( specs.size() == 1 ) {
+				const ParamSpec& s = specs[0];
+				Check( s.name == "ring_scale", "name" );
+				CheckClose( s.value, 4.0, 1e-9, "value" );
+				Check( s.hasMin && std::fabs(s.min-0.5) < 1e-9, "min" );
+				Check( s.hasMax && std::fabs(s.max-20.0) < 1e-9, "max" );
+				Check( s.hasStep && std::fabs(s.step-0.5) < 1e-9, "step" );
+				Check( s.hasLabel && s.label == "Ring density", "label" );
+			}
+		}
+	}
+	job->release();
+}
+
+static void TestExpressionChunkDiagnostics()
+{
+	std::cout << "Test 20: expression_painter / scalar_painter{expression} diagnostics" << std::endl;
+	Check( !S2::ParseBody( "ebad1", "expression_painter\n{\nname noexpr\n}\n" ),
+		"expression_painter missing `expr` rejects" );
+	Check( !S2::ParseBody( "ebad2", "expression_painter\n{\nname bad\nexpr unknown_var_xyz\n}\n" ),
+		"expression_painter unknown-identifier expr rejects" );
+	Check( !S2::ParseBody( "sexdup1", "scalar_painter\n{\nname dup\nvalue 0.5\nexpression 0.5\n}\n" ),
+		"scalar_painter `expression`+`value` (mutually exclusive) rejects" );
+	Check( !S2::ParseBody( "sexdup2", "scalar_painter\n{\nname dup2\ntexture foo\nexpression 0.5\n}\n" ),
+		"scalar_painter `expression`+`texture` (mutually exclusive) rejects" );
+	Check( S2::ParseBody( "sexok", "scalar_painter\n{\nname ok\nexpression 0.5\n}\n" ),
+		"scalar_painter `expression` alone parses" );
+}
+
+static void TestExpressionPainterTimeKeyframe()
+{
+	std::cout << "Test 21: expression_painter `time` keyframe changes GetColor output" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body = "expression_painter\n{\nname tpaint\nexpr vec3(time, time, time)\ntime 0.0\n}\n";
+	Check( S2::ParseBody( "etime", body, *job ), "parses" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		IPainter* p = priv->GetPainters()->GetItem( "tpaint" );
+		Check( p != 0, "registered" );
+		if( p ) {
+			RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+			const RISEPel before = p->GetColor( r );
+			CheckClose( before[0], 0.0, 1e-9, "time starts at the chunk's initial value (0.0)" );
+			IKeyframeParameter* kp = p->KeyframeFromParameters( "time", "5.0" );
+			Check( kp != 0, "KeyframeFromParameters(\"time\", \"5.0\") returns a parameter" );
+			if( kp ) {
+				p->SetIntermediateValue( *kp );
+				const RISEPel after = p->GetColor( r );
+				CheckClose( after[0], 5.0, 1e-9, "GetColor reflects the new time after SetIntermediateValue" );
+				kp->release();
+			}
+		}
+	}
+	job->release();
+}
+
+static void TestScalarExpressionRealMaterialBind()
+{
+	std::cout << "Test 22: scalar_painter{expression} binds to a real material slot (ggx_material alphax/alphay)" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body =
+		"scalar_painter\n{\nname rough\nexpression 0.05 + 0.1*worley_f1(P*2.0, 1.0)\n}\n"
+		"ggx_material\n{\nname mat\nalphax rough\nalphay rough\n}\n";
+	Check( S2::ParseBody( "matbind", body, *job ), "scalar_painter{expression} + ggx_material parse" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		Check( priv->GetScalarPainters()->GetItem( "rough" ) != 0, "scalar_painter registered" );
+		Check( priv->GetMaterials()->GetItem( "mat" ) != 0, "ggx_material bound to it and registered" );
+	}
+	job->release();
+}
+
+static void TestExpressionPainterSpectralPath()
+{
+	std::cout << "Test 23: expression_painter spectral path -- GetColorNM varies with P, GetSpectrum agrees with GetColorNM, a neutral body uplifts near-flat" << std::endl;
+
+	// (a) + (b): a spatially-varying vec3 body.
+	{
+		Job* job = new Job();
+		job->addref();
+		const char* body =
+			"expression_painter\n{\nname varyfield\nexpr vec3(0.2+0.1*sin(P.x), 0.3+0.1*cos(P.y), 0.5+0.05*P.z)\n}\n";
+		Check( S2::ParseBody( "espectral1", body, *job ), "parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* p = priv->GetPainters()->GetItem( "varyfield" );
+			Check( p != 0, "registered" );
+			if( p ) {
+				RayIntersectionGeometric r1( Ray(), nullRasterizerState );
+				r1.bHit = true; r1.ptIntersection = Point3( 1, 2, 3 );
+				RayIntersectionGeometric r2( Ray(), nullRasterizerState );
+				r2.bHit = true; r2.ptIntersection = Point3( 9, 8, 7 );
+
+				// (a) finite at several nm, and differs between r1/r2.
+				const Scalar testNMs[3] = { 450, 550, 650 };
+				bool anyDiffer = false;
+				for( int i = 0; i < 3; ++i ) {
+					const Scalar nm = testNMs[i];
+					const Scalar c1 = p->GetColorNM( r1, nm );
+					const Scalar c2 = p->GetColorNM( r2, nm );
+					Check( std::isfinite( (double)c1 ), "GetColorNM(r1) finite at nm" );
+					Check( std::isfinite( (double)c2 ), "GetColorNM(r2) finite at nm" );
+					if( c1 != c2 ) anyDiffer = true;
+				}
+				Check( anyDiffer, "GetColorNM differs between two hits with different P" );
+
+				// (b) GetSpectrum's bins agree with GetColorNM at the same
+				// wavelength.  GetSpectrum stores s.Eval(lambda_begin + i*delta)
+				// at index i (see ExpressionPainter::GetSpectrum); reconstructing
+				// the wavelength for SpectralPacket::ValueAtNM's bin lookup via
+				// plain subtraction risks a one-ULP-below-integer truncation
+				// (int() rounds toward zero), so nudge into the bin interior by
+				// a fraction of a bin width -- negligible for a smooth uplift
+				// curve, but safely clears the int() truncation edge.
+				const Scalar lambda_begin = Scalar(380);
+				const Scalar lambda_end   = Scalar(780);
+				const unsigned int nbins  = 81;
+				const Scalar delta = ( lambda_end - lambda_begin ) / Scalar(nbins);
+				const SpectralPacket sp1 = p->GetSpectrum( r1 );
+				Check( sp1.NumBins() == nbins, "GetSpectrum bin count" );
+				const unsigned int sampleIdx[5] = { 0, 20, 40, 60, 80 };
+				for( int k = 0; k < 5; ++k ) {
+					const unsigned int i = sampleIdx[k];
+					const Scalar nmEdge   = lambda_begin + Scalar(i) * delta;
+					const Scalar nmNudged = nmEdge + delta * Scalar(1e-6);
+					const Scalar viaSpectrum = sp1.ValueAtNM( nmNudged );
+					const Scalar viaColorNM  = p->GetColorNM( r1, nmNudged );
+					Check( std::isfinite( (double)viaSpectrum ), "GetSpectrum bin finite" );
+					CheckClose( viaSpectrum, viaColorNM, 1e-6, "GetSpectrum bin agrees with GetColorNM at the same nm" );
+				}
+			}
+		}
+		job->release();
+	}
+
+	// (c) A neutral constant body uplifts to a near-flat spectrum.
+	{
+		Job* job = new Job();
+		job->addref();
+		const char* body = "expression_painter\n{\nname neutral\nexpr vec3(0.5, 0.5, 0.5)\n}\n";
+		Check( S2::ParseBody( "espectral2", body, *job ), "parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* p = priv->GetPainters()->GetItem( "neutral" );
+			Check( p != 0, "registered" );
+			if( p ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const SpectralPacket sp = p->GetSpectrum( r );
+				const Scalar lambda_begin = Scalar(380);
+				const Scalar lambda_end   = Scalar(780);
+				const unsigned int nbins  = 81;
+				const Scalar delta = ( lambda_end - lambda_begin ) / Scalar(nbins);
+				// The JH sigmoid uplift is smooth but not perfectly flat for a
+				// neutral grey, even off the gamut-edge corner (see
+				// docs/JH_LUT_GAMUT.md) -- it rolls off toward the 380/780nm
+				// extremes (measured: ~0.16 at the deep-red edge, ~0.55 near
+				// 470nm, for an input of 0.5).  The band below is loose enough
+				// to tolerate that roll-off while still catching a genuinely
+				// broken uplift (negative, zero, wildly overshooting, or
+				// non-finite).
+				bool allInBand = true;
+				for( unsigned int i = 0; i < nbins; ++i ) {
+					const Scalar nm = lambda_begin + Scalar(i) * delta + delta * Scalar(1e-6);
+					const Scalar v = sp.ValueAtNM( nm );
+					if( !std::isfinite( (double)v ) || v < Scalar(0.1) || v > Scalar(0.65) ) allInBand = false;
+				}
+				Check( allInBand, "neutral vec3(0.5,0.5,0.5) uplifts to a near-flat spectrum in a loose [0.1,0.65] band across all bins" );
+			}
+		}
+		job->release();
+	}
+}
+
+static void TestScalarExpressionPerChannelInSingleSlotDiagnostic()
+{
+	std::cout << "Test 24: scalar_painter{expression} vec3 (per-channel) bound to a requireSingle material slot rejects with the targeted diagnostic path" << std::endl;
+
+	// sheen_material's `sheen_roughness` is resolved via
+	// ResolveOrDiagnoseScalar( ..., requireSingle = true ) (Job.cpp) --
+	// it reads .v[0] only, so a per-channel scalar_painter bound there
+	// would silently lose G/B.  Drive it through the real chunk-parser
+	// path (ChunkParserRegistry.cpp -> Job::AddSheenMaterial).
+	{
+		const char* body =
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"scalar_painter\n{\nname pcvar\nexpression vec3(0.1, 0.5, 0.9)\n}\n"
+			"sheen_material\n{\nname mat\nsheen_color white\nsheen_roughness pcvar\n}\n";
+		Check( !S2::ParseBody( "reqsingle_bad", body ),
+			"sheen_material `sheen_roughness` bound to a per-channel scalar_painter{expression} rejects (a) per-channel-in-single-slot diagnostic path" );
+	}
+
+	// Differential control: the SAME slot accepts a scalar-typed (uniform)
+	// expression body -- proves the rejection above is specifically about
+	// per-channel variation, not scalar_painter{expression} bindings in
+	// general.
+	{
+		const char* body =
+			"uniformcolor_painter\n{\nname white2\ncolor 1 1 1\n}\n"
+			"scalar_painter\n{\nname uniformvar\nexpression 0.2\n}\n"
+			"sheen_material\n{\nname mat2\nsheen_color white2\nsheen_roughness uniformvar\n}\n";
+		Check( S2::ParseBody( "reqsingle_ok", body ),
+			"sheen_material `sheen_roughness` bound to a scalar-typed (uniform) scalar_painter{expression} parses fine" );
+	}
+}
+
+static void TestExpressionPainterScalarBroadcastOnColorPipe()
+{
+	std::cout << "Test 25: expression_painter with a scalar-typed final expr broadcasts to grey on the COLOUR pipe" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body = "expression_painter\n{\nname grey\nexpr 0.5\n}\n";
+	Check( S2::ParseBody( "escalarbcast", body, *job ), "parses (scalar-typed final expr accepted on the colour pipe)" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		IPainter* p = priv->GetPainters()->GetItem( "grey" );
+		Check( p != 0, "registered" );
+		if( p ) {
+			RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+			const RISEPel c = p->GetColor( r );
+			CheckClose( c[0], 0.5, 1e-9, "GetColor.r broadcasts scalar" );
+			CheckClose( c[1], 0.5, 1e-9, "GetColor.g broadcasts scalar" );
+			CheckClose( c[2], 0.5, 1e-9, "GetColor.b broadcasts scalar" );
+			const Scalar nm550 = p->GetColorNM( r, 550 );
+			Check( std::isfinite( (double)nm550 ), "GetColorNM finite for a scalar-broadcast body" );
+			Check( nm550 > Scalar(0), "GetColorNM positive for a scalar-broadcast body" );
+		}
+	}
+	job->release();
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -945,6 +1338,16 @@ int main( int, char** )
 	TestSpliceAndLexerEdges();
 	TestRampMoreEdgesAndMixRejection();
 	TestContextVarGating();
+	TestExpressionPainterChunkRegistration();
+	TestExpressionPainterContextVaries();
+	TestScalarExpressionPerChannelAndUniform();
+	TestExpressionPainterParamMetadataRoundTrip();
+	TestExpressionChunkDiagnostics();
+	TestExpressionPainterTimeKeyframe();
+	TestScalarExpressionRealMaterialBind();
+	TestExpressionPainterSpectralPath();
+	TestScalarExpressionPerChannelInSingleSlotDiagnostic();
+	TestExpressionPainterScalarBroadcastOnColorPipe();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

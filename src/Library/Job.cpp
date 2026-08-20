@@ -58,6 +58,7 @@
 #include "Interfaces/IScalarPainter.h"
 #include "Interfaces/IPainterManager.h"
 #include "Painters/PainterToScalarAdapter.h"
+#include "Painters/ExpressionPainter.h"	// Implementation::BuildExpressionProgramFromChunkFields (AddExpressionPainter)
 #include "Intersection/RayIntersectionGeometric.h"
 #include <cctype>
 #include <cstdlib>
@@ -1281,6 +1282,55 @@ bool Job::AddGerstnerWavePainter(
 		seed,
 		time );
 	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds an expression_painter (doc 88 P1, S2)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddExpressionPainter(
+							const char* name,
+							const char* expr,
+							const char* const* params,
+							const unsigned int numParams,
+							const char* const* defs,
+							const unsigned int numDefs,
+							const double seed,
+							const double time
+							)
+{
+	std::vector<std::string> paramLines;
+	paramLines.reserve( numParams );
+	for( unsigned int i = 0; i < numParams; ++i ) {
+		paramLines.push_back( ( params && params[i] ) ? params[i] : "" );
+	}
+	std::vector<std::string> defLines;
+	defLines.reserve( numDefs );
+	for( unsigned int i = 0; i < numDefs; ++i ) {
+		defLines.push_back( ( defs && defs[i] ) ? defs[i] : "" );
+	}
+
+	const std::string context = std::string( "expression_painter `" ) + ( name ? name : "noname" ) + "`";
+	Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+	std::vector<Implementation::ParamSpec> specs;
+	if( !Implementation::BuildExpressionProgramFromChunkFields(
+			context, paramLines, defLines, Scalar( seed ), expr ? expr : "", prog, specs ) ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateExpressionPainter( &pPainter, prog, specs, Scalar( time ) ) ) {
+		return false;
+	}
+	// Deliberately SINGLE-manager registration -- NOT RegisterPainterDual.
+	// expression_painter is a full-3D-context surface; registering it in
+	// the IFunction2D manager would let it be reached via Evaluate(u,v)
+	// alone (e.g. a displaced_geometry `function` reference), where the
+	// default IFunction2D hook (Painter::Evaluate) builds a dummy
+	// RayIntersectionGeometric with P/Po/N held at zero -- silently
+	// freezing any P/Po/N-dependent field to a constant.  See
+	// ExpressionPainter.h's file header comment.
+	const bool ok = RegisterOrDiag( pPntManager, pPainter, name, "painter" );
 	safe_release( pPainter );
 	return ok;
 }

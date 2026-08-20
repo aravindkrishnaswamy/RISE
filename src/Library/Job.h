@@ -669,6 +669,20 @@ namespace RISE
 									const double time
 									);
 
+		//! Adds an expression_painter (doc 88 P1, S2) -- see IJob.h for
+		//! the full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddExpressionPainter(
+									const char* name,
+									const char* expr,
+									const char* const* params,
+									const unsigned int numParams,
+									const char* const* defs,
+									const unsigned int numDefs,
+									const double seed,
+									const double time
+									);
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPerlin3DPainter(

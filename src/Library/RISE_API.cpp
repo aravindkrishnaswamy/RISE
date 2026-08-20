@@ -4696,6 +4696,7 @@ namespace RISE
 #include "Painters/Function2DScalarPainter.h"
 #include "Painters/Function2DColorPainter.h"
 #include "Painters/ExpressionFunction2DPainter.h"
+#include "Painters/ExpressionPainter.h"
 #include "Painters/TextureScalarPainter.h"
 #include "Painters/ScaledScalarPainter.h"
 #include "Painters/MultiplyScalarPainter.h"
@@ -4929,6 +4930,26 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateExpressionPainter(
+		IPainter** ppi,
+		const Implementation::ExpressionProgram& prog,
+		const std::vector<Implementation::ParamSpec>& paramSpecs,
+		const Scalar time
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionPainter: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		// Unlike RISE_API_CreateExpressionFunction2D, both result types are
+		// accepted here: vec3 is the natural colour result, scalar
+		// broadcasts to grayscale (doc 88 P1).
+		*ppi = new Implementation::ExpressionPainter( prog, paramSpecs, time );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression painter" );
+		return true;
+	}
+
 	bool RISE_API_CreateTextureScalarPainter(
 		IScalarPainter** ppi,
 		IRasterImageAccessor* pRIA,
@@ -4984,6 +5005,22 @@ namespace RISE
 		if( !ppi ) return false;
 		*ppi = new MultiplyScalarPainter( pA, pB );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "multiply scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateExpressionScalarPainter(
+		IScalarPainter** ppi,
+		const Implementation::ExpressionProgram& prog,
+		const std::vector<Implementation::ParamSpec>& paramSpecs
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionScalarPainter: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		*ppi = new Implementation::ExpressionScalarPainter( prog, paramSpecs );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression scalar painter" );
 		return true;
 	}
 

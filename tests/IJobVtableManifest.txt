@@ -289,3 +289,4 @@ ApplyCstReplaceDocumentText
 SetObjectParent
 ComposeObjectHierarchy
 AddLatheGeometry
+AddExpressionPainter

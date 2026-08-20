@@ -3894,6 +3894,29 @@ namespace RISE
 			const LatheDescriptor& desc				///< [in] Profile + axis + sweep + resolution parameters
 			) = 0;
 
+		//! Adds an expression_painter (doc 88 P1, S2): the COLOUR-pipe
+		//! texture-expression VM surface.  The body sees the FULL 3D
+		//! context (u, v, P, Po, N, fw, time), unlike expression_function2d.
+		//! `params` are raw `<name> <value> [min][max][step][label]` lines
+		//! (ExpressionParamSpec grammar); `defs` are raw `<name> <expr>`
+		//! lines.  `seed` is auto-registered as a named scalar constant
+		//! `seed` the body can reference for per-instance jitter (e.g.
+		//! `perlin(P + vec3(seed*17.0, seed*31.0, seed*13.0))`).  `time` is
+		//! keyframeable at the scene level (Gerstner precedent).  Appended
+		//! after AddLatheGeometry per the append-only IJob tail (preserves
+		//! every prior vtable slot -- see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddExpressionPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* expr,					///< [in] Final value expression
+									const char* const* params,			///< [in] Raw `param` lines
+									const unsigned int numParams,		///< [in] Count of `params`
+									const char* const* defs,			///< [in] Raw `def` lines
+									const unsigned int numDefs,		///< [in] Count of `defs`
+									const double seed,					///< [in] Auto-registered named constant `seed`
+									const double time					///< [in] Initial `time` value (keyframeable)
+									) = 0;
+
 	};
 
 

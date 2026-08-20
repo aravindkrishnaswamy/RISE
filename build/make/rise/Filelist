@@ -144,6 +144,7 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/CompositeFunction2DPainter.cpp		\
 	$(PATHLIBRARY)Painters/PolynomialFunction2DPainter.cpp		\
 	$(PATHLIBRARY)Painters/GerstnerWavePainter.cpp				\
+	$(PATHLIBRARY)Painters/ExpressionPainter.cpp				\
 	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
 	$(PATHLIBRARY)Painters/Turbulence3DPainter.cpp				\
 	$(PATHLIBRARY)Painters/Worley3DPainter.cpp					\

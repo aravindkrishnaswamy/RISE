@@ -28,6 +28,10 @@
 		6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
 		F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
 		F2ADD1000000000000000003 /* ExpressionParamSpec.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
+		EE990000000000000000001C /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
+		EE990000000000000000001D /* ExpressionPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
+		EE990000000000000000001E /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
+		EE990000000000000000001F /* ExpressionPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -1919,6 +1923,8 @@
 		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
 		6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionFunction2DPainter.h; sourceTree = "<group>"; };
 		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
+		EE990000000000000000001A /* ExpressionPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionPainter.h; sourceTree = "<group>"; };
+		EE990000000000000000001B /* ExpressionPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionPainter.cpp; sourceTree = "<group>"; };
 		6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AmbientOcclusionShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AmbientOcclusionShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AreaLightShaderOp.cpp; sourceTree = "<group>"; };
@@ -3628,6 +3634,8 @@
 				6A10E005000000000000C0DE /* Function2DColorPainter.h */,
 				6A11E001000000000000C0DE /* ExpressionEval.h */,
 				6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */,
+				EE990000000000000000001A /* ExpressionPainter.h */,
+				EE990000000000000000001B /* ExpressionPainter.cpp */,
 				F2ADD1000000000000000001 /* ExpressionParamSpec.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
@@ -4620,6 +4628,7 @@
 				6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */,
 				6A11B002000000000000C0DE /* ExpressionEval.h in Headers */,
 				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
+				EE990000000000000000001D /* ExpressionPainter.h in Headers */,
 				F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
@@ -5210,6 +5219,7 @@
 				CC0F00000000000000000005 /* CompositeFunction2DPainter.cpp in Sources */,
 				CC0F0000000000000000000B /* PolynomialFunction2DPainter.cpp in Sources */,
 				DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */,
+				EE990000000000000000001C /* ExpressionPainter.cpp in Sources */,
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
 				F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */,
@@ -6257,6 +6267,8 @@
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
 				F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */,
 				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
+				EE990000000000000000001E /* ExpressionPainter.cpp in Sources */,
+				EE990000000000000000001F /* ExpressionPainter.h in Sources */,
 				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,
