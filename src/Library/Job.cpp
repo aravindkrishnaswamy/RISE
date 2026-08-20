@@ -9968,6 +9968,14 @@ bool Job::Rasterize(
 	)
 {
 	if( !pRasterizer ) {
+		// GUI scene-switch debugging (2026-08-20): this was a SILENT false --
+		// no log line anywhere, so a caller with no active rasterizer (e.g. a
+		// Job that hasn't derived a rasterizer chunk, or one caught between a
+		// ClearAll and the next successful derive) produced an undiagnosable
+		// "render failed" with zero trace.  Log it so a recurrence is
+		// immediately attributable to THIS site rather than a mystery.
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::Rasterize:: no active rasterizer (pRasterizer is null) -- nothing to render." );
 		return false;
 	}
 
@@ -10023,6 +10031,9 @@ bool Job::RasterizeAnimation(
 	)
 {
 	if( !pRasterizer ) {
+		// See Job::Rasterize's matching comment -- same silent-false class, same fix.
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::RasterizeAnimation:: no active rasterizer (pRasterizer is null) -- nothing to render." );
 		return false;
 	}
 
@@ -10058,6 +10069,11 @@ bool Job::RasterizeRegion(
 	)
 {
 	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
+		// See Job::Rasterize's matching comment -- same silent-false class, same fix.
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::RasterizeRegion:: cannot render -- %s.",
+			!pRasterizer ? "no active rasterizer (pRasterizer is null)"
+			: ( !pScene ? "no active scene" : "scene has no film" ) );
 		return false;
 	}
 
