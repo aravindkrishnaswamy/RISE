@@ -265,6 +265,7 @@ namespace
 		std::filesystem::path equivalenceSnapshotDirectory;
 		bool forceActiveSetIdentityCheckForTest=false;
 		bool injectActiveSetIdentityMismatchForTest=false;
+		bool forceZeroSourceForTest=false;
 	};
 
 	class CheckpointWriter
@@ -1192,7 +1193,8 @@ namespace
 			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;eligibilityGrid.nz=shape.nz;
 			eligibilityGrid.cells=states;eligibilityGrid.pilotMask.resize(shape.CellCount(),false);
 			for(std::size_t cell=0;cell<shape.CellCount();++cell)
-				eligibilityGrid.pilotMask[cell]=canonicalPilotMask[cell]!=0u&&
+				eligibilityGrid.pilotMask[cell]=!persistence.forceZeroSourceForTest&&
+					canonicalPilotMask[cell]!=0u&&
 					simulationTimeS<pilotEndS;
 			std::vector<bool> eligibility;
 			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
@@ -1270,9 +1272,10 @@ namespace
 				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
 				bool commandOK=true;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell) {
-					commandOK=commandOK&&FireCase::EvaluatePilotSetpointTemperatureK(
-						caseRecord.derived,canonicalPilotMask[cell]!=0u,simulationTimeS,
-						simulationTimeS+trialStep,pilotSetpointTemperatureK[cell],error);
+					commandOK=commandOK&&(persistence.forceZeroSourceForTest||
+						FireCase::EvaluatePilotSetpointTemperatureK(caseRecord.derived,
+							canonicalPilotMask[cell]!=0u,simulationTimeS,
+							simulationTimeS+trialStep,pilotSetpointTemperatureK[cell],error));
 					reactions[cell].deltaTimeS=trialStep;
 					reactions[cell].pilotSetpointTemperatureK=pilotSetpointTemperatureK[cell];
 					reactions[cell].pilotExpansionVolumeRatioCap=
@@ -1281,7 +1284,10 @@ namespace
 				}
 				if(!commandOK){lastAdvanceError=error;break;}
 				config.transport.deltaTimeS=trialStep;
-				const bool packetOK=BuildFrozenMethaneSourcePackets(states,reactions,
+				bool packetOK=true;
+				if(persistence.forceZeroSourceForTest){
+					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
+				}else packetOK=BuildFrozenMethaneSourcePackets(states,reactions,
 					std::vector<double>(shape.CellCount(),cellVolume),300.0,
 					caseRecord.derived.referenceHeatReleaseRateW,
 					caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
@@ -2644,6 +2650,7 @@ namespace
 			if(mode=="resume-final"||mode=="resume-one")
 				persistence.finalCheckpointPath=checkpointPath;
 			if(mode=="resume-one")persistence.stopAfterAdditionalAcceptedSteps=1u;
+			if(mode=="resume-one")persistence.forceZeroSourceForTest=true;
 			persistence.killAfterFirstCheckpoint=mode=="kill"||mode=="syncfail";
 		}
 		SolverFrameValues result=RunMethaneFrameProbe(workerCount,3u,0.0,1.0,4.0,6.0,
