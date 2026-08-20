@@ -1267,6 +1267,8 @@ namespace
 			advancedOK=false;
 			std::string lastAdvanceError;
 			double trialStep=eventStep;
+			const FireStateProducerPrecision advanceOutputPrecision=
+				FireStateProducerPrecision::Binary64;
 			std::vector<double> pilotSetpointTemperatureK(shape.CellCount(),0.0);
 			for(unsigned int reduction=0;reduction<20u&&!advancedOK;++reduction) {
 				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
@@ -1300,7 +1302,7 @@ namespace
 					advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 						config.transport.ambientTemperatureK,
 						caseRecord.derived.maximumAcceptedTemperatureK,
-						config.transport.producerPrecision,trialTemperature,&error,
+						advanceOutputPrecision,trialTemperature,&error,
 						workerCount);
 					if(advancedOK&&std::any_of(trialTemperature.begin(),trialTemperature.end(),
 						[&caseRecord](const double temperatureK){return !std::isfinite(temperatureK)||
@@ -1408,7 +1410,7 @@ namespace
 				advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 					config.transport.ambientTemperatureK,
 					caseRecord.derived.maximumAcceptedTemperatureK,
-					config.transport.producerPrecision,acceptedTemperature,&error,
+					advanceOutputPrecision,acceptedTemperature,&error,
 					workerCount);
 				const bool measurePilotApproach=!values.pilotApproachComplete&&
 					simulationTimeS<pilotEndS;
@@ -1426,7 +1428,7 @@ namespace
 					++acceptedCell) {
 					const ConservativeVector& conservative=advanced.conservative[acceptedCell];
 					MethaneCellState accepted=FromConservativeVector(conservative,
-						config.transport.producerPrecision);
+						advanceOutputPrecision);
 					accepted.temperatureK=acceptedTemperature[acceptedCell];
 					double acceptedEOSResidual=0.0;
 					if(!EquationOfStateResidual(accepted,fuel,acceptedEOSResidual,&error)){
@@ -1474,6 +1476,7 @@ namespace
 				}
 				if(advancedOK){
 					states=std::move(acceptedStates);
+					config.transport.producerPrecision=advanceOutputPrecision;
 					values.maximumAcceptedEOSResidual=std::max(
 						values.maximumAcceptedEOSResidual,stepAcceptedEOSMaximum);
 					values.acceptedMaximumEOSResidualHistory.push_back(stepAcceptedEOSMaximum);
@@ -2639,18 +2642,19 @@ namespace
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
 		if(mode!="baseline"&&mode!="kill"&&mode!="resume"&&mode!="resume-final"&&
-			mode!="resume-one"&&
+			mode!="resume-one-fp64-reject"&&
 			mode!="syncfail")return 96;
 		forcePostRenameDirectorySyncFailureForTest=mode=="syncfail";
 		RunPersistenceOptions persistence;
 		if(mode!="baseline"){
 			persistence.checkpointPath=checkpointPath;
 			persistence.checkpointCadenceWallS=0.0;
-			persistence.resume=mode=="resume"||mode=="resume-final"||mode=="resume-one";
-			if(mode=="resume-final"||mode=="resume-one")
+			persistence.resume=mode=="resume"||mode=="resume-final"||
+				mode=="resume-one-fp64-reject";
+			if(mode=="resume-final"||mode=="resume-one-fp64-reject")
 				persistence.finalCheckpointPath=checkpointPath;
-			if(mode=="resume-one")persistence.stopAfterAdditionalAcceptedSteps=1u;
-			if(mode=="resume-one")persistence.forceZeroSourceForTest=true;
+			if(mode=="resume-one-fp64-reject")persistence.stopAfterAdditionalAcceptedSteps=1u;
+			if(mode=="resume-one-fp64-reject")persistence.forceZeroSourceForTest=true;
 			persistence.killAfterFirstCheckpoint=mode=="kill"||mode=="syncfail";
 		}
 		SolverFrameValues result=RunMethaneFrameProbe(workerCount,3u,0.0,1.0,4.0,6.0,
@@ -2662,6 +2666,9 @@ namespace
 			std::ofstream marker(framePath,std::ios::binary|std::ios::trunc);
 			marker << result.structuredError;marker.close();return marker?0:98;
 		}
+		if(mode=="resume-one-fp64-reject")return !result.succeeded&&
+			result.structuredError.find("violates the certified affine rows")!=std::string::npos?
+			0:97;
 		if(!result.succeeded){std::fprintf(stderr,"checkpoint child failed: %s\n",
 			result.structuredError.c_str());return 93;}
 		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,result))return 94;
@@ -3358,7 +3365,8 @@ int main(int argc,char** argv)
 		precisionRoundTrip,checkpointFixtureError)&&LoadMethaneRunCheckpoint(precisionCheckpoint,
 		loadedPrecisionRoundTrip,checkpointFixtureError);
 	FireStateProducerPrecision loadedPrecision=FireStateProducerPrecision::Unknown;
-	const int precisionResumeExit=precisionSave?RunCheckpointSubprocess(self,"resume-one",
+	const int precisionResumeExit=precisionSave?RunCheckpointSubprocess(self,
+		"resume-one-fp64-reject",
 		precisionCheckpoint,precisionFrame,4u):-1;
 	MethaneRunCheckpoint resumedPrecisionRoundTrip;
 	Check(precisionSave&&
@@ -3369,8 +3377,8 @@ int main(int argc,char** argv)
 			checkpointFixtureError)&&
 		HomogeneousStateProducerPrecision(resumedPrecisionRoundTrip.states,loadedPrecision)&&
 		loadedPrecision==FireStateProducerPrecision::Binary32&&
-		resumedPrecisionRoundTrip.acceptedSteps==precisionRoundTrip.acceptedSteps+1u,
-		"r115 homogeneous binary32 checkpoint metadata survives serialization and an actual resumed step");
+		resumedPrecisionRoundTrip.acceptedSteps==precisionRoundTrip.acceptedSteps,
+		"r115 binary32 checkpoint metadata survives serialization and a binary64 CPU resume cannot relabel the inherited excursion");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
 	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
 	const std::filesystem::path corruptedCheckpointPath=checkpointFixture/"corrupt.checkpoint";
