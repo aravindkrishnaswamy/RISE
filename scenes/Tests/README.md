@@ -24,6 +24,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Caustics/`: compact caustic and SMS comparison scenes
 - `Geometry/`: primitive and CSG sanity scenes, plus the object-parenting scene-graph check
 - `GlobalIllumination/`: focused GI baselines such as final gather
+- `GUI/`: minimal fixture scenes for the Mac GUI's headless `ViewportReattachProbe` (see `build/XCode/rise/RISE-GUI/App/RISEApp.swift`) — two tiny, distinct, fast-rendering scenes (`viewport_reattach_probe_a`/`_b`) used to drive the probe's scene-A-then-scene-B sequence; not meant to be rendered for their own sake
 - `Importers/`: glTF import regression scenes (Khronos sample assets, alpha modes, embedded textures, light-control)
 - `LightBVH/`: many-light regression scenes comparing alias-table sampling vs. light BVH (corridor 20/100 lights, spotlights stage, BDPT mixed-light Cornell)
 - `Lighting/`: physically based unit and environment-map lighting checks

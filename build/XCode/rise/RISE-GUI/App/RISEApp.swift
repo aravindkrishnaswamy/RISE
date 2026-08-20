@@ -76,6 +76,113 @@ enum SkillsRootBootstrap {
     }
 }
 
+/// Headless regression probe for the viewport-controller re-registration
+/// race (GUI bug 2026-08-20: "second scene loaded in a session fails
+/// Render" -- `RISEBridge: -rasterizeAtSceneTime: refused -- no viewport
+/// controller registered...").  RenderViewModel.loadScene's real teardown
+/// sequence is: `viewportBridge?.shutdown(); viewportBridge = nil`, THEN
+/// (for a reopen over an already-loaded Job) `bridge.clearAll()`, THEN
+/// construct a fresh `RISEViewportBridge` for the new scene (its
+/// designated initializer self-registers with the host via
+/// `-attachSceneEditController:`).  `RISEViewportBridge.shutdown()`
+/// unconditionally called `[_host attachSceneEditController:nullptr]` as
+/// its FIRST line, with no guard -- so if anything else in the app holds
+/// a transient extra strong reference to an outgoing `RISEViewportBridge`
+/// (e.g. a SwiftUI view struct's stored `let bridge: RISEViewportBridge`
+/// property from a not-yet-discarded body evaluation) past the point
+/// `viewportBridge = nil` runs, that instance's EVENTUAL `-dealloc` calls
+/// `-shutdown` a SECOND time and re-detaches the host -- silently
+/// clobbering whatever NEWER `RISEViewportBridge` had since registered
+/// for the next scene.  A synchronous, single-threaded harness with no
+/// stray retainer can't see this; this probe manufactures the stray
+/// retain explicitly (`strayA`) to drive the exact mechanism.
+///
+/// Enable with `RISE_GUI_HEADLESS_PROBE=viewport_reattach` plus
+/// `RISE_GUI_HEADLESS_PROBE_SCENE_A` / `_SCENE_B` pointing at two loadable
+/// scenes -- `scenes/Tests/GUI/viewport_reattach_probe_a.RISEscene` /
+/// `_b.RISEscene` are the checked-in fixtures made for this (tiny, fast,
+/// deliberately different geometry so a stale frame from the wrong scene
+/// would be obvious). `RISE_MEDIA_PATH` must also be set to the repo root
+/// (same as any RISE render). Exits the process with 0 (pass) or 1 (fail)
+/// -- never reaches the normal SwiftUI app body. Zero cost when the env
+/// var is unset. Example (from the repo root):
+///
+///   export RISE_MEDIA_PATH="$(pwd)/"
+///   export RISE_GUI_HEADLESS_PROBE=viewport_reattach
+///   export RISE_GUI_HEADLESS_PROBE_SCENE_A=scenes/Tests/GUI/viewport_reattach_probe_a.RISEscene
+///   export RISE_GUI_HEADLESS_PROBE_SCENE_B=scenes/Tests/GUI/viewport_reattach_probe_b.RISEscene
+///   <path-to>/RISE-GUI.app/Contents/MacOS/RISE-GUI
+enum ViewportReattachProbe {
+    static func runIfRequested() {
+        guard ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE"]
+                == "viewport_reattach" else { return }
+        guard let pathA = ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE_SCENE_A"],
+              let pathB = ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE_SCENE_B"]
+        else {
+            FileHandle.standardError.write("ViewportReattachProbe: missing SCENE_A/SCENE_B env vars\n".data(using: .utf8)!)
+            exit(2)
+        }
+
+        func step(_ label: String, _ ok: Bool) -> Bool {
+            print("ViewportReattachProbe: \(ok ? "PASS" : "FAIL") -- \(label)")
+            return ok
+        }
+
+        var allOK = true
+        let bridge = RISEBridge()
+
+        // Scene A: load, stand up its viewport bridge (mirrors
+        // RenderViewModel.loadScene's success branch), render once.
+        allOK = step("load scene A", bridge.loadAsciiScene(pathA)) && allOK
+        var vbA: RISEViewportBridge? = RISEViewportBridge(hostBridge: bridge)
+        allOK = step("scene A viewport bridge constructed", vbA != nil) && allOK
+        // The stray extra strong reference a SwiftUI view struct's stored
+        // `let bridge:` property could hold past the official swap below.
+        var strayA = vbA
+        allOK = step("render scene A", bridge.rasterize(atSceneTime: 0)) && allOK
+
+        // RenderViewModel.loadScene's teardown, verbatim ordering:
+        // shutdown + nil the OFFICIAL reference (strayA is untouched).
+        vbA?.shutdown()
+        vbA = nil
+
+        // Reopen path (RenderViewModel.continueClearAndLoad /
+        // finishSaveAndReload): clearAll() so the load-once guard permits
+        // a second LoadAsciiSceneAuto on the SAME Job, then load scene B
+        // and stand up its viewport bridge exactly like scene A's.
+        allOK = step("clearAll", bridge.clearAll()) && allOK
+        allOK = step("load scene B", bridge.loadAsciiScene(pathB)) && allOK
+        var vbB: RISEViewportBridge? = RISEViewportBridge(hostBridge: bridge)
+        allOK = step("scene B viewport bridge constructed", vbB != nil) && allOK
+
+        // The bug's own symptom: render scene B BEFORE anything releases
+        // strayA. This must pass on both the buggy and fixed code --
+        // scene B's own registration is what CanProceed() sees right now.
+        allOK = step("render scene B (before stray A deallocs)",
+                      bridge.rasterize(atSceneTime: 0)) && allOK
+
+        // Now let the LAST strong reference to scene A's viewport bridge
+        // go -- exactly what happens whenever ARC finally catches up to
+        // a stray SwiftUI-held reference. Pre-fix: strayA's deinit runs
+        // -shutdown again, which unconditionally re-detaches the host,
+        // clobbering scene B's live registration with NULL. Post-fix:
+        // -shutdown is idempotent (guarded on `_controller`), so the
+        // second call from strayA's dealloc is a no-op and scene B stays
+        // attached.
+        strayA = nil
+        allOK = step("stray A reference dropped", strayA == nil) && allOK
+
+        allOK = step("render scene B (after stray A finally deallocs -- THE RED LINE)",
+                      bridge.rasterize(atSceneTime: 0)) && allOK
+
+        _ = vbB // keep scene B's viewport bridge alive through the final render
+        vbB = nil
+
+        print(allOK ? "ViewportReattachProbe: ALL PASS" : "ViewportReattachProbe: FAILURE (see above)")
+        exit(allOK ? 0 : 1)
+    }
+}
+
 /// Quit-time unsaved-work prompt (84-trajectory-document-snapshots'
 /// backstop is a safety net, not the fix — this is the fix): SwiftUI's
 /// `App` protocol installs an implicit delegate that always answers
@@ -137,6 +244,11 @@ struct RISEApp: App {
     private var themeModeRaw: String = ThemeMode.dark.rawValue
 
     init() {
+        // Headless regression probe (see ViewportReattachProbe's header
+        // doc): must run before ANYTHING else touches AppKit/theme state
+        // and must never fall through to the normal app body -- it exits
+        // the process itself.
+        ViewportReattachProbe.runIfRequested()
         // Quit-time save prompt: hand the delegate the SAME RenderViewModel
         // instance ContentView/the menus use (not a second one) so its
         // dirty check reflects the actual open scene.

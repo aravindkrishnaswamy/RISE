@@ -847,7 +847,37 @@ private:
     // calls Stop()/joins the worker; clearing the host's pointer here just
     // stops any NEW production render from being submitted to a controller
     // that is about to disappear.
-    [_host attachSceneEditController:nullptr];
+    //
+    // GUI scene-switch bug (2026-08-20): this call MUST be guarded on
+    // `_controller` being non-null, i.e. "this instance has not already
+    // shut down" -- see ViewportReattachProbe's header doc (RISEApp.swift)
+    // for the full mechanism this fixes, proven red before this guard
+    // existed and green after. `-shutdown` is documented below as
+    // idempotent (the agent-dispatcher/`_controller` teardown already
+    // nil-guards every step), but this FIRST line was the one exception:
+    // called a second time -- e.g. from `-dealloc` running against an
+    // instance some OTHER strong reference kept alive past an explicit
+    // `-shutdown` + release (RenderViewModel.loadScene's teardown does
+    // `viewportBridge?.shutdown(); viewportBridge = nil`, but several
+    // SwiftUI views store this class in a plain, non-weak `let bridge:
+    // RISEViewportBridge` property -- e.g. ViewportGizmoOverlay,
+    // ViewportNavOverlay, PropertiesPanel/EnvironmentPanel/NamedViewsPanel/
+    // OutlinerView/MultiPaneViewport row structs -- any of which retaining
+    // a not-yet-discarded body evaluation past the swap is a plausible,
+    // but not individually confirmed, real-app source of exactly this
+    // extra strong reference) -- it unconditionally re-detached the host,
+    // even though by then a BRAND NEW `RISEViewportBridge` for the next
+    // scene had already registered ITS controller.  That clobbered the
+    // live registration with NULL, so every production render on the new
+    // scene silently refused via ViewportControllerLease::CanProceed
+    // ("no viewport controller registered while one is required").
+    // Guarding on `_controller` makes every step in this method agree on
+    // the same "already shut down" signal, so a stray second call --
+    // regardless of which caller produces it -- is a true no-op instead
+    // of a live-registration-clobbering footgun.
+    if (_controller) {
+        [_host attachSceneEditController:nullptr];
+    }
 
     // Secure-MCP slice 5c: stop the EXTERNAL hosted server BEFORE the
     // in-process agent dispatcher / controller below.  -stopAgentHostedServer

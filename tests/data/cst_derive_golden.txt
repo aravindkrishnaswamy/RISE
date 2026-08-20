@@ -119,6 +119,8 @@ scenes/Tests/ChunkCoverage/cc_tiff_painter.RISEscene  5fab27ffba490aa7a9708d6063
 scenes/Tests/ChunkCoverage/cc_translucent_pel_gather.RISEscene  21e20674169d15ab7e3649fce26e9d68c56f88d8418715b37cc44ea93da5cf8f  187  15
 scenes/Tests/ChunkCoverage/cc_translucent_pel_photonmap.RISEscene  21e20674169d15ab7e3649fce26e9d68c56f88d8418715b37cc44ea93da5cf8f  187  15
 scenes/Tests/ChunkCoverage/cc_voronoi2d_painter.RISEscene  c1ecc20d9f145aa61223a33850b3c5ac1ad39ed4d375ac0cfcbabd3cef0d83b9  224  18
+scenes/Tests/GUI/viewport_reattach_probe_a.RISEscene  da8ce0324bcf97456419b578ed96ccd666fc283689dc815ca55301a4188aca9b  525  21
+scenes/Tests/GUI/viewport_reattach_probe_b.RISEscene  a0346215efc671d7bd2ea437fb3a5bb04c2e0c38104de5775adbc4e51831fb97  547  21
 scenes/Tests/Geometry/aphrodite_mesh.RISEscene  880c46044653a2859ad63060f23015843462e15b06179fe695db642afc613179  646  26
 scenes/Tests/Geometry/bilinear_patch.RISEscene  d6d2a06a07905648e9a63a854da9062291bc7d78a2390999daccf2a518a9f341  610  21
 scenes/Tests/Geometry/csg.RISEscene  c885504f746ecfe3b71eb3153ad29796424b8e929c826543cadec16cc6db8faa  2507  40
