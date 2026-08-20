@@ -60,11 +60,9 @@ struct ViewportProperty {
     // expression painter's `param[i]` rows, from the `min`/`max`/`step`
     // metadata on the scene text's `param` line.
     //
-    // CARRIED, NOT YET RENDERED.  `buildPropertyRow` below still draws the
-    // ordinary field for these rows; the Qt slider affordance is owed and
-    // needs an MSVC build to land (this checkout is macOS-only).  Populating
-    // the field now keeps the two bridges structurally identical, so the Qt
-    // work is a widget change with no plumbing behind it.
+    // Rendered by ViewportProperties::buildPropertyRow's slider block (the
+    // Qt mirror of the Mac ParamSliderCell); still owed a compile-verify on
+    // an actual MSVC build (this checkout is macOS-only).
     bool    hasRange = false;
     double  rangeMin = 0.0;
     double  rangeMax = 0.0;

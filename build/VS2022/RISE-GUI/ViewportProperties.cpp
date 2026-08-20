@@ -15,6 +15,8 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSlider>
+#include <QGuiApplication>
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPainter>
@@ -75,6 +77,83 @@ inline QString formatScrubbed(double v, int kind)
         return QString::number(n);
     }
     return QString::asprintf("%.6g", v);
+}
+
+// doc 88 S4b (Tier-1 param sliders): the first whitespace-delimited token,
+// SKIPPING token 0, that looks and parses as a number, as (its position and
+// length within `line`, its parsed value).  Returns false when the line has
+// no such token -- the caller then has nothing to drive and falls back to
+// the range minimum / skips the commit.  Mirrors PropertiesPanel.swift's
+// private `ParamSliderCell.numericToken` (~line 889).
+//
+// Two deliberate departures from "just try toDouble() on every token":
+//
+// 1. Token 0 is SKIPPED.  `hasRange` (the sole gate that routes a row
+//    through the slider block in buildPropertyRow below, rather than
+//    straight to the plain text well) is set only for an expression
+//    painter's `param[i]` rows.  The row's VALUE line is `<paramName>
+//    <value> [min ... max ... step ... label ...]` -- so token 0 is the
+//    param's OWN NAME (e.g. `wob` or `ring_scale`), never a value the
+//    slider should scrub.  A parameter literally named `4` (or, see point
+//    2, `inf`/`nan`) would otherwise have its name token silently
+//    overwritten by a scrub commit.
+//
+// 2. A token must LOOK numeric (optional leading sign, then a digit or
+//    `.`) before `QString::toDouble()` is even tried.  `toDouble()`
+//    accepts "inf"/"nan"-shaped input in some locales, so without this
+//    guard a param named exactly `inf`/`nan` (rare, but not disallowed by
+//    the scene grammar) could still be misread as a numeric value by a
+//    naive scan -- the token-0 skip above only rules out the FIRST token,
+//    not a same-shaped later one on a multi-token value line.
+//
+//    QChar::isNumber() (not isDigit()) deliberately: Swift's guard is
+//    `Character.isNumber`, which spans Unicode categories Nd+Nl+No, and
+//    QChar::isNumber() matches exactly those -- isDigit() is Nd only.
+//    The category set decides whether a malformed token BAILS the scan
+//    (looks numeric, fails to parse) or is silently skipped, so the two
+//    platforms must classify identically or the same malformed line would
+//    rewrite a DIFFERENT token on Windows than on macOS.
+bool numericToken(const QString& line, int* outPos, int* outLen, double* outValue)
+{
+    auto looksNumeric = [](const QString& tok) {
+        int i = 0;
+        if (i < tok.size() && (tok[i] == QLatin1Char('+') || tok[i] == QLatin1Char('-'))) ++i;
+        if (i >= tok.size()) return false;
+        return tok[i].isNumber() || tok[i] == QLatin1Char('.');
+    };
+
+    const int n = line.size();
+    int i = 0;
+    int tokenIndex = 0;
+    while (i < n) {
+        while (i < n && line[i].isSpace()) ++i;
+        if (i >= n) return false;
+        int j = i;
+        while (j < n && !line[j].isSpace()) ++j;
+        const QString tok = line.mid(i, j - i);
+        if (tokenIndex > 0 && looksNumeric(tok)) {
+            // A token that LOOKS numeric (leading sign/digit/`.`) but does
+            // not actually parse (`4.0.1`, a truncated `1e`, `-.`)
+            // means this line is not shaped the way this scanner assumes --
+            // bail out with false rather than falling through to scan later
+            // tokens.  Falling through would let the scan land on the NEXT
+            // numeric-looking token, which for a `param` line is `min`'s
+            // own bound (`param ring_scale <bad> min 0.5 max 20 ...`) -- so
+            // a malformed value token would silently make the slider scrub
+            // and commit OVER the min bound instead of refusing to drive
+            // at all.
+            bool ok = false;
+            const double v = tok.toDouble(&ok);
+            if (!ok) return false;
+            if (outPos) *outPos = i;
+            if (outLen) *outLen = j - i;
+            if (outValue) *outValue = v;
+            return true;
+        }
+        tokenIndex += 1;
+        i = j;
+    }
+    return false;
 }
 
 // Shared well chrome (Theme::bgWell fill + hairline border) -- mirrors
@@ -1108,6 +1187,200 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
     cellColLayout->setContentsMargins(0, 0, 0, 0);
     cellColLayout->setSpacing(4);
 
+    // doc 88 S4b (Tier-1 param sliders): a row that carries an authored
+    // numeric range gets a QSlider ABOVE its ordinary value cell -- never
+    // INSTEAD of it.  Mirrors PropertiesPanel.swift's PropertyRowView.valueCell
+    // (~line 758) + ParamSliderCell (~line 806): the range is a presentation
+    // hint, not a validation rule -- the scene language accepts values
+    // outside it, an expression `param` line carries metadata (the param's
+    // own name, `label`, `step`, ...) the slider does not touch, and the
+    // value cell added by the branches below remains the only way to reach
+    // either.  So: slider for the common gesture, field for everything the
+    // slider cannot say.
+    if (p.editable && p.hasRange) {
+        // (S5) `p` is assembled on the GUI bridge from multiple separate
+        // lock acquisitions (doc 88 S4b's snapshot construction), not one
+        // atomic read -- a live scene mutation can swap the underlying
+        // snapshot in between two of them, tearing `rangeMin` from one
+        // snapshot and `rangeMax` from a different (older or newer) one.
+        // Mirrors PropertiesPanel.swift's ParamSliderCell `hasValidRange`
+        // comment (~line 814): compute the validity ONCE, here, into a
+        // local -- never inline the comparison at each use site, where a
+        // second torn re-read could disagree with the first.  Unlike
+        // Swift's `Range` (a hard trap on an inverted bound), QSlider::
+        // setRange won't crash on rangeMax <= rangeMin, but it WILL
+        // silently clamp every position to the same endpoint and produce
+        // an inert slider -- skip the block entirely instead.
+        const bool hasValidRange = p.rangeMax > p.rangeMin;
+        if (hasValidRange) {
+            const double span = p.rangeMax - p.rangeMin;
+
+            // QSlider is integer-only -- map the authored [rangeMin,
+            // rangeMax] onto an integer tick count.  A discrete rangeStep
+            // gets enough ticks to hit every authored step; "continuous"
+            // (rangeStep == 0) gets 1000 subdivisions -- fine enough
+            // granularity that no tick reads as a jump.  DELIBERATE
+            // platform divergence: the Mac ParamSliderCell's continuous
+            // fallback is an absolute 0.0001 step (SwiftUI sliders run on
+            // doubles), which an integer QSlider cannot express for wide
+            // spans (span 1e6 would need 1e10 ticks) -- a span-relative
+            // subdivision is the sanctioned Qt equivalent.
+            // Both bounds and the step are AUTHORED metadata, so `span /
+            // step` is arbitrary -- a step tiny relative to the span
+            // (`min 0 max 1e6 step 0.0001`) would overflow the int tick
+            // cast into a garbage slider range.  Past 100k ticks a step
+            // grid is indistinguishable from continuous anyway, so such
+            // a row falls back to the continuous 1000-subdivision path.
+            int ticks;
+            double step;
+            const double authoredTicks =
+                (p.rangeStep > 0) ? (span / p.rangeStep) : 0.0;
+            if (p.rangeStep > 0 && authoredTicks <= 100000.0) {
+                step = p.rangeStep;
+                // ceil, not round: when the step doesn't evenly divide the
+                // span, rounding DOWN would leave rangeMax unreachable from
+                // the slider (min 0 max 10 step 2.9 -> 3 ticks tops out at
+                // 8.7).  An extra tick past the span is fine -- tickToValue
+                // below clamps it, so the top tick lands exactly on
+                // rangeMax.  The 1e-9 slack keeps an evenly-dividing step
+                // from gaining a spurious extra tick to FP error.
+                ticks = std::max(1, static_cast<int>(std::ceil(authoredTicks - 1e-9)));
+            } else {
+                ticks = 1000;
+                step = span / 1000.0;
+            }
+
+            // Tick -> value.  Clamped to rangeMax: a rangeStep that
+            // doesn't divide the span evenly would otherwise let the last
+            // tick overshoot the authored maximum.
+            auto tickToValue = [rangeMin = p.rangeMin, rangeMax = p.rangeMax, step](int t) {
+                return std::min(rangeMin + static_cast<double>(t) * step, rangeMax);
+            };
+
+            // Initial value: the row's own current numeric token, else
+            // rangeMin (mirrors Swift's `.onAppear` fallback).  NOT
+            // clamped -- an out-of-range authored value is displayed
+            // honestly in the label below.  Clamped separately, below,
+            // for the slider's own initial POSITION only.
+            double initValue = p.rangeMin;
+            {
+                int tokPos = 0, tokLen = 0;
+                double tokValue = 0.0;
+                if (numericToken(p.value, &tokPos, &tokLen, &tokValue)) initValue = tokValue;
+            }
+            double clampedInit = initValue;
+            if (clampedInit < p.rangeMin) clampedInit = p.rangeMin;
+            if (clampedInit > p.rangeMax) clampedInit = p.rangeMax;
+            const int initTick = static_cast<int>(std::llround((clampedInit - p.rangeMin) / step));
+
+            auto* sliderRow = new QWidget;
+            auto* sliderRowLayout = new QHBoxLayout(sliderRow);
+            sliderRowLayout->setContentsMargins(0, 0, 0, 0);
+            sliderRowLayout->setSpacing(6);
+
+            auto* slider = new QSlider(Qt::Horizontal);
+            slider->setRange(0, ticks);
+
+            auto* valueLabel = new QLabel(QString::asprintf("%.6g", initValue));
+            valueLabel->setFont(Theme::mono(10));
+            valueLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            valueLabel->setFixedWidth(46);
+            valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+            // Set the initial position BEFORE connecting any signals below
+            // -- QSlider::setValue() emits valueChanged(), and construction
+            // must not fire a spurious commit.
+            slider->setValue(initTick);
+
+            sliderRowLayout->addWidget(slider, 1);
+            sliderRowLayout->addWidget(valueLabel);
+            cellColLayout->addWidget(sliderRow);
+
+            const QString capturedLine = p.value;
+            const QString capturedName = p.name;
+
+            // Commit: re-derives the token position from the CAPTURED
+            // original line (not anything mutated since) -- mirrors
+            // PropertiesPanel.swift's ParamSliderCell.commit() (~line
+            // 856).  Guards exactly like that commit(): if the captured
+            // line has no numeric token to drive, there's nothing to
+            // rewrite, so return without touching the scene.  Each commit
+            // is a real CST edit + re-derive + undo entry -- that is why
+            // this fires on release (or a discrete groove-click/keyboard
+            // gesture) and NEVER per `valueChanged` tick during an actual
+            // drag, which would otherwise push one per frame.
+            auto commitTick = [this, capturedLine, capturedName, tickToValue, initTick](int tick) {
+                // The initial POSITION is a quantized approximation of the
+                // row's actual value (which need not sit on the tick grid,
+                // or even inside the range).  Releasing on that same tick
+                // means the user never moved -- committing would silently
+                // snap the authored value to the grid (actual 10 on a
+                // step-2.9 grid would commit as 8.7).  SwiftUI's slider
+                // leaves the bound value untouched on a no-move gesture;
+                // this check is the integer-tick equivalent.
+                if (tick == initTick) return;
+                int tokPos = 0, tokLen = 0;
+                double unused = 0.0;
+                if (!numericToken(capturedLine, &tokPos, &tokLen, &unused)) return;
+                QString newLine = capturedLine;
+                newLine.replace(tokPos, tokLen, QString::asprintf("%.6g", tickToValue(tick)));
+                if (newLine == capturedLine) return;   // rewrite is byte-identical -- nothing to commit
+                commitEdit(capturedName, newLine);
+            };
+
+            connect(slider, &QSlider::sliderPressed, this, [this]() {
+                // Blocks the per-frame refresh() rebuild that would
+                // deleteLater() this very slider mid-drag -- same guard
+                // ScrubHandle uses (see the beginPropertyScrub bracket in
+                // the ScrubHandle wiring later in this method).
+                // No beginPropertyScrub(): unlike ScrubHandle, there are
+                // no mid-drag commits to coalesce here -- this slider
+                // commits exactly once per gesture, on release.
+                m_scrubbing = true;
+            });
+
+            connect(slider, &QSlider::valueChanged, this,
+                    [this, slider, valueLabel, tickToValue, commitTick](int tick) {
+                valueLabel->setText(QString::asprintf("%.6g", tickToValue(tick)));
+                // A groove-click (page step) or keyboard arrow never sets
+                // isSliderDown() -- treat those as a complete one-shot
+                // gesture and commit right here.  An actual drag also
+                // fires this per tick, but isSliderDown() stays true for
+                // its whole duration, so this branch is skipped until
+                // sliderReleased below.  Relies on the initial setValue()
+                // above running BEFORE this connect() -- otherwise that
+                // very first setValue would land here as a "commit".
+                // A click-and-HELD groove press (or held arrow key) can't
+                // stack auto-repeat commits: the first commit's refresh()
+                // rebuilds the rows, and this slider's deferred delete is
+                // processed on the next event-loop pass -- long before
+                // QAbstractSlider's 500ms repeat timer (or a keyboard
+                // auto-repeat aimed at the now-unfocused replacement)
+                // could fire a second one.
+                if (!slider->isSliderDown()) commitTick(tick);
+            });
+
+            connect(slider, &QSlider::sliderReleased, this, [this, slider, commitTick]() {
+                m_scrubbing = false;
+                commitTick(slider->value());
+            });
+            // A swallowed release (mouse grab stolen by a modal dialog
+            // mid-drag) would leave m_scrubbing stuck true -- recovered by
+            // the no-button self-heal at the top of refresh(), not here: a
+            // QWidget never sees QEvent::UngrabMouse (that event is a
+            // QGraphicsItem/QQuickItem mechanism), and a destructor net a
+            // la ScrubHandle's can't work for this flag, because a stuck
+            // flag is precisely what blocks the rebuild that would destroy
+            // the slider.  The aborted drag's in-flight value is DROPPED,
+            // deliberately: this slider commits only completed gestures,
+            // and silently landing a half-drag value because a dialog
+            // interrupted it would be worse than reverting.  (ScrubHandle
+            // differs -- it commits per move tick, so its aborted drags
+            // keep the last-dragged value; that's inherent to its design,
+            // not a bar this slider should match.)
+        }
+    }
+
     if (!p.editable) {
         // Read-only well.
         auto* wellWidget = new QWidget;
@@ -1386,6 +1659,20 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
 void ViewportProperties::refresh()
 {
     if (!m_bridge) return;
+
+    // doc 88 S4b: self-heal a swallowed drag release.  m_scrubbing is set
+    // by a param-slider / ScrubHandle press and normally cleared on
+    // release -- but a mouse grab stolen mid-drag (a modal dialog opening,
+    // e.g. on render completion) can swallow the release event, leaving
+    // the flag stuck true and this panel frozen (the gate below skips
+    // every rebuild) until the next completed scrub gesture.  The flag
+    // being set with NO mouse button held means the gesture is over,
+    // however it ended, so it is safe to resume rebuilding.  A stuck
+    // ScrubHandle's endPropertyScrub bracket is closed by its destructor
+    // net when the rebuild below destroys it.
+    if (m_scrubbing && QGuiApplication::mouseButtons() == Qt::NoButton)
+        m_scrubbing = false;
+
     // While a ScrubHandle drag is in flight, do NOT rebuild the rows --
     // doing so would deleteLater() the handle whose mouseMoveEvent put
     // setProperty() -> imageUpdated -> here on the stack, killing the
