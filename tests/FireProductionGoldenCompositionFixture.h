@@ -231,6 +231,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
 		if(production.interstageFullGridTransferCount!=0u||production.residentProjectionInvocationCount!=1u||
+			production.conservativeProducerPrecision!=RISE::FireStateProducerPrecision::Binary32||
 			production.projection.executedVCycleCount!=16u||
 			production.projection.executedJacobiSweepCount!=1088u)
 			return 120;

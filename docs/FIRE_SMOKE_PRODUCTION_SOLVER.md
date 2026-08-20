@@ -1758,6 +1758,56 @@ This is load-bearing: the former inherited fast-math path changed the ownership
 sum by one binary32 ULP. A source-local test binds both Xcode entries, including
 the shipping Opto configuration.
 
+### 7.31 Precision-class accepted-state feasibility and the next monitored stop (r115/r116)
+
+r115 extends r60's one accepted-state predicate by producer precision. It does
+not add a second predicate and does not change the accumulation-owned mass or
+energy scale. A state's producer metadata selects exactly one unit system:
+
+`bound_r = kappa_precision * epsilon_precision * scale_r`.
+
+The immutable v1 record continues to own `kappa64=4096`, so every binary64
+oracle state sees exactly the former r60 envelope. The strict binary32 resident
+result publishes `Binary32` producer metadata; default/failure results publish
+`Unknown` and are never admissible. The binary32 extension is derived from the
+union of already certified resident producers. Remap contributes `256 eps32`
+because `3e-5/eps32 < 252`; the r96 composed force result contributes `64
+eps32` and subsumes r93's per-kernel `8` ULP result; the one projection
+contributes another `256 eps32`. The pre-thermo source operand is exact positive
+zero and contributes no term. Thus the union is `576`, and r60's
+next-power-of-two rule gives `kappa32=1024`. Nonzero thermo/source maps must add
+their own derived producer term before they may publish a binary32 state.
+
+The original tier-5 observation is confirmation only: its maximum scaled
+affine excursion is `5.2451771873310863e-8`, or `0.8799947063 eps32`, at cell
+4915 row 2. The derived envelope is `0.0001220703125` at unit scale, a
+`2327.2867272213789` margin. A mutation above `kappa32*eps32*scale_r` remains a
+structural rejection. Temperature inversion, EOS evaluation, positive-part
+property availability, and molecular-viscosity reconstruction all enter the
+same metadata-selected predicate; no stored conservative byte is repaired.
+
+The ruling explicitly rejects three alternatives: projecting or clamping each
+resident state would mutate conservation ledgers and hide producer defects;
+promoting the resident state to binary64 would defeat the resident architecture;
+and widening `kappa64` would confuse two unit systems and weaken the certified
+oracle. This feasibility envelope is categorically distinct from `B_fp32`: it
+decides whether a state has defined downstream physics, while `B_fp32` is an
+accuracy term in the calibrated comparison contract.
+
+With r115, the former exit `190` chains successfully and 31 more resident
+steps pass their projection validation contracts. r116 then stops at a new,
+independent gate: tier 12, step 7, cell 2256 reconstructs a finite temperature
+`348.53712185868289 K` and a positive molecular viscosity, but its EOS residual
+is `0.0011434014099940271`, above the pre-existing `0.001` accepted-state EOS
+limit. The payload digest is
+`e5a8cdfd54772cc58c8d58e3a0c32d650a71f9f428cd27c1be3e52e6a60c5b70`;
+its maximum affine excursion `2.1925594524305645e-7` remains far inside the
+binary32 feasibility envelope, so the EOS miss cannot be charged to r115 or
+absorbed into it. Exact monitored exit `191` records this stop. Production
+Richardson and all later calibration stages remain unrun until the EOS drift is
+instrumented under the budget-probe discipline; neither solver nor the `0.001`
+EOS contract was changed.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

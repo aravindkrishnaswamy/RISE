@@ -2265,6 +2265,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+cell.deviceElapsedMS+
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
 					computed.projection.deviceElapsedMS;
+				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=1u||
 					computed.residentProjectionInvocationCount!=1u||

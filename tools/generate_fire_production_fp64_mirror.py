@@ -49,6 +49,11 @@ def source_manifest() -> str:
 
 def transform(text: str, name: str, suffix: str) -> str:
     text = text.replace("namespace RISE", "namespace RISEFireProductionFP64")
+    text = text.replace(
+        '#include "FireSimulationRecords.h"',
+        '#include "../../src/Library/Utilities/FireSimulationRecords.h"',
+    )
+    text = text.replace("FireStateProducerPrecision", "RISE::FireStateProducerPrecision")
     text = re.sub(r"\bfloat\b", "double", text)
     # Decimal and hexadecimal floating literals use the same expression tree;
     # only their storage suffix changes.

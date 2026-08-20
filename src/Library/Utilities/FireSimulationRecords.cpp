@@ -2500,6 +2500,24 @@ namespace RISE
 			envelope.kappaEpsilon64 >= 2.0*envelope.derivedUnionFactorEpsilon64 ) {
 			return Fail(error,"fire-simulation accepted-state feasibility certificate is malformed");
 		}
+		// Precision-class extension of the immutable v1 record.  The embedded
+		// r60 certificate and golden-checkpoint identity remain byte-identical.
+		// Remap contributes 256 eps32, the r96 composed force certificate 64
+		// eps32 (and subsumes r93's 8-ULP kernel result), and the single
+		// projection contributes 256 eps32.  Source addition is exactly +0 in
+		// this pre-thermo resident path.  The union is 576; r60's next-power-of-
+		// two construction therefore selects kappa32=1024.
+		envelope.remapFactorEpsilon32=256.0;
+		envelope.composedForceFactorEpsilon32=64.0;
+		envelope.projectionFactorEpsilon32=256.0;
+		envelope.derivedUnionFactorEpsilon32=
+			envelope.remapFactorEpsilon32+envelope.composedForceFactorEpsilon32+
+			envelope.projectionFactorEpsilon32;
+		envelope.kappaEpsilon32=1024.0;
+		if(envelope.derivedUnionFactorEpsilon32!=576.0||
+			envelope.kappaEpsilon32<envelope.derivedUnionFactorEpsilon32||
+			envelope.kappaEpsilon32>=2.0*envelope.derivedUnionFactorEpsilon32)
+			return Fail(error,"fire-simulation binary32 feasibility extension is malformed");
 		m_acceptedStateFeasibilityEnvelope = envelope;
 
 		const RISECBOR64::Value* reconstruction = Required(

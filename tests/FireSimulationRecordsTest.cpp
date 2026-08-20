@@ -271,13 +271,18 @@ int main()
 		methane.AcceptedStateFeasibilityEnvelope();
 	Check(feasibility.derivedUnionFactorEpsilon64==2384.0&&
 		feasibility.kappaEpsilon64==4096.0&&
+		feasibility.remapFactorEpsilon32==256.0&&
+		feasibility.composedForceFactorEpsilon32==64.0&&
+		feasibility.projectionFactorEpsilon32==256.0&&
+		feasibility.derivedUnionFactorEpsilon32==576.0&&
+		feasibility.kappaEpsilon32==1024.0&&
 		feasibility.limiterOutwardFactorEpsilon64+
 		feasibility.rowAccumulationFactorEpsilon64+
 		feasibility.nullspaceProjectionFactorEpsilon64+
 		feasibility.sourcePacketFactorEpsilon64+
 		feasibility.ledgerReductionFactorEpsilon64==
 			feasibility.derivedUnionFactorEpsilon64,
-		"methane record carries the exact r60 accepted-state producer-union certificate");
+		"methane record carries r60 plus the derived resident binary32 precision class");
 	std::vector<double> physicalReactionDelta(1,0.0);
 	physicalReactionDelta.insert(physicalReactionDelta.end(),
 		methane.PrimaryReactionDelta().begin(),methane.PrimaryReactionDelta().end());

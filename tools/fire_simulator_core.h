@@ -234,9 +234,10 @@ namespace RISE
 			std::array<double,MethaneSpeciesCount> constituent;
 			double sensibleEnergyJPerM3;
 			double temperatureK;
+			FireStateProducerPrecision producerPrecision;
 
 			MethaneCellState() : rhoTotalZ(0.0), sensibleEnergyJPerM3(0.0),
-				temperatureK(0.0)
+				temperatureK(0.0),producerPrecision(FireStateProducerPrecision::Binary64)
 			{
 				constituent.fill(0.0);
 			}
@@ -267,9 +268,11 @@ namespace RISE
 			return result;
 		}
 
-		inline MethaneCellState FromConservativeVector( const ConservativeVector& input )
+		inline MethaneCellState FromConservativeVector(const ConservativeVector& input,
+			const FireStateProducerPrecision producerPrecision=FireStateProducerPrecision::Binary64)
 		{
 			MethaneCellState result;
+			result.producerPrecision=producerPrecision;
 			result.rhoTotalZ = input[0];
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				result.constituent[index] = input[1+index];
@@ -342,9 +345,18 @@ namespace RISE
 		inline bool AcceptedStateAdmissible(const ConservativeVector& state,
 			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
 			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
+			const FireSimulationMethaneRecord& fuel,
+			const FireStateProducerPrecision producerPrecision,std::string* error);
+		inline bool AcceptedStateAdmissible(const ConservativeVector& state,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
 			const FireSimulationMethaneRecord& fuel,std::string* error);
+		inline double AcceptedStateRoundoffFactor(
+			const FireAcceptedStateFeasibilityEnvelope& envelope,
+			const FireStateProducerPrecision producerPrecision);
 		inline bool AcceptedMethaneCellStateAdmissible(const MethaneCellState& state,
-			const FireSimulationMethaneRecord& fuel,std::string* error=0);
+			const FireSimulationMethaneRecord& fuel,
+			const FireStateProducerPrecision producerPrecision,std::string* error=0);
 		inline double MixtureCertifiedCpLowerJPerM3K(const MethaneCellState& state,
 			const double lowerK,const double upperK,
 			const FireSimulationMethaneRecord& thermochemistry);
@@ -354,6 +366,7 @@ namespace RISE
 			const double lowerTemperatureK,
 			const double upperTemperatureK,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			double& result,
 			std::string* error=0 )
 		{
@@ -366,7 +379,7 @@ namespace RISE
 				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(upperTemperatureK,
 					upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(state),lowerEnthalpy,
-					upperEnthalpy,thermochemistry,error))return false;
+					upperEnthalpy,thermochemistry,producerPrecision,error))return false;
 			double lowerEnergy=0.0,upperEnergy=0.0;
 			if(!SignedMixtureSensibleEnergy(state,lowerTemperatureK,thermochemistry,
 				lowerEnergy,error)||!SignedMixtureSensibleEnergy(state,upperTemperatureK,
@@ -374,9 +387,12 @@ namespace RISE
 			if(!(MixtureCertifiedCpLowerJPerM3K(state,lowerTemperatureK,
 				upperTemperatureK,thermochemistry)>0.0))return Fail(error,
 				"fire solver signed inversion lacks a positive certified heat capacity");
-			const double tolerance=thermochemistry.AcceptedStateFeasibilityEnvelope().
-				kappaEpsilon64*std::numeric_limits<double>::epsilon()*
+			const FireAcceptedStateFeasibilityEnvelope& envelope=
+				thermochemistry.AcceptedStateFeasibilityEnvelope();
+			const double tolerance=AcceptedStateRoundoffFactor(envelope,producerPrecision)*
 				AcceptedStateEnergyScale(ToConservativeVector(state),lowerEnthalpy,upperEnthalpy);
+			if(!(tolerance>0.0)||!std::isfinite(tolerance))return Fail(error,
+				"fire solver temperature inversion producer precision is invalid");
 			if(state.sensibleEnergyJPerM3<=lowerEnergy+tolerance){result=lowerTemperatureK;return true;}
 			if(state.sensibleEnergyJPerM3>=upperEnergy-tolerance){result=upperTemperatureK;return true;}
 			double lower=lowerTemperatureK,upper=upperTemperatureK;
@@ -389,6 +405,17 @@ namespace RISE
 			}
 			result=0.5*(lower+upper);return std::isfinite(result)||Fail(error,
 				"fire solver signed temperature inversion is non-finite");
+		}
+
+		inline bool InvertMethaneTemperatureWithinAcceptedEnvelope(
+			const MethaneCellState& state,const double lowerTemperatureK,
+			const double upperTemperatureK,
+			const FireSimulationMethaneRecord& thermochemistry,double& result,
+			std::string* error=0)
+		{
+			return InvertMethaneTemperatureWithinAcceptedEnvelope(state,lowerTemperatureK,
+				upperTemperatureK,thermochemistry,state.producerPrecision,
+				result,error);
 		}
 
 		inline bool ValidateCellState(
@@ -412,6 +439,7 @@ namespace RISE
 		inline bool EquationOfStateResidual(
 			const MethaneCellState& state,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireStateProducerPrecision producerPrecision,
 			double& result,
 			std::string* error = 0
 			)
@@ -428,7 +456,7 @@ namespace RISE
 				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(state),lowerEnthalpy,
-					upperEnthalpy,thermochemistry,error))return false;
+					upperEnthalpy,thermochemistry,producerPrecision,error))return false;
 			double gasDensity = 0.0;
 			double molarDensityKMolPerM3 = 0.0;
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
@@ -447,6 +475,14 @@ namespace RISE
 				state.temperatureK/meanWeightKGPerKMol;
 			result = std::fabs(representedPressure/thermochemistry.ThermodynamicPressurePa()-1.0);
 			return std::isfinite(result) || Fail(error,"fire solver EOS residual overflowed");
+		}
+
+		inline bool EquationOfStateResidual(const MethaneCellState& state,
+			const FireSimulationMethaneRecord& thermochemistry,double& result,
+			std::string* error=0)
+		{
+			return EquationOfStateResidual(state,thermochemistry,
+				state.producerPrecision,result,error);
 		}
 
 		struct CellTransportEvaluation
@@ -481,12 +517,13 @@ namespace RISE
 			const MethaneCellState& state,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			CellMolecularTransportEvaluation& result,
 			std::string* error = 0
 			)
 		{
 			if(!ValidateCellState(state,error)||
-				!AcceptedMethaneCellStateAdmissible(state,thermochemistry,error)||
+				!AcceptedMethaneCellStateAdmissible(state,thermochemistry,producerPrecision,error)||
 				!thermochemistry.IsValid()||!transport.IsValid())return false;
 			std::array<double,MethaneSpeciesCount> propertyDensities;
 			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
@@ -505,6 +542,15 @@ namespace RISE
 			return transport.MixturePropertiesBySpeciesOrder(massFractions.data(),
 				massFractions.size(),thermochemistry,state.temperatureK,
 				result.molecularViscosityPaS,result.molecularConductivityWPerMK,error);
+		}
+
+		inline bool EvaluateCellMolecularTransport(const MethaneCellState& state,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			CellMolecularTransportEvaluation& result,std::string* error=0)
+		{
+			return EvaluateCellMolecularTransport(state,thermochemistry,transport,
+				state.producerPrecision,result,error);
 		}
 
 		inline bool EvaluateCellTransportFromMolecular(
@@ -539,14 +585,26 @@ namespace RISE
 			const bool dns,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
+			const FireStateProducerPrecision producerPrecision,
 			CellTransportEvaluation& result,
 			std::string* error = 0
 			)
 		{
 			CellMolecularTransportEvaluation molecular;
-			return EvaluateCellMolecularTransport(state,thermochemistry,transport,molecular,error)&&
+			return EvaluateCellMolecularTransport(state,thermochemistry,transport,
+				producerPrecision,molecular,error)&&
 				EvaluateCellTransportFromMolecular(molecular,velocityGradientPerS,directionalWidthsM,
 					dns,transport,result,error);
+		}
+
+		inline bool EvaluateCellTransport(const MethaneCellState& state,
+			const double velocityGradientPerS[3][3],const double directionalWidthsM[3],
+			const bool dns,const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			CellTransportEvaluation& result,std::string* error=0)
+		{
+			return EvaluateCellTransport(state,velocityGradientPerS,directionalWidthsM,dns,
+				thermochemistry,transport,state.producerPrecision,result,error);
 		}
 
 		inline bool ComputeMixingTimeS(
@@ -766,7 +824,7 @@ namespace RISE
 				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
-					upperEnthalpy,thermochemistry,error))return false;
+					upperEnthalpy,thermochemistry,beginning.producerPrecision,error))return false;
 			bool identity=packet.sensibleEnergyDeltaJPerM3==0.0;
 			for(const double delta:packet.constituentDelta)identity=identity&&delta==0.0;
 			if(identity) {
@@ -819,7 +877,7 @@ namespace RISE
 				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(strictMaximumAcceptedTemperatureK,
 					ceilingEnthalpy.data(),ceilingEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
-					ceilingEnthalpy,fuel,error))return false;
+					ceilingEnthalpy,fuel,beginning.producerPrecision,error))return false;
 			const double relaxation = -std::expm1(-step.deltaTimeS/step.mixingTimeS);
 			const double oxygen = std::max(0.0,beginning.constituent[MethaneO2]);
 			const double primaryCandidate = step.primaryEligible ? relaxation*std::min(
@@ -1241,13 +1299,26 @@ namespace RISE
 			return std::max(1.0,result);
 		}
 
+		inline double AcceptedStateRoundoffFactor(
+			const FireAcceptedStateFeasibilityEnvelope& envelope,
+			const FireStateProducerPrecision producerPrecision)
+		{
+			if(producerPrecision==FireStateProducerPrecision::Binary64)
+				return envelope.kappaEpsilon64*std::numeric_limits<double>::epsilon();
+			if(producerPrecision==FireStateProducerPrecision::Binary32)
+				return envelope.kappaEpsilon32*std::numeric_limits<float>::epsilon();
+			return 0.0;
+		}
+
 		inline bool CertifiedConstraintRowsSatisfied(
 			const ConservativeVector& state,
 			const FireCertifiedNullspace& closure,
-			const FireAcceptedStateFeasibilityEnvelope& envelope
+			const FireAcceptedStateFeasibilityEnvelope& envelope,
+			const FireStateProducerPrecision producerPrecision
 			)
 		{
-			if(!std::isfinite(envelope.kappaEpsilon64)||envelope.kappaEpsilon64<=0.0||
+			const double roundoffFactor=AcceptedStateRoundoffFactor(envelope,producerPrecision);
+			if(!(roundoffFactor>0.0)||!std::isfinite(roundoffFactor)||
 				closure.stateDimension>
 				MethaneMassStateDimension)return false;
 			for( std::size_t row=0; row<closure.constraintRows; ++row ) {
@@ -1258,11 +1329,18 @@ namespace RISE
 					const double term=coefficient*state[column];
 					scale+=std::fabs(term);residual+=term;
 				}
-				const double bound=envelope.kappaEpsilon64*
-					std::numeric_limits<double>::epsilon()*std::max(1.0,scale);
+				const double bound=roundoffFactor*std::max(1.0,scale);
 				if(!std::isfinite(residual)||std::fabs(residual)>bound)return false;
 			}
 			return true;
+		}
+
+		inline bool CertifiedConstraintRowsSatisfied(const ConservativeVector& state,
+			const FireCertifiedNullspace& closure,
+			const FireAcceptedStateFeasibilityEnvelope& envelope)
+		{
+			return CertifiedConstraintRowsSatisfied(state,closure,envelope,
+				FireStateProducerPrecision::Binary64);
 		}
 
 		inline bool AcceptedStateAdmissible(
@@ -1270,12 +1348,13 @@ namespace RISE
 			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
 			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
 			const FireSimulationMethaneRecord& fuel,
+			const FireStateProducerPrecision producerPrecision,
 			std::string* error=0 )
 		{
 			const FireAcceptedStateFeasibilityEnvelope& envelope=
 				fuel.AcceptedStateFeasibilityEnvelope();
-			if(!fuel.IsValid()||!std::isfinite(envelope.kappaEpsilon64)||
-				envelope.kappaEpsilon64<=0.0)return Fail(error,
+			const double roundoffFactor=AcceptedStateRoundoffFactor(envelope,producerPrecision);
+			if(!fuel.IsValid()||!(roundoffFactor>0.0)||!std::isfinite(roundoffFactor))return Fail(error,
 				"fire solver accepted-state envelope record is invalid");
 			double total=0.0;
 			for(std::size_t component=0;component<MethaneConservativeDimension;++component)
@@ -1288,19 +1367,20 @@ namespace RISE
 			for(std::size_t inequality=0;inequality<4+MethaneSpeciesCount;++inequality){
 				const double value=InequalityValue(state,inequality,ambientEnthalpy,
 					adiabaticEnthalpy);
-				const double bound=envelope.kappaEpsilon64*
-					std::numeric_limits<double>::epsilon()*InequalityRoundoffScale(state,
+				const double bound=roundoffFactor*InequalityRoundoffScale(state,
 						inequality,ambientEnthalpy,adiabaticEnthalpy);
 				if(!std::isfinite(value)||value>bound)return Fail(error,
 					"fire solver accepted state violates the single r60 feasibility envelope");
 			}
 			return CertifiedConstraintRowsSatisfied(state,fuel.ConservativeReconstruction(),
-				envelope)||Fail(error,"fire solver accepted state violates the certified affine rows");
+				envelope,producerPrecision)||Fail(error,
+				"fire solver accepted state violates the certified affine rows");
 		}
 
 		inline bool AcceptedMethaneCellStateAdmissible(
 			const MethaneCellState& state,
 			const FireSimulationMethaneRecord& fuel,
+			const FireStateProducerPrecision producerPrecision,
 			std::string* error )
 		{
 			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
@@ -1309,7 +1389,23 @@ namespace RISE
 				fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
 					upperEnthalpy.data(),upperEnthalpy.size(),error)&&
 				AcceptedStateAdmissible(ToConservativeVector(state),lowerEnthalpy,
-					upperEnthalpy,fuel,error);
+					upperEnthalpy,fuel,producerPrecision,error);
+		}
+
+		inline bool AcceptedStateAdmissible(const ConservativeVector& state,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
+			const FireSimulationMethaneRecord& fuel,std::string* error)
+		{
+			return AcceptedStateAdmissible(state,ambientEnthalpy,adiabaticEnthalpy,fuel,
+				FireStateProducerPrecision::Binary64,error);
+		}
+
+		inline bool AcceptedMethaneCellStateAdmissible(const MethaneCellState& state,
+			const FireSimulationMethaneRecord& fuel,std::string* error=0)
+		{
+			return AcceptedMethaneCellStateAdmissible(state,fuel,
+				state.producerPrecision,error);
 		}
 
 		inline bool ApplyPeriodicSharedFCT(
@@ -1415,6 +1511,7 @@ namespace RISE
 			const FireSimulationMethaneRecord& thermochemistry,
 			const double lowerTemperatureK,
 			const double upperTemperatureK,
+			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& temperatureK,
 			std::string* error = 0,
 			const unsigned int workerCount = 1u
@@ -1436,10 +1533,11 @@ namespace RISE
 				const std::size_t first=cells.size()*worker/workers;
 				const std::size_t last=cells.size()*(worker+1u)/workers;
 				for(std::size_t cell=first;cell<last;++cell) {
-				MethaneCellState state = FromConservativeVector(cells[cell]);
+				MethaneCellState state = FromConservativeVector(cells[cell],producerPrecision);
 				std::string inversionError;
 				if(!InvertMethaneTemperatureWithinAcceptedEnvelope(state,lowerTemperatureK,
-					upperTemperatureK,thermochemistry,candidate[cell],&inversionError)) {
+					upperTemperatureK,thermochemistry,producerPrecision,candidate[cell],
+					&inversionError)) {
 					std::ostringstream message;
 					message << "fire solver cell " << cell << " temperature inversion failed: "
 						<< inversionError << "; constituents=";
@@ -1450,7 +1548,7 @@ namespace RISE
 				}
 				state.temperatureK = candidate[cell];
 				double equationOfStateResidual = 0.0;
-				if( !EquationOfStateResidual(state,thermochemistry,
+				if( !EquationOfStateResidual(state,thermochemistry,producerPrecision,
 					equationOfStateResidual,&inversionError) ||
 					equationOfStateResidual > 1.0e-3 ) {
 					std::ostringstream message;
@@ -1472,6 +1570,18 @@ namespace RISE
 			if(firstFailure!=noFailure) return Fail(error,failureMessage[failedWorker]);
 			temperatureK.swap(candidate);
 			return true;
+		}
+
+		inline bool InvertPeriodicTemperaturesWithinBounds(
+			const std::vector<ConservativeVector>& cells,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const double lowerTemperatureK,const double upperTemperatureK,
+			std::vector<double>& temperatureK,std::string* error=0,
+			const unsigned int workerCount=1u)
+		{
+			return InvertPeriodicTemperaturesWithinBounds(cells,thermochemistry,
+				lowerTemperatureK,upperTemperatureK,FireStateProducerPrecision::Binary64,
+				temperatureK,error,workerCount);
 		}
 
 		inline bool InvertPeriodicTemperatures(

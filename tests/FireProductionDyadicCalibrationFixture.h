@@ -708,7 +708,7 @@ namespace FireProductionDyadicCalibration
 			const ConservativeVector conservative=ToConservativeVector(state.states[cell]);
 			const double gas=state.states[cell].GasDensity();CellMolecularTransportEvaluation molecular;
 			if(!(gas>0.0)||!EvaluateCellMolecularTransport(state.states[cell],fuel,transport,
-				molecular,&error))return false;
+				state.states[cell].producerPrecision,molecular,&error))return false;
 			request.force.molecularKinematicViscosityM2PerS[cell]=
 				static_cast<float>(molecular.molecularViscosityPaS/gas);
 			for(std::size_t component=0u;component<9u;++component)
@@ -774,16 +774,20 @@ namespace FireProductionDyadicCalibration
 	{
 		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
 			return false;
+		if(production.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32)
+			return Fail(&error,"production resident state lacks binary32 producer metadata");
 		std::vector<ConservativeVector> conservative(cells);
 		for(std::size_t cell=0u;cell<cells;++cell){
 			for(std::size_t component=0u;component<9u;++component)
 				conservative[cell][component]=production.conservativeValues[component*cells+cell];
-			state.states[cell]=FromConservativeVector(conservative[cell]);
+			state.states[cell]=FromConservativeVector(conservative[cell],
+				production.conservativeProducerPrecision);
 		}
 		std::vector<double> temperature;
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
-			fuel.TemperatureMaxK(),temperature,&error,1u)||temperature.size()!=cells)return false;
+			fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,1u)||
+			temperature.size()!=cells)return false;
 		for(std::size_t cell=0u;cell<cells;++cell)state.states[cell].temperatureK=temperature[cell];
 		for(unsigned int axis=0u;axis<3u;++axis){
 			state.momentum.component[axis].assign(production.projection.momentumKGPerM2S[axis].begin(),
@@ -819,6 +823,42 @@ namespace FireProductionDyadicCalibration
 				result.maximumAbsolute=std::fabs(residual);result.cell=cell;result.row=row;}
 		}
 		return result;
+	}
+
+	struct ProductionConsumerFailure
+	{
+		std::size_t cell;
+		double temperatureK;
+		double eosResidual;
+		bool viscosityTotal;
+		ProductionConsumerFailure() : cell(std::numeric_limits<std::size_t>::max()),
+			temperatureK(0.0),eosResidual(0.0),viscosityTotal(false) {}
+	};
+
+	ProductionConsumerFailure MeasureProductionConsumerFailure(
+		const RISE::FireProductionResidentStepResult& production,const std::size_t cells)
+	{
+		ProductionConsumerFailure failure;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		for(std::size_t cell=0u;cell<cells;++cell){ConservativeVector conservative;
+			for(std::size_t component=0u;component<9u;++component)
+				conservative[component]=production.conservativeValues[component*cells+cell];
+			MethaneCellState state=FromConservativeVector(conservative,
+				FireStateProducerPrecision::Binary32);std::string error;
+			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(state,fuel.TemperatureMinK(),
+				fuel.TemperatureMaxK(),fuel,FireStateProducerPrecision::Binary32,
+				state.temperatureK,&error))continue;
+			double residual=0.0;
+			if(!EquationOfStateResidual(state,fuel,FireStateProducerPrecision::Binary32,
+				residual,&error)||residual>1.0e-3){failure.cell=cell;
+				failure.temperatureK=state.temperatureK;failure.eosResidual=residual;
+				CellMolecularTransportEvaluation molecular;
+				failure.viscosityTotal=EvaluateCellMolecularTransport(state,fuel,
+					FireSimulationTransportRecord::OpenV1(),FireStateProducerPrecision::Binary32,
+					molecular,&error)&&molecular.molecularViscosityPaS>0.0;
+				return failure;}
+		}
+		return failure;
 	}
 
 	std::string ProductionConservativeDigest(
@@ -879,6 +919,7 @@ namespace FireProductionDyadicCalibration
 							production.projection.executedJacobiSweepCount),
 						static_cast<unsigned long long>(ExpectedProjectionSweeps(
 							request.force.shape)));return 186;}
+				if(!production.projection.validationPassed)return 188;
 				if(index==0u&&step==0u){std::fprintf(stderr,"dyadic production projection "
 					"pre=%.17g post=%.17g complementarity=%.17g mean=%.17g valid=%d\n",
 					production.projection.maximumPreProjectionResidualPerS,
@@ -894,9 +935,29 @@ namespace FireProductionDyadicCalibration
 						production.projection.maximumPostProjectionResidualPerS!=0x1.6e31p-21f||
 						production.projection.maximumOpenComplementarityDiscrepancyMPerS!=
 							0x1.6a596ep-7f||
-						removedMeanBits!=0u)return 189;}
+						removedMeanBits!=0u)return 189;
+					const ProductionAffineResidual calibratingResidual=
+						MeasureProductionAffineResidual(production,states[index].states.size());
+					const FireAcceptedStateFeasibilityEnvelope& envelope=
+						FireSimulationMethaneRecord::PhysicalV1().AcceptedStateFeasibilityEnvelope();
+					const double fp32Bound=AcceptedStateRoundoffFactor(envelope,
+						FireStateProducerPrecision::Binary32);
+					if(calibratingResidual.maximumAbsolute!=5.2451771873310863e-08||
+						calibratingResidual.maximumScaled!=5.2451771873310863e-08||
+						calibratingResidual.cell!=4915u||calibratingResidual.row!=2u||
+						!(calibratingResidual.maximumScaled<fp32Bound)||
+						ProductionConservativeDigest(production)!=
+							"03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50")
+						return 190;
+					std::fprintf(stderr,"dyadic production precision envelope observed=%.17g "
+						"bound=%.17g margin=%.17g cell=%zu row=%zu\n",
+						calibratingResidual.maximumScaled,fp32Bound,
+						fp32Bound/calibratingResidual.maximumScaled,
+						calibratingResidual.cell,calibratingResidual.row);}
 				if(!ApplyProductionResult(production,states[index],error)){
 					const ProductionAffineResidual residual=MeasureProductionAffineResidual(
+						production,states[index].states.size());
+					const ProductionConsumerFailure consumer=MeasureProductionConsumerFailure(
 						production,states[index].states.size());
 					const std::string digest=ProductionConservativeDigest(production);
 					std::fprintf(stderr,"dyadic production affine residual max_abs=%.17g "
@@ -906,12 +967,17 @@ namespace FireProductionDyadicCalibration
 							kappaEpsilon64*std::numeric_limits<double>::epsilon(),digest.c_str());
 					std::fprintf(stderr,"dyadic production state reconstruction tier=%u step=%zu "
 						"failed: %s\n",Tiers[index],step,error.c_str());
-					if(index==0u&&step==0u&&
-						residual.maximumAbsolute==5.2451771873310863e-08&&
-						residual.maximumScaled==5.2451771873310863e-08&&
-						residual.cell==4915u&&residual.row==2u&&
-						digest=="03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50"&&
-						error.find("certified affine rows")!=std::string::npos)return 190;
+					std::fprintf(stderr,"dyadic production consumer failure cell=%zu temperature=%.17g "
+						"eos=%.17g viscosity_total=%d\n",consumer.cell,
+						consumer.temperatureK,consumer.eosResidual,consumer.viscosityTotal?1:0);
+					if(index==3u&&step==7u&&consumer.cell==2256u&&
+						consumer.temperatureK==348.53712185868289&&
+						consumer.eosResidual==0.0011434014099940271&&consumer.viscosityTotal&&
+						residual.maximumAbsolute==2.1925594524305645e-07&&
+						residual.maximumScaled==2.1925594524305645e-07&&
+						residual.cell==134050u&&residual.row==2u&&
+						digest=="e5a8cdfd54772cc58c8d58e3a0c32d650a71f9f428cd27c1be3e52e6a60c5b70"&&
+						error.find("accepted-state EOS gate")!=std::string::npos)return 191;
 					return 187;}
 				std::fprintf(stderr,"dyadic production tier=%u step=%zu residual=%.9g valid=%d\n",
 					Tiers[index],step,production.projection.maximumPostProjectionResidualPerS,

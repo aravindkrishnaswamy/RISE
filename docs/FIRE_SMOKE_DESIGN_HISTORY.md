@@ -2701,3 +2701,25 @@ it was already tried and refuted here.
   Metal confirmation, eight-slice readmission, and thermo/source maps remain
   unrun pending an owner ruling that makes fp32 resident output a chainable
   thermochemical state.
+
+- **r115 precision-class feasibility / r116 EOS stop (2026-08-20):** r60's
+  single accumulation-scaled accepted-state predicate now selects its unit
+  roundoff from producer metadata. Binary64 retains the immutable record's
+  `kappa64=4096`. The resident binary32 producer union is remap `256`, composed
+  force `64` (subsuming r93's `8`), and projection `256` eps32 units: union
+  `576`, rounded by the r60 rule to `kappa32=1024`. Source is exact +0 at this
+  pre-thermo seam. The former cell-4915 observation is `0.8799947063 eps32`,
+  `2327.2867x` inside the derived unit-scale envelope; an above-envelope RED
+  still fails closed. Temperature, EOS, positive-part properties, and molecular
+  viscosity all consume the state's precision metadata. No state repair,
+  resident promotion, or fp64 widening is permitted, and the feasibility
+  envelope remains separate from the future accuracy term `B_fp32`.
+
+  Exit `190` is retired by the derived ruling. The production campaign chains
+  31 additional states before exact monitored exit `191`: tier 12 step 7 cell
+  2256 has finite reconstructed temperature `348.53712185868289 K`, total
+  viscosity evaluation, and EOS residual `0.0011434014099940271`, exceeding
+  the unchanged `0.001` gate. Payload digest is `e5a8cdfd...c5b70`; maximum
+  affine excursion `2.1925594524305645e-7` is inside the fp32 envelope. This is
+  a new EOS-consistency finding, not a feasibility or `B_fp32` term. The
+  campaign stops before production Richardson pending targeted instrumentation.

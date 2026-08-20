@@ -17,6 +17,13 @@
 
 namespace RISE
 {
+	enum class FireStateProducerPrecision : unsigned char
+	{
+		Unknown=0u,
+		Binary64=1u,
+		Binary32=2u
+	};
+
 	struct FireThermochemistrySegment
 	{
 		double temperatureMinK;
@@ -72,12 +79,19 @@ namespace RISE
 		double ledgerReductionFactorEpsilon64;
 		double derivedUnionFactorEpsilon64;
 		double kappaEpsilon64;
+		double remapFactorEpsilon32;
+		double composedForceFactorEpsilon32;
+		double projectionFactorEpsilon32;
+		double derivedUnionFactorEpsilon32;
+		double kappaEpsilon32;
 
 		FireAcceptedStateFeasibilityEnvelope() :
 			limiterOutwardFactorEpsilon64(0.0), rowAccumulationFactorEpsilon64(0.0),
 			nullspaceProjectionFactorEpsilon64(0.0), sourcePacketFactorEpsilon64(0.0),
 			ledgerReductionFactorEpsilon64(0.0), derivedUnionFactorEpsilon64(0.0),
-			kappaEpsilon64(0.0) {}
+			kappaEpsilon64(0.0),remapFactorEpsilon32(0.0),
+			composedForceFactorEpsilon32(0.0),projectionFactorEpsilon32(0.0),
+			derivedUnionFactorEpsilon32(0.0),kappaEpsilon32(0.0) {}
 	};
 
 	//! Canonical synthetic RED inputs.  These records are deliberately not

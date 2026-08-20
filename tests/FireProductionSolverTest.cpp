@@ -3817,6 +3817,7 @@ int main()
 		seeded.residentProjectionInvocationCount=1u;seeded.interstageFullGridTransferCount=1u;
 		seeded.terminalStagingCount=1u;seeded.combinedCertifiedWorkingSetBytes=1u;
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
+		seeded.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 	};
 	auto fullStepResultIsDefault=[&](const FireProductionResidentStepResult& rejected) {
 		FireProductionResidentForceProjectionResult nested;
@@ -3828,7 +3829,8 @@ int main()
 			rejected.residentProjectionInvocationCount==0u&&
 			rejected.interstageFullGridTransferCount==0u&&rejected.terminalStagingCount==0u&&
 			rejected.combinedCertifiedWorkingSetBytes==0u&&
-			rejected.combinedActualMetalAllocationBytes==0u&&rejected.deviceElapsedMS==0.0;
+			rejected.combinedActualMetalAllocationBytes==0u&&rejected.deviceElapsedMS==0.0&&
+			rejected.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 	};
 	FireProductionResidentStepRequest malformedFullStep=composedStep;
 	malformedFullStep.force.cellGasDensityKGPerM3.clear();
@@ -4021,6 +4023,8 @@ int main()
 		const double wallMS=std::chrono::duration<double,std::milli>(
 			std::chrono::steady_clock::now()-beginning).count();
 		Check(advanced&&tier10ResidentStepResult.forceSchedule.substepCount==8u&&
+			tier10ResidentStepResult.conservativeProducerPrecision==
+				FireStateProducerPrecision::Binary32&&
 			tier10ResidentStepResult.cellSubmapCount==5u&&
 			tier10ResidentStepResult.dualSubmapCount==15u&&
 			tier10ResidentStepResult.residentProjectionInvocationCount==1u&&

@@ -437,8 +437,13 @@ int main()
 		r60Envelope.sourcePacketFactorEpsilon64==128.0&&
 		r60Envelope.ledgerReductionFactorEpsilon64==128.0&&
 		r60Envelope.derivedUnionFactorEpsilon64==2384.0&&
-		r60Envelope.kappaEpsilon64==4096.0,
-		"r60 accepted-state envelope is the record-derived producer-union ceiling");
+		r60Envelope.kappaEpsilon64==4096.0&&
+		r60Envelope.remapFactorEpsilon32==256.0&&
+		r60Envelope.composedForceFactorEpsilon32==64.0&&
+		r60Envelope.projectionFactorEpsilon32==256.0&&
+		r60Envelope.derivedUnionFactorEpsilon32==576.0&&
+		r60Envelope.kappaEpsilon32==1024.0,
+		"precision-class accepted-state envelope retains r60 and derives the fp32 producer union");
 	std::array<double,MethaneSpeciesCount> r60LowerEnthalpy,r60UpperEnthalpy;
 	const bool r60Bounds=fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(
 		fuel.TemperatureMinK(),r60LowerEnthalpy.data(),r60LowerEnthalpy.size(),0)&&
@@ -602,6 +607,33 @@ int main()
 	Check(!AcceptedStateAdmissible(ToConservativeVector(forwardEnvelopeState),
 		r60LowerEnthalpy,r60UpperEnthalpy,fuel,&error),
 		"accepted conservative state rejects a constituent beyond the certified fp64 envelope");
+	MethaneCellState fp32EnvelopeState=eosFixture;
+	fp32EnvelopeState.producerPrecision=FireStateProducerPrecision::Binary32;
+	const double fp32StateEnvelope=AcceptedStateRoundoffFactor(r60Envelope,
+		FireStateProducerPrecision::Binary32)*
+		AcceptedStateMassScale(ToConservativeVector(fp32EnvelopeState));
+	fp32EnvelopeState.rhoTotalZ+=0.5*fp32StateEnvelope;
+	double fp32Temperature=0.0,fp32EOSResidual=0.0;
+	CellMolecularTransportEvaluation fp32Molecular;
+	const bool fp32FailsFp64=!AcceptedStateAdmissible(ToConservativeVector(fp32EnvelopeState),
+		r60LowerEnthalpy,r60UpperEnthalpy,fuel,FireStateProducerPrecision::Binary64,&error);
+	const bool fp32Admissible=AcceptedStateAdmissible(ToConservativeVector(fp32EnvelopeState),
+			r60LowerEnthalpy,r60UpperEnthalpy,fuel,FireStateProducerPrecision::Binary32,&error);
+	const bool fp32Inverts=InvertMethaneTemperatureWithinAcceptedEnvelope(fp32EnvelopeState,
+			fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,fp32Temperature,&error)&&
+		std::isfinite(fp32Temperature);
+	fp32EnvelopeState.temperatureK=fp32Temperature;
+	const bool fp32EOS=EquationOfStateResidual(fp32EnvelopeState,fuel,fp32EOSResidual,&error)&&
+		std::isfinite(fp32EOSResidual);
+	const bool fp32Transport=EvaluateCellMolecularTransport(fp32EnvelopeState,fuel,transport,
+		fp32Molecular,&error)&&
+		fp32Molecular.molecularViscosityPaS>0.0;
+	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport,
+		"fp32-envelope states remain total through temperature, EOS, and viscosity consumers");
+	fp32EnvelopeState.rhoTotalZ+=1.5*fp32StateEnvelope;
+	Check(!AcceptedStateAdmissible(ToConservativeVector(fp32EnvelopeState),
+		r60LowerEnthalpy,r60UpperEnthalpy,fuel,FireStateProducerPrecision::Binary32,&error),
+		"binary32 producer excursions above the derived envelope still fail closed");
 
 	// V1: hydrostatic-relative buoyancy supplies no momentum in the ambient
 	// state, and pressure-open faces cold-start in their static-pressure class.

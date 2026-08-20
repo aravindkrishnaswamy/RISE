@@ -13,6 +13,7 @@
 
 #include "FireProductionProjection.h"
 #include "FireProductionTransport.h"
+#include "../../src/Library/Utilities/FireSimulationRecords.h"
 
 #include <array>
 #include <cstdint>
@@ -286,12 +287,14 @@ namespace RISEFireProductionFP64
 		std::uint64_t combinedCertifiedWorkingSetBytes;
 		std::uint64_t combinedActualMetalAllocationBytes;
 		double deviceElapsedMS;
+		RISE::FireStateProducerPrecision conservativeProducerPrecision;
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0) {}
+			deviceElapsedMS(0.0),
+			conservativeProducerPrecision(RISE::FireStateProducerPrecision::Unknown) {}
 	};
 
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,
