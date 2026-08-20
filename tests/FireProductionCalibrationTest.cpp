@@ -83,6 +83,14 @@ int main()
 	Check(!GeneralizedGridRichardson(0.95,1.0,h5,h6,h7,2.0,order,distance)&&
 		GeneralizedGridRichardson(d56,d67,h5,h6,h7,2.0,order,distance),
 		"a non-asymptotic input family cannot stand in for an evolved-output gate");
+	DyadicDistanceEstimate pairA,pairB;
+	Check(DyadicDistanceAtVerifiedOrder(0.25,1.8,pairA)&&
+		DyadicDistanceAtVerifiedOrder(0.20,1.8,pairB)&&
+		pairA.coarseDistance>pairA.fineRadius&&
+		DyadicLimitBallsOverlap(pairA.fineRadius+pairB.fineRadius,pairA,pairB)&&
+		!DyadicLimitBallsOverlap(std::nextafter(NextUp(pairA.fineRadius+pairB.fineRadius),
+			std::numeric_limits<double>::infinity()),pairA,pairB),
+		"dyadic verified-order estimates own an exact independent-limit overlap rule");
 	Check(TemporalRichardson(0.75,0.1875,2.0,order,distance)&&order==2.0&&
 		distance>=1.0,"three-level temporal Richardson uses the baseline distance");
 	double tolerance=0.0;

@@ -177,12 +177,17 @@ For a factor-two refinement, let `D_coarse=|U_dt-U_dt/2|` and
 `p=min(p_formal,log2(D_coarse/D_fine))` and the baseline-distance estimate is
 `E_dt=D_coarse/(1-2^-p)`. The two differences must
 be finite, positive, and strictly decreasing; an exact zero is admissible only
-for a separately proved algebraic identity. Tiers 5, 6, and 7 use their actual
-cell widths and a generalized three-level Richardson solve on a center-aligned,
-volume/area-overlap common support. Measured order is capped by the declared
-formal order for that solver, metric, and refinement axis. Nondecreasing
-differences, an unidentifiable order, or incompatible signed continuum
-extrapolants block calibration rather than producing a large or tuned band.
+for a separately proved algebraic identity. The retired r106 adjacent-tier
+spatial instrument is not an acceptance path. Its ratios `h5/h6=1.2` and
+`h6/h7=7/6` make the positive-order ratio interval only
+`[1.18274896,1.65846154]`; front placement and unequal domains then dominate
+that ill-conditioned quotient. Spatial calibration instead uses two exact
+dyadic pairs on one analytic, smooth, fixed-domain beginning state. Each pair
+evaluates the V2-verified lower order `p=1.8`, and the two independent
+fine-grid Richardson balls must overlap. This tests consistency without
+estimating an order from three nearly adjacent grids. The tier-6 distance is
+the outward maximum of the direct `{6,12}` estimate and the `{5,10}` estimate
+rescaled by `(h6/h5)^p`; no fitted factor is permitted.
 
 Long-horizon validation remains statistical and integral. Its block bootstrap,
 RMS, onset, frequency, and conservative time-bin terms are calibrated on the
@@ -1600,6 +1605,45 @@ cause probe of the evolved tier family or an owner-approved continuous-input
 calibration-family ruling. No solver, tolerance, or ceiling changed;
 thermo/source maps remain downstream. The tier-10 checkpoint remains
 `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+
+### 7.26 Dyadic smooth filtered calibration instrument (r109 protocol freeze)
+
+r108 remains valid evidence about the rejected adjacent-tier instrument, not
+about the oracle. Before any r109 output is produced, the replacement study is
+frozen as follows.
+
+- The common periodic box is exactly `4 D* x 4 D* x 6 D*`. Tier `r` has
+  dimensions `(4r,4r,6r)` and `h=D*/r`, so `{5,10}` and `{6,12}` are exact
+  factor-two pairs with identical physical domains. The capstone methane
+  `D*=0.2447449285392881 m` is derived from the unchanged case record.
+- Every tier samples the same analytic thermochemical state: a smooth periodic
+  convex ambient/injected mixture, smooth temperature, and a divergence-free
+  Taylor--Green MAC velocity. Sources are exact positive zero and all six
+  sides are periodic. This is an instrument state, not a replacement capstone
+  initial condition.
+- The comparison horizon is `H=t_ft/64=0.014810434142203257 s`, below the
+  `0.1 t_ft` transition/puffing class and commensurate with the eight-slice
+  contract. Exactly eight fixed steps use `dt=t_ft/512`.
+- Field observables are mollified before comparison by the nonnegative,
+  partition-of-unity tensor cubic cardinal B-spline. Its physical scale is
+  `w=h5=0.04894898570785762 m`, support radius `2w`, and every weight is the
+  exact polynomial cell integral. All tiers are sampled on the tier-5 lattice.
+  Unfiltered values and conservative integrals remain diagnostics; exact donor
+  envelopes and signed minima remain structural gates.
+- For each metric and pair, `D=||U_h-U_(h/2)||` and the V2-qualified lower
+  order is `p=1.8`. The fine-grid Richardson radius is
+  `R=D/(2^p-1)`. The two independently extrapolated limit fields must differ
+  by at most `R_5,10+R_6,12`, and each fine field must be closer than its
+  coarse partner to the other pair's extrapolate. Failure of either condition
+  is a monitored oracle-regime stop. If they pass, the tier-6 spatial term is
+  `max(D_6,12/(1-2^-p),(h6/h5)^p D_5,10/(1-2^-p))`, rounded outward.
+
+The no-Metal derivation process seals the analytic-state, schedule, filter,
+metric, record, source, and decision-rule bytes before a comparison process
+may inspect output. If any required channel fails, production refinement,
+`B_fp32`, Metal confirmation, and eight-slice readmission do not run. If all
+pass, the remaining r106 triangle campaign resumes. No solver, ceiling, or
+tolerance changes as part of this instrument redesign.
 
 ## 8. Rejected directions and future work
 

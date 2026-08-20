@@ -84,6 +84,32 @@ namespace FireProductionCalibration
 		return std::isfinite(baselineDistance);
 	}
 
+	struct DyadicDistanceEstimate
+	{
+		double coarseDistance=0.0;
+		double fineRadius=0.0;
+	};
+
+	inline bool DyadicDistanceAtVerifiedOrder(const double difference,const double verifiedOrder,
+		DyadicDistanceEstimate& estimate)
+	{
+		estimate=DyadicDistanceEstimate();
+		if(!(difference>0.0&&verifiedOrder>0.0)||!std::isfinite(difference)||
+			!std::isfinite(verifiedOrder))return false;
+		const double refinement=std::pow(2.0,verifiedOrder);
+		if(!(refinement>1.0)||!std::isfinite(refinement))return false;
+		estimate.coarseDistance=NextUp(difference/(1.0-1.0/refinement));
+		estimate.fineRadius=NextUp(difference/(refinement-1.0));
+		return std::isfinite(estimate.coarseDistance)&&std::isfinite(estimate.fineRadius);
+	}
+
+	inline bool DyadicLimitBallsOverlap(const double extrapolatedDifference,
+		const DyadicDistanceEstimate& first,const DyadicDistanceEstimate& second)
+	{
+		if(!(extrapolatedDifference>=0.0)||!std::isfinite(extrapolatedDifference))return false;
+		return extrapolatedDifference<=NextUp(first.fineRadius+second.fineRadius);
+	}
+
 	inline bool TriangleTolerance(const double productionGrid,const double productionTime,
 		const double oracleGrid,const double oracleTime,const double rounding,double& tolerance)
 	{

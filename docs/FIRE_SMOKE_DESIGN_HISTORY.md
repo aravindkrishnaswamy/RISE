@@ -2609,3 +2609,21 @@ it was already tried and refuted here.
   and eight-slice readmission do not run. Exit `162` is the monitored stop;
   no solver, tolerance, or ceiling changed, and the checkpoint remains
   `1b944176...`.
+
+- **r109 protocol freeze (2026-08-19, before evidence):** r108 is retained but
+  its adjacent-tier instrument is retired. The ratios `1.2` and `7/6` compress
+  positive orders `0<p<=2` into the fragile difference-ratio interval
+  `[1.18274896,1.65846154]`, while the old observable was exposed to front
+  placement and a `0.32--0.322 s` evolved trajectory. The replacement owns
+  exact dyadic pairs `{5,10}` and `{6,12}` on one `4D* x 4D* x 6D*` periodic
+  analytic smooth state, eight steps to `t_ft/64`, and a fixed tensor cubic
+  B-spline mollifier with scale `h5` and support radius `2h5`. It consumes the
+  already verified V2 minimum order `p=1.8`; independent extrapolated-limit
+  balls must overlap and refinement must approach the other pair's limit.
+  The tier-6 distance is the outward maximum of the direct and rescaled
+  estimates. These choices, including exact polynomial cell integration and
+  a tier-5 observation lattice, are frozen before any r109 solver output.
+  Failure of any required filtered channel stops the campaign; success resumes
+  production refinement, analytic `B_fp32`, Metal confirmation, and the
+  eight-slice gate. The tier-10 checkpoint is not an input to this instrument
+  and remains byte-untouched.
