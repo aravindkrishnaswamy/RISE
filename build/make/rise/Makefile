@@ -206,17 +206,17 @@ build-test/% : $(PATHTESTDEST)%
 # Compile and link split into two rules so a library-only change relinks
 # WITHOUT recompiling every test translation unit (the .d dependency files
 # emitted by $(CXXFLAGS_DEPS) keep the .o rebuilds header-accurate).
-$(PATHTESTS)%.o : $(PATHTESTS)%.cpp
-	@echo Compiling: $<
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHTESTS)fire_production_fp64/%.o : $(PATHTESTS)fire_production_fp64/%.cpp
+	@echo Compiling strict fp64 calibration mirror: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 $(PATHTESTS)FireProductionCalibrationTest.o : $(PATHTESTS)FireProductionCalibrationTest.cpp
 	@echo Compiling strict calibration gate: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-$(PATHTESTS)fire_production_fp64/%.o : $(PATHTESTS)fire_production_fp64/%.cpp
-	@echo Compiling strict fp64 calibration mirror: $<
-	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHTESTS)%.o : $(PATHTESTS)%.cpp
+	@echo Compiling: $<
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 $(PATHTESTDEST)FireProductionCalibrationTest : $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
