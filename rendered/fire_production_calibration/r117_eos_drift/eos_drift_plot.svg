@@ -6,8 +6,8 @@
   <line x1="70" y1="80" x2="70" y2="440" stroke="#718096"/>
   <line x1="70" y1="140" x2="840" y2="140" stroke="#f56565" stroke-width="2" stroke-dasharray="8 6"/>
   <text x="690" y="133" fill="#fc8181" font-family="sans-serif" font-size="12">EOS ceiling 1.0e-3</text>
-  <line x1="70" y1="395.5" x2="840" y2="395.5" stroke="#68d391" stroke-dasharray="4 5"/>
-  <text x="600" y="389" fill="#68d391" font-family="sans-serif" font-size="12">G/r = 1.48195e-4</text>
+  <line x1="70" y1="394.2" x2="840" y2="394.2" stroke="#68d391" stroke-dasharray="4 5"/>
+  <text x="600" y="387.7" fill="#68d391" font-family="sans-serif" font-size="12">G/r = 1.52725e-4 (provisional)</text>
   <polyline points="90,391.3 190,352.8 290,313.4 390,272.7 490,230.8 590,187.5 690,142.9 790,97.0" fill="none" stroke="#f6ad55" stroke-width="3"/>
   <polyline points="90,361.8 190,351.2 290,313.4 390,272.7 490,230.8 590,187.5 690,142.9 790,97.0" fill="none" stroke="#fbd38d" stroke-width="2" stroke-dasharray="6 4"/>
   <polyline points="90,391.3 190,394.9 290,404.3 390,408.7 490,402.1 590,389.4 690,382.0 790,385.9" fill="none" stroke="#63b3ed" stroke-width="3"/>

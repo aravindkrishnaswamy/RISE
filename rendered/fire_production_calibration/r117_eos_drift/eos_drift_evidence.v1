@@ -1,5 +1,5 @@
 schema fire_production_eos_drift_evidence_v1
-protocol_commit 2a57aa2465206aa40c980866f71df6d000e542cc
+protocol_commit e7eb8834a43f6dffa8b905e09a7ff7fab7ca1600
 golden_checkpoint_sha256 1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947
 tier 12
 campaign_step_indices 0 1 2 3 4 5 6 7
@@ -14,13 +14,19 @@ restored_field_max_signed 0.00026066224468057619 0.00015617602691020416 -0.00017
 restored_field_max_cell 79206 165408 39755 86706 40 1 79200 47
 restored_projection_valid 0 1 0 0 1 0 0 1
 restored_projection_post_residual_hex 0x1.ac94p-12 0x1.35p-16 0x1.ac8658p-12 0x1.adf6p-12 0x1.3dc8p-16 0x1.a8263p-12 0x1.ace4p-12 0x1.57fp-16
-generation_G 0.0001486658786928885
-drain_reference 0.000697411360109923
-counterfactual_probe 0.00029058390971270498
-drained_amount 0.00069962586998650877
-drain_fraction_r 1.0031753280821762
-predicted_plateau_G_over_r 0.00014819530996351454
-plateau_to_ceiling_ratio 0.14819530996351454
+capacity_restored_projection_valid 0
+capacity_restored_projection_pre_residual_hex 0x1.fc125ap-2
+capacity_restored_projection_post_residual_hex 0x1.ac2p-12
+capacity_drained_projection_valid 0
+capacity_drained_projection_pre_residual_hex 0x1.1a9968p-1
+capacity_drained_projection_post_residual_hex 0x1.acbf72p-12
+generation_G 0.00015319163029481331
+drain_reference 0.00084154390100632526
+counterfactual_probe 0.00029928827030656358
+drained_amount 0.00084411313968746349
+drain_fraction_r 1.0030530061213276
+predicted_plateau_G_over_r 0.00015272535883939468
+plateau_to_ceiling_ratio 0.15272535883939467
 target_audit_r69 production_absolute_reference_absent
 target_audit_r70 production_candidate_advective_anomaly_closure_absent
 target_source pre_extracted_oracle_divergence_target

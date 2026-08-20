@@ -967,6 +967,10 @@ namespace FireProductionDyadicCalibration
 			std::array<unsigned int,8> observedRestoredValid={{}};
 			double observedGeneration=0.0,observedDrainFraction=0.0;
 			double observedPredictedPlateau=0.0;
+			float observedOneOffRestoredPreResidual=0.0f;
+			float observedOneOffRestoredPostResidual=0.0f;
+			float observedOneOffDrainedPreResidual=0.0f;
+			float observedOneOffDrainedPostResidual=0.0f;
 			for(std::size_t step=0u;step<8u;++step){
 				ProductionEOSDeviation beginningDeviation;
 				std::vector<double> beginningDeviationField;
@@ -1059,6 +1063,10 @@ namespace FireProductionDyadicCalibration
 							&error)){std::fprintf(stderr,"EOSDRAIN restored step-6 call failed: %s\n",
 								error.c_str());return 202;}
 						restoredProjectionValid=restored.projection.validationPassed;
+						observedOneOffRestoredPreResidual=
+							restored.projection.maximumPreProjectionResidualPerS;
+						observedOneOffRestoredPostResidual=
+							restored.projection.maximumPostProjectionResidualPerS;
 						if(!restoredProjectionValid)std::fprintf(stderr,
 							"EOSDRAIN restored step-6 projection failed pre=%.17g post=%.17g\n",
 							restored.projection.maximumPreProjectionResidualPerS,
@@ -1095,6 +1103,10 @@ namespace FireProductionDyadicCalibration
 							drained.projection.maximumPreProjectionResidualPerS,
 							drained.projection.maximumPostProjectionResidualPerS);
 						drainedProjectionValid=drained.projection.validationPassed;
+						observedOneOffDrainedPreResidual=
+							drained.projection.maximumPreProjectionResidualPerS;
+						observedOneOffDrainedPostResidual=
+							drained.projection.maximumPostProjectionResidualPerS;
 						ProductionEOSDeviation drainedDeviation;
 						if(!MeasureProductionEOSDeviation(drained,states[index].states.size(),
 							failingProbeCell,drainedDeviation,error))return 206;
@@ -1155,9 +1167,14 @@ namespace FireProductionDyadicCalibration
 							observedRestoredMaximumCell!=expectedRestoredMaximumCell||
 							observedRestoredPostResidual!=expectedRestoredPostResidual||
 							observedRestoredValid!=expectedRestoredValid||
-							observedGeneration!=0.0001486658786928885||
-							observedDrainFraction!=1.0031753280821762||
-							observedPredictedPlateau!=0.00014819530996351454)return 214;
+							observedGeneration!=0.00015319163029481331||
+							observedDrainFraction!=1.0030530061213276||
+							observedPredictedPlateau!=0.00015272535883939468||
+							restoredProjectionValid||drainedProjectionValid||
+							observedOneOffRestoredPreResidual!=0x1.fc125ap-2f||
+							observedOneOffRestoredPostResidual!=0x1.ac2p-12f||
+							observedOneOffDrainedPreResidual!=0x1.1a9968p-1f||
+							observedOneOffDrainedPostResidual!=0x1.acbf72p-12f)return 214;
 					}
 				}
 				if(!production.projection.validationPassed)return 188;

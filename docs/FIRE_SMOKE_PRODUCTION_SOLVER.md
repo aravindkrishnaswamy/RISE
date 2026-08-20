@@ -1886,17 +1886,26 @@ production-state r69 absolute reference nor a production-candidate r70
 advective-anomaly closure.
 
 The earlier transition-7 capacity values are retired because they did not
-measure the failing configuration. The corrected transition-8 values are
-re-derived before this conclusion is re-admitted. The eight-step r69 shadow
-remains diagnostic: its probe stays
-`1.04e-4--1.93e-4` and its absolute field maximum `1.56e-4--3.37e-4`. But the
-fixed single projection validates only transitions 2, 5, and 8. The other five
-post residuals plateau at `4.045e-4--4.100e-4`, so the restoration cannot yet
-be landed under the existing projection contract. The corrected
-failing-transition capacity measurement and its two projection-valid bits are
-regenerated before the architecture classification and durable artifact hashes
-are admitted. No solver or gate changes in r117. Production Richardson and
-subsequent calibration stages remain stopped.
+measure the failing configuration. At transition 8 the corrected capacity-only
+readout is `G=1.5319163029481331e-4`, `r=1.0030530061213276`, and
+`G/r=1.5272535883939468e-4`, or `0.15272535883939467` of the EOS ceiling.
+Its full-gain projection and the carried-state projection are both invalid:
+their exact post residuals are respectively `0x1.ac2p-12` and
+`0x1.acbf72p-12`. The eight-step r69 shadow agrees in state space: its probe
+stays `1.04e-4--1.93e-4` and its absolute field maximum
+`1.56e-4--3.37e-4`. But the fixed single projection validates only transitions
+2, 5, and 8; the other five post residuals plateau at
+`4.045e-4--4.100e-4`.
+
+Thus restoration would put the EOS plateau below the ceiling, but the existing
+single-projection schedule cannot admit the restoration targets. This is an
+architecture-capacity finding, not authorization to land r69. Restoration
+gain, a manifold-residual-only second projection, or a new derived production
+ceiling have different contract consequences and need an owner ruling. No
+solver or gate changes in r117. Exact evidence and its plot are stored under
+`rendered/fire_production_calibration/r117_eos_drift/` with SHA-256
+`ea7943ef...848c` and `c8a2677d...a1a0`. Production Richardson and subsequent
+calibration stages remain stopped.
 
 ## 8. Rejected directions and future work
 

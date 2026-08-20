@@ -2785,13 +2785,17 @@ it was already tried and refuted here.
   on transition 3. The target audit finds the known hole reborn: the production
   request copies the sealed oracle target and has neither its own r69 absolute
   term nor an r70 production-candidate closure. The originally recorded
-  one-shot `G/r` used transition 7 and is retired; the failing-transition value
-  must be regenerated before the capacity conclusion is re-admitted. The
-  eight-step shadow and its 3/8 projection-valid bitmap remain diagnostic, but
-  do not substitute for that corrected attribution. Gain,
-  manifold-residual-only second projection, and a new derived ceiling remain
-  explicit owner-level alternatives. No solver or gate changed; production
-  Richardson remains stopped.
+  one-shot `G/r` used transition 7 and is retired. The corrected transition-8
+  capacity-only values are `G=1.5319163029481331e-4`,
+  `r=1.0030530061213276`, and `G/r=1.5272535883939468e-4`. Both one-off
+  projection-valid bits are zero, with exact post residuals `0x1.ac2p-12` and
+  `0x1.acbf72p-12`. The eight-step shadow likewise validates only 3/8 calls.
+  Restoration therefore predicts a state-space plateau well below the EOS
+  ceiling, but exceeds the current fixed projection schedule's admissible
+  target capacity. Gain, a manifold-residual-only second projection, and a new
+  derived ceiling remain explicit owner-level alternatives. No solver or gate
+  changed; production Richardson remains stopped. Durable evidence/plot hashes
+  are `ea7943ef...848c` and `c8a2677d...a1a0`.
 
   Replay is an independently binding outcome. Exact
   `RISE_FIRE_EOS_DRIFT_PROBE=1` returns `215` only after the frozen arrays,
