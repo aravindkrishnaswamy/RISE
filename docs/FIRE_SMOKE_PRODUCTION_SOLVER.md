@@ -1907,6 +1907,78 @@ solver or gate changes in r117. Exact evidence and its plot are stored under
 `ea7943ef...848c` and `c8a2677d...a1a0`. Production Richardson and subsequent
 calibration stages remain stopped.
 
+### 7.33 Resident manifold-restoration projection (r118, pre-evidence)
+
+r118 resolves the r117 capacity finding with a second resident projection.
+The first projection remains the physical projection against the sealed
+`S_div` field. Its Private momentum result is not staged: it is borrowed by a
+second invocation of the same Metal projection implementation. The second
+invocation is a correction solve whose only authored divergence increment is
+
+`R_n = float((V(Q^n)-1)/float(dt))`.
+
+It therefore preserves the physical divergence already achieved by the first
+pass; it is not an absolute projection to `R_n` and it never receives the
+physical target. Open-boundary pressure correction is homogeneous in this
+pass. The resident API binds the expected Private restoration-target buffer by
+identity. Passing the physical target, a Shared target, a short buffer, or an
+aliased buffer fails before the restoration command is created. Only the final
+restoration result is staged at the step boundary. Scalar projection
+diagnostics may be read between passes; no full-grid device/host transfer is
+permitted.
+
+The two passes own different validation contracts. The physical pass retains
+the existing `0.005 U/L` criterion. The restoration pass derives its scale
+from its own authored divergence increment and requires
+`max |div(u_after)-div(u_before)-R_n| <= 0.005 max |R_n|`. A zero restoration
+field therefore requires an exact-zero incremental residual. No physical
+velocity, physical target, or physical tolerance is borrowed by the second
+criterion. The first restored successor exposes a new physical-input class:
+the former 16-cycle physical schedule leaves about `4.09e-4 s^-1` and misses
+its unchanged band, while one additional V-cycle is sufficient. The composed
+resident owner consequently fixes 17 pressure-open cycles for its first pass
+and 16 for the restoration pass; standalone and removed-restoration physical
+projection schedules remain unchanged. This is extra solver work, not a
+tolerance change or a gain.
+
+Restoration is deadbeat (`gamma=1`); no gain constant exists. A gain is
+rejected because a value inferred in one density/boundary/target window has no
+derived transfer across the production gamma-window regimes and would turn a
+feasibility correction into a fitted knob. A derived wider EOS ceiling is
+rejected for the same regime-dependence reason: the measured `G/r` diagnoses
+this producer/solver pair, while the `1.0e-3` EOS ceiling governs every
+consumer and producer. Moving that ceiling would mask producer defects outside
+the measured window. Production intentionally omits r70's Picard
+advective-anomaly closure. Its omission is explicit: the measured per-step
+generation is `G`, while deadbeat absolute restoration predicts
+`G/r=1.5272535883939468e-4`, 15.2725% of the unchanged ceiling and a 6.55-fold
+margin.
+
+Before r118 evidence is inspected, the long resident protocol is fixed as
+follows. It starts from the immutable analytic tier-12 calibration beginning,
+uses exact positive-zero sources, and advances 104 steps: thirteen complete
+phase-balanced repetitions of the already sealed eight-slice physical-target
+schedule. This is a controlled restoration-capacity trajectory, not new
+long-horizon oracle evidence. Every step records the cell-2256 signed EOS
+deviation, the independently searched signed field maximum and cell, both
+projection pre/post residuals and validation bits, invocation/transfer counts,
+the accepted-state envelope excursion, and the conservative payload digest.
+The calibrating plateau statistic is the maximum absolute cell-2256 deviation
+over the final 32 steps; the final-32 field maximum is recorded separately and
+must remain below `1.0e-3`. Both projections must validate on all 104 calls.
+After eight warm-up calls, the remaining 96 completed calls define device and
+wall p95; the maximum certified and observed allocation totals are also pinned.
+
+Three RED classes are frozen. `removed` retains the former one-projection
+schedule and must reproduce all eight exact r117 secular-blowthrough values,
+including exit 191. `full-target` substitutes the physical target at the
+second-pass ownership seam and must fail before the second projection command.
+The resident transfer/allocation REDs are re-run for both passes, and the fp32
+producer union is re-derived as remap `256` + force `64` + two projection
+terms `2*256 = 512`, total `832 epsilon32`; the r60 power-of-two rule therefore
+keeps `kappa32=1024`. This feasibility envelope remains distinct from the
+future accuracy term `B_fp32`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

@@ -2802,3 +2802,35 @@ it was already tried and refuted here.
   corrected failing-transition capacity values, and both one-off
   projection-valid bits match. A malformed nonempty activation returns `216`;
   the ordinary uninstrumented campaign retains exit `191`.
+
+- **r118 manifold-restoration protocol (2026-08-20, frozen before long-run
+  evidence):** the owner ruling selects a second resident projection and
+  rejects both restoration gain and a derived EOS ceiling. The first pass owns
+  the sealed physical target and its unchanged `0.005 U/L` validation. Its
+  Private momentum is borrowed without staging by a correction-only second
+  pass whose sole authored divergence increment is
+  `float((V(Q^n)-1)/float(dt))`; the second pass owns the independent criterion
+  `max|Delta div-R| <= 0.005 max|R|`, homogeneous open pressure correction, and
+  an identity-bound Private target. Deadbeat `gamma=1` is structural. A fitted
+  gain and a widened EOS ceiling are both rejected because an observed
+  gamma-window contraction does not transfer across density, boundary, and
+  target regimes. r70's advective-anomaly closure remains intentionally absent:
+  r117's `G/r=1.5272535883939468e-4` is 15.2725% of the unchanged ceiling, a
+  6.55-fold margin, and is the prediction to test rather than a new constant.
+
+  A schedule admission probe showed that the new restored successor is a real
+  new main-pass regime: 16 physical V-cycles leave about `4.09e-4 s^-1` and
+  miss the existing band, while the first deterministic extension, 17 cycles,
+  passes it; restoration retains 16 cycles under its own scale. No tolerance
+  moved. The predeclared evidence run is 104 tier-12 resident steps, thirteen
+  repetitions of the sealed eight-target phase, with exact +0 sources. It pins
+  the maximum absolute cell-2256 deviation over the final 32 steps, the
+  final-32 field maximum, all 208 validation bits/residuals, envelope and
+  payload digests, zero full-grid interstage transfers, allocation maxima, and
+  device/wall p95 over the final 96 calls. The old eight-value blowthrough is
+  the removal RED; physical-target substitution is the mis-wiring RED. The
+  binary32 feasibility union becomes `256+64+2*256=832 epsilon32`, still
+  rounding to `kappa32=1024`. The golden checkpoint remains outside this
+  controlled capacity trajectory and byte-untouched. Production Richardson,
+  `B_fp32`, Metal confirmation, eight-slice readmission, and thermo/source maps
+  remain sequenced after this gate.
