@@ -156,19 +156,41 @@ continuing from unknown bytes is not monitored acceptance.
 
 ### 5.1 Calibration rule
 
-Each metric m has an oracle calibration package containing repeated oracle
-runs, adjacent dt/grid refinements, the V-tier expected value, and the preserved
-tier-10 prefix where applicable. Define
+Calibration has two horizon classes and they do not share a tolerance model.
+For a deterministic short-horizon metric `m`, define the outward-rounded
+triangle bound
 
-`B_m = max(3 sigma_block,m, 1.25 |m_oracle,fine - m_oracle,coarse|,
-           B_fp32,m)`.
+`T_m = E_h,prod,m + E_dt,prod,m + E_h,oracle,m + E_dt,oracle,m + B_fp32,m`.
 
-`sigma_block,m` is the fixed-block bootstrap spread of the oracle time series;
-for bit-identical repeats it is zero. `B_fp32,m` is the independently measured
-table/reduction quantization floor. A metric passes only when the production
-difference is at most `min(B_m, C_m)`, where C_m is the scientific ceiling
-below. Calibration bytes and the resulting tolerance are versioned evidence;
-the production run may not estimate its own tolerance.
+`E_h` and `E_dt` are Richardson distances from the compared baseline to the
+solver's own apparent continuum limit. They are evaluated separately for the
+production scheme and the certified scheme; a production-versus-oracle
+difference is never used to estimate either term. `B_fp32` is an analytic
+roundoff bound for the production operation graph, instantiated from sealed
+input bytes. The fp32-Metal versus fp64-same-scheme difference only confirms
+that bound and never selects it. A short-horizon metric passes only when its
+observed difference is at most `min(T_m,C_m)`.
+
+Three temporal levels (`dt`, `dt/2`, `dt/4`) reach the same physical end time.
+For a factor-two refinement, let `D_coarse=|U_dt-U_dt/2|` and
+`D_fine=|U_dt/2-U_dt/4|`. Then
+`p=min(p_formal,log2(D_coarse/D_fine))` and the baseline-distance estimate is
+`E_dt=D_coarse/(1-2^-p)`. The two differences must
+be finite, positive, and strictly decreasing; an exact zero is admissible only
+for a separately proved algebraic identity. Tiers 5, 6, and 7 use their actual
+cell widths and a generalized three-level Richardson solve on a center-aligned,
+volume/area-overlap common support. Measured order is capped by the declared
+formal order for that solver, metric, and refinement axis. Nondecreasing
+differences, an unidentifiable order, or incompatible signed continuum
+extrapolants block calibration rather than producing a large or tuned band.
+
+Long-horizon validation remains statistical and integral. Its block bootstrap,
+RMS, onset, frequency, and conservative time-bin terms are calibrated on the
+corresponding V-tier, empirical, or prefix campaign. Short-horizon pointwise
+bands are valid for at most eight chained steps and may not be reused for a
+ninth step or a long chaotic trajectory. Calibration inputs, output evidence,
+and resulting tolerances are separate versioned artifacts; production output
+cannot mutate or complete the sealed input manifest.
 
 ### 5.2 Scientific ceilings
 
@@ -205,6 +227,27 @@ ceiling is never widened to admit production output.
    Production is compared at oracle timestamps by conservative time-bin
    integration, never by dropping samples. Required gates are HRR trajectory
    and integral, T_max trajectory, ignition/puffing onset, and physical ceilings.
+
+### 5.4 Short-horizon calibration quantities
+
+The short-horizon registry is dimensioned, never a maximum across unlike
+units. It contains a volume-normalized `L1` field metric and one physical
+integral for each of the nine conservative channels, plus volume-weighted `L2`
+cell-centered velocity and projection residual. Density-like channels,
+`rho_tot Z`, carbon aerosol, and sensible enthalpy retain their own units and
+bands. Pointwise `L_inf` at a transported discontinuity is not used for a
+Richardson term; exact local donor envelopes and signed inventory minima remain
+separate structural gates. Every metric declares its support, cell/face
+overlap rule, normalization (if any), formal spatial/temporal order, scientific
+ceiling, and horizon class before evidence is produced.
+
+The exact step-3479 bytes seed two different gates. A local-slice ensemble may
+restart from separately SHA-bound oracle beginnings and diagnoses one-step
+operator behavior. A short trajectory must instead chain each solver's own
+accepted state from the root for at most eight steps. Substituting the next
+oracle snapshot into a production chain is a structural failure. `S_div`,
+source operands, boundary records, and schedules are sealed comparison inputs;
+none is obtained live from the oracle invocation being judged.
 
 ## 6. Provenance and artifacts
 
@@ -1417,6 +1460,78 @@ fixture therefore records all eight monitored deviations and deliberately
 returns a calibration-blocked result at the end. r105 stops here rather than
 blessing production output or widening a ceiling. The immutable checkpoint
 remains SHA-256 `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+
+### 7.23 Calibration protocol freeze (r106)
+
+Before producing new calibration evidence, r106 replaces section 5.1's old
+maximum-of-terms rule with the additive triangle bound. The input manifest is
+sealed separately from all solver output. It contains the exact tier-5/6/7
+shapes and spacings, centered common-support geometry, `dt`, `dt/2`, `dt/4`,
+boundary/source/`S_div` bytes, metric registry and units, formal orders,
+operation-topology and solver-source digests, strict-fp/compiler requirements,
+and all eight golden beginning hashes. Result-like fields are forbidden.
+
+The tier calibration states are fresh, case-bound certified tier-5/6/7 states
+at the sealed physical time `0.32 s`, just after the adopted pilot ignition
+window begins to produce both annular and plume-edge gradients. Their
+ceil-rounded domains differ, so x/y are
+aligned by domain center, z by the common floor, cells use exact overlap
+volumes, MAC values use area weights plus normal interpolation, and comparisons
+use only the exact mutual physical support. Whole-box inventories from the
+three unequal domains are not refinement evidence. The original tier-10
+checkpoint remains read-only and is hashed before and after every phase. A
+pre-extracted and hashed divergence target is reused by both solvers; the
+production request cannot consume a target emitted by the oracle run under
+comparison.
+
+The production fp64 mirror is generated from the strict CPU production
+arithmetic bodies and is source-digest bound. It executes the same five cell
+submaps, fifteen dual submaps, frozen one-to-eight viscous substeps, explicit
+source order, and one fixed sixteen-cycle pressure-open projection. Stored
+fp32 inputs are promoted exactly. The float instantiation must reproduce the
+existing CPU comparators byte-for-byte before the double instantiation can be
+evidence.
+
+The operation trace/topology machinery described normatively in r89/r90 was
+not present when r105 stopped; r106 treats that as an implementation gate, not
+as prior evidence. Derivation runs in a process that cannot dispatch Metal and
+atomically seals an input-and-bound manifest. Confirmation runs in a separate
+process that may execute fp32 Metal but cannot alter or complete the manifest.
+
+`B_fp32` is derived without reading the fp32-minus-fp64 result. For every
+kernel, an independent topology walk and an execution trace must agree on
+operation kinds, reduction depths, operand envelopes, denominator lower
+bounds, and discontinuous-branch margins. With unit roundoff `u=2^-24`, each
+stage supplies an outward local term `beta_k` and condition amplification
+`kappa_k`; the composed recurrence is
+
+`B_(k+1) = nextUp(kappa_k B_k + beta_k)`.
+
+The generator rejects `n*u>=1`, a trace/topology disagreement, an unresolved
+branch margin, nonfinite outward arithmetic, or a bound above its scientific
+ceiling. The resulting parametric certificate is confirmed on identical
+tier-6 fp32 Metal/fp64 mirror inputs, then instantiated independently for every
+SHA-bound tier-10 short-horizon input. A tier-6 number is never copied onto a
+tier-10 topology.
+
+Generalized three-grid Richardson uses
+`D56=||U5-U6||`, `D67=||U6-U7||`, solves
+`D56/D67=(h5^p-h6^p)/(h6^p-h7^p)`, and estimates the tier-6 distance as
+`E_h=D67/(1-(h7/h6)^p)`. Three equal-horizon temporal levels estimate the
+baseline `dt` distance. The mutual-limit premise is itself gated:
+signed/restricted production and oracle extrapolants must overlap within their
+separately estimated unresolved remainders. The final tolerance is the
+outward sum of the four scheme-distance terms and analytic `B_fp32`; no safety
+factor or production-derived constant is permitted.
+
+Finally, the eight-step short gate chains each solver from step 3479 and stores
+`[step][channel/quantity]` evidence. The earlier r105 campaign is retained and
+renamed a local-slice ensemble; its cumulative mixed-unit scalar maximum is
+diagnostic only. If any chained quantity exceeds the derived model, stage
+probes partition cell transport, dual transport, frozen force, sources, and
+projection before either solver or the contract is changed. Long-horizon
+pointwise comparison remains rejected; V-gates, tier-6 empirical rows, and
+prefix integrals own that chaotic-flow regime.
 
 ## 8. Rejected directions and future work
 

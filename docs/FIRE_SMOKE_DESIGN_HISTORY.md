@@ -2544,3 +2544,35 @@ it was already tried and refuted here.
   while the required tier-6 adjacent-grid and analytic `B_fp32` evidence is
   absent. The fixture accumulates all eight deviations and fails at validation
   time; it does not tune a tolerance from production output.
+
+- **r106 (2026-08-19):** calibration protocol frozen before new evidence.
+  Short-horizon acceptance now uses the outward triangle sum of production
+  spatial/time Richardson distances, oracle spatial/time Richardson distances,
+  and an analytic production `B_fp32`; the former max-of-variability rule is
+  retained only for the long-horizon statistical/integral class. Tiers 5/6/7
+  and `dt,dt/2,dt/4` are mandatory so each solver/metric measures its own order,
+  capped by formal order, on a centered physical-overlap support. Component
+  scalar `L1`, velocity `L2`, and physical ledgers are dimensioned separately;
+  steep-front `L_inf` remains a structural envelope gate rather than a
+  Richardson observable. The signed
+  continuum estimates must also be mutually compatible.
+
+  Fresh case-bound tier states are taken at exactly `0.32 s`; this is fixed
+  before the campaign because it contains both pilot-ring and plume-edge
+  gradients without borrowing a production observation.
+
+  A separately hashed input manifest owns state, `S_div`, source, boundary,
+  topology, metric, compiler, and schedule bytes and forbids result fields.
+  The fp64 production mirror is generated from the strict production CPU
+  bodies and keeps five cell, fifteen dual, N-nu frozen-force, source, and one
+  fixed sixteen-cycle projection topology. `B_fp32` comes from the independent
+  operation-graph recurrence `B' = nextUp(kappa B + beta)` with `u=2^-24`;
+  fp32-versus-fp64 evidence may only confirm it. Tier-10 receives separately
+  instantiated bounds. The r89/r90 operation-trace language was a requirement,
+  not an implemented artifact; r106 makes its absence an explicit gate and
+  separates a no-Metal derivation process from immutable Metal confirmation.
+  Scalar channels and ledgers remain dimensioned and
+  separate. The old eight restartable taps are explicitly local-slice evidence;
+  a short trajectory chains each solver's own state for at most eight steps,
+  while long chaotic horizons use only V/empirical/prefix statistical and
+  integral gates.
