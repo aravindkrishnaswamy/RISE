@@ -1694,6 +1694,44 @@ B-spline support lies wholly inside the physical domain, so only physical cell
 integrals contribute. This boundary/window choice is sealed before any r112
 advance.
 
+### 7.30 Dyadic oracle acceptance and fp32 state-admissibility stop (r113)
+
+The durable r112 directory is
+`rendered/fire_production_calibration/r112_dyadic_smooth_open/`. Its protocol
+manifest SHA-256 is
+`42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed`;
+its eight-step target manifest SHA-256 is
+`d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b`.
+The dedicated no-Metal comparison byte-verifies every sealed `S_div` payload
+and exact-binds all 27 scalar evidence values (`D_5,10`, `D_6,12`, and the
+extrapolated-limit difference). Every conservative channel passes both the
+independent-limit-ball and cross-pair-approach rules. The direct tier-6 oracle
+distance terms range from `4.0730194870657798e-8` for `C(gr)` through
+`27.496545640537025` for sensible enthalpy. The redesigned dyadic,
+short-horizon, mollified oracle instrument is therefore accepted.
+
+Production refinement is not yet admissible. The first tier-5 resident step
+uses the sealed target, exact positive-zero sources, sixteen fixed projection
+cycles, the shape-derived exact smoother count, and zero interstage full-grid
+transfers. Its raw conservative payload is finite and gas-positive, with
+SHA-256 `03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50`.
+Nevertheless the payload has maximum certified-row residual
+`5.2451771873310863e-8` (row 2, cell 4915). That is `0.8799947063` binary32
+unit roundoff but `57,671.3331` times the record's current fp64 admissibility
+envelope `9.0949470177292824e-13`. The next step cannot invert temperature or
+derive molecular viscosity without either an unruled state projection or a
+new analytically derived fp32 feasibility envelope. The canonical command
+
+`./bin/tests/FireSequenceTest --fire-production-calibration-check-dyadic-production rendered/fire_production_calibration/r112_dyadic_smooth_open 42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b`
+
+returns exact monitored stop `190`. This is not a failure of the newly
+accepted oracle regime and is not a license to infer `B_fp32` from the
+measurement. The next design ruling must state how strict-binary32 resident
+transport outputs become accepted thermochemical beginnings, derive its bound
+before confirmation, and preserve conservative ledgers. Until then the
+production Richardson, `B_fp32`, Metal confirmation, eight-slice, and source-
+map campaigns remain blocked. The tier-10 checkpoint remains byte-untouched.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

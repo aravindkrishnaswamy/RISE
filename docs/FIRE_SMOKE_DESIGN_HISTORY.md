@@ -2655,3 +2655,32 @@ it was already tried and refuted here.
   from every side, so its complete `2h5` support never consumes a ghost or
   wrap. No r111 solver evidence exists; all numerical acceptance rules remain
   unchanged.
+
+- **r112 oracle acceptance / r113 production stop (2026-08-19):** the sealed
+  dyadic open-boundary instrument is now asymptotic in all nine filtered
+  conservative channels. Its protocol and target manifests are respectively
+  `42185c882c52...15a4ed` and `d4947cb8eedb...e958b`; both independent
+  limit-ball and cross-pair-approach tests pass. Representative tier-pair
+  distances are `2.7470874096e-5 / 1.9110121791e-5` for `rho_total_Z`,
+  `4.0231720361e-5 / 2.7979909266e-5` for O2, and
+  `27.2136975348 / 19.0562311507` for sensible enthalpy. This accepts the
+  redesigned oracle instrument and retires r108's adjacent-tier refusal as an
+  instrument-design result.
+
+  The first strict-fp32 resident production step then exposed two production
+  integration defects before a production Richardson term could be formed.
+  First, the make path had omitted the source-local strict-FP rule for
+  `FireProductionAdvectionMac.mm`; `-ffast-math` changed the host packed-gas
+  ownership sum by one ULP. The rule and a path-bound RED now match the other
+  production TUs. With that repaired, tier-5 step zero returns a finite,
+  positive conservative payload whose exact digest is
+  `03faf5aad21e...64e50`, but its certified affine row 2 has maximum scaled
+  residual `5.2451771873310863e-8` at cell 4915. This is only `0.879995`
+  binary32 unit roundoff, yet it is `57,671.33x` the existing fp64 accepted-
+  state envelope, so temperature inversion and the next molecular-viscosity
+  request structurally reject. Exit `190` is the exact monitored r113 stop.
+  No nullspace projection, tolerance widening, solver change, or post-hoc
+  continuation was introduced. Production refinement, analytic `B_fp32`,
+  Metal confirmation, eight-slice readmission, and thermo/source maps remain
+  unrun pending an owner ruling that makes fp32 resident output a chainable
+  thermochemical state.

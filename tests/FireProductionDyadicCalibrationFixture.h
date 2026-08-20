@@ -422,6 +422,19 @@ namespace FireProductionDyadicCalibration
 		const std::array<double,9> fineAToB=FieldDistance(filtered[1],limitB);
 		const std::array<double,9> coarseBToA=FieldDistance(filtered[2],limitA);
 		const std::array<double,9> fineBToA=FieldDistance(filtered[3],limitA);
+		static const std::array<double,9> expectedA={{
+			2.7470874096308602e-05,2.1976699277047011e-05,4.0231720360505535e-05,
+			8.1681230739515595e-05,1.4623092049747496e-05,1.233964089521796e-05,
+			1.918563438587409e-07,4.0311216479063973e-08,27.213697534765799}};
+		static const std::array<double,9> expectedB={{
+			1.9110121790822129e-05,1.5288097432657347e-05,2.7979909266403962e-05,
+			5.6950264505725857e-05,1.0172558363063742e-05,8.5840748836714389e-06,
+			1.3346492305372179e-07,2.8042509814226353e-08,19.056231150677373}};
+		static const std::array<double,9> expectedLimitDifference={{
+			5.7638488509996388e-07,4.6110790808047211e-07,8.6342690894070087e-07,
+			1.7491251816547303e-06,3.0681692913582059e-07,2.5890630471503395e-07,
+			4.0254669845263587e-09,8.4579674447443766e-10,0.56813643742138875}};
+		if(dA!=expectedA||dB!=expectedB||limitDifference!=expectedLimitDifference)return 172;
 		bool accepted=true;
 		for(std::size_t component=0u;component<9u;++component){
 			FireProductionCalibration::DyadicDistanceEstimate estimateA,estimateB;
@@ -446,6 +459,269 @@ namespace FireProductionDyadicCalibration
 				overlap&&approaches?1:0);
 		}
 		return accepted?0:179;
+	}
+
+	bool BuildProductionRequest(const MethaneRunCheckpoint& state,
+		const std::vector<double>& divergenceTarget,const double timeStepS,
+		RISE::FireProductionResidentStepRequest& request,std::string& error)
+	{
+		request=RISE::FireProductionResidentStepRequest();
+		const std::size_t cells=state.states.size();
+		if(cells!=state.dimensions[0]*state.dimensions[1]*state.dimensions[2]||
+			divergenceTarget.size()!=cells)return false;
+		MethaneCellState ambient,injected;if(!AmbientAndInjected(ambient,injected,error))return false;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		const FireSimulationTransportRecord transport=FireSimulationTransportRecord::OpenV1();
+		request.force.shape.nx=state.dimensions[0];request.force.shape.ny=state.dimensions[1];
+		request.force.shape.nz=state.dimensions[2];
+		request.force.shape.cellWidthM=static_cast<float>(state.cellWidthM);
+		request.force.timeStepS=static_cast<float>(timeStepS);
+		request.force.ambientDensityKGPerM3=static_cast<float>(ambient.GasDensity());
+		request.force.vremanCoefficient=0.07f;
+		request.force.gravityMPerS2={{0.0f,0.0f,-static_cast<float>(Gravity)}};
+		request.force.boundary.fill(RISE::FireProductionProjectionPressureOpen);
+		request.force.cellGasDensityKGPerM3.resize(cells);
+		request.force.molecularKinematicViscosityM2PerS.resize(cells);
+		request.cellTransport.shape=request.force.shape;request.cellTransport.componentCount=9u;
+		request.cellTransport.timeStepS=request.force.timeStepS;
+		request.cellTransport.boundary=request.force.boundary;
+		request.cellTransport.conservativeValues.resize(9u*cells);
+		const ConservativeVector ambientVector=ToConservativeVector(ambient);
+		request.cellTransport.ambientValues.resize(9u);
+		for(std::size_t component=0u;component<9u;++component)
+			request.cellTransport.ambientValues[component]=static_cast<float>(ambientVector[component]);
+		for(std::size_t cell=0u;cell<cells;++cell){
+			const ConservativeVector conservative=ToConservativeVector(state.states[cell]);
+			const double gas=state.states[cell].GasDensity();CellMolecularTransportEvaluation molecular;
+			if(!(gas>0.0)||!EvaluateCellMolecularTransport(state.states[cell],fuel,transport,
+				molecular,&error))return false;
+			request.force.molecularKinematicViscosityM2PerS[cell]=
+				static_cast<float>(molecular.molecularViscosityPaS/gas);
+			for(std::size_t component=0u;component<9u;++component)
+				request.cellTransport.conservativeValues[component*cells+cell]=
+					static_cast<float>(conservative[component]);
+			float packedGas=request.cellTransport.conservativeValues[cells+cell];
+			for(std::size_t component=2u;component<=6u;++component)
+				packedGas+=request.cellTransport.conservativeValues[component*cells+cell];
+			request.force.cellGasDensityKGPerM3[cell]=packedGas;
+		}
+		request.dualTransport.shape=request.force.shape;
+		request.dualTransport.timeStepS=request.force.timeStepS;
+		request.dualTransport.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
+		request.dualTransport.boundary=request.force.boundary;
+		auto cellIndex=[&](const std::size_t x,const std::size_t y,const std::size_t z){
+			return (z*state.dimensions[1]+y)*state.dimensions[0]+x;};
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const std::size_t nx=state.dimensions[0],ny=state.dimensions[1],nz=state.dimensions[2];
+			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
+				ez=axis==2u?nz+1u:nz,faces=ex*ey*ez;
+			if(state.momentum.component[axis].size()!=faces||
+				state.velocity.component[axis].size()!=faces)return false;
+			request.force.faceDensityKGPerM3[axis].resize(faces);
+			request.force.beginningMomentumKGPerM2S[axis].resize(faces);
+			request.cellTransport.frozenVelocityMPerS[axis].resize(faces);
+			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+				for(std::size_t x=0u;x<ex;++x){
+					const std::size_t face=(z*ey+y)*ex+x;
+					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
+					std::array<std::size_t,3> low={{x,y,z}},high=low;
+					if(coordinate>0u&&coordinate<extent)low[axis]=coordinate-1u;
+					else {low[axis]=coordinate==0u?0u:extent-1u;high[axis]=low[axis];}
+					const float lowDensity=request.force.cellGasDensityKGPerM3[
+						cellIndex(low[0],low[1],low[2])];
+					float density=0.0f;
+					if(coordinate==0u||coordinate==extent)density=0.5f*lowDensity+
+						0.5f*request.force.ambientDensityKGPerM3;
+					else {high[axis]=coordinate;density=0.5f*lowDensity+0.5f*
+						request.force.cellGasDensityKGPerM3[cellIndex(high[0],high[1],high[2])];}
+					request.force.faceDensityKGPerM3[axis][face]=density;
+					request.force.beginningMomentumKGPerM2S[axis][face]=
+						static_cast<float>(state.momentum.component[axis][face]);
+					request.cellTransport.frozenVelocityMPerS[axis][face]=
+						static_cast<float>(state.velocity.component[axis][face]);
+				}
+			request.dualTransport.beginningFaceDensity[axis]=request.force.faceDensityKGPerM3[axis];
+			request.dualTransport.beginningMomentum[axis]=request.force.beginningMomentumKGPerM2S[axis];
+			request.dualTransport.frozenVelocityMPerS[axis]=request.cellTransport.frozenVelocityMPerS[axis];
+			request.momentumSourceIncrement[axis].assign(faces,0.0f);
+		}
+		request.cellSourceIncrement.assign(9u*cells,0.0f);
+		request.divergenceTargetPerS.resize(cells);
+		for(std::size_t cell=0u;cell<cells;++cell)
+			request.divergenceTargetPerS[cell]=static_cast<float>(divergenceTarget[cell]);
+		return RISE::ValidateFireProductionFrozenForceRequest(request.force,&error)&&
+			RISE::ValidateFireProductionCellPalindromeRequest(request.cellTransport,&error)&&
+			RISE::ValidateFireProductionDualMomentumRequest(request.dualTransport,&error);
+	}
+
+	bool ApplyProductionResult(const RISE::FireProductionResidentStepResult& production,
+		MethaneRunCheckpoint& state,std::string& error)
+	{
+		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
+			return false;
+		std::vector<ConservativeVector> conservative(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){
+			for(std::size_t component=0u;component<9u;++component)
+				conservative[cell][component]=production.conservativeValues[component*cells+cell];
+			state.states[cell]=FromConservativeVector(conservative[cell]);
+		}
+		std::vector<double> temperature;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
+			fuel.TemperatureMaxK(),temperature,&error,1u)||temperature.size()!=cells)return false;
+		for(std::size_t cell=0u;cell<cells;++cell)state.states[cell].temperatureK=temperature[cell];
+		for(unsigned int axis=0u;axis<3u;++axis){
+			state.momentum.component[axis].assign(production.projection.momentumKGPerM2S[axis].begin(),
+				production.projection.momentumKGPerM2S[axis].end());
+			state.velocity.component[axis].assign(production.projection.velocityMPerS[axis].begin(),
+				production.projection.velocityMPerS[axis].end());
+		}
+		return true;
+	}
+
+	struct ProductionAffineResidual
+	{
+		double maximumAbsolute;
+		double maximumScaled;
+		std::size_t cell;
+		std::size_t row;
+		ProductionAffineResidual() : maximumAbsolute(0.0),maximumScaled(0.0),cell(0u),row(0u) {}
+	};
+
+	ProductionAffineResidual MeasureProductionAffineResidual(
+		const RISE::FireProductionResidentStepResult& production,const std::size_t cells)
+	{
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		const FireCertifiedNullspace& closure=fuel.ConservativeReconstruction();
+		ProductionAffineResidual result;
+		for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t row=0u;
+			row<closure.constraintRows;++row){double residual=0.0,scale=0.0;
+			for(std::size_t column=0u;column<closure.stateDimension;++column){const double term=
+				closure.constraintMatrix[row*closure.stateDimension+column]*
+				production.conservativeValues[column*cells+cell];residual+=term;scale+=std::fabs(term);}
+			const double relative=std::fabs(residual)/std::max(1.0,scale);
+			if(relative>result.maximumScaled){result.maximumScaled=relative;
+				result.maximumAbsolute=std::fabs(residual);result.cell=cell;result.row=row;}
+		}
+		return result;
+	}
+
+	std::string ProductionConservativeDigest(
+		const RISE::FireProductionResidentStepResult& production)
+	{
+		RISECBOR64::Bytes bytes;for(const float value:production.conservativeValues){
+			std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));AppendInteger(bytes,bits);}
+		return RISECBOR64::SHA256Hex(bytes);
+	}
+
+	std::uint64_t ExpectedProjectionSweeps(const RISE::FireProductionProjectionShape& shape)
+	{
+		std::size_t nx=shape.nx,ny=shape.ny,nz=shape.nz,levels=1u;
+		while(nx>4u||ny>4u||nz>4u){if(nx>4u)nx=(nx+1u)/2u;
+			if(ny>4u)ny=(ny+1u)/2u;if(nz>4u)nz=(nz+1u)/2u;++levels;}
+		return 16u*(32u+6u*(levels-1u));
+	}
+
+	int CheckProduction(const std::filesystem::path& directory,const char* expectedProtocol,
+		const char* expectedTargets)
+	{
+		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
+			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
+			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 180;
+		std::array<std::string,4> targetDigests;if(!ReadTargetDigests(
+			directory/"dyadic_targets.v1",targetDigests))return 181;
+		std::array<MethaneRunCheckpoint,4> states;std::array<FilteredField,4> filtered;
+		std::string error;
+		for(std::size_t index=0u;index<Tiers.size();++index){
+			if(!BuildAnalyticState(Tiers[index],states[index],error))return 182;
+			std::vector<std::vector<double> > sealed;const std::filesystem::path target=
+				directory/(std::string("oracle_tier")+std::to_string(Tiers[index])+"_sdiv_x8.f64");
+			if(DigestFile(target)!=targetDigests[index]||!ReadCalibrationDoublePayload(target,
+				states[index].states.size(),8u,sealed))return 183;
+			const double flowThrough=6.0*std::sqrt(states[index].values.characteristicDiameterM/Gravity);
+			for(std::size_t step=0u;step<8u;++step){
+				RISE::FireProductionResidentStepRequest request;
+				if(!BuildProductionRequest(states[index],sealed[step],flowThrough/512.0,request,error))
+					return 184;
+				RISE::FireProductionResidentStepResult production;
+				const std::uint64_t commitsBefore=
+					RISE::FireProductionResidentStepMetalCommandCommitCount();
+				if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){
+					std::fprintf(stderr,"dyadic production tier %u step %zu failed: %s commits=%llu\n",
+						Tiers[index],step,error.c_str(),static_cast<unsigned long long>(
+							RISE::FireProductionResidentStepMetalCommandCommitCount()-commitsBefore));return 185;}
+				if(production.interstageFullGridTransferCount!=0u||
+					production.residentProjectionInvocationCount!=1u||
+					production.projection.executedVCycleCount!=16u||
+					production.projection.executedJacobiSweepCount!=
+						ExpectedProjectionSweeps(request.force.shape)){
+					std::fprintf(stderr,"dyadic production topology tier=%u step=%zu transfers=%u "
+						"projection=%u cycles=%u sweeps=%llu expected=%llu\n",Tiers[index],step,
+						production.interstageFullGridTransferCount,
+						production.residentProjectionInvocationCount,
+						production.projection.executedVCycleCount,
+						static_cast<unsigned long long>(
+							production.projection.executedJacobiSweepCount),
+						static_cast<unsigned long long>(ExpectedProjectionSweeps(
+							request.force.shape)));return 186;}
+				if(!ApplyProductionResult(production,states[index],error)){
+					const ProductionAffineResidual residual=MeasureProductionAffineResidual(
+						production,states[index].states.size());
+					const std::string digest=ProductionConservativeDigest(production);
+					std::fprintf(stderr,"dyadic production affine residual max_abs=%.17g "
+						"max_scaled=%.17g cell=%zu row=%zu fp64_envelope=%.17g digest=%s\n",
+						residual.maximumAbsolute,residual.maximumScaled,residual.cell,residual.row,
+						FireSimulationMethaneRecord::PhysicalV1().AcceptedStateFeasibilityEnvelope().
+							kappaEpsilon64*std::numeric_limits<double>::epsilon(),digest.c_str());
+					std::fprintf(stderr,"dyadic production state reconstruction tier=%u step=%zu "
+						"failed: %s\n",Tiers[index],step,error.c_str());
+					if(index==0u&&step==0u&&
+						residual.maximumAbsolute==5.2451771873310863e-08&&
+						residual.maximumScaled==5.2451771873310863e-08&&
+						residual.cell==4915u&&residual.row==2u&&
+						digest=="03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50"&&
+						error.find("certified affine rows")!=std::string::npos)return 190;
+					return 187;}
+				std::fprintf(stderr,"dyadic production tier=%u step=%zu residual=%.9g valid=%d\n",
+					Tiers[index],step,production.projection.maximumPostProjectionResidualPerS,
+					production.projection.validationPassed?1:0);
+			}
+			std::vector<ConservativeVector> conservative(states[index].states.size());
+			for(std::size_t cell=0u;cell<conservative.size();++cell)
+				conservative[cell]=ToConservativeVector(states[index].states[cell]);
+			if(!FilterConservative(states[index],conservative,
+				states[index].values.characteristicDiameterM,filtered[index]))return 188;
+		}
+		const std::array<double,9> dA=FieldDistance(filtered[0],filtered[1]);
+		const std::array<double,9> dB=FieldDistance(filtered[2],filtered[3]);
+		const FilteredField limitA=Extrapolate(filtered[0],filtered[1]);
+		const FilteredField limitB=Extrapolate(filtered[2],filtered[3]);
+		const std::array<double,9> limitDifference=FieldDistance(limitA,limitB);
+		const std::array<double,9> coarseAToB=FieldDistance(filtered[0],limitB);
+		const std::array<double,9> fineAToB=FieldDistance(filtered[1],limitB);
+		const std::array<double,9> coarseBToA=FieldDistance(filtered[2],limitA);
+		const std::array<double,9> fineBToA=FieldDistance(filtered[3],limitA);
+		bool accepted=true;
+		for(std::size_t component=0u;component<9u;++component){
+			FireProductionCalibration::DyadicDistanceEstimate estimateA,estimateB;
+			const bool estimated=FireProductionCalibration::DyadicDistanceAtVerifiedOrder(
+				dA[component],VerifiedOrder,estimateA)&&
+				FireProductionCalibration::DyadicDistanceAtVerifiedOrder(dB[component],
+					VerifiedOrder,estimateB);
+			const bool overlap=estimated&&FireProductionCalibration::DyadicLimitBallsOverlap(
+				limitDifference[component],estimateA,estimateB);
+			const bool approaches=coarseAToB[component]>fineAToB[component]&&
+				coarseBToA[component]>fineBToA[component];
+			accepted=accepted&&overlap&&approaches;
+			std::fprintf(stderr,"dyadic production component=%zu D5_10=%.17g D6_12=%.17g "
+				"limit_delta=%.17g radius_sum=%.17g approachA=%d approachB=%d accepted=%d\n",
+				component,dA[component],dB[component],limitDifference[component],estimated?
+				estimateA.fineRadius+estimateB.fineRadius:0.0,
+				coarseAToB[component]>fineAToB[component]?1:0,
+				coarseBToA[component]>fineBToA[component]?1:0,overlap&&approaches?1:0);
+		}
+		return accepted?0:189;
 	}
 }
 

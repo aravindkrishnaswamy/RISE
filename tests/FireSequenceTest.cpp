@@ -2990,6 +2990,8 @@ int main(int argc,char** argv)
 		return FireProductionDyadicCalibration::SealTargets(argv[2],argv[3]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-check-dyadic-oracle")==0)
 		return FireProductionDyadicCalibration::CheckOracle(argv[2],argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-check-dyadic-production")==0)
+		return FireProductionDyadicCalibration::CheckProduction(argv[2],argv[3],argv[4]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;
