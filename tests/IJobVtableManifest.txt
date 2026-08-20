@@ -1,298 +1,335 @@
-# Ordered manifest of IJob's virtual-method declaration order (vtable ABI).
-# Consumed by SourceHygieneTest: the header's virtuals must match exactly
-# this sequence.  A NEW virtual is legal ONLY appended at the IJob tail -- add
-# its name to the END of this file in the same commit (a conscious, reviewable
-# ABI decision).  A mid-list insert/reorder/removal fails the suite: it shifts
-# every later vtable slot and breaks out-of-tree binaries (see the
-# abi-preserving-api-evolution skill).
-SetPrimaryAcceleration
-SetLightSampleRRThreshold
-AddPinholeCamera
-AddPinholeCameraONB
-AddThinlensCamera
-AddFisheyeCamera
-AddOrthographicCamera
-SetActiveCamera
-GetActiveCameraName
-RemoveCamera
-AddCheckerPainter
-AddLinesPainter
-AddMandelbrotFractalPainter
-AddPerlin2DPainter
-AddControlledSmoothness2DPainter
-AddPolynomialFunction2DPainter
-AddCompositeFunction2DPainter
-AddGerstnerWavePainter
-AddPerlin3DPainter
-AddWavelet3DPainter
-AddReactionDiffusion3DPainter
-AddGabor3DPainter
-AddSimplex3DPainter
-AddSDF3DPainter
-AddCurlNoise3DPainter
-AddDomainWarp3DPainter
-AddPerlinWorley3DPainter
-AddWorley3DPainter
-AddTurbulence3DPainter
-AddSpectralColorPainter
-AddPNGTexturePainter
-AddUniformColorPainter
-AddVertexColorPainter
-AddJPEGTexturePainter
-AddInMemoryPNGTexturePainter
-AddInMemoryJPEGTexturePainter
-AddHDRTexturePainter
-AddEXRTexturePainter
-AddTIFFTexturePainter
-AddVoronoi2DPainter
-AddVoronoi3DPainter
-AddIridescentPainter
-AddBlackBodyPainter
-AddBlendPainter
-AddChannelPainter
-AddUVTransformPainter
-AddLambertianMaterial
-AddPolishedMaterial
-AddDielectricMaterial
-AddSubSurfaceScatteringMaterial
-AddRandomWalkSSSMaterial
-AddIsotropicPhongMaterial
-AddAshikminShirleyAnisotropicPhongMaterial
-AddPerfectReflectorMaterial
-AddPerfectRefractorMaterial
-AddTranslucentMaterial
-AddBioSpecSkinMaterial
-AddDonnerJensenSkinBSSRDFMaterial
-AddGenericHumanTissueMaterial
-AddCompositeMaterial
-AddWardIsotropicGaussianMaterial
-AddWardAnisotropicEllipticalGaussianMaterial
-AddGGXMaterial
-AddGGXEmissiveMaterial
-AddPBRMetallicRoughnessMaterial
-AddSheenMaterial
-AddCookTorranceMaterial
-AddOrenNayarMaterial
-AddSchlickMaterial
-AddDataDrivenMaterial
-AddLambertianLuminaireMaterial
-AddPhongLuminaireMaterial
-AddBoxGeometry
-AddCircularDiskGeometry
-AddClippedPlaneGeometry
-AddCylinderGeometry
-AddInfinitePlaneGeometry
-AddSphereGeometry
-AddEllipsoidGeometry
-AddTorusGeometry
-AddIndexedTriangleMeshGeometry
-Add3DSTriangleMeshGeometry
-AddRAWTriangleMeshGeometry
-AddRAW2TriangleMeshGeometry
-AddPLYTriangleMeshGeometry
-ImportGLTFScene
-AddGLTFTriangleMeshGeometry
-AddRISEMeshTriangleMeshGeometry
-AddBezierPatchGeometry
-AddBilinearPatchGeometry
-AddDisplacedGeometry
-AddPointOmniLight
-AddPointSpotLight
-AddAmbientLight
-AddDirectionalLight
-AddHomogeneousMedium
-AddHomogeneousMediumSpectral
-AddHeterogeneousMedium
-AddPainterHeterogeneousMedium
-SetGlobalMedium
-SetObjectInteriorMedium
-GetMedium
-EnumerateMediumNames
-GetGeometry
-EnumerateGeometryNames
-AddBumpMapModifier
-AddNormalMapModifier
-AddPiecewiseLinearFunction
-AddPiecewiseLinearFunction2D
-AddObject
-AddObjectMatrix
-AddCSGObject
-AddReflectionShaderOp
-AddRefractionShaderOp
-AddEmissionShaderOp
-AddDirectLightingShaderOp
-AddCausticPelPhotonMapShaderOp
-AddCausticSpectralPhotonMapShaderOp
-AddGlobalPelPhotonMapShaderOp
-AddGlobalSpectralPhotonMapShaderOp
-AddTranslucentPelPhotonMapShaderOp
-AddShadowPhotonMapShaderOp
-AddDistributionTracingShaderOp
-AddFinalGatherShaderOp
-AddPathTracingShaderOp
-AddSMSShaderOp
-AddAmbientOcclusionShaderOp
-AddSimpleSubSurfaceScatteringShaderOp
-AddDiffusionApproximationSubSurfaceScatteringShaderOp
-AddDonnerJensenSkinSSSShaderOp
-AddAreaLightShaderOp
-AddTransparencyShaderOp
-AddAlphaTestShaderOp
-AddStandardShader
-AddAdvancedShader
-AddDirectVolumeRenderingShader
-AddSpectralDirectVolumeRenderingShader
-SetPixelBasedPelRasterizer
-SetPixelBasedSpectralIntegratingRasterizer
-SetBDPTPelRasterizer
-SetBDPTSpectralRasterizer
-SetVCMPelRasterizer
-SetVCMSpectralRasterizer
-SetAutoRasterizer
-SetAutoSpectralRasterizer
-SetPathTracingPelRasterizer
-SetPathTracingSpectralRasterizer
-SetMLTRasterizer
-SetMLTSpectralRasterizer
-SetSuppressFileRasterizerOutputs
-GetSuppressFileRasterizerOutputs
-AddFileRasterizerOutput
-AddCallbackRasterizerOutput
-SetCausticPelGatherParameters
-SetGlobalPelGatherParameters
-SetTranslucentPelGatherParameters
-SetCausticSpectralGatherParameters
-SetGlobalSpectralGatherParameters
-SetIrradianceCacheParameters
-SetShadowGatherParameters
-SaveCausticPelPhotonmap
-SaveGlobalPelPhotonmap
-SaveTranslucentPelPhotonmap
-SaveCausticSpectralPhotonmap
-SaveGlobalSpectralPhotonmap
-SaveShadowPhotonmap
-LoadCausticPelPhotonmap
-LoadGlobalPelPhotonmap
-LoadTranslucentPelPhotonmap
-LoadCausticSpectralPhotonmap
-LoadGlobalSpectralPhotonmap
-LoadShadowPhotonmap
-ShootCausticPelPhotons
-ShootGlobalPelPhotons
-ShootTranslucentPelPhotons
-ShootCausticSpectralPhotons
-ShootGlobalSpectralPhotons
-ShootShadowPhotons
-PredictRasterizationTime
-Rasterize
-RasterizeAnimation
-RasterizeAnimationUsingOptions
-RasterizeAnimationUsingOptions
-RasterizeRegion
-SetObjectPosition
-SetObjectOrientation
-SetObjectScale
-SetObjectUVToSpherical
-SetObjectUVToBox
-SetObjectUVToCylindrical
-SetObjectIntersectionError
-RemovePainter
-RemoveMaterial
-RemoveGeometry
-RemoveObject
-RemoveLight
-RemoveModifier
-InvalidateSpatialStructure
-BumpLightTopologyGeneration
-GetLightTopologyGeneration
-SetIncrementalRepointMode
-ClearAll
-RemoveRasterizerOutputs
-LoadAsciiSceneViaCst
-LoadAsciiSceneAuto
-RederiveCstWithVariant
-HasRetainedCstDocument
-GetCstDocument
-RunAsciiScript
-AreThereAnyKeyframedObjects
-AddKeyframe
-SetAnimationOptions
-GetAnimationOptions
-DeclareAnimation
-AddKeyframeToAnimation
-SetActiveAnimation
-SetActiveAnimationByIndex
-GetAnimationCount
-NoteObjectOverride
-GetObjectOverrideCount
-GetAnimationName
-GetActiveAnimationIndex
-GetActiveAnimationName
-DeclareSceneVariant
-SetActiveSceneVariant
-GetActiveSceneVariant
-GetSceneVariantCount
-GetSceneVariantName
-HasSceneVariants
-ClearSceneVariants
-SetProgress
-AddTexturePaintersBatch
-AddPrebuiltTriangleMeshGeometry
-SetActiveRasterizer
-GetActiveRasterizerName
-GetRasterizerTypeCount
-GetRasterizerTypeName
-SetRasterizerParameter
-GetRasterizerParameter
-IsMaterialComposed
-AddTexCoord1Painter
-SetGlobalRadianceMap
-ClearGlobalRadianceMap
-AddHosekWilkieSkylight
-SetFilm
-ScaleFilmToFit
-AddSDFGeometry
-AddSDFHeightfieldGeometry
-AddSweepGeometry
-AddPathInstancesGeometry
-AddFunction2DColorPainter
-AddCartesianDiskGeometry
-SetObjectMaterial
-SetObjectShader
-SetMaterialEmissionScale
-SetActiveRasterizerRadianceScale
-AddGlintModifier
-ApplyCstParamEdit
-ApplyCstObjectMatrixEdit
-ApplyCstCameraPoseEdit
-ApplyCstInsertCameraChunk
-ApplyCstRemoveCameraChunk
-ApplyCstFilmEdit
-ApplyCstEnvironmentEdit
-CstObjectTransformKind
-ApplyCstObjectComponentsEdit
-RefreshCstLoadFileIdentity
-ApplyCstDeleteCameraChunk
-SetViewportFit
-ApplyCstInsertChunk
-ApplyCstRemoveChunk
-ApplyCstParamEditChecked
-ApplyCstParamRemoveChecked
-ApplyCstRestoreChunkAt
-ApplyCstRemoveItemsAt
-ClearProgressIfCurrent
-SetProgressIfCurrent
-ExchangeProgress
-ApplyCstCameraPoseEditWithBasis
-ApplyCstRemoveChunks
-ApplyCstReplaceDocumentText
-SetObjectParent
-ComposeObjectHierarchy
-AddLatheGeometry
-AddExpressionPainter
-AddRampPainter
-AddMappingPainter
-AddVoronoi3DPainterWithSpace
-AddBlendPainterWithMode
-AddStochasticTilePainter
-AddScatterPainter
+# IJob vtable manifest -- FULL NORMALIZED SIGNATURE per virtual, in
+# declaration order (the vtable ABI).  Format v2 (2026-08-20).  Each
+# non-comment line below is one entire pure-virtual declaration
+# collapsed to a single canonical line by NormalizeDeclSignature in
+# tests/SourceHygieneTest.cpp -- NOT just the method name.  The name is
+# derivable by parsing the identifier before the first '(', so nothing
+# here restates it separately.
+#
+# WHY FULL SIGNATURES, NOT JUST NAMES.  A name-only manifest cannot see
+# a trailing DEFAULTED parameter appended to an EXISTING virtual -- that
+# is still a vtable/ABI break: changing a pure virtual's signature on a
+# shipped abstract interface changes the vtable layout and breaks
+# out-of-tree overriders (docs/VITREOUS_ENAMEL.md:894-899,
+# docs/gui/RENDER_COORDINATOR.md:1237-1239).  It is not hypothetical: the
+# doc-88 S7 review (2026-08-20) found exactly this -- two IJob virtuals
+# had grown a trailing defaulted parameter while the name-only v1
+# manifest stayed green throughout.  This file exists so that can never
+# happen silently again.
+#
+# CONSUMED BY: SourceHygieneTest (tests/SourceHygieneTest.cpp, the "IJob
+# vtable append-only + full-signature manifest" block).  The header's
+# virtuals must match this sequence EXACTLY, signature and all.
+#
+# A LEGAL CHANGE is a tail append: a brand-new virtual goes at the END of
+# IJob's class body, and its normalized signature is added as ONE new
+# line at the END of this file, in the SAME commit -- a conscious,
+# reviewable ABI decision.  A mid-list insert / reorder / rename /
+# removal / in-place signature change (including a merely-appended
+# default parameter) fails the suite: it moves or changes a vtable slot
+# and breaks out-of-tree binaries (see the abi-preserving-api-evolution
+# skill).
+#
+# REGEN PROCEDURE.  After a reviewed, intentional signature migration or
+# a legal tail append, regenerate this file mechanically instead of
+# hand-editing it -- generator and checker must never drift apart:
+#
+#     RISE_REGEN_IJOB_VTABLE_MANIFEST=1 ./bin/tests/SourceHygieneTest
+#
+# This REWRITES the whole file (including this header) from IJob.h's
+# CURRENT virtuals, then the same run's comparison passes.  Regen is for
+# LEGAL changes ONLY -- a tail append, or a signature edit you have
+# already reviewed as an intentional ABI break -- never a shortcut to
+# turn a red suite green.  The `git diff` this produces on this file IS
+# the ABI review: read every changed/added line before committing it.
+virtual bool SetPrimaryAcceleration(const bool bUseBSPtree,const bool bUseOctree,const unsigned int nMaxObjectsPerNode,const unsigned int nMaxTreeDepth)=0;
+virtual bool SetLightSampleRRThreshold(const double threshold)=0;
+virtual bool AddPinholeCamera(const char*name,const double ptLocation[3],const double ptLookAt[3],const double vUp[3],const double fov,const double exposure,const double scanningRate,const double pixelRate,const double orientation[3],const double target_orientation[2],const double iso=0.0,const double fstop=0.0)=0;
+virtual bool AddPinholeCameraONB(const char*name,const double ONB_U[3],const double ONB_V[3],const double ONB_W[3],const double ptLocation[3],const double fov,const double exposure,const double scanningRate,const double pixelRate,const double iso=0.0,const double fstop=0.0)=0;
+virtual bool AddThinlensCamera(const char*name,const double ptLocation[3],const double ptLookAt[3],const double vUp[3],const double sensorSize,const double focalLength,const double fstop,const double focusDistance,const double sceneUnitMeters,const double exposure,const double scanningRate,const double pixelRate,const double orientation[3],const double target_orientation[2],const unsigned int apertureBlades,const double apertureRotation,const double anamorphicSqueeze,const double tiltX,const double tiltY,const double shiftX,const double shiftY,const double iso=0.0)=0;
+virtual bool AddFisheyeCamera(const char*name,const double ptLocation[3],const double ptLookAt[3],const double vUp[3],const double exposure,const double scanningRate,const double pixelRate,const double orientation[3],const double target_orientation[2],const double scale)=0;
+virtual bool AddOrthographicCamera(const char*name,const double ptLocation[3],const double ptLookAt[3],const double vUp[3],const double vpScale[2],const double exposure,const double scanningRate,const double pixelRate,const double orientation[3],const double target_orientation[2])=0;
+virtual bool SetActiveCamera(const char*name)=0;
+virtual std::string GetActiveCameraName()const=0;
+virtual bool RemoveCamera(const char*name)=0;
+virtual bool AddCheckerPainter(const char*name,const double size,const char*pa,const char*pb)=0;
+virtual bool AddLinesPainter(const char*name,const double size,const char*pa,const char*pb,const bool bvert)=0;
+virtual bool AddMandelbrotFractalPainter(const char*name,const char*pa,const char*pb,const double lower_x,const double upper_x,const double lower_y,const double upper_y,const double exp)=0;
+virtual bool AddPerlin2DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const char*pa,const char*pb,const double vScale[2],const double vShift[2])=0;
+virtual bool AddControlledSmoothness2DPainter(const char*name,const char*pa,const char*pb,const double centerU,const double centerV,const double radius,const double amplitude,const unsigned int smoothnessMode)=0;
+virtual bool AddPolynomialFunction2DPainter(const char*name,const char*pa,const char*pb,const unsigned int polynomialType,const double center[2],const double scale[2],const double amplitude,const unsigned int degree,const unsigned int powerX,const unsigned int powerY,const double*pCoeffs,const unsigned int nCoeffs)=0;
+virtual bool AddCompositeFunction2DPainter(const char*name,const char*pa,const char*pb,const char*childA,const char*childB,const unsigned int op,const double weightA,const double uvScaleA[2],const double uvOffsetA[2],const double weightB,const double uvScaleB[2],const double uvOffsetB[2],const double lerpT,const double outputScale,const double outputOffset)=0;
+virtual bool AddGerstnerWavePainter(const char*name,const char*pa,const char*pb,const unsigned int numWaves,const double medianWavelength,const double wavelengthRange,const double medianAmplitude,const double amplitudePower,const double windDir[2],const double directionalSpread,const double dispersionSpeed,const unsigned int seed,const double time)=0;
+virtual bool AddPerlin3DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddWavelet3DPainter(const char*name,const unsigned int nTileSize,const double dPersistence,const unsigned int nOctaves,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddReactionDiffusion3DPainter(const char*name,const unsigned int nGridSize,const double dDa,const double dDb,const double dFeed,const double dKill,const unsigned int nIterations,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddGabor3DPainter(const char*name,const double dFrequency,const double dBandwidth,const double vOrientation[3],const double dImpulseDensity,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddSimplex3DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddSDF3DPainter(const char*name,const unsigned int nType,const double dParam1,const double dParam2,const double dParam3,const double dShellThickness,const double dNoiseAmplitude,const double dNoiseFrequency,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddCurlNoise3DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const double dEpsilon,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddDomainWarp3DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const double dWarpAmplitude,const unsigned int nWarpLevels,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddPerlinWorley3DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const double dWorleyJitter,const double dBlend,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddWorley3DPainter(const char*name,const double dJitter,const unsigned int nMetric,const unsigned int nOutput,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddTurbulence3DPainter(const char*name,const double dPersistence,const unsigned int nOctaves,const char*pa,const char*pb,const double vScale[3],const double vShift[3])=0;
+virtual bool AddSpectralColorPainter(const char*name,const double amplitudes[],const double frequencies[],const double lambda_begin,const double lambda_end,const unsigned int numfreq,const double scale)=0;
+virtual bool AddPNGTexturePainter(const char*name,const char*filename,const char color_space,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0,const bool mipmap=true,const SpectrumKind spectrumKind=eSpectrumKind_Albedo)=0;
+virtual bool AddUniformColorPainter(const char*name,const double pel[3],const char*cspace)=0;
+virtual bool AddVertexColorPainter(const char*name,const double fallback[3],const char*cspace)=0;
+virtual bool AddJPEGTexturePainter(const char*name,const char*filename,const char color_space,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0,const bool mipmap=true,const SpectrumKind spectrumKind=eSpectrumKind_Albedo)=0;
+virtual bool AddInMemoryPNGTexturePainter(const char*name,const unsigned char*bytes,const size_t numBytes,const char color_space,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0,const bool mipmap=true,const SpectrumKind spectrumKind=eSpectrumKind_Albedo)=0;
+virtual bool AddInMemoryJPEGTexturePainter(const char*name,const unsigned char*bytes,const size_t numBytes,const char color_space,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0,const bool mipmap=true,const SpectrumKind spectrumKind=eSpectrumKind_Albedo)=0;
+virtual bool AddHDRTexturePainter(const char*name,const char*filename,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0,const SpectrumKind spectrumKind=eSpectrumKind_Unbounded)=0;
+virtual bool AddEXRTexturePainter(const char*name,const char*filename,const char color_space,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0,const SpectrumKind spectrumKind=eSpectrumKind_Unbounded)=0;
+virtual bool AddTIFFTexturePainter(const char*name,const char*filename,const char color_space,const char filter_type,const bool lowmemory,const double scale[3],const double shift[3],const char wrap_s=0,const char wrap_t=0)=0;
+virtual bool AddVoronoi2DPainter(const char*name,const double pt_x[],const double pt_y[],const char**painters,const unsigned int count,const char*border,const double bsize)=0;
+virtual bool AddVoronoi3DPainter(const char*name,const double pt_x[],const double pt_y[],const double pt_z[],const char**painters,const unsigned int count,const char*border,const double bsize)=0;
+virtual bool AddIridescentPainter(const char*name,const char*pa,const char*pb,const double bias)=0;
+virtual bool AddBlackBodyPainter(const char*name,const double temperature,const double lambda_begin,const double lambda_end,const unsigned int num_freq,const bool normalize,const double scale)=0;
+virtual bool AddBlendPainter(const char*name,const char*pa,const char*pb,const char*mask)=0;
+virtual bool AddChannelPainter(const char*name,const char*source,const char channel,const double scale,const double bias)=0;
+virtual bool AddUVTransformPainter(const char*name,const char*source,const double offset_u,const double offset_v,const double rotation,const double scale_u,const double scale_v)=0;
+virtual bool AddLambertianMaterial(const char*name,const char*ref)=0;
+virtual bool AddPolishedMaterial(const char*name,const char*ref,const char*tau,const char*Nt,const char*scat,const bool hg)=0;
+virtual bool AddDielectricMaterial(const char*name,const char*tau,const char*rIndex,const char*scat,const bool hg,const Scalar*arN=0,const Scalar*arK=0,const Scalar*arThickness=0,const unsigned int arNLayers=0)=0;
+virtual bool AddSubSurfaceScatteringMaterial(const char*name,const char*ior,const char*absorption,const char*scattering,const char*g,const char*roughness)=0;
+virtual bool AddRandomWalkSSSMaterial(const char*name,const char*ior,const char*absorption,const char*scattering,const char*g,const char*roughness,const char*maxBounces)=0;
+virtual bool AddIsotropicPhongMaterial(const char*name,const char*rd,const char*rs,const char*exponent)=0;
+virtual bool AddAshikminShirleyAnisotropicPhongMaterial(const char*name,const char*rd,const char*rs,const char*Nu,const char*Nv)=0;
+virtual bool AddPerfectReflectorMaterial(const char*name,const char*ref)=0;
+virtual bool AddPerfectRefractorMaterial(const char*name,const char*ref,const char*ior)=0;
+virtual bool AddTranslucentMaterial(const char*name,const char*rF,const char*T,const char*ext,const char*N,const char*scat)=0;
+virtual bool AddBioSpecSkinMaterial(const char*name,const char*thickness_SC_,const char*thickness_epidermis_,const char*thickness_papillary_dermis_,const char*thickness_reticular_dermis_,const char*ior_SC_,const char*ior_epidermis_,const char*ior_papillary_dermis_,const char*ior_reticular_dermis_,const char*concentration_eumelanin_,const char*concentration_pheomelanin_,const char*melanosomes_in_epidermis_,const char*hb_ratio_,const char*whole_blood_in_papillary_dermis_,const char*whole_blood_in_reticular_dermis_,const char*bilirubin_concentration_,const char*betacarotene_concentration_SC_,const char*betacarotene_concentration_epidermis_,const char*betacarotene_concentration_dermis_,const char*folds_aspect_ratio_,const bool bSubdermalLayer)=0;
+virtual bool AddDonnerJensenSkinBSSRDFMaterial(const char*name,const char*melanin_fraction_,const char*melanin_blend_,const char*hemoglobin_epidermis_,const char*carotene_fraction_,const char*hemoglobin_dermis_,const char*epidermis_thickness_,const char*ior_epidermis_,const char*ior_dermis_,const char*blood_oxygenation_,const char*roughness)=0;
+virtual bool AddGenericHumanTissueMaterial(const char*name,const char*sca,const char*g,const double whole_blood_,const double hb_ratio_,const double bilirubin_concentration_,const double betacarotene_concentration_,const bool diffuse)=0;
+virtual bool AddCompositeMaterial(const char*name,const char*top,const char*bottom,const unsigned int max_recur,const unsigned int max_reflection_recursion,const unsigned int max_refraction_recursion,const unsigned int max_diffuse_recursion,const unsigned int max_translucent_recursion,const double thickness,const char*extinction)=0;
+virtual bool AddWardIsotropicGaussianMaterial(const char*name,const char*diffuse,const char*specular,const char*alpha)=0;
+virtual bool AddWardAnisotropicEllipticalGaussianMaterial(const char*name,const char*diffuse,const char*specular,const char*alphax,const char*alphay)=0;
+virtual bool AddGGXMaterial(const char*name,const char*diffuse,const char*specular,const char*alphaX,const char*alphaY,const char*ior,const char*ext,const char*fresnel_mode="conductor",const char*tangent_rotation="none",const char*film_ior="none",const char*film_extinction="none",const char*film_thickness="none")=0;
+virtual bool AddGGXEmissiveMaterial(const char*name,const char*diffuse,const char*specular,const char*alphaX,const char*alphaY,const char*ior,const char*ext,const char*emissive,const double emissive_scale,const char*fresnel_mode="conductor",const char*tangent_rotation="none",const char*film_ior="none",const char*film_extinction="none",const char*film_thickness="none")=0;
+virtual bool AddPBRMetallicRoughnessMaterial(const char*name,const char*base_color,const char*metallic,const char*roughness,const double ior,const char*emissive,const double emissive_scale,const char*specular_factor="1.0",const char*specular_color="none",const char*anisotropy_factor="0.0",const char*anisotropy_rotation="0.0")=0;
+virtual bool AddSheenMaterial(const char*name,const char*sheen_color,const char*sheen_roughness)=0;
+virtual bool AddCookTorranceMaterial(const char*name,const char*diffuse,const char*specular,const char*facet,const char*ior,const char*ext)=0;
+virtual bool AddOrenNayarMaterial(const char*name,const char*reflectance,const char*roughness)=0;
+virtual bool AddSchlickMaterial(const char*name,const char*diffuse,const char*specular,const char*roughness,const char*isotropy)=0;
+virtual bool AddDataDrivenMaterial(const char*name,const char*filename)=0;
+virtual bool AddLambertianLuminaireMaterial(const char*name,const char*radEx,const char*mat,const double scale)=0;
+virtual bool AddPhongLuminaireMaterial(const char*name,const char*radEx,const char*mat,const char*N,const double scale)=0;
+virtual bool AddBoxGeometry(const char*name,const double width,const double height,const double depth)=0;
+virtual bool AddCircularDiskGeometry(const char*name,const double radius,const char axis)=0;
+virtual bool AddClippedPlaneGeometry(const char*name,const double ptA[4],const double ptB[4],const double ptC[4],const double ptD[4],const bool doublesided)=0;
+virtual bool AddCylinderGeometry(const char*name,const char axis,const double radius,const double height,const bool capped=true)=0;
+virtual bool AddInfinitePlaneGeometry(const char*name,const double xt,const double yt)=0;
+virtual bool AddSphereGeometry(const char*name,const double radius)=0;
+virtual bool AddEllipsoidGeometry(const char*name,const double radii[3])=0;
+virtual bool AddTorusGeometry(const char*name,const double majorRad,const double minorRad)=0;
+virtual bool AddIndexedTriangleMeshGeometry(const char*name,const float*vertices,const float*normals,const float*coords,const unsigned int*vertexface,const unsigned int*uvwface,const unsigned int*normalface,const unsigned int numpts,const unsigned int numnormals,const unsigned int numcoords,const unsigned int numfaces,const bool double_sided,const bool face_normals)=0;
+virtual bool Add3DSTriangleMeshGeometry(const char*name,const char*filename,const bool double_sided,const bool face_normals)=0;
+virtual bool AddRAWTriangleMeshGeometry(const char*name,const char*szFileName,const bool double_sided)=0;
+virtual bool AddRAW2TriangleMeshGeometry(const char*name,const char*szFileName,const bool double_sided,const bool face_normals)=0;
+virtual bool AddPLYTriangleMeshGeometry(const char*name,const char*szFileName,const bool double_sided,const bool bInvertFaces,const bool face_normals)=0;
+virtual bool ImportGLTFScene(const char*filename,const char*name_prefix,const unsigned int scene_index,const bool import_meshes,const bool import_materials,const bool import_lights,const bool import_cameras,const bool import_normal_maps,const bool lowmem_textures,const double lights_intensity_override,const double directional_intensity_override,const double point_intensity_override,const double spot_intensity_override,const bool respect_baked_occlusion=true,const double emissive_intensity_scale=1.0,const double emissive_tint_r=1.0,const double emissive_tint_g=1.0,const double emissive_tint_b=1.0)=0;
+virtual bool AddGLTFTriangleMeshGeometry(const char*name,const char*szFileName,const unsigned int mesh_index,const unsigned int primitive_index,const bool double_sided,const bool face_normals,const bool flip_v)=0;
+virtual bool AddRISEMeshTriangleMeshGeometry(const char*name,const char*szFileName,const bool load_into_memory,const bool face_normals)=0;
+virtual bool AddBezierPatchGeometry(const char*name,const char*szFileName,const unsigned int max_patches,const unsigned char max_recur,const bool use_bsp,const bool bCenterObject)=0;
+virtual bool AddBilinearPatchGeometry(const char*name,const char*szFileName,const unsigned int max_polys,const unsigned char max_recur,const bool use_bsp)=0;
+virtual bool AddDisplacedGeometry(const char*name,const char*base_geometry_name,const unsigned int detail,const char*displacement,const Scalar disp_scale,const bool double_sided,const bool face_normals,const bool seam_fold=true)=0;
+virtual bool AddPointOmniLight(const char*name,const double power,const double srgb[3],const double pos[3],const bool shootPhotons)=0;
+virtual bool AddPointSpotLight(const char*name,const double power,const double srgb[3],const double foc[3],const double inner,const double outer,const double pos[3],const bool shootPhotons)=0;
+virtual bool AddAmbientLight(const char*name,const double power,const double srgb[3])=0;
+virtual bool AddDirectionalLight(const char*name,const double power,const double srgb[3],const double dir[3])=0;
+virtual bool AddHomogeneousMedium(const char*name,const double sigma_a[3],const double sigma_s[3],const char*phase_type,const double phase_g)=0;
+virtual bool AddHomogeneousMediumSpectral(const char*name,const double sigma_a[3],const double sigma_s[3],const double emission[3],const char*absorption_spectral,const char*scattering_spectral,const char*phase_type,const double phase_g)=0;
+virtual bool AddHeterogeneousMedium(const char*name,const double max_sigma_a[3],const double max_sigma_s[3],const double emission[3],const char*phase_type,const double phase_g,const char*szVolumeFilePattern,const unsigned int volWidth,const unsigned int volHeight,const unsigned int volStartZ,const unsigned int volEndZ,const char accessor,const double bboxMin[3],const double bboxMax[3])=0;
+virtual bool AddPainterHeterogeneousMedium(const char*name,const double max_sigma_a[3],const double max_sigma_s[3],const double emission[3],const char*phase_type,const double phase_g,const char*density_painter,const unsigned int virtualResolution,const char colorToScalar,const double bboxMin[3],const double bboxMax[3])=0;
+virtual bool SetGlobalMedium(const char*name)=0;
+virtual bool SetObjectInteriorMedium(const char*object_name,const char*medium_name)=0;
+virtual const IMedium*GetMedium(const char*name)const=0;
+virtual void EnumerateMediumNames(IEnumCallback<const char*>&cb)const=0;
+virtual const IGeometry*GetGeometry(const char*name)const=0;
+virtual void EnumerateGeometryNames(IEnumCallback<const char*>&cb)const=0;
+virtual bool AddBumpMapModifier(const char*name,const char*func,const double scale,const double window)=0;
+virtual bool AddNormalMapModifier(const char*name,const char*painter,const double scale)=0;
+virtual bool AddPiecewiseLinearFunction(const char*name,const double x[],const double y[],const unsigned int num,const bool bUseLUTs,const unsigned int lutsize)=0;
+virtual bool AddPiecewiseLinearFunction2D(const char*name,const double x[],char**y,const unsigned int num)=0;
+virtual bool AddObject(const char*name,const char*geom,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double pos[3],const double orient[3],const double scale[3],const bool bCastsShadows,const bool bReceivesShadows)=0;
+virtual bool AddObjectMatrix(const char*name,const char*geom,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double matrix[16],const bool bCastsShadows,const bool bReceivesShadows)=0;
+virtual bool AddCSGObject(const char*name,const char*objA,const char*objB,const char op,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double pos[3],const double orient[3],const bool bCastsShadows,const bool bReceivesShadows)=0;
+virtual bool AddReflectionShaderOp(const char*name)=0;
+virtual bool AddRefractionShaderOp(const char*name)=0;
+virtual bool AddEmissionShaderOp(const char*name)=0;
+virtual bool AddDirectLightingShaderOp(const char*name,const char*bsdf)=0;
+virtual bool AddCausticPelPhotonMapShaderOp(const char*name)=0;
+virtual bool AddCausticSpectralPhotonMapShaderOp(const char*name)=0;
+virtual bool AddGlobalPelPhotonMapShaderOp(const char*name)=0;
+virtual bool AddGlobalSpectralPhotonMapShaderOp(const char*name)=0;
+virtual bool AddTranslucentPelPhotonMapShaderOp(const char*name)=0;
+virtual bool AddShadowPhotonMapShaderOp(const char*name)=0;
+virtual bool AddDistributionTracingShaderOp(const char*name,const unsigned int samples,const bool irradiancecaching,const bool forcecheckemitters,const bool reflections,const bool refractions,const bool diffuse,const bool translucents)=0;
+virtual bool AddFinalGatherShaderOp(const char*name,const unsigned int numtheta,const unsigned int numphi,const bool cachegradients,const unsigned int min_effective_contributors,const double high_variation_reuse_scale,const bool cache)=0;
+virtual bool AddPathTracingShaderOp(const char*name,const bool smsEnabled,const unsigned int smsMaxIterations,const double smsThreshold,const unsigned int smsMaxChainDepth,const bool smsBiased)=0;
+virtual bool AddSMSShaderOp(const char*name,const unsigned int maxIterations,const double threshold,const unsigned int maxChainDepth,const bool biased)=0;
+virtual bool AddAmbientOcclusionShaderOp(const char*name,const unsigned int numtheta,const unsigned int numphi,const bool multiplybrdf,const bool irradiance_cache)=0;
+virtual bool AddSimpleSubSurfaceScatteringShaderOp(const char*name,const unsigned int numPoints,const double error,const unsigned int maxPointsPerNode,const unsigned char maxDepth,const double irrad_scale,const double geometric_scale,const bool multiplyBSDF,const bool regenerate,const char*shader,const bool cache,const bool low_discrepancy,const double extinction[3])=0;
+virtual bool AddDiffusionApproximationSubSurfaceScatteringShaderOp(const char*name,const unsigned int numPoints,const double error,const unsigned int maxPointsPerNode,const unsigned char maxDepth,const double irrad_scale,const double geometric_scale,const bool multiplyBSDF,const bool regenerate,const char*shader,const bool cache,const bool low_discrepancy,const double scattering[3],const double absorption[3],const double ior,const double g)=0;
+virtual bool AddDonnerJensenSkinSSSShaderOp(const char*name,const unsigned int numPoints,const double error,const unsigned int maxPointsPerNode,const unsigned char maxDepth,const double irrad_scale,const char*shader,const bool cache,const double melanin_fraction,const double melanin_blend,const double hemoglobin_epidermis,const double carotene_fraction,const double hemoglobin_dermis,const double epidermis_thickness,const double ior_epidermis,const double ior_dermis,const double blood_oxygenation,const char*melanin_fraction_offset,const char*hemoglobin_epidermis_offset,const char*hemoglobin_dermis_offset)=0;
+virtual bool AddAreaLightShaderOp(const char*name,const double width,const double height,const double location[3],const double dir[3],const unsigned int samples,const char*emm,const double power,const char*N,const double hotSpot,const bool cache)=0;
+virtual bool AddTransparencyShaderOp(const char*name,const char*transparency,const bool one_sided)=0;
+virtual bool AddAlphaTestShaderOp(const char*name,const char*alpha_painter,const double cutoff)=0;
+virtual bool AddStandardShader(const char*name,const unsigned int count,const char**shaderops)=0;
+virtual bool AddAdvancedShader(const char*name,const unsigned int count,const char**shaderops,const unsigned int*mindepths,const unsigned int*maxdepths,const char*operations)=0;
+virtual bool AddDirectVolumeRenderingShader(const char*name,const char*szVolumeFilePattern,const unsigned int width,const unsigned int height,const unsigned int startz,const unsigned int endz,const char accessor,const char gradient,const char composite,const double dThresholdStart,const double dThresholdEnd,const char sampler,const unsigned int samples,const char*transfer_red,const char*transfer_green,const char*transfer_blue,const char*transfer_alpha,const char*iso_shader)=0;
+virtual bool AddSpectralDirectVolumeRenderingShader(const char*name,const char*szVolumeFilePattern,const unsigned int width,const unsigned int height,const unsigned int startz,const unsigned int endz,const char accessor,const char gradient,const char composite,const double dThresholdStart,const double dThresholdEnd,const char sampler,const unsigned int samples,const char*transfer_alpha,const char*transfer_spectral,const char*iso_shader)=0;
+virtual bool SetPixelBasedPelRasterizer(const unsigned int numPixelSamples,const unsigned int numLumSamples,const unsigned int maxRecur,const char*shader,const RadianceMapConfig&radianceMapConfig,const char*luminarySampler,const double luminarySamplerParam,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetPixelBasedSpectralIntegratingRasterizer(const unsigned int numPixelSamples,const unsigned int numLumSamples,const SpectralConfig&spectralConfig,const unsigned int maxRecur,const char*shader,const RadianceMapConfig&radianceMapConfig,const char*luminarySampler,const double luminarySamplerParam,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const bool bIntegrateRGB,const unsigned int numSPDvalues,const double rgb_spd_frequencies[],const double rgb_spd_r[],const double rgb_spd_g[],const double rgb_spd_b[],const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const StabilityConfig&stabilityConfig)=0;
+virtual bool SetBDPTPelRasterizer(const unsigned int numPixelSamples,const unsigned int maxEyeDepth,const unsigned int maxLightDepth,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetBDPTSpectralRasterizer(const unsigned int numPixelSamples,const unsigned int maxEyeDepth,const unsigned int maxLightDepth,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const SpectralConfig&spectralConfig,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetVCMPelRasterizer(const unsigned int numPixelSamples,const unsigned int maxEyeDepth,const unsigned int maxLightDepth,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const double mergeRadius,const bool enableVC,const bool enableVM,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetVCMSpectralRasterizer(const unsigned int numPixelSamples,const unsigned int maxEyeDepth,const unsigned int maxLightDepth,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const SpectralConfig&spectralConfig,const double mergeRadius,const bool enableVC,const bool enableVM,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetAutoRasterizer(const AutoIntegratorChoice integrator,const unsigned int numPixelSamples,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig,const bool probeEnabled)=0;
+virtual bool SetAutoSpectralRasterizer(const AutoIntegratorChoice integrator,const unsigned int numPixelSamples,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const SpectralConfig&spectralConfig,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig,const bool probeEnabled)=0;
+virtual bool SetPathTracingPelRasterizer(const unsigned int numPixelSamples,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const SMSConfig&smsConfig,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PathGuidingConfig&guidingConfig,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetPathTracingSpectralRasterizer(const unsigned int numPixelSamples,const char*shader,const RadianceMapConfig&radianceMapConfig,const PixelFilterConfig&pixelFilterConfig,const bool bShowLuminaires,const SpectralConfig&spectralConfig,const SMSConfig&smsConfig,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const AdaptiveSamplingConfig&adaptiveConfig,const StabilityConfig&stabilityConfig,const ProgressiveConfig&progressiveConfig)=0;
+virtual bool SetMLTRasterizer(const unsigned int maxEyeDepth,const unsigned int maxLightDepth,const unsigned int nBootstrap,const unsigned int nChains,const unsigned int nMutationsPerPixel,const double largeStepProb,const char*shader,const bool bShowLuminaires,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PixelFilterConfig&pixelFilterConfig,const StabilityConfig&stabilityConfig)=0;
+virtual bool SetMLTSpectralRasterizer(const unsigned int maxEyeDepth,const unsigned int maxLightDepth,const unsigned int nBootstrap,const unsigned int nChains,const unsigned int nMutationsPerPixel,const double largeStepProb,const char*shader,const bool bShowLuminaires,const SpectralConfig&spectralConfig,const bool oidnDenoise,const OidnQuality oidnQuality,const OidnDevice oidnDevice,const OidnPrefilter oidnPrefilter,const PixelFilterConfig&pixelFilterConfig,const StabilityConfig&stabilityConfig)=0;
+virtual void SetSuppressFileRasterizerOutputs(bool){}
+virtual bool GetSuppressFileRasterizerOutputs()const { return false;}
+virtual bool AddFileRasterizerOutput(const char*szPattern,const bool bMultiple,const char type,const unsigned char bpp,const char color_space,const double exposureEV,const char display_transform,const char exr_compression,const bool exr_with_alpha)=0;
+virtual bool AddCallbackRasterizerOutput(IJobRasterizerOutput*pObj)=0;
+virtual bool SetCausticPelGatherParameters(const double radius,const double ellipse_ratio,const unsigned int min,const unsigned int max)=0;
+virtual bool SetGlobalPelGatherParameters(const double radius,const double ellipse_ratio,const unsigned int min,const unsigned int max)=0;
+virtual bool SetTranslucentPelGatherParameters(const double radius,const double ellipse_ratio,const unsigned int min,const unsigned int max)=0;
+virtual bool SetCausticSpectralGatherParameters(const double radius,const double ellipse_ratio,const unsigned int min,const unsigned int max,const double nm_range)=0;
+virtual bool SetGlobalSpectralGatherParameters(const double radius,const double ellipse_ratio,const unsigned int min,const unsigned int max,const double nm_range)=0;
+virtual bool SetIrradianceCacheParameters(const unsigned int size,const double tolerance,const double min_spacing,const double max_spacing,const double query_threshold_scale,const double neighbor_spacing_scale)=0;
+virtual bool SetShadowGatherParameters(const double radius,const double ellipse_ratio,const unsigned int min,const unsigned int max)=0;
+virtual bool SaveCausticPelPhotonmap(const char*file_name)=0;
+virtual bool SaveGlobalPelPhotonmap(const char*file_name)=0;
+virtual bool SaveTranslucentPelPhotonmap(const char*file_name)=0;
+virtual bool SaveCausticSpectralPhotonmap(const char*file_name)=0;
+virtual bool SaveGlobalSpectralPhotonmap(const char*file_name)=0;
+virtual bool SaveShadowPhotonmap(const char*file_name)=0;
+virtual bool LoadCausticPelPhotonmap(const char*file_name)=0;
+virtual bool LoadGlobalPelPhotonmap(const char*file_name)=0;
+virtual bool LoadTranslucentPelPhotonmap(const char*file_name)=0;
+virtual bool LoadCausticSpectralPhotonmap(const char*file_name)=0;
+virtual bool LoadGlobalSpectralPhotonmap(const char*file_name)=0;
+virtual bool LoadShadowPhotonmap(const char*file_name)=0;
+virtual bool ShootCausticPelPhotons(const unsigned int num,const double power_scale,const unsigned int maxRecur,const double minImportance,const bool branch,const bool reflect,const bool refract,const bool shootFromNonMeshLights,const unsigned int temporal_samples,const bool regenerate,const bool shootFromMeshLights=true)=0;
+virtual bool ShootGlobalPelPhotons(const unsigned int num,const double power_scale,const unsigned int maxRecur,const double minImportance,const bool branch,const bool shootFromNonMeshLights,const unsigned int temporal_samples,const bool regenerate,const bool shootFromMeshLights=true)=0;
+virtual bool ShootTranslucentPelPhotons(const unsigned int num,const double power_scale,const unsigned int maxRecur,const double minImportance,const bool reflect,const bool refract,const bool direct_translucent,const bool shootFromNonMeshLights,const unsigned int temporal_samples,const bool regenerate,const bool shootFromMeshLights=true)=0;
+virtual bool ShootCausticSpectralPhotons(const unsigned int num,const double power_scale,const unsigned int maxRecur,const double minImportance,const double nm_begin,const double nm_end,const unsigned int num_wavelengths,const bool branch,const bool reflect,const bool refract,const unsigned int temporal_samples,const bool regenerate)=0;
+virtual bool ShootGlobalSpectralPhotons(const unsigned int num,const double power_scale,const unsigned int maxRecur,const double minImportance,const double nm_begin,const double nm_end,const unsigned int num_wavelengths,const bool branch,const unsigned int temporal_samples,const bool regenerate)=0;
+virtual bool ShootShadowPhotons(const unsigned int num,const unsigned int temporal_samples,const bool regenerate)=0;
+virtual bool PredictRasterizationTime(unsigned int num,unsigned int*ms,unsigned int*actual)=0;
+virtual bool Rasterize()=0;
+virtual bool RasterizeAnimation(const double time_start,const double time_end,const unsigned int num_frames,const bool do_fields,const bool invert_fields)=0;
+virtual bool RasterizeAnimationUsingOptions()=0;
+virtual bool RasterizeAnimationUsingOptions(const unsigned int frame)=0;
+virtual bool RasterizeRegion(const unsigned int left,const unsigned int top,const unsigned int right,const unsigned int bottom)=0;
+virtual bool SetObjectPosition(const char*name,const double pos[3])=0;
+virtual bool SetObjectOrientation(const char*name,const double orient[3])=0;
+virtual bool SetObjectScale(const char*name,const double scale)=0;
+virtual bool SetObjectUVToSpherical(const char*name,const double radius)=0;
+virtual bool SetObjectUVToBox(const char*name,const double width,const double height,const double depth)=0;
+virtual bool SetObjectUVToCylindrical(const char*name,const double radius,const char axis,const double size)=0;
+virtual bool SetObjectIntersectionError(const char*name,const double error)=0;
+virtual bool RemovePainter(const char*name)=0;
+virtual bool RemoveMaterial(const char*name)=0;
+virtual bool RemoveGeometry(const char*name)=0;
+virtual bool RemoveObject(const char*name)=0;
+virtual bool RemoveLight(const char*name)=0;
+virtual bool RemoveModifier(const char*name)=0;
+virtual void InvalidateSpatialStructure(){}
+virtual void BumpLightTopologyGeneration(){}
+virtual unsigned int GetLightTopologyGeneration()const { return 0;}
+virtual void SetIncrementalRepointMode(bool){}
+virtual bool ClearAll()=0;
+virtual bool RemoveRasterizerOutputs()=0;
+virtual bool LoadAsciiSceneViaCst(const char*filename){ return false;}
+virtual bool LoadAsciiSceneAuto(const char*filename){ return false;}
+virtual bool RederiveCstWithVariant(const char*variantName){ return false;}
+virtual bool HasRetainedCstDocument()const { return false;}
+virtual const RISE::Cst::Document*GetCstDocument()const { return nullptr;}
+virtual bool RunAsciiScript(const char*filename)=0;
+virtual bool AreThereAnyKeyframedObjects()=0;
+virtual bool AddKeyframe(const char*element_type,const char*element,const char*param,const char*value,const double time,const char*interp,const char*interp_params)=0;
+virtual bool SetAnimationOptions(const double time_start,const double time_end,const unsigned int num_frames,const bool do_fields,const bool invert_fields)=0;
+virtual bool GetAnimationOptions(double&time_start,double&time_end,unsigned int&num_frames,bool&do_fields,bool&invert_fields)const=0;
+virtual bool DeclareAnimation(const char*,const double,const double,const unsigned int,const bool,const bool,const bool){ return false;}
+virtual bool AddKeyframeToAnimation(const char*,const char*,const char*,const char*,const double,const char*,const char*,const char*){ return false;}
+virtual bool SetActiveAnimation(const char*){ return false;}
+virtual bool SetActiveAnimationByIndex(const unsigned int){ return false;}
+virtual unsigned int GetAnimationCount()const { return 0;}
+virtual void NoteObjectOverride(){}
+virtual unsigned int GetObjectOverrideCount()const { return 0;}
+virtual bool GetAnimationName(const unsigned int,char*,const unsigned int)const { return false;}
+virtual unsigned int GetActiveAnimationIndex()const { return 0;}
+virtual bool GetActiveAnimationName(char*,const unsigned int)const { return false;}
+virtual bool DeclareSceneVariant(const char*,const char*){ return false;}
+virtual bool SetActiveSceneVariant(const char*){ return false;}
+virtual bool GetActiveSceneVariant(char*,const unsigned int)const { return false;}
+virtual unsigned int GetSceneVariantCount()const { return 0;}
+virtual bool GetSceneVariantName(unsigned int,char*,const unsigned int)const { return false;}
+virtual bool HasSceneVariants()const { return false;}
+virtual void ClearSceneVariants(){}
+virtual void SetProgress(IProgressCallback*pProgress)=0;
+virtual bool AddTexturePaintersBatch(const TexturePainterBatchRequest*requests,size_t numRequests,bool*outRequestSuccess=nullptr)=0;
+virtual bool AddPrebuiltTriangleMeshGeometry(const char*name,ITriangleMeshGeometryIndexed*pGeom)=0;
+virtual bool SetActiveRasterizer(const char*){ return false;}
+virtual std::string GetActiveRasterizerName()const { return std::string();}
+virtual unsigned int GetRasterizerTypeCount()const { return 0;}
+virtual std::string GetRasterizerTypeName(unsigned int)const { return std::string();}
+virtual bool SetRasterizerParameter(const char*,const char*,const char*){ return false;}
+virtual std::string GetRasterizerParameter(const char*,const char*)const { return std::string();}
+virtual bool IsMaterialComposed(const char*)const { return false;}
+virtual bool AddTexCoord1Painter(const char*,const char*){ return false;}
+virtual bool SetGlobalRadianceMap(class IRadianceMap*){ return false;}
+virtual bool ClearGlobalRadianceMap(){ return false;}
+virtual bool AddHosekWilkieSkylight(const double,const double,const double,const double[3],const double,const double,const bool){ return false;}
+virtual bool SetFilm(const unsigned int width,const unsigned int height,const double pixelAR)=0;
+virtual bool ScaleFilmToFit(const unsigned int maxSurfaceW,const unsigned int maxSurfaceH,const unsigned int maxLongEdge)=0;
+virtual bool AddSDFGeometry(const char*name,const char*szFileName,const char*szParts,const unsigned int maxSteps,const double surfaceEpsilonFraction,const unsigned int samplingDetail)=0;
+virtual bool AddSDFHeightfieldGeometry(const char*name,const char*heightfieldFunction,const double radius,const double scale,const unsigned int maxSteps,const double surfaceEpsilonFraction,const unsigned int samplingDetail)=0;
+virtual bool AddSweepGeometry(const char*name,const SweepDescriptor&desc)=0;
+virtual bool AddPathInstancesGeometry(const char*name,const char*szTemplate,const PathInstancesDescriptor&desc)=0;
+virtual bool AddFunction2DColorPainter(const char*name,const char*szFunction,const double scale,const double bias)=0;
+virtual bool AddCartesianDiskGeometry(const char*name,const double radius,const int meshN)=0;
+virtual bool SetObjectMaterial(const char*objName,const char*materialName)=0;
+virtual bool SetObjectShader(const char*objName,const char*shaderName)=0;
+virtual bool SetMaterialEmissionScale(const char*materialName,const double scale)=0;
+virtual bool SetActiveRasterizerRadianceScale(const double scale)=0;
+virtual bool AddGlintModifier(const char*name,const double density,const double coverage,const double fill,const double spread,const double scale[3],const double shift[3],const unsigned int seed)=0;
+virtual int ApplyCstParamEdit(const char*entityName,const char*entityKind,const char*role,int occ,const char*newValue){ return 0;}
+virtual int ApplyCstObjectMatrixEdit(const char*objectName,const char*matrix16){ return 0;}
+virtual int ApplyCstCameraPoseEdit(const char*camName,const char*location,const char*lookat,const char*up,const char*orientation,const char*targetOrientation){ return 0;}
+virtual int ApplyCstInsertCameraChunk(const char*chunkText){ return 0;}
+virtual int ApplyCstRemoveCameraChunk(const char*camName){ return 0;}
+virtual int ApplyCstFilmEdit(const char*width,const char*height,const char*pixelAR){ return 0;}
+virtual int ApplyCstEnvironmentEdit(const char*paramName,const char*value){ return 0;}
+virtual int CstObjectTransformKind(const char*name)const { return 0;}
+virtual int ApplyCstObjectComponentsEdit(const char*objectName,const char*position,const char*orientation){ return 0;}
+virtual void RefreshCstLoadFileIdentity(const char*path){}
+virtual int ApplyCstDeleteCameraChunk(const char*camName){ return 0;}
+virtual bool SetViewportFit(const unsigned int surfaceW,const unsigned int surfaceH,const unsigned int maxLongEdge){ return false;}
+virtual int ApplyCstInsertChunk(const char*chunkText,char*outKeyword,unsigned int keywordMax,char*outName,unsigned int nameMax,char*outDiag,unsigned int diagMax,int*outInsertedAt=nullptr){ if(outKeyword&&keywordMax)outKeyword[0]='\0';if(outName&&nameMax)outName[0]='\0';if(outDiag&&diagMax)outDiag[0]='\0';return 0;}
+virtual int ApplyCstRemoveChunk(const char*target,const char*kind,char*outKeyword,unsigned int keywordMax,char*outDiag,unsigned int diagMax){ if(outKeyword&&keywordMax)outKeyword[0]='\0';if(outDiag&&diagMax)outDiag[0]='\0';return 0;}
+virtual int ApplyCstParamEditChecked(const char*entityName,const char*entityKind,const char*role,int occ,const char*newValue){ return 0;}
+virtual int ApplyCstParamRemoveChecked(const char*entityName,const char*entityKind,const char*role,int occ){ return 0;}
+virtual int ApplyCstRestoreChunkAt(const char*bytesInOrder,int atIndex,bool restoreActiveRasterizer,char*outDiag,unsigned int diagMax){ if(outDiag&&diagMax)outDiag[0]='\0';return 0;}
+virtual int ApplyCstRemoveItemsAt(int atIndex,int count,char*outDiag,unsigned int diagMax,const char*expectedChunkBytes=nullptr){ if(outDiag&&diagMax)outDiag[0]='\0';return 0;}
+virtual bool ClearProgressIfCurrent(IProgressCallback*){ return false;}
+virtual bool SetProgressIfCurrent(IProgressCallback*,IProgressCallback*){ return false;}
+virtual IProgressCallback*ExchangeProgress(IProgressCallback*){ return nullptr;}
+virtual int ApplyCstCameraPoseEditWithBasis(const char*camName,const char*location,const char*lookat,const char*up,const char*orientation,const char*targetOrientation,const char*,const char*){ return ApplyCstCameraPoseEdit(camName,location,lookat,up,orientation,targetOrientation);}
+virtual int ApplyCstRemoveChunks(const char*const*,const char*const*,int,char*outKeywords,unsigned int keywordsMax,char*outDiag,unsigned int diagMax,int*outFailIndex=nullptr){ if(outKeywords&&keywordsMax)outKeywords[0]='\0';if(outDiag&&diagMax)outDiag[0]='\0';if(outFailIndex)*outFailIndex=-1;return 0;}
+virtual int ApplyCstReplaceDocumentText(const char*,bool,char*outDiag,unsigned int diagMax,const char*=nullptr){ if(outDiag&&diagMax)outDiag[0]='\0';return 0;}
+virtual bool SetObjectParent(const char*,const char*){ return false;}
+virtual bool ComposeObjectHierarchy(){ return false;}
+virtual bool AddLatheGeometry(const char*name,const LatheDescriptor&desc)=0;
+virtual bool AddExpressionPainter(const char*name,const char*expr,const char*const*params,const unsigned int numParams,const char*const*defs,const unsigned int numDefs,const double seed,const double time)=0;
+virtual bool AddRampPainter(const char*name,const char*input,const unsigned int channel,const unsigned int interpolation,const double*stopPositions,const double*stopColors,const unsigned int numStops,const char*colorSpace)=0;
+virtual bool AddMappingPainter(const char*name,const char*source,const unsigned int projection,const double scale[3],const double rotateDeg[3],const double translate[3],const double blendSharpness)=0;
+virtual bool AddVoronoi3DPainterWithSpace(const char*name,const double pt_x[],const double pt_y[],const double pt_z[],const char**painters,const unsigned int count,const char*border,const double bsize,const bool worldSpace)=0;
+virtual bool AddBlendPainterWithMode(const char*name,const char*pa,const char*pb,const char*mask,const unsigned int mode)=0;
+virtual bool AddStochasticTilePainter(const char*name,const char*source,const double tileScale,const unsigned int seed,const double mean[3],const double blendGamma,const char*colorSpace)=0;
+virtual bool AddScatterPainter(const char*name,const char*source,const char*background,const double cellScale,const double stampScale,const double jitterPosition,const double jitterRotationDeg,const double jitterScale,const double probability,const unsigned int seed)=0;
