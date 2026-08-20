@@ -55,6 +55,11 @@ int main()
 		"generalized three-grid Richardson recovers capped order and tier-6 distance");
 	Check(!GeneralizedGridRichardson(d67,d56,h5,h6,h7,2.0,order,distance),
 		"non-asymptotic grid differences block calibration");
+	const double positiveOrderFloor=std::log(h5/h6)/std::log(h6/h7);
+	Check(!GeneralizedGridRichardson(positiveOrderFloor*0.99,1.0,h5,h6,h7,2.0,
+		order,distance),"ratio below the positive-order limit blocks calibration");
+	Check(GeneralizedGridRichardson(2.0,1.0,h5,h6,h7,2.0,order,distance)&&
+		order==2.0,"apparent superconvergence is capped at formal order");
 	Check(TemporalRichardson(0.75,0.1875,2.0,order,distance)&&order==2.0&&
 		distance>=1.0,"three-level temporal Richardson uses the baseline distance");
 	double tolerance=0.0;
