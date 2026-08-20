@@ -861,6 +861,59 @@ namespace FireProductionDyadicCalibration
 		return failure;
 	}
 
+	struct ProductionEOSDeviation
+	{
+		double signedProbe;
+		double maximumAbsolute;
+		double signedAtMaximum;
+		std::size_t maximumCell;
+		ProductionEOSDeviation() : signedProbe(0.0),maximumAbsolute(0.0),
+			signedAtMaximum(0.0),maximumCell(0u) {}
+	};
+
+	bool MeasureCheckpointEOSDeviation(const MethaneRunCheckpoint& state,
+		const std::size_t probeCell,ProductionEOSDeviation& result,
+		std::vector<double>* signedDeviation,std::string& error)
+	{
+		result=ProductionEOSDeviation();
+		if(probeCell>=state.states.size())return false;
+		if(signedDeviation)signedDeviation->assign(state.states.size(),0.0);
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		for(std::size_t cell=0u;cell<state.states.size();++cell){double ratio=0.0;
+			const ConservativeVector conservative=ToConservativeVector(state.states[cell]);
+			if(!AcceptedConservativeVolumeRatio(conservative,fuel,
+				state.states[cell].producerPrecision,ratio,&error))return false;
+			const double deviation=ratio-1.0;
+			if(signedDeviation)(*signedDeviation)[cell]=deviation;
+			if(cell==probeCell)result.signedProbe=deviation;
+			if(std::fabs(deviation)>result.maximumAbsolute){
+				result.maximumAbsolute=std::fabs(deviation);
+				result.signedAtMaximum=deviation;result.maximumCell=cell;}
+		}
+		return true;
+	}
+
+	bool MeasureProductionEOSDeviation(const RISE::FireProductionResidentStepResult& production,
+		const std::size_t cells,const std::size_t probeCell,ProductionEOSDeviation& result,
+		std::string& error)
+	{
+		result=ProductionEOSDeviation();
+		if(probeCell>=cells||production.conservativeValues.size()!=9u*cells)return false;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		for(std::size_t cell=0u;cell<cells;++cell){ConservativeVector conservative;
+			for(std::size_t component=0u;component<9u;++component)
+				conservative[component]=production.conservativeValues[component*cells+cell];
+			double ratio=0.0;if(!AcceptedConservativeVolumeRatio(conservative,fuel,
+				FireStateProducerPrecision::Binary32,ratio,&error))return false;
+			const double deviation=ratio-1.0;
+			if(cell==probeCell)result.signedProbe=deviation;
+			if(std::fabs(deviation)>result.maximumAbsolute){
+				result.maximumAbsolute=std::fabs(deviation);
+				result.signedAtMaximum=deviation;result.maximumCell=cell;}
+		}
+		return true;
+	}
+
 	std::string ProductionConservativeDigest(
 		const RISE::FireProductionResidentStepResult& production)
 	{
@@ -880,6 +933,8 @@ namespace FireProductionDyadicCalibration
 	int CheckProduction(const std::filesystem::path& directory,const char* expectedProtocol,
 		const char* expectedTargets)
 	{
+		const char* eosProbeEnvironment=std::getenv("RISE_FIRE_EOS_DRIFT_PROBE");
+		const bool eosProbe=eosProbeEnvironment&&std::strcmp(eosProbeEnvironment,"1")==0;
 		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
 			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
 			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 180;
@@ -894,7 +949,15 @@ namespace FireProductionDyadicCalibration
 			if(DigestFile(target)!=targetDigests[index]||!ReadCalibrationDoublePayload(target,
 				states[index].states.size(),8u,sealed))return 183;
 			const double flowThrough=6.0*std::sqrt(states[index].values.characteristicDiameterM/Gravity);
+			static const std::size_t failingProbeCell=2256u;
+			MethaneRunCheckpoint restoredProbeState;
+			bool restoredProbeReady=false;
+			double restorationReferenceDeviation=0.0;
 			for(std::size_t step=0u;step<8u;++step){
+				ProductionEOSDeviation beginningDeviation;
+				std::vector<double> beginningDeviationField;
+				if(eosProbe&&index==3u&&!MeasureCheckpointEOSDeviation(states[index],
+					failingProbeCell,beginningDeviation,&beginningDeviationField,error))return 200;
 				RISE::FireProductionResidentStepRequest request;
 				if(!BuildProductionRequest(states[index],sealed[step],flowThrough/512.0,request,error))
 					return 184;
@@ -919,6 +982,60 @@ namespace FireProductionDyadicCalibration
 							production.projection.executedJacobiSweepCount),
 						static_cast<unsigned long long>(ExpectedProjectionSweeps(
 							request.force.shape)));return 186;}
+				ProductionEOSDeviation outputDeviation;
+				if(eosProbe&&index==3u){
+					if(!MeasureProductionEOSDeviation(production,states[index].states.size(),
+						failingProbeCell,outputDeviation,error))return 201;
+					std::fprintf(stderr,"EOSPROBE step=%zu begin_probe=%.17g output_probe=%.17g "
+						"begin_max=%.17g begin_max_cell=%zu output_max=%.17g output_max_cell=%zu\n",
+						step+1u,beginningDeviation.signedProbe,outputDeviation.signedProbe,
+						beginningDeviation.signedAtMaximum,beginningDeviation.maximumCell,
+						outputDeviation.signedAtMaximum,outputDeviation.maximumCell);
+					if(step==5u){
+						if(!std::isfinite(beginningDeviation.signedProbe)||
+							beginningDeviation.signedProbe==0.0)return 207;
+						RISE::FireProductionResidentStepRequest restoredRequest=request;
+						for(std::size_t cell=0u;cell<beginningDeviationField.size();++cell){
+							const float absoluteReference=static_cast<float>(
+								beginningDeviationField[cell]/static_cast<double>(request.force.timeStepS));
+							restoredRequest.divergenceTargetPerS[cell]=
+								restoredRequest.divergenceTargetPerS[cell]+absoluteReference;
+						}
+						RISE::FireProductionResidentStepResult restored;
+						if(!RISE::AdvanceFireProductionResidentStepMetal(restoredRequest,restored,
+							&error)||!restored.projection.validationPassed||
+							restored.interstageFullGridTransferCount!=0u||
+							restored.conservativeValues!=production.conservativeValues)return 202;
+						restoredProbeState=states[index];
+						if(!ApplyProductionResult(restored,restoredProbeState,error))return 203;
+						restorationReferenceDeviation=beginningDeviation.signedProbe;
+						restoredProbeReady=true;
+					}else if(step==6u&&restoredProbeReady){
+						RISE::FireProductionResidentStepRequest drainedRequest;
+						if(!BuildProductionRequest(restoredProbeState,sealed[step],flowThrough/512.0,
+							drainedRequest,error))return 204;
+						RISE::FireProductionResidentStepResult drained;
+						if(!RISE::AdvanceFireProductionResidentStepMetal(drainedRequest,drained,&error)||
+							!drained.projection.validationPassed||
+							drained.interstageFullGridTransferCount!=0u)return 205;
+						ProductionEOSDeviation drainedDeviation;
+						if(!MeasureProductionEOSDeviation(drained,states[index].states.size(),
+							failingProbeCell,drainedDeviation,error))return 206;
+						const double generation=outputDeviation.signedProbe-
+							beginningDeviation.signedProbe;
+						const double drainedAmount=outputDeviation.signedProbe-
+							drainedDeviation.signedProbe;
+						const double drainFraction=drainedAmount/restorationReferenceDeviation;
+						const double predictedPlateau=generation/drainFraction;
+						if(!std::isfinite(generation)||!std::isfinite(drainedAmount)||
+							!std::isfinite(drainFraction)||drainFraction==0.0||
+							!std::isfinite(predictedPlateau))return 208;
+						std::fprintf(stderr,"EOSDRAIN step=%zu generation=%.17g reference=%.17g "
+							"counterfactual=%.17g drained=%.17g fraction=%.17g plateau=%.17g\n",
+							step+1u,generation,restorationReferenceDeviation,
+							drainedDeviation.signedProbe,drainedAmount,drainFraction,predictedPlateau);
+					}
+				}
 				if(!production.projection.validationPassed)return 188;
 				if(index==0u&&step==0u){std::fprintf(stderr,"dyadic production projection "
 					"pre=%.17g post=%.17g complementarity=%.17g mean=%.17g valid=%d\n",

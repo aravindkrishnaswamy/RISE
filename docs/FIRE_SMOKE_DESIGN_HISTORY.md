@@ -2733,3 +2733,29 @@ it was already tried and refuted here.
   a new EOS-consistency finding, not a feasibility or `B_fp32` term. The
   four-tier campaign is incomplete and admits no production Richardson distance
   pending targeted instrumentation.
+
+- **r117 EOS-drift probe protocol (2026-08-20, frozen before evidence):** the
+  exit-191 campaign is instrumented without changing the solver, divergence
+  target, EOS ceiling, or accepted-state gate.  On the tier-12 trajectory the
+  signed observable is `d_n = V(Q_n)-1`; every step records the fixed failing
+  cell 2256 and the independently searched field maximum before and after the
+  resident step.  Monotone near-linear growth classifies secular accumulation;
+  a fast nonzero plateau classifies per-step generation against finite drain.
+  The target audit is structural: an opaque pre-extracted oracle target is not
+  credited as production restoration unless the production request itself
+  contains `(V(Q_n)-1)/dt`, and no r70 counterpart is credited unless the
+  target is recomputed from the production transported candidate.
+
+  Drain is measured by one counterfactual, not fitted.  At the end of tier-12
+  step 6, an otherwise byte-identical resident call adds the strict-fp32
+  absolute-reference term `float(d_n/float(dt))` to each authored target.  Its
+  conservative output must be byte-identical to baseline because projection is
+  terminal; only its projected MAC state may differ.  That MAC state drives one
+  ordinary step-7 transport with the unchanged sealed step-7 target.  At cell
+  2256, `G=d_7-d_6`, `drain=d_7-d_7^restored`,
+  `r=drain/d_5`, and the diagnosed steady value is `G/r`.  Nonfinite values,
+  zero reference/drain, a failed projection, an interstage transfer, or changed
+  step-6 conservative bytes invalidate the probe.  This is diagnostic evidence
+  only: it cannot relax the `1.0e-3` gate or authorize a fix.  The golden
+  checkpoint remains outside this campaign and must retain SHA-256
+  `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.

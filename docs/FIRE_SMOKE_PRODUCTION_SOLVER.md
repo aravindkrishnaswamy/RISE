@@ -1827,6 +1827,26 @@ and all later calibration stages remain unrun until the EOS drift is instrumente
 under the budget-probe discipline. Neither solver nor the `0.001` EOS contract
 was changed.
 
+### 7.32 EOS-drift diagnostic contract (r117, pre-evidence)
+
+The exit-191 diagnosis is a read-only resident campaign. It records the signed
+EOS-volume deviation `d=V(Q)-1` at tier-12 cell 2256 and the independently
+searched field maximum for steps 1--7. Linear monotone growth means missing or
+ineffective absolute restoration; a fast plateau means per-step production
+exceeds the single projection's drain capacity. The target audit recognizes
+r69 only when the production target itself contains `(V(Q^n)-1)/dt`, and r70
+only when the target closes the production transported candidate's advective
+volume anomaly. Reusing an oracle target does not establish either property.
+
+Drain uses the frozen r117 counterfactual: step 6 adds the per-cell fp32 term
+`float(d_n/float(dt))` to the existing target, requires byte-identical transported
+conservative output, carries only the changed projected MAC state into step 7,
+and measures `r=(d_7-d_7^restored)/d_5`. With `G=d_7-d_6`, the predicted
+steady deviation is `G/r`. The probe must fail for nonfinite or zero diagnostic
+denominators, any projection-validation or residency miss, or any changed
+step-6 conservative byte. No measured value may alter the EOS gate or select a
+fix retroactively.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
