@@ -196,7 +196,7 @@ std::vector<CameraProperty> PainterIntrospection::Inspect(
 			"only chunk that ever registers into the scalar pipe; `blend_painter` / `ramp_painter` have "
 			"a real dual-registration, but it is colour + IFunction2D (so the same name can also be "
 			"bound as a UV-domain function elsewhere), not colour + scalar." );
-		// Directly after the generic surface's leading "type" row, so the
+		// Directly after the generic surface's leading "chunk_type" row, so the
 		// two identity facts read together at the top of the panel.  Index 1
 		// is always valid: the empty case returned above, and the generic
 		// surface's first row is unconditionally the identity row.

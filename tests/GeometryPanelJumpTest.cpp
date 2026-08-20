@@ -308,9 +308,9 @@ int main()
 			Check( std::string( ctrl.PropertyValueFor( Category::Geometry, radiusIdx ).c_str() ) == "0.8",
 				"`radius` row carries the scene's CST value 0.8" );
 		}
-		const int typeIdx = RowIndexFor( ctrl, Category::Geometry, "type" );
+		const int typeIdx = RowIndexFor( ctrl, Category::Geometry, "chunk_type" );
 		Check( typeIdx == 0 && !ctrl.PropertyEditableFor( Category::Geometry, 0 ),
-			"leading read-only `type` identity row present" );
+			"leading read-only `chunk_type` identity row present" );
 		// The shells' single-panel path reads the PRIMARY snapshot --
 		// PanelMode has no Geometry value, so RefreshProperties must route
 		// the per-category rows as primary (the pre-existing Painter gap,

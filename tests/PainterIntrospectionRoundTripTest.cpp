@@ -295,9 +295,9 @@ static void TestInspectRows()
 	{
 		const std::vector<CameraProperty> rows = InspectPainter( *j, "basecol" );
 		Check( !rows.empty(), "uniformcolor_painter yields rows" );
-		Check( RowFor( rows, "type", row ) && row.value == String( "uniformcolor_painter" )
+		Check( RowFor( rows, "chunk_type", row ) && row.value == String( "uniformcolor_painter" )
 		    && !row.editable,
-		       "leading `type` row names the chunk keyword, read-only" );
+		       "leading `chunk_type` row names the chunk keyword, read-only" );
 		Check( RowFor( rows, "pipe", row ) && row.value == String( "colour" ) && !row.editable,
 		       "`pipe` row reports the COLOUR pipe for a uniformcolor_painter" );
 		Check( RowFor( rows, "color", row ) && row.editable
@@ -888,7 +888,7 @@ static void TestBridgeSnapshotPath()
 		for( unsigned int i = 0; i < n; ++i ) {
 			const String nm = c.PropertyNameFor( SceneEditController::Category::Painter, i );
 			const bool ed   = c.PropertyEditableFor( SceneEditController::Category::Painter, i );
-			if( nm == String( "type" ) )     sawType = true;
+			if( nm == String( "chunk_type" ) )     sawType = true;
 			if( nm == String( "pipe" ) )     sawPipe = true;
 			if( nm == String( "expr" ) )   { sawExpr = true;     exprEditable = ed; }
 			if( nm == String( "param[0]" ) ) { sawParamOcc = true; paramOccEditable = ed; }
@@ -1828,6 +1828,95 @@ static void TestOccurrenceDriftGuardWhitespace()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 21: the synthetic identity row and a REAL descriptor param that
+// happens to also be named `type` no longer collide.  sdf3d_painter
+// declares a genuine `type` parameter (the SDF primitive enum -- sphere
+// / box / torus / cylinder); before the chunk_type rename, the generic
+// CST surface's leading synthetic identity row was ALSO named "type",
+// so a painter panel for an sdf3d_painter chunk showed two rows named
+// `type` and any name-keyed lookup (RowFor included) silently picked
+// whichever happened to come first.  This is the regression guard for
+// that collision, not just a rename-propagation check.
+//////////////////////////////////////////////////////////////////////
+static void TestSdf3dChunkTypeIdentityRowNoCollision()
+{
+	std::cout << "Test 21: sdf3d_painter's real `type` param vs. the synthetic "
+	             "`chunk_type` identity row -- no name collision..." << std::endl;
+
+	// Self-contained (not kScene): the only fixture that needs an
+	// sdf3d_painter chunk, whose own `type` param is the whole point.
+	static const char* kSceneSdf =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname basecol\ncolor 0.25 0.5 0.75\n}\n"
+		"sdf3d_painter\n{\nname sdftype\ncolora white\ncolorb basecol\ntype torus\n"
+			"param1 0.5\nparam2 0.3\nparam3 0.3\n}\n"
+		"lambertian_luminaire_material\n{\nname lum\nexitance basecol\nscale 5.0\nmaterial none\n}\n"
+		"sphere_geometry\n{\nname s\nradius 1\n}\n"
+		"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+	const char* tmp = "painterintro_sdf3d_chunktype.RISEscene";
+	Job* j = LoadScene( kSceneSdf, tmp );
+	Check( j != nullptr, "sdf3d_painter fixture scene loads via the CST path" );
+	if( j )
+	{
+		const std::vector<CameraProperty> rows = InspectPainter( *j, "sdftype" );
+		Check( !rows.empty(), "sdf3d_painter yields rows" );
+
+		// (c) no duplicate row names anywhere in the result -- checked first
+		// so a collision fails loudly instead of masquerading as a
+		// mis-valued single row below.
+		{
+			std::vector<std::string> names;
+			for( std::size_t i = 0; i < rows.size(); ++i )
+				names.push_back( std::string( rows[i].name.c_str() ) );
+			std::vector<std::string> sortedNames = names;
+			std::sort( sortedNames.begin(), sortedNames.end() );
+			const bool noDupes =
+				std::adjacent_find( sortedNames.begin(), sortedNames.end() ) == sortedNames.end();
+			Check( noDupes, "MONEY: no two rows share a name (the pre-fix collision)" );
+		}
+
+		// (b) the synthetic identity row: exactly one `chunk_type` row, at
+		// index 0, read-only, naming the chunk keyword.
+		Check( !rows.empty() && rows[0].name == String( "chunk_type" )
+		    && rows[0].value == String( "sdf3d_painter" ) && !rows[0].editable,
+		       "MONEY: row 0 is the read-only `chunk_type` identity row, valued `sdf3d_painter`" );
+		{
+			int chunkTypeCount = 0;
+			for( std::size_t i = 0; i < rows.size(); ++i )
+				if( rows[i].name == String( "chunk_type" ) ) ++chunkTypeCount;
+			Check( chunkTypeCount == 1, "exactly one `chunk_type` row" );
+		}
+
+		// (a) the REAL descriptor param: exactly one `type` row, editable,
+		// carrying the scene's value with the descriptor's enum presets.
+		{
+			int typeCount = 0;
+			CameraProperty typeRow;
+			for( std::size_t i = 0; i < rows.size(); ++i )
+				if( rows[i].name == String( "type" ) ) { ++typeCount; typeRow = rows[i]; }
+			Check( typeCount == 1, "exactly one `type` row (the real descriptor param)" );
+			Check( typeRow.editable, "MONEY: the real `type` row is EDITABLE (unlike chunk_type)" );
+			Check( typeRow.value == String( "torus" ), "the real `type` row carries the scene's value `torus`" );
+			Check( typeRow.kind == ValueKind::Enum, "the real `type` row carries the descriptor's Enum kind" );
+			std::vector<std::string> presetValues;
+			for( std::size_t i = 0; i < typeRow.presets.size(); ++i )
+				presetValues.push_back( std::string( typeRow.presets[i].value.c_str() ) );
+			const bool hasAllFour =
+				std::find( presetValues.begin(), presetValues.end(), "sphere" )   != presetValues.end()
+			 && std::find( presetValues.begin(), presetValues.end(), "box" )      != presetValues.end()
+			 && std::find( presetValues.begin(), presetValues.end(), "torus" )    != presetValues.end()
+			 && std::find( presetValues.begin(), presetValues.end(), "cylinder" ) != presetValues.end();
+			Check( hasAllFour, "the real `type` row carries the descriptor's four enum presets" );
+		}
+
+		j->release();
+	}
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== PainterIntrospectionRoundTripTest (doc 88 S4 + S4b) ===" << std::endl;
@@ -1854,6 +1943,7 @@ int main()
 	TestOccurrenceDriftGuard();
 	TestRowRangeMetadata();
 	TestOccurrenceDriftGuardWhitespace();
+	TestSdf3dChunkTypeIdentityRowNoCollision();
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

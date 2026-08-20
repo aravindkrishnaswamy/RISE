@@ -61,9 +61,14 @@ namespace RISE
 	{
 	public:
 		//! Returns one CameraProperty per parameter the entity's chunk
-		//! descriptor declares (the `name` param itself is surfaced as a
-		//! leading read-only "type" row instead -- renaming stays a
-		//! dedicated affordance).  Repeatable parameters are skipped --
+		//! descriptor declares, preceded by a leading read-only
+		//! "chunk_type" identity row whose value is the chunk KEYWORD
+		//! (e.g. "sdf3d_painter" -- not the entity's `name`; the `name`
+		//! param is skipped entirely, since renaming stays a dedicated
+		//! affordance).  "chunk_type" is deliberately a name no descriptor
+		//! param uses -- some chunks declare a real `type` param
+		//! (sdf3d_painter, polynomial_function2d_painter), which surfaces
+		//! as its own ordinary editable row.  Repeatable parameters are skipped --
 		//! the single-value ApplyAgentParamEdit occurrence-0 edit path
 		//! isn't a good fit for a repeated param; editing those stays
 		//! scene-text-only.  Returns an empty vector when `doc` is null,
@@ -74,7 +79,7 @@ namespace RISE
 		//! `roleKindSuffix` is the same vocabulary DocFindByNameAnyRole /
 		//! RoleKindSuffixForCategory use ("painter", "geometry",
 		//! "material", ...).  `typeRowDescription` is the doc string on
-		//! the leading read-only type row (e.g. "Geometry chunk
+		//! the leading read-only chunk_type row (e.g. "Geometry chunk
 		//! keyword").
 		static std::vector<CameraProperty> Inspect(
 			const RISE::Cst::Document* doc,

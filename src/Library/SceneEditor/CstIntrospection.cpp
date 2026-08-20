@@ -136,7 +136,7 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 	// keyword has no registered descriptor, so the panel isn't blank.
 	{
 		CameraProperty row;
-		row.name        = String( "type" );
+		row.name        = String( "chunk_type" );
 		row.kind         = ValueKind::String;
 		row.value        = keyword;
 		row.description  = String( typeRowDescription ? typeRowDescription : "Chunk keyword" );
@@ -265,7 +265,15 @@ void CstIntrospection::AugmentWithCstRows(
 
 	for( const CameraProperty& g : generic )
 	{
-		if( g.name == String( "type" ) ) continue;   // live modules carry their own identity rows
+		// Live modules carry their own identity rows (a capitalized "Type" --
+		// MaterialIntrospection etc.), so the generic identity row is dropped
+		// here.  NOTE the name-merge below is CASE-SENSITIVE: a future
+		// descriptor that declares a real lowercase `type` param on a merged
+		// category would NOT merge into the live "Type" row -- it would list
+		// as its own editable row alongside it (today no Material descriptor
+		// declares one; only sdf3d_painter / polynomial_function2d_painter /
+		// file_rasterizeroutput do, none on this merge path).
+		if( g.name == String( "chunk_type" ) ) continue;
 
 		CameraProperty* existing = nullptr;
 		for( CameraProperty& r : rows )

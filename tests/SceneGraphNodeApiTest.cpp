@@ -1991,7 +1991,7 @@ int main()
 				if( rn == "count_u" ) countU = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
 				if( rn == "source"  ) source  = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
 				if( rn == "Bounds"  ) boundsRow = "present";
-				if( rn == "type"    ) typeRow = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
+				if( rn == "chunk_type" ) typeRow = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
 			}
 			CheckEq( countU, "2", "Z: the rows are the INSTANCING CHUNK's -- `count_u` reads what the "
 			                      "author wrote" );
@@ -2020,12 +2020,12 @@ int main()
 			for( unsigned int i = 0; i < nLive; ++i ) {
 				const std::string rn( c.PropertyNameFor( Cat::Object, i ).c_str() );
 				if( rn == "Bounds" ) liveHasBounds = true;
-				if( rn == "type"   ) liveHasTypeRow = true;
+				if( rn == "chunk_type" ) liveHasTypeRow = true;
 			}
 			Check( nLive > 0, "Z: the control -- a LIVE object still fills the panel" );
 			Check( liveHasBounds && !liveHasTypeRow,
 			       "Z: ... through the LIVE introspection path, not the chunk one -- it has the "
-			       "live-only `Bounds` row and not the CST surface's `type` row, so the fallback "
+			       "live-only `Bounds` row and not the CST surface's `chunk_type` row, so the fallback "
 			       "really is only a fallback" );
 
 			// AND THE ROWS WORK.  The panel offers them as editable; an edit

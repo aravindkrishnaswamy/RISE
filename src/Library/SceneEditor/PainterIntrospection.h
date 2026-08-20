@@ -134,7 +134,7 @@ namespace RISE
 		//! One panel row per surfaceable parameter of the painter chunk
 		//! named `painterName`, in this order:
 		//!
-		//!   1. the generic surface's leading read-only "type" row
+		//!   1. the generic surface's leading read-only "chunk_type" row
 		//!      (the chunk keyword),
 		//!   2. a read-only "pipe" row naming the manager(s) the painter
 		//!      is registered in (see PipesFor),
