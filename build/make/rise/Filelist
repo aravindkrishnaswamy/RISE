@@ -147,6 +147,8 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/ExpressionPainter.cpp				\
 	$(PATHLIBRARY)Painters/RampPainter.cpp						\
 	$(PATHLIBRARY)Painters/MappingPainter.cpp					\
+	$(PATHLIBRARY)Painters/StochasticTilePainter.cpp			\
+	$(PATHLIBRARY)Painters/ScatterPainter.cpp					\
 	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
 	$(PATHLIBRARY)Painters/Turbulence3DPainter.cpp				\
 	$(PATHLIBRARY)Painters/Worley3DPainter.cpp					\

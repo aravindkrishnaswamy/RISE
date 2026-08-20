@@ -736,6 +736,35 @@ namespace RISE
 									const unsigned int mode
 									);
 
+		//! Adds a stochastic_tile_painter (doc 88 P3.1, S8) -- see IJob.h
+		//! for the full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddStochasticTilePainter(
+									const char* name,
+									const char* source,
+									const double tileScale,
+									const unsigned int seed,
+									const double mean[3],
+									const double blendGamma,
+									const char* colorSpace
+									);
+
+		//! Adds a scatter_painter (doc 88 P3.2, S8) -- see IJob.h for the
+		//! full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddScatterPainter(
+									const char* name,
+									const char* source,
+									const char* background,
+									const double cellScale,
+									const double stampScale,
+									const double jitterPosition,
+									const double jitterRotationDeg,
+									const double jitterScale,
+									const double probability,
+									const unsigned int seed
+									);
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPerlin3DPainter(

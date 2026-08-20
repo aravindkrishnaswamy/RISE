@@ -2520,6 +2520,789 @@ static void TestBlendPainterScreenOverlayClamping()
 	mask1.release();
 }
 
+//======================================================================
+// S8 (doc 88 P3.1/P3.2): stochastic_tile_painter, scatter_painter.
+//
+// P2-b (S8 review round 1) corrected banner: the helpers below (Hash01,
+// HexTileRaw, CellInstance) are NOT an independent reimplementation --
+// they are deliberate TRANSCRIPTIONS of the painters' own hash-draw /
+// triangle-lattice / per-cell-instance formulas, kept as free functions
+// here so a test can recompute an expected value without hand-copying
+// a magic float.  Their job is DRIFT-GUARDING: if a future edit changes
+// StochasticTilePainter.cpp / ScatterPainter.cpp's math without a
+// matching edit here, the transcribed copy and the real implementation
+// disagree and the test fails -- catching an implementation-vs-spec
+// DIVERGENCE, not a conceptual error (a bug shared by both the real
+// code and its transcription here would pass silently).
+//
+// The genuinely independent goldens are the ones actually computed by
+// hand/closed-form from the documented algorithm rather than by
+// calling a transcribed helper -- the contrast-restore formula in
+// Test 44 (mu + w.(x-mu)/sqrt(sum w^2), evaluated by hand at the
+// equal-thirds point) and the mean/blend_gamma golden in Test 45.
+// Those two catch a CONCEPTUAL error (the transcription and the real
+// code agreeing with each other but not with the spec) that the
+// transcription-based tests structurally cannot.
+//
+// Parser-surface tests use S2::ParseBody like the S3/S7 sections above.
+//======================================================================
+namespace S8 {
+
+	// Mirrors StochasticTilePainter.cpp / ScatterPainter.cpp's Hash01
+	// EXACTLY (both use the identical technique) -- see either file's
+	// header comment.  Duplicated here so a test can independently
+	// recompute the exact hash draw a given (vertex/cell, channel,
+	// seed) produces and compare it against the painter's actual
+	// output, instead of hand-copying a magic float.
+	inline Scalar Hash01( int vx, int vy, int channel, unsigned int seed )
+	{
+		const unsigned int zu = (unsigned int)channel * 1000003u + seed * 7919u;
+		const unsigned int h = NoiseCore::WorleyHashCell( vx, vy, (int)zu );
+		return Scalar( h ) / Scalar( 4294967296.0 );
+	}
+
+	// Mirrors StochasticTilePainter::ComputeHexTiling's triangle-lattice
+	// solve, RAW (pre-sharpen) weights only -- callers apply gamma-
+	// sharpening themselves so a single helper serves both the gamma-
+	// invariant (equal-weight) and gamma-sensitive golden tests.
+	void HexTileRaw( Scalar coordX, Scalar coordY, Scalar tileScale, int vi[3], int vj[3], Scalar wraw[3] )
+	{
+		const Scalar kSqrt3Over2 = Scalar( 0.86602540378443864676 );
+		const Scalar px = coordX * tileScale;
+		const Scalar py = coordY * tileScale;
+		const Scalar j = py / kSqrt3Over2;
+		const Scalar i = px - Scalar( 0.5 ) * j;
+		const Scalar baseI = std::floor( (double)i );
+		const Scalar baseJ = std::floor( (double)j );
+		const Scalar fi = i - baseI;
+		const Scalar fj = j - baseJ;
+		const int bi = (int)baseI;
+		const int bj = (int)baseJ;
+		if( fi + fj <= Scalar( 1 ) ) {
+			vi[0] = bi;     vj[0] = bj;     wraw[0] = Scalar(1) - fi - fj;
+			vi[1] = bi + 1; vj[1] = bj;     wraw[1] = fi;
+			vi[2] = bi;     vj[2] = bj + 1; wraw[2] = fj;
+		} else {
+			vi[0] = bi + 1; vj[0] = bj + 1; wraw[0] = fi + fj - Scalar(1);
+			vi[1] = bi + 1; vj[1] = bj;     wraw[1] = Scalar(1) - fj;
+			vi[2] = bi;     vj[2] = bj + 1; wraw[2] = Scalar(1) - fi;
+		}
+	}
+
+	// Mirrors ScatterPainter::FindStamp's per-cell instance geometry
+	// (position/rotation/scale draws only -- no neighbourhood search or
+	// probability roll, since callers already know which cell they
+	// want and whether it should be active).
+	void CellInstance( int ci, int cj, unsigned int seed, Scalar jitterPosition, Scalar jitterRotationDeg, Scalar jitterScale, Scalar stampScale,
+		Scalar& Cx, Scalar& Cy, Scalar& angleRad, Scalar& S )
+	{
+		const Scalar rx = Scalar(2) * Hash01( ci, cj, 0, seed ) - Scalar(1);
+		const Scalar ry = Scalar(2) * Hash01( ci, cj, 1, seed ) - Scalar(1);
+		Cx = Scalar( ci ) + Scalar(0.5) + jitterPosition * Scalar(0.5) * rx;
+		Cy = Scalar( cj ) + Scalar(0.5) + jitterPosition * Scalar(0.5) * ry;
+		const Scalar rr = Scalar(2) * Hash01( ci, cj, 2, seed ) - Scalar(1);
+		angleRad = jitterRotationDeg * rr * DEG_TO_RAD;
+		const Scalar rs = Scalar(2) * Hash01( ci, cj, 3, seed ) - Scalar(1);
+		S = stampScale * ( Scalar(1) + jitterScale * rs );
+	}
+
+	// A stamp whose alpha is always exactly 0 -- for the "alpha-gated
+	// stamp shows background" test.  GetColor still returns a loud,
+	// distinguishable colour so a test failure (background NOT shown)
+	// would be visually obvious in a render, even though this is a
+	// numeric test.
+	class TransparentPainter : public Painter
+	{
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ) const { return RISEPel( 1, 0, 1 ); }
+		Scalar GetColorNM( const RayIntersectionGeometric&, const Scalar ) const { return 1.0; }
+		Scalar GetAlpha( const RayIntersectionGeometric& ) const { return 0.0; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	// Echoes ptCoord like S7::UVEchoPainter (R=u, G=v) but with alpha
+	// hard-pinned to 1.0 (fully opaque) -- the scatter_painter golden
+	// tests use this as the STAMP source instead of S7::UVEchoPainter,
+	// because UVEchoPainter deliberately echoes GetAlpha == ptCoord.x
+	// too (by design, for the mapping_painter/blend_painter "all four
+	// paths agree" tests in S7) -- and scatter_painter's Porter-Duff
+	// "over" composite READS the stamp's alpha as a real mix factor,
+	// so an echoing alpha would silently blend the golden local-UV
+	// colour toward background instead of passing it through, making
+	// the position/rotation/scale goldens below unreadable.  Pinning
+	// alpha to 1.0 isolates exactly what those tests want to measure:
+	// the local sample COORDINATE, with the compositing math taken out
+	// of the picture.
+	class OpaqueUVEchoPainter : public Painter
+	{
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ri ) const { return RISEPel( ri.ptCoord.x, ri.ptCoord.y, 0.0 ); }
+		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar ) const { return ri.ptCoord.x; }
+		Scalar GetAlpha( const RayIntersectionGeometric& ) const { return 1.0; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+} // namespace S8
+
+static void TestStochasticTileDeterminismAndSeed()
+{
+	std::cout << "Test 42: stochastic_tile_painter -- determinism and seed dependence" << std::endl;
+	using namespace S7;
+
+	ConstColorPainter src( RISEPel( 0.3, 0.6, 0.9 ) ); src.addref();
+	IPainter* stp = 0;
+	RISE_API_CreateStochasticTilePainter( &stp, src, 5.0, 3, RISEPel(0.5,0.5,0.5), 7.0 );
+	RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.37, 0.61 );
+	const RISEPel c1 = stp->GetColor( ri );
+	const RISEPel c2 = stp->GetColor( ri );
+	Check( c1.r == c2.r && c1.g == c2.g && c1.b == c2.b, "stochastic_tile: identical UV+seed -> bit-identical output" );
+	stp->release();
+	src.release();
+
+	// Seed dependence: UVEchoPainter's output tracks the offset UV
+	// directly, so a different seed (different hash draws) must move
+	// at least one sampled channel.
+	UVEchoPainter esrc; esrc.addref();
+	IPainter* a = 0; RISE_API_CreateStochasticTilePainter( &a, esrc, 5.0, 3,  RISEPel(0.5,0.5,0.5), 7.0 );
+	IPainter* b = 0; RISE_API_CreateStochasticTilePainter( &b, esrc, 5.0, 99, RISEPel(0.5,0.5,0.5), 7.0 );
+	RayIntersectionGeometric ri2 = MakeRi(); ri2.ptCoord = Point2( 0.22, 0.48 );
+	const RISEPel ca = a->GetColor( ri2 );
+	const RISEPel cb = b->GetColor( ri2 );
+	Check( ca.r != cb.r || ca.g != cb.g, "stochastic_tile: different seed -> different output" );
+	a->release(); b->release(); esrc.release();
+}
+
+static void TestStochasticTileLatticeContinuityNoNaN()
+{
+	std::cout << "Test 43: stochastic_tile_painter -- lattice continuity spot-check, no NaN across tile borders" << std::endl;
+	using namespace S7;
+
+	UVEchoPainter src; src.addref();
+	IPainter* stp = 0;
+	RISE_API_CreateStochasticTilePainter( &stp, src, 4.0, 11, RISEPel(0.5,0.5,0.5), 7.0 );
+
+	bool allFinite = true;
+	for( int iy = -20; iy <= 30; ++iy ) {
+		for( int ix = -20; ix <= 30; ++ix ) {
+			RayIntersectionGeometric ri = MakeRi();
+			ri.ptCoord = Point2( Scalar(ix) * 0.1, Scalar(iy) * 0.1 );	// sweeps [-2,3]x[-2,3], crossing many tile borders
+			const RISEPel c = stp->GetColor( ri );
+			const Scalar a = stp->GetAlpha( ri );
+			if( !std::isfinite( (double)c.r ) || !std::isfinite( (double)c.g ) || !std::isfinite( (double)c.b ) || !std::isfinite( (double)a ) ) {
+				allFinite = false;
+			}
+		}
+	}
+	Check( allFinite, "stochastic_tile: no NaN/inf across a dense UV sweep including negative coordinates and many tile borders" );
+	stp->release();
+	src.release();
+}
+
+static void TestStochasticTileContrastRestoreGolden()
+{
+	std::cout << "Test 44: stochastic_tile_painter -- histogram-preserving contrast-restore formula, hand/formula-computed golden" << std::endl;
+	using namespace S7;
+	using namespace S8;
+
+	// tile_scale 1, coord (0.5, sqrt(3)/6): lands exactly at fi=fj=1/3,
+	// so ALL THREE raw barycentric weights are 1/3 -- and stay 1/3 after
+	// ANY gamma-sharpening (equal inputs sharpen to equal outputs), so
+	// this point's blend weights are gamma-INVARIANT.  See file header
+	// derivation replicated in HexTileRaw above.
+	const Scalar coordX = 0.5;
+	const Scalar coordY = Scalar( 0.16666666666666666667 ) * Scalar( 1.7320508075688772935 );	// sqrt(3)/6
+	const Scalar tileScale = 1.0;
+	const unsigned int seed = 17;
+
+	int vi[3], vj[3]; Scalar wraw[3];
+	HexTileRaw( coordX, coordY, tileScale, vi, vj, wraw );
+	CheckClose( wraw[0], 1.0/3.0, 1e-9, "contrast-restore golden setup: w0 == 1/3" );
+	CheckClose( wraw[1], 1.0/3.0, 1e-9, "contrast-restore golden setup: w1 == 1/3" );
+	CheckClose( wraw[2], 1.0/3.0, 1e-9, "contrast-restore golden setup: w2 == 1/3" );
+
+	// UVEchoPainter's GetColor(ri) = (ptCoord.x, ptCoord.y, 0) --
+	// GetColorNM/GetAlpha = ptCoord.x.  The 3 offset-UV x components
+	// (channel 0) are the "synthetic 3-value source" for the R channel;
+	// channel 1 for G; the CONSTANT 0 for B (a degenerate all-equal
+	// "source").
+	Scalar x[3], y[3];
+	for( int k = 0; k < 3; ++k ) {
+		x[k] = coordX + Hash01( vi[k], vj[k], 0, seed );
+		y[k] = coordY + Hash01( vi[k], vj[k], 1, seed );
+	}
+
+	const RISEPel mean( 0.5, 0.5, 0.5 );
+	UVEchoPainter esrc; esrc.addref();
+	IPainter* stp = 0;
+	RISE_API_CreateStochasticTilePainter( &stp, esrc, tileScale, seed, mean, 7.0 );	// gamma irrelevant here (equal weights)
+	RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( coordX, coordY );
+	const RISEPel c = stp->GetColor( ri );
+
+	// Equal-thirds contrast restore: out = mean + sqrt(3) * (avg(x_i) - mean).
+	const Scalar sqrt3 = Scalar( 1.7320508075688772935 );
+	const Scalar expectedR = 0.5 + sqrt3 * ( (x[0]+x[1]+x[2])/3.0 - 0.5 );
+	const Scalar expectedG = 0.5 + sqrt3 * ( (y[0]+y[1]+y[2])/3.0 - 0.5 );
+	const Scalar expectedB = 0.5 + sqrt3 * ( 0.0 - 0.5 );	// B channel is always exactly 0 (constant "source")
+	CheckClose( c.r, expectedR, 1e-9, "contrast-restore golden: R channel matches formula" );
+	CheckClose( c.g, expectedG, 1e-9, "contrast-restore golden: G channel matches formula" );
+	CheckClose( c.b, expectedB, 1e-9, "contrast-restore golden: B channel (constant source) matches formula" );
+
+	// GetAlpha does NOT contrast-restore -- plain average, using the
+	// SAME (gamma-invariant here) weights.  Different from expectedR
+	// above by construction -- proves the documented divergence.
+	const Scalar a = stp->GetAlpha( ri );
+	const Scalar expectedAlpha = (x[0]+x[1]+x[2])/3.0;
+	CheckClose( a, expectedAlpha, 1e-9, "contrast-restore golden: GetAlpha is the PLAIN average (no restore)" );
+	Check( std::fabs( (double)(a - c.r) ) > 1e-6, "contrast-restore golden: GetAlpha differs from GetColor.r (restore only applies to colour)" );
+
+	stp->release();
+	esrc.release();
+}
+
+static void TestStochasticTileMeanAndGammaRespected()
+{
+	std::cout << "Test 45: stochastic_tile_painter -- mean and blend_gamma parameters are respected" << std::endl;
+	using namespace S7;
+	using namespace S8;
+
+	// mean: at the SAME equal-thirds point as Test 43, a CONSTANT
+	// source C gives out = mean + sqrt(3)*(C - mean) for ANY mean --
+	// verify two different `mean` values both match their own formula.
+	{
+		const Scalar coordX = 0.5;
+		const Scalar coordY = Scalar( 0.16666666666666666667 ) * Scalar( 1.7320508075688772935 );
+		const Scalar sqrt3 = Scalar( 1.7320508075688772935 );
+		ConstColorPainter csrc( RISEPel( 0.8, 0.8, 0.8 ) ); csrc.addref();
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( coordX, coordY );
+
+		for( Scalar meanVal : { 0.5, 0.2 } ) {
+			IPainter* stp = 0;
+			RISE_API_CreateStochasticTilePainter( &stp, csrc, 1.0, 17, RISEPel(meanVal,meanVal,meanVal), 7.0 );
+			const RISEPel c = stp->GetColor( ri );
+			const Scalar expected = meanVal + sqrt3 * ( 0.8 - meanVal );
+			CheckClose( c.r, expected, 1e-9, std::string("mean respected: mean=") + std::to_string((double)meanVal) );
+			stp->release();
+		}
+		csrc.release();
+	}
+
+	// blend_gamma: an ASYMMETRIC point (raw weights 0.7/0.2/0.1) makes
+	// gamma=1 (unsharpened) and gamma=7 (default sharpening) diverge --
+	// verify both match their own formula-computed golden, and that
+	// they differ from each other.
+	{
+		const Scalar coordX = 0.25;
+		const Scalar coordY = Scalar( 0.1 ) * Scalar( 0.86602540378443864676 );	// j*sqrt(3)/2 for j=0.1, i=0.2 at tile_scale 1
+		const unsigned int seed = 5;
+		int vi[3], vj[3]; Scalar wraw[3];
+		HexTileRaw( coordX, coordY, 1.0, vi, vj, wraw );
+		CheckClose( wraw[0], 0.7, 1e-9, "gamma golden setup: w0 == 0.7" );
+		CheckClose( wraw[1], 0.2, 1e-9, "gamma golden setup: w1 == 0.2" );
+		CheckClose( wraw[2], 0.1, 1e-9, "gamma golden setup: w2 == 0.1" );
+
+		Scalar x[3];
+		for( int k = 0; k < 3; ++k ) x[k] = coordX + Hash01( vi[k], vj[k], 0, seed );
+
+		UVEchoPainter esrc; esrc.addref();
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( coordX, coordY );
+		const RISEPel mean( 0.5, 0.5, 0.5 );
+
+		Scalar outputs[2];
+		const Scalar gammas[2] = { 1.0, 7.0 };
+		for( int g = 0; g < 2; ++g ) {
+			Scalar wsharp[3], wsum = 0;
+			for( int k = 0; k < 3; ++k ) { wsharp[k] = std::pow( (double)wraw[k], (double)gammas[g] ); wsum += wsharp[k]; }
+			Scalar wnorm[3], wsq = 0;
+			for( int k = 0; k < 3; ++k ) { wnorm[k] = wsharp[k]/wsum; wsq += wnorm[k]*wnorm[k]; }
+			Scalar weighted = 0;
+			for( int k = 0; k < 3; ++k ) weighted += wnorm[k]*(x[k]-0.5);
+			const Scalar expected = 0.5 + weighted/std::sqrt((double)wsq);
+
+			IPainter* stp = 0;
+			RISE_API_CreateStochasticTilePainter( &stp, esrc, 1.0, seed, mean, gammas[g] );
+			const RISEPel c = stp->GetColor( ri );
+			CheckClose( c.r, expected, 1e-6, std::string("blend_gamma respected: gamma=") + std::to_string((double)gammas[g]) );
+			outputs[g] = c.r;
+			stp->release();
+		}
+		Check( std::fabs( (double)(outputs[0]-outputs[1]) ) > 1e-4, "blend_gamma respected: gamma=1 and gamma=7 give DIFFERENT output at an asymmetric point" );
+
+		// P3 (S8 review round 1): blend_gamma == 0 corner.  pow(w,0) == 1
+		// for every (positive) raw weight regardless of how asymmetric
+		// they are, so the sharpen-and-renormalize step collapses to
+		// UNIFORM 1/3 weights everywhere -- mathematically consistent
+		// (see StochasticTilePainter.cpp's ComputeHexTiling comment at
+		// the pow() call site) and parser-legal (blend_gamma is clamped
+		// to [0, 64], 0 included).  Pin it against the SAME asymmetric
+		// point (0.7/0.2/0.1 raw weights) used above, so the corner is
+		// exercised where gamma actually matters, not a degenerate
+		// equal-thirds point where every gamma looks the same.
+		{
+			const Scalar wnormUniform = 1.0 / 3.0;
+			const Scalar wsqUniform = 3.0 * wnormUniform * wnormUniform;	// == 1/3
+			Scalar weighted = 0;
+			for( int k = 0; k < 3; ++k ) weighted += wnormUniform * ( x[k] - 0.5 );
+			const Scalar expectedGamma0 = 0.5 + weighted / std::sqrt( (double)wsqUniform );
+
+			IPainter* stp = 0;
+			RISE_API_CreateStochasticTilePainter( &stp, esrc, 1.0, seed, mean, 0.0 );
+			const RISEPel c = stp->GetColor( ri );
+			CheckClose( c.r, expectedGamma0, 1e-6, "blend_gamma==0 corner: pow(w,0)==1 collapses to uniform 1/3 weights" );
+			stp->release();
+		}
+		esrc.release();
+	}
+}
+
+static void TestStochasticTileFootprintInvalidation()
+{
+	std::cout << "Test 46: stochastic_tile_painter -- txFootprint invalidated on every Get* path" << std::endl;
+	using namespace S7;
+
+	FootprintEchoPainter src; src.addref();
+	IPainter* stp = 0;
+	RISE_API_CreateStochasticTilePainter( &stp, src, 4.0, 1, RISEPel(0.5,0.5,0.5), 7.0 );
+	RayIntersectionGeometric ri = MakeRi();
+	ri.ptCoord = Point2( 0.3, 0.4 );
+	ri.txFootprint.valid = true;
+
+	src.lastFootprintValid = true; stp->GetColor( ri );      Check( src.lastFootprintValid == false, "stochastic_tile: GetColor invalidates txFootprint" );
+	src.lastFootprintValid = true; stp->GetColorNM( ri, 550.0 ); Check( src.lastFootprintValid == false, "stochastic_tile: GetColorNM invalidates txFootprint" );
+	src.lastFootprintValid = true; stp->GetSpectrum( ri );    Check( src.lastFootprintValid == false, "stochastic_tile: GetSpectrum invalidates txFootprint" );
+	src.lastFootprintValid = true; stp->GetAlpha( ri );       Check( src.lastFootprintValid == false, "stochastic_tile: GetAlpha invalidates txFootprint" );
+	Check( ri.txFootprint.valid == true, "stochastic_tile: caller's ri.txFootprint.valid is NOT mutated by the wrapper" );
+
+	stp->release();
+	src.release();
+}
+
+static void TestStochasticTileNMRGBConsistency()
+{
+	std::cout << "Test 47: stochastic_tile_painter -- NM/RGB path consistency (source == mean collapses both paths to mean)" << std::endl;
+	using namespace S7;
+
+	const RISEPel gray( 0.5, 0.5, 0.5 );
+	ConstColorPainter src( gray ); src.addref();
+	IPainter* stp = 0;
+	RISE_API_CreateStochasticTilePainter( &stp, src, 6.0, 21, gray, 7.0 );
+	RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.44, 0.71 );
+
+	// RGB path: source IS exactly `mean` everywhere, so every sample's
+	// (x_i - mean) term is EXACTLY zero -- the restored output must be
+	// EXACTLY mean, bit-for-bit (no accumulated rounding: the weighted
+	// sum is a sum of exact zeros).
+	const RISEPel c = stp->GetColor( ri );
+	Check( c.r == 0.5 && c.g == 0.5 && c.b == 0.5, "NM/RGB consistency: GetColor with source==mean returns EXACTLY mean" );
+
+	// Spectral path: ConstColorPainter's GetColorNM returns a flat 0.5
+	// (not JH-uplifted -- see its own comment), while the painter's
+	// internal `mean` IS JH-uplifted -- so exact equality isn't
+	// expected, but a mid-spectrum sample should land close to 0.5
+	// (JH-uplift of a neutral grey is close to flat).  This is the
+	// "consistency" this test's name refers to: both paths collapse
+	// toward the same answer when there's no information in the source.
+	const Scalar nm = stp->GetColorNM( ri, 550.0 );
+	CheckClose( nm, 0.5, 0.05, "NM/RGB consistency: GetColorNM(source==mean) lands close to GetColor's exact 0.5 (JH-uplift tolerance)" );
+
+	stp->release();
+	src.release();
+}
+
+static void TestS8ChunkParsingAndDiagnostics()
+{
+	std::cout << "Test 48: stochastic_tile_painter / scatter_painter -- chunk parsing, registration, diagnostics" << std::endl;
+
+	// stochastic_tile_painter diagnostics.
+	Check( !S2::ParseBody( "st_nosrc", "stochastic_tile_painter\n{\nname t1\n}\n" ),
+		"stochastic_tile_painter missing `source` rejects" );
+	Check( !S2::ParseBody( "st_badscale",
+		"uniformcolor_painter\n{\nname s\ncolor 1 1 1\n}\n"
+		"stochastic_tile_painter\n{\nname t2\nsource s\ntile_scale 0\n}\n" ),
+		"stochastic_tile_painter tile_scale <= 0 rejects" );
+	Check( !S2::ParseBody( "st_gammaneg",
+		"uniformcolor_painter\n{\nname s\ncolor 1 1 1\n}\n"
+		"stochastic_tile_painter\n{\nname t3\nsource s\nblend_gamma -1\n}\n" ),
+		"stochastic_tile_painter blend_gamma < 0 rejects" );
+	Check( !S2::ParseBody( "st_gammahigh",
+		"uniformcolor_painter\n{\nname s\ncolor 1 1 1\n}\n"
+		"stochastic_tile_painter\n{\nname t4\nsource s\nblend_gamma 65\n}\n" ),
+		"stochastic_tile_painter blend_gamma > 64 rejects" );
+	{
+		Job* job = new Job(); job->addref();
+		Check( S2::ParseBody( "st_ok",
+			"uniformcolor_painter\n{\nname s\ncolor 1 1 1\n}\n"
+			"stochastic_tile_painter\n{\nname t5\nsource s\ntile_scale 6\nseed 3\nmean 0.4 0.4 0.4\nblend_gamma 5\ncolor_space Rec709RGB_Linear\n}\n",
+			*job ), "stochastic_tile_painter fully-specified chunk parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			Check( priv->GetPainters()->GetItem( "t5" ) != 0, "stochastic_tile_painter registered as a colour painter" );
+			Check( priv->GetFunction2Ds()->GetItem( "t5" ) != 0, "stochastic_tile_painter ALSO registered as an IFunction2D (dual registration)" );
+		}
+		job->release();
+	}
+
+	// scatter_painter diagnostics.
+	Check( !S2::ParseBody( "sc_nosrc",
+		"uniformcolor_painter\n{\nname bg\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp1\nbackground bg\n}\n" ),
+		"scatter_painter missing `source` rejects" );
+	Check( !S2::ParseBody( "sc_nobg",
+		"uniformcolor_painter\n{\nname st\ncolor 1 1 1\n}\n"
+		"scatter_painter\n{\nname sp2\nsource st\n}\n" ),
+		"scatter_painter missing `background` rejects" );
+	Check( !S2::ParseBody( "sc_badcell",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp3\nsource a\nbackground b\ncell_scale 0\n}\n" ),
+		"scatter_painter cell_scale <= 0 rejects" );
+	Check( !S2::ParseBody( "sc_badstamp",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp4\nsource a\nbackground b\nstamp_scale 0\n}\n" ),
+		"scatter_painter stamp_scale <= 0 rejects" );
+	Check( !S2::ParseBody( "sc_badjitpos",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp5\nsource a\nbackground b\njitter_position 1.5\n}\n" ),
+		"scatter_painter jitter_position out of [0,1] rejects" );
+	Check( !S2::ParseBody( "sc_badjitrot",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp6\nsource a\nbackground b\njitter_rotation -5\n}\n" ),
+		"scatter_painter jitter_rotation < 0 rejects" );
+	Check( !S2::ParseBody( "sc_badjitscale",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp7\nsource a\nbackground b\njitter_scale 1.0\n}\n" ),
+		"scatter_painter jitter_scale >= 1 rejects (must be [0,1))" );
+	Check( !S2::ParseBody( "sc_badprob",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp8\nsource a\nbackground b\nprobability 1.2\n}\n" ),
+		"scatter_painter probability out of [0,1] rejects" );
+	// stamp_scale * (1 + jitter_scale) = 1.2 * 1.3 = 1.56 > sqrt(2) -- the
+	// "stamp too large" neighbourhood-reach diagnostic.
+	Check( !S2::ParseBody( "sc_toolarge",
+		"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+		"scatter_painter\n{\nname sp9\nsource a\nbackground b\nstamp_scale 1.2\njitter_scale 0.3\n}\n" ),
+		"scatter_painter stamp_scale*(1+jitter_scale) > sqrt(2) rejects (stamp too large for the 3x3 search)" );
+	{
+		Job* job = new Job(); job->addref();
+		Check( S2::ParseBody( "sc_ok",
+			"uniformcolor_painter\n{\nname a\ncolor 1 1 1\n}\n"
+			"uniformcolor_painter\n{\nname b\ncolor 0 0 0\n}\n"
+			"scatter_painter\n{\nname sp10\nsource a\nbackground b\ncell_scale 5\nstamp_scale 0.6\njitter_position 0.4\njitter_rotation 10\njitter_scale 0.2\nprobability 0.7\nseed 2\n}\n",
+			*job ), "scatter_painter fully-specified chunk parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			Check( priv->GetPainters()->GetItem( "sp10" ) != 0, "scatter_painter registered as a colour painter" );
+			Check( priv->GetFunction2Ds()->GetItem( "sp10" ) != 0, "scatter_painter ALSO registered as an IFunction2D (dual registration)" );
+		}
+		job->release();
+	}
+}
+
+static void TestScatterDeterminismAndProbability()
+{
+	std::cout << "Test 49: scatter_painter -- determinism, probability 0 (pure background), probability 1 + no jitter (grid golden)" << std::endl;
+	using namespace S7;
+
+	ConstColorPainter stamp( RISEPel( 1, 1, 0 ) ); stamp.addref();
+	ConstColorPainter bg( RISEPel( 0.05, 0.05, 0.05 ) ); bg.addref();
+
+	// Determinism.
+	{
+		IPainter* sp = 0;
+		RISE_API_CreateScatterPainter( &sp, stamp, bg, 4.0, 0.6, 0.5, 15.0, 0.2, 0.8, 9 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.33, 0.71 );
+		const RISEPel c1 = sp->GetColor( ri );
+		const RISEPel c2 = sp->GetColor( ri );
+		Check( c1.r == c2.r && c1.g == c2.g && c1.b == c2.b, "scatter: identical UV+seed -> bit-identical output" );
+		sp->release();
+	}
+
+	// probability 0 -> pure background everywhere: strict `<` means a
+	// roll of exactly 0.0 (possible from Hash01's [0,1) range) still
+	// never activates a cell.
+	{
+		IPainter* sp = 0;
+		RISE_API_CreateScatterPainter( &sp, stamp, bg, 4.0, 0.6, 0.5, 15.0, 0.2, 0.0, 0 );
+		bool allBackground = true;
+		for( int iy = 0; iy < 15; ++iy ) {
+			for( int ix = 0; ix < 15; ++ix ) {
+				RayIntersectionGeometric ri = MakeRi();
+				ri.ptCoord = Point2( Scalar(ix)*0.13, Scalar(iy)*0.13 );
+				const RISEPel c = sp->GetColor( ri );
+				const RISEPel e = bg.GetColor( ri );
+				if( c.r != e.r || c.g != e.g || c.b != e.b ) allBackground = false;
+				if( sp->GetAlpha( ri ) != bg.GetAlpha( ri ) ) allBackground = false;
+			}
+		}
+		Check( allBackground, "scatter: probability 0 -> pure background everywhere (colour AND alpha)" );
+		sp->release();
+	}
+
+	// probability 1 + zero jitter -> exact grid: stamp_scale 1.0 means
+	// each cell's stamp exactly fills its cell (no gaps/overlaps), so
+	// a query point's local coordinate is a plain fractional part.
+	{
+		S8::OpaqueUVEchoPainter estamp; estamp.addref();
+		IPainter* sp = 0;
+		RISE_API_CreateScatterPainter( &sp, estamp, bg, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 4 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.9, 0.5 );	// cell (0,0), local = (0.9, 0.5)
+		const RISEPel c = sp->GetColor( ri );
+		CheckClose( c.r, 0.9, 1e-9, "scatter: probability 1 + zero jitter -> grid golden local.u" );
+		CheckClose( c.g, 0.5, 1e-9, "scatter: probability 1 + zero jitter -> grid golden local.v" );
+		sp->release();
+		estamp.release();
+	}
+
+	stamp.release(); bg.release();
+}
+
+static void TestScatterAlphaGatedAndFootprint()
+{
+	std::cout << "Test 50: scatter_painter -- alpha-gated stamp shows background; txFootprint invalidated" << std::endl;
+	using namespace S7;
+	using namespace S8;
+
+	// Alpha-gated: a fully-transparent stamp, geometrically covering
+	// (probability 1, zero jitter, stamp fills the cell), must show
+	// pure background -- the texture-bombing cutout idiom.
+	{
+		TransparentPainter stamp; stamp.addref();
+		ConstColorPainter bg( RISEPel( 0.1, 0.2, 0.3 ) ); bg.addref();
+		IPainter* sp = 0;
+		RISE_API_CreateScatterPainter( &sp, stamp, bg, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.5, 0.5 );
+		const RISEPel c = sp->GetColor( ri );
+		Check( c.r == 0.1 && c.g == 0.2 && c.b == 0.3, "scatter: alpha-0 stamp shows EXACTLY the background colour" );
+		Check( sp->GetAlpha( ri ) == bg.GetAlpha( ri ), "scatter: alpha-0 stamp's composited alpha == background alpha (Porter-Duff over, a_src=0)" );
+		sp->release();
+		bg.release();
+	}
+
+	// txFootprint invalidation on the winning stamp's local sample.
+	{
+		FootprintEchoPainter stampSrc; stampSrc.addref();
+		ConstColorPainter bg( RISEPel( 0, 0, 0 ) ); bg.addref();
+		IPainter* sp = 0;
+		RISE_API_CreateScatterPainter( &sp, stampSrc, bg, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptCoord = Point2( 0.5, 0.5 );
+		ri.txFootprint.valid = true;
+
+		stampSrc.lastFootprintValid = true; sp->GetColor( ri );      Check( stampSrc.lastFootprintValid == false, "scatter: GetColor invalidates the stamp's txFootprint" );
+		stampSrc.lastFootprintValid = true; sp->GetColorNM( ri, 550.0 ); Check( stampSrc.lastFootprintValid == false, "scatter: GetColorNM invalidates the stamp's txFootprint" );
+		stampSrc.lastFootprintValid = true; sp->GetSpectrum( ri );    Check( stampSrc.lastFootprintValid == false, "scatter: GetSpectrum invalidates the stamp's txFootprint" );
+		stampSrc.lastFootprintValid = true; sp->GetAlpha( ri );       Check( stampSrc.lastFootprintValid == false, "scatter: GetAlpha invalidates the stamp's txFootprint" );
+		Check( ri.txFootprint.valid == true, "scatter: caller's ri.txFootprint.valid is NOT mutated by the wrapper" );
+
+		sp->release();
+		bg.release();
+	}
+}
+
+static void TestScatterJitterBoundedAtZero()
+{
+	std::cout << "Test 51: scatter_painter -- jitter_rotation=0 and jitter_scale=0 pin the instance EXACTLY, across many seeds" << std::endl;
+	using namespace S7;
+
+	// jitter_rotation 0: an offset purely along +x from the (jitter-
+	// position-0, hence exactly known) cell center must land at local
+	// v == 0.5 EXACTLY for every seed -- any leaked rotation would move
+	// v away from 0.5.
+	{
+		S8::OpaqueUVEchoPainter estamp; estamp.addref();
+		ConstColorPainter bg( RISEPel(0,0,0) ); bg.addref();
+		for( unsigned int seed = 0; seed < 10; ++seed ) {
+			IPainter* sp = 0;
+			RISE_API_CreateScatterPainter( &sp, estamp, bg, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, seed );
+			RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.8, 0.5 );	// cell(0,0) center (0.5,0.5) + 0.3 along +x
+			const RISEPel c = sp->GetColor( ri );
+			CheckClose( c.r, 0.8, 1e-9, std::string("jitter_rotation=0 pinned (u), seed=") + std::to_string(seed) );
+			CheckClose( c.g, 0.5, 1e-9, std::string("jitter_rotation=0 pinned (v), seed=") + std::to_string(seed) );
+			sp->release();
+		}
+		estamp.release(); bg.release();
+	}
+
+	// jitter_scale 0: stamp_scale 0.6 pins S EXACTLY, so a point at
+	// HALF the stamp width from the (jitter-position-0) center sits
+	// EXACTLY on the local boundary (u=1.0, found) while a point just
+	// past it is NOT found, for every seed.
+	{
+		S8::OpaqueUVEchoPainter estamp; estamp.addref();
+		ConstColorPainter bg( RISEPel(0,0,0) ); bg.addref();
+		for( unsigned int seed = 0; seed < 10; ++seed ) {
+			IPainter* sp = 0;
+			RISE_API_CreateScatterPainter( &sp, estamp, bg, 1.0, 0.6, 0.0, 0.0, 0.0, 1.0, seed );
+			RayIntersectionGeometric riOn = MakeRi(); riOn.ptCoord = Point2( 0.8, 0.5 );	// 0.5 + 0.3 == half of 0.6
+			const RISEPel c = sp->GetColor( riOn );
+			CheckClose( c.r, 1.0, 1e-6, std::string("jitter_scale=0 pinned: boundary point found at u=1.0, seed=") + std::to_string(seed) );
+
+			RayIntersectionGeometric riOff = MakeRi(); riOff.ptCoord = Point2( 0.82, 0.5 );	// just past the boundary
+			const RISEPel cOff = sp->GetColor( riOff );
+			Check( cOff.r == 0.0 && cOff.g == 0.0 && cOff.b == 0.0, std::string("jitter_scale=0 pinned: just-past-boundary point is NOT the stamp (shows EXACT background), seed=") + std::to_string(seed) );
+			sp->release();
+		}
+		estamp.release(); bg.release();
+	}
+}
+
+static void TestScatterNeighborOverlapGolden()
+{
+	std::cout << "Test 52: scatter_painter -- neighbour-overlap correctness, formula-computed golden (a stamp crossing a cell border wins from the adjacent cell)" << std::endl;
+	using namespace S7;
+	using namespace S8;
+
+	// seed=7 found by brute-force search (see the S8 slice notes) over
+	// a config where cell (0,0)'s jittered/enlarged stamp crosses into
+	// cell (1,0) and WINS (is nearer than cell (1,0)'s own instance) at
+	// query point (1.05, 0.5).  stamp_scale*(1+jitter_scale) = 1.0*1.3
+	// = 1.3 <= sqrt(2), so the parser's neighbourhood-reach bound holds.
+	const Scalar cellScale = 1.0, stampScale = 1.0, jitterPosition = 1.0, jitterRotationDeg = 0.0, jitterScale = 0.3, probability = 1.0;
+	const unsigned int seed = 7;
+	const Scalar qx = 1.05, qy = 0.5;
+
+	// Independently recompute the expected winner + local UV via the
+	// SAME per-cell formula (CellInstance) over the 3x3 neighbourhood
+	// of the query point's own cell -- this is the reimplementation the
+	// file-header comment describes, not a magic-number transcription.
+	const int qi = (int)std::floor( (double)(qx*cellScale) );
+	const int qj = (int)std::floor( (double)(qy*cellScale) );
+	bool found = false; Scalar bestD2 = 0, bestU = 0, bestV = 0; int bestCi = 0, bestCj = 0;
+	for( int dj = -1; dj <= 1; ++dj ) {
+		for( int di = -1; di <= 1; ++di ) {
+			const int ci = qi+di, cj = qj+dj;
+			if( Hash01(ci,cj,4,seed) >= probability ) continue;
+			Scalar Cx, Cy, angle, S;
+			CellInstance( ci, cj, seed, jitterPosition, jitterRotationDeg, jitterScale, stampScale, Cx, Cy, angle, S );
+			const Scalar dx = qx*cellScale - Cx, dy = qy*cellScale - Cy;
+			const Scalar cs = std::cos((double)angle), sn = std::sin((double)angle);
+			const Scalar lx = cs*dx + sn*dy, ly = -sn*dx + cs*dy;
+			const Scalar u = lx/S + Scalar(0.5), v = ly/S + Scalar(0.5);
+			if( u < 0 || u > 1 || v < 0 || v > 1 ) continue;
+			const Scalar d2 = dx*dx+dy*dy;
+			if( !found || d2 < bestD2 ) { found = true; bestD2 = d2; bestU = u; bestV = v; bestCi = ci; bestCj = cj; }
+		}
+	}
+	Check( found, "neighbour-overlap golden setup: SOME stamp covers the query point" );
+	Check( bestCi == 0 && bestCj == 0, "neighbour-overlap golden setup: cell (0,0) -- crossing the border -- is the WINNER, not the query's own cell (1,0)" );
+
+	S8::OpaqueUVEchoPainter estamp; estamp.addref();
+	ConstColorPainter bg( RISEPel(0,0,0) ); bg.addref();
+	IPainter* sp = 0;
+	RISE_API_CreateScatterPainter( &sp, estamp, bg, cellScale, stampScale, jitterPosition, jitterRotationDeg, jitterScale, probability, seed );
+	RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( qx, qy );
+	const RISEPel c = sp->GetColor( ri );
+	CheckClose( c.r, bestU, 1e-6, "neighbour-overlap golden: actual local.u matches the independently-recomputed winner" );
+	CheckClose( c.g, bestV, 1e-6, "neighbour-overlap golden: actual local.v matches the independently-recomputed winner" );
+	sp->release();
+	estamp.release(); bg.release();
+}
+
+static void TestScatterDrawOrderStability()
+{
+	std::cout << "Test 53: scatter_painter -- draw-order stability (repeated evaluation over many points is fully deterministic)" << std::endl;
+	using namespace S7;
+
+	S8::OpaqueUVEchoPainter estamp; estamp.addref();
+	ConstColorPainter bg( RISEPel( 0.02, 0.02, 0.02 ) ); bg.addref();
+	IPainter* sp = 0;
+	RISE_API_CreateScatterPainter( &sp, estamp, bg, 3.0, 0.7, 0.6, 25.0, 0.25, 0.75, 13 );
+
+	bool stable = true;
+	for( int iy = 0; iy < 12; ++iy ) {
+		for( int ix = 0; ix < 12; ++ix ) {
+			RayIntersectionGeometric ri = MakeRi();
+			ri.ptCoord = Point2( Scalar(ix)*0.11, Scalar(iy)*0.11 );
+			const RISEPel c1 = sp->GetColor( ri );
+			const RISEPel c2 = sp->GetColor( ri );
+			const RISEPel c3 = sp->GetColor( ri );
+			if( c1.r != c2.r || c1.g != c2.g || c1.b != c2.b || c2.r != c3.r || c2.g != c3.g || c2.b != c3.b ) stable = false;
+		}
+	}
+	Check( stable, "scatter: repeated evaluation at 144 UVs is bit-identical every time (no draw-order or iteration-dependent nondeterminism)" );
+
+	sp->release();
+	estamp.release(); bg.release();
+}
+
+//======================================================================
+// P1-A (S8 review round 1): bare (int)floor casts in
+// StochasticTilePainter.cpp / ScatterPainter.cpp were UB for |value| >
+// INT_MAX, reachable via an unbounded tile_scale/cell_scale multiplied
+// against an ordinary UV -- the same class of bug as the cellhash(1e20)
+// UB fixed in TestOctaveAndCellhashRuntimeSafety (Test 11) above, now
+// recurring a third time because NoiseCore::SafeFloorToInt (the fix)
+// was trapped in ProceduralNoiseCore.cpp's anonymous namespace and
+// unreachable from Painters/.  Both painters now route through the
+// promoted, public NoiseCore::SafeFloorToInt -- these tests pin the
+// same "finite, deterministic, no crash" contract at a lattice index
+// that overflows int (tile_scale/cell_scale 1e6 at u=1e5 -> lattice
+// coordinate ~1e11, far past INT_MAX's ~2.1e9).
+//======================================================================
+static void TestStochasticTileExtremeScaleSafety()
+{
+	std::cout << "Test 54: stochastic_tile_painter -- P1-A extreme tile_scale x UV lattice-index safety (no floor->int UB)" << std::endl;
+	using namespace S7;
+
+	ConstColorPainter src( RISEPel( 0.3, 0.6, 0.9 ) ); src.addref();
+	IPainter* stp = 0;
+	RISE_API_CreateStochasticTilePainter( &stp, src, 1.0e6, 3, RISEPel(0.5,0.5,0.5), 7.0 );
+	RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 1.0e5, 1.0e5 );
+
+	const RISEPel c1 = stp->GetColor( ri );
+	const RISEPel c2 = stp->GetColor( ri );
+	Check( ExpressionProgram::IsFinite(c1.r) && ExpressionProgram::IsFinite(c1.g) && ExpressionProgram::IsFinite(c1.b),
+		"stochastic_tile: tile_scale=1e6 at u=v=1e5 (lattice index >> INT_MAX) gives a finite GetColor" );
+	Check( c1.r == c2.r && c1.g == c2.g && c1.b == c2.b,
+		"stochastic_tile: tile_scale=1e6 at u=v=1e5 is bit-identical on repeated evaluation (deterministic, not UB-dependent garbage)" );
+
+	const Scalar a = stp->GetAlpha( ri );
+	Check( ExpressionProgram::IsFinite(a), "stochastic_tile: tile_scale=1e6 at u=v=1e5 gives a finite GetAlpha" );
+
+	const Scalar nm = stp->GetColorNM( ri, 550.0 );
+	Check( ExpressionProgram::IsFinite(nm), "stochastic_tile: tile_scale=1e6 at u=v=1e5 gives a finite GetColorNM" );
+
+	stp->release();
+	src.release();
+}
+
+static void TestScatterExtremeScaleSafety()
+{
+	std::cout << "Test 55: scatter_painter -- P1-A extreme cell_scale x UV lattice-index safety (no floor->int UB)" << std::endl;
+	using namespace S7;
+
+	S8::OpaqueUVEchoPainter estamp; estamp.addref();
+	ConstColorPainter bg( RISEPel( 0.02, 0.02, 0.02 ) ); bg.addref();
+	IPainter* sp = 0;
+	RISE_API_CreateScatterPainter( &sp, estamp, bg, 1.0e6, 0.5, 0.5, 20.0, 0.25, 0.5, 7 );
+	RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 1.0e5, 1.0e5 );
+
+	const RISEPel c1 = sp->GetColor( ri );
+	const RISEPel c2 = sp->GetColor( ri );
+	Check( ExpressionProgram::IsFinite(c1.r) && ExpressionProgram::IsFinite(c1.g) && ExpressionProgram::IsFinite(c1.b),
+		"scatter: cell_scale=1e6 at u=v=1e5 (lattice index >> INT_MAX) gives a finite GetColor" );
+	Check( c1.r == c2.r && c1.g == c2.g && c1.b == c2.b,
+		"scatter: cell_scale=1e6 at u=v=1e5 is bit-identical on repeated evaluation (deterministic, not UB-dependent garbage)" );
+
+	const Scalar a = sp->GetAlpha( ri );
+	Check( ExpressionProgram::IsFinite(a), "scatter: cell_scale=1e6 at u=v=1e5 gives a finite GetAlpha" );
+
+	const Scalar nm = sp->GetColorNM( ri, 550.0 );
+	Check( ExpressionProgram::IsFinite(nm), "scatter: cell_scale=1e6 at u=v=1e5 gives a finite GetColorNM" );
+
+	sp->release();
+	estamp.release(); bg.release();
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -2564,6 +3347,20 @@ int main( int, char** )
 	TestMappingPainterFootprintInvalidation();
 	TestMappingPainterMultiAxisRotationGolden();
 	TestBlendPainterScreenOverlayClamping();
+	TestStochasticTileDeterminismAndSeed();
+	TestStochasticTileLatticeContinuityNoNaN();
+	TestStochasticTileContrastRestoreGolden();
+	TestStochasticTileMeanAndGammaRespected();
+	TestStochasticTileFootprintInvalidation();
+	TestStochasticTileNMRGBConsistency();
+	TestS8ChunkParsingAndDiagnostics();
+	TestScatterDeterminismAndProbability();
+	TestScatterAlphaGatedAndFootprint();
+	TestScatterJitterBoundedAtZero();
+	TestScatterNeighborOverlapGolden();
+	TestScatterDrawOrderStability();
+	TestStochasticTileExtremeScaleSafety();
+	TestScatterExtremeScaleSafety();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

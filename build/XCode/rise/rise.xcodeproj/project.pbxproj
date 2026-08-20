@@ -40,6 +40,14 @@
 		FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
 		FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
 		5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
+		AA9ACED5B61C5CEB57B603BC /* StochasticTilePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */; };
+		5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
+		140407933B9764E4BC83D473 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
+		B6C0F688FFA8CDE958115833 /* StochasticTilePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */; };
+		85710068587FC02741850AF6 /* ScatterPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
+		A735D3AC56F0DA831B3E43A7 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
+		71618BBF16D279BF7A6042B8 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
+		CACC0D1DA2A40C557C9FE827 /* ScatterPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -1943,6 +1951,10 @@
 		F204D6F309C3AA61F5300F19 /* RampPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RampPainter.cpp; sourceTree = "<group>"; };
 		457B359DA029B1CE5FC98767 /* MappingPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MappingPainter.h; sourceTree = "<group>"; };
 		03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MappingPainter.cpp; sourceTree = "<group>"; };
+		EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StochasticTilePainter.h; sourceTree = "<group>"; };
+		9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = StochasticTilePainter.cpp; sourceTree = "<group>"; };
+		BE7496E31374360455F82362 /* ScatterPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ScatterPainter.h; sourceTree = "<group>"; };
+		95A25391E59451A35B5168AB /* ScatterPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ScatterPainter.cpp; sourceTree = "<group>"; };
 		6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AmbientOcclusionShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AmbientOcclusionShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AreaLightShaderOp.cpp; sourceTree = "<group>"; };
@@ -3661,6 +3673,10 @@
 				F204D6F309C3AA61F5300F19 /* RampPainter.cpp */,
 				457B359DA029B1CE5FC98767 /* MappingPainter.h */,
 				03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */,
+				EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */,
+				9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */,
+				BE7496E31374360455F82362 /* ScatterPainter.h */,
+				95A25391E59451A35B5168AB /* ScatterPainter.cpp */,
 				F2ADD1000000000000000001 /* ExpressionParamSpec.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
@@ -4659,6 +4675,8 @@
 				EE990000000000000000001D /* ExpressionPainter.h in Headers */,
 				A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */,
 				FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */,
+				AA9ACED5B61C5CEB57B603BC /* StochasticTilePainter.h in Headers */,
+				85710068587FC02741850AF6 /* ScatterPainter.h in Headers */,
 				F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
@@ -5254,6 +5272,8 @@
 				EE990000000000000000001C /* ExpressionPainter.cpp in Sources */,
 				994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */,
 				D7F0DC15ABC1B86AE7C693B0 /* MappingPainter.cpp in Sources */,
+				5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */,
+				A735D3AC56F0DA831B3E43A7 /* ScatterPainter.cpp in Sources */,
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
 				F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */,
@@ -6311,6 +6331,10 @@
 				E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */,
 				FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */,
 				5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */,
+				140407933B9764E4BC83D473 /* StochasticTilePainter.cpp in Sources */,
+				B6C0F688FFA8CDE958115833 /* StochasticTilePainter.h in Sources */,
+				71618BBF16D279BF7A6042B8 /* ScatterPainter.cpp in Sources */,
+				CACC0D1DA2A40C557C9FE827 /* ScatterPainter.h in Sources */,
 				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,

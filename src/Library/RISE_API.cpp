@@ -3333,6 +3333,8 @@ namespace RISE
 #include "Painters/UVTransformPainter.h"
 #include "Painters/TexCoord1Painter.h"
 #include "Painters/MappingPainter.h"
+#include "Painters/StochasticTilePainter.h"
+#include "Painters/ScatterPainter.h"
 
 namespace RISE
 {
@@ -4177,6 +4179,46 @@ namespace RISE
 
 		(*ppi) = new MappingPainter( source, proj, scale, rotateDeg, translate, blendSharpness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mapping painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateStochasticTilePainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const Scalar tileScale,
+								const unsigned int seed,
+								const RISEPel& mean,
+								const Scalar blendGamma
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new StochasticTilePainter( source, tileScale, seed, mean, blendGamma );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "stochastic tile painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateScatterPainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const IPainter& background,
+								const Scalar cellScale,
+								const Scalar stampScale,
+								const Scalar jitterPosition,
+								const Scalar jitterRotationDeg,
+								const Scalar jitterScale,
+								const Scalar probability,
+								const unsigned int seed
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ScatterPainter( source, background, cellScale, stampScale, jitterPosition, jitterRotationDeg, jitterScale, probability, seed );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "scatter painter" );
 		return true;
 	}
 }

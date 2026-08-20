@@ -1499,6 +1499,91 @@ bool Job::AddBlendPainterWithMode(
 	return ok;
 }
 
+//! Adds a stochastic_tile_painter (doc 88 P3.1, S8)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddStochasticTilePainter(
+							const char* name,
+							const char* source,
+							const double tileScale,
+							const unsigned int seed,
+							const double mean[3],
+							const double blendGamma,
+							const char* colorSpace
+							)
+{
+	IPainter* pSource = pPntManager->GetItem( source );
+	if( !pSource ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddStochasticTilePainter `%s`: source painter `%s` not found", name ? name : "noname", source ? source : "" );
+		return false;
+	}
+
+	// Same colour-space -> RISEPel conversion switch as
+	// AddRampPainter/AddUniformColorPainter.
+	RISEPel meanPel;
+	if( colorSpace ) {
+		if( strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) {
+			meanPel = RISEPel( Rec709RGBPel( mean ) );
+		} else if( strcmp( colorSpace, "sRGB" ) == 0 ) {
+			meanPel = RISEPel( sRGBPel( mean ) );
+		} else if( strcmp( colorSpace, "ROMMRGB_Linear" ) == 0 ) {
+			meanPel = RISEPel( ROMMRGBPel( mean ) );
+		} else if( strcmp( colorSpace, "ProPhotoRGB" ) == 0 ) {
+			meanPel = RISEPel( ProPhotoRGBPel( mean ) );
+		} else if( strcmp( colorSpace, "RISERGB" ) == 0 ) {
+			meanPel = RISEPel( mean );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "AddStochasticTilePainter `%s`: unknown color space `%s`", name ? name : "noname", colorSpace );
+			return false;
+		}
+	} else {
+		meanPel = RISEPel( sRGBPel( mean ) );
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateStochasticTilePainter( &pPainter, *pSource, Scalar( tileScale ), seed, meanPel, Scalar( blendGamma ) ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a scatter_painter (doc 88 P3.2, S8)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddScatterPainter(
+							const char* name,
+							const char* source,
+							const char* background,
+							const double cellScale,
+							const double stampScale,
+							const double jitterPosition,
+							const double jitterRotationDeg,
+							const double jitterScale,
+							const double probability,
+							const unsigned int seed
+							)
+{
+	IPainter* pSource = pPntManager->GetItem( source );
+	if( !pSource ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddScatterPainter `%s`: source (stamp) painter `%s` not found", name ? name : "noname", source ? source : "" );
+		return false;
+	}
+	IPainter* pBackground = pPntManager->GetItem( background );
+	if( !pBackground ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddScatterPainter `%s`: background painter `%s` not found", name ? name : "noname", background ? background : "" );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateScatterPainter( &pPainter, *pSource, *pBackground, Scalar( cellScale ), Scalar( stampScale ),
+			Scalar( jitterPosition ), Scalar( jitterRotationDeg ), Scalar( jitterScale ), Scalar( probability ), seed ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
 //! Adds a 2D perlin noise painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPerlin3DPainter(

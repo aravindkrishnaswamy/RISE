@@ -123,7 +123,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 
 | Family | Count | Examples |
 |--------|-------|----------|
-| Painters | 38 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions), `expression_painter` (the doc-88 texture-expression VM colour pipe; `scalar_painter`'s sibling `expression` and `painter` FORMs are not separate keywords), `ramp_painter` (doc-88 S3 P2.2, the universal scalar->colour remap), `mapping_painter` (doc-88 S7 P2.3, the domain scale/rotate/translate/reproject wrapper -- uv/world/object/triplanar) |
+| Painters | 40 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions), `expression_painter` (the doc-88 texture-expression VM colour pipe; `scalar_painter`'s sibling `expression` and `painter` FORMs are not separate keywords), `ramp_painter` (doc-88 S3 P2.2, the universal scalar->colour remap), `mapping_painter` (doc-88 S7 P2.3, the domain scale/rotate/translate/reproject wrapper -- uv/world/object/triplanar), `stochastic_tile_painter` (doc-88 P3.1 S8, hex-tiling with histogram-preserving blending), `scatter_painter` (doc-88 P3.2 S8, texture-bombing / FX-map-lite) |
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
 | Materials | 25 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
@@ -142,7 +142,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 165 unique chunk keywords** (the per-family counts above sum to 165; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 167 unique chunk keywords** (the per-family counts above sum to 167; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
 
 ### Composite chunks (parse-time sugar)
 

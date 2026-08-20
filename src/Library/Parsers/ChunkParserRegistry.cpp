@@ -6356,6 +6356,192 @@ namespace RISE
 				}
 			};
 
+			// stochastic_tile_painter -- hex-tiling with histogram-
+			// preserving blending over `source` (doc 88 P3.1, S8).  See
+			// StochasticTilePainter.h for the full algorithm (Heitz &
+			// Neyret 2018; Burley JCGT 2019; Mikkelsen JCGT 2022 for the
+			// blend_gamma default).
+			struct StochasticTilePainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string source = bag.GetString( "source", "" );
+					if( source.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"stochastic_tile_painter `%s`: missing `source` (the painter to tile)",
+							name.c_str() );
+						return false;
+					}
+
+					const double tileScale = bag.GetDouble( "tile_scale", 4.0 );
+					if( !( tileScale > 0.0 ) || !Implementation::ExpressionProgram::IsFinite( (Scalar)tileScale ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"stochastic_tile_painter `%s`: tile_scale %g must be finite and > 0",
+							name.c_str(), tileScale );
+						return false;
+					}
+
+					const unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					double mean[3] = { 0.5, 0.5, 0.5 };
+					bag.GetVec3( "mean", mean );
+					for( int k = 0; k < 3; ++k ) {
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)mean[k] ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"stochastic_tile_painter `%s`: mean must be finite (nan/inf rejected)",
+								name.c_str() );
+							return false;
+						}
+					}
+
+					const double blendGamma = bag.GetDouble( "blend_gamma", 7.0 );
+					if( !Implementation::ExpressionProgram::IsFinite( (Scalar)blendGamma ) || blendGamma < 0.0 || blendGamma > 64.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"stochastic_tile_painter `%s`: blend_gamma %g must be in [0, 64] (negative would divide-by-zero on a zero barycentric weight; anything past the literature's range buys nothing but underflow risk)",
+							name.c_str(), blendGamma );
+						return false;
+					}
+
+					std::string colorSpace = bag.GetString( "color_space", "Rec709RGB_Linear" );
+
+					return pJob.AddStochasticTilePainter( name.c_str(), source.c_str(), tileScale, seed, mean, blendGamma, colorSpace.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "stochastic_tile_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Hex-tiling with histogram-preserving blending over `source` (doc 88 P3.1) -- breaks up the visible tile-grid repetition of a photographic source (one photo of bark/plaster/rust -> unbounded non-repeating cover) with no extra authored content (Heitz & Neyret 2018; Burley, JCGT 2019).  Partitions `ptCoord * tile_scale` into a triangular lattice; each of the 3 lattice vertices bounding the query point gets a deterministic (`seed`-derived) random UV offset, `source` is sampled at all three, and the samples are combined with sharpened barycentric weights (`blend_gamma`) via the variance-preserving formula out = mean + sum(w_i*(x_i-mean))/sqrt(sum(w_i^2)) -- this restores the source's original value spread, which a plain weighted average would blur toward `mean`.  `mean` is AUTHOR-SUPPLIED (not estimated from `source` -- painters have no statistics prepass in this codebase); pick it to match the source image/painter's actual average value for the sharpest restoration.  UV domain only (`ptCoord`) -- wrap in an outer `mapping_painter { projection triplanar }` for world-space / UV-less tiling rather than a separate projection parameter here.  GetAlpha uses the same sharpened weights but WITHOUT the variance restore (alpha is coverage, not a histogram).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";      p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named painter to tile (typically an image painter)"; }
+						{ auto& p = P(); p.name = "tile_scale";  p.kind = ValueKind::Double;     p.description = "Lattice density -- larger means smaller, more numerous tiles"; p.defaultValueHint = "4.0"; }
+						{ auto& p = P(); p.name = "seed";        p.kind = ValueKind::UInt;       p.description = "Hash seed for per-vertex UV offsets"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "mean";        p.kind = ValueKind::DoubleVec3; p.description = "Source's mean value (r,g,b) -- author-supplied, used by the variance-preserving blend"; p.defaultValueHint = "0.5 0.5 0.5"; }
+						{ auto& p = P(); p.name = "blend_gamma"; p.kind = ValueKind::Double;     p.description = "Barycentric-weight sharpening exponent (higher = crisper triangle seams); [0, 64]"; p.defaultValueHint = "7.0"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Interpretation of `mean`'s r g b"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// scatter_painter -- texture-bombing / FX-map-lite (doc 88
+			// P3.2, S8).  See ScatterPainter.h for the full algorithm and
+			// the neighbourhood-reach proof behind the stamp_scale /
+			// jitter_scale bound enforced below.
+			struct ScatterPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string source = bag.GetString( "source", "" );
+					if( source.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: missing `source` (the stamp painter)",
+							name.c_str() );
+						return false;
+					}
+					std::string background = bag.GetString( "background", "" );
+					if( background.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: missing `background`",
+							name.c_str() );
+						return false;
+					}
+
+					const double cellScale = bag.GetDouble( "cell_scale", 4.0 );
+					if( !( cellScale > 0.0 ) || !Implementation::ExpressionProgram::IsFinite( (Scalar)cellScale ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: cell_scale %g must be finite and > 0",
+							name.c_str(), cellScale );
+						return false;
+					}
+
+					const double stampScale = bag.GetDouble( "stamp_scale", 0.7 );
+					if( !( stampScale > 0.0 ) || !Implementation::ExpressionProgram::IsFinite( (Scalar)stampScale ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: stamp_scale %g must be finite and > 0",
+							name.c_str(), stampScale );
+						return false;
+					}
+
+					const double jitterPosition = bag.GetDouble( "jitter_position", 0.5 );
+					if( jitterPosition < 0.0 || jitterPosition > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: jitter_position %g must be in [0, 1]",
+							name.c_str(), jitterPosition );
+						return false;
+					}
+
+					const double jitterRotationDeg = bag.GetDouble( "jitter_rotation", 15.0 );
+					if( jitterRotationDeg < 0.0 || jitterRotationDeg > 360.0 || !Implementation::ExpressionProgram::IsFinite( (Scalar)jitterRotationDeg ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: jitter_rotation %g must be in [0, 360] degrees",
+							name.c_str(), jitterRotationDeg );
+						return false;
+					}
+
+					const double jitterScale = bag.GetDouble( "jitter_scale", 0.2 );
+					if( jitterScale < 0.0 || jitterScale >= 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: jitter_scale %g must be in [0, 1)",
+							name.c_str(), jitterScale );
+						return false;
+					}
+
+					const double probability = bag.GetDouble( "probability", 1.0 );
+					if( probability < 0.0 || probability > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: probability %g must be in [0, 1]",
+							name.c_str(), probability );
+						return false;
+					}
+
+					// Neighbourhood-reach bound (see ScatterPainter.h file
+					// header point 3): the 3x3 neighbourhood search is only
+					// provably sufficient when stamp_scale*(1+jitter_scale)
+					// <= sqrt(2).  Reject rather than silently clamp -- a
+					// silently-shrunk stamp would render smaller than
+					// authored with no visible diagnostic.
+					const double reach = stampScale * ( 1.0 + jitterScale );
+					const double kMaxReach = 1.4142135623730951;	// sqrt(2)
+					if( reach > kMaxReach ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: stamp_scale * (1 + jitter_scale) = %g exceeds the 3x3-neighbourhood-search bound of sqrt(2) (%g) -- the stamp could extend past the immediately adjacent cell and go unfound; reduce stamp_scale or jitter_scale",
+							name.c_str(), reach, kMaxReach );
+						return false;
+					}
+
+					const unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					return pJob.AddScatterPainter( name.c_str(), source.c_str(), background.c_str(),
+						cellScale, stampScale, jitterPosition, jitterRotationDeg, jitterScale, probability, seed );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scatter_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture-bombing / FX-map-lite (doc 88 P3.2): stamps `source` over `background` on a jittered square lattice -- the discrete-element richness (rivets, leaves, scratches, stains, screws) that noise cannot produce.  Each lattice cell may host one stamp instance (per-cell `probability` roll), jittered in position (`jitter_position`, stays within its owning cell), rotation (`jitter_rotation`, +/- degrees), and size (`stamp_scale` +/- `jitter_scale` relative).  A 3x3-cell neighbourhood search finds stamps that cross into an adjacent cell; among covering candidates the nearest stamp CENTER wins.  The winning stamp composites over `background` via `source`'s own alpha (Porter-Duff over) -- an RGBA stamp with alpha 0 at that texel shows background, the standard texture-bombing cutout idiom.  All jitter is deterministic (`seed`-hashed per cell), never random-per-render.  UV domain only; wrap in an outer `mapping_painter { projection triplanar }` for world-space scattering.  `stamp_scale * (1 + jitter_scale)` is capped at sqrt(2) (~1.414) -- the provable bound under which the 3x3 neighbourhood search can never miss a stamp; the parser rejects chunks that exceed it.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";               p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";             p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named stamp painter, sampled in its own local [0,1]^2 frame"; }
+						{ auto& p = P(); p.name = "background";         p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named background painter, shown outside every stamp"; }
+						{ auto& p = P(); p.name = "cell_scale";         p.kind = ValueKind::Double;     p.description = "Lattice density -- larger means smaller, more numerous cells"; p.defaultValueHint = "4.0"; }
+						{ auto& p = P(); p.name = "stamp_scale";        p.kind = ValueKind::Double;     p.description = "Base stamp size within a cell, as a fraction of the cell width"; p.defaultValueHint = "0.7"; }
+						{ auto& p = P(); p.name = "jitter_position";    p.kind = ValueKind::Double;     p.description = "Position jitter, [0, 1] (1 = center may reach the cell edge)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "jitter_rotation";    p.kind = ValueKind::Double;     p.description = "Max rotation jitter, +/- degrees, [0, 360]"; p.defaultValueHint = "15.0"; }
+						{ auto& p = P(); p.name = "jitter_scale";       p.kind = ValueKind::Double;     p.description = "Relative +/- size jitter, [0, 1)"; p.defaultValueHint = "0.2"; }
+						{ auto& p = P(); p.name = "probability";        p.kind = ValueKind::Double;     p.description = "Per-cell occupancy probability, [0, 1] (0 = no stamps, 1 = every cell occupied)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "seed";               p.kind = ValueKind::UInt;       p.description = "Hash seed for all per-cell jitter draws"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct Function2DColorPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -11824,6 +12010,8 @@ namespace RISE
 		add( "expression_painter",                    new ExpressionPainterAsciiChunkParser() );
 		add( "ramp_painter",                          new RampPainterAsciiChunkParser() );
 		add( "mapping_painter",                       new MappingPainterAsciiChunkParser() );
+		add( "stochastic_tile_painter",               new StochasticTilePainterAsciiChunkParser() );
+		add( "scatter_painter",                       new ScatterPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions

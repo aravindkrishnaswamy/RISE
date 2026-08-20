@@ -83,6 +83,25 @@ namespace RISE
 			//! blow the eval budget.
 			static const int kMaxOctaves = 10;
 
+			//! floor(x) then a bare (int) cast is UB when the floored value
+			//! is outside int's representable range -- e.g. cellhash(1e20)
+			//! from the expression VM (UBSan-confirmed), or an unbounded
+			//! painter parameter (tile_scale, cell_scale, ...) multiplied
+			//! against an ordinary UV.  Clamp in Scalar (double) space,
+			//! BEFORE the cast, to the widest window every int can hold; a
+			//! value outside it saturates to the boundary instead of
+			//! hitting the UB / platform-divergent truncation a raw cast
+			//! would give.  Non-finite input is treated as 0.  This is the
+			//! ONE fix point for every floor-then-truncate site in the tree
+			//! that can receive an unbounded, user-authored Scalar --
+			//! originally added (as an anonymous-namespace local) for
+			//! CellHash / WorleySample3D / PerlinOctave3D in
+			//! ProceduralNoiseCore.cpp; promoted to the public API here so
+			//! new callers (StochasticTilePainter, ScatterPainter, ...)
+			//! route through the same guarded cast instead of each growing
+			//! its own bare (int)floor and re-introducing the UB.
+			int SafeFloorToInt( Scalar v );
+
 			//////////////////////////////////////////////////////////
 			//  Worley (cellular) noise (Worley3DPainter's engine)
 			//////////////////////////////////////////////////////////

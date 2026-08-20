@@ -57,28 +57,31 @@ namespace
 	{
 		return RISE::IsFiniteDouble( (double)v ) ? v : Scalar(0);
 	}
+}
 
-	// P1-C: floor(x) then a bare (int) cast is UB when the floored value is
-	// outside int's representable range -- e.g. cellhash(1e20) from the
-	// expression VM (UBSan-confirmed).  Clamp in Scalar (double) space,
-	// BEFORE the cast, to the widest window every int can hold; a value
-	// outside it saturates to the boundary instead of hitting the UB /
-	// platform-divergent truncation a raw cast would give.  Shared by
-	// every floor-then-truncate site in this file that can receive an
-	// unbounded, user-authored Scalar (CellHash directly; WorleySample3D's
-	// ix/iy/iz, reached via worley_f1/f2/f2f1/id(vec3(huge,...), jitter);
-	// PerlinOctave3D's X/Y/Z, reached via perlin()/fbm()/turbulence()/
-	// ridged() -- fbm-family octave/lacunarity looping can also drive the
-	// sampled coordinate arbitrarily large even from an in-range vec3
-	// literal) -- one fix point instead of three independently-drifting
-	// unguarded casts.
-	inline int SafeFloorToInt( Scalar v )
-	{
-		Scalar f = std::floor( RISE::IsFiniteDouble( (double)v ) ? v : Scalar(0) );
-		if( f < Scalar(-2147483648.0) ) f = Scalar(-2147483648.0);
-		if( f > Scalar(2147483647.0) )  f = Scalar(2147483647.0);
-		return (int)f;
-	}
+// P1-C (promoted to the public API for P1-A, S8 review round 1 -- see
+// ProceduralNoiseCore.h for the full rationale): floor(x) then a bare
+// (int) cast is UB when the floored value is outside int's representable
+// range -- e.g. cellhash(1e20) from the expression VM (UBSan-confirmed).
+// Clamp in Scalar (double) space, BEFORE the cast, to the widest window
+// every int can hold; a value outside it saturates to the boundary
+// instead of hitting the UB / platform-divergent truncation a raw cast
+// would give.  Shared by every floor-then-truncate site in this file
+// that can receive an unbounded, user-authored Scalar (CellHash
+// directly; WorleySample3D's ix/iy/iz, reached via
+// worley_f1/f2/f2f1/id(vec3(huge,...), jitter); PerlinOctave3D's X/Y/Z,
+// reached via perlin()/fbm()/turbulence()/ridged() -- fbm-family
+// octave/lacunarity looping can also drive the sampled coordinate
+// arbitrarily large even from an in-range vec3 literal) -- and, now
+// that it lives in the public API, by StochasticTilePainter.cpp and
+// ScatterPainter.cpp as well, whose tile_scale/cell_scale parameters
+// are equally unbounded.
+int RISE::Implementation::NoiseCore::SafeFloorToInt( Scalar v )
+{
+	Scalar f = std::floor( RISE::IsFiniteDouble( (double)v ) ? v : Scalar(0) );
+	if( f < Scalar(-2147483648.0) ) f = Scalar(-2147483648.0);
+	if( f > Scalar(2147483647.0) )  f = Scalar(2147483647.0);
+	return (int)f;
 }
 
 Scalar RISE::Implementation::NoiseCore::PerlinOctave3D( Scalar x, Scalar y, Scalar z )

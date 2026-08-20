@@ -1,0 +1,213 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           stochastic_scatter.RISEscene                                                           #
+#   Description:    S8 regression scene for stochastic_tile_painter and scatter_painter (doc 88 P3.1/       #
+#                   P3.2) -- three ground tiles side by side:                                               #
+#                     LEFT:   a plain checker_painter, tiled small enough to show its perfectly             #
+#                             repeating grid -- the "control".                                              #
+#                     MIDDLE: the SAME checker_painter wrapped in stochastic_tile_painter at a matched      #
+#                             density -- the hex-tiling / histogram-preserving blend breaks the grid up      #
+#                             into a non-repeating jumble of checker fragments, with no visible seams.       #
+#                     RIGHT:  scatter_painter -- a small bright stamp scattered with jittered position/      #
+#                             rotation/scale over a dark background, texture-bombing's discrete-element      #
+#                             richness (rivets/stains/leaves) rather than a continuous noise field.          #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-20                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/stochastic_scatter
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			720
+	height			360
+}
+
+pinhole_camera
+{
+	location		0 10 11
+	lookat			0 0 0
+	up				0 1 0
+	fov				45.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name			black
+	color			0.05 0.05 0.05
+	colorspace		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			white
+	color			0.95 0.95 0.95
+	colorspace		Rec709RGB_Linear
+}
+
+# The shared checker source: `size 0.125` gives 8 cells across each
+# box top face's [0,1] UV span (box_geometry's per-face UV is always
+# [0,1], independent of the box's physical dimensions).
+checker_painter
+{
+	name			checker_src
+	colora			black
+	colorb			white
+	size			0.125
+}
+
+# MIDDLE tile: the same checker source, hex-tiled with histogram-
+# preserving blending.  tile_scale 8 matches the checker's own 8-cells-
+# per-face density, so the two tiles are a fair density comparison.
+# `mean 0.5 0.5 0.5` matches checker_src's actual average (black and
+# white are symmetric about 0.5 by construction above).  blend_gamma
+# left at its default (7.0, see StochasticTilePainter.h).
+stochastic_tile_painter
+{
+	name			checker_stochastic
+	source			checker_src
+	tile_scale		8.0
+	seed			0
+	mean			0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name			stamp_bright
+	color			1.0 0.85 0.2
+	colorspace		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			scatter_dark
+	color			0.04 0.04 0.06
+	colorspace		Rec709RGB_Linear
+}
+
+# RIGHT tile: a small bright stamp scattered over a dark background.
+# stamp_scale * (1 + jitter_scale) = 0.6 * 1.25 = 0.75, comfortably
+# under the sqrt(2) neighbourhood-reach bound the parser enforces.
+scatter_painter
+{
+	name			scatter_demo
+	source			stamp_bright
+	background		scatter_dark
+	cell_scale		6.0
+	stamp_scale		0.6
+	jitter_position	0.6
+	jitter_rotation	20.0
+	jitter_scale		0.25
+	probability		0.8
+	seed			1
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name			mat_control
+	reflectance		checker_src
+}
+
+lambertian_material
+{
+	name			mat_stochastic
+	reflectance		checker_stochastic
+}
+
+lambertian_material
+{
+	name			mat_scatter
+	reflectance		scatter_demo
+}
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name			tile_box
+	width			3
+	height			0.3
+	depth			3
+}
+
+standard_object
+{
+	name			tile_control
+	geometry		tile_box
+	position		-4 0 0
+	material		mat_control
+	receives_shadows false
+}
+
+standard_object
+{
+	name			tile_stochastic
+	geometry		tile_box
+	position		0 0 0
+	material		mat_stochastic
+	receives_shadows false
+}
+
+standard_object
+{
+	name			tile_scatter
+	geometry		tile_box
+	position		4 0 0
+	material		mat_scatter
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.6 0.7 1.0
+}
+
+ambient_light
+{
+	name		amb
+	color		1.0 1.0 1.0
+	power		0.4
+}

@@ -465,6 +465,12 @@
     <ClCompile Include="..\..\..\src\Library\Painters\MappingPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\StochasticTilePainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\ScatterPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
@@ -1702,6 +1708,12 @@
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\MappingPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\StochasticTilePainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ScatterPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\PainterChannelScalarPainter.h">

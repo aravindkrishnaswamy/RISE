@@ -4005,6 +4005,41 @@ namespace RISE
 									const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
 									) = 0;
 
+		//! Adds a stochastic_tile_painter (doc 88 P3.1, S8): hex-tiling
+		//! with histogram-preserving blending over `source` -- see
+		//! StochasticTilePainter.h for the full algorithm.  Tail-appended
+		//! after AddBlendPainterWithMode per the append-only IJob tail
+		//! (preserves every prior vtable slot -- see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddStochasticTilePainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Named source painter
+									const double tileScale,			///< [in] Lattice density
+									const unsigned int seed,			///< [in] Hash seed
+									const double mean[3],				///< [in] Source's mean value (r,g,b), author-supplied
+									const double blendGamma,			///< [in] Barycentric-weight sharpening exponent
+									const char* colorSpace			///< [in] Interpretation of `mean`
+									) = 0;
+
+		//! Adds a scatter_painter (doc 88 P3.2, S8): texture-bombing /
+		//! FX-map-lite, stamping `source` over `background` on a
+		//! jittered square lattice -- see ScatterPainter.h for the full
+		//! algorithm and the neighbourhood-reach proof the parser
+		//! enforces.  Tail-appended after AddStochasticTilePainter.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddScatterPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Named stamp painter
+									const char* background,			///< [in] Named background painter
+									const double cellScale,			///< [in] Lattice density
+									const double stampScale,			///< [in] Base stamp size within a cell
+									const double jitterPosition,		///< [in] Position jitter, [0,1]
+									const double jitterRotationDeg,	///< [in] Max rotation jitter, degrees
+									const double jitterScale,			///< [in] Relative +/- scale jitter, [0,1)
+									const double probability,			///< [in] Per-cell occupancy probability, [0,1]
+									const unsigned int seed			///< [in] Hash seed
+									) = 0;
+
 	};
 
 

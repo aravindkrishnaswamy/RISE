@@ -294,3 +294,5 @@ AddRampPainter
 AddMappingPainter
 AddVoronoi3DPainterWithSpace
 AddBlendPainterWithMode
+AddStochasticTilePainter
+AddScatterPainter

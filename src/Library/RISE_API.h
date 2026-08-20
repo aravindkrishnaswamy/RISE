@@ -1569,6 +1569,39 @@ namespace RISE
 								const Scalar blendSharpness		///< [in] Triplanar normal-weight exponent (ignored otherwise)
 								);
 
+	//! Creates a stochastic_tile_painter (doc 88 P3.1, S8): hex-tiling
+	//! with histogram-preserving blending over `source` -- breaks the
+	//! visible tile-grid repetition of a photographic source without
+	//! authoring extra content.  See StochasticTilePainter.h for the
+	//! full algorithm (Heitz & Neyret 2018; Burley JCGT 2019).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateStochasticTilePainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter (addref'd)
+								const Scalar tileScale,			///< [in] Lattice density (larger = smaller/more tiles)
+								const unsigned int seed,			///< [in] Hash seed for per-vertex offsets
+								const RISEPel& mean,				///< [in] Source's mean value (author-supplied, NOT estimated -- see header)
+								const Scalar blendGamma			///< [in] Barycentric-weight sharpening exponent
+								);
+
+	//! Creates a scatter_painter (doc 88 P3.2, S8): texture-bombing /
+	//! FX-map-lite, stamping `source` over `background` on a jittered
+	//! square lattice.  See ScatterPainter.h for the full algorithm
+	//! and the neighbourhood-reach proof the parser enforces.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateScatterPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Stamp painter (addref'd)
+								const IPainter& background,		///< [in] Background painter (addref'd)
+								const Scalar cellScale,			///< [in] Lattice density
+								const Scalar stampScale,			///< [in] Base stamp size within a cell
+								const Scalar jitterPosition,		///< [in] Position jitter, [0,1]
+								const Scalar jitterRotationDeg,	///< [in] Max rotation jitter, degrees
+								const Scalar jitterScale,			///< [in] Relative +/- scale jitter, [0,1)
+								const Scalar probability,			///< [in] Per-cell occupancy probability, [0,1]
+								const unsigned int seed			///< [in] Hash seed
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Radiance maps

@@ -289,6 +289,8 @@
     <ClCompile Include="..\..\..\src\Library\Painters\ExpressionPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\RampPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\MappingPainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\StochasticTilePainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\ScatterPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Turbulence3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Worley3DPainter.cpp" />
@@ -805,6 +807,8 @@
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\RampPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MappingPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\StochasticTilePainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ScatterPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\PainterChannelScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />

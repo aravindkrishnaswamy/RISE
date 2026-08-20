@@ -225,6 +225,7 @@ scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene  59b6fd365659a7a
 scenes/Tests/Painters/polynomial_negative_amplitude_check.RISEscene  f303f0b8b8a066328dc78d5efa8f8d68624054273d883740dae7f4dd7a0a85fb  848  28
 scenes/Tests/Painters/ramp_painter_terrain.RISEscene  715a5129c3d84e242c77b7b5aa27892fa8c6d1df83c6ec3bd578fb05a17f108c  1015  27
 scenes/Tests/Painters/scalar_painter_expression_roughness.RISEscene  da6e4d68ca761535873fd6048c5159de7b356ddf26bf86faa9f30bcd718f3b1a  757  23
+scenes/Tests/Painters/stochastic_scatter.RISEscene  90d91b4694b019a93d553edcec977f5efdf69c6214cdf5e9da257c4e5968b263  1252  32
 scenes/Tests/Painters/textureaccessors.RISEscene  72c92084f002792f9b42d49314dbb8edca874517f510469bb1954aa08d37da94  1273  30
 scenes/Tests/Parser/loops.RISEscene  56751f097674acec4491aba7b7f59347b3af07da713dfe1d0980774c9273df7f  21860  141
 scenes/Tests/PathTracing/cornellbox_pathtracer.RISEscene  d40ba354b33d47d7dd3d489daded74a37abbb14bde9a29919a99c0b211a49906  2048  41
