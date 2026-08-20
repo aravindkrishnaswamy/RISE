@@ -37,10 +37,25 @@ int RunProductionCalibrationStateGeneration(const std::filesystem::path& outputD
 	}
 	const std::filesystem::path partial=outputDirectory/"input_manifest.v1.partial";
 	const std::filesystem::path manifest=outputDirectory/"input_manifest.v1";
+	std::array<MethaneRunCheckpoint,3> states;
+	double commonX=std::numeric_limits<double>::infinity();
+	double commonY=std::numeric_limits<double>::infinity();
+	double commonZ=std::numeric_limits<double>::infinity();
+	for(std::size_t index=0u;index<paths.size();++index){
+		std::string error;
+		if(!LoadMethaneRunCheckpoint(paths[index],states[index],error))return 134;
+		commonX=std::min(commonX,states[index].cellWidthM*states[index].dimensions[0]);
+		commonY=std::min(commonY,states[index].cellWidthM*states[index].dimensions[1]);
+		commonZ=std::min(commonZ,states[index].cellWidthM*states[index].dimensions[2]);
+	}
 	std::ofstream output(partial,std::ios::binary|std::ios::trunc);
 	if(!output)return 133;
 	output<<"fire_production_calibration_input_v1\nphysical_time_s 0.32\n"
+		<<"baseline_horizon_s 0.002\ntemporal_steps_s 0.002 0.001 0.0005\n"
+		<<"formal_order production_space 2 production_time 1 oracle_space 2 oracle_time 2\n"
 		<<"horizontal_alignment domain_center\nvertical_alignment common_floor\n"
+		<<"common_support_m "<<std::setprecision(17)<<-0.5*commonX<<' '<<0.5*commonX
+		<<' '<<-0.5*commonY<<' '<<0.5*commonY<<" 0 "<<commonZ<<'\n'
 		<<"metric_registry component_volume_l1,component_integral,velocity_volume_l2,projection_residual\n"
 		<<"golden_checkpoint_sha256 "<<goldenCheckpoint<<'\n';
 	for(std::size_t index=0u;index<goldenBeginnings.size();++index)
@@ -55,8 +70,7 @@ int RunProductionCalibrationStateGeneration(const std::filesystem::path& outputD
 		<<"projection_source_sha256 "
 		<<RISEFireProductionFP64::SourceManifest::FireProductionProjectionSource<<'\n';
 	for(std::size_t index=0u;index<paths.size();++index){
-		MethaneRunCheckpoint state;std::string error;
-		if(!LoadMethaneRunCheckpoint(paths[index],state,error))return 134;
+		const MethaneRunCheckpoint& state=states[index];
 		output<<"tier "<<static_cast<unsigned int>(tiers[index])<<" shape "
 			<<state.dimensions[0]<<' '<<state.dimensions[1]<<' '<<state.dimensions[2]
 			<<" dx "<<std::setprecision(17)<<state.cellWidthM<<" sha256 "
