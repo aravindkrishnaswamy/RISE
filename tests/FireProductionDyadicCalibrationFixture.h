@@ -967,6 +967,94 @@ namespace FireProductionDyadicCalibration
 		return values[(95u*values.size()+99u)/100u-1u];
 	}
 
+	int DiagnoseRoundoff(const std::filesystem::path& directory,const char* expectedProtocol,
+		const char* expectedTargets)
+	{
+		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
+			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
+			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 230;
+		std::array<std::string,4> targetDigests;
+		if(!ReadTargetDigests(directory/"dyadic_targets.v1",targetDigests))return 231;
+		MethaneRunCheckpoint state;std::string error;
+		if(!BuildAnalyticState(6u,state,error))return 232;
+		std::vector<std::vector<double> > sealed;const std::filesystem::path target=
+			directory/"oracle_tier6_sdiv_x8.f64";
+		if(DigestFile(target)!=targetDigests[2]||!ReadCalibrationDoublePayload(target,
+			state.states.size(),8u,sealed))return 233;
+		const double flowThrough=6.0*std::sqrt(
+			state.values.characteristicDiameterM/Gravity);
+		RISE::FireProductionResidentStepRequest request;
+		if(!BuildProductionRequest(state,sealed[0],flowThrough/512.0,request,error))return 234;
+		FireProductionRoundoffAdapter::ResidentStepTraceResult trace;
+		if(!FireProductionRoundoffAdapter::AdvanceResidentStepTrace(request,0.0f,trace,&error)){
+			std::fprintf(stderr,"r120 trace failed: %s\n",error.c_str());return 235;}
+		RISECBOR64::Bytes encoded;std::uint32_t unresolvedBitmap=0u,invalidBitmap=0u;
+		std::fprintf(stderr,"r120 diagnostic tier=6 stages=%zu schedule=%u\n",trace.stages.size(),
+			trace.force.schedule.substepCount);
+		for(std::size_t index=0u;index<trace.stages.size();++index){
+			const FireProductionRoundoffTrace::Observation& stage=trace.stages[index];
+			AppendInteger(encoded,index);
+			for(const std::uint64_t count:stage.operation)AppendInteger(encoded,count);
+			AppendInteger(encoded,stage.maximumDepth);AppendInteger(encoded,stage.comparisonCount);
+			AppendDouble(encoded,stage.minimumBranchMargin);
+			AppendDouble(encoded,stage.minimumDenominatorLowerBound);
+			AppendDouble(encoded,stage.minimumSqrtDomainLowerBound);
+			AppendDouble(encoded,stage.maximumAbsoluteOutput);
+			AppendDouble(encoded,stage.maximumOutputRadius);
+			AppendInteger(encoded,stage.unresolvedBranch?1u:0u);
+			AppendInteger(encoded,stage.invalidDomain?1u:0u);
+			AppendInteger(encoded,stage.unresolvedWitnessRecorded?1u:0u);
+			AppendDouble(encoded,stage.unresolvedLeftCenter);
+			AppendDouble(encoded,stage.unresolvedLeftRadius);
+			AppendDouble(encoded,stage.unresolvedRightCenter);
+			AppendDouble(encoded,stage.unresolvedRightRadius);
+			std::uint32_t leftBits=0u,rightBits=0u;
+			std::memcpy(&leftBits,&stage.unresolvedLeftRounded,sizeof(leftBits));
+			std::memcpy(&rightBits,&stage.unresolvedRightRounded,sizeof(rightBits));
+			AppendInteger(encoded,leftBits);AppendInteger(encoded,rightBits);
+			AppendInteger(encoded,stage.unresolvedRoundedResult?1u:0u);
+			AppendInteger(encoded,stage.invalidDenominatorWitnessRecorded?1u:0u);
+			AppendDouble(encoded,stage.invalidDenominatorCenter);
+			AppendDouble(encoded,stage.invalidDenominatorRadius);
+			std::uint32_t denominatorBits=0u;std::memcpy(&denominatorBits,
+				&stage.invalidDenominatorRounded,sizeof(denominatorBits));
+			AppendInteger(encoded,denominatorBits);
+			if(stage.unresolvedBranch)unresolvedBitmap|=std::uint32_t(1u)<<index;
+			if(stage.invalidDomain)invalidBitmap|=std::uint32_t(1u)<<index;
+			std::uint64_t operations=0u;for(const std::uint64_t count:stage.operation)
+				operations+=count;
+			std::fprintf(stderr,"r120 stage=%zu operations=%llu depth=%u comparisons=%llu "
+				"unresolved=%d invalid=%d output=%.17g radius=%.17g denominator=%.17g "
+				"sqrt_domain=%.17g branch_margin=%.17g\n",index,
+				static_cast<unsigned long long>(operations),stage.maximumDepth,
+				static_cast<unsigned long long>(stage.comparisonCount),
+				stage.unresolvedBranch?1:0,stage.invalidDomain?1:0,
+				stage.maximumAbsoluteOutput,stage.maximumOutputRadius,
+				stage.minimumDenominatorLowerBound,stage.minimumSqrtDomainLowerBound,
+				stage.minimumBranchMargin);
+			if(stage.unresolvedWitnessRecorded)std::fprintf(stderr,
+				"r120 stage=%zu branch_witness left=(%.17g +- %.17g, %.9g) "
+				"right=(%.17g +- %.17g, %.9g) rounded_result=%d separated=%d\n",index,
+				stage.unresolvedLeftCenter,stage.unresolvedLeftRadius,
+				stage.unresolvedLeftRounded,stage.unresolvedRightCenter,
+				stage.unresolvedRightRadius,stage.unresolvedRightRounded,
+				stage.unresolvedRoundedResult?1:0,
+				FireProductionRoundoffWalker::IntervalsAreSeparated(
+					stage.unresolvedLeftCenter,stage.unresolvedLeftRadius,
+					stage.unresolvedRightCenter,stage.unresolvedRightRadius)?1:0);
+			if(stage.invalidDenominatorWitnessRecorded)std::fprintf(stderr,
+				"r120 stage=%zu denominator_witness center=%.17g radius=%.17g rounded=%.9g\n",
+				index,stage.invalidDenominatorCenter,stage.invalidDenominatorRadius,
+				stage.invalidDenominatorRounded);
+		}
+		std::fprintf(stderr,"r120 trace_digest=%s unresolved_bitmap=0x%06x "
+			"invalid_bitmap=0x%06x trace_generator=%s transport_source=%s\n",
+			RISECBOR64::SHA256Hex(encoded).c_str(),unresolvedBitmap,invalidBitmap,
+			RISEFireProductionTrace::SourceManifest::Generator,
+			RISEFireProductionTrace::SourceManifest::FireProductionTransportSource);
+		return 236;
+	}
+
 	int CheckRestorationLong(const std::filesystem::path& directory,
 		const std::array<std::string,4>& targetDigests)
 	{

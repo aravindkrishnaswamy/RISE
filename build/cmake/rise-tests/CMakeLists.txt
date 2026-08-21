@@ -289,7 +289,8 @@ foreach(test_src ${TEST_SOURCES})
         set_source_files_properties(${FIRE_PRODUCTION_FP64_SOURCES} PROPERTIES
             COMPILE_OPTIONS "/fp:strict")
     endif()
-	if(test_name STREQUAL "FireProductionCalibrationTest")
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
 		file(GLOB FIRE_PRODUCTION_TRACE_SOURCES CONFIGURE_DEPENDS
 			"${RISE_TESTS_DIR}/fire_production_trace/*.cpp")
 		target_sources(${test_name} PRIVATE ${FIRE_PRODUCTION_TRACE_SOURCES})
@@ -319,7 +320,8 @@ foreach(test_src ${TEST_SOURCES})
         /wd4250                    # 'inherits via dominance' - benign with diamond inheritance
     )
 
-	if(test_name STREQUAL "FireProductionCalibrationTest")
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
 		target_compile_options(${test_name} PRIVATE /fp:strict)
 	endif()
 	if(test_name STREQUAL "FireSequenceTest")

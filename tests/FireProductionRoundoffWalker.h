@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 
 namespace FireProductionRoundoffWalker
@@ -47,6 +48,14 @@ namespace FireProductionRoundoffWalker
 	inline std::size_t NextPowerOfTwo(const std::size_t value)
 	{
 		std::size_t result=1u;while(result<value)result<<=1u;return result;
+	}
+
+	inline bool IntervalsAreSeparated(const double leftCenter,const double leftRadius,
+		const double rightCenter,const double rightRadius)
+	{
+		if(!(leftRadius>=0.0&&rightRadius>=0.0))return false;
+		return (leftRadius==0.0&&rightRadius==0.0)||
+			std::fabs(leftCenter-rightCenter)>leftRadius+rightRadius;
 	}
 
 	// Independent graph walk for the exact positive-subcell periodic free-stream

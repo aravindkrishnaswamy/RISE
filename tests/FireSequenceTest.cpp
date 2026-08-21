@@ -15,6 +15,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
+#include "FireProductionRoundoffTraceAdapter.h"
+#include "FireProductionRoundoffWalker.h"
+#include "fire_production_trace/SourceManifest.h"
 
 #include <cmath>
 #include <algorithm>
@@ -3063,6 +3066,8 @@ int main(int argc,char** argv)
 			argv[2],argv[3],argv[4],argv[5]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-check-dyadic-production")==0)
 		return FireProductionDyadicCalibration::CheckProduction(argv[2],argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-diagnose-roundoff")==0)
+		return FireProductionDyadicCalibration::DiagnoseRoundoff(argv[2],argv[3],argv[4]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;

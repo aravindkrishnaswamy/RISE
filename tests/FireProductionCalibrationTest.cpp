@@ -129,7 +129,13 @@ int main()
 				"invalid traced division publishes an infinite diagnostic radius");
 		}
 		Check(branchResult&&counters.invalidDomain&&counters.unresolvedBranch&&
-			counters.minimumDenominatorLowerBound<=0.0,
+			counters.minimumDenominatorLowerBound<=0.0&&
+			counters.unresolvedWitnessRecorded&&counters.invalidDenominatorWitnessRecorded&&
+			!FireProductionRoundoffWalker::IntervalsAreSeparated(
+				counters.unresolvedLeftCenter,counters.unresolvedLeftRadius,
+				counters.unresolvedRightCenter,counters.unresolvedRightRadius)&&
+			counters.invalidDenominatorCenter==0.0&&
+			counters.invalidDenominatorRadius>=1.0,
 			"roundoff trace rejects denominator and branch intervals that cross a decision surface");
 	}
 	using namespace FireProductionCalibration;

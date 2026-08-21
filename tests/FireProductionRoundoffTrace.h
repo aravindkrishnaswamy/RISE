@@ -27,6 +27,14 @@ namespace FireProductionRoundoffTrace
 		double minimumSqrtDomainLowerBound=std::numeric_limits<double>::infinity();
 		bool unresolvedBranch=false;
 		bool invalidDomain=false;
+		bool unresolvedWitnessRecorded=false;
+		double unresolvedLeftCenter=0.0,unresolvedLeftRadius=0.0;
+		double unresolvedRightCenter=0.0,unresolvedRightRadius=0.0;
+		float unresolvedLeftRounded=0.0f,unresolvedRightRounded=0.0f;
+		bool unresolvedRoundedResult=false;
+		bool invalidDenominatorWitnessRecorded=false;
+		double invalidDenominatorCenter=0.0,invalidDenominatorRadius=0.0;
+		float invalidDenominatorRounded=0.0f;
 		double maximumAbsoluteOutput=0.0;
 		double maximumOutputRadius=0.0;
 	};
@@ -105,7 +113,12 @@ namespace FireProductionRoundoffTrace
 			const double lower=std::fabs(b.center_)-b.radius_;
 			if(ActiveCounters)ActiveCounters->minimumDenominatorLowerBound=std::min(
 				ActiveCounters->minimumDenominatorLowerBound,lower);
-			if(!(lower>0.0)){if(ActiveCounters)ActiveCounters->invalidDomain=true;
+			if(!(lower>0.0)){if(ActiveCounters){ActiveCounters->invalidDomain=true;
+				if(!ActiveCounters->invalidDenominatorWitnessRecorded){
+					ActiveCounters->invalidDenominatorWitnessRecorded=true;
+					ActiveCounters->invalidDenominatorCenter=b.center_;
+					ActiveCounters->invalidDenominatorRadius=b.radius_;
+					ActiveCounters->invalidDenominatorRounded=b.rounded_;}}
 				return Raw(a.center_/b.center_,std::numeric_limits<double>::infinity(),
 					static_cast<float>(a.rounded_/b.rounded_),1u+std::max(a.depth_,b.depth_));}
 			const double center=a.center_/b.center_;
@@ -164,23 +177,32 @@ namespace FireProductionRoundoffTrace
 			return Raw(center,radius,rounded,depth);
 		}
 		static void RecordComparison(const TraceFloat& a,const TraceFloat& b,
-			const bool resolved)
+			const bool resolved,const bool roundedResult)
 		{
 			if(ActiveCounters){++ActiveCounters->comparisonCount;
 				const double margin=std::fabs(a.center_-b.center_)-a.radius_-b.radius_;
 				ActiveCounters->minimumBranchMargin=std::min(
 					ActiveCounters->minimumBranchMargin,margin);
-				if(!resolved)ActiveCounters->unresolvedBranch=true;}
+				if(!resolved){ActiveCounters->unresolvedBranch=true;
+					if(!ActiveCounters->unresolvedWitnessRecorded){
+						ActiveCounters->unresolvedWitnessRecorded=true;
+						ActiveCounters->unresolvedLeftCenter=a.center_;
+						ActiveCounters->unresolvedLeftRadius=a.radius_;
+						ActiveCounters->unresolvedRightCenter=b.center_;
+						ActiveCounters->unresolvedRightRadius=b.radius_;
+						ActiveCounters->unresolvedLeftRounded=a.rounded_;
+						ActiveCounters->unresolvedRightRounded=b.rounded_;
+						ActiveCounters->unresolvedRoundedResult=roundedResult;}}}
 		}
 		static bool OrderedCompare(const TraceFloat& a,const TraceFloat& b,const bool result)
 		{
 			RecordComparison(a,b,(a.radius_==0.0&&b.radius_==0.0)||
-				std::fabs(a.center_-b.center_)>a.radius_+b.radius_);return result;
+				std::fabs(a.center_-b.center_)>a.radius_+b.radius_,result);return result;
 		}
 		static bool EqualityCompare(const TraceFloat& a,const TraceFloat& b,const bool result)
 		{
 			RecordComparison(a,b,(a.radius_==0.0&&b.radius_==0.0)||
-				std::fabs(a.center_-b.center_)>a.radius_+b.radius_);return result;
+				std::fabs(a.center_-b.center_)>a.radius_+b.radius_,result);return result;
 		}
 		double center_,radius_;
 		float rounded_;
@@ -228,7 +250,12 @@ namespace FireProductionRoundoffTrace
 		const double denominatorLower=std::fabs(b.Center())-b.Radius();
 		if(ActiveCounters)ActiveCounters->minimumDenominatorLowerBound=std::min(
 			ActiveCounters->minimumDenominatorLowerBound,denominatorLower);
-		if(!(denominatorLower>0.0)&&ActiveCounters)ActiveCounters->invalidDomain=true;
+		if(!(denominatorLower>0.0)&&ActiveCounters){ActiveCounters->invalidDomain=true;
+			if(!ActiveCounters->invalidDenominatorWitnessRecorded){
+				ActiveCounters->invalidDenominatorWitnessRecorded=true;
+				ActiveCounters->invalidDenominatorCenter=b.Center();
+				ActiveCounters->invalidDenominatorRadius=b.Radius();
+				ActiveCounters->invalidDenominatorRounded=b.Rounded();}}
 		const double center=std::fmod(a.Center(),b.Center());
 		const double propagated=a.Radius()+
 			std::ceil(std::fabs(a.Center()/b.Center()))*b.Radius();
