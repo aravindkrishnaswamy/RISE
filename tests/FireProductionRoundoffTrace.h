@@ -68,6 +68,7 @@ namespace FireProductionRoundoffTrace
 	inline thread_local BranchSite ActiveBranchSite=BranchSite::Unknown;
 	inline thread_local std::size_t LastScopedObligation=std::numeric_limits<std::size_t>::max();
 	inline thread_local unsigned int CoveredBranchDepth=0u;
+	inline thread_local unsigned int ParentOwnedSelectionDepth=0u;
 	inline thread_local std::size_t PPMObligationStart=std::numeric_limits<std::size_t>::max();
 	inline thread_local bool PPMQuadraticAmbiguous=false;
 
@@ -86,10 +87,13 @@ namespace FireProductionRoundoffTrace
 	class CoveredBranchScope
 	{
 	public:
-		explicit CoveredBranchScope(const bool covered):covered_(covered)
-			{if(covered_)++CoveredBranchDepth;}
-		~CoveredBranchScope(){if(covered_)--CoveredBranchDepth;}
-	private:bool covered_;
+		explicit CoveredBranchScope(const bool covered,const bool parentOwnsSelections=false):
+			covered_(covered),parentOwnsSelections_(covered&&parentOwnsSelections)
+			{if(covered_)++CoveredBranchDepth;if(parentOwnsSelections_)
+				++ParentOwnedSelectionDepth;}
+		~CoveredBranchScope(){if(parentOwnsSelections_)--ParentOwnedSelectionDepth;
+			if(covered_)--CoveredBranchDepth;}
+	private:bool covered_,parentOwnsSelections_;
 	};
 
 	template<class Predicate> inline bool EvaluateBranch(const BranchSite site,
@@ -241,9 +245,9 @@ namespace FireProductionRoundoffTrace
 			const bool resolved,const bool roundedResult)
 		{
 			if(ActiveCounters){const std::uint64_t ordinal=ActiveCounters->comparisonCount++;
-				if(CoveredBranchDepth!=0u&&(!PPMQuadraticAmbiguous||
-					(ActiveBranchSite!=BranchSite::PPMStationaryLower&&
-					 ActiveBranchSite!=BranchSite::PPMStationaryUpper)))return;
+				if(CoveredBranchDepth!=0u&&
+					ActiveBranchSite!=BranchSite::PPMStationaryLower&&
+					ActiveBranchSite!=BranchSite::PPMStationaryUpper)return;
 				const double margin=std::fabs(a.center_-b.center_)-a.radius_-b.radius_;
 				ActiveCounters->minimumBranchMargin=std::min(
 					ActiveCounters->minimumBranchMargin,margin);
@@ -330,7 +334,9 @@ namespace FireProductionRoundoffTrace
 			if(obligation.certificate!=BranchCertificate::None)continue;
 			if(obligation.site==BranchSite::PPMQuadraticZero||
 				obligation.site==BranchSite::PPMStationaryLower||
-				obligation.site==BranchSite::PPMStationaryUpper)hasObligation=true;
+				obligation.site==BranchSite::PPMStationaryUpper||
+				obligation.site==BranchSite::MinimumSelection||
+				obligation.site==BranchSite::MaximumSelection)hasObligation=true;
 		}
 		if(!hasObligation){PPMObligationStart=std::numeric_limits<std::size_t>::max();
 			PPMQuadraticAmbiguous=false;return;}
@@ -350,7 +356,9 @@ namespace FireProductionRoundoffTrace
 			BranchObligation& obligation=ActiveCounters->branchObligations[index];
 			if((obligation.site==BranchSite::PPMQuadraticZero||
 				obligation.site==BranchSite::PPMStationaryLower||
-				obligation.site==BranchSite::PPMStationaryUpper)&&
+				obligation.site==BranchSite::PPMStationaryUpper||
+				obligation.site==BranchSite::MinimumSelection||
+				obligation.site==BranchSite::MaximumSelection)&&
 				obligation.certificate==BranchCertificate::None){
 				obligation.certificate=BranchCertificate::Equivalence;
 				obligation.divergenceBound=divergence;
@@ -400,7 +408,7 @@ namespace FireProductionRoundoffTrace
 		const double predicateRadius=NextUp(first.Radius()+second.Radius());
 		const bool resolved=(first.Radius()==0.0&&second.Radius()==0.0)||
 			std::fabs(predicateCenter)>predicateRadius;
-		if(!ActiveCounters||CoveredBranchDepth!=0u)return chosen;
+		if(!ActiveCounters)return chosen;
 		const std::uint64_t ordinal=ActiveCounters->comparisonCount++;
 		ActiveCounters->minimumBranchMargin=std::min(
 			ActiveCounters->minimumBranchMargin,std::fabs(predicateCenter)-predicateRadius);
@@ -410,10 +418,12 @@ namespace FireProductionRoundoffTrace
 		obligation.predicateCenter=predicateCenter;
 		obligation.predicateRadius=predicateRadius;
 		obligation.roundedResult=chooseSecond;
-		obligation.certificate=BranchCertificate::Equivalence;
-		obligation.divergenceBound=predicateRadius;
+		obligation.certificate=ParentOwnedSelectionDepth?
+			BranchCertificate::None:BranchCertificate::Equivalence;
+		obligation.divergenceBound=ParentOwnedSelectionDepth?0.0:predicateRadius;
 		ActiveCounters->branchObligations.push_back(obligation);
-		++ActiveCounters->dischargedBranchObligationCount;
+		if(!ParentOwnedSelectionDepth)++ActiveCounters->dischargedBranchObligationCount;
+		if(ParentOwnedSelectionDepth)return chosen;
 		const double firstLow=first.Center()-first.Radius();
 		const double firstHigh=first.Center()+first.Radius();
 		const double secondLow=second.Center()-second.Radius();
@@ -441,6 +451,7 @@ namespace FireProductionRoundoffTrace
 		const bool pending=ActiveCounters&&
 			LastScopedObligation!=std::numeric_limits<std::size_t>::max()&&
 			LastScopedObligation<ActiveCounters->branchObligations.size();
+		const std::size_t parentObligation=LastScopedObligation;
 		const double numeratorCenter=positive?envelope.Center()-center.Center():
 			center.Center()-envelope.Center();
 		const double numeratorRadius=NextUp(envelope.Radius()+center.Radius());
@@ -450,20 +461,31 @@ namespace FireProductionRoundoffTrace
 		const bool noEffect=pending&&numeratorLower>=0.0&&
 			numeratorLower>=NextUp(alphaUpper*magnitudeUpper);
 		if(pending){BranchObligation& obligation=
-			ActiveCounters->branchObligations[LastScopedObligation];
+			ActiveCounters->branchObligations[parentObligation];
 			obligation.proofLower=numeratorLower;
 			obligation.proofRequired=NextUp(alphaUpper*magnitudeUpper);
 			obligation.inactiveResultRounded=alpha.Rounded();}
 		TraceFloat result=alpha;
 		if(active){
-			CoveredBranchScope covered(noEffect);
+			const std::size_t nestedObligationStart=ActiveCounters?
+				ActiveCounters->branchObligations.size():0u;
+			CoveredBranchScope covered(noEffect,true);
 			const TraceFloat numerator=positive?envelope-center:center-envelope;
 			result=CertifiedSelection(alpha,numerator/magnitude,true);
+			if(noEffect)for(std::size_t index=nestedObligationStart;
+				index<ActiveCounters->branchObligations.size();++index){
+				BranchObligation& nested=ActiveCounters->branchObligations[index];
+				if(nested.certificate==BranchCertificate::None){
+					nested.certificate=BranchCertificate::Equivalence;
+					nested.divergenceBound=0.0;
+					++ActiveCounters->dischargedBranchObligationCount;
+				}
+			}
 		}
-		if(pending)ActiveCounters->branchObligations[LastScopedObligation].
+		if(pending)ActiveCounters->branchObligations[parentObligation].
 			activeResultRounded=result.Rounded();
 		if(!noEffect)return result;
-		BranchObligation& obligation=ActiveCounters->branchObligations[LastScopedObligation];
+		BranchObligation& obligation=ActiveCounters->branchObligations[parentObligation];
 		obligation.certificate=BranchCertificate::Equivalence;
 		obligation.divergenceBound=0.0;
 		++ActiveCounters->dischargedBranchObligationCount;

@@ -1192,12 +1192,15 @@ namespace FireProductionDyadicCalibration
 			obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::None){
 			limiterObligation=&obligation;break;}
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="835b71d021087868aeec099b087232087fe8d08e552a87c0c5901497f0622af5"||
-			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x00ab80u||!finiteOutputs||
-			totalBranchObligationCount!=4103559u||
-			totalDischargedBranchObligationCount!=421268u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=3682291u||
-			!firstCell.unresolvedWitnessRecorded||firstCell.invalidDenominatorWitnessRecorded||
+			traceDigest!="b2cd4fcf1b19348686acf1ea2e15949ac09992d8e04038f345d9eda3415619e5"||
+			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x1ffffeu||!finiteOutputs||
+			totalBranchObligationCount!=4161080u||
+			totalDischargedBranchObligationCount!=468869u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=3692211u||
+			!firstCell.unresolvedWitnessRecorded||!firstCell.invalidDenominatorWitnessRecorded||
+			firstCell.invalidDenominatorCenter!=5.2089492479923116e-5||
+			firstCell.invalidDenominatorRadius!=6.2056656484854261e-5||
+			firstCell.invalidDenominatorRounded!=5.5077325678439811e-5f||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1215,12 +1218,12 @@ namespace FireProductionDyadicCalibration
 			ppmCertificate.ambiguityWidth!=2.008640214894198e-6||
 			ppmCertificate.arithmeticResidualBound!=2.6783670818887366e-6||
 			ppmCertificate.divergenceBound!=3.1805271356122864e-6||
-			!limiterObligation||limiterObligation->comparisonOrdinal!=156245u||
-			limiterObligation->predicateCenter!=-2.5484634978965355e-6||
-			limiterObligation->predicateRadius!=4.7677165632473422e-6||
+			!limiterObligation||limiterObligation->comparisonOrdinal!=5957u||
+			limiterObligation->predicateCenter!=-4.1921933491284591e-6||
+			limiterObligation->predicateRadius!=5.7555189193234835e-6||
 			!limiterObligation->roundedResult||limiterObligation->proofLower!=
 				-4.9406564584124654e-324||
-			limiterObligation->proofRequired!=7.3161800611438812e-6||
+			limiterObligation->proofRequired!=10.986253083780237||
 			limiterObligation->inactiveResultRounded!=1.0f||
 			limiterObligation->activeResultRounded!=0.0f||
 			source.unresolvedBranch||

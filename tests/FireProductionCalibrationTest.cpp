@@ -76,7 +76,7 @@ int main()
 		"branch_obligation_stop.v1");
 	Check(!branchStopEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		branchStopEvidence.begin(),branchStopEvidence.end()))==
-		"c860fcec9f3954fe1b9fde70a7ff8ed8f96a0e091859a2e30b099eb026726260",
+		"2743b6347b2c456530949d2d01df182efa5b1c637f5107ebfd6f794bd4cb3971",
 		"r123 branch-obligation census and shared-limiter stop are durable and byte-bound");
 	Check(unixTestDriver.find("FireProductionCalibrationOracle.r123")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
@@ -244,26 +244,106 @@ int main()
 				nonzero=q!=0.0f; }
 			FireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(
 				FireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());
-			if(nonzero){FireProductionRoundoffTrace::CoveredBranchScope covered(true);
+			if(nonzero){FireProductionRoundoffTrace::CoveredBranchScope covered(true,true);
 				auto stationary=-linear/(2.0f*q);
 				bool lower=FireProductionRoundoffTrace::EvaluateBranch(
 					FireProductionRoundoffTrace::BranchSite::PPMStationaryLower,
 					[&](){return stationary>0.0f;});
-				if(lower)FireProductionRoundoffTrace::EvaluateBranch(
+				const bool upper=lower&&FireProductionRoundoffTrace::EvaluateBranch(
 					FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper,
-					[&](){return stationary<1.0f;});}
+					[&](){return stationary<1.0f;});
+				if(upper){const auto value=(q*stationary+linear)*stationary;
+					minimum=std::min(minimum,value);maximum=std::max(maximum,value);}}
 			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(q,linear,
 				endpointMinimum,endpointMaximum,minimum,maximum);
 		}
-		Check(counters.branchObligations.size()==3u&&
-			counters.dischargedBranchObligationCount==3u&&
+		Check(counters.branchObligations.size()==5u&&
+			counters.dischargedBranchObligationCount==5u&&
 			counters.branchObligations[0].site==
 				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero&&
 			counters.branchObligations[1].site==
 				FireProductionRoundoffTrace::BranchSite::PPMStationaryLower&&
 			counters.branchObligations[2].site==
-				FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper,
-			"ambiguous PPM nonzero path emits and explicitly discharges its parent and both stationary predicates");
+				FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper&&
+			counters.branchObligations[3].site==
+				FireProductionRoundoffTrace::BranchSite::MinimumSelection&&
+			counters.branchObligations[4].site==
+				FireProductionRoundoffTrace::BranchSite::MaximumSelection&&
+			std::isfinite(minimum.Radius())&&std::isfinite(maximum.Radius()),
+			"ambiguous PPM path emits and parent-discharges its quadratic, stationary, and extrema-selector obligations with a finite envelope");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		auto q=FireProductionRoundoffTrace::TraceFloat::Raw(
+			1.0e-4,1.0e-8,1.0e-4f,1u);
+		auto linear=FireProductionRoundoffTrace::TraceFloat::Raw(
+			0.0,1.0e-8,0.0f,1u);
+		auto minimum=FireProductionRoundoffTrace::TraceFloat(-1.0f);
+		auto maximum=FireProductionRoundoffTrace::TraceFloat(1.0f);
+		const auto endpointMinimum=minimum,endpointMaximum=maximum;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::BeginPPMBranchEnvelope();
+			bool nonzero=false;
+			{ FireProductionRoundoffTrace::BranchSiteScope site(
+				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero);
+				nonzero=q!=0.0f; }
+			FireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(
+				FireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());
+			if(nonzero){FireProductionRoundoffTrace::CoveredBranchScope covered(true,true);
+				auto stationary=-linear/(2.0f*q);
+				FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryLower,
+					[&](){return stationary>0.0f;});}
+			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(q,linear,
+				endpointMinimum,endpointMaximum,minimum,maximum);
+		}
+		Check(counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::PPMStationaryLower&&
+			counters.branchObligations[0].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence,
+			"resolved nonzero PPM parent still emits and explicitly discharges an ambiguous stationary predicate");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		auto q=FireProductionRoundoffTrace::TraceFloat::Raw(4.0,1.0e-6,4.0f,1u);
+		auto linear=FireProductionRoundoffTrace::TraceFloat::Raw(-4.0,1.0e-6,-4.0f,1u);
+		const auto left=FireProductionRoundoffTrace::TraceFloat(1.0f);
+		auto minimum=FireProductionRoundoffTrace::TraceFloat(0.0f);
+		auto maximum=FireProductionRoundoffTrace::TraceFloat(1.0f);
+		const auto endpointMinimum=minimum,endpointMaximum=maximum;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::BeginPPMBranchEnvelope();
+			bool nonzero=false;
+			{ FireProductionRoundoffTrace::BranchSiteScope site(
+				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero);
+				nonzero=q!=0.0f; }
+			FireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(
+				FireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());
+			if(nonzero){FireProductionRoundoffTrace::CoveredBranchScope covered(true,true);
+				auto stationary=-linear/(2.0f*q);
+				const bool lower=FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryLower,
+					[&](){return stationary>0.0f;});
+				const bool upper=lower&&FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper,
+					[&](){return stationary<1.0f;});
+				if(upper){const auto value=(q*stationary+linear)*stationary+left;
+					minimum=std::min(minimum,value);maximum=std::max(maximum,value);}}
+			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(q,linear,
+				endpointMinimum,endpointMaximum,minimum,maximum);
+		}
+		Check(counters.comparisonCount==5u&&counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::MinimumSelection&&
+			counters.branchObligations[0].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			std::isfinite(minimum.Radius())&&std::isfinite(maximum.Radius()),
+			"resolved PPM parent and stationary predicates still emit and parent-discharge an ambiguous extrema selector");
 	}
 	{
 		double lower=0.0,upper=0.0,divergence=0.0;
@@ -288,9 +368,50 @@ int main()
 			selected.Center()+selected.Radius()>=upper,
 			"continuous min selector is independently hulled and discharged across an ambiguous predicate");
 	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::CoveredBranchScope covered(true);
+			const auto resolved=std::min(FireProductionRoundoffTrace::TraceFloat(1.0f),
+				FireProductionRoundoffTrace::TraceFloat(2.0f));
+			const auto ambiguous=std::max(
+				FireProductionRoundoffTrace::TraceFloat::Raw(1.0,0.25,1.0f,1u),
+				FireProductionRoundoffTrace::TraceFloat::Raw(1.1,0.2,1.1f,1u));
+			Check(resolved.Rounded()==1.0f&&ambiguous.Radius()>0.0,
+				"covered-path selector fixtures execute both resolved and ambiguous cases");
+		}
+		Check(counters.comparisonCount==2u&&counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::MaximumSelection,
+			"covered PPM path counts every selector and emits the continuous hull obligation");
+	}
 	Check(FireProductionRoundoffWalker::CertifyInactiveLimiter(0.75,0.0031,0.004)&&
 		!FireProductionRoundoffWalker::CertifyInactiveLimiter(0.75,0.0029,0.004),
 		"independent limiter certificate requires the envelope ratio to dominate the shared limiter");
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		FireProductionRoundoffTrace::TraceFloat limited;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			limited=FireProductionRoundoffTrace::ApplyLimiterBranch(
+				FireProductionRoundoffTrace::TraceFloat::Raw(0.5,0.1,0.5f,1u),
+				FireProductionRoundoffTrace::TraceFloat(2.0f),
+				FireProductionRoundoffTrace::TraceFloat(1.0f),
+				FireProductionRoundoffTrace::TraceFloat::Raw(
+					1.0e-7,2.0e-7,1.0e-7f,1u),true);
+		}
+		Check(limited.Rounded()==0.5f&&!counters.invalidDomain&&
+			counters.comparisonCount==2u&&counters.branchObligations.size()==2u&&
+			counters.dischargedBranchObligationCount==2u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::LimiterPositive&&
+			counters.branchObligations[1].site==
+				FireProductionRoundoffTrace::BranchSite::MinimumSelection&&
+			counters.branchObligations[1].divergenceBound==0.0,
+			"limiter no-effect proof owns and explicitly discharges its nested selector without an infinite hull");
+	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};

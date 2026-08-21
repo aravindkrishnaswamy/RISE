@@ -119,7 +119,7 @@ def transform(text: str, name: str, suffix: str) -> str:
                              "\t\t\t\tFireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());\n"
                              "\t\t\tif( quadraticNonzero ) {\n"
                              "\t\t\t\tFireProductionRoundoffTrace::CoveredBranchScope "
-                             "coveredBranch(true);\n"
+                             "coveredBranch(true,true);\n"
                              "\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat stationary="
                              "-linear/(2.0f*quadratic);\n"
                              "\t\t\t\tconst bool stationaryPositive="

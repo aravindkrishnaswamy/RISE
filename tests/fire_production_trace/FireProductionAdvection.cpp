@@ -140,7 +140,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(
 				FireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());
 			if( quadraticNonzero ) {
-				FireProductionRoundoffTrace::CoveredBranchScope coveredBranch(true);
+				FireProductionRoundoffTrace::CoveredBranchScope coveredBranch(true,true);
 				const FireProductionRoundoffTrace::TraceFloat stationary=-linear/(2.0f*quadratic);
 				const bool stationaryPositive=FireProductionRoundoffTrace::EvaluateBranch(
 					FireProductionRoundoffTrace::BranchSite::PPMStationaryLower,[&](){ return stationary>0.0f; });
