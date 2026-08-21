@@ -855,6 +855,12 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayout.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
@@ -2155,6 +2161,12 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayout.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h">

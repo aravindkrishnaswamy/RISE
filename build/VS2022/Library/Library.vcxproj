@@ -421,6 +421,8 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterPreview.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\EntityTemplates.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayout.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp" />
@@ -934,6 +936,8 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterPreview.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\EntityTemplates.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayout.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h" />
