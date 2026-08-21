@@ -4753,6 +4753,24 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		int fromCategory, const char* fromName,
 		int toCategory, const char* toName );
 
+	//! doc-88 Phase 3 S21 -- `ConnectionLegality::CheckConnectionByKeyword`
+	//! passthrough for the "add node" palette's required-reference
+	//! candidate picker, which must filter candidates for a node keyword
+	//! the document does not contain YET (the by-name form above needs a
+	//! real target chunk to resolve). Pure descriptor form: no
+	//! `SceneEditController*`, no document, no locking -- safe before any
+	//! scene is even loaded. `candidateIsPerChannelValues` narrows a
+	//! `requireSingle` Scalar-pipe target when the candidate is itself a
+	//! `scalar_painter` authored in the per-channel `values` form (pass 0
+	//! when unknown). Returns the legality verdict directly; `outDiagBuf`
+	//! (optional) receives the diagnostic text, empty iff the return is
+	//! true. Returns false with no diagnostic on a null keyword argument.
+	bool RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+		const char* targetKeyword, const char* paramName,
+		const char* candidateKeyword, int candidateCategory,
+		int candidateIsPerChannelValues,
+		char* outDiagBuf, unsigned int outDiagBufLen );
+
 	//! doc-88 Phase 3 S19 -- the ownership-closure REWIRE verb
 	//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S19; OwnershipClosure.h;
 	//! docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  Re-points
@@ -5133,6 +5151,22 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* outName, unsigned int outNameLen,
 		char* outStatus, unsigned int outStatusLen,
 		char* outMessage, unsigned int outMessageLen );
+
+	//! doc-88 Phase 3 S21 -- the "add node" search palette's keyword list
+	//! (SceneEditController::PaletteKeywords passthrough).  `category` is
+	//! a `RISE::ChunkCategory` ordinal, the SAME convention every other
+	//! graph-canvas ABI call on this surface uses. Pure descriptor read:
+	//! safe at any time, no locking, no scene dependency. 0 for an
+	//! unmodeled category or a null controller.
+	unsigned int RISE_API_SceneEditController_PaletteKeywordCount(
+		SceneEditController* p, int category );
+
+	//! Keyword at `idx` in `category`'s sorted palette list. Returns
+	//! false (buffer untouched) for a null controller, an out-of-range
+	//! idx, or a null/zero-length buffer.
+	bool RISE_API_SceneEditController_PaletteKeyword(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outKeyword, unsigned int outKeywordLen );
 
 	//! Remove the named entity in `category` (see
 	//! SceneEditController::RemoveEntity) — refused with a non-empty

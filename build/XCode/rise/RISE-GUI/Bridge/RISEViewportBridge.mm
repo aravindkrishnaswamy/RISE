@@ -2513,6 +2513,93 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
           originalIndex:(NSInteger)originalIndex];
 }
 
+#pragma mark - Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition (S21)
+
+- (BOOL)checkConnectionWithTargetCategory:(NSInteger)targetCategory
+                                targetName:(NSString *)targetName
+                                     param:(NSString *)param
+                         candidateCategory:(NSInteger)candidateCategory
+                             candidateName:(NSString *)candidateName
+                            outDiagnostic:(NSString **)outDiagnostic {
+    if (outDiagnostic) *outDiagnostic = nil;
+    if (!_controller || !targetName || !param || !candidateName) return NO;
+    char diagBuf[1024] = {0};
+    const BOOL legal = RISE_API_SceneEditController_CheckConnection(
+        _controller,
+        (int)targetCategory, [targetName UTF8String],
+        [param UTF8String],
+        (int)candidateCategory, [candidateName UTF8String],
+        diagBuf, sizeof(diagBuf)) ? YES : NO;
+    if (outDiagnostic && diagBuf[0] != '\0') {
+        *outDiagnostic = [NSString stringWithUTF8String:diagBuf];
+    }
+    return legal;
+}
+
+- (BOOL)wouldCycleFromCategory:(NSInteger)fromCategory
+                       fromName:(NSString *)fromName
+                     toCategory:(NSInteger)toCategory
+                         toName:(NSString *)toName {
+    if (!_controller || !fromName || !toName) return NO;
+    return RISE_API_SceneEditController_WouldCycle(
+        _controller,
+        (int)fromCategory, [fromName UTF8String],
+        (int)toCategory, [toName UTF8String]) ? YES : NO;
+}
+
+- (BOOL)checkConnectionByKeywordTargetKeyword:(NSString *)targetKeyword
+                                         param:(NSString *)param
+                              candidateKeyword:(NSString *)candidateKeyword
+                             candidateCategory:(NSInteger)candidateCategory
+                                outDiagnostic:(NSString **)outDiagnostic {
+    if (outDiagnostic) *outDiagnostic = nil;
+    if (!targetKeyword || !param || !candidateKeyword) return NO;
+    char diagBuf[1024] = {0};
+    const BOOL legal = RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+        [targetKeyword UTF8String], [param UTF8String],
+        [candidateKeyword UTF8String], (int)candidateCategory,
+        0,
+        diagBuf, sizeof(diagBuf)) ? YES : NO;
+    if (outDiagnostic && diagBuf[0] != '\0') {
+        *outDiagnostic = [NSString stringWithUTF8String:diagBuf];
+    }
+    return legal;
+}
+
+- (BOOL)writeGraphNodeLayoutPositionWithName:(NSString *)name
+                                            x:(double)x
+                                            y:(double)y
+                                     outError:(NSString **)outError {
+    if (outError) *outError = nil;
+    if (!_controller || !name) return NO;
+    char errBuf[512] = {0};
+    const BOOL ok = RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+        _controller, [name UTF8String], x, y, errBuf, sizeof(errBuf)) ? YES : NO;
+    if (!ok && outError && errBuf[0] != '\0') {
+        *outError = [NSString stringWithUTF8String:errBuf];
+    }
+    return ok;
+}
+
+#pragma mark - Node-graph canvas: add-node search palette (S21)
+
+- (NSArray<NSString *> *)paletteKeywordsForCategory:(NSInteger)category {
+    if (!_controller) return @[];
+    const unsigned int n =
+        RISE_API_SceneEditController_PaletteKeywordCount(_controller, (int)category);
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        char buf[128] = {0};
+        if (!RISE_API_SceneEditController_PaletteKeyword(
+                _controller, (int)category, i, buf, sizeof(buf))) {
+            continue;
+        }
+        NSString *s = [NSString stringWithUTF8String:buf];
+        if (s.length > 0) [out addObject:s];
+    }
+    return out;
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {

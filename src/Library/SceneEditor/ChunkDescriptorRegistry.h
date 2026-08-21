@@ -24,6 +24,7 @@
 
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Utilities/RString.h"
+#include <vector>
 
 namespace RISE
 {
@@ -32,6 +33,18 @@ namespace RISE
 	//! pointer lives until program exit (the registry is a function-
 	//! static populated once via `std::call_once`).
 	const ChunkDescriptor* DescriptorForKeyword( const String& keyword );
+
+	//! doc-88 Phase 3 S21 -- every registered keyword whose descriptor's
+	//! own `category` equals @a category, sorted lexicographically (a
+	//! stable, deterministic order for a search palette to filter over --
+	//! not declaration/registration order, which is an implementation
+	//! detail of `CreateAllChunkParsers()`). Pure descriptor read: no
+	//! scene state, no locking beyond the same lazily-built, cached
+	//! registry `DescriptorForKeyword` already uses. Backs the S21 node-
+	//! graph canvas's "add node" search palette (Painter/Function/
+	//! Material keywords) -- the open keyword set `CreateChunkNode`
+	//! already accepts, so the palette lists exactly what it can create.
+	std::vector<String> AllKeywordsForCategory( ChunkCategory category );
 }
 
 #endif

@@ -1306,6 +1306,86 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                                                              name:(NSString *)name
     NS_SWIFT_NAME(duplicateGraphNode(category:name:));
 
+#pragma mark - Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition (S21)
+//
+// Mirrors RISE_API_SceneEditController_{CheckConnection,WouldCycle,
+// WriteGraphNodeLayoutPosition}. Pure reads (checkConnection/wouldCycle)
+// are safe at any time; the position write takes no scene-mutation lock
+// (it only touches the layout SIDECAR file, never the CST document) but
+// still refuses while a render owns the scene -- see the C++ method's
+// own doc.
+
+/// Connection-legality pre-check (S17 passthrough) for the canvas's
+/// live drag-to-wire preview: may `candidateName` legally be bound at
+/// `targetName`.`param`? Categories are `RISE::ChunkCategory` ordinals,
+/// the SAME convention `rewireConnection`/`duplicateGraphNode` use, NOT
+/// RISEViewportCategory. `outDiagnostic` (optional) receives the real
+/// parser's own diagnostic text on a refusal (nil on a legal verdict) --
+/// show it as the drag's status line / tooltip. Returns NO on a missing
+/// controller or nil argument, with no diagnostic written.
+- (BOOL)checkConnectionWithTargetCategory:(NSInteger)targetCategory
+                                targetName:(NSString *)targetName
+                                     param:(NSString *)param
+                         candidateCategory:(NSInteger)candidateCategory
+                             candidateName:(NSString *)candidateName
+                            outDiagnostic:(NSString * _Nullable * _Nullable)outDiagnostic
+    NS_SWIFT_NAME(checkConnection(targetCategory:targetName:param:candidateCategory:candidateName:outDiagnostic:));
+
+/// Forward-reachability cycle check (S17 `WouldCycle` passthrough):
+/// would wiring `fromName` to reference `toName` create a cycle?
+/// Categories as above. Returns NO (never a crash) on a missing
+/// controller or either name failing to resolve -- treat an unresolved
+/// name as "cannot commit this wire" via `checkConnection` first, not as
+/// proof of safety.
+- (BOOL)wouldCycleFromCategory:(NSInteger)fromCategory
+                       fromName:(NSString *)fromName
+                     toCategory:(NSInteger)toCategory
+                         toName:(NSString *)toName
+    NS_SWIFT_NAME(wouldCycle(fromCategory:fromName:toCategory:toName:));
+
+/// Pure-descriptor connection-legality check (`ConnectionLegality::
+/// CheckConnectionByKeyword` passthrough): may a chunk of
+/// `candidateKeyword`/`candidateCategory` legally be bound at
+/// `targetKeyword`.`param` -- for the "add node" palette's required-
+/// reference candidate picker, BEFORE the new node exists to address by
+/// name (unlike `checkConnection` above, which needs a real target
+/// chunk in the document). No document, no locking, safe at any time
+/// including before any scene is loaded -- does NOT require `bridge`'s
+/// controller to be non-null. `outDiagnostic` (optional) receives the
+/// diagnostic on a refusal.
+- (BOOL)checkConnectionByKeywordTargetKeyword:(NSString *)targetKeyword
+                                         param:(NSString *)param
+                              candidateKeyword:(NSString *)candidateKeyword
+                             candidateCategory:(NSInteger)candidateCategory
+                                outDiagnostic:(NSString * _Nullable * _Nullable)outDiagnostic
+    NS_SWIFT_NAME(checkConnectionByKeyword(targetKeyword:param:candidateKeyword:candidateCategory:outDiagnostic:));
+
+/// Persist ONE node's canvas position into the layout sidecar -- the
+/// drag-to-reposition commit path (`WriteGraphLayoutPositions` with a
+/// single-element update, the shape a canvas drag commits: call ONCE on
+/// drag release, never mid-drag). `x`/`y` are the node's TOP-LEFT anchor
+/// in the same graph-space units `-painterMaterialGraph`'s
+/// `RISEGraphNode.x`/`.y` report. Returns YES on success, INCLUDING the
+/// two documented no-op cases (position unchanged on disk; scene never
+/// saved yet) -- see the C++ method's own comment. Returns NO on a null
+/// controller / empty name / an actual I/O failure / a render owning
+/// the scene; `outError` (optional) receives a message on NO.
+- (BOOL)writeGraphNodeLayoutPositionWithName:(NSString *)name
+                                            x:(double)x
+                                            y:(double)y
+                                     outError:(NSString * _Nullable * _Nullable)outError
+    NS_SWIFT_NAME(writeGraphNodeLayoutPosition(name:x:y:outError:));
+
+#pragma mark - Node-graph canvas: add-node search palette (S21)
+
+/// Every registered Painter/Function/Material keyword whose descriptor
+/// category is `category` (a `RISE::ChunkCategory` ordinal), sorted
+/// lexicographically -- exactly the open keyword set `createChunkNode`
+/// can create. Pure descriptor read: no scene state, safe at any time.
+/// Empty for an unmodeled category or a null controller.
+- (NSArray<NSString *> *)paletteKeywordsForCategory:(NSInteger)category
+    NS_SWIFT_NAME(paletteKeywords(forCategory:));
+
 #pragma mark - Environment / IBL section
 
 /// Read the current environment binding.  Returns nil only when there is

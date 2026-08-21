@@ -15266,6 +15266,11 @@ SceneEditController::ChunkNodeRequirements( const String& keyword ) const
 	return out;
 }
 
+std::vector<String> SceneEditController::PaletteKeywords( ChunkCategory category ) const
+{
+	return AllKeywordsForCategory( category );
+}
+
 SceneEditController::AgentCommitResult SceneEditController::CreateChunkNode(
 	const String& keyword, const String& baseName,
 	const std::vector<ChunkNodeArg>& args, String* outName )

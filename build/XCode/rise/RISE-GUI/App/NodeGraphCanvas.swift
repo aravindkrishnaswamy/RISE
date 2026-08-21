@@ -12,12 +12,21 @@
 //  pan/zoom-transformed coordinate space so wires track node boxes with
 //  no separate bookkeeping.
 //
-//  SCOPE (S15 is Phase A, read-only — docs/gui/NODE_GRAPH_CANVAS.md §5):
-//  no drag-to-reposition (positions render exactly where the bridge lays
-//  them out; dragging is S21), no topology editing, no chunk creation.
-//  Click selects (wired to the same setSelection the outliner uses);
-//  double-click on an expression-family node asks PropertiesPanel to
-//  reveal its `def[i]` rows (RenderViewModel.focusPainterDefRows).
+//  SCOPE (S15 shipped Phase A, read-only; THIS FILE now also carries S21,
+//  Phase B -- docs/gui/NODE_GRAPH_CANVAS.md §5/§6): drag-to-reposition
+//  (live during the drag, persisted via -writeGraphNodeLayoutPosition on
+//  release only), drag-to-wire (an output-handle drag onto an existing
+//  input port, live-validated via -checkConnection during the drag,
+//  committed via -rewireConnection on drop, with a refusal panel + the
+//  Duplicate-then-retry escape hatch for a SharedTarget refusal), an
+//  add-node search palette (-paletteKeywords / -chunkNodeRequirements /
+//  -createChunkNode), and keyboard delete/duplicate
+//  (-deleteGraphNode / -duplicateGraphNode). Click selects (wired to the
+//  same setSelection the outliner uses); double-click on an
+//  expression-family node asks PropertiesPanel to reveal its `def[i]`
+//  rows (RenderViewModel.focusPainterDefRows). Every mutation goes
+//  through these same S18-S20 bridge verbs -- no direct document write
+//  from this file, ever.
 //
 //  ENTRY POINT: a third left-panel tab ("Graph"), alongside the existing
 //  Agent/Scene file tabs — see ContentView.leftPanelTabStrip/leftPanel
@@ -56,6 +65,8 @@
 //
 
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Snapshot model (Swift-native copy of one -painterMaterialGraph call)
 //
@@ -94,14 +105,54 @@ private struct GraphCanvasNode: Identifiable {
     let category: Int
     let defCount: Int
     /// Top-left anchor in graph space (GraphLayout's rank*columnSpacing /
-    /// rowSlot*rowSpacing grid; both always >= 0 by construction).
-    let position: CGPoint
+    /// rowSlot*rowSpacing grid; both always >= 0 by construction). `var`
+    /// (S21) so `repositioned(to:)` below can hand back a same-identity
+    /// copy with a live/committed drag position -- this is the only
+    /// field S21 ever overrides; nothing else about a node changes
+    /// without a fresh `-painterMaterialGraph` fetch.
+    var position: CGPoint
     let outEdges: [GraphCanvasPort]
     let inEdges: [GraphCanvasPort]
 
     var isRampPainter: Bool { chunkKeyword == "ramp_painter" }
     /// §5 item: "a fan-out badge when a node has >1 in-edges."
     var isShared: Bool { inEdges.count > 1 }
+    /// S21 review round 1 P2-1: zero in-edges on a Painter/Function node --
+    /// nothing on the canvas references it any more. This is the SNAPSHOT-
+    /// derived answer to the same question `RISERewireOutcome.nowUnreferenced`
+    /// reports at the moment of a rewire, deliberately computed here instead
+    /// of by threading that one-shot event through canvas state: a plain
+    /// per-node predicate over the CURRENT snapshot is self-healing (wiring a
+    /// new reference into the node on the next reload just makes this false
+    /// again, no separate "clear the badge" bookkeeping to forget) and reads
+    /// the same for an orphan made by a delete, an undo, or an agent edit as
+    /// for one made by this canvas's own rewire -- `nowUnreferenced` only
+    /// ever covers the last case. See `commitRewire`'s comment for why the
+    /// rewire outcome itself needs no further plumbing than the refresh it
+    /// already triggers. Materials are excluded: a Material is this graph's
+    /// natural ROOT (nothing points a reference chunk AT a material -- it's
+    /// the consumer, not the consumed), so zero in-edges there is the normal
+    /// case, not an orphan.
+    var isOrphaned: Bool { inEdges.isEmpty && category != 2 }
+
+    /// S21 drag-to-reposition: a copy of this node at a new position,
+    /// everything else byte-identical. Used both for the LIVE preview
+    /// (a throwaway copy fed to the wires layer + this node's own box
+    /// while a drag is in flight) and to fold a just-committed drag back
+    /// into `snapshot` without a round-trip re-fetch.
+    func repositioned(to point: CGPoint) -> GraphCanvasNode {
+        var copy = self
+        copy.position = point
+        return copy
+    }
+
+    /// S21: this node's OUTPUT handle anchor -- the drag-to-wire source
+    /// hotspot, right-edge center. The mirror of `GraphWiresLayer`'s own
+    /// wire-start point for an out-edge, so the visible wire and the
+    /// drag handle sit at the exact same pixel.
+    var outputHandlePoint: CGPoint {
+        CGPoint(x: position.x + GraphMetrics.nodeWidth, y: position.y + GraphMetrics.nodeHeight / 2)
+    }
 }
 
 private struct GraphCanvasSnapshot {
@@ -125,6 +176,43 @@ private enum GraphMetrics {
     static let labelZoomThreshold: CGFloat = 0.55
     static let minScale: CGFloat = 0.2
     static let maxScale: CGFloat = 2.5
+
+    // S21 additions -- drag-to-wire geometry.
+    /// Visible radius of the output-handle circle drawn at a node's
+    /// right edge.
+    static let outputHandleRadius: CGFloat = 6
+    /// How close a wire-drag's current point must be to an input-port
+    /// anchor to register as a hover/drop candidate, in SCREEN points --
+    /// i.e. this constant is independent of zoom, even though `point`
+    /// itself (from the `"graphSpace"` coordinate space) is CONTENT-space
+    /// and shrinks on screen as the canvas zooms out (screenDist =
+    /// contentDist * scale). The hit-test site (`findPortTarget`)
+    /// therefore divides this by the current `effectiveScale` to get the
+    /// content-space threshold that maps back to a constant ~16pt target
+    /// on screen. Corrected S21 review round 1 P2-2 -- the previous
+    /// version compared this constant directly against a content-space
+    /// distance with no scale correction, so the effective on-screen hit
+    /// radius actually SHRANK at low zoom (down to ~3pt at
+    /// `minScale` 0.2), the opposite of the old comment's claim that a
+    /// content-space radius is easier, not harder, to hit when zoomed
+    /// out.
+    static let portHitRadius: CGFloat = 16
+}
+
+/// S21: the LEFT-edge input-port anchors for a node with `outEdgeCount`
+/// reference slots, spread evenly top-to-bottom in declaration order --
+/// the SAME layout `GraphWiresLayer` draws wire destinations at (moved
+/// here, out of that view, so drag-to-wire hit-testing in
+/// `NodeGraphCanvas` and the visible wire endpoints can never drift
+/// apart; both call this one function). `nodePosition` is the node's
+/// CURRENT (possibly live-drag-overridden) top-left.
+private func graphInputPortAnchors(nodePosition: CGPoint, outEdgeCount: Int) -> [CGFloat] {
+    let count = max(outEdgeCount, 1)
+    let top = nodePosition.y + GraphMetrics.headerHeight + 6
+    let bottom = nodePosition.y + GraphMetrics.nodeHeight - 6
+    guard count > 1 else { return [nodePosition.y + GraphMetrics.nodeHeight / 2] }
+    let step = (bottom - top) / CGFloat(count - 1)
+    return (0..<count).map { top + CGFloat($0) * step }
 }
 
 /// Category-tinted header color -- the only per-node color-coding this
@@ -154,6 +242,125 @@ private func graphCategoryLabel(_ category: Int) -> String {
     }
 }
 
+// MARK: - S21 drag-to-wire model
+
+/// One existing input-port slot a wire-drag can be dropped onto:
+/// `targetHandle`.`targetName`.`param`[occurrence] -- exactly the
+/// `(targetCategory, targetName, param, occurrence)` addressing
+/// `-rewireConnection` takes. Resolved by hit-testing every node's
+/// `graphInputPortAnchors` against the drag's current point.
+private struct WirePortTarget: Equatable {
+    let nodeHandle: UInt64
+    let nodeName: String
+    let nodeCategory: Int
+    let paramName: String
+    let occurrence: Int
+    let anchor: CGPoint
+
+    static func == (l: WirePortTarget, r: WirePortTarget) -> Bool {
+        l.nodeHandle == r.nodeHandle && l.paramName == r.paramName && l.occurrence == r.occurrence
+    }
+}
+
+/// Live state for an in-flight output-handle drag. `verdictLegal == nil`
+/// means "no candidate hovered yet, or the legality read hasn't landed" --
+/// drawn as a neutral wire; `true`/`false` drive the green/red preview
+/// (Theme.success / Theme.error) plus the status line.
+private struct WireDragState {
+    let sourceHandle: UInt64
+    let sourceName: String
+    let sourceCategory: Int
+    var currentPoint: CGPoint
+    var target: WirePortTarget? = nil
+    var verdictLegal: Bool? = nil
+    var verdictMessage: String = ""
+}
+
+/// The post-drop refusal the canvas needs to explain AND, for a
+/// SharedTarget refusal, unblock via Duplicate-then-retry (the S19/S20
+/// escape hatch, made interactive here per S21's brief).
+private struct WireRefusalState: Identifiable {
+    let id = UUID()
+    let outcome: RISERewireOutcome
+    let target: WirePortTarget
+    let sourceHandle: UInt64
+    let sourceName: String
+    let sourceCategory: Int
+}
+
+/// S21: the modal-ish center panel a rewire refusal shows -- the
+/// structured `RISERewireOutcome` explained in prose, with the
+/// Duplicate-then-retry escape hatch surfaced as an actual button only
+/// when the refusal is the one case it unblocks (`closure == .sharedTarget`,
+/// S19/S20's own rule -- see `RISERewireOutcome.closure`'s header doc).
+private struct WireRefusalPanel: View {
+    let state: WireRefusalState
+    let onDismiss: () -> Void
+    let onDuplicateAndRetry: () -> Void
+
+    private var outcome: RISERewireOutcome { state.outcome }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(Theme.warn)
+                Text("Can't wire \u{201c}\(state.sourceName)\u{201d} in")
+                    .font(Theme.sans(12, .semibold))
+                    .foregroundColor(Theme.textPrimary)
+            }
+            Text("Target: \(state.target.nodeName).\(state.target.paramName)")
+                .font(Theme.mono(9.5))
+                .foregroundColor(Theme.textFaint)
+            Text(outcome.message.isEmpty ? "The wire was refused." : outcome.message)
+                .font(Theme.mono(10.5))
+                .foregroundColor(Theme.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !outcome.sharedChunks.isEmpty {
+                refusalList(title: "Not solely owned:", items: outcome.sharedChunks)
+            }
+            if !outcome.outOfClosureReferrers.isEmpty {
+                refusalList(title: "Referenced from outside:", items: outcome.outOfClosureReferrers)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onDismiss)
+                    .buttonStyle(.plain)
+                    .foregroundColor(Theme.textDim)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                if outcome.closure == .sharedTarget {
+                    Button {
+                        onDuplicateAndRetry()
+                    } label: {
+                        Text("Duplicate \u{201c}\(state.sourceName)\u{201d} & Retry")
+                            .foregroundColor(Theme.textOnAccent)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(Theme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusMedium))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 360)
+        .background(Theme.bgCard)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusMedium))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radiusMedium).stroke(Theme.borderLight, lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
+    }
+
+    private func refusalList(title: String, items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(Theme.mono(9, .semibold)).foregroundColor(Theme.textFaint)
+            ForEach(items, id: \.self) { item in
+                Text("\u{2022} \(item)").font(Theme.mono(9.5)).foregroundColor(Theme.textDim)
+            }
+        }
+    }
+}
+
 // MARK: - Root view
 
 struct NodeGraphCanvas: View {
@@ -177,6 +384,31 @@ struct NodeGraphCanvas: View {
     @State private var selectedHandle: UInt64? = nil
     @State private var hoveredHandle: UInt64? = nil
 
+    // -------- S21: drag-to-reposition --------
+    /// The single node currently mid-drag, at its LIVE (uncommitted)
+    /// position. nil whenever no reposition drag is in flight. Kept as
+    /// ONE optional override (not a dictionary) because only one node
+    /// can be dragged at a time (multi-select drag is explicitly out of
+    /// scope this slice -- see the file header).
+    @State private var liveDragOverride: (handle: UInt64, point: CGPoint)? = nil
+
+    // -------- S21: drag-to-wire --------
+    @State private var wireDrag: WireDragState? = nil
+    @State private var wireRefusal: WireRefusalState? = nil
+    /// Debounces the legality re-check so a fast drag across several
+    /// ports doesn't fire a `-checkConnection` C++ call every pixel --
+    /// only when the hovered PORT actually changes.
+    @State private var lastCheckedTarget: WirePortTarget? = nil
+
+    // -------- S21: add-node palette --------
+    @State private var showPalette = false
+    /// Where a just-created node should be positioned -- recomputed to
+    /// the current viewport CENTER (in content-space) every time the
+    /// palette opens, so "near drop point" tracks wherever the user is
+    /// currently looking rather than a fixed canvas-space default.
+    @State private var paletteDropPoint = CGPoint(x: 60, y: 60)
+    @State private var lastViewportSize: CGSize = .zero
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -187,13 +419,18 @@ struct NodeGraphCanvas: View {
                     canvasContent
                         .scaleEffect(effectiveScale, anchor: .topLeading)
                         .offset(effectiveOffset)
+                    wireStatusLine
                 }
                 .clipped()
                 .contentShape(Rectangle())
                 .gesture(panGesture)
                 .simultaneousGesture(zoomGesture)
-                .onAppear { centerIfNeeded(in: geo.size) }
+                .onAppear {
+                    centerIfNeeded(in: geo.size)
+                    lastViewportSize = geo.size
+                }
                 .onChange(of: snapshot.generation) { _, _ in centerIfNeeded(in: geo.size) }
+                .onChange(of: geo.size) { _, newSize in lastViewportSize = newSize }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 0))
@@ -201,6 +438,81 @@ struct NodeGraphCanvas: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { scheduleReload(debounced: false) }
         .onChange(of: refreshTrigger) { _, _ in scheduleReload(debounced: true) }
+        .background(keyboardShortcuts)
+        .sheet(isPresented: $showPalette) {
+            NodeGraphAddNodeSheet(
+                bridge: bridge,
+                existingNodes: paletteCandidateNodes,
+                onCreated: { name, _, category in didCreateNode(named: name, category: category) },
+                onDismiss: { showPalette = false }
+            )
+        }
+        .overlay(alignment: .center) {
+            if let refusal = wireRefusal {
+                WireRefusalPanel(
+                    state: refusal,
+                    onDismiss: { wireRefusal = nil },
+                    onDuplicateAndRetry: { retryWithDuplicate(refusal) }
+                )
+            }
+        }
+    }
+
+    /// Hidden buttons carrying the app's ONLY keyboard-shortcut idiom for
+    /// "act on the current selection" (no `.onDeleteCommand`/NSEvent
+    /// monitor precedent exists elsewhere in this app -- OutlinerView's
+    /// delete/duplicate are context-menu-only; see RenderViewModel
+    /// .removeEntity/.duplicateSelectedOrNamed). `.opacity(0)` rather
+    /// than `EmptyView` because a shortcut needs a real controlValue to
+    /// bind to; `.disabled` when nothing is selected keeps the shortcut
+    /// inert rather than silently no-op'ing on a nil.
+    private var keyboardShortcuts: some View {
+        Group {
+            Button("Delete Node") { deleteSelected() }
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(selectedHandle == nil)
+            Button("Delete Node (forward)") { deleteSelected() }
+                .keyboardShortcut(.deleteForward, modifiers: [])
+                .disabled(selectedHandle == nil)
+            Button("Duplicate Node") { duplicateSelected() }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(selectedHandle == nil)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+    }
+
+    /// The drag-to-wire live status line -- S17's diagnostic surfaced as
+    /// text, not just the preview wire's color, so a colorblind user (or
+    /// anyone at a glance) can read WHY a drop would be refused before
+    /// releasing.
+    @ViewBuilder
+    private var wireStatusLine: some View {
+        if let wd = wireDrag {
+            VStack {
+                Spacer()
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(wd.verdictLegal == false ? Theme.errorStrong : (wd.verdictLegal == true ? Theme.success : Theme.textFaint))
+                        .frame(width: 7, height: 7)
+                    Text(wireStatusText(wd))
+                        .font(Theme.mono(10.5))
+                        .foregroundColor(Theme.textPrimary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Theme.bgCard.opacity(0.95))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusMedium))
+                .padding(.bottom, 10)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func wireStatusText(_ wd: WireDragState) -> String {
+        guard let target = wd.target else { return "Drag onto an input port to wire \"\(wd.sourceName)\" in" }
+        if wd.verdictLegal == false { return "\(target.nodeName).\(target.paramName): \(wd.verdictMessage)" }
+        return "Wire into \(target.nodeName).\(target.paramName)"
     }
 
     // MARK: - Header
@@ -212,6 +524,14 @@ struct NodeGraphCanvas: View {
                 .font(Theme.mono(10))
                 .foregroundColor(Theme.textDim)
             Spacer(minLength: 4)
+            Button {
+                openPalette(atViewportCenterOf: lastViewportSize)
+            } label: {
+                Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(Theme.textDim)
+            .help("Add node")
             Button {
                 scheduleReload(debounced: false, force: true)
             } label: {
@@ -238,12 +558,30 @@ struct NodeGraphCanvas: View {
         return CGSize(width: maxX + GraphMetrics.padding, height: maxY + GraphMetrics.padding)
     }
 
+    /// `snapshot.nodes` with the in-flight drag's node (if any) swapped
+    /// for its LIVE position -- the one array both the wires layer and
+    /// the node boxes render from, so a dragged node's own box AND every
+    /// wire touching it move in lockstep with no separate bookkeeping
+    /// (the same "one coordinate space, one source of positions"
+    /// discipline the file header already commits to for S15's
+    /// read-only wires).
+    private var displayedNodes: [GraphCanvasNode] {
+        guard let o = liveDragOverride else { return snapshot.nodes }
+        return snapshot.nodes.map { $0.handle == o.handle ? $0.repositioned(to: o.point) : $0 }
+    }
+
     private var canvasContent: some View {
         ZStack(alignment: .topLeading) {
-            GraphWiresLayer(nodes: snapshot.nodes, showLabels: scale >= GraphMetrics.labelZoomThreshold)
+            GraphWiresLayer(nodes: displayedNodes, showLabels: scale >= GraphMetrics.labelZoomThreshold,
+                             wireDraftFrom: wireDrag.flatMap { wd in
+                                 displayedNodes.first(where: { $0.handle == wd.sourceHandle })?.outputHandlePoint
+                             },
+                             wireDraftTo: wireDrag?.currentPoint,
+                             wireDraftLegal: wireDrag?.verdictLegal,
+                             hoveredPort: wireDrag?.target?.anchor)
                 .frame(width: contentSize.width, height: contentSize.height)
 
-            ForEach(snapshot.nodes) { node in
+            ForEach(displayedNodes) { node in
                 GraphNodeBoxView(
                     node: node,
                     bridge: bridge,
@@ -251,13 +589,43 @@ struct NodeGraphCanvas: View {
                     isHovered: hoveredHandle == node.handle,
                     onSelect: { selectNode(node) },
                     onOpenDefs: { openDefs(node) },
-                    onHover: { hovering in hoveredHandle = hovering ? node.handle : (hoveredHandle == node.handle ? nil : hoveredHandle) }
+                    onHover: { hovering in hoveredHandle = hovering ? node.handle : (hoveredHandle == node.handle ? nil : hoveredHandle) },
+                    onDragChanged: { pt in handleNodeDragChanged(node, to: pt) },
+                    onDragEnded: { pt in handleNodeDragEnded(node, to: pt) }
                 )
                 .position(x: node.position.x + GraphMetrics.nodeWidth / 2,
                           y: node.position.y + GraphMetrics.nodeHeight / 2)
             }
+
+            // S21 output-handle circles -- SIBLINGS of the node boxes
+            // (not children of GraphNodeBoxView) so a wire-drag's own
+            // DragGesture never contends with the node body's
+            // reposition-drag/tap gesture stack for the same touch.
+            ForEach(displayedNodes) { node in
+                // A 24x24 `Color.clear` establishes a generous hit target
+                // (ZStack centers its children by default) independent of
+                // the smaller VISIBLE circle drawn on top -- simpler and
+                // less anchor-fragile than a `.contentShape` with an
+                // explicit `Shape.size(...)` override.
+                ZStack {
+                    Color.clear.frame(width: 24, height: 24)
+                    Circle()
+                        .fill(graphCategoryTint(node.category))
+                        .overlay(Circle().stroke(Theme.bgWell, lineWidth: 1.5))
+                        .frame(width: GraphMetrics.outputHandleRadius * 2, height: GraphMetrics.outputHandleRadius * 2)
+                }
+                .contentShape(Rectangle())
+                .position(node.outputHandlePoint)
+                .gesture(
+                    DragGesture(minimumDistance: 2, coordinateSpace: .named("graphSpace"))
+                        .onChanged { value in handleWireDragChanged(source: node, point: value.location) }
+                        .onEnded { value in handleWireDragEnded(source: node, point: value.location) }
+                )
+                .help("Drag to wire \"\(node.name)\" into another node's reference")
+            }
         }
         .frame(width: contentSize.width, height: contentSize.height, alignment: .topLeading)
+        .coordinateSpace(name: "graphSpace")
     }
 
     // MARK: - Pan / zoom
@@ -270,9 +638,12 @@ struct NodeGraphCanvas: View {
         CGSize(width: offset.width + dragDelta.width, height: offset.height + dragDelta.height)
     }
 
-    /// Drag on empty canvas space pans. Node boxes install their own tap
-    /// gestures but do not consume drags, so a drag that starts on a node
-    /// still pans the canvas (no drag-to-reposition this slice — §5).
+    /// Drag on EMPTY canvas space pans. A drag that starts ON a node is
+    /// consumed by that node's own reposition-drag gesture (S21) before
+    /// it ever reaches this one -- SwiftUI resolves a touch against the
+    /// most specific (deepest) view with a matching `.gesture()` first,
+    /// and `GraphNodeBoxView`'s drag gesture sits strictly inside this
+    /// container's view tree, so pan never fires for a node-body drag.
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .updating($dragDelta) { value, state, _ in state = value.translation }
@@ -381,6 +752,298 @@ struct NodeGraphCanvas: View {
         }
         snapshot = GraphCanvasSnapshot(nodes: nodes, generation: g.generation)
     }
+
+    // MARK: - S21: drag-to-reposition
+
+    private func handleNodeDragChanged(_ node: GraphCanvasNode, to point: CGPoint) {
+        liveDragOverride = (node.handle, point)
+    }
+
+    /// Commit path: ONE `-writeGraphNodeLayoutPosition` call, on release
+    /// only (the file header's "no mid-drag writes" contract). On
+    /// success the moved node's position is folded straight into
+    /// `snapshot` (no re-fetch -- the sidecar write does not advance
+    /// `sceneEpoch`, by design, so nothing would trigger one anyway).
+    /// On failure the override simply clears, snapping the node back to
+    /// its last-known-good position with a status alert explaining why.
+    private func handleNodeDragEnded(_ node: GraphCanvasNode, to point: CGPoint) {
+        liveDragOverride = nil
+        guard let bridge else { return }
+        var outError: NSString? = nil
+        let ok = bridge.writeGraphNodeLayoutPosition(name: node.name, x: Double(point.x), y: Double(point.y), outError: &outError)
+        if ok {
+            if let idx = snapshot.nodes.firstIndex(where: { $0.handle == node.handle }) {
+                snapshot.nodes[idx] = snapshot.nodes[idx].repositioned(to: point)
+            }
+        } else {
+            // A GENUINE failure (the write itself failed -- I/O, an
+            // unwritable sidecar path), not a legality/ownership refusal --
+            // see `presentGraphFailureAlert`'s comment for the distinction
+            // this file now draws.
+            presentGraphFailureAlert(title: "Couldn't save position", message: (outError as String?) ?? "The position was not saved.")
+        }
+    }
+
+    // MARK: - S21: drag-to-wire
+
+    /// Hit-test every OTHER node's input-port anchors against `point`
+    /// (content-space, already coordinate-space-resolved by the caller's
+    /// `DragGesture(coordinateSpace: .named("graphSpace"))`), returning
+    /// the nearest one within `GraphMetrics.portHitRadius`. Self-wiring
+    /// is not specially excluded here -- a self-referencing drop is
+    /// simply refused downstream by the real cycle check
+    /// (`ConnectionLegality::WouldCycle` treats `from == to` as a
+    /// cycle), so there is exactly one place that rule lives.
+    private func findPortTarget(near point: CGPoint) -> WirePortTarget? {
+        var best: (WirePortTarget, CGFloat)? = nil
+        // Content-space threshold that maps back to a constant ~16pt
+        // ON-SCREEN radius regardless of zoom -- see `portHitRadius`'s own
+        // comment. `effectiveScale` is clamped to [minScale, maxScale] by
+        // construction, so this never divides by zero.
+        let hitRadius = GraphMetrics.portHitRadius / effectiveScale
+        for node in displayedNodes {
+            let anchors = graphInputPortAnchors(nodePosition: node.position, outEdgeCount: node.outEdges.count)
+            for (idx, y) in anchors.enumerated() where idx < node.outEdges.count {
+                let anchor = CGPoint(x: node.position.x, y: y)
+                let dist = hypot(anchor.x - point.x, anchor.y - point.y)
+                guard dist <= hitRadius else { continue }
+                if best == nil || dist < best!.1 {
+                    let port = node.outEdges[idx]
+                    best = (WirePortTarget(nodeHandle: node.handle, nodeName: node.name, nodeCategory: node.category,
+                                            paramName: port.paramName, occurrence: port.occurrence, anchor: anchor), dist)
+                }
+            }
+        }
+        return best?.0
+    }
+
+    private func handleWireDragChanged(source: GraphCanvasNode, point: CGPoint) {
+        var state = wireDrag ?? WireDragState(sourceHandle: source.handle, sourceName: source.name, sourceCategory: source.category, currentPoint: point)
+        state.currentPoint = point
+        let target = findPortTarget(near: point)
+        if target != state.target {
+            state.target = target
+            state.verdictLegal = nil
+            state.verdictMessage = ""
+        }
+        wireDrag = state
+        guard let target, target != lastCheckedTarget else { return }
+        lastCheckedTarget = target
+        updateWireVerdict(source: source, target: target)
+    }
+
+    /// S17 live pre-check -- `-checkConnection` is a fast, lock-free
+    /// descriptor+document read (no commit mutex), so calling it
+    /// synchronously per hovered-port-change (NOT per pixel -- see the
+    /// `lastCheckedTarget` debounce above) is cheap enough for a drag
+    /// gesture's cadence.
+    private func updateWireVerdict(source: GraphCanvasNode, target: WirePortTarget) {
+        guard let bridge else { return }
+        var outDiag: NSString? = nil
+        let legal = bridge.checkConnection(
+            targetCategory: target.nodeCategory, targetName: target.nodeName, param: target.paramName,
+            candidateCategory: source.category, candidateName: source.name, outDiagnostic: &outDiag)
+        // The drag may have moved to a different (or no) target while this
+        // call was in flight -- discard a stale answer rather than paint
+        // a verdict for a port the cursor already left.
+        guard wireDrag?.target == target else { return }
+        wireDrag?.verdictLegal = legal
+        wireDrag?.verdictMessage = legal ? "" : ((outDiag as String?) ?? "Not a legal connection")
+    }
+
+    private func handleWireDragEnded(source: GraphCanvasNode, point: CGPoint) {
+        let target = wireDrag?.target
+        wireDrag = nil
+        lastCheckedTarget = nil
+        guard let bridge, let target else { return }
+        guard viewModel.isSceneEditableForAgents else { return }
+        commitRewire(sourceHandle: source.handle, sourceName: source.name, sourceCategory: source.category, target: target, bridge: bridge)
+    }
+
+    private func commitRewire(sourceHandle: UInt64, sourceName: String, sourceCategory: Int, target: WirePortTarget, bridge: RISEViewportBridge) {
+        guard let outcome = bridge.rewireConnection(
+            targetCategory: target.nodeCategory, targetName: target.nodeName, param: target.paramName,
+            occurrence: target.occurrence, newRefCategory: sourceCategory, newRefName: sourceName) else { return }
+        if outcome.applied {
+            // P2-1 (S21 review round 1): `outcome.nowUnreferenced` names
+            // exactly what just got orphaned, but this success branch does
+            // not read it -- and does not need to. `GraphCanvasNode.isOrphaned`
+            // (see its comment) recomputes the SAME fact from the snapshot on
+            // every fetch, so all this event needs to do is trigger the one
+            // it already triggers below: `scheduleReload(force: true)` pulls
+            // a fresh snapshot, and the orphan badge falls out of that for
+            // free. Consuming `nowUnreferenced` here would mean carrying a
+            // second, event-sourced "which nodes are orphaned" state that
+            // could drift from the snapshot (e.g. after a later undo) --
+            // strictly worse than the self-healing snapshot read.
+            _ = bridge.setSelection(target.nodeCategory == 2 ? .material : .painter, name: target.nodeName)
+            selectedHandle = target.nodeHandle
+            refreshTrigger &+= 1
+            scheduleReload(debounced: false, force: true)
+        } else {
+            wireRefusal = WireRefusalState(outcome: outcome, target: target, sourceHandle: sourceHandle, sourceName: sourceName, sourceCategory: sourceCategory)
+        }
+    }
+
+    /// The SharedTarget escape hatch (S19/S20), made interactive: fork
+    /// the dragged SOURCE node via `-duplicateGraphNode`, then retry the
+    /// exact same rewire against the fork's deduped name -- the fork
+    /// solely owns whatever the original shared, so the retry lands
+    /// Clean.
+    private func retryWithDuplicate(_ refusal: WireRefusalState) {
+        guard let bridge else { return }
+        let dup = bridge.duplicateGraphNode(category: refusal.sourceCategory, name: refusal.sourceName)
+        guard let dup, dup.applied, !dup.newName.isEmpty else {
+            presentGraphAlert(title: "Couldn't duplicate \"\(refusal.sourceName)\"",
+                               message: dup?.message.isEmpty == false ? dup!.message : "The duplicate was refused.")
+            return
+        }
+        wireRefusal = nil
+        refreshTrigger &+= 1
+        commitRewire(sourceHandle: refusal.sourceHandle, sourceName: dup.newName, sourceCategory: refusal.sourceCategory, target: refusal.target, bridge: bridge)
+    }
+
+    // MARK: - S21: delete / duplicate
+
+    private func selectedNode() -> GraphCanvasNode? {
+        guard let h = selectedHandle else { return nil }
+        return snapshot.nodes.first(where: { $0.handle == h })
+    }
+
+    /// The confirm dialog below is what offers cascade explicitly, per
+    /// the file header's "cascade ONLY behind an explicit confirm" rule
+    /// -- this function takes no cascade flag of its own; the alert's
+    /// button choice is the sole source of truth.
+    private func deleteSelected() {
+        guard let node = selectedNode(), let bridge, viewModel.isSceneEditableForAgents else { return }
+
+        let confirm = NSAlert()
+        confirm.messageText = "Delete \"\(node.name)\"?"
+        confirm.informativeText = "Only this node is removed. Any painter it solely owned that becomes unreferenced is left in place as an orphan, unless you choose Delete + Remove Unused Below. This can be undone with Edit > Undo."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Delete")
+        confirm.addButton(withTitle: "Delete + Remove Unused Below")
+        confirm.addButton(withTitle: "Cancel")
+        let choice = confirm.runModal()
+        guard choice == .alertFirstButtonReturn || choice == .alertSecondButtonReturn else { return }
+        let doCascade = (choice == .alertSecondButtonReturn)
+
+        // Re-check the edit gate after the modal returns -- the confirm
+        // blocks the main thread, and a render can start/finish while
+        // it's up (same re-check RenderViewModel.removeEntity performs).
+        guard viewModel.isSceneEditableForAgents else { return }
+
+        guard let outcome = bridge.deleteGraphNode(category: node.category, name: node.name, cascade: doCascade) else { return }
+        if outcome.applied {
+            if selectedHandle == node.handle { selectedHandle = nil }
+            refreshTrigger &+= 1
+            scheduleReload(debounced: false, force: true)
+            // "the RESULT shows what was removed -- honest, no fake
+            // preview" (file header): only worth a follow-up when a
+            // cascade actually swept more than the named target.
+            if outcome.removed.count > 1 {
+                presentGraphAlert(title: "Removed \(outcome.removed.count) chunks",
+                                   message: outcome.removed.joined(separator: ", "))
+            }
+        } else {
+            presentGraphAlert(title: "Couldn't delete \"\(node.name)\"", message: outcome.message.isEmpty ? "The delete was refused." : outcome.message)
+        }
+    }
+
+    private func duplicateSelected() {
+        guard let node = selectedNode(), let bridge, viewModel.isSceneEditableForAgents else { return }
+        guard let outcome = bridge.duplicateGraphNode(category: node.category, name: node.name) else { return }
+        if outcome.applied {
+            refreshTrigger &+= 1
+            scheduleReload(debounced: false, force: true)
+            // Select the fork once the next fetch lands it -- the
+            // fork's handle doesn't exist yet in `snapshot`, so this
+            // just primes the name-based bridge selection immediately
+            // (the outliner/panel reflect it right away even before the
+            // graph refetch resolves a handle for it).
+            _ = bridge.setSelection(node.category == 2 ? .material : .painter, name: outcome.newName)
+        } else {
+            presentGraphAlert(title: "Couldn't duplicate \"\(node.name)\"", message: outcome.message.isEmpty ? "The duplicate was refused." : outcome.message)
+        }
+    }
+
+    /// A REFUSAL -- the edit was legal to attempt but the engine declined
+    /// it (ownership, reference-safety, legality). Matches RenderViewModel's
+    /// own `presentEntityEditAlert` house style (`.warning`, no explicit
+    /// button -- NSAlert's implicit single button already reads "OK").
+    private func presentGraphAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    /// P3 (S21 review round 1): a GENUINE failure -- something the canvas
+    /// expected to just work (a sidecar write) came back with an
+    /// unexpected error, as opposed to `presentGraphAlert`'s ordinary
+    /// business-rule refusal above. Matches RenderViewModel's OWN
+    /// distinction for this same split: its I/O-failure alerts
+    /// ("Failed to save file", `saveEditorFile`/`saveAndReloadScene`/
+    /// `showSaveAlert`) use `.critical`, while its refusal alerts
+    /// (`presentEntityEditAlert`, "Couldn't delete...") use `.warning` --
+    /// this file's `presentGraphAlert` was using `.warning` for BOTH
+    /// cases before this fix. `addButton` is explicit rather than relying
+    /// on NSAlert's implicit single button, matching `showSaveAlert`'s own
+    /// explicit-OK style for this alert class.
+    private func presentGraphFailureAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    // MARK: - S21: add-node palette
+
+    /// The candidate pool the palette's required-reference picker
+    /// filters -- every node currently on the canvas, Painter/Function
+    /// candidates only (a Material can never legally fill a painter
+    /// reference slot; the picker still runs each one through
+    /// `-checkConnectionByKeyword` for the SPECIFIC param, this is just
+    /// the pre-filter that keeps that O(n) sweep from also querying
+    /// obviously-wrong candidates).
+    private var paletteCandidateNodes: [PaletteCandidateNode] {
+        snapshot.nodes.filter { $0.category != 2 }.map {
+            PaletteCandidateNode(name: $0.name, keyword: $0.chunkKeyword, category: $0.category)
+        }
+    }
+
+    private func openPalette(atViewportCenterOf size: CGSize) {
+        if size.width > 1 && size.height > 1 {
+            // Convert the viewport's on-screen center into content-space
+            // (invert the pan/zoom transform `canvasContent` renders
+            // under) so a newly created node lands where the user is
+            // actually looking, not at a fixed canvas-space point that
+            // could be far outside the current scroll position.
+            let screenCenter = CGPoint(x: size.width / 2, y: size.height / 2)
+            paletteDropPoint = CGPoint(
+                x: (screenCenter.x - offset.width) / max(scale, 0.0001) - GraphMetrics.nodeWidth / 2,
+                y: (screenCenter.y - offset.height) / max(scale, 0.0001) - GraphMetrics.nodeHeight / 2)
+        }
+        showPalette = true
+    }
+
+    /// Called after `NodeGraphAddNodeSheet` reports a successful create.
+    /// The sheet already committed via `-createChunkNode`; this only
+    /// (a) persists the drop-point position (create-time auto-layout
+    /// would otherwise place it by rank, ignoring where the user asked
+    /// for it) and (b) selects + refreshes.
+    private func didCreateNode(named name: String, category: Int) {
+        showPalette = false
+        guard let bridge else { return }
+        var outError: NSString? = nil
+        _ = bridge.writeGraphNodeLayoutPosition(name: name, x: Double(paletteDropPoint.x), y: Double(paletteDropPoint.y), outError: &outError)
+        _ = bridge.setSelection(category == 2 ? .material : .painter, name: name)
+        refreshTrigger &+= 1
+        scheduleReload(debounced: false, force: true)
+    }
 }
 
 private extension Comparable {
@@ -399,6 +1062,10 @@ private struct GraphNodeBoxView: View {
     let onSelect: () -> Void
     let onOpenDefs: () -> Void
     let onHover: (Bool) -> Void
+    /// S21 drag-to-reposition: live position (content-space, absolute --
+    /// NOT a delta) on every gesture update, and once more on release.
+    let onDragChanged: (CGPoint) -> Void
+    let onDragEnded: (CGPoint) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -414,18 +1081,45 @@ private struct GraphNodeBoxView: View {
         )
         .shadow(color: .black.opacity(isHovered ? 0.28 : 0.14), radius: isHovered ? 7 : 3, y: 2)
         .contentShape(Rectangle())
-        // `exclusively(before:)` is the documented SwiftUI combinator for
-        // "try the double-tap first; if it doesn't complete within the
-        // system double-click interval, fall through to the single-tap
-        // handler" — the correct way to layer two `TapGesture`s of
-        // different counts on ONE view (plain sequential
-        // `.onTapGesture(count:)` modifiers do not reliably disambiguate
-        // against each other the way count-vs-drag priority does
-        // elsewhere in this app, e.g. ExposureSliderRow's double-tap-to-
-        // reset over the Slider's own drag gesture).
+        // S21: the reposition-drag gesture is tried FIRST via
+        // `exclusively(before:)` -- `DragGesture(minimumDistance: 3)`
+        // never recognizes a plain click (no movement past 3pt), so a
+        // tap/double-tap with no meaningful drag falls straight through
+        // to the tap combo below exactly as before; a real drag is
+        // consumed here and the tap combo never fires for it. Attaching
+        // this to a NAMED coordinate space (`"graphSpace"`, declared by
+        // the canvas content container this box is a child of) is what
+        // makes `value.location`/`.startLocation` report true
+        // content-space coordinates regardless of the ancestor
+        // `.scaleEffect`/`.offset` the whole canvas pans/zooms under --
+        // the standard, ambiguity-free fix for "drag inside a zoomed
+        // container" (a plain `.translation` would need manual
+        // `/ scale` correction and silently drift at non-1.0 zoom).
         .gesture(
-            TapGesture(count: 2).onEnded { onOpenDefs() }
-                .exclusively(before: TapGesture(count: 1).onEnded { onSelect() })
+            DragGesture(minimumDistance: 3, coordinateSpace: .named("graphSpace"))
+                .onChanged { value in
+                    let delta = CGSize(width: value.location.x - value.startLocation.x,
+                                        height: value.location.y - value.startLocation.y)
+                    onDragChanged(CGPoint(x: node.position.x + delta.width, y: node.position.y + delta.height))
+                }
+                .onEnded { value in
+                    let delta = CGSize(width: value.location.x - value.startLocation.x,
+                                        height: value.location.y - value.startLocation.y)
+                    onDragEnded(CGPoint(x: node.position.x + delta.width, y: node.position.y + delta.height))
+                }
+                .exclusively(before:
+                    // `exclusively(before:)` is the documented SwiftUI combinator for
+                    // "try the double-tap first; if it doesn't complete within the
+                    // system double-click interval, fall through to the single-tap
+                    // handler" — the correct way to layer two `TapGesture`s of
+                    // different counts on ONE view (plain sequential
+                    // `.onTapGesture(count:)` modifiers do not reliably disambiguate
+                    // against each other the way count-vs-drag priority does
+                    // elsewhere in this app, e.g. ExposureSliderRow's double-tap-to-
+                    // reset over the Slider's own drag gesture).
+                    TapGesture(count: 2).onEnded { onOpenDefs() }
+                        .exclusively(before: TapGesture(count: 1).onEnded { onSelect() })
+                )
         )
         .onHover(perform: onHover)
         .help(node.name)
@@ -454,8 +1148,13 @@ private struct GraphNodeBoxView: View {
                     .truncationMode(.tail)
             }
             Spacer(minLength: 2)
+            // Mutually exclusive by construction (isShared needs > 1
+            // in-edges, isOrphaned needs 0), so there is never a layout
+            // conflict over which badge shows.
             if node.isShared {
                 fanOutBadge
+            } else if node.isOrphaned {
+                orphanBadge
             }
         }
         .padding(.horizontal, 8)
@@ -477,6 +1176,26 @@ private struct GraphNodeBoxView: View {
         .background(Color.black.opacity(0.28))
         .clipShape(Capsule())
         .help("Referenced by \(node.inEdges.count) other nodes -- shared, not copied")
+    }
+
+    /// S21 review round 1 P2-1: the same fan-out-badge idiom, for the
+    /// opposite case -- nothing on the canvas references this node any
+    /// more (a rewire, delete, or undo stepped away from it and left it
+    /// in the document; NODE_GRAPH_CANVAS.md sect. 5's "this slice does
+    /// NOT auto-delete newly-unreferenced chunks" scoping). Recomputed
+    /// from `node.isOrphaned` every snapshot -- see that property's own
+    /// comment for why this needs no event plumbing.
+    private var orphanBadge: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "link.badge.minus").font(.system(size: 7, weight: .bold))
+            Text("orphan").font(Theme.mono(8, .semibold))
+        }
+        .foregroundColor(Theme.warn)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1)
+        .background(Color.black.opacity(0.28))
+        .clipShape(Capsule())
+        .help("No other node on the canvas references \"\(node.name)\" -- left in place by a rewire, delete, or undo; Delete removes it if it is no longer needed")
     }
 
     @ViewBuilder
@@ -552,13 +1271,24 @@ private struct GraphNodeBoxView: View {
 private struct GraphWiresLayer: View {
     let nodes: [GraphCanvasNode]
     let showLabels: Bool
+    /// S21 drag-to-wire LIVE PREVIEW -- non-nil `wireDraftFrom`/`To`
+    /// draws one extra curve from the dragged node's output handle to
+    /// the current drag point, colored by `wireDraftLegal` (nil =
+    /// neutral, not yet checked; true/false = Theme.success/.error,
+    /// matching the status line's dot). `hoveredPort`, when set, draws a
+    /// highlight ring around the candidate input port so the drop
+    /// target is unambiguous even before the legality read lands.
+    var wireDraftFrom: CGPoint? = nil
+    var wireDraftTo: CGPoint? = nil
+    var wireDraftLegal: Bool? = nil
+    var hoveredPort: CGPoint? = nil
 
     var body: some View {
         Canvas { context, _ in
             for node in nodes {
-                let destPortXs = inputPortAnchors(for: node)
+                let destPortYs = graphInputPortAnchors(nodePosition: node.position, outEdgeCount: node.outEdges.count)
                 for (portIdx, port) in node.outEdges.enumerated() {
-                    let destPoint = CGPoint(x: node.position.x, y: destPortXs[portIdx])
+                    let destPoint = CGPoint(x: node.position.x, y: destPortYs[portIdx])
                     if port.otherNodeIndex >= 0, port.otherNodeIndex < nodes.count {
                         let source = nodes[port.otherNodeIndex]
                         let sourcePoint = CGPoint(x: source.position.x + GraphMetrics.nodeWidth,
@@ -580,20 +1310,19 @@ private struct GraphWiresLayer: View {
                     }
                 }
             }
+
+            if let from = wireDraftFrom, let to = wireDraftTo {
+                let color: Color = wireDraftLegal == false ? Theme.errorStrong : (wireDraftLegal == true ? Theme.success : Theme.textFaint)
+                drawWire(context: context, from: from, to: to, color: color, dashed: wireDraftLegal != true)
+            }
+            if let hover = hoveredPort {
+                let ringColor: Color = wireDraftLegal == false ? Theme.errorStrong : Theme.success
+                var ring = Path()
+                ring.addEllipse(in: CGRect(x: hover.x - 9, y: hover.y - 9, width: 18, height: 18))
+                context.stroke(ring, with: .color(ringColor), lineWidth: 2)
+            }
         }
         .allowsHitTesting(false)
-    }
-
-    /// Spreads a node's input ports evenly along its left edge, in
-    /// declaration order — mirrors the row-thumbnail idiom (stage order
-    /// in PropertiesPanel is descriptor/occurrence order, not sorted).
-    private func inputPortAnchors(for node: GraphCanvasNode) -> [CGFloat] {
-        let count = max(node.outEdges.count, 1)
-        let top = node.position.y + GraphMetrics.headerHeight + 6
-        let bottom = node.position.y + GraphMetrics.nodeHeight - 6
-        guard count > 1 else { return [node.position.y + GraphMetrics.nodeHeight / 2] }
-        let step = (bottom - top) / CGFloat(count - 1)
-        return (0..<count).map { top + CGFloat($0) * step }
     }
 
     private func drawWire(context: GraphicsContext, from: CGPoint, to: CGPoint, color: Color, dashed: Bool = false) {

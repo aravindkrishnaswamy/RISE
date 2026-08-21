@@ -4141,6 +4141,17 @@ namespace RISE
 		//! scene state, no locking, callable from any thread at any time.
 		std::vector<ChunkNodeRequirement> ChunkNodeRequirements( const String& keyword ) const;
 
+		//! doc-88 Phase 3 S21 -- every registered keyword whose descriptor
+		//! category is @a category, sorted lexicographically
+		//! (`ChunkDescriptorRegistry::AllKeywordsForCategory` passthrough).
+		//! Backs the canvas's "add node" search palette: `Painter`,
+		//! `Function`, and `Material` are the three categories the palette
+		//! offers (the same three `PainterMaterialGraph` models -- see
+		//! `BuildPainterMaterialGraphSeedsLocked_`'s own comment). Pure
+		//! descriptor read, same "no scene state, no locking" posture as
+		//! `ChunkNodeRequirements` above.
+		std::vector<String> PaletteKeywords( ChunkCategory category ) const;
+
 		//! Create ONE new painter/material chunk of type `keyword`, named
 		//! from `baseName` (deduped `_2`, `_3`, ... exactly as
 		//! InstantiateEntityTemplate does, and checked doc-wide so a

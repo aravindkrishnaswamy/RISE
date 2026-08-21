@@ -9950,6 +9950,29 @@ namespace RISE
 			static_cast<ChunkCategory>( toCategory ), String( toName ) );
 	}
 
+	// doc-88 Phase 3 S21 -- pure-descriptor connection-legality passthrough.
+	// No SceneEditController* by design; see RISE_API.h.
+	bool RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+		const char* targetKeyword, const char* paramName,
+		const char* candidateKeyword, int candidateCategory,
+		int candidateIsPerChannelValues,
+		char* outDiagBuf, unsigned int outDiagBufLen )
+	{
+		if( outDiagBuf && outDiagBufLen > 0 ) outDiagBuf[0] = '\0';
+		if( !targetKeyword || !paramName || !candidateKeyword ) return false;
+		const ConnectionVerdict v = ConnectionLegality::CheckConnectionByKeyword(
+			std::string( targetKeyword ), std::string( paramName ),
+			std::string( candidateKeyword ), static_cast<ChunkCategory>( candidateCategory ),
+			candidateIsPerChannelValues != 0 );
+		if( !v.legal && outDiagBuf && outDiagBufLen > 0 && !v.diagnostic.empty() ) {
+			const unsigned int n =
+				( v.diagnostic.size() + 1 < outDiagBufLen ) ? (unsigned int)v.diagnostic.size() : ( outDiagBufLen - 1 );
+			std::memcpy( outDiagBuf, v.diagnostic.data(), n );
+			outDiagBuf[n] = '\0';
+		}
+		return v.legal;
+	}
+
 	// doc-88 Phase 3 S19 -- the ownership-closure rewire verb. See RISE_API.h.
 	namespace {
 		//! '\n'-join a name list into a caller buffer -- the same convention
@@ -10285,6 +10308,27 @@ namespace RISE
 		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
 		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
 		return r.applied;
+	}
+
+	// S21 -- the "add node" search palette's keyword list.
+	unsigned int RISE_API_SceneEditController_PaletteKeywordCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return static_cast<unsigned int>(
+			p->PaletteKeywords( static_cast<ChunkCategory>( category ) ).size() );
+	}
+
+	bool RISE_API_SceneEditController_PaletteKeyword(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outKeyword, unsigned int outKeywordLen )
+	{
+		if( !p ) return false;
+		const std::vector<String> kws =
+			p->PaletteKeywords( static_cast<ChunkCategory>( category ) );
+		if( idx >= kws.size() ) return false;
+		if( outKeyword && outKeywordLen > 0 ) CopyToBuf( kws[idx], outKeyword, outKeywordLen );
+		return true;
 	}
 
 	bool RISE_API_SceneEditController_RemoveEntity(

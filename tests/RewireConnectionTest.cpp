@@ -122,6 +122,20 @@
 //      build, asserted as a loose ratio budget rather than a tight
 //      wall-clock number (the S11 perf-gate precedent).
 //
+//    PART 8 -- S21 review round 1 P3: the node-graph ADD-NODE palette's
+//      per-channel-values gap, pinned end to end.
+//      ConnectionLegality.h documents that its per-channel detection only
+//      recognizes the STATIC `scalar_painter { values <r> <g> <b> }` form,
+//      not an `expression`-form per-channel `scalar_painter` (a vec3-typed
+//      body). 8a proves the UI-layer legality pre-check (CheckConnection,
+//      what the canvas's palette and drag-to-wire both call) FALSE-ACCEPTS
+//      such a candidate into a `requireSingle` Scalar-pipe slot. 8b proves
+//      the false-accept never actually lands: RewireConnection's commit
+//      path (full-derivability dry-run through the real chunk parsers)
+//      refuses it via `ResolveOrDiagnoseScalar`'s bound-to-per-channel
+//      branch (Job.cpp), document left byte-identical -- the UI filter is
+//      advisory, the commit is the real guard.
+//
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN
 //  off, no render pass is ever started.
 //
@@ -1628,6 +1642,78 @@ static void Part7_OwnersOfBatchPerf()
 		"7: the owners-for-every-node BATCH is the same order as ONE adjacency build, not N of them" );
 }
 
+// =====================================================================
+// PART 8 -- S21 review round 1 P3: the node-graph palette's documented
+//   per-channel-values gap -- the UI legality pre-check is ADVISORY,
+//   the commit is the real guard.
+// =====================================================================
+
+static void Part8_PaletteAdvisoryGapCommitGuard()
+{
+	std::printf( "\nPART 8 -- palette per-channel-values gap: UI pre-check false-accepts, commit refuses honestly\n" );
+
+	// `sheen_material.sheen_roughness` is a real requireSingle Scalar-pipe
+	// slot (ChunkParserRegistry.cpp, `semantics.requireSingle = true`),
+	// resolved at derive time via Job::AddSheenMaterial ->
+	// ResolveOrDiagnoseScalar( ..., requireSingle=true ). scal_dispersive
+	// is a per-channel scalar_painter built via the `expression` form
+	// (a vec3-typed body -- HasPerChannelVariation() == true), which
+	// ConnectionLegality's static `values`-only detection does not see.
+	const char* const kScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 4\npixel_filter box\noidn_denoise false\n}\n\n"
+		"film\n{\nwidth 16\nheight 16\n}\n\n"
+		"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\nname pnt_sheen\ncolor 0.8 0.8 0.9\n}\n\n"
+		"scalar_painter\n{\nname scal_sheen_rough\nvalue 0.3\n}\n\n"
+		"scalar_painter\n{\nname scal_dispersive\nexpression vec3(0.1,0.4,0.9)\n}\n\n"
+		"sheen_material\n{\nname mat_sheen\nsheen_color pnt_sheen\nsheen_roughness scal_sheen_rough\n}\n\n"
+		"sphere_geometry\n{\nname geo_witness\nradius 0.8\n}\n\n"
+		"standard_object\n{\nname obj_one\ngeometry geo_witness\nmaterial mat_sheen\n}\n\n"
+		"omni_light\n{\nname lgt_witness\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n";
+
+	const std::string path = TempPath( "test_rewire_p8_advisory_gap.RISEscene" );
+	Job* j = LoadScene( kScene, path );
+	Check( j != nullptr, "8: fixture scene loads" );
+	if( !j ) return;
+
+	SceneEditController c( *j, nullptr );
+	const std::string before = DocText( *j );
+
+	// 8a -- THE UI-LAYER FALSE-ACCEPT: the same legality read the canvas's
+	// palette / drag-to-wire pre-check calls (CheckConnection) says this
+	// per-channel candidate is LEGAL for a requireSingle slot. This is
+	// ConnectionLegality.h's documented gap made into a real assertion,
+	// not left as prose the code could silently stop matching.
+	const ConnectionVerdict v = c.CheckConnection(
+		ChunkCategory::Material, String( "mat_sheen" ), String( "sheen_roughness" ),
+		ChunkCategory::Painter, String( "scal_dispersive" ) );
+	Check( v.legal,
+		"8a: the UI legality pre-check FALSE-ACCEPTS an expression-form per-channel scalar_painter "
+		"into a requireSingle slot (the documented static-values-only detection gap)" );
+
+	// 8b -- THE COMMIT-TIME REFUSAL: RewireConnection actually tries to
+	// land the exact wire 8a just waved through. Its full-derivability
+	// dry-run (Job::ApplyCstParamEditChecked -> DeriveEditedCstDocument_)
+	// re-derives the WHOLE document through the real chunk parsers --
+	// Job::AddSheenMaterial's ResolveOrDiagnoseScalar( requireSingle=true )
+	// bound-to-per-channel branch refuses it -- so the commit fails and the
+	// false-accepted wire never reaches the document.
+	const Rewire r = c.RewireConnection(
+		ChunkCategory::Material, String( "mat_sheen" ), String( "sheen_roughness" ), 0,
+		ChunkCategory::Painter, String( "scal_dispersive" ), nullptr );
+	Check( !r.commit.applied,
+		"8b: RewireConnection REFUSES the same wire -- the commit-time full-derivability gate is the real guard" );
+
+	const std::string after = DocText( *j );
+	Check( after == before,
+		"8b: the refused commit leaves the document byte-identical -- the UI's false-accept never reached disk" );
+
+	j->release();
+	std::remove( path.c_str() );
+}
+
 int main()
 {
 	std::printf( "RewireConnectionTest -- doc-88 Phase 3 S19 (ownership closure + REFUSE)\n" );
@@ -1639,6 +1725,7 @@ int main()
 	Part5_PureClosure();
 	Part6_OccurrenceScopingSweep();
 	Part7_OwnersOfBatchPerf();
+	Part8_PaletteAdvisoryGapCommitGuard();
 
 	std::printf( "\n==================================================\n" );
 	std::printf( "RewireConnectionTest: %d passed, %d failed\n", g_pass, g_fail );
