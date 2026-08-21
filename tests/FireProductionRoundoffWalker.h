@@ -7,8 +7,15 @@
 
 namespace FireProductionRoundoffWalker
 {
+	enum OperationKind : unsigned int
+	{
+		Convert,Add,Subtract,Multiply,Divide,SquareRoot,Absolute,Minimum,Maximum,
+		Floor,Ceil,Remainder,NextAfter,OperationKindCount
+	};
+
 	struct Topology
 	{
+		std::uint64_t operation[OperationKindCount]={};
 		std::uint64_t operationCount=0u;
 		std::uint32_t maximumDepth=0u;
 	};
@@ -20,6 +27,13 @@ namespace FireProductionRoundoffWalker
 		const std::uint64_t term=factor*count;
 		if(total>std::numeric_limits<std::uint64_t>::max()-term)return false;
 		total+=term;return true;
+	}
+
+	inline bool CheckedAddOperation(Topology& topology,const OperationKind kind,
+		const std::uint64_t factor,const std::uint64_t count)
+	{
+		return CheckedAddProduct(topology.operation[kind],factor,count)&&
+			CheckedAddProduct(topology.operationCount,factor,count);
 	}
 
 	inline bool CheckedProduct(const std::uint64_t first,const std::uint64_t second,
@@ -53,14 +67,17 @@ namespace FireProductionRoundoffWalker
 			!CheckedProduct(lines,cells+1u,faces))return false;
 		const std::uint64_t swept=values;
 		const std::uint64_t treeEdges=NextPowerOfTwo(lineLength)-1u;
-		return CheckedAddProduct(topology.operationCount,1u,values)&&
-			CheckedAddProduct(topology.operationCount,2u,faces)&&
-			CheckedAddProduct(topology.operationCount,2u,values)&&
-			CheckedAddProduct(topology.operationCount,5u,values)&&
-			CheckedAddProduct(topology.operationCount,6u,values)&&
-			CheckedAddProduct(topology.operationCount,2u*treeEdges,lineComponents)&&
-			CheckedAddProduct(topology.operationCount,14u,swept)&&
-			CheckedAddProduct(topology.operationCount,3u,values)&&
+		return CheckedAddOperation(topology,Convert,1u,values)&&
+			CheckedAddOperation(topology,Add,5u,values)&&
+			CheckedAddOperation(topology,Add,2u*treeEdges,lineComponents)&&
+			CheckedAddOperation(topology,Subtract,9u,values)&&
+			CheckedAddOperation(topology,Multiply,9u,values)&&
+			CheckedAddOperation(topology,Multiply,1u,faces)&&
+			CheckedAddOperation(topology,Divide,3u,values)&&
+			CheckedAddOperation(topology,Divide,1u,faces)&&
+			CheckedAddOperation(topology,Absolute,1u,values)&&
+			CheckedAddOperation(topology,Floor,2u,values)&&
+			CheckedAddOperation(topology,Remainder,1u,swept)&&
 			(topology.maximumDepth=14u,true);
 	}
 }

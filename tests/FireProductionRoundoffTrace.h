@@ -2,6 +2,7 @@
 #define FIRE_PRODUCTION_ROUNDOFF_TRACE_H
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -272,6 +273,29 @@ namespace FireProductionRoundoffTrace
 		if(ActiveCounters){ActiveCounters->sealedStages.push_back(
 			static_cast<const Observation&>(*ActiveCounters));
 			static_cast<Observation&>(*ActiveCounters)=Observation();}
+	}
+
+	inline void SealCurrentStage()
+	{
+		if(ActiveCounters){ActiveCounters->sealedStages.push_back(
+			static_cast<const Observation&>(*ActiveCounters));
+			static_cast<Observation&>(*ActiveCounters)=Observation();}
+	}
+
+	template<std::size_t Count> inline void SealStageAndReset(
+		std::array<std::vector<TraceFloat>,Count>& first)
+	{
+		for(std::vector<TraceFloat>& values:first)ObserveAndReset(values);
+		SealCurrentStage();
+	}
+
+	template<std::size_t Count> inline void SealStageAndReset(
+		std::array<std::vector<TraceFloat>,Count>& first,
+		std::array<std::vector<TraceFloat>,Count>& second)
+	{
+		for(std::vector<TraceFloat>& values:first)ObserveAndReset(values);
+		for(std::vector<TraceFloat>& values:second)ObserveAndReset(values);
+		SealCurrentStage();
 	}
 
 	class Scope

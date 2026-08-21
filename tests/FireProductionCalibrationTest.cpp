@@ -1,6 +1,7 @@
 #include "FireProductionCalibrationMath.h"
 #include "FireProductionCalibrationMirror.h"
 #include "FireProductionRoundoffWalker.h"
+#include "FireProductionRoundoffTraceAdapter.h"
 #include "Utilities/FireProductionAdvection.h"
 #include "Utilities/FireProductionProjection.h"
 #include "Utilities/FireProductionTransport.h"
@@ -241,8 +242,15 @@ int main()
 			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
 		!tracedCounters.invalidDomain&&walked&&
 		tracedOperations==walkedTopology.operationCount&&
+		std::equal(std::begin(tracedCounters.operation),std::end(tracedCounters.operation),
+			std::begin(walkedTopology.operation))&&
 		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
+	FireProductionRoundoffWalker::Topology omittedAdd=walkedTopology;
+	--omittedAdd.operation[FireProductionRoundoffWalker::Add];--omittedAdd.operationCount;
+	Check(!std::equal(std::begin(tracedCounters.operation),std::end(tracedCounters.operation),
+		std::begin(omittedAdd.operation))&&omittedAdd.operationCount!=tracedOperations,
+		"independent topology gate rejects an omitted arithmetic operation");
 
 	RISE::FireProductionCellPalindromeRequest cell32;
 	cell32.shape.nx=5u;cell32.shape.ny=6u;cell32.shape.nz=7u;
@@ -432,6 +440,25 @@ int main()
 		step64.projection.executedVCycleCount==12u&&
 		step64.projection.maximumPostProjectionResidualPerS==0.0,
 		"binary64 mirror composes force, five cell maps, fifteen dual maps, sources, and one P2");
+	FireProductionRoundoffAdapter::ResidentStepTraceResult tracedStep;
+	const bool tracedStepOK=FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
+		step,0.0f,tracedStep,&error);
+	bool tracedStepStages=tracedStep.stages.size()==24u;
+	for(const FireProductionRoundoffTrace::Observation& stage:tracedStep.stages){
+		std::uint64_t operations=0u;for(const std::uint64_t count:stage.operation)operations+=count;
+		tracedStepStages=tracedStepStages&&operations>0u&&stage.maximumDepth>0u&&
+			stage.maximumOutputRadius>=0.0&&std::isfinite(stage.maximumOutputRadius);
+	}
+	const bool tracedStepBytes=tracedStep.conservativeValues.size()==
+		step64.conservativeValues.size()&&std::all_of(tracedStep.conservativeValues.begin(),
+		tracedStep.conservativeValues.end(),[](const FireProductionRoundoffTrace::TraceFloat& value){
+			return value.Radius()==0.0&&std::isfinite(value.Rounded());});
+	Check(tracedStepOK&&tracedStepStages&&tracedStepBytes&&
+		tracedStep.force.schedule.substepCount==1u&&
+		tracedStep.cell.executedSubmapCount==5u&&tracedStep.dual.executedSubmapCount==15u&&
+		tracedStep.physicalProjection.maximumPostProjectionResidualPerS.Rounded()==0.0f&&
+		tracedStep.projection.maximumPostProjectionResidualPerS.Rounded()==0.0f,
+		"roundoff adapter seals the complete force-transport-source-two-projection graph before measurement");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;
