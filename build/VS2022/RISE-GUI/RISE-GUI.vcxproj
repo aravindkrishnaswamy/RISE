@@ -118,6 +118,10 @@
     <ClCompile Include="ViewportToolbar.cpp" />
     <ClCompile Include="ViewportTimeline.cpp" />
     <ClCompile Include="ViewportProperties.cpp" />
+    <!-- doc-88 Phase 3 S16+S22 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6):
+         Windows/Qt Painter/Material node canvas, carried (not yet
+         MSVC-verified); see NodeGraphCanvas.cpp's PARITY TABLE. -->
+    <ClCompile Include="NodeGraphCanvas.cpp" />
   </ItemGroup>
   <!-- MOC-generated source files (compiled like regular .cpp) -->
   <ItemGroup>
@@ -140,6 +144,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_ViewportToolbar.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ViewportTimeline.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ViewportProperties.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_NodeGraphCanvas.cpp" />
   </ItemGroup>
   <!-- Headers with Q_OBJECT — CustomBuild runs moc.exe on each -->
   <ItemGroup>
@@ -252,6 +257,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="ViewportProperties.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="NodeGraphCanvas.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>

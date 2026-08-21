@@ -51,6 +51,7 @@ class ViewportProperties;
 class OutlinerWidget;
 class EnvironmentPanel;
 class StartWidget;
+class NodeGraphCanvas;
 
 class MainWindow : public QMainWindow
 {
@@ -202,8 +203,10 @@ private:
     QWidget* buildCenterColumn();
     QWidget* buildRightPanel();
     QWidget* buildLogDrawer();
+    /// index: 0 = Agent, 1 = Scene file, 2 = Graph (doc-88 Phase 3
+    /// S16+S22's third left-panel tab).
     void     setLeftTab(int index);
-    /// Refreshes just the Agent/Scene-file tab buttons' font weight +
+    /// Refreshes just the Agent/Scene-file/Graph tab buttons' font weight +
     /// border-underline stylesheet from the CURRENTLY checked button and
     /// the CURRENT Theme:: token values -- factored out of setLeftTab()
     /// so restyleTheme() can re-apply it on a theme switch WITHOUT
@@ -462,9 +465,18 @@ private:
     QStackedWidget* m_leftPanelStack = nullptr;
     QToolButton*  m_agentTabBtn = nullptr;
     QToolButton*  m_sceneTabBtn = nullptr;
-    // Agent/Scene-file tab strip container -- stored (rather than kept
-    // as a buildLeftPanel()-local) so restyleTheme() can re-apply its
-    // border-bottom stylesheet on a live theme switch.
+    // doc-88 Phase 3 S16+S22 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): a
+    // third left-panel tab, alongside Agent/Scene file -- mirrors the
+    // Mac reference's identical choice (NodeGraphCanvas.swift's own
+    // "ENTRY POINT" comment: the left panel already has the "swap the
+    // whole pane" tab idiom at zero new chrome cost, unlike the fixed
+    // center viewport). Persistent (built once, like m_chatPanel/
+    // m_sceneEditor), shows nothing until setBridge() gives it a scene.
+    QToolButton*  m_graphTabBtn = nullptr;
+    NodeGraphCanvas* m_nodeGraphCanvas = nullptr;
+    // Agent/Scene-file/Graph tab strip container -- stored (rather than
+    // kept as a buildLeftPanel()-local) so restyleTheme() can re-apply
+    // its border-bottom stylesheet on a live theme switch.
     QWidget*      m_leftTabStrip = nullptr;
 
     // Right panel: fixed-width host for the outliner (persistent, built

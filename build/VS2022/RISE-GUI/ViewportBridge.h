@@ -1517,6 +1517,86 @@ public:
     bool duplicateGraphNode(int category, const QString& name,
                              DuplicateOutcome* outOutcome = nullptr);
 
+    // ---- Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition (S16/S21/S22) --
+    // Mirrors RISE_API_SceneEditController_{CheckConnection,WouldCycle,
+    // WriteGraphNodeLayoutPosition} / RISE_API_ConnectionLegality_
+    // CheckConnectionByKeyword and the macOS RISEViewportBridge's
+    // identically-named section (docs/gui/NODE_GRAPH_CANVAS.md sect. 6
+    // S16/S21/S22). ADDED IN THIS SLICE -- the S14 bridge carry stopped at
+    // painterMaterialGraph()/categoryTree() (the read-only S16 surface);
+    // this half is the S21/S22 EDIT surface the Windows canvas widget
+    // needs and had no carry yet. `checkConnection`/`wouldCycle` are pure
+    // reads (safe at any time); `writeGraphNodeLayoutPosition` touches
+    // only the layout sidecar file (never the CST document) but still
+    // refuses while a render owns the scene -- gate on
+    // MainWindow::canUseSceneTransport() before calling, same as every
+    // other mutating call in this section.
+    //
+    // STANDING CAVEAT (same posture as the S18/S19/S20 blocks above): this
+    // whole section is CARRIED, not MSVC-verified -- written to match the
+    // macOS bridge line for line and owed a Windows build.
+
+    /// Connection-legality pre-check (S17 passthrough) for the canvas's
+    /// live drag-to-wire preview: may `candidateName` legally be bound at
+    /// `targetName`.`param`? Categories are `RISE::ChunkCategory` ordinals,
+    /// the SAME convention `rewireConnection`/`duplicateGraphNode` use, NOT
+    /// ViewportBridge::Category. `outDiagnostic` (optional) receives the
+    /// real parser's own diagnostic text on a refusal (left untouched on a
+    /// legal verdict) -- show it as the drag's status line / tooltip.
+    /// Returns false on a missing controller or empty argument, with no
+    /// diagnostic written.
+    bool checkConnection(int targetCategory, const QString& targetName,
+                          const QString& param,
+                          int candidateCategory, const QString& candidateName,
+                          QString* outDiagnostic = nullptr) const;
+
+    /// Forward-reachability cycle check (S17 `WouldCycle` passthrough):
+    /// would wiring `fromName` to reference `toName` create a cycle?
+    /// Categories as above. Returns false (never a crash) on a missing
+    /// controller or either name failing to resolve -- treat an unresolved
+    /// name as "cannot commit this wire" via `checkConnection` first, not
+    /// as proof of safety.
+    bool wouldCycle(int fromCategory, const QString& fromName,
+                     int toCategory, const QString& toName) const;
+
+    /// Pure-descriptor connection-legality check (`ConnectionLegality::
+    /// CheckConnectionByKeyword` passthrough): may a chunk of
+    /// `candidateKeyword`/`candidateCategory` legally be bound at
+    /// `targetKeyword`.`param` -- for the "add node" palette's required-
+    /// reference candidate picker, BEFORE the new node exists to address by
+    /// name (unlike `checkConnection` above, which needs a real target
+    /// chunk in the document). No document, no locking, safe at any time
+    /// including before any scene is loaded -- does NOT require
+    /// `m_controller` to be non-null (STATIC, unlike every other call in
+    /// this section). `outDiagnostic` (optional) receives the diagnostic
+    /// text on a refusal (left untouched on a legal verdict).
+    static bool checkConnectionByKeyword(const QString& targetKeyword, const QString& param,
+                                          const QString& candidateKeyword, int candidateCategory,
+                                          QString* outDiagnostic = nullptr);
+
+    /// Persist ONE node's canvas position into the layout sidecar -- the
+    /// drag-to-reposition commit path (`WriteGraphLayoutPositions` with a
+    /// single-element update, the shape a canvas drag commits: call ONCE
+    /// on drag release, never mid-drag). `x`/`y` are the node's TOP-LEFT
+    /// anchor in the same graph-space units `painterMaterialGraph()`'s
+    /// `PainterGraphNode::x`/`.y` report. Returns true on success,
+    /// INCLUDING the two documented no-op cases (position unchanged on
+    /// disk; scene never saved yet) -- see the C++ method's own comment.
+    /// Returns false on a null controller / empty name / an actual I/O
+    /// failure / a render owning the scene; `outError` (optional)
+    /// receives a message on false.
+    bool writeGraphNodeLayoutPosition(const QString& name, double x, double y,
+                                       QString* outError = nullptr);
+
+    // ---- Node-graph canvas: add-node search palette (S16/S21/S22) ------
+
+    /// Every registered Painter/Function/Material keyword whose descriptor
+    /// category is `category` (a `RISE::ChunkCategory` ordinal), sorted
+    /// lexicographically -- exactly the open keyword set `createChunkNode`
+    /// can create. Pure descriptor read: no scene state, safe at any time.
+    /// Empty for an unmodeled category or a null controller.
+    QStringList paletteKeywords(int category) const;
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.

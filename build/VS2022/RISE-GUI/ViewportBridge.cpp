@@ -2088,6 +2088,106 @@ bool ViewportBridge::duplicateGraphNode(int category, const QString& name,
     return applied;
 }
 
+// ---- Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition -----
+// (S16/S21/S22, docs/gui/NODE_GRAPH_CANVAS.md sect. 6)
+//
+// ADDED IN THIS SLICE (S16/S22's bridge-gap carry -- see the header's own
+// note): the S14 carry stopped at painterMaterialGraph()/categoryTree(),
+// the read-only surface; these five are the S21 EDIT surface the Windows
+// canvas widget needs. Carried mirror of the macOS bridge's identically-
+// named section; see the header's STANDING CAVEAT (this half is owed an
+// MSVC build).
+
+bool ViewportBridge::checkConnection(int targetCategory, const QString& targetName,
+                                      const QString& param,
+                                      int candidateCategory, const QString& candidateName,
+                                      QString* outDiagnostic) const
+{
+    if (!m_controller || targetName.isEmpty() || param.isEmpty() || candidateName.isEmpty()) {
+        return false;
+    }
+    const QByteArray tgt = targetName.toUtf8();
+    const QByteArray prm = param.toUtf8();
+    const QByteArray cand = candidateName.toUtf8();
+    char diagBuf[1024] = {0};
+    const bool legal = RISE_API_SceneEditController_CheckConnection(
+        m_controller,
+        targetCategory, tgt.constData(),
+        prm.constData(),
+        candidateCategory, cand.constData(),
+        diagBuf, sizeof(diagBuf));
+    if (outDiagnostic && diagBuf[0] != '\0') *outDiagnostic = QString::fromUtf8(diagBuf);
+    return legal;
+}
+
+bool ViewportBridge::wouldCycle(int fromCategory, const QString& fromName,
+                                 int toCategory, const QString& toName) const
+{
+    if (!m_controller || fromName.isEmpty() || toName.isEmpty()) return false;
+    const QByteArray from = fromName.toUtf8();
+    const QByteArray to = toName.toUtf8();
+    return RISE_API_SceneEditController_WouldCycle(
+        m_controller, fromCategory, from.constData(), toCategory, to.constData());
+}
+
+bool ViewportBridge::checkConnectionByKeyword(const QString& targetKeyword, const QString& param,
+                                               const QString& candidateKeyword, int candidateCategory,
+                                               QString* outDiagnostic)
+{
+    if (outDiagnostic) *outDiagnostic = QString();
+    if (targetKeyword.isEmpty() || param.isEmpty() || candidateKeyword.isEmpty()) return false;
+    const QByteArray tgt = targetKeyword.toUtf8();
+    const QByteArray prm = param.toUtf8();
+    const QByteArray cand = candidateKeyword.toUtf8();
+    char diagBuf[1024] = {0};
+    // `candidateIsPerChannelValues` (the trailing 0) -- pass "unknown",
+    // the SAME convention the macOS bridge's checkConnectionByKeyword
+    // uses (RISEViewportBridge.mm): the palette candidate picker only
+    // has a keyword string to filter on, not a live chunk it could
+    // introspect for the per-channel `values` authoring form, so it
+    // cannot answer this narrower question either. See
+    // RISE_API_ConnectionLegality_CheckConnectionByKeyword's own comment
+    // for why this is an advisory pre-filter, not the commit-time gate.
+    const bool legal = RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+        tgt.constData(), prm.constData(),
+        cand.constData(), candidateCategory,
+        0,
+        diagBuf, sizeof(diagBuf));
+    if (outDiagnostic && diagBuf[0] != '\0') *outDiagnostic = QString::fromUtf8(diagBuf);
+    return legal;
+}
+
+bool ViewportBridge::writeGraphNodeLayoutPosition(const QString& name, double x, double y,
+                                                    QString* outError)
+{
+    if (outError) *outError = QString();
+    if (!m_controller || name.isEmpty()) return false;
+    const QByteArray nm = name.toUtf8();
+    char errBuf[512] = {0};
+    const bool ok = RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+        m_controller, nm.constData(), x, y, errBuf, sizeof(errBuf));
+    if (!ok && outError && errBuf[0] != '\0') *outError = QString::fromUtf8(errBuf);
+    return ok;
+}
+
+// ---- Node-graph canvas: add-node search palette (S16/S21/S22) -----------
+
+QStringList ViewportBridge::paletteKeywords(int category) const
+{
+    QStringList out;
+    if (!m_controller) return out;
+    const unsigned int n = RISE_API_SceneEditController_PaletteKeywordCount(m_controller, category);
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        char buf[128] = {0};
+        if (!RISE_API_SceneEditController_PaletteKeyword(m_controller, category, i, buf, sizeof(buf))) {
+            continue;
+        }
+        if (buf[0] != '\0') out.append(QString::fromUtf8(buf));
+    }
+    return out;
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const

@@ -22,6 +22,7 @@
 #include "ViewportProperties.h"
 #include "OutlinerWidget.h"
 #include "EnvironmentPanel.h"
+#include "NodeGraphCanvas.h"
 #include "StartWidget.h"
 #include "Theme.h"
 
@@ -399,24 +400,44 @@ QWidget* MainWindow::buildLeftPanel()
 
     m_agentTabBtn = makeTabButton(QStringLiteral("Agent"));
     m_sceneTabBtn = makeTabButton(QStringLiteral("Scene file"));
+    // doc-88 Phase 3 S16+S22: third tab, "Graph" -- see MainWindow.h's
+    // m_nodeGraphCanvas doc comment for why this lives here rather than
+    // as a center-column mode (mirrors NodeGraphCanvas.swift's own
+    // "ENTRY POINT" rationale).
+    m_graphTabBtn = makeTabButton(QStringLiteral("Graph"));
 
     auto* tabGroup = new QButtonGroup(tabStrip);
     tabGroup->setExclusive(true);
     tabGroup->addButton(m_agentTabBtn);
     tabGroup->addButton(m_sceneTabBtn);
+    tabGroup->addButton(m_graphTabBtn);
 
     tabStripLayout->addWidget(m_agentTabBtn);
     tabStripLayout->addWidget(m_sceneTabBtn);
+    tabStripLayout->addWidget(m_graphTabBtn);
     tabStripLayout->addStretch(1);
     layout->addWidget(tabStrip);
 
+    m_nodeGraphCanvas = new NodeGraphCanvas(panel);
+    // A pick on the canvas doesn't itself touch the interactive
+    // rasterizer, so there's no imageUpdated to ride -- follow it
+    // explicitly, the SAME division of labor as the outliner's
+    // selectionActivated connect in buildRightPanel. m_nodeGraphCanvas
+    // is persistent (built once here), so this connects once.
+    connect(m_nodeGraphCanvas, &NodeGraphCanvas::selectionActivated, this, [this]() {
+        if (m_viewportProps)  m_viewportProps->refresh();
+        if (m_outlinerWidget) m_outlinerWidget->refresh();
+    });
+
     m_leftPanelStack = new QStackedWidget(panel);
-    m_leftPanelStack->addWidget(m_chatPanel);     // index 0 — Agent
-    m_leftPanelStack->addWidget(m_sceneEditor);   // index 1 — Scene file
+    m_leftPanelStack->addWidget(m_chatPanel);        // index 0 — Agent
+    m_leftPanelStack->addWidget(m_sceneEditor);       // index 1 — Scene file
+    m_leftPanelStack->addWidget(m_nodeGraphCanvas);   // index 2 — Graph
     layout->addWidget(m_leftPanelStack, 1);
 
     connect(m_agentTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(0); });
     connect(m_sceneTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(1); });
+    connect(m_graphTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(2); });
 
     setLeftTab(0);   // Agent tab is active on launch
 
@@ -428,38 +449,45 @@ void MainWindow::setLeftTab(int index)
     if (!m_leftPanelStack) return;
     m_leftPanelStack->setCurrentIndex(index);
 
-    const bool agentActive = (index == 0);
-    m_agentTabBtn->setChecked(agentActive);
-    m_sceneTabBtn->setChecked(!agentActive);
+    m_agentTabBtn->setChecked(index == 0);
+    m_sceneTabBtn->setChecked(index == 1);
+    m_graphTabBtn->setChecked(index == 2);
     updateTabButtonStyles();
 
     // Matches the pre-redesign Edit-toggle behavior: switching into
     // the Scene file tab (re-)loads the current file from disk.
-    if (!agentActive && m_engine && !m_engine->loadedFilePath().isEmpty()) {
+    if (index == 1 && m_engine && !m_engine->loadedFilePath().isEmpty()) {
         m_sceneEditor->loadFile(m_engine->loadedFilePath());
+    }
+    // Switching into the Graph tab pulls a fresh snapshot immediately
+    // rather than waiting for the next imageUpdated frame -- mirrors
+    // the Scene-file tab's own "switching in re-reads" behavior just
+    // above, and NodeGraphCanvas.swift's `.onAppear { scheduleReload(...) }`.
+    if (index == 2 && m_nodeGraphCanvas) {
+        m_nodeGraphCanvas->refresh();
     }
 }
 
 void MainWindow::updateTabButtonStyles()
 {
-    if (!m_agentTabBtn || !m_sceneTabBtn) return;
+    if (!m_agentTabBtn || !m_sceneTabBtn || !m_graphTabBtn) return;
 
     // Reads whichever button is CURRENTLY checked -- setLeftTab() sets
     // that before calling this, and a theme switch (restyleTheme()) just
     // wants to re-paint whatever's already active without touching
     // which tab is selected.
-    const bool agentActive = m_agentTabBtn->isChecked();
-    m_agentTabBtn->setFont(Theme::sans(12, agentActive ? QFont::DemiBold : QFont::Normal));
-    m_sceneTabBtn->setFont(Theme::sans(12, !agentActive ? QFont::DemiBold : QFont::Normal));
-
     const QString activeStyle = QStringLiteral(
         "QToolButton { color: %1; border: none; border-bottom: 2px solid %2; background: transparent; }")
         .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::accent));
     const QString inactiveStyle = QStringLiteral(
         "QToolButton { color: %1; border: none; border-bottom: 2px solid transparent; background: transparent; }")
         .arg(Theme::hex(Theme::textFaint));
-    m_agentTabBtn->setStyleSheet(agentActive ? activeStyle : inactiveStyle);
-    m_sceneTabBtn->setStyleSheet(!agentActive ? activeStyle : inactiveStyle);
+
+    for (QToolButton* btn : { m_agentTabBtn, m_sceneTabBtn, m_graphTabBtn }) {
+        const bool active = btn->isChecked();
+        btn->setFont(Theme::sans(12, active ? QFont::DemiBold : QFont::Normal));
+        btn->setStyleSheet(active ? activeStyle : inactiveStyle);
+    }
 }
 
 QWidget* MainWindow::buildCenterColumn()
@@ -572,6 +600,18 @@ QWidget* MainWindow::buildRightPanel()
     // and m_outlinerWidget are persistent, so this connects once.
     connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
             m_outlinerWidget, &OutlinerWidget::refresh);
+
+    // doc-88 Phase 3 S16+S22: an environment edit can add/remove Painter
+    // nodes (a radiance_map painter binding) -- follow it so the graph
+    // tab stays in sync. Connected ONCE here (both m_environmentPanel and
+    // m_nodeGraphCanvas are persistent, built once, unlike the per-scene
+    // m_viewportProps/m_outlinerWidget-style connects elsewhere) --
+    // m_nodeGraphCanvas already exists at this point (buildLeftPanel runs
+    // before buildRightPanel in the constructor).
+    if (m_nodeGraphCanvas) {
+        connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
+                m_nodeGraphCanvas, &NodeGraphCanvas::refreshForce);
+    }
 
     // Source traceability: a per-row reveal from the Environment section
     // resolves the backing param's exact span (the HDRI file on the bound
@@ -947,6 +987,11 @@ void MainWindow::updateMenuActionStates()
     // chat-driven render can never be wedged against by either affordance.
     if (m_viewportProps)  m_viewportProps->setSceneEditable(bridgeInteractingEnabled);
     if (m_outlinerWidget) m_outlinerWidget->setSceneEditable(bridgeInteractingEnabled);
+    // doc-88 Phase 3 S16+S22: the graph canvas's "+", drag-to-wire commit,
+    // and delete/duplicate verbs all take the SAME commit mutex -- gate
+    // on the IDENTICAL term (mirrors the outliner/props gates immediately
+    // above).
+    if (m_nodeGraphCanvas) m_nodeGraphCanvas->setSceneEditable(bridgeInteractingEnabled);
     // Environment section's mutating controls gate on the IDENTICAL term:
     // each ViewportBridge setEnvironment* call takes the controller's
     // commit mutex a production / chat-driven render owns.
@@ -2548,6 +2593,10 @@ void MainWindow::rebuildViewportForLoadedScene()
                 m_viewportProps, &ViewportProperties::refresh);
     }
 
+    if (m_nodeGraphCanvas) {
+        m_nodeGraphCanvas->setBridge(m_viewportBridge);
+    }
+
     // The scene's named animations are surfaced by the ViewportProperties
     // panel's "Animation" accordion category (constructed just above) —
     // it pulls the list from the bridge's generic categoryEntities() and
@@ -2641,6 +2690,14 @@ void MainWindow::rebuildViewportForLoadedScene()
         connect(m_viewportBridge, &ViewportBridge::imageUpdated,
                 m_outlinerWidget, &OutlinerWidget::refresh);
     }
+    if (m_nodeGraphCanvas) {
+        // Epoch-gated cheap compare on every frame -- the SAME cadence
+        // OutlinerWidget::refresh rides (see NodeGraphCanvas::refresh's
+        // own doc comment for why this file does not also carry a
+        // separate debounce timer).
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_nodeGraphCanvas, &NodeGraphCanvas::refresh);
+    }
     if (m_environmentPanel) {
         // Rides every preview frame like the outliner so a scene load /
         // active-rasterizer change / undone edit re-reads environmentInfo
@@ -2714,6 +2771,13 @@ void MainWindow::teardownViewport()
         // false with no controller).  m_environmentPanel is persistent, so
         // it is NOT deleted here -- only its bridge borrow is cleared.
         m_environmentPanel->setBridge(nullptr);
+    }
+    if (m_nodeGraphCanvas) {
+        // Same persistent-borrow-clear discipline as the outliner/
+        // environment panel just above -- m_nodeGraphCanvas is NOT
+        // deleted, only its bridge borrow is cleared (setBridge(nullptr)
+        // clears the canvas's own snapshot immediately).
+        m_nodeGraphCanvas->setBridge(nullptr);
     }
 
     // Close any looping preview-play (and its open scrub bracket) through the
