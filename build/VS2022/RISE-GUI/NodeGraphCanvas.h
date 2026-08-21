@@ -107,6 +107,12 @@ struct GraphNodeData
     bool isOrphaned() const { return inEdges.isEmpty() && category != 2; }
 };
 
+/// User-requested slice: "show all nodes" vs "show only the selection's
+/// subgraph". Ephemeral UI state ONLY -- never persisted (no QSettings
+/// entry anywhere in this file); resets to All on every fresh launch.
+/// Mirrors NodeGraphCanvas.swift's own GraphViewScope.
+enum class GraphViewScope { All, Focused };
+
 /// doc-88 Phase 3 S16/S21/S22: the Windows Painter/Material node canvas.
 /// A persistent left-panel tab widget (mirrors OutlinerWidget/
 /// EnvironmentPanel's lifetime discipline): built once, shows nothing
@@ -175,6 +181,24 @@ private:
     void applySnapshot(const ViewportBridge::PainterGraph& g);
     void prefetchThumbnails();
     void updateHeaderCounts();
+
+    // ---- view-scope toggle (user-requested slice: "All" vs "Focused") -
+    /// Re-derive the (category, name) the Focused view should root its
+    /// subgraph at. Returns false when there is nothing to focus on (no
+    /// selection). See NodeGraphCanvas.cpp's own comment for the
+    /// deliberate TWO-SOURCE split (shared bridge selection for Object,
+    /// THIS canvas's own m_selectedHandle for a Painter/Function/Material
+    /// node) and why an outliner-driven Material/Painter pick does NOT
+    /// count.
+    bool currentFocusTarget(int& outCategory, QString& outName) const;
+    /// The Focused-view fetch path, called from performReload() when
+    /// m_viewScope == Focused and a target was resolved. `force` bypasses
+    /// the cheap target-identity gate (mirrors performReload's own
+    /// `force`). See NodeGraphCanvas.cpp's own comment for the degrade
+    /// handling (leave the cheap gate uncommitted, no timer needed --
+    /// this canvas re-derives every preview frame already).
+    void performFocusedReload(int category, const QString& name, bool force);
+    void onViewScopeToggled(bool checked);
 
     // ---- selection / def-focus (sect. 5 interaction minimums 1 & 2) ---
     void selectNode(const GraphNodeData& node);
@@ -308,6 +332,11 @@ private:
     QLabel*      m_countLabel = nullptr;
     QToolButton* m_addBtn     = nullptr;
     QToolButton* m_refreshBtn = nullptr;
+    /// User-requested slice: "All" vs "Focused" view-scope toggle --
+    /// checkable QToolButton (this app's own idiomatic control for a
+    /// two-state header toggle; a segmented Mac-style control has no
+    /// direct single-widget Qt equivalent as cheap as a checkable button).
+    QToolButton* m_viewScopeBtn = nullptr;
     QWidget*     m_header     = nullptr;   ///< bottom-bordered, mirrors MainWindow's left-panel tabStrip
     QLabel*      m_statusLabel = nullptr;   ///< wire-drag status line, floats over the view
 
@@ -327,6 +356,18 @@ private:
 
     quint64 m_selectedHandle      = 0;
     bool    m_selectedHandleValid = false;
+
+    // ---- view-scope toggle state (user-requested slice) -----------------
+    GraphViewScope m_viewScope = GraphViewScope::All;
+    /// Cheap target-identity gate for the Focused fetch -- mirrors
+    /// m_lastSpotlightCategory/m_lastSpotlightSelectionName's own
+    /// two-tier-gate lesson: this canvas re-derives on EVERY preview
+    /// frame, so performFocusedReload must not pay a full applySnapshot
+    /// rebuild when the resolved target hasn't changed. Committed ONLY on
+    /// a non-degraded outcome -- see performFocusedReload's own comment.
+    bool    m_lastFocusedHasTarget = false;
+    int     m_lastFocusedCategory  = -1;
+    QString m_lastFocusedName;
 
     // ---- object-pick spotlight state ------------------------------------
     QSet<quint64> m_spotlightHandles;

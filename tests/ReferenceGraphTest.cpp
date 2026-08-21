@@ -1877,6 +1877,157 @@ int main()
 		}
 	}
 
+	// =================================================================
+	// PART 13 -- SceneEditController::ReadPainterMaterialGraphLaidOutFocused:
+	// the node-graph canvas's "All" vs "Focused" view-scope toggle
+	// (user-requested slice on top of the spotlight query). Shares
+	// AppearanceClosureForObject's own resolution + BFS (this is what
+	// PART13a pins directly: the two must produce IDENTICAL node sets in
+	// IDENTICAL order for the SAME object).
+	// =================================================================
+	{
+		const char* path = "test_referencegraph_focused.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"film\n{\nwidth 32\nheight 24\n}\n"
+			"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			// ramp1's UPSTREAM chain: ramp1.input -> field1.
+			"expression_painter\n{\nname field1\ndef n fbm(P*2.0, 2, 0.5, 2.0)\nexpr vec3(n,n,n)\n}\n"
+			"ramp_painter\n{\nname ramp1\ninput field1\nchannel R\ninterpolation linear\nstop 0.0 1 0 0\nstop 1.0 0 0 1\n}\n"
+			// ramp1's DOWNSTREAM referrers: matA AND matB both reference it
+			// (PART13b's fixture for "downstream referrers excluded" -- a
+			// focused read rooted at ramp1 must show neither).
+			"lambertian_material\n{\nname matA\nreflectance ramp1\n}\n"
+			"lambertian_material\n{\nname matB\nreflectance ramp1\n}\n"
+			"standard_object\n{\nname obj1\ngeometry g\nmaterial matA\nposition 0 0 0\n}\n" );
+		Check( j != nullptr, "PART13: fixture scene loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+			typedef SceneEditController::AppearanceClosureEntry ACEntry;
+
+			// ---- (a) Object-category focused read matches
+			// AppearanceClosureForObject exactly (set + order), and every
+			// returned node gets a valid (non-negative, rank-consistent)
+			// laid-out position ----
+			{
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				Check( closure.size() == 3, "PART13a: sanity -- obj1's appearance closure has 3 entries (matA, ramp1, field1)" );
+
+				bool degraded = true;   // seeded wrong -- the call must set it
+				LaidOutGraph focused;
+				c.ReadPainterMaterialGraphLaidOutFocused( ChunkCategory::Object, String( "obj1" ), focused, &degraded );
+				Check( !degraded, "PART13a: a non-contended focused read reports outDegraded == false" );
+				Check( focused.graph.nodes.size() == closure.size(),
+				       "PART13a: the focused subgraph has EXACTLY as many nodes as the appearance closure" );
+				Check( focused.positions.size() == focused.graph.nodes.size(),
+				       "PART13a: positions is parallel to graph.nodes" );
+
+				bool sameOrder = ( focused.graph.nodes.size() == closure.size() );
+				for( std::size_t i = 0; sameOrder && i < closure.size(); ++i ) {
+					if( focused.graph.nodes[i].category != closure[i].category
+					 || std::string( focused.graph.nodes[i].name.c_str() ) != std::string( closure[i].name.c_str() ) )
+						sameOrder = false;
+				}
+				Check( sameOrder, "PART13a: the focused subgraph's node ORDER matches AppearanceClosureForObject's exactly" );
+
+				// Valid ranks: GraphLayout::ComputeRanks (Kahn's algorithm)
+				// finalizes a LEAF node (no out-edges -- field1, which
+				// references nothing) at rank 0 FIRST, then propagates
+				// rank = 1 + max(dependency rank) toward whatever
+				// references it -- so rank (and therefore layout x, "Column
+				// x = rank * columnSpacing") strictly INCREASES
+				// leaf-to-root: field1.x < ramp1.x < matA.x. All positions
+				// non-negative "by construction" (GraphLayout's own
+				// invariant).
+				double matAx = -1, ramp1x = -1, field1x = -1;
+				bool allNonNegative = true;
+				for( std::size_t i = 0; i < focused.graph.nodes.size(); ++i ) {
+					const std::string n( focused.graph.nodes[i].name.c_str() );
+					if( focused.positions[i].x < 0.0 || focused.positions[i].y < 0.0 ) allNonNegative = false;
+					if( n == "matA" )   matAx   = focused.positions[i].x;
+					if( n == "ramp1" )  ramp1x  = focused.positions[i].x;
+					if( n == "field1" ) field1x = focused.positions[i].x;
+				}
+				Check( allNonNegative, "PART13a: every focused-subgraph position is non-negative" );
+				Check( field1x >= 0 && ramp1x > field1x && matAx > ramp1x,
+				       "PART13a: layout rank strictly increases field1 -> ramp1 -> matA (leaf-to-root)" );
+			}
+
+			// ---- (b) mid-chain Painter-category focused read: node +
+			// upstream only. Downstream referrers (matA, matB -- BOTH
+			// reference ramp1) are EXCLUDED, even though ramp1 itself is
+			// SHARED (2 referrers) ----
+			{
+				bool degraded = true;
+				LaidOutGraph focused;
+				c.ReadPainterMaterialGraphLaidOutFocused( ChunkCategory::Painter, String( "ramp1" ), focused, &degraded );
+				Check( !degraded, "PART13b: a non-contended focused read reports outDegraded == false" );
+				Check( focused.graph.nodes.size() == 2,
+				       "PART13b: ramp1's focused subgraph has exactly 2 nodes (ramp1, field1) -- upstream only" );
+
+				bool hasRamp1 = false, hasField1 = false, hasMatA = false, hasMatB = false;
+				for( const auto& n : focused.graph.nodes ) {
+					const std::string nm( n.name.c_str() );
+					if( n.category == ChunkCategory::Painter && nm == "ramp1" )  hasRamp1 = true;
+					if( n.category == ChunkCategory::Painter && nm == "field1" ) hasField1 = true;
+					if( n.category == ChunkCategory::Material && nm == "matA" )  hasMatA = true;
+					if( n.category == ChunkCategory::Material && nm == "matB" )  hasMatB = true;
+				}
+				Check( hasRamp1 && hasField1, "PART13b: ramp1 and its upstream field1 are both present" );
+				Check( !hasMatA && !hasMatB,
+				       "PART13b: DOWNSTREAM REFERRERS matA and matB are EXCLUDED from the focused subgraph" );
+			}
+
+			// ---- (c) unknown name -> empty ----
+			{
+				LaidOutGraph focused;
+				c.ReadPainterMaterialGraphLaidOutFocused( ChunkCategory::Painter, String( "no_such_painter" ), focused );
+				Check( focused.graph.nodes.empty(), "PART13c: an unknown (category,name) resolves an empty focused subgraph" );
+			}
+			{
+				LaidOutGraph focused;
+				c.ReadPainterMaterialGraphLaidOutFocused( ChunkCategory::Object, String( "no_such_object" ), focused );
+				Check( focused.graph.nodes.empty(), "PART13c: an unknown OBJECT resolves an empty focused subgraph too" );
+			}
+
+			j->release();
+		}
+
+		// ---- (d) degraded propagation: a focused read for cat==Object
+		// made WHILE a render owns the scene reports outDegraded == true
+		// and an empty graph -- same RunPreviewRenderParked technique
+		// PART12(e) already established (see that PART's own comment for
+		// why Start()/DoOneRenderPass is NOT the right mechanism here) ----
+		{
+			Job* rj = new Job();
+			SceneEditController dc( *rj, /*interactiveRasterizer*/0 );
+			std::thread renderThread( [&dc]() {
+				dc.RunPreviewRenderParked( []() {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+				} );
+			} );
+
+			bool sawRenderOwn = false;
+			for( int i = 0; i < 200; ++i ) {
+				if( dc.ForTest_RenderOwnsScene() ) { sawRenderOwn = true; break; }
+				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			}
+			Check( sawRenderOwn, "PART13d: the parked render is observed genuinely owning the scene" );
+
+			if( sawRenderOwn ) {
+				bool degraded = false;
+				LaidOutGraph focused;
+				dc.ReadPainterMaterialGraphLaidOutFocused( ChunkCategory::Object, String( "obj1" ), focused, &degraded );
+				Check( degraded, "PART13d: a focused Object read made WHILE a render owns the scene reports outDegraded == true" );
+				Check( focused.graph.nodes.empty(), "PART13d: a degraded focused read returns an empty graph" );
+			}
+
+			renderThread.join();
+			rj->release();
+		}
+	}
+
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

@@ -160,6 +160,19 @@ private struct GraphCanvasSnapshot {
     var generation: UInt64 = 0
 }
 
+/// User-requested slice: the canvas's "show all nodes" vs "show only the
+/// selection's subgraph" view-scope toggle. Ephemeral UI state ONLY --
+/// never persisted to the `.risegraph.json` sidecar or to any settings
+/// store; resets to `.all` on every fresh app launch (a plain `@State`
+/// default, no `@AppStorage`/`UserDefaults` involved anywhere in this
+/// file). See `NodeGraphCanvas.performFocusedReload`'s own comment for
+/// the full behavior contract.
+private enum GraphViewScope: String, CaseIterable, Identifiable {
+    case all, focused
+    var id: String { rawValue }
+    var label: String { self == .all ? "All" : "Focused" }
+}
+
 // MARK: - Layout constants
 
 private enum GraphMetrics {
@@ -375,6 +388,17 @@ struct NodeGraphCanvas: View {
     @State private var lastFetchedEpoch: Int = -1
     @State private var reloadWorkItem: DispatchWorkItem?
 
+    /// User-requested slice: "All" vs "Focused" view-scope toggle -- see
+    /// `GraphViewScope`'s own comment (ephemeral, never persisted).
+    @State private var viewScope: GraphViewScope = .all
+    /// Bounded retry for a DEGRADED focused-view fetch (a render owns the
+    /// scene) -- the SAME cancel-and-reschedule idiom
+    /// `spotlightRetryWorkItem` uses, but a SEPARATE slot: the two can be
+    /// in flight at once (a focused fetch can degrade independently of a
+    /// spotlight fetch) and serve different purposes, so one must never
+    /// cancel the other. See `performFocusedReload`'s own comment.
+    @State private var focusedRetryWorkItem: DispatchWorkItem?
+
     @State private var scale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
     @GestureState private var dragDelta: CGSize = .zero
@@ -480,6 +504,23 @@ struct NodeGraphCanvas: View {
             // spotlight to update IMMEDIATELY, not 250ms later -- this
             // explicit, undebounced call is what delivers that.
             refreshSpotlight()
+            // Focused mode's ENTIRE canvas content (not just the spotlight
+            // overlay) depends on the current selection -- without this,
+            // switching selections while focused would show the OLD
+            // subgraph (with the spotlight already pointing at nodes not
+            // yet in it) for up to 250ms until the debounced reload above
+            // catches up. `performReload` in focused mode never
+            // epoch-gates, so this is cheap and idempotent with that
+            // later debounced call.
+            if viewScope == .focused { performReload(force: true) }
+        }
+        .onChange(of: viewScope) { _, _ in
+            // Toggling the view scope must ALWAYS force a fresh fetch,
+            // regardless of `lastFetchedEpoch` -- switching Focused ->
+            // All must re-fetch the all-view even when sceneEpoch hasn't
+            // moved since the last (focused) fetch, or the canvas would
+            // keep showing the stale focused subgraph.
+            scheduleReload(debounced: false, force: true)
         }
         .background(keyboardShortcuts)
         .sheet(isPresented: $showPalette) {
@@ -567,6 +608,20 @@ struct NodeGraphCanvas: View {
                 .font(Theme.mono(10))
                 .foregroundColor(Theme.textDim)
             Spacer(minLength: 4)
+            // User-requested slice: "All" vs "Focused" view-scope toggle.
+            // A segmented Picker is this app's own idiomatic control for a
+            // small closed set of mutually-exclusive view modes (matches
+            // the left-panel tab strip's own two/three-way pattern
+            // elsewhere in this app). Ephemeral -- `viewScope` is a plain
+            // `@State`, never written to any persisted store.
+            Picker("", selection: $viewScope) {
+                ForEach(GraphViewScope.allCases) { scope in
+                    Text(scope.label).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 140)
+            .help("All: every Painter/Material/Function chunk. Focused: only the current selection's own subgraph.")
             Button {
                 openPalette(atViewportCenterOf: lastViewportSize)
             } label: {
@@ -920,14 +975,11 @@ struct NodeGraphCanvas: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
     }
 
-    private func performReload(force: Bool) {
-        guard let bridge else { return }
-        let epoch = Int(bridge.sceneEpoch)
-        guard force || epoch != lastFetchedEpoch else { return }
-        lastFetchedEpoch = epoch
-
-        let g = bridge.painterMaterialGraph()
-        let nodes: [GraphCanvasNode] = g.nodes.enumerated().map { idx, n in
+    /// Shared by the All-view and Focused-view fetch paths -- ONE
+    /// RISEGraphNode -> GraphCanvasNode conversion, not two independently
+    /// maintained copies.
+    private func nodesFrom(_ g: RISEPainterMaterialGraph) -> [GraphCanvasNode] {
+        g.nodes.enumerated().map { idx, n in
             GraphCanvasNode(
                 handle: n.handle,
                 index: idx,
@@ -946,6 +998,12 @@ struct NodeGraphCanvas: View {
                 }
             )
         }
+    }
+
+    /// Folds a freshly fetched node array into `snapshot`, dropping a
+    /// vanished selection and re-deriving the spotlight -- the common tail
+    /// both the All-view and Focused-view fetch paths share.
+    private func applyFetchedNodes(_ nodes: [GraphCanvasNode], generation: UInt64) {
         // A structural refresh can retarget/invalidate an outstanding
         // selection (the node could have been deleted); dropping it is
         // the safe default (matches OutlinerView's own stance of not
@@ -953,7 +1011,7 @@ struct NodeGraphCanvas: View {
         if let sel = selectedHandle, !nodes.contains(where: { $0.handle == sel }) {
             selectedHandle = nil
         }
-        snapshot = GraphCanvasSnapshot(nodes: nodes, generation: g.generation)
+        snapshot = GraphCanvasSnapshot(nodes: nodes, generation: generation)
         // A structural refresh can change which nodes exist -- re-derive
         // the spotlight against the fresh snapshot rather than pruning the
         // stale handle set in place, since the closure itself may have
@@ -961,6 +1019,102 @@ struct NodeGraphCanvas: View {
         // not just lost a node outright. Pass `nodes` directly (see
         // `refreshSpotlight`'s own `freshNodes` parameter comment).
         refreshSpotlight(freshNodes: nodes)
+    }
+
+    private func performReload(force: Bool) {
+        guard let bridge else { return }
+        let epoch = Int(bridge.sceneEpoch)
+
+        if viewScope == .focused {
+            // Focused mode NEVER epoch-gates (review-round-style reasoning,
+            // same as refreshSpotlight's own): a pure selection change
+            // needs a fresh focused fetch for the NEW selection, and a
+            // selection change never bumps sceneEpoch (only a structural
+            // mutation does). `lastFetchedEpoch` is still tracked below so
+            // a LATER switch back to All-view (forced explicitly via
+            // `.onChange(of: viewScope)`) is never confused by it.
+            lastFetchedEpoch = epoch
+            performFocusedReload(bridge: bridge)
+            return
+        }
+
+        guard force || epoch != lastFetchedEpoch else { return }
+        lastFetchedEpoch = epoch
+        let g = bridge.painterMaterialGraph()
+        applyFetchedNodes(nodesFrom(g), generation: g.generation)
+    }
+
+    /// `RISE::ChunkCategory::Object`'s ordinal (ChunkDescriptor.h) -- the
+    /// SAME "cast the parser's enum" convention `GraphCanvasNode.category`
+    /// already uses for Painter(0)/Function(1)/Material(2), extended here
+    /// for the one call (the focused-view Object case) that needs it.
+    private static let kChunkCategoryObject = 8
+
+    /// The (category, name) the Focused view should root its subgraph at,
+    /// or `nil` when there is nothing to focus on. TWO DELIBERATELY
+    /// DIFFERENT sources, matching the design's own "object via shared
+    /// selection, or the canvas's own selected node" split:
+    ///   - an OBJECT selection reads the SHARED bridge selection
+    ///     (`selectionRowName`, the same instancing-correct resolution
+    ///     the spotlight itself uses).
+    ///   - anything else reads THIS CANVAS's own `selectedHandle` against
+    ///     the CURRENT `snapshot.nodes` -- NOT `bridge.selectionCategory`/
+    ///     `selectionName` -- because the shared bridge selection collapses
+    ///     ChunkCategory::Function(1) into the Painter UI category
+    ///     (`selectNode`'s own comment), which would resolve a Function
+    ///     node's focused subgraph against the WRONG category and fail to
+    ///     find it. The canvas's own node data still carries the node's
+    ///     REAL category (0/1/2), so reading it from there is exact. This
+    ///     also means a Material/Painter selected via the OUTLINER (never
+    ///     clicked on this canvas) does NOT define a focus target -- an
+    ///     explicit scoping choice, not an oversight: falls back to "no
+    ///     selection" (show All) in that case.
+    private func currentFocusTarget(bridge: RISEViewportBridge) -> (category: Int, name: String)? {
+        if bridge.selectionCategory == .object {
+            let n = bridge.selectionRowName
+            return n.isEmpty ? nil : (Self.kChunkCategoryObject, n)
+        }
+        if let h = selectedHandle, let node = snapshot.nodes.first(where: { $0.handle == h }) {
+            return (node.category, node.name)
+        }
+        return nil
+    }
+
+    private func performFocusedReload(bridge: RISEViewportBridge) {
+        guard let target = currentFocusTarget(bridge: bridge) else {
+            // No selection -- a STABLE state, not a hiccup: fall back to
+            // showing ALL nodes rather than an empty canvas (design
+            // decision, distinct from the degraded case below, which must
+            // NOT fall back -- see that branch's own comment).
+            focusedRetryWorkItem?.cancel()
+            focusedRetryWorkItem = nil
+            let g = bridge.painterMaterialGraph()
+            applyFetchedNodes(nodesFrom(g), generation: g.generation)
+            return
+        }
+        guard let g = bridge.painterMaterialGraphFocused(category: target.category, name: target.name) else {
+            // DEGRADED (a render owns the scene) -- per design, this must
+            // NOT flip to the all-view and back (that would flicker every
+            // time a render happens to be in flight): keep showing
+            // whatever is CURRENTLY on screen, untouched, and retry once
+            // ~0.5s out via the SAME bounded cancel-and-reschedule idiom
+            // `refreshSpotlight`'s own retry already established (a
+            // SEPARATE work-item slot, not the shared spotlight one --
+            // the two can legitimately be in flight at once and serve
+            // different purposes, so they must not cancel each other).
+            focusedRetryWorkItem?.cancel()
+            let retry = DispatchWorkItem { performReload(force: true) }
+            focusedRetryWorkItem = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
+            return
+        }
+        focusedRetryWorkItem?.cancel()
+        focusedRetryWorkItem = nil
+        // A genuinely empty focused subgraph (e.g. an object with no
+        // material bound) IS a real, final answer -- shown as-is (an
+        // empty canvas), never retried; this branch is reached only for a
+        // non-degraded (possibly empty) result.
+        applyFetchedNodes(nodesFrom(g), generation: g.generation)
     }
 
     // MARK: - S21: drag-to-reposition
@@ -976,8 +1130,22 @@ struct NodeGraphCanvas: View {
     /// `sceneEpoch`, by design, so nothing would trigger one anyway).
     /// On failure the override simply clears, snapping the node back to
     /// its last-known-good position with a status alert explaining why.
+    ///
+    /// FOCUSED MODE NEVER COMMITS (user-requested view-scope slice):
+    /// `.risegraph.json` sidecar positions belong to the All-view's
+    /// persisted layout ONLY -- a focused subgraph's layout is transient,
+    /// recomputed fresh on every focused fetch (see
+    /// `ReadPainterMaterialGraphLaidOutFocused`'s own contract), so
+    /// writing a drag's endpoint into the sidecar while focused would
+    /// silently corrupt the all-view's layout with a position that has no
+    /// business there. Least-code choice per the design brief: the drag
+    /// still plays out VISUALLY via `liveDragOverride` above (unchanged),
+    /// but skipping the write here means the node simply snaps back to
+    /// its transient auto-layout position once released -- never a
+    /// refusal dialog, never a sidecar write.
     private func handleNodeDragEnded(_ node: GraphCanvasNode, to point: CGPoint) {
         liveDragOverride = nil
+        guard viewScope != .focused else { return }
         guard let bridge else { return }
         var outError: NSString? = nil
         let ok = bridge.writeGraphNodeLayoutPosition(name: node.name, x: Double(point.x), y: Double(point.y), outError: &outError)

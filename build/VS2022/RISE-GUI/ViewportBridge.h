@@ -1264,6 +1264,42 @@ public:
     /// reasoning painterMaterialGraph() documents above.
     QVector<AppearanceClosureEntry> appearanceClosureForObject(const QString& objectName, bool* degraded = nullptr) const;
 
+    /// User-requested slice: the node-graph canvas's "All" vs "Focused"
+    /// view-scope toggle. Focused variant of painterMaterialGraph() --
+    /// the returned PainterGraph's `nodes` contains ONLY the subgraph
+    /// rooted at `(category, name)`, laid out fresh -- see
+    /// SceneEditController::ReadPainterMaterialGraphLaidOutFocused's own
+    /// header comment for the exact subgraph definition:
+    ///   - `category == 8` (RISE::ChunkCategory::Object -- the SAME "cast
+    ///     the parser's enum" ordinal PainterGraphNode::category already
+    ///     uses for Painter(0)/Function(1)/Material(2), extended here to
+    ///     also accept Object): the object's APPEARANCE CLOSURE, identical
+    ///     to appearanceClosureForObject()'s own resolution + walk.
+    ///   - `category` Painter(0)/Function(1)/Material(2) (a canvas node
+    ///     itself): that node plus its own transitive closure in the SAME
+    ///     direction (its "inputs") -- DOWNSTREAM REFERRERS of the
+    ///     selected node are EXCLUDED, a narrower view than the Object
+    ///     case would ever produce for the same node, by design.
+    /// Empty `nodes` for an unknown `name`, or (Object case) an
+    /// unresolved/ambiguous bound material, or (non-Object case) an
+    /// ambiguous `(category, name)` -- same refusal convention as
+    /// ResolveUniqueGraphNodeIndex.
+    ///
+    /// `degraded` -- the SAME contract appearanceClosureForObject()
+    /// documents just above: set true ONLY when the Object-category
+    /// case's live object->material resolution could not get a
+    /// non-blocking hold of the commit lock (a render owns the scene);
+    /// false on every other outcome, including a genuinely empty result.
+    /// The non-Object case never degrades this way (a canvas-node lookup
+    /// never touches the live object/material manager). Defaults to
+    /// nullptr.
+    ///
+    /// LAYOUT IS TRANSIENT: this NEVER reads or writes the
+    /// .risegraph.json sidecar -- see the C++ method's own comment.
+    /// Toggling back to the all-view (painterMaterialGraph()) is
+    /// completely unaffected by any number of prior focused reads.
+    PainterGraph painterMaterialGraphFocused(int category, const QString& name, bool* degraded = nullptr) const;
+
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →
     /// active rasterizer chunk name; Film → "default" (a scene has

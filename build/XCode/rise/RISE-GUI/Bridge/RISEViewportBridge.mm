@@ -2014,6 +2014,48 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return [[RISESceneTree alloc] initWithNodes:nodes roots:roots];
 }
 
+// Shared by -painterMaterialGraph and -painterMaterialGraphFocusedForCategory:name:
+// (user-requested focused-view slice) -- ONE GraphPort/GraphNode ->
+// RISEGraphPort/RISEGraphNode conversion, not two independently
+// maintained copies. Extracted verbatim from -painterMaterialGraph's own
+// prior inline body.
+static NSArray<RISEGraphPort *>* ConvertGraphPortsToRISE(const std::vector<RISE::SceneEditController::GraphPort>& ports) {
+    NSMutableArray<RISEGraphPort *> *out = [NSMutableArray arrayWithCapacity:ports.size()];
+    for (const RISE::SceneEditController::GraphPort &p : ports) {
+        const NSInteger otherIdx =
+            (p.otherNode == RISE::SceneEditController::kInvalidNodeIndex)
+                ? -1 : static_cast<NSInteger>(p.otherNode);
+        NSString *paramName = NamedViewDisplayName(p.paramName.c_str()) ?: @"";
+        NSString *otherName = NamedViewDisplayName(p.otherName.c_str()) ?: @"";
+        [out addObject:[[RISEGraphPort alloc] initWithParamName:paramName
+                                                       occurrence:p.occurrence
+                                                   otherNodeIndex:otherIdx
+                                                        otherName:otherName]];
+    }
+    return out;
+}
+
+static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const RISE::SceneEditController::PainterMaterialGraphLaidOut& g) {
+    const std::size_t n = g.graph.nodes.size();
+    NSMutableArray<RISEGraphNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
+    for (std::size_t i = 0; i < n; ++i) {
+        const RISE::SceneEditController::GraphNode &gn = g.graph.nodes[i];
+        const RISE::SceneEditController::GraphNodePosition &pos = g.positions[i];
+        NSString *name = NamedViewDisplayName(gn.name.c_str()) ?: @"";
+        NSString *chunkKeyword = NamedViewDisplayName(gn.chunkKeyword.c_str()) ?: @"";
+        [nodes addObject:[[RISEGraphNode alloc] initWithHandle:gn.handle
+                                                            name:name
+                                                    chunkKeyword:chunkKeyword
+                                                        category:static_cast<NSInteger>(gn.category)
+                                                        defCount:gn.defCount
+                                                               x:pos.x
+                                                               y:pos.y
+                                                        outEdges:ConvertGraphPortsToRISE(gn.outEdges)
+                                                         inEdges:ConvertGraphPortsToRISE(gn.inEdges)]];
+    }
+    return nodes;
+}
+
 - (RISEPainterMaterialGraph *)painterMaterialGraph {
     if (!_controller) {
         return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
@@ -2032,42 +2074,23 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     // exists to avoid.
     SceneEditController::PainterMaterialGraphLaidOut g;
     _controller->ReadPainterMaterialGraphLaidOut(g);
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+}
 
-    const std::size_t n = g.graph.nodes.size();
-    NSMutableArray<RISEGraphNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
-    for (std::size_t i = 0; i < n; ++i) {
-        const SceneEditController::GraphNode &gn = g.graph.nodes[i];
-        const SceneEditController::GraphNodePosition &pos = g.positions[i];
-
-        auto convertPorts = [](const std::vector<SceneEditController::GraphPort> &ports) {
-            NSMutableArray<RISEGraphPort *> *out = [NSMutableArray arrayWithCapacity:ports.size()];
-            for (const SceneEditController::GraphPort &p : ports) {
-                const NSInteger otherIdx =
-                    (p.otherNode == SceneEditController::kInvalidNodeIndex)
-                        ? -1 : static_cast<NSInteger>(p.otherNode);
-                NSString *paramName = NamedViewDisplayName(p.paramName.c_str()) ?: @"";
-                NSString *otherName = NamedViewDisplayName(p.otherName.c_str()) ?: @"";
-                [out addObject:[[RISEGraphPort alloc] initWithParamName:paramName
-                                                               occurrence:p.occurrence
-                                                           otherNodeIndex:otherIdx
-                                                                otherName:otherName]];
-            }
-            return out;
-        };
-
-        NSString *name = NamedViewDisplayName(gn.name.c_str()) ?: @"";
-        NSString *chunkKeyword = NamedViewDisplayName(gn.chunkKeyword.c_str()) ?: @"";
-        [nodes addObject:[[RISEGraphNode alloc] initWithHandle:gn.handle
-                                                            name:name
-                                                    chunkKeyword:chunkKeyword
-                                                        category:static_cast<NSInteger>(gn.category)
-                                                        defCount:gn.defCount
-                                                               x:pos.x
-                                                               y:pos.y
-                                                        outEdges:convertPorts(gn.outEdges)
-                                                         inEdges:convertPorts(gn.inEdges)]];
+- (nullable RISEPainterMaterialGraph *)painterMaterialGraphFocusedForCategory:(NSInteger)category name:(NSString *)name {
+    if (!_controller || name.length == 0) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
     }
-    return [[RISEPainterMaterialGraph alloc] initWithNodes:nodes generation:g.graph.generation];
+    const char* utf8 = [name UTF8String] ?: "";
+    bool degraded = false;
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    _controller->ReadPainterMaterialGraphLaidOutFocused(
+        static_cast<RISE::ChunkCategory>(category), RISE::String(utf8), g, &degraded);
+    // nil vs empty is load-bearing here -- the SAME contract
+    // -appearanceClosureForObject: documents (see this method's own
+    // header comment). Do NOT collapse this to "return empty either way".
+    if (degraded) return nil;
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
 }
 
 - (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName {

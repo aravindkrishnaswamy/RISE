@@ -3299,6 +3299,61 @@ namespace RISE
 		std::vector<AppearanceClosureEntry> AppearanceClosureForObject(
 			const String& objectName, bool* outDegraded = nullptr ) const;
 
+		// =====================================================================
+		// Node-graph FOCUSED-VIEW read -- user-requested slice: the canvas
+		// toggles between "show all nodes" (ReadPainterMaterialGraphLaidOut,
+		// above) and "show only the selection's subgraph". Subgraph
+		// selection AND layout live here in C++ (this class's own C4
+		// convention: logic in the shared core, shells stay thin), not
+		// duplicated per platform.
+		// =====================================================================
+
+		//! Focused variant of `ReadPainterMaterialGraphLaidOut`: `out.graph`
+		//! contains ONLY the subgraph rooted at `(cat, name)`, laid out
+		//! fresh. Subgraph definition:
+		//!   - `cat == ChunkCategory::Object`: the object's APPEARANCE
+		//!     CLOSURE -- exactly `AppearanceClosureForObject`'s own
+		//!     resolution (live bound material, instancing-correct) and BFS
+		//!     (shared code, not a second walk) -- the object's bound
+		//!     material plus its full transitive Painter/Function/Material
+		//!     closure.
+		//!   - `cat == Painter/Function/Material` (a canvas node): that
+		//!     node plus its own transitive closure in the SAME direction
+		//!     (`BFSGraphClosure`'s outEdges walk -- a node's "inputs",
+		//!     the identical direction the Object case walks from a
+		//!     material). Nodes that only REFERENCE the selected node
+		//!     (downstream referrers, reachable via inEdges, never
+		//!     followed) are EXCLUDED from the subgraph -- this is a
+		//!     narrower view than `AppearanceClosureForObject` would ever
+		//!     produce for the same node, by design (an "upstream/inputs
+		//!     only" focus, not "everything touching this node").
+		//! `name` unknown, or (for the Object case) the object's bound
+		//! material AMBIGUOUS/unresolved, or (for the non-Object case)
+		//! `(cat, name)` itself ambiguous/not-found -- empty `out.graph`,
+		//! same refusal convention as `ResolveUniqueGraphNodeIndex`.
+		//!
+		//! `outDegraded`: set true ONLY when the Object-category case's
+		//! live object->material resolution could not get a non-blocking
+		//! hold of the commit lock (a render owns the scene) -- see
+		//! `AppearanceClosureForObject`'s own `outDegraded` comment for the
+		//! full contract; identical semantics here. The non-Object case
+		//! never degrades this way (`ReadPainterMaterialGraph` itself never
+		//! blocks; under contention it serves a stale published snapshot,
+		//! not an empty/failed read), so `*outDegraded` is always `false`
+		//! for a Painter/Function/Material `cat`.
+		//!
+		//! LAYOUT IS TRANSIENT (design decision, NOT an oversight): unlike
+		//! `ReadPainterMaterialGraphLaidOut`, this NEVER reads or writes the
+		//! `.risegraph.json` sidecar -- `GraphLayout::LayoutGraph` runs
+		//! against an always-empty saved-positions map, fresh on every
+		//! call, so a focused subgraph's layout can never leak into, or be
+		//! polluted by, the persisted all-view layout. Toggling back to the
+		//! all-view reads the sidecar exactly as it stood before any
+		//! focused excursion.
+		void ReadPainterMaterialGraphLaidOutFocused( ChunkCategory cat, const String& name,
+		                                              PainterMaterialGraphLaidOut& out,
+		                                              bool* outDegraded = nullptr ) const;
+
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
 		//! instance.  Each fresh controller therefore has a unique
@@ -5145,6 +5200,31 @@ namespace RISE
 		virtual void ForTest_OnSaveEngineAboutToRun() {}
 
 	private:
+		// ---- Node-graph spotlight / focused-view shared helpers --------
+		// See AppearanceClosureForObject and ReadPainterMaterialGraphLaidOutFocused
+		// (both public, above) for the two consumers of these three.
+
+		//! Object -> live bound material name, locking-safe (try_to_lock,
+		//! degrade rather than block behind a render). See the .cpp
+		//! definition's own comment for the full rationale; shared by
+		//! AppearanceClosureForObject and
+		//! ReadPainterMaterialGraphLaidOutFocused's Object-category case.
+		String ResolveObjectMaterialNameLocked_( const String& objectName, bool* outDegraded = nullptr ) const;
+
+		//! BFS from `startIdx` over `g` via outEdges only (the "downstream
+		//! reference" / "this node's own inputs" direction). Returns
+		//! visited indices in discovery order, `startIdx` first. PURE and
+		//! static -- see the .cpp definition's own comment.
+		static std::vector<unsigned int> BFSGraphClosure( const PainterMaterialGraph& g, unsigned int startIdx );
+
+		//! Filter `g` down to exactly the nodes named by `keep` (indices
+		//! into `g.nodes`, caller's own order), remapping every port's
+		//! `otherNode` into the new index space or to `kInvalidNodeIndex`
+		//! when the target is not itself kept. PURE and static -- see the
+		//! .cpp definition's own comment.
+		static PainterMaterialGraph FilterPainterMaterialGraph(
+			const PainterMaterialGraph& g, const std::vector<unsigned int>& keep );
+
 		bool PrepareForDestructionClaimed_();
 		void RenderLoop();
 		void KickRender();

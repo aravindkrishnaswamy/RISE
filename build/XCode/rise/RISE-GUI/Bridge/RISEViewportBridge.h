@@ -1089,6 +1089,42 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName
     NS_SWIFT_NAME(appearanceClosure(forObject:));
 
+/// User-requested slice: the node-graph canvas's "All" vs "Focused"
+/// view-scope toggle. Focused variant of `-painterMaterialGraph` --
+/// `.nodes` contains ONLY the subgraph rooted at `(category, name)`, laid
+/// out fresh -- see `SceneEditController::ReadPainterMaterialGraphLaidOutFocused`'s
+/// own header comment for the exact subgraph definition:
+///   - `category == 8` (`RISE::ChunkCategory::Object` -- the SAME "cast
+///     the parser's enum" ordinal `RISEGraphNode.category` already uses
+///     for Painter(0)/Function(1)/Material(2), extended here to also
+///     accept Object): the object's APPEARANCE CLOSURE, identical to
+///     `-appearanceClosureForObject:`'s own resolution + walk.
+///   - `category` Painter(0)/Function(1)/Material(2) (a canvas node
+///     itself): that node plus its own transitive closure in the SAME
+///     direction (its "inputs") -- DOWNSTREAM REFERRERS of the selected
+///     node are EXCLUDED, a narrower view than the Object case would ever
+///     produce for the same node, by design.
+/// Empty `.nodes` (never nil) for an unknown `name`, or (Object case) an
+/// unresolved/ambiguous bound material, or (non-Object case) an
+/// ambiguous `(category, name)` -- same refusal convention as every other
+/// `ResolveUniqueGraphNodeIndex`-backed lookup on this surface.
+///
+/// NIL VS EMPTY IS LOAD-BEARING here, the SAME contract
+/// `-appearanceClosureForObject:` documents: nil means the Object case's
+/// live object->material resolution could not get a non-blocking hold of
+/// the commit lock (a render owns the scene) -- retry your next pass, not
+/// "nothing to show". The non-Object case never degrades this way (a
+/// canvas-node lookup never touches the live object/material manager), so
+/// it is always a real, resolved (possibly empty) answer.
+///
+/// LAYOUT IS TRANSIENT: this NEVER reads or writes the `.risegraph.json`
+/// sidecar -- see the C++ method's own comment. Toggling back to the
+/// all-view (`-painterMaterialGraph`) is completely unaffected by any
+/// number of prior focused reads.
+- (nullable RISEPainterMaterialGraph *)painterMaterialGraphFocusedForCategory:(NSInteger)category
+                                                                            name:(NSString *)name
+    NS_SWIFT_NAME(painterMaterialGraphFocused(category:name:));
+
 /// Phase 4b: per-category panel selection.  Returns the entity
 /// name picked in `category`'s section, or empty when nothing is
 /// picked (section collapsed).  Distinct from `selectionName`

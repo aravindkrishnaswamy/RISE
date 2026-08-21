@@ -6021,54 +6021,157 @@ void SceneEditController::ResyncObjectBoundSections_()
 // SceneEditController.h for the full contract.
 // =====================================================================
 
+// Resolve the object's LIVE bound material name, OR degrade -- factored
+// out of AppearanceClosureForObject (focused-view slice) so the SAME
+// locking-safe object->material resolution serves BOTH that method and
+// ReadPainterMaterialGraphLaidOutFocused's Object-category case, rather
+// than two independently-maintained copies of this exact lock discipline.
+// See AppearanceClosureForObject's own (former, now-shared) comment below
+// for the full rationale: FindObjectMaterialName over the retained
+// `material` param because the latter is wrong for an instancing chunk,
+// and the try_to_lock-and-degrade pattern because this is a POLLED,
+// UI-thread-reached call that must never block behind a render.
+//
+// Returns empty String either way on a non-degraded miss (unknown object,
+// no material bound) -- `*outDegraded` is what tells that apart from
+// contention; never null-unsafe (outDegraded may be null, matching every
+// other out-param on this surface).
+String SceneEditController::ResolveObjectMaterialNameLocked_( const String& objectName, bool* outDegraded ) const
+{
+	if( outDegraded ) *outDegraded = false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+		if( outDegraded ) *outDegraded = true;   // a render owns the scene -- this is contention, report it
+		return String();
+	}
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) {
+		if( outDegraded ) *outDegraded = true;   // lock contended -- not a block, and not a real answer
+		return String();
+	}
+	return FindObjectMaterialName( mJob, objectName );
+}
+
+// BFS from `startIdx` over `g`, following outEdges ONLY -- the SAME
+// "downstream reference" direction a material's own outEdges walk toward
+// its input painters (a material's outEdges point AT the painters it
+// references; see GraphNode's own outEdges/inEdges comment). Returns the
+// visited indices in discovery order, `startIdx` itself first. A
+// node-less port (dangling, or pointing outside this graph's modeled
+// categories) is skipped, never followed and never a crash.
+//
+// Shared by AppearanceClosureForObject (walks from a resolved material)
+// and ReadPainterMaterialGraphLaidOutFocused (walks from either a
+// resolved material -- Object-category selection -- or directly from a
+// selected Painter/Function/Material canvas node) -- ONE BFS
+// implementation for this graph, not two independently maintained walks.
+// PURE and static: no controller state, no lock, testable against a
+// synthetic graph exactly like BuildPainterMaterialGraph.
+std::vector<unsigned int> SceneEditController::BFSGraphClosure( const PainterMaterialGraph& g, unsigned int startIdx )
+{
+	std::vector<unsigned int> frontier;
+	if( startIdx >= g.nodes.size() ) return frontier;
+	std::vector<bool> visited( g.nodes.size(), false );
+	visited[ startIdx ] = true;
+	frontier.push_back( startIdx );
+
+	std::size_t head = 0;
+	while( head < frontier.size() ) {
+		const unsigned int cur = frontier[head++];
+		for( const GraphPort& p : g.nodes[cur].outEdges ) {
+			if( p.otherNode == kInvalidNodeIndex ) continue;             // dangling / node-less port -- skip (design: "none"/unbound slots are skipped)
+			if( p.otherNode >= g.nodes.size() ) continue;                // defensive; never true for a snapshot BuildPainterMaterialGraph produced
+			if( visited[ p.otherNode ] ) continue;
+			visited[ p.otherNode ] = true;
+			frontier.push_back( p.otherNode );
+		}
+	}
+	return frontier;
+}
+
+// Filter `g` down to exactly the nodes named by `keep` (indices into
+// `g.nodes`, in the caller's own presentation order -- e.g. BFSGraphClosure's
+// discovery order), remapping every port's `otherNode` index into the NEW
+// (filtered) index space, or to `kInvalidNodeIndex` (node-less) when the
+// port's target is not itself in `keep` -- e.g. a kept node's inEdges row
+// from a referrer OUTSIDE the focused subgraph becomes a node-less port,
+// never a crash, never a silently dropped port (same "never drop an edge,
+// only node-less it" convention BuildPainterMaterialGraph itself
+// documents). This is what lets a focused-view node still show an
+// accurate fan-out badge (`inEdges.size() > 1`) even when most of its
+// referrers are out of view.
+//
+// Each kept node's ORIGINAL GraphNodeHandle is preserved VERBATIM -- this
+// function invents no new identity space, so the returned graph carries
+// `g.generation`/`g.rebuildCount` unchanged and a handle from a full read
+// resolves identically against a focused read of the same generation (and
+// vice versa) via the ordinary ResolveGraphNodeHandle.
+//
+// PURE and static, same testability posture as BFSGraphClosure.
+SceneEditController::PainterMaterialGraph SceneEditController::FilterPainterMaterialGraph(
+	const PainterMaterialGraph& g, const std::vector<unsigned int>& keep )
+{
+	PainterMaterialGraph out;
+	out.generation   = g.generation;
+	out.rebuildCount = g.rebuildCount;
+
+	std::vector<int> remap( g.nodes.size(), -1 );   // old index -> new index, -1 = not kept
+	for( std::size_t i = 0; i < keep.size(); ++i ) {
+		if( keep[i] < g.nodes.size() ) remap[ keep[i] ] = static_cast<int>( i );
+	}
+
+	auto remapPorts = [&]( const std::vector<GraphPort>& ports ) {
+		std::vector<GraphPort> mapped;
+		mapped.reserve( ports.size() );
+		for( const GraphPort& p : ports ) {
+			GraphPort np = p;
+			if( np.otherNode != kInvalidNodeIndex && np.otherNode < remap.size() && remap[ np.otherNode ] >= 0 ) {
+				np.otherNode = static_cast<unsigned int>( remap[ np.otherNode ] );
+			} else {
+				np.otherNode = kInvalidNodeIndex;   // out-of-subgraph target -- node-less, never dropped, otherName preserved
+			}
+			mapped.push_back( np );
+		}
+		return mapped;
+	};
+
+	out.nodes.reserve( keep.size() );
+	for( unsigned int idx : keep ) {
+		if( idx >= g.nodes.size() ) continue;   // defensive
+		GraphNode n   = g.nodes[idx];
+		n.outEdges    = remapPorts( n.outEdges );
+		n.inEdges     = remapPorts( n.inEdges );
+		out.nodes.push_back( n );
+	}
+	return out;
+}
+
+// =====================================================================
+// Node-graph "spotlight" query -- see the declaration's own comment in
+// SceneEditController.h for the full contract.
+// =====================================================================
+
 std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::AppearanceClosureForObject(
 	const String& objectName, bool* outDegraded ) const
 {
 	std::vector<AppearanceClosureEntry> result;
-	// Default: NOT degraded. Only the two `mRenderOwnsScene`/`try_to_lock`
-	// refusals below (review-round P1 fix) ever set this true -- every
-	// other early return (empty name, unknown object, no material bound,
-	// ambiguous material) is a REAL, resolved answer, not contention, and
-	// must not be reported as degraded (see this method's own declaration
-	// comment for why that distinction matters to a polling caller).
+	// Default: NOT degraded. Only ResolveObjectMaterialNameLocked_'s two
+	// `mRenderOwnsScene`/`try_to_lock` refusals (review-round P1 fix) ever
+	// set this true -- every other early return (empty name, unknown
+	// object, no material bound, ambiguous material) is a REAL, resolved
+	// answer, not contention, and must not be reported as degraded (see
+	// this method's own declaration comment for why that distinction
+	// matters to a polling caller).
 	if( outDegraded ) *outDegraded = false;
 	if( objectName.size() <= 1 ) return result;
 
-	// Step 1: resolve the object's LIVE bound material.  Reuses
-	// FindObjectMaterialName -- the EXACT resolution SetSelection's
-	// Object-pick auto-fill already uses (this file, above) -- rather than
-	// reading the object chunk's own `material` param off the CST document,
-	// because the latter is WRONG for an instancing chunk: `source`
-	// expansion happens at Cst::DeriveToJob DERIVE time, never touching the
-	// retained Document, so an instancing chunk's own CST text can carry no
-	// `material` line at all while its live IObject is bound to the copied
-	// one.
-	//
-	// LOCKING (review-round P1 fix): this is a POLLED, UI-thread-reached
-	// query -- both platform canvases call it on every selection-observing
-	// pass, not once on a user gesture -- so it must NEVER block behind a
-	// render the way a plain `std::lock_guard<std::mutex> lk( mMutex )`
-	// would (a render holds `mMutex` for its entire duration; blocking here
-	// would wedge the UI thread for that whole duration, and the shipped
-	// first draft did exactly that with no `mRenderOwnsScene` guard at all).
-	// Mirrors `ResolveTreeRowName`'s established pattern for this exact
-	// class of call (SceneEditController.cpp, above): check
-	// `mRenderOwnsScene` first, then a non-blocking `try_to_lock`, and
-	// degrade to an empty result on EITHER refusal -- a polling caller
-	// retries on its next pass rather than the UI thread stalling on this
-	// one.
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
-		if( outDegraded ) *outDegraded = true;   // review-round P1 fix: a render owns the scene -- this is contention, report it
+	// Step 1: resolve the object's LIVE bound material -- see
+	// ResolveObjectMaterialNameLocked_'s own comment for the full
+	// rationale (instancing-correctness, locking discipline).
+	bool degraded = false;
+	const String matName = ResolveObjectMaterialNameLocked_( objectName, &degraded );
+	if( degraded ) {
+		if( outDegraded ) *outDegraded = true;
 		return result;
-	}
-	String matName;
-	{
-		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-		if( !lk.owns_lock() ) {
-			if( outDegraded ) *outDegraded = true;   // review-round P1 fix: lock contended -- no spotlight this pass, not a block, and not a real answer
-			return result;
-		}
-		matName = FindObjectMaterialName( mJob, objectName );
 	}
 	if( matName.size() <= 1 ) return result;   // unknown object, or no material bound
 
@@ -6114,33 +6217,84 @@ std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::Ap
 	const int matIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, matName );
 	if( matIdx < 0 ) return result;   // not in the graph at all, or ambiguous -- refuse rather than guess
 
-	std::vector<bool> visited( g.nodes.size(), false );
-	std::vector<unsigned int> frontier;
-	visited[ static_cast<std::size_t>( matIdx ) ] = true;
-	frontier.push_back( static_cast<unsigned int>( matIdx ) );
-	{
+	const std::vector<unsigned int> keep = BFSGraphClosure( g, static_cast<unsigned int>( matIdx ) );
+	result.reserve( keep.size() );
+	for( unsigned int idx : keep ) {
 		AppearanceClosureEntry e;
-		e.category = g.nodes[ static_cast<std::size_t>( matIdx ) ].category;
-		e.name     = g.nodes[ static_cast<std::size_t>( matIdx ) ].name;
-		result.push_back( e );   // primary material first
-	}
-
-	std::size_t head = 0;
-	while( head < frontier.size() ) {
-		const unsigned int cur = frontier[head++];
-		for( const GraphPort& p : g.nodes[cur].outEdges ) {
-			if( p.otherNode == kInvalidNodeIndex ) continue;             // dangling / node-less port -- skip (design: "none"/unbound slots are skipped)
-			if( p.otherNode >= g.nodes.size() ) continue;                // defensive; never true for a snapshot BuildPainterMaterialGraph produced
-			if( visited[ p.otherNode ] ) continue;
-			visited[ p.otherNode ] = true;
-			frontier.push_back( p.otherNode );
-			AppearanceClosureEntry e;
-			e.category = g.nodes[ p.otherNode ].category;
-			e.name     = g.nodes[ p.otherNode ].name;
-			result.push_back( e );
-		}
+		e.category = g.nodes[idx].category;
+		e.name     = g.nodes[idx].name;
+		result.push_back( e );   // matIdx (the primary material) is keep[0] -- BFSGraphClosure's own contract
 	}
 	return result;
+}
+
+// =====================================================================
+// Node-graph FOCUSED-VIEW read -- user-requested slice on top of the
+// spotlight query above: "show all nodes" vs "show only the selection's
+// subgraph" (docs, if any, TODO -- see the declaration's own comment in
+// SceneEditController.h for the full contract). Reuses
+// ResolveObjectMaterialNameLocked_ + BFSGraphClosure -- the SAME
+// resolution and walk AppearanceClosureForObject uses -- rather than a
+// second graph-filtering mechanism.
+// =====================================================================
+
+void SceneEditController::ReadPainterMaterialGraphLaidOutFocused(
+	ChunkCategory cat, const String& name, PainterMaterialGraphLaidOut& out, bool* outDegraded ) const
+{
+	out = PainterMaterialGraphLaidOut();
+	if( outDegraded ) *outDegraded = false;
+	if( name.size() <= 1 ) return;
+
+	PainterMaterialGraph g;
+	ReadPainterMaterialGraph( g );
+
+	int startIdx = -1;
+	if( cat == ChunkCategory::Object ) {
+		// SAME resolution AppearanceClosureForObject's own Step 1 uses --
+		// an object's live bound material, instancing-correct, locking-safe.
+		bool degraded = false;
+		const String matName = ResolveObjectMaterialNameLocked_( name, &degraded );
+		if( degraded ) {
+			if( outDegraded ) *outDegraded = true;
+			return;
+		}
+		if( matName.size() <= 1 ) return;   // unknown object, or no material bound -- empty, not degraded
+		startIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, matName );
+	} else {
+		// A canvas node itself (Painter/Function/Material): resolve
+		// directly by (category, name) against the already-published
+		// graph -- no live-manager touch, so no separate degrade path here
+		// (ReadPainterMaterialGraph never blocks; it degrades to serving a
+		// stale snapshot under contention, not to an empty/failed read --
+		// see RefreshPainterMaterialGraphSnapshot_'s own comment).
+		startIdx = ResolveUniqueGraphNodeIndex( g, cat, name );
+	}
+	if( startIdx < 0 ) return;   // unknown or ambiguous -- refuse rather than guess, same convention as ResolveUniqueGraphNodeIndex itself
+
+	const std::vector<unsigned int> keep = BFSGraphClosure( g, static_cast<unsigned int>( startIdx ) );
+	const PainterMaterialGraph filtered = FilterPainterMaterialGraph( g, keep );
+
+	// TRANSIENT layout (design decision: focused mode never touches the
+	// .risegraph.json sidecar). `GraphLayout::LayoutGraph` is called with
+	// an ALWAYS-EMPTY saved-positions map -- every node in the focused
+	// subgraph gets a fresh auto-layout position on EVERY call, and
+	// nothing here ever reads OR writes the sidecar. Toggling back to the
+	// all-view goes through the ordinary `ReadPainterMaterialGraphLaidOut`,
+	// whose own sidecar-backed positions are completely untouched by this
+	// method -- there is no shared mutable state between the two paths at
+	// all, so the all-view is byte-for-byte exactly as it was before a
+	// focused excursion.
+	const GraphLayout::Positions empty;
+	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( filtered, empty );
+	out.graph = filtered;
+	out.positions.assign( filtered.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < filtered.nodes.size(); ++i ) {
+		const std::string key( filtered.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = laidOut.find( key );
+		if( it == laidOut.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
 }
 
 String SceneEditController::GetSelectionNameForCategory( Category cat ) const

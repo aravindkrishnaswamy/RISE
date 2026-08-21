@@ -1645,6 +1645,35 @@ namespace {
     }
 }
 
+// Shared by painterMaterialGraph() and painterMaterialGraphFocused()
+// (user-requested focused-view slice) -- ONE
+// SceneEditController::PainterMaterialGraphLaidOut -> ViewportBridge::PainterGraph
+// conversion, not two independently maintained copies. A free function,
+// same qualification requirement ConvertGraphPorts documents just above
+// (outside the class, so every nested-type reference needs ViewportBridge::).
+static ViewportBridge::PainterGraph ConvertLaidOutGraph(const SceneEditController::PainterMaterialGraphLaidOut& g)
+{
+    ViewportBridge::PainterGraph out;
+    const std::size_t n = g.graph.nodes.size();
+    out.nodes.resize(static_cast<int>(n));
+    for (std::size_t i = 0; i < n; ++i) {
+        const SceneEditController::GraphNode& gn = g.graph.nodes[i];
+        const SceneEditController::GraphNodePosition& pos = g.positions[i];
+        ViewportBridge::PainterGraphNode& node = out.nodes[static_cast<int>(i)];
+        node.handle       = gn.handle;
+        node.name         = QString::fromUtf8(gn.name.c_str());
+        node.chunkKeyword = QString::fromUtf8(gn.chunkKeyword.c_str());
+        node.category     = static_cast<int>(gn.category);
+        node.defCount     = gn.defCount;
+        node.x = pos.x;
+        node.y = pos.y;
+        node.outEdges = ConvertGraphPorts(gn.outEdges);
+        node.inEdges  = ConvertGraphPorts(gn.inEdges);
+    }
+    out.generation = g.graph.generation;
+    return out;
+}
+
 // Return type qualified with ViewportBridge:: (review-round P1 fix): an
 // out-of-line member function's RETURN TYPE is parsed BEFORE the compiler
 // enters the class's scope (that happens only once it sees
@@ -1654,8 +1683,7 @@ namespace {
 // function's body scope already includes its class.
 ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraph() const
 {
-    PainterGraph out;
-    if (!m_controller) return out;
+    if (!m_controller) return PainterGraph();
 
     // ONE TRANSACTIONAL READ, the SAME discipline categoryTree() documents
     // above: SceneEditController::ReadPainterMaterialGraphLaidOut composes
@@ -1670,25 +1698,23 @@ ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraph() const
     // non-transactional shape this method exists to avoid.
     SceneEditController::PainterMaterialGraphLaidOut g;
     m_controller->ReadPainterMaterialGraphLaidOut(g);
+    return ConvertLaidOutGraph(g);
+}
 
-    const std::size_t n = g.graph.nodes.size();
-    out.nodes.resize(static_cast<int>(n));
-    for (std::size_t i = 0; i < n; ++i) {
-        const SceneEditController::GraphNode& gn = g.graph.nodes[i];
-        const SceneEditController::GraphNodePosition& pos = g.positions[i];
-        PainterGraphNode& node = out.nodes[static_cast<int>(i)];
-        node.handle       = gn.handle;
-        node.name         = QString::fromUtf8(gn.name.c_str());
-        node.chunkKeyword = QString::fromUtf8(gn.chunkKeyword.c_str());
-        node.category     = static_cast<int>(gn.category);
-        node.defCount     = gn.defCount;
-        node.x = pos.x;
-        node.y = pos.y;
-        node.outEdges = ConvertGraphPorts(gn.outEdges);
-        node.inEdges  = ConvertGraphPorts(gn.inEdges);
-    }
-    out.generation = g.graph.generation;
-    return out;
+// Same return-type qualification requirement as painterMaterialGraph()
+// just above (review-round P1 fix).
+ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraphFocused(int category, const QString& name, bool* degraded) const
+{
+    if (degraded) *degraded = false;
+    if (!m_controller || name.isEmpty()) return PainterGraph();
+    const QByteArray utf8 = name.toUtf8();
+    bool coreDegraded = false;
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    m_controller->ReadPainterMaterialGraphLaidOutFocused(
+        static_cast<RISE::ChunkCategory>(category), RISE::String(utf8.constData()), g, &coreDegraded);
+    if (degraded) *degraded = coreDegraded;
+    if (coreDegraded) return PainterGraph();   // empty on degrade too -- callers distinguish via `degraded`, not graph emptiness
+    return ConvertLaidOutGraph(g);
 }
 
 // Same return-type qualification requirement as painterMaterialGraph()
