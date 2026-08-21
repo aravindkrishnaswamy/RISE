@@ -3611,7 +3611,14 @@ int main()
 		       // Post-await re-verification: Stop / cancelled Task / scene
 		       // close / production render starting.
 		       && macRetry.find( "Task.isCancelled || stopRequested" ) != std::string::npos
-		       && macRetry.find( "guard viewportBridge != nil" ) != std::string::npos
+		       // IDENTITY, not mere existence (756e0312 weak-ify): a scene
+		       // switch mid-backoff detaches `viewportBridge` and binds a
+		       // fresh instance, so a bare non-nil check would keep
+		       // re-issuing the edit against the shut-down bridge the retry
+		       // was opened for.  `=== vb` subsumes non-nil (vb is a
+		       // non-optional parameter), so this is STRICTLY stronger than
+		       // the existence guard it replaced, not a weakening.
+		       && macRetry.find( "guard viewportBridge === vb" ) != std::string::npos
 		       && macRetry.find( "guard sceneEditable()" ) != std::string::npos
 		       // HEAD-VERSION GUARD (round 2, C2): a re-issue is admitted only
 		       // while the refusal keeps reporting the head attempt 1 saw.
