@@ -57,14 +57,6 @@ def transform(text: str, name: str, suffix: str) -> str:
                 "if( FireProductionRoundoffTrace::EvaluateBranch("
                 "FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return "
                 "fractional>0.0f; }) )",
-            "faceVelocity>0.0f ?":
-                "FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return "
-                "faceVelocity>0.0f; }) ?",
-            "faceVelocity<0.0f ?":
-                "FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return "
-                "faceVelocity<0.0f; }) ?",
         }
         for before, after in branch_replacements.items():
             if before == "if( left==center&&right==center )":
@@ -109,19 +101,16 @@ def transform(text: str, name: str, suffix: str) -> str:
             "FireProductionRoundoffTrace::BranchSite::PeriodicSeamEquality,"
             "[&](){return request.faceVelocityMPerS[base]!=request.faceVelocityMPerS["
             "base+request.lineLength];})")
-        lower_ghost = "request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f"
-        upper_ghost = ("request.faceVelocityMPerS[line*(request.lineLength+1u)+"
-                       "request.lineLength]<0.0f")
-        if text.count(lower_ghost) != 1 or text.count(upper_ghost) != 1:
-            raise RuntimeError("open reconstruction ghost predicates changed")
-        text = text.replace(lower_ghost,
-            "FireProductionRoundoffTrace::EvaluateBranch("
-            "FireProductionRoundoffTrace::BranchSite::InflowSign,"
-            "[&](){return " + lower_ghost + ";})")
-        text = text.replace(upper_ghost,
-            "FireProductionRoundoffTrace::EvaluateBranch("
-            "FireProductionRoundoffTrace::BranchSite::InflowSign,"
-            "[&](){return " + upper_ghost + ";})")
+        lower_join = "if( signedVelocity<=-width ) return nearest;"
+        upper_join = "if( signedVelocity>=width ) return ambient;"
+        if text.count(lower_join) != 1 or text.count(upper_join) != 1:
+            raise RuntimeError("continuous inflow join seams changed")
+        text = text.replace(lower_join,
+            "if( FireProductionRoundoffTrace::EvaluateContinuousInflowJoin("
+            "signedVelocity,width,nearest,ambient,true) ) return nearest;")
+        text = text.replace(upper_join,
+            "if( FireProductionRoundoffTrace::EvaluateContinuousInflowJoin("
+            "signedVelocity,width,nearest,ambient,false) ) return ambient;")
         ppm_branch = ("\t\t\tif( quadratic!=0.0f ) {\n"
                       "\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat stationary="
                       "-linear/(2.0f*quadratic);\n"

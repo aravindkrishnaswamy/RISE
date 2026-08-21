@@ -106,24 +106,35 @@ int main()
 		remainingEvidence.find("executed_obligation_instances_pending 1691997")!=
 			std::string::npos,
 		"r126 remaining-positive derivation and cumulative census are durable");
+	const std::string inflowEvidence=ReadText(
+		"rendered/fire_production_calibration/r127_inflow_transition/inflow_transition.v1");
+	Check(!inflowEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		inflowEvidence.begin(),inflowEvidence.end()))==
+		"5d95d4d062ae2dd8ec3533d7c802b0369582dcc2222fdc958bd8fde2ecfba198"&&
+		inflowEvidence.find("removed_binary_inflow_obligation_instances 353664")!=
+			std::string::npos&&
+		inflowEvidence.find("power_of_two_width_factor 1")!=std::string::npos&&
+		inflowEvidence.find("executed_obligation_instances_pending 1338333")!=
+			std::string::npos,
+		"r127 inflow reformulation, derived width, and cumulative census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
 		"rendered/fire_production_calibration/r119_production_spatial/production_spatial_evidence.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(restorationEvidence.begin(),
 		restorationEvidence.end()))==
-		"7fa0872d5def2f68eba510b92cfc3bd47e9d78879d4e63f3e637b332ba3696d8"&&
+		"2752dc2075002911f8bec9bf909617fe8b4f641b9de3cbf20399475e0afaf451"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(spatialEvidence.begin(),
 			spatialEvidence.end()))==
-		"201b67b7d6dfeb8d23d6080b0306de3fecb951ef744469a69a821dcc5688d2c6",
+		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r124")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r127")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r124")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r127")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute the exact r124 proof stop and accept only exit 237");
+		"ordinary Unix and Windows suites execute the exact r127 proof stop and accept only exit 237");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -156,6 +167,15 @@ int main()
 		"generated transport trace owns exactly the cell and dual stage-reset seams");
 
 	{
+		double derivedFactor=0.0,derivedWidth=0.0,mutantFactor=0.0,mutantWidth=0.0;
+		Check(FireProductionRoundoffWalker::DeriveInflowTransitionWidth(
+			1.7632415612658968e-38,22.033558699237727,1.0,
+			derivedFactor,derivedWidth)&&derivedFactor==1.0&&
+			derivedWidth==0x1p-24*22.033558699237727&&
+			!FireProductionRoundoffWalker::DeriveInflowTransitionWidth(
+				1.7632415612658968e-38,22.033558699237727,0.5,
+				mutantFactor,mutantWidth)&&mutantFactor==1.0,
+			"independent inflow walker derives the one-unit power-of-two width and rejects its half-width mutant");
 		FireProductionRoundoffTrace::Counters counters;
 		FireProductionRoundoffTrace::TraceFloat sum;
 		{
@@ -593,6 +613,69 @@ int main()
 				obligation.predicateCenter,obligation.predicateRadius,profileUpper,missingFTZ,
 				FireProductionRoundoffWalker::RemainingGraphVariant::MissingFTZ),
 			"remaining-positive certificate rejects width, body-topology, and FTZ omissions");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			Check(FireProductionRoundoffTrace::EvaluateContinuousInflowJoin(
+				FireProductionRoundoffTrace::TraceFloat::Raw(-0.25,0.01,-0.25f,1u),
+				FireProductionRoundoffTrace::TraceFloat(0.25f),
+				FireProductionRoundoffTrace::TraceFloat(1.0f),
+				FireProductionRoundoffTrace::TraceFloat(3.0f),true),
+				"continuous-inflow fixture executes the rounded nearest-donor join");
+		}
+		Check(counters.branchObligations.size()==1u,
+			"continuous-inflow join emits one ambiguous obligation");
+		const FireProductionRoundoffTrace::BranchObligation obligation=
+			counters.branchObligations.empty()?FireProductionRoundoffTrace::BranchObligation():
+				counters.branchObligations.front();
+		FireProductionRoundoffWalker::InflowTransitionCertificate certificate;
+		const bool certified=FireProductionRoundoffWalker::CertifyInflowTransition(
+			obligation.predicateCenter,obligation.predicateRadius,0.25,0.0,
+			1.0,0.0,3.0,0.0,certificate);
+		Check(certified&&counters.dischargedBranchObligationCount==1u&&
+			obligation.site==FireProductionRoundoffTrace::BranchSite::InflowSign&&
+			obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::Reformulation&&
+			obligation.divergenceBound==certificate.totalEnvelope&&
+			certificate.continuousAtJoin&&certificate.convexDonorBlend&&
+			certificate.legacyOutsideWidth,
+			"independent inflow walker matches the traced convex join envelope");
+		FireProductionRoundoffTrace::Counters upperCounters;
+		{
+			FireProductionRoundoffTrace::Scope scope(upperCounters);
+			Check(!FireProductionRoundoffTrace::EvaluateContinuousInflowJoin(
+				FireProductionRoundoffTrace::TraceFloat::Raw(0.25,0.01,0.249f,1u),
+				FireProductionRoundoffTrace::TraceFloat(0.25f),
+				FireProductionRoundoffTrace::TraceFloat(1.0f),
+				FireProductionRoundoffTrace::TraceFloat(3.0f),false),
+				"continuous-inflow fixture executes the rounded ramp side of the ambient join");
+		}
+		Check(upperCounters.branchObligations.size()==1u&&
+			upperCounters.dischargedBranchObligationCount==1u&&
+			upperCounters.branchObligations.front().certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Reformulation&&
+			upperCounters.branchObligations.front().divergenceBound==
+				certificate.totalEnvelope,
+			"both continuous donor joins consume the same independently derived envelope");
+		FireProductionRoundoffWalker::InflowTransitionCertificate half,missingContrast,
+			missingRounded,binary;
+		Check(!FireProductionRoundoffWalker::CertifyInflowTransition(
+			obligation.predicateCenter,obligation.predicateRadius,0.25,0.0,1.0,0.0,
+			3.0,0.0,half,FireProductionRoundoffWalker::InflowGraphVariant::HalfAmbiguity)&&
+			!FireProductionRoundoffWalker::CertifyInflowTransition(
+				obligation.predicateCenter,obligation.predicateRadius,0.25,0.0,1.0,0.0,
+				3.0,0.0,missingContrast,
+				FireProductionRoundoffWalker::InflowGraphVariant::MissingDonorContrast)&&
+			!FireProductionRoundoffWalker::CertifyInflowTransition(
+				obligation.predicateCenter,obligation.predicateRadius,0.25,0.0,1.0,0.0,
+				3.0,0.0,missingRounded,
+				FireProductionRoundoffWalker::InflowGraphVariant::MissingRoundedTerm)&&
+			!FireProductionRoundoffWalker::CertifyInflowTransition(
+				obligation.predicateCenter,obligation.predicateRadius,0.25,0.0,1.0,0.0,
+				3.0,0.0,binary,
+				FireProductionRoundoffWalker::InflowGraphVariant::DiscontinuousBinary),
+			"inflow certificate rejects width, donor, rounding, and binary-branch mutants");
 	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;

@@ -3012,3 +3012,24 @@ it was already tried and refuted here.
   close, reducing pending obligations from `3,315,165` to `1,691,997` while
   exact exit `237` remains in force.  The largest class envelope is
   `0.49575328199529184`.
+
+- **r127 inflow-sign continuous reformulation (2026-08-21):** the old
+  pressure-open donor switch is non-equivalent at zero, so the r59/r123/r124
+  invariant triage applies rather than an asserted equivalence. The donor is a
+  convex nearest-to-ambient transition over
+  `w=u32*max(FLT_MIN,abs(v),abs(dx/dt))`; monotone donor admissibility is
+  retained and only binary donor optimality yields inside the derived width.
+  The frozen ambiguity is `1.7632415612658968e-38`, or
+  `1.3426012991064678e-32` units of `u32*s`, so the pre-registered upward
+  power-of-two factor is the minimum stable value one. The independent
+  envelope separates the exact donor-contrast Lipschitz term, a twelve-op
+  rounded term, and twelve FTZ terms. Half-width, missing-contrast,
+  missing-rounded, and binary-branch mutants RED; CPU/MSL topology and an
+  interior full-remap byte fixture bind both implementations. Removing the
+  old branch topology eliminates `353,664` pending obligations. The new
+  census is `2,633,990 / 3,972,323`, leaving `1,338,333` pending and exact
+  exit `237`. The r118 probe/field plateaus re-pin within noise to
+  `1.5439012582030287e-4` / `6.5237316812827295e-4`, and all r119 limit balls
+  remain accepted. Their durable hashes are `2752dc20...af451` and
+  `0c481de8...eb8de`; class evidence is `5d95d4d0...fba198`. The golden
+  checkpoint is untouched.

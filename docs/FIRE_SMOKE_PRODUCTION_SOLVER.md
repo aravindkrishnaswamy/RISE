@@ -1981,19 +1981,19 @@ future accuracy term `B_fp32`.
 
 The sealed r118 run admits the architecture. All 104 physical and all 104
 restoration projections validate, with zero full-grid interstage transfers.
-The final-32 cell-2256 maximum absolute deviation is
-`1.5435381821271577e-4`, 1.01066 times the independently predicted `G/r` and
-15.4354% of the unchanged EOS ceiling (6.4786-fold margin). The independently
-searched final-32 field maximum is `6.524281258450948e-4`, also below the
+The r127 rerun's final-32 cell-2256 maximum absolute deviation is
+`1.5439012582030287e-4`, 1.01090 times the independently predicted `G/r` and
+15.4390% of the unchanged EOS ceiling (6.4771-fold margin). The independently
+searched final-32 field maximum is `6.5237316812827295e-4`, also below the
 ceiling. The final signed probe/field observations are respectively
-`1.1215264457620222e-4` and `-4.060346667688064e-4`. The exact 104-step
+`1.1211235847818912e-4` and `-4.0622240705245893e-4`. The exact 104-step
 diagnostic/payload trace hashes to
-`2b7071e64f1203c749f2813c8b4a766f862ebcee9b4a78a77257f6addb72fc68`;
+`719ee45e254a65dc7b6a37ece81720d27213cd69d761312348d102a78f5f68cb`;
 the final state hashes to
-`b3e1710842b98f7f40580270b3fd857ed1bc1c1a81a567309c62b14981ddc76e`.
+`d9a1a0ea021f38792ff9fa3c1446c239ab66d3981f4154e519e568d0030c9dc2`.
 The maximum certified/observed allocation upper bounds are 248,479,780 and
 229,518,420 bytes. Over 96 post-warmup calls, combined force/transport/two-P2
-device p95 is 27.8510 ms and completed-call wall p95 is 71.2383 ms, 35.62% of
+device p95 is 28.2015 ms and completed-call wall p95 is 70.4273 ms, 35.21% of
 the 200 ms production wall allocation.
 
 The binding replay is
@@ -2006,7 +2006,7 @@ It returns `228` only after the exact deterministic evidence and the 200 ms
 wall gate match. Malformed activation returns `226`; simultaneous r117/r118
 activation returns `227`. Durable evidence is
 `rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1`
-(r124 rerun SHA-256 `7fa0872d5def2f68eba510b92cfc3bd47e9d78879d4e63f3e637b332ba3696d8`).
+(r127 rerun SHA-256 `2752dc2075002911f8bec9bf909617fe8b4f641b9de3cbf20399475e0afaf451`).
 
 ### 7.34 Production dyadic spatial term (r119)
 
@@ -2022,7 +2022,7 @@ balls and approach the opposite pair's limit from coarse to fine.
 The exact `D5_10`, `D6_12`, and independent-limit differences are bound in
 `ExpectedProduction*Evidence` and in the durable artifact
 `rendered/fire_production_calibration/r119_production_spatial/production_spatial_evidence.v1`
-(r124 rerun SHA-256 `201b67b7d6dfeb8d23d6080b0306de3fecb951ef744469a69a821dcc5688d2c6`).
+(r127 rerun SHA-256 `0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de`).
 This admits the production **spatial** scheme-distance term only. It is not a
 temporal term, not `B_fp32`, and not an eight-slice production-versus-oracle
 acceptance band. The fp32 feasibility envelope remains a consumer-totality
@@ -2300,8 +2300,8 @@ legacy behavior outside the width. A half-width mutant fails. Exact production
 fixtures bind the ramp at `-w,-w/2,0,w/2,w`; CPU and Metal use the same
 operation association. The 104-step r118 and four-tier/eight-step r119
 campaigns were rerun. Their classifications do not move: the restoration probe
-plateaus at `1.5452375598545842e-4`, the field maximum at
-`6.5195550111418754e-4`, and all r119 scalar, velocity, and inventory limit
+plateaus at `1.5439012582030287e-4`, the field maximum at
+`6.5237316812827295e-4`, and all r119 scalar, velocity, and inventory limit
 balls remain accepted. Only the expected strict-fp32 evidence bytes were
 re-pinned.
 
@@ -2370,6 +2370,47 @@ envelope is `0.49575328199529184`.  Exit `237` remains mandatory.  Durable
 evidence is
 `rendered/fire_production_calibration/r126_remaining_positive/remaining_positive.v1`,
 SHA-256 `9ad1b1de6b35d290753b3c263d170b6e11bb31dfb8e1764c0029b794ad453f68`.
+
+### 7.44 Continuous pressure-open donor transition (r127)
+
+The pressure-open donor switch is genuinely non-equivalent: at zero normal
+velocity its two paths return the nearest interior value and the ambient value.
+The r124 fallback therefore applies. Shared-alpha transport coupling is not
+involved, donor monotonicity is retained by a convex blend, and only exact
+binary donor optimality yields within the smallest stable fp32 neighbourhood.
+
+The frozen pre-reformulation walker measured outward predicate ambiguity
+`1.7632415612658968e-38`. Its natural velocity scale is
+`22.033558699237727`; normalized by `u32=2^-24` this is only
+`1.3426012991064678e-32`. The next power-of-two factor after imposing the
+minimum stable one-unit fp32 width is therefore exactly one:
+
+```
+s = max(FLT_MIN, abs(velocity), abs(dx/dt))
+w = u32 s
+```
+
+For signed inward velocity `v`, the donor is nearest for `v<=-w`, ambient for
+`v>=w`, and the convex linear interpolation between them inside. Both joins
+are continuous, the donor stays in the closed nearest/ambient interval, and
+legacy bytes are identical outside `[-w,w]` on both open sides. The independent
+two-path envelope is the exact term
+`|ambient-nearest| delta/(2 w_lower)`, plus
+`gamma_12 (4 max(|nearest|,|ambient|)+|ambient-nearest|)`, plus
+`12 FLT_MIN` for FTZ. Half-width, missing donor contrast, missing rounded
+term, and restored binary-branch mutants all fail. Strict CPU and MSL source
+topology and an interior-ramp full-remap byte comparison bind the implementation.
+
+The reformulation removes all `353,664` old binary inflow-sign obligations;
+the new joins are resolved on the frozen tier-6 state. The graph now contains
+`3,972,323` obligations, `2,633,990` discharged and `1,338,333` pending.
+Exit `237` remains mandatory. The 104-step restoration rerun remains below
+the unchanged ceiling (`1.5439012582030287e-4` probe plateau,
+`6.5237316812827295e-4` field plateau), and all r119 scalar, velocity, and
+inventory limit balls remain accepted after exact evidence re-pinning. Durable
+class evidence is
+`rendered/fire_production_calibration/r127_inflow_transition/inflow_transition.v1`,
+SHA-256 `5d95d4d062ae2dd8ec3533d7c802b0369582dcc2222fdc958bd8fde2ecfba198`.
 
 ## 8. Rejected directions and future work
 

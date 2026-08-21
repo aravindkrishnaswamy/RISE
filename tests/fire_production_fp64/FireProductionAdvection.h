@@ -77,6 +77,11 @@ namespace RISEFireProductionFP64
 		double alpha, double headroom, double signedConsumption,
 		double center, double envelope ) noexcept;
 
+	//! r127 continuous open-boundary donor transition. Exposed for contract gates.
+	double FireProductionContinuousInflowValue(
+		double nearest, double ambient, double velocity, bool positiveInflow,
+		double cellWidthM, double timeStepS ) noexcept;
+
 	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
 	bool RemapFireProductionCPU(
 		const FireProductionRemapRequest& request,

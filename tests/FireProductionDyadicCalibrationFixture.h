@@ -22,28 +22,28 @@ namespace FireProductionDyadicCalibration
 		{{3.0335881874780171,2.1990585236198967,0.062040384087595157}}
 	}};
 	static const std::array<std::array<double,3>,9> ExpectedProductionScalarEvidence={{
-		{{2.779630607142089e-05,1.9376399787670378e-05,6.5821457549512066e-07}},
-		{{2.2237012405112389e-05,1.550123643841692e-05,5.2661080535392201e-07}},
-		{{4.1616273041252398e-05,2.9297150713796919e-05,1.4221232851890914e-06}},
-		{{8.863713838071231e-05,6.3862743725679328e-05,4.4547775023081515e-06}},
-		{{1.4796329556418295e-05,1.0314370367320126e-05,3.5045661233875841e-07}},
-		{{1.2485879368318859e-05,8.7037771996212017e-06,2.9565806130198519e-07}},
-		{{1.9412971046475788e-07,1.3532665048727686e-07,4.5982090089556525e-09}},
-		{{4.0788865041019101e-08,2.8433442386997825e-08,9.6623497003419306e-10}},
-		{{27.368865872060592,19.18560584679599,0.60315313976442164}}
+		{{2.7796305039946874e-05,1.9376400517682078e-05,6.582228033548485e-07}},
+		{{2.2237020351149294e-05,1.5501218720141468e-05,5.2663655672729056e-07}},
+		{{4.1616123281438155e-05,2.9297085613832641e-05,1.4219871059640226e-06}},
+		{{8.8636991453610776e-05,6.386297406400966e-05,4.4544372513748042e-06}},
+		{{1.4796337119822723e-05,1.0314382013297282e-05,3.5045957484289135e-07}},
+		{{1.2485877457563494e-05,8.7037707862563385e-06,2.9567194577678921e-07}},
+		{{1.9412955088147213e-07,1.3532660750105176e-07,4.5981908279813335e-09}},
+		{{4.0788857371058287e-08,2.8433477024719178e-08,9.6625722505421453e-10}},
+		{{27.368788679904416,19.185604845693799,0.60313182040724933}}
 	}};
 	static const std::array<double,3> ExpectedProductionVelocityEvidence={{
-		0.0050310117952093794,0.0041988798898684931,0.00054172635019014454}};
+		0.005031015340016892,0.0041988689735742426,0.00054170919403134169}};
 	static const std::array<std::array<double,3>,9> ExpectedProductionInventoryEvidence={{
-		{{4.3003247507597542e-06,3.4038882101086743e-06,2.5067851355808912e-07}},
-		{{3.4403247021405625e-06,2.7231125060978023e-06,2.0054346086539887e-07}},
-		{{7.493455894291845e-06,5.9066817665875959e-06,4.1749268467339284e-07}},
-		{{1.3489273687161685e-05,1.0597627727815251e-05,7.2385354576987027e-07}},
-		{{2.2892133371595069e-06,1.8119702490590472e-06,1.334174376220465e-07}},
-		{{1.9316525140325447e-06,1.5290311632387699e-06,1.126244897967088e-07}},
-		{{3.0033352231822324e-08,2.3773353151628103e-08,1.7516096101235883e-09}},
-		{{6.310342049198087e-09,4.9948937606050488e-09,3.6787796847150261e-10}},
-		{{3.2317285868339241,2.5744273456512019,0.20393891033018008}}
+		{{4.3003033303318228e-06,3.4038920052811839e-06,2.5070017945633127e-07}},
+		{{3.4403398555399312e-06,2.7230951471016174e-06,2.0051584434521708e-07}},
+		{{7.493419107051924e-06,5.9067473400509218e-06,4.1751729240591118e-07}},
+		{{1.3489697749502483e-05,1.0597683779645095e-05,7.2355948221858313e-07}},
+		{{2.2892032478308288e-06,1.8119569771719857e-06,1.3342105658828429e-07}},
+		{{1.9316575974974437e-06,1.529023471828761e-06,1.126187700282999e-07}},
+		{{3.0033289325111234e-08,2.3773386398037201e-08,1.7516446411836722e-09}},
+		{{6.3103335605794791e-09,4.9948896377026712e-09,3.6787960725663885e-10}},
+		{{3.2317103983587003,2.5744190392724704,0.20393986767885508}}
 	}};
 
 	bool BuildCase(const double tier,FireCase::RecordV1& record,std::string& error)
@@ -1186,6 +1186,15 @@ namespace FireProductionDyadicCalibration
 				static_cast<unsigned long long>(totalPendingSiteCount[site]),
 				static_cast<unsigned long long>(totalSiteCount[site]));
 		std::fprintf(stderr," (pending/total)\n");
+		const double frozenInflowAmbiguity=1.7632415612658968e-38;
+		const double frozenInflowScale=22.033558699237727;
+		const double frozenInflowUnitFactor=frozenInflowAmbiguity/
+			(0x1p-24*frozenInflowScale);
+		const double frozenInflowPowerOfTwoFactor=std::max(1.0,std::exp2(std::ceil(
+			std::log2(frozenInflowUnitFactor))));
+		std::fprintf(stderr,"r127 inflow_width ambiguity=%.17g scale=%.17g "
+			"unit_factor=%.17g power_of_two_factor=%.17g\n",frozenInflowAmbiguity,
+			frozenInflowScale,frozenInflowUnitFactor,frozenInflowPowerOfTwoFactor);
 		std::array<double,static_cast<unsigned int>(
 			FireProductionRoundoffTrace::BranchSite::Count)> maximumClassEnvelope={};
 		for(const FireProductionRoundoffTrace::Observation& stage:trace.stages)
@@ -1212,11 +1221,14 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="e29d7d306c43160434f728746f71cced03db5d7a5f73db5715f192433d61d48e"||
+			traceDigest!="c471729481cc8787780078837156b5fadc9c9c0e37ab6b38c44f437765d7756a"||
 			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0u||!finiteOutputs||
-			totalBranchObligationCount!=4340821u||
-			totalDischargedBranchObligationCount!=2648824u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=1691997u||
+			totalBranchObligationCount!=3972323u||
+			totalDischargedBranchObligationCount!=2633990u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=1338333u||
+			frozenInflowAmbiguity!=1.7632415612658968e-38||
+			frozenInflowScale!=22.033558699237727||
+			frozenInflowPowerOfTwoFactor!=1.0||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1237,7 +1249,7 @@ namespace FireProductionDyadicCalibration
 			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r126 remaining-positive certified; %llu of %llu site-class "
+		std::fprintf(stderr,"r127 inflow transition certified; %llu of %llu site-class "
 			"obligations remain pending before B_fp32 and Metal measurement\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),
@@ -1326,14 +1338,14 @@ namespace FireProductionDyadicCalibration
 			static_cast<unsigned long long>(maximumCertified),
 			static_cast<unsigned long long>(maximumActual),traceDigest.c_str(),
 			AnalyticStateDigest(state).c_str());
-		if(plateau!=0.00015452375598545842||
-			fieldPlateau!=0.00065195550111418754||
-			probe.back()!=0.00011204190328806263||
-			fieldMaximum.back()!=-0.0004060806034105191||
+			if(plateau!=0.00015439012582030287||
+				fieldPlateau!=0.00065237316812827295||
+				probe.back()!=0.00011211235847818912||
+				fieldMaximum.back()!=-0.00040622240705245893||
 			maximumCertified!=248479780u||maximumActual!=229518420u||
-			traceDigest!="02404297c0d0beb31a219ea56d80dfafbc8091912be4a1442d9d70714ba15518"||
-			AnalyticStateDigest(state)!=
-				"4ae35e927f78d9b1a3eaf55c50b737a355a8f6afc62bead26b81b31ff452a6c7"||
+				traceDigest!="719ee45e254a65dc7b6a37ece81720d27213cd69d761312348d102a78f5f68cb"||
+				AnalyticStateDigest(state)!=
+					"d9a1a0ea021f38792ff9fa3c1446c239ab66d3981f4154e519e568d0030c9dc2"||
 			!(plateau<0.001)||!(fieldPlateau<0.001)||
 			!std::isfinite(deviceP95)||!std::isfinite(wallP95)||wallP95>200.0)return 224;
 		return 228;

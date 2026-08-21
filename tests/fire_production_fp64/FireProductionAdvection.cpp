@@ -81,6 +81,21 @@ namespace RISEFireProductionFP64
 			return values[component*request.lineCount+line];
 		}
 
+		double ContinuousInflowValue( const double nearest, const double ambient,
+			const double velocity, const bool positiveInflow, const double cellWidthM,
+			const double timeStepS )
+		{
+			if( !(timeStepS>0.0) ) return nearest;
+			const double scale=std::max(0x1p-126,std::max(std::fabs(velocity),
+				std::fabs(cellWidthM/timeStepS)));
+			const double width=0x1p-24*scale;
+			const double signedVelocity=positiveInflow?velocity:-velocity;
+			if( signedVelocity<=-width ) return nearest;
+			if( signedVelocity>=width ) return ambient;
+			const double weight=(signedVelocity+width)/(2.0*width);
+			return nearest+weight*(ambient-nearest);
+		}
+
 		double Sample( const FireProductionRemapRequest& request,
 			std::size_t component, std::size_t line, long cell )
 		{
@@ -92,16 +107,19 @@ namespace RISEFireProductionFP64
 					static_cast<std::size_t>(wrapped))];
 			}
 			if( cell<0 ) {
-				const bool inflow=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-					request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0;
-				return inflow ? AmbientValue(request,true,component,line) :
-					request.values[ValueIndex(request,component,line,0u)];
+				const double nearest=request.values[ValueIndex(request,component,line,0u)];
+				if( LowerBoundary(request)!=FireProductionRemapPressureOpen ) return nearest;
+				return ContinuousInflowValue(nearest,AmbientValue(request,true,component,line),
+					request.faceVelocityMPerS[line*(request.lineLength+1u)],true,
+					request.cellWidthM,request.timeStepS);
 			}
 			if( cell>=count ) {
-				const bool inflow=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0;
-				return inflow ? AmbientValue(request,false,component,line) :
-					request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+				const double nearest=request.values[ValueIndex(request,component,line,
+					request.lineLength-1u)];
+				if( UpperBoundary(request)!=FireProductionRemapPressureOpen ) return nearest;
+				return ContinuousInflowValue(nearest,AmbientValue(request,false,component,line),
+					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength],false,
+					request.cellWidthM,request.timeStepS);
 			}
 			return request.values[ValueIndex(request,component,line,static_cast<std::size_t>(cell))];
 		}
@@ -255,12 +273,15 @@ namespace RISEFireProductionFP64
 			const std::vector<double>& right )
 		{
 			const double magnitude=std::fabs(courant);
-			const double leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity>0.0 ? AmbientValue(request,true,component,line) :
-				request.values[ValueIndex(request,component,line,0u)];
-			const double rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity<0.0 ? AmbientValue(request,false,component,line) :
-				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+			const double leftNearest=request.values[ValueIndex(request,component,line,0u)];
+			const double rightNearest=request.values[ValueIndex(request,component,line,
+				request.lineLength-1u)];
+			const double leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen?
+				ContinuousInflowValue(leftNearest,AmbientValue(request,true,component,line),
+					faceVelocity,true,request.cellWidthM,request.timeStepS):leftNearest;
+			const double rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen?
+				ContinuousInflowValue(rightNearest,AmbientValue(request,false,component,line),
+					faceVelocity,false,request.cellWidthM,request.timeStepS):rightNearest;
 			if( courant>=0.0 ) {
 				const double interiorLength=std::min(magnitude,static_cast<double>(face));
 				const double whole=std::floor(interiorLength);
@@ -359,6 +380,14 @@ namespace RISEFireProductionFP64
 	{
 		return ContinuousSharedLimiterAlpha(alpha,headroom,signedConsumption,
 			center,envelope);
+	}
+
+	double FireProductionContinuousInflowValue( const double nearest, const double ambient,
+		const double velocity, const bool positiveInflow, const double cellWidthM,
+		const double timeStepS ) noexcept
+	{
+		return ContinuousInflowValue(nearest,ambient,velocity,positiveInflow,
+			cellWidthM,timeStepS);
 	}
 
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,

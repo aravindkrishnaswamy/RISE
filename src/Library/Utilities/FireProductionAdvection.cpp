@@ -79,6 +79,21 @@ namespace RISE
 			return values[component*request.lineCount+line];
 		}
 
+		float ContinuousInflowValue( const float nearest, const float ambient,
+			const float velocity, const bool positiveInflow, const float cellWidthM,
+			const float timeStepS )
+		{
+			if( !(timeStepS>0.0f) ) return nearest;
+			const float scale=std::max(0x1p-126f,std::max(std::fabs(velocity),
+				std::fabs(cellWidthM/timeStepS)));
+			const float width=0x1p-24f*scale;
+			const float signedVelocity=positiveInflow?velocity:-velocity;
+			if( signedVelocity<=-width ) return nearest;
+			if( signedVelocity>=width ) return ambient;
+			const float weight=(signedVelocity+width)/(2.0f*width);
+			return nearest+weight*(ambient-nearest);
+		}
+
 		float Sample( const FireProductionRemapRequest& request,
 			std::size_t component, std::size_t line, long cell )
 		{
@@ -90,16 +105,19 @@ namespace RISE
 					static_cast<std::size_t>(wrapped))];
 			}
 			if( cell<0 ) {
-				const bool inflow=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-					request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f;
-				return inflow ? AmbientValue(request,true,component,line) :
-					request.values[ValueIndex(request,component,line,0u)];
+				const float nearest=request.values[ValueIndex(request,component,line,0u)];
+				if( LowerBoundary(request)!=FireProductionRemapPressureOpen ) return nearest;
+				return ContinuousInflowValue(nearest,AmbientValue(request,true,component,line),
+					request.faceVelocityMPerS[line*(request.lineLength+1u)],true,
+					request.cellWidthM,request.timeStepS);
 			}
 			if( cell>=count ) {
-				const bool inflow=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0f;
-				return inflow ? AmbientValue(request,false,component,line) :
-					request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+				const float nearest=request.values[ValueIndex(request,component,line,
+					request.lineLength-1u)];
+				if( UpperBoundary(request)!=FireProductionRemapPressureOpen ) return nearest;
+				return ContinuousInflowValue(nearest,AmbientValue(request,false,component,line),
+					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength],false,
+					request.cellWidthM,request.timeStepS);
 			}
 			return request.values[ValueIndex(request,component,line,static_cast<std::size_t>(cell))];
 		}
@@ -253,12 +271,15 @@ namespace RISE
 			const std::vector<float>& right )
 		{
 			const float magnitude=std::fabs(courant);
-			const float leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity>0.0f ? AmbientValue(request,true,component,line) :
-				request.values[ValueIndex(request,component,line,0u)];
-			const float rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity<0.0f ? AmbientValue(request,false,component,line) :
-				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+			const float leftNearest=request.values[ValueIndex(request,component,line,0u)];
+			const float rightNearest=request.values[ValueIndex(request,component,line,
+				request.lineLength-1u)];
+			const float leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen?
+				ContinuousInflowValue(leftNearest,AmbientValue(request,true,component,line),
+					faceVelocity,true,request.cellWidthM,request.timeStepS):leftNearest;
+			const float rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen?
+				ContinuousInflowValue(rightNearest,AmbientValue(request,false,component,line),
+					faceVelocity,false,request.cellWidthM,request.timeStepS):rightNearest;
 			if( courant>=0.0f ) {
 				const float interiorLength=std::min(magnitude,static_cast<float>(face));
 				const float whole=std::floor(interiorLength);
@@ -357,6 +378,14 @@ namespace RISE
 	{
 		return ContinuousSharedLimiterAlpha(alpha,headroom,signedConsumption,
 			center,envelope);
+	}
+
+	float FireProductionContinuousInflowValue( const float nearest, const float ambient,
+		const float velocity, const bool positiveInflow, const float cellWidthM,
+		const float timeStepS ) noexcept
+	{
+		return ContinuousInflowValue(nearest,ambient,velocity,positiveInflow,
+			cellWidthM,timeStepS);
 	}
 
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,

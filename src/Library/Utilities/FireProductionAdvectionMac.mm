@@ -136,14 +136,27 @@ kernel void gather_grid_velocity(device const float* ux [[buffer(0)]],
 inline float ambient_value(device const float* ambient,constant Params& p,uint c,uint l){
  return ambient[p.ambientPerLine!=0u?c*p.lines+l:c];
 }
+inline float continuous_inflow(float nearest,float ambient,float velocity,bool positive,
+ constant Params& p){
+ if(!(p.dt>0.0f))return nearest;
+ float scale=max(0x1p-126f,max(abs(velocity),abs(p.dx/p.dt)));
+ float width=0x1p-24f*scale,signedVelocity=positive?velocity:-velocity;
+ if(signedVelocity<=-width)return nearest;
+ if(signedVelocity>=width)return ambient;
+ float weight=(signedVelocity+width)/(2.0f*width);
+ return nearest+weight*(ambient-nearest);
+}
 inline float sample_value(device const float* q,device const float* u,
  device const float* lowerAmbient,device const float* upperAmbient,
  constant Params& p,uint c,uint l,int i){
  if(p.lowerBoundary==0u&&p.upperBoundary==0u){int n=int(p.n);int w=i%n;if(w<0)w+=n;return q[value_index(p,c,l,uint(w))];}
- if(i<0){bool inflow=p.lowerBoundary==1u&&u[l*(p.n+1u)]>0.0f;
-  return inflow?ambient_value(lowerAmbient,p,c,l):q[value_index(p,c,l,0u)];}
- if(i>=int(p.n)){bool inflow=p.upperBoundary==1u&&u[l*(p.n+1u)+p.n]<0.0f;
-  return inflow?ambient_value(upperAmbient,p,c,l):q[value_index(p,c,l,p.n-1u)];}
+ if(i<0){float nearest=q[value_index(p,c,l,0u)];if(p.lowerBoundary!=1u)return nearest;
+  return continuous_inflow(nearest,ambient_value(lowerAmbient,p,c,l),
+   u[l*(p.n+1u)],true,p);}
+ if(i>=int(p.n)){float nearest=q[value_index(p,c,l,p.n-1u)];
+  if(p.upperBoundary!=1u)return nearest;
+  return continuous_inflow(nearest,ambient_value(upperAmbient,p,c,l),
+   u[l*(p.n+1u)+p.n],false,p);}
  return q[value_index(p,c,l,uint(i))];
 }
 inline void unlimited_edges(device const float* q,device const float* u,
@@ -253,10 +266,12 @@ inline float open_local_forward(device const float* q,device const float* left,
 inline float open_swept(device const float* q,device const float* left,device const float* right,
  device const float* lowerAmbient,device const float* upperAmbient,
  constant Params& p,uint c,uint l,uint face,float courant,float velocity){
- float magnitude=abs(courant);float leftExtension=p.lowerBoundary==1u&&velocity>0.0f?
-  ambient_value(lowerAmbient,p,c,l):q[value_index(p,c,l,0u)];
- float rightExtension=p.upperBoundary==1u&&velocity<0.0f?ambient_value(upperAmbient,p,c,l):
-  q[value_index(p,c,l,p.n-1u)];
+ float magnitude=abs(courant),leftNearest=q[value_index(p,c,l,0u)];
+ float rightNearest=q[value_index(p,c,l,p.n-1u)];
+ float leftExtension=p.lowerBoundary==1u?continuous_inflow(leftNearest,
+  ambient_value(lowerAmbient,p,c,l),velocity,true,p):leftNearest;
+ float rightExtension=p.upperBoundary==1u?continuous_inflow(rightNearest,
+  ambient_value(upperAmbient,p,c,l),velocity,false,p):rightNearest;
  if(courant>=0.0f){float interiorLength=min(magnitude,float(face));
   float whole=floor(interiorLength),fractional=interiorLength-whole;
   uint wholeBeginning=face-uint(whole);float result=(magnitude-interiorLength)*leftExtension;

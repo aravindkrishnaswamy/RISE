@@ -75,6 +75,11 @@ namespace RISE
 		float alpha, float headroom, float signedConsumption,
 		float center, float envelope ) noexcept;
 
+	//! r127 continuous open-boundary donor transition. Exposed for contract gates.
+	float FireProductionContinuousInflowValue(
+		float nearest, float ambient, float velocity, bool positiveInflow,
+		float cellWidthM, float timeStepS ) noexcept;
+
 	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
 	bool RemapFireProductionCPU(
 		const FireProductionRemapRequest& request,

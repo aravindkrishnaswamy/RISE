@@ -535,6 +535,49 @@ namespace FireProductionRoundoffTrace
 		return result;
 	}
 
+	inline bool EvaluateContinuousInflowJoin(const TraceFloat& signedVelocity,
+		const TraceFloat& width,const TraceFloat& nearest,const TraceFloat& ambient,
+		const bool lowerJoin)
+	{
+		bool result=false;{
+			BranchSiteScope scope(BranchSite::InflowSign);
+			result=lowerJoin?signedVelocity<=-width:signedVelocity>=width;
+		}
+		if(!ActiveCounters||LastScopedObligation==std::numeric_limits<std::size_t>::max()||
+			LastScopedObligation>=ActiveCounters->branchObligations.size())return result;
+		BranchObligation& obligation=ActiveCounters->branchObligations[LastScopedObligation];
+		const double widthLower=width.Center()-width.Radius();
+		if(!(widthLower>0.0)){ActiveCounters->invalidDomain=true;return result;}
+		const double ambiguity=NextUp(std::fabs(obligation.predicateCenter)+
+			obligation.predicateRadius);
+		const double contrast=NextUp(std::fabs(ambient.Center()-nearest.Center())+
+			ambient.Radius()+nearest.Radius());
+		const double exactTerm=NextUp(contrast*ambiguity/(2.0*widthLower));
+		const std::uint64_t operations=12u;
+		const double magnitude=NextUp(4.0*std::max(
+			std::fabs(nearest.Center())+nearest.Radius(),
+			std::fabs(ambient.Center())+ambient.Radius())+contrast);
+		const double roundedTerm=NextUp(Gamma(operations)*magnitude);
+		const double ftzTerm=NextUp(static_cast<double>(operations)*
+			static_cast<double>(std::numeric_limits<float>::min()));
+		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
+		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return result;}
+		obligation.certificate=BranchCertificate::Reformulation;
+		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
+		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
+		++ActiveCounters->dischargedBranchObligationCount;
+		const unsigned int site=static_cast<unsigned int>(BranchSite::InflowSign);
+		ActiveCounters->maximumBranchDivergence[site]=std::max(
+			ActiveCounters->maximumBranchDivergence[site],total);
+		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
+			sum=NextUp(sum+value);
+		ActiveCounters->transportBranchDivergenceBound=sum;
+		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
+			ActiveCounters->branchObligations.size();
+		LastScopedObligation=std::numeric_limits<std::size_t>::max();
+		return result;
+	}
+
 	inline TraceFloat CertifiedSelection(const TraceFloat& first,const TraceFloat& second,
 		const bool minimum)
 	{

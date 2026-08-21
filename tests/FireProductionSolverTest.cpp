@@ -898,6 +898,33 @@ int main()
 			SameFloatBytes(atPositiveWidth,0.0f),
 			"r124 zero-headroom alpha ramp is continuous, monotone, and exactly inactive at the negative edge");
 	}
+	{
+		const float width=0x1p-24f;
+		const float nearest=1.0f,ambient=3.0f;
+		Check(SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+			-2.0f*width,true,1.0f,1.0f),nearest)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				2.0f*width,true,1.0f,1.0f),ambient)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				2.0f*width,false,1.0f,1.0f),nearest)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				-2.0f*width,false,1.0f,1.0f),ambient),
+			"r127 donor transition preserves both legacy side choices outside its derived width");
+		Check(SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+			-width,true,1.0f,1.0f),nearest)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				-0.5f*width,true,1.0f,1.0f),1.5f)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				0.0f,true,1.0f,1.0f),2.0f)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				0.5f*width,true,1.0f,1.0f),2.5f)&&
+			SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+				width,true,1.0f,1.0f),ambient),
+			"r127 donor transition is continuous and convex at both certified joins");
+		Check(SameFloatBytes(FireProductionContinuousInflowValue(nearest,ambient,
+			1.0f,true,1.0f,0.0f),nearest),
+			"r127 donor transition fails closed to the nearest cell for an invalid time step");
+	}
 	FireProductionTablePackage package,repeated;
 	Check(BuildFireProductionTablePackage(methane,opacity,package,&error),
 		"record-derived production table package compiles");
@@ -1978,6 +2005,17 @@ int main()
 		openNegativeCPU.faceFluxes[RemapFluxIndex(openNegative,1u,0u,0u)]==-1.0f&&
 		openNegativeCPU.faceFluxes[RemapFluxIndex(openNegative,1u,0u,8u)]==-3.5f,
 		"pressure-open remap reverses ambient and interior roles under negative velocity");
+	FireProductionRemapRequest transitionOpen=open;
+	const float transitionWidth=0x1p-24f*std::fabs(
+		transitionOpen.cellWidthM/transitionOpen.timeStepS);
+	transitionOpen.faceVelocityMPerS.front()=0.5f*transitionWidth;
+	transitionOpen.faceVelocityMPerS.back()=-0.5f*transitionWidth;
+	FireProductionRemapResult transitionOpenCPU;
+	Check(RemapFireProductionCPU(transitionOpen,transitionOpenCPU,&error)&&
+		transitionOpenCPU.faceFluxes[RemapFluxIndex(transitionOpen,0u,0u,0u)]!=0.0f&&
+		transitionOpenCPU.faceFluxes[RemapFluxIndex(transitionOpen,1u,0u,
+			transitionOpen.lineLength)]!=0.0f,
+		"r127 pressure-open fixture executes both interior points of the donor transition");
 	FireProductionRemapRequest wall=open;wall.boundary=FireProductionRemapWall;
 	FireProductionRemapResult wallCPU;
 	const bool wallRemapped=RemapFireProductionCPU(wall,wallCPU,&error);
@@ -3714,7 +3752,8 @@ int main()
 	for( std::size_t i=0;i<returned.size();++i )
 		Check(returned[i]==(challenge[i]^(0x9e3779b9u+static_cast<std::uint32_t>(i)*0x85ebca6bu)),
 			"Metal production challenge proves nonidentity device execution");
-	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,openNegativeGPU,wallGPU,
+	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,openNegativeGPU,
+		transitionOpenGPU,wallGPU,
 		wallNegativeGPU,wallToOpenGPU,openToWallGPU,
 		lineAmbientGPU,smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
 	FireProductionCellPalindromeResult translatedGPU,donorGPU,orderGPU,orderGPURepeated,
@@ -4146,6 +4185,27 @@ int main()
 		RemapFireProductionMetal(lineAmbient,lineAmbientGPU,&error)&&
 		SameRemapWithin(lineAmbientCPU,lineAmbientGPU,2.0e-5f),
 		"Metal symmetric and asymmetric pressure-open/wall fluxes match the fp32 oracle");
+	Check(RemapFireProductionMetal(transitionOpen,transitionOpenGPU,&error)&&
+		SameFloatVectorBytes(transitionOpenCPU.updatedValues,
+			transitionOpenGPU.updatedValues)&&
+		SameFloatVectorBytes(transitionOpenCPU.faceFluxes,
+			transitionOpenGPU.faceFluxes)&&
+		SameFloatVectorBytes(transitionOpenCPU.sharedLimiterAlpha,
+			transitionOpenGPU.sharedLimiterAlpha),
+		"r127 Metal donor transition is byte-identical to the strict fp32 CPU topology inside both joins");
+	Check(SameFloatBytes(openCPU.faceFluxes[RemapFluxIndex(open,0u,0u,0u)],
+			openGPU.faceFluxes[RemapFluxIndex(open,0u,0u,0u)])&&
+		SameFloatBytes(openCPU.faceFluxes[RemapFluxIndex(open,1u,0u,0u)],
+			openGPU.faceFluxes[RemapFluxIndex(open,1u,0u,0u)])&&
+		SameFloatBytes(openNegativeCPU.faceFluxes[RemapFluxIndex(
+			openNegative,0u,0u,openNegative.lineLength)],
+			openNegativeGPU.faceFluxes[RemapFluxIndex(
+				openNegative,0u,0u,openNegative.lineLength)])&&
+		SameFloatBytes(openNegativeCPU.faceFluxes[RemapFluxIndex(
+			openNegative,1u,0u,openNegative.lineLength)],
+			openNegativeGPU.faceFluxes[RemapFluxIndex(
+				openNegative,1u,0u,openNegative.lineLength)]),
+		"r127 Metal pressure-open donor bytes remain exact on both legacy sides far outside the transition width");
 	const bool affineMetal=RemapFireProductionMetal(affine,affineGPU,&error);
 	float maximumGPUAffineResidual=0.0f;
 	if( affineMetal ) for( std::size_t cell=0;cell<affine.lineLength;++cell )
@@ -4255,6 +4315,36 @@ int main()
 		advectionMetalSource.find(metalTransition)!=std::string::npos&&
 		CountSubstring(advectionMetalSource,"continuous_shared_alpha(alpha,")==2u,
 		"r124 CPU and Metal transition width, association, clamp, and both shared-alpha calls are source-identical");
+	const std::size_t cpuInflowBeginning=advectionSource.find(
+		"float ContinuousInflowValue(");
+	const std::size_t cpuInflowEnd=advectionSource.find("float Sample(",cpuInflowBeginning);
+	const std::string cpuInflowBody=cpuInflowBeginning==std::string::npos||
+		cpuInflowEnd==std::string::npos?std::string():advectionSource.substr(
+			cpuInflowBeginning,cpuInflowEnd-cpuInflowBeginning);
+	const std::size_t metalInflowBeginning=advectionMetalSource.find(
+		"inline float continuous_inflow(");
+	const std::size_t metalInflowEnd=advectionMetalSource.find(
+		"inline float sample_value(",metalInflowBeginning);
+	const std::string metalInflowBody=metalInflowBeginning==std::string::npos||
+		metalInflowEnd==std::string::npos?std::string():advectionMetalSource.substr(
+			metalInflowBeginning,metalInflowEnd-metalInflowBeginning);
+	Check(!cpuInflowBody.empty()&&!metalInflowBody.empty()&&
+		cpuInflowBody.find("const float scale=std::max(0x1p-126f,std::max(std::fabs(velocity),")!=
+			std::string::npos&&
+		cpuInflowBody.find("const float width=0x1p-24f*scale;")!=std::string::npos&&
+		cpuInflowBody.find("const float weight=(signedVelocity+width)/(2.0f*width);")!=
+			std::string::npos&&
+		cpuInflowBody.find("return nearest+weight*(ambient-nearest);")!=std::string::npos&&
+		metalInflowBody.find("float scale=max(0x1p-126f,max(abs(velocity),abs(p.dx/p.dt)));")!=
+			std::string::npos&&
+		metalInflowBody.find("float width=0x1p-24f*scale,signedVelocity=positive?velocity:-velocity;")!=
+			std::string::npos&&
+		metalInflowBody.find("float weight=(signedVelocity+width)/(2.0f*width);")!=
+			std::string::npos&&
+		metalInflowBody.find("return nearest+weight*(ambient-nearest);")!=std::string::npos&&
+		CountSubstring(advectionSource,"ContinuousInflowValue(")==7u&&
+		CountSubstring(advectionMetalSource,"continuous_inflow(")==5u,
+		"r127 CPU and Metal donor width, association, convex ramp, and all four consumers are source-bound");
 	const std::string transportSource=ReadText(
 		"src/Library/Utilities/FireProductionTransport.cpp");
 	const std::string forceSource=ReadText(

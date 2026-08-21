@@ -78,6 +78,11 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat alpha, FireProductionRoundoffTrace::TraceFloat headroom, FireProductionRoundoffTrace::TraceFloat signedConsumption,
 		FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat envelope ) noexcept;
 
+	//! r127 continuous open-boundary donor transition. Exposed for contract gates.
+	FireProductionRoundoffTrace::TraceFloat FireProductionContinuousInflowValue(
+		FireProductionRoundoffTrace::TraceFloat nearest, FireProductionRoundoffTrace::TraceFloat ambient, FireProductionRoundoffTrace::TraceFloat velocity, bool positiveInflow,
+		FireProductionRoundoffTrace::TraceFloat cellWidthM, FireProductionRoundoffTrace::TraceFloat timeStepS ) noexcept;
+
 	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
 	bool RemapFireProductionCPU(
 		const FireProductionRemapRequest& request,

@@ -82,6 +82,21 @@ namespace RISEFireProductionTrace
 			return values[component*request.lineCount+line];
 		}
 
+		FireProductionRoundoffTrace::TraceFloat ContinuousInflowValue( const FireProductionRoundoffTrace::TraceFloat nearest, const FireProductionRoundoffTrace::TraceFloat ambient,
+			const FireProductionRoundoffTrace::TraceFloat velocity, const bool positiveInflow, const FireProductionRoundoffTrace::TraceFloat cellWidthM,
+			const FireProductionRoundoffTrace::TraceFloat timeStepS )
+		{
+			if( !(timeStepS>0.0f) ) return nearest;
+			const FireProductionRoundoffTrace::TraceFloat scale=std::max(FireProductionRoundoffTrace::TraceFloat(0x1p-126f),std::max(std::fabs(velocity),
+				std::fabs(cellWidthM/timeStepS)));
+			const FireProductionRoundoffTrace::TraceFloat width=0x1p-24f*scale;
+			const FireProductionRoundoffTrace::TraceFloat signedVelocity=positiveInflow?velocity:-velocity;
+			if( FireProductionRoundoffTrace::EvaluateContinuousInflowJoin(signedVelocity,width,nearest,ambient,true) ) return nearest;
+			if( FireProductionRoundoffTrace::EvaluateContinuousInflowJoin(signedVelocity,width,nearest,ambient,false) ) return ambient;
+			const FireProductionRoundoffTrace::TraceFloat weight=(signedVelocity+width)/(2.0f*width);
+			return nearest+weight*(ambient-nearest);
+		}
+
 		FireProductionRoundoffTrace::TraceFloat Sample( const FireProductionRemapRequest& request,
 			std::size_t component, std::size_t line, long cell )
 		{
@@ -93,16 +108,19 @@ namespace RISEFireProductionTrace
 					static_cast<std::size_t>(wrapped))];
 			}
 			if( cell<0 ) {
-				const bool inflow=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-					FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){return request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f;});
-				return inflow ? AmbientValue(request,true,component,line) :
-					request.values[ValueIndex(request,component,line,0u)];
+				const FireProductionRoundoffTrace::TraceFloat nearest=request.values[ValueIndex(request,component,line,0u)];
+				if( LowerBoundary(request)!=FireProductionRemapPressureOpen ) return nearest;
+				return ContinuousInflowValue(nearest,AmbientValue(request,true,component,line),
+					request.faceVelocityMPerS[line*(request.lineLength+1u)],true,
+					request.cellWidthM,request.timeStepS);
 			}
 			if( cell>=count ) {
-				const bool inflow=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-					FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){return request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0f;});
-				return inflow ? AmbientValue(request,false,component,line) :
-					request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+				const FireProductionRoundoffTrace::TraceFloat nearest=request.values[ValueIndex(request,component,line,
+					request.lineLength-1u)];
+				if( UpperBoundary(request)!=FireProductionRemapPressureOpen ) return nearest;
+				return ContinuousInflowValue(nearest,AmbientValue(request,false,component,line),
+					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength],false,
+					request.cellWidthM,request.timeStepS);
 			}
 			return request.values[ValueIndex(request,component,line,static_cast<std::size_t>(cell))];
 		}
@@ -274,12 +292,15 @@ namespace RISEFireProductionTrace
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& right )
 		{
 			const FireProductionRoundoffTrace::TraceFloat magnitude=std::fabs(courant);
-			const FireProductionRoundoffTrace::TraceFloat leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-				FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return faceVelocity>0.0f; }) ? AmbientValue(request,true,component,line) :
-				request.values[ValueIndex(request,component,line,0u)];
-			const FireProductionRoundoffTrace::TraceFloat rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-				FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return faceVelocity<0.0f; }) ? AmbientValue(request,false,component,line) :
-				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+			const FireProductionRoundoffTrace::TraceFloat leftNearest=request.values[ValueIndex(request,component,line,0u)];
+			const FireProductionRoundoffTrace::TraceFloat rightNearest=request.values[ValueIndex(request,component,line,
+				request.lineLength-1u)];
+			const FireProductionRoundoffTrace::TraceFloat leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen?
+				ContinuousInflowValue(leftNearest,AmbientValue(request,true,component,line),
+					faceVelocity,true,request.cellWidthM,request.timeStepS):leftNearest;
+			const FireProductionRoundoffTrace::TraceFloat rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen?
+				ContinuousInflowValue(rightNearest,AmbientValue(request,false,component,line),
+					faceVelocity,false,request.cellWidthM,request.timeStepS):rightNearest;
 			const std::size_t profileBase=ValueIndex(request,component,line,0u);
 			FireProductionRoundoffTrace::TransportProfileScope profileScope(
 				request.values,left,right,profileBase,request.lineLength,
@@ -382,6 +403,14 @@ namespace RISEFireProductionTrace
 	{
 		return ContinuousSharedLimiterAlpha(alpha,headroom,signedConsumption,
 			center,envelope);
+	}
+
+	FireProductionRoundoffTrace::TraceFloat FireProductionContinuousInflowValue( const FireProductionRoundoffTrace::TraceFloat nearest, const FireProductionRoundoffTrace::TraceFloat ambient,
+		const FireProductionRoundoffTrace::TraceFloat velocity, const bool positiveInflow, const FireProductionRoundoffTrace::TraceFloat cellWidthM,
+		const FireProductionRoundoffTrace::TraceFloat timeStepS ) noexcept
+	{
+		return ContinuousInflowValue(nearest,ambient,velocity,positiveInflow,
+			cellWidthM,timeStepS);
 	}
 
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,

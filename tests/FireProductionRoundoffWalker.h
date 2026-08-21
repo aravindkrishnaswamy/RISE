@@ -105,6 +105,14 @@ namespace FireProductionRoundoffWalker
 	};
 	enum class RemainingGraphVariant { Certified,HalfAmbiguity,MissingCellIntegral,
 		MissingFTZ };
+	struct InflowTransitionCertificate
+	{
+		double ambiguityWidth=0.0,widthLower=0.0,donorContrast=0.0;
+		double exactBranchTerm=0.0,roundedTerm=0.0,ftzTerm=0.0,totalEnvelope=0.0;
+		bool continuousAtJoin=false,convexDonorBlend=false,legacyOutsideWidth=false;
+	};
+	enum class InflowGraphVariant { Certified,HalfAmbiguity,MissingDonorContrast,
+		MissingRoundedTerm,DiscontinuousBinary };
 	enum class LimiterGraphVariant { Certified,MissingNegativeRamp,FixedWidthDenominator };
 
 	inline bool CertifyContinuousLimiterTransition(const double predicateCenter,
@@ -326,6 +334,72 @@ namespace FireProductionRoundoffWalker
 		return certificate.zeroWidthAtSwitch&&std::isfinite(certificate.totalEnvelope)&&
 			certificate.exactBranchTerm>=requiredExact&&
 			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
+	}
+
+	// The r127 donor is a convex linear transition from nearest to ambient over
+	// [-w,+w]. Each outer branch meets the ramp exactly at its join. The exact
+	// alternate-path excursion is donorContrast*delta/(2*wLower); twelve rounded
+	// scalar operations and their FTZ allowance are carried independently.
+	inline bool CertifyInflowTransition(const double predicateCenter,
+		const double predicateRadius,const double widthCenter,const double widthRadius,
+		const double nearestCenter,const double nearestRadius,const double ambientCenter,
+		const double ambientRadius,InflowTransitionCertificate& certificate,
+		const InflowGraphVariant variant=InflowGraphVariant::Certified)
+	{
+		certificate=InflowTransitionCertificate();
+		if(!(predicateRadius>=0.0&&widthRadius>=0.0&&nearestRadius>=0.0&&
+			ambientRadius>=0.0)||!std::isfinite(predicateCenter)||
+			!std::isfinite(predicateRadius)||!std::isfinite(widthCenter)||
+			!std::isfinite(widthRadius)||!std::isfinite(nearestCenter)||
+			!std::isfinite(ambientCenter))return false;
+		certificate.widthLower=widthCenter-widthRadius;
+		if(!(certificate.widthLower>0.0))return false;
+		const double fullAmbiguity=Detail::NextUp(std::fabs(predicateCenter)+
+			predicateRadius);
+		certificate.ambiguityWidth=variant==InflowGraphVariant::HalfAmbiguity?
+			0.5*fullAmbiguity:fullAmbiguity;
+		certificate.donorContrast=variant==InflowGraphVariant::MissingDonorContrast?0.0:
+			Detail::NextUp(std::fabs(ambientCenter-nearestCenter)+ambientRadius+nearestRadius);
+		certificate.exactBranchTerm=Detail::NextUp(certificate.donorContrast*
+			certificate.ambiguityWidth/(2.0*certificate.widthLower));
+		const double maximumDonor=std::max(std::fabs(nearestCenter)+nearestRadius,
+			std::fabs(ambientCenter)+ambientRadius);
+		const double magnitude=Detail::NextUp(4.0*maximumDonor+
+			Detail::NextUp(std::fabs(ambientCenter-nearestCenter)+ambientRadius+nearestRadius));
+		const double product=12.0*0x1p-24;
+		certificate.roundedTerm=variant==InflowGraphVariant::MissingRoundedTerm?0.0:
+			Detail::NextUp(product/(1.0-product)*magnitude);
+		certificate.ftzTerm=Detail::NextUp(12.0*static_cast<double>(
+			std::numeric_limits<float>::min()));
+		certificate.totalEnvelope=Detail::NextUp(certificate.exactBranchTerm+
+			certificate.roundedTerm+certificate.ftzTerm);
+		certificate.continuousAtJoin=variant!=InflowGraphVariant::DiscontinuousBinary;
+		certificate.convexDonorBlend=true;certificate.legacyOutsideWidth=true;
+		const double requiredContrast=Detail::NextUp(std::fabs(ambientCenter-nearestCenter)+
+			ambientRadius+nearestRadius);
+		const double requiredExact=Detail::NextUp(requiredContrast*fullAmbiguity/
+			(2.0*certificate.widthLower));
+		const double requiredRounded=Detail::NextUp(product/(1.0-product)*magnitude);
+		return certificate.continuousAtJoin&&certificate.convexDonorBlend&&
+			certificate.legacyOutsideWidth&&std::isfinite(certificate.totalEnvelope)&&
+			certificate.exactBranchTerm>=requiredExact&&
+			certificate.roundedTerm>=requiredRounded;
+	}
+
+	inline bool DeriveInflowTransitionWidth(const double predicateAmbiguity,
+		const double naturalScale,const double proposedPowerOfTwoFactor,
+		double& derivedPowerOfTwoFactor,double& derivedWidth)
+	{
+		derivedPowerOfTwoFactor=0.0;derivedWidth=0.0;
+		if(!(predicateAmbiguity>=0.0)||!(naturalScale>0.0)||
+			!std::isfinite(predicateAmbiguity)||!std::isfinite(naturalScale)||
+			!(proposedPowerOfTwoFactor>0.0)||!std::isfinite(proposedPowerOfTwoFactor))
+			return false;
+		const double normalized=std::max(1.0,predicateAmbiguity/(0x1p-24*naturalScale));
+		derivedPowerOfTwoFactor=std::exp2(std::ceil(std::log2(normalized)));
+		derivedWidth=derivedPowerOfTwoFactor*0x1p-24*naturalScale;
+		return std::isfinite(derivedWidth)&&derivedWidth>0.0&&
+			proposedPowerOfTwoFactor==derivedPowerOfTwoFactor;
 	}
 
 	// Independent branch-equivalence proof for ParabolaDeviationRange.  With
