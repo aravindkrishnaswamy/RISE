@@ -1,6 +1,7 @@
 #ifndef FIRE_PRODUCTION_ROUNDOFF_WALKER_H
 #define FIRE_PRODUCTION_ROUNDOFF_WALKER_H
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -63,6 +64,8 @@ namespace FireProductionRoundoffWalker
 	{
 		std::size_t line=0u,cell=0u,component=0u;
 		double leftCenter=0.0,leftRadius=0.0,rightCenter=0.0,rightRadius=0.0;
+		double linearCenter=0.0,linearRadius=0.0;
+		double endpointAbsoluteUpper=0.0,endpointRadius=0.0;
 		float leftRounded=0.0f,rightRounded=0.0f;
 		bool roundedResult=false;
 	};
@@ -71,6 +74,7 @@ namespace FireProductionRoundoffWalker
 	{
 		bool continuousAtSwitch=false;
 		double ambiguityWidth=0.0;
+		double arithmeticResidualBound=0.0;
 		double divergenceBound=0.0;
 	};
 
@@ -164,7 +168,18 @@ namespace FireProductionRoundoffWalker
 		certificate.continuousAtSwitch=true;
 		certificate.ambiguityWidth=Detail::NextUp(std::fabs(witness.leftCenter)+
 			witness.leftRadius);
-		certificate.divergenceBound=Detail::NextUp(0.25*certificate.ambiguityWidth);
+		const double unit=0x1p-24;
+		const double gamma4=Detail::NextUp((4.0*unit)/(1.0-4.0*unit));
+		const double operationMagnitude=Detail::NextUp(certificate.ambiguityWidth+
+			std::fabs(witness.linearCenter)+witness.linearRadius+
+			witness.endpointAbsoluteUpper);
+		const double underflowAllowance=4.0*
+			static_cast<double>(std::numeric_limits<float>::min());
+		certificate.arithmeticResidualBound=Detail::NextUp(witness.leftRadius+
+			witness.linearRadius+witness.endpointRadius+
+			gamma4*operationMagnitude+underflowAllowance);
+		certificate.divergenceBound=Detail::NextUp(
+			0.25*certificate.ambiguityWidth+certificate.arithmeticResidualBound);
 		return std::isfinite(certificate.divergenceBound)&&
 			certificate.divergenceBound>=0.0;
 	}
@@ -258,7 +273,15 @@ namespace FireProductionRoundoffWalker
 					Detail::Multiply(Detail::Interval(-4.0f),leftDeviation),
 					Detail::Multiply(two,rightDeviation));
 				if(Detail::CaptureIfUnresolved(quadratic,zero,quadratic.rounded!=0.0f,
-					line,cell,component,witness))return true;
+					line,cell,component,witness)){
+					witness.linearCenter=linear.center;witness.linearRadius=linear.radius;
+					witness.endpointAbsoluteUpper=std::max(
+						std::fabs(leftDeviation.center)+leftDeviation.radius,
+						std::fabs(rightDeviation.center)+rightDeviation.radius);
+					witness.endpointRadius=std::max(
+						leftDeviation.radius,rightDeviation.radius);
+					return true;
+				}
 				// The first canonical unresolved branch occurs above.  A resolved
 				// quadratic would require the remaining stationary-point graph, which
 				// belongs to the eventual full derivation rather than this fail-fast RED.

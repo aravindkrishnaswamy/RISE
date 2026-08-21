@@ -1013,6 +1013,13 @@ namespace FireProductionDyadicCalibration
 			independentBranch.leftRadius,independentBranch.leftRounded,
 			independentBranch.rightCenter,independentBranch.rightRadius,
 			independentBranch.rightRounded,independentBranch.roundedResult?1:0);
+		std::fprintf(stderr,"r123 independent_ppm certified=%d ambiguity=%.17g "
+			"arithmetic=%.17g divergence=%.17g linear=(%.17g +- %.17g) "
+			"endpoint=(%.17g, %.17g)\n",ppmCertified?1:0,
+			ppmCertificate.ambiguityWidth,ppmCertificate.arithmeticResidualBound,
+			ppmCertificate.divergenceBound,independentBranch.linearCenter,
+			independentBranch.linearRadius,independentBranch.endpointAbsoluteUpper,
+			independentBranch.endpointRadius);
 		if(!FireProductionRoundoffAdapter::AdvanceResidentStepTrace(request,0.0f,trace,&error)){
 			std::fprintf(stderr,"r120 trace failed: %s\n",error.c_str());return 235;}
 		RISECBOR64::Bytes encoded;std::uint32_t unresolvedBitmap=0u,invalidBitmap=0u;
@@ -1030,8 +1037,12 @@ namespace FireProductionDyadicCalibration
 		for(const char* source:traceSources)AppendText(encoded,source);
 		std::fprintf(stderr,"r120 diagnostic tier=6 stages=%zu schedule=%u\n",trace.stages.size(),
 			trace.force.schedule.substepCount);
+		std::uint64_t totalBranchObligationCount=0u;
+		std::uint64_t totalDischargedBranchObligationCount=0u;
 		for(std::size_t index=0u;index<trace.stages.size();++index){
 			const FireProductionRoundoffTrace::Observation& stage=trace.stages[index];
+			totalBranchObligationCount+=stage.branchObligations.size();
+			totalDischargedBranchObligationCount+=stage.dischargedBranchObligationCount;
 			AppendInteger(encoded,index);
 			for(const std::uint64_t count:stage.operation)AppendInteger(encoded,count);
 			for(const double operand:stage.maximumAbsoluteOperand)AppendDouble(encoded,operand);
@@ -1181,8 +1192,11 @@ namespace FireProductionDyadicCalibration
 			obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::None){
 			limiterObligation=&obligation;break;}
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="f20ff02487a61175aa11828d32c4beb123398f5d5ec8fc6486fe47e906c1899d"||
-			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x002380u||!finiteOutputs||
+			traceDigest!="835b71d021087868aeec099b087232087fe8d08e552a87c0c5901497f0622af5"||
+			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x00ab80u||!finiteOutputs||
+			totalBranchObligationCount!=4103559u||
+			totalDischargedBranchObligationCount!=421268u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=3682291u||
 			!firstCell.unresolvedWitnessRecorded||firstCell.invalidDenominatorWitnessRecorded||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
@@ -1199,8 +1213,9 @@ namespace FireProductionDyadicCalibration
 				independentBranch.rightCenter,independentBranch.rightRadius)||
 			!ppmCertified||!ppmCertificate.continuousAtSwitch||
 			ppmCertificate.ambiguityWidth!=2.008640214894198e-6||
-			ppmCertificate.divergenceBound!=5.021600537235496e-7||
-			!limiterObligation||limiterObligation->comparisonOrdinal!=64076u||
+			ppmCertificate.arithmeticResidualBound!=2.6783670818887366e-6||
+			ppmCertificate.divergenceBound!=3.1805271356122864e-6||
+			!limiterObligation||limiterObligation->comparisonOrdinal!=156245u||
 			limiterObligation->predicateCenter!=-2.5484634978965355e-6||
 			limiterObligation->predicateRadius!=4.7677165632473422e-6||
 			!limiterObligation->roundedResult||limiterObligation->proofLower!=

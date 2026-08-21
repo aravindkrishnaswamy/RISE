@@ -59,6 +59,8 @@ int main()
 		"roundoff trace carries source and generator SHA-256 identities");
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string windowsRules=ReadText("build/cmake/rise-tests/CMakeLists.txt");
+	const std::string unixTestDriver=ReadText("run_all_tests.sh");
+	const std::string windowsTestDriver=ReadText("run_all_tests.ps1");
 	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
 	const std::string tracedTransportSource=ReadText(
 		"tests/fire_production_trace/FireProductionTransport.cpp");
@@ -74,8 +76,15 @@ int main()
 		"branch_obligation_stop.v1");
 	Check(!branchStopEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		branchStopEvidence.begin(),branchStopEvidence.end()))==
-		"bc72222d064ec9b79c00b57c1c46f2ecbcd581502deae52be04f053ec50e2c4e",
+		"c860fcec9f3954fe1b9fde70a7ff8ed8f96a0e091859a2e30b099eb026726260",
 		"r123 branch-obligation census and shared-limiter stop are durable and byte-bound");
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r123")!=std::string::npos&&
+		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r123")!=std::string::npos&&
+		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
+		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
+		"ordinary Unix and Windows suites execute the exact r123 refusal and accept only exit 237");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -178,10 +187,12 @@ int main()
 		}
 		const double underBound=0.249*certificate.ambiguityWidth;
 		Check(certified&&certificate.continuousAtSwitch&&samplesContained&&
+			certificate.arithmeticResidualBound>0.0&&certificate.divergenceBound>
+				0.25*certificate.ambiguityWidth&&
 			FireProductionRoundoffWalker::PPMQuadraticPathDifference(0.0,0.375)==0.0&&
 			std::fabs(FireProductionRoundoffWalker::PPMQuadraticPathDifference(
 				certificate.ambiguityWidth,0.5))>underBound,
-			"independent PPM branch certificate proves continuity and the sharp one-quarter ambiguity envelope");
+			"independent PPM branch certificate proves continuity and adds a four-operation rounding residual to the one-quarter envelope");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;
@@ -214,6 +225,45 @@ int main()
 			counters.branchObligations[0].divergenceBound>0.0&&
 			minimum.Radius()>0.0&&maximum.Radius()>0.0,
 			"traced PPM obligation folds the independent equivalence envelope into both path outputs");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		auto q=FireProductionRoundoffTrace::TraceFloat::Raw(
+			1.0e-7,2.0e-7,1.0e-7f,1u);
+		auto linear=FireProductionRoundoffTrace::TraceFloat::Raw(
+			-1.0e-7,2.0e-7,-1.0e-7f,1u);
+		auto minimum=FireProductionRoundoffTrace::TraceFloat(-1.0f);
+		auto maximum=FireProductionRoundoffTrace::TraceFloat(1.0f);
+		const auto endpointMinimum=minimum,endpointMaximum=maximum;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::BeginPPMBranchEnvelope();
+			bool nonzero=false;
+			{ FireProductionRoundoffTrace::BranchSiteScope site(
+				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero);
+				nonzero=q!=0.0f; }
+			FireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(
+				FireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());
+			if(nonzero){FireProductionRoundoffTrace::CoveredBranchScope covered(true);
+				auto stationary=-linear/(2.0f*q);
+				bool lower=FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryLower,
+					[&](){return stationary>0.0f;});
+				if(lower)FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper,
+					[&](){return stationary<1.0f;});}
+			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(q,linear,
+				endpointMinimum,endpointMaximum,minimum,maximum);
+		}
+		Check(counters.branchObligations.size()==3u&&
+			counters.dischargedBranchObligationCount==3u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero&&
+			counters.branchObligations[1].site==
+				FireProductionRoundoffTrace::BranchSite::PPMStationaryLower&&
+			counters.branchObligations[2].site==
+				FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper,
+			"ambiguous PPM nonzero path emits and explicitly discharges its parent and both stationary predicates");
 	}
 	{
 		double lower=0.0,upper=0.0,divergence=0.0;
@@ -345,7 +395,7 @@ int main()
 	Check(tracedOK&&tracedBytes&&tracedOperations==700u&&
 		std::equal(expectedTraceKinds.begin(),expectedTraceKinds.end(),
 			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
-		tracedCounters.comparisonCount==304u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.comparisonCount==404u&&tracedCounters.unresolvedBranch&&
 		tracedCounters.branchObligations.size()==180u&&
 		tracedCounters.dischargedBranchObligationCount==60u&&
 		tracedCounters.minimumDenominatorLowerBound==0.25&&
@@ -358,7 +408,7 @@ int main()
 		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
 	if(!(tracedOK&&tracedBytes&&tracedOperations==700u&&
-		tracedCounters.comparisonCount==304u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.comparisonCount==404u&&tracedCounters.unresolvedBranch&&
 		!tracedCounters.invalidDomain))std::fprintf(stderr,
 		"roundoff remap detail ok=%d bytes=%d ops=%llu comparisons=%llu obligations=%zu "
 		"discharged=%llu unresolved=%d invalid=%d denominator=%.17g max_operand=%.17g\n",

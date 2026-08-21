@@ -241,7 +241,7 @@ namespace FireProductionRoundoffTrace
 			const bool resolved,const bool roundedResult)
 		{
 			if(ActiveCounters){const std::uint64_t ordinal=ActiveCounters->comparisonCount++;
-				if(CoveredBranchDepth!=0u&&(PPMQuadraticAmbiguous||
+				if(CoveredBranchDepth!=0u&&(!PPMQuadraticAmbiguous||
 					(ActiveBranchSite!=BranchSite::PPMStationaryLower&&
 					 ActiveBranchSite!=BranchSite::PPMStationaryUpper)))return;
 				const double margin=std::fabs(a.center_-b.center_)-a.radius_-b.radius_;
@@ -309,38 +309,38 @@ namespace FireProductionRoundoffTrace
 			PPMObligationStart>ActiveCounters->branchObligations.size())return;
 		const double quadraticUpper=NextUp(std::fabs(quadratic.Center())+
 			quadratic.Radius());
-		const double quadraticLower=std::fabs(quadratic.Center())-quadratic.Radius();
-		double divergence=0.0;
+		const double endpointAbsoluteUpper=NextUp(std::max(
+			std::fabs(endpointMinimum.Center())+endpointMinimum.Radius(),
+			std::fabs(endpointMaximum.Center())+endpointMaximum.Radius()));
+		const double endpointRadius=std::max(endpointMinimum.Radius(),
+			endpointMaximum.Radius());
+		const double unit=0x1p-24;
+		const double gamma4=NextUp((4.0*unit)/(1.0-4.0*unit));
+		const double operationMagnitude=NextUp(quadraticUpper+
+			std::fabs(linear.Center())+linear.Radius()+endpointAbsoluteUpper);
+		const double underflowAllowance=4.0*
+			static_cast<double>(std::numeric_limits<float>::min());
+		const double arithmeticResidual=NextUp(quadratic.Radius()+linear.Radius()+
+			endpointRadius+gamma4*operationMagnitude+underflowAllowance);
+		double divergence=NextUp(0.25*quadraticUpper+arithmeticResidual);
 		bool hasObligation=false;
 		for(std::size_t index=PPMObligationStart;
 			index<ActiveCounters->branchObligations.size();++index){
 			const BranchObligation& obligation=ActiveCounters->branchObligations[index];
 			if(obligation.certificate!=BranchCertificate::None)continue;
-			if(obligation.site==BranchSite::PPMQuadraticZero){
-				hasObligation=true;divergence=std::max(divergence,
-					NextUp(quadraticUpper*0.25));
-			}else if((obligation.site==BranchSite::PPMStationaryLower||
-				obligation.site==BranchSite::PPMStationaryUpper)&&quadraticLower>0.0){
-				hasObligation=true;
-				double derivativeCenter=linear.Center(),derivativeRadius=linear.Radius();
-				if(obligation.site==BranchSite::PPMStationaryUpper){
-					derivativeCenter+=2.0*quadratic.Center();
-					derivativeRadius=NextUp(derivativeRadius+2.0*quadratic.Radius());
-				}
-				const double derivativeUpper=NextUp(std::fabs(derivativeCenter)+
-					derivativeRadius);
-				const double local=NextUp(derivativeUpper*derivativeUpper/
-					(4.0*quadraticLower));
-				divergence=std::max(divergence,std::min(
-					NextUp(quadraticUpper*0.25),local));
-			}
+			if(obligation.site==BranchSite::PPMQuadraticZero||
+				obligation.site==BranchSite::PPMStationaryLower||
+				obligation.site==BranchSite::PPMStationaryUpper)hasObligation=true;
 		}
 		if(!hasObligation){PPMObligationStart=std::numeric_limits<std::size_t>::max();
 			PPMQuadraticAmbiguous=false;return;}
-		const double minimumRadius=NextUp(std::max(endpointMinimum.Radius()+divergence,
-			std::fabs(static_cast<double>(minimum.Rounded())-endpointMinimum.Center())));
-		const double maximumRadius=NextUp(std::max(endpointMaximum.Radius()+divergence,
-			std::fabs(static_cast<double>(maximum.Rounded())-endpointMaximum.Center())));
+		const double minimumRadius=NextUp(endpointMinimum.Radius()+divergence);
+		const double maximumRadius=NextUp(endpointMaximum.Radius()+divergence);
+		if(std::fabs(static_cast<double>(minimum.Rounded())-endpointMinimum.Center())>
+			minimumRadius||std::fabs(static_cast<double>(maximum.Rounded())-
+			endpointMaximum.Center())>maximumRadius){ActiveCounters->invalidDomain=true;
+			PPMObligationStart=std::numeric_limits<std::size_t>::max();
+			PPMQuadraticAmbiguous=false;return;}
 		minimum=TraceFloat::Raw(endpointMinimum.Center(),minimumRadius,minimum.Rounded(),
 			std::max(endpointMinimum.Depth(),minimum.Depth()));
 		maximum=TraceFloat::Raw(endpointMaximum.Center(),maximumRadius,maximum.Rounded(),
@@ -400,10 +400,11 @@ namespace FireProductionRoundoffTrace
 		const double predicateRadius=NextUp(first.Radius()+second.Radius());
 		const bool resolved=(first.Radius()==0.0&&second.Radius()==0.0)||
 			std::fabs(predicateCenter)>predicateRadius;
-		if(!ActiveCounters||CoveredBranchDepth!=0u||resolved)return chosen;
+		if(!ActiveCounters||CoveredBranchDepth!=0u)return chosen;
 		const std::uint64_t ordinal=ActiveCounters->comparisonCount++;
 		ActiveCounters->minimumBranchMargin=std::min(
 			ActiveCounters->minimumBranchMargin,std::fabs(predicateCenter)-predicateRadius);
+		if(resolved)return chosen;
 		BranchObligation obligation;obligation.comparisonOrdinal=ordinal;
 		obligation.site=minimum?BranchSite::MinimumSelection:BranchSite::MaximumSelection;
 		obligation.predicateCenter=predicateCenter;

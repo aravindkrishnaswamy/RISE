@@ -66,6 +66,9 @@ $FireGasPlanckManifest = Join-Path $RepoRoot 'docs\data\gas_opacity\hitemp_sourc
 $FireGasPlanckEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireGasOpacityRecordData.inc'
 $FireGasPlanckRecord = Join-Path $RepoRoot 'docs\data\gas_opacity\fire_gas_opacity_hitemp_planck_mean_v1.cbor'
 $FireGasPlanckTest = Join-Path $RepoRoot 'tests\test_fire_gas_opacity_planck_record.py'
+$FireProductionCalibrationDir = Join-Path $RepoRoot 'rendered\fire_production_calibration\r112_dyadic_smooth_open'
+$FireProductionProtocolSHA = '42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed'
+$FireProductionTargetsSHA = 'd4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b'
 
 $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
 if (-not $python) {
@@ -536,6 +539,30 @@ foreach ($src in $testSources) {
     } else {
         Write-Host ("FAIL (exit={0}, {1}s)" -f $rc, $dur)
         $runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $log; Reason = 'fail' }
+        $failed++
+    }
+}
+
+if (-not $Filter) {
+    $roundoffName = 'FireProductionCalibrationOracle.r123'
+    $roundoffExe = Join-Path $BinDir 'FireSequenceTest.exe'
+    $roundoffLog = Join-Path $LogDir "$roundoffName.log"
+    Write-Host -NoNewline ('[ evidence ] {0,-46} ... ' -f $roundoffName)
+    if (-not (Test-Path -LiteralPath $roundoffExe)) {
+        $roundoffRC = 127
+    } else {
+        & $roundoffExe --fire-production-calibration-diagnose-roundoff `
+            $FireProductionCalibrationDir $FireProductionProtocolSHA `
+            $FireProductionTargetsSHA *>&1 | Out-File -FilePath $roundoffLog -Encoding utf8
+        $roundoffRC = $LASTEXITCODE
+    }
+    if ($roundoffRC -eq 237) {
+        Write-Host 'PASS (exact exit=237)'
+        Remove-Item -LiteralPath $roundoffLog -ErrorAction SilentlyContinue
+    } else {
+        Write-Host ("FAIL (exit={0}; expected 237)" -f $roundoffRC)
+        $runFailures += [pscustomobject]@{ Name = $roundoffName; Code = $roundoffRC;
+            Log = $roundoffLog; Reason = 'fail' }
         $failed++
     }
 }

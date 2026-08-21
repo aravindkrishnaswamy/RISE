@@ -24,6 +24,9 @@ FIRE_GAS_PLANCK_MANIFEST="$REPO_ROOT/docs/data/gas_opacity/hitemp_sources_v1.jso
 FIRE_GAS_PLANCK_EMBEDDED="$LIB_DIR/Utilities/FireGasOpacityRecordData.inc"
 FIRE_GAS_PLANCK_RECORD="$REPO_ROOT/docs/data/gas_opacity/fire_gas_opacity_hitemp_planck_mean_v1.cbor"
 FIRE_GAS_PLANCK_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_planck_record.py"
+FIRE_PRODUCTION_CALIBRATION_DIR="$REPO_ROOT/rendered/fire_production_calibration/r112_dyadic_smooth_open"
+FIRE_PRODUCTION_PROTOCOL_SHA="42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed"
+FIRE_PRODUCTION_TARGETS_SHA="d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -372,6 +375,35 @@ for test_src in "$SRC_DIR"/*.cpp; do
 		failed=$((failed + 1))
 	fi
 done
+
+# The r123 derivation is an expected fail-closed evidence gate, not a test
+# source with its own executable name.  Run the capability-isolated binary
+# explicitly and accept only its exact branch-obligation refusal.
+roundoff_name="FireProductionCalibrationOracle.r123"
+roundoff_path="$BIN_DIR/FireProductionCalibrationOracle"
+roundoff_log="$LOG_DIR/$roundoff_name.log"
+printf '[ evidence ] %-46s ... ' "$roundoff_name"
+roundoff_rc=0
+if [ ! -x "$roundoff_path" ]; then
+	roundoff_rc=127
+elif [ -n "$timeout_bin" ]; then
+	"$timeout_bin" "$RISE_TEST_TIMEOUT" "$roundoff_path" \
+		--fire-production-calibration-diagnose-roundoff \
+		"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
+		"$FIRE_PRODUCTION_TARGETS_SHA" >"$roundoff_log" 2>&1 || roundoff_rc=$?
+else
+	"$roundoff_path" --fire-production-calibration-diagnose-roundoff \
+		"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
+		"$FIRE_PRODUCTION_TARGETS_SHA" >"$roundoff_log" 2>&1 || roundoff_rc=$?
+fi
+if [ "$roundoff_rc" -eq 237 ]; then
+	echo 'PASS (exact exit=237)'
+	rm -f "$roundoff_log"
+else
+	echo "FAIL (exit=$roundoff_rc; expected 237)"
+	printf '%s\t%d\t%s\n' "$roundoff_name" "$roundoff_rc" "$roundoff_log" >> "$RUN_FAIL_TSV"
+	failed=$((failed + 1))
+fi
 
 print_summary
 
