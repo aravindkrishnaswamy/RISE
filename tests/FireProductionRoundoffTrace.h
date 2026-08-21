@@ -111,6 +111,7 @@ namespace FireProductionRoundoffTrace
 		friend TraceFloat operator/(const TraceFloat& a,const TraceFloat& b)
 		{
 			const double lower=std::fabs(b.center_)-b.radius_;
+			const std::uint32_t depth=1u+std::max(a.depth_,b.depth_);
 			if(ActiveCounters)ActiveCounters->minimumDenominatorLowerBound=std::min(
 				ActiveCounters->minimumDenominatorLowerBound,lower);
 			if(!(lower>0.0)){if(ActiveCounters){ActiveCounters->invalidDomain=true;
@@ -118,9 +119,12 @@ namespace FireProductionRoundoffTrace
 					ActiveCounters->invalidDenominatorWitnessRecorded=true;
 					ActiveCounters->invalidDenominatorCenter=b.center_;
 					ActiveCounters->invalidDenominatorRadius=b.radius_;
-					ActiveCounters->invalidDenominatorRounded=b.rounded_;}}
+					ActiveCounters->invalidDenominatorRounded=b.rounded_;}
+				RecordOperation(Operation::Divide,depth,std::max(
+					std::fabs(a.center_)+a.radius_,std::fabs(b.center_)+b.radius_),
+					std::numeric_limits<double>::infinity());}
 				return Raw(a.center_/b.center_,std::numeric_limits<double>::infinity(),
-					static_cast<float>(a.rounded_/b.rounded_),1u+std::max(a.depth_,b.depth_));}
+					static_cast<float>(a.rounded_/b.rounded_),depth);}
 			const double center=a.center_/b.center_;
 			const double propagated=NextUp(a.radius_/lower+
 				(std::fabs(a.center_)+a.radius_)*b.radius_/(lower*lower));

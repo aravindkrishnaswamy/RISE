@@ -221,6 +221,12 @@ namespace FireProductionDyadicCalibration
 		std::uint64_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));AppendInteger(bytes,bits);
 	}
 
+	void AppendText(RISECBOR64::Bytes& bytes,const char* value)
+	{
+		const std::size_t length=std::strlen(value);AppendInteger(bytes,length);
+		bytes.insert(bytes.end(),value,value+length);
+	}
+
 	std::string AnalyticStateDigest(const MethaneRunCheckpoint& state)
 	{
 		RISECBOR64::Bytes bytes;
@@ -986,15 +992,46 @@ namespace FireProductionDyadicCalibration
 		RISE::FireProductionResidentStepRequest request;
 		if(!BuildProductionRequest(state,sealed[0],flowThrough/512.0,request,error))return 234;
 		FireProductionRoundoffAdapter::ResidentStepTraceResult trace;
+		FireProductionRoundoffWalker::BranchWitness independentBranch;
+		const bool independentBranchStopped=FireProductionRoundoffWalker::
+			WalkFirstCellXLimiterBranch(request.cellTransport.shape.nx,
+				request.cellTransport.shape.ny,request.cellTransport.shape.nz,
+				request.cellTransport.componentCount,
+				request.cellTransport.boundary[0]==RISE::FireProductionProjectionPeriodic,
+				request.cellTransport.boundary[0]==RISE::FireProductionProjectionPressureOpen,
+				request.cellTransport.boundary[1]==RISE::FireProductionProjectionPressureOpen,
+				request.cellTransport.conservativeValues,request.cellTransport.ambientValues,
+				request.cellTransport.frozenVelocityMPerS[0],independentBranch);
+		std::fprintf(stderr,"r120 independent_branch stopped=%d line=%zu cell=%zu component=%zu "
+			"left=(%.17g +- %.17g, %.9g) right=(%.17g +- %.17g, %.9g) result=%d\n",
+			independentBranchStopped?1:0,independentBranch.line,independentBranch.cell,
+			independentBranch.component,independentBranch.leftCenter,
+			independentBranch.leftRadius,independentBranch.leftRounded,
+			independentBranch.rightCenter,independentBranch.rightRadius,
+			independentBranch.rightRounded,independentBranch.roundedResult?1:0);
 		if(!FireProductionRoundoffAdapter::AdvanceResidentStepTrace(request,0.0f,trace,&error)){
 			std::fprintf(stderr,"r120 trace failed: %s\n",error.c_str());return 235;}
 		RISECBOR64::Bytes encoded;std::uint32_t unresolvedBitmap=0u,invalidBitmap=0u;
+		const char* traceSources[]={RISEFireProductionTrace::SourceManifest::Generator,
+			RISEFireProductionTrace::SourceManifest::FireProductionAdvectionHeader,
+			RISEFireProductionTrace::SourceManifest::FireProductionAdvectionSource,
+			RISEFireProductionTrace::SourceManifest::FireProductionTransportHeader,
+			RISEFireProductionTrace::SourceManifest::FireProductionTransportSource,
+			RISEFireProductionTrace::SourceManifest::FireProductionForceHeader,
+			RISEFireProductionTrace::SourceManifest::FireProductionForceSource,
+			RISEFireProductionTrace::SourceManifest::FireProductionProjectionHeader,
+			RISEFireProductionTrace::SourceManifest::FireProductionProjectionSource,
+			RISEFireProductionTrace::SourceManifest::TraceCore,
+			RISEFireProductionTrace::SourceManifest::IndependentWalker};
+		for(const char* source:traceSources)AppendText(encoded,source);
 		std::fprintf(stderr,"r120 diagnostic tier=6 stages=%zu schedule=%u\n",trace.stages.size(),
 			trace.force.schedule.substepCount);
 		for(std::size_t index=0u;index<trace.stages.size();++index){
 			const FireProductionRoundoffTrace::Observation& stage=trace.stages[index];
 			AppendInteger(encoded,index);
 			for(const std::uint64_t count:stage.operation)AppendInteger(encoded,count);
+			for(const double operand:stage.maximumAbsoluteOperand)AppendDouble(encoded,operand);
+			for(const double radius:stage.maximumResultRadius)AppendDouble(encoded,radius);
 			AppendInteger(encoded,stage.maximumDepth);AppendInteger(encoded,stage.comparisonCount);
 			AppendDouble(encoded,stage.minimumBranchMargin);
 			AppendDouble(encoded,stage.minimumDenominatorLowerBound);
@@ -1063,18 +1100,27 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="a4315505cadce8dce1f4357d4cbc319f9914afde705a7f29a7f5f5658975127f"||
+			traceDigest!="8f3e709af17fdf9b22f271b37791d8287243f1054c5df530437cf963e8fbf93e"||
 			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x1ffffeu||!finiteOutputs||
 			!firstCell.unresolvedWitnessRecorded||!firstCell.invalidDenominatorWitnessRecorded||
+			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
+			independentBranch.component!=3u||
+			independentBranch.leftCenter!=-7.7486038219110043e-7||
+			independentBranch.leftRadius!=1.2337798327030971e-6||
+			independentBranch.leftRounded!=-7.152557373046875e-7f||
+			independentBranch.rightCenter!=0.0||independentBranch.rightRadius!=0.0||
+			independentBranch.rightRounded!=0.0f||!independentBranch.roundedResult||
 			FireProductionRoundoffWalker::IntervalsAreSeparated(
-				firstCell.unresolvedLeftCenter,firstCell.unresolvedLeftRadius,
-				firstCell.unresolvedRightCenter,firstCell.unresolvedRightRadius)||
-			std::fabs(firstCell.invalidDenominatorCenter)-
-				firstCell.invalidDenominatorRadius>0.0||source.unresolvedBranch||
+				independentBranch.leftCenter,independentBranch.leftRadius,
+				independentBranch.rightCenter,independentBranch.rightRadius)||
+			!FireProductionRoundoffWalker::IntervalsAreSeparated(
+				independentBranch.leftCenter,0.5*independentBranch.leftRadius,
+				independentBranch.rightCenter,independentBranch.rightRadius)||
+			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r120 derivation stopped before Metal measurement: frozen branch "
-			"topology is unresolved\n");
+		std::fprintf(stderr,"r120 derivation stopped before Metal measurement: independently "
+			"walked limiter branch is unresolved\n");
 		return 237;
 	}
 

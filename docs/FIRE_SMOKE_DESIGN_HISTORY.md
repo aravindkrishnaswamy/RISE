@@ -2885,17 +2885,20 @@ it was already tried and refuted here.
   evidence, not substitutes for the burning-state measurements.
 
 - **r122 independent roundoff derivation refusal (2026-08-20):** the no-Metal
-  r120 trace executes all 24 frozen stages and binds exact digest
-  `a4315505...5127f`, unresolved-branch bitmap `0xdffffe`, and
+  r120 trace executes all 24 frozen stages and binds exact diagnostic digest
+  `8f3e709a...bf93e`, unresolved-branch bitmap `0xdffffe`, and
   invalid-denominator bitmap `0x1ffffe`. Force and exact-`+0` source addition
   are resolved; the 5 cell maps, 15 dual maps, and both projection passes have
   unresolved executed branch topology, and every transport map has an interval
-  denominator whose lower enclosure crosses zero. The first overlapping branch
-  and denominator witnesses are recorded numerically and independently checked
-  by the topology walker. Per the predeclared r120 rule, the campaign stops
+  denominator whose lower enclosure crosses zero. Independently, the fail-fast
+  walker repacks the public SoA state and reconstructs the first x-half-step PPM
+  edge DAG: line 1/cell 6/component 3 reaches `quadratic!=0` with
+  `-7.7486038219110043e-7 +/- 1.2337798327030971e-6` against exact zero. A
+  half-radius undercount mutant separates the intervals. Per the predeclared
+  r120 rule, this independent executed-branch witness stops the campaign
   before Metal, before fp32/fp64 measurement, and before any `B_fp32` radius is
   admitted. Temporal refinement, eight-slice readmission, and source maps did
   not run. The durable artifact is
   `r122_roundoff_derivation/roundoff_derivation_stop.v1`, SHA-256
-  `e52afd58...d98f`. Continuation requires an explicit branch-stable or
+  `939e95f8...b5d5ac`. Continuation requires an explicit branch-stable or
   branch-equivalence ruling; no measurement may widen the absent bound.

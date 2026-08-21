@@ -53,6 +53,8 @@ int main()
 		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionProjectionSource)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionTransportSource)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionForceSource)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::TraceCore)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::IndependentWalker)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::Generator)==64u,
 		"roundoff trace carries source and generator SHA-256 identities");
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
@@ -65,7 +67,7 @@ int main()
 		"roundoff_derivation_stop.v1");
 	Check(!roundoffStopEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		roundoffStopEvidence.begin(),roundoffStopEvidence.end()))==
-		"e52afd58a2972747e4e863908c71409569995440a30e46689a17d2dc0066d98f",
+		"939e95f8ff916fff6c168d2b6bd30186b50a9b6e7963255b10641481c1b5d5ac",
 		"r122 roundoff derivation refusal artifact is durable and byte-bound");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
@@ -136,6 +138,9 @@ int main()
 				"invalid traced division publishes an infinite diagnostic radius");
 		}
 		Check(branchResult&&counters.invalidDomain&&counters.unresolvedBranch&&
+			counters.operation[static_cast<unsigned int>(
+				FireProductionRoundoffTrace::Operation::Divide)]==1u&&
+			counters.maximumDepth==1u&&
 			counters.minimumDenominatorLowerBound<=0.0&&
 			counters.unresolvedWitnessRecorded&&counters.invalidDenominatorWitnessRecorded&&
 			!FireProductionRoundoffWalker::IntervalsAreSeparated(
