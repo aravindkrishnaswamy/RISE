@@ -1466,7 +1466,17 @@ bool Job::AddVoronoi3DPainterWithSpace(
 
 	for( unsigned int i=0; i<count; i++ ) {
 		pts.push_back( Point3( pt_x[i], pt_y[i], pt_z[i] ) );
-		ptrs.push_back( pPntManager->GetItem( painters[i] ) );
+
+		IPainter* pGen = pPntManager->GetItem( painters[i] );
+		if( !pGen ) {
+			char msg[300];
+			std::snprintf( msg, sizeof( msg ),
+				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi3DPainterWithSpace:: `%s`: %s", name ? name : "noname", msg );
+			if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+			return false;
+		}
+		ptrs.push_back( pGen );
 	}
 
 	IPainter* pPainter = 0;
@@ -2864,7 +2874,17 @@ bool Job::AddVoronoi2DPainter(
 
 	for( unsigned int i=0; i<count; i++ ) {
 		pts.push_back( Point2( pt_x[i], pt_y[i] ) );
-		ptrs.push_back( pPntManager->GetItem( painters[i] ) );
+
+		IPainter* pGen = pPntManager->GetItem( painters[i] );
+		if( !pGen ) {
+			char msg[300];
+			std::snprintf( msg, sizeof( msg ),
+				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi2DPainter:: `%s`: %s", name ? name : "noname", msg );
+			if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+			return false;
+		}
+		ptrs.push_back( pGen );
 	}
 
 	IPainter* pPainter = 0;
@@ -2904,7 +2924,17 @@ bool Job::AddVoronoi3DPainter(
 
 	for( unsigned int i=0; i<count; i++ ) {
 		pts.push_back( Point3( pt_x[i], pt_y[i], pt_z[i] ) );
-		ptrs.push_back( pPntManager->GetItem( painters[i] ) );
+
+		IPainter* pGen = pPntManager->GetItem( painters[i] );
+		if( !pGen ) {
+			char msg[300];
+			std::snprintf( msg, sizeof( msg ),
+				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi3DPainter:: `%s`: %s", name ? name : "noname", msg );
+			if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+			return false;
+		}
+		ptrs.push_back( pGen );
 	}
 
 	IPainter* pPainter = 0;

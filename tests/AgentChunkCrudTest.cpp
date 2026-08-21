@@ -17994,6 +17994,112 @@ static void TestFrameSceneOrderingBeforePopulate()
 	}
 }
 
+//----------------------------------------------------------------------
+// V1: a `voronoi2d_painter` / `voronoi3d_painter` whose `gen` line names a
+// painter that was never declared used to store a NULL IPainter* straight
+// into the Voronoi painter (Job::AddVoronoi2DPainter / AddVoronoi3DPainter
+// pushed `pPntManager->GetItem( painters[i] )` into the generator vector
+// with no null check, unlike the `pBorder` guard a few lines above) --
+// crashing at first evaluation instead of failing the derive. This test
+// goes DIRECTLY through RISE::Cst::ParseToCst + DeriveToJob (the same
+// raw-derive idiom as TestReservedCameraNameNoneAtDerive above) so it
+// exercises the chunk parser's Finalize path, not AgentSession::InsertChunk.
+// Each scene supplies TWO gens: gen 0 references a real painter (proves the
+// dangling-gen index reported is the SECOND one, not just "some" gen), gen 1
+// names a painter that was never declared. `border` is a real painter too --
+// AddVoronoi{2,3}DPainter's own pBorder guard returns false with no
+// diagnostic when border is missing, which would mask the fix under test.
+//----------------------------------------------------------------------
+static void TestVoronoiDanglingGenPainterAtDerive()
+{
+	std::printf( "V1: a voronoi2d/3d_painter `gen` naming a nonexistent painter is refused at derive...\n" );
+
+	// (a) voronoi2d_painter
+	{
+		const std::string text =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname border_pnt\n\tcolor 0.1 0.1 0.1\n}\n\n"
+			"uniformcolor_painter\n{\n\tname gen0_pnt\n\tcolor 0.2 0.3 0.4\n}\n\n"
+			"voronoi2d_painter\n{\n\tname test_voronoi2d\n"
+			"\tgen 0.2 0.3 gen0_pnt\n"
+			"\tgen 0.6 0.7 no_such_painter\n"
+			"\tborder border_pnt\n\tbordersize 0.01\n}\n";
+
+		RISE::Cst::Document doc = RISE::Cst::ParseToCst( text );
+		Job* j = new Job();
+		std::vector<std::string> diags;
+		RISE::Cst::DeriveToJob( doc, *j, &diags );
+
+		Check( !diags.empty(),
+		       "V1(a) deriving a voronoi2d_painter with a dangling `gen` painter emits a diagnostic "
+		       "(not a crash)" );
+		if( !diags.empty() ) {
+			Check( diags[0].find( "voronoi2d_painter" ) != std::string::npos,
+			       "V1(a) the diagnostic names the offending chunk `voronoi2d_painter`" );
+			Check( diags[0].find( "no_such_painter" ) != std::string::npos,
+			       "V1(a) the diagnostic names the dangling painter `no_such_painter`" );
+			Check( diags[0].find( "gen 1" ) != std::string::npos,
+			       "V1(a) the diagnostic names the offending gen index (1, the second gen)" );
+		}
+		// The painter must never have been registered under either name -- the whole
+		// chunk's Finalize returned false before RegisterPainterDual ran.
+		IPainterManager* pnts = j->GetPainters();
+		Check( pnts && !pnts->GetItem( "test_voronoi2d" ),
+		       "V1(a) no painter is ever registered under the voronoi chunk's own name" );
+
+		j->release();
+	}
+
+	// (b) voronoi3d_painter (routes through Job::AddVoronoi3DPainterWithSpace)
+	{
+		const std::string text =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname border_pnt\n\tcolor 0.1 0.1 0.1\n}\n\n"
+			"uniformcolor_painter\n{\n\tname gen0_pnt\n\tcolor 0.2 0.3 0.4\n}\n\n"
+			"voronoi3d_painter\n{\n\tname test_voronoi3d\n"
+			"\tgen 0.1 0.2 0.3 gen0_pnt\n"
+			"\tgen 0.4 0.5 0.6 no_such_painter\n"
+			"\tborder border_pnt\n\tbordersize 0.01\n}\n";
+
+		RISE::Cst::Document doc = RISE::Cst::ParseToCst( text );
+		Job* j = new Job();
+		std::vector<std::string> diags;
+		RISE::Cst::DeriveToJob( doc, *j, &diags );
+
+		Check( !diags.empty(),
+		       "V1(b) deriving a voronoi3d_painter with a dangling `gen` painter emits a diagnostic "
+		       "(not a crash)" );
+		if( !diags.empty() ) {
+			Check( diags[0].find( "voronoi3d_painter" ) != std::string::npos,
+			       "V1(b) the diagnostic names the offending chunk `voronoi3d_painter`" );
+			Check( diags[0].find( "no_such_painter" ) != std::string::npos,
+			       "V1(b) the diagnostic names the dangling painter `no_such_painter`" );
+			Check( diags[0].find( "gen 1" ) != std::string::npos,
+			       "V1(b) the diagnostic names the offending gen index (1, the second gen)" );
+		}
+		IPainterManager* pnts = j->GetPainters();
+		Check( pnts && !pnts->GetItem( "test_voronoi3d" ),
+		       "V1(b) no painter is ever registered under the voronoi chunk's own name" );
+
+		// (c) direct-API: the plain AddVoronoi3DPainter overload is unreachable
+		// from the parser (it always calls AddVoronoi3DPainterWithSpace), so its
+		// null-gen guard gets no coverage from (a)/(b) -- exercise it directly
+		// against the painters the derive above already registered.
+		{
+			const double px[2] = { 0.1, 0.4 };
+			const double py[2] = { 0.2, 0.5 };
+			const double pz[2] = { 0.3, 0.6 };
+			const char* gens[2] = { "gen0_pnt", "no_such_painter" };
+			Check( !j->AddVoronoi3DPainter( "test_voronoi3d_direct", px, py, pz, gens, 2, "border_pnt", 0.01 ),
+			       "V1(c) direct AddVoronoi3DPainter with a dangling gen returns false" );
+			Check( pnts && !pnts->GetItem( "test_voronoi3d_direct" ),
+			       "V1(c) no painter is ever registered under the direct call's name" );
+		}
+
+		j->release();
+	}
+}
+
 
 int main()
 {
@@ -18212,6 +18318,10 @@ int main()
 	TestRefiningDisarmsTheThreeConflicts();
 	TestSessionModeTransitionIsOneWay();
 	TestRefiningKeepsRendererPolicy();
+
+	// V1: dangling `gen` painter in voronoi2d_painter / voronoi3d_painter
+	// refuses to derive instead of crashing.
+	TestVoronoiDanglingGenPainterAtDerive();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
