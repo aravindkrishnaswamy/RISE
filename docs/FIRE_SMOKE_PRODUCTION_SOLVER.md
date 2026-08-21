@@ -2431,6 +2431,22 @@ evidence is
 `rendered/fire_production_calibration/r128_courant_sign/courant_sign.v1`,
 SHA-256 `482b58d038b200bd1a31cb006be76ac99ba64dd3ffa16b6fd68bd68dc1925e7e`.
 
+### 7.46 Fractional-tail equivalence envelope (r129)
+
+At fractional length zero, taking the optional trailing PPM branch adds a
+zero-measure slice. Across ambiguity `delta`, the exact omitted contribution
+is bounded by `M delta`. The independent trailing-polynomial and accumulation
+DAG contains 24 scalar operations, yielding `gamma_24 M (4+delta)` and a
+separate `24 FLT_MIN` FTZ term. Half-ambiguity, missing-trailing-integral, and
+missing-FTZ mutants all fail.
+
+All `371,760` fractional-tail obligations close. The cumulative census is
+`3,351,830 / 3,972,323`; `620,493` remain pending, so exact exit `237`
+continues. The maximum class envelope is `0.29684226235298722`, and the
+unresolved stage bitmap contracts to `0xdbdef6`. Durable evidence is
+`rendered/fire_production_calibration/r129_fractional_tail/fractional_tail.v1`,
+SHA-256 `7ed9b0be19306d1448c197d669b206578109a600d13369948ec861a436c6b1db`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

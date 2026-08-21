@@ -115,6 +115,14 @@ namespace FireProductionRoundoffWalker
 	};
 	enum class CourantGraphVariant { Certified,HalfAmbiguity,MissingNegativePath,
 		MissingFTZ,NoncanonicalSignedZero };
+	struct FractionPositiveCertificate
+	{
+		double ambiguityWidth=0.0,exactBranchTerm=0.0,roundedTerm=0.0,ftzTerm=0.0;
+		double totalEnvelope=0.0;std::uint64_t tailOperationCount=0u;
+		bool zeroWidthAtSwitch=false;
+	};
+	enum class FractionGraphVariant { Certified,HalfAmbiguity,MissingTrailingIntegral,
+		MissingFTZ };
 	struct InflowTransitionCertificate
 	{
 		double ambiguityWidth=0.0,widthLower=0.0,donorContrast=0.0;
@@ -397,6 +405,50 @@ namespace FireProductionRoundoffWalker
 			std::numeric_limits<float>::min()));
 		return certificate.continuousAtZero&&certificate.signedZeroCanonical&&
 			std::isfinite(certificate.totalEnvelope)&&
+			certificate.exactBranchTerm>=requiredExact&&
+			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
+	}
+
+	// At fractional==0 the optional trailing PPM interval has zero measure.
+	// Across ambiguity delta its exact contribution is Mdelta. The independent
+	// trailing-polynomial and accumulation DAG has 24 scalar operations.
+	inline bool CertifyFractionPositive(const double predicateCenter,
+		const double predicateRadius,const double profileAbsoluteUpper,
+		FractionPositiveCertificate& certificate,const FractionGraphVariant variant=
+			FractionGraphVariant::Certified)
+	{
+		certificate=FractionPositiveCertificate();
+		if(!(predicateRadius>=0.0&&profileAbsoluteUpper>=0.0)||
+			!std::isfinite(predicateCenter)||!std::isfinite(predicateRadius)||
+			!std::isfinite(profileAbsoluteUpper))return false;
+		const double fullAmbiguity=Detail::NextUp(std::fabs(predicateCenter)+
+			predicateRadius);
+		certificate.ambiguityWidth=variant==FractionGraphVariant::HalfAmbiguity?
+			0.5*fullAmbiguity:fullAmbiguity;
+		certificate.tailOperationCount=variant==FractionGraphVariant::MissingTrailingIntegral?
+			6u:24u;
+		certificate.exactBranchTerm=Detail::NextUp(profileAbsoluteUpper*
+			certificate.ambiguityWidth);
+		const double product=static_cast<double>(certificate.tailOperationCount)*0x1p-24;
+		if(!(product<1.0))return false;
+		const double gamma=Detail::NextUp(product/(1.0-product));
+		const double magnitude=Detail::NextUp(profileAbsoluteUpper*
+			(4.0+certificate.ambiguityWidth));
+		certificate.roundedTerm=Detail::NextUp(gamma*magnitude);
+		certificate.ftzTerm=variant==FractionGraphVariant::MissingFTZ?0.0:
+			Detail::NextUp(static_cast<double>(certificate.tailOperationCount)*
+				static_cast<double>(std::numeric_limits<float>::min()));
+		certificate.totalEnvelope=Detail::NextUp(certificate.exactBranchTerm+
+			certificate.roundedTerm+certificate.ftzTerm);
+		certificate.zeroWidthAtSwitch=true;
+		const double requiredExact=Detail::NextUp(profileAbsoluteUpper*fullAmbiguity);
+		const double requiredProduct=24.0*0x1p-24;
+		const double requiredGamma=Detail::NextUp(requiredProduct/(1.0-requiredProduct));
+		const double requiredRounded=Detail::NextUp(requiredGamma*
+			Detail::NextUp(profileAbsoluteUpper*(4.0+fullAmbiguity)));
+		const double requiredFTZ=Detail::NextUp(24.0*static_cast<double>(
+			std::numeric_limits<float>::min()));
+		return certificate.zeroWidthAtSwitch&&std::isfinite(certificate.totalEnvelope)&&
 			certificate.exactBranchTerm>=requiredExact&&
 			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
 	}

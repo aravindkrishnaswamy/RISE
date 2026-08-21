@@ -251,7 +251,7 @@ namespace RISEFireProductionTrace
 				const FireProductionRoundoffTrace::TraceFloat whole=std::floor(localLength);
 				const FireProductionRoundoffTrace::TraceFloat fractional=localLength-whole;
 				const long wholeBeginning=static_cast<long>(face)-static_cast<long>(whole);
-				if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return fractional>0.0f; }) ) {
+				if( FireProductionRoundoffTrace::EvaluateFractionPositiveBranch([&](){ return fractional>0.0f; }) ) {
 					const std::size_t wrapped=WrappedCell(wholeBeginning-1l,request.lineLength);
 					const std::size_t value=ValueIndex(request,component,line,wrapped);
 					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
@@ -311,7 +311,7 @@ namespace RISEFireProductionTrace
 				const FireProductionRoundoffTrace::TraceFloat fractional=interiorLength-whole;
 				const std::size_t wholeBeginning=face-static_cast<std::size_t>(whole);
 				FireProductionRoundoffTrace::TraceFloat result=(magnitude-interiorLength)*leftExtension;
-				if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return fractional>0.0f; }) ) {
+				if( FireProductionRoundoffTrace::EvaluateFractionPositiveBranch([&](){ return fractional>0.0f; }) ) {
 					const std::size_t value=ValueIndex(request,component,line,wholeBeginning-1u);
 					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
 						fractional);

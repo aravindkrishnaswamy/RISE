@@ -126,6 +126,15 @@ int main()
 		courantEvidence.find("executed_obligation_instances_pending 992253")!=
 			std::string::npos,
 		"r128 Courant derivation, signed-zero rule, and cumulative census are durable");
+	const std::string fractionEvidence=ReadText(
+		"rendered/fire_production_calibration/r129_fractional_tail/fractional_tail.v1");
+	Check(!fractionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		fractionEvidence.begin(),fractionEvidence.end()))==
+		"7ed9b0be19306d1448c197d669b206578109a600d13369948ec861a436c6b1db"&&
+		fractionEvidence.find("class_fraction_pending 0")!=std::string::npos&&
+		fractionEvidence.find("executed_obligation_instances_pending 620493")!=
+			std::string::npos,
+		"r129 fractional-tail derivation and cumulative census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -137,13 +146,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r128")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r129")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r128")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r129")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute the exact r128 proof stop and accept only exit 237");
+		"ordinary Unix and Windows suites execute the exact r129 proof stop and accept only exit 237");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -680,6 +689,49 @@ int main()
 				obligation.predicateRadius,courantProfileUpper,signedZero,
 				FireProductionRoundoffWalker::CourantGraphVariant::NoncanonicalSignedZero),
 			"Courant certificate rejects a noncanonical signed-zero mutant");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> values={
+				FireProductionRoundoffTrace::TraceFloat(2.0f)};
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> left=values,right=values;
+			FireProductionRoundoffTrace::TransportProfileScope profile(
+				values,left,right,0u,1u,0.0f,0.0f);
+			const FireProductionRoundoffTrace::TraceFloat fraction=
+				FireProductionRoundoffTrace::TraceFloat::Raw(0.0,0.01,0.0f,1u);
+			Check(!FireProductionRoundoffTrace::EvaluateFractionPositiveBranch(
+				[&](){return fraction>FireProductionRoundoffTrace::TraceFloat(0.0f);}),
+				"fraction fixture executes the rounded zero-width path");
+		}
+		Check(counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations.front().site==
+				FireProductionRoundoffTrace::BranchSite::FractionPositive&&
+			counters.branchObligations.front().certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence,
+			"trace consumes the fractional-tail equivalence envelope");
+		const auto obligation=counters.branchObligations.front();
+		const double profileUpper=std::nextafter(2.0,
+			std::numeric_limits<double>::infinity());
+		FireProductionRoundoffWalker::FractionPositiveCertificate certificate,half,
+			missingTail,missingFTZ;
+		Check(FireProductionRoundoffWalker::CertifyFractionPositive(
+			obligation.predicateCenter,obligation.predicateRadius,profileUpper,certificate)&&
+			obligation.divergenceBound==certificate.totalEnvelope&&
+			certificate.zeroWidthAtSwitch&&certificate.tailOperationCount==24u,
+			"independent fraction walker matches the traced trailing-slice envelope");
+		Check(!FireProductionRoundoffWalker::CertifyFractionPositive(
+			obligation.predicateCenter,obligation.predicateRadius,profileUpper,half,
+			FireProductionRoundoffWalker::FractionGraphVariant::HalfAmbiguity)&&
+			!FireProductionRoundoffWalker::CertifyFractionPositive(
+				obligation.predicateCenter,obligation.predicateRadius,profileUpper,missingTail,
+				FireProductionRoundoffWalker::FractionGraphVariant::MissingTrailingIntegral)&&
+			!FireProductionRoundoffWalker::CertifyFractionPositive(
+				obligation.predicateCenter,obligation.predicateRadius,profileUpper,missingFTZ,
+				FireProductionRoundoffWalker::FractionGraphVariant::MissingFTZ),
+			"fraction certificate rejects half-width, missing-tail, and FTZ mutants");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;

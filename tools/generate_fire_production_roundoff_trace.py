@@ -53,8 +53,7 @@ def transform(text: str, name: str, suffix: str) -> str:
                 "if( FireProductionRoundoffTrace::EvaluateCourantSignBranch([&](){ return "
                 "courant>=0.0f; }) )",
             "if( fractional>0.0f )":
-                "if( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return "
+                "if( FireProductionRoundoffTrace::EvaluateFractionPositiveBranch([&](){ return "
                 "fractional>0.0f; }) )",
         }
         for before, after in branch_replacements.items():

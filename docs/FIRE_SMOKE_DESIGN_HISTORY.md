@@ -3045,3 +3045,12 @@ it was already tried and refuted here.
   `2,980,070 / 3,972,323`, with `992,253` pending and exact exit `237`.
   Maximum class envelope is `1.1830324528164238`; durable evidence is
   `482b58d0...925e7e`. No production arithmetic or golden checkpoint changed.
+
+- **r129 fractional-tail class discharge (2026-08-21):** the optional
+  trailing PPM slice has zero measure at fraction zero, giving exact term
+  `M delta`. Its independently enumerated 24-operation polynomial/accumulation
+  path contributes `gamma_24 M (4+delta)` and `24 FLT_MIN`. Half-ambiguity,
+  missing-tail, and missing-FTZ mutants RED. All `371,760` instances close;
+  `3,351,830 / 3,972,323` are discharged and `620,493` remain. Exact exit
+  `237` and the block on B_fp32 remain. Maximum class envelope is
+  `0.29684226235298722`; durable evidence is `7ed9b0be...6c6b1db`.
