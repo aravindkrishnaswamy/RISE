@@ -2245,6 +2245,102 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return applied;
 }
 
+#pragma mark - Node-graph canvas: create node (S18)
+
+- (NSArray<NSDictionary<NSString *, id> *> *)chunkNodeRequirementsForKeyword:(NSString *)keyword {
+    if (!_controller || !keyword) return @[];
+    const char *kw = [keyword UTF8String];
+    const unsigned int n =
+        RISE_API_SceneEditController_ChunkNodeRequiredArgCount(_controller, kw);
+    NSMutableArray<NSDictionary<NSString *, id> *> *out =
+        [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        char paramBuf[128] = {0};
+        char descBuf[1024] = {0};
+        int isRef = 0;
+        if (!RISE_API_SceneEditController_ChunkNodeRequiredArg(
+                _controller, kw, i,
+                paramBuf, sizeof(paramBuf),
+                descBuf, sizeof(descBuf), &isRef)) {
+            continue;
+        }
+        [out addObject:@{
+            @"param":       [NSString stringWithUTF8String:paramBuf] ?: @"",
+            @"description": [NSString stringWithUTF8String:descBuf] ?: @"",
+            @"isReference": @(isRef != 0)
+        }];
+    }
+    return out;
+}
+
+- (BOOL)createChunkNodeWithKeyword:(NSString *)keyword
+                          baseName:(NSString *)baseName
+                         argParams:(NSArray<NSString *> *)argParams
+                         argValues:(NSArray<NSString *> *)argValues
+                           outName:(NSString **)outName
+                        outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !keyword) return NO;
+
+    // round-1 P2-c: ORDERED parallel arrays, not a keyed NSDictionary --
+    // a dictionary can neither repeat a param (voronoi's repeatable
+    // `gen`) nor preserve caller order (enumeration order over an
+    // NSDictionary is unspecified), and the C ABI beneath is itself two
+    // parallel arrays.  A count mismatch is a caller bug; clip to the
+    // shorter length rather than reading past either array's end.  The
+    // NSString objects are held in `keep` for the duration of the call
+    // so the UTF8String pointers stay valid (a bare fast-enumeration
+    // temporary could be released before the call returns under a
+    // tight autorelease pool).
+    NSMutableArray<NSString *> *keep = [NSMutableArray array];
+    std::vector<const char *> params, values;
+    const NSUInteger n = MIN(argParams.count, argValues.count);
+    for (NSUInteger i = 0; i < n; ++i) {
+        NSString *k = argParams[i];
+        NSString *v = argValues[i];
+        if (![k isKindOfClass:[NSString class]] || ![v isKindOfClass:[NSString class]]) continue;
+        [keep addObject:k];
+        [keep addObject:v];
+        params.push_back([k UTF8String]);
+        values.push_back([v UTF8String]);
+    }
+
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_CreateChunkNode(
+        _controller, [keyword UTF8String],
+        baseName ? [baseName UTF8String] : "",
+        params.empty() ? nullptr : params.data(),
+        values.empty() ? nullptr : values.data(),
+        (unsigned int)params.size(),
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    [keep removeAllObjects];
+
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    // round-1 P2-b: a DIAGNOSED result (statusBuf "diagnosed") also
+    // landed a real, undoable mutation -- the chunk was spliced in and
+    // the live managers were rebuilt, even though `applied` reports NO
+    // for it (the re-derive additionally emitted diagnostics).  Refresh
+    // on either outcome, matching CreateChunkNode's own "code 2 or 3"
+    // mutation test rather than gating on `applied` alone.
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        // Structural mutation -- same refresh the entity-creation calls
+        // above do, so the outliner/properties panel re-enumerate.
+        [self refreshProperties];
+    }
+    return applied;
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {

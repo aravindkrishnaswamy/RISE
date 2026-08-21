@@ -4064,6 +4064,123 @@ namespace RISE
 		//! dangling reference the copy would introduce).
 		AgentCommitResult DuplicateEntity( Category cat, const String& name, String* outName );
 
+		//! -------- S18: node-graph canvas chunk creation --------
+		//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S18; the Phase-B
+		//! prerequisite S19/S20/S21 build on.)
+		//!
+		//! WHY THIS EXISTS ALONGSIDE THE TWO CREATION PATHS ABOVE.  There
+		//! are exactly three chunk-creation shapes in the tree and this is
+		//! deliberately NOT a fourth:
+		//!   * Job::ApplyCstInsertCameraChunk -- DOCUMENT-ONLY, no
+		//!     re-derive, because CloneActiveCamera already put the clone
+		//!     in the LIVE scene and a re-derive would throw it away.  A
+		//!     live-first special case, not a general creator.
+		//!   * Job::ApplyCstInsertChunk (via ApplyAgentInsertChunk) -- the
+		//!     GENERAL creator: caller-supplied chunk TEXT, tier-positioned
+		//!     splice, dry-run-guarded full re-derive, EditHistory record,
+		//!     dirty, epoch, kick.  Everything below routes through it.
+		//!   * InstantiateEntityTemplate -- a fixed PICKER over
+		//!     hand-authored recipes, keyed by (category, index).
+		//! The canvas needs the picker's ergonomics (pick a name, hand back
+		//! a live entity) over an OPEN keyword set (a search palette of
+		//! every painter/material chunk the registry knows), which no
+		//! fixed table can supply.  So this method composes the two: it
+		//! DERIVES the minimal body from the ChunkDescriptorRegistry
+		//! (EntityTemplates::BuildNodeChunkText) and then inserts it
+		//! through ApplyAgentInsertChunk -- inheriting the whole commit
+		//! discipline (admission lock, mTxnOpen refusal, cancel-and-park,
+		//! optimistic-concurrency conflict gate, dry-run-guarded derive so
+		//! a refusal leaves the Document BYTE-IDENTICAL, rebind on D2,
+		//! MarkCstHeadDirty, the U2 EditHistory record so one Cmd-Z removes
+		//! the node again, the scene-epoch bump the canvas re-enumerates
+		//! on, and the render kick) rather than re-deriving any of it.
+		//!
+		//! NOT EXPOSED TO THE AGENT SURFACE, deliberately: an agent already
+		//! writes chunk text, and insert_chunk accepts it with strictly
+		//! more expressive power than a keyword + arg list.  Adding a verb
+		//! that can only do less would widen the MCP surface for no
+		//! capability.  This is a controller + C ABI surface for the S21
+		//! canvas.
+		//!
+		//! LIGHT GENERATION: no explicit bump is needed (nor correct) here.
+		//! An insert is always D2-class -- the Scene and every manager are
+		//! rebuilt from the re-derived Document, so the luminary list is
+		//! reconstructed wholesale.  The BumpSceneLightGeneration* calls
+		//! exist for the INCREMENTAL (code-1) param-edit path, which
+		//! mutates a live material in place; there is no such path here.
+		//! A created emissive material therefore lights the scene on the
+		//! very next pass, and creating a non-emissive one costs nothing.
+
+		//! One creation argument: `param` must be a parameter the
+		//! keyword's descriptor declares, `value` its literal text.
+		//! `name` is refused -- this verb picks the name.
+		struct ChunkNodeArg
+		{
+			String param;
+			String value;
+		};
+
+		//! One argument the caller MUST supply for a given keyword (a
+		//! `required` descriptor parameter with no static default -- in
+		//! practice the required REFERENCE slots, e.g. `ramp_painter`'s
+		//! `input`, which can only name another chunk in THIS scene).
+		//! `isReference` tells the canvas to resolve it from the drag
+		//! context / a candidate picker rather than a text field; use
+		//! ConnectionLegality (S17) for the legal candidate set.
+		struct ChunkNodeRequirement
+		{
+			String param;
+			String description;
+			bool   isReference = false;
+		};
+
+		//! The caller-supplied-argument contract for `keyword`.  Empty for
+		//! a keyword that needs nothing, for a non-painter/material
+		//! keyword, and for an unknown keyword.  Pure descriptor read: no
+		//! scene state, no locking, callable from any thread at any time.
+		std::vector<ChunkNodeRequirement> ChunkNodeRequirements( const String& keyword ) const;
+
+		//! Create ONE new painter/material chunk of type `keyword`, named
+		//! from `baseName` (deduped `_2`, `_3`, ... exactly as
+		//! InstantiateEntityTemplate does, and checked doc-wide so a
+		//! leftover chunk of another kind cannot collide), with the
+		//! minimal derivable body plus `args`.  `*outName` (if non-null)
+		//! receives the name that actually landed -- read from the primitive's
+		//! own parsed-back-out chunkName, not the locally-composed base --
+		//! whenever the Document was mutated (a clean apply OR a diagnosed-
+		//! but-mutated commit, see below), never only on a clean apply.
+		//!
+		//! REFUSES on a REJECTED result (non-mutating, head byte-identical,
+		//! `message` naming the cause, `retriable` set like
+		//! ApplyAgentInsertChunk's own render-locked/teardown refusals) when:
+		//! the keyword is unknown or is not a painter / material; an arg
+		//! names an undeclared parameter or carries an empty value; a
+		//! required arg is missing; an arg value is not a single line; or
+		//! the composed chunk would not derive in context (the dry-run's own
+		//! diagnostic is appended).  Also carries every refusal
+		//! ApplyAgentInsertChunk itself can produce -- render-locked
+		//! (retriable), open-editor-transaction (retriable), controller
+		//! teardown.  A DIAGNOSED result is DIFFERENT and NOT byte-identical:
+		//! the chunk was spliced in and the live managers were rebuilt, but
+		//! the full re-derive also emitted diagnostics -- `applied` is still
+		//! false, the mutation is real (and undoable), and `*outName` IS
+		//! filled.
+		//!
+		//! `baseName` is a HINT, canonicalized through the same
+		//! CanonicalCameraName choke point CloneActiveCamera's name pick
+		//! uses (whitespace/braces/etc. become `_`): only a genuinely empty
+		//! base (before or after canonicalization) falls back to the keyword
+		//! itself (`ramp_painter` -> `ramp_painter`, `ramp_painter_2`, ...) --
+		//! a 1-char base is used as-is.  Any base is suffixed on collision
+		//! (reserving suffix bytes before truncating to the 255-byte payload
+		//! the 256-byte `outName` C ABI buffer allows, same discipline as
+		//! UniqueCameraName), so the caller must read `*outName` rather than
+		//! assume it got what it asked for.
+		AgentCommitResult CreateChunkNode( const String& keyword,
+		                                   const String& baseName,
+		                                   const std::vector<ChunkNodeArg>& args,
+		                                   String* outName );
+
 		//! Remove the named entity in `cat` via ApplyAgentRemoveChunk,
 		//! narrowed by `cat`'s CST role-kind suffix (RoleKindSuffixForCategory)
 		//! so e.g. removing a Material named the same as an unrelated

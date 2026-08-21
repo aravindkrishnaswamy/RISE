@@ -1870,6 +1870,87 @@ bool ViewportBridge::removeEntity(Category category, const QString& name, QStrin
     return applied;
 }
 
+// ---- Node-graph canvas: create node (S18) ---------------------------
+//
+// Carried mirror of the macOS bridge's identically-named section; see
+// the header's STANDING CAVEAT (this half is owed an MSVC build).
+
+QVector<ViewportBridge::ChunkNodeRequirement>
+ViewportBridge::chunkNodeRequirements(const QString& keyword) const
+{
+    QVector<ChunkNodeRequirement> out;
+    if (!m_controller || keyword.isEmpty()) return out;
+    const QByteArray kw = keyword.toUtf8();
+    const unsigned int n = RISE_API_SceneEditController_ChunkNodeRequiredArgCount(
+        m_controller, kw.constData());
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        char paramBuf[128] = {0};
+        char descBuf[1024] = {0};
+        int isRef = 0;
+        if (!RISE_API_SceneEditController_ChunkNodeRequiredArg(
+                m_controller, kw.constData(), i,
+                paramBuf, sizeof(paramBuf),
+                descBuf, sizeof(descBuf), &isRef)) {
+            continue;
+        }
+        ChunkNodeRequirement r;
+        r.param       = QString::fromUtf8(paramBuf);
+        r.description = QString::fromUtf8(descBuf);
+        r.isReference = (isRef != 0);
+        out.push_back(r);
+    }
+    return out;
+}
+
+bool ViewportBridge::createChunkNode(const QString& keyword, const QString& baseName,
+                                      const QStringList& argParams,
+                                      const QStringList& argValues,
+                                      QString* outName, QString* outMessage)
+{
+    if (!m_controller || keyword.isEmpty()) return false;
+    const QByteArray kw   = keyword.toUtf8();
+    const QByteArray base = baseName.toUtf8();
+
+    // round-1 P2-c: ORDERED parallel lists, not a QMap -- a keyed map can
+    // neither repeat a param (voronoi's repeatable `gen`) nor preserve
+    // caller order (QMap iterates in key-sorted order, not insertion
+    // order), and the C ABI beneath is itself two parallel arrays.  A
+    // count mismatch is a caller bug; clip to the shorter length rather
+    // than reading past either list's end.  The QByteArray temporaries
+    // must outlive the call -- hold them in `keep` and only then take
+    // .constData() pointers into the two parallel arrays the ABI expects.
+    const int n = qMin(argParams.size(), argValues.size());
+    QVector<QByteArray> keep;
+    keep.reserve(n * 2);
+    for (int i = 0; i < n; ++i) {
+        keep.push_back(argParams[i].toUtf8());
+        keep.push_back(argValues[i].toUtf8());
+    }
+    std::vector<const char*> params, values;
+    params.reserve(static_cast<size_t>(n));
+    values.reserve(static_cast<size_t>(n));
+    for (int i = 0; i + 1 < keep.size(); i += 2) {
+        params.push_back(keep[i].constData());
+        values.push_back(keep[i + 1].constData());
+    }
+
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const bool applied = RISE_API_SceneEditController_CreateChunkNode(
+        m_controller, kw.constData(), base.constData(),
+        params.empty() ? nullptr : params.data(),
+        values.empty() ? nullptr : values.data(),
+        static_cast<unsigned int>(params.size()),
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+    if (outName && nameBuf[0] != '\0')       *outName    = QString::fromUtf8(nameBuf);
+    if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
+    return applied;
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const

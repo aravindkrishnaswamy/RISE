@@ -1307,6 +1307,63 @@ public:
     bool removeEntity(Category category, const QString& name,
                        QString* outMessage = nullptr);
 
+    // ---- Node-graph canvas: create node (S18) -----------------------
+    // Mirrors RISE_API_SceneEditController_{ChunkNodeRequiredArgCount,
+    // ChunkNodeRequiredArg,CreateChunkNode} / the macOS
+    // RISEViewportBridge's identically-named section.  Unlike the fixed
+    // template picker above, this creates a node for ANY painter/
+    // material KEYWORD -- the open set the S21/S22 canvas search
+    // palette offers.  `createChunkNode` takes the controller's commit
+    // mutex (same do-not-call-during-renders caveat as the entity CRUD
+    // above); `chunkNodeRequirements` is a pure descriptor read.
+    //
+    // STANDING CAVEAT (same posture as S4b's Qt range-slider and S10's
+    // Qt swatch widget, docs/gui/MATERIAL_EDITOR.md:69,205): this half
+    // is CARRIED, not MSVC-verified -- it is written to match the
+    // macOS bridge line for line and is owed a Windows build.
+
+    /// One argument the caller must supply to create a node of a given
+    /// keyword.  `isReference` = the value must name another chunk in
+    /// this scene (resolve it from the drag context / a candidate
+    /// picker filtered by the S17 connection-legality check), rather
+    /// than being free text or a file path.
+    struct ChunkNodeRequirement
+    {
+        QString param;
+        QString description;
+        bool    isReference = false;
+    };
+
+    /// The creation-argument contract for `keyword`.  Empty for a
+    /// keyword that needs nothing, for a non-painter/material keyword,
+    /// and for an unknown keyword.
+    QVector<ChunkNodeRequirement> chunkNodeRequirements(const QString& keyword) const;
+
+    /// Create one painter/material node of type `keyword`, named from
+    /// `baseName` (deduped on collision -- READ `outName`, do not
+    /// assume the base was granted; an empty base falls back to the
+    /// keyword).  `argParams` / `argValues` are ORDERED PARALLEL lists
+    /// (must be the same length; a mismatched pair is treated as no
+    /// args) mirroring the C ABI beneath -- NOT a QMap: a keyed map can
+    /// neither repeat a param (e.g. voronoi's repeatable `gen`) nor
+    /// guarantee the composed chunk body's line order matches what the
+    /// caller wrote (QMap iterates in KEY-SORTED order, not insertion
+    /// order).  Every `argParams[i]` must cover a requirement above.
+    /// Returns `applied`; `outName` / `outMessage` as the entity CRUD
+    /// calls above (each optional, may be null).
+    ///
+    /// On a REJECTED refusal the scene is left byte-identical.  A
+    /// DIAGNOSED refusal is different: the node WAS created and the
+    /// live managers WERE rebuilt, but the full re-derive also emitted
+    /// diagnostics -- `applied` is still false, but the mutation is
+    /// real (and undoable) and `outName` is filled with the name that
+    /// landed.
+    bool createChunkNode(const QString& keyword, const QString& baseName,
+                          const QStringList& argParams,
+                          const QStringList& argValues,
+                          QString* outName = nullptr,
+                          QString* outMessage = nullptr);
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.

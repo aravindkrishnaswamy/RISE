@@ -53,6 +53,9 @@
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/SceneEditor/CstIntrospection.h"
+#include "../src/Library/SceneEditor/ReferenceGraph.h"
+#include "../src/Library/Parsers/ChunkParserRegistry.h"
+#include "../src/Library/Parsers/IAsciiChunkParser.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -572,6 +575,560 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+	//==================================================================
+	// S18 -- node-graph canvas chunk creation (SceneEditController::
+	// CreateChunkNode).  See docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S18.
+	//
+	// WHY THIS FILE.  CreateChunkNode is a sibling of
+	// InstantiateEntityTemplate / DuplicateEntity / RemoveEntity: the same
+	// controller layer, the same UniqueEntityName-family dedup, the same
+	// AgentCommitResult contract, and it composes the SAME
+	// ApplyAgentInsertChunk commit.  This file's harness already is a
+	// SceneEditController over a real Job with an inline v7 scene and no
+	// render pass, which is exactly what these tests need.  The two files
+	// the brief offered are a poorer fit: AgentChunkCrudTest exercises the
+	// JOB PRIMITIVE plus the JSON-RPC dispatcher (a layer CreateChunkNode
+	// deliberately does not add to -- it is not an agent verb), and
+	// ReferenceGraphTest is a pure-function test over parsed Documents
+	// with no controller at all.  The graph-visibility assertion below
+	// reaches into SceneReferenceGraph directly, which is all that part
+	// needs.
+	//==================================================================
+
+	using NodeArg = SceneEditController::ChunkNodeArg;
+
+	std::vector<NodeArg> Args( std::initializer_list<std::pair<const char*, const char*>> kv )
+	{
+		std::vector<NodeArg> v;
+		for( const auto& p : kv )
+		{
+			NodeArg a;
+			a.param = String( p.first );
+			a.value = String( p.second );
+			v.push_back( a );
+		}
+		return v;
+	}
+
+	std::string DocText( Job* pJob )
+	{
+		const RISE::Cst::Document* d = pJob->GetCstDocument();
+		return d ? RISE::Cst::SerializeCst( *d ) : std::string();
+	}
+
+	// True iff `doc` carries a top-level chunk with keyword `kw` named
+	// `name` -- read through the SAME S11 scan the canvas seeds its nodes
+	// from, so "the node appears in the graph snapshot" is asserted
+	// against the real consumer, not a bespoke walk.
+	bool GraphHasNode( const RISE::Cst::Document& doc, const char* kw, const std::string& name )
+	{
+		const std::vector<SceneReferenceGraph::DocumentChunk> chunks = SceneReferenceGraph::AllChunks( doc );
+		for( const SceneReferenceGraph::DocumentChunk& c : chunks )
+			if( std::string( c.keyword.c_str() ) == kw && std::string( c.name.c_str() ) == name ) return true;
+		return false;
+	}
+
+	//------------------------------------------------------------------
+	// S18a: the representative keyword classes each create, derive, and
+	//       show up as a live entity AND as a graph node.
+	//------------------------------------------------------------------
+	void TestCreateChunkNodeClasses()
+	{
+		std::printf( "S18a: representative painter/material keyword classes create...\n" );
+		const std::string tmp = TempPath( "s18_classes.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18a fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		// (1) A no-required-ref procedural painter.
+		{
+			String out;
+			const auto r = ctrl.CreateChunkNode( String( "perlin3d_painter" ), String( "noise" ), {}, &out );
+			Check( r.applied, std::string( "perlin3d_painter creates (" ) + r.message.c_str() + ")" );
+			Check( std::string( out.c_str() ) == "noise", "...under the requested base name" );
+			Check( NameInCategory( ctrl, Category::Painter, "noise" ), "...and enumerates as a live Painter" );
+			Check( GraphHasNode( *pJob->GetCstDocument(), "perlin3d_painter", "noise" ),
+				"...and appears in the S11 graph snapshot" );
+		}
+
+		// (2) A REQUIRED-REFERENCE painter: the contract is discoverable
+		//     BEFORE the call, and the call succeeds once it is met.
+		{
+			const auto needs = ctrl.ChunkNodeRequirements( String( "ramp_painter" ) );
+			Check( needs.size() == 1 && std::string( needs[0].param.c_str() ) == "input",
+				"ramp_painter advertises exactly one required arg, `input`" );
+			Check( !needs.empty() && needs[0].isReference, "...and reports it as a REFERENCE slot" );
+
+			String out;
+			const auto r = ctrl.CreateChunkNode( String( "ramp_painter" ), String( "terrain_ramp" ),
+			                                     Args( { { "input", "noise" } } ), &out );
+			Check( r.applied, std::string( "ramp_painter creates with `input` supplied (" ) + r.message.c_str() + ")" );
+			Check( NameInCategory( ctrl, Category::Painter, "terrain_ramp" ), "...and enumerates as a live Painter" );
+
+			// The seeded two `stop` lines are what make it derivable at
+			// all -- prove the wire actually landed in the graph.
+			const RISE::Cst::Document& doc = *pJob->GetCstDocument();
+			const std::vector<SceneReferenceGraph::DocumentChunk> pre = SceneReferenceGraph::AllChunks( doc );
+			const std::vector<ReferenceEdge> edges = SceneReferenceGraph::Edges( doc, &pre );
+			bool wired = false;
+			for( const ReferenceEdge& e : edges )
+				if( std::string( e.referrerName.c_str() ) == "terrain_ramp"
+				 && std::string( e.targetName.c_str() ) == "noise" ) wired = true;
+			Check( wired, "...and its `input` reference is a real edge to `noise` in the graph" );
+		}
+
+		// (3) Materials -- the simplest and a heavily-parameterised one.
+		{
+			String out;
+			Check( ctrl.CreateChunkNode( String( "lambertian_material" ), String( "diffuse" ), {}, &out ).applied,
+				"lambertian_material creates with no args" );
+			Check( NameInCategory( ctrl, Category::Material, "diffuse" ), "...and enumerates as a live Material" );
+			Check( ctrl.CreateChunkNode( String( "ggx_material" ), String( "metal" ), {}, &out ).applied,
+				"ggx_material creates with no args" );
+			Check( NameInCategory( ctrl, Category::Material, "metal" ), "...and enumerates as a live Material" );
+		}
+
+		// (4) scalar_painter -- the FORM case: twelve mutually-exclusive
+		//     forms, none of them descriptor-`required`, so only the seed
+		//     table makes a bare create derivable.  Assert the form landed.
+		{
+			String out;
+			Check( ctrl.CreateChunkNode( String( "scalar_painter" ), String( "rough" ), {}, &out ).applied,
+				"scalar_painter creates with no args (seeded into the `value` form)" );
+			const std::string doc = DocText( pJob );
+			Check( doc.find( "name rough\nvalue 0.5\n" ) != std::string::npos,
+				"...and its body carries the seeded `value 0.5` form" );
+			// It must resolve in the SCALAR manager, not just the colour
+			// one -- the whole point of the form.
+			IScalarPainterManager* spm = pJob->GetScalarPainters();
+			Check( spm && spm->GetItem( "rough" ) != nullptr, "...and registers in the IScalarPainter pipe" );
+		}
+
+		// (5) A caller ARG overrides the seed rather than duplicating it.
+		{
+			String out;
+			Check( ctrl.CreateChunkNode( String( "scalar_painter" ), String( "rough_hi" ),
+			                             Args( { { "value", "0.9" } } ), &out ).applied,
+				"scalar_painter accepts an explicit `value` arg" );
+			const std::string doc = DocText( pJob );
+			Check( doc.find( "name rough_hi\nvalue 0.9\n}" ) != std::string::npos,
+				"...and the caller's value REPLACES the seed (no duplicate `value` line)" );
+		}
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// S18b: name collision -> suffixed; exhaustion -> refusal.
+	//------------------------------------------------------------------
+	void TestCreateChunkNodeNaming()
+	{
+		std::printf( "S18b: name dedup, cross-kind collision, and exhaustion...\n" );
+		const std::string tmp = TempPath( "s18_naming.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18b fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		String a, b, c;
+		Check( ctrl.CreateChunkNode( String( "uniformcolor_painter" ), String( "tint" ), {}, &a ).applied, "first `tint` creates" );
+		Check( std::string( a.c_str() ) == "tint", "...named `tint`" );
+		Check( ctrl.CreateChunkNode( String( "uniformcolor_painter" ), String( "tint" ), {}, &b ).applied, "second `tint` creates" );
+		Check( std::string( b.c_str() ) == "tint_2", "...suffixed to `tint_2`" );
+		Check( ctrl.CreateChunkNode( String( "checker_painter" ), String( "tint" ), {}, &c ).applied, "a DIFFERENT keyword also asks for `tint`" );
+		Check( std::string( c.c_str() ) == "tint_3",
+			"...and is deduped too (the probe is doc-wide, so two same-named Painter-category chunks can never collide)" );
+
+		// An empty base falls back to the keyword itself.
+		{
+			String d;
+			Check( ctrl.CreateChunkNode( String( "perlin3d_painter" ), String(), {}, &d ).applied, "an empty base name still creates" );
+			Check( std::string( d.c_str() ) == "perlin3d_painter", "...falling back to the keyword as the base" );
+		}
+
+		// round-1 P1: a whitespace-padded base is canonicalized through the
+		// SAME choke point CloneActiveCamera's name pick uses
+		// (CanonicalCameraName) BEFORE the dedup pick -- the reviewer's
+		// probe scenario.  Space is not a safe CST identifier char, so each
+		// one becomes `_`; the entity must exist under exactly that
+		// canonical name, and a second create with the SAME padded base
+		// (which canonicalizes to the SAME string) must dedup against it,
+		// not silently collide or produce two differently-shaped names.
+		{
+			String e, f;
+			const auto rE = ctrl.CreateChunkNode( String( "checker_painter" ), String( " tint pad " ), {}, &e );
+			Check( rE.applied, "a whitespace-padded base creates" );
+			Check( std::string( e.c_str() ) == "_tint_pad_",
+				"...outName is the canonicalized base (leading/trailing/interior space -> `_`)" );
+			Check( GraphHasNode( *pJob->GetCstDocument(), "checker_painter", std::string( e.c_str() ) ),
+				"...and the entity exists in the graph under the canonical name" );
+			String f2;
+			const auto rF = ctrl.CreateChunkNode( String( "checker_painter" ), String( " tint pad " ), {}, &f2 );
+			Check( rF.applied, "a second create with the SAME padded base creates too" );
+			Check( std::string( f2.c_str() ) == "_tint_pad__2",
+				"...and dedups against the CANONICAL form (not two distinct raw-padded collisions)" );
+		}
+
+		// round-1 P3: a 1-char base is used as-is (only a genuinely EMPTY
+		// base falls back to the keyword) -- the old `< 2` check refused a
+		// perfectly usable single-char base the header never documented
+		// refusing.
+		{
+			String g;
+			Check( ctrl.CreateChunkNode( String( "perlin2d_painter" ), String( "p" ), {}, &g ).applied,
+				"a 1-char base creates" );
+			Check( std::string( g.c_str() ) == "p", "...and is used AS-IS, not folded back to the keyword" );
+		}
+
+		// round-1 P3: long-name suffix discipline mirrors UniqueCameraName's
+		// reserve-suffix-bytes truncation -- a base near the 255-byte C ABI
+		// payload cap must still dedup correctly (the suffix must not be
+		// silently erased by a truncation that runs AFTER formatting).
+		{
+			const std::string longBase( 300, 'q' );   // exceeds the 255-byte payload cap
+			String h, i;
+			const auto rH = ctrl.CreateChunkNode( String( "perlin2d_painter" ), String( longBase.c_str() ), {}, &h );
+			Check( rH.applied, "a base past the 255-byte payload cap still creates" );
+			Check( std::string( h.c_str() ).size() <= 255, "...outName is truncated to the payload cap" );
+			Check( std::string( h.c_str() ) == longBase.substr( 0, 255 ), "...truncated to exactly the first 255 bytes" );
+			const auto rI = ctrl.CreateChunkNode( String( "perlin2d_painter" ), String( longBase.c_str() ), {}, &i );
+			Check( rI.applied, "a SECOND create with the same over-long base also creates" );
+			Check( std::string( i.c_str() ) != std::string( h.c_str() ),
+				"...and dedups to a DIFFERENT name (the collision, not a silently-erased suffix)" );
+			Check( std::string( i.c_str() ).size() <= 255, "...the deduped name also respects the payload cap" );
+			Check( std::string( i.c_str() ).substr( std::string( i.c_str() ).size() - 2 ) == "_2",
+				"...and the `_2` suffix survived truncation intact (reserved BEFORE truncating the base)" );
+		}
+
+		// EXHAUSTION: occupy `full`, `full_2` .. `full_999`, then prove the
+		// next create REFUSES without mutating (rather than the
+		// InstantiateEntityTemplate timestamp fallback, which is unchecked).
+		{
+			// Build the exhausted namespace cheaply: one insert per name
+			// through the same verb would be 999 full re-derives, so splice
+			// the names in as one document text instead.
+			std::string text = DocText( pJob );
+			text += "\n";
+			for( int i = 0; i < 1000; ++i )
+			{
+				char nm[64];
+				if( i == 0 ) std::snprintf( nm, sizeof( nm ), "full" );
+				else         std::snprintf( nm, sizeof( nm ), "full_%d", i + 1 );
+				text += "uniformcolor_painter\n{\nname ";
+				text += nm;
+				text += "\ncolor 0.5 0.5 0.5\n}\n";
+			}
+			char diag[512] = { 0 };
+			const int rc = pJob->ApplyCstReplaceDocumentText(
+				text.c_str(), /*restoreActiveRasterizer*/ true, diag, sizeof( diag ), "s18-exhaustion-fixture" );
+			Check( rc == 2 || rc == 3, std::string( "exhaustion fixture installs (rc=" ) + std::to_string( rc ) + ", " + diag + ")" );
+
+			const std::string before = DocText( pJob );
+			String out;
+			const auto r = ctrl.CreateChunkNode( String( "uniformcolor_painter" ), String( "full" ), {}, &out );
+			Check( !r.applied, "a create whose whole `_2`..`_999` suffix range is taken is REFUSED" );
+			Check( std::string( r.status.c_str() ) == "rejected", "...with status=rejected" );
+			Check( std::string( r.message.c_str() ).find( "could not find a free name" ) != std::string::npos,
+				std::string( "...naming the exhaustion honestly (" ) + r.message.c_str() + ")" );
+			Check( std::string( out.c_str() ).empty(), "...and reports no name" );
+			Check( DocText( pJob ) == before, "...leaving the Document BYTE-IDENTICAL" );
+		}
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// S18c: every refusal path leaves the Document byte-identical.
+	//       This is the slice's headline contract -- red-proved below by
+	//       comparing the FULL serialized document, not a chunk count.
+	//------------------------------------------------------------------
+	void TestCreateChunkNodeRefusalsByteIdentical()
+	{
+		std::printf( "S18c: every refusal is byte-identical and honest...\n" );
+		const std::string tmp = TempPath( "s18_refuse.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18c fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		struct Case { const char* what; const char* kw; const char* base; std::vector<NodeArg> args; const char* expectFragment; };
+		const std::vector<Case> cases = {
+			{ "unknown keyword",              "not_a_painter",      "x", {},                                        "unknown chunk keyword" },
+			{ "out-of-scope keyword (light)", "omni_light",         "x", {},                                        "not a painter or material" },
+			{ "out-of-scope keyword (geom)",  "sphere_geometry",    "x", {},                                        "not a painter or material" },
+			{ "missing required reference",   "ramp_painter",       "x", {},                                        "requires `input`" },
+			{ "undeclared parameter arg",     "lambertian_material","x", Args( { { "reflectanc", "pnt_albedo" } } ), "declares no parameter named `reflectanc`" },
+			// round-1 P3: an empty arg value is refused DIRECTLY, naming the
+			// offending param, rather than silently composing a value-less
+			// param line the parser would reject two layers down.
+			{ "empty arg value",              "uniformcolor_painter","x", Args( { { "color", "" } } ),               "the value for `color` is empty" },
+			{ "caller-supplied `name`",       "lambertian_material","x", Args( { { "name", "hijack" } } ),           "`name` is chosen by this verb" },
+			{ "multi-line value (brace)",     "lambertian_material","x", Args( { { "reflectance", "pnt_albedo\n}\nomni_light\n{\nname evil" } } ), "single line" },
+			// The SHARP form of the injection: a value carrying an extra
+			// NEWLINE but no brace still parses to exactly ONE chunk, so
+			// ApplyCstInsertChunk's own multi-chunk guard does NOT catch
+			// it -- without this verb's single-line check the smuggled
+			// `variant` line would APPLY and mutate the head.  This case
+			// is the byte-identity red-prove pin for the guard.
+			{ "smuggled extra param line",    "lambertian_material","x", Args( { { "reflectance", "pnt_albedo\nvariant smuggled" } } ), "single line" },
+			// round-1: brace-in-value OVER-REJECTION, pinned honestly.
+			// `ValueIsSingleLine` bans `{`/`}` in EVERY arg value
+			// unconditionally -- it has no notion of quoting, so a value a
+			// real CST author could write safely inside quotes (a literal
+			// string payload that happens to contain `{`/`}`, e.g. a label
+			// "a{b}") is refused here even though it could never smuggle a
+			// second chunk in (there is no quoting-aware escape to exploit).
+			// This is a DELIBERATE over-approximation, not a bug: the guard
+			// exists to make the whole class of brace-based injection
+			// (the two cases immediately above) impossible to get wrong,
+			// and a value that legitimately needs a brace has a workaround
+			// -- create the node with a placeholder value, then set the
+			// real value through the param-edit path (ApplyAgentParamEdit),
+			// which edits ONE already-declared param in place rather than
+			// splicing caller text into a freshly composed chunk body.  Do
+			// NOT weaken this guard to special-case quoting.
+			{ "brace-in-value (over-rejection, by design)", "scalar_painter", "x", Args( { { "expression", "a{b}" } } ), "single line" },
+			{ "non-deriving preset",          "ramp_painter",       "x", Args( { { "input", "no_such_painter" } } ), "would not derive" },
+		};
+
+		for( const Case& c : cases )
+		{
+			const std::string before = DocText( pJob );
+			const auto verBefore = pJob->GetCstHeadVersion();
+			String out;
+			const auto r = ctrl.CreateChunkNode( String( c.kw ), String( c.base ), c.args, &out );
+			Check( !r.applied, std::string( "REFUSED: " ) + c.what );
+			Check( std::string( r.status.c_str() ) == "rejected", std::string( "...status=rejected: " ) + c.what );
+			Check( std::string( r.message.c_str() ).find( c.expectFragment ) != std::string::npos,
+				std::string( "...diagnostic names the cause (" ) + r.message.c_str() + ")" );
+			Check( std::string( out.c_str() ).empty(), std::string( "...no name reported: " ) + c.what );
+			Check( DocText( pJob ) == before, std::string( "...Document BYTE-IDENTICAL: " ) + c.what );
+			Check( pJob->GetCstHeadVersion() == verBefore, std::string( "...head version unchanged: " ) + c.what );
+		}
+
+		// The multi-line-value case in particular must not have smuggled a
+		// second chunk in even in a form the byte compare could miss.
+		Check( DocText( pJob ).find( "name evil" ) == std::string::npos,
+			"the brace-injection value never reached the Document" );
+		Check( DocText( pJob ).find( "smuggled" ) == std::string::npos,
+			"the newline-only injection never reached the Document either" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// S18d: EditHistory citizenship -- undo removes the created node and
+	//       restores the Document BYTE-IDENTICALLY; redo re-creates it.
+	//------------------------------------------------------------------
+	void TestCreateChunkNodeUndoRedo()
+	{
+		std::printf( "S18d: undo/redo of a created node...\n" );
+		const std::string tmp = TempPath( "s18_undo.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18d fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		const std::string before = DocText( pJob );
+		String out;
+		Check( ctrl.CreateChunkNode( String( "orennayar_material" ), String( "rough_diffuse" ), {}, &out ).applied,
+			"a node is created" );
+		const std::string after = DocText( pJob );
+		Check( after != before, "...and the Document changed" );
+		Check( NameInCategory( ctrl, Category::Material, "rough_diffuse" ), "...and the entity is live" );
+
+		ctrl.Undo();
+		Check( DocText( pJob ) == before, "UNDO restores the Document BYTE-IDENTICALLY" );
+		Check( !NameInCategory( ctrl, Category::Material, "rough_diffuse" ), "...and the entity is gone from the live scene" );
+
+		ctrl.Redo();
+		Check( DocText( pJob ) == after, "REDO reinstates the byte-exact post-create Document" );
+		Check( NameInCategory( ctrl, Category::Material, "rough_diffuse" ), "...and the entity is live again" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// S18e: mid-transaction refusal, dirty marking, epoch bump, and the
+	//       agent-surface interplay (create here, then propose_patch on
+	//       the result; and the head-version conflict semantics).
+	//------------------------------------------------------------------
+	void TestCreateChunkNodeControllerDiscipline()
+	{
+		std::printf( "S18e: transaction refusal / dirty / epoch / agent interplay...\n" );
+		const std::string tmp = TempPath( "s18_discipline.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18e fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		// (a) DIRTY + EPOCH, on the freshly-loaded (clean) fixture.
+		{
+			Check( !ctrl.HasUnsavedChanges(), "the freshly-loaded fixture starts clean" );
+			const unsigned int epochBefore = ctrl.SceneEpoch();
+			String out;
+			Check( ctrl.CreateChunkNode( String( "checker_painter" ), String( "checks" ), {}, &out ).applied, "a node is created" );
+			Check( ctrl.HasUnsavedChanges(), "...which marks the scene DIRTY (save-safety)" );
+			Check( ctrl.SceneEpoch() != epochBefore, "...and bumps the scene epoch the canvas re-enumerates on" );
+		}
+
+		// (b) MID-TRANSACTION: refused, retriable, non-mutating.
+		{
+			const std::string before = DocText( pJob );
+			Check( ctrl.BeginTransaction(), "an editor transaction opens" );
+			String out;
+			const auto r = ctrl.CreateChunkNode( String( "uniformcolor_painter" ), String( "mid_txn" ), {}, &out );
+			Check( !r.applied, "a create during an open editor transaction is REFUSED" );
+			Check( r.retriable, "...and is marked RETRIABLE (the gesture will end)" );
+			Check( DocText( pJob ) == before, "...leaving the Document BYTE-IDENTICAL" );
+			ctrl.EndTransaction();
+			Check( ctrl.CreateChunkNode( String( "uniformcolor_painter" ), String( "mid_txn" ), {}, &out ).applied,
+				"...and the IDENTICAL create succeeds once the transaction closes (the red-prove that the gate is what rejected it)" );
+		}
+
+		// (c) AGENT INTERPLAY: a node created HERE is an ordinary chunk to
+		//     the agent surface -- propose_patch retargets it in place.
+		{
+			String out;
+			Check( ctrl.CreateChunkNode( String( "lambertian_material" ), String( "agent_target" ), {}, &out ).applied,
+				"a material node is created" );
+			const auto pr = ctrl.ApplyAgentParamEdit( String( "agent_target" ), String( "material" ),
+			                                          String( "reflectance" ), String( "pnt_albedo" ), nullptr );
+			Check( pr.applied, std::string( "...and an agent param edit retargets its `reflectance` (" ) + pr.message.c_str() + ")" );
+			Check( DocText( pJob ).find( "reflectance pnt_albedo" ) != std::string::npos,
+				"...with the retarget visible in the Document" );
+		}
+
+		// (d) HEAD-VERSION semantics: a create BUMPS the head, so a base
+		//     version captured before it is stale for a later agent commit.
+		{
+			const auto stale = pJob->GetCstHeadVersion();
+			String out;
+			Check( ctrl.CreateChunkNode( String( "uniformcolor_painter" ), String( "bumper" ), {}, &out ).applied, "a node is created" );
+			Check( !( pJob->GetCstHeadVersion() == stale ), "...bumping the head version" );
+			const std::string before = DocText( pJob );
+			const auto conflicted = ctrl.ApplyAgentInsertChunk(
+				String( "uniformcolor_painter\n{\nname stale_insert\ncolor 1 0 0\n}\n" ), &stale );
+			Check( conflicted.conflict, "...so an agent commit carrying the pre-create base CONFLICTS" );
+			Check( DocText( pJob ) == before, "...without mutating" );
+		}
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// S18f: THE COVERAGE GATE.  Every Painter- and Material-category
+	//       keyword the registry knows must either (a) create cleanly once
+	//       its advertised ChunkNodeRequirements are satisfied, or (b) be
+	//       listed below as a known, reasoned exception.  A new chunk
+	//       whose minimal-validity rule its descriptor cannot express
+	//       fails HERE and points at EntityTemplates.cpp's seed table.
+	//------------------------------------------------------------------
+	void TestCreateChunkNodeKeywordSweep()
+	{
+		std::printf( "S18f: every painter/material keyword creates (or is a listed exception)...\n" );
+		const std::string tmp = TempPath( "s18_sweep.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18f fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		// Keywords whose minimal body needs a FILE ON DISK -- the one
+		// class no static default can supply (a scene-relative path would
+		// depend on RISE_MEDIA_PATH, which a general creator must not
+		// assume).  These must advertise the file as a NON-reference
+		// requirement, and must REFUSE cleanly (never abort: OpenEXR's
+		// reader THROWS on the literal `none`, so refusing before the
+		// derive is load-bearing, not cosmetic).
+		//
+		// round-1 P2-a: spectral_painter is NOT here anymore -- its `file`
+		// param was never actually required (Finalize accepts inline `cp`
+		// samples too), and EntityTemplates.cpp's kNodeSeeds now seeds two
+		// `cp` lines, so it creates cleanly with no caller input like
+		// scalar_painter/ramp_painter above it.
+		struct FileNeeded { const char* keyword; const char* param; };
+		const FileNeeded kFileNeeded[] = {
+			{ "png_painter",         "file" },
+			{ "jpg_painter",         "file" },
+			{ "hdr_painter",         "file" },
+			{ "exr_painter",         "file" },
+			{ "tiff_painter",        "file" },
+			{ "datadriven_material", "filename" },
+		};
+		for( const FileNeeded& f : kFileNeeded )
+		{
+			const auto reqs = ctrl.ChunkNodeRequirements( String( f.keyword ) );
+			bool found = false;
+			for( const auto& r : reqs )
+				if( std::string( r.param.c_str() ) == f.param && !r.isReference ) found = true;
+			Check( found, std::string( "`" ) + f.keyword + "` advertises `" + f.param + "` as a non-reference (file) requirement" );
+		}
+		auto isException = [&]( const std::string& kw ) {
+			for( const FileNeeded& e : kFileNeeded ) if( kw == e.keyword ) return true;
+			return false;
+		};
+
+		int created = 0, refusedExpected = 0;
+		const std::vector<ChunkParserEntry> entries = CreateAllChunkParsers();
+		for( const ChunkParserEntry& e : entries )
+		{
+			if( !e.parser ) continue;
+			const ChunkDescriptor& d = e.parser->Describe();
+			if( d.keyword.empty() || d.keyword != e.keyword ) continue;   // skip legacy aliases
+			if( d.category != ChunkCategory::Painter && d.category != ChunkCategory::Material ) continue;
+
+			// Satisfy every advertised requirement from the fixture scene.
+			std::vector<NodeArg> args;
+			bool satisfiable = true;
+			for( const auto& req : ctrl.ChunkNodeRequirements( String( d.keyword.c_str() ) ) )
+			{
+				NodeArg a;
+				a.param = req.param;
+				if( !req.isReference ) { satisfiable = false; break; }   // no static default exists
+				// Both required-reference families in scope today are
+				// Painter-typed (`input` / `source` / `background` /
+				// `base_color` / `sheen_color`); the fixture's own painter
+				// is the natural stand-in.
+				a.value = String( "pnt_albedo" );
+				args.push_back( a );
+			}
+
+			const std::string before = DocText( pJob );
+			String out;
+			const auto r = ctrl.CreateChunkNode( String( d.keyword.c_str() ), String( d.keyword.c_str() ), args, &out );
+
+			if( isException( d.keyword ) || !satisfiable )
+			{
+				Check( !r.applied, std::string( "listed exception `" ) + d.keyword + "` refuses" );
+				Check( DocText( pJob ) == before,
+					std::string( "...byte-identically (" ) + d.keyword + ")" );
+				++refusedExpected;
+			}
+			else
+			{
+				Check( r.applied, std::string( "`" ) + d.keyword + "` creates ("
+					+ r.message.c_str() + ")" );
+				if( r.applied )
+				{
+					Check( GraphHasNode( *pJob->GetCstDocument(), d.keyword.c_str(), std::string( out.c_str() ) ),
+						std::string( "...and appears in the graph snapshot (" ) + d.keyword + ")" );
+					++created;
+				}
+			}
+		}
+		Check( created > 30, std::string( "the sweep created a substantial keyword set (" ) + std::to_string( created ) + ")" );
+		Check( refusedExpected == (int)( sizeof( kFileNeeded ) / sizeof( kFileNeeded[0] ) ),
+			std::string( "exactly the file-needing keywords refused (" ) + std::to_string( refusedExpected ) + ")" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -584,6 +1141,12 @@ int main()
 	TestPainterEnumerationAndEdit();
 	TestDerivedNameCollisionDedup();
 	TestDuplicateNonRepeatableParam();
+	TestCreateChunkNodeClasses();
+	TestCreateChunkNodeNaming();
+	TestCreateChunkNodeRefusalsByteIdentical();
+	TestCreateChunkNodeUndoRedo();
+	TestCreateChunkNodeControllerDiscipline();
+	TestCreateChunkNodeKeywordSweep();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

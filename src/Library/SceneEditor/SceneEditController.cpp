@@ -12001,13 +12001,19 @@ double SceneEditController::PropertyRangeStepFor( Category cat, unsigned int idx
 
 namespace {
 
-// Convert a UI-provided camera label into one token the CST scene grammar can
-// write without quoting.  Camera names are later emitted as `name <value>`;
+// Convert a UI- or agent-provided label into one token the CST scene grammar
+// can write without quoting.  Names are later emitted as `name <value>`;
 // whitespace, comments, and braces would otherwise alter the generated chunk
-// and leave the live manager and retained Document with different cameras.
-// Keep this at the one shared clone/stamp/promote choke point so every
-// externally proposed camera name obeys the same serialization contract.
-String CanonicalCameraName( const String& proposed )
+// and leave the live manager and retained Document out of sync with each
+// other.  Keep this at the ONE shared choke point every externally proposed
+// name funnels through -- originally camera clone/stamp/promote, and since
+// S18 round-1 P1 also CreateChunkNode's base-name pick -- so every caller
+// obeys the same serialization contract instead of each hand-rolling its own
+// (and drifting).  `emptyFallback` is caller-specific (a camera clone wants
+// "camera_copy"; a graph node wants its own keyword, so the created chunk's
+// name still says what it is) -- everything else about the transform is
+// shared.
+String CanonicalCameraName( const String& proposed, const char* emptyFallback = "camera_copy" )
 {
 	std::string out;
 	for( const char* p = proposed.c_str(); *p; ++p ) {
@@ -12017,7 +12023,7 @@ String CanonicalCameraName( const String& proposed )
 			( c >= '0' && c <= '9' ) || c == '_' || c == '-' || c == '.';
 		out += safe ? static_cast<char>( c ) : '_';
 	}
-	return out.empty() ? String( "camera_copy" ) : String( out.c_str() );
+	return out.empty() ? String( emptyFallback ) : String( out.c_str() );
 }
 
 // Generate a unique camera name from a canonicalized user-proposed base + the
@@ -15198,6 +15204,200 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 
 	if( outName ) *outName = instanceName;
 	return last;
+}
+
+// S18 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): see the header doc for the
+// landscape rationale -- this is a THIN COMPOSER over the two shipped
+// pieces (EntityTemplates::BuildNodeChunkText for the body,
+// ApplyAgentInsertChunk for the commit), never a third insert paradigm.
+std::vector<SceneEditController::ChunkNodeRequirement>
+SceneEditController::ChunkNodeRequirements( const String& keyword ) const
+{
+	std::vector<ChunkNodeRequirement> out;
+	const std::vector<EntityTemplates::ChunkNodeRequirement> src =
+		EntityTemplates::NodeRequirements( std::string( keyword.c_str() ) );
+	out.reserve( src.size() );
+	for( const EntityTemplates::ChunkNodeRequirement& r : src )
+	{
+		ChunkNodeRequirement o;
+		o.param       = String( r.param.c_str() );
+		o.description = String( r.description.c_str() );
+		// round-1 P3: read the authoritative flag, not
+		// `!r.referenceCategories.empty()` -- an unrestricted reference
+		// (legal, empty category list) would otherwise read back as a
+		// literal.  See EntityTemplates::ChunkNodeRequirement::isReference.
+		o.isReference = r.isReference;
+		out.push_back( o );
+	}
+	return out;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::CreateChunkNode(
+	const String& keyword, const String& baseName,
+	const std::vector<ChunkNodeArg>& args, String* outName )
+{
+	// Same preamble as InstantiateEntityTemplate: defer the dirty
+	// notification until after the lock hold, then take the admission
+	// lock so the render-locked gate is evaluated exactly once for the
+	// whole pick-then-insert sequence (and so a concurrent agent render
+	// cannot start between the name pick and the insert).
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	// Refusal helper, defined BEFORE the render-locked gate below so that
+	// gate can use it too instead of hand-rolling a bare AgentCommitResult
+	// that skips headVersion/retriable -- every early exit must leave the
+	// Document BYTE-IDENTICAL and still report the CURRENT head, exactly
+	// like ApplyAgentInsertChunk's own refusals (a {0,0} head on the wire
+	// earns the caller a guaranteed conflict on its next commit), AND must
+	// tell the caller whether retrying the identical request could ever
+	// succeed.  `retriable` defaults to false: an unknown keyword, a
+	// missing required arg, or a name-space exhaustion will fail again on
+	// retry.  The render-locked gate is the one caller that passes true --
+	// a queued/in-flight render clears on its own, matching
+	// ApplyAgentInsertChunk / ApplyAgentRemoveChunk's identical gate.
+	auto reject = [&]( const std::string& why, bool retriable = false ) {
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = retriable;
+		r.message = String( ( "create node rejected: " + why + " -- head unchanged" ).c_str() );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return reject( "scene is render-locked", /*retriable=*/true );
+	if( outName ) *outName = String();
+
+	const std::string kw( keyword.c_str() );
+
+	// Classify the keyword up front: the dedup below needs the right
+	// in-category name namespace, and an unknown / out-of-scope keyword
+	// must be refused BEFORE any name is burned.
+	const ChunkDescriptor* desc = DescriptorForKeyword( keyword );
+	if( !desc ) return reject( "unknown chunk keyword `" + kw + "`" );
+	Category cat = Category::None;
+	if(      desc->category == ChunkCategory::Painter )  cat = Category::Painter;
+	else if( desc->category == ChunkCategory::Material ) cat = Category::Material;
+	else return reject( "`" + kw + "` is not a painter or material chunk -- this verb creates node-graph nodes only" );
+
+	// Pick a name whose top-level (in-category) AND doc-wide namespace is
+	// free, under mMutex so the Document read is coherent.  Verbatim the
+	// InstantiateEntityTemplate pick, minus the multi-chunk sub-name set
+	// (a node is exactly ONE chunk, so its name set is the singleton).
+	std::string chosen;
+	std::string exhaustedBase;   // set (and the refusal deferred) when no free name exists
+	{
+		std::lock_guard<std::mutex> nlk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		std::vector<std::string> inCat;
+		const unsigned int nc = CategoryEntityCountLocked_( cat );
+		inCat.reserve( nc );
+		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityNameLocked_( cat, i ).c_str() );
+		auto candidateClear = [&]( const std::string& cand ) {
+			if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+			if( doc && AnyNameTakenDocWide( *doc, std::vector<std::string>{ cand } ) ) return false;
+			return true;
+		};
+		// S18 round-1 P1: canonicalize the externally-proposed base through
+		// the SAME choke point CloneActiveCamera's name pick uses
+		// (CanonicalCameraName, above) BEFORE the dedup pick -- an agent-
+		// supplied base can carry whitespace, comment-like text, or brace
+		// characters that would otherwise alter the generated chunk text
+		// and desync the live manager from the retained Document, exactly
+		// the hazard that helper's own rationale comment describes.  Only
+		// a genuinely EMPTY base (before or after canonicalization) falls
+		// back to the KEYWORD, which is always a legal identifier and
+		// tells the user what the node is; a 1-char canonicalized base is
+		// left alone (round-1 P3: a base has no length floor beyond
+		// non-empty -- the old `< 2` check refused a perfectly usable
+		// single-char base the header never documented refusing).
+		std::string base( CanonicalCameraName( baseName, kw.c_str() ).c_str() );
+		if( base.empty() ) base = kw;
+
+		// Reserve suffix bytes BEFORE truncating the base -- mirrors
+		// UniqueCameraName's identical discipline above.  Formatting a
+		// suffix onto an unreserved 255-byte base would erase the suffix
+		// digits, return the already-occupied base, and make every
+		// subsequent collision unresolvable; the 256-byte cap matches the
+		// C ABI's outName buffer (RISE_API_SceneEditController_CreateChunkNode).
+		const size_t kMaxPayloadBytes = 255;
+		base = base.substr( 0, kMaxPayloadBytes );
+		chosen = base;
+		if( !candidateClear( chosen ) )
+		{
+			chosen.clear();
+			for( int i = 2; i < 1000; ++i )
+			{
+				const std::string suffix = "_" + std::to_string( i );
+				const std::string candidate =
+					base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+				if( candidateClear( candidate ) ) { chosen = candidate; break; }
+			}
+			if( chosen.empty() )
+			{
+				// EXHAUSTION.  InstantiateEntityTemplate falls back to a
+				// timestamp suffix here; this verb refuses instead.  The
+				// timestamp fallback is UNCHECKED (it never re-runs
+				// candidateClear), so it can hand back a colliding name
+				// that then fails the insert with a raw duplicate message
+				// naming a name the caller never chose.  A canvas node
+				// creation that cannot find a free name in 998 tries is
+				// pathological; refusing honestly, without mutating, is
+				// the better contract -- and it keeps the byte-identical
+				// -on-refusal invariant unconditional.
+				//
+				// DEFERRED, not returned here: `reject` re-takes mMutex to
+				// read the post-call head, and mMutex is a plain
+				// std::mutex -- refusing inside this scope self-deadlocks.
+				exhaustedBase = base;
+			}
+		}
+	}
+	if( !exhaustedBase.empty() )
+		return reject( "could not find a free name for base `" + exhaustedBase
+		             + "` (tried `" + exhaustedBase + "_2` .. `" + exhaustedBase + "_999`)" );
+
+	// Compose the body.  Pure text construction off the descriptor -- no
+	// scene mutation yet, so every refusal below is byte-identical too.
+	std::vector<EntityTemplates::ChunkNodeArg> targs;
+	targs.reserve( args.size() );
+	for( const ChunkNodeArg& a : args )
+	{
+		EntityTemplates::ChunkNodeArg t;
+		t.param = std::string( a.param.c_str() );
+		t.value = std::string( a.value.c_str() );
+		targs.push_back( t );
+	}
+	std::string chunkText, diag;
+	if( !EntityTemplates::BuildNodeChunkText( kw, chosen, targs, chunkText, diag ) )
+		return reject( diag );
+
+	// Commit through the shared agent-insert critical section.  No
+	// baseVersion: this verb composed its chunk under the admission lock
+	// it still holds, so there is no snapshot-then-commit window for a
+	// stale head to slip through -- and a caller that DOES want
+	// optimistic concurrency has ApplyAgentInsertChunk directly.
+	// (ApplyAgentInsertChunk re-takes the admission mutex; it is a
+	// recursive_mutex and this is the same thread, matching
+	// InstantiateEntityTemplate's own nested acquisition.)
+	AgentCommitResult r = ApplyAgentInsertChunk( String( chunkText.c_str() ), nullptr );
+	// S18 round-1 P1/P2-b: source *outName from r.chunkName -- the name
+	// ApplyCstInsertChunk (via ApplyAgentChunkCrud_) itself parsed back out
+	// of the committed chunk text -- rather than the locally-composed
+	// `chosen`.  r.chunkName is the SSOT for what actually landed; `chosen`
+	// is only what this function ASKED for.  Fill it whenever the Document
+	// was mutated, which is rawCode 2 (clean apply) OR 3 (diagnosed: the
+	// splice landed and the managers were rebuilt, but the full re-derive
+	// also emitted diagnostics) -- gating on `r.applied` alone left
+	// *outName empty for a code-3 landing even though the caller's node
+	// now exists in the Document and the canvas needs its name to select
+	// it / show the diagnostic against it.
+	if( outName && r.rawCode >= 1 ) *outName = r.chunkName;
+	return r;
 }
 
 SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(

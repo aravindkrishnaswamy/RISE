@@ -1218,8 +1218,15 @@ bool Job::AddCompositeFunction2DPainter(
 	IFunction2D* pChildB = pFunc2DManager->GetItem( childB );
 
 	if( !pChildA || !pChildB ) {
+		// round-1 P3: not a fixed whitelist -- RegisterPainterDual dual-
+		// indexes EVERY successfully-added colour painter into
+		// pFunc2DManager except expression_painter (single-registered) and
+		// scalar_painter (a separate manager entirely); see
+		// ConnectionLegality::IsFunction2DCapable for the authoritative set.
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Job::AddCompositeFunction2DPainter '%s': child Function2D lookup failed (child_a='%s', child_b='%s'); both children must be Function2D-implementing painters (Perlin2D, Gerstner, ControlledSmoothness2D, ConstantFunction2D, or another composite)",
+			"Job::AddCompositeFunction2DPainter '%s': child Function2D lookup failed (child_a='%s', child_b='%s'); "
+			"both children must already be a registered, non-none colour painter in this scene "
+			"(expression_painter and scalar_painter do not qualify)",
 			name, childA, childB );
 		return false;
 	}

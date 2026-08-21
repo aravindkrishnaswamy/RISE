@@ -39,6 +39,7 @@
 #define RISE_ENTITYTEMPLATES_
 
 #include "SceneEditController.h"
+#include "../Parsers/ChunkDescriptor.h"
 #include <string>
 #include <vector>
 
@@ -85,6 +86,87 @@ namespace RISE
 		//! yet.  `name` is the chunk's own name -- caller is
 		//! responsible for dedup.
 		static std::string DefaultLambertianChunkText( const std::string& name, const std::string& painterName );
+
+		//! ---- S18 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): KEYWORD-driven
+		//! default bodies for the node-graph canvas's "create node" verb.
+		//!
+		//! The static table above is a fixed PICKER of hand-authored
+		//! recipes ("Sphere", "Omni Light").  The canvas needs something
+		//! different: given ANY painter/material KEYWORD the user dragged
+		//! out of the search palette, produce the MINIMAL body that
+		//! derives cleanly with zero further input.  Sourced from the live
+		//! ChunkDescriptorRegistry (so a new chunk keyword is creatable
+		//! the day its Describe() lands) plus the small seed table below
+		//! for the handful of shapes a ChunkDescriptor cannot express.
+		//!
+		//! WHY A SEED TABLE IS UNAVOIDABLE.  `ParameterDescriptor::required`
+		//! is METADATA ONLY -- the parameter dispatcher does not enforce it
+		//! (see ChunkParserRegistry.cpp's "REQUIRED PARAMETERS" comment) --
+		//! and, worse, several chunks carry minimal-validity rules the
+		//! descriptor has no vocabulary for at all:
+		//!   * a REPEATABLE MINIMUM (`ramp_painter` needs >= 2 `stop`
+		//!     lines; `stop` is merely `repeatable`, never `required`);
+		//!   * a ONE-OF FORM SELECTION (`scalar_painter` has twelve
+		//!     mutually-exclusive forms, none of them `required`, and a
+		//!     body with no form at all is not a usable painter).
+		//! Those live in the seed table.  Everything else is derived.
+		struct ChunkNodeArg
+		{
+			std::string param;
+			std::string value;
+		};
+
+		//! One parameter the CALLER must supply for `keyword` -- a
+		//! `required` parameter the descriptor gives no usable default
+		//! for and the seed table deliberately does not invent one for.
+		//! Today these are exactly the required REFERENCE parameters
+		//! (`ramp_painter.input`, `mapping_painter.source`, ...): a
+		//! reference names another chunk in THIS scene, so no static
+		//! default can exist -- the S21 canvas supplies it from the drag
+		//! context (the wire the user dropped onto the new node).
+		struct ChunkNodeRequirement
+		{
+			std::string                param;
+			std::string                description;      //!< the descriptor's own text, verbatim
+			//! True iff the param is ValueKind::Reference (or, for the
+			//! kNodeExtraRequirements table, flagged `isReference` there).
+			//! THE authoritative reference/literal flag -- round-1 P3:
+			//! `referenceCategories` below must NOT be used to infer this,
+			//! because a reference param with an unrestricted (empty)
+			//! category list -- legal; ConnectionLegality's CategoryAllowed
+			//! treats empty as "any category" -- would otherwise read back
+			//! as "not a reference" even though it is one.
+			bool                       isReference = false;
+			std::vector<ChunkCategory> referenceCategories;   //!< legal categories when isReference; empty = unrestricted
+		};
+
+		//! The caller-supplied-argument contract for `keyword` (empty for
+		//! a keyword that needs nothing, and for an unknown keyword).
+		//! Pure descriptor read -- no scene state, no locking.
+		static std::vector<ChunkNodeRequirement> NodeRequirements( const std::string& keyword );
+
+		//! Build the minimal derivable chunk text for `keyword` named
+		//! `name`, with `args` supplying (at least) every
+		//! NodeRequirements() param.  Emits ONLY the lines that are
+		//! load-bearing -- `name`, every caller arg, and the seeds -- and
+		//! deliberately omits every optional parameter so the chunk's own
+		//! Finalize() defaults apply (a `defaultValueHint` is a GUI HINT,
+		//! not always a parser-acceptable literal: "unlimited", "none",
+		//! "noname").
+		//!
+		//! Returns false WITHOUT touching `outText` when: the keyword is
+		//! unknown; its category is not Painter or Material (this verb is
+		//! the canvas's node creator, not a general chunk inserter -- use
+		//! the agent surface's insert_chunk for anything else); an arg
+		//! names a parameter the descriptor does not declare; a required
+		//! arg is missing; or an arg value carries a newline or a `}`
+		//! (which would break out of the chunk body).  `outDiag` always
+		//! receives the reason.
+		static bool BuildNodeChunkText( const std::string& keyword,
+		                                const std::string& name,
+		                                const std::vector<ChunkNodeArg>& args,
+		                                std::string& outText,
+		                                std::string& outDiag );
 
 		//! Ensure a small placeholder PNG texture file exists on disk
 		//! for the png_painter template's `file` parameter (a real

@@ -1098,6 +1098,52 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                       outMessage:(NSString * _Nullable * _Nullable)outMessage
     NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
 
+#pragma mark - Node-graph canvas: create node (S18)
+//
+// Mirrors RISE_API_SceneEditController_{ChunkNodeRequiredArgCount,
+// ChunkNodeRequiredArg,CreateChunkNode}.  Unlike the fixed template
+// picker above, this creates a node for ANY painter/material KEYWORD --
+// the open set the S21 canvas's search palette offers.  The create call
+// takes the controller's commit mutex (same do-not-call-during-renders
+// caveat as the entity CRUD above); the two requirement queries are
+// pure descriptor reads and are safe at any time.
+
+/// The arguments the caller must supply to create a node of type
+/// `keyword` -- one dictionary per requirement with keys "param"
+/// (NSString), "description" (NSString), and "isReference" (NSNumber
+/// BOOL: YES = the value must name another chunk, so resolve it from
+/// the drag context / a candidate picker rather than a text field).
+/// Empty for a keyword that needs nothing, for a non-painter/material
+/// keyword, and for an unknown keyword.
+- (NSArray<NSDictionary<NSString *, id> *> *)chunkNodeRequirementsForKeyword:(NSString *)keyword
+    NS_SWIFT_NAME(chunkNodeRequirements(forKeyword:));
+
+/// Create one painter/material node of type `keyword`, named from
+/// `baseName` (deduped on collision -- READ `outName`, do not assume
+/// the base was granted; a nil/empty base falls back to the keyword).
+/// `argParams` / `argValues` are ORDERED PARALLEL arrays (must be the
+/// same length; a nil/mismatched pair is treated as no args) mirroring
+/// the C ABI beneath -- NOT a dictionary: a keyed map can neither
+/// repeat a param (e.g. voronoi's repeatable `gen`) nor guarantee the
+/// composed chunk body's line order matches what the caller wrote, and
+/// dictionary enumeration order is unspecified besides.  Every
+/// `argParams[i]` must cover a requirement above.  Returns `applied`;
+/// `outName` / `outMessage` as the entity CRUD calls above (each
+/// optional, may be NULL).
+///
+/// On a REJECTED refusal the scene is left byte-identical.  A
+/// DIAGNOSED refusal is different: the node WAS created and the live
+/// managers WERE rebuilt, but the full re-derive also emitted
+/// diagnostics -- `applied` is still NO, but the mutation is real (and
+/// undoable) and `outName` is filled with the name that landed.
+- (BOOL)createChunkNodeWithKeyword:(NSString *)keyword
+                          baseName:(nullable NSString *)baseName
+                         argParams:(nullable NSArray<NSString *> *)argParams
+                         argValues:(nullable NSArray<NSString *> *)argValues
+                           outName:(NSString * _Nullable * _Nullable)outName
+                        outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(createChunkNode(keyword:baseName:argParams:argValues:outName:outMessage:));
+
 #pragma mark - Environment / IBL section
 
 /// Read the current environment binding.  Returns nil only when there is

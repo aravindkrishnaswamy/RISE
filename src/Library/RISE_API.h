@@ -4940,6 +4940,65 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* outStatus, unsigned int outStatusLen,
 		char* outMessage, unsigned int outMessageLen );
 
+	//! -------- S18: node-graph canvas chunk creation --------
+	//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S18; see
+	//! SceneEditController::CreateChunkNode for the full contract and
+	//! for WHY this exists alongside the template picker above.)
+	//! Deliberately NOT an agent verb: the agent surface's insert_chunk
+	//! already accepts arbitrary chunk TEXT, which strictly dominates a
+	//! keyword + arg list.  This pair is the S21 canvas's passthrough.
+
+	//! Number of arguments the caller MUST supply to create a node of
+	//! type `keyword` (required descriptor parameters with no static
+	//! default — in practice the required REFERENCE slots, e.g.
+	//! `ramp_painter`'s `input`).  0 for a keyword that needs nothing,
+	//! for a non-painter/material keyword, and for an unknown keyword.
+	unsigned int RISE_API_SceneEditController_ChunkNodeRequiredArgCount(
+		SceneEditController* p, const char* keyword );
+
+	//! Describe required argument `idx` for `keyword`: `outParam`
+	//! receives the parameter name, `outDescription` the descriptor's
+	//! own help text, and `*outIsReference` 1 when the value must name
+	//! another chunk (use the S17 connection-legality check for the
+	//! legal candidate set) or 0 for a literal.  Every out-param is
+	//! optional.  Returns false for a null controller or an
+	//! out-of-range idx.
+	bool RISE_API_SceneEditController_ChunkNodeRequiredArg(
+		SceneEditController* p, const char* keyword, unsigned int idx,
+		char* outParam, unsigned int outParamLen,
+		char* outDescription, unsigned int outDescriptionLen,
+		int* outIsReference );
+
+	//! Create one painter/material node of type `keyword`, named from
+	//! `baseName` (deduped on collision — READ `outName`, do not assume
+	//! the base was granted; `outName` is written through a 256-byte C
+	//! ABI buffer, so a pathologically long base is truncated with
+	//! suffix bytes reserved first, same discipline as
+	//! CloneActiveCamera's UniqueCameraName).  `argParams` / `argValues`
+	//! are ORDERED parallel arrays of `argCount` entries (either may be
+	//! null when argCount is 0) -- order is caller order, and a
+	//! repeated `argParams[i]` is legal (e.g. voronoi's repeatable
+	//! `gen`).  Each `argParams[i]` must be a parameter the keyword's
+	//! descriptor declares, and every required argument above must be
+	//! present.  Returns the AgentCommitResult's `applied`; `outName` /
+	//! `outStatus` / `outMessage` as the entity CRUD wrappers above
+	//! (each optional, may be null).
+	//!
+	//! On a REJECTED refusal (`applied` false, `outStatus` "rejected")
+	//! the retained Document is left byte-identical.  A DIAGNOSED
+	//! refusal (`outStatus` "diagnosed") is different and NOT byte-
+	//! identical: the chunk was spliced into the Document and the live
+	//! managers were rebuilt, but the full re-derive also emitted
+	//! diagnostics -- `applied` is still false, but the mutation is
+	//! real (and undoable), and `outName` is filled with the name that
+	//! landed.
+	bool RISE_API_SceneEditController_CreateChunkNode(
+		SceneEditController* p, const char* keyword, const char* baseName,
+		const char* const* argParams, const char* const* argValues, unsigned int argCount,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
 	//! Remove the named entity in `category` (see
 	//! SceneEditController::RemoveEntity) — refused with a non-empty
 	//! `outMessage` if it is still referenced (e.g. a material a

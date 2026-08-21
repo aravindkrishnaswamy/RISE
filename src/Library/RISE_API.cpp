@@ -10101,6 +10101,65 @@ namespace RISE
 		return r.applied;
 	}
 
+	// S18 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the node-graph canvas's
+	// create-node passthrough.  Same flattening as the entity CRUD
+	// wrappers above -- `applied` + `status` + `message` + the chosen
+	// name are what a caller needs to show a user-facing result.
+	unsigned int RISE_API_SceneEditController_ChunkNodeRequiredArgCount(
+		SceneEditController* p, const char* keyword )
+	{
+		if( !p || !keyword ) return 0;
+		return static_cast<unsigned int>( p->ChunkNodeRequirements( String( keyword ) ).size() );
+	}
+
+	bool RISE_API_SceneEditController_ChunkNodeRequiredArg(
+		SceneEditController* p, const char* keyword, unsigned int idx,
+		char* outParam, unsigned int outParamLen,
+		char* outDescription, unsigned int outDescriptionLen,
+		int* outIsReference )
+	{
+		if( !p || !keyword ) return false;
+		const std::vector<SceneEditController::ChunkNodeRequirement> reqs =
+			p->ChunkNodeRequirements( String( keyword ) );
+		if( idx >= reqs.size() ) return false;
+		if( outParam && outParamLen > 0 )             CopyToBuf( reqs[idx].param, outParam, outParamLen );
+		if( outDescription && outDescriptionLen > 0 ) CopyToBuf( reqs[idx].description, outDescription, outDescriptionLen );
+		if( outIsReference )                          *outIsReference = reqs[idx].isReference ? 1 : 0;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_CreateChunkNode(
+		SceneEditController* p, const char* keyword, const char* baseName,
+		const char* const* argParams, const char* const* argValues, unsigned int argCount,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		std::vector<SceneEditController::ChunkNodeArg> args;
+		// A null array with a non-zero count is a caller bug; treat it as
+		// "no args" rather than dereferencing it, and let the missing
+		// required argument surface as the ordinary honest refusal.
+		if( argParams && argValues )
+		{
+			args.reserve( argCount );
+			for( unsigned int i = 0; i < argCount; ++i )
+			{
+				SceneEditController::ChunkNodeArg a;
+				a.param = String( argParams[i] ? argParams[i] : "" );
+				a.value = String( argValues[i] ? argValues[i] : "" );
+				args.push_back( a );
+			}
+		}
+		String name;
+		const SceneEditController::AgentCommitResult r = p->CreateChunkNode(
+			String( keyword ? keyword : "" ), String( baseName ? baseName : "" ), args, &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
 	bool RISE_API_SceneEditController_RemoveEntity(
 		SceneEditController* p, int category, const char* name,
 		char* outStatus, unsigned int outStatusLen,

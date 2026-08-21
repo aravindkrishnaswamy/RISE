@@ -13,6 +13,7 @@
 #include "EntityTemplates.h"
 
 #include "../RISE_API.h"
+#include "ChunkDescriptorRegistry.h"
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Interfaces/IWriteBuffer.h"
@@ -679,7 +680,376 @@ namespace
 		default:                 return kEmpty;
 		}
 	}
+	// ================================================================
+	// S18: keyword-driven default node bodies.  See EntityTemplates.h's
+	// "S18" block for WHY a seed table exists alongside the descriptor.
+	// ================================================================
+
+	//! One descriptor-invisible line a minimal-valid body must carry.
+	//! Repeat the same `param` for a repeatable minimum (ramp's two
+	//! `stop` lines).  A seed is SKIPPED entirely when the caller
+	//! supplied ANY arg for that param -- the caller's authoring wins,
+	//! including the repeatable case (a caller that supplies one `stop`
+	//! owns the whole stop list and gets its own derive failure, rather
+	//! than a silently half-seeded ramp).
+	struct NodeSeed
+	{
+		const char* keyword;
+		const char* param;
+		const char* value;
+	};
+
+	// Every entry below was chosen to be the LEAST OPINIONATED body that
+	// still derives, and each is covered by the S18 "every painter and
+	// material keyword creates" sweep in tests/EntityTemplatesTest.cpp --
+	// if a future chunk grows a minimal-validity rule its descriptor
+	// cannot express, that sweep fails and points here.
+	const NodeSeed kNodeSeeds[] = {
+		// scalar_painter: twelve mutually-exclusive forms, none marked
+		// `required`.  Form 1 (UniformScalarPainter) is the only one with
+		// no dependency on another chunk or a file on disk.
+		{ "scalar_painter",        "value", "0.5" },
+
+		// ramp_painter: Finalize hard-fails below two `stop` lines.  A
+		// black->white ramp is the identity-shaped starting point a user
+		// then edits, and it is colour-space independent.
+		{ "ramp_painter",          "stop",  "0.0 0.0 0.0 0.0" },
+		{ "ramp_painter",          "stop",  "1.0 1.0 1.0 1.0" },
+
+		// spectral_painter: round-1 P2-a.  Finalize hard-fails when both
+		// `wavelengths` and `amplitudes` end up empty (ChunkParserRegistry.cpp,
+		// the "no samples (empty / all-comment file, no inline cp)" error) --
+		// but `cp` (repeatable) is a perfectly usable static default, exactly
+		// the ramp_painter repeatable-minimum shape above, and needs no
+		// RISE_MEDIA_PATH-relative file.  A flat mid-grey curve (same
+		// amplitude at both ends) is the least-opinionated starting shape;
+		// this used to be listed in kNodeExtraRequirements as a `file`
+		// requirement, which made the keyword UNCREATABLE with no caller
+		// input even though `file` was never actually required.
+		{ "spectral_painter",      "cp",    "400 0.5" },
+		{ "spectral_painter",      "cp",    "700 0.5" },
+
+		// The two expression chunks: `expr` is `required` but is a STRING
+		// (no reference to any other chunk), so a static default exists
+		// and the node is creatable with no caller input.  Mid-gray (0.5),
+		// independently chosen -- NOT the same literal
+		// EntityTemplates::DefaultPainterChunkText picks (0.7); the two
+		// have no requirement to match.
+		{ "expression_painter",    "expr",  "vec3(0.5, 0.5, 0.5)" },
+		{ "expression_function2d", "expr",  "0.5" },
+
+		// voronoi2d/3d: Job::AddVoronoi{2,3}DPainter hard-fails below TWO
+		// generators, and `gen` is `repeatable`, never `required` -- the
+		// repeatable-minimum shape again.  The painter token is left at
+		// the `none` sentinel, exactly as blend_painter's colora/colorb
+		// and every other optional painter slot default to; the user
+		// re-wires the cells on the canvas.
+		{ "voronoi2d_painter",     "gen",   "0.25 0.25 none" },
+		{ "voronoi2d_painter",     "gen",   "0.75 0.75 none" },
+		{ "voronoi3d_painter",     "gen",   "0.25 0.25 0.25 none" },
+		{ "voronoi3d_painter",     "gen",   "0.75 0.75 0.75 none" },
+
+		// SCALAR-PIPE slots whose Finalize default is the `none` painter
+		// name.  `none` resolves in the COLOUR manager, so
+		// ResolveOrDiagnoseScalar rejects it ("bound to `IPainter` chunk
+		// `none`; this slot now requires a scalar_painter" --
+		// docs/ISCALARPAINTER_REFACTOR.md).  An inline numeric literal is
+		// the documented idiom for these slots and needs no companion
+		// chunk, so it is exactly the right seed.  (The other scalar
+		// slots on these same chunks already default to a numeric
+		// literal in their own Finalize and need nothing here.)
+		{ "polished_material",     "tau",        "1.0" },
+		{ "dielectric_material",   "tau",        "1.0" },
+		{ "translucent_material",  "ext",        "1.0" },
+		{ "generic_human_tissue_material", "g",  "0.0" },
+	};
+
+	//! Requirements the descriptor's `required` flag does not carry, so
+	//! the caller (the S21 canvas) is told about them BEFORE the create
+	//! rather than after a failed derive.  Two families:
+	//!
+	//! FILES.  A keyword whose minimal body needs a file on disk that no
+	//! static default can supply.
+	//!
+	//! Two reasons this is a keyword table and not "every
+	//! ValueKind::Filename parameter".  (1) Several Filename params in
+	//! scope are genuinely OPTIONAL -- `scalar_painter`'s `file` is one
+	//! of twelve mutually-exclusive forms (we seed a different one), and
+	//! `voronoi2d_painter` / `voronoi3d_painter` take an optional
+	//! generator list -- so promoting them would make creatable nodes
+	//! uncreatable.  (2) The failure mode without this is not a tidy
+	//! refusal: the image readers are handed the literal string "none",
+	//! and OpenEXR's reader THROWS (Iex::InputExc, "Unable to open
+	//! 'none' for read") out through the derive, which is an abort, not
+	//! a diagnostic.  Catching it here -- before any insert runs -- is
+	//! what keeps "a refused create leaves the Document byte-identical"
+	//! true for these keywords rather than "a refused create takes the
+	//! process down".  The S21 canvas supplies the path from its file
+	//! picker, exactly as the Add-Entity png template already does.
+	//!
+	//! REFERENCES.  A slot whose Finalize hard-fails on the `none`
+	//! sentinel because the value must be a LIVE object of a specific
+	//! runtime kind (an IFunction2D), which no seed can conjure -- the
+	//! same "must name another chunk in THIS scene" situation as the
+	//! descriptor-`required` references, just undeclared.  Marked
+	//! `isReference` so the canvas resolves it from the drag context.
+	struct NodeExtraRequirement
+	{
+		const char* keyword;
+		const char* param;
+		bool        isReference;
+		const char* description;
+	};
+	const NodeExtraRequirement kNodeExtraRequirements[] = {
+		{ "png_painter",         "file",     false, "Path to a PNG image file" },
+		{ "jpg_painter",         "file",     false, "Path to a JPEG image file" },
+		{ "hdr_painter",         "file",     false, "Path to a Radiance HDR image file" },
+		{ "exr_painter",         "file",     false, "Path to an OpenEXR image file" },
+		{ "tiff_painter",        "file",     false, "Path to a TIFF image file" },
+		{ "datadriven_material", "filename", false, "Path to a measured-BRDF data file" },
+
+		// Job::AddCompositeFunction2DPainter (child_a/child_b) and
+		// Job::AddFunction2DColorPainter (function2d) both look the name up
+		// in pFunc2DManager and reject `none` / an unregistered name.
+		// round-1 P3: that is NOT the narrow "must implement IFunction2D"
+		// set the old comment here claimed.  Job.cpp's `RegisterPainterDual`
+		// dual-indexes EVERY successfully-added colour painter into BOTH
+		// pPntManager AND pFunc2DManager, with exactly two documented
+		// exceptions (`expression_painter`, single-registered; and
+		// `scalar_painter`, a wholly separate IScalarPainterManager that
+		// never touches either) -- see ConnectionLegality::IsFunction2DCapable
+		// for the authoritative list.  So the real requirement these three
+		// undeclared slots share with the descriptor-`required` reference
+		// slots above is simply "must name an already-created, non-none
+		// chunk in THIS scene" -- not a narrower painter-kind restriction.
+		// ConnectionLegality (S17) is what the canvas should filter the
+		// candidate list with (it already encodes the real rule, not this
+		// table's prose).
+		{ "composite_function2d_painter", "child_a",    true, "First operand: any colour painter in this scene" },
+		{ "composite_function2d_painter", "child_b",    true, "Second operand: any colour painter in this scene" },
+		{ "function2d_painter",           "function2d", true, "The named painter to wrap as a greyscale colour" },
+
+		// voronoi2d/3d `border`: its Finalize maps the `none` sentinel to
+		// a NULL pointer (`border=="none" ? 0 : ...`), and
+		// Job::AddVoronoi{2,3}DPainter then fails the null border lookup.
+		// So unlike every other optional painter slot, this one has no
+		// usable "unbound" value at all -- it is a required reference the
+		// descriptor never marked.
+		{ "voronoi2d_painter",            "border",     true, "Border colour painter (the `none` sentinel is not accepted here)" },
+		{ "voronoi3d_painter",            "border",     true, "Border colour painter (the `none` sentinel is not accepted here)" },
+	};
+
+	// True iff `args` mentions `param` at all.
+	bool ArgsMention( const std::vector<EntityTemplates::ChunkNodeArg>& args, const std::string& param )
+	{
+		for( const EntityTemplates::ChunkNodeArg& a : args )
+			if( a.param == param ) return true;
+		return false;
+	}
+
+	// A value is emittable as a chunk parameter line iff it stays on one
+	// line and cannot terminate the chunk body.  Rejecting `}` as well as
+	// the newlines is what makes the caller's argument strictly a VALUE:
+	// without it a canvas arg could splice arbitrary chunks into the
+	// document through a verb whose whole contract is "one node".
+	bool ValueIsSingleLine( const std::string& v )
+	{
+		return v.find_first_of( "\n\r}{" ) == std::string::npos;
+	}
+
+	// The descriptor parameter named `pname` on `desc`, or null.
+	const ParameterDescriptor* FindParam( const ChunkDescriptor& desc, const std::string& pname )
+	{
+		for( const ParameterDescriptor& p : desc.parameters )
+			if( p.name == pname ) return &p;
+		return nullptr;
+	}
+
 }   // anonymous namespace
+
+std::vector<EntityTemplates::ChunkNodeRequirement>
+EntityTemplates::NodeRequirements( const std::string& keyword )
+{
+	std::vector<ChunkNodeRequirement> out;
+	const ChunkDescriptor* desc = DescriptorForKeyword( String( keyword.c_str() ) );
+	if( !desc ) return out;
+	if( desc->category != ChunkCategory::Painter && desc->category != ChunkCategory::Material )
+		return out;
+
+	for( const ParameterDescriptor& p : desc->parameters )
+	{
+		if( !p.required ) continue;
+		if( p.name == "name" ) continue;   // this verb picks the name itself
+
+		// A required param the SEED TABLE covers is not the caller's
+		// problem -- it has a static default (expression_painter.expr).
+		bool seeded = false;
+		for( const NodeSeed& s : kNodeSeeds )
+			if( keyword == s.keyword && p.name == s.param ) { seeded = true; break; }
+		if( seeded ) continue;
+
+		ChunkNodeRequirement r;
+		r.param               = p.name;
+		r.description         = p.description;
+		r.isReference = ( p.kind == ValueKind::Reference );
+		if( r.isReference ) r.referenceCategories = p.referenceCategories;
+		out.push_back( r );
+	}
+
+	// The requirements the descriptor cannot flag (see the table's own
+	// doc).  Appended, never duplicated: skip a param the descriptor
+	// loop above already reported.
+	for( const NodeExtraRequirement& f : kNodeExtraRequirements )
+	{
+		if( keyword != f.keyword ) continue;
+		bool already = false;
+		for( const ChunkNodeRequirement& r : out ) if( r.param == f.param ) { already = true; break; }
+		if( already ) continue;
+		// Only advertise a param the chunk actually declares -- a typo in
+		// this table must not manufacture an unsatisfiable requirement.
+		const ParameterDescriptor* pd = FindParam( *desc, f.param );
+		if( !pd ) continue;
+		ChunkNodeRequirement r;
+		r.param       = f.param;
+		r.description = f.description;
+		r.isReference = f.isReference;
+		// Carry the descriptor's own legal-category set for a reference
+		// slot, so the canvas filters candidates from ONE source of
+		// truth rather than from this table's prose.
+		if( f.isReference ) r.referenceCategories = pd->referenceCategories;
+		out.push_back( r );
+	}
+	return out;
+}
+
+bool EntityTemplates::BuildNodeChunkText( const std::string& keyword,
+                                          const std::string& name,
+                                          const std::vector<ChunkNodeArg>& args,
+                                          std::string& outText,
+                                          std::string& outDiag )
+{
+	outDiag.clear();
+
+	const ChunkDescriptor* desc = DescriptorForKeyword( String( keyword.c_str() ) );
+	if( !desc )
+	{
+		outDiag = "unknown chunk keyword `" + keyword + "`";
+		return false;
+	}
+	if( desc->category != ChunkCategory::Painter && desc->category != ChunkCategory::Material )
+	{
+		outDiag = "`" + keyword + "` is not a painter or material chunk -- "
+		          "this verb creates node-graph nodes only";
+		return false;
+	}
+	if( name.empty() || !ValueIsSingleLine( name ) )
+	{
+		outDiag = "the generated node name is empty or not a single-line identifier";
+		return false;
+	}
+	if( !FindParam( *desc, "name" ) )
+	{
+		// Every painter/material chunk in the registry declares `name`;
+		// a future one that does not could not be addressed, wired, or
+		// removed by name, so refuse rather than emit an unnamed node.
+		outDiag = "`" + keyword + "` declares no `name` parameter -- it cannot be a named graph node";
+		return false;
+	}
+
+	// Validate every caller arg against the descriptor BEFORE emitting a
+	// byte: an undeclared parameter name would be refused two layers down
+	// by the parser's own kUndeclaredParameterFmt diagnostic, but only
+	// after the whole insert pipeline had run.  Catching it here keeps the
+	// refusal cheap and lets the message name the offending param.
+	for( const ChunkNodeArg& a : args )
+	{
+		if( a.param.empty() || !ValueIsSingleLine( a.param ) )
+		{
+			outDiag = "an argument carries an empty or malformed parameter name";
+			return false;
+		}
+		if( a.param == "name" )
+		{
+			// The name is this verb's to pick (it is what makes the
+			// result collision-safe); accepting a caller `name` would
+			// silently defeat the dedup and hand back a name the caller
+			// did not get told about.
+			outDiag = "`name` is chosen by this verb -- pass the desired base name instead";
+			return false;
+		}
+		if( !FindParam( *desc, a.param ) )
+		{
+			outDiag = "`" + keyword + "` declares no parameter named `" + a.param + "`";
+			return false;
+		}
+		if( a.value.empty() )
+		{
+			// round-1 P3: refuse directly, naming the offending arg, rather
+			// than silently falling through to the emit loop below -- which
+			// used to write just the param with no value at all (`text +=
+			// a.param` with the `!a.value.empty()` guard skipping the
+			// value), a line the parser then rejects two layers down with a
+			// diagnostic that never names WHICH argument was empty.  Same
+			// byte-identical-on-refusal contract as every other check in
+			// this loop: caught before a single byte is composed.
+			outDiag = "the value for `" + a.param + "` is empty -- omit the argument instead of passing an empty value";
+			return false;
+		}
+		if( !ValueIsSingleLine( a.value ) )
+		{
+			outDiag = "the value for `" + a.param + "` must be a single line with no braces";
+			return false;
+		}
+	}
+
+	// Required params with no seed and no caller arg -- the honest refusal
+	// (a ramp_painter with no `input` cannot be created out of nothing).
+	const std::vector<ChunkNodeRequirement> needs = NodeRequirements( keyword );
+	for( const ChunkNodeRequirement& n : needs )
+	{
+		if( ArgsMention( args, n.param ) ) continue;
+		outDiag = "`" + keyword + "` requires `" + n.param + "`"
+		        + ( n.description.empty() ? std::string() : ( " (" + n.description + ")" ) )
+		        + " -- supply it as a creation argument";
+		return false;
+	}
+
+	// Emit.  Braces on their own lines (the documented v7 authoring
+	// convention, and the shape ApplyCstInsertChunk's grammar checks
+	// expect), name first, then the caller's args in the order given,
+	// then the seeds the caller did not override.
+	std::string text;
+	text += keyword;
+	text += "\n{\nname ";
+	text += name;
+	text += "\n";
+	for( const ChunkNodeArg& a : args )
+	{
+		text += a.param;
+		if( !a.value.empty() ) { text += " "; text += a.value; }
+		text += "\n";
+	}
+	for( const NodeSeed& s : kNodeSeeds )
+	{
+		if( keyword != s.keyword ) continue;
+		if( ArgsMention( args, s.param ) ) continue;
+		// Defensive: a seed naming a parameter the chunk does not declare
+		// would make EVERY create of that keyword fail the parse with an
+		// "undeclared parameter" diagnostic pointing at a line the user
+		// never wrote.  Skip it; the keyword sweep in
+		// tests/EntityTemplatesTest.cpp is what actually catches the typo
+		// (the derive then fails for the seed's original reason).
+		if( !FindParam( *desc, s.param ) ) continue;
+		text += s.param;
+		text += " ";
+		text += s.value;
+		text += "\n";
+	}
+	text += "}\n";
+
+	outText.swap( text );
+	return true;
+}
 
 unsigned int EntityTemplates::Count( Category cat )
 {
