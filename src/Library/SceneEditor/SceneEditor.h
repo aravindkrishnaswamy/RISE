@@ -503,6 +503,22 @@ namespace RISE
 		void PushAgentReplaceGeometryEdit(
 			const String& objectName, const String& priorDocText, const String& postDocText );
 
+		//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): push the ONE EditHistory record that
+		//! represents the node-graph canvas's POSITIONED Duplicate-node fork, already applied to the retained
+		//! Document (via Job::ApplyCstReplaceDocumentText -- see SceneEditController::DuplicateGraphNode).
+		//! Same "forward already happened" shape as PushAgentReplaceGeometryEdit, and the same byte-exact
+		//! prior/post document pair -- the ONLY inverse a POSITIONED splice has, since AgentInsertChunk's
+		//! redo would re-run Job::ApplyCstInsertChunk's tier heuristic and land the copy somewhere else.
+		//!
+		//! `copyName` / `copyKeyword` are the COPY's resolved name and chunk keyword (both real and
+		//! addressable, so the record carries a per-entity dirty channel unlike the batch remove's
+		//! display-only list); `priorDocText` / `postDocText` are the byte-exact Cst::SerializeCst of the
+		//! Document immediately BEFORE and AFTER the splice.  Does NOT mark dirty or fire notifications --
+		//! the caller already calls MarkCstHeadDirty, matching PushAgentChunkCrudEdit.
+		void PushAgentDuplicateNodeEdit(
+			const String& copyName, const String& copyKeyword,
+			const String& priorDocText, const String& postDocText );
+
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
 		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
@@ -1015,12 +1031,13 @@ namespace RISE
 		//! entirely different Job primitives, so a shared four-way branch would only obscure both.
 		bool RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
 
-		//! R2 (2026-08-10, replace_geometry_scaffold): the AgentReplaceGeometry sibling of
+		//! R2 (2026-08-10, replace_geometry_scaffold): the whole-document prior/post text-swap route, the
+		//! AgentReplaceGeometry sibling of
 		//! RouteAgentRemoveChunksBatch_.  BOTH directions are the SAME primitive on DIFFERENT recorded bytes --
 		//! `forward` false = Undo (Job::ApplyCstReplaceDocumentText on `propertyValue`, the pre-composite
 		//! document), `forward` true = Redo (the SAME call on `prevPropertyValue`, the post-composite one).
 		//! Same mutation-keyed return + `outDiagnosed` convention as RouteAgentChunkCrud_.
-		bool RouteAgentReplaceGeometryDoc_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
+		bool RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
 
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.

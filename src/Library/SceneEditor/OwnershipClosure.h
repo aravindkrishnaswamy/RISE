@@ -140,6 +140,61 @@ namespace RISE
 	inline constexpr const char* const kClosureUnresolvedFmt =
 		"this topology edit names `%s`, which resolves to no chunk in this document.";
 
+	// ---- S20: the REFERENCE-SAFE DELETE refusals ------------------------
+	//
+	// Same discipline, same reason as the kClosure* family above (S17's
+	// finding that two hand-kept "verbatim" copies had ALREADY drifted):
+	// `DeleteGraphNodeTest` asserts the delete refusals by FORMATTING THESE
+	// SYMBOLS, so a test proving the diagnostic names every referrer / the
+	// blocking shared chunk cannot degrade into a test that merely proves
+	// the .cpp agrees with itself.  They live HERE, beside the closure
+	// family, because reference-safe delete (ENTITY_CREATION.md sect. 5) is
+	// the same EDIT-POLICY layer over the same `SceneReferenceGraph`
+	// substrate -- not because they are closure strings.
+
+	//! Still-referenced refusal (ENTITY_CREATION.md sect. 5.2's Block rule for
+	//! Material / Painter).  %s = the target's name, %s = the comma-joined
+	//! `referrer`.`param` list, %s = the target's name again.
+	//!
+	//! The message names BOTH escapes and is explicit that CASCADE is NOT
+	//! one of them: cascade sweeps DOWNSTREAM (the chunks below the target
+	//! that nothing else uses), never the UPSTREAM chunks that reference it,
+	//! so offering it here would send the user at a mode that refuses this
+	//! same delete for this same reason.
+	inline constexpr const char* const kDeleteReferencedFmt =
+		"`%s` cannot be deleted: it is still referenced from %s.  Rewire those references away first, or "
+		"delete the referring chunk(s) too -- removing it now would leave a dangling reference the scene "
+		"could not reload.  Cascade mode does not help here: it sweeps only the chunks BELOW `%s` that "
+		"nothing else uses, never the chunks that reference it.";
+
+	//! Shared-cascade refusal.  %s = the target's name, %s = the member the
+	//! cascade would have swept, %s = the comma-joined owners of that member,
+	//! %s = the target's name again.
+	//!
+	//! THE INVARIANT THIS ENFORCES: a cascade member is admitted only when it
+	//! is solely owned by the target, so a shared chunk should never reach
+	//! this refusal -- it is the LOAD-BEARING cross-check (the sweep is built
+	//! by a reachability worklist; the guard re-derives ownership through
+	//! `OwnershipClosure::OwnersOf`, a different function), not a formality.
+	inline constexpr const char* const kDeleteCascadeSharedFmt =
+		"cascade-deleting `%s` would also remove `%s`, which is owned by %s -- a shared chunk NEVER "
+		"cascades.  Delete `%s` on its own (cascade off), or rewire the other owner(s) off the shared "
+		"chunk first.";
+
+	//! A delete-set member the editor cannot address by name (an unnamed
+	//! chunk, or one whose name resolves differently through the editor's own
+	//! addressing than through the graph's).  Fires in BOTH `GraphDeleteMode`s
+	//! -- the addressability check runs over the whole sweep (the target
+	//! alone in `TargetOnly`, target-plus-cascade-members in `Cascade`), so
+	//! the wording is mode-neutral rather than naming "cascade" specifically
+	//! (S20 review round 1 P2-1: an earlier draft said "cascade-delete
+	//! refused" here even though a plain `TargetOnly` delete of an
+	//! unaddressable target hits this exact refusal too).  %s = the member's
+	//! display name, %s = why.
+	inline constexpr const char* const kDeleteUnaddressableFmt =
+		"delete refused: `%s` cannot be addressed for removal (%s) -- refusing rather than "
+		"erasing a chunk the checks never inspected.";
+
 	//! What kind of topology edit a closure is being computed for.  Both
 	//! kinds ask the SAME ownership question of the SAME target chunk;
 	//! they differ only in what the `nowUnreferenced` report means (a

@@ -2018,6 +2018,76 @@ bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetN
     return applied;
 }
 
+// ---- Node-graph canvas: reference-safe delete + duplicate (S20) ------
+
+bool ViewportBridge::deleteGraphNode(int category, const QString& name,
+                                      GraphDeleteMode mode,
+                                      DeleteOutcome* outOutcome)
+{
+    if (outOutcome) *outOutcome = DeleteOutcome();
+    if (!m_controller || name.isEmpty()) return false;
+
+    const QByteArray nm = name.toUtf8();
+
+    int closure = 0, refRefused = 0, cascadeRefused = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char referrersBuf[2048] = {0};
+    char removedBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DeleteGraphNode(
+        m_controller, category, nm.constData(),
+        (mode == GraphDeleteMode::Cascade) ? 1 : 0,
+        &closure, &refRefused, &cascadeRefused,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        referrersBuf, sizeof(referrersBuf),
+        removedBuf, sizeof(removedBuf));
+
+    if (outOutcome) {
+        outOutcome->applied          = applied;
+        outOutcome->status           = QString::fromUtf8(statusBuf);
+        outOutcome->message          = QString::fromUtf8(messageBuf);
+        outOutcome->closure          = static_cast<RewireClosure>(closure);
+        outOutcome->referenceRefused = (refRefused != 0);
+        outOutcome->cascadeRefused   = (cascadeRefused != 0);
+        outOutcome->referrers        = splitJoinedNames(referrersBuf);
+        outOutcome->removed          = splitJoinedNames(removedBuf);
+    }
+    return applied;
+}
+
+bool ViewportBridge::duplicateGraphNode(int category, const QString& name,
+                                         DuplicateOutcome* outOutcome)
+{
+    if (outOutcome) *outOutcome = DuplicateOutcome();
+    if (!m_controller || name.isEmpty()) return false;
+
+    const QByteArray nm = name.toUtf8();
+
+    int closure = 0, originalIndex = -1;
+    char newNameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DuplicateGraphNode(
+        m_controller, category, nm.constData(),
+        &closure, &originalIndex,
+        newNameBuf, sizeof(newNameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+
+    if (outOutcome) {
+        outOutcome->applied       = applied;
+        outOutcome->status        = QString::fromUtf8(statusBuf);
+        outOutcome->message       = QString::fromUtf8(messageBuf);
+        outOutcome->closure       = static_cast<RewireClosure>(closure);
+        outOutcome->newName       = QString::fromUtf8(newNameBuf);
+        outOutcome->originalIndex = originalIndex;
+    }
+    return applied;
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const

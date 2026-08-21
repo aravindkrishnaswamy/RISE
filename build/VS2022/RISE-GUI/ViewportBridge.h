@@ -1431,6 +1431,92 @@ public:
                            int newRefCategory, const QString& newRefName,
                            RewireOutcome* outOutcome = nullptr);
 
+    // ---- Node-graph canvas: reference-safe delete + duplicate (S20) --
+    // Mirrors RISE_API_SceneEditController_DeleteGraphNode /
+    // _DuplicateGraphNode and the macOS RISEViewportBridge's
+    // identically-named section (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S20,
+    // implementing docs/gui/ENTITY_CREATION.md sect. 5's block-or-cascade
+    // policy and MATERIAL_EDITOR.md sect. 3.7a's Duplicate escape hatch).
+    // Both take the controller's commit mutex -- gate on
+    // MainWindow::canUseSceneTransport() before calling.
+    //
+    // STANDING CAVEAT (same posture as the S18/S19 blocks above): this half
+    // is CARRIED, not MSVC-verified -- written to match the macOS bridge
+    // line for line and owed a Windows build.
+
+    /// What a delete should do about the chunks BELOW the target that
+    /// nothing else uses.  Mirrors
+    /// `SceneEditController::GraphDeleteMode`'s ordinals (the C ABI passes
+    /// it as a plain int: 0 = TargetOnly, 1 = Cascade).
+    enum class GraphDeleteMode
+    {
+        TargetOnly = 0,
+        Cascade    = 1
+    };
+
+    /// The reference-safety detail a canvas needs to explain a refused
+    /// delete or show what a cascade took.
+    struct DeleteOutcome
+    {
+        bool          applied = false;   ///< true only on a clean commit
+        QString       status;            ///< "applied"/"rejected"/"diagnosed"/"conflict"
+        QString       message;
+        /// Only Clean / UnresolvedTarget / AmbiguousTargetName are
+        /// reachable through this verb; the ordinals are shared with the
+        /// rewire verb's mirror above (and pinned by the same
+        /// static_asserts).
+        RewireClosure closure = RewireClosure::Clean;
+        bool          referenceRefused = false;   ///< offer "rewire those away first"
+        bool          cascadeRefused = false;     ///< offer "delete without cascade"
+        QStringList   referrers;                  ///< `chunk`.`param` of each blocker
+        /// The chunks removed, in DOCUMENT ORDER.  EMPTY ON EVERY REFUSAL,
+        /// including a cascade refusal (corrected -- S20 review round 1
+        /// P2-2: an earlier draft of this comment claimed a cascade
+        /// refusal leaves a sweep PREVIEW here; it cannot -- see
+        /// `SceneEditController::DeleteResult::removed`'s own corrected
+        /// comment for why). Read it as a mutation record only when
+        /// `applied` is true.
+        QStringList   removed;
+    };
+
+    /// The Duplicate-node fork's outcome.
+    struct DuplicateOutcome
+    {
+        bool          applied = false;
+        QString       status;
+        QString       message;
+        RewireClosure closure = RewireClosure::Clean;
+        /// The DEDUPED name the copy actually landed under -- use THIS to
+        /// select or rewire to the new node, never the requested name.
+        /// Empty when nothing landed.
+        QString       newName;
+        /// The original's top-level document index at the moment of the
+        /// fork, for placing the new node beside it; -1 when nothing landed.
+        int           originalIndex = -1;
+    };
+
+    /// Delete the graph node `(category, name)` REFERENCE-SAFELY: a node
+    /// anything still references is REFUSED in BOTH modes, with every
+    /// referrer named.  `category` is a `RISE::ChunkCategory` ordinal (NOT
+    /// ViewportBridge::Category).  `Cascade` also removes the chunks below
+    /// the target that nothing else uses, as ONE undoable composite; a
+    /// chunk shared with another graph is never swept, and a cascade that
+    /// would reach one is refused whole.  On ANY refusal the scene is left
+    /// byte-identical.  Returns `applied`; `outOutcome` receives the detail.
+    bool deleteGraphNode(int category, const QString& name,
+                          GraphDeleteMode mode,
+                          DeleteOutcome* outOutcome = nullptr);
+
+    /// Fork `(category, name)` into an owned copy placed IMMEDIATELY AFTER
+    /// the original in declaration order, so every consumer the original
+    /// had can legally be re-pointed at the copy -- MATERIAL_EDITOR.md
+    /// sect. 3.7a's escape hatch out of a SharedTarget rewire refusal.
+    /// SHALLOW: the copy shares everything the original referenced (the
+    /// fork unshares exactly ONE level).  Returns `applied`; `outOutcome`
+    /// receives the deduped `newName` to rewire at.
+    bool duplicateGraphNode(int category, const QString& name,
+                             DuplicateOutcome* outOutcome = nullptr);
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.

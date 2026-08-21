@@ -36,11 +36,17 @@
 //            drifted, and the test only proved self-agreement).
 //        1c. The Duplicate-node escape hatch FORKS and UNBLOCKS: once
 //            the second owner is re-pointed at its own copy, the
-//            previously-REFUSED edit succeeds unchanged.  S20 ships the
-//            one-click Duplicate ACTION; this pins the semantics it must
-//            deliver, using only shipped machinery (CreateChunkNode +
-//            RewireConnection), so S20 inherits a passing test rather
-//            than a promise.
+//            previously-REFUSED edit succeeds unchanged.  Proven with
+//            RewireConnection alone, so the claim under test is that the
+//            refusal is OWNERSHIP-DRIVEN, not a blanket ban.
+//        1c'. (S20, rewriting S19's standing gap marker as S19 said to)
+//            the hatch END TO END through the shipped verbs: refusal ->
+//            DuplicateGraphNode -> rewire the requesting consumer at the
+//            copy -> APPLIED, all four states byte-verified, including
+//            that the copy lands IMMEDIATELY AFTER the original.
+//        1c''. The OUTLINER fork (DuplicateEntity) is unchanged by S20
+//            and still appends -- pinned separately so the two verbs
+//            cannot be conflated.
 //        1d. Wiring a painter into an UNSPELLED reference param (the
 //            property panel's "every material slot, including defaulted
 //            ones" case) at occurrence 0 INSERTS the param line rather
@@ -416,16 +422,24 @@ static void Part1_AcceptanceCriteria()
 	// node and the identical edit lands.  That is asserted first, with
 	// nothing but RewireConnection.
 	//
-	// A FINDING THIS CASE SURFACED, pinned rather than papered over:
-	// `DuplicateEntity` -- the shipped fork -- APPENDS its copy at the end
-	// of the document, so an EARLIER-declared material cannot then be
-	// re-pointed at it: the full-derivability gate correctly refuses
-	// (ENTITY_CREATION.md sect. 7.3's declaration-order rule).  Today's
-	// fork therefore cannot, by itself, complete sect. 3.7a's escape hatch.
-	// S20's Duplicate-node action must place the copy where the ORIGINAL
-	// sits (or move the referrer), and the second block below is the
-	// standing assertion of that gap -- it will start failing the day S20
-	// fixes it, which is the correct time to revisit it.
+	// THE FINDING THIS CASE SURFACED, AND ITS RESOLUTION (S20):
+	// `DuplicateEntity` -- the shipped OUTLINER fork -- places its copy by
+	// `Job::ApplyCstInsertChunk`'s TIER heuristic, which in a scene whose
+	// first chunk is a `standard_shader` (tier 1) targets index 0, ahead of
+	// the painters the copy itself references; the positioned dry-run then
+	// fails and the insert FALLS BACK to append-at-end.  An EARLIER-declared
+	// material could not be re-pointed at that copy -- the full-derivability
+	// gate correctly refused (ENTITY_CREATION.md sect. 7.3's declaration-order
+	// rule) -- so the shipped fork could not, by itself, complete sect. 3.7a's
+	// escape hatch.  S19 pinned that as a standing marker for S20.
+	//
+	// S20 ships `SceneEditController::DuplicateGraphNode`, which places the
+	// copy IMMEDIATELY AFTER the original, and case 1c'' below is that marker
+	// REWRITTEN -- as S19 said it should be the day the gap closed -- into the
+	// END-TO-END hatch: shared-refusal -> Duplicate -> rewire the requesting
+	// consumer at the copy -> APPLIED, with the old append-position behaviour
+	// still pinned on `DuplicateEntity` itself so the two verbs cannot be
+	// silently conflated.
 	{
 		const std::string path = TempPath( "test_rewire_p1c.RISEscene" );
 		Job* j = LoadScene( kGraphScene, path );
@@ -464,7 +478,19 @@ static void Part1_AcceptanceCriteria()
 		}
 	}
 
-	// ---- 1c'. THE S20 GAP: today's fork lands in the wrong place -----
+	// ---- 1c'. THE ESCAPE HATCH, END TO END (S20) --------------------
+	//
+	// sect. 3.7a's acceptance criterion in full, through the SHIPPED verbs and
+	// nothing else: the shared-closure rewire is REFUSED -> Duplicate the
+	// shared node -> re-point the REQUESTING consumer at the copy -> the
+	// previously-refused edit APPLIES.  All four states byte-verified.
+	//
+	// This case is the S19 standing marker, rewritten.  It also keeps the
+	// marker's own subject alive: `DuplicateEntity` (the OUTLINER's fork)
+	// still appends, and still cannot complete the hatch -- asserted below
+	// against a SECOND fixture, so "the canvas verb positions correctly" and
+	// "the outliner verb still does not" can never be conflated into one
+	// passing assertion.
 	{
 		const std::string path = TempPath( "test_rewire_p1cprime.RISEscene" );
 		Job* j = LoadScene( kGraphScene, path );
@@ -472,47 +498,121 @@ static void Part1_AcceptanceCriteria()
 		if( j ) {
 			SceneEditController c( *j, nullptr );
 
+			// STATE 1 -- the refusal.  mat_three wants blend_shared changed,
+			// but mat_two owns it too.
+			const std::string s0 = DocText( *j );
+			const Rewire pre = c.RewireConnection(
+				ChunkCategory::Painter, String( "blend_shared" ), String( "colora" ), 0,
+				ChunkCategory::Painter, String( "pnt_white" ), nullptr );
+			Check( !pre.commit.applied && pre.closure == ClosureClassification::SharedTarget,
+				"1c': STATE 1 -- the shared-closure rewire is REFUSED" );
+			Check( DocText( *j ) == s0, "1c': STATE 1 -- and the document is BYTE-IDENTICAL" );
+			Check( Contains( std::string( pre.commit.message.c_str() ), kClosureDuplicateHatch ),
+				"1c': STATE 1 -- the refusal names the Duplicate-node hatch this case now walks" );
+
+			// STATE 2 -- Duplicate.  The copy must land IMMEDIATELY AFTER the
+			// original, which is the whole S20 fix.
+			const SceneEditController::DuplicateResult dup =
+				c.DuplicateGraphNode( ChunkCategory::Painter, String( "blend_shared" ), nullptr );
+			Check( dup.commit.applied, "1c': STATE 2 -- DuplicateGraphNode forks the shared painter" );
+			Check( dup.newName.size() > 1 && std::string( dup.newName.c_str() ) != "blend_shared",
+				"1c': STATE 2 -- under a genuinely new, deduped name" );
+			const std::string s1 = DocText( *j );
+			{
+				// POSITION, asserted on the BYTES: the copy's `name` line must
+				// appear after the original's and before the first consumer's.
+				const std::string origLine = "name blend_shared\n";
+				const std::string copyLine = "name " + std::string( dup.newName.c_str() ) + "\n";
+				const size_t origAt = s1.find( origLine );
+				const size_t copyAt = s1.find( copyLine );
+				const size_t consumerAt = s1.find( "name mat_two\n" );
+				Check( origAt != std::string::npos && copyAt != std::string::npos
+				    && consumerAt != std::string::npos && origAt < copyAt && copyAt < consumerAt,
+					"1c': STATE 2 -- the copy sits AFTER the original and BEFORE its consumers "
+					"(the S19 handoff gap, closed)" );
+				// SHALLOW: the copy shares the original's referents verbatim.
+				Check( Contains( s1, "name " + std::string( dup.newName.c_str() )
+				                    + "\ncolora pnt_green\ncolorb pnt_blue\nmask pnt_mask_b\n" ),
+					"1c': STATE 2 -- the fork is SHALLOW: it shares every chunk the original referenced" );
+				// And the ORIGINAL's own bytes did not move.
+				Check( Contains( s1, "name blend_shared\ncolora pnt_green\ncolorb pnt_blue\nmask pnt_mask_b\n" ),
+					"1c': STATE 2 -- the original's bytes are untouched" );
+			}
+			{
+				const RISE::Cst::NodeId forkId = SceneReferenceGraph::ResolveChunk(
+					*j->GetCstDocument(), ChunkCategory::Painter, dup.newName );
+				Check( forkId != 0, "1c': STATE 2 -- the fork NAME resolves to a real Painter chunk" );
+			}
+
+			// STATE 3 -- re-point the REQUESTING consumer at the copy.  This is
+			// the exact edit the S19 marker pinned as IMPOSSIBLE with the
+			// appended fork; it must now APPLY.
+			const Rewire rp = c.RewireConnection(
+				ChunkCategory::Material, String( "mat_three" ), String( "reflectance" ), 0,
+				ChunkCategory::Painter, dup.newName, nullptr );
+			Check( rp.commit.applied,
+				"1c': STATE 3 -- the requesting consumer re-points at the positioned copy "
+				"(the declaration-order gate no longer refuses)" );
+			Check( rp.closure == ClosureClassification::Clean, "1c': STATE 3 -- ...cleanly" );
+			const std::string s2 = DocText( *j );
+			Check( Contains( s2, "name mat_three\nreflectance " + std::string( dup.newName.c_str() ) + "\n" ),
+				"1c': STATE 3 -- and the consumer's bytes now name the copy" );
+
+			// STATE 4 -- the originally-REFUSED edit, verbatim, now APPLIES.
+			const Rewire post = c.RewireConnection(
+				ChunkCategory::Painter, String( "blend_shared" ), String( "colora" ), 0,
+				ChunkCategory::Painter, String( "pnt_white" ), nullptr );
+			Check( post.commit.applied,
+				"1c': STATE 4 -- the previously-REFUSED edit APPLIES unchanged (sect. 3.7a's hatch, closed)" );
+			Check( post.closure == ClosureClassification::Clean, "1c': STATE 4 -- its closure is now Clean" );
+			if( post.owners.size() == 1 )
+				Check( std::string( post.owners[0].c_str() ) == "mat_two",
+					"1c': STATE 4 -- with mat_two as the sole remaining owner" );
+			Check( Contains( DocText( *j ), "name blend_shared\ncolora pnt_white\n" ),
+				"1c': STATE 4 -- and the edit landed on the ORIGINAL, not the copy" );
+
+			j->release();
+			std::remove( path.c_str() );
+		}
+	}
+
+	// ---- 1c''. THE OUTLINER FORK STILL APPENDS (the S19 marker's subject) ----
+	//
+	// `DuplicateEntity` is deliberately UNCHANGED by S20 (it is the outliner's
+	// duplicate for EVERY category, UI-Category-addressed, with a different
+	// blast radius -- see DeleteGraphNode's placement note).  Its copy still
+	// lands by the tier heuristic's append-at-end fallback in this fixture, so
+	// an earlier-declared referrer still cannot point at it.  Pinned so a
+	// future reader cannot mistake 1c' above for "duplicate was fixed
+	// everywhere", and so a change to EITHER verb's positioning is visible.
+	{
+		const std::string path = TempPath( "test_rewire_p1cprime2.RISEscene" );
+		Job* j = LoadScene( kGraphScene, path );
+		Check( j != nullptr, "1c'': graph fixture loads" );
+		if( j ) {
+			SceneEditController c( *j, nullptr );
+
 			String forkName;
 			const SceneEditController::AgentCommitResult cr =
 				c.DuplicateEntity( SceneEditController::Category::Painter,
 				                   String( "blend_shared" ), &forkName );
-			Check( cr.applied, "1c': DuplicateEntity forks the shared painter under a deduped name" );
-			Check( forkName.size() > 1 && std::string( forkName.c_str() ) != "blend_shared",
-				"1c': ...a genuinely new name" );
-			// P2-6 (S19 review round 1): "applied" alone does not prove the
-			// fork is actually THERE -- resolve it for real, the same way
-			// RewireConnection's own candidate-side resolution does.
-			{
-				const RISE::Cst::NodeId forkId = SceneReferenceGraph::ResolveChunk(
-					*j->GetCstDocument(), ChunkCategory::Painter, forkName );
-				Check( forkId != 0, "1c': ...and the fork NAME actually resolves to a real Painter chunk" );
-			}
+			Check( cr.applied, "1c'': DuplicateEntity forks the shared painter under a deduped name" );
 
 			const Rewire rp = c.RewireConnection(
 				ChunkCategory::Material, String( "mat_three" ), String( "reflectance" ), 0,
 				ChunkCategory::Painter, forkName, nullptr );
 			Check( !rp.commit.applied,
-				"1c': S20 GAP (pinned) -- the fork is APPENDED, so an earlier-declared referrer cannot "
-				"point at it; the declaration-order gate refuses.  S20's Duplicate-node must position "
-				"the copy where the original sits.  When S20 lands, THIS assertion flips and should be "
-				"rewritten to assert the fork completes the hatch end to end." );
+				"1c'': the OUTLINER fork is still APPENDED, so an earlier-declared referrer cannot point "
+				"at it -- use DuplicateGraphNode (case 1c') for the canvas hatch" );
 			Check( rp.closure == ClosureClassification::Clean,
-				"1c': ...and the refusal is NOT an ownership one -- the closure was clean; it is the "
+				"1c'': ...and the refusal is NOT an ownership one -- the closure was clean; it is the "
 				"derive-order gate inside the commit" );
-			// P2-6: pin the ACTUAL declaration-order derive-refusal message
-			// (ApplyAgentParamEditInner_'s code-0 branch, verbatim) so this
-			// standing marker distinguishes the real S20 gap from any other
-			// way a rewire can fail to apply -- a regression that refused
-			// this edit for a DIFFERENT reason (a legality/closure change,
-			// say) would still trip `!rp.commit.applied` above but must not
-			// pass silently as "the same known gap".
 			Check( rp.commit.rawCode == 0,
-				"1c': ...specifically rawCode 0 (ApplyCstParamEditChecked's 'would not derive' code)" );
+				"1c'': ...specifically rawCode 0 (ApplyCstParamEditChecked's 'would not derive' code)" );
 			Check( Contains( std::string( rp.commit.message.c_str() ), "would not derive" )
 			    && std::string( rp.commit.status.c_str() ) == "rejected",
-				"1c': ...and the message is the ACTUAL declaration-order derive-refusal text "
-				"(ApplyAgentParamEditInner_'s code-0 branch), not a stand-in that could silently "
-				"diverge from what a caller really sees" );
+				"1c'': ...and the message is the ACTUAL declaration-order derive-refusal text "
+				"(ApplyAgentParamEditInner_'s code-0 branch)" );
 
 			j->release();
 			std::remove( path.c_str() );

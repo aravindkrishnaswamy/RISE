@@ -121,6 +121,53 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly, copy) NSArray<NSString *> *nowUnreferenced;
 @end
 
+/// doc-88 Phase 3 S20 -- the reference-safety detail a canvas needs to
+/// explain a refused delete or show what a cascade took.  Returned by
+/// `-deleteGraphNodeWithCategory:name:cascade:` on RISEViewportBridge
+/// below; see docs/gui/ENTITY_CREATION.md sect. 5's block-or-cascade policy
+/// and OwnershipClosure.h's kDelete* refusal formats.
+@interface RISEDeleteOutcome : NSObject
+/// True only on a clean commit.
+@property (nonatomic, readonly) BOOL applied;
+/// "applied" / "rejected" / "diagnosed" / "conflict".
+@property (nonatomic, readonly, copy) NSString *status;
+@property (nonatomic, readonly, copy) NSString *message;
+/// Only `Clean` / `UnresolvedTarget` / `AmbiguousTargetName` are reachable
+/// through this verb -- the ordinals are shared with the rewire verb (see
+/// RISERewireClosure above and its ordinal-pin note).
+@property (nonatomic, readonly) RISERewireClosure closure;
+/// The refusal was "still referenced" -- offer "rewire those away first".
+@property (nonatomic, readonly) BOOL referenceRefused;
+/// A CASCADE was refused because its sweep would have reached a chunk
+/// another graph owns -- offer "delete without cascade".
+@property (nonatomic, readonly) BOOL cascadeRefused;
+/// Every referrer that blocked the delete, as `chunk`.`param`.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *referrers;
+/// The chunks removed, in DOCUMENT ORDER.  EMPTY ON EVERY REFUSAL, including
+/// a cascade refusal (corrected -- S20 review round 1 P2-2: an earlier draft
+/// of this comment claimed a cascade refusal leaves a sweep PREVIEW here; it
+/// cannot -- see `SceneEditController::DeleteResult::removed`'s own
+/// corrected comment for why).  Read it as a mutation record only when
+/// `applied` is YES.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *removed;
+@end
+
+/// doc-88 Phase 3 S20 -- the Duplicate-node fork's outcome.  Returned by
+/// `-duplicateGraphNodeWithCategory:name:` below.
+@interface RISEDuplicateOutcome : NSObject
+@property (nonatomic, readonly) BOOL applied;
+@property (nonatomic, readonly, copy) NSString *status;
+@property (nonatomic, readonly, copy) NSString *message;
+@property (nonatomic, readonly) RISERewireClosure closure;
+/// The DEDUPED name the copy actually landed under -- use THIS to select
+/// or rewire to the new node, never the name that was asked for.  Empty
+/// when nothing landed.
+@property (nonatomic, readonly, copy) NSString *newName;
+/// The original's top-level document index at the moment of the fork, for
+/// placing the new node beside it on the canvas; -1 when nothing landed.
+@property (nonatomic, readonly) NSInteger originalIndex;
+@end
+
 /// 87 §5 step 4a/4b: one node of the AUTHORED-graph tree, as read out of
 /// SceneEditController's snapshot in a single pass.  The macOS mirror of
 /// Qt's `SceneTreeNode` (build/VS2022/RISE-GUI/ViewportBridge.h).
@@ -1224,6 +1271,40 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                                                     newRefCategory:(NSInteger)newRefCategory
                                                         newRefName:(NSString *)newRefName
     NS_SWIFT_NAME(rewireConnection(targetCategory:targetName:param:occurrence:newRefCategory:newRefName:));
+
+// doc-88 Phase 3 S20.  The `RISEDeleteOutcome` / `RISEDuplicateOutcome`
+// value objects these two return are declared at FILE SCOPE above, for the
+// same reason RISERewireOutcome is.
+
+/// Delete the graph node `(category, name)` REFERENCE-SAFELY: a node that
+/// anything still references is REFUSED, with every referrer named, in
+/// BOTH modes.  `category` is a `RISE::ChunkCategory` ordinal (the same
+/// convention the rewire verb and the graph snapshot use, NOT
+/// RISEViewportCategory).  `cascade` YES also removes the chunks BELOW the
+/// target that nothing else uses, as ONE undoable composite -- a chunk
+/// shared with another graph is never swept, and a cascade that would
+/// reach one is refused whole.
+///
+/// On ANY refusal the scene is left byte-identical.  Returns nil only on a
+/// missing controller / nil name.
+- (nullable RISEDeleteOutcome *)deleteGraphNodeWithCategory:(NSInteger)category
+                                                       name:(NSString *)name
+                                                    cascade:(BOOL)cascade
+    NS_SWIFT_NAME(deleteGraphNode(category:name:cascade:));
+
+/// Fork `(category, name)` into an owned copy placed IMMEDIATELY AFTER the
+/// original in declaration order -- MATERIAL_EDITOR.md sect. 3.7a's escape
+/// hatch: the copy can legally be referenced by every consumer the original
+/// had, so a shared-closure rewire refusal is unblocked by duplicating,
+/// then rewiring the requesting consumer at the outcome's `newName`.
+///
+/// SHALLOW: the copy shares everything the original referenced.  That is
+/// the point -- the fork unshares exactly ONE level.
+///
+/// Returns nil only on a missing controller / nil name.
+- (nullable RISEDuplicateOutcome *)duplicateGraphNodeWithCategory:(NSInteger)category
+                                                             name:(NSString *)name
+    NS_SWIFT_NAME(duplicateGraphNode(category:name:));
 
 #pragma mark - Environment / IBL section
 

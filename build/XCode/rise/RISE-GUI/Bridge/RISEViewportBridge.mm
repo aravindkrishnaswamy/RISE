@@ -169,6 +169,29 @@ NSString* NamedViewDisplayName( const char* bytes )
                 nowUnreferenced:(NSArray<NSString *> *)nowUnreferenced;
 @end
 
+// Class extensions: private initialisers for the doc-88 S20 delete /
+// duplicate value objects — same hoisting reason as RISERewireOutcome's
+// above; the implementations live near the bottom of this file.
+@interface RISEDeleteOutcome ()
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+               referenceRefused:(BOOL)referenceRefused
+                 cascadeRefused:(BOOL)cascadeRefused
+                      referrers:(NSArray<NSString *> *)referrers
+                        removed:(NSArray<NSString *> *)removed;
+@end
+
+@interface RISEDuplicateOutcome ()
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                        newName:(NSString *)newName
+                  originalIndex:(NSInteger)originalIndex;
+@end
+
 // Class extension: private initialiser for RISEViewportGizmoHandle —
 // needed by the `gizmoHandles` accessor on RISEViewportBridge which
 // builds the snapshot array.  The implementation lives at the bottom
@@ -2421,6 +2444,75 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         nowUnreferenced:RISESplitJoinedNames(orphanBuf)];
 }
 
+#pragma mark - Node-graph canvas: reference-safe delete + duplicate (S20)
+
+- (nullable RISEDeleteOutcome *)deleteGraphNodeWithCategory:(NSInteger)category
+                                                       name:(NSString *)name
+                                                    cascade:(BOOL)cascade {
+    if (!_controller || !name) return nil;
+
+    int closure = 0, refRefused = 0, cascadeRefused = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char referrersBuf[2048] = {0};
+    char removedBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DeleteGraphNode(
+        _controller, (int)category, [name UTF8String], cascade ? 1 : 0,
+        &closure, &refRefused, &cascadeRefused,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        referrersBuf, sizeof(referrersBuf),
+        removedBuf, sizeof(removedBuf));
+
+    // A "diagnosed" result mutated the Document even though `applied` is NO
+    // -- refresh on either, exactly as createChunkNode / rewireConnection do.
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        [self refreshProperties];
+    }
+
+    return [[RISEDeleteOutcome alloc]
+        initWithApplied:applied ? YES : NO
+                 status:[NSString stringWithUTF8String:statusBuf] ?: @""
+                message:[NSString stringWithUTF8String:messageBuf] ?: @""
+                closure:(RISERewireClosure)closure
+       referenceRefused:refRefused != 0
+         cascadeRefused:cascadeRefused != 0
+              referrers:RISESplitJoinedNames(referrersBuf)
+                removed:RISESplitJoinedNames(removedBuf)];
+}
+
+- (nullable RISEDuplicateOutcome *)duplicateGraphNodeWithCategory:(NSInteger)category
+                                                             name:(NSString *)name {
+    if (!_controller || !name) return nil;
+
+    int closure = 0, originalIndex = -1;
+    char newNameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DuplicateGraphNode(
+        _controller, (int)category, [name UTF8String],
+        &closure, &originalIndex,
+        newNameBuf, sizeof(newNameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        [self refreshProperties];
+    }
+
+    return [[RISEDuplicateOutcome alloc]
+        initWithApplied:applied ? YES : NO
+                 status:[NSString stringWithUTF8String:statusBuf] ?: @""
+                message:[NSString stringWithUTF8String:messageBuf] ?: @""
+                closure:(RISERewireClosure)closure
+                newName:[NSString stringWithUTF8String:newNameBuf] ?: @""
+          originalIndex:(NSInteger)originalIndex];
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {
@@ -3414,6 +3506,88 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSArray<NSString *> *)outOfClosureReferrers { return _outOfClosureReferrers; }
 - (NSArray<NSString *> *)owners                { return _owners; }
 - (NSArray<NSString *> *)nowUnreferenced       { return _nowUnreferenced; }
+
+@end
+
+@implementation RISEDeleteOutcome {
+    BOOL _applied;
+    NSString *_status;
+    NSString *_message;
+    RISERewireClosure _closure;
+    BOOL _referenceRefused;
+    BOOL _cascadeRefused;
+    NSArray<NSString *> *_referrers;
+    NSArray<NSString *> *_removed;
+}
+
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+               referenceRefused:(BOOL)referenceRefused
+                 cascadeRefused:(BOOL)cascadeRefused
+                      referrers:(NSArray<NSString *> *)referrers
+                        removed:(NSArray<NSString *> *)removed
+{
+    self = [super init];
+    if (self) {
+        _applied = applied;
+        _status = [status copy] ?: @"";
+        _message = [message copy] ?: @"";
+        _closure = closure;
+        _referenceRefused = referenceRefused;
+        _cascadeRefused = cascadeRefused;
+        _referrers = [referrers copy] ?: @[];
+        _removed = [removed copy] ?: @[];
+    }
+    return self;
+}
+
+- (BOOL)applied              { return _applied; }
+- (NSString *)status         { return _status; }
+- (NSString *)message        { return _message; }
+- (RISERewireClosure)closure { return _closure; }
+- (BOOL)referenceRefused     { return _referenceRefused; }
+- (BOOL)cascadeRefused       { return _cascadeRefused; }
+- (NSArray<NSString *> *)referrers { return _referrers; }
+- (NSArray<NSString *> *)removed   { return _removed; }
+
+@end
+
+@implementation RISEDuplicateOutcome {
+    BOOL _applied;
+    NSString *_status;
+    NSString *_message;
+    RISERewireClosure _closure;
+    NSString *_newName;
+    NSInteger _originalIndex;
+}
+
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                        newName:(NSString *)newName
+                  originalIndex:(NSInteger)originalIndex
+{
+    self = [super init];
+    if (self) {
+        _applied = applied;
+        _status = [status copy] ?: @"";
+        _message = [message copy] ?: @"";
+        _closure = closure;
+        _newName = [newName copy] ?: @"";
+        _originalIndex = originalIndex;
+    }
+    return self;
+}
+
+- (BOOL)applied              { return _applied; }
+- (NSString *)status         { return _status; }
+- (NSString *)message        { return _message; }
+- (RISERewireClosure)closure { return _closure; }
+- (NSString *)newName        { return _newName; }
+- (NSInteger)originalIndex   { return _originalIndex; }
 
 @end
 

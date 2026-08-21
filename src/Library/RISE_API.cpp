@@ -10014,6 +10014,69 @@ namespace RISE
 		return r.commit.applied;
 	}
 
+	bool RISE_API_SceneEditController_DeleteGraphNode(
+		SceneEditController* p,
+		int category, const char* name, int cascade,
+		int* outClosure, int* outReferenceRefused, int* outCascadeRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outRemoved, unsigned int outRemovedLen )
+	{
+		// Pre-clear every out so a caller that ignores the return value can
+		// never read a stale buffer as this call's answer (the rewire verb's
+		// discipline, verbatim).
+		if( outClosure )           *outClosure = 0;
+		if( outReferenceRefused )  *outReferenceRefused = 0;
+		if( outCascadeRefused )    *outCascadeRefused = 0;
+		if( outStatus && outStatusLen )         outStatus[0] = '\0';
+		if( outMessage && outMessageLen )       outMessage[0] = '\0';
+		if( outReferrers && outReferrersLen )   outReferrers[0] = '\0';
+		if( outRemoved && outRemovedLen )       outRemoved[0] = '\0';
+		if( !p || !name ) return false;
+
+		const SceneEditController::DeleteResult r = p->DeleteGraphNode(
+			static_cast<ChunkCategory>( category ), String( name ),
+			cascade ? SceneEditController::GraphDeleteMode::Cascade
+			        : SceneEditController::GraphDeleteMode::TargetOnly,
+			nullptr );
+
+		if( outClosure )          *outClosure          = static_cast<int>( r.closure );
+		if( outReferenceRefused ) *outReferenceRefused = r.referenceRefused ? 1 : 0;
+		if( outCascadeRefused )   *outCascadeRefused   = r.cascadeRefused ? 1 : 0;
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		CopyJoinedToBuf( r.referrers, outReferrers, outReferrersLen );
+		CopyJoinedToBuf( r.removed,   outRemoved,   outRemovedLen );
+		return r.commit.applied;
+	}
+
+	bool RISE_API_SceneEditController_DuplicateGraphNode(
+		SceneEditController* p,
+		int category, const char* name,
+		int* outClosure, int* outOriginalIndex,
+		char* outNewName, unsigned int outNewNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( outClosure )       *outClosure = 0;
+		if( outOriginalIndex ) *outOriginalIndex = -1;
+		if( outNewName && outNewNameLen ) outNewName[0] = '\0';
+		if( outStatus && outStatusLen )   outStatus[0] = '\0';
+		if( outMessage && outMessageLen ) outMessage[0] = '\0';
+		if( !p || !name ) return false;
+
+		const SceneEditController::DuplicateResult r = p->DuplicateGraphNode(
+			static_cast<ChunkCategory>( category ), String( name ), nullptr );
+
+		if( outClosure )       *outClosure       = static_cast<int>( r.closure );
+		if( outOriginalIndex ) *outOriginalIndex = r.originalIndex;
+		if( outNewName && outNewNameLen > 0 ) CopyToBuf( r.newName, outNewName, outNewNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		return r.commit.applied;
+	}
+
 	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
 	{
 		if( !p ) return 0;

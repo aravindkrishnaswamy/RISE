@@ -26,7 +26,31 @@ namespace RISE
 	class EditHistory
 	{
 	public:
-		EditHistory( unsigned int maxEntries = 1024 );
+		//! Default byte budget (S20 review round 1 P2-4): the ENTRY cap alone
+		//! (`maxEntries`, default 1024) bounds the undo stack's LENGTH, not its
+		//! WEIGHT.  Three op kinds carry a whole retained-Document text copy per
+		//! payload field rather than a typed value or a single chunk's bytes --
+		//! `AgentDuplicateNode` and `AgentReplaceGeometry` carry TWO
+		//! (`propertyValue` = pre-doc, `prevPropertyValue` = post-doc; both are
+		//! `Job::ApplyCstReplaceDocumentText` swaps, so both directions need the
+		//! full text), `AgentRemoveChunks` carries ONE (`propertyValue` = the
+		//! pre-batch doc; its `prevPropertyValue` is a short per-target
+		//! `kind\tname` redo descriptor, not document-sized) -- see each op's
+		//! own doc in SceneEdit.h.  On a large ("sombrero-scale") document, 1024
+		//! entries of up to 2x that document's bytes each is GIGABYTES held
+		//! live in the undo stack alone.  256MB is generous headroom for
+		//! interactive editing on any document RISE can load into memory
+		//! comfortably, while still bounding the pathological case.
+		static constexpr unsigned long long kDefaultByteBudget = 256ull * 1024ull * 1024ull;
+
+		//! `maxBytes` bounds the SUM of every undo-stack entry's heavyweight
+		//! document-payload bytes (see `kDefaultByteBudget`'s doc for exactly
+		//! which fields count) -- evaluated ALONGSIDE `maxEntries` in
+		//! `TrimToMax`, oldest-first, same as the entry cap.  Pass 0 to disable
+		//! the byte budget entirely (entry-cap-only behaviour, the pre-P2-4
+		//! contract) -- no production caller does this; it exists for a test
+		//! that wants to isolate the entry-cap path.
+		EditHistory( unsigned int maxEntries = 1024, unsigned long long maxBytes = kDefaultByteBudget );
 		~EditHistory();
 
 		//! Append an edit (forward op) to the undo stack and clear
@@ -108,6 +132,15 @@ namespace RISE
 		unsigned int UndoDepth() const;
 		unsigned int RedoDepth() const;
 
+		//! P2-4: the SUM of every current undo-stack entry's heavyweight
+		//! document-payload bytes (see `kDefaultByteBudget`'s doc) -- what
+		//! `TrimToMax` compares against `ByteBudget()`.  Exposed for tests and
+		//! for a future UI memory readout; not consulted by any production
+		//! decision besides `TrimToMax` itself.
+		unsigned long long CurrentByteUsage() const { return mCurrentBytes; }
+		//! The configured budget (constructor's `maxBytes`, 0 = disabled).
+		unsigned long long ByteBudget() const { return mByteBudget; }
+
 		//! P1-#3 (transaction atomicity): snapshot/restore the REDO stack across a
 		//! transaction.  The first edit in a transaction clears the redo stack
 		//! (standard new-edit-invalidates-redo); on a FULL rollback the transaction
@@ -120,7 +153,10 @@ namespace RISE
 		//! PRE-transaction undo record at the cap; a full rollback restores it so
 		//! the rolled-back gesture leaves NO permanent history side effect.
 		void SnapshotUndoForRollback() { mTxnUndoSnapshot = mUndoStack; }
-		void RestoreUndoFromSnapshot() { mUndoStack = mTxnUndoSnapshot; }
+		//! P2-4: a wholesale stack REPLACEMENT (not an incremental push/pop), so
+		//! `mCurrentBytes` is re-summed from scratch afterward rather than
+		//! adjusted -- see `RecomputeCurrentBytes_`.
+		void RestoreUndoFromSnapshot() { mUndoStack = mTxnUndoSnapshot; RecomputeCurrentBytes_(); }
 
 		//! P1 review: free both rollback snapshots when a transaction closes
 		//! (commit or rollback).  They are dead the moment the transaction ends;
@@ -154,9 +190,26 @@ namespace RISE
 		unsigned long long              mNextSeq;       ///< F2 monotonic edit id
 		unsigned long long              mMaxTrimmedSeq; ///< F2 highest trimmed seq
 		bool                            mDidTrim;       ///< F2 anything trimmed?
+		unsigned long long              mByteBudget;    ///< P2-4: constructor's `maxBytes` (0 = disabled)
+		unsigned long long              mCurrentBytes;  ///< P2-4: running sum, mUndoStack ONLY (see CurrentByteUsage)
 
 		void TrimToMax();
 		void PopFrontTracked();   ///< pop_front + update mMaxTrimmedSeq (F2)
+
+		//! P2-4: the heavyweight document-payload bytes ONE edit contributes to
+		//! the byte budget -- see `kDefaultByteBudget`'s doc for exactly which
+		//! op/field pairs count.  Every other op (transform deltas, typed
+		//! property values, single-chunk CRUD bytes) returns 0: this budget
+		//! targets the WHOLE-DOCUMENT-TEXT ops specifically, not the ordinary
+		//! per-edit bookkeeping that already fits comfortably within 1024
+		//! entries.
+		static unsigned long long HeavyPayloadBytes_( const SceneEdit& e );
+
+		//! P2-4: re-sum `mCurrentBytes` from scratch over `mUndoStack` as it
+		//! stands NOW.  Used after a wholesale stack replacement
+		//! (`RestoreUndoFromSnapshot`), where incremental add/subtract has no
+		//! single edit to key off of.
+		void RecomputeCurrentBytes_();
 	};
 }
 

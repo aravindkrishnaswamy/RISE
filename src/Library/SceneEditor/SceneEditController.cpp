@@ -7582,21 +7582,32 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 // Structurally identical to ApplyAgentRemoveChunksCrud_ above (same refusal order, same conflict gate, same
 // rebind-on-2/3, same one-history-push + kick tail); the differences are the Job primitive, the undo/redo
 // payload pair, and the code fold's wording.
+//
+// doc-88 Phase 3 S20: GENERALIZED (parameterized, not copied) so the canvas's positioned Duplicate-node --
+// which needs exactly this undo shape and no other, see PushAgentDuplicateNodeEdit -- rides the SAME commit
+// block rather than a second copy of the mTxnOpen refusal + cancel-and-park + conflict gate + rebind +
+// one-history-push + epoch-bump + kick sequence.  `entityKind` / `noun` / `appliedPhrase` /
+// `duplicateNodeOp` are the ONLY per-verb differences -- and the three result strings stay BYTE-IDENTICAL
+// to AgentSession.cpp's own hand-copy of them for the geometry verb (see the code-2 fold's note).
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometryCrud_(
 	const String& objectName,
 	const String& candidateDocText,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
-	const char* verbLabel )
+	const char* verbLabel,
+	const char* entityKind,
+	const char* noun,
+	const char* appliedPhrase,
+	bool duplicateNodeOp )
 {
 	AgentCommitResult r;
 	r.chunkName    = objectName;
-	r.chunkKeyword = String( "standard_object" );
+	r.chunkKeyword = String( entityKind ? entityKind : "" );
 
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire )
 	 || mEditor.IsCompositeOpen() )
 	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent geometry replacement refused while an editor transaction/gesture is open." );
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent %s refused while an editor transaction/gesture is open.", noun );
 		r.applied = false;
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
@@ -7659,11 +7670,14 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 
 	char diagBuf[512]; diagBuf[0] = '\0';
 	// `restoreActiveRasterizer` TRUE: the candidate never adds or removes a `*_rasterizer` chunk (the caller
-	// gates on exactly that), so the pre-swap active rasterizer is still the one a reload would activate.
+	// gates on exactly that -- the geometry verb by construction, and DuplicateGraphNode because it only
+	// forks a Painter/Function/Material-category graph node), so the pre-swap active rasterizer is still the
+	// one a reload would activate.
 	const int code = mJob.ApplyCstReplaceDocumentText( candidateDocText.c_str(),
 	                                                    /*restoreActiveRasterizer*/ true,
 	                                                    diagBuf, sizeof( diagBuf ),
-	                                                    verbLabel ? verbLabel : "replace_geometry_scaffold" );
+	                                                    verbLabel ? verbLabel : ( duplicateNodeOp ? "duplicate_graph_node"
+	                                                                                            : "replace_geometry_scaffold" ) );
 
 	// A whole-document swap that landed is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's
 	// cached pointers BEFORE releasing the lock (same rebind rule as every other agent commit).
@@ -7674,22 +7688,38 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 	switch( code )
 	{
 		case 2:
+		{
 			r.applied = true;
 			r.status  = String( "applied" );
-			r.message = String( "geometry replaced via a single full re-derive (Scene + managers were replaced)" );
+			// `appliedPhrase`, not `noun`, ONLY here: the code-3 and code-0 folds
+			// below read naturally off the noun ("geometry replacement NOT a clean
+			// success", "... rejected"), but the success line does not ("geometry
+			// replacement committed via ..." reads worse than "geometry replaced
+			// via ...") -- and, load-bearingly, `AgentSession.cpp`'s
+			// replace_geometry_scaffold keeps its OWN hand-copy of all three
+			// strings for the no-controller path it takes.  Parameterizing this
+			// one line separately is what keeps ALL THREE byte-identical to that
+			// copy for the geometry verb, so generalizing this block for S20 did
+			// not silently drift a pair the file elsewhere warns about.
+			const std::string m = std::string( appliedPhrase ) + " via a single full re-derive (Scene + managers were replaced)";
+			r.message = String( m.c_str() );
 			break;
+		}
 		case 3:
+		{
 			r.applied = false;
 			r.status  = String( "diagnosed" );
-			r.message = String( "geometry replacement NOT a clean success: the Document was mutated and the live managers "
-			                    "were replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+			const std::string m = std::string( noun ) + " NOT a clean success: the Document was mutated and the live managers "
+			                      "were replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+			r.message = String( m.c_str() );
 			break;
+		}
 		case 0:
 		default:
 		{
 			r.applied = false;
 			r.status  = String( "rejected" );
-			std::string m = "geometry replacement rejected (NOTHING changed): the candidate document would not derive "
+			std::string m = std::string( noun ) + " rejected (NOTHING changed): the candidate document would not derive "
 			                "-- head unchanged";
 			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
 			r.message = String( m.c_str() );
@@ -7701,7 +7731,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 
 	if( code == 2 || code == 3 )
 	{
-		mEditor.MarkCstHeadDirty( objectName.c_str(), "standard_object" );
+		mEditor.MarkCstHeadDirty( objectName.c_str(), entityKind );
 
 		// ONE history record for the WHOLE composite -- the headline property of this verb.  A capture
 		// failure (no retained Document at capture time) should be impossible here: the capture ran under
@@ -7709,21 +7739,25 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 		// guards against ever pushing an empty, un-restorable payload.
 		if( !priorDocText.empty() )
 		{
-			mEditor.PushAgentReplaceGeometryEdit( objectName,
-			                                      String( priorDocText.c_str() ),
-			                                      candidateDocText );
+			if( duplicateNodeOp )
+				mEditor.PushAgentDuplicateNodeEdit( objectName, String( entityKind ? entityKind : "" ),
+				                                    String( priorDocText.c_str() ), candidateDocText );
+			else
+				mEditor.PushAgentReplaceGeometryEdit( objectName,
+				                                      String( priorDocText.c_str() ),
+				                                      candidateDocText );
 		}
 		else
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditController: agent geometry replacement on `%s` applied (code %d) but the prior-document "
+				"SceneEditController: agent %s on `%s` applied (code %d) but the prior-document "
 				"capture was empty -- NO undo history record was pushed (should not happen: the capture ran under "
 				"the same lock hold as the swap).",
-				objectName.c_str(), code );
+				noun, objectName.c_str(), code );
 		}
 
-		// The entity set changed (chunks were added and one was erased) -- bump the epoch live GUI outliners
-		// cache against.
+		// The entity set changed (the geometry verb adds chunks and erases one; the duplicate adds one) --
+		// bump the epoch live GUI outliners, and the S15 node-graph canvas, cache against.
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 
 		mEditPending.store( true, std::memory_order_release );
@@ -15738,6 +15772,640 @@ SceneEditController::RewireResult SceneEditController::RewireConnection(
 	// baseVersion conflict, a full-derivability failure.  Same invariant:
 	// nothing committed, so nothing may be reported as newly unreferenced.
 	if( !out.commit.applied ) out.nowUnreferenced.clear();
+	return out;
+}
+
+// =====================================================================
+// doc-88 Phase 3 S20 -- reference-safe delete + the positioned Duplicate-node
+// fork.  See the declarations in SceneEditController.h for the gate orders,
+// the placement justification (why these are NOT `RemoveEntity` /
+// `DuplicateEntity` grown a policy), and the U2 reasoning; OwnershipClosure.h
+// for the shared refusal formats.
+//
+// Both are THIN COMPOSERS over shipped machinery, exactly like
+// RewireConnection above -- which is what makes their byte-identical-on-
+// refusal guarantee cheap: every gate runs BEFORE the single call that can
+// mutate anything.
+//
+// ON CYCLES, since S20 owns "cycle enforcement" and the answer bounds the
+// scope (verified by probe against this tree, not reasoned about):
+//   * A CYCLIC DOCUMENT NEVER BECOMES A LIVE HEAD.  `DeriveToJob` binds
+//     references in DECLARATION ORDER, so a cycle needs at least one FORWARD
+//     reference, and a forward reference simply does not resolve -- the
+//     derive REFUSES ("apply failed (e.g. unresolved reference)"), it does not
+//     hang and it does not silently accept a half-bound graph.  A hand-edited
+//     cyclic scene file fails to LOAD.
+//   * EVERY reference-edge-creating path is already gated on that same rule:
+//     the agent/canvas param edit through `ApplyCstParamEditChecked`'s
+//     full-derivability dry-run; the GUI property panel through
+//     `WouldPersistDanglingReference_`, whose "declared BEFORE the referencing
+//     chunk" clause is exactly the forward-reference test; `insert_chunk` /
+//     the duplicate below through `ApplyCstInsertChunk`'s own dry-run.
+//   * `ConnectionLegality::WouldCycle` (S17), which `RewireConnection` runs, is
+//     therefore DEFENSE IN DEPTH FOR THE CANVAS -- its value is the precise
+//     "`X` already reaches `Y`" diagnostic in place of an opaque "would not
+//     derive", not a hole it closes.  The agent surface needs no cycle check
+//     added, and none is added here.
+// `DeleteGraphNodeTest` PART 5 pins each of those findings so the day one of
+// them stops being true is the day a test fails, not the day a scene corrupts.
+// =====================================================================
+
+namespace {
+
+//! The display name S20's refusals use for a chunk: its `name`, or
+//! `<keyword>` for an unnamed one -- the SAME angle-bracket convention
+//! `OwnershipClosureResult::owners` already uses, so a canvas never renders
+//! "shared between  and ".
+std::string GraphChunkDisplayName( const SceneReferenceGraph::DocumentChunk& c )
+{
+	// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+	if( c.name.size() > 1 ) return std::string( c.name.c_str() );
+	return "<" + std::string( c.keyword.c_str() ) + ">";
+}
+
+//! Comma-join with a trailing " and ", matching OwnershipClosure.cpp's own
+//! owner/referrer joins so the two refusal families read alike.
+std::string JoinNamesForDiagnostic( const std::vector<String>& names )
+{
+	std::string out;
+	for( std::size_t i = 0; i < names.size(); ++i ) {
+		if( i ) out += ( i + 1 == names.size() ) ? " and " : ", ";
+		out += names[i].c_str();
+	}
+	return out;
+}
+
+}  // namespace
+
+SceneEditController::DeleteResult SceneEditController::DeleteGraphNode(
+	ChunkCategory category, const String& name,
+	GraphDeleteMode mode,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	DeleteResult out;
+
+	// Same preamble as RewireConnection: defer the dirty notification until
+	// after the lock hold, then take the admission lock so the WHOLE
+	// resolve-check-commit sequence is serialized against every other
+	// Document-mutating entry point.  That is what keeps the pure-read
+	// validation below from going stale before the remove verb writes --
+	// mMutex alone would NOT, since it is released in between.
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	bool headRead = false;
+	auto reject = [&]( const std::string& why, bool retriable ) {
+		out.commit.applied  = false;
+		out.commit.conflict = false;
+		out.commit.rawCode  = 0;
+		out.commit.status   = String( "rejected" );
+		out.commit.retriable = retriable;
+		out.commit.message  = String( ( "delete rejected: " + why + " -- head unchanged" ).c_str() );
+		if( !headRead ) {
+			std::lock_guard<std::mutex> hlk( mMutex );
+			out.commit.headVersion = mJob.GetCstHeadVersion();
+		}
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+		if( mInDestructorTeardown.load( std::memory_order_acquire )
+		 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) {
+			// Latched teardown: no head to read (mJob may be mid-destruction) and
+			// no retry will ever be admitted -- RewireConnection's split, verbatim.
+			headRead = true;
+			reject( "controller is being destroyed -- no further edit will be admitted", false );
+			return out;
+		}
+		reject( "scene is render-locked (render queued or in progress)", /*retriable=*/true );
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Pure-read validation.  NOTHING here mutates; every refusal below
+	// therefore leaves the retained Document byte-identical by
+	// construction, not by cleanup.  Every refusal it produces is
+	// PERMANENT (retriable=false): an ambiguous name, a live referrer, a
+	// shared cascade member, an unaddressable member -- resubmitting the
+	// identical request can never succeed.  The only TRANSIENT refusals
+	// this verb can produce are the render-locked gate above and the
+	// mid-transaction gate inside the remove verb, which sets its own flag.
+	// -----------------------------------------------------------------
+	std::string          refusal;
+	std::vector<String>  removeTargets, removeKinds;   // parallel, DOCUMENT order
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		char buf[1536];
+
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else if( name.size() <= 1 ) {
+			refusal = "no chunk named";
+		} else {
+			// ---- step 2: resolve, AMBIGUITY-AWARE ----------------------
+			//
+			// The S11 contract exists for exactly this: reading an ambiguous
+			// refusal as "not found" would delete whichever of a colour /
+			// `scalar_painter` same-name pair the resolver reached first.
+			// NEVER delete on a guess.
+			int occs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, category, name, &occs );
+			if( targetId == 0 && occs > 1 ) {
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, name.c_str(), occs );
+				refusal = buf;
+			} else if( targetId == 0 ) {
+				out.closure = ClosureClassification::UnresolvedTarget;
+				std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, name.c_str() );
+				refusal = buf;
+			} else {
+				// ---- step 3: REFERRERS (ENTITY_CREATION.md sect. 5's Block rule)
+				//
+				// `FindReferencesTo` is the query this whole module was built
+				// for (see ReferenceGraph.h's header: "ONE implementation, TWO
+				// consumers ... and reference-safe delete").  Its own
+				// `outOccurrences` ambiguity contract is already satisfied by
+				// the ResolveChunk above, which refused every non-unique name.
+				int refOccs = 0;
+				const std::vector<ReferenceEdge> referrers =
+					SceneReferenceGraph::FindReferencesTo( *doc, category, name, &refOccs );
+				for( std::size_t i = 0; i < referrers.size(); ++i ) {
+					const ReferenceEdge& e = referrers[i];
+					std::string disp = ( e.referrerName.size() > 1 )
+						? std::string( e.referrerName.c_str() )
+						: ( "<" + std::string( e.referrerKeyword.c_str() ) + ">" );
+					disp += ".";
+					disp += e.paramName.c_str();
+					out.referrers.push_back( String( disp.c_str() ) );
+				}
+				if( !out.referrers.empty() ) {
+					out.referenceRefused = true;
+					const std::string joined = JoinNamesForDiagnostic( out.referrers );
+					std::snprintf( buf, sizeof( buf ), kDeleteReferencedFmt,
+						name.c_str(), joined.c_str(), name.c_str() );
+					refusal = buf;
+				}
+
+				// ---- step 4: the SWEEP (Cascade only) ---------------------
+				const std::vector<SceneReferenceGraph::DocumentChunk> chunks =
+					SceneReferenceGraph::AllChunks( *doc );
+				if( refusal.empty() ) {
+					std::map<RISE::Cst::NodeId, const SceneReferenceGraph::DocumentChunk*> byId;
+					for( std::size_t i = 0; i < chunks.size(); ++i ) byId[chunks[i].id] = &chunks[i];
+
+					std::set<RISE::Cst::NodeId> sweep;
+					sweep.insert( targetId );
+
+					if( mode == GraphDeleteMode::Cascade ) {
+						const SceneReferenceGraph::Snapshot snap =
+							SceneReferenceGraph::EdgesAndDangling( *doc, &chunks );
+
+						// GROW TO FIXPOINT rather than one BFS pass: whether a
+						// candidate may join depends on whether ALL of its
+						// referrers are already in the sweep, and a referrer can
+						// itself join later in the same pass.  A single pass
+						// would under-sweep depending on edge order; repeating
+						// until nothing changes is order-independent and, for a
+						// graph this size, free.
+						bool changed = true;
+						while( changed ) {
+							changed = false;
+							for( std::size_t i = 0; i < snap.edges.size(); ++i ) {
+								const ReferenceEdge& e = snap.edges[i];
+								if( sweep.find( e.referrerId ) == sweep.end() ) continue;
+								if( sweep.find( e.targetId ) != sweep.end() )   continue;
+								// Only INTERIOR nodes (Painter / Function) ever cascade.
+								// A Material / Geometry / Light is a ROOT -- it is a graph
+								// of its own even when only this target names it, and
+								// sweeping it would delete an entity the user never
+								// pointed at.  This is the same Painter/Function-vs-root
+								// split OwnershipClosure's whole ownership rule rests on,
+								// read through its single definition rather than re-listed.
+								if( !OwnershipClosure::IsInteriorCategory( e.targetCategory ) ) continue;
+								bool everyReferrerInSweep = true;
+								for( std::size_t k = 0; k < snap.edges.size(); ++k ) {
+									if( snap.edges[k].targetId != e.targetId ) continue;
+									if( sweep.find( snap.edges[k].referrerId ) == sweep.end() ) {
+										everyReferrerInSweep = false;
+										break;
+									}
+								}
+								if( !everyReferrerInSweep ) continue;
+								sweep.insert( e.targetId );
+								changed = true;
+							}
+						}
+
+						// THE LOAD-BEARING CROSS-CHECK.  The sweep above was built
+						// by a REACHABILITY worklist; this re-derives each member's
+						// ownership through OwnershipClosure::OwnersOf -- a
+						// different function, over the same document -- and demands
+						// the target be its SOLE owner.  A shared chunk must never
+						// cascade (ENTITY_CREATION.md sect. 5.2's Block rule applies
+						// just as much to a chunk swept as collateral as to the one
+						// the user named), and this is what enforces it rather than
+						// merely intending it.
+						const OwnershipClosure::Adjacency adj =
+							OwnershipClosure::BuildAdjacencyFor( *doc, &chunks, &snap );
+						for( std::size_t i = 0; i < chunks.size() && refusal.empty(); ++i ) {
+							if( chunks[i].id == targetId ) continue;
+							if( sweep.find( chunks[i].id ) == sweep.end() ) continue;
+							const std::vector<RISE::Cst::NodeId> owners =
+								OwnershipClosure::OwnersOf( *doc, chunks[i].id, &chunks, &snap, &adj );
+							if( owners.size() == 1 && owners[0] == targetId ) continue;
+							std::vector<String> ownerNames;
+							for( std::size_t k = 0; k < owners.size(); ++k ) {
+								std::map<RISE::Cst::NodeId, const SceneReferenceGraph::DocumentChunk*>::const_iterator
+									it = byId.find( owners[k] );
+								ownerNames.push_back( String( it == byId.end()
+									? "<unknown>" : GraphChunkDisplayName( *it->second ).c_str() ) );
+							}
+							out.cascadeRefused = true;
+							const std::string member = GraphChunkDisplayName( chunks[i] );
+							const std::string ownerList = ownerNames.empty()
+								? std::string( "no resolvable root" ) : JoinNamesForDiagnostic( ownerNames );
+							std::snprintf( buf, sizeof( buf ), kDeleteCascadeSharedFmt,
+								name.c_str(), member.c_str(), ownerList.c_str(), name.c_str() );
+							refusal = buf;
+						}
+					}
+
+					// ---- ADDRESSABILITY, for every member incl. the target ----
+					//
+					// The graph addressed by (declared category, name); the remove
+					// verb addresses by the UI Category's CST role-kind suffix
+					// through Cst::DocFindByNameAnyRole.  Verify the two agree on
+					// WHICH chunk before erasing anything -- the same edit-path
+					// seam RewireConnection checks, and for the same reason: a
+					// mismatch means the erase would land somewhere the checks
+					// never inspected.  An UNNAMED chunk has no name address at
+					// all and is refused rather than skipped.
+					for( std::size_t i = 0; i < chunks.size() && refusal.empty(); ++i ) {
+						if( sweep.find( chunks[i].id ) == sweep.end() ) continue;
+						const SceneReferenceGraph::DocumentChunk& c = chunks[i];
+						const std::string disp = GraphChunkDisplayName( c );
+						std::string why;
+						String kindSuffix;
+						if( !c.hasCategory ) {
+							why = "its keyword has no registered descriptor";
+						} else if( c.name.size() <= 1 ) {
+							why = "it is unnamed, and the editor removes by name";
+						} else {
+							const Category uiCat = UiCategoryForChunkCategory( c.category );
+							std::string suffix; bool uf = false;
+							if( uiCat == Category::None || !RoleKindSuffixForCategory( uiCat, suffix, uf ) ) {
+								why = "its chunk category has no name-addressed edit path in the editor";
+							} else {
+								kindSuffix = String( suffix.c_str() );
+								int occ2 = 0;
+								const RISE::Cst::NodeId editId = RISE::Cst::DocFindByNameAnyRole(
+									*doc, std::string( c.name.c_str() ), &occ2, suffix, /*uniqueFallback*/ false );
+								if( editId != c.id )
+									why = "it resolves to a different chunk through the editor's `"
+									    + suffix + "` addressing than through the graph's";
+							}
+						}
+						if( !why.empty() ) {
+							std::snprintf( buf, sizeof( buf ), kDeleteUnaddressableFmt, disp.c_str(), why.c_str() );
+							refusal = buf;
+							break;
+						}
+						removeTargets.push_back( c.name );
+						removeKinds.push_back( kindSuffix );
+						out.removed.push_back( String( disp.c_str() ) );
+					}
+				}
+			}
+		}
+	}
+
+	if( !refusal.empty() ) {
+		// A refusal removed NOTHING, so the target list must not survive as a
+		// commit instruction, and neither may `removed`: an earlier draft of
+		// this guard preserved it specifically on a `cascadeRefused` outcome
+		// (as a "here is what the sweep would have taken" preview), but that
+		// preview can never actually be populated -- `removed` has exactly
+		// ONE writer (the addressability loop above), and that loop's own
+		// condition is `refusal.empty()`, which is already false by the time
+		// the shared-cascade guard sets `cascadeRefused` and its own
+		// `refusal`.  So the guarded branch was always clearing an
+		// already-empty vector; unconditional clear is the same observable
+		// behaviour with the dead condition removed (S20 review round 1
+		// P2-2 -- see DeleteResult::removed's header comment for the
+		// corrected contract).
+		removeTargets.clear();
+		removeKinds.clear();
+		out.removed.clear();
+		reject( refusal, /*retriable=*/false );
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Step 5: THE one mutating call.  Everything the commit discipline
+	// owes -- the mid-transaction refusal, the baseVersion conflict gate,
+	// cancel-and-park, the dry-run-guarded re-derive (so a still-referenced
+	// target STILL refuses at the engine layer even if the policy above
+	// somehow missed it), the rebind, MarkCstHeadDirty, the U2 EditHistory
+	// record, the scene-epoch bump the canvas re-enumerates on, and the
+	// render kick -- lives in there and is deliberately NOT re-derived here.
+	//
+	// ONE target -> the singular verb (its U2 record is the identity-checked
+	// bytes+index restore).  MANY -> the batch, which is the atomic composite:
+	// one erase pass against one pre-erase Document, ONE re-derive, ONE undo
+	// step.  See the header for why this and not BeginTransaction/EndTransaction.
+	// -----------------------------------------------------------------
+	if( removeTargets.size() == 1 )
+		out.commit = ApplyAgentRemoveChunk( removeTargets[0], removeKinds[0], baseVersionOrNull );
+	else
+		out.commit = ApplyAgentRemoveChunks( removeTargets, removeKinds, baseVersionOrNull );
+
+	// The same APPLIED GUARD RewireResult carries: this call, not `reject`
+	// above, is what can still refuse -- mid-transaction, a stale baseVersion
+	// conflict, a re-derive failure.  Nothing was removed, so nothing may be
+	// reported as removed.
+	if( !out.commit.applied ) out.removed.clear();
+	return out;
+}
+
+SceneEditController::DuplicateResult SceneEditController::DuplicateGraphNode(
+	ChunkCategory category, const String& name,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	DuplicateResult out;
+
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	bool headRead = false;
+	auto reject = [&]( const std::string& why, bool retriable ) {
+		out.commit.applied  = false;
+		out.commit.conflict = false;
+		out.commit.rawCode  = 0;
+		out.commit.status   = String( "rejected" );
+		out.commit.retriable = retriable;
+		out.commit.message  = String( ( "duplicate rejected: " + why + " -- head unchanged" ).c_str() );
+		out.newName = String();
+		out.originalIndex = -1;
+		if( !headRead ) {
+			std::lock_guard<std::mutex> hlk( mMutex );
+			out.commit.headVersion = mJob.GetCstHeadVersion();
+		}
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+		if( mInDestructorTeardown.load( std::memory_order_acquire )
+		 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) {
+			headRead = true;
+			reject( "controller is being destroyed -- no further edit will be admitted", false );
+			return out;
+		}
+		reject( "scene is render-locked (render queued or in progress)", /*retriable=*/true );
+		return out;
+	}
+
+	// ---- phase A (mMutex): resolve + validate + capture the bytes -------
+	std::string refusal;
+	std::string originalBytes;
+	std::string originalKeyword;
+	Category    uiCat = Category::None;
+	int         originalIndex = -1;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		char buf[1024];
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else if( name.size() <= 1 ) {
+			refusal = "no chunk named";
+		} else {
+			int occs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, category, name, &occs );
+			if( targetId == 0 && occs > 1 ) {
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, name.c_str(), occs );
+				refusal = buf;
+			} else if( targetId == 0 ) {
+				out.closure = ClosureClassification::UnresolvedTarget;
+				std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, name.c_str() );
+				refusal = buf;
+			} else {
+				const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, targetId );
+				const ChunkDescriptor* cd = chunk
+					? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
+				if( !chunk || !cd ) {
+					refusal = "the chunk's descriptor did not resolve";
+				} else if( cd->category != ChunkCategory::Painter
+				        && cd->category != ChunkCategory::Function
+				        && cd->category != ChunkCategory::Material ) {
+					// The canvas's node kinds, and the ONLY kinds whose copy is
+					// guaranteed to derive one slot after the original: a graph
+					// node's references all point BACKWARD by construction.  A
+					// rasterizer / film / camera copy would also have to reason
+					// about last-wins activation and singleton-ness, which this
+					// verb does not -- refuse honestly rather than guess.
+					std::snprintf( buf, sizeof( buf ),
+						"`%s` is a `%s`, not a painter / function / material -- this verb forks GRAPH NODES; "
+						"use the outliner's Duplicate for other entity kinds",
+						name.c_str(), chunk->role.c_str() );
+					refusal = buf;
+				} else {
+					uiCat = UiCategoryForChunkCategory( cd->category );
+					if( uiCat == Category::None ) {
+						refusal = "this chunk category has no name-addressed edit path in the editor";
+					} else {
+						originalIndex = RISE::Cst::DocIndexOfNodeId( *doc, targetId, nullptr );
+						if( originalIndex < 0 ) {
+							refusal = "the chunk occupies no top-level document index";
+						} else {
+							originalBytes   = RISE::Cst::SerializeNode( chunk );
+							originalKeyword = chunk->role;
+						}
+					}
+				}
+			}
+		}
+	}
+	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	// ---- phase B/C (mMutex): pick the copy's name AND build the candidate
+	// document in ONE locked pass.
+	//
+	// S20 review round 1 P2-3: the previous split (UniqueEntityName picked a
+	// name OUTSIDE mMutex, using only the target's OWN category's live-
+	// manager enumeration; a separate AnyNameTakenDocWide probe then ran
+	// under mMutex, doc-wide) wedged on a CROSS-CATEGORY name squat.
+	// UniqueEntityName has no visibility into other categories, so it could
+	// happily hand back e.g. `sphere_geometry_2` -- a name that sailed
+	// through the in-category check because it is a Painter being
+	// duplicated, but that a `sphere_geometry` chunk ELSEWHERE in the
+	// document already holds.  AnyNameTakenDocWide then caught the
+	// collision, but by then there was no retry left: the doc-wide check ran
+	// exactly once, against exactly the one name UniqueEntityName had
+	// already committed to, so the whole verb refused outright -- without
+	// even naming the colliding chunk -- instead of trying the next numeric
+	// suffix the way every other name-picking verb on this surface does.
+	//
+	// Fix: adopt CreateChunkNode's `candidateClear` pattern (S18) VERBATIM --
+	// AND the in-category check with `AnyNameTakenDocWide` in one predicate,
+	// retry through a `_2`.._999` suffix loop, and refuse honestly (naming
+	// the base) only on genuine exhaustion.  The in-category enumeration
+	// reads the `Locked_` accessors directly (mMutex is already held here)
+	// rather than going through UniqueEntityName's own internal locking,
+	// which is also what lets this run in the SAME locked pass as the
+	// doc-wide check instead of two passes with a TOCTOU gap between them.
+	std::string candidateText;
+	String      landedName;
+	String      chosenName;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		std::string exhaustedBase;
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else {
+			std::vector<std::string> inCat;
+			const unsigned int nc = CategoryEntityCountLocked_( uiCat );
+			inCat.reserve( nc );
+			for( unsigned int i = 0; i < nc; ++i )
+				inCat.emplace_back( CategoryEntityNameLocked_( uiCat, i ).c_str() );
+			auto candidateClear = [&]( const std::string& cand ) {
+				if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+				if( AnyNameTakenDocWide( *doc, std::vector<std::string>{ cand } ) ) return false;
+				return true;
+			};
+			// Reserve suffix bytes BEFORE truncating the base -- CreateChunkNode's
+			// identical discipline (its own comment explains why: formatting a
+			// suffix onto an unreserved 255-byte base would erase the suffix
+			// digits and make every subsequent collision unresolvable).
+			const size_t kMaxPayloadBytes = 255;
+			std::string base( name.c_str() );
+			base = base.substr( 0, kMaxPayloadBytes );
+			std::string chosen = base;
+			if( !candidateClear( chosen ) ) {
+				chosen.clear();
+				for( int i = 2; i < 1000; ++i ) {
+					const std::string suffix = "_" + std::to_string( i );
+					const std::string candidate =
+						base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+					if( candidateClear( candidate ) ) { chosen = candidate; break; }
+				}
+				if( chosen.empty() ) exhaustedBase = base;   // EXHAUSTION: refuse honestly, naming the base
+			}
+			if( exhaustedBase.empty() ) chosenName = String( chosen.c_str() );
+		}
+		if( !exhaustedBase.empty() ) {
+			refusal = "could not find a free name for base `" + exhaustedBase
+			        + "` (tried `" + exhaustedBase + "_2` .. `" + exhaustedBase + "_999`)";
+		}
+
+		std::string copyBytes;
+		if( refusal.empty() ) {
+			copyBytes = originalBytes;
+			if( !ReplaceFirstNameParamLine( copyBytes, std::string( chosenName.c_str() ) ) )
+				refusal = "could not locate a `name` parameter to substitute in the duplicated chunk";
+		}
+
+		if( refusal.empty() ) {
+			// Re-resolve the ORIGINAL's index against the document as it stands
+			// now.  Nothing can have moved it (the admission lock has been held
+			// throughout), but reading it here rather than trusting phase A's
+			// value keeps the splice index and the document one statement apart.
+			int occs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, category, name, &occs );
+			const int idx = ( targetId != 0 )
+				? RISE::Cst::DocIndexOfNodeId( *doc, targetId, nullptr ) : -1;
+			if( idx < 0 || idx != originalIndex ) {
+				refusal = "the original chunk moved between validation and commit";
+			} else {
+				// THE POSITION.  Immediately after the original: [sep][sep][copy]
+				// spliced at idx+1.  The copy's references are the original's, and
+				// the original derives where it sits, so the copy derives one slot
+				// later -- and EVERY consumer declared after the original (which,
+				// by declaration order, is every consumer it has) can legally be
+				// re-pointed at it.  That is the whole S19 handoff gap
+				// (RewireConnectionTest 1c'), closed.
+				//
+				// TWO separator items, not one "\n\n" parse, because ParseToCst's
+				// one-item-per-"\n" guarantee is the one Job::ApplyCstInsertChunk
+				// already relies on; and they go BEFORE the copy so the original's
+				// closing `}` can never be glued to the copy's keyword.  The
+				// original's own trailing separator (still sitting after the
+				// splice) becomes the copy's, so the inter-chunk spacing matches
+				// the document's existing style exactly.
+				RISE::Cst::Document sepA  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::Document sepB  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::Document sepC  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::Document copyD = RISE::Cst::ParseToCst( copyBytes );
+				RISE::Cst::NodeRef  sepAI = RISE::Cst::DocResolveNodeId( sepA, RISE::Cst::DocNodeIdAt( sepA, 0 ) );
+				RISE::Cst::NodeRef  sepBI = RISE::Cst::DocResolveNodeId( sepB, RISE::Cst::DocNodeIdAt( sepB, 0 ) );
+				RISE::Cst::NodeRef  sepCI = RISE::Cst::DocResolveNodeId( sepC, RISE::Cst::DocNodeIdAt( sepC, 0 ) );
+				RISE::Cst::NodeRef  copyI;
+				int copyChunks = 0;
+				const int nCopyItems = RISE::Cst::DocItemCount( copyD );
+				for( int i = 0; i < nCopyItems; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( copyD, RISE::Cst::DocNodeIdAt( copyD, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { ++copyChunks; if( !copyI ) copyI = it; }
+				}
+				if( !sepAI || !sepBI || !sepCI || !copyI || copyChunks != 1 ) {
+					refusal = "internal: the duplicated chunk text did not re-parse to exactly one chunk";
+				} else {
+					const std::string np = RISE::Cst::ChunkNamePath( copyI );
+					landedName = ( np.size() > originalKeyword.size() )
+						? String( np.substr( originalKeyword.size() + 1 ).c_str() ) : chosenName;
+
+					RISE::Cst::Document d = *doc;
+					const int at = idx + 1;
+					d = RISE::Cst::DocInsertItem( d, at,     sepAI );
+					d = RISE::Cst::DocInsertItem( d, at + 1, sepBI );
+					d = RISE::Cst::DocInsertItem( d, at + 2, copyI );
+					// If the original was the document's LAST item the copy is now
+					// the last, and a Chunk node's bytes end at `}` -- give the file
+					// its trailing newline back rather than shipping a `}`-terminated
+					// document no authored scene has.
+					if( at + 3 >= RISE::Cst::DocItemCount( d ) )
+						d = RISE::Cst::DocInsertItem( d, at + 3, sepCI );
+					candidateText = RISE::Cst::SerializeCst( d );
+				}
+			}
+		}
+	}
+	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	// ---- phase D: the one mutating call ---------------------------------
+	out.commit = ApplyAgentReplaceGeometryCrud_(
+		landedName, String( candidateText.c_str() ), baseVersionOrNull,
+		/*verbLabel*/ "duplicate_graph_node",
+		/*entityKind*/ originalKeyword.c_str(),
+		/*noun*/ "graph-node duplicate",
+		/*appliedPhrase*/ "the graph node was duplicated",
+		/*duplicateNodeOp*/ true );
+	// A DIAGNOSED commit (code 3) mutated the Document too -- report the name
+	// and index whenever the splice LANDED, not only on a clean apply, matching
+	// CreateChunkNode's own outName rule.
+	const bool landed = out.commit.applied
+	                 || std::string( out.commit.status.c_str() ) == "diagnosed";
+	if( landed ) {
+		out.newName       = landedName;
+		out.originalIndex = originalIndex;
+	}
+	// Document-first phase 1 drain.  NOT "post-unlock" in the sense every
+	// other site's identical comment means (S20 review round 1 P3 --
+	// corrected): `admissionLk` and `dirtyNotificationDeferral`, both taken
+	// at this function's TOP, are still in scope here and release only when
+	// this function RETURNS, one statement after this call -- mMutex is the
+	// lock that is actually free by this point (every `lock_guard<mutex>`
+	// hold above is scoped to its own `{ }` block, all already closed).
+	// Safe anyway: `mRenderAdmissionMutex` is a `std::recursive_mutex`
+	// specifically so a composed same-thread re-entry (a listener calling
+	// back into another public controller verb) does not deadlock on it --
+	// see its own declaration comment -- and `DrainDirtyNotification`'s "no
+	// controller locks held" contract is about the non-recursive leaf
+	// `mMutex`, which this call does not hold.
+	mEditor.DrainDirtyNotification();
 	return out;
 }
 

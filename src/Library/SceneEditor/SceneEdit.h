@@ -366,6 +366,32 @@ namespace RISE
 			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
 			AgentReplaceGeometry,
 
+			//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the node-graph canvas's
+			//! POSITIONED Duplicate-node fork (SceneEditController::DuplicateGraphNode), pushed AFTER the
+			//! mutation has already landed via Job::ApplyCstReplaceDocumentText -- the SAME "forward already
+			//! happened outside SceneEditor::Apply" shape AgentRemoveChunks / AgentReplaceGeometry use, and
+			//! routed through the SAME whole-document prior/post text swap
+			//! (SceneEditor::RouteAgentDocumentSwap_).
+			//!
+			//! WHY NOT AgentInsertChunk, which is also "a chunk appeared".  That op's REDO replays through
+			//! Job::ApplyCstInsertChunk, whose TIER heuristic picks the position itself -- so a redo of a
+			//! POSITIONED insert would put the copy somewhere other than the forward commit did, and its
+			//! Undo (ApplyCstRemoveItemsAt at a recorded index) would then be removing the wrong items.  A
+			//! byte-exact prior/post document pair is position-agnostic in BOTH directions, which is the
+			//! only inverse a positioned splice actually has.
+			//!
+			//! FIELD USE -- identical to AgentReplaceGeometry's (see that op's doc for the
+			//! no-op-specific-members rationale):
+			//!   * `propertyValue`     = the BYTE-EXACT pre-duplicate document (Undo's payload).
+			//!   * `prevPropertyValue` = the BYTE-EXACT post-duplicate document (Redo's payload).
+			//!   * `objectName`        = the COPY's name; `cstEntityKind` = the copy's chunk keyword, so
+			//!                           MarkCstHeadDirty routes to that entity's own channel.
+			//!   * `agentChunkWasRasterizer` = ALWAYS false: this verb duplicates a Painter/Material-class
+			//!                           graph node, never a `*_rasterizer`, so the document's last-wins
+			//!                           rasterizer activation is invariant across the swap.
+			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
+			AgentDuplicateNode,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

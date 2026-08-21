@@ -4812,6 +4812,82 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* outOwners, unsigned int outOwnersLen,
 		char* outNowUnreferenced, unsigned int outNowUnreferencedLen );
 
+	//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the canvas's
+	//! REFERENCE-SAFE DELETE (`SceneEditController::DeleteGraphNode`, which
+	//! implements docs/gui/ENTITY_CREATION.md sect. 5's block-or-cascade policy).
+	//!
+	//! `category` is a `RISE::ChunkCategory` as an int -- the DECLARED
+	//! descriptor category, the same addressing `_RewireConnection` above
+	//! takes, NOT the UI `Category` the outliner's `_RemoveEntity` uses.
+	//! `cascade` selects `GraphDeleteMode`: 0 = TargetOnly, 1 = Cascade
+	//! (delete the target AND its solely-owned, unreferenced-after closure as
+	//! ONE undoable composite).
+	//!
+	//! `outClosure` receives the SAME `RISE::ClosureClassification` int the
+	//! rewire verb documents (0 Clean / 1 UnresolvedTarget /
+	//! 2 AmbiguousTargetName / 3 ExpressionDrivenTarget / 4 SharedTarget) --
+	//! ordinal-pinned by `tests/RewireConnectionTest.cpp`'s static_assert
+	//! block; only 0/1/2 are reachable through THIS verb.
+	//! `outReferenceRefused` / `outCascadeRefused` (optional) receive 1/0 for
+	//! the two policy refusal kinds, so a shell can offer "rewire those away"
+	//! or "delete without cascade" without parsing prose.
+	//!
+	//! `outReferrers` receives the '\n'-JOINED `chunk`.`param` list of every
+	//! referrer that blocked the delete; `outRemoved` the '\n'-JOINED names of
+	//! the chunks removed, in DOCUMENT ORDER.  Same '\n'-joined list
+	//! convention the rewire verb and `ApplyAgentRemoveChunks`'s batch echo
+	//! use, for the same reason (a chunk name is a single parser token and can
+	//! never contain a newline, so the join is unambiguous); the ORDER is part
+	//! of `outRemoved`'s contract, which is why it is a joined list and not a
+	//! set.  REFUSAL PROPAGATION: on ANY refusal, including a cascade
+	//! refusal, `outRemoved` is EMPTY (corrected -- S20 review round 1 P2-2:
+	//! an earlier draft of this comment claimed a cascade refusal leaves a
+	//! sweep PREVIEW here, but the underlying field has exactly one writer,
+	//! gated on the same internal "no refusal yet" condition the
+	//! shared-cascade guard itself trips first -- see
+	//! `SceneEditController::DeleteResult::removed`'s own corrected
+	//! comment). Read it as a mutation record only when this call returned
+	//! true.  Every buffer is NUL-terminated and truncated to fit.
+	//!
+	//! Returns `applied` -- true ONLY on a clean commit.
+	bool RISE_API_SceneEditController_DeleteGraphNode(
+		SceneEditController* p,
+		int category, const char* name, int cascade,
+		int* outClosure, int* outReferenceRefused, int* outCascadeRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outRemoved, unsigned int outRemovedLen );
+
+	//! doc-88 Phase 3 S20: the canvas's DUPLICATE-NODE fork
+	//! (`SceneEditController::DuplicateGraphNode`) -- MATERIAL_EDITOR.md
+	//! sect. 3.7a's escape hatch, which the rewire verb's shared-closure refusal
+	//! names but S19 could not deliver.
+	//!
+	//! `category` is a `RISE::ChunkCategory` as an int (Painter / Function /
+	//! Material only -- every other kind is refused).  The copy is placed
+	//! IMMEDIATELY AFTER the original in declaration order, so every consumer
+	//! that could reference the original can legally be re-pointed at the copy.
+	//! SHALLOW by design: the copy shares everything the original referenced --
+	//! the fork unshares exactly ONE level.
+	//!
+	//! `outNewName` receives the DEDUPED name that actually landed -- READ IT
+	//! rather than assuming the requested name survived; it is filled whenever
+	//! the Document was mutated (a clean apply OR a diagnosed-but-mutated
+	//! commit), never only on a clean apply.  `outOriginalIndex` (optional)
+	//! receives the original's top-level document index, or -1 when nothing
+	//! landed.  `outClosure` carries the same ordinals as above (only
+	//! 0/1/2 reachable).
+	//!
+	//! Returns `applied` -- true ONLY on a clean commit.
+	bool RISE_API_SceneEditController_DuplicateGraphNode(
+		SceneEditController* p,
+		int category, const char* name,
+		int* outClosure, int* outOriginalIndex,
+		char* outNewName, unsigned int outNewNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache
 	//! (epoch, category) → entity-name list and re-pull when this

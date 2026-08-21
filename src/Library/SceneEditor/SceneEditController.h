@@ -4317,6 +4317,232 @@ namespace RISE
 			ChunkCategory newRefCategory, const String& newRefName,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		// =====================================================================
+		// doc-88 Phase 3 S20 -- cycle / orphan / copy-vs-link enforcement
+		// (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S20; the reference-safe
+		// delete policy of docs/gui/ENTITY_CREATION.md sect. 5, and sect. 3.7a's
+		// Duplicate-node escape hatch that S19 could only NAME).
+		//
+		// WHY THESE ARE NEW VERBS AND NOT `RemoveEntity` / `DuplicateEntity`
+		// GROWN A POLICY (the placement question, answered rather than left
+		// implicit -- both shipped verbs were read first):
+		//
+		//   * ADDRESSING.  `RemoveEntity`/`DuplicateEntity` are addressed by
+		//     the UI `Category` and resolve through
+		//     `Cst::DocFindByNameAnyRole` + `RoleKindSuffixForCategory` -- the
+		//     UI UNION in which "painter" deliberately accepts BOTH
+		//     ChunkCategory::Painter and ChunkCategory::Function, and in which
+		//     a camera may resolve POSITIONALLY.  A graph node's identity is
+		//     (declared descriptor category, name) and must NOT merge those
+		//     two (see SceneReferenceGraph::ResolveChunk's own note), which is
+		//     exactly why `RewireConnection` is `ChunkCategory`-addressed.
+		//     These two are its siblings, so they are too.
+		//   * BLAST RADIUS.  `RemoveEntity` is the shipped OUTLINER delete for
+		//     EVERY category.  ENTITY_CREATION.md sect. 5.2 deletes an Object,
+		//     a Camera and a Light FREELY -- teaching `RemoveEntity` to refuse
+		//     on referrers would change behaviour for every one of those, and
+		//     for every shipped caller/bridge/test of it, to serve a
+		//     painter/material policy.
+		//   * RESULT SHAPE.  A canvas delete has to report WHICH referrers
+		//     blocked it and WHAT a cascade swept; `AgentCommitResult` has
+		//     nowhere to carry either.  `RewireResult` set the precedent of a
+		//     verb-specific result wrapping the commit.
+		// `RemoveEntity` and `DuplicateEntity` are therefore UNCHANGED and
+		// still the right calls for the outliner; these are the graph's.
+
+		//! What a `DeleteGraphNode` should do about the chunks BELOW the
+		//! target that nothing else uses once it is gone.
+		enum class GraphDeleteMode
+		{
+			//! Delete ONLY the target.  Chunks it solely owned stay in the
+			//! document as orphans (which is also what a rewire leaves behind
+			//! -- see `RewireResult::nowUnreferenced`).
+			TargetOnly = 0,
+			//! Delete the target AND its solely-owned, unreferenced-after
+			//! closure, as ONE undoable composite.  A chunk shared with any
+			//! other graph is NEVER swept -- see `kDeleteCascadeSharedFmt`.
+			Cascade    = 1
+		};
+
+		//! `DeleteGraphNode`'s answer: the ordinary commit result plus the
+		//! reference-safety report the canvas needs to explain a refusal or
+		//! show what a cascade took.
+		struct DeleteResult
+		{
+			//! The underlying commit.  On the accept path this IS
+			//! `ApplyAgentRemoveChunk`'s (TargetOnly) or
+			//! `ApplyAgentRemoveChunks`'s (Cascade) result verbatim; every
+			//! refusal below is a `status == "rejected"`, non-mutating,
+			//! head-BYTE-IDENTICAL result.
+			AgentCommitResult commit;
+
+			//! `AmbiguousTargetName` / `UnresolvedTarget` when the name did
+			//! not resolve to exactly one chunk; `Clean` on every outcome that
+			//! got past resolution -- INCLUDING a later reference/cascade
+			//! refusal, which is not a CLOSURE verdict.  Read
+			//! `commit.applied` for "did it land", not this.
+			ClosureClassification closure = ClosureClassification::Clean;
+
+			//! True when the refusal was "still referenced" -- so a bridge can
+			//! offer "rewire those away" without parsing prose.
+			bool referenceRefused = false;
+
+			//! True when a CASCADE was refused because its sweep would have
+			//! reached a chunk another graph owns.
+			bool cascadeRefused = false;
+
+			//! Every referrer that blocks the delete, as `chunk`.`param`
+			//! (an unnamed referrer contributes `<keyword>`.`param`, the same
+			//! angle-bracket display convention `OwnershipClosureResult::owners`
+			//! uses).  Populated on the `referenceRefused` path; EMPTY on a
+			//! clean delete, which by definition had none.
+			std::vector<String> referrers;
+
+			//! In DOCUMENT ORDER: the chunks this call removed (target first
+			//! only if it happens to be first in the document -- this is the
+			//! document's order, not a priority order).  EMPTY ON EVERY REFUSAL
+			//! (corrected -- S20 review round 1 P2-2: an earlier draft of this
+			//! comment claimed a cascade-shared refusal leaves a "preview" of
+			//! the sweep here, but that can never happen -- this field's only
+			//! writer is the addressability loop, which itself only runs while
+			//! the internal refusal accumulator is still empty, and the
+			//! shared-cascade guard always sets that accumulator BEFORE the
+			//! addressability loop would run.  So a `cascadeRefused` outcome
+			//! reaches this field exactly like every other refusal: empty).
+			//! APPLIED GUARD: on a refusal `commit.applied` is false and
+			//! nothing was removed -- read this as a record of a successful
+			//! mutation only, never present on any refusal path.
+			std::vector<String> removed;
+		};
+
+		//! Delete the graph node `(category, name)`, reference-safely.
+		//!
+		//! CATEGORY SCOPE -- DELIBERATELY WIDER THAN `DuplicateGraphNode`
+		//! (S20 review round 1 P3, documenting the asymmetry rather than
+		//! collapsing it): `DuplicateGraphNode` below refuses every category
+		//! except Painter / Function / Material, because ITS specific
+		//! contract -- "splice the copy immediately after the original in
+		//! declaration order" -- is only meaningful for an interior graph
+		//! node or a material sitting inside a reference DAG where "after"
+		//! has a consumer-legality meaning.  This verb has no such
+		//! constraint: it implements ENTITY_CREATION.md sect. 5's
+		//! reference-safe delete policy, which is scoped to EVERY
+		//! introspectable entity family the doc's dependency-graph table
+		//! covers -- Object, Camera, Light, Material, Medium, and (stage 2)
+		//! Painter -- not to the canvas's graph-node subset.  `DeleteGraphNodeTest`
+		//! 1f/1g exercise this directly: a `ChunkCategory::Shader` delete
+		//! reaches the SAME addressability refusal a Painter/Material delete
+		//! would (refused for lacking a `(UI Category, name)` edit path in
+		//! THIS editor, per `UiCategoryForChunkCategory`/
+		//! `RoleKindSuffixForCategory` -- not for being the "wrong kind" the
+		//! way `DuplicateGraphNode`'s up-front kind check refuses).  So the
+		//! practical scope ends up self-limiting to whatever
+		//! `RoleKindSuffixForCategory` already addresses (Painter, Material,
+		//! Geometry, Medium, Object, Camera, Light) without this verb having
+		//! to enumerate or gate categories itself -- widening that set (a
+		//! future Shader/Modifier addressing surface) widens what this verb
+		//! can delete for free, with no change here.
+		//!
+		//! GATE ORDER, load-bearing exactly as `RewireConnection`'s is:
+		//!   1. Render-locked / teardown / no-document pre-flight.
+		//!   2. RESOLUTION, ambiguity-aware (`SceneReferenceGraph::ResolveChunk`).
+		//!      An AMBIGUOUS name REFUSES -- never delete on a guess.
+		//!   3. REFERRERS (`SceneReferenceGraph::FindReferencesTo`).  Any
+		//!      referrer at all REFUSES, in BOTH modes, naming every one of
+		//!      them plus the two escapes (`kDeleteReferencedFmt`).
+		//!   4. `Cascade` only: build the sweep, then CROSS-CHECK every member's
+		//!      ownership through `OwnershipClosure::OwnersOf` -- a member owned
+		//!      by anything but the target REFUSES the whole cascade
+		//!      (`kDeleteCascadeSharedFmt`), and so does a member the editor
+		//!      cannot address (`kDeleteUnaddressableFmt`).
+		//!   5. The commit: `ApplyAgentRemoveChunk` (TargetOnly) or
+		//!      `ApplyAgentRemoveChunks` (Cascade -- ONE atomic all-or-nothing
+		//!      erase, ONE EditHistory record, so one Cmd-Z restores the whole
+		//!      composite).
+		//!
+		//! Every refusal in steps 1-4 leaves the retained Document
+		//! BYTE-IDENTICAL: nothing before step 5 mutates anything.
+		//!
+		//! WHY `ApplyAgentRemoveChunks` AND NOT `BeginTransaction`/
+		//! `EndTransaction` FOR THE CASCADE.  The two are MUTUALLY EXCLUSIVE by
+		//! construction: every agent-commit entry point (`ApplyAgentChunkCrud_`,
+		//! `ApplyAgentRemoveChunksCrud_`, `ApplyAgentParamEditInner_`) refuses
+		//! outright while `mTxnOpen` is set, so bracketing agent removes in an
+		//! editor transaction produces N refusals, not a composite -- the same
+		//! constraint `InstantiateEntityTemplate` already documents.
+		//! `ApplyAgentRemoveChunks` IS the composite primitive: it resolves and
+		//! erases every target against the SAME pre-erase Document, runs ONE
+		//! dry-run-guarded re-derive (so an intra-batch reference can never
+		//! cause a spurious refusal), and records ONE `AgentRemoveChunks` U2
+		//! step whose undo payload is the BYTE-EXACT pre-batch document -- a
+		//! stronger inverse than N per-chunk splices, which for ADJACENT
+		//! targets are not even well defined (`DocEraseChunkTidy`'s
+		//! trailing-separator collapse for chunk i depends on whether chunk
+		//! i+1 is still there).
+		//!
+		//! `baseVersionOrNull` is the usual optimistic-concurrency precondition.
+		DeleteResult DeleteGraphNode(
+			ChunkCategory category, const String& name,
+			GraphDeleteMode mode,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! `DuplicateGraphNode`'s answer.
+		struct DuplicateResult
+		{
+			//! The underlying commit (the whole-document composite swap).
+			AgentCommitResult commit;
+			//! `AmbiguousTargetName` / `UnresolvedTarget` when the name did not
+			//! resolve to exactly one chunk; `Clean` otherwise.
+			ClosureClassification closure = ClosureClassification::Clean;
+			//! The deduped name the copy actually landed under -- READ THIS
+			//! rather than assuming the requested base survived. Empty unless
+			//! the Document was mutated.
+			String newName;
+			//! The top-level document index of the ORIGINAL at the moment of
+			//! the copy, for a canvas that wants to place the new node beside
+			//! it. -1 when nothing landed.
+			int    originalIndex = -1;
+		};
+
+		//! Fork `(category, name)` into an owned copy positioned IMMEDIATELY
+		//! AFTER the original in declaration order -- sect. 3.7a's Duplicate-node
+		//! escape hatch, which S19 could name in a diagnostic but not deliver.
+		//!
+		//! WHY THIS IS A NEW VERB AND NOT A FIX INSIDE `DuplicateEntity`.
+		//! `DuplicateEntity`'s copy is placed by `Job::ApplyCstInsertChunk`'s
+		//! TIER heuristic -- a painter goes "before the first Material/Geometry/
+		//! Shader/... chunk".  In a scene whose FIRST chunk is a `standard_shader`
+		//! (tier 1), that target index is 0, ahead of every painter the copy
+		//! itself references, so the positioned dry-run fails and the insert
+		//! FALLS BACK to append-at-end -- which is the S19 handoff's pinned gap
+		//! (`RewireConnectionTest` case 1c'), reproduced and confirmed by probe.
+		//! Making `ApplyCstInsertChunk` position by DEPENDENCY instead would
+		//! change where every agent `insert_chunk` lands, in every scene, to
+		//! serve one canvas verb; and no pure function of (document, chunk text)
+		//! can express "immediately after THAT chunk", because the text of a
+		//! copy does not say which chunk it is a copy OF.  So position is the
+		//! CALLER's knowledge here, and this verb splices with it.  A rename is
+		//! deliberately NOT attempted: `DuplicateEntity` remains the outliner's
+		//! duplicate, unchanged.
+		//!
+		//! SHALLOW, BY DESIGN AND BY DEFINITION.  The copy shares every chunk
+		//! the original referenced -- that is the POINT of the hatch: it unshares
+		//! exactly ONE level, so the requesting consumer can be re-pointed at a
+		//! node it now solely owns while the leaves below stay links (sect. 3.8's
+		//! "shared painters are links, not copies").  A DEEP copy would fork the
+		//! whole subgraph and is deliberately out of scope for this slice; it is
+		//! also why the copy is guaranteed to derive at its new position:
+		//! identical references, one slot later than an original that already
+		//! derived where it sits.
+		//!
+		//! Refuses (non-mutating, head byte-identical) on an ambiguous or
+		//! unresolved name, on a chunk with no `name` parameter to substitute,
+		//! on a name collision the dedup could not clear, and on every refusal
+		//! the commit layer itself can produce.
+		DuplicateResult DuplicateGraphNode(
+			ChunkCategory category, const String& name,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
 		//! Remove the named entity in `cat` via ApplyAgentRemoveChunk,
 		//! narrowed by `cat`'s CST role-kind suffix (RoleKindSuffixForCategory)
 		//! so e.g. removing a Material named the same as an unrelated
@@ -4978,11 +5204,28 @@ namespace RISE
 		//! rather than a target list, calls a different Job primitive, and pushes a different history op.
 		//! Caller holds mRenderAdmissionMutex and has already cleared the agent-render gate; this takes
 		//! mMutex itself.
+		//!
+		//! doc-88 Phase 3 S20: GENERALIZED (not copied) so the canvas's
+		//! positioned Duplicate-node rides the SAME commit block.  A positioned
+		//! insert needs exactly this undo shape and no other: its inverse cannot
+		//! be `AgentInsertChunk`'s, because that op's REDO replays through
+		//! `Job::ApplyCstInsertChunk`, whose TIER heuristic would put the copy
+		//! somewhere else than the forward commit did.  A byte-exact prior/post
+		//! text pair is position-agnostic in both directions.  The `entityKind` /
+		//! `noun` / `appliedPhrase` / `duplicateNodeOp` parameters are the ONLY differences between
+		//! the two verbs -- deliberately parameters rather than a second copy of
+		//! the mTxnOpen refusal + cancel-and-park + conflict gate + rebind +
+		//! history-push + epoch-bump + kick sequence, which is precisely the
+		//! "two policies free to drift" shape this file keeps warning about.
 		AgentCommitResult ApplyAgentReplaceGeometryCrud_(
 			const String& objectName,
 			const String& candidateDocText,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
-			const char* verbLabel );
+			const char* verbLabel,
+			const char* entityKind = "standard_object",
+			const char* noun = "geometry replacement",
+			const char* appliedPhrase = "geometry replaced",
+			bool duplicateNodeOp = false );
 
 		AgentCommitResult ApplyAgentChunkCrud_(
 			bool isInsert,
