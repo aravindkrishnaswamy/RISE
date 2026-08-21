@@ -2305,32 +2305,27 @@ plateaus at `1.5452375598545842e-4`, the field maximum at
 balls remain accepted. Only the expected strict-fp32 evidence bytes were
 re-pinned.
 
-The complete no-Metal walk now discharges every one of `4,340,821` dynamic
-obligations. The site-class census is: PPM quadratic `1,350`, stationary lower
-`3,798`, stationary upper `2,628`, continuous minimum `166,342`, continuous
-maximum `478,293`, floor partition `373,245`, flat integral `620,491`,
+Fresh boundary review rejected the first attempted bulk discharge because one
+generic `4*M*ambiguity` expression did not independently model six distinct
+branch topologies. The trace therefore does not use it. The fail-closed census
+contains `4,340,821` dynamic obligations: the independently modeled PPM and
+continuous-selection families discharge `652,411`; `3,688,410` remain pending.
+The pending classes are floor partition `373,245`, flat integral `620,491`,
 remaining-length `1,623,168`, Courant sign `346,080`, fractional tail
 `371,760`, inflow sign `353,664`, and two projection nonnegative-reduction
-guards. Each class has zero pending instances. The two projection guards are
-closed by the independently bound producer invariant: the maximum is
-initialized to positive zero and updated only from absolute residual
-candidates. The trace identity is
-`5a16fc01bd9f57597c4fa6c4c55114621fb62752d51bfac338de6e2d287b1463`;
-both unresolved and invalid bitmaps are zero.
+guards. The invalid-domain bitmap is zero, but the unresolved bitmap remains
+`0xdffffe`. The trace identity is
+`a4ae55166d376dcffedb4aaa9ab4d62ed1261fee797ab2210456bfca9850a2d9`.
 
-This completes r123's topology obligation, so exit `237` is retired for the
-current graph. It does not manufacture `B_fp32`. Applying the next frozen r120
-condition recurrence exposes a separate arithmetic-walker obstruction: the
-physical 17-cycle projection interval overflows to a nonfinite radius, while
-the restoration projection reaches the finite but unusable
-`1.6173346646130356e+303`. The canonical no-Metal command therefore exits
-`239` before Metal or fp64 comparison. This is neither a measured miss nor
-grounds to enlarge the bound; it identifies the projection condition model as
-the next proof work. Temporal refinement, eight-slice readmission, and source
-maps remain blocked until an independent finite projection condition bound is
-derived. Durable evidence is
+This is the intended effect of fresh review: the production reformulation and
+its r118/r119 evidence remain admitted, while an asserted site label cannot
+stand in for an independent two-path proof. Canonical exit `237` remains until
+each pending source site has its own source-bound alternate-path model,
+Lipschitz factor, downstream envelope, and mutation RED. `B_fp32`, Metal/fp64
+confirmation, temporal refinement, eight-slice readmission, and source maps did
+not run. Durable evidence is
 `rendered/fire_production_calibration/r124_branch_discharge/branch_discharge.v1`,
-SHA-256 `2fffea028ca3ccb3dd9ed1f0832be3474bf63faf9e7f5c531df87df51da61117`.
+SHA-256 `238195f1c197b6a5abdcdd4c4862f85d4213a803bb192adfd0c873a5938bee96`.
 
 ## 8. Rejected directions and future work
 

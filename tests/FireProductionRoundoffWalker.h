@@ -87,10 +87,12 @@ namespace FireProductionRoundoffWalker
 		bool continuousAtZero=false,continuousAtPositiveWidth=false;
 		bool monotoneForPositiveConsumption=false;
 	};
+	enum class LimiterGraphVariant { Certified,MissingNegativeRamp,FixedWidthDenominator };
 
 	inline bool CertifyContinuousLimiterTransition(const double predicateCenter,
 		const double predicateRadius,const float center,const float envelope,
-		const float signedConsumption,ContinuousLimiterCertificate& certificate)
+		const float signedConsumption,ContinuousLimiterCertificate& certificate,
+		const LimiterGraphVariant variant=LimiterGraphVariant::Certified)
 	{
 		certificate=ContinuousLimiterCertificate();
 		if(!(predicateRadius>=0.0)||!std::isfinite(predicateCenter)||
@@ -106,48 +108,34 @@ namespace FireProductionRoundoffWalker
 		certificate.requiredUnitFactor=ambiguity/
 			(ContinuousLimiterCertificate::UnitRoundoff*certificate.scale);
 		certificate.ambiguityContained=ambiguity<=certificate.width;
+		auto cap=[&](const double headroom,const double consumption){
+			const double numerator=headroom+(variant==LimiterGraphVariant::MissingNegativeRamp?
+				0.0:std::max(-consumption,0.0));
+			const double denominator=variant==LimiterGraphVariant::FixedWidthDenominator?
+				certificate.width:std::max(consumption,certificate.width);
+			return std::min(1.0,numerator/denominator);
+		};
+		const double qValues[]={0.0,0.5*certificate.width,2.0*certificate.width};
 		certificate.continuousAtNegativeWidth=true;
 		certificate.continuousAtZero=true;
 		certificate.continuousAtPositiveWidth=true;
 		certificate.monotoneForPositiveConsumption=true;
-		return certificate.ambiguityContained;
-	}
-
-	enum class ContinuousTransportBranchClass
-	{
-		FloorPartition,FlatIntegral,RemainingLength,FractionalTail,CourantSign,InflowSign
-	};
-
-	inline bool CertifyContinuousTransportBranch(
-		const ContinuousTransportBranchClass branchClass,const double predicateCenter,
-		const double predicateRadius,const double operandMaximum,double& divergence)
-	{
-		divergence=0.0;
-		if(!(predicateRadius>=0.0)||!(operandMaximum>=0.0)||
-			!std::isfinite(predicateCenter)||!std::isfinite(predicateRadius)||
-			!std::isfinite(operandMaximum))return false;
-		switch(branchClass){
-		case ContinuousTransportBranchClass::FloorPartition:
-		case ContinuousTransportBranchClass::FlatIntegral:
-		case ContinuousTransportBranchClass::RemainingLength:
-		case ContinuousTransportBranchClass::FractionalTail:
-		case ContinuousTransportBranchClass::CourantSign:
-		case ContinuousTransportBranchClass::InflowSign:break;
-		default:return false;
+		for(const double q:qValues){
+			certificate.continuousAtNegativeWidth&=cap(q,-certificate.width)==1.0;
+			certificate.continuousAtZero&=cap(q,-0.0)==cap(q,+0.0);
+			certificate.continuousAtPositiveWidth&=
+				cap(q,certificate.width)==std::min(1.0,q/certificate.width);
+			const double positive[]={0.25*certificate.width,0.5*certificate.width,
+				certificate.width,2.0*certificate.width};
+			for(const double d:positive)certificate.monotoneForPositiveConsumption&=
+				cap(q,d)*d<=q&&cap(q,d)>=0.0&&cap(q,d)<=1.0;
+			certificate.monotoneForPositiveConsumption&=
+				cap(q,-2.0*certificate.width)==1.0&&
+				cap(q,2.0*certificate.width)==std::min(1.0,q/(2.0*certificate.width));
 		}
-		const double ambiguity=std::nextafter(std::fabs(predicateCenter)+predicateRadius,
-			std::numeric_limits<double>::infinity());
-		const double scale=std::nextafter(std::max(1.0,operandMaximum),
-			std::numeric_limits<double>::infinity());
-		divergence=std::nextafter(4.0*scale*ambiguity,
-			std::numeric_limits<double>::infinity());
-		return std::isfinite(divergence);
-	}
-
-	inline bool CertifyNonnegativeMaximumOfAbsolute(
-		const bool initializedToPositiveZero,const bool onlyAbsoluteCandidates)
-	{
-		return initializedToPositiveZero&&onlyAbsoluteCandidates;
+		return certificate.ambiguityContained&&certificate.continuousAtNegativeWidth&&
+			certificate.continuousAtZero&&certificate.continuousAtPositiveWidth&&
+			certificate.monotoneForPositiveConsumption;
 	}
 
 	namespace Detail

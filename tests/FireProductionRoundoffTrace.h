@@ -117,61 +117,6 @@ namespace FireProductionRoundoffTrace
 			static_cast<double>(std::numeric_limits<float>::min()));
 	}
 
-	inline bool IsContinuousTransportBranchSite(const BranchSite site)
-	{
-		return site==BranchSite::FloorBoundary||site==BranchSite::FlatIntegral||
-			site==BranchSite::RemainingPositive||
-			site==BranchSite::CourantNonnegative||
-			site==BranchSite::FractionPositive||site==BranchSite::InflowSign;
-	}
-
-	inline double CurrentTransportScale()
-	{
-		double scale=1.0;
-		if(!ActiveCounters)return scale;
-		for(const double value:ActiveCounters->maximumAbsoluteOperand)
-			if(std::isfinite(value))scale=std::max(scale,value);
-		return NextUp(scale);
-	}
-
-	inline void ApplyContinuousTransportBranchCertificate(BranchObligation& obligation)
-	{
-		if(!ActiveCounters||!IsContinuousTransportBranchSite(obligation.site)||
-			obligation.certificate!=BranchCertificate::None)return;
-		const double ambiguity=NextUp(std::fabs(obligation.predicateCenter)+
-			obligation.predicateRadius);
-		const double scale=CurrentTransportScale();
-		// One switching surface can perturb each adjacent face integral by M*delta;
-		// the conservative difference owns two faces and the two-path hull owns two
-		// sides, hence the independent 4*M*delta envelope.
-		const double divergence=NextUp(4.0*scale*ambiguity);
-		obligation.certificate=BranchCertificate::Equivalence;
-		obligation.divergenceBound=divergence;
-		obligation.proofLower=scale;obligation.proofRequired=4.0;
-		ActiveCounters->transportBranchDivergenceBound=NextUp(
-			ActiveCounters->transportBranchDivergenceBound+divergence);
-		++ActiveCounters->dischargedBranchObligationCount;
-		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
-			ActiveCounters->branchObligations.size();
-	}
-
-	inline void ApplyStructuralBranchCertificate(BranchObligation& obligation)
-	{
-		if(!ActiveCounters||obligation.site!=BranchSite::NonnegativeReductionGuard||
-			obligation.certificate!=BranchCertificate::None)return;
-		// Both production callers supply a maximum initialized to +0 and updated
-		// only with absolute residual candidates.  The independent walker binds
-		// that producer topology; rounding can widen the interval below zero but
-		// cannot make the represented reduction negative.
-		obligation.certificate=BranchCertificate::Equivalence;
-		obligation.divergenceBound=0.0;
-		obligation.proofLower=0.0;
-		obligation.proofRequired=0.0;
-		++ActiveCounters->dischargedBranchObligationCount;
-		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
-			ActiveCounters->branchObligations.size();
-	}
-
 	class TraceFloat
 	{
 	public:
@@ -320,10 +265,6 @@ namespace FireProductionRoundoffTrace
 					obligation.predicateRadius=NextUp(a.radius_+b.radius_);
 					obligation.roundedResult=roundedResult;
 					ActiveCounters->branchObligations.push_back(obligation);
-					ApplyContinuousTransportBranchCertificate(
-						ActiveCounters->branchObligations.back());
-					ApplyStructuralBranchCertificate(
-						ActiveCounters->branchObligations.back());
 					if(ActiveBranchSite!=BranchSite::Unknown)
 						LastScopedObligation=ActiveCounters->branchObligations.size()-1u;
 					if(!ActiveCounters->unresolvedWitnessRecorded){
@@ -454,7 +395,6 @@ namespace FireProductionRoundoffTrace
 		obligation.site=site;obligation.predicateCenter=center;
 		obligation.predicateRadius=radius;obligation.roundedResult=roundedResult;
 		ActiveCounters->branchObligations.push_back(obligation);
-		ApplyContinuousTransportBranchCertificate(ActiveCounters->branchObligations.back());
 		if(!ActiveCounters->unresolvedWitnessRecorded){
 			ActiveCounters->unresolvedWitnessRecorded=true;
 			ActiveCounters->unresolvedLeftCenter=value.Center();

@@ -1199,10 +1199,11 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="5a16fc01bd9f57597c4fa6c4c55114621fb62752d51bfac338de6e2d287b1463"||
-			unresolvedBitmap!=0u||invalidBitmap!=0u||finiteOutputs||
+			traceDigest!="a4ae55166d376dcffedb4aaa9ab4d62ed1261fee797ab2210456bfca9850a2d9"||
+			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=4340821u||
-			totalDischargedBranchObligationCount!=4340821u||
+			totalDischargedBranchObligationCount!=652411u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=3688410u||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1221,16 +1222,14 @@ namespace FireProductionDyadicCalibration
 			ppmCertificate.arithmeticResidualBound!=2.6783670818887366e-6||
 			ppmCertificate.divergenceBound!=3.1805271356122864e-6||
 			source.unresolvedBranch||
-			source.invalidDomain||physical.unresolvedBranch||physical.invalidDomain||
-			restoration.unresolvedBranch||restoration.invalidDomain||
-			std::isfinite(physical.maximumOutputRadius)||
-			!std::isfinite(restoration.maximumOutputRadius))return 238;
-		std::fprintf(stderr,"r124 all %llu branch obligations discharged; B_fp32 "
-			"derivation stopped before Metal because physical projection radius is nonfinite "
-			"(restoration radius %.17g)\n",
-			static_cast<unsigned long long>(totalBranchObligationCount),
-			restoration.maximumOutputRadius);
-		return 239;
+			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
+			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
+		std::fprintf(stderr,"r124 continuous limiter certified; %llu of %llu site-class "
+			"obligations remain pending before B_fp32 and Metal measurement\n",
+			static_cast<unsigned long long>(totalBranchObligationCount-
+				totalDischargedBranchObligationCount),
+			static_cast<unsigned long long>(totalBranchObligationCount));
+		return 237;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

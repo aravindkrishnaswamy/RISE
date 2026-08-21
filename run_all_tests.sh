@@ -377,8 +377,8 @@ for test_src in "$SRC_DIR"/*.cpp; do
 done
 
 # The r123 derivation is an expected fail-closed evidence gate, not a test
-# source with its own executable name.  Run the capability-isolated binary
-# explicitly and accept only its exact branch-obligation refusal.
+# source with its own executable name. Run the capability-isolated binary
+# explicitly and accept only r124's exact incomplete site-class proof.
 roundoff_name="FireProductionCalibrationOracle.r124"
 roundoff_path="$BIN_DIR/FireProductionCalibrationOracle"
 roundoff_log="$LOG_DIR/$roundoff_name.log"
@@ -396,11 +396,11 @@ else
 		"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
 		"$FIRE_PRODUCTION_TARGETS_SHA" >"$roundoff_log" 2>&1 || roundoff_rc=$?
 fi
-if [ "$roundoff_rc" -eq 239 ]; then
-	echo 'PASS (exact exit=239)'
+if [ "$roundoff_rc" -eq 237 ]; then
+	echo 'PASS (exact exit=237)'
 	rm -f "$roundoff_log"
 else
-	echo "FAIL (exit=$roundoff_rc; expected 239)"
+	echo "FAIL (exit=$roundoff_rc; expected 237)"
 	printf '%s\t%d\t%s\n' "$roundoff_name" "$roundoff_rc" "$roundoff_log" >> "$RUN_FAIL_TSV"
 	failed=$((failed + 1))
 fi

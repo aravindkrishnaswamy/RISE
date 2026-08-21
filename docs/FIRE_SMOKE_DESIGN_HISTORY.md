@@ -2968,7 +2968,7 @@ it was already tried and refuted here.
   site class has one reusable equivalence certificate or a recorded continuous
   reformulation; exit `237` remains the incomplete-proof result.
 
-- **r124 continuous transition evidence / projection-condition stop
+- **r124 continuous transition evidence / site-class proof stop
   (2026-08-21):** the compact shared-alpha transition retains common tuple
   coupling and strict monotonicity, yields only maximal inactivity inside
   `w=2^-10*s`, and is byte-identical to the legacy limiter outside that width.
@@ -2978,19 +2978,14 @@ it was already tried and refuted here.
   classifications remain accepted; their durable evidence hashes are now
   `7fa0872d...3696d8` and `201b67b7...8d2c6`.
 
-  The complete site-class census discharges all `4,340,821` executed
-  obligations: PPM `1,350`, stationary lower/upper `3,798/2,628`, min/max
-  `166,342/478,293`, floor `373,245`, flat integral `620,491`, remaining
-  `1,623,168`, Courant `346,080`, fraction `371,760`, inflow `353,664`, and two
-  absolute-maximum projection guards. Pending count, unresolved bitmap, and
-  invalid bitmap are all zero. This closes the r123 topology proof and retires
-  exit `237` for this graph.
-
-  The immediately following frozen `B_fp32` derivation still refuses before
-  measurement for a new, distinct reason: dependency-blind interval recurrence
-  through P2(17) becomes nonfinite; P2(16) reaches
-  `1.6173346646130356e+303`. No Metal/fp64 result was inspected and no bound was
-  widened. Canonical exit `239` names an independent projection-condition
-  walker as the required next work. Artifact
-  `r124_branch_discharge/branch_discharge.v1` hashes to
-  `2fffea02...da61117`; the golden checkpoint remains untouched.
+  Fresh boundary review then invalidated the attempted generic bulk discharge:
+  assigning the same `4*M*ambiguity` expression to six branch classes did not
+  independently walk their alternate paths. That certificate was removed.
+  Of `4,340,821` obligations, the existing independent PPM/selection proofs
+  discharge `652,411` and `3,688,410` remain pending (floor `373,245`, flat
+  integral `620,491`, remaining `1,623,168`, Courant `346,080`, fraction
+  `371,760`, inflow `353,664`, projection guards `2`). Invalid bitmap is zero;
+  unresolved bitmap is `0xdffffe`. Exit `237` remains fail-closed before
+  `B_fp32` or Metal measurement. This correction is itself the review-loop
+  evidence: the operator landed, but topology certification did not get
+  promoted on a tautological proof. The golden checkpoint remains untouched.

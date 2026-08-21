@@ -4239,6 +4239,22 @@ int main()
 		"Metal capability source gate binds compilation, dispatch, completion, and returned bytes");
 	const std::string advectionMetalSource=ReadText(
 		"src/Library/Utilities/FireProductionAdvectionMac.mm");
+	const std::string advectionSource=ReadText(
+		"src/Library/Utilities/FireProductionAdvection.cpp");
+	const std::string cpuTransition=
+		"const float width=0x1p-10f*scale;\n"
+		"\t\t\tconst float numerator=headroom+std::max(0.0f,-signedConsumption);\n"
+		"\t\t\tconst float denominator=std::max(signedConsumption,width);\n"
+		"\t\t\tconst float cap=std::min(1.0f,numerator/denominator);";
+	const std::string metalTransition=
+		"float width=0x1p-10f*scale;\n"
+		" float numerator=headroom+max(0.0f,-d);\n"
+		" float denominator=max(d,width);\n"
+		" return min(alpha,min(1.0f,numerator/denominator));";
+	Check(advectionSource.find(cpuTransition)!=std::string::npos&&
+		advectionMetalSource.find(metalTransition)!=std::string::npos&&
+		CountSubstring(advectionMetalSource,"continuous_shared_alpha(alpha,")==2u,
+		"r124 CPU and Metal transition width, association, clamp, and both shared-alpha calls are source-identical");
 	const std::string transportSource=ReadText(
 		"src/Library/Utilities/FireProductionTransport.cpp");
 	const std::string forceSource=ReadText(

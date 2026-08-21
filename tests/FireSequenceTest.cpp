@@ -3130,8 +3130,8 @@ int main(int argc,char** argv)
 	if(argc==1)Check(FireProductionDyadicCalibration::DiagnoseRoundoff(
 		"rendered/fire_production_calibration/r112_dyadic_smooth_open",
 		"42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed",
-		"d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b")==239,
-		"r124 canonical tier-6 projection-condition refusal remains an exact normal-suite gate");
+		"d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b")==237,
+		"r124 canonical incomplete site-class proof remains an exact normal-suite gate");
 #endif
 	std::string identityFailure;
 	Check(!DiscontinuousThreadIdentityAccepted(false,true,identityFailure)&&
