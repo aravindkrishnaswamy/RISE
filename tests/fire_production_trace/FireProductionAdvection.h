@@ -73,6 +73,11 @@ namespace RISEFireProductionTrace
 		const FireProductionRemapRequest& request,
 		std::string* error=0 );
 
+	//! r124 continuous common-alpha cap. Exposed for independent contract gates.
+	FireProductionRoundoffTrace::TraceFloat FireProductionContinuousSharedLimiterAlpha(
+		FireProductionRoundoffTrace::TraceFloat alpha, FireProductionRoundoffTrace::TraceFloat headroom, FireProductionRoundoffTrace::TraceFloat signedConsumption,
+		FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat envelope ) noexcept;
+
 	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
 	bool RemapFireProductionCPU(
 		const FireProductionRemapRequest& request,

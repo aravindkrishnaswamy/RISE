@@ -94,13 +94,13 @@ namespace RISEFireProductionTrace
 			}
 			if( cell<0 ) {
 				const bool inflow=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-					request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f;
+					FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){return request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f;});
 				return inflow ? AmbientValue(request,true,component,line) :
 					request.values[ValueIndex(request,component,line,0u)];
 			}
 			if( cell>=count ) {
 				const bool inflow=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0f;
+					FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){return request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0f;});
 				return inflow ? AmbientValue(request,false,component,line) :
 					request.values[ValueIndex(request,component,line,request.lineLength-1u)];
 			}
@@ -154,6 +154,18 @@ namespace RISEFireProductionTrace
 			}
 			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(
 				quadratic,linear,endpointMinimum,endpointMaximum,minimum,maximum);
+		}
+
+		FireProductionRoundoffTrace::TraceFloat ContinuousSharedLimiterAlpha( const FireProductionRoundoffTrace::TraceFloat alpha, const FireProductionRoundoffTrace::TraceFloat headroom,
+			const FireProductionRoundoffTrace::TraceFloat signedConsumption, const FireProductionRoundoffTrace::TraceFloat center, const FireProductionRoundoffTrace::TraceFloat envelope )
+		{
+			const FireProductionRoundoffTrace::TraceFloat scale=std::max(FireProductionRoundoffTrace::TraceFloat(0x1p-126f),std::max(std::fabs(center),
+				std::max(std::fabs(envelope),std::fabs(signedConsumption))));
+			const FireProductionRoundoffTrace::TraceFloat width=0x1p-10f*scale;
+			const FireProductionRoundoffTrace::TraceFloat numerator=headroom+std::max(FireProductionRoundoffTrace::TraceFloat(0.0f),-signedConsumption);
+			const FireProductionRoundoffTrace::TraceFloat denominator=std::max(signedConsumption,width);
+			const FireProductionRoundoffTrace::TraceFloat cap=std::min(FireProductionRoundoffTrace::TraceFloat(1.0f),numerator/denominator);
+			return std::min(alpha,cap);
 		}
 
 		FireProductionRoundoffTrace::TraceFloat CellIntervalIntegral( FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat left, FireProductionRoundoffTrace::TraceFloat right,
@@ -357,6 +369,14 @@ namespace RISEFireProductionTrace
 		bytes=total;return true;
 	}
 
+	FireProductionRoundoffTrace::TraceFloat FireProductionContinuousSharedLimiterAlpha( const FireProductionRoundoffTrace::TraceFloat alpha,
+		const FireProductionRoundoffTrace::TraceFloat headroom, const FireProductionRoundoffTrace::TraceFloat signedConsumption, const FireProductionRoundoffTrace::TraceFloat center,
+		const FireProductionRoundoffTrace::TraceFloat envelope ) noexcept
+	{
+		return ContinuousSharedLimiterAlpha(alpha,headroom,signedConsumption,
+			center,envelope);
+	}
+
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,
 		std::string* error )
 	{
@@ -412,7 +432,7 @@ namespace RISEFireProductionTrace
 		for( std::size_t line=0;line<request.lineCount;++line ) {
 			const std::size_t base=line*(request.lineLength+1u);
 			if( IsPeriodic(request)&&
-				request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+request.lineLength] )
+				FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::PeriodicSeamEquality,[&](){return request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+request.lineLength];}) )
 				return Fail(error,"production periodic remap seam velocity is not single-valued");
 			double previous=0.0;
 			for( std::size_t face=0;face<=request.lineLength;++face ) {
@@ -453,10 +473,10 @@ namespace RISEFireProductionTrace
 				const FireProductionRoundoffTrace::TraceFloat envelopeMaximum=std::max(center,std::max(
 					Sample(request,component,line,static_cast<long>(cell)-1),
 					Sample(request,component,line,static_cast<long>(cell)+1)));
-				alpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,
-					envelopeMaximum,center,maximumDeviation,true);
-				alpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,
-					envelopeMinimum,center,minimumDeviation,false);
+				alpha=ContinuousSharedLimiterAlpha(alpha,envelopeMaximum-center,
+					maximumDeviation,center,envelopeMaximum);
+				alpha=ContinuousSharedLimiterAlpha(alpha,center-envelopeMinimum,
+					-minimumDeviation,center,envelopeMinimum);
 			}
 			alpha=std::max(FireProductionRoundoffTrace::TraceFloat(0.0f),std::min(FireProductionRoundoffTrace::TraceFloat(1.0f),alpha));
 			result.sharedLimiterAlpha[line*request.lineLength+cell]=alpha;

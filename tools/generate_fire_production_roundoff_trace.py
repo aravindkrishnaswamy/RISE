@@ -26,6 +26,8 @@ def transform(text: str, name: str, suffix: str) -> str:
     text = text.replace("sizeof(FireProductionRoundoffTrace::TraceFloat)", "sizeof(float)")
     text = re.sub(r"std::(min|max)\(([-+]?[0-9.]+f),",
                   r"std::\1(FireProductionRoundoffTrace::TraceFloat(\2),", text)
+    text = text.replace("std::max(0x1p-126f,",
+                        "std::max(FireProductionRoundoffTrace::TraceFloat(0x1p-126f),")
     if name == "FireProductionAdvection" and suffix == ".cpp":
         # Tag every data-dependent branch in the remap arithmetic before applying
         # site-specific equivalence certificates. These are test-only wrappers;
@@ -55,14 +57,6 @@ def transform(text: str, name: str, suffix: str) -> str:
                 "if( FireProductionRoundoffTrace::EvaluateBranch("
                 "FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return "
                 "fractional>0.0f; }) )",
-            "if( maximumDeviation>0.0f )":
-                "if( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::LimiterPositive,[&](){ return "
-                "maximumDeviation>0.0f; }) )",
-            "if( minimumDeviation<0.0f )":
-                "if( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::LimiterNegative,[&](){ return "
-                "minimumDeviation<0.0f; }) )",
             "faceVelocity>0.0f ?":
                 "FireProductionRoundoffTrace::EvaluateBranch("
                 "FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return "
@@ -82,22 +76,28 @@ def transform(text: str, name: str, suffix: str) -> str:
             elif text.count(before) != 1:
                 raise RuntimeError("remap branch seam changed: " + before)
             text = text.replace(before, after)
-        limiter_positive = ("\t\t\t\tif( FireProductionRoundoffTrace::EvaluateBranch("
-            "FireProductionRoundoffTrace::BranchSite::LimiterPositive,[&](){ return "
-            "maximumDeviation>0.0f; }) ) alpha=std::min(alpha,\n"
-            "\t\t\t\t\t(envelopeMaximum-center)/maximumDeviation);")
-        limiter_negative = ("\t\t\t\tif( FireProductionRoundoffTrace::EvaluateBranch("
-            "FireProductionRoundoffTrace::BranchSite::LimiterNegative,[&](){ return "
-            "minimumDeviation<0.0f; }) ) alpha=std::min(alpha,\n"
-            "\t\t\t\t\t(center-envelopeMinimum)/(-minimumDeviation));")
-        if text.count(limiter_positive) != 1 or text.count(limiter_negative) != 1:
-            raise RuntimeError("traced limiter branch seams changed")
-        text = text.replace(limiter_positive,
-            "\t\t\t\talpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,\n"
-            "\t\t\t\t\tenvelopeMaximum,center,maximumDeviation,true);")
-        text = text.replace(limiter_negative,
-            "\t\t\t\talpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,\n"
-            "\t\t\t\t\tenvelopeMinimum,center,minimumDeviation,false);")
+        seam = ("request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+"
+                "request.lineLength]")
+        if text.count(seam) != 1:
+            raise RuntimeError("remap periodic seam predicate changed")
+        text = text.replace(seam,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::PeriodicSeamEquality,"
+            "[&](){return request.faceVelocityMPerS[base]!=request.faceVelocityMPerS["
+            "base+request.lineLength];})")
+        lower_ghost = "request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f"
+        upper_ghost = ("request.faceVelocityMPerS[line*(request.lineLength+1u)+"
+                       "request.lineLength]<0.0f")
+        if text.count(lower_ghost) != 1 or text.count(upper_ghost) != 1:
+            raise RuntimeError("open reconstruction ghost predicates changed")
+        text = text.replace(lower_ghost,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::InflowSign,"
+            "[&](){return " + lower_ghost + ";})")
+        text = text.replace(upper_ghost,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::InflowSign,"
+            "[&](){return " + upper_ghost + ";})")
         ppm_branch = ("\t\t\tif( quadratic!=0.0f ) {\n"
                       "\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat stationary="
                       "-linear/(2.0f*quadratic);\n"
@@ -142,6 +142,50 @@ def transform(text: str, name: str, suffix: str) -> str:
         if text.count(ppm_branch) != 1:
             raise RuntimeError("PPM quadratic branch seam changed")
         text = text.replace(ppm_branch, traced_ppm_branch)
+    if name == "FireProductionTransport" and suffix == ".cpp":
+        seam = "velocity!=seamVelocity"
+        if text.count(seam) != 1:
+            raise RuntimeError("periodic carrier seam predicate changed")
+        text = text.replace(seam,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::PeriodicSeamEquality,"
+            "[&](){return velocity!=seamVelocity;})")
+        density = "density>0.0f"
+        if text.count(density) != 4:
+            raise RuntimeError("dual density admissibility predicates changed")
+        text = text.replace(density,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::AdmissibilityGuard,"
+            "[&](){return density>0.0f;})")
+        publication_seam = "return first==second;"
+        if text.count(publication_seam) != 1:
+            raise RuntimeError("periodic dual publication seam predicate changed")
+        text = text.replace(publication_seam,
+            "return FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::PeriodicSeamEquality,"
+            "[&](){return first==second;});")
+    if name == "FireProductionProjection" and suffix == ".cpp":
+        negative_maximum = "maximumResidualPerS<0.0f"
+        if text.count(negative_maximum) != 2:
+            raise RuntimeError("projection nonnegative-reduction guards changed")
+        text = text.replace(negative_maximum,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard,"
+            "[&](){return maximumResidualPerS<0.0f;})")
+        band = "maximumResidualPerS<=tolerance"
+        if text.count(band) != 2:
+            raise RuntimeError("projection validation predicates changed")
+        text = text.replace(band,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand,"
+            "[&](){return maximumResidualPerS<=tolerance;})")
+        inflow = "outward<0.0f"
+        if text.count(inflow) != 1:
+            raise RuntimeError("projection open active-set predicate changed")
+        text = text.replace(inflow,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::OpenBoundaryActiveSet,"
+            "[&](){return outward<0.0f;})")
     if suffix == ".h":
         guards = {"FireProductionAdvection": "FIREPRODUCTIONADVECTION_",
                   "FireProductionProjection": "FIREPRODUCTIONPROJECTION_",

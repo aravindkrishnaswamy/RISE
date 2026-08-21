@@ -2967,3 +2967,30 @@ it was already tried and refuted here.
   obligations.  The full remaining census is still blocked until every source
   site class has one reusable equivalence certificate or a recorded continuous
   reformulation; exit `237` remains the incomplete-proof result.
+
+- **r124 continuous transition evidence / projection-condition stop
+  (2026-08-21):** the compact shared-alpha transition retains common tuple
+  coupling and strict monotonicity, yields only maximal inactivity inside
+  `w=2^-10*s`, and is byte-identical to the legacy limiter outside that width.
+  The half-width mutation fails. The affected r118/r119 campaigns were rerun:
+  restoration plateau `1.5452375598545842e-4`, field plateau
+  `6.5195550111418754e-4`, and all production dyadic scalar/velocity/inventory
+  classifications remain accepted; their durable evidence hashes are now
+  `7fa0872d...3696d8` and `201b67b7...8d2c6`.
+
+  The complete site-class census discharges all `4,340,821` executed
+  obligations: PPM `1,350`, stationary lower/upper `3,798/2,628`, min/max
+  `166,342/478,293`, floor `373,245`, flat integral `620,491`, remaining
+  `1,623,168`, Courant `346,080`, fraction `371,760`, inflow `353,664`, and two
+  absolute-maximum projection guards. Pending count, unresolved bitmap, and
+  invalid bitmap are all zero. This closes the r123 topology proof and retires
+  exit `237` for this graph.
+
+  The immediately following frozen `B_fp32` derivation still refuses before
+  measurement for a new, distinct reason: dependency-blind interval recurrence
+  through P2(17) becomes nonfinite; P2(16) reaches
+  `1.6173346646130356e+303`. No Metal/fp64 result was inspected and no bound was
+  widened. Canonical exit `239` names an independent projection-condition
+  walker as the required next work. Artifact
+  `r124_branch_discharge/branch_discharge.v1` hashes to
+  `2fffea02...da61117`; the golden checkpoint remains untouched.

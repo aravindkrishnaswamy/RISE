@@ -486,19 +486,19 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat maximumVelocityMPerS,FireProductionRoundoffTrace::TraceFloat domainLengthM,bool& withinBand )
 	{
 		withinBand=false;
-		if( !std::isfinite(maximumResidualPerS)||maximumResidualPerS<0.0f||
+		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard,[&](){return maximumResidualPerS<0.0f;})||
 			!std::isfinite(maximumVelocityMPerS)||maximumVelocityMPerS<0.0f||
 			!std::isfinite(domainLengthM)||!(domainLengthM>0.0f) ) return false;
 		const FireProductionRoundoffTrace::TraceFloat tolerance=0.005f*maximumVelocityMPerS/domainLengthM;
 		if( !std::isfinite(tolerance) ) return false;
-		withinBand=maximumResidualPerS<=tolerance;return true;
+		withinBand=FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand,[&](){return maximumResidualPerS<=tolerance;});return true;
 	}
 
 	bool FireProductionRestorationProjectionResidualWithinBand(
 		FireProductionRoundoffTrace::TraceFloat maximumResidualPerS,FireProductionRoundoffTrace::TraceFloat maximumRestorationTargetPerS,bool& withinBand )
 	{
 		withinBand=false;
-		if( !std::isfinite(maximumResidualPerS)||maximumResidualPerS<0.0f||
+		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard,[&](){return maximumResidualPerS<0.0f;})||
 			!std::isfinite(maximumRestorationTargetPerS)||
 			maximumRestorationTargetPerS<0.0f ) return false;
 		// The main certificate is 0.5% of its characteristic divergence U/L.
@@ -506,7 +506,7 @@ namespace RISEFireProductionTrace
 		// is max |(V(Q^n)-1)/dt|; no physical-pass velocity scale enters here.
 		const FireProductionRoundoffTrace::TraceFloat tolerance=0.005f*maximumRestorationTargetPerS;
 		if( !std::isfinite(tolerance) ) return false;
-		withinBand=maximumResidualPerS<=tolerance;return true;
+		withinBand=FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand,[&](){return maximumResidualPerS<=tolerance;});return true;
 	}
 
 	bool ValidateFireProductionProjectionRequest( const FireProductionProjectionRequest& request,
@@ -635,7 +635,7 @@ namespace RISEFireProductionTrace
 					const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
 					const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
 					const std::size_t index=SideFaceIndex(shape,side,cx,cy,cz);
-					if( outward<0.0f ) {
+					if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::OpenBoundaryActiveSet,[&](){return outward<0.0f;}) ) {
 						result.pressureOpenInflow[side][index]=1u;
 						FireProductionRoundoffTrace::TraceFloat speed2=result.velocityMPerS[axis][face]*
 							result.velocityMPerS[axis][face];

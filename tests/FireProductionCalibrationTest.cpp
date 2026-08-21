@@ -78,13 +78,34 @@ int main()
 		branchStopEvidence.begin(),branchStopEvidence.end()))==
 		"2743b6347b2c456530949d2d01df182efa5b1c637f5107ebfd6f794bd4cb3971",
 		"r123 branch-obligation census and shared-limiter stop are durable and byte-bound");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r123")!=std::string::npos&&
+	const std::string branchDischargeEvidence=ReadText(
+		"rendered/fire_production_calibration/r124_branch_discharge/branch_discharge.v1");
+	Check(!branchDischargeEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		branchDischargeEvidence.begin(),branchDischargeEvidence.end()))==
+		"2fffea028ca3ccb3dd9ed1f0832be3474bf63faf9e7f5c531df87df51da61117"&&
+		branchDischargeEvidence.find("executed_obligation_instances_pending 0")!=
+			std::string::npos&&
+		branchDischargeEvidence.find("physical_projection_maximum_output_radius nonfinite")!=
+			std::string::npos,
+		"r124 complete branch census and projection-condition stop are durable and semantic-bound");
+	const std::string restorationEvidence=ReadText(
+		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
+	const std::string spatialEvidence=ReadText(
+		"rendered/fire_production_calibration/r119_production_spatial/production_spatial_evidence.v1");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(restorationEvidence.begin(),
+		restorationEvidence.end()))==
+		"7fa0872d5def2f68eba510b92cfc3bd47e9d78879d4e63f3e637b332ba3696d8"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(spatialEvidence.begin(),
+			spatialEvidence.end()))==
+		"201b67b7d6dfeb8d23d6080b0306de3fecb951ef744469a69a821dcc5688d2c6",
+		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r124")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r123")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 239")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r124")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute the exact r123 refusal and accept only exit 237");
+		windowsTestDriver.find("roundoffRC -eq 239")!=std::string::npos,
+		"ordinary Unix and Windows suites execute the exact r124 derivation and accept only exit 239");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -128,6 +149,22 @@ int main()
 			FireProductionRoundoffTrace::Operation::Add)]==1u&&
 			std::fabs(static_cast<double>(sum.Rounded())-sum.Center())<=sum.Radius(),
 			"roundoff trace outward radius contains a binary32 tie-to-even addition");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		bool copiedEqual=false,recomputedEqual=false;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			const auto source=FireProductionRoundoffTrace::TraceFloat::Raw(
+				1.0,0.25,1.0f,1u);
+			const auto copied=source;
+			const auto recomputed=FireProductionRoundoffTrace::TraceFloat::Raw(
+				1.0,0.25,1.0f,1u);
+			copiedEqual=copied==source;recomputedEqual=recomputed==source;
+		}
+		Check(copiedEqual&&recomputedEqual&&counters.comparisonCount==2u&&
+			counters.branchObligations.size()==1u,
+			"trace identity proves a canonical publication copy while retaining an obligation for independently recomputed equal bytes");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;
@@ -412,6 +449,54 @@ int main()
 			counters.branchObligations[1].divergenceBound==0.0,
 			"limiter no-effect proof owns and explicitly discharges its nested selector without an infinite hull");
 	}
+	{
+		const float positiveScale=22372.0f,negativeScale=1.002f;
+		const double positiveAmbiguity=9292.2824737527444*0x1p-24*
+			static_cast<double>(positiveScale);
+		const double negativeAmbiguity=8645.4622206683161*0x1p-24*
+			static_cast<double>(negativeScale);
+		FireProductionRoundoffWalker::ContinuousLimiterCertificate positive,negative;
+		const bool positiveCertified=FireProductionRoundoffWalker::
+			CertifyContinuousLimiterTransition(positiveAmbiguity,0.0,
+				positiveScale,positiveScale,0.0f,positive);
+		const bool negativeCertified=FireProductionRoundoffWalker::
+			CertifyContinuousLimiterTransition(negativeAmbiguity,0.0,
+				negativeScale,negativeScale,0.0f,negative);
+		Check(positiveCertified&&negativeCertified&&
+			positive.requiredUnitFactor<16384.0&&
+			negative.requiredUnitFactor<16384.0&&
+			positive.continuousAtNegativeWidth&&positive.continuousAtZero&&
+			positive.continuousAtPositiveWidth&&
+			positive.monotoneForPositiveConsumption,
+			"independent r59 limiter walker proves the power-of-two transition contains both frozen site classes and preserves every join");
+		FireProductionRoundoffWalker::ContinuousLimiterCertificate undercount;
+		Check(!FireProductionRoundoffWalker::CertifyContinuousLimiterTransition(
+			positive.width,positive.width,positiveScale,positiveScale,0.0f,undercount),
+			"half-width undercount mutant fails the independent continuous-limiter certificate");
+	}
+	{
+		double total=0.0;
+		using BranchClass=FireProductionRoundoffWalker::ContinuousTransportBranchClass;
+		for(const BranchClass branchClass:{BranchClass::FloorPartition,
+			BranchClass::FlatIntegral,BranchClass::RemainingLength,
+			BranchClass::FractionalTail,BranchClass::CourantSign,
+			BranchClass::InflowSign}){
+			double divergence=0.0;
+			Check(FireProductionRoundoffWalker::CertifyContinuousTransportBranch(
+				branchClass,0.0,0x1p-20,8.0,divergence)&&divergence>0.0&&
+				std::isfinite(divergence),
+				"independent transport site-class walker derives a finite two-face equivalence hull");
+			total+=divergence;
+		}
+		double invalid=1.0;
+		Check(total>0.0&&!FireProductionRoundoffWalker::CertifyContinuousTransportBranch(
+			BranchClass::FloorPartition,0.0,-1.0,8.0,invalid)&&invalid==0.0,
+			"transport site-class certificate rejects an undercounted predicate enclosure");
+	}
+	Check(FireProductionRoundoffWalker::CertifyNonnegativeMaximumOfAbsolute(true,true)&&
+		!FireProductionRoundoffWalker::CertifyNonnegativeMaximumOfAbsolute(false,true)&&
+		!FireProductionRoundoffWalker::CertifyNonnegativeMaximumOfAbsolute(true,false),
+		"independent projection walker binds +0 initialization and absolute-only reduction candidates");
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};
@@ -502,7 +587,7 @@ int main()
 	std::uint64_t tracedOperations=0u;
 	for(const std::uint64_t count:tracedCounters.operation)tracedOperations+=count;
 	const std::array<std::uint64_t,13u> expectedTraceKinds={{
-		20u,156u,180u,192u,72u,0u,20u,0u,0u,40u,0u,20u,0u}};
+		20u,196u,220u,232u,112u,0u,140u,0u,0u,40u,0u,20u,0u}};
 	FireProductionRoundoffWalker::Topology walkedTopology;
 	const bool walked=FireProductionRoundoffWalker::
 		WalkPeriodicPositiveSubcellFreeStreamRemap(fp32.lineLength,fp32.lineCount,
@@ -513,13 +598,13 @@ int main()
 			static_cast<unsigned long long>(tracedOperations),tracedCounters.maximumDepth,
 			static_cast<unsigned long long>(walkedTopology.operationCount),
 			walkedTopology.maximumDepth);
-	Check(tracedOK&&tracedBytes&&tracedOperations==700u&&
+	Check(tracedOK&&tracedBytes&&tracedOperations==980u&&
 		std::equal(expectedTraceKinds.begin(),expectedTraceKinds.end(),
 			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
-		tracedCounters.comparisonCount==404u&&tracedCounters.unresolvedBranch&&
-		tracedCounters.branchObligations.size()==180u&&
-		tracedCounters.dischargedBranchObligationCount==60u&&
-		tracedCounters.minimumDenominatorLowerBound==0.25&&
+		tracedCounters.comparisonCount==644u&&!tracedCounters.unresolvedBranch&&
+		tracedCounters.branchObligations.size()==260u&&
+		tracedCounters.dischargedBranchObligationCount==260u&&
+		tracedCounters.minimumDenominatorLowerBound>0.0&&
 		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
 			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
 		!tracedCounters.invalidDomain&&walked&&
@@ -528,8 +613,8 @@ int main()
 			std::begin(walkedTopology.operation))&&
 		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
-	if(!(tracedOK&&tracedBytes&&tracedOperations==700u&&
-		tracedCounters.comparisonCount==404u&&tracedCounters.unresolvedBranch&&
+	if(!(tracedOK&&tracedBytes&&tracedOperations==980u&&
+		tracedCounters.comparisonCount==644u&&!tracedCounters.unresolvedBranch&&
 		!tracedCounters.invalidDomain))std::fprintf(stderr,
 		"roundoff remap detail ok=%d bytes=%d ops=%llu comparisons=%llu obligations=%zu "
 		"discharged=%llu unresolved=%d invalid=%d denominator=%.17g max_operand=%.17g\n",
@@ -739,8 +824,14 @@ int main()
 	const bool tracedStepOK=FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
 		step,0.0f,tracedStep,&error);
 	bool tracedStepStages=tracedStep.stages.size()==24u;
-	for(const FireProductionRoundoffTrace::Observation& stage:tracedStep.stages){
+	for(std::size_t stageIndex=0u;stageIndex<tracedStep.stages.size();++stageIndex){
+		const FireProductionRoundoffTrace::Observation& stage=tracedStep.stages[stageIndex];
 		std::uint64_t operations=0u;for(const std::uint64_t count:stage.operation)operations+=count;
+		if(!(operations>0u&&stage.maximumDepth>0u&&stage.maximumOutputRadius>=0.0&&
+			std::isfinite(stage.maximumOutputRadius)))std::fprintf(stderr,
+			"roundoff stage detail index=%zu operations=%llu depth=%u radius=%.17g branch=%.17g\n",
+			stageIndex,static_cast<unsigned long long>(operations),stage.maximumDepth,
+			stage.maximumOutputRadius,stage.transportBranchDivergenceBound);
 		tracedStepStages=tracedStepStages&&operations>0u&&stage.maximumDepth>0u&&
 			stage.maximumOutputRadius>=0.0&&std::isfinite(stage.maximumOutputRadius);
 	}
@@ -754,6 +845,10 @@ int main()
 		tracedStep.physicalProjection.maximumPostProjectionResidualPerS.Rounded()==0.0f&&
 		tracedStep.projection.maximumPostProjectionResidualPerS.Rounded()==0.0f,
 		"roundoff adapter seals the complete force-transport-source-two-projection graph before measurement");
+	if(!(tracedStepOK&&tracedStepStages&&tracedStepBytes))
+		std::fprintf(stderr,"roundoff full-step detail ok=%d stages=%d bytes=%d count=%zu error=%s\n",
+			tracedStepOK?1:0,tracedStepStages?1:0,tracedStepBytes?1:0,
+			tracedStep.stages.size(),error.c_str());
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;

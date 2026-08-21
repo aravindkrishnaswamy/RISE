@@ -22,28 +22,28 @@ namespace FireProductionDyadicCalibration
 		{{3.0335881874780171,2.1990585236198967,0.062040384087595157}}
 	}};
 	static const std::array<std::array<double,3>,9> ExpectedProductionScalarEvidence={{
-		{{2.7851990348363993e-05,1.9427319999681218e-05,6.5356608245750555e-07}},
-		{{2.2281636234865962e-05,1.5542015862467438e-05,5.228759329782421e-07}},
-		{{4.1658167971001657e-05,2.9348761419887533e-05,1.4178467521848632e-06}},
-		{{8.8669996502703475e-05,6.3935281112802704e-05,4.4452705530853003e-06}},
-		{{1.482601163529923e-05,1.0341457039123518e-05,3.47986839112617e-07}},
-		{{1.2510883380785839e-05,8.7266649065345203e-06,2.9354274317721736e-07}},
-		{{1.9451898679532878e-07,1.3568110002410778e-07,4.5662575133497111e-09}},
-		{{4.0870837816313034e-08,2.8508293612840997e-08,9.593138934565624e-10}},
-		{{27.362509614068905,19.19314077269485,0.60267226196132961}}
+		{{2.779630607142089e-05,1.9376399787670378e-05,6.5821457549512066e-07}},
+		{{2.2237012405112389e-05,1.550123643841692e-05,5.2661080535392201e-07}},
+		{{4.1616273041252398e-05,2.9297150713796919e-05,1.4221232851890914e-06}},
+		{{8.863713838071231e-05,6.3862743725679328e-05,4.4547775023081515e-06}},
+		{{1.4796329556418295e-05,1.0314370367320126e-05,3.5045661233875841e-07}},
+		{{1.2485879368318859e-05,8.7037771996212017e-06,2.9565806130198519e-07}},
+		{{1.9412971046475788e-07,1.3532665048727686e-07,4.5982090089556525e-09}},
+		{{4.0788865041019101e-08,2.8433442386997825e-08,9.6623497003419306e-10}},
+		{{27.368865872060592,19.18560584679599,0.60315313976442164}}
 	}};
 	static const std::array<double,3> ExpectedProductionVelocityEvidence={{
-		0.0050309330830369779,0.0041988863756097731,0.00054172469945656628}};
+		0.0050310117952093794,0.0041988798898684931,0.00054172635019014454}};
 	static const std::array<std::array<double,3>,9> ExpectedProductionInventoryEvidence={{
-		{{4.3003371683891789e-06,3.4039960469869901e-06,2.5074860157681123e-07}},
-		{{3.4402878760983469e-06,2.723177742691707e-06,2.0060483436890042e-07}},
-		{{7.4924031893408571e-06,5.9068428257535999e-06,4.1817756896156411e-07}},
-		{{1.3490075245425892e-05,1.0597573831816476e-05,7.2302922771161349e-07}},
-		{{2.2891683426375098e-06,1.8119336222498228e-06,1.3341737607405757e-07}},
-		{{1.931659566859617e-06,1.5290131586097322e-06,1.1261318754243743e-07}},
-		{{3.0033833960845316e-08,2.3773419468968177e-08,1.7509790883386313e-09}},
-		{{6.3102930501716795e-09,4.9951138534088941e-09,3.6801403444823924e-10}},
-		{{3.2317766520209261,2.5743976169178495,0.20385408542642836}}
+		{{4.3003247507597542e-06,3.4038882101086743e-06,2.5067851355808912e-07}},
+		{{3.4403247021405625e-06,2.7231125060978023e-06,2.0054346086539887e-07}},
+		{{7.493455894291845e-06,5.9066817665875959e-06,4.1749268467339284e-07}},
+		{{1.3489273687161685e-05,1.0597627727815251e-05,7.2385354576987027e-07}},
+		{{2.2892133371595069e-06,1.8119702490590472e-06,1.334174376220465e-07}},
+		{{1.9316525140325447e-06,1.5290311632387699e-06,1.126244897967088e-07}},
+		{{3.0033352231822324e-08,2.3773353151628103e-08,1.7516096101235883e-09}},
+		{{6.310342049198087e-09,4.9948937606050488e-09,3.6787796847150261e-10}},
+		{{3.2317285868339241,2.5744273456512019,0.20393891033018008}}
 	}};
 
 	bool BuildCase(const double tier,FireCase::RecordV1& record,std::string& error)
@@ -1039,6 +1039,9 @@ namespace FireProductionDyadicCalibration
 			trace.force.schedule.substepCount);
 		std::uint64_t totalBranchObligationCount=0u;
 		std::uint64_t totalDischargedBranchObligationCount=0u;
+		std::array<std::uint64_t,static_cast<unsigned int>(
+			FireProductionRoundoffTrace::BranchSite::Count)> totalSiteCount={},
+			totalPendingSiteCount={};
 		for(std::size_t index=0u;index<trace.stages.size();++index){
 			const FireProductionRoundoffTrace::Observation& stage=trace.stages[index];
 			totalBranchObligationCount+=stage.branchObligations.size();
@@ -1053,6 +1056,7 @@ namespace FireProductionDyadicCalibration
 			AppendDouble(encoded,stage.minimumSqrtDomainLowerBound);
 			AppendDouble(encoded,stage.maximumAbsoluteOutput);
 			AppendDouble(encoded,stage.maximumOutputRadius);
+			AppendDouble(encoded,stage.transportBranchDivergenceBound);
 			AppendInteger(encoded,stage.unresolvedBranch?1u:0u);
 			AppendInteger(encoded,stage.invalidDomain?1u:0u);
 			AppendInteger(encoded,stage.unresolvedWitnessRecorded?1u:0u);
@@ -1069,6 +1073,10 @@ namespace FireProductionDyadicCalibration
 			AppendInteger(encoded,stage.dischargedBranchObligationCount);
 			for(const FireProductionRoundoffTrace::BranchObligation& obligation:
 				stage.branchObligations){
+				++totalSiteCount[static_cast<unsigned int>(obligation.site)];
+				if(obligation.certificate==FireProductionRoundoffTrace::
+					BranchCertificate::None)++totalPendingSiteCount[
+						static_cast<unsigned int>(obligation.site)];
 				AppendInteger(encoded,obligation.comparisonOrdinal);
 				AppendInteger(encoded,static_cast<unsigned int>(obligation.site));
 				AppendDouble(encoded,obligation.predicateCenter);
@@ -1170,6 +1178,12 @@ namespace FireProductionDyadicCalibration
 					obligation.proofLower,obligation.proofRequired,
 					obligation.inactiveResultRounded,obligation.activeResultRounded);
 		}
+		std::fprintf(stderr,"r124 class_census");
+		for(unsigned int site=0u;site<totalSiteCount.size();++site)
+			if(totalSiteCount[site])std::fprintf(stderr," %u=%llu/%llu",site,
+				static_cast<unsigned long long>(totalPendingSiteCount[site]),
+				static_cast<unsigned long long>(totalSiteCount[site]));
+		std::fprintf(stderr," (pending/total)\n");
 		const std::string traceDigest=RISECBOR64::SHA256Hex(encoded);
 		std::fprintf(stderr,"r120 trace_digest=%s unresolved_bitmap=0x%06x "
 			"invalid_bitmap=0x%06x trace_generator=%s transport_source=%s\n",
@@ -1181,26 +1195,14 @@ namespace FireProductionDyadicCalibration
 			finiteOutputs=finiteOutputs&&std::isfinite(stage.maximumAbsoluteOutput)&&
 				std::isfinite(stage.maximumOutputRadius);
 		if(trace.stages.size()!=24u)return 238;
-		const FireProductionRoundoffTrace::Observation& firstCell=trace.stages[1];
 		const FireProductionRoundoffTrace::Observation& source=trace.stages[21];
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
-		const FireProductionRoundoffTrace::BranchObligation* limiterObligation=nullptr;
-		for(const FireProductionRoundoffTrace::BranchObligation& obligation:
-			trace.stages[7].branchObligations)if(obligation.site==
-			FireProductionRoundoffTrace::BranchSite::LimiterNegative&&
-			obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::None){
-			limiterObligation=&obligation;break;}
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="b2cd4fcf1b19348686acf1ea2e15949ac09992d8e04038f345d9eda3415619e5"||
-			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x1ffffeu||!finiteOutputs||
-			totalBranchObligationCount!=4161080u||
-			totalDischargedBranchObligationCount!=468869u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=3692211u||
-			!firstCell.unresolvedWitnessRecorded||!firstCell.invalidDenominatorWitnessRecorded||
-			firstCell.invalidDenominatorCenter!=5.2089492479923116e-5||
-			firstCell.invalidDenominatorRadius!=6.2056656484854261e-5||
-			firstCell.invalidDenominatorRounded!=5.5077325678439811e-5f||
+			traceDigest!="5a16fc01bd9f57597c4fa6c4c55114621fb62752d51bfac338de6e2d287b1463"||
+			unresolvedBitmap!=0u||invalidBitmap!=0u||finiteOutputs||
+			totalBranchObligationCount!=4340821u||
+			totalDischargedBranchObligationCount!=4340821u||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1218,21 +1220,17 @@ namespace FireProductionDyadicCalibration
 			ppmCertificate.ambiguityWidth!=2.008640214894198e-6||
 			ppmCertificate.arithmeticResidualBound!=2.6783670818887366e-6||
 			ppmCertificate.divergenceBound!=3.1805271356122864e-6||
-			!limiterObligation||limiterObligation->comparisonOrdinal!=5957u||
-			limiterObligation->predicateCenter!=-4.1921933491284591e-6||
-			limiterObligation->predicateRadius!=5.7555189193234835e-6||
-			!limiterObligation->roundedResult||limiterObligation->proofLower!=
-				-4.9406564584124654e-324||
-			limiterObligation->proofRequired!=10.986253083780237||
-			limiterObligation->inactiveResultRounded!=1.0f||
-			limiterObligation->activeResultRounded!=0.0f||
 			source.unresolvedBranch||
-			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
-			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r123 PPM branch discharged at %.17g; derivation stopped before "
-			"Metal measurement at a non-equivalent shared-limiter obligation\n",
-			ppmCertificate.divergenceBound);
-		return 237;
+			source.invalidDomain||physical.unresolvedBranch||physical.invalidDomain||
+			restoration.unresolvedBranch||restoration.invalidDomain||
+			std::isfinite(physical.maximumOutputRadius)||
+			!std::isfinite(restoration.maximumOutputRadius))return 238;
+		std::fprintf(stderr,"r124 all %llu branch obligations discharged; B_fp32 "
+			"derivation stopped before Metal because physical projection radius is nonfinite "
+			"(restoration radius %.17g)\n",
+			static_cast<unsigned long long>(totalBranchObligationCount),
+			restoration.maximumOutputRadius);
+		return 239;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,
@@ -1316,14 +1314,14 @@ namespace FireProductionDyadicCalibration
 			static_cast<unsigned long long>(maximumCertified),
 			static_cast<unsigned long long>(maximumActual),traceDigest.c_str(),
 			AnalyticStateDigest(state).c_str());
-		if(plateau!=0.00015435381821271577||
-			fieldPlateau!=0.0006524281258450948||
-			probe.back()!=0.00011215264457620222||
-			fieldMaximum.back()!=-0.0004060346667688064||
+		if(plateau!=0.00015452375598545842||
+			fieldPlateau!=0.00065195550111418754||
+			probe.back()!=0.00011204190328806263||
+			fieldMaximum.back()!=-0.0004060806034105191||
 			maximumCertified!=248479780u||maximumActual!=229518420u||
-			traceDigest!="2b7071e64f1203c749f2813c8b4a766f862ebcee9b4a78a77257f6addb72fc68"||
+			traceDigest!="02404297c0d0beb31a219ea56d80dfafbc8091912be4a1442d9d70714ba15518"||
 			AnalyticStateDigest(state)!=
-				"b3e1710842b98f7f40580270b3fd857ed1bc1c1a81a567309c62b14981ddc76e"||
+				"4ae35e927f78d9b1a3eaf55c50b737a355a8f6afc62bead26b81b31ff452a6c7"||
 			!(plateau<0.001)||!(fieldPlateau<0.001)||
 			!std::isfinite(deviceP95)||!std::isfinite(wallP95)||wallP95>200.0)return 224;
 		return 228;
@@ -1616,9 +1614,9 @@ namespace FireProductionDyadicCalibration
 						sizeof(removedMeanBits));
 					if(!production.physicalProjection.validationPassed||
 						production.physicalProjection.maximumPreProjectionResidualPerS!=0x1.7d1296p-3f||
-						production.physicalProjection.maximumPostProjectionResidualPerS!=0x1.eb74p-22f||
+						production.physicalProjection.maximumPostProjectionResidualPerS!=0x1.04afp-21f||
 						production.physicalProjection.maximumOpenComplementarityDiscrepancyMPerS!=
-							0x1.6a5972p-7f||
+							0x1.6a59cep-7f||
 						removedMeanBits!=0u)return 189;
 					const ProductionAffineResidual calibratingResidual=
 						MeasureProductionAffineResidual(production,states[index].states.size());
@@ -1626,12 +1624,16 @@ namespace FireProductionDyadicCalibration
 						FireSimulationMethaneRecord::PhysicalV1().AcceptedStateFeasibilityEnvelope();
 					const double fp32Bound=AcceptedStateRoundoffFactor(envelope,
 						FireStateProducerPrecision::Binary32);
+					std::fprintf(stderr,"r124 dyadic first residual_abs=%.17g residual_scaled=%.17g "
+						"cell=%zu row=%zu digest=%s\n",calibratingResidual.maximumAbsolute,
+						calibratingResidual.maximumScaled,calibratingResidual.cell,
+						calibratingResidual.row,ProductionConservativeDigest(production).c_str());
 					if(calibratingResidual.maximumAbsolute!=5.2451771873310863e-08||
 						calibratingResidual.maximumScaled!=5.2451771873310863e-08||
 						calibratingResidual.cell!=4915u||calibratingResidual.row!=2u||
 						!(calibratingResidual.maximumScaled<fp32Bound)||
 						ProductionConservativeDigest(production)!=
-							"03faf5aad21ef47b5127213dde0e744e92d0d89f4a2a5345b7bd373979564e50")
+							"4ebc18c73162ed9a4f14c0836b4e1b5388a19883780c082ab9f9c75d2bfd5efc")
 						return 190;
 					std::fprintf(stderr,"dyadic production precision envelope observed=%.17g "
 						"bound=%.17g margin=%.17g cell=%zu row=%zu\n",

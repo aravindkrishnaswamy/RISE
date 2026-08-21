@@ -2006,7 +2006,7 @@ It returns `228` only after the exact deterministic evidence and the 200 ms
 wall gate match. Malformed activation returns `226`; simultaneous r117/r118
 activation returns `227`. Durable evidence is
 `rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1`
-(SHA-256 `adaa3fc412f9c10a4ce99967ca5d95f54bd02f44be070db9f2178a21a16fa5b7`).
+(r124 rerun SHA-256 `7fa0872d5def2f68eba510b92cfc3bd47e9d78879d4e63f3e637b332ba3696d8`).
 
 ### 7.34 Production dyadic spatial term (r119)
 
@@ -2022,7 +2022,7 @@ balls and approach the opposite pair's limit from coarse to fine.
 The exact `D5_10`, `D6_12`, and independent-limit differences are bound in
 `ExpectedProduction*Evidence` and in the durable artifact
 `rendered/fire_production_calibration/r119_production_spatial/production_spatial_evidence.v1`
-(SHA-256 `10229d0f0508787912e0ef4986ad9743de7d4fc62bab5b0c9cdaf7c38a4345f4`).
+(r124 rerun SHA-256 `201b67b7d6dfeb8d23d6080b0306de3fecb951ef744469a69a821dcc5688d2c6`).
 This admits the production **spatial** scheme-distance term only. It is not a
 temporal term, not `B_fp32`, and not an eight-slice production-versus-oracle
 acceptance band. The fp32 feasibility envelope remains a consumer-totality
@@ -2284,6 +2284,53 @@ then discharged by site class: one independent equivalence certificate or one
 recorded continuous reformulation per source site, instantiated over every
 cell/component.  An incomplete class census retains exit `237` and blocks
 `B_fp32`.
+
+### 7.41 Continuous-limiter evidence and complete branch census (r124)
+
+The production CPU and Metal implementations use the algebraically compact
+form of the pre-registered transition,
+
+```
+min(alpha, min(1, (Q + max(-d,0)) / max(d,w))) .
+```
+
+The independent walker proves the three joins, positive-consumption
+monotonicity, containment of both frozen predicate classes by `w`, and exact
+legacy behavior outside the width. A half-width mutant fails. Exact production
+fixtures bind the ramp at `-w,-w/2,0,w/2,w`; CPU and Metal use the same
+operation association. The 104-step r118 and four-tier/eight-step r119
+campaigns were rerun. Their classifications do not move: the restoration probe
+plateaus at `1.5452375598545842e-4`, the field maximum at
+`6.5195550111418754e-4`, and all r119 scalar, velocity, and inventory limit
+balls remain accepted. Only the expected strict-fp32 evidence bytes were
+re-pinned.
+
+The complete no-Metal walk now discharges every one of `4,340,821` dynamic
+obligations. The site-class census is: PPM quadratic `1,350`, stationary lower
+`3,798`, stationary upper `2,628`, continuous minimum `166,342`, continuous
+maximum `478,293`, floor partition `373,245`, flat integral `620,491`,
+remaining-length `1,623,168`, Courant sign `346,080`, fractional tail
+`371,760`, inflow sign `353,664`, and two projection nonnegative-reduction
+guards. Each class has zero pending instances. The two projection guards are
+closed by the independently bound producer invariant: the maximum is
+initialized to positive zero and updated only from absolute residual
+candidates. The trace identity is
+`5a16fc01bd9f57597c4fa6c4c55114621fb62752d51bfac338de6e2d287b1463`;
+both unresolved and invalid bitmaps are zero.
+
+This completes r123's topology obligation, so exit `237` is retired for the
+current graph. It does not manufacture `B_fp32`. Applying the next frozen r120
+condition recurrence exposes a separate arithmetic-walker obstruction: the
+physical 17-cycle projection interval overflows to a nonfinite radius, while
+the restoration projection reaches the finite but unusable
+`1.6173346646130356e+303`. The canonical no-Metal command therefore exits
+`239` before Metal or fp64 comparison. This is neither a measured miss nor
+grounds to enlarge the bound; it identifies the projection condition model as
+the next proof work. Temporal refinement, eight-slice readmission, and source
+maps remain blocked until an independent finite projection condition bound is
+derived. Durable evidence is
+`rendered/fire_production_calibration/r124_branch_discharge/branch_discharge.v1`,
+SHA-256 `2fffea028ca3ccb3dd9ed1f0832be3474bf63faf9e7f5c531df87df51da61117`.
 
 ## 8. Rejected directions and future work
 

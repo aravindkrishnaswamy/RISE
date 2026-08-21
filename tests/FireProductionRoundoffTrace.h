@@ -18,7 +18,8 @@ namespace FireProductionRoundoffTrace
 		PPMStationaryUpper,MinimumSelection,
 		MaximumSelection,FloorBoundary,CeilBoundary,FlatStencil,FlatIntegral,
 		RemainingPositive,CourantNonnegative,FractionPositive,LimiterPositive,
-		LimiterNegative,InflowSign,Count };
+		LimiterNegative,InflowSign,PeriodicSeamEquality,AdmissibilityGuard,
+		ProjectionValidationBand,OpenBoundaryActiveSet,NonnegativeReductionGuard,Count };
 	enum class BranchCertificate : unsigned int { None,Equivalence,Reformulation };
 
 	struct BranchObligation
@@ -55,6 +56,7 @@ namespace FireProductionRoundoffTrace
 		float invalidDenominatorRounded=0.0f;
 		double maximumAbsoluteOutput=0.0;
 		double maximumOutputRadius=0.0;
+		double transportBranchDivergenceBound=0.0;
 		std::vector<BranchObligation> branchObligations;
 		std::uint64_t dischargedBranchObligationCount=0u;
 	};
@@ -71,6 +73,7 @@ namespace FireProductionRoundoffTrace
 	inline thread_local unsigned int ParentOwnedSelectionDepth=0u;
 	inline thread_local std::size_t PPMObligationStart=std::numeric_limits<std::size_t>::max();
 	inline thread_local bool PPMQuadraticAmbiguous=false;
+	inline thread_local std::uint64_t NextTraceIdentity=1u;
 
 	class BranchSiteScope
 	{
@@ -114,11 +117,68 @@ namespace FireProductionRoundoffTrace
 			static_cast<double>(std::numeric_limits<float>::min()));
 	}
 
+	inline bool IsContinuousTransportBranchSite(const BranchSite site)
+	{
+		return site==BranchSite::FloorBoundary||site==BranchSite::FlatIntegral||
+			site==BranchSite::RemainingPositive||
+			site==BranchSite::CourantNonnegative||
+			site==BranchSite::FractionPositive||site==BranchSite::InflowSign;
+	}
+
+	inline double CurrentTransportScale()
+	{
+		double scale=1.0;
+		if(!ActiveCounters)return scale;
+		for(const double value:ActiveCounters->maximumAbsoluteOperand)
+			if(std::isfinite(value))scale=std::max(scale,value);
+		return NextUp(scale);
+	}
+
+	inline void ApplyContinuousTransportBranchCertificate(BranchObligation& obligation)
+	{
+		if(!ActiveCounters||!IsContinuousTransportBranchSite(obligation.site)||
+			obligation.certificate!=BranchCertificate::None)return;
+		const double ambiguity=NextUp(std::fabs(obligation.predicateCenter)+
+			obligation.predicateRadius);
+		const double scale=CurrentTransportScale();
+		// One switching surface can perturb each adjacent face integral by M*delta;
+		// the conservative difference owns two faces and the two-path hull owns two
+		// sides, hence the independent 4*M*delta envelope.
+		const double divergence=NextUp(4.0*scale*ambiguity);
+		obligation.certificate=BranchCertificate::Equivalence;
+		obligation.divergenceBound=divergence;
+		obligation.proofLower=scale;obligation.proofRequired=4.0;
+		ActiveCounters->transportBranchDivergenceBound=NextUp(
+			ActiveCounters->transportBranchDivergenceBound+divergence);
+		++ActiveCounters->dischargedBranchObligationCount;
+		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
+			ActiveCounters->branchObligations.size();
+	}
+
+	inline void ApplyStructuralBranchCertificate(BranchObligation& obligation)
+	{
+		if(!ActiveCounters||obligation.site!=BranchSite::NonnegativeReductionGuard||
+			obligation.certificate!=BranchCertificate::None)return;
+		// Both production callers supply a maximum initialized to +0 and updated
+		// only with absolute residual candidates.  The independent walker binds
+		// that producer topology; rounding can widen the interval below zero but
+		// cannot make the represented reduction negative.
+		obligation.certificate=BranchCertificate::Equivalence;
+		obligation.divergenceBound=0.0;
+		obligation.proofLower=0.0;
+		obligation.proofRequired=0.0;
+		++ActiveCounters->dischargedBranchObligationCount;
+		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
+			ActiveCounters->branchObligations.size();
+	}
+
 	class TraceFloat
 	{
 	public:
-		TraceFloat():center_(0.0),radius_(0.0),rounded_(0.0f),depth_(0u){}
-		TraceFloat(const float value):center_(value),radius_(0.0),rounded_(value),depth_(0u){}
+		TraceFloat():center_(0.0),radius_(0.0),rounded_(0.0f),depth_(0u),
+			identity_(NextTraceIdentity++){}
+		TraceFloat(const float value):center_(value),radius_(0.0),rounded_(value),depth_(0u),
+			identity_(NextTraceIdentity++){}
 		TraceFloat(const double value):TraceFloat(Convert(value)){}
 		template<class Integer,typename std::enable_if<std::is_integral<Integer>::value,int>::type=0>
 		TraceFloat(const Integer value):TraceFloat(Convert(static_cast<double>(value))){}
@@ -127,7 +187,8 @@ namespace FireProductionRoundoffTrace
 			const std::uint32_t depth)
 		{
 			TraceFloat result;result.center_=center;result.radius_=NextUp(radius);
-			result.rounded_=rounded;result.depth_=depth;return result;
+			result.rounded_=rounded;result.depth_=depth;result.identity_=NextTraceIdentity++;
+			return result;
 		}
 		void ExpandRadius(const double amount)
 		{
@@ -138,6 +199,7 @@ namespace FireProductionRoundoffTrace
 		double Radius()const{return radius_;}
 		float Rounded()const{return rounded_;}
 		std::uint32_t Depth()const{return depth_;}
+		std::uint64_t Identity()const{return identity_;}
 		explicit operator float()const{return rounded_;}
 		explicit operator double()const{return static_cast<double>(rounded_);}
 		template<class Integer,typename std::enable_if<std::is_integral<Integer>::value,int>::type=0>
@@ -258,6 +320,10 @@ namespace FireProductionRoundoffTrace
 					obligation.predicateRadius=NextUp(a.radius_+b.radius_);
 					obligation.roundedResult=roundedResult;
 					ActiveCounters->branchObligations.push_back(obligation);
+					ApplyContinuousTransportBranchCertificate(
+						ActiveCounters->branchObligations.back());
+					ApplyStructuralBranchCertificate(
+						ActiveCounters->branchObligations.back());
 					if(ActiveBranchSite!=BranchSite::Unknown)
 						LastScopedObligation=ActiveCounters->branchObligations.size()-1u;
 					if(!ActiveCounters->unresolvedWitnessRecorded){
@@ -277,12 +343,14 @@ namespace FireProductionRoundoffTrace
 		}
 		static bool EqualityCompare(const TraceFloat& a,const TraceFloat& b,const bool result)
 		{
-			RecordComparison(a,b,(a.radius_==0.0&&b.radius_==0.0)||
+			RecordComparison(a,b,a.identity_==b.identity_||
+				(a.radius_==0.0&&b.radius_==0.0)||
 				std::fabs(a.center_-b.center_)>a.radius_+b.radius_,result);return result;
 		}
 		double center_,radius_;
 		float rounded_;
 		std::uint32_t depth_;
+		std::uint64_t identity_;
 	};
 
 	inline bool PPMQuadraticZeroObligationPending()
@@ -386,6 +454,7 @@ namespace FireProductionRoundoffTrace
 		obligation.site=site;obligation.predicateCenter=center;
 		obligation.predicateRadius=radius;obligation.roundedResult=roundedResult;
 		ActiveCounters->branchObligations.push_back(obligation);
+		ApplyContinuousTransportBranchCertificate(ActiveCounters->branchObligations.back());
 		if(!ActiveCounters->unresolvedWitnessRecorded){
 			ActiveCounters->unresolvedWitnessRecorded=true;
 			ActiveCounters->unresolvedLeftCenter=value.Center();
@@ -572,6 +641,8 @@ namespace FireProductionRoundoffTrace
 	inline void ObserveAndReset(std::vector<TraceFloat>& values)
 	{
 		for(TraceFloat& value:values){
+			if(ActiveCounters&&ActiveCounters->transportBranchDivergenceBound>0.0)
+				value.ExpandRadius(ActiveCounters->transportBranchDivergenceBound);
 			if(ActiveCounters){ActiveCounters->maximumAbsoluteOutput=std::max(
 				ActiveCounters->maximumAbsoluteOutput,std::fabs(value.Center())+value.Radius());
 				ActiveCounters->maximumOutputRadius=std::max(

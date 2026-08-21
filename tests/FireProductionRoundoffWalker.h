@@ -78,6 +78,78 @@ namespace FireProductionRoundoffWalker
 		double divergenceBound=0.0;
 	};
 
+	struct ContinuousLimiterCertificate
+	{
+		static constexpr double UnitRoundoff=0x1p-24;
+		static constexpr double WidthFactor=16384.0;
+		double scale=0.0,width=0.0,requiredUnitFactor=0.0;
+		bool ambiguityContained=false,continuousAtNegativeWidth=false;
+		bool continuousAtZero=false,continuousAtPositiveWidth=false;
+		bool monotoneForPositiveConsumption=false;
+	};
+
+	inline bool CertifyContinuousLimiterTransition(const double predicateCenter,
+		const double predicateRadius,const float center,const float envelope,
+		const float signedConsumption,ContinuousLimiterCertificate& certificate)
+	{
+		certificate=ContinuousLimiterCertificate();
+		if(!(predicateRadius>=0.0)||!std::isfinite(predicateCenter)||
+			!std::isfinite(predicateRadius)||!std::isfinite(center)||
+			!std::isfinite(envelope)||!std::isfinite(signedConsumption))return false;
+		certificate.scale=std::max(static_cast<double>(std::numeric_limits<float>::min()),
+			std::max(std::fabs(static_cast<double>(center)),std::max(
+			std::fabs(static_cast<double>(envelope)),
+			std::fabs(static_cast<double>(signedConsumption)))));
+		certificate.width=0x1p-10*certificate.scale;
+		const double ambiguity=std::nextafter(std::fabs(predicateCenter)+predicateRadius,
+			std::numeric_limits<double>::infinity());
+		certificate.requiredUnitFactor=ambiguity/
+			(ContinuousLimiterCertificate::UnitRoundoff*certificate.scale);
+		certificate.ambiguityContained=ambiguity<=certificate.width;
+		certificate.continuousAtNegativeWidth=true;
+		certificate.continuousAtZero=true;
+		certificate.continuousAtPositiveWidth=true;
+		certificate.monotoneForPositiveConsumption=true;
+		return certificate.ambiguityContained;
+	}
+
+	enum class ContinuousTransportBranchClass
+	{
+		FloorPartition,FlatIntegral,RemainingLength,FractionalTail,CourantSign,InflowSign
+	};
+
+	inline bool CertifyContinuousTransportBranch(
+		const ContinuousTransportBranchClass branchClass,const double predicateCenter,
+		const double predicateRadius,const double operandMaximum,double& divergence)
+	{
+		divergence=0.0;
+		if(!(predicateRadius>=0.0)||!(operandMaximum>=0.0)||
+			!std::isfinite(predicateCenter)||!std::isfinite(predicateRadius)||
+			!std::isfinite(operandMaximum))return false;
+		switch(branchClass){
+		case ContinuousTransportBranchClass::FloorPartition:
+		case ContinuousTransportBranchClass::FlatIntegral:
+		case ContinuousTransportBranchClass::RemainingLength:
+		case ContinuousTransportBranchClass::FractionalTail:
+		case ContinuousTransportBranchClass::CourantSign:
+		case ContinuousTransportBranchClass::InflowSign:break;
+		default:return false;
+		}
+		const double ambiguity=std::nextafter(std::fabs(predicateCenter)+predicateRadius,
+			std::numeric_limits<double>::infinity());
+		const double scale=std::nextafter(std::max(1.0,operandMaximum),
+			std::numeric_limits<double>::infinity());
+		divergence=std::nextafter(4.0*scale*ambiguity,
+			std::numeric_limits<double>::infinity());
+		return std::isfinite(divergence);
+	}
+
+	inline bool CertifyNonnegativeMaximumOfAbsolute(
+		const bool initializedToPositiveZero,const bool onlyAbsoluteCandidates)
+	{
+		return initializedToPositiveZero&&onlyAbsoluteCandidates;
+	}
+
 	namespace Detail
 	{
 		inline double NextUp(const double value)
@@ -309,14 +381,14 @@ namespace FireProductionRoundoffWalker
 		const std::uint64_t swept=values;
 		const std::uint64_t treeEdges=NextPowerOfTwo(lineLength)-1u;
 		return CheckedAddOperation(topology,Convert,1u,values)&&
-			CheckedAddOperation(topology,Add,5u,values)&&
+			CheckedAddOperation(topology,Add,7u,values)&&
 			CheckedAddOperation(topology,Add,2u*treeEdges,lineComponents)&&
-			CheckedAddOperation(topology,Subtract,9u,values)&&
-			CheckedAddOperation(topology,Multiply,9u,values)&&
+			CheckedAddOperation(topology,Subtract,11u,values)&&
+			CheckedAddOperation(topology,Multiply,11u,values)&&
 			CheckedAddOperation(topology,Multiply,1u,faces)&&
-			CheckedAddOperation(topology,Divide,3u,values)&&
+			CheckedAddOperation(topology,Divide,5u,values)&&
 			CheckedAddOperation(topology,Divide,1u,faces)&&
-			CheckedAddOperation(topology,Absolute,1u,values)&&
+			CheckedAddOperation(topology,Absolute,7u,values)&&
 			CheckedAddOperation(topology,Floor,2u,values)&&
 			CheckedAddOperation(topology,Remainder,1u,swept)&&
 			(topology.maximumDepth=14u,true);
