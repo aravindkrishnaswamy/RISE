@@ -457,7 +457,8 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/CstIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/PainterIntrospection.cpp			\
 	$(PATHLIBRARY)SceneEditor/PainterPreview.cpp					\
-	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp
+	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp					\
+	$(PATHLIBRARY)SceneEditor/ReferenceGraph.cpp
 
 # Miscellaneous stuff
 SRCLIBMISC =\

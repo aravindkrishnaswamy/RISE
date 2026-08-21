@@ -1,0 +1,1113 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  ReferenceGraphTest.cpp - doc-88 Phase 3 S11:
+//    docs/gui/NODE_GRAPH_CANVAS.md sect. 6's "S11 -- ReferenceGraph
+//    shared type + multi-parent DAG assembler".
+//
+//  Five parts, tested separately then together (round 1 of an opus
+//  review added PARTS 4/5 and the new PART 1/2 cases below -- see each
+//  block's own comment for which review item it pins):
+//
+//    PART 1 -- RISE::SceneReferenceGraph (src/Library/SceneEditor/
+//      ReferenceGraph.h; renamed from `ReferenceGraph` in review round
+//      1 P3 -- it shadowed `RISE::Cst::ReferenceGraph`'s bare name).
+//      A pure function of a Cst::Document, so every case here parses a
+//      scene STRING directly (Cst::ParseToCst) and never touches a
+//      Job -- no film, no camera, no derive.
+//        A. FindReferencesTo: painter -> painter (blend_painter.colora/
+//           colorb -> uniformcolor_painter).
+//        B. FindReferencesTo: material -> painter (lambertian_material.
+//           reflectance).
+//        C. The scalar pipe: ggx_material.alphax/alphay -> scalar_painter.
+//           Both `alphax` and `alphay` declare referenceCategories =
+//           {Painter} (not a distinct "scalar" category -- see
+//           ChunkParserRegistry.cpp), and `scalar_painter`'s OWN
+//           descriptor is ALSO ChunkCategory::Painter (only the LIVE
+//           manager differs, IScalarPainterManager vs IPainterManager --
+//           see PainterIntrospection.h's header note).  So the (category,
+//           name) resolution Cst::BuildReferenceGraph performs is
+//           descriptor-based, not live-manager-based, and already
+//           covers this case with NO extension needed -- this test
+//           VERIFIES that rather than assuming it (the S11 brief
+//           flagged this as a case to check, not to trust).
+//        D. Forward query (FindReferencesFrom): a chunk's own out-edges.
+//        E. Self-reference: tolerated, not a crash, not silently dropped.
+//        F. Dangling reference: DanglingReferences surfaces it; Edges/
+//           FindReferencesTo do NOT fabricate an edge for it.
+//        G. ResolveChunk: exact category (a Painter-named chunk and a
+//           same-named Material-category chunk are NOT the same node).
+//        H2. AMBIGUITY OUT-PARAM (review round 1 P1-3): FindReferencesTo/
+//           From distinguish "0 referrers" from "ambiguous name, refused"
+//           via the new `outOccurrences` parameter.
+//        I2. TO/FROM SYMMETRY (review round 1 P2-4): for an unambiguous
+//           name, FindReferencesFrom's out-edges and FindReferencesTo's
+//           in-edges agree; for an AMBIGUOUS referrer name, the two
+//           queries deliberately DISAGREE (FindReferencesTo on the far
+//           end still shows the edge; FindReferencesFrom on the
+//           ambiguous name refuses) -- pinned as documented, not "fixed".
+//
+//    PART 2 -- SceneEditController::BuildPainterMaterialGraph, the PURE
+//      multi-parent DAG assembler (SceneEditController.h/.cpp).  Driven
+//      directly on synthetic GraphNodeSeed/GraphEdgeSeed vectors, the
+//      same "hostile input" discipline SceneGraphNodeApiTest's D/E
+//      cases use for BuildAuthoredTree. Node identity is now
+//      `GraphNodeSeed::id` (review round 1 P1-2), so every seed below
+//      carries an explicit `Cst::NodeId`:
+//        H. Shared-node fan-out: one painter referenced by two
+//           materials is ONE node with TWO inEdges rows.
+//        I. A crafted CYCLE (a references b, b references a) does not
+//           hang the assembler (it never walks what it builds -- see
+//           the header comment on GraphEdgeSeed).
+//        J. A dangling edge seed (toId matches no node) becomes a
+//           node-less port (otherNode == kInvalidNodeIndex), not a
+//           crash and not a dropped edge.
+//        K. Self-reference on the pure assembler: one row in both
+//           outEdges and inEdges of the SAME node.
+//        L. DUPLICATE-ID SEED CONTRACT (review round 1 P1-2): two node
+//           seeds sharing one `id` collapse to ONE node (the FIRST in
+//           presentation order), not a permanently-unreachable orphan --
+//           the exact bug round-1 review caught with a synthetic
+//           2-duplicate-seed input producing 3 nodes instead of 1.
+//        M. TRANSITIVE FUNCTION CHAIN at the assembler level (review
+//           round 1 P2-3): a Painter -> Function -> Function chain wires
+//           correctly (two hops, not just one). No CURRENT chunk
+//           descriptor produces a genuine Function->Function reference
+//           edge (audited: every {Function}-typed Reference param lives
+//           on a Painter/Material/Geometry/Medium chunk, never on a
+//           Function-category chunk itself), so this is tested at the
+//           PURE ASSEMBLER level with synthetic seeds -- exactly the
+//           shape BuildPainterMaterialGraphSeedsLocked_'s transitive
+//           promotion walk would produce once such a param exists.
+//           PART 4b covers the REAL one-hop case
+//           (scalar_painter.function1d) end-to-end through a loaded Job.
+//
+//    PART 3 -- the assembler wired to a REAL loaded scene through
+//      SceneEditController::ReadPainterMaterialGraph: expression_painter
+//      (2 defs) -> ramp_painter -> two materials (fan-out) + a
+//      scalar-pipe bridge (ggx_material.alphax -> scalar_painter),
+//      asserting the EXACT node/edge sets ReadPainterMaterialGraph
+//      publishes.
+//
+//    PART 4 -- additional REAL-scene coverage from review round 1
+//      (P2-5's listed test gaps), through the same Job-loading harness
+//      as PART 3:
+//        4a. Same-name colour+scalar PAIR: two chunks of the SAME
+//            category sharing a name become TWO distinct nodes, both
+//            with a correct (never blank) chunkKeyword, edges attached
+//            per Cst::BuildReferenceGraph's documented first-wins.
+//        4b. REAL one-hop Function promotion: scalar_painter.function1d
+//            -> piecewise_linear_function, reached through a material.
+//        4c. Document-wide NO-BLANK-KEYWORD invariant, asserted as a
+//            standing structural check (not scene-specific) on every
+//            fixture already loaded in this part.
+//
+//    PART 5 -- enamel_watch.RISEscene, a real 2193-line production scene
+//      whose 9 `piecewise_linear_function` chunks are DUAL-REGISTERED
+//      (Job::AddPiecewiseLinearFunction also registers a Function1D-
+//      SpectralPainter in the COLOUR PAINTER manager) -- the exact shape
+//      that produced 9 blank-chunkKeyword phantom Painter nodes under
+//      the prior live-manager-union seeding. Asserts the document-wide
+//      no-blank-keyword invariant AND that the graph's Painter+Material
+//      node COUNT exactly matches an independent AllChunks-based count
+//      of named Painter/Material chunks in the same document (every
+//      such chunk becomes exactly one node, no fewer, no more, no
+//      phantoms).
+//
+//    PART 6 (PERF) -- sombrero.RISEscene, a 96828-line procedurally-
+//      generated scene with 3721 uniformcolor_painter + 3721
+//      lambertian_material chunks (7442 Painter/Material nodes) --
+//      review round 1 P1-1's regression case: the PRIOR seeding design
+//      called SceneReferenceGraph::ResolveChunk (a full O(N log N) document
+//      scan) once PER node, measured at 24s under mMutex.  Times a
+//      steady-state (nothing changed between calls) ReadPainterMaterialGraph
+//      and reports the number the review round asked for.
+//
+//    PART 7 -- doc-88 S11 review round 2 P1: GraphNode::handle, the
+//      generation-tagged replacement for the raw Cst::NodeId this struct
+//      used to publish (a NodeId is per-parse and can silently ALIAS a
+//      different chunk after a reload -- see GraphNodeHandle's own
+//      comment).
+//        N. The PURE assembler (BuildPainterMaterialGraph) never stamps a
+//           handle -- it has no generation to mint one against -- so every
+//           node it produces carries kInvalidGraphNode until a real
+//           publish (RefreshPainterMaterialGraphSnapshot_) stamps it.
+//        O. CROSS-GENERATION REFUSAL: a handle minted on one controller's
+//           published graph does not resolve against a DIFFERENT
+//           controller's published graph (the process-global generation
+//           counter guarantees the two never share a generation) --
+//           ResolveGraphNodeHandle refuses cleanly rather than naming
+//           whatever node happens to sit at the same index over there.
+//           Mirrors SceneGraphNodeApiTest's case W for TreeNodeHandle.
+//
+//    PART 8 -- doc-88 S11 review round 2 P2-b: SceneEditController::
+//      ExpandFunctionPromotionFrontier, factored out of
+//      BuildPainterMaterialGraphSeedsLocked_'s transitive Function-node
+//      promotion walk so its visited-set guard (the thing that makes a
+//      Function->Function CYCLE terminate) is reachable by a synthetic
+//      input -- no current chunk descriptor produces a real one
+//      post-derive, so this guard was previously provable only by reading
+//      the code, not by a test driving it to termination.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "../src/Library/Cst/Cst.h"
+#include "../src/Library/SceneEditor/ReferenceGraph.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/RISE_API.h"
+
+using namespace RISE;
+
+static int passCount = 0, failCount = 0;
+static void Check( bool c, const char* n )
+{
+	if( c ) { ++passCount; }
+	else    { ++failCount; std::cout << "  FAIL: " << n << std::endl; }
+}
+static void CheckEq( const std::string& got, const std::string& want, const char* n )
+{
+	if( got == want ) { ++passCount; return; }
+	++failCount;
+	std::cout << "  FAIL: " << n << "\n    got  : " << got << "\n    want : " << want << std::endl;
+}
+
+// ---------------------------------------------------------------------
+// PART 1 oracles / helpers -- SceneReferenceGraph over a bare Cst::Document
+// ---------------------------------------------------------------------
+
+//! Find one ReferenceEdge in `edges` whose (paramName, occurrence) matches --
+//! a spot check, not a whole-list oracle, since these fixtures are small and
+//! the interesting property in each case is "this specific edge exists /
+//! resolves correctly", not the whole edge SET's shape (PART 2/3 cover shape).
+static const ReferenceEdge* FindEdge( const std::vector<ReferenceEdge>& edges,
+                                       const char* paramName, int occurrence )
+{
+	for( const ReferenceEdge& e : edges )
+		if( std::string( e.paramName.c_str() ) == paramName && e.occurrence == occurrence )
+			return &e;
+	return nullptr;
+}
+
+// ---------------------------------------------------------------------
+// PART 2 oracles / helpers -- the pure DAG assembler
+// ---------------------------------------------------------------------
+
+typedef SceneEditController::GraphNodeSeed NodeSeed;
+typedef SceneEditController::GraphEdgeSeed EdgeSeed;
+typedef SceneEditController::GraphNode     GNode;
+typedef SceneEditController::GraphPort     GPort;
+typedef SceneEditController::PainterMaterialGraph Graph;
+
+static NodeSeed MakeNodeSeed( Cst::NodeId id, const char* name, ChunkCategory cat,
+                               unsigned long long order, unsigned long long serial = 0 )
+{
+	NodeSeed s;
+	s.id       = id;
+	s.name     = String( name );
+	s.category = cat;
+	s.order    = order;
+	s.serial   = serial;
+	return s;
+}
+
+static EdgeSeed MakeEdgeSeed( Cst::NodeId fromId, ChunkCategory fromCat, const char* fromName,
+                               const char* param, int occ,
+                               Cst::NodeId toId, ChunkCategory toCat, const char* toName )
+{
+	EdgeSeed e;
+	e.fromId       = fromId;
+	e.fromCategory = fromCat;
+	e.fromName     = String( fromName );
+	e.paramName    = String( param );
+	e.occurrence   = occ;
+	e.toId         = toId;
+	e.toCategory   = toCat;
+	e.toName       = String( toName );
+	e.portCategories.push_back( toCat );
+	return e;
+}
+
+//! Find the node named `name` in category `cat`, or null. When more than
+//! one node matches (a legal same-name-same-category pair, PART 4a), finds
+//! the FIRST in `g.nodes`' own (presentation) order -- callers that need
+//! to distinguish siblings use `FindNodeByKeyword` instead.
+static const GNode* FindNode( const Graph& g, ChunkCategory cat, const char* name )
+{
+	for( const GNode& n : g.nodes )
+		if( n.category == cat && std::string( n.name.c_str() ) == name )
+			return &n;
+	return nullptr;
+}
+
+//! Find the node named `name` in category `cat` whose chunkKeyword is
+//! EXACTLY `keyword` -- the disambiguator PART 4a needs for a legal
+//! same-name-same-category pair (e.g. two Painter nodes both named "P",
+//! one `uniformcolor_painter`, one `scalar_painter`).
+static const GNode* FindNodeByKeyword( const Graph& g, ChunkCategory cat, const char* name, const char* keyword )
+{
+	for( const GNode& n : g.nodes )
+		if( n.category == cat && std::string( n.name.c_str() ) == name && std::string( n.chunkKeyword.c_str() ) == keyword )
+			return &n;
+	return nullptr;
+}
+
+static const GPort* FindPort( const std::vector<GPort>& ports, const char* paramName, int occ )
+{
+	for( const GPort& p : ports )
+		if( std::string( p.paramName.c_str() ) == paramName && p.occurrence == occ )
+			return &p;
+	return nullptr;
+}
+
+//! Standing invariant (review round 1 P2-5): NO node in a published graph
+//! may have a blank chunkKeyword. Under the pre-fix live-manager-union
+//! seeding, a dual-registered chunk (e.g. piecewise_linear_function, whose
+//! descriptor category is Function but which also enumerates through the
+//! colour Painter manager) could seed a Painter-category node whose
+//! category-exact ResolveChunk lookup then failed to attribute a keyword,
+//! leaving it blank. Document-driven seeding (every node comes straight
+//! from a real chunk's own `role`) makes this true BY CONSTRUCTION, so
+//! this check is run against every real-scene graph in PARTS 3-6, not
+//! just the scenes known to have trip the old bug.
+static bool NoNodeHasBlankKeyword( const Graph& g, std::string* outFirstOffender = nullptr )
+{
+	for( const GNode& n : g.nodes ) {
+		if( n.chunkKeyword.size() <= 1 ) {   // String's <=1-is-empty convention
+			if( outFirstOffender ) *outFirstOffender = std::string( n.name.c_str() );
+			return false;
+		}
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------
+
+static const char* kEdgeFixture =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname base\ncolor 0.8 0.2 0.1\n}\n"
+	"uniformcolor_painter\n{\nname shine\ncolor 1 1 1\n}\n"
+	"blend_painter\n{\nname blended\ncolora base\ncolorb base\nmask base\n}\n"
+	"lambertian_material\n{\nname wallA\nreflectance blended\n}\n"
+	"scalar_painter\n{\nname rough\nvalue 0.3\n}\n"
+	"ggx_material\n{\nname metalA\nrd shine\nalphax rough\nalphay rough\n}\n";
+
+//! Load `text` into a fresh Job via a temp file at `path`, returning the Job
+//! (caller owns, must ->release()) or nullptr on load failure (the temp
+//! file is always removed either way).
+static Job* LoadFixture( const char* path, const std::string& text )
+{
+	{
+		std::ofstream o( path );
+		o << text;
+	}
+	Job* j = new Job();
+	const bool ok = j->LoadAsciiSceneViaCst( path );
+	std::remove( path );
+	if( !ok ) { j->release(); return nullptr; }
+	return j;
+}
+
+int main()
+{
+	std::cout << "ReferenceGraphTest" << std::endl;
+
+	// Scenes under scenes/ reference media by RISE_MEDIA_PATH-relative
+	// path (e.g. enamel_watch's `colors/conductors/Ag.n`) -- default to
+	// the repo root (tests run with CWD == repo root, same convention
+	// scenes/FeatureBased paths below already assume) without clobbering
+	// an operator-supplied override.
+#ifdef _WIN32
+	_putenv_s( "RISE_MEDIA_PATH_DEFAULT_UNUSED", "" );   // no-op, keeps the #ifdef symmetrical
+	if( std::getenv( "RISE_MEDIA_PATH" ) == nullptr ) _putenv_s( "RISE_MEDIA_PATH", "./" );
+#else
+	setenv( "RISE_MEDIA_PATH", "./", 0 );   // 0: do not overwrite an existing value
+#endif
+
+	// =================================================================
+	// PART 1 -- RISE::SceneReferenceGraph over a bare Cst::Document
+	// =================================================================
+	{
+		const Cst::Document doc = Cst::ParseToCst( kEdgeFixture );
+
+		// A. painter -> painter: blend_painter.colora / .colorb / .mask
+		// all point at `base` (a uniformcolor_painter).
+		{
+			const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "base" );
+			Check( to.size() == 3, "A: three painter-side references resolve to `base` (colora, colorb, mask)" );
+			bool sawColora = false, sawColorb = false, sawMask = false;
+			for( const ReferenceEdge& e : to ) {
+				CheckEq( std::string( e.referrerKeyword.c_str() ), "blend_painter", "A: every referrer is the blend_painter chunk" );
+				CheckEq( std::string( e.referrerName.c_str() ),    "blended",       "A: every referrer is named `blended`" );
+				Check( e.referrerCategory == ChunkCategory::Painter, "A: referrer category is Painter" );
+				Check( e.targetCategory   == ChunkCategory::Painter, "A: target category is Painter" );
+				if( std::string( e.paramName.c_str() ) == "colora" ) sawColora = true;
+				if( std::string( e.paramName.c_str() ) == "colorb" ) sawColorb = true;
+				if( std::string( e.paramName.c_str() ) == "mask" )   sawMask = true;
+				Check( !e.portCategories.empty() && e.portCategories[0] == ChunkCategory::Painter,
+				       "A: the port's declared referenceCategories is {Painter}" );
+			}
+			Check( sawColora && sawColorb && sawMask, "A: colora, colorb AND mask all show up as distinct referring params" );
+		}
+
+		// B. material -> painter: lambertian_material.reflectance -> blended
+		{
+			const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "blended" );
+			Check( to.size() == 1, "B: exactly one referrer of `blended` (wallA.reflectance)" );
+			if( to.size() == 1 ) {
+				CheckEq( std::string( to[0].referrerKeyword.c_str() ), "lambertian_material", "B: referrer is lambertian_material" );
+				CheckEq( std::string( to[0].referrerName.c_str() ),    "wallA",               "B: referrer is named wallA" );
+				CheckEq( std::string( to[0].paramName.c_str() ),       "reflectance",         "B: via `reflectance`" );
+				Check( to[0].referrerCategory == ChunkCategory::Material, "B: referrer category is Material" );
+			}
+		}
+
+		// C. THE SCALAR PIPE: ggx_material.alphax / .alphay -> scalar_painter
+		// `rough`.  Verifies (does not assume) that Cst::BuildReferenceGraph's
+		// descriptor-based (category,name) resolution already covers a
+		// scalar_painter target -- see the file header comment.
+		{
+			const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "rough" );
+			Check( to.size() == 2, "C: alphax AND alphay both resolve to the scalar_painter `rough` -- "
+			                       "the scalar pipe IS covered by the descriptor-based (category,name) graph, no extension needed" );
+			bool sawAlphax = false, sawAlphay = false;
+			for( const ReferenceEdge& e : to ) {
+				CheckEq( std::string( e.referrerKeyword.c_str() ), "ggx_material", "C: referrer is ggx_material" );
+				if( std::string( e.paramName.c_str() ) == "alphax" ) sawAlphax = true;
+				if( std::string( e.paramName.c_str() ) == "alphay" ) sawAlphay = true;
+			}
+			Check( sawAlphax && sawAlphay, "C: both alphax and alphay are distinct referring params" );
+		}
+
+		// D. Forward query: what does `metalA` (the ggx_material) itself reference?
+		{
+			const std::vector<ReferenceEdge> from = SceneReferenceGraph::FindReferencesFrom( doc, ChunkCategory::Material, "metalA" );
+			Check( from.size() == 3, "D: metalA has three outgoing references (rd, alphax, alphay)" );
+			const ReferenceEdge* rd = FindEdge( from, "rd", 0 );
+			Check( rd != nullptr && std::string( rd->targetName.c_str() ) == "shine", "D: rd -> shine" );
+			const ReferenceEdge* ax = FindEdge( from, "alphax", 0 );
+			Check( ax != nullptr && std::string( ax->targetName.c_str() ) == "rough", "D: alphax -> rough" );
+		}
+
+		// I2a. TO/FROM SYMMETRY for an UNAMBIGUOUS name (review round 1 P2-4):
+		// FindReferencesFrom(metalA)'s `alphax` row and FindReferencesTo(rough)'s
+		// matching row describe the SAME edge from both ends.
+		{
+			const std::vector<ReferenceEdge> from = SceneReferenceGraph::FindReferencesFrom( doc, ChunkCategory::Material, "metalA" );
+			const std::vector<ReferenceEdge> to   = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "rough" );
+			const ReferenceEdge* fromSide = FindEdge( from, "alphax", 0 );
+			const ReferenceEdge* toSide   = FindEdge( to,   "alphax", 0 );
+			Check( fromSide != nullptr && toSide != nullptr, "I2a: both directions find the alphax edge" );
+			if( fromSide && toSide ) {
+				Check( fromSide->referrerId == toSide->referrerId, "I2a: SYMMETRY -- same referrerId from both queries" );
+				Check( fromSide->targetId   == toSide->targetId,   "I2a: SYMMETRY -- same targetId from both queries" );
+				Check( fromSide->occurrence == toSide->occurrence, "I2a: SYMMETRY -- same occurrence from both queries" );
+			}
+		}
+
+		// E/F/G exercised on tiny dedicated fixtures below (self-reference,
+		// dangling, and exact-category resolution deserve isolated scenes
+		// rather than being folded into the shared fixture's edge count).
+	}
+
+	// E. SELF-REFERENCE: a painter that (nonsensically, but not illegally at
+	// the CST layer) names itself as its own mask. Must be tolerated -- a
+	// resolvable edge, not a crash, not silently dropped.
+	{
+		const char* selfRefScene =
+			"RISE ASCII SCENE 7\n"
+			"blend_painter\n{\nname selfy\ncolora selfy\ncolorb selfy\nmask selfy\n}\n";
+		const Cst::Document doc = Cst::ParseToCst( selfRefScene );
+		const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "selfy" );
+		Check( to.size() == 3, "E: a self-referencing chunk resolves all three of its own params as edges to itself" );
+		for( const ReferenceEdge& e : to ) {
+			Check( std::string( e.referrerName.c_str() ) == "selfy" && std::string( e.targetName.c_str() ) == "selfy",
+			       "E: referrer and target are both `selfy`" );
+		}
+	}
+
+	// F. DANGLING: a reference to a name nothing declares. DanglingReferences
+	// surfaces it; Edges()/FindReferencesTo do NOT fabricate a resolved edge.
+	{
+		const char* danglingScene =
+			"RISE ASCII SCENE 7\n"
+			"lambertian_material\n{\nname lonely\nreflectance ghost_painter\n}\n";
+		const Cst::Document doc = Cst::ParseToCst( danglingScene );
+		const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "ghost_painter" );
+		Check( to.empty(), "F: no resolved edge exists for a name nothing declares" );
+		const std::vector<ReferenceEdge> from = SceneReferenceGraph::FindReferencesFrom( doc, ChunkCategory::Material, "lonely" );
+		Check( from.empty(), "F: the dangling reference does not appear in Edges()/FindReferencesFrom either" );
+		const std::vector<Cst::UnresolvedReference> dangling = SceneReferenceGraph::DanglingReferences( doc );
+		Check( dangling.size() == 1, "F: DanglingReferences surfaces exactly the one dangling reference" );
+		if( dangling.size() == 1 ) {
+			CheckEq( dangling[0].chunkKeyword, "lambertian_material", "F: dangling reference attributed to lambertian_material" );
+			CheckEq( dangling[0].param,        "reflectance",         "F: ...via `reflectance`" );
+			CheckEq( dangling[0].value,        "ghost_painter",       "F: ...naming `ghost_painter`" );
+		}
+		// F2: EdgesAndDangling (review round 1 P1-1's combined query) agrees
+		// with the two separate calls above, from a SINGLE BuildReferenceGraph
+		// pass.
+		const SceneReferenceGraph::Snapshot snap = SceneReferenceGraph::EdgesAndDangling( doc );
+		Check( snap.edges.empty(), "F2: EdgesAndDangling's edges half agrees (still empty)" );
+		Check( snap.unresolved.size() == 1, "F2: EdgesAndDangling's unresolved half agrees (still one entry)" );
+	}
+
+	// G. EXACT CATEGORY: a Painter-named chunk and a same-named Material-
+	// category chunk are TWO DIFFERENT nodes, never merged.
+	{
+		const char* dualNameScene =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname dupe\ncolor 1 1 1\n}\n"
+			"lambertian_material\n{\nname dupe\nreflectance dupe\n}\n";
+		const Cst::Document doc = Cst::ParseToCst( dualNameScene );
+		int occP = 0, occM = 0;
+		const Cst::NodeId painterId  = SceneReferenceGraph::ResolveChunk( doc, ChunkCategory::Painter,  String( "dupe" ), &occP );
+		const Cst::NodeId materialId = SceneReferenceGraph::ResolveChunk( doc, ChunkCategory::Material, String( "dupe" ), &occM );
+		Check( painterId != 0 && materialId != 0 && painterId != materialId,
+		       "G: the Painter `dupe` and the Material `dupe` resolve to two DIFFERENT chunk ids" );
+		Check( occP == 1 && occM == 1, "G: neither resolution is reported ambiguous -- each category has exactly one `dupe`" );
+	}
+
+	// H2 / I2b. AMBIGUITY OUT-PARAM + the documented TO/FROM ASYMMETRY for an
+	// ambiguous name (review round 1 P1-3 + P2-4). Two Painter-category
+	// chunks legally share the name "P" (a blend_painter and a
+	// scalar_painter); `defs[(Painter,"P")]` first-wins to whichever is
+	// declared FIRST (Cst.cpp's BuildReferenceNamespace) -- here the
+	// blend_painter, since it appears first in the fixture text.
+	{
+		const char* ambiguousScene =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname shine\ncolor 1 1 1\n}\n"
+			"blend_painter\n{\nname P\ncolora shine\ncolorb shine\nmask shine\n}\n"
+			"scalar_painter\n{\nname P\nvalue 0.5\n}\n";
+		const Cst::Document doc = Cst::ParseToCst( ambiguousScene );
+
+		// H2a. A GENUINELY UNREFERENCED, UNAMBIGUOUS name: outOccurrences==1,
+		// empty result means "really zero referrers".
+		{
+			int occ = -1;
+			const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "shine", &occ );
+			Check( occ == 1, "H2a: `shine` is unambiguous (occurrence count 1)" );
+			// `shine` IS referenced (by P's colora/colorb/mask) in this fixture,
+			// so assert the COUNT matches occ==1's promise that the query
+			// actually ran (not refused) -- the interesting empty-vs-ambiguous
+			// distinction is H2b below, on a genuinely unreferenced name.
+			Check( to.size() == 3, "H2a: an unambiguous, actually-referenced name returns its real referrers" );
+		}
+		{
+			int occ = -1;
+			const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Material, "nobody_references_this", &occ );
+			Check( occ == 0, "H2a: a name nothing declares reports occurrence 0" );
+			Check( to.empty(), "H2a: ...and an empty result -- '0 referrers' because there IS no such chunk" );
+		}
+
+		// H2b / I2b. THE AMBIGUOUS name "P": FindReferencesFrom refuses
+		// (empty result, occ==2) -- this MUST NOT be misread as "P has zero
+		// out-references" by a future reference-safe-delete consumer
+		// (ENTITY_CREATION.md sect. 5): P (the blend_painter that won the
+		// first-wins race) genuinely has three resolved out-edges, which
+		// FindReferencesTo(Painter,"shine") below independently proves.
+		{
+			int occ = -1;
+			const std::vector<ReferenceEdge> from = SceneReferenceGraph::FindReferencesFrom( doc, ChunkCategory::Painter, "P", &occ );
+			Check( occ == 2, "H2b: `P` is reported AMBIGUOUS (occurrence count 2 -- the blend_painter and the scalar_painter)" );
+			Check( from.empty(), "H2b: FindReferencesFrom REFUSES on an ambiguous name -- empty, but NOT because P has no out-edges" );
+		}
+		{
+			// I2b: the ASYMMETRY -- querying the FAR END (`shine`, unambiguous)
+			// still finds the edges the ambiguous referrer emitted, even though
+			// FindReferencesFrom(P) itself refused to answer. This is the
+			// documented, NOT a bug: Edges()/FindReferencesTo never resolve BY
+			// the referrer's name (only ResolveChunk, which FindReferencesFrom
+			// uses as its entry gate, can be ambiguity-refused).
+			const std::vector<ReferenceEdge> to = SceneReferenceGraph::FindReferencesTo( doc, ChunkCategory::Painter, "shine" );
+			Check( to.size() == 3, "I2b: ASYMMETRY -- FindReferencesTo(shine) sees all 3 edges from the ambiguous referrer P" );
+			for( const ReferenceEdge& e : to )
+				CheckEq( std::string( e.referrerName.c_str() ), "P", "I2b: ...each attributed to referrer name `P` (the first-wins blend_painter)" );
+		}
+	}
+
+	// =================================================================
+	// PART 2 -- the pure DAG assembler, hostile-input discipline
+	// (mirrors SceneGraphNodeApiTest's D/E cases for BuildAuthoredTree)
+	// =================================================================
+
+	// H. SHARED-NODE FAN-OUT: one ramp_painter referenced by two materials
+	// is ONE node with TWO inEdges rows, never two nodes.
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "ramp",  ChunkCategory::Painter,  0 ) );
+		nodes.push_back( MakeNodeSeed( 2, "matA",  ChunkCategory::Material, 1 ) );
+		nodes.push_back( MakeNodeSeed( 3, "matB",  ChunkCategory::Material, 2 ) );
+		std::vector<EdgeSeed> edges;
+		edges.push_back( MakeEdgeSeed( 2, ChunkCategory::Material, "matA", "reflectance", 0, 1, ChunkCategory::Painter, "ramp" ) );
+		edges.push_back( MakeEdgeSeed( 3, ChunkCategory::Material, "matB", "reflectance", 0, 1, ChunkCategory::Painter, "ramp" ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, edges );
+		Check( g.nodes.size() == 3, "H: exactly THREE nodes -- the shared painter did not get duplicated" );
+		const GNode* ramp = FindNode( g, ChunkCategory::Painter, "ramp" );
+		Check( ramp != nullptr, "H: the ramp node exists" );
+		if( ramp ) {
+			Check( ramp->inEdges.size() == 2, "H: the ramp node has TWO inEdges rows (one per referring material)" );
+			Check( ramp->outEdges.empty(), "H: the ramp node itself references nothing" );
+			bool fromA = false, fromB = false;
+			for( const GPort& p : ramp->inEdges ) {
+				if( std::string( p.otherName.c_str() ) == "matA" ) fromA = true;
+				if( std::string( p.otherName.c_str() ) == "matB" ) fromB = true;
+			}
+			Check( fromA && fromB, "H: the two inEdges rows name matA and matB respectively" );
+		}
+		const GNode* matA = FindNode( g, ChunkCategory::Material, "matA" );
+		Check( matA && matA->outEdges.size() == 1 && matA->outEdges[0].otherNode != SceneEditController::kInvalidNodeIndex,
+		       "H: matA's own outEdges row resolves (not a node-less port)" );
+	}
+
+	// I. A CYCLE among edge seeds terminates without a walk -- the assembler
+	// never traverses the structure it produces, so nothing can hang here.
+	// (Budgeted with a hard iteration cap purely so a REGRESSION that
+	// introduced a walk would fail loudly instead of hanging the suite.)
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "a", ChunkCategory::Painter, 0 ) );
+		nodes.push_back( MakeNodeSeed( 2, "b", ChunkCategory::Painter, 1 ) );
+		std::vector<EdgeSeed> edges;
+		edges.push_back( MakeEdgeSeed( 1, ChunkCategory::Painter, "a", "child", 0, 2, ChunkCategory::Painter, "b" ) );
+		edges.push_back( MakeEdgeSeed( 2, ChunkCategory::Painter, "b", "child", 0, 1, ChunkCategory::Painter, "a" ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, edges );
+		Check( g.nodes.size() == 2, "I: both cyclic nodes remain -- a cycle is not dropped" );
+		const GNode* a = FindNode( g, ChunkCategory::Painter, "a" );
+		const GNode* b = FindNode( g, ChunkCategory::Painter, "b" );
+		Check( a && a->outEdges.size() == 1 && a->inEdges.size() == 1, "I: `a` has one out-edge (to b) and one in-edge (from b)" );
+		Check( b && b->outEdges.size() == 1 && b->inEdges.size() == 1, "I: `b` has one out-edge (to a) and one in-edge (from a)" );
+	}
+
+	// J. A DANGLING edge seed (toId matches no node) becomes a node-less
+	// port -- recorded, not dropped, not a crash.
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "onlyOne", ChunkCategory::Painter, 0 ) );
+		std::vector<EdgeSeed> edges;
+		edges.push_back( MakeEdgeSeed( 1, ChunkCategory::Painter, "onlyOne", "mask", 0, 999, ChunkCategory::Painter, "ghost" ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, edges );
+		Check( g.nodes.size() == 1, "J: only the one seeded node exists -- the dangling target did not spawn a phantom node" );
+		const GNode* n = FindNode( g, ChunkCategory::Painter, "onlyOne" );
+		Check( n != nullptr, "J: onlyOne exists" );
+		if( n ) {
+			const GPort* p = FindPort( n->outEdges, "mask", 0 );
+			Check( p != nullptr, "J: the dangling port is still RECORDED on outEdges" );
+			if( p ) {
+				Check( p->otherNode == SceneEditController::kInvalidNodeIndex, "J: otherNode is the invalid-node sentinel" );
+				CheckEq( std::string( p->otherName.c_str() ), "ghost", "J: otherName preserves the dangling target's name" );
+			}
+		}
+	}
+
+	// K. SELF-REFERENCE on the pure assembler: one row in outEdges AND one
+	// row in inEdges of the SAME node -- not special-cased, not a crash.
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "loopy", ChunkCategory::Painter, 0 ) );
+		std::vector<EdgeSeed> edges;
+		edges.push_back( MakeEdgeSeed( 1, ChunkCategory::Painter, "loopy", "mask", 0, 1, ChunkCategory::Painter, "loopy" ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, edges );
+		Check( g.nodes.size() == 1, "K: one node" );
+		const GNode* n = FindNode( g, ChunkCategory::Painter, "loopy" );
+		Check( n && n->outEdges.size() == 1 && n->inEdges.size() == 1, "K: loopy has exactly one out-edge and one in-edge, both to/from itself" );
+		if( n && !n->outEdges.empty() ) Check( n->outEdges[0].otherNode == 0, "K: the out-edge resolves to node index 0 (itself, the only node)" );
+		if( n && !n->inEdges.empty() )  Check( n->inEdges[0].otherNode  == 0, "K: the in-edge resolves to node index 0 (itself)" );
+	}
+
+	// L. DUPLICATE-ID SEED CONTRACT (review round 1 P1-2): two node seeds
+	// sharing one `id` collapse to ONE node, not a 3rd orphan node -- the
+	// exact regression the round-1 review's synthetic input caught (2
+	// duplicate-key seeds + 1 distinct seed producing 3 nodes instead of 2).
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "dup", ChunkCategory::Painter, 0, /*serial*/ 100 ) );   // first occurrence: SURVIVES
+		nodes.push_back( MakeNodeSeed( 1, "dup", ChunkCategory::Painter, 1, /*serial*/ 200 ) );   // duplicate id: DROPPED
+		nodes.push_back( MakeNodeSeed( 2, "other", ChunkCategory::Painter, 2 ) );
+		std::vector<EdgeSeed> edges;
+		// An edge sourced from the duplicate id must attach to the SURVIVING
+		// (first) node -- proving the dedup is a real merge, not a silent
+		// drop of the id from the lookup map alone (the round-1 bug).
+		edges.push_back( MakeEdgeSeed( 1, ChunkCategory::Painter, "dup", "mask", 0, 2, ChunkCategory::Painter, "other" ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, edges );
+		Check( g.nodes.size() == 2, "L: exactly TWO nodes -- the duplicate-id seed did not become a 3rd orphan" );
+		const GNode* dup = FindNode( g, ChunkCategory::Painter, "dup" );
+		Check( dup != nullptr, "L: the surviving `dup` node exists" );
+		if( dup ) Check( dup->serial == 100, "L: the SURVIVING node is the FIRST occurrence (serial 100, not 200)" );
+		const GNode* other = FindNode( g, ChunkCategory::Painter, "other" );
+		Check( other && other->inEdges.size() == 1, "L: `other` sees exactly ONE inEdges row -- the edge from the (deduped) `dup` resolves, not orphaned" );
+	}
+
+	// M. TRANSITIVE FUNCTION CHAIN at the assembler level (review round 1
+	// P2-3): Painter -> FunctionA -> FunctionB, two hops. Chosen over a
+	// one-hop cutoff because the promotion-discovery walk
+	// (BuildPainterMaterialGraphSeedsLocked_) is a bounded in-memory BFS
+	// over the ALREADY-computed document-wide edge list, not a further
+	// document scan -- see that method's own comment. This test pins the
+	// ASSEMBLER half (given the seeds a transitive walk would produce, the
+	// chain wires correctly); no current chunk descriptor has a genuine
+	// Function->Function reference param to exercise the DISCOVERY half
+	// end-to-end (audited: every {Function}-typed Reference param lives on
+	// a Painter/Material/Geometry/Medium chunk, never on a Function-
+	// category chunk itself) -- PART 4b covers the real one-hop discovery
+	// case that DOES exist (scalar_painter.function1d).
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "paint", ChunkCategory::Painter,  0 ) );
+		nodes.push_back( MakeNodeSeed( 2, "fnA",   ChunkCategory::Function, 1 ) );
+		nodes.push_back( MakeNodeSeed( 3, "fnB",   ChunkCategory::Function, 2 ) );
+		std::vector<EdgeSeed> edges;
+		edges.push_back( MakeEdgeSeed( 1, ChunkCategory::Painter,  "paint", "function1d", 0, 2, ChunkCategory::Function, "fnA" ) );
+		edges.push_back( MakeEdgeSeed( 2, ChunkCategory::Function, "fnA",   "compose",    0, 3, ChunkCategory::Function, "fnB" ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, edges );
+		Check( g.nodes.size() == 3, "M: all three nodes (paint, fnA, fnB) present" );
+		const GNode* fnA = FindNode( g, ChunkCategory::Function, "fnA" );
+		const GNode* fnB = FindNode( g, ChunkCategory::Function, "fnB" );
+		Check( fnA && fnA->inEdges.size() == 1 && fnA->outEdges.size() == 1, "M: fnA has one in-edge (from paint) and one out-edge (to fnB) -- the middle of the chain" );
+		Check( fnB && fnB->inEdges.size() == 1 && fnB->outEdges.empty(), "M: fnB has one in-edge (from fnA) and no out-edges -- the end of the chain" );
+		if( fnA && !fnA->outEdges.empty() ) CheckEq( std::string( fnA->outEdges[0].otherName.c_str() ), "fnB", "M: fnA's out-edge names fnB" );
+	}
+
+	// =================================================================
+	// PART 3 -- the assembler wired to a REAL loaded scene, through
+	// SceneEditController::ReadPainterMaterialGraph.
+	// =================================================================
+	{
+		const char* path = "test_referencegraph_real.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"film\n{\nwidth 32\nheight 24\n}\n"
+			"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"expression_painter\n{\nname pnt_field\ndef n fbm(P*3.0, 3, 0.5, 2.0)\ndef t clamp(0.5+0.5*n, 0, 1)\nexpr mix(vec3(0.1,0.1,0.1), vec3(0.9,0.7,0.4), t)\n}\n"
+			"ramp_painter\n{\nname warm_ramp\ninput pnt_field\nchannel R\ninterpolation linear\nstop 0.0 1 0 0\nstop 1.0 0 0 1\n}\n"
+			"scalar_painter\n{\nname rough_scalar\nvalue 0.3\n}\n"
+			"uniformcolor_painter\n{\nname base_color\ncolor 0.8 0.8 0.8\n}\n"
+			"lambertian_material\n{\nname wallA\nreflectance warm_ramp\n}\n"
+			"lambertian_material\n{\nname wallB\nreflectance warm_ramp\n}\n"
+			"ggx_material\n{\nname metalA\nrd base_color\nalphax rough_scalar\nalphay rough_scalar\n}\n"
+			"standard_object\n{\nname obj\ngeometry g\nmaterial wallA\n}\n" );
+		Check( j != nullptr, "PART3: fixture scene loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+			SceneEditController::PainterMaterialGraph g;
+			c.ReadPainterMaterialGraph( g );
+
+			// Exact node SET: pnt_field, warm_ramp, rough_scalar, base_color
+			// (Painter) + wallA, wallB, metalA (Material).  No Function node --
+			// nothing here references a Function-category chunk.
+			Check( g.nodes.size() == 7, "PART3: exactly 7 nodes (4 painters + 3 materials)" );
+			Check( g.generation > 0, "PART3: the published graph carries a real generation (>0)" );
+			Check( NoNodeHasBlankKeyword( g ), "PART3: no node has a blank chunkKeyword" );
+
+			const GNode* pntField = FindNode( g, ChunkCategory::Painter, "pnt_field" );
+			Check( pntField != nullptr, "PART3: pnt_field node exists" );
+			if( pntField ) {
+				CheckEq( std::string( pntField->chunkKeyword.c_str() ), "expression_painter", "PART3: pnt_field's chunkKeyword" );
+				Check( pntField->defCount == 2, "PART3: pnt_field has 2 def stages (the §1.1 two-level model's hook)" );
+				Check( pntField->inEdges.size() == 1, "PART3: pnt_field is referenced once (by warm_ramp.input)" );
+				Check( pntField->handle != SceneEditController::kInvalidGraphNode,
+				       "PART3: pnt_field carries a real (published, generation-tagged) node handle" );
+				// HANDLE ROUND-TRIP (doc-88 S11 review round 2 P1): resolving
+				// the handle this SAME published graph just handed back
+				// against that SAME graph must name pnt_field's own row --
+				// the replacement for the raw-Cst::NodeId identity this test
+				// used to assert (a raw id round-trips trivially by
+				// definition; a generation-tagged handle actually exercises
+				// ResolveGraphNodeHandle's decode path).
+				const unsigned int pntFieldIdx = SceneEditController::ResolveGraphNodeHandle( g, pntField->handle );
+				Check( pntFieldIdx < g.nodes.size()
+				    && std::string( g.nodes[pntFieldIdx].name.c_str() ) == "pnt_field",
+				       "PART3: ResolveGraphNodeHandle round-trips pnt_field's own handle back to its own row" );
+			}
+
+			const GNode* ramp = FindNode( g, ChunkCategory::Painter, "warm_ramp" );
+			Check( ramp != nullptr, "PART3: warm_ramp node exists" );
+			if( ramp ) {
+				CheckEq( std::string( ramp->chunkKeyword.c_str() ), "ramp_painter", "PART3: warm_ramp's chunkKeyword" );
+				Check( ramp->defCount == 0, "PART3: a non-expression painter has defCount 0" );
+				const GPort* inputPort = FindPort( ramp->outEdges, "input", 0 );
+				Check( inputPort && std::string( inputPort->otherName.c_str() ) == "pnt_field",
+				       "PART3: warm_ramp.input -> pnt_field" );
+				Check( ramp->inEdges.size() == 2, "PART3: warm_ramp is shared -- TWO inEdges rows (wallA, wallB)" );
+				bool fromWallA = false, fromWallB = false;
+				for( const GPort& p : ramp->inEdges ) {
+					if( std::string( p.otherName.c_str() ) == "wallA" ) fromWallA = true;
+					if( std::string( p.otherName.c_str() ) == "wallB" ) fromWallB = true;
+				}
+				Check( fromWallA && fromWallB, "PART3: warm_ramp's two inEdges name wallA and wallB" );
+			}
+
+			const GNode* rough = FindNode( g, ChunkCategory::Painter, "rough_scalar" );
+			Check( rough != nullptr, "PART3: rough_scalar node exists" );
+			if( rough ) {
+				CheckEq( std::string( rough->chunkKeyword.c_str() ), "scalar_painter", "PART3: rough_scalar's chunkKeyword" );
+				Check( rough->inEdges.size() == 2, "PART3: rough_scalar is referenced twice (metalA.alphax, metalA.alphay) -- the scalar pipe, live end to end" );
+			}
+
+			const GNode* metalA = FindNode( g, ChunkCategory::Material, "metalA" );
+			Check( metalA != nullptr, "PART3: metalA node exists" );
+			if( metalA ) {
+				CheckEq( std::string( metalA->chunkKeyword.c_str() ), "ggx_material", "PART3: metalA's chunkKeyword" );
+				Check( metalA->outEdges.size() == 3, "PART3: metalA has three outgoing refs (rd, alphax, alphay)" );
+			}
+
+			// STALE-FALLBACK / GENERATION STABILITY: an idle re-read (nothing
+			// changed) must NOT bump the generation -- same compare-then-publish
+			// discipline RefreshTreeSnapshot_ uses (TreesEquivalent), mirrored
+			// here by PainterMaterialGraphsEquivalent.
+			SceneEditController::PainterMaterialGraph g2;
+			c.ReadPainterMaterialGraph( g2 );
+			Check( g2.generation == g.generation, "PART3: an idle re-read does not bump the generation" );
+			Check( g2.nodes.size() == g.nodes.size(), "PART3: an idle re-read reports the same node count" );
+
+			j->release();
+		}
+	}
+
+	// =================================================================
+	// PART 4 -- additional REAL-scene coverage, review round 1 P2-5's
+	// listed test gaps.
+	// =================================================================
+
+	// 4a. SAME-NAME COLOUR+SCALAR PAIR: a uniformcolor_painter and a
+	// scalar_painter both named "P" (legal -- doc-88 S11 review round 1
+	// P1-2) become TWO distinct Painter-category nodes, both with a
+	// correct (never blank) chunkKeyword. Every reference to "P" attaches
+	// to whichever chunk Cst::BuildReferenceGraph's own first-wins (the)
+	// namespace resolution picked (the colour painter, declared first) --
+	// this graph does not, and is not meant to, improve on that
+	// resolution (see ReferenceGraph.h's "CATEGORY IS EXACT" note).
+	{
+		const char* path = "test_referencegraph_dualpainter.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname P\ncolor 1 0 0\n}\n"
+			"scalar_painter\n{\nname P\nvalue 0.5\n}\n"
+			"uniformcolor_painter\n{\nname shine\ncolor 1 1 1\n}\n"
+			"lambertian_material\n{\nname m1\nreflectance P\n}\n"
+			"ggx_material\n{\nname m2\nrd shine\nalphax P\nalphay P\n}\n" );
+		Check( j != nullptr, "PART4a: dual-painter fixture loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+			SceneEditController::PainterMaterialGraph g;
+			c.ReadPainterMaterialGraph( g );
+
+			int painterPCount = 0;
+			for( const GNode& n : g.nodes )
+				if( n.category == ChunkCategory::Painter && std::string( n.name.c_str() ) == "P" ) ++painterPCount;
+			Check( painterPCount == 2, "PART4a: TWO distinct Painter-category nodes named P (colour + scalar), not collapsed into one" );
+
+			const GNode* colourP = FindNodeByKeyword( g, ChunkCategory::Painter, "P", "uniformcolor_painter" );
+			const GNode* scalarP = FindNodeByKeyword( g, ChunkCategory::Painter, "P", "scalar_painter" );
+			Check( colourP != nullptr, "PART4a: the colour node's chunkKeyword is uniformcolor_painter -- never blank" );
+			Check( scalarP != nullptr, "PART4a: the scalar node's chunkKeyword is scalar_painter -- never blank" );
+			if( colourP && scalarP ) {
+				Check( colourP->handle != scalarP->handle, "PART4a: the two nodes carry DIFFERENT handles -- distinct chunks, not aliases of one" );
+				// First-wins: uniformcolor_painter is declared FIRST in the
+				// fixture, so ALL THREE P-directed references (m1.reflectance,
+				// m2.alphax, m2.alphay) resolve to it; the scalar sibling gets none.
+				Check( colourP->inEdges.size() == 3, "PART4a: first-wins -- all 3 references to `P` land on the colour node (declared first)" );
+				Check( scalarP->inEdges.empty(), "PART4a: ...and NONE land on the scalar node (the documented imprecision, not fixed here)" );
+			}
+			Check( NoNodeHasBlankKeyword( g ), "PART4a: standing invariant -- no node in this graph has a blank chunkKeyword" );
+			j->release();
+		}
+	}
+
+	// 4b. REAL one-hop Function promotion: scalar_painter.function1d ->
+	// piecewise_linear_function, reached through a material (the ONE real
+	// {Function}-typed Reference param that lives on a Painter-category
+	// chunk today -- see PART 2's test M comment for the descriptor audit).
+	{
+		const char* path = "test_referencegraph_fnpromote.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname curve\ncp 0.0 0.0\ncp 1.0 1.0\n}\n"
+			"scalar_painter\n{\nname roughFn\nfunction1d curve\n}\n"
+			"uniformcolor_painter\n{\nname shine\ncolor 1 1 1\n}\n"
+			"ggx_material\n{\nname m\nrd shine\nalphax roughFn\nalphay roughFn\n}\n" );
+		Check( j != nullptr, "PART4b: function-promotion fixture loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+			SceneEditController::PainterMaterialGraph g;
+			c.ReadPainterMaterialGraph( g );
+
+			Check( g.nodes.size() == 4, "PART4b: 4 nodes -- roughFn, shine, m, AND the promoted `curve` Function node" );
+			const GNode* curve = FindNode( g, ChunkCategory::Function, "curve" );
+			Check( curve != nullptr, "PART4b: the piecewise_linear_function `curve` was PROMOTED into a node" );
+			if( curve ) {
+				CheckEq( std::string( curve->chunkKeyword.c_str() ), "piecewise_linear_function", "PART4b: curve's chunkKeyword is correct, never blank" );
+				Check( curve->defCount == 0, "PART4b: a Function chunk never registers in a painter manager -- defCount 0" );
+				Check( curve->inEdges.size() == 1, "PART4b: curve is referenced once (roughFn.function1d)" );
+			}
+			const GNode* roughFn = FindNode( g, ChunkCategory::Painter, "roughFn" );
+			Check( roughFn != nullptr, "PART4b: roughFn node exists" );
+			if( roughFn ) {
+				const GPort* fn1d = FindPort( roughFn->outEdges, "function1d", 0 );
+				Check( fn1d && std::string( fn1d->otherName.c_str() ) == "curve" && fn1d->otherNode != SceneEditController::kInvalidNodeIndex,
+				       "PART4b: roughFn.function1d -> curve resolves (not a node-less port)" );
+			}
+			Check( NoNodeHasBlankKeyword( g ), "PART4b: standing invariant -- no blank chunkKeyword" );
+			j->release();
+		}
+	}
+
+	// =================================================================
+	// PART 5 -- enamel_watch.RISEscene: a real 2193-line production scene
+	// with 9 dual-registered piecewise_linear_function chunks (each also
+	// enumerates through the colour Painter manager via
+	// Job::AddPiecewiseLinearFunction) -- the exact shape that produced 9
+	// blank-chunkKeyword phantom Painter nodes under the prior live-
+	// manager-union seeding (doc-88 S11 review round 1 P1-2).
+	// =================================================================
+	{
+		const char* path = "scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene";
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path );
+		Check( loaded, "PART5: enamel_watch.RISEscene loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			SceneEditController::PainterMaterialGraph g;
+			c.ReadPainterMaterialGraph( g );
+
+			std::string offender;
+			Check( NoNodeHasBlankKeyword( g, &offender ), ( "PART5: no node has a blank chunkKeyword (first offender if any: " + offender + ")" ).c_str() );
+
+			// None of the 9 dual-registered piecewise_linear_function chunks
+			// (their descriptor category is Function, only referenced by
+			// out-of-scope homogeneous_medium chunks in this scene) show up as
+			// a Painter-category node -- the phantom-node failure mode this
+			// scene used to trip.
+			Check( FindNode( g, ChunkCategory::Painter, "goldruby_abs" ) == nullptr,
+			       "PART5: `goldruby_abs` (a piecewise_linear_function) is NOT a phantom Painter node" );
+
+			// STRUCTURAL COUNT CHECK: every named Painter/Material chunk in the
+			// document becomes EXACTLY one node -- no fewer (a dropped/collapsed
+			// chunk), no more (a phantom). Computed independently of
+			// ReadPainterMaterialGraph's own internals (a second, fresh
+			// AllChunks scan of the SAME retained document) so this is a real
+			// cross-check, not a tautology.
+			const RISE::Cst::Document* doc = j->GetCstDocument();
+			Check( doc != nullptr, "PART5: the Job retains a CST document" );
+			if( doc ) {
+				const std::vector<SceneReferenceGraph::DocumentChunk> chunks = SceneReferenceGraph::AllChunks( *doc );
+				std::size_t expectedPainterMaterial = 0;
+				for( const SceneReferenceGraph::DocumentChunk& dc : chunks ) {
+					if( !dc.hasCategory ) continue;
+					if( dc.category != ChunkCategory::Painter && dc.category != ChunkCategory::Material ) continue;
+					if( dc.name.size() <= 1 ) continue;   // unnamed: this graph does not seed it either
+					++expectedPainterMaterial;
+				}
+				std::size_t actualPainterMaterial = 0;
+				for( const GNode& n : g.nodes )
+					if( n.category == ChunkCategory::Painter || n.category == ChunkCategory::Material ) ++actualPainterMaterial;
+				Check( actualPainterMaterial == expectedPainterMaterial,
+				       "PART5: graph's Painter+Material node count EXACTLY matches an independent document scan -- no phantoms, no drops" );
+				std::cout << "  PART5: enamel_watch.RISEscene -- " << expectedPainterMaterial
+				          << " Painter/Material chunks, " << g.nodes.size() << " total graph nodes" << std::endl;
+			}
+			j->release();
+		} else {
+			j->release();
+		}
+	}
+
+	// =================================================================
+	// PART 6 (PERF) -- sombrero.RISEscene: doc-88 S11 review round 1
+	// P1-1's regression case. 3721 uniformcolor_painter + 3721
+	// lambertian_material chunks (7442 Painter/Material nodes); the PRIOR
+	// seeding design called SceneReferenceGraph::ResolveChunk (a fresh O(N log
+	// N) document scan) once PER node, measured at 24s under mMutex.
+	// =================================================================
+	{
+		const char* path = "scenes/FeatureBased/Parser/sombrero.RISEscene";
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path );
+		Check( loaded, "PART6: sombrero.RISEscene loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+
+			// Cold read: builds the live Painter/Material managers' first
+			// snapshot (not the measurement -- discarded).
+			SceneEditController::PainterMaterialGraph g1;
+			c.ReadPainterMaterialGraph( g1 );
+			Check( g1.nodes.size() == 7442, "PART6: sombrero graph has exactly 7442 Painter/Material nodes (3721 + 3721)" );
+
+			// STEADY-STATE read: nothing changed between calls, so this times
+			// EXACTLY the cost review round 1 P1-1 flagged --
+			// BuildPainterMaterialGraphSeedsLocked_ + BuildPainterMaterialGraph,
+			// the same work RefreshPainterMaterialGraphSnapshot_ repeats on
+			// every refresh regardless of whether the compare-then-publish step
+			// ends up bumping the generation.
+			const auto t0 = std::chrono::steady_clock::now();
+			SceneEditController::PainterMaterialGraph g2;
+			c.ReadPainterMaterialGraph( g2 );
+			const auto t1 = std::chrono::steady_clock::now();
+			const double ms = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+
+			std::cout << "  PERF: ReadPainterMaterialGraph steady-state on sombrero.RISEscene ("
+			          << g2.nodes.size() << " nodes): " << ms << " ms" << std::endl;
+
+			Check( g2.generation == g1.generation, "PART6: steady-state re-read does not bump the generation (nothing changed)" );
+			// Budget: the reviewer measured Edges() alone at 23.8ms and asked
+			// for "same order... target < ~100ms" for the FULL steady-state
+			// read (seeding + assembly), vs. the pre-fix 24 SECONDS. 2000ms
+			// leaves generous headroom for slower/loaded CI machines while
+			// still failing hard on any reintroduction of the O(nodes * N log
+			// N) pattern (which would push this back into multi-second range).
+			Check( ms < 2000.0, "PART6: steady-state ReadPainterMaterialGraph stays under 2000ms (pre-fix baseline: ~24000ms)" );
+
+			j->release();
+		} else {
+			j->release();
+		}
+	}
+
+	// =================================================================
+	// PART 7 -- doc-88 S11 review round 2 P1: GraphNode::handle discipline,
+	// replacing the raw Cst::NodeId this struct used to publish.
+	// =================================================================
+
+	// N. The PURE assembler never stamps a handle -- see GraphNode::handle's
+	// own header comment for why (no generation exists yet to mint one
+	// against; only RefreshPainterMaterialGraphSnapshot_, which has just
+	// decided to publish, stamps real handles).
+	{
+		std::vector<NodeSeed> nodes;
+		nodes.push_back( MakeNodeSeed( 1, "onlyOne", ChunkCategory::Painter, 0 ) );
+		const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, std::vector<EdgeSeed>() );
+		Check( g.nodes.size() == 1, "N: one node" );
+		if( !g.nodes.empty() )
+			Check( g.nodes[0].handle == SceneEditController::kInvalidGraphNode,
+			       "N: the pure assembler never stamps a handle -- kInvalidGraphNode until a real publish" );
+	}
+
+	// O. CROSS-GENERATION REFUSAL: a handle minted on controller A's
+	// published graph does not resolve against controller B's published
+	// graph, even though the two are structurally identical single-node
+	// fixtures -- mirrors SceneGraphNodeApiTest's case W for TreeNodeHandle.
+	// This is the exact hole a raw Cst::NodeId could not have caught: two
+	// independently-derived documents can (and here, deliberately do) mint
+	// the SAME NodeId for their one chunk, so an `id`-keyed identity would
+	// have aliased silently where the generation-tagged handle refuses.
+	{
+		const char* sA = "refgraph_xctlA.RISEscene";
+		const char* sB = "refgraph_xctlB.RISEscene";
+		Job* jA = LoadFixture( sA,
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname AONLY\ncolor 1 0 0\n}\n" );
+		Job* jB = LoadFixture( sB,
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname BONLY\ncolor 0 1 0\n}\n" );
+		Check( jA != nullptr && jB != nullptr, "O: both cross-controller fixtures load" );
+		if( jA && jB ) {
+			SceneEditController cA( *jA, 0 );
+			SceneEditController cB( *jB, 0 );
+			SceneEditController::PainterMaterialGraph gA, gB;
+			cA.ReadPainterMaterialGraph( gA );
+			cB.ReadPainterMaterialGraph( gB );
+			Check( gA.nodes.size() == 1 && gB.nodes.size() == 1, "O: both controllers publish a single-node graph" );
+			Check( gA.generation != gB.generation, "O: the two controllers' graphs do not share a generation (process-global counter)" );
+			if( gA.nodes.size() == 1 && gB.nodes.size() == 1 ) {
+				const SceneEditController::GraphNodeHandle hA = gA.nodes[0].handle;
+				const unsigned int idxOnA = SceneEditController::ResolveGraphNodeHandle( gA, hA );
+				Check( idxOnA == 0, "O: A's handle resolves cleanly against A's OWN graph (the round-trip half)" );
+				// The premise: B has its own single node at the SAME index, so a
+				// decoded (rather than refused) cross-controller handle would
+				// silently name it.
+				CheckEq( std::string( gB.nodes[0].name.c_str() ), "BONLY",
+				         "O: the premise -- B's node 0 is a DIFFERENT chunk (BONLY, not AONLY)" );
+				const unsigned int idxOnB = SceneEditController::ResolveGraphNodeHandle( gB, hA );
+				Check( idxOnB == SceneEditController::kInvalidNodeIndex,
+				       "O: A's handle FAILS against B's graph rather than silently naming B's node 0" );
+			}
+		}
+		if( jA ) jA->release();
+		if( jB ) jB->release();
+	}
+
+	// =================================================================
+	// PART 8 -- doc-88 S11 review round 2 P2-b:
+	// SceneEditController::ExpandFunctionPromotionFrontier, driven directly
+	// with a synthetic Function->Function CYCLE to prove the visited-set
+	// guard that makes the transitive promotion BFS terminate is real, not
+	// just a comment's say-so (no current chunk descriptor produces a
+	// genuine Function->Function reference edge post-derive -- see PART 2's
+	// test M comment -- so a real loaded scene can never exercise this).
+	// =================================================================
+	{
+		// A 3-hop cycle: fnA(10) -> fnB(20) -> fnC(30) -> fnA(10).
+		ReferenceEdge eAB;
+		eAB.referrerId     = 10;
+		eAB.referrerCategory = ChunkCategory::Function;
+		eAB.targetId       = 20;
+		eAB.targetCategory = ChunkCategory::Function;
+		eAB.targetName     = String( "fnB" );
+		ReferenceEdge eBC;
+		eBC.referrerId     = 20;
+		eBC.referrerCategory = ChunkCategory::Function;
+		eBC.targetId       = 30;
+		eBC.targetCategory = ChunkCategory::Function;
+		eBC.targetName     = String( "fnC" );
+		ReferenceEdge eCA;
+		eCA.referrerId     = 30;
+		eCA.referrerCategory = ChunkCategory::Function;
+		eCA.targetId       = 10;
+		eCA.targetCategory = ChunkCategory::Function;
+		eCA.targetName     = String( "fnA" );
+
+		// The SAME adjacency shape BuildPainterMaterialGraphSeedsLocked_
+		// builds once from its full edge scan -- built here directly from
+		// the synthetic edges above, no document, no Job.
+		std::multimap<Cst::NodeId, const ReferenceEdge*> edgesByReferrer;
+		edgesByReferrer.insert( std::make_pair( eAB.referrerId, &eAB ) );
+		edgesByReferrer.insert( std::make_pair( eBC.referrerId, &eBC ) );
+		edgesByReferrer.insert( std::make_pair( eCA.referrerId, &eCA ) );
+
+		// fnA(10) is the (synthetic) discovery seed -- as if a Painter/
+		// Material referrer's own edge had already promoted it, exactly the
+		// state BuildPainterMaterialGraphSeedsLocked_'s seeding loop hands
+		// this helper before the frontier walk begins.
+		std::set<Cst::NodeId> promotedFunctionIds;
+		std::vector<std::pair<Cst::NodeId, String> > functionFrontier;
+		promotedFunctionIds.insert( 10 );
+		functionFrontier.push_back( std::make_pair( Cst::NodeId( 10 ), String( "fnA" ) ) );
+
+		// TERMINATION: if the visited-set guard (`promotedFunctionIds.insert(
+		// ...).second`) were ever dropped, this call would grow
+		// `functionFrontier` without bound and hang the suite rather than
+		// return -- so reaching the assertions below, on a call directly into
+		// the PRODUCTION helper (not a reimplementation of it), is itself
+		// the property doc-88 S11 review round 2 P2-b asked to prove.
+		SceneEditController::ExpandFunctionPromotionFrontier( edgesByReferrer, promotedFunctionIds, functionFrontier );
+
+		Check( promotedFunctionIds.size() == 3, "PART8: all THREE cycle members visited exactly once (fnA, fnB, fnC)" );
+		Check( functionFrontier.size() == 3, "PART8: the frontier grew to exactly 3 entries -- the cycle's re-encounter of fnA did not re-queue it" );
+		Check( promotedFunctionIds.count( 10 ) == 1 && promotedFunctionIds.count( 20 ) == 1 && promotedFunctionIds.count( 30 ) == 1,
+		       "PART8: the visited set names exactly fnA(10), fnB(20), fnC(30)" );
+		if( functionFrontier.size() >= 3 ) {
+			CheckEq( std::string( functionFrontier[0].second.c_str() ), "fnA", "PART8: frontier[0] is the seed, fnA" );
+			CheckEq( std::string( functionFrontier[1].second.c_str() ), "fnB", "PART8: frontier[1] is fnB, discovered from fnA" );
+			CheckEq( std::string( functionFrontier[2].second.c_str() ), "fnC", "PART8: frontier[2] is fnC, discovered from fnB" );
+		}
+	}
+
+	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;
+	return failCount == 0 ? 0 : 1;
+}

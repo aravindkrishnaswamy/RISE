@@ -29,6 +29,7 @@
 #include "SaveEngine.h"
 #include "CancellableProgressCallback.h"
 #include "CameraIntrospection.h"
+#include "ReferenceGraph.h"                 // doc-88 Phase 3 S11 round 2 P2-b: ReferenceEdge, for the public ExpandFunctionPromotionFrontier helper's signature
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IRasterizerOutput.h"
@@ -39,8 +40,11 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <set>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace RISE
@@ -2525,6 +2529,328 @@ namespace RISE
 		//!  - `generation` is left 0: only RefreshTreeSnapshot_ stamps it,
 		//!    at publish time.
 		static AuthoredTree BuildAuthoredTree( const std::vector<TreeNodeSeed>& seeds );
+
+		// =====================================================================
+		// doc-88 Phase 3 S11 -- the multi-parent Painter/Material DAG.
+		//
+		// Generalizes BuildAuthoredTree (immediately above) from a single-
+		// parent TREE (Category::Object) to a multi-parent DAG (Category::
+		// Painter + Category::Material, plus any ChunkCategory::Function node
+		// an edge from one of those actually reaches -- docs/gui/
+		// NODE_GRAPH_CANVAS.md §1.1's two-level model: a `def` stage stays
+		// internal to its owning painter node, NEVER a top-level graph node
+		// here). Same three-layer split as the object tree:
+		//   1. BuildPainterMaterialGraph        -- PURE.  Seeds+edge-seeds ->
+		//                                          PainterMaterialGraph.  The
+		//                                          only layer a test may hand
+		//                                          a hostile input to.
+		//   2. BuildPainterMaterialGraphSeedsLocked_ -- seeds nodes from the
+		//                                          retained CST Document's
+		//                                          own Painter/Material
+		//                                          chunks (SceneReferenceGraph
+		//                                          ::AllChunks), edges from
+		//                                          SceneReferenceGraph::
+		//                                          EdgesAndDangling over the
+		//                                          SAME scan, both under
+		//                                          mMutex; the live Painter/
+		//                                          Material managers are
+		//                                          consulted ONLY for
+		//                                          enrichment (serial,
+		//                                          def-count), never as the
+		//                                          node SOURCE -- see the
+		//                                          .cpp for why (doc-88 S11
+		//                                          review round 1 P1-2).
+		//   3. RefreshPainterMaterialGraphSnapshot_  -- the SAME stale-fallback
+		//                                          publish discipline
+		//                                          RefreshTreeSnapshot_ uses.
+		//
+		// UNLIKE BuildAuthoredTree, this assembler never WALKS the structure
+		// it builds -- a DAG's adjacency is exactly the edge-seed list,
+		// classified once against an id->index map (GraphNodeSeed::id, the
+		// chunk's own Cst::NodeId -- see review round 1 P1-2), so a crafted
+		// cycle (or a self-reference) needs no break-and-root logic: it is
+		// simply two ordinary adjacency rows, never a hang.  See
+		// BuildPainterMaterialGraph's own comment.
+		// =====================================================================
+
+		//! The input to the pure DAG assembler: one record per NODE that is
+		//! to appear in the graph, seeded from a `SceneReferenceGraph::
+		//! DocumentChunk` (identity/keyword/category/name) plus enrichment
+		//! read out of the live Painter/Material managers (order/serial/
+		//! def-count) -- see BuildPainterMaterialGraphSeedsLocked_.
+		//!
+		//! `id` is the chunk's OWN `Cst::NodeId` and is the assembler's node
+		//! IDENTITY (doc-88 S11 review round 1 P1-2/P2-1/P2-2) -- NOT
+		//! (category,name): two chunks of the SAME category can legally
+		//! share a name (a colour painter and a `scalar_painter` both named
+		//! "P"), and each gets its OWN node here. `id` must be nonzero and
+		//! unique per seed (0 is the reserved "no such chunk" sentinel
+		//! `Cst::NodeId` uses throughout this codebase -- `DocParamId`,
+		//! `ResolveChunk`, ... -- so a real document chunk never has it).
+		struct GraphNodeSeed
+		{
+			Cst::NodeId   id = 0;
+			String        name;
+			String        chunkKeyword;
+			ChunkCategory category   = ChunkCategory::Painter;
+			unsigned long long order  = 0;   //!< sibling/display order key, same role as TreeNodeSeed::order
+			unsigned long long serial = 0;   //!< registration identity, same role as TreeNodeSeed::serial
+			int           defCount   = 0;
+		};
+
+		//! The input to the pure DAG assembler: one record per RESOLVED
+		//! reference edge, already resolved out of the retained Document
+		//! (see SceneReferenceGraph::Edges) -- deliberately the SAME shape
+		//! ReferenceEdge carries (referrer side + target side), so the
+		//! seeds-gathering step is a straight field copy, not a re-derivation.
+		//!
+		//! `fromId`/`toId` are the referrer's/target's `Cst::NodeId` (see
+		//! GraphNodeSeed::id) -- the assembler matches edges to nodes by
+		//! THESE, not by (category,name), for the same ambiguity reason.
+		//! `toId == 0` means the reference is dangling or points outside
+		//! this graph's modeled categories (`toName` still carries the
+		//! target's name for display either way) -- `fromId` is always
+		//! nonzero (an edge is only ever discovered by walking a real
+		//! chunk's own params).
+		struct GraphEdgeSeed
+		{
+			Cst::NodeId   fromId = 0;
+			ChunkCategory fromCategory = ChunkCategory::Painter;
+			String        fromName;
+			String        paramName;
+			int           occurrence   = 0;
+			std::vector<ChunkCategory> portCategories;
+			Cst::NodeId   toId = 0;
+			ChunkCategory toCategory   = ChunkCategory::Painter;
+			String        toName;        //!< may name no seed at all -- see BuildPainterMaterialGraph
+		};
+
+		//! One port on a graph node: a single (paramName, occurrence) slot
+		//! that either REFERENCES another node (an outEdges row) or IS
+		//! referenced BY another node (an inEdges row) -- the SAME struct
+		//! serves both directions, mirroring ReferenceEdge's shape.
+		struct GraphPort
+		{
+			String paramName;                          //!< the Reference-kind param's role
+			int    occurrence      = 0;                 //!< 0-based occurrence among same-role siblings
+			//! Index into PainterMaterialGraph::nodes of the OTHER end, or
+			//! kInvalidNodeIndex when this port is a NODE-LESS PORT: the
+			//! reference is dangling (points at a name nothing declares) or
+			//! points OUT OF SCOPE (a category this graph does not model,
+			//! e.g. a `standard_object.geometry` reference would never reach
+			//! this graph at all, but a Painter->Object edge if one ever
+			//! existed would land here). Never dropped silently -- see
+			//! BuildPainterMaterialGraph.
+			unsigned int otherNode = kInvalidNodeIndex;
+			String otherName;                            //!< the other end's name, even when otherNode is invalid
+			//! The port's declared TYPE (ParameterDescriptor::referenceCategories)
+			//! -- what kind of chunk this slot accepts.
+			std::vector<ChunkCategory> portCategories;
+		};
+
+		//! An opaque, GENERATION-TAGGED node handle for a PUBLISHED
+		//! PainterMaterialGraph -- THE SAME `(generation << 32) | index`
+		//! layout as `TreeNodeHandle` (see its own comment for the 32/32
+		//! split rationale), minted with the SAME `EncodeTreeHandle` the
+		//! object tree uses (doc-88 S11 review round 2 P1).
+		//!
+		//! WHY THIS EXISTS, and why `GraphNode` used to publish a raw
+		//! `Cst::NodeId` instead: a chunk's `Cst::NodeId` is a PER-PARSE
+		//! identity (`Cst.h`'s own NodeId lineage caveat) -- a full re-derive
+		//! (any of the `ApplyCstParamEdit` fallback paths, `RederiveCstWith
+		//! Variant`, reopening a document into a reused Job) mints a FRESH
+		//! Document with FRESH NodeIds, and nothing stops a later chunk from
+		//! being handed the SAME integer an earlier, now-gone chunk used to
+		//! own. A shell that cached a raw `id` across such a reload and used
+		//! it to, say, jump back to "the node the user last selected" could
+		//! silently land on an unrelated chunk instead of failing loudly --
+		//! exactly the aliasing hole `TreeNodeHandle` was built to close for
+		//! the object tree, and the S11 spec (`docs/gui/NODE_GRAPH_CANVAS.md`
+		//! §6 S11) requires the SAME discipline here.
+		//!
+		//! Callers must treat it as opaque; see `ResolveGraphNodeHandle`.
+		typedef unsigned long long GraphNodeHandle;
+		//! Handle value meaning "no such node" -- default `GraphNode::handle`
+		//! before publish, and the refusal value `ResolveGraphNodeHandle`
+		//! returns for an unresolvable handle. Same bit pattern as
+		//! `kInvalidTreeNode`, kept as a SEPARATE named constant (rather than
+		//! reusing `kInvalidTreeNode` directly) because the two live in
+		//! different handle spaces -- see `kInvalidTreeNode`'s own comment on
+		//! why conflating sentinel spaces is a hazard even when the bits match.
+		static constexpr GraphNodeHandle kInvalidGraphNode = 0xFFFFFFFFFFFFFFFFull;
+
+		//! One node: a single Painter/Material (or edge-reached Function)
+		//! chunk. `inEdges` is the "parents is a LIST" half of the doc's
+		//! §1.2 links-not-copies rule -- a painter shared by two materials
+		//! is ONE node with TWO inEdges rows, never two nodes.
+		struct GraphNode
+		{
+			//! Opaque, generation-tagged identity -- see `GraphNodeHandle`.
+			//! `kInvalidGraphNode` here means "not yet stamped": true only
+			//! for a `GraphNode` fresh out of the PURE `BuildPainterMaterial
+			//! Graph` assembler, which has no generation to mint against (the
+			//! same reason `AuthoredTree::TreeNodeRow` carries no handle at
+			//! all). Every node this controller actually PUBLISHES (i.e. a
+			//! `GraphNode` reachable via `ReadPainterMaterialGraph`) carries a
+			//! real handle, stamped in `RefreshPainterMaterialGraphSnapshot_`
+			//! right after `generation` is finalized -- see that function's
+			//! own comment for why the stamp cannot happen any earlier.
+			//! Deliberately NOT compared by `GraphNodesEqual`: it is a
+			//! DERIVED field, not content, and the compare-then-publish step
+			//! that decides whether to bump `generation` runs BEFORE a new
+			//! generation exists to stamp with -- comparing it would either
+			//! always disagree (spurious republish every refresh) or require
+			//! computing the new generation before knowing whether one is
+			//! needed. Replaces the raw `Cst::NodeId` this struct used to
+			//! publish -- see `GraphNodeHandle`'s own comment for why.
+			GraphNodeHandle handle = kInvalidGraphNode;
+			String        name;
+			String        chunkKeyword;                  //!< e.g. "ramp_painter", "ggx_material"
+			ChunkCategory category    = ChunkCategory::Painter;
+			unsigned long long order  = 0;                //!< presentation-order key, same role as TreeNodeSeed::order
+			unsigned long long serial = 0;                //!< registration identity, same role as TreeNodeSeed::serial
+			//! S10's ExpressionProgram::DefCount() for an expression-family
+			//! painter (expression_painter / scalar_painter{expression}); 0
+			//! for every other chunk kind. The §1.1 two-level model's hook:
+			//! `def` stages are a COUNT here, never nodes of their own.
+			int defCount = 0;
+			std::vector<GraphPort> outEdges;              //!< this node's OWN reference params -> other nodes (or dangling)
+			std::vector<GraphPort> inEdges;                //!< other nodes' reference params -> this node (its "parents")
+		};
+
+		//! ONE STRUCT, published under mUiSnapshotMutex exactly like
+		//! AuthoredTree -- see AuthoredTree's own comment for why the publish
+		//! must stay one assignment under one lock hold rather than several
+		//! fields split apart.
+		struct PainterMaterialGraph
+		{
+			std::vector<GraphNode> nodes;
+			//! Generation this graph was published at; 0 = never published.
+			//! Same process-global counter as AuthoredTree::generation
+			//! (NextTreeGeneration()) -- so a Painter/Material graph
+			//! generation and an AuthoredTree generation are drawn from the
+			//! same space and never collide. Every `GraphNode::handle` in
+			//! `nodes` is stamped from THIS field at publish time (doc-88 S11
+			//! review round 2 P1) -- see `GraphNode::handle`'s own comment.
+			unsigned long long generation   = 0;
+			//! Which INSTANCE of the stores this graph was read out of --
+			//! same role as AuthoredTree::rebuildCount; see its comment for
+			//! why a serial alone cannot detect a ClearAll + re-derive.
+			unsigned long long rebuildCount = 0;
+		};
+
+		//! The pure assembly step, seeds+edge-seeds -> PainterMaterialGraph.
+		//! PURE and static, like BuildAuthoredTree: touches no controller
+		//! state and no manager.
+		//!
+		//! Node identity is `GraphNodeSeed::id` (the backing chunk's own
+		//! `Cst::NodeId`) -- NOT (category, name) (doc-88 S11 review round 1
+		//! P1-2/P2-1/P2-2: a Painter and a Function chunk may share a name,
+		//! the same coarseness Cst::BuildReferenceGraph's own "painter
+		//! alias" already lives with, but so can TWO chunks of the SAME
+		//! category, e.g. a colour painter and a `scalar_painter` both named
+		//! "P" -- (category,name) cannot key those as separate nodes, `id`
+		//! always can). A DUPLICATE `id` seed keeps the FIRST occurrence in
+		//! presentation order (order, then name tie-break, exactly like
+		//! BuildAuthoredTree) and DROPS every later seed sharing that id
+		//! from `out.nodes` too -- not just from the lookup map. (An earlier
+		//! draft of this assembler deduped ONLY the lookup map, leaving a
+		//! second same-key seed in `out.nodes` as a permanently-unreachable
+		//! orphan node no edge could ever address -- round-1 review caught
+		//! it with a synthetic 2-duplicate-seed input producing 3 nodes
+		//! instead of 1.) This is the caller's contract, same "least
+		//! surprising degradation" posture BuildAuthoredTree's own
+		//! duplicate-name handling documents.
+		//!
+		//! An edge seed whose `fromId` does not match any node seed's `id`
+		//! is DROPPED (the caller's contract: every edge must be seeded
+		//! FROM a node this graph actually contains). An edge seed whose
+		//! `toId` is 0 or does not match any node seed's `id` becomes a
+		//! NODE-LESS PORT on the referrer's outEdges (otherNode ==
+		//! kInvalidNodeIndex, otherName preserved) -- covers both a genuinely
+		//! DANGLING reference and a reference that resolves out of this
+		//! graph's modeled categories; never a crash, never a silently
+		//! dropped edge.
+		//!
+		//! A self-reference (fromName==toName, fromCategory==toCategory) is
+		//! NOT special-cased: the node simply gets one row in its own
+		//! outEdges AND one row in its own inEdges. A CYCLE among edge seeds
+		//! needs no guard at all -- unlike BuildAuthoredTree this function
+		//! never walks the structure it produces, so there is nothing for a
+		//! cycle to make loop.
+		static PainterMaterialGraph BuildPainterMaterialGraph(
+			const std::vector<GraphNodeSeed>& nodeSeeds,
+			const std::vector<GraphEdgeSeed>& edgeSeeds );
+
+		//! THE TRANSACTIONAL READ -- mirrors ReadTree exactly: refreshes
+		//! once, then copies the whole published graph out under a single
+		//! hold of the leaf lock.
+		void ReadPainterMaterialGraph( PainterMaterialGraph& out ) const;
+
+		//! THE WAY BACK from a `GraphNode::handle` a caller squirreled away
+		//! (e.g. "the node the user last selected") to that node's index in
+		//! a LATER `PainterMaterialGraph` copy -- mirrors `HandleFor`'s
+		//! reverse direction for the object tree, adapted to this type's own
+		//! shape: `GraphNode` already carries its handle inline (unlike
+		//! `AuthoredTree::TreeNodeRow`, which carries none), so there is
+		//! nothing to MINT here, only to RESOLVE.
+		//!
+		//! Returns the resolved node's index into `g.nodes` on success.
+		//! Returns `kInvalidNodeIndex` -- never a crash, never a silent
+		//! alias onto whatever node happens to sit at the decoded index in
+		//! `g` -- when `handle` is `kInvalidGraphNode`, was minted from a
+		//! DIFFERENT generation than `g.generation` (the exact case a raw
+		//! `Cst::NodeId` could not detect, see `GraphNodeHandle`'s own
+		//! comment), or decodes to an out-of-range index.
+		//!
+		//! PURE and static, same testability posture as
+		//! `BuildPainterMaterialGraph`: a test can hand it a hostile or
+		//! cross-generation handle directly, with no controller, no lock, no
+		//! live document.
+		static unsigned int ResolveGraphNodeHandle( const PainterMaterialGraph& g, GraphNodeHandle handle );
+
+		//! ONE FULL PASS of the transitive Function-node promotion BFS that
+		//! `BuildPainterMaterialGraphSeedsLocked_` runs to find every
+		//! Function-category chunk reachable from an in-scope Painter/
+		//! Material referrer (doc-88 S11 review round 1 P2-3's fixpoint
+		//! walk). Factored out of that method (doc-88 S11 review round 2
+		//! P2-b) because the walk's own visited-set guard -- the thing that
+		//! makes a crafted Function->Function CYCLE terminate rather than
+		//! loop forever -- was previously reachable only through a REAL
+		//! document's chunk descriptors, which today never form such a
+		//! cycle post-derive, leaving the guard itself untested by anything
+		//! but a comment's say-so.
+		//!
+		//! `edgesByReferrer` is the SAME adjacency index the production call
+		//! site already builds once from its full edge scan (an in-memory
+		//! multimap, `referrerId -> ReferenceEdge*`, built once and reused --
+		//! see `BuildPainterMaterialGraphSeedsLocked_`'s own comment for why
+		//! that reuse matters on a large scene). `promotedFunctionIds` is the
+		//! visited set (a chunk id enters it at most once, which is what
+		//! bounds this to the graph's actual size no matter how the edges
+		//! are wired) and `functionFrontier` is the BFS queue-so-far, in
+		//! discovery order; BOTH are read AND written in place, exactly as
+		//! the inline loop this replaces did, so the caller's post-loop use
+		//! of either (the node-seed emission loop, the edge-seed in-scope
+		//! check) sees the identical end state.
+		//!
+		//! The loop bound is `functionFrontier.size()`, RE-READ every
+		//! iteration -- that is what lets an entry THIS CALL appends get
+		//! walked in the same pass, to a fixpoint, rather than needing the
+		//! caller to invoke this repeatedly.
+		//!
+		//! PURE over its explicit parameters (no Document, no manager, no
+		//! controller lock) -- a synthetic `edgesByReferrer`, including one
+		//! encoding a Function->Function cycle, can drive this EXACT
+		//! function in a test and prove it terminates, rather than a test
+		//! re-deriving the walk against its own copy of the logic. The
+		//! production call site (`BuildPainterMaterialGraphSeedsLocked_`)
+		//! calls this with the SAME three pieces of state it threaded
+		//! through the loop before this refactor -- behavior unchanged.
+		static void ExpandFunctionPromotionFrontier(
+			const std::multimap<Cst::NodeId, const ReferenceEdge*>& edgesByReferrer,
+			std::set<Cst::NodeId>& promotedFunctionIds,
+			std::vector<std::pair<Cst::NodeId, String> >& functionFrontier );
 
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
@@ -5467,6 +5793,31 @@ namespace RISE
 		//! sanctioned route.
 		void BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>& outSeeds ) const;
 
+		//! doc-88 Phase 3 S11's refresh cadence for the Painter/Material DAG --
+		//! the SAME compare-then-publish discipline as RefreshTreeSnapshot_
+		//! (a serve-stale on contention/render-owns-scene, republish only on
+		//! an actual structural change, generation bumped only then).
+		void RefreshPainterMaterialGraphSnapshot_() const;
+
+		//! Gather BOTH halves of the DAG assembler's input under mMutex, from
+		//! ONE `SceneReferenceGraph::AllChunks` document scan (doc-88 S11
+		//! review round 1 P1-1/P1-2 -- see the .cpp for the full design
+		//! note): node seeds are every Painter/Material-category chunk that
+		//! scan finds (identity/keyword/category/name are correct BY
+		//! CONSTRUCTION, no re-resolution), enriched with order/serial/
+		//! defCount read from the live Painter/Material managers as a
+		//! SECONDARY lookup, never as the node source; edge seeds (plus
+		//! Function-node promotion and dangling ports) come from
+		//! `SceneReferenceGraph::EdgesAndDangling` over the SAME retained
+		//! Document (`mJob.GetCstDocument()`), given the SAME chunk scan and
+		//! called ONCE -- calling `ResolveChunk` per node (the prior design)
+		//! or `Edges`/`DanglingReferences` as two separate passes would each
+		//! re-pay the O(N log N) document walk (measured 24s under mMutex on
+		//! a 7442-chunk scene for the ResolveChunk-per-node version).
+		//! REQUIRES mMutex held.
+		void BuildPainterMaterialGraphSeedsLocked_(
+			std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const;
+
 		//! Does `cat`'s CURRENTLY PUBLISHED tree contain a row named `name`?
 		//! Takes only the leaf snapshot lock and does NOT refresh -- it asks
 		//! about the tree a shell has drawn, which is the question
@@ -5490,6 +5841,12 @@ namespace RISE
 			//! own comment for why its vectors may not be hoisted out into
 			//! parallel arrays here.
 			AuthoredTree                trees[kNumCategories];
+			//! doc-88 Phase 3 S11.  ONE graph, not per-category (unlike
+			//! `trees`) -- it already spans exactly Category::Painter +
+			//! Category::Material (plus any edge-reached Function node), so a
+			//! per-category slot would be either empty or a duplicate of this
+			//! one for every other category.
+			PainterMaterialGraph        painterMaterialGraph;
 		};
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;
