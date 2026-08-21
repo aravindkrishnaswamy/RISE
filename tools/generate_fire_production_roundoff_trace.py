@@ -42,12 +42,12 @@ def transform(text: str, name: str, suffix: str) -> str:
                 "FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return "
                 "left==center&&right==center; }) )",
             "while( remaining>0.0f )":
-                "while( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return "
+                "while( FireProductionRoundoffTrace::EvaluateRemainingPositiveBranch("
+                "[&](){ return "
                 "remaining>0.0f; }) )",
             "while( remaining>0.0f&&cell<request.lineLength )":
-                "while( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return "
+                "while( FireProductionRoundoffTrace::EvaluateRemainingPositiveBranch("
+                "[&](){ return "
                 "remaining>0.0f; })&&cell<request.lineLength )",
             "if( courant>=0.0f )":
                 "if( FireProductionRoundoffTrace::EvaluateBranch("

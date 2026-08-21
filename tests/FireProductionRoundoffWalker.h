@@ -96,6 +96,15 @@ namespace FireProductionRoundoffWalker
 	};
 	enum class FloorGraphVariant { Certified,HalfAmbiguity,MissingRoundedTerm,
 		MissingCyclePath };
+	struct RemainingPositiveCertificate
+	{
+		double ambiguityWidth=0.0,exactBranchTerm=0.0;
+		double roundedTerm=0.0,ftzTerm=0.0,totalEnvelope=0.0;
+		std::uint64_t alternatePathOperationCount=0u;
+		bool zeroWidthAtSwitch=false;
+	};
+	enum class RemainingGraphVariant { Certified,HalfAmbiguity,MissingCellIntegral,
+		MissingFTZ };
 	enum class LimiterGraphVariant { Certified,MissingNegativeRamp,FixedWidthDenominator };
 
 	inline bool CertifyContinuousLimiterTransition(const double predicateCenter,
@@ -270,6 +279,51 @@ namespace FireProductionRoundoffWalker
 		const double requiredFTZ=Detail::NextUp(static_cast<double>(requiredOperations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		return certificate.continuousAtInteger&&std::isfinite(certificate.totalEnvelope)&&
+			certificate.exactBranchTerm>=requiredExact&&
+			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
+	}
+
+	// At remaining==0 the taken loop body integrates a zero-width interval.
+	// Across an ambiguous positive remainder, the exact omitted/extra slice is
+	// bounded by M*delta. One PPM cell integral plus the loop updates has forty
+	// scalar operations; its gamma_40 and FTZ terms are carried separately.
+	inline bool CertifyRemainingPositive(const double predicateCenter,
+		const double predicateRadius,const double profileAbsoluteUpper,
+		RemainingPositiveCertificate& certificate,const RemainingGraphVariant variant=
+			RemainingGraphVariant::Certified)
+	{
+		certificate=RemainingPositiveCertificate();
+		if(!(predicateRadius>=0.0&&profileAbsoluteUpper>=0.0)||
+			!std::isfinite(predicateCenter)||!std::isfinite(predicateRadius)||
+			!std::isfinite(profileAbsoluteUpper))return false;
+		const double fullAmbiguity=Detail::NextUp(std::fabs(predicateCenter)+
+			predicateRadius);
+		certificate.ambiguityWidth=variant==RemainingGraphVariant::HalfAmbiguity?
+			0.5*fullAmbiguity:fullAmbiguity;
+		certificate.alternatePathOperationCount=variant==
+			RemainingGraphVariant::MissingCellIntegral?8u:40u;
+		certificate.exactBranchTerm=Detail::NextUp(profileAbsoluteUpper*
+			certificate.ambiguityWidth);
+		const double product=static_cast<double>(certificate.alternatePathOperationCount)*
+			0x1p-24;
+		if(!(product<1.0))return false;
+		const double gamma=Detail::NextUp(product/(1.0-product));
+		const double magnitude=Detail::NextUp(profileAbsoluteUpper*
+			(4.0+certificate.ambiguityWidth));
+		certificate.roundedTerm=Detail::NextUp(gamma*magnitude);
+		certificate.ftzTerm=variant==RemainingGraphVariant::MissingFTZ?0.0:
+			Detail::NextUp(static_cast<double>(certificate.alternatePathOperationCount)*
+				static_cast<double>(std::numeric_limits<float>::min()));
+		certificate.totalEnvelope=Detail::NextUp(certificate.exactBranchTerm+
+			certificate.roundedTerm+certificate.ftzTerm);
+		certificate.zeroWidthAtSwitch=true;
+		const double requiredExact=Detail::NextUp(profileAbsoluteUpper*fullAmbiguity);
+		const double requiredProduct=40.0*0x1p-24;
+		const double requiredRounded=Detail::NextUp(requiredProduct/(1.0-requiredProduct)*
+			Detail::NextUp(profileAbsoluteUpper*(4.0+fullAmbiguity)));
+		const double requiredFTZ=Detail::NextUp(40.0*static_cast<double>(
+			std::numeric_limits<float>::min()));
+		return certificate.zeroWidthAtSwitch&&std::isfinite(certificate.totalEnvelope)&&
 			certificate.exactBranchTerm>=requiredExact&&
 			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
 	}

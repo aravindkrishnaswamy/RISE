@@ -1192,7 +1192,7 @@ namespace FireProductionDyadicCalibration
 			for(unsigned int site=0u;site<maximumClassEnvelope.size();++site)
 				maximumClassEnvelope[site]=std::max(maximumClassEnvelope[site],
 					stage.maximumBranchDivergence[site]);
-		std::fprintf(stderr,"r125 class_envelope");
+		std::fprintf(stderr,"branch_class_envelope");
 		for(unsigned int site=0u;site<maximumClassEnvelope.size();++site)
 			if(maximumClassEnvelope[site]>0.0)std::fprintf(stderr," %u=%.17g",site,
 				maximumClassEnvelope[site]);
@@ -1212,11 +1212,11 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="e6ede1a9b414d3d98ee446abec8b6929f32cb456ece1c6f9c9b2b5c6527780a7"||
+			traceDigest!="e29d7d306c43160434f728746f71cced03db5d7a5f73db5715f192433d61d48e"||
 			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=4340821u||
-			totalDischargedBranchObligationCount!=1025656u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=3315165u||
+			totalDischargedBranchObligationCount!=2648824u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=1691997u||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1237,7 +1237,7 @@ namespace FireProductionDyadicCalibration
 			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r125 floor partition certified; %llu of %llu site-class "
+		std::fprintf(stderr,"r126 remaining-positive certified; %llu of %llu site-class "
 			"obligations remain pending before B_fp32 and Metal measurement\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),

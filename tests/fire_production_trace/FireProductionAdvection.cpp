@@ -202,7 +202,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::TraceFloat remaining=length,result=0.0f;
 			long cell=beginningCell;
 			FireProductionRoundoffTrace::TraceFloat fraction=beginningFraction;
-			while( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return remaining>0.0f; }) ) {
+			while( FireProductionRoundoffTrace::EvaluateRemainingPositiveBranch([&](){ return remaining>0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat span=std::min(remaining,1.0f-fraction);
 				const std::size_t wrapped=WrappedCell(cell,request.lineLength);
 				const std::size_t value=ValueIndex(request,component,line,wrapped);
@@ -256,7 +256,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::TraceFloat remaining=length,result=0.0f;
 			std::size_t cell=beginningCell;
 			FireProductionRoundoffTrace::TraceFloat fraction=beginningFraction;
-			while( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return remaining>0.0f; })&&cell<request.lineLength ) {
+			while( FireProductionRoundoffTrace::EvaluateRemainingPositiveBranch([&](){ return remaining>0.0f; })&&cell<request.lineLength ) {
 				const FireProductionRoundoffTrace::TraceFloat span=std::min(remaining,1.0f-fraction);
 				const std::size_t value=ValueIndex(request,component,line,cell);
 				result+=CellIntervalIntegral(request.values[value],left[value],right[value],

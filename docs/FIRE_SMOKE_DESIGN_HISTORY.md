@@ -3003,3 +3003,12 @@ it was already tried and refuted here.
   loose maximum floor envelope (`4.486687686924483e302`) is recorded honestly:
   topology discharge does not pre-approve an eventual validation-contract
   `B_fp32`.
+
+- **r126 remaining-positive class discharge (2026-08-21):** the loop body
+  integrates a zero-width PPM slice at `remaining=0`; across ambiguity
+  `delta`, the exact term is `M delta`.  The independent forty-operation body
+  supplies `gamma_40 M (4+delta)` plus `40 FLT_MIN`.  Width-halving,
+  missing-cell-body, and missing-FTZ mutants RED.  All `1,623,168` instances
+  close, reducing pending obligations from `3,315,165` to `1,691,997` while
+  exact exit `237` remains in force.  The largest class envelope is
+  `0.49575328199529184`.

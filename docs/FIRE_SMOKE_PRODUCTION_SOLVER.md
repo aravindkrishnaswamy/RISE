@@ -2355,6 +2355,22 @@ evidence is
 `rendered/fire_production_calibration/r125_floor_partition/floor_partition.v1`,
 SHA-256 `c1c273ed66f2af22e5982435beb38600f2ad9481b0c5d57069cf1f48e277588c`.
 
+### 7.43 Remaining-positive loop envelope (r126)
+
+At `remaining=0`, taking one more local-integration iteration contributes an
+exact zero-width PPM slice.  Over outward ambiguity `delta`, its exact branch
+term is `M delta`.  The independently enumerated cell-integral and loop-update
+path has forty scalar operations, so the rounded term is
+`gamma_40 M (4+delta)` and the separate FTZ term is `40 FLT_MIN`.  Mutants
+halving `delta`, omitting the cell-integral topology, or deleting FTZ all fail.
+
+All `1,623,168` remaining-positive instances close.  The cumulative census is
+`2,648,824 / 4,340,821` discharged and `1,691,997` pending; the maximum class
+envelope is `0.49575328199529184`.  Exit `237` remains mandatory.  Durable
+evidence is
+`rendered/fire_production_calibration/r126_remaining_positive/remaining_positive.v1`,
+SHA-256 `9ad1b1de6b35d290753b3c263d170b6e11bb31dfb8e1764c0029b794ad453f68`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

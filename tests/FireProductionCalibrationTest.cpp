@@ -97,6 +97,15 @@ int main()
 		floorEvidence.find("executed_obligation_instances_pending 3315165")!=
 			std::string::npos,
 		"r125 floor derivation, zero class pending count, and cumulative census are durable");
+	const std::string remainingEvidence=ReadText(
+		"rendered/fire_production_calibration/r126_remaining_positive/remaining_positive.v1");
+	Check(!remainingEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		remainingEvidence.begin(),remainingEvidence.end()))==
+		"9ad1b1de6b35d290753b3c263d170b6e11bb31dfb8e1764c0029b794ad453f68"&&
+		remainingEvidence.find("class_remaining_positive_pending 0")!=std::string::npos&&
+		remainingEvidence.find("executed_obligation_instances_pending 1691997")!=
+			std::string::npos,
+		"r126 remaining-positive derivation and cumulative census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -541,6 +550,50 @@ int main()
 				missingCycle,FireProductionRoundoffWalker::FloorGraphVariant::MissingCyclePath),
 			"floor certificate rejects ambiguity, rounded-path, and cycle-topology undercounts");
 	}
+	{
+		std::vector<FireProductionRoundoffTrace::TraceFloat> values(3u,
+			FireProductionRoundoffTrace::TraceFloat(2.0f)),left(values),right(values);
+		FireProductionRoundoffTrace::Counters counters;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::TransportProfileScope profile(values,left,right,
+				0u,3u,FireProductionRoundoffTrace::TraceFloat(0.0f),
+				FireProductionRoundoffTrace::TraceFloat(0.0f));
+			const auto remaining=FireProductionRoundoffTrace::TraceFloat::Raw(
+				0.0,0.0625,0.0f,1u);
+			Check(!FireProductionRoundoffTrace::EvaluateRemainingPositiveBranch(
+				[&](){return remaining>0.0f;}),
+				"remaining-positive fixture executes the rounded inactive path");
+		}
+		Check(counters.branchObligations.size()==1u,
+			"remaining-positive fixture emits exactly one ambiguous obligation");
+		const FireProductionRoundoffTrace::BranchObligation obligation=
+			counters.branchObligations.empty()?FireProductionRoundoffTrace::BranchObligation():
+				counters.branchObligations.front();
+		const double profileUpper=std::nextafter(2.0,
+			std::numeric_limits<double>::infinity());
+		FireProductionRoundoffWalker::RemainingPositiveCertificate certificate;
+		const bool certified=FireProductionRoundoffWalker::CertifyRemainingPositive(
+			obligation.predicateCenter,obligation.predicateRadius,profileUpper,certificate);
+		Check(certified&&counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			obligation.site==FireProductionRoundoffTrace::BranchSite::RemainingPositive&&
+			obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			obligation.divergenceBound==certificate.totalEnvelope&&
+			certificate.zeroWidthAtSwitch,
+			"remaining-positive walker matches the zero-width exact, rounded, and FTZ envelope");
+		FireProductionRoundoffWalker::RemainingPositiveCertificate half,missingCell,missingFTZ;
+		Check(!FireProductionRoundoffWalker::CertifyRemainingPositive(
+			obligation.predicateCenter,obligation.predicateRadius,profileUpper,half,
+			FireProductionRoundoffWalker::RemainingGraphVariant::HalfAmbiguity)&&
+			!FireProductionRoundoffWalker::CertifyRemainingPositive(
+				obligation.predicateCenter,obligation.predicateRadius,profileUpper,missingCell,
+				FireProductionRoundoffWalker::RemainingGraphVariant::MissingCellIntegral)&&
+			!FireProductionRoundoffWalker::CertifyRemainingPositive(
+				obligation.predicateCenter,obligation.predicateRadius,profileUpper,missingFTZ,
+				FireProductionRoundoffWalker::RemainingGraphVariant::MissingFTZ),
+			"remaining-positive certificate rejects width, body-topology, and FTZ omissions");
+	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};
@@ -647,7 +700,7 @@ int main()
 			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
 		tracedCounters.comparisonCount==644u&&tracedCounters.unresolvedBranch&&
 		tracedCounters.branchObligations.size()==260u&&
-		tracedCounters.dischargedBranchObligationCount==200u&&
+		tracedCounters.dischargedBranchObligationCount==220u&&
 		tracedCounters.minimumDenominatorLowerBound>0.0&&
 		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
 			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
@@ -660,7 +713,7 @@ int main()
 	if(!(tracedOK&&tracedBytes&&tracedOperations==980u&&
 		tracedCounters.comparisonCount==644u&&tracedCounters.unresolvedBranch&&
 		tracedCounters.branchObligations.size()==260u&&
-		tracedCounters.dischargedBranchObligationCount==200u&&
+		tracedCounters.dischargedBranchObligationCount==220u&&
 		!tracedCounters.invalidDomain))std::fprintf(stderr,
 		"roundoff remap detail ok=%d bytes=%d ops=%llu comparisons=%llu obligations=%zu "
 		"discharged=%llu unresolved=%d invalid=%d denominator=%.17g max_operand=%.17g\n",
