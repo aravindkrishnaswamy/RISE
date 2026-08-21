@@ -1623,13 +1623,17 @@ namespace {
     // Shared body for the outEdges/inEdges conversion loop below -- the
     // only difference between the two call sites is which
     // SceneEditController::GraphPort vector is being walked.
-    QVector<PainterGraphPort> ConvertGraphPorts(
+    // ViewportBridge:: qualification required (review-round P1 fix):
+    // PainterGraphPort is now a NESTED member of ViewportBridge, and this
+    // helper is a free function in an anonymous namespace -- outside the
+    // class entirely -- so unqualified lookup would no longer find it.
+    QVector<ViewportBridge::PainterGraphPort> ConvertGraphPorts(
         const std::vector<SceneEditController::GraphPort>& ports)
     {
-        QVector<PainterGraphPort> out;
+        QVector<ViewportBridge::PainterGraphPort> out;
         out.reserve(static_cast<int>(ports.size()));
         for (const SceneEditController::GraphPort& p : ports) {
-            PainterGraphPort pp;
+            ViewportBridge::PainterGraphPort pp;
             pp.paramName = QString::fromUtf8(p.paramName.c_str());
             pp.occurrence = p.occurrence;
             pp.otherNodeIndex = (p.otherNode == SceneEditController::kInvalidNodeIndex)
@@ -1641,7 +1645,14 @@ namespace {
     }
 }
 
-PainterGraph ViewportBridge::painterMaterialGraph() const
+// Return type qualified with ViewportBridge:: (review-round P1 fix): an
+// out-of-line member function's RETURN TYPE is parsed BEFORE the compiler
+// enters the class's scope (that happens only once it sees
+// `ViewportBridge::painterMaterialGraph`), so a bare `PainterGraph` here
+// -- now a NESTED member, not a global sibling -- would not resolve.
+// Everything inside the function BODY below stays unqualified: a member
+// function's body scope already includes its class.
+ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraph() const
 {
     PainterGraph out;
     if (!m_controller) return out;
@@ -1680,7 +1691,9 @@ PainterGraph ViewportBridge::painterMaterialGraph() const
     return out;
 }
 
-QVector<AppearanceClosureEntry> ViewportBridge::appearanceClosureForObject(const QString& objectName) const
+// Same return-type qualification requirement as painterMaterialGraph()
+// just above (review-round P1 fix).
+QVector<ViewportBridge::AppearanceClosureEntry> ViewportBridge::appearanceClosureForObject(const QString& objectName) const
 {
     QVector<AppearanceClosureEntry> out;
     if (!m_controller || objectName.isEmpty()) return out;

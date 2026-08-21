@@ -1349,19 +1349,15 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
     // appearanceClosureForObject() needs.
     const QString objectName = (cat == ViewportBridge::Category::Object) ? m_bridge->selectionRowName() : QString();
 
-    // review-round P2 fix: auto-scroll must fire only when the ROW-NAME
-    // identity of the external selection actually CHANGED, computed BEFORE
-    // overwriting the cache below -- NOT on a forceReapply-only pass (a
-    // structural edit/rewire while the SAME object stays selected must not
-    // yank the view out from under an in-progress canvas edit). The
-    // closure/handle set below is still recomputed unconditionally on a
-    // forceReapply, since every GraphNodeItem is brand new and carries no
-    // prior spotlight state.
-    const bool selectionChanged = (objectName != m_lastSpotlightObjectName);
-    m_lastSpotlightObjectName = objectName;
-
     QSet<quint64> handles;
     GraphNodeItem* primaryItem = nullptr;
+    // review-round P2 fix: auto-scroll must fire only when the ROW-NAME
+    // identity of the external selection actually CHANGED since the last
+    // SUCCESSFUL resolve, NOT on a forceReapply-only pass (a structural
+    // edit/rewire while the SAME object stays selected must not yank the
+    // view out from under an in-progress canvas edit). Defaults to false;
+    // only set true in the successful-resolve branch below.
+    bool selectionChanged = false;
     if (cat == ViewportBridge::Category::Object && !objectName.isEmpty()) {
         // (category, name) matching, NOT name alone (review-round P1 fix):
         // a Painter and a Material chunk may legally share a name, so
@@ -1369,17 +1365,41 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
         // could silently spotlight the wrong node on a cross-category
         // collision.
         const QVector<ViewportBridge::AppearanceClosureEntry> closureEntries = m_bridge->appearanceClosureForObject(objectName);
-        for (const ViewportBridge::AppearanceClosureEntry& entry : closureEntries) {
-            for (int i = 0; i < m_nodes.size(); ++i) {
-                if (m_nodes[i].category != entry.category || m_nodes[i].name != entry.name) continue;
-                handles.insert(m_nodes[i].handle);
-                // First entry = the object's bound material, per
-                // appearanceClosureForObject's own contract -- the
-                // auto-scroll target.
-                if (!primaryItem && i < m_nodeItems.size()) primaryItem = m_nodeItems[i];
-                break;
+        if (!closureEntries.isEmpty()) {
+            // review-round P2 fix: stamp m_lastSpotlightObjectName ONLY on
+            // a successful (non-empty) resolve. An empty result here is
+            // OVERLOADED -- it means either a genuinely empty closure OR
+            // the C++ side's try_to_lock degrading to empty because a
+            // render currently owns the commit lock
+            // (AppearanceClosureForObject's own contract). Stamping the
+            // memo on the degraded case would poison it: once the render
+            // finishes and the SAME selection resolves for real, this
+            // comparison would read false (the memo already "matches"),
+            // so the auto-scroll would never fire for what is effectively
+            // the first real resolution of this pick.
+            selectionChanged = (objectName != m_lastSpotlightObjectName);
+            m_lastSpotlightObjectName = objectName;
+            for (const ViewportBridge::AppearanceClosureEntry& entry : closureEntries) {
+                for (int i = 0; i < m_nodes.size(); ++i) {
+                    if (m_nodes[i].category != entry.category || m_nodes[i].name != entry.name) continue;
+                    handles.insert(m_nodes[i].handle);
+                    // First entry = the object's bound material, per
+                    // appearanceClosureForObject's own contract -- the
+                    // auto-scroll target.
+                    if (!primaryItem && i < m_nodeItems.size()) primaryItem = m_nodeItems[i];
+                    break;
+                }
             }
         }
+        // else: leave m_lastSpotlightObjectName untouched (see the
+        // comment above) -- handles/primaryItem stay empty/null, so no
+        // spotlight is shown and no scroll happens for this pass, exactly
+        // as a genuinely-empty closure would look.
+    } else {
+        // Selection genuinely moved away from Object (or there is none) --
+        // this is a REAL transition, not a degraded read, so clear the
+        // memo for real.
+        m_lastSpotlightObjectName.clear();
     }
     m_spotlightHandles = handles;
     applySpotlightToItems();

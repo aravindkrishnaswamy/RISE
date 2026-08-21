@@ -171,85 +171,6 @@ struct SceneTree {
     QVector<int>           roots;
 };
 
-/// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): one
-/// reference-param slot on a `PainterGraphNode`.  Mirrors
-/// `SceneEditController::GraphPort`.
-///
-/// `otherNodeIndex` is -1 for a NODE-LESS port (a dangling reference, or
-/// one pointing outside this graph's modeled categories) -- `otherName`
-/// still carries the target's name either way, never blank for a real
-/// reference.  Otherwise it is an INDEX into the SAME
-/// `PainterGraph::nodes` array this port's owning node came from -- like
-/// `SceneTreeNode`'s own `parent`/`children` indices, NOT a controller
-/// handle: valid only within the ONE `painterMaterialGraph()` call that
-/// produced it (see `SceneTreeNode`'s own header comment for why -- the
-/// same rule applies here for the same reason).
-struct PainterGraphPort {
-    QString paramName;
-    int     occurrence     = 0;
-    int     otherNodeIndex = -1;
-    QString otherName;
-};
-
-/// One node of the Painter/Material graph, WITH its laid-out position --
-/// mirrors `SceneEditController::GraphNode` plus the parallel
-/// `SceneEditController::GraphNodePosition`
-/// `ReadPainterMaterialGraphLaidOut` hands back for it (doc-88 Phase 3
-/// S11/S12/S13/S14).
-///
-/// `handle` is a real `SceneEditController::GraphNodeHandle` (unlike this
-/// struct's own port INDICES) -- it survives being held across a
-/// re-fetch of the SAME published generation (`PainterGraph::
-/// generation`), the same "the way back" role `ResolveGraphNodeHandle`
-/// plays on the C++ side.  A caller that wants to re-find "the node the
-/// user last selected" after a re-fetch should hold THIS, never an
-/// `outEdges[i].otherNodeIndex`.
-struct PainterGraphNode {
-    quint64 handle   = 0;
-    QString name;
-    QString chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
-    /// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's
-    /// enum, no bespoke per-value mirror" convention `ViewportProperty::
-    /// kind` already uses for `ValueKind` (see `SceneEditController::
-    /// PainterGraphNodeCategory`'s own comment). `chunkKeyword` above is
-    /// almost always the more useful discriminator for a UI label/icon.
-    int     category = -1;
-    int     defCount = 0;   ///< expression-family def-stage count; 0 otherwise
-    double  x = 0.0;
-    double  y = 0.0;
-    QVector<PainterGraphPort> outEdges;
-    QVector<PainterGraphPort> inEdges;   ///< non-empty here == this node is SHARED (fan-out badge)
-};
-
-/// The whole Painter/Material graph, positioned -- one
-/// `painterMaterialGraph()` call, the node table plus its generation.  No
-/// separate edge array: an edge is reachable through either endpoint's
-/// own `outEdges`/`inEdges` (`PainterGraphPort` already carries both
-/// endpoints + the param label, everything needed to draw a wire).
-struct PainterGraph {
-    QVector<PainterGraphNode> nodes;
-    quint64                   generation = 0;
-};
-
-/// One entry of an `appearanceClosureForObject()` result -- a node
-/// IDENTITY, not just a display string.  Mirrors
-/// `SceneEditController::AppearanceClosureEntry` field-for-field: a bare
-/// name is NOT enough to address a node in `PainterGraph::nodes` (a
-/// Painter and a Material chunk may legally share a name), so a caller
-/// matching a returned entry against an already-fetched node list MUST
-/// compare BOTH `category` and `name`, never `name` alone (review-round P1
-/// fix -- an earlier draft of this bridge method returned a bare
-/// `QStringList` and the Qt canvas matched by name only, which could
-/// silently spotlight the wrong node on a cross-category name collision).
-struct AppearanceClosureEntry {
-    /// `RISE::ChunkCategory` cast to int -- the SAME ordinal
-    /// `PainterGraphNode::category` already uses (Painter 0, Function 1,
-    /// Material 2), so this compares directly against a node's own
-    /// `category` field with no remapping.
-    int     category = -1;
-    QString name;
-};
-
 class ViewportBridge : public QObject
 {
     Q_OBJECT
@@ -1190,6 +1111,111 @@ public:
     ///
     /// Empty (both arrays) on a null controller or an empty category.
     SceneTree categoryTree(Category cat) const;
+
+    // ---- doc-88 Phase 3 S14/S16/S22 Painter/Material graph value types ---
+    // NESTED as public members of ViewportBridge (review-round P1 fix):
+    // these FOUR structs were previously declared as siblings of this
+    // class, at global namespace scope, while NodeGraphCanvas.h/.cpp (and
+    // this file's own out-of-line method definitions) referenced them as
+    // `ViewportBridge::PainterGraph` / `ViewportBridge::PainterGraphNode` /
+    // `ViewportBridge::PainterGraphPort` / `ViewportBridge::
+    // AppearanceClosureEntry` -- qualified-name lookup only searches the
+    // NAMED class, so a global-scope sibling is simply not found through
+    // that spelling ("no type named 'PainterGraph' in 'ViewportBridge'"
+    // under Clang; MSVC C2039 identically). This predates the
+    // AppearanceClosureEntry addition -- PainterGraph/PainterGraphNode/
+    // PainterGraphPort shipped broken in the S14/S16/S22 slices, never
+    // caught because this file has never been built by a real MSVC
+    // toolchain (see the MSVC-verification checklist in
+    // NodeGraphCanvas.cpp). Nesting here, rather than qualifying every
+    // call site with `::` to force global lookup, is the minimal-churn fix:
+    // every existing `ViewportBridge::X` spelling becomes valid AS WRITTEN.
+    //
+    // Plain data structs (QString/QVector/int/double/quint64 members only)
+    // passed by value or by const-ref/QVector -- none crosses a
+    // Q_DECLARE_METATYPE, a signal parameter, or any other context that
+    // would need them registered with Qt's meta-object system, so nesting
+    // introduces no such hazard.
+    // =====================================================================
+
+    /// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): one
+    /// reference-param slot on a `PainterGraphNode`.  Mirrors
+    /// `SceneEditController::GraphPort`.
+    ///
+    /// `otherNodeIndex` is -1 for a NODE-LESS port (a dangling reference, or
+    /// one pointing outside this graph's modeled categories) -- `otherName`
+    /// still carries the target's name either way, never blank for a real
+    /// reference.  Otherwise it is an INDEX into the SAME
+    /// `PainterGraph::nodes` array this port's owning node came from -- like
+    /// `SceneTreeNode`'s own `parent`/`children` indices, NOT a controller
+    /// handle: valid only within the ONE `painterMaterialGraph()` call that
+    /// produced it (see `SceneTreeNode`'s own header comment for why -- the
+    /// same rule applies here for the same reason).
+    struct PainterGraphPort {
+        QString paramName;
+        int     occurrence     = 0;
+        int     otherNodeIndex = -1;
+        QString otherName;
+    };
+
+    /// One node of the Painter/Material graph, WITH its laid-out position --
+    /// mirrors `SceneEditController::GraphNode` plus the parallel
+    /// `SceneEditController::GraphNodePosition`
+    /// `ReadPainterMaterialGraphLaidOut` hands back for it (doc-88 Phase 3
+    /// S11/S12/S13/S14).
+    ///
+    /// `handle` is a real `SceneEditController::GraphNodeHandle` (unlike this
+    /// struct's own port INDICES) -- it survives being held across a
+    /// re-fetch of the SAME published generation (`PainterGraph::
+    /// generation`), the same "the way back" role `ResolveGraphNodeHandle`
+    /// plays on the C++ side.  A caller that wants to re-find "the node the
+    /// user last selected" after a re-fetch should hold THIS, never an
+    /// `outEdges[i].otherNodeIndex`.
+    struct PainterGraphNode {
+        quint64 handle   = 0;
+        QString name;
+        QString chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
+        /// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's
+        /// enum, no bespoke per-value mirror" convention `ViewportProperty::
+        /// kind` already uses for `ValueKind` (see `SceneEditController::
+        /// PainterGraphNodeCategory`'s own comment). `chunkKeyword` above is
+        /// almost always the more useful discriminator for a UI label/icon.
+        int     category = -1;
+        int     defCount = 0;   ///< expression-family def-stage count; 0 otherwise
+        double  x = 0.0;
+        double  y = 0.0;
+        QVector<PainterGraphPort> outEdges;
+        QVector<PainterGraphPort> inEdges;   ///< non-empty here == this node is SHARED (fan-out badge)
+    };
+
+    /// The whole Painter/Material graph, positioned -- one
+    /// `painterMaterialGraph()` call, the node table plus its generation.  No
+    /// separate edge array: an edge is reachable through either endpoint's
+    /// own `outEdges`/`inEdges` (`PainterGraphPort` already carries both
+    /// endpoints + the param label, everything needed to draw a wire).
+    struct PainterGraph {
+        QVector<PainterGraphNode> nodes;
+        quint64                   generation = 0;
+    };
+
+    /// One entry of an `appearanceClosureForObject()` result -- a node
+    /// IDENTITY, not just a display string.  Mirrors
+    /// `SceneEditController::AppearanceClosureEntry` field-for-field: a bare
+    /// name is NOT enough to address a node in `PainterGraph::nodes` (a
+    /// Painter and a Material chunk may legally share a name), so a caller
+    /// matching a returned entry against an already-fetched node list MUST
+    /// compare BOTH `category` and `name`, never `name` alone (review-round P1
+    /// fix -- an earlier draft of this bridge method returned a bare
+    /// `QStringList` and the Qt canvas matched by name only, which could
+    /// silently spotlight the wrong node on a cross-category name collision).
+    struct AppearanceClosureEntry {
+        /// `RISE::ChunkCategory` cast to int -- the SAME ordinal
+        /// `PainterGraphNode::category` already uses (Painter 0, Function 1,
+        /// Material 2), so this compares directly against a node's own
+        /// `category` field with no remapping.
+        int     category = -1;
+        QString name;
+    };
 
     /// doc-88 Phase 3 S14: the Painter/Material node graph, positioned --
     /// {nodes, edges, positions}.  Same ONE-TRANSACTIONAL-READ discipline

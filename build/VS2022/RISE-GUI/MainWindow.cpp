@@ -567,6 +567,27 @@ QWidget* MainWindow::buildRightPanel()
                 revealEntityInSceneText(static_cast<int>(category), name);
             });
 
+    // Object-pick spotlight (review-round P1 fix): same "connect once"
+    // reasoning as revealRequested just above -- m_outlinerWidget AND
+    // m_nodeGraphCanvas are BOTH persistent (the latter built once in
+    // buildLeftPanel(), which runs before this function -- see
+    // MainWindow's constructor ordering), so connecting them here, exactly
+    // once, is correct. This was previously (wrongly) connected inside
+    // rebuildViewportForLoadedScene(), which runs on every scene (re)load
+    // -- since neither endpoint is ever destroyed/recreated between loads,
+    // that accumulated one more duplicate connection per reload, exactly
+    // the hazard this comment block already warns against for
+    // revealRequested/addEntityRequested/etc. A pick in the outliner
+    // doesn't itself touch the interactive rasterizer, so there's no
+    // imageUpdated to ride -- follow it explicitly so the node-graph
+    // canvas's spotlight (NodeGraphCanvas::refreshSpotlight, reached via
+    // refresh()'s tail) updates immediately rather than waiting for the
+    // next render frame.
+    if (m_nodeGraphCanvas) {
+        connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
+                m_nodeGraphCanvas, &NodeGraphCanvas::refresh);
+    }
+
     // Entity-creation slice: same "connect once, adapt the enum to a raw
     // int" pattern as revealRequested above -- m_outlinerWidget is
     // persistent, `this` is not recreated per scene load.
@@ -2579,21 +2600,17 @@ void MainWindow::rebuildViewportForLoadedScene()
         // single-entity inspector below updates immediately.
         connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
                 m_viewportProps, &ViewportProperties::refresh);
-        // review-round P1 fix: the SAME gap applies to the node-graph
-        // canvas's object-pick spotlight (NodeGraphCanvas::refreshSpotlight)
-        // -- it was previously reachable ONLY via imageUpdated (a render
-        // frame arriving) or a CRUD's own refreshForce(), so an outliner
-        // pick with no render in flight (the common case: nothing is
-        // actively rendering, the user is just browsing the scene graph)
-        // never lit the spotlight up at all. refresh() is the SAME
-        // epoch-gated call the imageUpdated connect below already uses --
-        // cheap when nothing structural changed, and its tail unconditionally
-        // re-derives the spotlight regardless (see refreshSpotlight's own
-        // comment on why a plain selection change never bumps sceneEpoch()).
-        if (m_nodeGraphCanvas) {
-            connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
-                    m_nodeGraphCanvas, &NodeGraphCanvas::refresh);
-        }
+        // The node-graph canvas's OWN follow of this same signal is
+        // connected ONCE in buildRightPanel() (review-round P1 fix), not
+        // here: m_nodeGraphCanvas is a PERSISTENT receiver (built once in
+        // buildLeftPanel, like m_outlinerWidget itself), unlike
+        // m_viewportProps just above, which IS per-scene (a fresh instance
+        // every rebuildViewportForLoadedScene call, so ITS connect must be
+        // redone here every time). Connecting a persistent-to-persistent
+        // pair inside this per-scene-reload function would accumulate one
+        // more duplicate connection on every load -- exactly the hazard
+        // this file's own "Reveal in scene file" comment in
+        // buildRightPanel() already warns against.
     }
 
     if (m_environmentPanel) {

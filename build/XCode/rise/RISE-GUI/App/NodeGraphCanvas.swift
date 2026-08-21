@@ -450,8 +450,25 @@ struct NodeGraphCanvas: View {
             .clipShape(RoundedRectangle(cornerRadius: 0))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear { scheduleReload(debounced: false); refreshSpotlight() }
-        .onChange(of: refreshTrigger) { _, _ in scheduleReload(debounced: true); refreshSpotlight() }
+        // review-round P3 fix: no separate `refreshSpotlight()` call here.
+        // `scheduleReload(debounced: false)` runs `performReload`
+        // SYNCHRONOUSLY, and `performReload`'s own tail already calls
+        // `refreshSpotlight(freshNodes:)` unconditionally -- an explicit
+        // call right after would be a full duplicate bridge round-trip on
+        // every appearance for no additional effect.
+        .onAppear { scheduleReload(debounced: false) }
+        .onChange(of: refreshTrigger) { _, _ in
+            scheduleReload(debounced: true)
+            // LOAD-BEARING, do not remove even though it looks like the
+            // same "duplicate" shape as the .onAppear call just above:
+            // `scheduleReload(debounced: true)` only runs `performReload`
+            // (and therefore its tail `refreshSpotlight`) after a 250ms
+            // GCD debounce, but a plain SELECTION change (the overwhelming
+            // common trigger for a `refreshTrigger` bump) needs the
+            // spotlight to update IMMEDIATELY, not 250ms later -- this
+            // explicit, undebounced call is what delivers that.
+            refreshSpotlight()
+        }
         .background(keyboardShortcuts)
         .sheet(isPresented: $showPalette) {
             NodeGraphAddNodeSheet(
@@ -764,25 +781,37 @@ struct NodeGraphCanvas: View {
             lastSpotlightObjectName = nil
             return
         }
-        // review-round P2 fix: auto-scroll must only fire when the OBJECT
-        // selection itself changed since the last time this ran, not on
-        // every reload -- otherwise a drag/edit while an object stays
-        // selected would re-trigger `scrollToNodeIfNeeded` and yank the
-        // view out from under an in-progress canvas edit. The closure set
-        // itself is still recomputed unconditionally below (a rewire can
-        // add/remove a member while the SAME object stays selected).
-        let selectionChanged = (objectName != lastSpotlightObjectName)
-        lastSpotlightObjectName = objectName
-
         // (category, name) matching, NOT name alone (review-round P1 fix):
         // a Painter and a Material chunk may legally share a name, so
         // matching this closure's entries against `nodes` by name only can
         // silently spotlight the wrong node on a cross-category collision.
         let closureEntries = bridge.appearanceClosure(forObject: objectName)
         guard !closureEntries.isEmpty else {
+            // review-round P2 fix: do NOT stamp `lastSpotlightObjectName`
+            // here. An empty result is OVERLOADED -- it means either a
+            // genuinely empty closure OR the C++ side's `try_to_lock`
+            // degrading to empty because a render currently owns the
+            // commit lock (AppearanceClosureForObject's own contract).
+            // Stamping the memo on the degraded case would poison it: once
+            // the render finishes and the SAME selection resolves for
+            // real, `selectionChanged` below would read false (the memo
+            // already "matches"), so the auto-scroll would never fire for
+            // what is effectively the first real resolution of this pick.
+            // Leaving the memo untouched keeps `selectionChanged` true
+            // until a resolve actually succeeds.
             spotlightHandles = []
             return
         }
+        // review-round P2 fix: stamp the memo ONLY on a successful
+        // (non-empty) resolve -- see the guard above. Auto-scroll must
+        // only fire when the OBJECT selection itself changed since the
+        // last SUCCESSFUL resolve, not on every reload -- otherwise a
+        // drag/edit while an object stays selected would re-trigger
+        // `scrollToNodeIfNeeded` and yank the view out from under an
+        // in-progress canvas edit.
+        let selectionChanged = (objectName != lastSpotlightObjectName)
+        lastSpotlightObjectName = objectName
+
         var handles: Set<UInt64> = []
         var primaryNode: GraphCanvasNode? = nil
         for entry in closureEntries {
