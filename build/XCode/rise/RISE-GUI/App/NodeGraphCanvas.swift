@@ -397,6 +397,16 @@ struct NodeGraphCanvas: View {
     /// recomputing the closure" apart from "the selection actually moved,"
     /// which is what gates the auto-scroll (see that function's comment).
     @State private var lastSpotlightObjectName: String? = nil
+    /// Review-round P2-1 fix: unlike the Qt canvas (which re-derives the
+    /// spotlight on every preview frame via `performReload`'s
+    /// `imageUpdated`-driven poll), this canvas only reacts to DISCRETE
+    /// triggers (a `refreshTrigger` bump or `performReload`'s own tail) --
+    /// there is no frame-tick to naturally retry a resolve that degraded
+    /// to empty because a render currently owns the commit lock
+    /// (`AppearanceClosureForObject`'s try_to_lock contract). Holds the
+    /// single bounded retry `refreshSpotlight` schedules on a degrade; see
+    /// that function's own comment.
+    @State private var spotlightRetryWorkItem: DispatchWorkItem?
 
     // -------- S21: drag-to-reposition --------
     /// The single node currently mid-drag, at its LIVE (uncommitted)
@@ -761,6 +771,12 @@ struct NodeGraphCanvas: View {
     /// the object the properties panel is inspecting; this canvas only
     /// LOOKS at it, it never claims it.
     private func refreshSpotlight(freshNodes: [GraphCanvasNode]? = nil) {
+        // Any call here supersedes a still-pending degrade retry (see the
+        // degrade branch below) -- a fresh, real trigger is always a
+        // better answer than a stale scheduled one.
+        spotlightRetryWorkItem?.cancel()
+        spotlightRetryWorkItem = nil
+
         let nodes = freshNodes ?? snapshot.nodes
         guard let bridge, bridge.selectionCategory == .object else {
             spotlightHandles = []
@@ -787,28 +803,39 @@ struct NodeGraphCanvas: View {
         // silently spotlight the wrong node on a cross-category collision.
         let closureEntries = bridge.appearanceClosure(forObject: objectName)
         guard !closureEntries.isEmpty else {
-            // review-round P2 fix: do NOT stamp `lastSpotlightObjectName`
-            // here. An empty result is OVERLOADED -- it means either a
-            // genuinely empty closure OR the C++ side's `try_to_lock`
-            // degrading to empty because a render currently owns the
-            // commit lock (AppearanceClosureForObject's own contract).
-            // Stamping the memo on the degraded case would poison it: once
-            // the render finishes and the SAME selection resolves for
-            // real, `selectionChanged` below would read false (the memo
-            // already "matches"), so the auto-scroll would never fire for
-            // what is effectively the first real resolution of this pick.
-            // Leaving the memo untouched keeps `selectionChanged` true
-            // until a resolve actually succeeds.
+            // DEGRADED (or genuinely empty) resolve (review-round P2-1/
+            // P2-2 fix): CLEAR the memo rather than leaving it untouched.
+            // "Leave untouched" was itself a bug: object A resolves and is
+            // spotlit, the user picks object B while a render degrades B's
+            // resolve, then picks A again -- with the memo left at "A"
+            // from the earlier resolve, re-selecting A would read as
+            // "unchanged" and skip the auto-scroll entirely. Clearing
+            // makes every post-degrade re-selection (including of the
+            // SAME object) a fresh change.
             spotlightHandles = []
+            lastSpotlightObjectName = nil
+
+            // Unlike the Qt canvas (re-derives every preview frame), this
+            // canvas has no frame-tick to naturally retry once a
+            // contended render finishes -- refreshSpotlight only runs on
+            // discrete triggers. Schedule exactly ONE bounded retry
+            // ~0.5s out, via the SAME DispatchWorkItem cancel-and-
+            // reschedule idiom `scheduleReload`'s own debounce already
+            // uses. Harmless for a genuinely material-less object (the
+            // retry fires once, finds still-empty, and stops -- no
+            // pile-up, since every call to this function cancels any
+            // pending retry first).
+            let retry = DispatchWorkItem { refreshSpotlight() }
+            spotlightRetryWorkItem = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
             return
         }
-        // review-round P2 fix: stamp the memo ONLY on a successful
-        // (non-empty) resolve -- see the guard above. Auto-scroll must
-        // only fire when the OBJECT selection itself changed since the
-        // last SUCCESSFUL resolve, not on every reload -- otherwise a
-        // drag/edit while an object stays selected would re-trigger
-        // `scrollToNodeIfNeeded` and yank the view out from under an
-        // in-progress canvas edit.
+        // Stamp the memo ONLY on a successful (non-empty) resolve -- see
+        // the guard above. Auto-scroll must only fire when the OBJECT
+        // selection itself changed since the last SUCCESSFUL resolve, not
+        // on every reload -- otherwise a drag/edit while an object stays
+        // selected would re-trigger `scrollToNodeIfNeeded` and yank the
+        // view out from under an in-progress canvas edit.
         let selectionChanged = (objectName != lastSpotlightObjectName)
         lastSpotlightObjectName = objectName
 

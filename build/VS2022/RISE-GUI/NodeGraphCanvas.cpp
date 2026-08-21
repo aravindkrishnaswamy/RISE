@@ -1322,23 +1322,33 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
         return;
     }
 
-    // CHEAP pre-check first (review-round P2 fix). selectionCategory() and
-    // selectionName() are both O(1) field reads; selectionRowName() below
-    // is an O(rows), per-row-heap-allocating tree walk
-    // (SelectionRowName -> ResolveTreeRowName's fold-chain search) -- and
-    // this method runs on EVERY preview frame (performReload's own
-    // per-frame poll cadence), not once per user gesture. selectionRowName()
-    // is a PURE function of (selectionCategory(), selectionName()): if
-    // NEITHER changed since the last time this ran, its answer cannot have
-    // either, so the expensive walk is safe to skip on the overwhelmingly
-    // common steady-state frame (an object sitting selected while nothing
-    // else happens) -- only derive the expensive row name when this cheap
-    // gate says the spotlight path might actually be live.
+    // CHEAP pre-check first. selectionCategory() and selectionName() are
+    // both O(1) field reads; selectionRowName() below is an O(rows),
+    // per-row-heap-allocating tree walk (SelectionRowName ->
+    // ResolveTreeRowName's fold-chain search) -- and this method runs on
+    // EVERY preview frame (performReload's own per-frame poll cadence),
+    // not once per user gesture. selectionRowName() is a PURE function of
+    // (selectionCategory(), selectionName()): if NEITHER changed since the
+    // cheap-gate memo was last COMMITTED, its answer cannot have either,
+    // so the expensive walk is safe to skip.
+    //
+    // NOT COMMITTED YET (review-round P2-1 fix): a prior draft stamped
+    // m_lastSpotlightCategory/m_lastSpotlightSelectionName here,
+    // unconditionally, before ever attempting the deep resolve below. That
+    // poisoned retries: if appearanceClosureForObject() degrades to empty
+    // because a render currently owns the commit lock
+    // (AppearanceClosureForObject's own try_to_lock contract), the cheap
+    // gate would already show "nothing changed" on every SUBSEQUENT
+    // preview frame (selectionCategory()/selectionName() genuinely are
+    // unchanged -- the same object is still selected), so the expensive
+    // path -- and therefore the retry -- would never run again, even after
+    // the render finished and a real resolve became possible. The gate is
+    // now committed ONLY alongside a successful deep resolve (see below);
+    // a degraded attempt leaves it uncommitted so the NEXT imageUpdated
+    // frame retries for real.
     const ViewportBridge::Category cat = m_bridge->selectionCategory();
     const QString cheapName = (cat == ViewportBridge::Category::Object) ? m_bridge->selectionName() : QString();
     if (!forceReapply && cat == m_lastSpotlightCategory && cheapName == m_lastSpotlightSelectionName) return;
-    m_lastSpotlightCategory = cat;
-    m_lastSpotlightSelectionName = cheapName;
 
     // selectionRowName(), NOT selectionName(): a viewport/outliner pick on
     // a count_u/count_v repeated or subtree-copied instance names a
@@ -1351,12 +1361,12 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
 
     QSet<quint64> handles;
     GraphNodeItem* primaryItem = nullptr;
-    // review-round P2 fix: auto-scroll must fire only when the ROW-NAME
-    // identity of the external selection actually CHANGED since the last
-    // SUCCESSFUL resolve, NOT on a forceReapply-only pass (a structural
-    // edit/rewire while the SAME object stays selected must not yank the
-    // view out from under an in-progress canvas edit). Defaults to false;
-    // only set true in the successful-resolve branch below.
+    // Auto-scroll must fire only when the ROW-NAME identity of the
+    // external selection actually CHANGED since the last SUCCESSFUL
+    // resolve, NOT on a forceReapply-only pass (a structural edit/rewire
+    // while the SAME object stays selected must not yank the view out
+    // from under an in-progress canvas edit). Defaults to false; only set
+    // true in the successful-resolve branch below.
     bool selectionChanged = false;
     if (cat == ViewportBridge::Category::Object && !objectName.isEmpty()) {
         // (category, name) matching, NOT name alone (review-round P1 fix):
@@ -1366,17 +1376,13 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
         // collision.
         const QVector<ViewportBridge::AppearanceClosureEntry> closureEntries = m_bridge->appearanceClosureForObject(objectName);
         if (!closureEntries.isEmpty()) {
-            // review-round P2 fix: stamp m_lastSpotlightObjectName ONLY on
-            // a successful (non-empty) resolve. An empty result here is
-            // OVERLOADED -- it means either a genuinely empty closure OR
-            // the C++ side's try_to_lock degrading to empty because a
-            // render currently owns the commit lock
-            // (AppearanceClosureForObject's own contract). Stamping the
-            // memo on the degraded case would poison it: once the render
-            // finishes and the SAME selection resolves for real, this
-            // comparison would read false (the memo already "matches"),
-            // so the auto-scroll would never fire for what is effectively
-            // the first real resolution of this pick.
+            // SUCCESSFUL resolve -- commit BOTH memos now (review-round
+            // P2-1/P2-2 fix): the cheap gate (so a later steady-state
+            // frame with nothing changed can skip the expensive walk
+            // again) and the object-identity memo used for the
+            // auto-scroll-on-change decision.
+            m_lastSpotlightCategory = cat;
+            m_lastSpotlightSelectionName = cheapName;
             selectionChanged = (objectName != m_lastSpotlightObjectName);
             m_lastSpotlightObjectName = objectName;
             for (const ViewportBridge::AppearanceClosureEntry& entry : closureEntries) {
@@ -1390,15 +1396,30 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
                     break;
                 }
             }
+        } else {
+            // DEGRADED (or genuinely empty) resolve (review-round P2-1/
+            // P2-2 fix): CLEAR all three memos rather than leaving them
+            // stamped/untouched. Clearing (not merely "leaving alone")
+            // matters for a THIRD scenario beyond the render-in-flight
+            // one: object A resolves and is spotlit, the user picks
+            // object B while a render degrades B's resolve, then picks A
+            // again -- with the object memo left at "A" from the first
+            // resolve, re-selecting A would read as "unchanged" and skip
+            // the auto-scroll entirely. Clearing makes every post-degrade
+            // re-selection (including of the SAME object) a fresh change.
+            // Clearing the cheap-gate memo too is what makes the NEXT
+            // imageUpdated frame retry the deep resolve instead of
+            // short-circuiting above.
+            m_lastSpotlightCategory = ViewportBridge::Category::None;
+            m_lastSpotlightSelectionName.clear();
+            m_lastSpotlightObjectName.clear();
         }
-        // else: leave m_lastSpotlightObjectName untouched (see the
-        // comment above) -- handles/primaryItem stay empty/null, so no
-        // spotlight is shown and no scroll happens for this pass, exactly
-        // as a genuinely-empty closure would look.
     } else {
         // Selection genuinely moved away from Object (or there is none) --
-        // this is a REAL transition, not a degraded read, so clear the
-        // memo for real.
+        // a REAL, resolved transition, not a degraded read, so commit the
+        // cheap gate and clear the object memo for real.
+        m_lastSpotlightCategory = cat;
+        m_lastSpotlightSelectionName = cheapName;
         m_lastSpotlightObjectName.clear();
     }
     m_spotlightHandles = handles;
@@ -1913,6 +1934,22 @@ qreal NodeGraphCanvas::currentScale() const
 //
 // ---- MSVC-verification checklist (for the owed Windows build session) ----
 //
+//  [ ] HIGHEST-RISK ITEM, CHECK FIRST: the nested-struct fix in
+//      `ViewportBridge.h` (`PainterGraphPort`/`PainterGraphNode`/
+//      `PainterGraph`/`AppearanceClosureEntry` moved from global-namespace
+//      siblings of `class ViewportBridge` to public NESTED members, plus
+//      the two return-type qualifications and the `ConvertGraphPorts`
+//      free-function qualification this required in `ViewportBridge.cpp`)
+//      was verified ONLY via a throwaway `clang++ -fsyntax-only -std=c++17`
+//      mock harness (QString/QVector aliased to std types) in a scratch
+//      directory, NOT a real MSVC compile -- this whole file (and
+//      `ViewportBridge.h`/`.cpp`) had never actually been built by MSVC
+//      before that fix, per this checklist's own standing note below.
+//      Re-verify a REAL MSVC compile of `ViewportBridge.h`/`.cpp` +
+//      `NodeGraphCanvas.cpp` before trusting anything else on this list --
+//      MSVC's name-lookup diagnostics (C2039) are expected to agree with
+//      Clang's here, but that expectation is unconfirmed on the actual
+//      toolchain this code ships for.
 //  [ ] `NodeGraphCanvas.h`/`.cpp` compile clean at the project's warning
 //      level (0 warnings, per this repo's "Compiler Warnings Are Bugs"
 //      policy) -- watch specifically for MSVC C4244 (double/qreal->int
