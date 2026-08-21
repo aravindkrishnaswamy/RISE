@@ -1210,16 +1210,13 @@ void NodeGraphCanvas::performReload(bool force)
         int category = -1;
         QString name;
         if (currentFocusTarget(category, name)) {
-            // Force a fresh focused fetch when JUST transitioning FROM the
-            // "no selection -> All" fallback below: performFocusedReload's
-            // own cheap target-identity gate compares only (category,
-            // name), which could coincidentally match a STALE cached
-            // target left over from BEFORE the fallback interlude and
-            // wrongly skip the refetch while the canvas is still showing
-            // All-view content (re-selecting the SAME node after a brief
-            // deselection is the concrete repro).
-            if (!m_lastFocusedHasTarget) force = true;
-            m_lastFocusedHasTarget = true;
+            // No transition-force logic needed here (review-round P1 fix
+            // on 0562b9c4, see below): performFocusedReload's own cheap
+            // gate refuses to skip whenever m_lastFocusedHasTarget is
+            // false, and hasTarget is exactly what the no-target branch
+            // below clears -- so the "just came back from a no-target (or
+            // degraded) interlude" case is already covered by that gate,
+            // not by anything here.
             performFocusedReload(category, name, force);
             return;
         }
@@ -1234,7 +1231,16 @@ void NodeGraphCanvas::performReload(bool force)
         // skipped by the epoch gate; once settled, further frames defer
         // to the ordinary gate like any other All-view frame.
         if (m_lastFocusedHasTarget || !m_hasFetchedOnce) force = true;
+        // All THREE focused-gate fields clear TOGETHER, one policy
+        // (review-round P1 fix on 0562b9c4): m_lastFocusedHasTarget must
+        // never go false while m_lastFocusedCategory/Name still hold a
+        // stale target, or a later reselect of a name that happens to
+        // coincide with the stale memo would wrongly skip its refetch via
+        // performFocusedReload's cheap gate -- see that function's own
+        // comment for the matching paired commit on the success side.
         m_lastFocusedHasTarget = false;
+        m_lastFocusedCategory  = -1;
+        m_lastFocusedName.clear();
     }
 
     const unsigned int epoch = m_bridge->sceneEpoch();
@@ -1295,23 +1301,39 @@ void NodeGraphCanvas::performFocusedReload(int category, const QString& name, bo
     // frame, not once per gesture -- skip the full applySnapshot rebuild
     // (tears down and recreates every GraphNodeItem) when the focus
     // target identity did not change since the last COMMITTED
-    // (non-degraded) outcome.
-    if (!force && category == m_lastFocusedCategory && name == m_lastFocusedName) return;
+    // (non-degraded) outcome. Gated on m_lastFocusedHasTarget too
+    // (review-round P1 fix on 0562b9c4): a degraded resolve below
+    // intentionally leaves ALL THREE gate fields exactly as they were,
+    // INCLUDING hasTarget -- without this check, hasTarget could be true
+    // from a stale prior success while category/name still coincidentally
+    // match a just-reselected target, wrongly skipping the retry forever
+    // (the P1 repro: focus A -> deselect -> reselect A mid-render).
+    if (!force && m_lastFocusedHasTarget && category == m_lastFocusedCategory && name == m_lastFocusedName) return;
 
     bool degraded = false;
     const ViewportBridge::PainterGraph g = m_bridge->painterMaterialGraphFocused(category, name, &degraded);
     if (degraded) {
-        // DEGRADED (a render owns the scene): leave the cheap-gate memo
-        // UNCOMMITTED so the NEXT imageUpdated frame retries the deep
-        // resolve for real -- no explicit timer needed the way the Mac
-        // canvas requires (NodeGraphCanvas.swift's own
-        // spotlightRetryWorkItem/focusedRetryWorkItem comment explains why
-        // THAT platform needs one and this one does not: this canvas
-        // already re-derives every preview frame). Keep showing whatever
-        // is CURRENTLY on screen -- never flip to All and back, which
-        // would flicker every time a render happens to be in flight.
+        // DEGRADED (a render owns the scene): leave ALL THREE gate fields
+        // (hasTarget + the identity memo) exactly as they were -- in
+        // particular hasTarget is NOT stamped true here, so the cheap gate
+        // above can never wrongly treat this attempt as committed. The
+        // NEXT imageUpdated frame retries the deep resolve for real -- no
+        // explicit timer needed the way the Mac canvas requires
+        // (NodeGraphCanvas.swift's own spotlightRetryWorkItem/
+        // focusedRetryWorkItem comment explains why THAT platform needs
+        // one and this one does not: this canvas already re-derives every
+        // preview frame). Keep showing whatever is CURRENTLY on screen --
+        // never flip to All and back, which would flicker every time a
+        // render happens to be in flight.
         return;
     }
+    // Commit all THREE gate fields TOGETHER, one policy (review-round P1
+    // fix on 0562b9c4): hasTarget and the identity memo change in lockstep
+    // -- never one without the other -- so a stale identity can never
+    // coincidentally re-match after an intervening no-target interlude or
+    // a degraded attempt. See performReload's no-target branch for the
+    // matching paired CLEAR.
+    m_lastFocusedHasTarget = true;
     m_lastFocusedCategory = category;
     m_lastFocusedName = name;
     // A genuinely empty focused subgraph (e.g. an object with no material
@@ -2010,8 +2032,20 @@ void NodeGraphCanvas::openAddNodeDialog()
     // persists the drop-point position (create-time auto-layout would
     // otherwise place it by rank, ignoring where the user asked for it)
     // and (b) selects + refreshes -- mirrors didCreateNode exactly.
-    QString err;
-    m_bridge->writeGraphNodeLayoutPosition(dlg.createdName(), dropPoint.x(), dropPoint.y(), &err);
+    //
+    // SKIP THE SIDECAR WRITE WHILE FOCUSED (review-round P3-2 fix on
+    // 0562b9c4): `dropPoint` was computed from `m_view`'s CURRENT pan/zoom,
+    // which while Focused is showing the transient focused-subgraph layout
+    // space, not the All-view's persisted coordinate space -- writing it
+    // into the sidecar would land the new node at a nonsense position once
+    // the user toggles back to All. Let the new node fall back to its
+    // natural rank-layout position in the All view instead (the same thing
+    // that already happens to any node with no sidecar entry) -- same
+    // least-code choice as commitNodeMove's own Focused-mode skip.
+    if (m_viewScope != GraphViewScope::Focused) {
+        QString err;
+        m_bridge->writeGraphNodeLayoutPosition(dlg.createdName(), dropPoint.x(), dropPoint.y(), &err);
+    }
     m_bridge->setSelection(
         dlg.createdCategory() == 2 ? ViewportBridge::Category::Material : ViewportBridge::Category::Painter,
         dlg.createdName());
@@ -2092,7 +2126,7 @@ qreal NodeGraphCanvas::currentScale() const
 // | 26 | Category/edge count header ("N nodes, M edges") | `updateHeaderCounts` | Direct port. |
 // | 27 | Node-graph model types (`GraphCanvasNode`/`GraphCanvasPort`) | `GraphNodeData`/`GraphPortData` | Structurally identical MINUS the `position` field's role — see #12; Qt's `GraphNodeData::position` is a "last-known-good" seed/revert value, not the live render position. |
 // | 28 | Object-pick spotlight: viewport/outliner Object selection → gold glow/border on the object's bound material + its full Painter/Function/Material closure, auto-scroll to the material ONLY on an actual selection change, NEVER calls `setSelection` from the spotlight path | `NodeGraphCanvas::refreshSpotlight`/`applySpotlightToItems`, `GraphNodeItem::setNodeSpotlit`, `ViewportBridge::appearanceClosureForObject` | **NOT a direct port on first landing — an external review round caught a real gap, now closed; this row describes the FIXED state.** (a) Mac's `.shadow` glow has no Qt equivalent without a whole-item `QGraphicsEffect`, so `GraphNodeItem::paint` approximates it with two concentric rounded-rect strokes drawn behind the card — same warm-gold (`Theme::gold`) read, different primitive; a genuine cosmetic-only deviation. (b) Mac observes `refreshTrigger`/`sceneEpoch` via SwiftUI `.onChange`, and Mac's own `selectNode` bumps `refreshTrigger` SYNCHRONOUSLY on a canvas click, clearing a live spotlight immediately. Qt has no such push signal for a plain selection change (confirmed: `SceneEditController::SetSelectionInner_`'s UI-only Object/Material path never bumps `mSceneEpoch`), and `NodeGraphCanvas::refresh()` is NOT a true per-frame timer poll — it rides `ViewportBridge::imageUpdated` (MainWindow.cpp), which fires on a RENDERED FRAME, not on a bare selection change. The FIRST landing wired ONLY that connection, so a viewport/outliner Object pick with no render in flight (the common case: browsing the scene graph on an already-converged or static preview) never lit the spotlight at all, and a canvas-node click never cleared one immediately either. Fixed two ways: `MainWindow.cpp`'s `OutlinerWidget::selectionActivated` connect now ALSO calls `NodeGraphCanvas::refresh()` (the same explicit-follow pattern that connection already uses for `ViewportProperties::refresh`), and `NodeGraphCanvas::selectNode` now calls `refreshSpotlight(false)` directly, matching Mac's synchronous clear. `refreshSpotlight` itself runs on every `refresh()`/`performReload()` call (whichever of the two paths triggered it) with a two-tier early-exit: a CHEAP `(selectionCategory(), selectionName())` pre-check before ever paying the O(rows) `selectionRowName()` walk, plus a `forceReapply` flag so a just-rebuilt node set (whose items are all new) always gets the spotlight re-applied even when the selection identity itself did not change — but `forceReapply` does NOT by itself trigger a re-scroll; auto-scroll is gated on the RESOLVED row name actually differing from the last one computed, so a structural edit/rewire while the same object stays selected never yanks the view. Auto-scroll uses `QGraphicsView::ensureVisible` (built-in, already a no-op when the target is fully visible) rather than porting Mac's by-hand screen↔content inversion. |
-// | 29 | View-scope toggle: "All" vs "Focused" (selection's subgraph only) — Object selection focuses the appearance closure, a canvas Painter/Function/Material node focuses itself + its transitive upstream (inputs) only, downstream referrers excluded; layout is TRANSIENT (never reads/writes the `.risegraph.json` sidecar); no target or a degraded resolve falls back to showing All (never a blank canvas); node drags are disabled (snap back) while Focused | `NodeGraphCanvas::performReload`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`, `m_viewScopeBtn`, `ViewportBridge::painterMaterialGraphFocused`, `SceneEditController::ReadPainterMaterialGraphLaidOutFocused` | Direct port of the Mac `GraphViewScope` segmented Picker, same shared-core C++ call (`ReadPainterMaterialGraphLaidOutFocused`) so the subgraph selection + transient layout logic is identical bit-for-bit on both platforms — only the toggle widget and the refetch plumbing differ. Toggle is a checkable `QToolButton` ("Focused") inserted into the header row immediately before the "+" palette button, mirroring the Mac segmented control's position. `currentFocusTarget` mirrors Mac's `currentFocusTarget(bridge:)` exactly: Object-category selection comes from `ViewportBridge::selectionCategory()`/`selectionRowName()` (the shared external selection); a canvas-node target comes from THIS canvas's own `m_selectedHandleValid`/`m_selectedHandle` against `m_nodes`, using the canvas's own precise 0/1/2 category rather than the UI-collapsed Painter/Function grouping the shared bridge exposes elsewhere — an outliner-driven Material/Painter pick that never touched the canvas does not define a focus target on either platform. `performFocusedReload` carries a cheap `(category, name)` identity gate (the established two-tier pre-check pattern from row 15/P2-1) with an explicit "force on transition" fix: a bare identity-equality gate would wrongly skip a refetch when the target transitions THROUGH a no-target interlude back to a coincidentally-same-identity target (e.g. reselecting the same node after a brief deselection), since the stale `m_lastFocusedCategory`/`m_lastFocusedName` memo was never cleared during the interlude — fixed by forcing `force=true` whenever `!m_lastFocusedHasTarget` at the moment a target is newly found. Degraded resolves (render-contention) leave the cheap-gate memo uncommitted and simply keep showing the last-good focused content — no separate retry timer needed (unlike Mac's bounded `DispatchWorkItem` retry), because this canvas already re-derives on every `imageUpdated` frame via the ordinary `refresh()`/`performReload()` path, so contention self-heals on the next frame for free. `selectNode`'s focused-mode refetch is deferred via `QTimer::singleShot(0, ...)` rather than called synchronously — a direct call would delete every `GraphNodeItem` (including the one whose `mousePressEvent` is still on the call stack, which touches `this` again via the trailing `QGraphicsItem::mousePressEvent(event)` base-class call) before that base call runs, a genuine use-after-free; deferring past the current event-handler's call stack avoids it, matching the established "defer past the handler" idiom this file already uses elsewhere. `commitNodeMove` gains an early-return in Focused mode that calls the existing `revertToKnownGoodPosition()` snap-back instead of committing to the sidecar — the least-code option that cannot corrupt persisted layout, matching Mac's drag-disable choice (dragging is visually inert rather than refused outright, since suppressing the drag gesture itself would need deeper `GraphNodeItem::itemChange` plumbing for no behavioral benefit). `setBridge()` needs NO explicit reset of the new `m_viewScope`/`m_lastFocusedHasTarget`/`m_lastFocusedCategory`/`m_lastFocusedName` state on a scene (re)load: its existing `m_hasFetchedOnce = false` already forces `performReload`'s Focused branch down the `!m_hasFetchedOnce → force = true` path regardless of the stale memo's value, so a fresh scene correctly re-evaluates (and, since the fresh scene starts with no selection, falls back to All) without any new code — this mirrors Mac, which likewise has no explicit `viewScope` reset on scene load and can retain the user's All/Focused preference across a scene switch, a deliberate cross-platform consistency rather than an oversight. |
+// | 29 | View-scope toggle: "All" vs "Focused" (selection's subgraph only) — Object selection focuses the appearance closure, a canvas Painter/Function/Material node focuses itself + its transitive upstream (inputs) only, downstream referrers excluded; layout is TRANSIENT (never reads/writes the `.risegraph.json` sidecar); no target or a degraded resolve falls back to showing All (never a blank canvas); node drags are disabled (snap back) while Focused | `NodeGraphCanvas::performReload`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`, `m_viewScopeBtn`, `ViewportBridge::painterMaterialGraphFocused`, `SceneEditController::ReadPainterMaterialGraphLaidOutFocused` | Direct port of the Mac `GraphViewScope` segmented Picker, same shared-core C++ call (`ReadPainterMaterialGraphLaidOutFocused`) so the subgraph selection + transient layout logic is identical bit-for-bit on both platforms — only the toggle widget and the refetch plumbing differ. Toggle is a checkable `QToolButton` ("Focused") inserted into the header row immediately before the "+" palette button, mirroring the Mac segmented control's position. `currentFocusTarget` mirrors Mac's `currentFocusTarget(bridge:)` exactly: Object-category selection comes from `ViewportBridge::selectionCategory()`/`selectionRowName()` (the shared external selection); a canvas-node target comes from THIS canvas's own `m_selectedHandleValid`/`m_selectedHandle` against `m_nodes`, using the canvas's own precise 0/1/2 category rather than the UI-collapsed Painter/Function grouping the shared bridge exposes elsewhere — an outliner-driven Material/Painter pick that never touched the canvas does not define a focus target on either platform. `performFocusedReload` carries a cheap `(category, name)` identity gate (the established two-tier pre-check pattern from row 15/P2-1), gated on THREE fields — `m_lastFocusedHasTarget`, `m_lastFocusedCategory`, `m_lastFocusedName` — that commit and clear TOGETHER as one policy (review-round P1 fix on `0562b9c4`, this row's original text was wrong about this): `performReload`'s no-target branch clears all three when the selection disappears, and `performFocusedReload` sets all three ONLY on a non-degraded resolve. A bare identity-equality gate that ignored `hasTarget` (the FIRST landing's shape) would wrongly skip a refetch forever after this sequence: focus A resolves (all three commit to A) → deselect (all three clear) → reselect A while a render owns the scene (the fetch degrades, so nothing commits — but the FIRST landing stamped `hasTarget=true` unconditionally BEFORE the fetch, so the stale `category`/`name` memo from before the deselect could still coincidentally equal A and the gate would keep matching on every later frame even after the render ended, since only the identity fields — never `hasTarget` — were being compared). The fix folds `hasTarget` into the gate's own equality check and moves its commit inside the same non-degraded branch as the identity fields, so a degraded attempt can never leave the three fields out of lockstep. Degraded resolves leave all three fields exactly as they were and simply keep showing the last-good focused content — no separate retry timer needed (unlike Mac's bounded `DispatchWorkItem` retry), because this canvas already re-derives on every `imageUpdated` frame via the ordinary `refresh()`/`performReload()` path, so contention now genuinely self-heals once the render ends (this claim was FALSE for the reselect-during-contention sequence before the P1 fix — the MSVC checklist below has a dedicated case for it). `selectNode`'s focused-mode refetch is deferred via `QTimer::singleShot(0, ...)` rather than called synchronously — a direct call would delete every `GraphNodeItem` (including the one whose `mousePressEvent` is still on the call stack, which touches `this` again via the trailing `QGraphicsItem::mousePressEvent(event)` base-class call) before that base call runs, a genuine use-after-free; deferring past the current event-handler's call stack avoids it, matching the established "defer past the handler" idiom this file already uses elsewhere. `commitNodeMove` gains an early-return in Focused mode that calls the existing `revertToKnownGoodPosition()` snap-back instead of committing to the sidecar — the least-code option that cannot corrupt persisted layout, matching Mac's drag-disable choice (dragging is visually inert rather than refused outright, since suppressing the drag gesture itself would need deeper `GraphNodeItem::itemChange` plumbing for no behavioral benefit). `setBridge()` needs NO explicit reset of the new `m_viewScope`/`m_lastFocusedHasTarget`/`m_lastFocusedCategory`/`m_lastFocusedName` state on a scene (re)load: its existing `m_hasFetchedOnce = false` already forces `performReload`'s Focused branch down the `!m_hasFetchedOnce → force = true` path regardless of the stale memo's value, so a fresh scene correctly re-evaluates (and, since the fresh scene starts with no selection, falls back to All) without any new code — this mirrors Mac, which likewise has no explicit `viewScope` reset on scene load and can retain the user's All/Focused preference across a scene switch, a deliberate cross-platform consistency rather than an oversight. |
 //
 // ---- Bridge gaps closed in this slice (build/VS2022/RISE-GUI/ViewportBridge.{h,cpp}) ----
 //
@@ -2224,9 +2258,19 @@ qreal NodeGraphCanvas::currentScale() const
 //      match here would wrongly keep showing All). Create a new node while
 //      Focused with a reachable selection active; confirm the new node
 //      appears in the focused subgraph (selection-follow on create makes
-//      it the new focus target). Finally, trigger render contention
-//      (kick off a render, immediately toggle to Focused) and confirm the
-//      canvas keeps showing its last-good content rather than flashing to
-//      All and back.
+//      it the new focus target). Trigger render contention (kick off a
+//      render, immediately toggle to Focused) and confirm the canvas
+//      keeps showing its last-good content rather than flashing to All
+//      and back. THEN (review-round P1 regression case on `0562b9c4` --
+//      the step above alone never exercises this): with the render still
+//      running, deselect the focused node (falls back to All), reselect
+//      the SAME node WHILE THE RENDER IS STILL RUNNING, and confirm the
+//      resolve keeps retrying every frame (still showing All, not a
+//      stale/wrong focused subgraph) until the render ends, at which
+//      point it must resolve to the correct focused subgraph on its own
+//      -- no further click needed. This is the sequence the P1 fix
+//      closed: a bare identity-equality gate that ignored
+//      `m_lastFocusedHasTarget` would wedge on exactly this reselect and
+//      never recover even after the render ended.
 //
 // ======================================================================

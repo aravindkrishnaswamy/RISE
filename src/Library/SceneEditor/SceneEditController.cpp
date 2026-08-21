@@ -6106,7 +6106,24 @@ std::vector<unsigned int> SceneEditController::BFSGraphClosure( const PainterMat
 // resolves identically against a focused read of the same generation (and
 // vice versa) via the ordinary ResolveGraphNodeHandle.
 //
-// PURE and static, same testability posture as BFSGraphClosure.
+// PURE and static, same testability posture as BFSGraphClosure. TOLERATES
+// TOLERATES OUT-OF-RANGE ENTRIES IN `keep` (review-round P3-1 fix on
+// 0562b9c4): `remap[idx]` is keyed off the ACTUAL count of entries pushed
+// so far, not `keep`'s own index `i` -- computed with a dedicated pre-pass
+// that mirrors the exact same bounds-skip condition the push loop below
+// uses, so an out-of-range entry that gets skipped can never shift every
+// LATER remap value by the skip count (the bug: with the old "remap[keep[i]]=i"
+// scheme, keep=[5,999,3] on a 6-node graph would still record remap[3]=2
+// even though index 999 gets skipped and node 3 actually lands at
+// out.nodes[1] -- any port pointing at old index 3 would then resolve to
+// the WRONG new node). (BFSGraphClosure's own output is already clean --
+// no out-of-range indices -- so this had no observable effect on the one
+// caller that exists today; it matters only because this helper is
+// explicitly extracted for reuse by future callers that may not share
+// that guarantee. Duplicate indices in `keep` are NOT specifically
+// handled -- `keep` is documented as a set of node indices, and a caller
+// that violates that by repeating one gets an unspecified but non-crashing
+// remap for that index's incoming edges, same as before this fix.)
 SceneEditController::PainterMaterialGraph SceneEditController::FilterPainterMaterialGraph(
 	const PainterMaterialGraph& g, const std::vector<unsigned int>& keep )
 {
@@ -6115,8 +6132,12 @@ SceneEditController::PainterMaterialGraph SceneEditController::FilterPainterMate
 	out.rebuildCount = g.rebuildCount;
 
 	std::vector<int> remap( g.nodes.size(), -1 );   // old index -> new index, -1 = not kept
-	for( std::size_t i = 0; i < keep.size(); ++i ) {
-		if( keep[i] < g.nodes.size() ) remap[ keep[i] ] = static_cast<int>( i );
+	{
+		int pushedSoFar = 0;
+		for( unsigned int idx : keep ) {
+			if( idx >= g.nodes.size() ) continue;   // MUST mirror the push loop's own skip below
+			remap[ idx ] = pushedSoFar++;
+		}
 	}
 
 	auto remapPorts = [&]( const std::vector<GraphPort>& ports ) {
@@ -6136,7 +6157,7 @@ SceneEditController::PainterMaterialGraph SceneEditController::FilterPainterMate
 
 	out.nodes.reserve( keep.size() );
 	for( unsigned int idx : keep ) {
-		if( idx >= g.nodes.size() ) continue;   // defensive
+		if( idx >= g.nodes.size() ) continue;   // MUST mirror the remap pre-pass's own skip above
 		GraphNode n   = g.nodes[idx];
 		n.outEdges    = remapPorts( n.outEdges );
 		n.inEdges     = remapPorts( n.inEdges );

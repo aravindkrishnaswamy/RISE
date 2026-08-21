@@ -1416,8 +1416,20 @@ struct NodeGraphCanvas: View {
     private func didCreateNode(named name: String, category: Int) {
         showPalette = false
         guard let bridge else { return }
-        var outError: NSString? = nil
-        _ = bridge.writeGraphNodeLayoutPosition(name: name, x: Double(paletteDropPoint.x), y: Double(paletteDropPoint.y), outError: &outError)
+        // SKIP THE SIDECAR WRITE WHILE FOCUSED (review-round P3-2 fix on
+        // 0562b9c4): `paletteDropPoint` was computed from the CURRENT
+        // pan/zoom, which while Focused is showing the transient
+        // focused-subgraph layout space, not the All-view's persisted
+        // coordinate space -- writing it into the sidecar would land the
+        // new node at a nonsense position once the user toggles back to
+        // All. Let the new node fall back to its natural rank-layout
+        // position in the All view instead (the same thing that already
+        // happens to any node with no sidecar entry) -- same least-code
+        // choice as handleNodeDragEnded's own Focused-mode skip.
+        if viewScope != .focused {
+            var outError: NSString? = nil
+            _ = bridge.writeGraphNodeLayoutPosition(name: name, x: Double(paletteDropPoint.x), y: Double(paletteDropPoint.y), outError: &outError)
+        }
         _ = bridge.setSelection(category == 2 ? .material : .painter, name: name)
         refreshTrigger &+= 1
         scheduleReload(debounced: false, force: true)

@@ -5222,6 +5222,16 @@ namespace RISE
 		//! `otherNode` into the new index space or to `kInvalidNodeIndex`
 		//! when the target is not itself kept. PURE and static -- see the
 		//! .cpp definition's own comment.
+		//!
+		//! Contract (review-round P3-1 fix on 0562b9c4): tolerates an
+		//! out-of-range entry anywhere in `keep` -- it is silently skipped
+		//! and every OTHER entry's remap is still exactly correct (not
+		//! shifted by the skip count, the bug this fix closed). `keep` is
+		//! documented as a SET of node indices; a caller that repeats one
+		//! gets an unspecified but non-crashing remap for that index's
+		//! incoming edges. BFSGraphClosure's own output already satisfies
+		//! both (clean, no duplicates) -- this contract exists for future
+		//! callers of this now-shared helper, not the one caller today.
 		static PainterMaterialGraph FilterPainterMaterialGraph(
 			const PainterMaterialGraph& g, const std::vector<unsigned int>& keep );
 
