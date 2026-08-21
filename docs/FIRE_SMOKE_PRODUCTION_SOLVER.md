@@ -2327,6 +2327,34 @@ not run. Durable evidence is
 `rendered/fire_production_calibration/r124_branch_discharge/branch_discharge.v1`,
 SHA-256 `238195f1c197b6a5abdcdd4c4862f85d4213a803bb192adfd0c873a5938bee96`.
 
+### 7.42 Floor-partition branch envelope (r125)
+
+The first r125 class campaign discharges every executed floor-partition
+obligation.  At an integer crossing, the fractional-tail and whole-cell paths
+integrate the same PPM polynomial.  Their exact switching-surface difference
+is zero; over predicate ambiguity `delta`, the common integral is Lipschitz
+with outward bound `2 M delta`, where `M` is the independently walked absolute
+profile enclosure.  The factor two also covers the projection prolongation
+case, whose adjacent coarse values may have opposite signs.
+
+The alternate rounded path is not hidden inside that exact term.  The walker
+counts at most `32+24N` scalar operations for the prefix/full-cell realization,
+adds `gamma_(32+24N) M (N+4)`, and separately adds
+`(32+24N) FLT_MIN` for FTZ.  Half-ambiguity, missing-rounded-term, and
+missing-cycle-path mutants all fail.  The trace consumes the same three-part
+envelope and binds its per-stage maximum independently.
+
+This closes all `373,245` floor instances.  The cumulative census is
+`1,025,656 / 4,340,821` discharged and `3,315,165` pending; exit `237`
+therefore remains mandatory.  The largest floor envelope is
+`4.486687686924483e302`, arising inside the long projection interval graph.
+It is finite and proves topology, but it is intentionally recorded rather than
+interpreted as an acceptable `B_fp32`; the completed composition must still
+judge whether its analytic radius fits the validation contract.  Durable
+evidence is
+`rendered/fire_production_calibration/r125_floor_partition/floor_partition.v1`,
+SHA-256 `c1c273ed66f2af22e5982435beb38600f2ad9481b0c5d57069cf1f48e277588c`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

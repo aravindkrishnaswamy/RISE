@@ -220,6 +220,9 @@ namespace RISEFireProductionTrace
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& left, const std::vector<FireProductionRoundoffTrace::TraceFloat>& right,
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& prefix )
 		{
+			const std::size_t profileBase=ValueIndex(request,component,line,0u);
+			FireProductionRoundoffTrace::TransportProfileScope profileScope(
+				request.values,left,right,profileBase,request.lineLength,0.0f,0.0f);
 			const FireProductionRoundoffTrace::TraceFloat count=static_cast<FireProductionRoundoffTrace::TraceFloat>(request.lineLength);
 			const FireProductionRoundoffTrace::TraceFloat magnitude=std::fabs(courant);
 			const FireProductionRoundoffTrace::TraceFloat localLength=std::fmod(magnitude,count);
@@ -277,6 +280,10 @@ namespace RISEFireProductionTrace
 			const FireProductionRoundoffTrace::TraceFloat rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
 				FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return faceVelocity<0.0f; }) ? AmbientValue(request,false,component,line) :
 				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
+			const std::size_t profileBase=ValueIndex(request,component,line,0u);
+			FireProductionRoundoffTrace::TransportProfileScope profileScope(
+				request.values,left,right,profileBase,request.lineLength,
+				leftExtension,rightExtension);
 			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return courant>=0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat interiorLength=std::min(magnitude,static_cast<FireProductionRoundoffTrace::TraceFloat>(face));
 				const FireProductionRoundoffTrace::TraceFloat whole=std::floor(interiorLength);

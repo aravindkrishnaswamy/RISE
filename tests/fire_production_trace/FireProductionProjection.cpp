@@ -411,6 +411,7 @@ namespace RISEFireProductionTrace
 
 		void ProlongateAndAdd( const Level& coarse, Level& fine, FireProductionRoundoffTrace::TraceFloat damping )
 		{
+			FireProductionRoundoffTrace::ScalarProfileScope profileScope(coarse.pressure,8u);
 			for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
 				for( std::size_t x=0;x<fine.nx;++x ) {
 					std::size_t x0=0,x1=0,y0=0,y1=0,z0=0,z1=0;

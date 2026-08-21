@@ -87,6 +87,15 @@ namespace FireProductionRoundoffWalker
 		bool continuousAtZero=false,continuousAtPositiveWidth=false;
 		bool monotoneForPositiveConsumption=false;
 	};
+	struct FloorPartitionCertificate
+	{
+		double ambiguityWidth=0.0,exactBranchTerm=0.0;
+		double roundedTerm=0.0,ftzTerm=0.0,totalEnvelope=0.0;
+		std::uint64_t alternatePathOperationCount=0u;
+		bool continuousAtInteger=false;
+	};
+	enum class FloorGraphVariant { Certified,HalfAmbiguity,MissingRoundedTerm,
+		MissingCyclePath };
 	enum class LimiterGraphVariant { Certified,MissingNegativeRamp,FixedWidthDenominator };
 
 	inline bool CertifyContinuousLimiterTransition(const double predicateCenter,
@@ -212,6 +221,57 @@ namespace FireProductionRoundoffWalker
 			witness.leftRounded=left.rounded;witness.rightRounded=right.rounded;
 			witness.roundedResult=roundedResult;return true;
 		}
+	}
+
+	// The periodic/open swept integral is continuous when its integer partition
+	// crosses a floor boundary: the cell moved between the fractional tail and
+	// whole-cell path is the same PPM polynomial integral.  The exact excursion
+	// is bounded by 2*M*delta (the common transport derivative sharpens this to
+	// M, while projection interpolation may span values of opposite sign). The
+	// alternate prefix/full-cell evaluation has at
+	// most 32 scalar operations plus 24 per cell; gamma_n and an explicit FTZ
+	// allowance cover its independently rounded realization.
+	inline bool CertifyFloorPartition(const double predicateCenter,
+		const double predicateRadius,const double profileAbsoluteUpper,
+		const std::size_t lineLength,FloorPartitionCertificate& certificate,
+		const FloorGraphVariant variant=FloorGraphVariant::Certified)
+	{
+		certificate=FloorPartitionCertificate();
+		if(!(predicateRadius>=0.0&&profileAbsoluteUpper>=0.0)||!lineLength||
+			!std::isfinite(predicateCenter)||!std::isfinite(predicateRadius)||
+			!std::isfinite(profileAbsoluteUpper))return false;
+		const double fullAmbiguity=Detail::NextUp(std::fabs(predicateCenter)+
+			predicateRadius);
+		certificate.ambiguityWidth=variant==FloorGraphVariant::HalfAmbiguity?
+			0.5*fullAmbiguity:fullAmbiguity;
+		certificate.alternatePathOperationCount=32u+(variant==
+			FloorGraphVariant::MissingCyclePath?0u:24u*lineLength);
+		certificate.exactBranchTerm=Detail::NextUp(2.0*profileAbsoluteUpper*
+			certificate.ambiguityWidth);
+		const double product=static_cast<double>(certificate.alternatePathOperationCount)*
+			0x1p-24;
+		if(!(product<1.0))return false;
+		const double gamma=Detail::NextUp(product/(1.0-product));
+		const double magnitude=Detail::NextUp(profileAbsoluteUpper*
+			(static_cast<double>(lineLength)+4.0));
+		certificate.roundedTerm=variant==FloorGraphVariant::MissingRoundedTerm?0.0:
+			Detail::NextUp(gamma*magnitude);
+		certificate.ftzTerm=Detail::NextUp(static_cast<double>(
+			certificate.alternatePathOperationCount)*static_cast<double>(
+				std::numeric_limits<float>::min()));
+		certificate.totalEnvelope=Detail::NextUp(certificate.exactBranchTerm+
+			certificate.roundedTerm+certificate.ftzTerm);
+		certificate.continuousAtInteger=true;
+		const double requiredExact=Detail::NextUp(2.0*profileAbsoluteUpper*fullAmbiguity);
+		const std::uint64_t requiredOperations=32u+24u*lineLength;
+		const double requiredProduct=static_cast<double>(requiredOperations)*0x1p-24;
+		const double requiredRounded=Detail::NextUp(requiredProduct/(1.0-requiredProduct)*
+			magnitude);
+		const double requiredFTZ=Detail::NextUp(static_cast<double>(requiredOperations)*
+			static_cast<double>(std::numeric_limits<float>::min()));
+		return certificate.continuousAtInteger&&std::isfinite(certificate.totalEnvelope)&&
+			certificate.exactBranchTerm>=requiredExact&&
+			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
 	}
 
 	// Independent branch-equivalence proof for ParabolaDeviationRange.  With

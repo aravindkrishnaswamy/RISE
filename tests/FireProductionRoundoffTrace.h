@@ -57,6 +57,7 @@ namespace FireProductionRoundoffTrace
 		double maximumAbsoluteOutput=0.0;
 		double maximumOutputRadius=0.0;
 		double transportBranchDivergenceBound=0.0;
+		double maximumBranchDivergence[static_cast<unsigned int>(BranchSite::Count)]={};
 		std::vector<BranchObligation> branchObligations;
 		std::uint64_t dischargedBranchObligationCount=0u;
 	};
@@ -74,6 +75,8 @@ namespace FireProductionRoundoffTrace
 	inline thread_local std::size_t PPMObligationStart=std::numeric_limits<std::size_t>::max();
 	inline thread_local bool PPMQuadraticAmbiguous=false;
 	inline thread_local std::uint64_t NextTraceIdentity=1u;
+	inline thread_local double ActiveTransportProfileUpper=0.0;
+	inline thread_local std::size_t ActiveTransportLineLength=0u;
 
 	class BranchSiteScope
 	{
@@ -294,6 +297,49 @@ namespace FireProductionRoundoffTrace
 		std::uint64_t identity_;
 	};
 
+	class TransportProfileScope
+	{
+	public:
+		TransportProfileScope(const std::vector<TraceFloat>& values,
+			const std::vector<TraceFloat>& left,const std::vector<TraceFloat>& right,
+			const std::size_t base,const std::size_t count,const TraceFloat& firstExtra,
+			const TraceFloat& secondExtra):previousUpper_(ActiveTransportProfileUpper),
+			previousLength_(ActiveTransportLineLength)
+		{
+			ActiveTransportProfileUpper=std::max(AbsoluteUpper(firstExtra),
+				AbsoluteUpper(secondExtra));
+			for(std::size_t offset=0u;offset<count;++offset){const std::size_t index=base+offset;
+				ActiveTransportProfileUpper=std::max(ActiveTransportProfileUpper,std::max(
+					AbsoluteUpper(values[index]),std::max(AbsoluteUpper(left[index]),
+						AbsoluteUpper(right[index]))));}
+			ActiveTransportLineLength=count;
+		}
+		~TransportProfileScope(){ActiveTransportProfileUpper=previousUpper_;
+			ActiveTransportLineLength=previousLength_;}
+	private:
+		static double AbsoluteUpper(const TraceFloat& value)
+			{return NextUp(std::fabs(value.Center())+value.Radius());}
+		double previousUpper_;
+		std::size_t previousLength_;
+	};
+
+	class ScalarProfileScope
+	{
+	public:
+		ScalarProfileScope(const std::vector<TraceFloat>& values,
+			const std::size_t alternatePathLength):previousUpper_(ActiveTransportProfileUpper),
+			previousLength_(ActiveTransportLineLength)
+		{
+			ActiveTransportProfileUpper=0.0;
+			for(const TraceFloat& value:values)ActiveTransportProfileUpper=std::max(
+				ActiveTransportProfileUpper,NextUp(std::fabs(value.Center())+value.Radius()));
+			ActiveTransportLineLength=alternatePathLength;
+		}
+		~ScalarProfileScope(){ActiveTransportProfileUpper=previousUpper_;
+			ActiveTransportLineLength=previousLength_;}
+	private:double previousUpper_;std::size_t previousLength_;
+	};
+
 	inline bool PPMQuadraticZeroObligationPending()
 	{
 		return ActiveCounters&&LastScopedObligation!=std::numeric_limits<std::size_t>::max()&&
@@ -381,10 +427,10 @@ namespace FireProductionRoundoffTrace
 		PPMQuadraticAmbiguous=false;
 	}
 
-	inline void RecordDiscreteBoundaryObligation(const BranchSite site,
+	inline std::size_t RecordDiscreteBoundaryObligation(const BranchSite site,
 		const TraceFloat& value,const double boundary,const bool roundedResult)
 	{
-		if(!ActiveCounters)return;
+		if(!ActiveCounters)return std::numeric_limits<std::size_t>::max();
 		const std::uint64_t ordinal=ActiveCounters->comparisonCount++;
 		const double center=value.Center()-boundary;
 		const double radius=value.Radius();
@@ -405,6 +451,47 @@ namespace FireProductionRoundoffTrace
 			ActiveCounters->unresolvedRightRounded=static_cast<float>(boundary);
 			ActiveCounters->unresolvedRoundedResult=roundedResult;
 		}
+		return ActiveCounters->branchObligations.size()-1u;
+	}
+
+	inline double Gamma(const std::uint64_t operations)
+	{
+		const double product=static_cast<double>(operations)*0x1p-24;
+		return product<1.0?NextUp(product/(1.0-product)):
+			std::numeric_limits<double>::infinity();
+	}
+
+	inline void ApplyFloorBoundaryCertificate(const std::size_t obligationIndex)
+	{
+		if(!ActiveCounters||obligationIndex>=ActiveCounters->branchObligations.size()||
+			!(ActiveTransportProfileUpper>=0.0)||!ActiveTransportLineLength)return;
+		BranchObligation& obligation=ActiveCounters->branchObligations[obligationIndex];
+		if(obligation.site!=BranchSite::FloorBoundary||
+			obligation.certificate!=BranchCertificate::None)return;
+		const double ambiguity=NextUp(std::fabs(obligation.predicateCenter)+
+			obligation.predicateRadius);
+		const std::uint64_t operations=32u+24u*ActiveTransportLineLength;
+		const double exactTerm=NextUp(2.0*ActiveTransportProfileUpper*ambiguity);
+		const double roundedMagnitude=NextUp(ActiveTransportProfileUpper*
+			(static_cast<double>(ActiveTransportLineLength)+4.0));
+		const double roundedTerm=NextUp(Gamma(operations)*roundedMagnitude);
+		const double ftzTerm=NextUp(static_cast<double>(operations)*
+			static_cast<double>(std::numeric_limits<float>::min()));
+		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
+		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		obligation.certificate=BranchCertificate::Equivalence;
+		obligation.divergenceBound=total;
+		obligation.proofLower=exactTerm;
+		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
+		++ActiveCounters->dischargedBranchObligationCount;
+		const unsigned int site=static_cast<unsigned int>(BranchSite::FloorBoundary);
+		ActiveCounters->maximumBranchDivergence[site]=std::max(
+			ActiveCounters->maximumBranchDivergence[site],total);
+		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
+			sum=NextUp(sum+value);
+		ActiveCounters->transportBranchDivergenceBound=sum;
+		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
+			ActiveCounters->branchObligations.size();
 	}
 
 	inline TraceFloat CertifiedSelection(const TraceFloat& first,const TraceFloat& second,
@@ -532,8 +619,9 @@ namespace FireProductionRoundoffTrace
 		const double low=std::floor(value.Center()-value.Radius());
 		const double high=std::floor(value.Center()+value.Radius());
 		if(low!=high&&ActiveCounters)for(double boundary=low+1.0;
-			boundary<=high;boundary+=1.0)RecordDiscreteBoundaryObligation(
-				BranchSite::FloorBoundary,value,boundary,value.Rounded()>=boundary);
+			boundary<=high;boundary+=1.0)ApplyFloorBoundaryCertificate(
+				RecordDiscreteBoundaryObligation(BranchSite::FloorBoundary,value,boundary,
+					value.Rounded()>=boundary));
 		return TraceFloat::Unary(Operation::Floor,value,center,0.0f,
 			std::floor(value.Rounded()));
 	}

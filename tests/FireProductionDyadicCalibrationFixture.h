@@ -1057,6 +1057,8 @@ namespace FireProductionDyadicCalibration
 			AppendDouble(encoded,stage.maximumAbsoluteOutput);
 			AppendDouble(encoded,stage.maximumOutputRadius);
 			AppendDouble(encoded,stage.transportBranchDivergenceBound);
+			for(const double divergence:stage.maximumBranchDivergence)
+				AppendDouble(encoded,divergence);
 			AppendInteger(encoded,stage.unresolvedBranch?1u:0u);
 			AppendInteger(encoded,stage.invalidDomain?1u:0u);
 			AppendInteger(encoded,stage.unresolvedWitnessRecorded?1u:0u);
@@ -1184,6 +1186,17 @@ namespace FireProductionDyadicCalibration
 				static_cast<unsigned long long>(totalPendingSiteCount[site]),
 				static_cast<unsigned long long>(totalSiteCount[site]));
 		std::fprintf(stderr," (pending/total)\n");
+		std::array<double,static_cast<unsigned int>(
+			FireProductionRoundoffTrace::BranchSite::Count)> maximumClassEnvelope={};
+		for(const FireProductionRoundoffTrace::Observation& stage:trace.stages)
+			for(unsigned int site=0u;site<maximumClassEnvelope.size();++site)
+				maximumClassEnvelope[site]=std::max(maximumClassEnvelope[site],
+					stage.maximumBranchDivergence[site]);
+		std::fprintf(stderr,"r125 class_envelope");
+		for(unsigned int site=0u;site<maximumClassEnvelope.size();++site)
+			if(maximumClassEnvelope[site]>0.0)std::fprintf(stderr," %u=%.17g",site,
+				maximumClassEnvelope[site]);
+		std::fprintf(stderr,"\n");
 		const std::string traceDigest=RISECBOR64::SHA256Hex(encoded);
 		std::fprintf(stderr,"r120 trace_digest=%s unresolved_bitmap=0x%06x "
 			"invalid_bitmap=0x%06x trace_generator=%s transport_source=%s\n",
@@ -1199,11 +1212,11 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="a4ae55166d376dcffedb4aaa9ab4d62ed1261fee797ab2210456bfca9850a2d9"||
+			traceDigest!="e6ede1a9b414d3d98ee446abec8b6929f32cb456ece1c6f9c9b2b5c6527780a7"||
 			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=4340821u||
-			totalDischargedBranchObligationCount!=652411u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=3688410u||
+			totalDischargedBranchObligationCount!=1025656u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=3315165u||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1224,7 +1237,7 @@ namespace FireProductionDyadicCalibration
 			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r124 continuous limiter certified; %llu of %llu site-class "
+		std::fprintf(stderr,"r125 floor partition certified; %llu of %llu site-class "
 			"obligations remain pending before B_fp32 and Metal measurement\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),

@@ -76,6 +76,30 @@ def transform(text: str, name: str, suffix: str) -> str:
             elif text.count(before) != 1:
                 raise RuntimeError("remap branch seam changed: " + before)
             text = text.replace(before, after)
+        periodic_profile = ("\t\t\tconst FireProductionRoundoffTrace::TraceFloat count="
+                            "static_cast<FireProductionRoundoffTrace::TraceFloat>(request.lineLength);")
+        periodic_profile_traced = (
+            "\t\t\tconst std::size_t profileBase=ValueIndex(request,component,line,0u);\n"
+            "\t\t\tFireProductionRoundoffTrace::TransportProfileScope profileScope(\n"
+            "\t\t\t\trequest.values,left,right,profileBase,request.lineLength,0.0f,0.0f);\n" +
+            periodic_profile)
+        if text.count(periodic_profile) != 1:
+            raise RuntimeError("periodic swept profile seam changed")
+        text = text.replace(periodic_profile, periodic_profile_traced)
+        courant_branch = ("\t\t\tif( FireProductionRoundoffTrace::EvaluateBranch("
+                           "FireProductionRoundoffTrace::BranchSite::CourantNonnegative,"
+                           "[&](){ return courant>=0.0f; }) )")
+        first_courant = text.find(courant_branch)
+        second_courant = text.find(courant_branch, first_courant + 1)
+        if first_courant < 0 or second_courant < 0 or text.find(
+                courant_branch, second_courant + 1) >= 0:
+            raise RuntimeError("open swept profile seam changed")
+        open_profile_scope = (
+            "\t\t\tconst std::size_t profileBase=ValueIndex(request,component,line,0u);\n"
+            "\t\t\tFireProductionRoundoffTrace::TransportProfileScope profileScope(\n"
+            "\t\t\t\trequest.values,left,right,profileBase,request.lineLength,\n"
+            "\t\t\t\tleftExtension,rightExtension);\n")
+        text = text[:second_courant] + open_profile_scope + text[second_courant:]
         seam = ("request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+"
                 "request.lineLength]")
         if text.count(seam) != 1:
@@ -186,6 +210,13 @@ def transform(text: str, name: str, suffix: str) -> str:
             "FireProductionRoundoffTrace::EvaluateBranch("
             "FireProductionRoundoffTrace::BranchSite::OpenBoundaryActiveSet,"
             "[&](){return outward<0.0f;})")
+        prolongate = ("\t\tvoid ProlongateAndAdd( const Level& coarse, Level& fine, "
+                      "FireProductionRoundoffTrace::TraceFloat damping )\n\t\t{")
+        if text.count(prolongate) != 1:
+            raise RuntimeError("projection prolongation floor context changed")
+        text = text.replace(prolongate,prolongate+
+            "\n\t\t\tFireProductionRoundoffTrace::ScalarProfileScope "
+            "profileScope(coarse.pressure,8u);")
     if suffix == ".h":
         guards = {"FireProductionAdvection": "FIREPRODUCTIONADVECTION_",
                   "FireProductionProjection": "FIREPRODUCTIONPROJECTION_",

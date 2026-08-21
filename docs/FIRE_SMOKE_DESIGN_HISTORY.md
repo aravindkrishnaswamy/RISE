@@ -2989,3 +2989,17 @@ it was already tried and refuted here.
   `B_fp32` or Metal measurement. This correction is itself the review-loop
   evidence: the operator landed, but topology certification did not get
   promoted on a tautological proof. The golden checkpoint remains untouched.
+
+- **r125 floor-partition class discharge (2026-08-21):** the first class in
+  the seven-class campaign uses an independent two-path proof rather than a
+  site label.  Fractional-tail and whole-cell partitions integrate the same
+  PPM polynomial at an integer boundary; the outward exact term is
+  `2 M delta`.  The separately counted alternate realization contributes
+  `gamma_(32+24N) M (N+4)`, with `(32+24N) FLT_MIN` added for FTZ.  Mutants
+  halving ambiguity, deleting the rounded term, or omitting the full-cycle
+  topology all RED.  All `373,245` floor obligations close, moving the census
+  from `652,411 / 4,340,821` to `1,025,656 / 4,340,821`; `3,315,165` remain
+  and exact exit `237` is retained.  The projection graph's finite but very
+  loose maximum floor envelope (`4.486687686924483e302`) is recorded honestly:
+  topology discharge does not pre-approve an eventual validation-contract
+  `B_fp32`.

@@ -88,6 +88,15 @@ int main()
 		branchDischargeEvidence.find("reason independent_site_class_envelopes_not_yet_derived")!=
 			std::string::npos,
 		"r124 limiter admission and incomplete site-class census are durable and semantic-bound");
+	const std::string floorEvidence=ReadText(
+		"rendered/fire_production_calibration/r125_floor_partition/floor_partition.v1");
+	Check(!floorEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		floorEvidence.begin(),floorEvidence.end()))==
+		"c1c273ed66f2af22e5982435beb38600f2ad9481b0c5d57069cf1f48e277588c"&&
+		floorEvidence.find("class_floor_pending 0")!=std::string::npos&&
+		floorEvidence.find("executed_obligation_instances_pending 3315165")!=
+			std::string::npos,
+		"r125 floor derivation, zero class pending count, and cumulative census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -482,6 +491,56 @@ int main()
 			FireProductionRoundoffWalker::LimiterGraphVariant::FixedWidthDenominator),
 			"independent limiter graph rejects discontinuous-ramp and nonlegacy denominator mutants");
 	}
+	{
+		std::vector<FireProductionRoundoffTrace::TraceFloat> values(4u,
+			FireProductionRoundoffTrace::TraceFloat(3.0f)),left(values),right(values);
+		FireProductionRoundoffTrace::Counters counters;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::TransportProfileScope profile(values,left,right,
+				0u,4u,FireProductionRoundoffTrace::TraceFloat(0.0f),
+				FireProductionRoundoffTrace::TraceFloat(0.0f));
+			const auto partition=FireProductionRoundoffTrace::floor(
+				FireProductionRoundoffTrace::TraceFloat::Raw(2.0,0.125,2.0f,1u));
+			Check(partition.Rounded()==2.0f,"floor partition fixture executes the upper path");
+		}
+		FireProductionRoundoffWalker::FloorPartitionCertificate certificate;
+		const double profileUpper=std::nextafter(3.0,
+			std::numeric_limits<double>::infinity());
+		const double predicateCenter=counters.branchObligations.empty()?0.0:
+			counters.branchObligations[0].predicateCenter;
+		const double predicateRadius=counters.branchObligations.empty()?0.0:
+			counters.branchObligations[0].predicateRadius;
+		const bool certified=FireProductionRoundoffWalker::CertifyFloorPartition(
+			predicateCenter,predicateRadius,profileUpper,4u,certificate);
+		if(!(certified&&counters.branchObligations.size()==1u&&
+			counters.branchObligations[0].divergenceBound==certificate.totalEnvelope))
+			std::fprintf(stderr,"floor certificate diagnostic certified=%d obligations=%zu "
+				"trace=%.17g walker=%.17g profile=%.17g\n",certified?1:0,
+				counters.branchObligations.size(),counters.branchObligations.empty()?0.0:
+				counters.branchObligations[0].divergenceBound,certificate.totalEnvelope,
+				profileUpper);
+		Check(certified&&counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::FloorBoundary&&
+			counters.branchObligations[0].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			counters.branchObligations[0].divergenceBound==certificate.totalEnvelope&&
+			certificate.continuousAtInteger,
+			"independent floor walker matches the traced exact, rounded, and FTZ envelope");
+		FireProductionRoundoffWalker::FloorPartitionCertificate half,missingRound,missingCycle;
+		Check(!FireProductionRoundoffWalker::CertifyFloorPartition(predicateCenter,
+			predicateRadius,profileUpper,4u,
+			half,FireProductionRoundoffWalker::FloorGraphVariant::HalfAmbiguity)&&
+			!FireProductionRoundoffWalker::CertifyFloorPartition(predicateCenter,
+				predicateRadius,profileUpper,4u,
+				missingRound,FireProductionRoundoffWalker::FloorGraphVariant::MissingRoundedTerm)&&
+			!FireProductionRoundoffWalker::CertifyFloorPartition(predicateCenter,
+				predicateRadius,profileUpper,4u,
+				missingCycle,FireProductionRoundoffWalker::FloorGraphVariant::MissingCyclePath),
+			"floor certificate rejects ambiguity, rounded-path, and cycle-topology undercounts");
+	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};
@@ -588,7 +647,7 @@ int main()
 			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
 		tracedCounters.comparisonCount==644u&&tracedCounters.unresolvedBranch&&
 		tracedCounters.branchObligations.size()==260u&&
-		tracedCounters.dischargedBranchObligationCount==180u&&
+		tracedCounters.dischargedBranchObligationCount==200u&&
 		tracedCounters.minimumDenominatorLowerBound>0.0&&
 		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
 			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
@@ -600,6 +659,8 @@ int main()
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
 	if(!(tracedOK&&tracedBytes&&tracedOperations==980u&&
 		tracedCounters.comparisonCount==644u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.branchObligations.size()==260u&&
+		tracedCounters.dischargedBranchObligationCount==200u&&
 		!tracedCounters.invalidDomain))std::fprintf(stderr,
 		"roundoff remap detail ok=%d bytes=%d ops=%llu comparisons=%llu obligations=%zu "
 		"discharged=%llu unresolved=%d invalid=%d denominator=%.17g max_operand=%.17g\n",
