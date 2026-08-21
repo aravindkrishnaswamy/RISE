@@ -289,6 +289,13 @@ foreach(test_src ${TEST_SOURCES})
         set_source_files_properties(${FIRE_PRODUCTION_FP64_SOURCES} PROPERTIES
             COMPILE_OPTIONS "/fp:strict")
     endif()
+	if(test_name STREQUAL "FireProductionCalibrationTest")
+		file(GLOB FIRE_PRODUCTION_TRACE_SOURCES CONFIGURE_DEPENDS
+			"${RISE_TESTS_DIR}/fire_production_trace/*.cpp")
+		target_sources(${test_name} PRIVATE ${FIRE_PRODUCTION_TRACE_SOURCES})
+		set_source_files_properties(${FIRE_PRODUCTION_TRACE_SOURCES} PROPERTIES
+			COMPILE_OPTIONS "/fp:strict")
+	endif()
 
     target_include_directories(${test_name} PRIVATE
         "${RISE_LIB_INCLUDE}"
@@ -323,6 +330,12 @@ foreach(test_src ${TEST_SOURCES})
 		add_custom_command(TARGET ${test_name} PRE_BUILD
 			COMMAND ${Python3_EXECUTABLE}
 				"${RISE_ROOT}/tools/generate_fire_production_fp64_mirror.py" --check
+			WORKING_DIRECTORY "${RISE_ROOT}")
+	endif()
+	if(test_name STREQUAL "FireProductionCalibrationTest")
+		add_custom_command(TARGET ${test_name} PRE_BUILD
+			COMMAND ${Python3_EXECUTABLE}
+				"${RISE_ROOT}/tools/generate_fire_production_roundoff_trace.py" --check
 			WORKING_DIRECTORY "${RISE_ROOT}")
 	endif()
 

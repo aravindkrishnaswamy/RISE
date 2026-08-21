@@ -1,12 +1,16 @@
 #include "FireProductionCalibrationMath.h"
 #include "FireProductionCalibrationMirror.h"
+#include "FireProductionRoundoffWalker.h"
 #include "Utilities/FireProductionAdvection.h"
 #include "Utilities/FireProductionProjection.h"
 #include "fire_production_fp64/FireProductionAdvection.h"
 #include "fire_production_fp64/FireProductionProjection.h"
 #include "fire_production_fp64/SourceManifest.h"
+#include "fire_production_trace/FireProductionAdvection.h"
+#include "fire_production_trace/SourceManifest.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -42,7 +46,15 @@ int main()
 		std::strlen(RISEFireProductionFP64::SourceManifest::FireProductionForceSource)==64u&&
 		std::strlen(RISEFireProductionFP64::SourceManifest::Generator)==64u,
 		"fp64 mirror carries source and generator SHA-256 identities");
+	Check(std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionAdvectionSource)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionProjectionSource)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionTransportSource)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionForceSource)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::Generator)==64u,
+		"roundoff trace carries source and generator SHA-256 identities");
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
+	const std::string windowsRules=ReadText("build/cmake/rise-tests/CMakeLists.txt");
+	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -54,6 +66,61 @@ int main()
 		std::string::npos&&makeRules.find("otool -L $@ | grep -q 'Metal.framework'")!=
 		std::string::npos&&makeRules.find("nm $@ | grep -q 'ProjectFireProductionMetalImpl'")!=
 		std::string::npos,"calibration oracle target is source-bound to a no-Metal link audit");
+	Check(makeRules.find("fire_production_trace/%.o")!=std::string::npos&&
+		makeRules.find("-fno-fast-math -ffp-contract=off")!=std::string::npos&&
+		makeRules.find("$(FIREPRODUCTIONTRACEOBJECTS) $(OBJDRISE)")!=std::string::npos&&
+		makeRules.find("check-fire-production-trace")!=std::string::npos&&
+		windowsRules.find("fire_production_trace/*.cpp")!=std::string::npos&&
+		windowsRules.find("generate_fire_production_roundoff_trace.py\" --check")!=
+			std::string::npos&&windowsRules.find("COMPILE_OPTIONS \"/fp:strict\"")!=
+			std::string::npos,
+		"roundoff trace is source-check-bound and strict on Make and Windows test surfaces");
+	Check(walkerSource.find("RISEFireProductionTrace")==std::string::npos&&
+		walkerSource.find("Counters")==std::string::npos&&
+		walkerSource.find("fire_production_trace")==std::string::npos,
+		"independent topology walker shares neither trace counts nor generated arithmetic code");
+
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		FireProductionRoundoffTrace::TraceFloat sum;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			const FireProductionRoundoffTrace::TraceFloat one(1.0f),halfULP(0x1p-24f);
+			sum=one+halfULP;
+		}
+		Check(counters.operation[static_cast<unsigned int>(
+			FireProductionRoundoffTrace::Operation::Add)]==1u&&
+			std::fabs(static_cast<double>(sum.Rounded())-sum.Center())<=sum.Radius(),
+			"roundoff trace outward radius contains a binary32 tie-to-even addition");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		FireProductionRoundoffTrace::TraceFloat converted;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			converted=FireProductionRoundoffTrace::TraceFloat(std::uint32_t(16777217u));
+		}
+		Check(counters.operation[static_cast<unsigned int>(
+			FireProductionRoundoffTrace::Operation::Convert)]==1u&&
+			converted.Rounded()==16777216.0f&&converted.Radius()>=1.0,
+			"roundoff trace records and encloses an inexact integer conversion");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		const auto numerator=FireProductionRoundoffTrace::TraceFloat::Raw(1.0,0.0,1.0f,0u);
+		const auto uncertainZero=FireProductionRoundoffTrace::TraceFloat::Raw(0.0,1.0,0.0f,0u);
+		bool branchResult=false;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			const auto quotient=numerator/uncertainZero;
+			branchResult=uncertainZero<numerator;
+			Check(!std::isfinite(quotient.Radius()),
+				"invalid traced division publishes an infinite diagnostic radius");
+		}
+		Check(branchResult&&counters.invalidDomain&&counters.unresolvedBranch&&
+			counters.minimumDenominatorLowerBound<=0.0,
+			"roundoff trace rejects denominator and branch intervals that cross a decision surface");
+	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};
@@ -121,6 +188,52 @@ int main()
 			[](double value){return value==0.125;}),
 		"generated binary64 remap preserves the production free-stream topology");
 
+	RISEFireProductionTrace::FireProductionRemapRequest traced;
+	traced.lineLength=fp32.lineLength;traced.lineCount=fp32.lineCount;
+	traced.componentCount=fp32.componentCount;traced.cellWidthM=fp32.cellWidthM;
+	traced.timeStepS=fp32.timeStepS;
+	traced.boundary=RISEFireProductionTrace::FireProductionRemapPeriodic;
+	traced.values.assign(fp32.values.begin(),fp32.values.end());
+	traced.faceVelocityMPerS.assign(fp32.faceVelocityMPerS.begin(),
+		fp32.faceVelocityMPerS.end());
+	traced.ambientValues.assign(fp32.ambientValues.begin(),fp32.ambientValues.end());
+	RISEFireProductionTrace::FireProductionRemapResult tracedResult;
+	FireProductionRoundoffTrace::Counters tracedCounters;
+	bool tracedOK=false;{
+		FireProductionRoundoffTrace::Scope scope(tracedCounters);
+		tracedOK=RISEFireProductionTrace::RemapFireProductionCPU(traced,tracedResult,&error);
+	}
+	bool tracedBytes=tracedResult.updatedValues.size()==fp32Result.updatedValues.size();
+	for(std::size_t i=0u;tracedBytes&&i<tracedResult.updatedValues.size();++i)
+		tracedBytes=tracedResult.updatedValues[i].Rounded()==fp32Result.updatedValues[i]&&
+			tracedResult.updatedValues[i].Radius()>=0.0&&
+			std::isfinite(tracedResult.updatedValues[i].Radius());
+	std::uint64_t tracedOperations=0u;
+	for(const std::uint64_t count:tracedCounters.operation)tracedOperations+=count;
+	const std::array<std::uint64_t,13u> expectedTraceKinds={{
+		20u,156u,180u,192u,72u,0u,20u,0u,0u,40u,0u,20u,0u}};
+	FireProductionRoundoffWalker::Topology walkedTopology;
+	const bool walked=FireProductionRoundoffWalker::
+		WalkPeriodicPositiveSubcellFreeStreamRemap(fp32.lineLength,fp32.lineCount,
+			fp32.componentCount,walkedTopology);
+	if(!(walked&&tracedOperations==walkedTopology.operationCount&&
+		tracedCounters.maximumDepth==walkedTopology.maximumDepth))
+		std::fprintf(stderr,"roundoff topology diagnostic traced=%llu/%u walked=%llu/%u\n",
+			static_cast<unsigned long long>(tracedOperations),tracedCounters.maximumDepth,
+			static_cast<unsigned long long>(walkedTopology.operationCount),
+			walkedTopology.maximumDepth);
+	Check(tracedOK&&tracedBytes&&tracedOperations==700u&&
+		std::equal(expectedTraceKinds.begin(),expectedTraceKinds.end(),
+			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
+		tracedCounters.comparisonCount==384u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.minimumDenominatorLowerBound==0.25&&
+		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
+			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
+		!tracedCounters.invalidDomain&&walked&&
+		tracedOperations==walkedTopology.operationCount&&
+		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
+		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
+
 	RISE::FireProductionProjectionRequest projection32;
 	projection32.shape.nx=4u;projection32.shape.ny=4u;projection32.shape.nz=4u;
 	projection32.shape.cellWidthM=0.5f;projection32.timeStepS=0.01f;
@@ -185,7 +298,6 @@ int main()
 		step64.projection.executedVCycleCount==12u&&
 		step64.projection.maximumPostProjectionResidualPerS==0.0,
 		"binary64 mirror composes force, five cell maps, fifteen dual maps, sources, and one P2");
-
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;

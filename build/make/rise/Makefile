@@ -65,6 +65,8 @@ SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
 OBJTESTS = $(SRCTESTS:.cpp=.o)
 FIREPRODUCTIONFP64SOURCES = $(wildcard $(PATHTESTS)fire_production_fp64/*.cpp)
 FIREPRODUCTIONFP64OBJECTS = $(FIREPRODUCTIONFP64SOURCES:.cpp=.o)
+FIREPRODUCTIONTRACESOURCES = $(wildcard $(PATHTESTS)fire_production_trace/*.cpp)
+FIREPRODUCTIONTRACEOBJECTS = $(FIREPRODUCTIONTRACESOURCES:.cpp=.o)
 FIREPRODUCTIONFP64ORIGINALS = \
 	$(PATHLIBRARY)Utilities/FireProductionAdvection.h \
 	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp \
@@ -110,7 +112,8 @@ OBJSTANDALONE = \
 # back in via the `-include $(ALL_DEPS)` near the bottom of this file. Result:
 # editing a header invalidates exactly the .o files that included it -- no
 # more `make clean` after touching IJob.h or any other interface header.
-ALL_OBJS = $(OBJLIB) $(FIREPRODUCTIONNOMETALSTUBS) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
+ALL_OBJS = $(OBJLIB) $(FIREPRODUCTIONNOMETALSTUBS) $(FIREPRODUCTIONFP64OBJECTS) \
+	$(FIREPRODUCTIONTRACEOBJECTS) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
 ALL_DEPS = $(ALL_OBJS:.o=.d)
 
 # -MMD: emit a Make-format header-dependency snippet alongside each .o,
@@ -244,6 +247,10 @@ $(PATHTESTS)fire_production_fp64/%.o : $(PATHTESTS)fire_production_fp64/%.cpp
 	@echo Compiling strict fp64 calibration mirror: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+$(PATHTESTS)fire_production_trace/%.o : $(PATHTESTS)fire_production_trace/%.cpp
+	@echo Compiling strict roundoff trace: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHTESTS)FireProductionCalibrationTest.o : $(PATHTESTS)FireProductionCalibrationTest.cpp
 	@echo Compiling strict calibration gate: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
@@ -256,14 +263,17 @@ $(PATHTESTS)%.o : $(PATHTESTS)%.cpp
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-.PHONY: check-fire-production-fp64
+.PHONY: check-fire-production-fp64 check-fire-production-trace
 check-fire-production-fp64 : ../../../tools/generate_fire_production_fp64_mirror.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONFP64SOURCES)
 	@python3 ../../../tools/generate_fire_production_fp64_mirror.py --check
 
-$(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
+check-fire-production-trace : ../../../tools/generate_fire_production_roundoff_trace.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONTRACESOURCES)
+	@python3 ../../../tools/generate_fire_production_roundoff_trace.py --check
+
+$(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
-	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB) $(LDLIBS)
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS)
 
 $(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
