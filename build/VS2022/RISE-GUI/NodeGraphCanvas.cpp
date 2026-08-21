@@ -52,6 +52,7 @@
 #include <QAbstractButton>
 #include <QSize>
 #include <QFrame>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -192,6 +193,22 @@ public:
         update();
     }
 
+    /// This node is part of the CURRENT object-pick spotlight closure
+    /// (NodeGraphCanvas::m_spotlightHandles) -- a visually DISTINCT state
+    /// from `m_isSelected` on purpose: `m_isSelected` is this canvas's own
+    /// click-to-select, while a spotlight is driven by the shared
+    /// selection sitting on an OBJECT elsewhere (viewport/outliner), which
+    /// this canvas must never claim as its own selection (no
+    /// ViewportBridge::setSelection call from a spotlight -- see
+    /// NodeGraphCanvas::refreshSpotlight). Several nodes can be spotlit at
+    /// once; at most one is ever `m_isSelected`.
+    void setNodeSpotlit(bool spotlit)
+    {
+        if (m_isSpotlit == spotlit) return;
+        m_isSpotlit = spotlit;
+        update();
+    }
+
     /// Called by NodeGraphCanvas::commitNodeMove on a SUCCESSFUL layout
     /// write: `pos` becomes the new "last known good" position, so a
     /// LATER failed drag reverts to this point, not the original
@@ -274,6 +291,7 @@ private:
     GraphNodeData     m_data;
     NodeGraphCanvas*  m_canvas;
     bool              m_isSelected = false;
+    bool              m_isSpotlit  = false;
     bool              m_isHovered  = false;
     QPointF           m_dragStartPos;
 };
@@ -284,6 +302,23 @@ void GraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
 
     const QRectF rect(0.0, 0.0, GraphMetrics::nodeWidth, GraphMetrics::nodeHeight);
 
+    // Warm-gold spotlight glow, drawn BEHIND the card so it reads as an
+    // outer halo -- a no-op (nothing drawn) when not spotlit. Qt has no
+    // direct equivalent of SwiftUI's `.shadow` without a QGraphicsEffect,
+    // which would apply to this item's ALREADY-DRAWN content as a whole;
+    // two concentric rounded-rect strokes approximate the same "warm glow
+    // around the card" read the Mac source achieves with `.shadow`.
+    if (m_isSpotlit) {
+        QColor glow = Theme::gold;
+        glow.setAlphaF(0.35);
+        QPainterPath glowPath;
+        glowPath.addRoundedRect(rect.adjusted(-3.0, -3.0, 3.0, 3.0),
+                                 Theme::radiusMedium + 3.0, Theme::radiusMedium + 3.0);
+        painter->setPen(QPen(glow, 3.0));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(glowPath);
+    }
+
     QPainterPath cardPath;
     cardPath.addRoundedRect(rect, Theme::radiusMedium, Theme::radiusMedium);
     painter->fillPath(cardPath, Theme::bgCard);
@@ -291,6 +326,7 @@ void GraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
     QColor borderColor = Theme::borderLight;
     qreal borderWidth = 1.0;
     if (m_isSelected) { borderColor = Theme::accent; borderWidth = 2.0; }
+    else if (m_isSpotlit) { borderColor = Theme::gold; borderWidth = 2.0; }
     else if (m_isHovered) { borderColor = Theme::borderHover; }
     painter->setPen(QPen(borderColor, borderWidth));
     painter->setBrush(Qt::NoBrush);
@@ -1150,12 +1186,20 @@ void NodeGraphCanvas::refreshForce() { performReload(true); }
 
 void NodeGraphCanvas::performReload(bool force)
 {
-    if (!m_bridge) { applySnapshot(ViewportBridge::PainterGraph()); return; }
+    if (!m_bridge) { applySnapshot(ViewportBridge::PainterGraph()); refreshSpotlight(true); return; }
     const unsigned int epoch = m_bridge->sceneEpoch();
-    if (!force && m_hasFetchedOnce && epoch == m_lastFetchedEpoch) return;
-    m_lastFetchedEpoch = epoch;
-    m_hasFetchedOnce = true;
-    applySnapshot(m_bridge->painterMaterialGraph());
+    bool rebuilt = false;
+    if (force || !m_hasFetchedOnce || epoch != m_lastFetchedEpoch) {
+        m_lastFetchedEpoch = epoch;
+        m_hasFetchedOnce = true;
+        applySnapshot(m_bridge->painterMaterialGraph());
+        rebuilt = true;   // every GraphNodeItem is BRAND NEW -- none of them carry the prior spotlight state
+    }
+    // Independent of the epoch-gated branch above: a plain Object pick
+    // does not bump sceneEpoch (see this method's own header comment), so
+    // the spotlight must be re-derived on every call regardless of
+    // whether the structural graph itself was just refetched.
+    refreshSpotlight(rebuilt);
 }
 
 void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
@@ -1261,6 +1305,68 @@ void NodeGraphCanvas::updateHeaderCounts()
     m_countLabel->setText(tr("%1 node%2, %3 edge%4")
         .arg(m_nodes.size()).arg(m_nodes.size() == 1 ? QString() : QStringLiteral("s"))
         .arg(edgeCount).arg(edgeCount == 1 ? QString() : QStringLiteral("s")));
+}
+
+// ---- object-pick spotlight (viewport/outliner -> canvas) --------------
+
+void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
+{
+    if (!m_bridge) {
+        m_lastSpotlightCategory = ViewportBridge::Category::None;
+        m_lastSpotlightObjectName.clear();
+        if (!m_spotlightHandles.isEmpty() || forceReapply) {
+            m_spotlightHandles.clear();
+            applySpotlightToItems();
+        }
+        return;
+    }
+
+    const ViewportBridge::Category cat = m_bridge->selectionCategory();
+    // selectionRowName(), NOT selectionName(): a viewport/outliner pick on
+    // a count_u/count_v repeated or subtree-copied instance names a
+    // SYNTHESIZED per-repetition/per-member entity (`I[1,0]`/`I.child`)
+    // that is never itself an addressable chunk -- selectionRowName() is
+    // the same "resolve back to the instancing chunk's own row" the
+    // outliner already performs, which is what
+    // appearanceClosureForObject() needs.
+    const QString objectName = (cat == ViewportBridge::Category::Object) ? m_bridge->selectionRowName() : QString();
+
+    if (!forceReapply && cat == m_lastSpotlightCategory && objectName == m_lastSpotlightObjectName) return;
+    m_lastSpotlightCategory = cat;
+    m_lastSpotlightObjectName = objectName;
+
+    QSet<quint64> handles;
+    GraphNodeItem* primaryItem = nullptr;
+    if (cat == ViewportBridge::Category::Object && !objectName.isEmpty()) {
+        const QStringList closureNames = m_bridge->appearanceClosureForObject(objectName);
+        for (const QString& name : closureNames) {
+            for (int i = 0; i < m_nodes.size(); ++i) {
+                if (m_nodes[i].name != name) continue;
+                handles.insert(m_nodes[i].handle);
+                // First entry = the object's bound material, per
+                // appearanceClosureForObject's own contract -- the
+                // auto-scroll target.
+                if (!primaryItem && i < m_nodeItems.size()) primaryItem = m_nodeItems[i];
+                break;
+            }
+        }
+    }
+    m_spotlightHandles = handles;
+    applySpotlightToItems();
+
+    // Auto-scroll (never re-zoom) so the primary node is visible --
+    // QGraphicsView::ensureVisible is already a no-op when the item is
+    // fully visible, matching centerIfNeeded's "don't move the view out
+    // from under the user" posture on the Mac side without needing any
+    // bespoke geometry math here.
+    if (primaryItem && m_view) m_view->ensureVisible(primaryItem);
+}
+
+void NodeGraphCanvas::applySpotlightToItems()
+{
+    for (GraphNodeItem* item : qAsConst(m_nodeItems)) {
+        item->setNodeSpotlit(m_spotlightHandles.contains(item->data().handle));
+    }
 }
 
 // ---- selection / def-focus (sect. 5 interaction minimums 1 & 2) -------
@@ -1717,6 +1823,7 @@ qreal NodeGraphCanvas::currentScale() const
 // | 25 | Position persistence: sidecar file via `writeGraphNodeLayoutPosition`/S13 | `NodeGraphCanvas::commitNodeMove`, same bridge call | Direct port; shared C++ core (S13), no platform-specific behavior to diverge on. |
 // | 26 | Category/edge count header ("N nodes, M edges") | `updateHeaderCounts` | Direct port. |
 // | 27 | Node-graph model types (`GraphCanvasNode`/`GraphCanvasPort`) | `GraphNodeData`/`GraphPortData` | Structurally identical MINUS the `position` field's role — see #12; Qt's `GraphNodeData::position` is a "last-known-good" seed/revert value, not the live render position. |
+// | 28 | Object-pick spotlight: viewport/outliner Object selection → gold glow/border on the object's bound material + its full Painter/Function/Material closure, auto-scroll to the material, NEVER calls `setSelection` from the spotlight path | `NodeGraphCanvas::refreshSpotlight`/`applySpotlightToItems`, `GraphNodeItem::setNodeSpotlit`, `ViewportBridge::appearanceClosureForObject` | Direct port of the contract; two mechanism differences, neither a fidelity gap. (a) Mac's `.shadow` glow has no Qt equivalent without a whole-item `QGraphicsEffect`, so `GraphNodeItem::paint` approximates it with two concentric rounded-rect strokes drawn behind the card — same warm-gold (`Theme::gold`) read, different primitive. (b) Mac observes `refreshTrigger`/`sceneEpoch` via SwiftUI `.onChange`; Qt has no such push signal for a plain selection change (confirmed: `SceneEditController::SetSelectionInner_`'s UI-only Object/Material path never bumps `mSceneEpoch`), so `refreshSpotlight` instead runs on EVERY `performReload` call — this widget's existing per-frame `refresh()` poll (see row 24) — with its own cheap (selectionCategory, selectionRowName) early-exit, plus a `forceReapply` flag so a just-rebuilt node set (whose items are all new) always gets the spotlight re-applied even when the selection identity itself did not change. Auto-scroll uses `QGraphicsView::ensureVisible` (built-in, already a no-op when the target is fully visible) rather than porting Mac's by-hand screen↔content inversion. |
 //
 // ---- Bridge gaps closed in this slice (build/VS2022/RISE-GUI/ViewportBridge.{h,cpp}) ----
 //
@@ -1792,5 +1899,17 @@ qreal NodeGraphCanvas::currentScale() const
 //  [ ] SourceHygieneTest and a clean `make -j8 all` both stay green (the
 //      Qt files are not in the make build by design; this is a
 //      regression check that the library side is untouched).
+//  [ ] Object-pick spotlight (row 28): pick an object in the viewport (or
+//      the outliner) whose material has a multi-stage painter chain;
+//      confirm its bound material AND every node in the painter chain
+//      light up with the gold glow/border, the view auto-scrolls to the
+//      material if it starts offscreen, and the properties panel keeps
+//      showing the OBJECT the whole time (the spotlight must never steal
+//      selection onto a painter/material node). Pick an instanced copy
+//      (a `standard_object` with `source`, or a `count_u`/`count_v`
+//      repeated instance) and confirm the SAME material/closure lights up
+//      as picking the source directly. Then click a bare canvas node and
+//      confirm the spotlight clears (selection moved to a non-Object
+//      category).
 //
 // ======================================================================

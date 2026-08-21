@@ -1680,6 +1680,18 @@ PainterGraph ViewportBridge::painterMaterialGraph() const
     return out;
 }
 
+QStringList ViewportBridge::appearanceClosureForObject(const QString& objectName) const
+{
+    QStringList out;
+    if (!m_controller || objectName.isEmpty()) return out;
+    const QByteArray utf8 = objectName.toUtf8();
+    const std::vector<RISE::String> closure =
+        m_controller->AppearanceClosureForObject(RISE::String(utf8.constData()));
+    out.reserve(static_cast<int>(closure.size()));
+    for (const RISE::String& name : closure) out.append(QString::fromUtf8(name.c_str()));
+    return out;
+}
+
 QString ViewportBridge::activeNameForCategory(Category cat) const
 {
     if (!m_controller) return QString();

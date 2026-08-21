@@ -56,6 +56,7 @@
 #include <QPointF>
 #include <QHash>
 #include <QImage>
+#include <QSet>
 
 #include "ViewportBridge.h"   // for ViewportBridge::PainterGraph / RewireOutcome / etc.
 
@@ -184,6 +185,28 @@ private:
     /// exists in ViewportProperties today).
     void openDefs(const GraphNodeData& node);
 
+    // ---- object-pick spotlight (viewport/outliner -> canvas) -----------
+    /// Re-derive m_spotlightHandles from the CURRENT shared (viewport/
+    /// outliner) selection and re-apply it to every live GraphNodeItem.
+    /// Called from performReload() on EVERY call (this widget's own
+    /// per-frame refresh() cadence, see NodeGraphCanvas.h's class-level
+    /// comment) -- independent of performReload's own epoch gate, since a
+    /// plain Object pick does NOT bump ViewportBridge::sceneEpoch() (only
+    /// a structural mutation does -- SceneEditController::SceneEpoch's own
+    /// comment), so this cannot piggyback on that early-return the way the
+    /// structural graph refetch does. Internally cheap-exits when neither
+    /// the selection identity NOR `forceReapply` (a just-rebuilt node set,
+    /// whose items are all new and therefore all un-spotlit until this
+    /// runs) requires redoing the work, so the per-frame cost is one enum
+    /// + one QString compare in the overwhelmingly common case.
+    ///
+    /// CRITICAL (per NODE_GRAPH_CANVAS.md's own interaction contract):
+    /// never calls ViewportBridge::setSelection. The shared selection
+    /// stays on the object the properties panel is inspecting; this
+    /// canvas only LOOKS at it, it never claims it.
+    void refreshSpotlight(bool forceReapply);
+    void applySpotlightToItems();
+
     // ---- drag-to-reposition (S21/S22) ----------------------------------
     // Takes the ITEM directly (not a handle/name pair): on a write
     // failure the item must snap back to its last-known-good position,
@@ -294,6 +317,14 @@ private:
 
     quint64 m_selectedHandle      = 0;
     bool    m_selectedHandleValid = false;
+
+    // ---- object-pick spotlight state ------------------------------------
+    QSet<quint64> m_spotlightHandles;
+    /// Last selection identity `refreshSpotlight` actually acted on --
+    /// the cheap early-exit key. `Category::None` + empty name is the
+    /// initial (never-run) state, matching "nothing spotlit yet."
+    ViewportBridge::Category m_lastSpotlightCategory = ViewportBridge::Category::None;
+    QString                  m_lastSpotlightObjectName;
 
     bool          m_wireDragActive = false;
     WireDragState m_wireDrag;

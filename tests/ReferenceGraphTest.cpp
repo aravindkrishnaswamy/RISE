@@ -1480,6 +1480,142 @@ int main()
 		}
 	}
 
+	// =================================================================
+	// PART 10 -- SceneEditController::AppearanceClosureForObject: the
+	// node-graph canvas "spotlight" query (viewport/outliner object pick
+	// -> chunk names to highlight).  Cases (a)-(f) are the ones named in
+	// the feature brief; a composite_material case is added to back this
+	// method's own header-comment claim that Material->Material edges
+	// (not just Painter/Function) are included in the closure.
+	// =================================================================
+	{
+		const char* path = "test_referencegraph_appearance.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"film\n{\nwidth 32\nheight 24\n}\n"
+			"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			// matA's chain: matA.reflectance -> ramp1.input -> field1 (a
+			// 2-hop transitive closure, PART10 (a)/(c)).
+			"expression_painter\n{\nname field1\ndef n fbm(P*2.0, 2, 0.5, 2.0)\nexpr vec3(n,n,n)\n}\n"
+			"ramp_painter\n{\nname ramp1\ninput field1\nchannel R\ninterpolation linear\nstop 0.0 1 0 0\nstop 1.0 0 0 1\n}\n"
+			"lambertian_material\n{\nname matA\nreflectance ramp1\n}\n"
+			// matB's own separate chain, referenced only through the
+			// composite material below (PART10 bonus: Material->Material).
+			"expression_painter\n{\nname field2\ndef n fbm(P*4.0, 2, 0.5, 2.0)\nexpr vec3(n,n,n)\n}\n"
+			"lambertian_material\n{\nname matB\nreflectance field2\n}\n"
+			"composite_material\n{\nname compo\ntop matA\nbottom matB\n}\n"
+			// obj1/obj2 both bind matA (PART10 (a)/(b)); objNoMat binds
+			// nothing (PART10 (e)); objInstance is a `source` instance of
+			// obj1 (PART10 (f)); objComposite binds the composite material
+			// (PART10 bonus).
+			"standard_object\n{\nname obj1\ngeometry g\nmaterial matA\nposition -3 0 0\n}\n"
+			"standard_object\n{\nname obj2\ngeometry g\nmaterial matA\nposition -1 0 0\n}\n"
+			"standard_object\n{\nname objNoMat\ngeometry g\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname objInstance\nsource obj1\nposition 3 0 0\n}\n"
+			"standard_object\n{\nname objComposite\ngeometry g\nmaterial compo\nposition 5 0 0\n}\n" );
+		Check( j != nullptr, "PART10: fixture scene loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+
+			// ---- (a) object with one material + painter chain: exact
+			// closure set + order (material first, then BFS discovery
+			// order down the single-branch chain) ----
+			{
+				const std::vector<String> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				Check( closure.size() == 3, "PART10a: obj1's closure has exactly 3 entries (matA, ramp1, field1)" );
+				if( closure.size() == 3 ) {
+					CheckEq( std::string( closure[0].c_str() ), "matA", "PART10a: index 0 is the bound material" );
+					CheckEq( std::string( closure[1].c_str() ), "ramp1", "PART10a: index 1 is matA's direct painter reference" );
+					CheckEq( std::string( closure[2].c_str() ), "field1", "PART10a: index 2 is ramp1's own reference (transitive)" );
+				}
+			}
+
+			// ---- (b) two objects sharing a material: each resolves to
+			// the SAME closure ----
+			{
+				const std::vector<String> closure1 = c.AppearanceClosureForObject( String( "obj1" ) );
+				const std::vector<String> closure2 = c.AppearanceClosureForObject( String( "obj2" ) );
+				Check( closure1.size() == closure2.size() && closure1.size() == 3,
+				       "PART10b: obj1 and obj2 (sharing matA) resolve to the same-size closure" );
+				bool same = closure1.size() == closure2.size();
+				for( std::size_t i = 0; same && i < closure1.size(); ++i )
+					if( std::string( closure1[i].c_str() ) != std::string( closure2[i].c_str() ) ) same = false;
+				Check( same, "PART10b: obj1 and obj2's closures are IDENTICAL, not merely same-sized" );
+			}
+
+			// ---- (c) material with a deep painter chain: transitive
+			// closure complete (field1, two hops from matA, is present) ----
+			{
+				const std::vector<String> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				bool hasField1 = false;
+				for( const String& s : closure ) if( std::string( s.c_str() ) == "field1" ) hasField1 = true;
+				Check( hasField1, "PART10c: the 2-hop-away field1 is present -- the closure is transitive, not one-hop" );
+			}
+
+			// ---- (d) unknown object name -> empty ----
+			{
+				const std::vector<String> closure = c.AppearanceClosureForObject( String( "no_such_object_at_all" ) );
+				Check( closure.empty(), "PART10d: an unknown object name resolves to an empty closure" );
+			}
+
+			// ---- (e) object with no material bound -> empty (the
+			// object-level reading of "material slot none/unbound ->
+			// skipped"; the painter-slot-level reading -- a dangling or
+			// none-valued Reference param inside a material producing a
+			// node-less port, not a phantom node -- is BuildPainterMaterial
+			// Graph's own general mechanism, this method's Step 2 reuses
+			// verbatim and does not re-test here) ----
+			{
+				const std::vector<String> closure = c.AppearanceClosureForObject( String( "objNoMat" ) );
+				Check( closure.empty(), "PART10e: an object with no material bound resolves to an empty closure" );
+			}
+
+			// ---- (f) instanced-copy object name: resolves to the SAME
+			// closure as the source object, because FindObjectMaterialName
+			// reads the LIVE post-derive IObject's bound material (copied
+			// from the source at Cst::DeriveToJob PASS-2 expansion time),
+			// not the instancing chunk's own CST text -- which for
+			// objInstance carries only `source obj1`, no `material` line
+			// at all ----
+			{
+				const std::vector<String> closureSrc = c.AppearanceClosureForObject( String( "obj1" ) );
+				const std::vector<String> closureInst = c.AppearanceClosureForObject( String( "objInstance" ) );
+				Check( closureInst.size() == closureSrc.size() && closureInst.size() == 3,
+				       "PART10f: the instancing chunk's OWN name resolves to a non-empty closure" );
+				bool same = closureInst.size() == closureSrc.size();
+				for( std::size_t i = 0; same && i < closureInst.size(); ++i )
+					if( std::string( closureInst[i].c_str() ) != std::string( closureSrc[i].c_str() ) ) same = false;
+				Check( same, "PART10f: an instance's closure is IDENTICAL to its source object's closure" );
+			}
+
+			// ---- bonus: composite_material's Material->Material edges
+			// (top/bottom) are traversed, not treated as a closure
+			// boundary -- backs this method's own header-comment claim ----
+			{
+				const std::vector<String> closure = c.AppearanceClosureForObject( String( "objComposite" ) );
+				Check( closure.size() == 6,
+				       "PART10-bonus: objComposite's closure has 6 entries (compo, matA, ramp1, field1, matB, field2)" );
+				Check( !closure.empty() && std::string( closure[0].c_str() ) == "compo",
+				       "PART10-bonus: index 0 is the composite material itself" );
+				bool hasMatA = false, hasMatB = false, hasRamp1 = false, hasField1 = false, hasField2 = false;
+				for( const String& s : closure ) {
+					const std::string n( s.c_str() );
+					if( n == "matA" ) hasMatA = true;
+					if( n == "matB" ) hasMatB = true;
+					if( n == "ramp1" ) hasRamp1 = true;
+					if( n == "field1" ) hasField1 = true;
+					if( n == "field2" ) hasField2 = true;
+				}
+				Check( hasMatA && hasMatB, "PART10-bonus: both sub-materials (matA, matB) are in the closure" );
+				Check( hasRamp1 && hasField1 && hasField2,
+				       "PART10-bonus: both sub-materials' OWN painter chains are in the closure too" );
+			}
+
+			j->release();
+		}
+	}
+
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

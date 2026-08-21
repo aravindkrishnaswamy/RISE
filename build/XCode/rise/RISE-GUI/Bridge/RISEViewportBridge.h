@@ -1032,6 +1032,23 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// ABI walk. Empty (but non-nil) on a temporarily unavailable controller.
 - (RISEPainterMaterialGraph *)painterMaterialGraph;
 
+/// Node-graph "spotlight" query: for `objectName` (an Object-category
+/// chunk name -- pass `selectionRowName`, NOT `selectionName`, for a
+/// viewport/outliner pick, since a synthesized per-repetition/subtree-
+/// member name like `I[1,0]`/`I.child` is never itself an addressable
+/// chunk -- see `-selectionRowName`'s own comment), returns the chunk
+/// NAMES to highlight on the node-graph canvas: the object's bound
+/// material first, then the full transitive Painter/Function/Material
+/// closure reachable from it in the SAME published `PainterMaterialGraph`
+/// `-painterMaterialGraph` reads from, in BFS discovery order. Empty
+/// (never nil) when the object is unknown, has no material bound, or a
+/// temporarily unavailable controller. Called directly on the C++
+/// controller (`SceneEditController::AppearanceClosureForObject`), the
+/// same "this file already calls SceneEditController natively" reasoning
+/// `-painterMaterialGraph` documents above.
+- (NSArray<NSString *> *)appearanceClosureForObject:(NSString *)objectName
+    NS_SWIFT_NAME(appearanceClosure(forObject:));
+
 /// Phase 4b: per-category panel selection.  Returns the entity
 /// name picked in `category`'s section, or empty when nothing is
 /// picked (section collapsed).  Distinct from `selectionName`

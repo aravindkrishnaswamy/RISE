@@ -2066,6 +2066,18 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return [[RISEPainterMaterialGraph alloc] initWithNodes:nodes generation:g.graph.generation];
 }
 
+- (NSArray<NSString *> *)appearanceClosureForObject:(NSString *)objectName {
+    if (!_controller || objectName.length == 0) return @[];
+    const char* utf8 = [objectName UTF8String] ?: "";
+    const std::vector<RISE::String> closure = _controller->AppearanceClosureForObject(RISE::String(utf8));
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:closure.size()];
+    for (const RISE::String &name : closure) {
+        NSString *s = NamedViewDisplayName(name.c_str()) ?: @"";
+        [out addObject:s];
+    }
+    return out;
+}
+
 - (NSString *)activeNameForCategory:(RISEViewportCategory)category {
     if (!_controller) return @"";
     const int catInt = static_cast<int>(category);

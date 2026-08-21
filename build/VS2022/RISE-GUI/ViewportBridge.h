@@ -1182,6 +1182,22 @@ public:
     /// than a per-node ABI walk.  Empty (no nodes) on a null controller.
     PainterGraph painterMaterialGraph() const;
 
+    /// Node-graph "spotlight" query: for `objectName` (an Object-category
+    /// chunk name -- pass `selectionRowName()`, NOT `selectionName()`, for
+    /// a viewport/outliner pick, since a synthesized per-repetition/
+    /// subtree-member name like `I[1,0]`/`I.child` is never itself an
+    /// addressable chunk -- see `selectionRowName()`'s own comment),
+    /// returns the chunk NAMES to highlight on the node-graph canvas: the
+    /// object's bound material first, then the full transitive Painter/
+    /// Function/Material closure reachable from it in the SAME published
+    /// PainterGraph `painterMaterialGraph()` reads from, in BFS discovery
+    /// order.  Empty when the object is unknown, has no material bound, or
+    /// a null controller.  Called directly on the C++ controller
+    /// (SceneEditController::AppearanceClosureForObject), the same "this
+    /// file already calls SceneEditController natively" reasoning
+    /// painterMaterialGraph() documents above.
+    QStringList appearanceClosureForObject(const QString& objectName) const;
+
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →
     /// active rasterizer chunk name; Film → "default" (a scene has

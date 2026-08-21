@@ -3163,6 +3163,53 @@ namespace RISE
 		                             GraphNodeHandle& outOtherNode, String& outParamName,
 		                             int& outOccurrence, String& outOtherName ) const;
 
+		// =====================================================================
+		// Node-graph "spotlight" query -- viewport/outliner object pick ->
+		// canvas highlight.  A thin composition over TWO already-shipped,
+		// already-correct mechanisms (deliberately not a third): the live
+		// object->material resolution `SetSelection`'s Object-pick auto-fill
+		// already uses (`FindObjectMaterialName`, SceneEditController.cpp,
+		// instancing-correct by construction -- see its own comment), and the
+		// S11 `PainterMaterialGraph` this class already publishes
+		// (`ReadPainterMaterialGraph`) -- the SAME edges the node-graph canvas
+		// itself draws from, so this query can never disagree with what the
+		// canvas shows.
+		// =====================================================================
+
+		//! For `objectName` (an Object-category chunk name -- a
+		//! `standard_object`/`csg_object`, addressed the same way
+		//! `selectionRowName` resolves an instancing pick back to its own
+		//! chunk, NOT a synthesized per-repetition/per-subtree-member name
+		//! like `I[1,0]`/`I.child`, neither of which is ever an addressable
+		//! chunk), returns the chunk NAMES to highlight on the Painter/
+		//! Material node-graph canvas: the object's bound material first
+		//! (index 0), then every node transitively reachable from it in the
+		//! published `PainterMaterialGraph` -- Painter, Function, AND
+		//! Material nodes alike (so a `composite_material`'s `top`/`bottom`
+		//! sub-materials, and their own painter chains, are included, not
+		//! just the primary material's own direct painter references) -- in
+		//! BFS discovery order.
+		//!
+		//! Empty when: `objectName` does not name a live, registered Object
+		//! (unknown name, or a Painter/Material/other-category name passed
+		//! by mistake); the object has no material bound (`material none`/
+		//! unset, or a container node with no `geometry` to bind one to at
+		//! all); or the resolved material name is not present (uniquely) in
+		//! the current graph (a degenerate same-name-different-chunk
+		//! collision -- see `BuildPainterMaterialGraph`'s own node-identity
+		//! comment).
+		//!
+		//! `objectName` naming an INSTANCING chunk (a `standard_object` with
+		//! its own `source X` and no `material` of its own) resolves to the
+		//! SAME material `X` itself would: this query reads the LIVE
+		//! post-derive `IObject`'s bound `IMaterial` (`FindObjectMaterialName`),
+		//! never the instancing chunk's own CST text -- which, absent an
+		//! explicit `material` override, never has a `material` line at all
+		//! (`Cst::DeriveToJob` PASS-2 merges the source's bindings into the
+		//! Job-facing bag at DERIVE time, never into the retained Document;
+		//! see `standard_object`'s own descriptor comment on `source`).
+		std::vector<String> AppearanceClosureForObject( const String& objectName ) const;
+
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
 		//! instance.  Each fresh controller therefore has a unique

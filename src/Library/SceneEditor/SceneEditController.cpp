@@ -6002,6 +6002,80 @@ void SceneEditController::ResyncObjectBoundSections_()
 	mSelectionByCategory[ medIdx ] = FindObjectInteriorMediumName( mJob, objName );
 }
 
+// =====================================================================
+// Node-graph "spotlight" query -- see the declaration's own comment in
+// SceneEditController.h for the full contract.
+// =====================================================================
+
+std::vector<String> SceneEditController::AppearanceClosureForObject( const String& objectName ) const
+{
+	std::vector<String> result;
+	if( objectName.size() <= 1 ) return result;
+
+	// Step 1: resolve the object's LIVE bound material.  Reuses
+	// FindObjectMaterialName -- the EXACT resolution SetSelection's
+	// Object-pick auto-fill already uses (this file, above) -- rather than
+	// reading the object chunk's own `material` param off the CST document,
+	// because the latter is WRONG for an instancing chunk: `source`
+	// expansion happens at Cst::DeriveToJob DERIVE time, never touching the
+	// retained Document, so an instancing chunk's own CST text can carry no
+	// `material` line at all while its live IObject is bound to the copied
+	// one. Same brief mMutex hold External review round 3 (2026-07-22)
+	// established for this exact pair of calls (races the live object
+	// manager against an any-thread agent D2 manager swap).
+	String matName;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		matName = FindObjectMaterialName( mJob, objectName );
+	}
+	if( matName.size() <= 1 ) return result;   // unknown object, or no material bound
+
+	// Step 2: BFS the ALREADY-PUBLISHED S11 PainterMaterialGraph -- the SAME
+	// edges ReadPainterMaterialGraphLaidOut composes and the canvas itself
+	// draws from, so this closure can never disagree with what the canvas
+	// shows. No second reference-resolution mechanism: this deliberately
+	// does NOT re-derive edges from SceneReferenceGraph/Cst::BuildReferenceGraph
+	// itself.
+	PainterMaterialGraph g;
+	ReadPainterMaterialGraph( g );
+
+	// Name-based node lookup, same addressing CheckConnection/WouldCycle
+	// already use for this graph (GraphNodeHandle's own comment: a
+	// published GraphNode carries no raw Cst::NodeId for a caller to key
+	// off instead). A duplicate (category, name) pair -- two same-category
+	// chunks legally sharing a name, see BuildPainterMaterialGraph's own
+	// comment -- resolves to whichever node FindObjectMaterialName's own
+	// manager-name resolution would have found too (first match, same
+	// presentation order both surfaces share), so this stays consistent
+	// with the auto-fill it started from rather than independently
+	// guessing.
+	int matIdx = -1;
+	for( std::size_t i = 0; i < g.nodes.size(); ++i ) {
+		if( g.nodes[i].category == ChunkCategory::Material && g.nodes[i].name == matName ) { matIdx = static_cast<int>( i ); break; }
+	}
+	if( matIdx < 0 ) return result;
+
+	std::vector<bool> visited( g.nodes.size(), false );
+	std::vector<unsigned int> frontier;
+	visited[ static_cast<std::size_t>( matIdx ) ] = true;
+	frontier.push_back( static_cast<unsigned int>( matIdx ) );
+	result.push_back( g.nodes[ static_cast<std::size_t>( matIdx ) ].name );   // primary material first
+
+	std::size_t head = 0;
+	while( head < frontier.size() ) {
+		const unsigned int cur = frontier[head++];
+		for( const GraphPort& p : g.nodes[cur].outEdges ) {
+			if( p.otherNode == kInvalidNodeIndex ) continue;             // dangling / node-less port -- skip (design: "none"/unbound slots are skipped)
+			if( p.otherNode >= g.nodes.size() ) continue;                // defensive; never true for a snapshot BuildPainterMaterialGraph produced
+			if( visited[ p.otherNode ] ) continue;
+			visited[ p.otherNode ] = true;
+			frontier.push_back( p.otherNode );
+			result.push_back( g.nodes[ p.otherNode ].name );
+		}
+	}
+	return result;
+}
+
 String SceneEditController::GetSelectionNameForCategory( Category cat ) const
 {
 	const int i = static_cast<int>( cat );

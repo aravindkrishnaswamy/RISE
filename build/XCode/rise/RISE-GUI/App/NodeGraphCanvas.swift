@@ -384,6 +384,14 @@ struct NodeGraphCanvas: View {
     @State private var selectedHandle: UInt64? = nil
     @State private var hoveredHandle: UInt64? = nil
 
+    // -------- Object-pick spotlight (viewport/outliner -> canvas) --------
+    /// Every node currently spotlit -- the object's bound material plus its
+    /// transitive Painter/Function/Material closure (`-appearanceClosure
+    /// (forObject:)`). Set from the CURRENT shared selection, never by this
+    /// canvas selecting anything itself: see `refreshSpotlight`'s own
+    /// comment for why this must NEVER call `bridge.setSelection`.
+    @State private var spotlightHandles: Set<UInt64> = []
+
     // -------- S21: drag-to-reposition --------
     /// The single node currently mid-drag, at its LIVE (uncommitted)
     /// position. nil whenever no reposition drag is in flight. Kept as
@@ -436,8 +444,8 @@ struct NodeGraphCanvas: View {
             .clipShape(RoundedRectangle(cornerRadius: 0))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear { scheduleReload(debounced: false) }
-        .onChange(of: refreshTrigger) { _, _ in scheduleReload(debounced: true) }
+        .onAppear { scheduleReload(debounced: false); refreshSpotlight() }
+        .onChange(of: refreshTrigger) { _, _ in scheduleReload(debounced: true); refreshSpotlight() }
         .background(keyboardShortcuts)
         .sheet(isPresented: $showPalette) {
             NodeGraphAddNodeSheet(
@@ -586,6 +594,7 @@ struct NodeGraphCanvas: View {
                     node: node,
                     bridge: bridge,
                     isSelected: selectedHandle == node.handle,
+                    isSpotlit: spotlightHandles.contains(node.handle),
                     isHovered: hoveredHandle == node.handle,
                     onSelect: { selectNode(node) },
                     onOpenDefs: { openDefs(node) },
@@ -704,6 +713,79 @@ struct NodeGraphCanvas: View {
         viewModel.focusPainterDefRows(name: node.name)
     }
 
+    // MARK: - Object-pick spotlight
+
+    /// Re-derive `spotlightHandles` from the CURRENT shared (viewport/
+    /// outliner) selection. Runs on every `refreshTrigger` bump
+    /// independently of `performReload`'s epoch gate above: a plain
+    /// Object pick does NOT bump `bridge.sceneEpoch` (only a structural
+    /// mutation does -- see `SceneEditController::SceneEpoch`'s own
+    /// comment), so this cannot piggyback on that early-return the way the
+    /// structural graph refetch does; it must always re-read the current
+    /// selection and act on it.
+    ///
+    /// CRITICAL (per NODE_GRAPH_CANVAS.md's own interaction contract):
+    /// never calls `bridge.setSelection`. The shared selection stays on
+    /// the object the properties panel is inspecting; this canvas only
+    /// LOOKS at it, it never claims it.
+    private func refreshSpotlight() {
+        guard let bridge, bridge.selectionCategory == .object else {
+            spotlightHandles = []
+            return
+        }
+        // `selectionRowName`, NOT `selectionName`: a viewport/outliner pick
+        // on a `count_u`/`count_v` repeated or subtree-copied instance
+        // names a SYNTHESIZED per-repetition/per-member entity
+        // (`I[1,0]`/`I.child`) that is never itself an addressable chunk --
+        // `selectionRowName` is the same "resolve back to the instancing
+        // chunk's own row" the outliner already performs (OutlinerView's
+        // own `selectionRowName` comment), which is what
+        // `-appearanceClosureForObject:` needs.
+        let objectName = bridge.selectionRowName
+        guard !objectName.isEmpty else {
+            spotlightHandles = []
+            return
+        }
+        let closureNames = bridge.appearanceClosure(forObject: objectName)
+        guard !closureNames.isEmpty else {
+            spotlightHandles = []
+            return
+        }
+        var handles: Set<UInt64> = []
+        var primaryNode: GraphCanvasNode? = nil
+        for name in closureNames {
+            guard let node = snapshot.nodes.first(where: { $0.name == name }) else { continue }
+            handles.insert(node.handle)
+            if primaryNode == nil { primaryNode = node }   // first entry = the object's material, per the bridge's own contract
+        }
+        spotlightHandles = handles
+        if let primaryNode { scrollToNodeIfNeeded(primaryNode) }
+    }
+
+    /// Auto-scroll (never re-zoom) so `node`'s box is visible within the
+    /// current viewport -- the mirror, in reverse, of `openPalette`'s own
+    /// screen<->content transform math. A no-op when the node is already
+    /// fully visible, so a spotlight on an already-visible node never
+    /// fights a manual pan mid-inspection (the same "don't move the view
+    /// out from under the user" posture `centerIfNeeded` documents).
+    private func scrollToNodeIfNeeded(_ node: GraphCanvasNode) {
+        guard lastViewportSize.width > 1, lastViewportSize.height > 1 else { return }
+        let s = scale
+        let nodeRectScreen = CGRect(
+            x: node.position.x * s + offset.width, y: node.position.y * s + offset.height,
+            width: GraphMetrics.nodeWidth * s, height: GraphMetrics.nodeHeight * s)
+        let viewportRect = CGRect(origin: .zero, size: lastViewportSize)
+        guard !viewportRect.contains(nodeRectScreen) else { return }
+
+        let nodeCenterContent = CGPoint(x: node.position.x + GraphMetrics.nodeWidth / 2,
+                                         y: node.position.y + GraphMetrics.nodeHeight / 2)
+        let screenCenter = CGPoint(x: lastViewportSize.width / 2, y: lastViewportSize.height / 2)
+        withAnimation(.easeInOut(duration: 0.25)) {
+            offset = CGSize(width: screenCenter.x - nodeCenterContent.x * s,
+                             height: screenCenter.y - nodeCenterContent.y * s)
+        }
+    }
+
     // MARK: - Reload
 
     private func scheduleReload(debounced: Bool, force: Bool = false) {
@@ -751,6 +833,12 @@ struct NodeGraphCanvas: View {
             selectedHandle = nil
         }
         snapshot = GraphCanvasSnapshot(nodes: nodes, generation: g.generation)
+        // A structural refresh can change which nodes exist -- re-derive
+        // the spotlight against the fresh snapshot rather than pruning the
+        // stale handle set in place, since the closure itself may have
+        // grown or shrunk (a rewire adding/removing a painter reference),
+        // not just lost a node outright.
+        refreshSpotlight()
     }
 
     // MARK: - S21: drag-to-reposition
@@ -1058,6 +1146,16 @@ private struct GraphNodeBoxView: View {
     let node: GraphCanvasNode
     weak var bridge: RISEViewportBridge?
     let isSelected: Bool
+    /// This node is part of the CURRENT object-pick spotlight closure
+    /// (`NodeGraphCanvas.spotlightHandles`) -- a visually DISTINCT state
+    /// from `isSelected` on purpose: `isSelected` is this canvas's own
+    /// click-to-select, while a spotlight is driven by the shared
+    /// selection sitting on an OBJECT elsewhere (viewport/outliner), which
+    /// this canvas must never claim as ITS OWN selection (no
+    /// `bridge.setSelection` call from a spotlight -- see
+    /// `NodeGraphCanvas.refreshSpotlight`). Several nodes can be spotlit
+    /// at once; at most one is ever `isSelected`.
+    let isSpotlit: Bool
     let isHovered: Bool
     let onSelect: () -> Void
     let onOpenDefs: () -> Void
@@ -1077,9 +1175,15 @@ private struct GraphNodeBoxView: View {
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusMedium))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMedium)
-                .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
+                .stroke(borderColor, lineWidth: (isSelected || isSpotlit) ? 2 : 1)
         )
         .shadow(color: .black.opacity(isHovered ? 0.28 : 0.14), radius: isHovered ? 7 : 3, y: 2)
+        // A SECOND, warm-gold glow layered on top of the normal hover
+        // shadow -- opacity/radius both 0 when not spotlit, so this is a
+        // pure no-op for every node outside the current closure. Kept as
+        // its own `.shadow` (SwiftUI stacks them) rather than folded into
+        // the one above so the ordinary hover shadow is untouched.
+        .shadow(color: isSpotlit ? Theme.gold.opacity(0.6) : .clear, radius: isSpotlit ? 8 : 0)
         .contentShape(Rectangle())
         // S21: the reposition-drag gesture is tried FIRST via
         // `exclusively(before:)` -- `DragGesture(minimumDistance: 3)`
@@ -1127,6 +1231,7 @@ private struct GraphNodeBoxView: View {
 
     private var borderColor: Color {
         if isSelected { return Theme.accent }
+        if isSpotlit { return Theme.gold }
         if isHovered { return Theme.borderHover }
         return Theme.borderLight
     }
