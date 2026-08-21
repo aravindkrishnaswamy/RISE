@@ -2945,3 +2945,25 @@ it was already tried and refuted here.
   a tolerance. Exit `237` remains fail-closed; `B_fp32` and later campaigns did
   not run. The durable evidence SHA is `2743b634...cb3971`; golden checkpoint
   `1b944176...4947` is untouched.
+
+- **r124 continuous shared-alpha ruling (2026-08-21, frozen before production
+  evidence):** r59's admissible-interval theorem decides the invariant triage
+  at r123's non-equivalent limiter switch.  Shared tuple alpha is retained
+  because it is the section 3.7 conservation coupling; strict component
+  monotonicity is retained because it is physical admissibility; only maximal
+  inactivity, an optimality property, yields inside the certified ambiguity
+  neighbourhood.  Per-component alpha, relaxed monotonicity, and a binary-site
+  certification carve-out are rejected.  On the frozen r123 graph the largest
+  outward limiter-predicate widths are `9292.2824737527444 u32*s` (positive)
+  and `8645.4622206683161 u32*s` (negative), where
+  `s=max(FLT_MIN,abs(center),abs(envelope),abs(signed deviation))` and
+  `u32=2^-24`.  Rounding the union upward to the next power of two fixes
+  `w=2^14*u32*s=2^-10*s`.  The pre-registered cap is one below `-w`, a
+  continuous `(Q+max(-d,0))/w` ramp inside `[-w,w]`, and the legacy `Q/d`
+  cap above `+w`, each clamped to one.  Both joins and the zero surface are
+  continuous, `c*d<=Q` for positive `d`, and legacy bytes are required outside
+  the width.  The independent walker, not production measurement, must prove
+  every limiter enclosure fits its local width and must discharge all new join
+  obligations.  The full remaining census is still blocked until every source
+  site class has one reusable equivalence certificate or a recorded continuous
+  reformulation; exit `237` remains the incomplete-proof result.

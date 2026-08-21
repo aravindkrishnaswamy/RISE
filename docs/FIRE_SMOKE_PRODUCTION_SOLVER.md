@@ -2220,6 +2220,71 @@ maps did not run. The durable census is
 SHA-256 `2743b6347b2c456530949d2d01df182efa5b1c637f5107ebfd6f794bd4cb3971`.
 The untouched golden checkpoint remains outside this diagnostic.
 
+### 7.40 Continuous shared-alpha transition (r124, ruling)
+
+r124 applies the r59 admissible-interval theorem to the first genuinely
+non-equivalent r123 site.  The theorem fixes the invariant triage.  A single
+tuple alpha remains shared by every component because that is the conservation
+coupling in section 3.7, and every component remains inside its donor envelope
+because monotonicity is physical admissibility.  Maximal inactivity is only an
+optimality property: any pointwise smaller alpha remains in the already-proved
+admissible interval.  It therefore yields inside the certified ambiguity
+neighbourhood.  Relaxing shared alpha, relaxing monotonicity, or carving the
+old binary branch out of certification are rejected respectively as ledger
+breakage, physical inadmissibility, and restoration of an uncertifiable
+topology.
+
+The width is derived from the frozen r123 predicate enclosures, before any
+reformulated production result is inspected.  For each positive or negative
+limiter predicate let
+
+```
+s = max(FLT_MIN, abs(center), abs(envelope), abs(signed deviation))
+u32 = 2^-24
+```
+
+over the exact rounded operands at that site.  The largest outward ambiguity
+widths are `9292.2824737527444 u32*s` for the positive site class and
+`8645.4622206683161 u32*s` for the negative class.  The next power of two is
+`2^14`; the pre-registered transition half-width is consequently
+
+```
+w = 2^14 u32 s = 2^-10 s.
+```
+
+No Metal/fp64 difference selects this coefficient.  The independent walker
+must verify every instantiated limiter obligation is contained by its local
+`[-w,+w]` before the reformulation is certified.
+
+Write `d` for signed envelope consumption (positive means the reconstruction
+consumes headroom) and `Q>=0` for available headroom.  The component cap is the
+continuous function
+
+```
+d <= -w :  c = 1
+-w < d < w : c = min(1, (Q + max(-d,0))/w)
+d >=  w :  c = min(1, Q/d).
+```
+
+The shared tuple alpha remains the minimum of its previous value and every
+component cap.  At `d=-w` both adjacent definitions equal one; at `d=+w` both
+equal `min(1,Q/w)`; and both one-sided limits at zero equal `min(1,Q/w)`.
+For every `d>0`, `c*d<=Q`, so strict monotonicity is unchanged.  For
+`d<=-w` the component is exactly inactive, and for `d>=w` the arithmetic and
+result are the legacy limiter.  Thus only the smallest independently certified
+neighbourhood sacrifices maximal inactivity, while common-alpha conservation
+and the r59 admissible interval remain untouched.
+
+Every comparison in this piecewise evaluation is itself a branch obligation.
+The `-w`, zero, and `+w` joins close by the equalities above and an outward
+envelope over both adjacent paths; no rounded branch is selected as proof.
+The affected CPU and Metal evidence must prove byte identity outside the local
+width and rerun the r118/r119-class gates.  The remaining r123 obligations are
+then discharged by site class: one independent equivalence certificate or one
+recorded continuous reformulation per source site, instantiated over every
+cell/component.  An incomplete class census retains exit `237` and blocks
+`B_fp32`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
