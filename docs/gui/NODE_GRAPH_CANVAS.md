@@ -1,10 +1,14 @@
 # Node-Graph Canvas (doc-88 Phase 3 / MATERIAL_EDITOR C2)
 
-**Status: PROPOSED DESIGN — awaiting user review (2026-08-20).  Nothing
-implemented.  Produced at the close of doc-88 Phase 2 (arc commits
-ded865ed..02f6124a); supersedes MATERIAL_EDITOR.md §3/§3.7/§3.8 as the
-load-bearing spec once accepted (those sections remain as original
-rationale).**
+**Status: APPROVED (user review 2026-08-20) — all six design calls decided
+as recommended: C1 two-level model (defs = internal stage strip), C2
+sidecar layout, C3 read-only Phase A then editable Phase B immediately
+after, C4 shared headless C++ core + thin per-platform widgets, C5
+rank-by-dependency layout, C6 FULL plan S11-S23 committed.  One addition
+at approval: a set of GUI stress-test sample scenes ships at the end of
+the arc.  This doc supersedes MATERIAL_EDITOR.md §3/§3.7/§3.8 as the
+load-bearing spec (those sections remain as original rationale).
+Implementation begins at S11.**
 
 
 Companion to `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §4 P5.4 and §7 decision 6 (canvas is ON the roadmap, Phase 3, "no longer only if data demands"), and to `docs/gui/MATERIAL_EDITOR.md` §3/§3.7/§3.8 (C2 node graph — the design this doc narrows into an implementable slice plan).
