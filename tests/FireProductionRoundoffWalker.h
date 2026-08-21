@@ -67,6 +67,13 @@ namespace FireProductionRoundoffWalker
 		bool roundedResult=false;
 	};
 
+	struct PPMQuadraticZeroCertificate
+	{
+		bool continuousAtSwitch=false;
+		double ambiguityWidth=0.0;
+		double divergenceBound=0.0;
+	};
+
 	namespace Detail
 	{
 		inline double NextUp(const double value)
@@ -141,6 +148,52 @@ namespace FireProductionRoundoffWalker
 			witness.leftRounded=left.rounded;witness.rightRounded=right.rounded;
 			witness.roundedResult=roundedResult;return true;
 		}
+	}
+
+	// Independent branch-equivalence proof for ParabolaDeviationRange.  With
+	// endpoint deviations l and r, the quadratic path is the endpoint chord
+	// minus q*s*(1-s), q=3(l+r).  It therefore coincides with the endpoint-only
+	// path at q=0 and differs by at most |q|/4 on s in [0,1].
+	inline bool CertifyPPMQuadraticZero(const BranchWitness& witness,
+		PPMQuadraticZeroCertificate& certificate)
+	{
+		certificate=PPMQuadraticZeroCertificate();
+		if(witness.rightCenter!=0.0||witness.rightRadius!=0.0||
+			IntervalsAreSeparated(witness.leftCenter,witness.leftRadius,
+				witness.rightCenter,witness.rightRadius))return false;
+		certificate.continuousAtSwitch=true;
+		certificate.ambiguityWidth=Detail::NextUp(std::fabs(witness.leftCenter)+
+			witness.leftRadius);
+		certificate.divergenceBound=Detail::NextUp(0.25*certificate.ambiguityWidth);
+		return std::isfinite(certificate.divergenceBound)&&
+			certificate.divergenceBound>=0.0;
+	}
+
+	inline double PPMQuadraticPathDifference(const double quadratic,const double s)
+	{
+		return -quadratic*s*(1.0-s);
+	}
+
+	inline bool ContinuousSelectionHull(const double firstCenter,const double firstRadius,
+		const double secondCenter,const double secondRadius,const bool minimum,
+		double& lower,double& upper,double& divergence)
+	{
+		lower=upper=divergence=0.0;
+		if(!(firstRadius>=0.0&&secondRadius>=0.0))return false;
+		const double firstLow=firstCenter-firstRadius,firstHigh=firstCenter+firstRadius;
+		const double secondLow=secondCenter-secondRadius,secondHigh=secondCenter+secondRadius;
+		lower=minimum?std::min(firstLow,secondLow):std::max(firstLow,secondLow);
+		upper=minimum?std::min(firstHigh,secondHigh):std::max(firstHigh,secondHigh);
+		divergence=Detail::NextUp(firstRadius+secondRadius);
+		return lower<=upper&&std::isfinite(lower)&&std::isfinite(upper)&&
+			std::isfinite(divergence);
+	}
+
+	inline bool CertifyInactiveLimiter(const double alphaUpper,
+		const double numeratorLower,const double deviationUpper)
+	{
+		return alphaUpper>=0.0&&numeratorLower>=0.0&&deviationUpper>=0.0&&
+			numeratorLower>=Detail::NextUp(alphaUpper*deviationUpper);
 	}
 
 	// Fail-fast independent walk of the first x-half-step limiter branch in the

@@ -26,6 +26,122 @@ def transform(text: str, name: str, suffix: str) -> str:
     text = text.replace("sizeof(FireProductionRoundoffTrace::TraceFloat)", "sizeof(float)")
     text = re.sub(r"std::(min|max)\(([-+]?[0-9.]+f),",
                   r"std::\1(FireProductionRoundoffTrace::TraceFloat(\2),", text)
+    if name == "FireProductionAdvection" and suffix == ".cpp":
+        # Tag every data-dependent branch in the remap arithmetic before applying
+        # site-specific equivalence certificates. These are test-only wrappers;
+        # the rounded production predicate and path remain unchanged.
+        branch_replacements = {
+            "if( im2==center&&im1==center&&ip1==center&&ip2==center )":
+                "if( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::FlatStencil,[&](){ return "
+                "im2==center&&im1==center&&ip1==center&&ip2==center; }) )",
+            "if( left==center&&right==center )":
+                "if( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return "
+                "left==center&&right==center; }) )",
+            "while( remaining>0.0f )":
+                "while( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return "
+                "remaining>0.0f; }) )",
+            "while( remaining>0.0f&&cell<request.lineLength )":
+                "while( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return "
+                "remaining>0.0f; })&&cell<request.lineLength )",
+            "if( courant>=0.0f )":
+                "if( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return "
+                "courant>=0.0f; }) )",
+            "if( fractional>0.0f )":
+                "if( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return "
+                "fractional>0.0f; }) )",
+            "if( maximumDeviation>0.0f )":
+                "if( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::LimiterPositive,[&](){ return "
+                "maximumDeviation>0.0f; }) )",
+            "if( minimumDeviation<0.0f )":
+                "if( FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::LimiterNegative,[&](){ return "
+                "minimumDeviation<0.0f; }) )",
+            "faceVelocity>0.0f ?":
+                "FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return "
+                "faceVelocity>0.0f; }) ?",
+            "faceVelocity<0.0f ?":
+                "FireProductionRoundoffTrace::EvaluateBranch("
+                "FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return "
+                "faceVelocity<0.0f; }) ?",
+        }
+        for before, after in branch_replacements.items():
+            if before == "if( left==center&&right==center )":
+                if text.count(before) != 2:
+                    raise RuntimeError("flat integral branch seams changed")
+            elif before in ("if( courant>=0.0f )", "if( fractional>0.0f )"):
+                if text.count(before) != 2:
+                    raise RuntimeError("swept integral branch seams changed: " + before)
+            elif text.count(before) != 1:
+                raise RuntimeError("remap branch seam changed: " + before)
+            text = text.replace(before, after)
+        limiter_positive = ("\t\t\t\tif( FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::LimiterPositive,[&](){ return "
+            "maximumDeviation>0.0f; }) ) alpha=std::min(alpha,\n"
+            "\t\t\t\t\t(envelopeMaximum-center)/maximumDeviation);")
+        limiter_negative = ("\t\t\t\tif( FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::LimiterNegative,[&](){ return "
+            "minimumDeviation<0.0f; }) ) alpha=std::min(alpha,\n"
+            "\t\t\t\t\t(center-envelopeMinimum)/(-minimumDeviation));")
+        if text.count(limiter_positive) != 1 or text.count(limiter_negative) != 1:
+            raise RuntimeError("traced limiter branch seams changed")
+        text = text.replace(limiter_positive,
+            "\t\t\t\talpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,\n"
+            "\t\t\t\t\tenvelopeMaximum,center,maximumDeviation,true);")
+        text = text.replace(limiter_negative,
+            "\t\t\t\talpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,\n"
+            "\t\t\t\t\tenvelopeMinimum,center,minimumDeviation,false);")
+        ppm_branch = ("\t\t\tif( quadratic!=0.0f ) {\n"
+                      "\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat stationary="
+                      "-linear/(2.0f*quadratic);\n"
+                      "\t\t\t\tif( stationary>0.0f&&stationary<1.0f ) {\n"
+                      "\t\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat value="
+                      "(quadratic*stationary+linear)*stationary+leftDeviation;\n"
+                      "\t\t\t\t\tminimum=std::min(minimum,value);\n"
+                      "\t\t\t\t\tmaximum=std::max(maximum,value);\n"
+                      "\t\t\t\t}\n"
+                      "\t\t\t}")
+        traced_ppm_branch = ("\t\t\tbool quadraticNonzero=false;\n"
+                             "\t\t\tconst FireProductionRoundoffTrace::TraceFloat "
+                             "endpointMinimum=minimum,endpointMaximum=maximum;\n"
+                             "\t\t\tFireProductionRoundoffTrace::BeginPPMBranchEnvelope();\n"
+                             "\t\t\t{ FireProductionRoundoffTrace::BranchSiteScope branchScope(\n"
+                             "\t\t\t\tFireProductionRoundoffTrace::BranchSite::PPMQuadraticZero);\n"
+                             "\t\t\t\tquadraticNonzero=quadratic!=0.0f; }\n"
+                             "\t\t\tFireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(\n"
+                             "\t\t\t\tFireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());\n"
+                             "\t\t\tif( quadraticNonzero ) {\n"
+                             "\t\t\t\tFireProductionRoundoffTrace::CoveredBranchScope "
+                             "coveredBranch(true);\n"
+                             "\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat stationary="
+                             "-linear/(2.0f*quadratic);\n"
+                             "\t\t\t\tconst bool stationaryPositive="
+                             "FireProductionRoundoffTrace::EvaluateBranch(\n"
+                             "\t\t\t\t\tFireProductionRoundoffTrace::BranchSite::"
+                             "PPMStationaryLower,[&](){ return stationary>0.0f; });\n"
+                             "\t\t\t\tconst bool stationaryBelowOne=stationaryPositive&&"
+                             "FireProductionRoundoffTrace::EvaluateBranch(\n"
+                             "\t\t\t\t\tFireProductionRoundoffTrace::BranchSite::"
+                             "PPMStationaryUpper,[&](){ return stationary<1.0f; });\n"
+                             "\t\t\t\tif( stationaryBelowOne ) {\n"
+                             "\t\t\t\t\tconst FireProductionRoundoffTrace::TraceFloat value="
+                             "(quadratic*stationary+linear)*stationary+leftDeviation;\n"
+                             "\t\t\t\t\tminimum=std::min(minimum,value);\n"
+                             "\t\t\t\t\tmaximum=std::max(maximum,value);\n"
+                             "\t\t\t\t}\n"
+                             "\t\t\t}\n"
+                             "\t\t\tFireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(\n"
+                             "\t\t\t\tquadratic,linear,endpointMinimum,endpointMaximum,minimum,maximum);")
+        if text.count(ppm_branch) != 1:
+            raise RuntimeError("PPM quadratic branch seam changed")
+        text = text.replace(ppm_branch, traced_ppm_branch)
     if suffix == ".h":
         guards = {"FireProductionAdvection": "FIREPRODUCTIONADVECTION_",
                   "FireProductionProjection": "FIREPRODUCTIONPROJECTION_",

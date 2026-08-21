@@ -1002,6 +1002,10 @@ namespace FireProductionDyadicCalibration
 				request.cellTransport.boundary[1]==RISE::FireProductionProjectionPressureOpen,
 				request.cellTransport.conservativeValues,request.cellTransport.ambientValues,
 				request.cellTransport.frozenVelocityMPerS[0],independentBranch);
+		FireProductionRoundoffWalker::PPMQuadraticZeroCertificate ppmCertificate;
+		const bool ppmCertified=independentBranchStopped&&
+			FireProductionRoundoffWalker::CertifyPPMQuadraticZero(
+				independentBranch,ppmCertificate);
 		std::fprintf(stderr,"r120 independent_branch stopped=%d line=%zu cell=%zu component=%zu "
 			"left=(%.17g +- %.17g, %.9g) right=(%.17g +- %.17g, %.9g) result=%d\n",
 			independentBranchStopped?1:0,independentBranch.line,independentBranch.cell,
@@ -1050,6 +1054,26 @@ namespace FireProductionDyadicCalibration
 			std::memcpy(&rightBits,&stage.unresolvedRightRounded,sizeof(rightBits));
 			AppendInteger(encoded,leftBits);AppendInteger(encoded,rightBits);
 			AppendInteger(encoded,stage.unresolvedRoundedResult?1u:0u);
+			AppendInteger(encoded,stage.branchObligations.size());
+			AppendInteger(encoded,stage.dischargedBranchObligationCount);
+			for(const FireProductionRoundoffTrace::BranchObligation& obligation:
+				stage.branchObligations){
+				AppendInteger(encoded,obligation.comparisonOrdinal);
+				AppendInteger(encoded,static_cast<unsigned int>(obligation.site));
+				AppendDouble(encoded,obligation.predicateCenter);
+				AppendDouble(encoded,obligation.predicateRadius);
+				AppendInteger(encoded,obligation.roundedResult?1u:0u);
+				AppendInteger(encoded,static_cast<unsigned int>(obligation.certificate));
+				AppendDouble(encoded,obligation.divergenceBound);
+				AppendDouble(encoded,obligation.proofLower);
+				AppendDouble(encoded,obligation.proofRequired);
+				std::uint32_t inactiveBits=0u,activeBits=0u;
+				std::memcpy(&inactiveBits,&obligation.inactiveResultRounded,
+					sizeof(inactiveBits));
+				std::memcpy(&activeBits,&obligation.activeResultRounded,
+					sizeof(activeBits));
+				AppendInteger(encoded,inactiveBits);AppendInteger(encoded,activeBits);
+			}
 			AppendInteger(encoded,stage.invalidDenominatorWitnessRecorded?1u:0u);
 			AppendDouble(encoded,stage.invalidDenominatorCenter);
 			AppendDouble(encoded,stage.invalidDenominatorRadius);
@@ -1061,10 +1085,13 @@ namespace FireProductionDyadicCalibration
 			std::uint64_t operations=0u;for(const std::uint64_t count:stage.operation)
 				operations+=count;
 			std::fprintf(stderr,"r120 stage=%zu operations=%llu depth=%u comparisons=%llu "
-				"unresolved=%d invalid=%d output=%.17g radius=%.17g denominator=%.17g "
+				"obligations=%zu discharged=%llu unresolved=%d invalid=%d "
+				"output=%.17g radius=%.17g denominator=%.17g "
 				"sqrt_domain=%.17g branch_margin=%.17g\n",index,
 				static_cast<unsigned long long>(operations),stage.maximumDepth,
 				static_cast<unsigned long long>(stage.comparisonCount),
+				stage.branchObligations.size(),static_cast<unsigned long long>(
+					stage.dischargedBranchObligationCount),
 				stage.unresolvedBranch?1:0,stage.invalidDomain?1:0,
 				stage.maximumAbsoluteOutput,stage.maximumOutputRadius,
 				stage.minimumDenominatorLowerBound,stage.minimumSqrtDomainLowerBound,
@@ -1083,6 +1110,54 @@ namespace FireProductionDyadicCalibration
 				"r120 stage=%zu denominator_witness center=%.17g radius=%.17g rounded=%.9g\n",
 				index,stage.invalidDenominatorCenter,stage.invalidDenominatorRadius,
 				stage.invalidDenominatorRounded);
+			std::array<std::uint64_t,static_cast<unsigned int>(
+				FireProductionRoundoffTrace::BranchSite::Count)> siteCount={},pendingCount={};
+			for(const FireProductionRoundoffTrace::BranchObligation& obligation:
+				stage.branchObligations){
+				const unsigned int site=static_cast<unsigned int>(obligation.site);
+				++siteCount[site];if(obligation.certificate==
+					FireProductionRoundoffTrace::BranchCertificate::None)++pendingCount[site];
+			}
+			std::fprintf(stderr,"r120 stage=%zu obligation_census unknown=%llu/%llu "
+				"ppm=%llu/%llu stationary_low=%llu/%llu stationary_high=%llu/%llu "
+				"min=%llu/%llu max=%llu/%llu floor=%llu/%llu "
+				"ceil=%llu/%llu (pending/total)\n",index,
+				static_cast<unsigned long long>(pendingCount[0]),
+				static_cast<unsigned long long>(siteCount[0]),
+				static_cast<unsigned long long>(pendingCount[1]),
+				static_cast<unsigned long long>(siteCount[1]),
+				static_cast<unsigned long long>(pendingCount[2]),
+				static_cast<unsigned long long>(siteCount[2]),
+				static_cast<unsigned long long>(pendingCount[3]),
+				static_cast<unsigned long long>(siteCount[3]),
+				static_cast<unsigned long long>(pendingCount[4]),
+				static_cast<unsigned long long>(siteCount[4]),
+				static_cast<unsigned long long>(pendingCount[5]),
+				static_cast<unsigned long long>(siteCount[5]),
+				static_cast<unsigned long long>(pendingCount[6]),
+				static_cast<unsigned long long>(siteCount[6]),
+				static_cast<unsigned long long>(pendingCount[7]),
+				static_cast<unsigned long long>(siteCount[7]));
+			std::fprintf(stderr,"r120 stage=%zu branch_sites",index);
+			for(unsigned int site=8u;site<siteCount.size();++site)if(siteCount[site])
+				std::fprintf(stderr," %u=%llu/%llu",site,
+					static_cast<unsigned long long>(pendingCount[site]),
+					static_cast<unsigned long long>(siteCount[site]));
+			std::fprintf(stderr," (pending/total)\n");
+			std::array<unsigned int,static_cast<unsigned int>(
+				FireProductionRoundoffTrace::BranchSite::Count)> printed={};
+			for(const FireProductionRoundoffTrace::BranchObligation& obligation:
+				stage.branchObligations)if(obligation.certificate==
+					FireProductionRoundoffTrace::BranchCertificate::None&&
+					printed[static_cast<unsigned int>(obligation.site)]++<2u)
+				std::fprintf(stderr,"r120 stage=%zu pending ordinal=%llu site=%u "
+					"predicate=(%.17g +- %.17g) rounded=%d proof=(%.17g >= %.17g) "
+					"paths=(%.9g, %.9g)\n",index,
+					static_cast<unsigned long long>(obligation.comparisonOrdinal),
+					static_cast<unsigned int>(obligation.site),obligation.predicateCenter,
+					obligation.predicateRadius,obligation.roundedResult?1:0,
+					obligation.proofLower,obligation.proofRequired,
+					obligation.inactiveResultRounded,obligation.activeResultRounded);
 		}
 		const std::string traceDigest=RISECBOR64::SHA256Hex(encoded);
 		std::fprintf(stderr,"r120 trace_digest=%s unresolved_bitmap=0x%06x "
@@ -1099,10 +1174,16 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& source=trace.stages[21];
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
+		const FireProductionRoundoffTrace::BranchObligation* limiterObligation=nullptr;
+		for(const FireProductionRoundoffTrace::BranchObligation& obligation:
+			trace.stages[7].branchObligations)if(obligation.site==
+			FireProductionRoundoffTrace::BranchSite::LimiterNegative&&
+			obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::None){
+			limiterObligation=&obligation;break;}
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="8f3e709af17fdf9b22f271b37791d8287243f1054c5df530437cf963e8fbf93e"||
-			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x1ffffeu||!finiteOutputs||
-			!firstCell.unresolvedWitnessRecorded||!firstCell.invalidDenominatorWitnessRecorded||
+			traceDigest!="f20ff02487a61175aa11828d32c4beb123398f5d5ec8fc6486fe47e906c1899d"||
+			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x002380u||!finiteOutputs||
+			!firstCell.unresolvedWitnessRecorded||firstCell.invalidDenominatorWitnessRecorded||
 			!independentBranchStopped||independentBranch.line!=1u||independentBranch.cell!=6u||
 			independentBranch.component!=3u||
 			independentBranch.leftCenter!=-7.7486038219110043e-7||
@@ -1116,11 +1197,23 @@ namespace FireProductionDyadicCalibration
 			!FireProductionRoundoffWalker::IntervalsAreSeparated(
 				independentBranch.leftCenter,0.5*independentBranch.leftRadius,
 				independentBranch.rightCenter,independentBranch.rightRadius)||
+			!ppmCertified||!ppmCertificate.continuousAtSwitch||
+			ppmCertificate.ambiguityWidth!=2.008640214894198e-6||
+			ppmCertificate.divergenceBound!=5.021600537235496e-7||
+			!limiterObligation||limiterObligation->comparisonOrdinal!=64076u||
+			limiterObligation->predicateCenter!=-2.5484634978965355e-6||
+			limiterObligation->predicateRadius!=4.7677165632473422e-6||
+			!limiterObligation->roundedResult||limiterObligation->proofLower!=
+				-4.9406564584124654e-324||
+			limiterObligation->proofRequired!=7.3161800611438812e-6||
+			limiterObligation->inactiveResultRounded!=1.0f||
+			limiterObligation->activeResultRounded!=0.0f||
 			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r120 derivation stopped before Metal measurement: independently "
-			"walked limiter branch is unresolved\n");
+		std::fprintf(stderr,"r123 PPM branch discharged at %.17g; derivation stopped before "
+			"Metal measurement at a non-equivalent shared-limiter obligation\n",
+			ppmCertificate.divergenceBound);
 		return 237;
 	}
 

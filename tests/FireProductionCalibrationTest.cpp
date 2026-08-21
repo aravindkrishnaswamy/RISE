@@ -69,6 +69,13 @@ int main()
 		roundoffStopEvidence.begin(),roundoffStopEvidence.end()))==
 		"939e95f8ff916fff6c168d2b6bd30186b50a9b6e7963255b10641481c1b5d5ac",
 		"r122 roundoff derivation refusal artifact is durable and byte-bound");
+	const std::string branchStopEvidence=ReadText(
+		"rendered/fire_production_calibration/r123_branch_obligations/"
+		"branch_obligation_stop.v1");
+	Check(!branchStopEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		branchStopEvidence.begin(),branchStopEvidence.end()))==
+		"bc72222d064ec9b79c00b57c1c46f2ecbcd581502deae52be04f053ec50e2c4e",
+		"r123 branch-obligation census and shared-limiter stop are durable and byte-bound");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -150,6 +157,90 @@ int main()
 			counters.invalidDenominatorRadius>=1.0,
 			"roundoff trace rejects denominator and branch intervals that cross a decision surface");
 	}
+	{
+		FireProductionRoundoffWalker::BranchWitness witness;
+		witness.leftCenter=-7.7486038219110043e-7;
+		witness.leftRadius=1.2337798327030971e-6;
+		witness.rightCenter=0.0;witness.rightRadius=0.0;
+		FireProductionRoundoffWalker::PPMQuadraticZeroCertificate certificate;
+		const bool certified=FireProductionRoundoffWalker::CertifyPPMQuadraticZero(
+			witness,certificate);
+		bool samplesContained=true;
+		for(unsigned int sample=0u;sample<=64u;++sample){
+			const double s=static_cast<double>(sample)/64.0;
+			const double positive=FireProductionRoundoffWalker::PPMQuadraticPathDifference(
+				certificate.ambiguityWidth,s);
+			const double negative=FireProductionRoundoffWalker::PPMQuadraticPathDifference(
+				-certificate.ambiguityWidth,s);
+			samplesContained=samplesContained&&std::fabs(positive)<=
+				certificate.divergenceBound&&std::fabs(negative)<=
+				certificate.divergenceBound;
+		}
+		const double underBound=0.249*certificate.ambiguityWidth;
+		Check(certified&&certificate.continuousAtSwitch&&samplesContained&&
+			FireProductionRoundoffWalker::PPMQuadraticPathDifference(0.0,0.375)==0.0&&
+			std::fabs(FireProductionRoundoffWalker::PPMQuadraticPathDifference(
+				certificate.ambiguityWidth,0.5))>underBound,
+			"independent PPM branch certificate proves continuity and the sharp one-quarter ambiguity envelope");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		auto q=FireProductionRoundoffTrace::TraceFloat::Raw(
+			-7.7486038219110043e-7,1.2337798327030971e-6,
+			-7.152557373046875e-7f,1u);
+		auto minimum=FireProductionRoundoffTrace::TraceFloat(-1.0f);
+		auto maximum=FireProductionRoundoffTrace::TraceFloat(1.0f);
+		const auto linear=FireProductionRoundoffTrace::TraceFloat(0.0f);
+		const auto endpointMinimum=minimum,endpointMaximum=maximum;
+		bool nonzero=false;
+		{
+			FireProductionRoundoffTrace::Scope traceScope(counters);
+			FireProductionRoundoffTrace::BeginPPMBranchEnvelope();
+			{
+				FireProductionRoundoffTrace::BranchSiteScope branchScope(
+					FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero);
+				nonzero=q!=0.0f;
+			}
+			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(
+				q,linear,endpointMinimum,endpointMaximum,minimum,maximum);
+		}
+		Check(nonzero&&counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			!counters.unresolvedBranch&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero&&
+			counters.branchObligations[0].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			counters.branchObligations[0].divergenceBound>0.0&&
+			minimum.Radius()>0.0&&maximum.Radius()>0.0,
+			"traced PPM obligation folds the independent equivalence envelope into both path outputs");
+	}
+	{
+		double lower=0.0,upper=0.0,divergence=0.0;
+		const bool walked=FireProductionRoundoffWalker::ContinuousSelectionHull(
+			1.0,0.25,1.1,0.2,true,lower,upper,divergence);
+		FireProductionRoundoffTrace::Counters counters;
+		FireProductionRoundoffTrace::TraceFloat selected;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			selected=std::min(FireProductionRoundoffTrace::TraceFloat::Raw(
+				1.0,0.25,1.0f,1u),FireProductionRoundoffTrace::TraceFloat::Raw(
+				1.1,0.2,1.1f,1u));
+		}
+		Check(walked&&lower==0.75&&upper==1.25&&divergence>0.45&&
+			counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations[0].site==
+				FireProductionRoundoffTrace::BranchSite::MinimumSelection&&
+			counters.branchObligations[0].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			selected.Center()-selected.Radius()<=lower&&
+			selected.Center()+selected.Radius()>=upper,
+			"continuous min selector is independently hulled and discharged across an ambiguous predicate");
+	}
+	Check(FireProductionRoundoffWalker::CertifyInactiveLimiter(0.75,0.0031,0.004)&&
+		!FireProductionRoundoffWalker::CertifyInactiveLimiter(0.75,0.0029,0.004),
+		"independent limiter certificate requires the envelope ratio to dominate the shared limiter");
 	using namespace FireProductionCalibration;
 	double radius=0.0;
 	const RoundoffStage stages[]={{1.25,0x1p-22,24u},{2.0,0x1p-21,48u}};
@@ -254,7 +345,9 @@ int main()
 	Check(tracedOK&&tracedBytes&&tracedOperations==700u&&
 		std::equal(expectedTraceKinds.begin(),expectedTraceKinds.end(),
 			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
-		tracedCounters.comparisonCount==384u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.comparisonCount==304u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.branchObligations.size()==180u&&
+		tracedCounters.dischargedBranchObligationCount==60u&&
 		tracedCounters.minimumDenominatorLowerBound==0.25&&
 		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
 			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
@@ -264,6 +357,19 @@ int main()
 			std::begin(walkedTopology.operation))&&
 		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
+	if(!(tracedOK&&tracedBytes&&tracedOperations==700u&&
+		tracedCounters.comparisonCount==304u&&tracedCounters.unresolvedBranch&&
+		!tracedCounters.invalidDomain))std::fprintf(stderr,
+		"roundoff remap detail ok=%d bytes=%d ops=%llu comparisons=%llu obligations=%zu "
+		"discharged=%llu unresolved=%d invalid=%d denominator=%.17g max_operand=%.17g\n",
+		tracedOK?1:0,tracedBytes?1:0,static_cast<unsigned long long>(tracedOperations),
+		static_cast<unsigned long long>(tracedCounters.comparisonCount),
+		tracedCounters.branchObligations.size(),static_cast<unsigned long long>(
+			tracedCounters.dischargedBranchObligationCount),
+		tracedCounters.unresolvedBranch?1:0,tracedCounters.invalidDomain?1:0,
+		tracedCounters.minimumDenominatorLowerBound,
+		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
+			std::end(tracedCounters.maximumAbsoluteOperand)));
 	FireProductionRoundoffWalker::Topology omittedAdd=walkedTopology;
 	--omittedAdd.operation[FireProductionRoundoffWalker::Add];--omittedAdd.operationCount;
 	Check(!std::equal(std::begin(tracedCounters.operation),std::end(tracedCounters.operation),

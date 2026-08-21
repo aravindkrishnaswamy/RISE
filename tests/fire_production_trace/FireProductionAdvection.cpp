@@ -117,7 +117,7 @@ namespace RISEFireProductionTrace
 			const FireProductionRoundoffTrace::TraceFloat center=Sample(request,component,line,i);
 			const FireProductionRoundoffTrace::TraceFloat ip1=Sample(request,component,line,i+1);
 			const FireProductionRoundoffTrace::TraceFloat ip2=Sample(request,component,line,i+2);
-			if( im2==center&&im1==center&&ip1==center&&ip2==center ) {
+			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FlatStencil,[&](){ return im2==center&&im1==center&&ip1==center&&ip2==center; }) ) {
 				left=center;right=center;return;
 			}
 			left=(7.0f*(im1+center)-(im2+ip1))/12.0f;
@@ -131,20 +131,35 @@ namespace RISEFireProductionTrace
 			maximum=std::max(leftDeviation,rightDeviation);
 			const FireProductionRoundoffTrace::TraceFloat quadratic=3.0f*(leftDeviation+rightDeviation);
 			const FireProductionRoundoffTrace::TraceFloat linear=-4.0f*leftDeviation-2.0f*rightDeviation;
-			if( quadratic!=0.0f ) {
+			bool quadraticNonzero=false;
+			const FireProductionRoundoffTrace::TraceFloat endpointMinimum=minimum,endpointMaximum=maximum;
+			FireProductionRoundoffTrace::BeginPPMBranchEnvelope();
+			{ FireProductionRoundoffTrace::BranchSiteScope branchScope(
+				FireProductionRoundoffTrace::BranchSite::PPMQuadraticZero);
+				quadraticNonzero=quadratic!=0.0f; }
+			FireProductionRoundoffTrace::SetPPMQuadraticAmbiguous(
+				FireProductionRoundoffTrace::PPMQuadraticZeroObligationPending());
+			if( quadraticNonzero ) {
+				FireProductionRoundoffTrace::CoveredBranchScope coveredBranch(true);
 				const FireProductionRoundoffTrace::TraceFloat stationary=-linear/(2.0f*quadratic);
-				if( stationary>0.0f&&stationary<1.0f ) {
+				const bool stationaryPositive=FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryLower,[&](){ return stationary>0.0f; });
+				const bool stationaryBelowOne=stationaryPositive&&FireProductionRoundoffTrace::EvaluateBranch(
+					FireProductionRoundoffTrace::BranchSite::PPMStationaryUpper,[&](){ return stationary<1.0f; });
+				if( stationaryBelowOne ) {
 					const FireProductionRoundoffTrace::TraceFloat value=(quadratic*stationary+linear)*stationary+leftDeviation;
 					minimum=std::min(minimum,value);
 					maximum=std::max(maximum,value);
 				}
 			}
+			FireProductionRoundoffTrace::ApplyPPMQuadraticZeroCertificate(
+				quadratic,linear,endpointMinimum,endpointMaximum,minimum,maximum);
 		}
 
 		FireProductionRoundoffTrace::TraceFloat CellIntervalIntegral( FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat left, FireProductionRoundoffTrace::TraceFloat right,
 			FireProductionRoundoffTrace::TraceFloat beginning, FireProductionRoundoffTrace::TraceFloat end )
 		{
-			if( left==center&&right==center ) return (end-beginning)*center;
+			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return left==center&&right==center; }) ) return (end-beginning)*center;
 			const FireProductionRoundoffTrace::TraceFloat q6=6.0f*center-3.0f*(left+right);
 			const FireProductionRoundoffTrace::TraceFloat delta=end-beginning;
 			return delta*(left+0.5f*(right-left+q6)*(beginning+end)-
@@ -153,7 +168,7 @@ namespace RISEFireProductionTrace
 
 		FireProductionRoundoffTrace::TraceFloat CellTrailingIntegral( FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat left, FireProductionRoundoffTrace::TraceFloat right, FireProductionRoundoffTrace::TraceFloat length )
 		{
-			if( left==center&&right==center ) return length*center;
+			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return left==center&&right==center; }) ) return length*center;
 			const FireProductionRoundoffTrace::TraceFloat q6=6.0f*center-3.0f*(left+right);
 			return length*(right-0.5f*(right-left-q6)*length-
 				(q6/3.0f)*length*length);
@@ -175,7 +190,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::TraceFloat remaining=length,result=0.0f;
 			long cell=beginningCell;
 			FireProductionRoundoffTrace::TraceFloat fraction=beginningFraction;
-			while( remaining>0.0f ) {
+			while( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return remaining>0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat span=std::min(remaining,1.0f-fraction);
 				const std::size_t wrapped=WrappedCell(cell,request.lineLength);
 				const std::size_t value=ValueIndex(request,component,line,wrapped);
@@ -199,11 +214,11 @@ namespace RISEFireProductionTrace
 			const FireProductionRoundoffTrace::TraceFloat cycles=std::floor((magnitude-localLength)/count);
 			const std::size_t base=(component*request.lineCount+line)*(request.lineLength+1u);
 			FireProductionRoundoffTrace::TraceFloat result=cycles*prefix[base+request.lineLength];
-			if( courant>=0.0f ) {
+			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return courant>=0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat whole=std::floor(localLength);
 				const FireProductionRoundoffTrace::TraceFloat fractional=localLength-whole;
 				const long wholeBeginning=static_cast<long>(face)-static_cast<long>(whole);
-				if( fractional>0.0f ) {
+				if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return fractional>0.0f; }) ) {
 					const std::size_t wrapped=WrappedCell(wholeBeginning-1l,request.lineLength);
 					const std::size_t value=ValueIndex(request,component,line,wrapped);
 					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
@@ -226,7 +241,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::TraceFloat remaining=length,result=0.0f;
 			std::size_t cell=beginningCell;
 			FireProductionRoundoffTrace::TraceFloat fraction=beginningFraction;
-			while( remaining>0.0f&&cell<request.lineLength ) {
+			while( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::RemainingPositive,[&](){ return remaining>0.0f; })&&cell<request.lineLength ) {
 				const FireProductionRoundoffTrace::TraceFloat span=std::min(remaining,1.0f-fraction);
 				const std::size_t value=ValueIndex(request,component,line,cell);
 				result+=CellIntervalIntegral(request.values[value],left[value],right[value],
@@ -245,18 +260,18 @@ namespace RISEFireProductionTrace
 		{
 			const FireProductionRoundoffTrace::TraceFloat magnitude=std::fabs(courant);
 			const FireProductionRoundoffTrace::TraceFloat leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity>0.0f ? AmbientValue(request,true,component,line) :
+				FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return faceVelocity>0.0f; }) ? AmbientValue(request,true,component,line) :
 				request.values[ValueIndex(request,component,line,0u)];
 			const FireProductionRoundoffTrace::TraceFloat rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity<0.0f ? AmbientValue(request,false,component,line) :
+				FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::InflowSign,[&](){ return faceVelocity<0.0f; }) ? AmbientValue(request,false,component,line) :
 				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
-			if( courant>=0.0f ) {
+			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return courant>=0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat interiorLength=std::min(magnitude,static_cast<FireProductionRoundoffTrace::TraceFloat>(face));
 				const FireProductionRoundoffTrace::TraceFloat whole=std::floor(interiorLength);
 				const FireProductionRoundoffTrace::TraceFloat fractional=interiorLength-whole;
 				const std::size_t wholeBeginning=face-static_cast<std::size_t>(whole);
 				FireProductionRoundoffTrace::TraceFloat result=(magnitude-interiorLength)*leftExtension;
-				if( fractional>0.0f ) {
+				if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FractionPositive,[&](){ return fractional>0.0f; }) ) {
 					const std::size_t value=ValueIndex(request,component,line,wholeBeginning-1u);
 					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
 						fractional);
@@ -438,10 +453,10 @@ namespace RISEFireProductionTrace
 				const FireProductionRoundoffTrace::TraceFloat envelopeMaximum=std::max(center,std::max(
 					Sample(request,component,line,static_cast<long>(cell)-1),
 					Sample(request,component,line,static_cast<long>(cell)+1)));
-				if( maximumDeviation>0.0f ) alpha=std::min(alpha,
-					(envelopeMaximum-center)/maximumDeviation);
-				if( minimumDeviation<0.0f ) alpha=std::min(alpha,
-					(center-envelopeMinimum)/(-minimumDeviation));
+				alpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,
+					envelopeMaximum,center,maximumDeviation,true);
+				alpha=FireProductionRoundoffTrace::ApplyLimiterBranch(alpha,
+					envelopeMinimum,center,minimumDeviation,false);
 			}
 			alpha=std::max(FireProductionRoundoffTrace::TraceFloat(0.0f),std::min(FireProductionRoundoffTrace::TraceFloat(1.0f),alpha));
 			result.sharedLimiterAlpha[line*request.lineLength+cell]=alpha;
