@@ -1221,11 +1221,11 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="c471729481cc8787780078837156b5fadc9c9c0e37ab6b38c44f437765d7756a"||
+			traceDigest!="1b5c15d5d673946afce03e5d7cd3c478a00fd25bf7c9d42d4c22f8ed257f6a18"||
 			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=3972323u||
-			totalDischargedBranchObligationCount!=2633990u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=1338333u||
+			totalDischargedBranchObligationCount!=2980070u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=992253u||
 			frozenInflowAmbiguity!=1.7632415612658968e-38||
 			frozenInflowScale!=22.033558699237727||
 			frozenInflowPowerOfTwoFactor!=1.0||
@@ -1249,7 +1249,7 @@ namespace FireProductionDyadicCalibration
 			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r127 inflow transition certified; %llu of %llu site-class "
+		std::fprintf(stderr,"r128 Courant sign certified; %llu of %llu site-class "
 			"obligations remain pending before B_fp32 and Metal measurement\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),

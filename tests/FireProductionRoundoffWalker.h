@@ -105,6 +105,16 @@ namespace FireProductionRoundoffWalker
 	};
 	enum class RemainingGraphVariant { Certified,HalfAmbiguity,MissingCellIntegral,
 		MissingFTZ };
+	struct CourantSignCertificate
+	{
+		double ambiguityWidth=0.0,profileAbsoluteUpper=0.0;
+		std::uint64_t commonSetupOperationCount=0u,positiveSuccessorOperationCount=0u;
+		std::uint64_t negativeSuccessorOperationCount=0u,alternatePathOperationCount=0u;
+		double exactBranchTerm=0.0,roundedTerm=0.0,ftzTerm=0.0,totalEnvelope=0.0;
+		bool continuousAtZero=false,signedZeroCanonical=false;
+	};
+	enum class CourantGraphVariant { Certified,HalfAmbiguity,MissingNegativePath,
+		MissingFTZ,NoncanonicalSignedZero };
 	struct InflowTransitionCertificate
 	{
 		double ambiguityWidth=0.0,widthLower=0.0,donorContrast=0.0;
@@ -332,6 +342,61 @@ namespace FireProductionRoundoffWalker
 		const double requiredFTZ=Detail::NextUp(40.0*static_cast<double>(
 			std::numeric_limits<float>::min()));
 		return certificate.zeroWidthAtSwitch&&std::isfinite(certificate.totalEnvelope)&&
+			certificate.exactBranchTerm>=requiredExact&&
+			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
+	}
+
+	// Both swept-volume orientations vanish at Courant zero. Across ambiguity
+	// delta their one-cell donor slopes can differ by at most 2M, hence 2Mdelta.
+	// The independently enumerated common setup plus the longer negative/local
+	// successor is bounded by 48 scalar operations. The >= comparison also sends
+	// both IEEE signed zeros through the positive path.
+	inline bool CertifyCourantSign(const double predicateCenter,
+		const double predicateRadius,const double profileAbsoluteUpper,
+		CourantSignCertificate& certificate,const CourantGraphVariant variant=
+			CourantGraphVariant::Certified)
+	{
+		certificate=CourantSignCertificate();
+		if(!(predicateRadius>=0.0&&profileAbsoluteUpper>=0.0)||
+			!std::isfinite(predicateCenter)||!std::isfinite(predicateRadius)||
+			!std::isfinite(profileAbsoluteUpper))return false;
+		const double fullAmbiguity=Detail::NextUp(std::fabs(predicateCenter)+
+			predicateRadius);
+		certificate.ambiguityWidth=variant==CourantGraphVariant::HalfAmbiguity?
+			0.5*fullAmbiguity:fullAmbiguity;
+		certificate.profileAbsoluteUpper=profileAbsoluteUpper;
+		certificate.commonSetupOperationCount=8u;
+		certificate.positiveSuccessorOperationCount=32u;
+		certificate.negativeSuccessorOperationCount=variant==
+			CourantGraphVariant::MissingNegativePath?0u:40u;
+		certificate.alternatePathOperationCount=certificate.commonSetupOperationCount+
+			std::max(certificate.positiveSuccessorOperationCount,
+				certificate.negativeSuccessorOperationCount);
+		certificate.exactBranchTerm=Detail::NextUp(2.0*profileAbsoluteUpper*
+			certificate.ambiguityWidth);
+		const double product=static_cast<double>(certificate.alternatePathOperationCount)*
+			0x1p-24;
+		if(!(product<1.0))return false;
+		const double magnitude=Detail::NextUp(profileAbsoluteUpper*
+			(8.0+certificate.ambiguityWidth));
+		const double gamma=Detail::NextUp(product/(1.0-product));
+		certificate.roundedTerm=Detail::NextUp(gamma*magnitude);
+		certificate.ftzTerm=variant==CourantGraphVariant::MissingFTZ?0.0:
+			Detail::NextUp(static_cast<double>(certificate.alternatePathOperationCount)*
+				static_cast<double>(std::numeric_limits<float>::min()));
+		certificate.totalEnvelope=Detail::NextUp(certificate.exactBranchTerm+
+			certificate.roundedTerm+certificate.ftzTerm);
+		certificate.continuousAtZero=true;
+		certificate.signedZeroCanonical=variant!=CourantGraphVariant::NoncanonicalSignedZero;
+		const double requiredExact=Detail::NextUp(2.0*profileAbsoluteUpper*fullAmbiguity);
+		const double requiredProduct=48.0*0x1p-24;
+		const double requiredGamma=Detail::NextUp(requiredProduct/(1.0-requiredProduct));
+		const double requiredRounded=Detail::NextUp(requiredGamma*
+			Detail::NextUp(profileAbsoluteUpper*(8.0+fullAmbiguity)));
+		const double requiredFTZ=Detail::NextUp(48.0*static_cast<double>(
+			std::numeric_limits<float>::min()));
+		return certificate.continuousAtZero&&certificate.signedZeroCanonical&&
+			std::isfinite(certificate.totalEnvelope)&&
 			certificate.exactBranchTerm>=requiredExact&&
 			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
 	}

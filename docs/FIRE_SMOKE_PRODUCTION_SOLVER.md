@@ -2412,6 +2412,25 @@ class evidence is
 `rendered/fire_production_calibration/r127_inflow_transition/inflow_transition.v1`,
 SHA-256 `5d95d4d062ae2dd8ec3533d7c802b0369582dcc2222fdc958bd8fde2ecfba198`.
 
+### 7.45 Courant-orientation equivalence envelope (r128)
+
+Both periodic and pressure-open swept-volume orientations vanish at Courant
+zero. Across an ambiguity `delta`, their one-cell donor slopes differ by at
+most `2M`, so the independent exact branch term is `2 M delta`. The walker
+enumerates the common setup and the longer negative/local successor as 48
+scalar operations, producing `gamma_48 M (8+delta)` plus `48 FLT_MIN` for
+FTZ. The authored `courant>=0` comparison sends both IEEE signed zeros through
+the same positive path. Half-ambiguity, missing-negative-path, missing-FTZ,
+and noncanonical-signed-zero mutants all fail.
+
+All `346,080` Courant obligations close. The cumulative census is
+`2,980,070 / 3,972,323`, leaving `992,253` pending; exact exit `237` remains
+mandatory. The maximum Courant class envelope is `1.1830324528164238`.
+This is a topology envelope, not an admitted composed `B_fp32`. Durable
+evidence is
+`rendered/fire_production_calibration/r128_courant_sign/courant_sign.v1`,
+SHA-256 `482b58d038b200bd1a31cb006be76ac99ba64dd3ffa16b6fd68bd68dc1925e7e`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

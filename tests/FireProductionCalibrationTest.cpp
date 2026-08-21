@@ -117,6 +117,15 @@ int main()
 		inflowEvidence.find("executed_obligation_instances_pending 1338333")!=
 			std::string::npos,
 		"r127 inflow reformulation, derived width, and cumulative census are durable");
+	const std::string courantEvidence=ReadText(
+		"rendered/fire_production_calibration/r128_courant_sign/courant_sign.v1");
+	Check(!courantEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		courantEvidence.begin(),courantEvidence.end()))==
+		"482b58d038b200bd1a31cb006be76ac99ba64dd3ffa16b6fd68bd68dc1925e7e"&&
+		courantEvidence.find("class_courant_pending 0")!=std::string::npos&&
+		courantEvidence.find("executed_obligation_instances_pending 992253")!=
+			std::string::npos,
+		"r128 Courant derivation, signed-zero rule, and cumulative census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -128,13 +137,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r127")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r128")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r127")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r128")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute the exact r127 proof stop and accept only exit 237");
+		"ordinary Unix and Windows suites execute the exact r128 proof stop and accept only exit 237");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -613,6 +622,64 @@ int main()
 				obligation.predicateCenter,obligation.predicateRadius,profileUpper,missingFTZ,
 				FireProductionRoundoffWalker::RemainingGraphVariant::MissingFTZ),
 			"remaining-positive certificate rejects width, body-topology, and FTZ omissions");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> values={
+				FireProductionRoundoffTrace::TraceFloat(3.0f)};
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> left=values,right=values;
+			FireProductionRoundoffTrace::TransportProfileScope profile(
+				values,left,right,0u,1u,0.0f,0.0f);
+			const FireProductionRoundoffTrace::TraceFloat courant=
+				FireProductionRoundoffTrace::TraceFloat::Raw(0.0,0.01,0.0f,1u);
+			Check(FireProductionRoundoffTrace::EvaluateCourantSignBranch(
+				[&](){return courant>=FireProductionRoundoffTrace::TraceFloat(0.0f);}),
+				"Courant fixture executes the canonical nonnegative signed-zero path");
+		}
+		Check(counters.branchObligations.size()==1u&&
+			counters.dischargedBranchObligationCount==1u&&
+			counters.branchObligations.front().site==
+				FireProductionRoundoffTrace::BranchSite::CourantNonnegative&&
+			counters.branchObligations.front().certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence,
+			"trace consumes the Courant two-path equivalence envelope");
+		const auto obligation=counters.branchObligations.front();
+		FireProductionRoundoffWalker::CourantSignCertificate certificate,half,missingPath,
+			missingFTZ,signedZero;
+		const double courantProfileUpper=std::nextafter(3.0,
+			std::numeric_limits<double>::infinity());
+		const bool courantCertified=FireProductionRoundoffWalker::CertifyCourantSign(
+			obligation.predicateCenter,obligation.predicateRadius,courantProfileUpper,
+			certificate);
+		Check(courantCertified&&
+			obligation.divergenceBound==certificate.totalEnvelope&&
+			certificate.continuousAtZero&&certificate.signedZeroCanonical&&
+			certificate.commonSetupOperationCount==8u&&
+			certificate.positiveSuccessorOperationCount==32u&&
+			certificate.negativeSuccessorOperationCount==40u&&
+			certificate.alternatePathOperationCount==48u,
+			"independent Courant walker matches the traced two-path envelope");
+		Check(!FireProductionRoundoffWalker::CertifyCourantSign(obligation.predicateCenter,
+				obligation.predicateRadius,courantProfileUpper,half,
+				FireProductionRoundoffWalker::CourantGraphVariant::HalfAmbiguity),
+			"Courant certificate rejects a half-ambiguity mutant");
+		Check(
+			!FireProductionRoundoffWalker::CertifyCourantSign(obligation.predicateCenter,
+				obligation.predicateRadius,courantProfileUpper,missingPath,
+				FireProductionRoundoffWalker::CourantGraphVariant::MissingNegativePath),
+			"Courant certificate rejects a missing-negative-path mutant");
+		Check(
+			!FireProductionRoundoffWalker::CertifyCourantSign(obligation.predicateCenter,
+				obligation.predicateRadius,courantProfileUpper,missingFTZ,
+				FireProductionRoundoffWalker::CourantGraphVariant::MissingFTZ),
+			"Courant certificate rejects a missing-FTZ mutant");
+		Check(
+			!FireProductionRoundoffWalker::CertifyCourantSign(obligation.predicateCenter,
+				obligation.predicateRadius,courantProfileUpper,signedZero,
+				FireProductionRoundoffWalker::CourantGraphVariant::NoncanonicalSignedZero),
+			"Courant certificate rejects a noncanonical signed-zero mutant");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;

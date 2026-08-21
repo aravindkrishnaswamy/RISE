@@ -247,7 +247,7 @@ namespace RISEFireProductionTrace
 			const FireProductionRoundoffTrace::TraceFloat cycles=std::floor((magnitude-localLength)/count);
 			const std::size_t base=(component*request.lineCount+line)*(request.lineLength+1u);
 			FireProductionRoundoffTrace::TraceFloat result=cycles*prefix[base+request.lineLength];
-			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return courant>=0.0f; }) ) {
+			if( FireProductionRoundoffTrace::EvaluateCourantSignBranch([&](){ return courant>=0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat whole=std::floor(localLength);
 				const FireProductionRoundoffTrace::TraceFloat fractional=localLength-whole;
 				const long wholeBeginning=static_cast<long>(face)-static_cast<long>(whole);
@@ -305,7 +305,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::TransportProfileScope profileScope(
 				request.values,left,right,profileBase,request.lineLength,
 				leftExtension,rightExtension);
-			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return courant>=0.0f; }) ) {
+			if( FireProductionRoundoffTrace::EvaluateCourantSignBranch([&](){ return courant>=0.0f; }) ) {
 				const FireProductionRoundoffTrace::TraceFloat interiorLength=std::min(magnitude,static_cast<FireProductionRoundoffTrace::TraceFloat>(face));
 				const FireProductionRoundoffTrace::TraceFloat whole=std::floor(interiorLength);
 				const FireProductionRoundoffTrace::TraceFloat fractional=interiorLength-whole;

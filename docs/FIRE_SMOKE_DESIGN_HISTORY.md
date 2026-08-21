@@ -3033,3 +3033,15 @@ it was already tried and refuted here.
   remain accepted. Their durable hashes are `2752dc20...af451` and
   `0c481de8...eb8de`; class evidence is `5d95d4d0...fba198`. The golden
   checkpoint is untouched.
+
+- **r128 Courant-orientation class discharge (2026-08-21):** both swept
+  orientations vanish at Courant zero and their local donor slopes differ by
+  at most `2M`, giving exact term `2 M delta`. The independently enumerated
+  longer successor has 48 scalar operations, so the rounded/FTZ terms are
+  `gamma_48 M (8+delta)` and `48 FLT_MIN`. The `>=` topology canonicalizes
+  both signed zeros onto the positive path. Half-ambiguity,
+  missing-negative-path, missing-FTZ, and signed-zero mutants RED. All
+  `346,080` instances close; the census is now
+  `2,980,070 / 3,972,323`, with `992,253` pending and exact exit `237`.
+  Maximum class envelope is `1.1830324528164238`; durable evidence is
+  `482b58d0...925e7e`. No production arithmetic or golden checkpoint changed.

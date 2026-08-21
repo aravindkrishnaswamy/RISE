@@ -50,8 +50,7 @@ def transform(text: str, name: str, suffix: str) -> str:
                 "[&](){ return "
                 "remaining>0.0f; })&&cell<request.lineLength )",
             "if( courant>=0.0f )":
-                "if( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::CourantNonnegative,[&](){ return "
+                "if( FireProductionRoundoffTrace::EvaluateCourantSignBranch([&](){ return "
                 "courant>=0.0f; }) )",
             "if( fractional>0.0f )":
                 "if( FireProductionRoundoffTrace::EvaluateBranch("
@@ -78,8 +77,7 @@ def transform(text: str, name: str, suffix: str) -> str:
         if text.count(periodic_profile) != 1:
             raise RuntimeError("periodic swept profile seam changed")
         text = text.replace(periodic_profile, periodic_profile_traced)
-        courant_branch = ("\t\t\tif( FireProductionRoundoffTrace::EvaluateBranch("
-                           "FireProductionRoundoffTrace::BranchSite::CourantNonnegative,"
+        courant_branch = ("\t\t\tif( FireProductionRoundoffTrace::EvaluateCourantSignBranch("
                            "[&](){ return courant>=0.0f; }) )")
         first_courant = text.find(courant_branch)
         second_courant = text.find(courant_branch, first_courant + 1)
