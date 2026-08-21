@@ -4753,6 +4753,65 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		int fromCategory, const char* fromName,
 		int toCategory, const char* toName );
 
+	//! doc-88 Phase 3 S19 -- the ownership-closure REWIRE verb
+	//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S19; OwnershipClosure.h;
+	//! docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  Re-points
+	//! `targetName`.`param` (occurrence `occurrence`) at `newRefName` as ONE
+	//! undoable commit, or REFUSES with the head left byte-identical.
+	//!
+	//! `targetCategory` / `newRefCategory` are `RISE::ChunkCategory`
+	//! ordinals -- the SAME convention `_CheckConnection` above uses, NOT
+	//! `SceneEditController::Category`.
+	//!
+	//! `outClosure` (optional) receives the `RISE::ClosureClassification`
+	//! ordinal: 0 Clean / 1 UnresolvedTarget / 2 AmbiguousTargetName /
+	//! 3 ExpressionDrivenTarget / 4 SharedTarget.  BRIDGE-ENUM MIRROR
+	//! (P2-3, S19 review round 1 -- corrects an earlier false claim here):
+	//! this crosses the ABI as a plain `int`, but BOTH bridges DO
+	//! re-declare a real mirror enum on the platform side --
+	//! `RewireClosure` (build/VS2022/RISE-GUI/ViewportBridge.h) and
+	//! `RISERewireClosure` (build/XCode/rise/RISE-GUI/Bridge/
+	//! RISEViewportBridge.h) -- so there IS a mirror, and it CAN drift.
+	//! `tests/RewireConnectionTest.cpp` carries a block of `static_assert`s
+	//! pinning these five ordinals directly against
+	//! `RISE::ClosureClassification`; the two bridge headers carry a
+	//! comment pointing at that block.
+	//! `outLegalityRefused` / `outCycleRefused` (optional)
+	//! receive 1/0 for the two non-closure refusal kinds.
+	//!
+	//! `outStatus` is the commit status ("applied" / "rejected" /
+	//! "diagnosed" / "conflict") and `outMessage` its message -- on a
+	//! legality refusal that message is the REAL PARSER's own diagnostic
+	//! verbatim, so a canvas-rejected wire reads exactly like a
+	//! hand-edited scene's failure.
+	//!
+	//! `outShared` / `outReferrers` / `outOwners` / `outNowUnreferenced`
+	//! (each optional) receive '\n'-JOINED name lists -- sect. 3.7a's (a) the
+	//! shared chunk(s), (b) the out-of-closure referrers, the owning roots,
+	//! and the chunks this rewire leaves unreferenced (a canvas badge; this
+	//! slice does NOT delete them -- that is S20's reference-safe delete).
+	//! The '\n'-joined convention matches
+	//! `ApplyAgentRemoveChunks`'s own batch echo rather than inventing a
+	//! second list-across-the-ABI idiom; a name can never contain a newline
+	//! (the parser's chunk names are single tokens), so the join is
+	//! unambiguous.  Every buffer is NUL-terminated and truncated to fit,
+	//! like every other `char*, len` pair on this surface.
+	//!
+	//! Returns `applied` -- true ONLY on a clean commit.  A "diagnosed"
+	//! result returns false but DID mutate (see `AgentCommitResult`).
+	bool RISE_API_SceneEditController_RewireConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen );
+
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache
 	//! (epoch, category) → entity-name list and re-pull when this

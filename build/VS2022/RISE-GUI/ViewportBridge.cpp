@@ -1951,6 +1951,73 @@ bool ViewportBridge::createChunkNode(const QString& keyword, const QString& base
     return applied;
 }
 
+// ---- Node-graph canvas: rewire a connection (S19) --------------------
+//
+// Carried mirror of the macOS bridge's identically-named section; see
+// the header's STANDING CAVEAT (this half is owed an MSVC build).
+
+namespace {
+
+// Split a '\n'-JOINED name list (the C ABI's list convention -- see
+// RISE_API.h's RewireConnection doc) back into a QStringList.  An empty
+// buffer means an EMPTY list, not a list containing one empty string,
+// which a naive QString::split would produce.
+QStringList splitJoinedNames(const char* buf)
+{
+    if (!buf || buf[0] == '\0') return QStringList();
+    return QString::fromUtf8(buf).split(QChar('\n'));
+}
+
+}  // namespace
+
+bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetName,
+                                       const QString& param, int occurrence,
+                                       int newRefCategory, const QString& newRefName,
+                                       RewireOutcome* outOutcome)
+{
+    if (outOutcome) *outOutcome = RewireOutcome();
+    if (!m_controller || targetName.isEmpty() || param.isEmpty()) return false;
+
+    const QByteArray tgt = targetName.toUtf8();
+    const QByteArray prm = param.toUtf8();
+    const QByteArray ref = newRefName.toUtf8();
+
+    int closure = 0, legality = 0, cycle = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char sharedBuf[1024] = {0};
+    char referrersBuf[2048] = {0};
+    char ownersBuf[1024] = {0};
+    char orphanBuf[1024] = {0};
+
+    const bool applied = RISE_API_SceneEditController_RewireConnection(
+        m_controller,
+        targetCategory, tgt.constData(),
+        prm.constData(), occurrence,
+        newRefCategory, ref.constData(),
+        &closure, &legality, &cycle,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        sharedBuf, sizeof(sharedBuf),
+        referrersBuf, sizeof(referrersBuf),
+        ownersBuf, sizeof(ownersBuf),
+        orphanBuf, sizeof(orphanBuf));
+
+    if (outOutcome) {
+        outOutcome->applied               = applied;
+        outOutcome->status                = QString::fromUtf8(statusBuf);
+        outOutcome->message               = QString::fromUtf8(messageBuf);
+        outOutcome->closure               = static_cast<RewireClosure>(closure);
+        outOutcome->legalityRefused       = (legality != 0);
+        outOutcome->cycleRefused          = (cycle != 0);
+        outOutcome->sharedChunks          = splitJoinedNames(sharedBuf);
+        outOutcome->outOfClosureReferrers = splitJoinedNames(referrersBuf);
+        outOutcome->owners                = splitJoinedNames(ownersBuf);
+        outOutcome->nowUnreferenced       = splitJoinedNames(orphanBuf);
+    }
+    return applied;
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const

@@ -1916,12 +1916,16 @@
 		FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
 		FECC0009000000000000FC03 /* ReferenceGraph.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC01 /* ReferenceGraph.h */; };
 		FECC000A000000000000FC03 /* ConnectionLegality.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC000A000000000000FC01 /* ConnectionLegality.h */; };
+		FECC000B000000000000FC03 /* OwnershipClosure.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC000B000000000000FC01 /* OwnershipClosure.h */; };
 		FECC0009000000000000FC04 /* ReferenceGraph.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC02 /* ReferenceGraph.cpp */; };
 		FECC000A000000000000FC04 /* ConnectionLegality.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC000A000000000000FC02 /* ConnectionLegality.cpp */; };
+		FECC000B000000000000FC04 /* OwnershipClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC000B000000000000FC02 /* OwnershipClosure.cpp */; };
 		FECC0009000000000000FC05 /* ReferenceGraph.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC01 /* ReferenceGraph.h */; };
 		FECC000A000000000000FC05 /* ConnectionLegality.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC000A000000000000FC01 /* ConnectionLegality.h */; };
+		FECC000B000000000000FC05 /* OwnershipClosure.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC000B000000000000FC01 /* OwnershipClosure.h */; };
 		FECC0009000000000000FC06 /* ReferenceGraph.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC02 /* ReferenceGraph.cpp */; };
 		FECC000A000000000000FC06 /* ConnectionLegality.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC000A000000000000FC02 /* ConnectionLegality.cpp */; };
+		FECC000B000000000000FC06 /* OwnershipClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC000B000000000000FC02 /* OwnershipClosure.cpp */; };
 		FECC0009000000000000FD03 /* GraphLayout.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FD01 /* GraphLayout.h */; };
 		FECC0009000000000000FD04 /* GraphLayout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FD02 /* GraphLayout.cpp */; };
 		FECC0009000000000000FD05 /* GraphLayout.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FD01 /* GraphLayout.h */; };
@@ -2976,7 +2980,9 @@
 		FECC0009000000000000FC01 /* ReferenceGraph.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ReferenceGraph.h; sourceTree = "<group>"; };
 		FECC0009000000000000FC02 /* ReferenceGraph.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ReferenceGraph.cpp; sourceTree = "<group>"; };
 		FECC000A000000000000FC01 /* ConnectionLegality.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ConnectionLegality.h; sourceTree = "<group>"; };
+		FECC000B000000000000FC01 /* OwnershipClosure.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OwnershipClosure.h; sourceTree = "<group>"; };
 		FECC000A000000000000FC02 /* ConnectionLegality.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ConnectionLegality.cpp; sourceTree = "<group>"; };
+		FECC000B000000000000FC02 /* OwnershipClosure.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OwnershipClosure.cpp; sourceTree = "<group>"; };
 		FECC0009000000000000FD01 /* GraphLayout.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GraphLayout.h; sourceTree = "<group>"; };
 		FECC0009000000000000FD02 /* GraphLayout.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GraphLayout.cpp; sourceTree = "<group>"; };
 		FECC0009000000000000FE01 /* GraphLayoutSidecar.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GraphLayoutSidecar.h; sourceTree = "<group>"; };
@@ -4379,7 +4385,9 @@
 				FECC0009000000000000FC01 /* ReferenceGraph.h */,
 				FECC0009000000000000FC02 /* ReferenceGraph.cpp */,
 				FECC000A000000000000FC01 /* ConnectionLegality.h */,
+				FECC000B000000000000FC01 /* OwnershipClosure.h */,
 				FECC000A000000000000FC02 /* ConnectionLegality.cpp */,
+				FECC000B000000000000FC02 /* OwnershipClosure.cpp */,
 				FECC0009000000000000FD01 /* GraphLayout.h */,
 				FECC0009000000000000FD02 /* GraphLayout.cpp */,
 				FECC0009000000000000FE01 /* GraphLayoutSidecar.h */,
@@ -4780,6 +4788,7 @@
 				FECC0007000000000000FA05 /* PainterIntrospection.h in Headers */,
 				FECC0009000000000000FC05 /* ReferenceGraph.h in Headers */,
 				FECC000A000000000000FC05 /* ConnectionLegality.h in Headers */,
+				FECC000B000000000000FC05 /* OwnershipClosure.h in Headers */,
 				FECC0009000000000000FD05 /* GraphLayout.h in Headers */,
 				FECC0009000000000000FE05 /* GraphLayoutSidecar.h in Headers */,
 				FECC0007000000000000FB05 /* PainterPreview.h in Headers */,
@@ -5354,6 +5363,7 @@
 				FECC0007000000000000FA06 /* PainterIntrospection.cpp in Sources */,
 				FECC0009000000000000FC06 /* ReferenceGraph.cpp in Sources */,
 				FECC000A000000000000FC06 /* ConnectionLegality.cpp in Sources */,
+				FECC000B000000000000FC06 /* OwnershipClosure.cpp in Sources */,
 				FECC0009000000000000FD06 /* GraphLayout.cpp in Sources */,
 				FECC0009000000000000FE06 /* GraphLayoutSidecar.cpp in Sources */,
 				FECC0007000000000000FB06 /* PainterPreview.cpp in Sources */,
@@ -6043,7 +6053,9 @@
 				FECC0009000000000000FC03 /* ReferenceGraph.h in Sources */,
 				FECC0009000000000000FC04 /* ReferenceGraph.cpp in Sources */,
 				FECC000A000000000000FC03 /* ConnectionLegality.h in Sources */,
+				FECC000B000000000000FC03 /* OwnershipClosure.h in Sources */,
 				FECC000A000000000000FC04 /* ConnectionLegality.cpp in Sources */,
+				FECC000B000000000000FC04 /* OwnershipClosure.cpp in Sources */,
 				FECC0009000000000000FD03 /* GraphLayout.h in Sources */,
 				FECC0009000000000000FD04 /* GraphLayout.cpp in Sources */,
 				FECC0009000000000000FE03 /* GraphLayoutSidecar.h in Sources */,

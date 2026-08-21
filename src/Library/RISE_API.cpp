@@ -9950,6 +9950,70 @@ namespace RISE
 			static_cast<ChunkCategory>( toCategory ), String( toName ) );
 	}
 
+	// doc-88 Phase 3 S19 -- the ownership-closure rewire verb. See RISE_API.h.
+	namespace {
+		//! '\n'-join a name list into a caller buffer -- the same convention
+		//! ApplyAgentRemoveChunks' batch echo uses.  A no-op (but still
+		//! NUL-terminating) on a null/zero-length buffer.
+		void CopyJoinedToBuf( const std::vector<String>& names, char* buf, unsigned int bufLen )
+		{
+			if( !buf || bufLen == 0 ) return;
+			std::string joined;
+			for( size_t i = 0; i < names.size(); ++i ) {
+				if( i ) joined += '\n';
+				joined += names[i].c_str();
+			}
+			const unsigned int n =
+				( joined.size() + 1 < bufLen ) ? (unsigned int)joined.size() : ( bufLen - 1 );
+			if( n ) std::memcpy( buf, joined.data(), n );
+			buf[n] = '\0';
+		}
+	}
+
+	bool RISE_API_SceneEditController_RewireConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen )
+	{
+		// Pre-clear every out so a caller that ignores the return value can
+		// never read a stale buffer as this call's answer.
+		if( outClosure )          *outClosure = 0;
+		if( outLegalityRefused )  *outLegalityRefused = 0;
+		if( outCycleRefused )     *outCycleRefused = 0;
+		if( outStatus && outStatusLen )                     outStatus[0] = '\0';
+		if( outMessage && outMessageLen )                   outMessage[0] = '\0';
+		if( outShared && outSharedLen )                     outShared[0] = '\0';
+		if( outReferrers && outReferrersLen )               outReferrers[0] = '\0';
+		if( outOwners && outOwnersLen )                     outOwners[0] = '\0';
+		if( outNowUnreferenced && outNowUnreferencedLen )   outNowUnreferenced[0] = '\0';
+		if( !p || !targetName || !param || !newRefName ) return false;
+
+		const SceneEditController::RewireResult r = p->RewireConnection(
+			static_cast<ChunkCategory>( targetCategory ), String( targetName ),
+			String( param ), occurrence,
+			static_cast<ChunkCategory>( newRefCategory ), String( newRefName ),
+			nullptr );
+
+		if( outClosure )         *outClosure         = static_cast<int>( r.closure );
+		if( outLegalityRefused ) *outLegalityRefused = r.legalityRefused ? 1 : 0;
+		if( outCycleRefused )    *outCycleRefused    = r.cycleRefused ? 1 : 0;
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		CopyJoinedToBuf( r.sharedChunks,          outShared,          outSharedLen );
+		CopyJoinedToBuf( r.outOfClosureReferrers, outReferrers,       outReferrersLen );
+		CopyJoinedToBuf( r.owners,                outOwners,          outOwnersLen );
+		CopyJoinedToBuf( r.nowUnreferenced,       outNowUnreferenced, outNowUnreferencedLen );
+		return r.commit.applied;
+	}
+
 	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
 	{
 		if( !p ) return 0;

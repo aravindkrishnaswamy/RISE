@@ -15400,6 +15400,347 @@ SceneEditController::AgentCommitResult SceneEditController::CreateChunkNode(
 	return r;
 }
 
+// =====================================================================
+// doc-88 Phase 3 S19 -- the ownership-closure rewrite + REFUSE path.
+// See the declaration's own comment in SceneEditController.h for the
+// gate order and the scoping; OwnershipClosure.h for sect. 3.7a's rule.
+//
+// Structurally a sibling of CreateChunkNode above: a THIN COMPOSER over
+// shipped machinery (SceneReferenceGraph resolution, ConnectionLegality,
+// OwnershipClosure, ApplyAgentParamEditInner_) with no mutation logic of
+// its own -- which is exactly what makes the byte-identical-on-refusal
+// guarantee cheap: every gate runs BEFORE the single call that can
+// mutate anything.
+// =====================================================================
+
+// The (ChunkCategory -> UI Category) direction this verb needs -- S17's
+// legality/graph surface addresses by ChunkCategory (a node's identity is
+// its DECLARED descriptor category), while the Document edit path
+// addresses by the UI Category's CST role-kind suffix
+// (RoleKindSuffixForCategory, above) -- is ALREADY in this TU as
+// `UiCategoryForChunkCategory` (the jump-to-definition helper, ~line
+// 11687, file-static).  Reused verbatim rather than re-declared: it
+// already maps Function -> Painter through exactly the UI union
+// DocFindByNameAnyRole's own narrowing predicate applies
+// (RoleMatchesKindConstraint: "painter accepts Painter|Function"), and it
+// already answers Category::None for the kinds with no chunk-name
+// addressing scheme (Shader / ShaderOp / Rasterizer / Film / ...), which
+// this verb refuses honestly rather than guessing a suffix for.  A second
+// copy here would be a second policy free to drift.
+
+SceneEditController::RewireResult SceneEditController::RewireConnection(
+	ChunkCategory targetCategory, const String& targetName,
+	const String& param, int occurrence,
+	ChunkCategory newRefCategory, const String& newRefName,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	RewireResult out;
+
+	// Same preamble as CreateChunkNode: defer the dirty notification until
+	// after the lock hold, then take the admission lock so the WHOLE
+	// resolve-check-commit sequence is serialized against every other
+	// Document-mutating entry point (Undo, Redo, the agent verbs, the GUI
+	// SetProperty path -- all of them take this same recursive mutex).
+	// That is what keeps the pure-read validation below from going stale
+	// before ApplyAgentParamEditInner_ writes: mMutex alone would NOT, since
+	// it is released between the two (see the identical rationale on
+	// SetPropertyInner_'s occurrence-validation block).
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	// Every early exit must leave the Document byte-identical AND still
+	// report the CURRENT head (a {0,0} head on the wire earns the caller a
+	// guaranteed conflict on its next commit), AND say whether retrying the
+	// identical request could ever succeed -- CreateChunkNode's contract,
+	// verbatim.  DEFERRED head read for the same reason it defers there:
+	// mMutex is a plain std::mutex, so reading the head from inside a scope
+	// that already holds it self-deadlocks.
+	bool  headRead = false;
+	auto reject = [&]( const std::string& why, bool retriable ) {
+		out.commit.applied  = false;
+		out.commit.conflict = false;
+		out.commit.rawCode  = 0;
+		out.commit.status   = String( "rejected" );
+		out.commit.retriable = retriable;
+		out.commit.message  = String( ( "rewire rejected: " + why + " -- head unchanged" ).c_str() );
+		// P2-1 (S19 review round 1): a refusal reached AFTER the closure step
+		// already ran (e.g. the edit-path addressing-seam mismatch below,
+		// which checks something the closure never inspected) must not leave
+		// a Clean closure's `nowUnreferenced` report standing -- that report
+		// describes what WOULD become unreferenced if this edit committed,
+		// and this edit did not commit.  Every refusal clears it here so
+		// `commit.applied == false` implies `nowUnreferenced.empty()`
+		// unconditionally, never just on the refusal paths that happen to
+		// run before the closure step populates it.
+		out.nowUnreferenced.clear();
+		if( !headRead ) {
+			std::lock_guard<std::mutex> hlk( mMutex );
+			out.commit.headVersion = mJob.GetCstHeadVersion();
+		}
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+		if( mInDestructorTeardown.load( std::memory_order_acquire )
+		 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) {
+			// Latched teardown: no head to report and no retry will ever be
+			// admitted -- the same split ApplyAgentParamEdit draws.
+			//
+			// P3 (S19 review round 1): `headRead` is set true here WITHOUT
+			// an actual read -- its name says "was the head already read",
+			// but its real job is "should `reject` attempt one at all".
+			// During teardown it deliberately does NOT: `mJob` may be
+			// mid-destruction, so touching it here is exactly what this
+			// branch exists to avoid.  Skipping the read leaves
+			// `out.commit.headVersion` at its default `{0,0}` -- which is
+			// fine, not an oversight, because the file's opening comment
+			// already documents `{0,0}` as a head that "earns the caller a
+			// guaranteed conflict on its next commit", and a caller who
+			// hits latched teardown has no next commit to make anyway.
+			headRead = true;
+			reject( "controller is being destroyed -- no further edit will be admitted", false );
+			return out;
+		}
+		reject( "scene is render-locked (render queued or in progress)", /*retriable=*/true );
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Pure-read validation.  NOTHING here mutates; every refusal below
+	// therefore leaves the retained Document byte-identical by
+	// construction, not by cleanup.
+	// -----------------------------------------------------------------
+	// Every refusal produced by this block is PERMANENT (retriable=false):
+	// an ambiguous name, an illegal binding, a cycle, a shared closure, an
+	// out-of-range occurrence -- resubmitting the identical request can
+	// never succeed.  The only TRANSIENT refusals this verb can produce are
+	// the render-locked gate above and the mid-transaction gate inside
+	// ApplyAgentParamEditInner_, both of which set the flag themselves.
+	std::string  refusal;                 // non-empty => refuse with this
+	String       entityKind;              // the CST role-kind suffix the edit addresses through
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		char buf[1024];
+
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else if( param.size() <= 1 ) {
+			refusal = "no parameter named";
+		} else if( occurrence < 0 ) {
+			refusal = "occurrence index must be >= 0";
+		} else {
+			// ---- step 2: resolve BOTH endpoints, ambiguity-aware --------
+			//
+			// SceneReferenceGraph::ResolveChunk is the S11 contract built for
+			// exactly this: it refuses an ambiguous (category, name) rather
+			// than handing back one of the matches, and its `outOccurrences`
+			// distinguishes "no such chunk" (0) from "refused, ambiguous"
+			// (>1).  Reading an ambiguous refusal as "not found" would let a
+			// rewire aim at whichever of a colour/`scalar_painter` same-name
+			// pair the resolver happened to reach first.
+			int tOccs = 0, cOccs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, targetCategory, targetName, &tOccs );
+			const RISE::Cst::NodeId candidateId =
+				SceneReferenceGraph::ResolveChunk( *doc, newRefCategory, newRefName, &cOccs );
+
+			if( targetId == 0 && tOccs > 1 ) {
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, targetName.c_str(), tOccs );
+				refusal = buf;
+			} else if( targetId == 0 ) {
+				out.closure = ClosureClassification::UnresolvedTarget;
+				std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, targetName.c_str() );
+				refusal = buf;
+			} else if( candidateId == 0 && cOccs > 1 ) {
+				// P3 (S19 review round 1): the TARGET-side twin of this branch
+				// (above) sets `out.closure`; this candidate-side one used to
+				// leave it at the struct's default `Clean` -- a refused commit
+				// reporting a Clean closure.  Same enum value as the
+				// target-side case (there is no separate "ambiguous candidate"
+				// classification) for consistency.
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, newRefName.c_str(), cOccs );
+				refusal = buf;
+			} else if( candidateId == 0 ) {
+				// A DETACH reaches here too (empty newRefName resolves to
+				// nothing).  Named explicitly so the user is told the verb's
+				// scope rather than "no such chunk `\0`".
+				if( newRefName.size() <= 1 ) {
+					refusal = "this verb rewires a slot to another chunk; it does not UNBIND one "
+					          "(the `none` literal itself commits fine -- the real blocker is that "
+					          "ConnectionLegality's per-slot check is NodeId-addressed and `none` has "
+					          "no NodeId to check; that gap is reference-safe delete's job to close)";
+				} else {
+					// P3: same consistency fix as the ambiguous-candidate arm
+					// above -- an unresolved CANDIDATE is still an unresolved
+					// name, reusing the same classification the target-side
+					// unresolved case (above) already uses.
+					out.closure = ClosureClassification::UnresolvedTarget;
+					std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, newRefName.c_str() );
+					refusal = buf;
+				}
+			}
+
+			// ---- step 3: LEGALITY and CYCLE, before ownership -----------
+			if( refusal.empty() ) {
+				const ConnectionVerdict v =
+					ConnectionLegality::CheckConnection( *doc, targetId, param, candidateId );
+				if( !v.legal ) {
+					out.legalityRefused = true;
+					refusal = v.diagnostic;
+				}
+			}
+			if( refusal.empty() && ConnectionLegality::WouldCycle( *doc, targetId, candidateId ) ) {
+				out.cycleRefused = true;
+				std::snprintf( buf, sizeof( buf ),
+					"binding `%s` into `%s`.`%s` would create a reference cycle -- `%s` already "
+					"reaches `%s` along existing references, and the renderer walks painter "
+					"references without a cycle guard.",
+					newRefName.c_str(), targetName.c_str(), param.c_str(),
+					newRefName.c_str(), targetName.c_str() );
+				refusal = buf;
+			}
+
+			// ---- the tuple / occurrence contract ------------------------
+			//
+			// Runs AFTER legality (which already proved the param exists and
+			// is reference-typed) so these messages are only ever reached by
+			// a param that IS bindable -- just not by THIS verb.
+			const ChunkDescriptor* tDesc = nullptr;
+			const ParameterDescriptor* pDesc = nullptr;
+			RISE::Cst::NodeRef tChunk;
+			if( refusal.empty() ) {
+				tChunk = RISE::Cst::DocResolveNodeId( *doc, targetId );
+				tDesc  = tChunk ? DescriptorForKeyword( String( tChunk->role.c_str() ) ) : nullptr;
+				if( !tDesc ) {
+					refusal = "the target chunk's descriptor did not resolve";
+				} else {
+					for( size_t i = 0; i < tDesc->parameters.size(); ++i )
+						if( tDesc->parameters[i].name == std::string( param.c_str() ) )
+							{ pDesc = &tDesc->parameters[i]; break; }
+					if( !pDesc ) {
+						refusal = "the target parameter's descriptor did not resolve";
+					} else if( pDesc->kind != ValueKind::Reference ) {
+						// ConnectionLegality accepts a TUPLE that merely
+						// CONTAINS a Reference token (voronoi_painter's `gen
+						// <x> <y> <painter>`) -- correctly, since binding one
+						// IS legal.  But rewriting it means re-emitting the
+						// whole tuple, coordinates included, which this verb
+						// does not do; writing the bare name would corrupt the
+						// line.  Refuse honestly rather than silently mangle.
+						std::snprintf( buf, sizeof( buf ),
+							"`%s` on `%s` carries its reference inside a multi-token value, so a rewire "
+							"would have to re-emit the whole line (coordinates and all) -- edit that "
+							"parameter's value directly instead.",
+							param.c_str(), tChunk->role.c_str() );
+						refusal = buf;
+					} else {
+						const int count = RISE::Cst::ParamOccurrenceCount( tChunk, std::string( param.c_str() ) );
+						if( occurrence > 0 && occurrence >= count ) {
+							// occurrence 0 on an UNSPELLED param (count == 0) is
+							// NOT out of range: DocSetOrAddParamValue's INSERT arm
+							// (Cst.h) exists precisely for this case -- the
+							// property panel surfaces every defaulted material
+							// slot and editing one must take effect + persist by
+							// inserting a new `role value` line. Only a positive
+							// occurrence past the end is a genuine out-of-range
+							// request (INSERT is occurrence-0-only), which would
+							// otherwise surface as a silent no-op / bare code 0
+							// naming nothing.  Refuse with the count, matching
+							// SetPropertyInner_'s own occurrence-row refusal
+							// wording.
+							std::snprintf( buf, sizeof( buf ),
+								"`%s` has %d occurrence(s) on `%s`, so index %d is out of range",
+								param.c_str(), count, targetName.c_str(), occurrence );
+							refusal = buf;
+						} else if( occurrence > 0 && !pDesc->repeatable ) {
+							std::snprintf( buf, sizeof( buf ),
+								"`%s` is not a repeatable parameter on `%s`, so it has no occurrence %d",
+								param.c_str(), tChunk->role.c_str(), occurrence );
+							refusal = buf;
+						}
+					}
+				}
+			}
+
+			// ---- step 4: the OWNERSHIP CLOSURE (sect. 3.7a) --------------
+			if( refusal.empty() ) {
+				TopologyEditIntent intent;
+				intent.kind        = TopologyEditKind::Rewire;
+				intent.targetChunk = targetId;
+				intent.paramName   = std::string( param.c_str() );
+				intent.occurrence  = occurrence;
+				intent.newRefChunk = candidateId;
+				const OwnershipClosureResult cr = OwnershipClosure::Compute( *doc, intent );
+				out.closure                = cr.classification;
+				out.sharedChunks           = cr.sharedChunks;
+				out.outOfClosureReferrers  = cr.outOfClosureReferrers;
+				out.owners                 = cr.owners;
+				out.nowUnreferenced        = cr.nowUnreferenced;
+				if( !cr.Clean() ) refusal = cr.diagnostic;
+			}
+
+			// ---- the edit-path addressing seam --------------------------
+			//
+			// Everything above addressed the chunk by its DECLARED descriptor
+			// category (the node's identity).  The commit addresses it by the
+			// UI Category's CST role-kind suffix.  Verify the two agree on
+			// WHICH chunk before committing: a mismatch means the edit would
+			// land somewhere the checks never inspected, and there is no
+			// honest way to proceed.  Cheap, and it closes the one gap
+			// between "what was validated" and "what gets written".
+			if( refusal.empty() ) {
+				const Category uiCat = UiCategoryForChunkCategory( targetCategory );
+				std::string suffix; bool uf = false;
+				if( uiCat == Category::None || !RoleKindSuffixForCategory( uiCat, suffix, uf ) ) {
+					refusal = "this chunk category has no name-addressed edit path in the editor";
+				} else {
+					entityKind = String( suffix.c_str() );
+					const RISE::Cst::NodeId editId = ResolveSourceChunkId(
+						*doc, uiCat, std::string( targetName.c_str() ),
+						mJob.GetActiveRasterizerName(), mJob.GetActiveCameraName(), mJob.GetObjects() );
+					if( editId != targetId ) {
+						std::snprintf( buf, sizeof( buf ),
+							"`%s` resolves to a different chunk through the editor's `%s` addressing than "
+							"through the graph's -- refusing rather than writing to an unvalidated chunk",
+							targetName.c_str(), suffix.c_str() );
+						refusal = buf;
+					}
+				}
+			}
+		}
+	}
+
+	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	// -----------------------------------------------------------------
+	// Step 5: THE one mutating call.  Everything the commit discipline
+	// owes -- mid-transaction refusal, the baseVersion conflict gate, the
+	// U1 prior-value capture at THIS occurrence (so undo restores the
+	// wire, not a sibling's), the full-derivability check, the D2 rebind,
+	// MarkCstHeadDirty, the scene-epoch bump the canvas re-enumerates on,
+	// and the render kick -- lives in there and is deliberately NOT
+	// re-derived here.
+	//
+	// NOTE on the epoch: no explicit bump belongs here.
+	// ApplyAgentParamEditInner_ already bumps mSceneEpoch on every
+	// rawCode >= 1 (the S15 canvas-refresh gap, closed at that call site,
+	// with a rewire named as the motivating case in its comment).  Adding
+	// a second bump here would be a redundant no-op at best and a divergent
+	// second policy at worst.
+	// -----------------------------------------------------------------
+	out.commit = ApplyAgentParamEditInner_(
+		targetName, entityKind, param, newRefName, baseVersionOrNull,
+		occurrence, /*occAddressed=*/occurrence > 0 );
+	// P2-1 (S19 review round 1): this call, not `reject` above, is what can
+	// refuse a closure that computed Clean -- mid-transaction, a stale
+	// baseVersion conflict, a full-derivability failure.  Same invariant:
+	// nothing committed, so nothing may be reported as newly unreferenced.
+	if( !out.commit.applied ) out.nowUnreferenced.clear();
+	return out;
+}
+
 SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 	Category cat, const String& name, String* outName )
 {

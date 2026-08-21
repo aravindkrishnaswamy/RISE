@@ -31,6 +31,7 @@
 #include "CameraIntrospection.h"
 #include "ReferenceGraph.h"                 // doc-88 Phase 3 S11 round 2 P2-b: ReferenceEdge, for the public ExpandFunctionPromotionFrontier helper's signature
 #include "ConnectionLegality.h"             // doc-88 Phase 3 S17: ConnectionVerdict, for CheckConnection/WouldCycle below
+#include "OwnershipClosure.h"               // doc-88 Phase 3 S19: ClosureClassification, for RewireConnection's RewireResult below
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IRasterizerOutput.h"
@@ -4180,6 +4181,141 @@ namespace RISE
 		                                   const String& baseName,
 		                                   const std::vector<ChunkNodeArg>& args,
 		                                   String* outName );
+
+		// =====================================================================
+		// doc-88 Phase 3 S19 -- the ownership-closure rewrite + REFUSE path
+		// (OwnershipClosure.h/.cpp; docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S19,
+		// implementing docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  The canvas's
+		// REWIRE verb: re-point one reference slot at a different chunk.
+		// =====================================================================
+
+		//! `RewireConnection`'s answer: the ordinary commit result, plus the
+		//! sect. 3.7a closure report the canvas needs to badge / explain /
+		//! offer the escape hatch.  The closure fields are populated on BOTH
+		//! outcomes where they are known (a clean rewire reports the owner it
+		//! resolved and anything the edit orphaned; a refusal reports what
+		//! blocked it), never only on failure.
+		struct RewireResult
+		{
+			//! The underlying commit -- `applied` / `status` / `message` /
+			//! `headVersion` / `conflict` / `retriable` all carry the SAME
+			//! meanings `AgentCommitResult` documents, because on the accept
+			//! path this IS ApplyAgentParamEdit's result verbatim.  Every
+			//! refusal below is a `status == "rejected"`, non-mutating,
+			//! head-BYTE-IDENTICAL result.
+			AgentCommitResult commit;
+
+			//! Why the closure step refused, machine-readable so a bridge can
+			//! branch (offer Duplicate-node only for `SharedTarget`) without
+			//! parsing prose.  `Clean` on every outcome that got PAST the
+			//! closure step -- including a later legality/conflict refusal --
+			//! so read `commit.applied` for "did it land", not this.
+			ClosureClassification closure = ClosureClassification::Clean;
+
+			//! True when the refusal came from `ConnectionLegality`
+			//! (S17) rather than from the closure: the proposed binding is
+			//! not one the real parser would accept.  `commit.message` then
+			//! carries the parser's OWN diagnostic verbatim, so a
+			//! canvas-rejected wire reads identically to what a hand-edited
+			//! scene file fails on (MATERIAL_EDITOR.md:145).
+			bool legalityRefused = false;
+
+			//! True when the refusal came from the forward-reachability cycle
+			//! check (`ConnectionLegality::WouldCycle`).
+			bool cycleRefused = false;
+
+			//! sect. 3.7a's (a)/(b)/(c): the shared chunk(s), the referrers
+			//! outside the closure, and the owning roots.  See
+			//! OwnershipClosureResult's own field docs -- these are copied
+			//! from it verbatim.
+			std::vector<String> sharedChunks;
+			std::vector<String> outOfClosureReferrers;
+			std::vector<String> owners;
+
+			//! Chunks that lose their LAST reference if/when this rewire
+			//! commits -- for the canvas to badge as newly orphaned.
+			//!
+			//! SCOPING, stated rather than left to be discovered: this slice
+			//! does NOT auto-delete them.  Reference-safe delete (block-or-
+			//! cascade, ENTITY_CREATION.md sect. 5) is S20's slice; S19 rewires
+			//! the slot and REPORTS what that orphaned, leaving the orphan in
+			//! the document where an undo can still restore the wiring.
+			//!
+			//! APPLIED GUARD: empty whenever `commit.applied` is false --
+			//! including a refusal that lands AFTER the closure step already
+			//! computed a non-empty report (a later addressing-seam mismatch,
+			//! a mid-transaction refusal, a stale-baseVersion conflict).
+			//! `RewireConnection` clears it on every refusal path so this
+			//! field never reports an orphan from an edit that never
+			//! committed (S19 review round 1 P2-1).
+			std::vector<String> nowUnreferenced;
+		};
+
+		//! Re-point `targetName`'s `param` (occurrence `occurrence`) at
+		//! `newRefName`, as ONE undoable commit through the existing
+		//! param-edit machinery.  The canvas's drag-a-wire-to-a-different-
+		//! node verb.
+		//!
+		//! GATE ORDER, which is load-bearing:
+		//!   1. Render-locked / no-document pre-flight.
+		//!   2. RESOLUTION of both endpoints.  An AMBIGUOUS name (two
+		//!      same-category chunks share it -- the colour/`scalar_painter`
+		//!      pair `SceneReferenceGraph::ResolveChunk` documents) REFUSES;
+		//!      it never guesses which one it meant.
+		//!   3. LEGALITY (`ConnectionLegality::CheckConnection`) and the
+		//!      CYCLE check (`WouldCycle`) -- FIRST, before ownership,
+		//!      because an illegal or cyclic wire is refused whether or not
+		//!      the edit owns what it touches, and its diagnostic is the
+		//!      parser's own.
+		//!   4. OWNERSHIP CLOSURE (`OwnershipClosure::Compute`) -- sect. 3.7a.
+		//!   5. The commit, through `ApplyAgentParamEditInner_` (so it
+		//!      inherits the mid-transaction refusal, the optimistic-
+		//!      concurrency conflict gate, the U1 undo record + prior-value
+		//!      capture at the SAME occurrence, the D2 rebind, the dirty
+		//!      mark, the scene-epoch bump the canvas re-enumerates on, and
+		//!      the render kick -- none of it re-derived here).
+		//!
+		//! Every refusal in steps 1-4 leaves the retained Document
+		//! BYTE-IDENTICAL: nothing before step 5 mutates anything.
+		//!
+		//! `newRefName` must name a REAL chunk.  A DETACH (unbind the slot)
+		//! is NOT commitable in this slice -- NOT because a reference slot
+		//! has no valid empty literal (`none` parses and commits into most
+		//! reference slots fine when written directly), but because
+		//! `ConnectionLegality::CheckConnection` (step 3 above) is
+		//! `Cst::NodeId`-addressed on both sides, and `none` is a runtime
+		//! default with no `NodeId` -- there is no candidate to run the
+		//! legality gate against, so a detach's per-slot legality can't be
+		//! checked.  Closing that (a NodeId-free legality path for `none`)
+		//! is S20's scope, alongside the reference-safe delete/unbind
+		//! policy it already owns.  `OwnershipClosure::Compute`
+		//! DOES model `TopologyEditKind::Detach`, so a canvas can pre-flight
+		//! "would detaching this orphan anything?" today.
+		//!
+		//! `occurrence` selects WHICH occurrence of a repeatable reference
+		//! param to rewrite, and is validated against the chunk's actual
+		//! occurrence count (out of range REFUSES rather than silently
+		//! no-op'ing, which is what an unchecked occurrence does inside
+		//! `Cst::DocSetOrAddParamValue`).  NOTE (pinned by
+		//! RewireConnectionTest's registry sweep): NO chunk kind addressable
+		//! through this verb declares a repeatable pure-`ValueKind::Reference`
+		//! parameter today -- the one that exists at all,
+		//! `standard_shader.shaderop`, lives on a Shader-category chunk this
+		//! controller has no (category, name) addressing scheme for -- so
+		//! `occurrence` is 0 in every reachable case, and the sweep fails
+		//! loudly the day that stops being true.  Reference params that are
+		//! repeatable via a TUPLE (`voronoi_painter.gen`'s `<x> <y>
+		//! <painter>`) are refused: rewriting one would have to re-emit the
+		//! whole tuple, which this verb does not do.
+		//!
+		//! `baseVersionOrNull` is the same optimistic-concurrency
+		//! precondition every other agent commit takes: non-null and not
+		//! equal to the current head -> `status == "conflict"`, non-mutating.
+		RewireResult RewireConnection(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& param, int occurrence,
+			ChunkCategory newRefCategory, const String& newRefName,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
 		//! Remove the named entity in `cat` via ApplyAgentRemoveChunk,
 		//! narrowed by `cat`'s CST role-kind suffix (RoleKindSuffixForCategory)

@@ -153,6 +153,22 @@ NSString* NamedViewDisplayName( const char* bytes )
                             background:(BOOL)background;
 @end
 
+// Class extension: private initialiser for RISERewireOutcome (doc-88 S19)
+// — same hoisting reason as RISEEnvironmentInfo's above; the
+// implementation lives near the bottom of this file.
+@interface RISERewireOutcome ()
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                legalityRefused:(BOOL)legalityRefused
+                   cycleRefused:(BOOL)cycleRefused
+                   sharedChunks:(NSArray<NSString *> *)sharedChunks
+          outOfClosureReferrers:(NSArray<NSString *> *)outOfClosureReferrers
+                         owners:(NSArray<NSString *> *)owners
+                nowUnreferenced:(NSArray<NSString *> *)nowUnreferenced;
+@end
+
 // Class extension: private initialiser for RISEViewportGizmoHandle —
 // needed by the `gizmoHandles` accessor on RISEViewportBridge which
 // builds the snapshot array.  The implementation lives at the bottom
@@ -2341,6 +2357,70 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return applied;
 }
 
+#pragma mark - Node-graph canvas: rewire a connection (S19)
+
+// Split a '\n'-JOINED name list (the C ABI's list convention -- see
+// RISE_API.h's RewireConnection doc) back into an NSArray.  An empty
+// buffer means an EMPTY list, not a list containing one empty string,
+// which a naive componentsSeparatedByString would produce.
+static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
+    if (!buf || buf[0] == '\0') return @[];
+    NSString *s = [NSString stringWithUTF8String:buf];
+    if (!s) return @[];
+    return [s componentsSeparatedByString:@"\n"];
+}
+
+- (nullable RISERewireOutcome *)rewireConnectionWithTargetCategory:(NSInteger)targetCategory
+                                                        targetName:(NSString *)targetName
+                                                             param:(NSString *)param
+                                                        occurrence:(NSInteger)occurrence
+                                                    newRefCategory:(NSInteger)newRefCategory
+                                                        newRefName:(NSString *)newRefName {
+    if (!_controller || !targetName || !param || !newRefName) return nil;
+
+    int closure = 0, legality = 0, cycle = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char sharedBuf[1024] = {0};
+    char referrersBuf[2048] = {0};
+    char ownersBuf[1024] = {0};
+    char orphanBuf[1024] = {0};
+
+    const bool applied = RISE_API_SceneEditController_RewireConnection(
+        _controller,
+        (int)targetCategory, [targetName UTF8String],
+        [param UTF8String], (int)occurrence,
+        (int)newRefCategory, [newRefName UTF8String],
+        &closure, &legality, &cycle,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        sharedBuf, sizeof(sharedBuf),
+        referrersBuf, sizeof(referrersBuf),
+        ownersBuf, sizeof(ownersBuf),
+        orphanBuf, sizeof(orphanBuf));
+
+    // A "diagnosed" result mutated the Document even though `applied` is
+    // NO -- refresh on either, exactly as createChunkNode does (round-1
+    // P2-b's lesson: gating the refresh on `applied` alone leaves the
+    // panels stale after a real, undoable mutation).
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        [self refreshProperties];
+    }
+
+    return [[RISERewireOutcome alloc]
+        initWithApplied:applied ? YES : NO
+                 status:[NSString stringWithUTF8String:statusBuf] ?: @""
+                message:[NSString stringWithUTF8String:messageBuf] ?: @""
+                closure:(RISERewireClosure)closure
+        legalityRefused:legality != 0
+           cycleRefused:cycle != 0
+           sharedChunks:RISESplitJoinedNames(sharedBuf)
+  outOfClosureReferrers:RISESplitJoinedNames(referrersBuf)
+                 owners:RISESplitJoinedNames(ownersBuf)
+        nowUnreferenced:RISESplitJoinedNames(orphanBuf)];
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {
@@ -3277,6 +3357,63 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 
 - (NSArray<RISEGraphNode *> *)nodes { return _nodes; }
 - (unsigned long long)generation { return _generation; }
+
+@end
+
+// doc-88 Phase 3 S19 -- the rewire outcome value object.  Same
+// readonly-properties-plus-designated-init shape as RISEEnvironmentInfo
+// below, so the bridge hands Swift an immutable snapshot rather than a
+// mutable bag the canvas could accidentally edit.
+@implementation RISERewireOutcome {
+    BOOL _applied;
+    NSString *_status;
+    NSString *_message;
+    RISERewireClosure _closure;
+    BOOL _legalityRefused;
+    BOOL _cycleRefused;
+    NSArray<NSString *> *_sharedChunks;
+    NSArray<NSString *> *_outOfClosureReferrers;
+    NSArray<NSString *> *_owners;
+    NSArray<NSString *> *_nowUnreferenced;
+}
+
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                legalityRefused:(BOOL)legalityRefused
+                   cycleRefused:(BOOL)cycleRefused
+                   sharedChunks:(NSArray<NSString *> *)sharedChunks
+          outOfClosureReferrers:(NSArray<NSString *> *)outOfClosureReferrers
+                         owners:(NSArray<NSString *> *)owners
+                nowUnreferenced:(NSArray<NSString *> *)nowUnreferenced
+{
+    self = [super init];
+    if (self) {
+        _applied = applied;
+        _status = [status copy] ?: @"";
+        _message = [message copy] ?: @"";
+        _closure = closure;
+        _legalityRefused = legalityRefused;
+        _cycleRefused = cycleRefused;
+        _sharedChunks = [sharedChunks copy] ?: @[];
+        _outOfClosureReferrers = [outOfClosureReferrers copy] ?: @[];
+        _owners = [owners copy] ?: @[];
+        _nowUnreferenced = [nowUnreferenced copy] ?: @[];
+    }
+    return self;
+}
+
+- (BOOL)applied                { return _applied; }
+- (NSString *)status           { return _status; }
+- (NSString *)message          { return _message; }
+- (RISERewireClosure)closure   { return _closure; }
+- (BOOL)legalityRefused        { return _legalityRefused; }
+- (BOOL)cycleRefused           { return _cycleRefused; }
+- (NSArray<NSString *> *)sharedChunks          { return _sharedChunks; }
+- (NSArray<NSString *> *)outOfClosureReferrers { return _outOfClosureReferrers; }
+- (NSArray<NSString *> *)owners                { return _owners; }
+- (NSArray<NSString *> *)nowUnreferenced       { return _nowUnreferenced; }
 
 @end
 

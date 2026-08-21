@@ -858,6 +858,9 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ConnectionLegality.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\OwnershipClosure.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayout.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
@@ -2167,6 +2170,9 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ConnectionLegality.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\OwnershipClosure.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayout.h">

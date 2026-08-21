@@ -70,6 +70,57 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 @property (nonatomic, readonly) BOOL background;        ///< map visible behind geometry
 @end
 
+/// doc-88 Phase 3 S19 -- why a node-graph rewire was refused.  Mirrors
+/// `RISE::ClosureClassification`'s ordinals 1:1 (the C ABI passes it as a
+/// plain `int`).  NOT the only platform-side mirror (P2-3, S19 review round
+/// 1 -- corrects the earlier "ONE mirror" claim here): build/VS2022/
+/// RISE-GUI/ViewportBridge.h's `RewireClosure` re-declares the same five
+/// values on Windows/Qt.  See the ordinal-pinning `static_assert`s at the
+/// top of tests/RewireConnectionTest.cpp, which check the C++ side; keep
+/// this enum's five values in step with them AND with the Windows mirror
+/// by hand.
+typedef NS_ENUM(NSInteger, RISERewireClosure) {
+    RISERewireClosureClean = 0,
+    RISERewireClosureUnresolvedTarget = 1,
+    RISERewireClosureAmbiguousTargetName = 2,
+    RISERewireClosureExpressionDrivenTarget = 3,
+    RISERewireClosureSharedTarget = 4
+};
+
+/// doc-88 Phase 3 S19 -- the refusal / success detail a canvas needs to
+/// explain a rewire.  Returned by
+/// `-rewireConnectionWithTargetCategory:...` on RISEViewportBridge below;
+/// see that method's own comment and OwnershipClosure.h for the
+/// MATERIAL_EDITOR.md sect. 3.7a rule these fields report on.
+@interface RISERewireOutcome : NSObject
+/// True only on a clean commit.
+@property (nonatomic, readonly) BOOL applied;
+/// "applied" / "rejected" / "diagnosed" / "conflict".
+@property (nonatomic, readonly, copy) NSString *status;
+/// On a LEGALITY refusal this is the real parser's own diagnostic
+/// verbatim, so a canvas-rejected wire reads exactly like a hand-edited
+/// scene's failure (MATERIAL_EDITOR.md:145).
+@property (nonatomic, readonly, copy) NSString *message;
+@property (nonatomic, readonly) RISERewireClosure closure;
+/// The refusal came from the connection-legality validator (S17).
+@property (nonatomic, readonly) BOOL legalityRefused;
+/// The refusal came from the forward-reachability cycle check.
+@property (nonatomic, readonly) BOOL cycleRefused;
+/// sect. 3.7a (a): the chunk(s) this edit does not solely own.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *sharedChunks;
+/// sect. 3.7a (b): the referrers outside the closure.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *outOfClosureReferrers;
+/// The root chunks that own the target (1 on a clean verdict).
+@property (nonatomic, readonly, copy) NSArray<NSString *> *owners;
+/// Chunks left with no reference by this rewire -- BADGE them; this
+/// slice does not delete them (that is S20's reference-safe delete).
+/// Empty whenever `applied` is false -- the controller clears it on
+/// every refusal path, including one that lands after the closure
+/// step already computed a non-empty report, so this never names an
+/// orphan from an edit that never committed.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *nowUnreferenced;
+@end
+
 /// 87 §5 step 4a/4b: one node of the AUTHORED-graph tree, as read out of
 /// SceneEditController's snapshot in a single pass.  The macOS mirror of
 /// Qt's `SceneTreeNode` (build/VS2022/RISE-GUI/ViewportBridge.h).
@@ -1143,6 +1194,36 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                            outName:(NSString * _Nullable * _Nullable)outName
                         outMessage:(NSString * _Nullable * _Nullable)outMessage
     NS_SWIFT_NAME(createChunkNode(keyword:baseName:argParams:argValues:outName:outMessage:));
+
+#pragma mark - Node-graph canvas: rewire a connection (S19)
+//
+// Mirrors RISE_API_SceneEditController_RewireConnection -- the
+// ownership-closure REWIRE verb (docs/gui/NODE_GRAPH_CANVAS.md sect. 6
+// S19, implementing docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  Takes the
+// controller's commit mutex, same do-not-call-during-renders caveat as
+// the create/CRUD calls above.
+
+// The `RISERewireClosure` enum and the `RISERewireOutcome` value object
+// this call returns are declared at FILE SCOPE above (beside
+// RISEEnvironmentInfo), since an @interface cannot nest inside another.
+
+/// Re-point `targetName`.`param` (occurrence `occurrence`, 0 for the
+/// only occurrence) at `newRefName`, as ONE undoable commit.  The
+/// category arguments are `RISE::ChunkCategory` ordinals -- the SAME
+/// convention the graph-snapshot node category uses, NOT
+/// RISEViewportCategory.
+///
+/// On ANY refusal the scene is left byte-identical; read the returned
+/// outcome's `closure` to decide what to offer (a `SharedTarget`
+/// refusal is the one the Duplicate-node escape hatch unblocks).
+/// Returns nil only on a missing controller / nil arguments.
+- (nullable RISERewireOutcome *)rewireConnectionWithTargetCategory:(NSInteger)targetCategory
+                                                        targetName:(NSString *)targetName
+                                                             param:(NSString *)param
+                                                        occurrence:(NSInteger)occurrence
+                                                    newRefCategory:(NSInteger)newRefCategory
+                                                        newRefName:(NSString *)newRefName
+    NS_SWIFT_NAME(rewireConnection(targetCategory:targetName:param:occurrence:newRefCategory:newRefName:));
 
 #pragma mark - Environment / IBL section
 

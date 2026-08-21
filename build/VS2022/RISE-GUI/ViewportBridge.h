@@ -1364,6 +1364,73 @@ public:
                           QString* outName = nullptr,
                           QString* outMessage = nullptr);
 
+    // ---- Node-graph canvas: rewire a connection (S19) ---------------
+    // Mirrors RISE_API_SceneEditController_RewireConnection / the macOS
+    // RISEViewportBridge's identically-named section -- the
+    // ownership-closure REWIRE verb (docs/gui/NODE_GRAPH_CANVAS.md
+    // sect. 6 S19, implementing docs/gui/MATERIAL_EDITOR.md sect. 3.7a).
+    // Takes the controller's commit mutex -- gate on
+    // MainWindow::canUseSceneTransport() before calling.
+    //
+    // STANDING CAVEAT (same posture as the S18 block above): this half
+    // is CARRIED, not MSVC-verified -- written to match the macOS bridge
+    // line for line and owed a Windows build.
+
+    /// Why a rewire was refused.  Mirrors `RISE::ClosureClassification`'s
+    /// ordinals 1:1 (the C ABI passes it as a plain `int`).  This IS a real
+    /// mirror that can drift (P2-3, S19 review round 1 -- an earlier
+    /// RISE_API.h comment wrongly claimed neither bridge re-declares this
+    /// enum) -- see the ordinal-pinning `static_assert`s at the top of
+    /// tests/RewireConnectionTest.cpp, which check the C++ side; keep this
+    /// enum's five values in step with them by hand.
+    enum class RewireClosure
+    {
+        Clean = 0,
+        UnresolvedTarget = 1,
+        AmbiguousTargetName = 2,
+        ExpressionDrivenTarget = 3,
+        SharedTarget = 4
+    };
+
+    /// The refusal / success detail a canvas needs to explain a rewire.
+    struct RewireOutcome
+    {
+        bool          applied = false;   ///< true only on a clean commit
+        QString       status;            ///< "applied"/"rejected"/"diagnosed"/"conflict"
+        /// On a LEGALITY refusal this is the real parser's own diagnostic
+        /// verbatim, so a canvas-rejected wire reads exactly like a
+        /// hand-edited scene's failure (MATERIAL_EDITOR.md:145).
+        QString       message;
+        RewireClosure closure = RewireClosure::Clean;
+        bool          legalityRefused = false;
+        bool          cycleRefused = false;
+        QStringList   sharedChunks;             ///< sect. 3.7a (a)
+        QStringList   outOfClosureReferrers;    ///< sect. 3.7a (b)
+        QStringList   owners;                   ///< the owning roots (1 when clean)
+        /// Chunks left with no reference -- BADGE them; this slice does
+        /// not delete them (that is S20's reference-safe delete).  Empty
+        /// whenever `applied` is false -- the controller clears it on
+        /// every refusal path, including one that lands after the
+        /// closure step already computed a non-empty report, so this
+        /// never names an orphan from an edit that never committed.
+        QStringList   nowUnreferenced;
+    };
+
+    /// Re-point `targetName`.`param` (occurrence `occurrence`, 0 for the
+    /// only occurrence) at `newRefName`, as ONE undoable commit.  The
+    /// category arguments are `RISE::ChunkCategory` ordinals -- the SAME
+    /// convention the graph-snapshot node category uses, NOT
+    /// ViewportBridge::Category.
+    ///
+    /// On ANY refusal the scene is left byte-identical; read
+    /// `outcome.closure` to decide what to offer (a `SharedTarget`
+    /// refusal is the one the Duplicate-node escape hatch unblocks).
+    /// Returns `applied`; `outOutcome` (optional) receives the detail.
+    bool rewireConnection(int targetCategory, const QString& targetName,
+                           const QString& param, int occurrence,
+                           int newRefCategory, const QString& newRefName,
+                           RewireOutcome* outOutcome = nullptr);
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.
