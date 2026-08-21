@@ -2174,15 +2174,22 @@ deviations `l,r` and `q=3(l+r)`, the quadratic reconstruction differs from its
 endpoint chord by exactly `-q s(1-s)`. Both paths therefore coincide at `q=0`,
 and `max_[0,1] |q s(1-s)|=|q|/4`. For the r122 witness the outward ambiguity
 width is `2.008640214894198e-6`, giving the independently derived divergence
-term `5.021600537235496e-7`. The trace consumes that term rather than selecting
-its rounded nonzero branch. All executed PPM quadratic and stationary-point
-obligations, and all continuous `min`/`max` selections, are discharged by the
-same identity-plus-hull discipline.
+term `5.021600537235496e-7` for the exact polynomial. Separately rounded `q`,
+linear coefficient, stationary point, and Horner arithmetic contribute the
+independent outward `gamma_4`/underflow residual
+`2.6783670818887366e-6`; the certified total is
+`3.1805271356122864e-6`. No observed successor value enters this bound. The
+trace consumes the total envelope rather than selecting its rounded nonzero
+branch. All executed PPM quadratic and stationary-point obligations, and all
+continuous `min`/`max` selections, are discharged by the same
+identity-plus-hull discipline.
 
-The complete 24-stage census contains 4,117,982 dynamic obligation instances:
-429,765 discharged and 3,688,217 still pending. This count is diagnostic
+The complete 24-stage census contains 4,103,559 dynamic obligation instances:
+421,268 discharged and 3,682,291 still pending. This count is diagnostic
 evidence, not a bound. The first mandatory fallback occurs in dual-remap stage
-7 at comparison ordinal 64,076. The negative-deviation predicate is
+7 at executed-comparison ordinal 156,245. Resolved selectors count in the
+ordinal even though only interval-crossing selectors emit obligations. The
+negative-deviation predicate is
 `-2.5484634978965355e-6 +/- 4.7677165632473422e-6`; its zero-headroom proof has
 lower numerator `-4.9406564584124654e-324` but requires
 `7.3161800611438812e-6` to leave the current shared limiter unchanged. The two
@@ -2206,7 +2213,7 @@ and binding the first non-equivalent limiter paths. `B_fp32`, Metal
 confirmation, temporal refinement, eight-slice readmission, and thermo/source
 maps did not run. The durable census is
 `rendered/fire_production_calibration/r123_branch_obligations/branch_obligation_stop.v1`,
-SHA-256 `bc72222d064ec9b79c00b57c1c46f2ecbcd581502deae52be04f053ec50e2c4e`.
+SHA-256 `c860fcec9f3954fe1b9fde70a7ff8ed8f96a0e091859a2e30b099eb026726260`.
 The untouched golden checkpoint remains outside this diagnostic.
 
 ## 8. Rejected directions and future work

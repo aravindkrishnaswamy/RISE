@@ -2921,11 +2921,15 @@ it was already tried and refuted here.
 - **r123 branch-obligation evidence / shared-limiter stop (2026-08-20):** the
   independent PPM identity is `P_q(s)-P_0(s)=-q s(1-s)`, so the r122 ambiguity
   width `2.008640214894198e-6` closes with the outward `|q|/4` term
-  `5.021600537235496e-7`. All 1,364 quadratic, 2,545 lower-stationary, and 1,985
-  upper-stationary dynamic obligations close, as do the continuous min/max
-  selectors. The completed 24-stage census records 4,117,982 dynamic
-  obligations (429,765 discharged; 3,688,217 pending). It then stops at the
-  first non-equivalent shared-tuple limiter case: stage 7 / ordinal 64,076 has
+  `5.021600537235496e-7`; separately rounded coefficient/stationary/Horner work
+  adds an independent `gamma_4`/underflow residual
+  `2.6783670818887366e-6`, for total `3.1805271356122864e-6`. No observed
+  successor enters the proof. All 1,364 quadratic, 1,240 lower-stationary, and
+  634 upper-stationary dynamic obligations close, as do the continuous min/max
+  selectors. The completed 24-stage census records 4,103,559 dynamic
+  obligations (421,268 discharged; 3,682,291 pending). It then stops at the
+  first non-equivalent shared-tuple limiter case: stage 7 / executed-comparison
+  ordinal 156,245 has
   predicate `-2.5484634978965355e-6 +/- 4.7677165632473422e-6`, zero available
   numerator versus required `7.3161800611438812e-6`, and successor alpha bytes
   `1` versus `0`. Strict component monotonicity, maximal inactive behavior, and
@@ -2933,5 +2937,5 @@ it was already tried and refuted here.
   flat-stencil rewrite was rejected because the executed obstruction is
   non-plateau; resolving it requires an explicit limiter-semantics choice, not
   a tolerance. Exit `237` remains fail-closed; `B_fp32` and later campaigns did
-  not run. The durable evidence SHA is `bc72222d...e2c4e`; golden checkpoint
+  not run. The durable evidence SHA is `c860fcec...726260`; golden checkpoint
   `1b944176...4947` is untouched.
