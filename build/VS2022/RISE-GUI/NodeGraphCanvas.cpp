@@ -1343,9 +1343,10 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
     // unchanged -- the same object is still selected), so the expensive
     // path -- and therefore the retry -- would never run again, even after
     // the render finished and a real resolve became possible. The gate is
-    // now committed ONLY alongside a successful deep resolve (see below);
-    // a degraded attempt leaves it uncommitted so the NEXT imageUpdated
-    // frame retries for real.
+    // now committed ONLY alongside a REAL, RESOLVED deep-resolve outcome
+    // (see below -- "resolved" includes a genuinely empty closure, not
+    // only a non-empty one); a DEGRADED attempt leaves it uncommitted so
+    // the NEXT imageUpdated frame retries for real.
     const ViewportBridge::Category cat = m_bridge->selectionCategory();
     const QString cheapName = (cat == ViewportBridge::Category::Object) ? m_bridge->selectionName() : QString();
     if (!forceReapply && cat == m_lastSpotlightCategory && cheapName == m_lastSpotlightSelectionName) return;
@@ -1374,13 +1375,30 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
         // matching this closure's entries against m_nodes by name only
         // could silently spotlight the wrong node on a cross-category
         // collision.
-        const QVector<ViewportBridge::AppearanceClosureEntry> closureEntries = m_bridge->appearanceClosureForObject(objectName);
-        if (!closureEntries.isEmpty()) {
-            // SUCCESSFUL resolve -- commit BOTH memos now (review-round
-            // P2-1/P2-2 fix): the cheap gate (so a later steady-state
-            // frame with nothing changed can skip the expensive walk
-            // again) and the object-identity memo used for the
-            // auto-scroll-on-change decision.
+        //
+        // DEGRADED VS GENUINELY-EMPTY IS LOAD-BEARING (a later external
+        // review round caught a P1 in the prior fix, which treated any
+        // empty `closureEntries` as "not yet resolved" and left the cheap
+        // gate uncommitted -- so a genuinely material-less object paid a
+        // full deep resolve on EVERY preview frame forever, since nothing
+        // ever told this code the empty answer was final). `degraded` is
+        // `appearanceClosureForObject`'s explicit out-param (surfacing
+        // `SceneEditController::AppearanceClosureForObject`'s
+        // `outDegraded` across the bridge) -- `true` ONLY when the commit
+        // lock was contended and this call could not even ATTEMPT a real
+        // answer; `false` on a genuine resolution, whether or not the
+        // closure itself came back empty.
+        bool degraded = false;
+        const QVector<ViewportBridge::AppearanceClosureEntry> closureEntries = m_bridge->appearanceClosureForObject(objectName, &degraded);
+        if (!degraded) {
+            // REAL, RESOLVED answer -- commit BOTH memos now, whether the
+            // closure is non-empty (success -- the loop below populates
+            // `handles`) or genuinely empty (nothing to spotlight -- the
+            // loop below is simply a no-op over an empty vector). Either
+            // way this is a final answer for this selection: the cheap
+            // gate can safely skip the expensive walk on a later
+            // steady-state frame, and the object-identity memo can safely
+            // gate the auto-scroll-on-change decision.
             m_lastSpotlightCategory = cat;
             m_lastSpotlightSelectionName = cheapName;
             selectionChanged = (objectName != m_lastSpotlightObjectName);
@@ -1397,19 +1415,22 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
                 }
             }
         } else {
-            // DEGRADED (or genuinely empty) resolve (review-round P2-1/
-            // P2-2 fix): CLEAR all three memos rather than leaving them
-            // stamped/untouched. Clearing (not merely "leaving alone")
-            // matters for a THIRD scenario beyond the render-in-flight
-            // one: object A resolves and is spotlit, the user picks
-            // object B while a render degrades B's resolve, then picks A
-            // again -- with the object memo left at "A" from the first
-            // resolve, re-selecting A would read as "unchanged" and skip
-            // the auto-scroll entirely. Clearing makes every post-degrade
-            // re-selection (including of the SAME object) a fresh change.
-            // Clearing the cheap-gate memo too is what makes the NEXT
+            // DEGRADED: this call could not even attempt a real answer, so
+            // CLEAR all three memos rather than committing a placeholder.
+            // Clearing (not merely "leaving alone") matters for a THIRD
+            // scenario beyond the render-in-flight one: object A resolves
+            // and is spotlit, the user picks object B while a render
+            // degrades B's resolve, then picks A again -- with the object
+            // memo left at "A" from the first resolve, re-selecting A
+            // would read as "unchanged" and skip the auto-scroll entirely.
+            // Clearing makes every post-degrade re-selection (including of
+            // the SAME object) a fresh change. Leaving the cheap-gate memo
+            // UNCOMMITTED (cleared, not stamped) is what makes the NEXT
             // imageUpdated frame retry the deep resolve instead of
-            // short-circuiting above.
+            // short-circuiting above -- this canvas re-derives every
+            // preview frame, so retrying while contended costs nothing
+            // beyond that frame's own deep resolve, self-terminating the
+            // moment the resolve stops degrading.
             m_lastSpotlightCategory = ViewportBridge::Category::None;
             m_lastSpotlightSelectionName.clear();
             m_lastSpotlightObjectName.clear();

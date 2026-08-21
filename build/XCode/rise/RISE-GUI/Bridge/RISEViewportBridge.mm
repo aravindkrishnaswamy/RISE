@@ -2070,11 +2070,18 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return [[RISEPainterMaterialGraph alloc] initWithNodes:nodes generation:g.graph.generation];
 }
 
-- (NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName {
+- (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName {
+    // Empty (not nil): a null controller or an empty name is a genuine,
+    // resolved "nothing to show" -- never a lock-contention degrade, so it
+    // must not be reported as one (see this method's own header comment).
     if (!_controller || objectName.length == 0) return @[];
     const char* utf8 = [objectName UTF8String] ?: "";
+    bool degraded = false;
     const std::vector<RISE::SceneEditController::AppearanceClosureEntry> closure =
-        _controller->AppearanceClosureForObject(RISE::String(utf8));
+        _controller->AppearanceClosureForObject(RISE::String(utf8), &degraded);
+    // nil vs empty is load-bearing here (see the header comment) -- do NOT
+    // collapse this to "return @[] either way".
+    if (degraded) return nil;
     NSMutableArray<RISEAppearanceClosureEntry *> *out = [NSMutableArray arrayWithCapacity:closure.size()];
     for (const RISE::SceneEditController::AppearanceClosureEntry &e : closure) {
         NSString *s = NamedViewDisplayName(e.name.c_str()) ?: @"";

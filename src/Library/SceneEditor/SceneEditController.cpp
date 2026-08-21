@@ -6021,9 +6021,17 @@ void SceneEditController::ResyncObjectBoundSections_()
 // SceneEditController.h for the full contract.
 // =====================================================================
 
-std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::AppearanceClosureForObject( const String& objectName ) const
+std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::AppearanceClosureForObject(
+	const String& objectName, bool* outDegraded ) const
 {
 	std::vector<AppearanceClosureEntry> result;
+	// Default: NOT degraded. Only the two `mRenderOwnsScene`/`try_to_lock`
+	// refusals below (review-round P1 fix) ever set this true -- every
+	// other early return (empty name, unknown object, no material bound,
+	// ambiguous material) is a REAL, resolved answer, not contention, and
+	// must not be reported as degraded (see this method's own declaration
+	// comment for why that distinction matters to a polling caller).
+	if( outDegraded ) *outDegraded = false;
 	if( objectName.size() <= 1 ) return result;
 
 	// Step 1: resolve the object's LIVE bound material.  Reuses
@@ -6049,11 +6057,17 @@ std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::Ap
 	// degrade to an empty result on EITHER refusal -- a polling caller
 	// retries on its next pass rather than the UI thread stalling on this
 	// one.
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return result;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+		if( outDegraded ) *outDegraded = true;   // review-round P1 fix: a render owns the scene -- this is contention, report it
+		return result;
+	}
 	String matName;
 	{
 		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-		if( !lk.owns_lock() ) return result;   // contended -- no spotlight this pass, not a block
+		if( !lk.owns_lock() ) {
+			if( outDegraded ) *outDegraded = true;   // review-round P1 fix: lock contended -- no spotlight this pass, not a block, and not a real answer
+			return result;
+		}
 		matName = FindObjectMaterialName( mJob, objectName );
 	}
 	if( matName.size() <= 1 ) return result;   // unknown object, or no material bound

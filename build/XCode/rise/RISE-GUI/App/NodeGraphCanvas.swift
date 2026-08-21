@@ -403,9 +403,11 @@ struct NodeGraphCanvas: View {
     /// triggers (a `refreshTrigger` bump or `performReload`'s own tail) --
     /// there is no frame-tick to naturally retry a resolve that degraded
     /// to empty because a render currently owns the commit lock
-    /// (`AppearanceClosureForObject`'s try_to_lock contract). Holds the
-    /// single bounded retry `refreshSpotlight` schedules on a degrade; see
-    /// that function's own comment.
+    /// (`AppearanceClosureForObject`'s try_to_lock contract). Holds AT MOST
+    /// ONE pending retry timer at a time -- `refreshSpotlight` re-arms this
+    /// on every degrade and cancels it on every call, so this retries for
+    /// as long as (but no longer than) the resolve stays degraded, not a
+    /// single one-shot attempt; see that function's own comment.
     @State private var spotlightRetryWorkItem: DispatchWorkItem?
 
     // -------- S21: drag-to-reposition --------
@@ -801,33 +803,64 @@ struct NodeGraphCanvas: View {
         // a Painter and a Material chunk may legally share a name, so
         // matching this closure's entries against `nodes` by name only can
         // silently spotlight the wrong node on a cross-category collision.
-        let closureEntries = bridge.appearanceClosure(forObject: objectName)
-        guard !closureEntries.isEmpty else {
-            // DEGRADED (or genuinely empty) resolve (review-round P2-1/
-            // P2-2 fix): CLEAR the memo rather than leaving it untouched.
-            // "Leave untouched" was itself a bug: object A resolves and is
-            // spotlit, the user picks object B while a render degrades B's
-            // resolve, then picks A again -- with the memo left at "A"
-            // from the earlier resolve, re-selecting A would read as
-            // "unchanged" and skip the auto-scroll entirely. Clearing
-            // makes every post-degrade re-selection (including of the
-            // SAME object) a fresh change.
+        //
+        // NIL VS EMPTY IS LOAD-BEARING (a later external review round
+        // caught a P1 in the prior fix, which treated any empty result the
+        // same way): `nil` means the bridge/controller could not even
+        // ATTEMPT a real answer this pass (a render owns the commit lock
+        // -- SceneEditController::AppearanceClosureForObject's
+        // `outDegraded` contract, surfaced across the bridge as
+        // nil-vs-empty, see `-appearanceClosureForObject:`'s own header
+        // comment). A non-nil EMPTY array means the object genuinely has
+        // nothing to spotlight (unknown object, no material bound,
+        // ambiguous material) -- a real, resolved answer, not contention.
+        guard let closureEntries = bridge.appearanceClosure(forObject: objectName) else {
+            // DEGRADED: CLEAR the memo rather than leaving it untouched.
+            // "Leave untouched" was itself a bug (review-round P2-2 fix):
+            // object A resolves and is spotlit, the user picks object B
+            // while a render degrades B's resolve, then picks A again --
+            // with the memo left at "A" from the earlier resolve,
+            // re-selecting A would read as "unchanged" and skip the
+            // auto-scroll entirely. Clearing makes every post-degrade
+            // re-selection (including of the SAME object) a fresh change.
             spotlightHandles = []
             lastSpotlightObjectName = nil
 
             // Unlike the Qt canvas (re-derives every preview frame), this
             // canvas has no frame-tick to naturally retry once a
             // contended render finishes -- refreshSpotlight only runs on
-            // discrete triggers. Schedule exactly ONE bounded retry
-            // ~0.5s out, via the SAME DispatchWorkItem cancel-and-
-            // reschedule idiom `scheduleReload`'s own debounce already
-            // uses. Harmless for a genuinely material-less object (the
-            // retry fires once, finds still-empty, and stops -- no
-            // pile-up, since every call to this function cancels any
-            // pending retry first).
+            // discrete triggers. Schedule ONE bounded retry ~0.5s out, via
+            // the SAME DispatchWorkItem cancel-and-reschedule idiom
+            // `scheduleReload`'s own debounce already uses.
+            //
+            // THIS RETRIES WHILE CONTENDED, BY DESIGN -- it is NOT a
+            // one-shot ("fires once and stops" was a FALSE claim in an
+            // earlier draft of this comment, corrected by the same review
+            // round that caught this as a P1: since a genuinely
+            // material-less object now returns a non-nil EMPTY array, not
+            // nil, it can never reach this branch at all, so there is no
+            // infinite-polling case left to bound against here). What
+            // bounds this branch is exactly ONE pending timer at a time
+            // (every call to `refreshSpotlight` -- including this retry
+            // itself -- cancels any prior pending retry first, at the top
+            // of this function), and the timer chain self-terminates the
+            // moment a resolve stops degrading, because that resolve lands
+            // in a DIFFERENT branch (nil vs non-nil) which does not
+            // re-arm it.
             let retry = DispatchWorkItem { refreshSpotlight() }
             spotlightRetryWorkItem = retry
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: retry)
+            return
+        }
+        guard !closureEntries.isEmpty else {
+            // Genuinely empty (NOT degraded, see the guard above) -- a
+            // real, resolved answer: this object has nothing to
+            // spotlight. Stamp the memo (so a later reselection of this
+            // SAME object is correctly seen as "unchanged," matching the
+            // successful-resolve path below) and clear any prior
+            // spotlight, but do NOT retry -- there is nothing to wait for.
+            spotlightHandles = []
+            lastSpotlightObjectName = objectName
             return
         }
         // Stamp the memo ONLY on a successful (non-empty) resolve -- see

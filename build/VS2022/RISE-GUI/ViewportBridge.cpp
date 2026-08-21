@@ -1693,13 +1693,19 @@ ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraph() const
 
 // Same return-type qualification requirement as painterMaterialGraph()
 // just above (review-round P1 fix).
-QVector<ViewportBridge::AppearanceClosureEntry> ViewportBridge::appearanceClosureForObject(const QString& objectName) const
+QVector<ViewportBridge::AppearanceClosureEntry> ViewportBridge::appearanceClosureForObject(const QString& objectName, bool* degraded) const
 {
+    // Empty (not degraded): a null controller or an empty name is a
+    // genuine, resolved "nothing to show" -- never lock contention -- so
+    // it must not be reported as degraded (see the header comment).
+    if (degraded) *degraded = false;
     QVector<AppearanceClosureEntry> out;
     if (!m_controller || objectName.isEmpty()) return out;
     const QByteArray utf8 = objectName.toUtf8();
+    bool coreDegraded = false;
     const std::vector<RISE::SceneEditController::AppearanceClosureEntry> closure =
-        m_controller->AppearanceClosureForObject(RISE::String(utf8.constData()));
+        m_controller->AppearanceClosureForObject(RISE::String(utf8.constData()), &coreDegraded);
+    if (degraded) *degraded = coreDegraded;
     out.reserve(static_cast<int>(closure.size()));
     for (const RISE::SceneEditController::AppearanceClosureEntry& e : closure) {
         AppearanceClosureEntry qe;

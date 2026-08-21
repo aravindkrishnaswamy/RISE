@@ -1239,20 +1239,30 @@ public:
     /// in BFS discovery order -- see `AppearanceClosureEntry`'s own comment
     /// on why a bare name is not enough to match against
     /// `PainterGraph::nodes`.  Empty when the object is unknown, has no
-    /// material bound, the resolved material name is AMBIGUOUS in the
+    /// material bound, or the resolved material name is AMBIGUOUS in the
     /// current graph (more than one same-category chunk shares it --
     /// refused rather than guessed, see
-    /// SceneEditController::AppearanceClosureForObject's own comment), or
-    /// the controller could not get a non-blocking hold of the commit lock
-    /// right now (a render owns the scene) -- this is a POLLED query (the
-    /// Qt canvas calls it from every performReload() pass), so it degrades
-    /// to empty on contention rather than blocking the caller's thread
-    /// behind a render; a polling caller retries on its next pass.  Called
-    /// directly on the C++ controller
-    /// (SceneEditController::AppearanceClosureForObject), the same "this
-    /// file already calls SceneEditController natively" reasoning
-    /// painterMaterialGraph() documents above.
-    QVector<AppearanceClosureEntry> appearanceClosureForObject(const QString& objectName) const;
+    /// SceneEditController::AppearanceClosureForObject's own comment).
+    ///
+    /// `degraded` (later external review round -- an empty result used to
+    /// be overloaded, and the Qt consumer polling this could not tell a
+    /// genuine empty answer apart from lock contention, which caused a
+    /// material-less object to pay a full deep resolve on every single
+    /// preview frame forever, since the caller had no way to know it was
+    /// safe to cache "empty" the way it caches a real answer): when
+    /// non-null, `*degraded` is set to `true` ONLY when the controller
+    /// could not get a non-blocking hold of the commit lock right now (a
+    /// render owns the scene) and so could not even ATTEMPT a real answer
+    /// -- this is a POLLED query (the Qt canvas calls it from every
+    /// performReload() pass), so `degraded == true` means "retry next
+    /// pass," not "the object has nothing to show." Set to `false` on
+    /// every other outcome, INCLUDING a successful walk that finds nothing
+    /// reachable -- that is a genuine, resolved answer a caller should
+    /// accept and cache, not retry. Defaults to `nullptr`. Called directly
+    /// on the C++ controller (SceneEditController::AppearanceClosureForObject),
+    /// the same "this file already calls SceneEditController natively"
+    /// reasoning painterMaterialGraph() documents above.
+    QVector<AppearanceClosureEntry> appearanceClosureForObject(const QString& objectName, bool* degraded = nullptr) const;
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →

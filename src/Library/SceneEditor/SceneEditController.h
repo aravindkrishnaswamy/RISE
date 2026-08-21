@@ -3273,6 +3273,20 @@ namespace RISE
 		//! retries on the next call rather than blocking the UI thread behind
 		//! a render.
 		//!
+		//! `outDegraded` (later external review round): an empty `result` is
+		//! OVERLOADED -- it means EITHER a genuinely resolved answer (unknown
+		//! object, no material bound, ambiguous material) OR that this call
+		//! could not even ATTEMPT a real answer because the commit lock was
+		//! contended. A caller that polls (both platform canvases do) needs
+		//! to tell these apart: a genuine empty answer should be accepted and
+		//! NOT retried; a degraded one should be retried once the lock is
+		//! likely free again. When non-null, `*outDegraded` is set to `true`
+		//! ONLY on the `mRenderOwnsScene`/`try_to_lock` refusals above, and
+		//! `false` on every other return path -- INCLUDING a successful walk
+		//! that finds nothing reachable. Defaults to `nullptr` (every
+		//! existing caller, including every test written before this
+		//! parameter existed, is unaffected).
+		//!
 		//! `objectName` naming an INSTANCING chunk (a `standard_object` with
 		//! its own `source X` and no `material` of its own) resolves to the
 		//! SAME material `X` itself would: this query reads the LIVE
@@ -3282,7 +3296,8 @@ namespace RISE
 		//! (`Cst::DeriveToJob` PASS-2 merges the source's bindings into the
 		//! Job-facing bag at DERIVE time, never into the retained Document;
 		//! see `standard_object`'s own descriptor comment on `source`).
-		std::vector<AppearanceClosureEntry> AppearanceClosureForObject( const String& objectName ) const;
+		std::vector<AppearanceClosureEntry> AppearanceClosureForObject(
+			const String& objectName, bool* outDegraded = nullptr ) const;
 
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`

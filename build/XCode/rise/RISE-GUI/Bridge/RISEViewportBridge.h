@@ -1063,20 +1063,30 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// `PainterMaterialGraph` `-painterMaterialGraph` reads from, in BFS
 /// discovery order -- see `RISEAppearanceClosureEntry`'s own comment on
 /// why a bare name is not enough to match against
-/// `RISEPainterMaterialGraph.nodes`.  Empty (never nil) when the object is
-/// unknown, has no material bound, the resolved material name is
-/// AMBIGUOUS in the current graph (more than one same-category chunk
-/// shares it -- refused rather than guessed, see
-/// `SceneEditController::AppearanceClosureForObject`'s own comment), or the
-/// controller could not get a non-blocking hold of the commit lock right
-/// now (a render owns the scene) -- this is a POLLED query (both platform
-/// canvases call it on every selection-observing pass), so it degrades to
-/// empty on contention rather than blocking the caller's thread behind a
-/// render; a polling caller retries on its next pass.  Called directly on
-/// the C++ controller (`SceneEditController::AppearanceClosureForObject`),
-/// the same "this file already calls SceneEditController natively"
-/// reasoning `-painterMaterialGraph` documents above.
-- (NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName
+/// `RISEPainterMaterialGraph.nodes`.
+///
+/// NIL VS EMPTY IS LOAD-BEARING (later external review round -- an empty
+/// array used to be overloaded and a Swift consumer polling this could not
+/// tell the two cases apart, which caused BOTH a lost auto-scroll AND,
+/// separately, an unbounded 0.5s retry timer for a genuinely material-less
+/// object): returns **nil** when the underlying
+/// `SceneEditController::AppearanceClosureForObject` call reports
+/// `outDegraded == true` -- the controller could not get a non-blocking
+/// hold of the commit lock right now (a render owns the scene) and so
+/// could not even ATTEMPT a real answer; this is a POLLED query (both
+/// platform canvases call it on every selection-observing pass), so nil
+/// here means "retry your next pass," not "the object has nothing to
+/// show." Returns a real, possibly-**empty** array for every OTHER
+/// outcome -- the object is unknown, has no material bound, or the
+/// resolved material name is AMBIGUOUS in the current graph (more than one
+/// same-category chunk shares it -- refused rather than guessed, see
+/// `SceneEditController::AppearanceClosureForObject`'s own comment) -- all
+/// of which are genuine, resolved answers a caller should accept and NOT
+/// retry. Called directly on the C++ controller
+/// (`SceneEditController::AppearanceClosureForObject`), the same "this
+/// file already calls SceneEditController natively" reasoning
+/// `-painterMaterialGraph` documents above.
+- (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName
     NS_SWIFT_NAME(appearanceClosure(forObject:));
 
 /// Phase 4b: per-category panel selection.  Returns the entity

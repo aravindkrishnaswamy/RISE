@@ -203,6 +203,7 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../src/Library/Cst/Cst.h"
@@ -367,6 +368,25 @@ static Job* LoadFixture( const char* path, const std::string& text )
 	if( !ok ) { j->release(); return nullptr; }
 	return j;
 }
+
+//! PART 12: `mRenderOwnsScene` (the flag `AppearanceClosureForObject`'s
+//! `outDegraded` reports on) is set ONLY by `RunPreviewRenderParked` --
+//! the "parked render" mechanism (`RenderOwnershipScope`,
+//! SceneEditController.cpp) -- NOT by the ordinary interactive `Start()`/
+//! `RenderLoop` per-frame loop, which uses a DIFFERENT flag (`mRendering`)
+//! entirely (verified against the source: `RenderLoop`'s own
+//! `DoOneRenderPass` call site, SceneEditController.cpp, sits under an
+//! `ActiveFlipGuard` that flips `mRendering`, never `mRenderOwnsScene`).
+//! An earlier draft of this test used a `DoOneRenderPass`-overriding
+//! subclass plus `Start()`, mirroring
+//! tests/SceneEditorCancelRestartTest.cpp's technique -- that compiled and
+//! ran, but never observed `mRenderOwnsScene` true even over a 10s poll,
+//! which is what caught this distinction. `RunPreviewRenderParked` is
+//! public and runs its callback SYNCHRONOUSLY on the CALLING thread with
+//! `mMutex` held for the callback's whole duration (its own header
+//! comment) -- so a background `std::thread` calling it with a sleeping
+//! lambda gives the main test thread a genuine, observable window to poll
+//! `ForTest_RenderOwnsScene()` against, no subclass needed.
 
 int main()
 {
@@ -1734,6 +1754,126 @@ int main()
 			const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, std::vector<EdgeSeed>() );
 			const int idx = SceneEditController::ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, String( "dup_mat" ), nullptr );
 			Check( idx < 0, "PART11D: a null outMatches pointer is tolerated (still refuses correctly)" );
+		}
+	}
+
+	// =================================================================
+	// PART 12 -- SceneEditController::AppearanceClosureForObject's
+	// `outDegraded` out-param (later external review round P1 fix): an
+	// empty result is overloaded ("genuinely nothing to show" vs "could
+	// not even attempt a real answer because a render owns the commit
+	// lock"), and both platform GUI consumers need to tell the two apart
+	// to avoid either an unbounded 0.5s retry-forever loop (Mac) or a
+	// full deep resolve on every single preview frame forever (Qt) for a
+	// perfectly ordinary material-less object. Pins `outDegraded == false`
+	// on (a) a successful closure, (b) a genuinely-empty resolve, (c) an
+	// unknown object -- and, since the render-ownership state IS reachable
+	// headlessly via the SAME DoOneRenderPass-override technique
+	// tests/SceneEditorCancelRestartTest.cpp already established (see
+	// DegradeTestController's own comment above), also pins
+	// `outDegraded == true` while a render genuinely owns the scene.
+	// =================================================================
+	{
+		const char* path = "test_referencegraph_degraded.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"film\n{\nwidth 32\nheight 24\n}\n"
+			"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"uniformcolor_painter\n{\nname base\ncolor 0.8 0.2 0.1\n}\n"
+			"lambertian_material\n{\nname matA\nreflectance base\n}\n"
+			"standard_object\n{\nname obj1\ngeometry g\nmaterial matA\nposition 0 0 0\n}\n"
+			"standard_object\n{\nname objNoMat\ngeometry g\nposition 2 0 0\n}\n" );
+		Check( j != nullptr, "PART12: fixture scene loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+			typedef SceneEditController::AppearanceClosureEntry ACEntry;
+
+			// ---- (a) successful closure -> outDegraded == false ----
+			{
+				bool degraded = true;   // seeded to the WRONG answer -- the call must actually set it
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "obj1" ), &degraded );
+				Check( !closure.empty(), "PART12a: obj1 resolves a non-empty closure (sanity)" );
+				Check( !degraded, "PART12a: a successful resolve reports outDegraded == false" );
+			}
+
+			// ---- (b) genuinely-empty resolve (material-less object) ->
+			// outDegraded == false -- this is THE case the prior fix got
+			// wrong (both platforms' consumers previously could not
+			// distinguish this from contention) ----
+			{
+				bool degraded = true;
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "objNoMat" ), &degraded );
+				Check( closure.empty(), "PART12b: objNoMat resolves an empty closure (sanity, no material bound)" );
+				Check( !degraded, "PART12b: a genuinely-empty resolve reports outDegraded == false, NOT true" );
+			}
+
+			// ---- (c) unknown object -> outDegraded == false ----
+			{
+				bool degraded = true;
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "no_such_object" ), &degraded );
+				Check( closure.empty(), "PART12c: an unknown object resolves an empty closure (sanity)" );
+				Check( !degraded, "PART12c: an unknown-object refusal reports outDegraded == false, NOT true" );
+			}
+
+			// ---- (d) outDegraded == nullptr default -- every pre-existing
+			// caller (PART 10's own calls, and both GUI bridges before
+			// this round) compiles and behaves unchanged. Not a new
+			// behavioral case, just confirming the default-arg contract
+			// mentioned in the header doesn't crash with no out-param at
+			// all. ----
+			{
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				Check( !closure.empty(), "PART12d: the default nullptr outDegraded is tolerated and the call still resolves" );
+			}
+
+			j->release();
+		}
+
+		// ---- (e) REAL render contention -> outDegraded == true ----
+		{
+			// A BARE, never-loaded Job. This part only exercises the
+			// `mRenderOwnsScene` gate itself (the FIRST check inside
+			// AppearanceClosureForObject, before anything scene-specific
+			// is ever touched), so an unloaded Job is adequate -- no scene
+			// content is needed to prove the gate.
+			Job* rj = new Job();
+			SceneEditController dc( *rj, /*interactiveRasterizer*/0 );
+
+			// RunPreviewRenderParked runs its callback SYNCHRONOUSLY, with
+			// mMutex held and mRenderOwnsScene set true for the callback's
+			// whole duration (its own header comment; see this PART's
+			// header comment for why this -- not Start()/RenderLoop -- is
+			// the mechanism that actually sets this flag). Drive it from a
+			// background thread so the main test thread can poll.
+			std::thread renderThread( [&dc]() {
+				dc.RunPreviewRenderParked( []() {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+				} );
+			} );
+
+			// 300ms is generous relative to the poll granularity (10ms) and
+			// the AppearanceClosureForObject call itself (microseconds) --
+			// once the poll below observes mRenderOwnsScene flip true, the
+			// remaining window comfortably covers the immediately
+			// following call.
+			bool sawRenderOwn = false;
+			for( int i = 0; i < 200; ++i ) {   // up to ~2s
+				if( dc.ForTest_RenderOwnsScene() ) { sawRenderOwn = true; break; }
+				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			}
+			Check( sawRenderOwn, "PART12e: the parked render is observed genuinely owning the scene" );
+
+			if( sawRenderOwn ) {
+				bool degraded = false;
+				const std::vector<SceneEditController::AppearanceClosureEntry> closure =
+					dc.AppearanceClosureForObject( String( "obj1" ), &degraded );
+				Check( degraded, "PART12e: a call made WHILE a render owns the scene reports outDegraded == true" );
+				Check( closure.empty(), "PART12e: a degraded call returns an empty result (never a stale/partial answer)" );
+			}
+
+			renderThread.join();
+			rj->release();
 		}
 	}
 
