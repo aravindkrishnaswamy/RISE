@@ -2167,6 +2167,48 @@ reachable interval, the limiter site must be reformulated branch-free and all
 affected r118/r119-class evidence rerun. No empirical branch frequency or
 measured fp32 difference may discharge it.
 
+### 7.39 Branch-obligation evidence and shared-limiter stop (r123)
+
+The amended no-Metal walk discharges the first PPM obligation. With endpoint
+deviations `l,r` and `q=3(l+r)`, the quadratic reconstruction differs from its
+endpoint chord by exactly `-q s(1-s)`. Both paths therefore coincide at `q=0`,
+and `max_[0,1] |q s(1-s)|=|q|/4`. For the r122 witness the outward ambiguity
+width is `2.008640214894198e-6`, giving the independently derived divergence
+term `5.021600537235496e-7`. The trace consumes that term rather than selecting
+its rounded nonzero branch. All executed PPM quadratic and stationary-point
+obligations, and all continuous `min`/`max` selections, are discharged by the
+same identity-plus-hull discipline.
+
+The complete 24-stage census contains 4,117,982 dynamic obligation instances:
+429,765 discharged and 3,688,217 still pending. This count is diagnostic
+evidence, not a bound. The first mandatory fallback occurs in dual-remap stage
+7 at comparison ordinal 64,076. The negative-deviation predicate is
+`-2.5484634978965355e-6 +/- 4.7677165632473422e-6`; its zero-headroom proof has
+lower numerator `-4.9406564584124654e-324` but requires
+`7.3161800611438812e-6` to leave the current shared limiter unchanged. The two
+executed successor values are alpha `1` and alpha `0`.
+
+This is not the PPM zero-branch problem in another spelling. A single shared
+tuple alpha that is (i) maximally inactive when a component imposes no
+constraint and (ii) strictly monotone when that component has zero headroom is
+discontinuous: for positive reconstruction direction `d`, zero headroom
+requires `alpha=0`, while at `d=0` that component is inactive and another tuple
+component may retain `alpha=1`. The one-sided limit and switching-surface value
+do not coincide. A local flat-stencil rewrite cannot repair the observed
+non-plateau sites and was therefore not admitted. A branch-stable replacement
+must explicitly change one of the coupled limiter semantics--per-component
+limiting (losing the common affine-row alpha), a deliberately non-maximal common
+limiter (adding dissipation), or loss of strict component monotonicity. That is
+an operator-contract decision, not an arithmetic tolerance choice.
+
+The exact no-Metal replay remains exit `237` after proving the PPM certificate
+and binding the first non-equivalent limiter paths. `B_fp32`, Metal
+confirmation, temporal refinement, eight-slice readmission, and thermo/source
+maps did not run. The durable census is
+`rendered/fire_production_calibration/r123_branch_obligations/branch_obligation_stop.v1`,
+SHA-256 `bc72222d064ec9b79c00b57c1c46f2ecbcd581502deae52be04f053ec50e2c4e`.
+The untouched golden checkpoint remains outside this diagnostic.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
