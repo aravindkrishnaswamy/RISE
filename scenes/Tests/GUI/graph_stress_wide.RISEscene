@@ -46,8 +46,8 @@ file_rasterizeroutput
 
 film
 {
-	width			96
-	height			72
+	width			800
+	height			600
 }
 
 pinhole_camera

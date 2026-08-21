@@ -296,7 +296,7 @@ Same discipline as doc 88 §8: each slice runs the implementation-review-loop to
     `ramp_painter` ×8, `mapping_painter` ×6, `stochastic_tile_painter`
     ×6, `scatter_painter` ×8, `voronoi3d_painter` ×2 incl. one
     `space world`, `blend_painter` ×24 cycling all five modes). Film
-    96×72, 4 samples, `pixelpel_rasterizer` — renders in 14ms.
+    800×600, 4 samples, `pixelpel_rasterizer` — renders in ~1s.
   - `graph_stress_editing.RISEscene` — 20 Painter/Material chunks (12
     painters + 8 materials), 15 edges, purpose-built for edit-flow
     exercises, each documented in-file as "exercise X by doing Y": a
@@ -309,8 +309,8 @@ Same discipline as doc 88 §8: each slice runs the implementation-review-loop to
     on `metal_trim_3`); a `png_painter{file textures/waterbump.png}`
     node (the file-slot picker flow, vs. a chunk-reference picker); a
     `ggx_material` (`mat_unspelled`) with its optional `rs` slot left
-    unbound (the unspelled/unbound-slot bind flow). Film 80×60, 4
-    samples — renders in 17-19ms.
+    unbound (the unspelled/unbound-slot bind flow). Film 800×600, 4
+    samples.
   - `panel_stress_params.RISEscene` — 12 Painter/Material chunks (7
     painters + 5 materials), 9 edges, the property-panel +
     `PainterPreview` load test: three `expression_painter` nodes
@@ -324,7 +324,7 @@ Same discipline as doc 88 §8: each slice runs the implementation-review-loop to
     dispersive `ior`, `panel_scalar_roughness_rgb` drives a
     `ggx_material`'s `alphax`/`alphay`, confirming those slots accept a
     per-channel scalar painter without a `requireSingle`-style refusal).
-    Film 80×60, 4 samples — renders in 30ms.
+    Film 800×600, 4 samples.
 
   Golden manifest (`tests/data/cst_derive_golden.txt`) regenerated after
   `git add`-ing the three new scenes (the ls-files coverage-sweep lesson):
