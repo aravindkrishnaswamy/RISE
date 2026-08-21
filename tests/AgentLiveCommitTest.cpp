@@ -2136,6 +2136,102 @@ static void TestAgentUnknownKindEditBumpsConservatively()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 11e (S15 review fix): `mSceneEpoch` gates the node-graph canvas's
+// reload (NodeGraphCanvas.swift's `performReload`, mirroring OutlinerView) --
+// but until this fix, the two paths that can REWIRE a graph edge never bumped
+// it: ApplyAgentParamEditInner_ (agent propose_patch AND, via SetProperty's
+// non-rebind fallthrough, the panel too -- covers reference params like a
+// painter-slot rebind) and the Category::Material slot-rebind arm (the GUI
+// panel rebinding a material's painter/scalar-painter slot). Undo/Redo
+// already bump unconditionally on their own landed mutation (see
+// UndoInner_/RedoInner_, "cheap to bump unconditionally").
+//
+// (a) a reference-param rewire via the AGENT path (ApplyAgentParamEdit
+//     rebinding `lum`'s `exitance` slot from `white` to `grey` -- this
+//     routes straight to ApplyAgentParamEditInner_'s Document mutation, NOT
+//     through the GUI's registered-painter classification) must bump.
+// (b) a material slot rebind via the GUI path (SetPropertyForCategory
+//     resolving `exitance` -> `grey` as a registered painter name, taking
+//     the Category::Material rebindSlot branch) must ALSO bump.
+// (c) a REFUSED edit (mid-transaction) must NOT bump -- no mutation landed,
+//     so no consumer needs to re-pull.
+//
+// RED-PROVE: at the pre-fix parent, neither ApplyAgentParamEditInner_ nor the
+// slot-rebind arm ever touched mSceneEpoch, so (a) and (b) both leave
+// SceneEpoch() UNCHANGED (only (c)'s no-bump assertion would still pass).
+//////////////////////////////////////////////////////////////////////
+static void TestSceneEpochBumpsOnGraphRewire()
+{
+	std::cout << "Test 11e: mSceneEpoch bumps on graph-edge rewires (agent param edit + GUI slot rebind), not on a refusal..." << std::endl;
+
+	const char* tmp = "agentlive_epoch_rewire.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		//------------------------------------------------------------------
+		// (a) AGENT-path reference-param rewire: exitance white -> grey via
+		// ApplyAgentParamEdit (ApplyAgentParamEditInner_'s Document-mutation
+		// route -- covers propose_patch AND panel reference-param edits).
+		//------------------------------------------------------------------
+		const unsigned int epochBeforeAgent = c.SceneEpoch();
+		const SceneEditController::AgentCommitResult agentRewire =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "exitance" ), String( "grey" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( agentRewire.applied && agentRewire.rawCode >= 1,
+		       "agent exitance rewire applies (rawCode >= 1 -- the mutation-landed test this fix uses)" );
+		const unsigned int epochAfterAgent = c.SceneEpoch();
+		Check( epochAfterAgent != epochBeforeAgent,
+		       "RED-PROVE: an agent propose_patch reference-param rewire (ApplyAgentParamEditInner_) bumps "
+		       "mSceneEpoch (at the pre-fix parent this stays UNCHANGED)" );
+
+		//------------------------------------------------------------------
+		// (b) GUI-path material slot rebind: exitance grey -> white via
+		// SetPropertyForCategory (Category::Material's rebindSlot branch,
+		// since `white` is a registered uniformcolor_painter).
+		//------------------------------------------------------------------
+		const unsigned int epochBeforeGui = c.SceneEpoch();
+		const bool guiRewireOk = c.SetPropertyForCategory(
+			SceneEditController::Category::Material, String( "exitance" ), String( "white" ) );
+		Check( guiRewireOk, "GUI exitance slot rebind (grey -> white) applies" );
+		const unsigned int epochAfterGui = c.SceneEpoch();
+		Check( epochAfterGui != epochBeforeGui,
+		       "RED-PROVE: a GUI material slot rebind (Category::Material's rebindSlot arm) bumps mSceneEpoch "
+		       "(at the pre-fix parent this stays UNCHANGED)" );
+
+		//------------------------------------------------------------------
+		// (c) Negative control: a REFUSED agent commit (mid-transaction) must
+		// NOT bump -- nothing mutated, so no consumer needs to re-pull.
+		//------------------------------------------------------------------
+		Check( c.BeginTransaction(), "transaction opens" );
+		const unsigned int epochBeforeRefusal = c.SceneEpoch();
+		const SceneEditController::AgentCommitResult refused =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "9.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( !refused.applied && refused.status == String( "rejected" ),
+		       "mid-transaction agent commit is refused (applied=false, status=\"rejected\")" );
+		const unsigned int epochAfterRefusal = c.SceneEpoch();
+		Check( epochAfterRefusal == epochBeforeRefusal,
+		       "a refused (mid-transaction) edit leaves mSceneEpoch UNCHANGED -- no mutation landed" );
+		Check( c.RollbackTransaction(), "rollback completes (empty transaction)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Test 12: the INTERLEAVING headline -- GUI edit A, agent edit B, GUI edit C;
 // Undo x3 must revert C, then B (the agent edit!), then A, in strict LIFO
 // order across BOTH clients (no special-casing by origin).  Redo x3 restores
@@ -6497,6 +6593,7 @@ int main()
 	TestAgentEmissiveEditBumpsLightGeneration();
 	TestAgentNonMaterialEditDoesNotBumpLightGeneration();
 	TestAgentUnknownKindEditBumpsConservatively();
+	TestSceneEpochBumpsOnGraphRewire();
 	TestInterleavedLifoUndo();
 	TestAgentEditDefaultedSlotUndo();
 	TestCodeThreeUndo();

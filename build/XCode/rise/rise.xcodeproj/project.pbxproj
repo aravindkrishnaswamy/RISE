@@ -7,17 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		140407933B9764E4BC83D473 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
 		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
-		F2586B1100000000A0000002 /* skills in Resources */ = {isa = PBXBuildFile; fileRef = F2586B1100000000A0000001 /* skills */; };
 		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
 		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
 		5C57B003000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
 		5C57B004000000000000C0DE /* Cst.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
+		5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
 		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
 		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
 		5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
 		5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
 		5EDAF71C14454D71AD5365FC /* BezierClipping.h in Headers */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
+		5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
+		638119AC57041C82DB44A5B1 /* PainterChannelScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
 		6A10B007000000000000C0DE /* ProceduralDescriptors.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
 		6A10B008000000000000C0DE /* ProceduralDescriptors.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
 		6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
@@ -26,28 +29,6 @@
 		6A11B002000000000000C0DE /* ExpressionEval.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
 		6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
 		6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
-		F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
-		F2ADD1000000000000000003 /* ExpressionParamSpec.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
-		EE990000000000000000001C /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
-		EE990000000000000000001D /* ExpressionPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
-		EE990000000000000000001E /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
-		EE990000000000000000001F /* ExpressionPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
-		994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
-		A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
-		71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
-		E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
-		D7F0DC15ABC1B86AE7C693B0 /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
-		FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
-		FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
-		5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
-		AA9ACED5B61C5CEB57B603BC /* StochasticTilePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */; };
-		5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
-		140407933B9764E4BC83D473 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
-		B6C0F688FFA8CDE958115833 /* StochasticTilePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */; };
-		85710068587FC02741850AF6 /* ScatterPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
-		A735D3AC56F0DA831B3E43A7 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
-		71618BBF16D279BF7A6042B8 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
-		CACC0D1DA2A40C557C9FE827 /* ScatterPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -93,7 +74,12 @@
 		6DFD32F70A0FBBAA00E99FBE /* EXRReader.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F30A0FBBAA00E99FBE /* EXRReader.h */; };
 		6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */; };
 		6DFD32F90A0FBBAA00E99FBE /* EXRWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */; };
+		71618BBF16D279BF7A6042B8 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
+		71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
 		7B74685035C14A7ABB6F0BCE /* ThinFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = 9888E7381E6C448B879A54D9 /* ThinFilm.h */; };
+		85710068587FC02741850AF6 /* ScatterPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
+		994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
+		A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
 		A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
 		A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
 		A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
@@ -150,13 +136,17 @@
 		A6E7B0E4000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
 		A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
 		A6E7B0F2000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
+		A735D3AC56F0DA831B3E43A7 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
 		AA0000030000000000000003 /* AutoRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000010000000000000001 /* AutoRasterizer.h */; };
 		AA0000040000000000000004 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
 		AA0000050000000000000005 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
+		AA9ACED5B61C5CEB57B603BC /* StochasticTilePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */; };
 		AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
 		AAB7C04202604280000000A2 /* VertexColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
 		ACE1000000000000000000A4 /* BVH.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A2 /* BVH.h */; };
 		ACE1000000000000000000A5 /* AccelerationConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A3 /* AccelerationConfig.h */; };
+		B3CF82E5032CA541ADA5A656 /* PainterChannelScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
+		B6C0F688FFA8CDE958115833 /* StochasticTilePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */; };
 		B7A4ED03F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
 		B7A4ED04F0DE4E61A0A3D001 /* AlphaTestShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */; };
 		B7A4ED05F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
@@ -171,6 +161,7 @@
 		B7A4ED1CF0DE4E61A0A3D001 /* SheenBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
 		B7A4ED1DF0DE4E61A0A3D001 /* SheenSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
 		B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
+		CACC0D1DA2A40C557C9FE827 /* ScatterPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
 		CC0F00000000000000000003 /* CompositeFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */; };
 		CC0F00000000000000000004 /* CompositeFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000002 /* CompositeFunction2DPainter.h */; };
 		CC0F00000000000000000005 /* CompositeFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */; };
@@ -183,6 +174,7 @@
 		CDA10000000000000000000D /* ControlledSmoothness2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
 		CDA10000000000000000000E /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
 		CDA10000000000000000000F /* ControlledSmoothness2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
+		D7F0DC15ABC1B86AE7C693B0 /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
 		DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
 		DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
@@ -197,6 +189,11 @@
 		DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* RenderParallelScope.h */; };
 		DEFE44ED00000000000000D1 /* RenderParallelScope.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */; };
 		DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* RenderParallelScope.h */; };
+		E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
+		EE990000000000000000001C /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
+		EE990000000000000000001D /* ExpressionPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
+		EE990000000000000000001E /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
+		EE990000000000000000001F /* ExpressionPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001A /* ExpressionPainter.h */; };
 		F24B71E02F52A632008304C4 /* AdaptiveDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */; };
 		F24B71E12F52A632008304C4 /* AdaptiveDetectorSphere.h in Sources */ = {isa = PBXBuildFile; fileRef = F277342707ECCC2F00C0B600 /* AdaptiveDetectorSphere.h */; };
 		F24B71E22F52A632008304C4 /* CircularDiskDetector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */; };
@@ -794,8 +791,6 @@
 		F24B743F2F52A632008304C4 /* Plane.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A34069C42900069C9E5 /* Plane.h */; };
 		F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */; };
 		F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */; };
-		F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
-		F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
 		F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A37069C42900069C9E5 /* RandomNumbers.h */; };
 		F24B74432F52A632008304C4 /* Ray.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F24B74442F52A632008304C4 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
@@ -885,6 +880,7 @@
 		F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */; };
 		F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
 		F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */ = {isa = PBXBuildFile; fileRef = F24D00002F7CAB67009AF16D /* IORStackSeeding.h */; };
+		F2586B1100000000A0000002 /* skills in Resources */ = {isa = PBXBuildFile; fileRef = F2586B1100000000A0000001 /* skills */; };
 		F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
 		F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
@@ -1443,8 +1439,6 @@
 		F27F0C8D069C42910069C9E5 /* Plane.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A34069C42900069C9E5 /* Plane.h */; };
 		F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */; };
 		F27F0C8F069C42910069C9E5 /* ProbabilityDensityFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */; };
-		F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
-		F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
 		F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A37069C42900069C9E5 /* RandomNumbers.h */; };
 		F27F0C91069C42910069C9E5 /* Ray.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
@@ -1500,6 +1494,12 @@
 		F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
 		F2A5C0D12FB30E000077A171 /* OidnConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0D02FB30E000077A171 /* OidnConfig.h */; };
 		F2A5C0E12FC50E000077A171 /* RasterizerDefaults.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */; };
+		F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
+		F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
+		F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
+		F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
+		F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
+		F2ADD1000000000000000003 /* ExpressionParamSpec.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
 		F2B10A000000000000BA5E02 /* BidirectionalRasterizerBase.h in Headers */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */; };
 		F2B10A000000000000BA5E03 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
 		F2B10A000000000000BA5E04 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
@@ -1877,10 +1877,9 @@
 		FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
 		FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
 		FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
-		638119AC57041C82DB44A5B1 /* PainterChannelScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
-		B3CF82E5032CA541ADA5A656 /* PainterChannelScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
 		FA9D00010000000000000001 /* FiniteMath.h in Sources */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
 		FA9D00020000000000000001 /* FiniteMath.h in Headers */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
+		FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
 		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
@@ -1907,6 +1906,14 @@
 		FECC0007000000000000FA04 /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FA02 /* PainterIntrospection.cpp */; };
 		FECC0007000000000000FA05 /* PainterIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FA01 /* PainterIntrospection.h */; };
 		FECC0007000000000000FA06 /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FA02 /* PainterIntrospection.cpp */; };
+		FECC0007000000000000FB03 /* PainterPreview.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB01 /* PainterPreview.h */; };
+		FECC0007000000000000FB04 /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
+		FECC0007000000000000FB05 /* PainterPreview.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB01 /* PainterPreview.h */; };
+		FECC0007000000000000FB06 /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
+		FECC0008000000000000F803 /* EntityTemplates.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
+		FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
+		FECC0008000000000000F805 /* EntityTemplates.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
+		FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
 		FECC0009000000000000FC03 /* ReferenceGraph.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC01 /* ReferenceGraph.h */; };
 		FECC0009000000000000FC04 /* ReferenceGraph.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC02 /* ReferenceGraph.cpp */; };
 		FECC0009000000000000FC05 /* ReferenceGraph.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC01 /* ReferenceGraph.h */; };
@@ -1919,14 +1926,6 @@
 		FECC0009000000000000FE04 /* GraphLayoutSidecar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FE02 /* GraphLayoutSidecar.cpp */; };
 		FECC0009000000000000FE05 /* GraphLayoutSidecar.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FE01 /* GraphLayoutSidecar.h */; };
 		FECC0009000000000000FE06 /* GraphLayoutSidecar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FE02 /* GraphLayoutSidecar.cpp */; };
-		FECC0007000000000000FB03 /* PainterPreview.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB01 /* PainterPreview.h */; };
-		FECC0007000000000000FB04 /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
-		FECC0007000000000000FB05 /* PainterPreview.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB01 /* PainterPreview.h */; };
-		FECC0007000000000000FB06 /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
-		FECC0008000000000000F803 /* EntityTemplates.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
-		FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
-		FECC0008000000000000F805 /* EntityTemplates.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
-		FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
 		FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
@@ -1936,6 +1935,7 @@
 		FF11FFFF000000000000F1A5 /* Film.h in Headers */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A4 /* Film.h */; };
 		FF11FFFF000000000000F1A7 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
 		FF11FFFF000000000000F1A8 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
+		FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1951,7 +1951,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		F2586B1100000000A0000001 /* skills */ = {isa = PBXFileReference; lastKnownFileType = folder; name = skills; path = ../../../skills; sourceTree = SOURCE_ROOT; };
+		03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MappingPainter.cpp; sourceTree = "<group>"; };
+		40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterChannelScalarPainter.h; sourceTree = "<group>"; };
+		457B359DA029B1CE5FC98767 /* MappingPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MappingPainter.h; sourceTree = "<group>"; };
 		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
 		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
 		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
@@ -1960,17 +1962,6 @@
 		6A10E005000000000000C0DE /* Function2DColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DColorPainter.h; sourceTree = "<group>"; };
 		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
 		6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionFunction2DPainter.h; sourceTree = "<group>"; };
-		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
-		EE990000000000000000001A /* ExpressionPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionPainter.h; sourceTree = "<group>"; };
-		EE990000000000000000001B /* ExpressionPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionPainter.cpp; sourceTree = "<group>"; };
-		89A2797DF74BDB70C5D959B9 /* RampPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RampPainter.h; sourceTree = "<group>"; };
-		F204D6F309C3AA61F5300F19 /* RampPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RampPainter.cpp; sourceTree = "<group>"; };
-		457B359DA029B1CE5FC98767 /* MappingPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MappingPainter.h; sourceTree = "<group>"; };
-		03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MappingPainter.cpp; sourceTree = "<group>"; };
-		EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StochasticTilePainter.h; sourceTree = "<group>"; };
-		9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = StochasticTilePainter.cpp; sourceTree = "<group>"; };
-		BE7496E31374360455F82362 /* ScatterPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ScatterPainter.h; sourceTree = "<group>"; };
-		95A25391E59451A35B5168AB /* ScatterPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ScatterPainter.cpp; sourceTree = "<group>"; };
 		6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AmbientOcclusionShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AmbientOcclusionShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AreaLightShaderOp.cpp; sourceTree = "<group>"; };
@@ -2017,7 +2008,10 @@
 		6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EXRWriter.cpp; sourceTree = "<group>"; };
 		6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRWriter.h; sourceTree = "<group>"; };
 		876B3710A0D34ED183373077 /* BezierClipping.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierClipping.h; sourceTree = "<group>"; };
+		89A2797DF74BDB70C5D959B9 /* RampPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RampPainter.h; sourceTree = "<group>"; };
 		8DD76F6C0486A84900D96B5E /* rise */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rise; sourceTree = BUILT_PRODUCTS_DIR; };
+		9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = StochasticTilePainter.cpp; sourceTree = "<group>"; };
+		95A25391E59451A35B5168AB /* ScatterPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ScatterPainter.cpp; sourceTree = "<group>"; };
 		9888E7381E6C448B879A54D9 /* ThinFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThinFilm.h; sourceTree = "<group>"; };
 		A6E7E001000000000000C0DE /* AgentSession.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentSession.cpp; sourceTree = "<group>"; };
 		A6E7E002000000000000C0DE /* SchemaGen.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SchemaGen.cpp; sourceTree = "<group>"; };
@@ -2059,6 +2053,7 @@
 		B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenSPF.h; sourceTree = "<group>"; };
 		B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenSPF.cpp; sourceTree = "<group>"; };
 		B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenMaterial.h; sourceTree = "<group>"; };
+		BE7496E31374360455F82362 /* ScatterPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ScatterPainter.h; sourceTree = "<group>"; };
 		CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeFunction2DPainter.cpp; sourceTree = "<group>"; };
 		CC0F00000000000000000002 /* CompositeFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompositeFunction2DPainter.h; sourceTree = "<group>"; };
 		CC0F00000000000000000007 /* PolynomialFunction2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PolynomialFunction2DPainter.cpp; sourceTree = "<group>"; };
@@ -2072,6 +2067,10 @@
 		DDDD0000000000000000000D /* Observable.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Observable.h; sourceTree = "<group>"; };
 		DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RenderParallelScope.cpp; sourceTree = "<group>"; };
 		DEFE44ED00000000000000F2 /* RenderParallelScope.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RenderParallelScope.h; sourceTree = "<group>"; };
+		EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StochasticTilePainter.h; sourceTree = "<group>"; };
+		EE990000000000000000001A /* ExpressionPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionPainter.h; sourceTree = "<group>"; };
+		EE990000000000000000001B /* ExpressionPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionPainter.cpp; sourceTree = "<group>"; };
+		F204D6F309C3AA61F5300F19 /* RampPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RampPainter.cpp; sourceTree = "<group>"; };
 		F24B71C62F52A211008304C4 /* RISE-GUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RISE-GUI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F24B80012F52A632008304C4 /* PendingPhotonShoots.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PendingPhotonShoots.h; sourceTree = "<group>"; };
 		F24C3E032F54FB56005DA46B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
@@ -2110,6 +2109,7 @@
 		F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTSpectralRasterizer.h; sourceTree = "<group>"; };
 		F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F24D00002F7CAB67009AF16D /* IORStackSeeding.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IORStackSeeding.h; sourceTree = "<group>"; };
+		F2586B1100000000A0000001 /* skills */ = {isa = PBXFileReference; lastKnownFileType = folder; name = skills; path = ../../../skills; sourceTree = SOURCE_ROOT; };
 		F2617A0D2F9A000100610001 /* GlintModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GlintModifier.cpp; sourceTree = "<group>"; };
 		F2617A0D2F9A000100610002 /* GlintModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GlintModifier.h; sourceTree = "<group>"; };
 		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
@@ -2665,8 +2665,6 @@
 		F27F0A34069C42900069C9E5 /* Plane.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Plane.h; sourceTree = "<group>"; };
 		F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ProbabilityDensityFunction.cpp; sourceTree = "<group>"; };
 		F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProbabilityDensityFunction.h; sourceTree = "<group>"; };
-		F2ADD0000000000000000001 /* ProceduralNoiseCore.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProceduralNoiseCore.h; sourceTree = "<group>"; };
-		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
 		F27F0A37069C42900069C9E5 /* RandomNumbers.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RandomNumbers.h; sourceTree = "<group>"; };
 		F27F0A38069C42900069C9E5 /* Ray.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Ray.h; sourceTree = "<group>"; };
 		F27F0A39069C42900069C9E5 /* Reference.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Reference.cpp; sourceTree = "<group>"; };
@@ -2716,6 +2714,9 @@
 		F2A00000000000000000001F /* SMSPhotonMap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSPhotonMap.cpp; sourceTree = "<group>"; };
 		F2A5C0D02FB30E000077A171 /* OidnConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OidnConfig.h; sourceTree = "<group>"; };
 		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
+		F2ADD0000000000000000001 /* ProceduralNoiseCore.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProceduralNoiseCore.h; sourceTree = "<group>"; };
+		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
+		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
 		F2BAFED100000000000000A1 /* RGBToSpectrumTable_LUTData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RGBToSpectrumTable_LUTData.cpp; sourceTree = "<group>"; };
@@ -2950,7 +2951,6 @@
 		FA1ABFR1000000000000002C /* ScaledScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScaledScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MultiplyScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
-		40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterChannelScalarPainter.h; sourceTree = "<group>"; };
 		FA9D00030000000000000001 /* FiniteMath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FiniteMath.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
@@ -2965,16 +2965,16 @@
 		FECC0007000000000000F702 /* CstIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CstIntrospection.cpp; sourceTree = "<group>"; };
 		FECC0007000000000000FA01 /* PainterIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterIntrospection.h; sourceTree = "<group>"; };
 		FECC0007000000000000FA02 /* PainterIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterIntrospection.cpp; sourceTree = "<group>"; };
+		FECC0007000000000000FB01 /* PainterPreview.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterPreview.h; sourceTree = "<group>"; };
+		FECC0007000000000000FB02 /* PainterPreview.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterPreview.cpp; sourceTree = "<group>"; };
+		FECC0008000000000000F801 /* EntityTemplates.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EntityTemplates.h; sourceTree = "<group>"; };
+		FECC0008000000000000F802 /* EntityTemplates.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EntityTemplates.cpp; sourceTree = "<group>"; };
 		FECC0009000000000000FC01 /* ReferenceGraph.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ReferenceGraph.h; sourceTree = "<group>"; };
 		FECC0009000000000000FC02 /* ReferenceGraph.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ReferenceGraph.cpp; sourceTree = "<group>"; };
 		FECC0009000000000000FD01 /* GraphLayout.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GraphLayout.h; sourceTree = "<group>"; };
 		FECC0009000000000000FD02 /* GraphLayout.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GraphLayout.cpp; sourceTree = "<group>"; };
 		FECC0009000000000000FE01 /* GraphLayoutSidecar.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GraphLayoutSidecar.h; sourceTree = "<group>"; };
 		FECC0009000000000000FE02 /* GraphLayoutSidecar.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GraphLayoutSidecar.cpp; sourceTree = "<group>"; };
-		FECC0007000000000000FB01 /* PainterPreview.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterPreview.h; sourceTree = "<group>"; };
-		FECC0007000000000000FB02 /* PainterPreview.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterPreview.cpp; sourceTree = "<group>"; };
-		FECC0008000000000000F801 /* EntityTemplates.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EntityTemplates.h; sourceTree = "<group>"; };
-		FECC0008000000000000F802 /* EntityTemplates.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EntityTemplates.cpp; sourceTree = "<group>"; };
 		FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SnapshotLeafClone.cpp; sourceTree = "<group>"; };
 		FEEDC10E0000000000000004 /* SnapshotLeafClone.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SnapshotLeafClone.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A1 /* IFilm.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFilm.h; sourceTree = "<group>"; };

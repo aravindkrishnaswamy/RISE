@@ -7059,6 +7059,24 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// (code 3 remains applied=false / "diagnosed"); this only decouples the render-kick from success.
 	if( code == 1 || code == 2 || code == 3 )
 	{
+		// S15 review fix: this path (panel painter-param edits AND agent
+		// propose_patch, INCLUDING reference params like blend_painter's
+		// colora/mask/source) can REWIRE a graph edge, which the node-graph
+		// canvas only re-pulls when `bridge.sceneEpoch` advances
+		// (NodeGraphCanvas.swift's `performReload` epoch-cache short-circuit,
+		// mirroring OutlinerView's).  Undo/Redo already bump unconditionally
+		// here ("cheap to bump unconditionally", see UndoInner_/RedoInner_
+		// above) whenever their own mutation landed; this site was the gap --
+		// a rewire committed here refreshed on a LATER undo of it, never on
+		// the rewire itself.  `code == 1 || 2 || 3` is exactly "rawCode >= 1",
+		// i.e. the Document WAS mutated (code 3 is diagnosed-but-mutated, see
+		// its case arm above) -- bump unconditionally rather than trying to
+		// classify which params are graph-structural; every consumer
+		// (OutlinerView / NodeGraphCanvas / the Windows OutlinerWidget) is
+		// epoch-gated but content-diffs before doing real work, so an extra
+		// bump on a non-structural param edit is a no-op, not a regression.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
 		// F5 slice 1b (data-loss fix): the agent path mutated the retained
 		// CST head DIRECTLY via ApplyCstParamEdit -- it bypassed
 		// mEditor.Apply, so the GUI's per-edit dirty-mark
@@ -16225,6 +16243,17 @@ bool SceneEditController::SetPropertyInner_(
 		// diagnosed CST re-derive (Job code 3) replaced the Scene+managers, so the viewport must repaint.  Kick on
 		// `ok || changed`, return the unchanged success bool.
 		if( !ok && !mEditor.CstLiveSceneChangedInLastApply() ) return false;
+
+		// S15 review fix: this arm REBINDS a material slot to a different
+		// painter/scalar-painter -- exactly the graph-edge rewire the
+		// node-graph canvas exists to show, and its epoch-gated reload
+		// (NodeGraphCanvas.swift) never re-pulled without this.  Mirrors the
+		// same "mutation landed" test the kick above just used (`ok ||
+		// changed`, not the return value alone) -- a diagnosed code-3 still
+		// rewired the slot before the re-derive flagged it.  See the
+		// ApplyAgentParamEditInner_ bump above for the "cheap to bump
+		// unconditionally" precedent and the consumer no-op argument.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();

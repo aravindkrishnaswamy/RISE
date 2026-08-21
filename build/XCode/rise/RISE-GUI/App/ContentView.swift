@@ -173,6 +173,12 @@ struct ContentView: View {
                 agentTabBody
             case .sceneFile:
                 SceneEditorPanel()
+            case .graph:
+                // doc-88 Phase 3 S15: the read-only Painter/Material node
+                // canvas. `viewModel.viewportBridge` is guaranteed non-nil
+                // here — `leftPanel` itself is only rendered from
+                // `mainArea` when `viewModel.viewportBridge != nil`.
+                NodeGraphCanvas(bridge: viewModel.viewportBridge, refreshTrigger: $propertyRefresh)
             }
         }
         .frame(width: CGFloat(leftPanelWidth))
@@ -215,6 +221,11 @@ struct ContentView: View {
             }
             leftPanelTabButton(title: "Scene file", isActive: viewModel.leftTab == .sceneFile, showDot: false) {
                 viewModel.leftTab = .sceneFile
+            }
+            // doc-88 Phase 3 S15: third tab for the read-only Painter/
+            // Material node canvas — same tab-strip idiom, zero new chrome.
+            leftPanelTabButton(title: "Graph", isActive: viewModel.leftTab == .graph, showDot: false) {
+                viewModel.leftTab = .graph
             }
             Spacer(minLength: 0)
         }

@@ -188,6 +188,87 @@ enum ViewportReattachProbe {
     }
 }
 
+/// Headless regression probe for doc-88 Phase 3 S15's Mac node canvas
+/// (`NodeGraphCanvas.swift`). Pixels are manual-checklist only (a real
+/// node-box layout needs eyes), but the DATA path underneath every pixel
+/// -- one transactional `-[RISEViewportBridge painterMaterialGraph]`
+/// call, exactly what `NodeGraphCanvas.performReload` itself calls -- is
+/// fully exercisable headless, so this pins that end-to-end: load a real
+/// scene, fetch the laid-out graph, and assert the shape a canvas render
+/// depends on (non-empty nodes/edges, non-origin laid-out positions, a
+/// known material node with out-edges, a known expression-family node
+/// with `def` stages).
+///
+/// Enable with `RISE_GUI_HEADLESS_PROBE=graph_canvas_smoke`.  Defaults to
+/// `scenes/FeatureBased/Textures/weathered_workbench.RISEscene` (the
+/// scene this slice's manual checklist also uses -- "expect ~a dozen
+/// typed nodes, wires L->R, thumbnails"); override with
+/// `RISE_GUI_HEADLESS_PROBE_SCENE` for a different fixture.
+/// `RISE_MEDIA_PATH` must be set to the repo root, same as any RISE
+/// render (see ViewportReattachProbe's own doc for the exact env-var
+/// recipe). Exits the process with 0 (pass) or 1 (fail) -- never reaches
+/// the normal SwiftUI app body. Zero cost when the env var is unset.
+///
+///   export RISE_MEDIA_PATH="$(pwd)/"
+///   export RISE_GUI_HEADLESS_PROBE=graph_canvas_smoke
+///   <path-to>/RISE-GUI.app/Contents/MacOS/RISE-GUI
+enum GraphCanvasSmokeProbe {
+    static func runIfRequested() {
+        guard ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE"]
+                == "graph_canvas_smoke" else { return }
+        let scenePath = ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE_SCENE"]
+            ?? "scenes/FeatureBased/Textures/weathered_workbench.RISEscene"
+
+        func step(_ label: String, _ ok: Bool) -> Bool {
+            print("GraphCanvasSmokeProbe: \(ok ? "PASS" : "FAIL") -- \(label)")
+            return ok
+        }
+
+        var allOK = true
+        let bridge = RISEBridge()
+        allOK = step("load scene (\(scenePath))", bridge.loadAsciiScene(scenePath)) && allOK
+
+        guard let vb = RISEViewportBridge(hostBridge: bridge) else {
+            _ = step("viewport bridge constructed", false)
+            print("GraphCanvasSmokeProbe: FAILURE (see above)")
+            exit(1)
+        }
+        _ = step("viewport bridge constructed", true)
+
+        // The SAME single bulk transactional read NodeGraphCanvas.
+        // performReload itself calls -- see that method for the canvas's
+        // own consumption of this exact data.
+        let graph = vb.painterMaterialGraph()
+        allOK = step("nodes non-empty (\(graph.nodes.count))", !graph.nodes.isEmpty) && allOK
+        allOK = step("generation non-zero (\(graph.generation))", graph.generation != 0) && allOK
+
+        let edgeCount = graph.nodes.reduce(0) { $0 + $1.outEdges.filter { $0.otherNodeIndex >= 0 }.count }
+        allOK = step("edges non-empty (\(edgeCount))", edgeCount > 0) && allOK
+
+        let hasLaidOutPosition = graph.nodes.contains { $0.x > 0 || $0.y > 0 }
+        allOK = step("at least one node has a non-origin laid-out position", hasLaidOutPosition) && allOK
+
+        if let material = graph.nodes.first(where: { $0.name == "mat_wood_top" }) {
+            allOK = step("mat_wood_top category is Material(2), got \(material.category)",
+                         material.category == 2) && allOK
+            allOK = step("mat_wood_top has out-edges", !material.outEdges.isEmpty) && allOK
+        } else {
+            allOK = step("known material node 'mat_wood_top' present", false) && allOK
+        }
+
+        if let expr = graph.nodes.first(where: { $0.name == "sp_pit_rough" }) {
+            allOK = step("sp_pit_rough is expression-family (defCount=\(expr.defCount) > 0)",
+                         expr.defCount > 0) && allOK
+        } else {
+            allOK = step("known expression node 'sp_pit_rough' present", false) && allOK
+        }
+
+        vb.shutdown()
+        print(allOK ? "GraphCanvasSmokeProbe: ALL PASS" : "GraphCanvasSmokeProbe: FAILURE (see above)")
+        exit(allOK ? 0 : 1)
+    }
+}
+
 /// Quit-time unsaved-work prompt (84-trajectory-document-snapshots'
 /// backstop is a safety net, not the fix — this is the fix): SwiftUI's
 /// `App` protocol installs an implicit delegate that always answers
@@ -254,6 +335,9 @@ struct RISEApp: App {
         // and must never fall through to the normal app body -- it exits
         // the process itself.
         ViewportReattachProbe.runIfRequested()
+        // Same "must run before anything else, exits the process itself"
+        // contract -- see GraphCanvasSmokeProbe's own header doc.
+        GraphCanvasSmokeProbe.runIfRequested()
         // Quit-time save prompt: hand the delegate the SAME RenderViewModel
         // instance ContentView/the menus use (not a second one) so its
         // dirty check reflects the actual open scene.

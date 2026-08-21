@@ -39,6 +39,10 @@ enum RenderState: Equatable {
 enum LeftPanelTab {
     case agent
     case sceneFile
+    /// doc-88 Phase 3 S15: the read-only Painter/Material node canvas
+    /// (`NodeGraphCanvas.swift`) — a third tab alongside Agent/Scene file,
+    /// same tab-strip idiom, no new chrome pattern.
+    case graph
 }
 
 /// Thread-safe image buffer that accumulates progressive RGBA16 render updates
@@ -288,6 +292,26 @@ final class RenderViewModel: ObservableObject {
     }
     @Published var editorRevealRequest: EditorRevealRequest? = nil
     private var nextEditorRevealGeneration = 1
+
+    /// doc-88 Phase 3 S15 (docs/gui/NODE_GRAPH_CANVAS.md §5 item 2):
+    /// double-clicking an expression-family node on the canvas asks
+    /// PropertiesPanel to reveal its `def[i]` rows.  Same generation-
+    /// counter shape as `EditorRevealRequest` for the identical reason —
+    /// a repeat double-click on the SAME already-selected painter (e.g.
+    /// the user hand-collapsed "Advanced" since the first click) must
+    /// still re-trigger the reveal rather than being skipped as
+    /// "unchanged."  No new introspection: PropertiesPanel already
+    /// renders `def[i]` rows (with a stage thumbnail) whenever they're
+    /// visible — this only asks it to open the Advanced disclosure that
+    /// may be hiding them.  See PropertiesPanel's consumption of this
+    /// for why that's the documented Phase-A scope (no per-row scroll-to
+    /// anchor exists in the panel yet).
+    struct GraphDefFocusRequest {
+        let painterName: String
+        let generation: Int
+    }
+    @Published var graphDefFocusRequest: GraphDefFocusRequest? = nil
+    private var nextGraphDefFocusGeneration = 1
 
     // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
     // "agent + user co-edit" affordance — a typed JSON-RPC request is
@@ -2656,6 +2680,16 @@ final class RenderViewModel: ObservableObject {
         guard !isEditorDirty else { return }
         editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: 0, generation: nextEditorRevealGeneration)
         nextEditorRevealGeneration += 1
+    }
+
+    /// doc-88 Phase 3 S15: node-canvas double-click entry point — see
+    /// `GraphDefFocusRequest`.  Selection (which entity/category the
+    /// property panel shows) is a separate call the canvas makes itself
+    /// via the bridge (`setSelection`); this only carries the "please
+    /// open Advanced" intent, so it takes just the name, not a category.
+    func focusPainterDefRows(name: String) {
+        graphDefFocusRequest = GraphDefFocusRequest(painterName: name, generation: nextGraphDefFocusGeneration)
+        nextGraphDefFocusGeneration += 1
     }
 
     /// Source traceability: reveal a specific UI element's span in the Scene-file

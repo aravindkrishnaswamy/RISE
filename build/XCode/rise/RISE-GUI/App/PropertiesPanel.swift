@@ -295,7 +295,13 @@ final class PainterThumbnailCache {
 /// A small preview swatch for a painter (`defIndex == -1`) or one of its
 /// expression `def` stages (`defIndex >= 0`).  Renders a neutral filled
 /// tile until the async fetch lands, never blocking the row it sits in.
-private struct PainterThumbnailView: View {
+///
+/// Internal (not `private`) since doc-88 Phase 3 S15's node canvas
+/// (`NodeGraphCanvas.swift`, same target/module) reuses this verbatim for
+/// its node-box thumbnails per docs/gui/NODE_GRAPH_CANVAS.md §5 item 3 --
+/// "PainterPreview... this is exactly why S10 shipped painter previews
+/// ahead of the canvas." No second cache, no reimplementation.
+struct PainterThumbnailView: View {
     /// Weak for the same reason `PainterPreviewFetcher` is (see its doc):
     /// a swatch must never keep a shut-down bridge alive past its scene.
     weak var bridge: RISEViewportBridge?
@@ -351,7 +357,10 @@ private struct PainterThumbnailView: View {
 /// RampPainter::EvalAt sweeps `t` directly, bypassing `input` -- see
 /// PainterPreview::RenderRampStripPreview's doc comment), so the two
 /// never collide or overwrite each other in the cache.
-private struct RampStripThumbnailView: View {
+///
+/// Internal (not `private`) -- see `PainterThumbnailView`'s doc above:
+/// reused verbatim by the S15 node canvas for a `ramp_painter` node's box.
+struct RampStripThumbnailView: View {
     /// Weak — see `PainterThumbnailView.bridge`.
     weak var bridge: RISEViewportBridge?
     let painterName: String
@@ -428,6 +437,11 @@ struct PropertiesPanel: View {
     @State private var selectionName: String = ""
     @State private var showAdvanced: Bool = false
     @State private var lastEntityKey: String = ""
+    // doc-88 Phase 3 S15: last-consumed `viewModel.graphDefFocusRequest`
+    // generation, so a canvas double-click's "open Advanced" intent is
+    // applied exactly once (a stale request must not keep re-opening
+    // Advanced after the user manually collapses it again).
+    @State private var lastGraphDefFocusGeneration: Int = 0
     // "Reveal in scene file" (design comp ⌗ affordance): the selected
     // entity's 1-based line in the scene text, or nil when unavailable
     // (no CST document, unresolvable/ambiguous name, or a category with
@@ -462,6 +476,11 @@ struct PropertiesPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { reload() }
         .onChange(of: refreshTrigger) { _, _ in reload() }
+        // Belt-and-suspenders alongside the canvas's own refreshTrigger
+        // bump (NodeGraphCanvas.selectNode always bumps both together) —
+        // guards a future caller of focusPainterDefRows that forgets to
+        // also bump refreshTrigger.
+        .onChange(of: viewModel.graphDefFocusRequest?.generation) { _, _ in reload() }
     }
 
     // MARK: - Entity header
@@ -976,6 +995,23 @@ struct PropertiesPanel: View {
         if keyChanged {
             lastEntityKey = key
             showAdvanced = false
+        }
+
+        // doc-88 Phase 3 S15: apply a pending canvas double-click "reveal
+        // def rows" intent, AFTER the keyChanged reset above so it isn't
+        // immediately clobbered back to false when the double-click is
+        // also what changed the selection (the common case). Gated on the
+        // generation counter (not a Bool) so a second double-click on the
+        // same node re-opens Advanced even if untouched since; gated on
+        // name match so a stale request queued for a DIFFERENT node
+        // (selection changed via some other path before this ran) doesn't
+        // pop Advanced open for the wrong entity.
+        if let req = viewModel.graphDefFocusRequest,
+           req.generation != lastGraphDefFocusGeneration {
+            lastGraphDefFocusGeneration = req.generation
+            if req.painterName == selectionName {
+                showAdvanced = true
+            }
         }
 
         // "Reveal in scene file": fetch on selection change, and ALSO
