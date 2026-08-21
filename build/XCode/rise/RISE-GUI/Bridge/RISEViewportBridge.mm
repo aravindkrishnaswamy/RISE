@@ -91,6 +91,32 @@ NSString* NamedViewDisplayName( const char* bytes )
                         roots:(NSArray<NSNumber *> *)roots;
 @end
 
+// Class extensions: private initialisers for the doc-88 Phase 3 S14
+// Painter/Material graph value types.
+@interface RISEGraphPort ()
+- (instancetype)initWithParamName:(NSString *)paramName
+                        occurrence:(NSInteger)occurrence
+                    otherNodeIndex:(NSInteger)otherNodeIndex
+                         otherName:(NSString *)otherName;
+@end
+
+@interface RISEGraphNode ()
+- (instancetype)initWithHandle:(unsigned long long)handle
+                           name:(NSString *)name
+                   chunkKeyword:(NSString *)chunkKeyword
+                       category:(NSInteger)category
+                       defCount:(NSInteger)defCount
+                              x:(double)x
+                              y:(double)y
+                       outEdges:(NSArray<RISEGraphPort *> *)outEdges
+                        inEdges:(NSArray<RISEGraphPort *> *)inEdges;
+@end
+
+@interface RISEPainterMaterialGraph ()
+- (instancetype)initWithNodes:(NSArray<RISEGraphNode *> *)nodes
+                    generation:(unsigned long long)generation;
+@end
+
 // Class extension: private initializer for RISEViewportProperty.
 @interface RISEViewportProperty ()
 - (instancetype)initWithName:(NSString *)name
@@ -1945,6 +1971,62 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return [[RISESceneTree alloc] initWithNodes:nodes roots:roots];
 }
 
+- (RISEPainterMaterialGraph *)painterMaterialGraph {
+    if (!_controller) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+    }
+
+    // ONE TRANSACTIONAL READ, the SAME discipline -categoryTree: documents
+    // above: SceneEditController::ReadPainterMaterialGraphLaidOut composes
+    // S11's graph + S13's saved sidecar positions + S12's auto-layout
+    // fill-in under one snapshot-lock hold (plus one small sidecar file
+    // read -- see that method's own header comment), so what lands here
+    // cannot straddle two different published generations. Called
+    // directly on the C++ controller, not through RISE_API_*, for the
+    // same reason -categoryTree: is: this file already calls
+    // SceneEditController natively, and the C ABI's PainterGraph* surface
+    // is per-node -- exactly the non-transactional shape this method
+    // exists to avoid.
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    _controller->ReadPainterMaterialGraphLaidOut(g);
+
+    const std::size_t n = g.graph.nodes.size();
+    NSMutableArray<RISEGraphNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
+    for (std::size_t i = 0; i < n; ++i) {
+        const SceneEditController::GraphNode &gn = g.graph.nodes[i];
+        const SceneEditController::GraphNodePosition &pos = g.positions[i];
+
+        auto convertPorts = [](const std::vector<SceneEditController::GraphPort> &ports) {
+            NSMutableArray<RISEGraphPort *> *out = [NSMutableArray arrayWithCapacity:ports.size()];
+            for (const SceneEditController::GraphPort &p : ports) {
+                const NSInteger otherIdx =
+                    (p.otherNode == SceneEditController::kInvalidNodeIndex)
+                        ? -1 : static_cast<NSInteger>(p.otherNode);
+                NSString *paramName = NamedViewDisplayName(p.paramName.c_str()) ?: @"";
+                NSString *otherName = NamedViewDisplayName(p.otherName.c_str()) ?: @"";
+                [out addObject:[[RISEGraphPort alloc] initWithParamName:paramName
+                                                               occurrence:p.occurrence
+                                                           otherNodeIndex:otherIdx
+                                                                otherName:otherName]];
+            }
+            return out;
+        };
+
+        NSString *name = NamedViewDisplayName(gn.name.c_str()) ?: @"";
+        NSString *chunkKeyword = NamedViewDisplayName(gn.chunkKeyword.c_str()) ?: @"";
+        [nodes addObject:[[RISEGraphNode alloc] initWithHandle:gn.handle
+                                                            name:name
+                                                    chunkKeyword:chunkKeyword
+                                                        category:static_cast<NSInteger>(gn.category)
+                                                        defCount:gn.defCount
+                                                               x:pos.x
+                                                               y:pos.y
+                                                        outEdges:convertPorts(gn.outEdges)
+                                                         inEdges:convertPorts(gn.inEdges)]];
+    }
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:nodes generation:g.graph.generation];
+}
+
 - (NSString *)activeNameForCategory:(RISEViewportCategory)category {
     if (!_controller) return @"";
     const int catInt = static_cast<int>(category);
@@ -2997,6 +3079,108 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 
 - (NSArray<RISESceneTreeNode *> *)nodes { return _nodes; }
 - (NSArray<NSNumber *> *)roots { return _roots; }
+
+@end
+
+// doc-88 Phase 3 S14 value types -- immutable rows handed to the Swift
+// node-graph canvas.
+
+@implementation RISEGraphPort {
+    NSString *_paramName;
+    NSInteger _occurrence;
+    NSInteger _otherNodeIndex;
+    NSString *_otherName;
+}
+
+- (instancetype)initWithParamName:(NSString *)paramName
+                        occurrence:(NSInteger)occurrence
+                    otherNodeIndex:(NSInteger)otherNodeIndex
+                         otherName:(NSString *)otherName
+{
+    self = [super init];
+    if (self) {
+        _paramName = [paramName copy] ?: @"";
+        _occurrence = occurrence;
+        _otherNodeIndex = otherNodeIndex;
+        _otherName = [otherName copy] ?: @"";
+    }
+    return self;
+}
+
+- (NSString *)paramName { return _paramName; }
+- (NSInteger)occurrence { return _occurrence; }
+- (NSInteger)otherNodeIndex { return _otherNodeIndex; }
+- (NSString *)otherName { return _otherName; }
+
+@end
+
+@implementation RISEGraphNode {
+    unsigned long long _handle;
+    NSString *_name;
+    NSString *_chunkKeyword;
+    NSInteger _category;
+    NSInteger _defCount;
+    double _x;
+    double _y;
+    NSArray<RISEGraphPort *> *_outEdges;
+    NSArray<RISEGraphPort *> *_inEdges;
+}
+
+- (instancetype)initWithHandle:(unsigned long long)handle
+                           name:(NSString *)name
+                   chunkKeyword:(NSString *)chunkKeyword
+                       category:(NSInteger)category
+                       defCount:(NSInteger)defCount
+                              x:(double)x
+                              y:(double)y
+                       outEdges:(NSArray<RISEGraphPort *> *)outEdges
+                        inEdges:(NSArray<RISEGraphPort *> *)inEdges
+{
+    self = [super init];
+    if (self) {
+        _handle = handle;
+        _name = [name copy] ?: @"";
+        _chunkKeyword = [chunkKeyword copy] ?: @"";
+        _category = category;
+        _defCount = defCount;
+        _x = x;
+        _y = y;
+        _outEdges = [outEdges copy] ?: @[];
+        _inEdges = [inEdges copy] ?: @[];
+    }
+    return self;
+}
+
+- (unsigned long long)handle { return _handle; }
+- (NSString *)name { return _name; }
+- (NSString *)chunkKeyword { return _chunkKeyword; }
+- (NSInteger)category { return _category; }
+- (NSInteger)defCount { return _defCount; }
+- (double)x { return _x; }
+- (double)y { return _y; }
+- (NSArray<RISEGraphPort *> *)outEdges { return _outEdges; }
+- (NSArray<RISEGraphPort *> *)inEdges { return _inEdges; }
+
+@end
+
+@implementation RISEPainterMaterialGraph {
+    NSArray<RISEGraphNode *> *_nodes;
+    unsigned long long _generation;
+}
+
+- (instancetype)initWithNodes:(NSArray<RISEGraphNode *> *)nodes
+                    generation:(unsigned long long)generation
+{
+    self = [super init];
+    if (self) {
+        _nodes = [nodes copy] ?: @[];
+        _generation = generation;
+    }
+    return self;
+}
+
+- (NSArray<RISEGraphNode *> *)nodes { return _nodes; }
+- (unsigned long long)generation { return _generation; }
 
 @end
 

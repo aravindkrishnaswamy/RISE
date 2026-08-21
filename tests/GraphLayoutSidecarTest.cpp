@@ -29,6 +29,10 @@
 //    PART 7 -- composition: MigrateName then WriteSidecar (rename-then-
 //      save) -- the migrated entry survives under its new name and no
 //      orphan remains under the old one, through a real temp file.
+//    PART 8 -- MigrateSidecarOnSaveAs (doc-88 S14 review round P2(2)):
+//      a real Save-As copy through a temp file, no-op cases (empty path,
+//      equal paths, no old sidecar), the never-overwrite-the-destination
+//      rule, and that the OLD sidecar is left in place either way.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -492,6 +496,86 @@ static void TestMigrateThenWriteRoundTrips()
 	}
 }
 
+// =======================================================================
+// PART 8 -- MigrateSidecarOnSaveAs (doc-88 S14 review round P2(2))
+// =======================================================================
+
+static void TestMigrateSidecarOnSaveAsCopies()
+{
+	std::cout << "PART 8a: MigrateSidecarOnSaveAs copies the old sidecar to the new path" << std::endl;
+	const fs::path dir = TestDir();
+	const std::string oldScenePath = ( dir / "old.RISEscene" ).string();
+	const std::string newScenePath = ( dir / "new.RISEscene" ).string();
+
+	GraphLayout::Positions positions;
+	positions["A"] = GraphLayoutPoint{ 1.0, 2.0 };
+	positions["B"] = GraphLayoutPoint{ 3.0, 4.0 };
+	std::set<std::string> live; live.insert( "A" ); live.insert( "B" );
+	std::string err;
+	Check( GraphLayoutSidecar::WriteSidecar( oldScenePath, positions, live, err ), "8a: old sidecar seeded" );
+
+	std::string migErr;
+	Check( GraphLayoutSidecar::MigrateSidecarOnSaveAs( oldScenePath, newScenePath, migErr ), "8a: migration succeeds" );
+	Check( migErr.empty(), "8a: no error message on success" );
+
+	const GraphLayout::Positions newSide = GraphLayoutSidecar::ReadSidecar( newScenePath );
+	Check( newSide.size() == 2, "8a: the new sidecar has both entries" );
+	const GraphLayout::Positions::const_iterator itA = newSide.find( "A" );
+	Check( itA != newSide.end(), "8a: A migrated" );
+	if( itA != newSide.end() ) {
+		CheckDoubleEq( itA->second.x, 1.0, "8a: A.x migrated verbatim" );
+		CheckDoubleEq( itA->second.y, 2.0, "8a: A.y migrated verbatim" );
+	}
+
+	const GraphLayout::Positions oldSide = GraphLayoutSidecar::ReadSidecar( oldScenePath );
+	Check( oldSide.size() == 2, "8a: the OLD sidecar is left in place, untouched" );
+}
+
+static void TestMigrateSidecarOnSaveAsNoOpCases()
+{
+	std::cout << "PART 8b: MigrateSidecarOnSaveAs no-ops on empty/equal paths and a missing old sidecar" << std::endl;
+	const fs::path dir = TestDir();
+	const std::string oldScenePath = ( dir / "old.RISEscene" ).string();
+	const std::string newScenePath = ( dir / "new.RISEscene" ).string();
+
+	std::string err;
+	Check( GraphLayoutSidecar::MigrateSidecarOnSaveAs( "", newScenePath, err ), "8b: empty oldScenePath no-ops (true)" );
+	Check( GraphLayoutSidecar::MigrateSidecarOnSaveAs( oldScenePath, "", err ), "8b: empty newScenePath no-ops (true)" );
+	Check( GraphLayoutSidecar::MigrateSidecarOnSaveAs( oldScenePath, oldScenePath, err ), "8b: equal paths (ordinary save, not Save-As) no-ops (true)" );
+
+	// No old sidecar on disk at all -- ordinary "this scene never had one".
+	Check( GraphLayoutSidecar::MigrateSidecarOnSaveAs( oldScenePath, newScenePath, err ), "8b: missing old sidecar no-ops (true)" );
+	Check( !fs::exists( GraphLayoutSidecar::SidecarPathForScene( newScenePath ) ),
+	       "8b: no new sidecar was created when there was nothing to migrate" );
+}
+
+static void TestMigrateSidecarOnSaveAsNeverOverwrites()
+{
+	std::cout << "PART 8c: MigrateSidecarOnSaveAs never overwrites an existing new-path sidecar" << std::endl;
+	const fs::path dir = TestDir();
+	const std::string oldScenePath = ( dir / "old.RISEscene" ).string();
+	const std::string newScenePath = ( dir / "new.RISEscene" ).string();
+
+	GraphLayout::Positions oldPositions;
+	oldPositions["FromOld"] = GraphLayoutPoint{ 10.0, 20.0 };
+	std::set<std::string> liveOld; liveOld.insert( "FromOld" );
+	std::string err;
+	Check( GraphLayoutSidecar::WriteSidecar( oldScenePath, oldPositions, liveOld, err ), "8c: old sidecar seeded" );
+
+	GraphLayout::Positions decoy;
+	decoy["FromNew"] = GraphLayoutPoint{ -1.0, -1.0 };
+	std::set<std::string> liveNew; liveNew.insert( "FromNew" );
+	Check( GraphLayoutSidecar::WriteSidecar( newScenePath, decoy, liveNew, err ), "8c: decoy sidecar already sits at the destination" );
+
+	std::string migErr;
+	Check( GraphLayoutSidecar::MigrateSidecarOnSaveAs( oldScenePath, newScenePath, migErr ),
+	       "8c: migration returns true (never an error) when it refuses to overwrite" );
+
+	const GraphLayout::Positions afterNew = GraphLayoutSidecar::ReadSidecar( newScenePath );
+	Check( afterNew.size() == 1 && afterNew.find( "FromNew" ) != afterNew.end() && afterNew.find( "FromOld" ) == afterNew.end(),
+	       "8c: the destination's own (decoy) sidecar is untouched, not merged or replaced" );
+}
+
 int main()
 {
 	std::cout << "=== GraphLayoutSidecarTest ===" << std::endl;
@@ -517,6 +601,10 @@ int main()
 	TestUnsavedSceneNeverWrites();
 
 	TestMigrateThenWriteRoundTrips();
+
+	TestMigrateSidecarOnSaveAsCopies();
+	TestMigrateSidecarOnSaveAsNoOpCases();
+	TestMigrateSidecarOnSaveAsNeverOverwrites();
 
 	std::cout << "\n=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

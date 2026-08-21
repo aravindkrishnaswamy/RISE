@@ -148,6 +148,47 @@
 //      post-derive, so this guard was previously provable only by reading
 //      the code, not by a test driving it to termination.
 //
+//    PART 9 -- doc-88 Phase 3 S14: ReadPainterMaterialGraphLaidOut/
+//      WriteGraphLayoutPositions (SceneEditController) + the flat
+//      PainterGraph* accessors + the RISE_API_SceneEditController_
+//      PainterGraph* C-ABI shims (RISE_API.h/.cpp), through a REAL
+//      LoadFixture-loaded scene (so `mJob.GetCstLoadFileIdentity()
+//      .filePath` is non-empty and a real sidecar file can be exercised):
+//        P. First open (no sidecar file yet): every node's laid-out
+//           position matches a directly-computed `GraphLayout::
+//           LayoutGraph(graph, {})` oracle -- full auto-layout.
+//        Q. A hand-written sidecar entry for ONE node is echoed back
+//           EXACTLY (never touched by layout); every other node still
+//           matches the `LayoutGraph(graph, saved)` oracle.
+//        R. WriteGraphLayoutPositions round-trips a real update through
+//           the sidecar file (read back via `GraphLayoutSidecar::
+//           ReadSidecar` directly) and MERGES onto what was already
+//           saved rather than clobbering it.
+//        S. Orphan-prune: a stale sidecar entry for a name outside the
+//           CURRENT graph is pruned by the next WriteGraphLayoutPositions
+//           call, while every live entry (including ones the call did
+//           not itself touch) survives.
+//        T. Unsaved-scene write refusal: a controller over a Job that was
+//           never CST-loaded (empty scene path) -- WriteGraphLayoutPositions
+//           returns true (no-op), no error, no file.
+//        U. Handle passthrough: a handle read off ReadPainterMaterialGraph
+//           (S11) resolves via ResolveGraphNodeHandle against the SAME
+//           generation's laid-out graph, and PainterGraphNodePosition
+//           agrees with the bulk read's parallel `positions` entry.
+//        V. C-ABI smoke: every RISE_API_SceneEditController_PainterGraph*
+//           shim (count/generation/handle-at/name/keyword/category/
+//           defCount/position/out-edge/in-edge) is cross-checked against
+//           the C++ `ReadPainterMaterialGraphLaidOut` result for the SAME
+//           published graph, and RISE_API_SceneEditController_
+//           WriteGraphNodeLayoutPosition round-trips through the sidecar
+//           the same way case R does for the C++ entry point.
+//        W. Save-As sidecar migration (doc-88 S14 review round P2(2)): a
+//           REAL `RequestSave` to a path different from the scene's
+//           current identity migrates the OLD sidecar's positions to the
+//           NEW path verbatim, leaves the OLD sidecar in place untouched,
+//           and (W2) never overwrites a sidecar that already exists at
+//           the destination path.
+//
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
 //
@@ -160,12 +201,15 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/SceneEditor/ReferenceGraph.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/SceneEditor/GraphLayout.h"          // doc-88 Phase 3 S14: LayoutGraph oracle for PART 9
+#include "../src/Library/SceneEditor/GraphLayoutSidecar.h"   // doc-88 Phase 3 S14: direct sidecar read/write for PART 9's cross-checks
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
 
@@ -210,6 +254,8 @@ typedef SceneEditController::GraphEdgeSeed EdgeSeed;
 typedef SceneEditController::GraphNode     GNode;
 typedef SceneEditController::GraphPort     GPort;
 typedef SceneEditController::PainterMaterialGraph Graph;
+typedef SceneEditController::PainterMaterialGraphLaidOut LaidOutGraph;
+typedef SceneEditController::GraphNodePositionUpdate     PosUpdate;
 
 static NodeSeed MakeNodeSeed( Cst::NodeId id, const char* name, ChunkCategory cat,
                                unsigned long long order, unsigned long long serial = 0 )
@@ -1105,6 +1151,332 @@ int main()
 			CheckEq( std::string( functionFrontier[0].second.c_str() ), "fnA", "PART8: frontier[0] is the seed, fnA" );
 			CheckEq( std::string( functionFrontier[1].second.c_str() ), "fnB", "PART8: frontier[1] is fnB, discovered from fnA" );
 			CheckEq( std::string( functionFrontier[2].second.c_str() ), "fnC", "PART8: frontier[2] is fnC, discovered from fnB" );
+		}
+	}
+
+	// =================================================================
+	// PART 9 -- doc-88 Phase 3 S14: {nodes, edges, positions} composition,
+	// the layout-position write path, the flat accessors, and the C-ABI
+	// shims.  See this file's own header comment for the full case list.
+	// =================================================================
+	{
+		const char* path = "test_referencegraph_s14.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname baseA\ncolor 0.8 0.2 0.1\n}\n"
+			"uniformcolor_painter\n{\nname baseB\ncolor 0.1 0.8 0.2\n}\n"
+			"lambertian_material\n{\nname wallA\nreflectance baseA\n}\n" );
+		Check( j != nullptr, "PART9: S14 fixture scene loads" );
+		if( j ) {
+			const std::string scenePath( path );
+			const std::string sidecarPath = GraphLayoutSidecar::SidecarPathForScene( scenePath );
+			std::remove( sidecarPath.c_str() );   // belt-and-braces: no leftover from a prior failed run
+
+			SceneEditController c( *j, 0 );
+
+			// ---- P. First open: no sidecar file yet -- full auto-layout ----
+			LaidOutGraph laidOut;
+			c.ReadPainterMaterialGraphLaidOut( laidOut );
+			Check( laidOut.graph.nodes.size() == 3, "PART9-P: 3 nodes (baseA, baseB, wallA)" );
+			Check( laidOut.positions.size() == laidOut.graph.nodes.size(), "PART9-P: positions is parallel to graph.nodes" );
+			{
+				const GraphLayout::Positions oracle = GraphLayout::LayoutGraph( laidOut.graph, GraphLayout::Positions() );
+				bool allMatch = true;
+				for( std::size_t i = 0; i < laidOut.graph.nodes.size(); ++i ) {
+					const std::string key( laidOut.graph.nodes[i].name.c_str() );
+					GraphLayout::Positions::const_iterator it = oracle.find( key );
+					if( it == oracle.end() || it->second.x != laidOut.positions[i].x || it->second.y != laidOut.positions[i].y )
+						allMatch = false;
+				}
+				Check( allMatch, "PART9-P: every position matches the direct LayoutGraph({}) oracle (no sidecar yet)" );
+			}
+
+			// ---- Q. A hand-written sidecar entry for baseA is echoed verbatim ----
+			{
+				GraphLayout::Positions manual;
+				GraphLayoutPoint pt; pt.x = 111.0; pt.y = 222.0;
+				manual[ "baseA" ] = pt;
+				std::set<std::string> live;
+				for( const GNode& n : laidOut.graph.nodes ) live.insert( std::string( n.name.c_str() ) );
+				std::string werr;
+				Check( GraphLayoutSidecar::WriteSidecar( scenePath, manual, live, werr ),
+				       "PART9-Q: direct WriteSidecar of a hand-authored baseA entry succeeds" );
+
+				LaidOutGraph laidOut2;
+				c.ReadPainterMaterialGraphLaidOut( laidOut2 );
+				const GNode* baseA = FindNode( laidOut2.graph, ChunkCategory::Painter, "baseA" );
+				Check( baseA != nullptr, "PART9-Q: baseA node still present" );
+				if( baseA ) {
+					const unsigned int idx = SceneEditController::ResolveGraphNodeHandle( laidOut2.graph, baseA->handle );
+					Check( idx < laidOut2.positions.size()
+					    && laidOut2.positions[idx].x == 111.0 && laidOut2.positions[idx].y == 222.0,
+					       "PART9-Q: baseA's position is echoed EXACTLY from the sidecar, untouched by layout" );
+				}
+				const GraphLayout::Positions oracle2 = GraphLayout::LayoutGraph( laidOut2.graph, manual );
+				bool allMatch2 = true;
+				for( std::size_t i = 0; i < laidOut2.graph.nodes.size(); ++i ) {
+					const std::string key( laidOut2.graph.nodes[i].name.c_str() );
+					GraphLayout::Positions::const_iterator it = oracle2.find( key );
+					if( it == oracle2.end() || it->second.x != laidOut2.positions[i].x || it->second.y != laidOut2.positions[i].y )
+						allMatch2 = false;
+				}
+				Check( allMatch2, "PART9-Q: every OTHER node still matches LayoutGraph(graph, {baseA}) with baseA pinned" );
+			}
+
+			// ---- R. WriteGraphLayoutPositions round-trips + MERGES ----
+			{
+				std::vector<PosUpdate> updates;
+				PosUpdate u; u.name = String( "baseB" ); u.x = 55.0; u.y = 66.0;
+				updates.push_back( u );
+				std::string werr;
+				Check( c.WriteGraphLayoutPositions( updates, werr ), "PART9-R: WriteGraphLayoutPositions succeeds" );
+				Check( werr.empty(), "PART9-R: no error message on success" );
+
+				const GraphLayout::Positions onDisk = GraphLayoutSidecar::ReadSidecar( scenePath );
+				GraphLayout::Positions::const_iterator itA = onDisk.find( "baseA" );
+				GraphLayout::Positions::const_iterator itB = onDisk.find( "baseB" );
+				Check( itA != onDisk.end() && itA->second.x == 111.0 && itA->second.y == 222.0,
+				       "PART9-R: baseA's earlier position SURVIVED the merge (not clobbered)" );
+				Check( itB != onDisk.end() && itB->second.x == 55.0 && itB->second.y == 66.0,
+				       "PART9-R: baseB's new position is on disk" );
+			}
+
+			// ---- S. Orphan-prune ----
+			{
+				// Directly seed a "ghost" entry that is NOT among the current
+				// graph's node names -- forcing liveNodeNames to include it at
+				// THIS write only, bypassing the controller, so it lands on disk
+				// once. The very next controller-driven write must prune it,
+				// because the controller always supplies the CURRENT graph's own
+				// live names (ghost is never among them).
+				GraphLayout::Positions withGhost = GraphLayoutSidecar::ReadSidecar( scenePath );
+				GraphLayoutPoint ghostPt; ghostPt.x = 9.0; ghostPt.y = 9.0;
+				withGhost[ "ghost" ] = ghostPt;
+				std::set<std::string> liveWithGhost;
+				for( const GNode& n : laidOut.graph.nodes ) liveWithGhost.insert( std::string( n.name.c_str() ) );
+				liveWithGhost.insert( "ghost" );
+				std::string werr0;
+				Check( GraphLayoutSidecar::WriteSidecar( scenePath, withGhost, liveWithGhost, werr0 ),
+				       "PART9-S: seeding a ghost entry directly succeeds" );
+				Check( GraphLayoutSidecar::ReadSidecar( scenePath ).count( "ghost" ) == 1,
+				       "PART9-S: the ghost entry is on disk before the controller write" );
+
+				std::vector<PosUpdate> updates;
+				PosUpdate u; u.name = String( "wallA" ); u.x = 77.0; u.y = 88.0;
+				updates.push_back( u );
+				std::string werr;
+				Check( c.WriteGraphLayoutPositions( updates, werr ), "PART9-S: the pruning write succeeds" );
+
+				const GraphLayout::Positions afterPrune = GraphLayoutSidecar::ReadSidecar( scenePath );
+				Check( afterPrune.count( "ghost" ) == 0, "PART9-S: the ghost (non-live) entry was pruned" );
+				Check( afterPrune.count( "baseA" ) == 1 && afterPrune.count( "baseB" ) == 1,
+				       "PART9-S: the untouched live entries (baseA, baseB) survive the prune" );
+				GraphLayout::Positions::const_iterator itW = afterPrune.find( "wallA" );
+				Check( itW != afterPrune.end() && itW->second.x == 77.0 && itW->second.y == 88.0,
+				       "PART9-S: wallA's new position is on disk" );
+			}
+
+			// ---- T. Unsaved-scene write refusal ----
+			{
+				Job* uj = new Job();   // never LoadAsciiSceneViaCst'd -- GetCstLoadFileIdentity().filePath == ""
+				SceneEditController uc( *uj, 0 );
+				std::vector<PosUpdate> updates;
+				PosUpdate u; u.name = String( "whatever" ); u.x = 1.0; u.y = 2.0;
+				updates.push_back( u );
+				std::string uerr;
+				const bool uok = uc.WriteGraphLayoutPositions( updates, uerr );
+				Check( uok, "PART9-T: an unsaved scene's write no-ops (returns true, not a refusal)" );
+				Check( uerr.empty(), "PART9-T: no error message on the unsaved no-op" );
+				uj->release();
+			}
+
+			// ---- U. Handle passthrough ----
+			{
+				Graph g;
+				c.ReadPainterMaterialGraph( g );
+				const GNode* wallA = FindNode( g, ChunkCategory::Material, "wallA" );
+				Check( wallA != nullptr, "PART9-U: wallA node exists via the S11 read" );
+				if( wallA ) {
+					double px = -1.0, py = -1.0;
+					Check( c.PainterGraphNodePosition( wallA->handle, px, py ),
+					       "PART9-U: PainterGraphNodePosition resolves a real S11-minted handle" );
+
+					LaidOutGraph laidOut3;
+					c.ReadPainterMaterialGraphLaidOut( laidOut3 );
+					const unsigned int idx = SceneEditController::ResolveGraphNodeHandle( laidOut3.graph, wallA->handle );
+					Check( idx < laidOut3.positions.size()
+					    && laidOut3.positions[idx].x == px && laidOut3.positions[idx].y == py,
+					       "PART9-U: matches the bulk laid-out read's own parallel positions entry" );
+				}
+			}
+
+			// ---- V. C-ABI smoke ----
+			{
+				LaidOutGraph laidOut4;
+				c.ReadPainterMaterialGraphLaidOut( laidOut4 );
+
+				const unsigned int cnt = RISE_API_SceneEditController_PainterGraphNodeCount( &c );
+				Check( cnt == laidOut4.graph.nodes.size(), "PART9-V: ABI node count matches the C++ read" );
+				const unsigned long long gen = RISE_API_SceneEditController_PainterGraphGeneration( &c );
+				Check( gen == laidOut4.graph.generation, "PART9-V: ABI generation matches the C++ read" );
+
+				for( unsigned int i = 0; i < cnt; ++i ) {
+					unsigned long long h = 0;
+					Check( RISE_API_SceneEditController_PainterGraphNodeHandleAt( &c, i, &h ),
+					       "PART9-V: ABI PainterGraphNodeHandleAt succeeds for a valid index" );
+					const GNode* match = nullptr;
+					for( const GNode& n : laidOut4.graph.nodes ) if( n.handle == h ) { match = &n; break; }
+					Check( match != nullptr, "PART9-V: the ABI handle names a real C++ node" );
+					if( !match ) continue;
+
+					char nameBuf[256] = {0};
+					Check( RISE_API_SceneEditController_PainterGraphNodeName( &c, h, nameBuf, sizeof( nameBuf ) ),
+					       "PART9-V: ABI node name lookup succeeds" );
+					CheckEq( std::string( nameBuf ), std::string( match->name.c_str() ), "PART9-V: ABI node name matches" );
+
+					char kwBuf[256] = {0};
+					Check( RISE_API_SceneEditController_PainterGraphNodeKeyword( &c, h, kwBuf, sizeof( kwBuf ) ),
+					       "PART9-V: ABI node keyword lookup succeeds" );
+					CheckEq( std::string( kwBuf ), std::string( match->chunkKeyword.c_str() ), "PART9-V: ABI node keyword matches" );
+
+					Check( RISE_API_SceneEditController_PainterGraphNodeCategory( &c, h ) == static_cast<int>( match->category ),
+					       "PART9-V: ABI node category matches" );
+					Check( RISE_API_SceneEditController_PainterGraphNodeDefCount( &c, h ) == match->defCount,
+					       "PART9-V: ABI node defCount matches" );
+
+					double px = -1.0, py = -1.0;
+					Check( RISE_API_SceneEditController_PainterGraphNodePosition( &c, h, &px, &py ),
+					       "PART9-V: ABI node position lookup succeeds" );
+					const unsigned int mi = SceneEditController::ResolveGraphNodeHandle( laidOut4.graph, h );
+					Check( mi < laidOut4.positions.size() && laidOut4.positions[mi].x == px && laidOut4.positions[mi].y == py,
+					       "PART9-V: ABI position matches the C++ bulk laid-out read" );
+
+					const unsigned int outCnt = RISE_API_SceneEditController_PainterGraphNodeOutEdgeCount( &c, h );
+					Check( outCnt == match->outEdges.size(), "PART9-V: ABI outEdge count matches" );
+					for( unsigned int pi = 0; pi < outCnt; ++pi ) {
+						unsigned long long otherH = SceneEditController::kInvalidGraphNode;
+						char pnBuf[256] = {0}; int occ = -1; char onBuf[256] = {0};
+						Check( RISE_API_SceneEditController_PainterGraphNodeOutEdge(
+						           &c, h, pi, &otherH, pnBuf, sizeof( pnBuf ), &occ, onBuf, sizeof( onBuf ) ),
+						       "PART9-V: ABI outEdge lookup succeeds" );
+						const GPort& gp = match->outEdges[pi];
+						CheckEq( std::string( pnBuf ), std::string( gp.paramName.c_str() ), "PART9-V: ABI outEdge paramName matches" );
+						Check( occ == gp.occurrence, "PART9-V: ABI outEdge occurrence matches" );
+						CheckEq( std::string( onBuf ), std::string( gp.otherName.c_str() ), "PART9-V: ABI outEdge otherName matches" );
+						const unsigned long long expectedOther =
+							( gp.otherNode == SceneEditController::kInvalidNodeIndex )
+								? SceneEditController::kInvalidGraphNode
+								: laidOut4.graph.nodes[gp.otherNode].handle;
+						Check( otherH == expectedOther, "PART9-V: ABI outEdge otherNode resolves to the SAME handle as the C++ read" );
+					}
+
+					const unsigned int inCnt = RISE_API_SceneEditController_PainterGraphNodeInEdgeCount( &c, h );
+					Check( inCnt == match->inEdges.size(), "PART9-V: ABI inEdge count matches" );
+					for( unsigned int pi = 0; pi < inCnt; ++pi ) {
+						unsigned long long otherH = SceneEditController::kInvalidGraphNode;
+						char pnBuf[256] = {0}; int occ = -1; char onBuf[256] = {0};
+						Check( RISE_API_SceneEditController_PainterGraphNodeInEdge(
+						           &c, h, pi, &otherH, pnBuf, sizeof( pnBuf ), &occ, onBuf, sizeof( onBuf ) ),
+						       "PART9-V: ABI inEdge lookup succeeds" );
+						const GPort& gp = match->inEdges[pi];
+						CheckEq( std::string( pnBuf ), std::string( gp.paramName.c_str() ), "PART9-V: ABI inEdge paramName matches" );
+						Check( occ == gp.occurrence, "PART9-V: ABI inEdge occurrence matches" );
+						CheckEq( std::string( onBuf ), std::string( gp.otherName.c_str() ), "PART9-V: ABI inEdge otherName matches" );
+						const unsigned long long expectedOther =
+							( gp.otherNode == SceneEditController::kInvalidNodeIndex )
+								? SceneEditController::kInvalidGraphNode
+								: laidOut4.graph.nodes[gp.otherNode].handle;
+						Check( otherH == expectedOther, "PART9-V: ABI inEdge otherNode resolves to the SAME handle as the C++ read" );
+					}
+				}
+
+				// ABI write round-trip, same shape as PART9-R for the C++ entry point.
+				char errBuf[256] = {0};
+				const bool wok = RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+					&c, "baseA", 321.0, 654.0, errBuf, sizeof( errBuf ) );
+				Check( wok, "PART9-V: ABI WriteGraphNodeLayoutPosition succeeds" );
+				const GraphLayout::Positions onDisk = GraphLayoutSidecar::ReadSidecar( scenePath );
+				GraphLayout::Positions::const_iterator itA = onDisk.find( "baseA" );
+				Check( itA != onDisk.end() && itA->second.x == 321.0 && itA->second.y == 654.0,
+				       "PART9-V: ABI write round-trips baseA's new position through the sidecar" );
+
+				// Null-controller / bad-input refusal, same discrimination style
+				// as every other C-ABI shim on this surface (never a crash).
+				Check( RISE_API_SceneEditController_PainterGraphNodeCount( nullptr ) == 0, "PART9-V: null controller -> 0 count" );
+				Check( !RISE_API_SceneEditController_WriteGraphNodeLayoutPosition( &c, "", 0.0, 0.0, nullptr, 0 ),
+				       "PART9-V: empty nodeName is refused" );
+			}
+
+			// ---- W. Save-As sidecar migration (doc-88 S14 review round P2(2)) ----
+			// A RequestSave to a path DIFFERENT from the scene's current
+			// FileIdentity path (a Save-As) must migrate the OLD sidecar's
+			// positions to the new path -- see GraphLayoutSidecar.h's
+			// "SAVE-AS SIDECAR MIGRATION" note on MigrateSidecarOnSaveAs.
+			// Driven through the controller's real RequestSave, same as
+			// PainterIntrospectionRoundTripTest's own Save-As coverage,
+			// rather than calling MigrateSidecarOnSaveAs directly -- this is
+			// the end-to-end wiring check, GraphLayoutSidecarTest already
+			// covers the primitive itself in isolation.
+			{
+				const GraphLayout::Positions before = GraphLayoutSidecar::ReadSidecar( scenePath );
+				Check( !before.empty(), "PART9-W: fixture already has a saved sidecar before Save-As" );
+
+				const std::string saveAsPath = "test_referencegraph_s14_saveas.RISEscene";
+				const std::string newSidecarPath = GraphLayoutSidecar::SidecarPathForScene( saveAsPath );
+				std::remove( saveAsPath.c_str() );
+				std::remove( newSidecarPath.c_str() );   // belt-and-braces: no leftover from a prior failed run
+
+				const SaveResult sr = c.RequestSave( saveAsPath );
+				Check( Succeeded( sr.status ), "PART9-W: Save-As succeeds" );
+
+				const GraphLayout::Positions after = GraphLayoutSidecar::ReadSidecar( saveAsPath );
+				Check( after.size() == before.size(), "PART9-W: the new path's sidecar has the SAME node count as the old one" );
+				bool allMigrated = ( after.size() == before.size() );
+				for( const std::pair<const std::string, GraphLayoutPoint>& kv : before ) {
+					GraphLayout::Positions::const_iterator it = after.find( kv.first );
+					if( it == after.end() || it->second.x != kv.second.x || it->second.y != kv.second.y ) allMigrated = false;
+				}
+				Check( allMigrated, "PART9-W: every position migrated verbatim to the new path's sidecar" );
+
+				const GraphLayout::Positions oldStill = GraphLayoutSidecar::ReadSidecar( scenePath );
+				Check( oldStill.size() == before.size(), "PART9-W: the OLD sidecar is left in place, untouched (belongs to the old scene file, which still exists)" );
+
+				// ---- W2. Never overwrites an EXISTING new-path sidecar ----
+				{
+					const std::string saveAsPath2 = "test_referencegraph_s14_saveas2.RISEscene";
+					const std::string newSidecarPath2 = GraphLayoutSidecar::SidecarPathForScene( saveAsPath2 );
+					std::remove( saveAsPath2.c_str() );
+					std::remove( newSidecarPath2.c_str() );
+
+					GraphLayout::Positions decoy;
+					GraphLayoutPoint decoyPt; decoyPt.x = -1.0; decoyPt.y = -1.0;
+					decoy[ "decoy" ] = decoyPt;
+					std::set<std::string> decoyLive; decoyLive.insert( "decoy" );
+					std::string decoyErr;
+					Check( GraphLayoutSidecar::WriteSidecar( saveAsPath2, decoy, decoyLive, decoyErr ),
+					       "PART9-W2: seeding a decoy sidecar at the future Save-As target succeeds" );
+
+					// c's identity is now saveAsPath (from W above) -- this Save-As
+					// migrates FROM saveAsPath, not scenePath; either way the point
+					// under test is the destination-side refusal.
+					const SaveResult sr2 = c.RequestSave( saveAsPath2 );
+					Check( Succeeded( sr2.status ), "PART9-W2: second Save-As succeeds" );
+
+					const GraphLayout::Positions afterDecoy = GraphLayoutSidecar::ReadSidecar( saveAsPath2 );
+					Check( afterDecoy.size() == 1 && afterDecoy.count( "decoy" ) == 1
+					    && afterDecoy.find( "decoy" )->second.x == -1.0 && afterDecoy.find( "decoy" )->second.y == -1.0,
+					       "PART9-W2: an EXISTING new-path sidecar is never overwritten by the migration" );
+
+					std::remove( saveAsPath2.c_str() );
+					std::remove( newSidecarPath2.c_str() );
+				}
+
+				std::remove( saveAsPath.c_str() );
+				std::remove( newSidecarPath.c_str() );
+			}
+
+			std::remove( sidecarPath.c_str() );
+			j->release();
 		}
 	}
 

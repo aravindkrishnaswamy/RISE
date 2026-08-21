@@ -4620,6 +4620,112 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// A C++ shell (Qt ViewportBridge) reaches both through the controller
 	// directly.
 
+	// Painter/Material node graph (doc-88 Phase 3 S11/S14,
+	// docs/gui/NODE_GRAPH_CANVAS.md sect. 6) -----------------------------
+	//
+	// SAME two-surface split as the tree above, and the SAME reason: no
+	// `ReadPainterMaterialGraph`/`ReadPainterMaterialGraphLaidOut`/
+	// `HandleFor`-equivalent here either -- `SceneEditController::
+	// PainterMaterialGraph` is a nested C++ type this header cannot name.
+	// A C++ shell (both platform bridges) reaches the bulk read directly
+	// through the controller, exactly like `-categoryTree:` does for the
+	// tree; this flat surface is for a caller that cannot name the nested
+	// type (and for the C-ABI smoke test, `SceneGraphNodeApiTest.cpp`-
+	// style, that proves the two surfaces agree).
+	//
+	// UNLIKE the tree, this graph is FLAT (no root/child distinction --
+	// `SceneEditController::PainterMaterialGraph::nodes` is a plain list),
+	// so there is no `*RootNode`/`*ChildNode` pair here: one node-count +
+	// one handle-at-index getter covers enumeration.  `category` crosses as
+	// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's enum
+	// to int, do not hand-mirror it" convention `RISEViewportProperty.kind`
+	// already uses for `ValueKind` (see `SceneEditController::
+	// PainterGraphNodeCategory`'s own comment for why no bespoke per-value
+	// mirror is needed on either bridge).  Every "the other end of this
+	// port" value is a `GraphNodeHandle` (never the raw `GraphPort::
+	// otherNode` array index), so ports and nodes share ONE identity space
+	// -- `kInvalidGraphNode` doubles as both "no such node" and "node-less
+	// (dangling/out-of-scope) port".
+
+	//! Total nodes in the CURRENT Painter/Material graph.  Refreshes.  0 on
+	//! a null controller.
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeCount(
+		SceneEditController* p );
+
+	//! The generation of the currently published graph.  Does NOT refresh.
+	//! 0 on a null controller or a graph never published.
+	unsigned long long RISE_API_SceneEditController_PainterGraphGeneration(
+		SceneEditController* p );
+
+	//! Handle of the `idx`-th node (presentation order).  Returns false --
+	//! leaving `*outNode` untouched -- on null controller / null out-pointer
+	//! / out-of-range index.
+	bool RISE_API_SceneEditController_PainterGraphNodeHandleAt(
+		SceneEditController* p, unsigned int idx, unsigned long long* outNode );
+
+	//! `node`'s name / chunk keyword (e.g. "ramp_painter").  Returns false
+	//! on null controller or an unknown/stale handle.
+	bool RISE_API_SceneEditController_PainterGraphNodeName(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PainterGraphNodeKeyword(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen );
+
+	//! `node`'s `RISE::ChunkCategory`, cast to int.  -1 on null controller
+	//! or an unknown/stale handle (never a valid category ordinal).
+	int RISE_API_SceneEditController_PainterGraphNodeCategory(
+		SceneEditController* p, unsigned long long node );
+
+	//! `node`'s expression-family def-stage count (0 for a non-expression
+	//! chunk).  -1 on null controller or an unknown/stale handle.
+	int RISE_API_SceneEditController_PainterGraphNodeDefCount(
+		SceneEditController* p, unsigned long long node );
+
+	//! `node`'s laid-out position (S12 auto-layout + S13 saved-position
+	//! sidecar, composed by `ReadPainterMaterialGraphLaidOut`).  Returns
+	//! false -- `*outX`/`*outY` untouched -- on null controller / null
+	//! out-pointer / an unknown or stale handle.  Re-composes (sidecar read
+	//! + layout) on every call -- fine for this smoke-test/occasional-caller
+	//! surface, but a bulk walk should use the C++ `ReadPainterMaterialGraphLaidOut`
+	//! directly instead (see that method's own comment).
+	bool RISE_API_SceneEditController_PainterGraphNodePosition(
+		SceneEditController* p, unsigned long long node, double* outX, double* outY );
+
+	//! Port counts for `node`'s two port lists.  0 on null controller or an
+	//! unknown/stale handle.
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeOutEdgeCount(
+		SceneEditController* p, unsigned long long node );
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeInEdgeCount(
+		SceneEditController* p, unsigned long long node );
+
+	//! One port at `portIdx` on `node`'s out-edge / in-edge list.
+	//! `*outOtherNode` is `kInvalidGraphNode`-equivalent (0xFFFFFFFFFFFFFFFF)
+	//! for a node-less port (dangling or out-of-scope reference) --
+	//! `outOtherNameBuf` still carries the target's name either way.
+	//! Returns false -- no out-param touched -- on null controller / null
+	//! out-pointer / an unknown or stale handle / an out-of-range `portIdx`.
+	bool RISE_API_SceneEditController_PainterGraphNodeOutEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen );
+	bool RISE_API_SceneEditController_PainterGraphNodeInEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen );
+
+	//! Write ONE node's layout position into the current scene's sidecar
+	//! (`SceneEditController::WriteGraphLayoutPositions` with a single-
+	//! element update -- the shape a canvas drag commits: one node moved at
+	//! a time).  `outError` (optional -- may be null/0-length) receives an
+	//! error message on failure; unused/truncated like every other
+	//! `char*, len` out-buffer on this surface.  Returns true on success,
+	//! INCLUDING the two documented no-op cases (positions unchanged on
+	//! disk; scene never saved) -- see `WriteGraphLayoutPositions`'s own
+	//! comment.  Returns false on null controller / empty `nodeName` / an
+	//! actual I/O failure / a render owning the scene.
+	bool RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+		SceneEditController* p, const char* nodeName, double x, double y,
+		char* outError, unsigned int outErrorLen );
+
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache
 	//! (epoch, category) → entity-name list and re-pull when this

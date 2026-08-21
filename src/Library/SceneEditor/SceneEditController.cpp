@@ -51,6 +51,8 @@
 #include "PainterPreview.h"           // Tier-2 painter/def-stage/ramp-strip preview thumbnails -- doc 88 S10
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "ReferenceGraph.h"           // doc-88 Phase 3 S11: SceneReferenceGraph::FindReferencesTo/Edges -- the Painter/Material DAG's edge source
+#include "GraphLayout.h"              // doc-88 Phase 3 S12/S14: GraphLayout::LayoutGraph -- the rank-by-dependency auto-layout fill-in
+#include "GraphLayoutSidecar.h"       // doc-88 Phase 3 S13/S14: GraphLayoutSidecar::Read/WriteSidecar -- the `<scenePath>.risegraph.json` position store
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
 #include "../Agent/AgentSession.h"    // Post-arc enforcement E1 / P1-3: CheckNonSamplingEmitterGateFor{Patch,Insert} -- ResolveProposal's stale-staged-proposal re-check (no header cycle: AgentSession.h forward-declares SceneEditController, does not include this header)
@@ -5437,6 +5439,238 @@ unsigned int SceneEditController::ResolveGraphNodeHandle( const PainterMaterialG
 	return idx;
 }
 
+// =====================================================================
+// doc-88 Phase 3 S14 -- see the declarations' own comments in
+// SceneEditController.h for the full design (scene-path contract, why
+// position is not folded into the compare-then-publish graph snapshot,
+// the flat-accessor / bulk-read two-surface split).
+// =====================================================================
+
+bool SceneEditController::GetCurrentScenePath_( std::string& outPath, bool blocking ) const
+{
+	outPath.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;   // render owns the scene: refuse (see header comment)
+	if( blocking ) {
+		std::lock_guard<std::mutex> lk( mMutex );
+		outPath = mJob.GetCstLoadFileIdentity().filePath;
+		return true;
+	}
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;                                       // contended: serve stale (see header comment)
+	outPath = mJob.GetCstLoadFileIdentity().filePath;
+	return true;
+}
+
+void SceneEditController::ReadPainterMaterialGraphLaidOut( PainterMaterialGraphLaidOut& out ) const
+{
+	out = PainterMaterialGraphLaidOut();
+	ReadPainterMaterialGraph( out.graph );
+
+	std::string scenePath;
+	GraphLayout::Positions saved;   // stays empty on an unsaved scene or a contended path read -- LayoutGraph then auto-lays-out every node
+	if( GetCurrentScenePath_( scenePath, /*blocking=*/false ) && !scenePath.empty() ) {
+		saved = GraphLayoutSidecar::ReadSidecar( scenePath );
+	}
+
+	const GraphLayout::Positions full = GraphLayout::LayoutGraph( out.graph, saved );
+	out.positions.assign( out.graph.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < out.graph.nodes.size(); ++i ) {
+		const std::string key( out.graph.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = full.find( key );
+		if( it == full.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
+}
+
+bool SceneEditController::WriteGraphLayoutPositions(
+	const std::vector<GraphNodePositionUpdate>& updates, std::string& outError ) const
+{
+	outError.clear();
+
+	// doc-88 S14 review round P2(1): scenePath and the live-node-name set
+	// MUST come from the SAME snapshot of `mJob` -- fold both reads into
+	// ONE blocking critical section, rather than the two SEPARATE critical
+	// sections this used to take: `GetCurrentScenePath_( blocking=true )`
+	// (lock mMutex, read the path, UNLOCK) followed by `ReadPainterMaterialGraph`
+	// -> `RefreshPainterMaterialGraphSnapshot_` (a SEPARATE, NON-blocking
+	// `try_lock` that serves the STALE `mUi.painterMaterialGraph` under any
+	// contention at all). A concurrent edit landing in the window between
+	// those two locks -- e.g. a just-added node -- could be reflected in
+	// neither read, or in the path read but not (yet, or ever, if the
+	// refresh keeps losing the try_lock race) the graph read: either way
+	// `liveNodeNames` below would not yet know about a node this very call's
+	// `updates` might be positioning, and `WriteSidecar`'s ORPHAN-DROP rule
+	// (GraphLayoutSidecar.h) would silently prune that position right back
+	// out. Same `mRenderOwnsScene` pre-check and lock order
+	// `GetCurrentScenePath_`'s blocking branch used (check-then-lock,
+	// mMutex only) -- this function no longer calls that helper for its own
+	// use (a NON-blocking, `false`-on-contention API cannot express "read
+	// the path AND the graph together"), but `ReadPainterMaterialGraphLaidOut`'s
+	// polled path still does, unchanged.
+	std::string scenePath;
+	std::set<std::string> liveNodeNames;
+	{
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+			outError = "layout write refused: a render is in progress";
+			return false;
+		}
+		std::lock_guard<std::mutex> lk( mMutex );
+		scenePath = mJob.GetCstLoadFileIdentity().filePath;
+
+		std::vector<GraphNodeSeed> nodeSeeds;
+		std::vector<GraphEdgeSeed> edgeSeeds;
+		BuildPainterMaterialGraphSeedsLocked_( nodeSeeds, edgeSeeds );   // REQUIRES mMutex held -- see its own comment
+		for( const GraphNodeSeed& n : nodeSeeds ) {
+			if( n.name.size() <= 1 ) continue;   // BuildPainterMaterialGraphSeedsLocked_ never seeds an unnamed chunk; belt-and-braces
+			liveNodeNames.insert( std::string( n.name.c_str() ) );
+		}
+	}
+	// scenePath empty (unsaved scene) is NOT special-cased here -- it flows
+	// straight through to WriteSidecar, which already implements exactly
+	// that refusal (returns true, touches no file) -- see this function's
+	// own header comment for why the rule lives in one place only.
+
+	GraphLayout::Positions positions = GraphLayoutSidecar::ReadSidecar( scenePath );   // merge onto what's already saved
+	for( const GraphNodePositionUpdate& u : updates ) {
+		if( u.name.size() <= 1 ) continue;   // nothing to key a sidecar entry by
+		GraphLayoutPoint pt;
+		pt.x = u.x;
+		pt.y = u.y;
+		positions[ std::string( u.name.c_str() ) ] = pt;
+	}
+
+	return GraphLayoutSidecar::WriteSidecar( scenePath, positions, liveNodeNames, outError );
+}
+
+unsigned int SceneEditController::PainterGraphNodeCount() const
+{
+	RefreshPainterMaterialGraphSnapshot_();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.painterMaterialGraph.nodes.size() );
+}
+
+unsigned long long SceneEditController::PainterGraphGeneration() const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return mUi.painterMaterialGraph.generation;
+}
+
+SceneEditController::GraphNodeHandle SceneEditController::PainterGraphNodeHandleAt( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	if( idx >= g.nodes.size() ) return kInvalidGraphNode;
+	return g.nodes[idx].handle;
+}
+
+String SceneEditController::PainterGraphNodeName( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return String();
+	return g.nodes[idx].name;
+}
+
+String SceneEditController::PainterGraphNodeKeyword( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return String();
+	return g.nodes[idx].chunkKeyword;
+}
+
+int SceneEditController::PainterGraphNodeCategory( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return -1;
+	return static_cast<int>( g.nodes[idx].category );
+}
+
+int SceneEditController::PainterGraphNodeDefCount( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return -1;
+	return g.nodes[idx].defCount;
+}
+
+bool SceneEditController::PainterGraphNodePosition( GraphNodeHandle node, double& outX, double& outY ) const
+{
+	PainterMaterialGraphLaidOut laidOut;
+	ReadPainterMaterialGraphLaidOut( laidOut );
+	const unsigned int idx = ResolveGraphNodeHandle( laidOut.graph, node );
+	if( idx == kInvalidNodeIndex || idx >= laidOut.positions.size() ) return false;
+	outX = laidOut.positions[idx].x;
+	outY = laidOut.positions[idx].y;
+	return true;
+}
+
+unsigned int SceneEditController::PainterGraphNodeOutEdgeCount( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return 0;
+	return static_cast<unsigned int>( g.nodes[idx].outEdges.size() );
+}
+
+unsigned int SceneEditController::PainterGraphNodeInEdgeCount( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return 0;
+	return static_cast<unsigned int>( g.nodes[idx].inEdges.size() );
+}
+
+namespace {
+	//! Shared body for PainterGraphNodeOutEdge/InEdge -- the only
+	//! difference between the two is which port vector is indexed.
+	bool ReadGraphPortLocked(
+		const SceneEditController::PainterMaterialGraph& g, unsigned int nodeIdx,
+		const std::vector<SceneEditController::GraphPort>& ports, unsigned int portIdx,
+		SceneEditController::GraphNodeHandle& outOtherNode, String& outParamName,
+		int& outOccurrence, String& outOtherName )
+	{
+		( void )nodeIdx;
+		if( portIdx >= ports.size() ) return false;
+		const SceneEditController::GraphPort& p = ports[portIdx];
+		outOtherNode = ( p.otherNode == SceneEditController::kInvalidNodeIndex )
+			? SceneEditController::kInvalidGraphNode
+			: g.nodes[p.otherNode].handle;
+		outParamName  = p.paramName;
+		outOccurrence = p.occurrence;
+		outOtherName  = p.otherName;
+		return true;
+	}
+}
+
+bool SceneEditController::PainterGraphNodeOutEdge( GraphNodeHandle node, unsigned int portIdx,
+	GraphNodeHandle& outOtherNode, String& outParamName, int& outOccurrence, String& outOtherName ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return false;
+	return ReadGraphPortLocked( g, idx, g.nodes[idx].outEdges, portIdx, outOtherNode, outParamName, outOccurrence, outOtherName );
+}
+
+bool SceneEditController::PainterGraphNodeInEdge( GraphNodeHandle node, unsigned int portIdx,
+	GraphNodeHandle& outOtherNode, String& outParamName, int& outOccurrence, String& outOtherName ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return false;
+	return ReadGraphPortLocked( g, idx, g.nodes[idx].inEdges, portIdx, outOtherNode, outParamName, outOccurrence, outOtherName );
+}
+
 SceneEditController::TreeNodeHandle SceneEditController::HandleFor(
 	const AuthoredTree& t, unsigned int index )
 {
@@ -9632,6 +9866,28 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// flagged the transition -- drain it here, outside the lock scope, so the
 	// Save button disables promptly on the dirty->clean flip.
 	mEditor.DrainDirtyNotification();
+
+	// doc-88 S14 review round P2(2): Save-As sidecar migration -- see
+	// GraphLayoutSidecar.h's own "SAVE-AS SIDECAR MIGRATION" note on
+	// `MigrateSidecarOnSaveAs` for the full contract. Deliberately OUTSIDE
+	// mMutex (pure filesystem I/O -- same "don't stall the render thread"
+	// posture Step 2's own comment gives for the heavier `SaveEngine::Save`
+	// call above); `loadedFileIdentitySnapshot.filePath` was captured under
+	// Step 1's lock BEFORE this save, so comparing it against `filePath`
+	// (the path just saved to) is exactly "did this save move the scene to
+	// a new path" -- an ordinary same-path save is `==` and no-ops inside
+	// `MigrateSidecarOnSaveAs` itself. A migration failure is logged and
+	// swallowed: the scene file itself is already saved and correct by this
+	// point, so a stranded/un-migrated sidecar is never allowed to fail the
+	// save the caller is waiting on.
+	if( Succeeded( result.status ) && filePath != loadedFileIdentitySnapshot.filePath ) {
+		std::string sidecarError;
+		if( !GraphLayoutSidecar::MigrateSidecarOnSaveAs( loadedFileIdentitySnapshot.filePath, filePath, sidecarError ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController::RequestSave: graph-layout sidecar migration for Save-As failed: %s",
+				sidecarError.c_str() );
+		}
+	}
 
 	return result;
 }

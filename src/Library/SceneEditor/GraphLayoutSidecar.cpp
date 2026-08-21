@@ -286,6 +286,34 @@ bool GraphLayoutSidecar::WriteSidecar( const std::string& scenePath, const Graph
 	return AtomicWriteSidecar( path, newText, outError );
 }
 
+bool GraphLayoutSidecar::MigrateSidecarOnSaveAs( const std::string& oldScenePath, const std::string& newScenePath,
+                                                  std::string& outError )
+{
+	outError.clear();
+	if( oldScenePath.empty() || newScenePath.empty() || oldScenePath == newScenePath )
+		return true;   // nothing to migrate: unsaved-before, or an ordinary (non-Save-As) save
+
+	const std::string oldPath = SidecarPathForScene( oldScenePath );
+	const std::string newPath = SidecarPathForScene( newScenePath );
+	if( oldPath.empty() || newPath.empty() ) return true;   // defensive mirror of the above
+
+	std::error_code existsEc;
+	if( !std::filesystem::exists( oldPath, existsEc ) || existsEc )
+		return true;   // no old sidecar to migrate: ordinary "this scene never had one", not a failure
+
+	if( std::filesystem::exists( newPath, existsEc ) && !existsEc )
+		return true;   // NEVER overwrite an existing new-path sidecar -- see header
+
+	std::error_code copyEc;
+	std::filesystem::copy_file( oldPath, newPath, std::filesystem::copy_options::none, copyEc );
+	if( copyEc ) {
+		outError = "GraphLayoutSidecar::MigrateSidecarOnSaveAs: copy '" + oldPath + "' -> '" + newPath
+			+ "' failed: " + copyEc.message();
+		return false;
+	}
+	return true;
+}
+
 bool GraphLayoutSidecar::MigrateName( GraphLayout::Positions& positions,
                                        const std::string& oldName, const std::string& newName )
 {

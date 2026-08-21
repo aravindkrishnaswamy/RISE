@@ -1617,6 +1617,69 @@ SceneTree ViewportBridge::categoryTree(Category cat) const
     return out;
 }
 
+// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6) -----------
+
+namespace {
+    // Shared body for the outEdges/inEdges conversion loop below -- the
+    // only difference between the two call sites is which
+    // SceneEditController::GraphPort vector is being walked.
+    QVector<PainterGraphPort> ConvertGraphPorts(
+        const std::vector<SceneEditController::GraphPort>& ports)
+    {
+        QVector<PainterGraphPort> out;
+        out.reserve(static_cast<int>(ports.size()));
+        for (const SceneEditController::GraphPort& p : ports) {
+            PainterGraphPort pp;
+            pp.paramName = QString::fromUtf8(p.paramName.c_str());
+            pp.occurrence = p.occurrence;
+            pp.otherNodeIndex = (p.otherNode == SceneEditController::kInvalidNodeIndex)
+                ? -1 : static_cast<int>(p.otherNode);
+            pp.otherName = QString::fromUtf8(p.otherName.c_str());
+            out.append(pp);
+        }
+        return out;
+    }
+}
+
+PainterGraph ViewportBridge::painterMaterialGraph() const
+{
+    PainterGraph out;
+    if (!m_controller) return out;
+
+    // ONE TRANSACTIONAL READ, the SAME discipline categoryTree() documents
+    // above: SceneEditController::ReadPainterMaterialGraphLaidOut composes
+    // S11's graph + S13's saved sidecar positions + S12's auto-layout
+    // fill-in under one snapshot-lock hold (plus one small sidecar file
+    // read -- see that method's own header comment), so what lands here
+    // cannot straddle two different published generations. Called
+    // directly on the C++ controller, not through RISE_API_*: this file
+    // already calls SceneEditController natively (see categoryTree()
+    // above) -- the C ABI's PainterGraph* surface exists for a caller
+    // that cannot see C++ at all, and is per-node -- exactly the
+    // non-transactional shape this method exists to avoid.
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    m_controller->ReadPainterMaterialGraphLaidOut(g);
+
+    const std::size_t n = g.graph.nodes.size();
+    out.nodes.resize(static_cast<int>(n));
+    for (std::size_t i = 0; i < n; ++i) {
+        const SceneEditController::GraphNode& gn = g.graph.nodes[i];
+        const SceneEditController::GraphNodePosition& pos = g.positions[i];
+        PainterGraphNode& node = out.nodes[static_cast<int>(i)];
+        node.handle       = gn.handle;
+        node.name         = QString::fromUtf8(gn.name.c_str());
+        node.chunkKeyword = QString::fromUtf8(gn.chunkKeyword.c_str());
+        node.category     = static_cast<int>(gn.category);
+        node.defCount     = gn.defCount;
+        node.x = pos.x;
+        node.y = pos.y;
+        node.outEdges = ConvertGraphPorts(gn.outEdges);
+        node.inEdges  = ConvertGraphPorts(gn.inEdges);
+    }
+    out.generation = g.graph.generation;
+    return out;
+}
+
 QString ViewportBridge::activeNameForCategory(Category cat) const
 {
     if (!m_controller) return QString();

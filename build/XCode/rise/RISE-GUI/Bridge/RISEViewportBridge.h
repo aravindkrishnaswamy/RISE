@@ -112,6 +112,66 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 @property (nonatomic, readonly, copy) NSArray<NSNumber *> *roots;    ///< indices into `nodes`, in display order
 @end
 
+/// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): one
+/// reference-param SLOT on a `RISEGraphNode`.  Mirrors
+/// `SceneEditController::GraphPort`.
+///
+/// `otherNodeIndex` is -1 for a NODE-LESS port (a dangling reference, or
+/// one pointing outside this graph's modeled categories) -- `otherName`
+/// still carries the target's name either way, never blank for a real
+/// reference. Otherwise it is an INDEX into the SAME
+/// `RISEPainterMaterialGraph.nodes` array this port's owning node came
+/// from -- like `RISESceneTreeNode.children`, NOT a handle: valid only
+/// within the ONE `-painterMaterialGraph` call that produced it (see
+/// `RISESceneTreeNode`'s own "nothing here is a handle, so nothing here
+/// expires" comment -- the same rule applies here for the same reason).
+@interface RISEGraphPort : NSObject
+@property (nonatomic, readonly, copy) NSString *paramName;
+@property (nonatomic, readonly) NSInteger occurrence;
+@property (nonatomic, readonly) NSInteger otherNodeIndex;   ///< -1 for a node-less port
+@property (nonatomic, readonly, copy) NSString *otherName;
+@end
+
+/// One node of the Painter/Material graph, WITH its laid-out position --
+/// mirrors `SceneEditController::GraphNode` + the parallel
+/// `SceneEditController::GraphNodePosition` `ReadPainterMaterialGraphLaidOut`
+/// hands back for it (doc-88 Phase 3 S11/S12/S13/S14).
+///
+/// `handle` is a real `SceneEditController::GraphNodeHandle` (unlike this
+/// array's own INDICES, which a caller must not carry past the next
+/// `-painterMaterialGraph` call) -- it survives being squirreled away
+/// across a refresh of the SAME published generation (`generation` on
+/// `RISEPainterMaterialGraph`), the same "the way back" role
+/// `ResolveGraphNodeHandle` plays on the C++ side.  A shell that wants to
+/// re-find "the node the user last selected" after a re-fetch should hold
+/// this, never `outEdges[i].otherNodeIndex`.
+@interface RISEGraphNode : NSObject
+@property (nonatomic, readonly) unsigned long long handle;
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy) NSString *chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
+/// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's enum,
+/// no bespoke per-value mirror" convention `RISEViewportProperty.kind`
+/// already uses for `ValueKind` (see `SceneEditController::
+/// PainterGraphNodeCategory`'s own comment). `chunkKeyword` above is
+/// almost always the more useful discriminator for a UI label/icon.
+@property (nonatomic, readonly) NSInteger category;
+@property (nonatomic, readonly) NSInteger defCount;   ///< expression-family def-stage count; 0 otherwise
+@property (nonatomic, readonly) double x;
+@property (nonatomic, readonly) double y;
+@property (nonatomic, readonly, copy) NSArray<RISEGraphPort *> *outEdges;
+@property (nonatomic, readonly, copy) NSArray<RISEGraphPort *> *inEdges;   ///< non-empty here == this node is SHARED (fan-out badge)
+@end
+
+/// The whole Painter/Material graph, positioned -- one `-painterMaterialGraph`
+/// call, the node table plus its generation.  No separate edge array: an
+/// edge is reachable through either endpoint's own `outEdges`/`inEdges`
+/// (`RISEGraphPort` already carries both endpoints + the param label,
+/// everything needed to draw a wire).
+@interface RISEPainterMaterialGraph : NSObject
+@property (nonatomic, readonly, copy) NSArray<RISEGraphNode *> *nodes;
+@property (nonatomic, readonly) unsigned long long generation;
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -863,6 +923,16 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Empty (but non-nil) on a temporarily unavailable controller or an empty
 /// category.
 - (RISESceneTree *)categoryTree:(RISEViewportCategory)category;
+
+/// doc-88 Phase 3 S14: the Painter/Material node graph, positioned --
+/// `{nodes, edges, positions}`. ONE TRANSACTIONAL READ, the SAME
+/// discipline `-categoryTree:` documents just above: built from
+/// `SceneEditController::ReadPainterMaterialGraphLaidOut`, which composes
+/// S11's graph + S13's saved sidecar positions + S12's auto-layout
+/// fill-in under one snapshot-lock hold (plus one small sidecar file
+/// read -- see that method's own header comment) rather than a per-node
+/// ABI walk. Empty (but non-nil) on a temporarily unavailable controller.
+- (RISEPainterMaterialGraph *)painterMaterialGraph;
 
 /// Phase 4b: per-category panel selection.  Returns the entity
 /// name picked in `category`'s section, or empty when nothing is

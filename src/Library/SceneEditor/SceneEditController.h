@@ -2852,6 +2852,278 @@ namespace RISE
 			std::set<Cst::NodeId>& promotedFunctionIds,
 			std::vector<std::pair<Cst::NodeId, String> >& functionFrontier );
 
+		// =====================================================================
+		// doc-88 Phase 3 S14 -- the `{nodes, edges, positions}` snapshot,
+		// composed from S11 (this graph) + S12 (GraphLayout::LayoutGraph,
+		// GraphLayout.h) + S13 (GraphLayoutSidecar, GraphLayoutSidecar.h) --
+		// and the layout-position WRITE counterpart, S13's sidecar write's
+		// first real (non-test) caller.  docs/gui/NODE_GRAPH_CANVAS.md sect.
+		// 6 S14.  Plus a FLAT indexed-accessor surface mirroring
+		// TreeNodeCount/TreeRootNode/TreeChildNode/TreeNodeParent/
+		// TreeNodeNameByHandle's own split (a REFRESHING count getter, then
+		// non-refreshing per-index/per-handle getters reading the snapshot
+		// the count call just published) -- the shape `RISE_API_
+		// SceneEditController_PainterGraph*` (RISE_API.h) forwards 1:1, the
+		// SAME two-surface pattern S11's own AuthoredTree-crossing-the-ABI
+		// precedent established: a bulk C++ read (`ReadTree` /
+		// `ReadPainterMaterialGraph`) for a shell that can see the nested
+		// C++ type (both platform bridges, exactly like `-categoryTree:`
+		// already does for AuthoredTree -- see RISEViewportBridge.h's own
+		// "one `-categoryTree:` call rather than walked node by node"
+		// comment for why a per-node ABI walk is the WRONG shape for a
+		// widget's bulk read), plus these flat accessors for a caller that
+		// cannot name the nested type at all (the C ABI; see the "NO
+		// `ReadTree` AND NO `HandleFor` ON THIS SURFACE" note by the Tree
+		// ABI block in RISE_API.h for why).
+		//
+		// WHERE THE SCENE PATH COMES FROM (the sidecar's own contract needs
+		// one): the controller does NOT own a dedicated "current scene path"
+		// field.  It reads `mJob.GetCstLoadFileIdentity().filePath` instead
+		// -- the SAME FileIdentity the CST save-guard already tracks
+		// (FileIdentity.h), refreshed at CST-load (`Job::
+		// LoadAsciiSceneViaCst` calls `RefreshCstLoadFileIdentity(filename)`
+		// right after a successful load) AND at the end of every successful
+		// `RequestSave` (so a Save-As re-anchors it to the new path).  This
+		// is exactly "the currently open scene's file path" a sidecar path
+		// needs, already threaded through the one place (`Job`) both load
+		// and save funnel through -- no new field, no new invalidation
+		// surface to keep in sync.  Empty (`FileIdentity::filePath == ""`)
+		// on a brand-new, never-loaded-or-saved scene -- GraphLayoutSidecar
+		// ::SidecarPathForScene's/WriteSidecar's own "unsaved scene" case,
+		// which both ReadPainterMaterialGraphLaidOut (degrades to
+		// full-auto-layout, no sidecar) and WriteGraphLayoutPositions
+		// (no-ops, returns true) already handle by construction -- see
+		// GetCurrentScenePath_'s own comment (SceneEditController.cpp) for
+		// the full non-blocking-poll-vs-blocking-write split.
+		// =====================================================================
+
+		//! One node's laid-out 2D position -- parallel-indexed to
+		//! `PainterMaterialGraphLaidOut::graph.nodes` (positions[i] is
+		//! nodes[i]'s position), the SAME parallel-array convention
+		//! `GraphLayout::ComputeRanks` already established for this graph
+		//! type ("ranks[i] is nodes[i]'s rank" -- GraphLayout.h).
+		//!
+		//! Deliberately a LOCAL type here, not a reuse of `GraphLayout::
+		//! GraphLayoutPoint` -- GraphLayout.h itself `#include`s THIS header
+		//! (it takes a `PainterMaterialGraph` by value), so this header
+		//! including GraphLayout.h back for its point type would be
+		//! circular. Same (x, y) shape; SceneEditController.cpp (which DOES
+		//! include GraphLayout.h) converts between the two with a trivial
+		//! field copy at the composition boundary.
+		struct GraphNodePosition
+		{
+			double x = 0.0;
+			double y = 0.0;
+		};
+
+		//! The composed snapshot: S11's PainterMaterialGraph plus a position
+		//! for EVERY node -- S13's sidecar filling in whatever it has saved,
+		//! S12's LayoutGraph filling in everything else -- exactly the
+		//! "{nodes, edges, positions}" shape NODE_GRAPH_CANVAS.md sect. 6
+		//! S14 asks for.  No separate edge array: an edge is reachable
+		//! through either endpoint's own `outEdges`/`inEdges` (`GraphPort`
+		//! already carries both endpoints -- `otherNode`/`otherName` -- plus
+		//! the `paramName` label), which is everything S15's canvas needs to
+		//! draw a wire (both endpoints + the param label it connects).
+		struct PainterMaterialGraphLaidOut
+		{
+			PainterMaterialGraph graph;
+			//! Parallel to graph.nodes; see GraphNodePosition's own comment.
+			std::vector<GraphNodePosition> positions;
+		};
+
+		//! THE S14 COMPOSITION POINT.  Three steps, in order:
+		//!   1. `ReadPainterMaterialGraph` (S11) -- the current graph.
+		//!   2. `GraphLayoutSidecar::ReadSidecar` (S13) on the CURRENT
+		//!      scene's path (see this block's own "WHERE THE SCENE PATH
+		//!      COMES FROM" note) -- whatever positions were saved.  Read
+		//!      FRESH from disk on EVERY call, deliberately not cached: the
+		//!      sidecar is a tiny (per-node, two-double) JSON file, so a
+		//!      per-call read costs nothing worth caching for, and caching
+		//!      it would add a THIRD invalidation cadence (beside the
+		//!      graph's own compare-then-publish and the scene path's own
+		//!      Save-As-can-move-without-a-graph-change hazard --
+		//!      GetCurrentScenePath_'s own comment) for no measured benefit.
+		//!      A caller that walks many nodes per frame should use the
+		//!      bulk read below ONCE per frame (exactly what both platform
+		//!      bridges do), not re-call this per node.
+		//!   3. `GraphLayout::LayoutGraph` (S12) over the result -- echoes
+		//!      every saved position back verbatim and auto-lays-out every
+		//!      node the sidecar did not have one for.
+		//! `out.positions` is populated parallel to `out.graph.nodes`; a
+		//! node with an empty name (should not occur, see `GraphLayout::
+		//! LayoutGraph`'s own comment) is left at the default (0, 0).
+		void ReadPainterMaterialGraphLaidOut( PainterMaterialGraphLaidOut& out ) const;
+
+		//! One position UPDATE for WriteGraphLayoutPositions -- keyed by
+		//! node NAME, not `GraphNodeHandle` (see GraphLayout.h's "NAME-KEYED,
+		//! NOT HANDLE-KEYED" note: a handle is generation-tagged and cannot
+		//! survive the save/reload a sidecar entry must).
+		struct GraphNodePositionUpdate
+		{
+			String name;
+			double x = 0.0;
+			double y = 0.0;
+		};
+
+		//! THE WRITE COUNTERPART -- the future canvas drag's commit path
+		//! (one node moved -> one update here), and S13's `GraphLayoutSidecar
+		//! ::WriteSidecar`'s first REAL (non-test) caller.  Merges `updates`
+		//! onto whatever the sidecar currently has saved (so moving one node
+		//! does not clobber every other node's saved position), then writes
+		//! through `WriteSidecar`, which itself:
+		//!   - orphan-prunes any name not among the CURRENT graph's own node
+		//!     names. This function supplies that live-name set itself, from
+		//!     `BuildPainterMaterialGraphSeedsLocked_` called under the SAME
+		//!     blocking `mMutex` hold used to read the scene path (doc-88
+		//!     S14 review round P2(1)) -- deliberately NOT via
+		//!     `ReadPainterMaterialGraph` / `RefreshPainterMaterialGraphSnapshot_`,
+		//!     whose non-blocking `try_lock` may serve a STALE published
+		//!     graph under contention. Reading the path and the live-name
+		//!     set from two SEPARATE critical sections (the prior shape)
+		//!     left a window where a node added by a concurrent edit is
+		//!     reflected in neither, or in the path but not (yet, or at all,
+		//!     under sustained contention) the stale-servable graph read --
+		//!     either way this call's own `updates` for that node would get
+		//!     silently orphan-pruned by `WriteSidecar` moments after the
+		//!     node was created. An explicit user-initiated write cannot
+		//!     accept that degradation the way a polled read may;
+		//!   - REFUSES (no-ops, returns true, touches no file) when the
+		//!     current scene has never been saved -- see this block's own
+		//!     "WHERE THE SCENE PATH COMES FROM" note; this function passes
+		//!     the path it read straight through rather than special-casing
+		//!     empty itself, so the ONE refusal rule lives in ONE place
+		//!     (`WriteSidecar`);
+		//!   - skips the write entirely when the serialized result is
+		//!     byte-identical to the file's current content ("only when
+		//!     positions actually changed").
+		//! An `updates` entry with an empty name is skipped (nothing to key
+		//! a sidecar entry by).  Returns false with `outError` set on an
+		//! actual I/O failure, OR when the controller cannot determine the
+		//! current scene path right now (a render owns the scene -- same
+		//! `mRenderOwnsScene` refusal `GetCurrentScenePath_`'s blocking
+		//! branch itself implements; this is the ONE case this function
+		//! refuses itself, because an explicit user-initiated write must not
+		//! silently no-op the way a POLLED read may).
+		bool WriteGraphLayoutPositions( const std::vector<GraphNodePositionUpdate>& updates,
+		                                std::string& outError ) const;
+
+		// ---- Flat indexed accessors -----------------------------------
+		// Mirror TreeNodeCount/TreeRootNode/TreeChildCountByHandle/
+		// TreeChildNode/TreeNodeParent/TreeNodeNameByHandle's own split
+		// EXACTLY: PainterGraphNodeCount is the ONLY one that refreshes
+		// (`RefreshPainterMaterialGraphSnapshot_`); every other accessor
+		// below reads the ALREADY-PUBLISHED `mUi.painterMaterialGraph`
+		// under the leaf `mUiSnapshotMutex` ONLY, no refresh -- a caller
+		// walking many nodes/ports must call PainterGraphNodeCount ONCE
+		// first (exactly the existing Tree-walk contract). Calling it once
+		// does NOT, by itself, PREVENT a republish from landing mid-walk --
+		// a concurrent thread can call PainterGraphNodeCount (or any other
+		// refresh) at any time, and a raw-INDEX accessor like
+		// `PainterGraphNodeHandleAt` has no generation of its own to check
+		// against, so an index obtained before such a republish can name a
+		// different node, or run past a now-shorter array, after one lands.
+		// The two guarantees this surface actually has are narrower:
+		// (a) every per-HANDLE accessor below (as opposed to per-index)
+		// resolves through `ResolveGraphNodeHandle`, which refuses a handle
+		// whose encoded generation does not match the graph it is being
+		// read against -- so once a caller holds a `GraphNodeHandle`, a
+		// later republish makes further per-handle accessor calls for it
+		// fail cleanly (`kInvalidGraphNode`-shaped refusal) rather than read
+		// a wrong or stale node; and (b) every PRODUCTION caller of this
+		// graph (both platform bridges) reads it through the one-shot bulk
+		// C++ snapshot (`ReadPainterMaterialGraph` / `ReadPainterMaterialGraphLaidOut`)
+		// instead of walking this flat surface index-by-index, so the
+		// mid-walk-republish hazard described above does not arise for
+		// them at all. This flat indexed surface exists for the C ABI
+		// (`RISE_API.cpp`) and is, in practice, exercised only by it and by
+		// `tests/ReferenceGraphTest.cpp` -- it is SMOKE-TEST-SCOPED, not a
+		// surface any shipped bridge walks this way. `otherNode` on a port accessor is
+		// resolved to the OTHER node's real `GraphNodeHandle` (not the raw
+		// `GraphPort::otherNode` index) IN THE SAME LOCKED PASS -- one
+		// consistent identity space (`GraphNodeHandle`, `kInvalidGraphNode`
+		// for "no such node", including a node-less/dangling port) for
+		// every accessor below, rather than a second index space a caller
+		// would have to know how to dereference.  `portCategories` is
+		// DELIBERATELY NOT exposed here -- nothing on this surface needs it
+		// yet (S15's canvas draws a wire from endpoint + param label alone;
+		// see PainterMaterialGraphLaidOut's own comment) -- a future
+		// connection-legality slice (S17) adds an accessor for it WHEN
+		// something crossing the ABI actually reads it, not before.
+
+		//! Total nodes in the CURRENT Painter/Material graph.  Refreshes.
+		unsigned int PainterGraphNodeCount() const;
+
+		//! The generation of the currently published graph.  Does NOT
+		//! refresh (see the block comment).  0 if nothing has ever been
+		//! published.
+		unsigned long long PainterGraphGeneration() const;
+
+		//! Handle of the `idx`-th node (presentation order, same order
+		//! `ReadPainterMaterialGraph` would hand back).  `kInvalidGraphNode`
+		//! on an out-of-range index.
+		GraphNodeHandle PainterGraphNodeHandleAt( unsigned int idx ) const;
+
+		//! `node`'s name / chunk keyword.  Empty String on an unknown or
+		//! stale handle.
+		String PainterGraphNodeName( GraphNodeHandle node ) const;
+		String PainterGraphNodeKeyword( GraphNodeHandle node ) const;
+
+		//! `node`'s `ChunkCategory`, cast to int -- the SAME "just append,
+		//! never reorder" ABI-stability contract the parser's `ValueKind`
+		//! already crosses the ABI under (RISEViewportProperty.kind's own
+		//! "the parser's ValueKind enum cast to int" comment, RISEViewport
+		//! Bridge.h) -- not a bespoke per-value NS_ENUM/QT-enum mirror: a
+		//! graph node's category is, in practice, always Painter/Material/
+		//! Function today (`BuildPainterMaterialGraphSeedsLocked_`'s own
+		//! scope), and a shell that wants a friendly label already has
+		//! `chunkKeyword` (e.g. "ramp_painter") without needing to switch on
+		//! this value at all.  -1 on an unknown or stale handle (never a
+		//! valid `ChunkCategory` ordinal).
+		int PainterGraphNodeCategory( GraphNodeHandle node ) const;
+
+		//! `node`'s expression-family def-stage count (S10's `ExpressionProgram
+		//! ::DefCount()`; 0 for every non-expression chunk).  -1 on an
+		//! unknown or stale handle (never a legitimate defCount).
+		int PainterGraphNodeDefCount( GraphNodeHandle node ) const;
+
+		//! `node`'s laid-out position (see ReadPainterMaterialGraphLaidOut).
+		//! UNLIKE every other accessor on this surface, this one DOES
+		//! perform the S14 composition (sidecar read + LayoutGraph fill-in)
+		//! on every call -- position is not part of the compare-then-publish
+		//! `PainterMaterialGraph` snapshot the other accessors read (see
+		//! this block's own "WHERE THE SCENE PATH COMES FROM" note for why
+		//! position/path cannot be folded into that same struct). Acceptable
+		//! for an occasional/smoke-test caller; a widget walking every
+		//! node's position should call `ReadPainterMaterialGraphLaidOut`
+		//! ONCE instead (exactly as RISESceneTreeNode's own comment steers a
+		//! bulk walk away from a per-node handle call). Returns false --
+		//! `outX`/`outY` untouched -- on an unknown or stale handle.
+		bool PainterGraphNodePosition( GraphNodeHandle node, double& outX, double& outY ) const;
+
+		//! Port counts + indexed port accessors for `node`'s two port lists
+		//! (S11's `GraphNode::outEdges`/`inEdges` -- "direction" is WHICH of
+		//! these two you call, not a separate flag field: mirrors GraphNode's
+		//! own out/in split rather than inventing a second encoding of the
+		//! same information). 0 / false on an unknown or stale handle, same
+		//! degradation as every other accessor here.
+		unsigned int PainterGraphNodeOutEdgeCount( GraphNodeHandle node ) const;
+		unsigned int PainterGraphNodeInEdgeCount( GraphNodeHandle node ) const;
+
+		//! One port at `portIdx` (0-based, presentation order = `GraphPort`'s
+		//! own vector order). `outOtherNode` is `kInvalidGraphNode` for a
+		//! node-less port (dangling reference, or a reference out of this
+		//! graph's modeled categories -- `GraphPort::otherNode`'s own
+		//! comment) -- `outOtherName` still carries the target's name either
+		//! way. Returns false -- no out-param touched -- on an unknown/stale
+		//! handle or an out-of-range `portIdx`.
+		bool PainterGraphNodeOutEdge( GraphNodeHandle node, unsigned int portIdx,
+		                              GraphNodeHandle& outOtherNode, String& outParamName,
+		                              int& outOccurrence, String& outOtherName ) const;
+		bool PainterGraphNodeInEdge( GraphNodeHandle node, unsigned int portIdx,
+		                             GraphNodeHandle& outOtherNode, String& outParamName,
+		                             int& outOccurrence, String& outOtherName ) const;
+
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
 		//! instance.  Each fresh controller therefore has a unique
@@ -5817,6 +6089,36 @@ namespace RISE
 		//! REQUIRES mMutex held.
 		void BuildPainterMaterialGraphSeedsLocked_(
 			std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const;
+
+		//! doc-88 Phase 3 S14: "the current scene's file path", read from
+		//! `mJob.GetCstLoadFileIdentity().filePath` -- see the block comment
+		//! by `ReadPainterMaterialGraphLaidOut`'s declaration for why the
+		//! controller reads THIS field rather than owning a dedicated path
+		//! of its own. `outPath` is cleared first and left empty (not
+		//! untouched) on every return, including a `false` return -- a
+		//! caller that ignores the bool and reads `outPath` anyway sees ""
+		//! (the "no sidecar" / "unsaved scene" degradation), never a stale
+		//! leftover from a previous call.
+		//!
+		//! `blocking=false` (the default -- used by the POLLED read path,
+		//! `ReadPainterMaterialGraphLaidOut`) follows the same non-blocking
+		//! "serve stale on contention" convention `RefreshTreeSnapshot_`/
+		//! `GetAnimationOptions` already use: `try_to_lock`, returns false
+		//! without touching `outPath` on contention OR while a render owns
+		//! the scene -- a polling caller degrades to "no sidecar this call"
+		//! (full auto-layout) rather than blocking a UI thread, and
+		//! self-heals on the next poll.
+		//!
+		//! `blocking=true` (used by the explicit, user-initiated
+		//! `WriteGraphLayoutPositions`) waits for `mMutex` like
+		//! `RequestSave`'s own snapshot step does -- an explicit write must
+		//! not silently no-op just because a poll happened to be
+		//! mid-refresh. It still refuses (returns false) while a render owns
+		//! the scene, same as `RequestSave` itself refuses a save in that
+		//! state -- `WriteGraphLayoutPositions` surfaces that as an error
+		//! rather than a silent no-op, unlike the polled read path, because
+		//! it is an explicit user action.
+		bool GetCurrentScenePath_( std::string& outPath, bool blocking = false ) const;
 
 		//! Does `cat`'s CURRENTLY PUBLISHED tree contain a row named `name`?
 		//! Takes only the leaf snapshot lock and does NOT refresh -- it asks

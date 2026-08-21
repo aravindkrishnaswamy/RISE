@@ -9777,6 +9777,145 @@ namespace RISE
 		return true;
 	}
 
+	// Painter/Material node graph (doc-88 Phase 3 S14) ------------------
+
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeCount( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphNodeCount();
+	}
+
+	unsigned long long RISE_API_SceneEditController_PainterGraphGeneration( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphGeneration();
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeHandleAt(
+		SceneEditController* p, unsigned int idx, unsigned long long* outNode )
+	{
+		if( !p || !outNode ) return false;
+		const SceneEditController::GraphNodeHandle n = p->PainterGraphNodeHandleAt( idx );
+		if( n == SceneEditController::kInvalidGraphNode ) return false;
+		*outNode = n;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeName(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const String nm = p->PainterGraphNodeName( node );
+		if( nm.size() <= 1 ) return false;   // same discriminator as TreeNodeNameByHandle -- see its own comment
+		CopyToBuf( nm, buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeKeyword(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const String kw = p->PainterGraphNodeKeyword( node );
+		if( kw.size() <= 1 ) return false;
+		CopyToBuf( kw, buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PainterGraphNodeCategory( SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return -1;
+		return p->PainterGraphNodeCategory( node );
+	}
+
+	int RISE_API_SceneEditController_PainterGraphNodeDefCount( SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return -1;
+		return p->PainterGraphNodeDefCount( node );
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodePosition(
+		SceneEditController* p, unsigned long long node, double* outX, double* outY )
+	{
+		if( !p || !outX || !outY ) return false;
+		return p->PainterGraphNodePosition( node, *outX, *outY );
+	}
+
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeOutEdgeCount(
+		SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphNodeOutEdgeCount( node );
+	}
+
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeInEdgeCount(
+		SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphNodeInEdgeCount( node );
+	}
+
+	// Shared body for the Out/In edge shims immediately below -- the only
+	// difference between the two is which SceneEditController method it forwards to.
+	static bool PainterGraphNodeEdgeShim(
+		bool (SceneEditController::*fn)( SceneEditController::GraphNodeHandle, unsigned int,
+			SceneEditController::GraphNodeHandle&, String&, int&, String& ) const,
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen )
+	{
+		if( !p || !outOtherNode || !outOccurrence ) return false;
+		SceneEditController::GraphNodeHandle otherNode = SceneEditController::kInvalidGraphNode;
+		String paramName, otherName;
+		int occurrence = 0;
+		if( !( p->*fn )( node, portIdx, otherNode, paramName, occurrence, otherName ) ) return false;
+		*outOtherNode  = otherNode;
+		*outOccurrence = occurrence;
+		CopyToBuf( paramName, outParamNameBuf, paramNameBufLen );
+		CopyToBuf( otherName, outOtherNameBuf, otherNameBufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeOutEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen )
+	{
+		return PainterGraphNodeEdgeShim( &SceneEditController::PainterGraphNodeOutEdge,
+			p, node, portIdx, outOtherNode, outParamNameBuf, paramNameBufLen,
+			outOccurrence, outOtherNameBuf, otherNameBufLen );
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeInEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen )
+	{
+		return PainterGraphNodeEdgeShim( &SceneEditController::PainterGraphNodeInEdge,
+			p, node, portIdx, outOtherNode, outParamNameBuf, paramNameBufLen,
+			outOccurrence, outOtherNameBuf, otherNameBufLen );
+	}
+
+	bool RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+		SceneEditController* p, const char* nodeName, double x, double y,
+		char* outError, unsigned int outErrorLen )
+	{
+		if( outError && outErrorLen > 0 ) outError[0] = '\0';
+		if( !p || !nodeName || nodeName[0] == '\0' ) return false;
+		SceneEditController::GraphNodePositionUpdate u;
+		u.name = String( nodeName );
+		u.x = x;
+		u.y = y;
+		std::string err;
+		const bool ok = p->WriteGraphLayoutPositions( std::vector<SceneEditController::GraphNodePositionUpdate>{ u }, err );
+		if( !ok && outError && outErrorLen > 0 && !err.empty() ) {
+			const unsigned int n =
+				( err.size() + 1 < outErrorLen ) ? (unsigned int)err.size() : ( outErrorLen - 1 );
+			std::memcpy( outError, err.data(), n );
+			outError[n] = '\0';
+		}
+		return ok;
+	}
+
 	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
 	{
 		if( !p ) return 0;

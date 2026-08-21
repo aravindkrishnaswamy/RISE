@@ -92,10 +92,11 @@
 
 namespace RISE
 {
-	//! Pure/static except for the two filesystem-touching entry points
-	//! (ReadSidecar/WriteSidecar); every other method is a function of its
-	//! explicit arguments only, directly unit-testable in a temp directory
-	//! (no controller, no Job, no live document).
+	//! Pure/static except for the three filesystem-touching entry points
+	//! (ReadSidecar/WriteSidecar/MigrateSidecarOnSaveAs); every other
+	//! method is a function of its explicit arguments only, directly
+	//! unit-testable in a temp directory (no controller, no Job, no live
+	//! document).
 	class GraphLayoutSidecar
 	{
 	public:
@@ -226,6 +227,45 @@ namespace RISE
 		//! crash and never a wrong position assigned to the wrong node.
 		static bool MigrateName( GraphLayout::Positions& positions,
 		                         const std::string& oldName, const std::string& newName );
+
+		//! SAVE-AS SIDECAR MIGRATION (doc-88 S14 review P2(2)).  Before this
+		//! existed, a Save-As (`SceneEditController::RequestSave` called with
+		//! a path different from the scene's prior `FileIdentity` path) left
+		//! the OLD `<oldScenePath>.risegraph.json` stranded next to the old
+		//! (still-existing) scene file, and the newly-saved scene had no
+		//! sidecar at all -- every manually-dragged node position silently
+		//! reverted to auto-layout the next time the new file was opened, a
+		//! "layout is disposable" degradation the design brief did not
+		//! intend for the ORDINARY Save-As case (it is the right behavior
+		//! for a genuinely NEW scene that never had a layout, just not for a
+		//! renamed/relocated copy of one that did).
+		//!
+		//! Best-effort file COPY (never a move -- see below) from
+		//! `SidecarPathForScene(oldScenePath)` to
+		//! `SidecarPathForScene(newScenePath)`, called ONCE, right after a
+		//! successful save publishes the new path:
+		//!   - no-ops (returns true) when either path is empty, the two
+		//!     paths are equal (an ordinary, non-Save-As save), or the OLD
+		//!     sidecar does not exist (nothing to migrate -- the ordinary
+		//!     "this scene never had one" case, not a failure);
+		//!   - NEVER OVERWRITES an existing sidecar at `newScenePath`: if a
+		//!     file already sits there (e.g. a previous save-as-then-back
+		//!     round trip, or an unrelated file that happens to occupy that
+		//!     name), this returns true and leaves it untouched rather than
+		//!     clobbering positions that may belong to a different graph;
+		//!   - a copy failure (permissions, disk full, ...) returns false
+		//!     with `outError` set -- the caller logs it at eLog_Warning and
+		//!     treats it as NON-FATAL to the save itself: the scene file is
+		//!     already written and correct by the time this runs, so a lost
+		//!     sidecar degrades to "this node re-lays-out on next open",
+		//!     never a failed or corrupted save;
+		//!   - the OLD sidecar is always LEFT IN PLACE, migrated or not --
+		//!     it belongs to the old scene file, which itself is untouched
+		//!     and still exists (Save-As is a COPY-forward, not a rename of
+		//!     the original), so deleting it would strand ITS OWN sidecar
+		//!     the same way skipping this call would strand the new one.
+		static bool MigrateSidecarOnSaveAs( const std::string& oldScenePath, const std::string& newScenePath,
+		                                     std::string& outError );
 
 		//! Coordinate magnitude bound: a saved position beyond this in
 		//! either axis is treated as "absurd" and clamped (see
