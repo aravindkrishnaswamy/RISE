@@ -3,10 +3,12 @@
 #include "FireProductionRoundoffWalker.h"
 #include "Utilities/FireProductionAdvection.h"
 #include "Utilities/FireProductionProjection.h"
+#include "Utilities/FireProductionTransport.h"
 #include "fire_production_fp64/FireProductionAdvection.h"
 #include "fire_production_fp64/FireProductionProjection.h"
 #include "fire_production_fp64/SourceManifest.h"
 #include "fire_production_trace/FireProductionAdvection.h"
+#include "fire_production_trace/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
 
 #include <algorithm>
@@ -55,6 +57,8 @@ int main()
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string windowsRules=ReadText("build/cmake/rise-tests/CMakeLists.txt");
 	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
+	const std::string tracedTransportSource=ReadText(
+		"tests/fire_production_trace/FireProductionTransport.cpp");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -79,6 +83,12 @@ int main()
 		walkerSource.find("Counters")==std::string::npos&&
 		walkerSource.find("fire_production_trace")==std::string::npos,
 		"independent topology walker shares neither trace counts nor generated arithmetic code");
+	const std::size_t firstStageSeam=tracedTransportSource.find("SealStageAndReset");
+	Check(firstStageSeam!=std::string::npos&&tracedTransportSource.find(
+		"SealStageAndReset",firstStageSeam+1u)!=std::string::npos&&
+		tracedTransportSource.find("SealStageAndReset",tracedTransportSource.find(
+			"SealStageAndReset",firstStageSeam+1u)+1u)==std::string::npos,
+		"generated transport trace owns exactly the cell and dual stage-reset seams");
 
 	{
 		FireProductionRoundoffTrace::Counters counters;
@@ -233,6 +243,130 @@ int main()
 		tracedOperations==walkedTopology.operationCount&&
 		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
+
+	RISE::FireProductionCellPalindromeRequest cell32;
+	cell32.shape.nx=5u;cell32.shape.ny=6u;cell32.shape.nz=7u;
+	cell32.shape.cellWidthM=0.2f;cell32.componentCount=9u;cell32.timeStepS=0.01f;
+	cell32.boundary.fill(RISE::FireProductionProjectionPressureOpen);
+	const std::size_t cellCount=cell32.shape.CellCount();
+	cell32.conservativeValues.resize(cell32.componentCount*cellCount);
+	cell32.ambientValues.resize(cell32.componentCount);
+	for(std::size_t component=0u;component<cell32.componentCount;++component){
+		const float base=component==8u?300000.0f:static_cast<float>(component+1u);
+		cell32.ambientValues[component]=base;
+		for(std::size_t z=0u;z<cell32.shape.nz;++z)
+			for(std::size_t y=0u;y<cell32.shape.ny;++y)
+				for(std::size_t x=0u;x<cell32.shape.nx;++x){
+					const std::size_t cell=(z*cell32.shape.ny+y)*cell32.shape.nx+x;
+					cell32.conservativeValues[component*cellCount+cell]=base*(1.0f+
+						0.02f*static_cast<float>(x+2u*y+3u*z));
+				}
+	}
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(cell32.shape,axis);
+		cell32.frozenVelocityMPerS[axis].resize(faces);
+		for(std::size_t face=0u;face<faces;++face)
+			cell32.frozenVelocityMPerS[axis][face]=0.01f*static_cast<float>(axis+1u);
+	}
+	RISE::FireProductionCellPalindromeResult cell32Result;
+	Check(RISE::RemapFireProductionCellPalindromeCPU(cell32,cell32Result,&error),
+		"binary32 cell palindrome accepts the stage-reset witness");
+	RISEFireProductionTrace::FireProductionCellPalindromeRequest tracedCell;
+	tracedCell.shape.nx=cell32.shape.nx;tracedCell.shape.ny=cell32.shape.ny;
+	tracedCell.shape.nz=cell32.shape.nz;tracedCell.shape.cellWidthM=cell32.shape.cellWidthM;
+	tracedCell.componentCount=cell32.componentCount;tracedCell.timeStepS=cell32.timeStepS;
+	for(unsigned int side=0u;side<6u;++side)tracedCell.boundary[side]=
+		static_cast<RISEFireProductionTrace::FireProductionProjectionBoundary>(
+			cell32.boundary[side]);
+	tracedCell.conservativeValues.assign(cell32.conservativeValues.begin(),
+		cell32.conservativeValues.end());
+	tracedCell.ambientValues.assign(cell32.ambientValues.begin(),cell32.ambientValues.end());
+	for(unsigned int axis=0u;axis<3u;++axis)tracedCell.frozenVelocityMPerS[axis].assign(
+		cell32.frozenVelocityMPerS[axis].begin(),cell32.frozenVelocityMPerS[axis].end());
+	RISEFireProductionTrace::FireProductionCellPalindromeResult tracedCellResult;
+	FireProductionRoundoffTrace::Counters tracedCellCounters;bool tracedCellOK=false;{
+		FireProductionRoundoffTrace::Scope scope(tracedCellCounters);
+		tracedCellOK=RISEFireProductionTrace::RemapFireProductionCellPalindromeCPU(
+			tracedCell,tracedCellResult,&error);
+	}
+	bool tracedCellBytes=tracedCellResult.conservativeValues.size()==
+		cell32Result.conservativeValues.size();
+	for(std::size_t value=0u;tracedCellBytes&&value<tracedCellResult.conservativeValues.size();++value)
+		tracedCellBytes=tracedCellResult.conservativeValues[value].Rounded()==
+			cell32Result.conservativeValues[value]&&
+			tracedCellResult.conservativeValues[value].Radius()==0.0;
+	bool completeStages=tracedCellCounters.sealedStages.size()==5u;
+	for(const FireProductionRoundoffTrace::Observation& stage:tracedCellCounters.sealedStages){
+		std::uint64_t operations=0u;for(const std::uint64_t count:stage.operation)operations+=count;
+		completeStages=completeStages&&operations>0u&&stage.maximumDepth>0u&&
+			stage.maximumOutputRadius>0.0&&std::isfinite(stage.maximumOutputRadius)&&
+			std::isfinite(stage.maximumAbsoluteOutput);
+	}
+	Check(tracedCellOK&&tracedCellBytes&&completeStages,
+		"cell palindrome trace seals five local certificates and resets radii without changing fp32 bytes");
+
+	RISE::FireProductionDualMomentumRequest dual32;
+	dual32.shape=cell32.shape;dual32.timeStepS=cell32.timeStepS;
+	dual32.ambientDensityKGPerM3=1.0f;dual32.boundary=cell32.boundary;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(dual32.shape,axis);
+		dual32.beginningFaceDensity[axis].resize(faces);
+		dual32.beginningMomentum[axis].resize(faces);
+		dual32.frozenVelocityMPerS[axis].resize(faces);
+		for(std::size_t face=0u;face<faces;++face){
+			const float density=1.0f+0.001f*static_cast<float>(face%17u);
+			const float velocity=0.01f*static_cast<float>(axis+1u);
+			dual32.beginningFaceDensity[axis][face]=density;
+			dual32.beginningMomentum[axis][face]=density*velocity;
+			dual32.frozenVelocityMPerS[axis][face]=velocity;
+		}
+	}
+	RISE::FireProductionDualMomentumResult dual32Result;
+	const bool dual32OK=RISE::RemapFireProductionDualMomentumCPU(dual32,dual32Result,&error);
+	if(!dual32OK)std::fprintf(stderr,"dual stage witness failed: %s\n",error.c_str());
+	Check(dual32OK,
+		"binary32 dual palindrome accepts the stage-reset witness");
+	RISEFireProductionTrace::FireProductionDualMomentumRequest tracedDual;
+	tracedDual.shape=tracedCell.shape;tracedDual.timeStepS=dual32.timeStepS;
+	tracedDual.ambientDensityKGPerM3=dual32.ambientDensityKGPerM3;
+	for(unsigned int side=0u;side<6u;++side)tracedDual.boundary[side]=
+		static_cast<RISEFireProductionTrace::FireProductionProjectionBoundary>(
+			dual32.boundary[side]);
+	for(unsigned int axis=0u;axis<3u;++axis){
+		tracedDual.beginningFaceDensity[axis].assign(dual32.beginningFaceDensity[axis].begin(),
+			dual32.beginningFaceDensity[axis].end());
+		tracedDual.beginningMomentum[axis].assign(dual32.beginningMomentum[axis].begin(),
+			dual32.beginningMomentum[axis].end());
+		tracedDual.frozenVelocityMPerS[axis].assign(dual32.frozenVelocityMPerS[axis].begin(),
+			dual32.frozenVelocityMPerS[axis].end());
+	}
+	RISEFireProductionTrace::FireProductionDualMomentumResult tracedDualResult;
+	FireProductionRoundoffTrace::Counters tracedDualCounters;bool tracedDualOK=false;{
+		FireProductionRoundoffTrace::Scope scope(tracedDualCounters);
+		tracedDualOK=RISEFireProductionTrace::RemapFireProductionDualMomentumCPU(
+			tracedDual,tracedDualResult,&error);
+	}
+	bool tracedDualBytes=true;
+	for(unsigned int axis=0u;axis<3u&&tracedDualBytes;++axis){
+		tracedDualBytes=tracedDualResult.auxiliaryFaceDensity[axis].size()==
+			dual32Result.auxiliaryFaceDensity[axis].size()&&
+			tracedDualResult.momentum[axis].size()==dual32Result.momentum[axis].size();
+		for(std::size_t face=0u;tracedDualBytes&&
+			face<tracedDualResult.momentum[axis].size();++face)
+			tracedDualBytes=tracedDualResult.auxiliaryFaceDensity[axis][face].Rounded()==
+				dual32Result.auxiliaryFaceDensity[axis][face]&&
+				tracedDualResult.momentum[axis][face].Rounded()==dual32Result.momentum[axis][face]&&
+				tracedDualResult.auxiliaryFaceDensity[axis][face].Radius()==0.0&&
+				tracedDualResult.momentum[axis][face].Radius()==0.0;
+	}
+	bool completeDualStages=tracedDualCounters.sealedStages.size()==15u;
+	for(const FireProductionRoundoffTrace::Observation& stage:tracedDualCounters.sealedStages){
+		std::uint64_t operations=0u;for(const std::uint64_t count:stage.operation)operations+=count;
+		completeDualStages=completeDualStages&&operations>0u&&stage.maximumDepth>0u&&
+			stage.maximumOutputRadius>0.0&&std::isfinite(stage.maximumOutputRadius);
+	}
+	Check(tracedDualOK&&tracedDualBytes&&completeDualStages,
+		"dual palindrome trace seals fifteen local certificates and resets radii without changing fp32 bytes");
 
 	RISE::FireProductionProjectionRequest projection32;
 	projection32.shape.nx=4u;projection32.shape.ny=4u;projection32.shape.nz=4u;

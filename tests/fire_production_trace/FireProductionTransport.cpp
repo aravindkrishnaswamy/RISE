@@ -647,8 +647,10 @@ namespace RISEFireProductionTrace
 			const FireProductionRoundoffTrace::TraceFloat halfStep=0.5f*request.timeStepS;
 			const unsigned int axes[]={0u,1u,2u,1u,0u};
 			const FireProductionRoundoffTrace::TraceFloat steps[]={halfStep,halfStep,request.timeStepS,halfStep,halfStep};
-			for( unsigned int pass=0u;pass<5u;++pass )
+			for( unsigned int pass=0u;pass<5u;++pass ) {
 				if( !ApplyAxis(request,axes[pass],steps[pass],values,error) ) return false;
+				FireProductionRoundoffTrace::SealStageAndReset(values);
+			}
 			result.conservativeValues=std::move(values);
 			result.executedSubmapCount=5u;
 			if( error ) error->clear();
@@ -1103,10 +1105,13 @@ namespace RISEFireProductionTrace
 				}
 			const unsigned int axes[]={0u,1u,2u,1u,0u};
 			for( unsigned int component=0u;component<3u;++component ) {
-				for( const unsigned int sweepAxis : axes )
+				for( const unsigned int sweepAxis : axes ) {
 					if( !ApplyDualAxis(request,component,sweepAxis,axisTimeStep[sweepAxis],
 						computed.auxiliaryFaceDensity[component],computed.momentum[component],
 						error) ) return false;
+					FireProductionRoundoffTrace::SealStageAndReset(
+						computed.auxiliaryFaceDensity[component],computed.momentum[component]);
+				}
 				if( AxisIsPeriodic(request,component) ) PublishPeriodicDualSeam(shape,component,
 					computed.auxiliaryFaceDensity[component],computed.momentum[component],
 					computed.canonicalSeamCopyCount);

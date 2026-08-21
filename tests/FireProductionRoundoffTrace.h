@@ -7,13 +7,14 @@
 #include <cstdint>
 #include <limits>
 #include <type_traits>
+#include <vector>
 
 namespace FireProductionRoundoffTrace
 {
 	enum class Operation : unsigned int { Convert,Add,Subtract,Multiply,Divide,Sqrt,Absolute,
 		Minimum,Maximum,Floor,Ceil,Remainder,NextAfter,Count };
 
-	struct Counters
+	struct Observation
 	{
 		std::uint64_t operation[static_cast<unsigned int>(Operation::Count)]={};
 		double maximumAbsoluteOperand[static_cast<unsigned int>(Operation::Count)]={};
@@ -25,6 +26,13 @@ namespace FireProductionRoundoffTrace
 		double minimumSqrtDomainLowerBound=std::numeric_limits<double>::infinity();
 		bool unresolvedBranch=false;
 		bool invalidDomain=false;
+		double maximumAbsoluteOutput=0.0;
+		double maximumOutputRadius=0.0;
+	};
+
+	struct Counters : Observation
+	{
+		std::vector<Observation> sealedStages;
 	};
 
 	inline thread_local Counters* ActiveCounters=nullptr;
@@ -237,6 +245,34 @@ namespace FireProductionRoundoffTrace
 			depth);
 	}
 	inline bool isfinite(const TraceFloat& value){return std::isfinite(value.Rounded());}
+
+	inline void ObserveAndReset(std::vector<TraceFloat>& values)
+	{
+		for(TraceFloat& value:values){
+			if(ActiveCounters){ActiveCounters->maximumAbsoluteOutput=std::max(
+				ActiveCounters->maximumAbsoluteOutput,std::fabs(value.Center())+value.Radius());
+				ActiveCounters->maximumOutputRadius=std::max(
+					ActiveCounters->maximumOutputRadius,value.Radius());}
+			value=TraceFloat(value.Rounded());
+		}
+	}
+
+	inline void SealStageAndReset(std::vector<TraceFloat>& first)
+	{
+		ObserveAndReset(first);
+		if(ActiveCounters){ActiveCounters->sealedStages.push_back(
+			static_cast<const Observation&>(*ActiveCounters));
+			static_cast<Observation&>(*ActiveCounters)=Observation();}
+	}
+
+	inline void SealStageAndReset(std::vector<TraceFloat>& first,
+		std::vector<TraceFloat>& second)
+	{
+		ObserveAndReset(first);ObserveAndReset(second);
+		if(ActiveCounters){ActiveCounters->sealedStages.push_back(
+			static_cast<const Observation&>(*ActiveCounters));
+			static_cast<Observation&>(*ActiveCounters)=Observation();}
+	}
 
 	class Scope
 	{
