@@ -1047,12 +1047,35 @@ namespace FireProductionDyadicCalibration
 				index,stage.invalidDenominatorCenter,stage.invalidDenominatorRadius,
 				stage.invalidDenominatorRounded);
 		}
+		const std::string traceDigest=RISECBOR64::SHA256Hex(encoded);
 		std::fprintf(stderr,"r120 trace_digest=%s unresolved_bitmap=0x%06x "
 			"invalid_bitmap=0x%06x trace_generator=%s transport_source=%s\n",
-			RISECBOR64::SHA256Hex(encoded).c_str(),unresolvedBitmap,invalidBitmap,
+			traceDigest.c_str(),unresolvedBitmap,invalidBitmap,
 			RISEFireProductionTrace::SourceManifest::Generator,
 			RISEFireProductionTrace::SourceManifest::FireProductionTransportSource);
-		return 236;
+		bool finiteOutputs=true;
+		for(const FireProductionRoundoffTrace::Observation& stage:trace.stages)
+			finiteOutputs=finiteOutputs&&std::isfinite(stage.maximumAbsoluteOutput)&&
+				std::isfinite(stage.maximumOutputRadius);
+		if(trace.stages.size()!=24u)return 238;
+		const FireProductionRoundoffTrace::Observation& firstCell=trace.stages[1];
+		const FireProductionRoundoffTrace::Observation& source=trace.stages[21];
+		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
+		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
+		if(trace.force.schedule.substepCount!=1u||
+			traceDigest!="a4315505cadce8dce1f4357d4cbc319f9914afde705a7f29a7f5f5658975127f"||
+			unresolvedBitmap!=0xdffffeu||invalidBitmap!=0x1ffffeu||!finiteOutputs||
+			!firstCell.unresolvedWitnessRecorded||!firstCell.invalidDenominatorWitnessRecorded||
+			FireProductionRoundoffWalker::IntervalsAreSeparated(
+				firstCell.unresolvedLeftCenter,firstCell.unresolvedLeftRadius,
+				firstCell.unresolvedRightCenter,firstCell.unresolvedRightRadius)||
+			std::fabs(firstCell.invalidDenominatorCenter)-
+				firstCell.invalidDenominatorRadius>0.0||source.unresolvedBranch||
+			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
+			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
+		std::fprintf(stderr,"r120 derivation stopped before Metal measurement: frozen branch "
+			"topology is unresolved\n");
+		return 237;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

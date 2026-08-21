@@ -60,6 +60,13 @@ int main()
 	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
 	const std::string tracedTransportSource=ReadText(
 		"tests/fire_production_trace/FireProductionTransport.cpp");
+	const std::string roundoffStopEvidence=ReadText(
+		"rendered/fire_production_calibration/r122_roundoff_derivation/"
+		"roundoff_derivation_stop.v1");
+	Check(!roundoffStopEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		roundoffStopEvidence.begin(),roundoffStopEvidence.end()))==
+		"e52afd58a2972747e4e863908c71409569995440a30e46689a17d2dc0066d98f",
+		"r122 roundoff derivation refusal artifact is durable and byte-bound");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");

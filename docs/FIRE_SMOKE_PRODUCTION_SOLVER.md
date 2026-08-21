@@ -2086,6 +2086,37 @@ agree with the independently formed `(G_0+G_src)/r_burn` prediction. A source
 term that makes the predicted plateau exceed the ceiling is an architecture
 finding, not permission to change restoration gain or the ceiling.
 
+### 7.37 Independent roundoff derivation refusal (r122)
+
+The first no-Metal execution of the frozen r120 arithmetic trace stops before
+`B_fp32` exists. The exact 24-stage trace digest is
+`a4315505cadce8dce1f4357d4cbc319f9914afde705a7f29a7f5f5658975127f`.
+The unresolved-branch bitmap is `0xdffffe`: all five cell maps, all fifteen
+dual maps, and both projection solves cross at least one executed comparison
+surface. The invalid-denominator bitmap is `0x1ffffe`: every transport map has
+an interval denominator whose lower enclosure crosses zero. Force and the
+exact-`+0` source stage are branch-resolved and domain-valid.
+
+This is a structural pre-measurement refusal, not a measured rounding miss and
+not a numerical allowance. The first cell-map branch compares independently
+overlapping intervals centered at `0.026247603451568811` and
+`0.026247604031626407`, with radii about `7.6070e-7`; its first denominator is
+centered at `-1.5497207643822009e-6` with radius
+`2.4675599048547826e-6`. The physical and restoration projection denominators
+remain strictly positive, but each projection still has an unresolved branch.
+The separately authored interval predicate confirms the first branch intervals
+overlap.
+
+Under the frozen r120 rule, no Metal/fp64 measurement may run and no analytic
+radius may be emitted while branch topology is unresolved. Production temporal
+refinement, eight-slice readmission, and thermo/source maps therefore remain
+stopped. Continuing requires an explicit, pre-evidence ruling that supplies
+either a branch-stable arithmetic formulation or an independently proved
+branch-equivalence certificate; measurement cannot select between branches or
+inflate a bound. The durable refusal artifact is
+`rendered/fire_production_calibration/r122_roundoff_derivation/roundoff_derivation_stop.v1`,
+SHA-256 `e52afd58a2972747e4e863908c71409569995440a30e46689a17d2dc0066d98f`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
