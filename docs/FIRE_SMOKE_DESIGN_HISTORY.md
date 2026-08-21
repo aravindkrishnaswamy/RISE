@@ -2924,18 +2924,24 @@ it was already tried and refuted here.
   `5.021600537235496e-7`; separately rounded coefficient/stationary/Horner work
   adds an independent `gamma_4`/underflow residual
   `2.6783670818887366e-6`, for total `3.1805271356122864e-6`. No observed
-  successor enters the proof. All 1,364 quadratic, 1,240 lower-stationary, and
-  634 upper-stationary dynamic obligations close, as do the continuous min/max
-  selectors. The completed 24-stage census records 4,103,559 dynamic
-  obligations (421,268 discharged; 3,682,291 pending). It then stops at the
+  successor enters the proof. All 1,364 quadratic, 3,785 lower-stationary, and
+  2,619 upper-stationary dynamic obligations close, including stationary
+  predicates beneath resolved nonzero quadratic parents; every executed
+  continuous min/max selector is also ordinal-counted and hulled or explicitly
+  owned by its parent certificate. The completed 24-stage census records
+  4,161,080 dynamic obligations (468,869 discharged; 3,692,211 pending). It
+  also records conditional division/domain obligations in all twenty transport
+  stage (`invalid_bitmap=0x1ffffe`); these are pending rather than admitted as
+  bounds. It then stops at the first site proved non-equivalent and therefore
+  requiring the mandated reformulation fallback:
   first non-equivalent shared-tuple limiter case: stage 7 / executed-comparison
-  ordinal 156,245 has
-  predicate `-2.5484634978965355e-6 +/- 4.7677165632473422e-6`, zero available
-  numerator versus required `7.3161800611438812e-6`, and successor alpha bytes
+  ordinal 5,957 has predicate
+  `-4.1921933491284591e-6 +/- 5.7555189193234835e-6`, zero available
+  numerator versus required `10.986253083780237`, and successor alpha bytes
   `1` versus `0`. Strict component monotonicity, maximal inactive behavior, and
   a single common alpha are not jointly continuous at zero headroom. A local
   flat-stencil rewrite was rejected because the executed obstruction is
   non-plateau; resolving it requires an explicit limiter-semantics choice, not
   a tolerance. Exit `237` remains fail-closed; `B_fp32` and later campaigns did
-  not run. The durable evidence SHA is `c860fcec...726260`; golden checkpoint
+  not run. The durable evidence SHA is `2743b634...cb3971`; golden checkpoint
   `1b944176...4947` is untouched.

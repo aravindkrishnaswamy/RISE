@@ -2184,15 +2184,19 @@ branch. All executed PPM quadratic and stationary-point obligations, and all
 continuous `min`/`max` selections, are discharged by the same
 identity-plus-hull discipline.
 
-The complete 24-stage census contains 4,103,559 dynamic obligation instances:
-421,268 discharged and 3,682,291 still pending. This count is diagnostic
-evidence, not a bound. The first mandatory fallback occurs in dual-remap stage
-7 at executed-comparison ordinal 156,245. Resolved selectors count in the
+The complete 24-stage census contains 4,161,080 dynamic obligation instances:
+468,869 discharged and 3,692,211 still pending. This count is diagnostic
+evidence, not a bound. Propagating the finite PPM envelope also exposes
+conditional division/domain intervals in all twenty transport stages
+(`invalid_bitmap=0x1ffffe`); they remain pending proof obligations and are not
+silently treated as arithmetic bounds. The first site proved to require the
+mandatory reformulation fallback occurs in dual-remap stage
+7 at executed-comparison ordinal 5,957. Resolved selectors count in the
 ordinal even though only interval-crossing selectors emit obligations. The
 negative-deviation predicate is
-`-2.5484634978965355e-6 +/- 4.7677165632473422e-6`; its zero-headroom proof has
+`-4.1921933491284591e-6 +/- 5.7555189193234835e-6`; its zero-headroom proof has
 lower numerator `-4.9406564584124654e-324` but requires
-`7.3161800611438812e-6` to leave the current shared limiter unchanged. The two
+`10.986253083780237` to leave the current shared limiter unchanged. The two
 executed successor values are alpha `1` and alpha `0`.
 
 This is not the PPM zero-branch problem in another spelling. A single shared
@@ -2213,7 +2217,7 @@ and binding the first non-equivalent limiter paths. `B_fp32`, Metal
 confirmation, temporal refinement, eight-slice readmission, and thermo/source
 maps did not run. The durable census is
 `rendered/fire_production_calibration/r123_branch_obligations/branch_obligation_stop.v1`,
-SHA-256 `c860fcec9f3954fe1b9fde70a7ff8ed8f96a0e091859a2e30b099eb026726260`.
+SHA-256 `2743b6347b2c456530949d2d01df182efa5b1c637f5107ebfd6f794bd4cb3971`.
 The untouched golden checkpoint remains outside this diagnostic.
 
 ## 8. Rejected directions and future work
