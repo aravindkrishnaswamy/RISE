@@ -6106,7 +6106,7 @@ std::vector<unsigned int> SceneEditController::BFSGraphClosure( const PainterMat
 // resolves identically against a focused read of the same generation (and
 // vice versa) via the ordinary ResolveGraphNodeHandle.
 //
-// PURE and static, same testability posture as BFSGraphClosure. TOLERATES
+// PURE and static, same testability posture as BFSGraphClosure.
 // TOLERATES OUT-OF-RANGE ENTRIES IN `keep` (review-round P3-1 fix on
 // 0562b9c4): `remap[idx]` is keyed off the ACTUAL count of entries pushed
 // so far, not `keep`'s own index `i` -- computed with a dedicated pre-pass
