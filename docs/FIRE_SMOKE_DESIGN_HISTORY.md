@@ -2902,3 +2902,18 @@ it was already tried and refuted here.
   `r122_roundoff_derivation/roundoff_derivation_stop.v1`, SHA-256
   `939e95f8...b5d5ac`. Continuation requires an explicit branch-stable or
   branch-equivalence ruling; no measurement may widen the absent bound.
+
+- **r123 branch-obligation ruling (2026-08-20, frozen before discharge):**
+  r120 is amended only to replace blanket zero-crossing rejection with the r59
+  direct-certificate principle. Every ambiguous executed comparison emits an
+  identity-bound obligation. It closes through either a proof that both paths
+  coincide on the switching surface plus an outward Lipschitz/divergence hull
+  over the complete ambiguity width, or a recorded branch-stable reformulation.
+  Non-equivalent sites must be reformulated; empirical branch selection,
+  tolerance tuning, and measurement-derived bounds remain prohibited. Any
+  undischarged obligation keeps exit `237`. The first owner is PPM's
+  `quadratic!=0`: exact zero is the linear-polynomial endpoint case, while the
+  nonzero stationary-point path must be enveloped over the r122
+  `1.2337798327030971e-6` radius or reformulated. A successful full resident
+  walk must publish the complete obligation census before `B_fp32`, Metal,
+  temporal refinement, eight-slice readmission, or source maps may run.

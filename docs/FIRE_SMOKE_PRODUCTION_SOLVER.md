@@ -2128,6 +2128,45 @@ inflate a bound. The durable refusal artifact is
 `rendered/fire_production_calibration/r122_roundoff_derivation/roundoff_derivation_stop.v1`,
 SHA-256 `939e95f8ff916fff6c168d2b6bd30186b50a9b6e7963255b10641481c1b5d5ac`.
 
+### 7.38 Branch obligations and equivalence envelopes (r123, ruling)
+
+r123 amends the frozen r120 protocol only at its branch-obstruction rule. The
+lineage is r59: a discontinuous derived selector is not made certifiable by
+requiring the selector itself to converge. Instead, certification reasons
+directly about every admissible output selected at the switching surface. The
+same principle now governs certified arithmetic.
+
+Every executed comparison whose independently propagated predicate interval
+crosses zero emits a branch obligation with stage, executed comparison ordinal,
+site class, rounded decision, predicate center/radius, ambiguity width, and the
+two successor envelopes. An obligation is discharged only by one of:
+
+1. an equivalence certificate proving the two branches coincide on the exact
+   switching surface and supplying an independently derived Lipschitz/divergence
+   term over the entire ambiguity interval; the composed recurrence consumes
+   the outward hull of both successor paths plus that term; or
+2. a recorded branch-stable reformulation, mandated when surface continuity or
+   a finite transferable divergence bound cannot be proved.
+
+An equivalence certificate never picks the rounded branch, suppresses the other
+path, or tunes a tolerance from fp32/fp64 measurements. It proves an envelope
+over both paths before Metal runs. An undischarged obligation preserves exit
+`237`; source, topology, certificate-kind, and outward-bound bytes are identity
+bound. The complete resident-step derivation must report the total obligation
+census and discharge every entry before `B_fp32` exists. A successful walk then
+resumes the frozen sequence: same-scheme Metal confirmation, temporal
+refinement, eight-slice readmission, and finally thermo/source maps with their
+separate fp32 producer term.
+
+The first required certificate is the PPM `quadratic!=0` site found by r122.
+At exact quadratic zero the reconstruction polynomial is linear, so its extrema
+are its endpoints; the nonzero path is equivalent only if any stationary point
+admitted over the ambiguity interval contributes an extrema enlargement bounded
+by an independently derived Lipschitz term. If that statement fails for any
+reachable interval, the limiter site must be reformulated branch-free and all
+affected r118/r119-class evidence rerun. No empirical branch frequency or
+measured fp32 difference may discharge it.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
