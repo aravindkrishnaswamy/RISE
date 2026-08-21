@@ -1,0 +1,1577 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                               #
+#                                                                                                           #
+#   File:           graph_stress_wide.RISEscene                                                           #
+#   Description:    doc-88 Phase 3 S23 GUI stress scene 1/3 -- ~130 Painter/Material chunks, heavy        #
+#                   painter sharing (several hub nodes fanned out to 6-10 referrers), deep reference      #
+#                   chains (7+ ranks from a base colour through mapping/stochastic-tile/blend/scalar    #
+#                   to a material), and one instance of every doc-88 arc chunk kind (expression_painter,  #
+#                   ramp_painter, mapping_painter, stochastic_tile_painter, scatter_painter,            #
+#                   voronoi3d_painter{space world}, blend_painter across all five modes).  This is a     #
+#                   CANVAS layout/perf/badge workout, not a beauty render -- film and sample count are   #
+#                   kept tiny on purpose (Part 2 of NODE_GRAPH_CANVAS.md S23).                       #
+#   Author:         RISE contributors
+#   Birthdate:      2026-08-21
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples			4
+	lum_samples		1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/graph_stress_wide
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			96
+	height			72
+}
+
+pinhole_camera
+{
+	location		0 5.5 15
+	lookat			0 0 0
+	up			0 1 0
+	fov			42.0
+}
+
+##################################################
+# Painters -- rank 0: base colours (several become HUB fan-out sources)
+##################################################
+
+uniformcolor_painter
+{
+	name			col00
+	color			0.85 0.25 0.2
+}
+
+uniformcolor_painter
+{
+	name			col01
+	color			0.2 0.55 0.85
+}
+
+uniformcolor_painter
+{
+	name			col02
+	color			0.95 0.8 0.15
+}
+
+uniformcolor_painter
+{
+	name			col03
+	color			0.15 0.65 0.3
+}
+
+uniformcolor_painter
+{
+	name			col04
+	color			0.6 0.2 0.75
+}
+
+uniformcolor_painter
+{
+	name			col05
+	color			0.9 0.55 0.1
+}
+
+uniformcolor_painter
+{
+	name			col06
+	color			0.1 0.1 0.12
+}
+
+uniformcolor_painter
+{
+	name			col07
+	color			0.92 0.92 0.9
+}
+
+uniformcolor_painter
+{
+	name			col08
+	color			0.35 0.35 0.4
+}
+
+uniformcolor_painter
+{
+	name			col09
+	color			0.7 0.45 0.2
+}
+
+uniformcolor_painter
+{
+	name			col10
+	color			0.05 0.4 0.55
+}
+
+uniformcolor_painter
+{
+	name			col11
+	color			0.8 0.15 0.45
+}
+
+uniformcolor_painter
+{
+	name			col12
+	color			0.45 0.75 0.75
+}
+
+uniformcolor_painter
+{
+	name			col13
+	color			0.25 0.25 0.75
+}
+
+uniformcolor_painter
+{
+	name			col14
+	color			0.65 0.65 0.1
+}
+
+##################################################
+# Painters -- rank 1: noise/pattern sources
+##################################################
+
+perlin3d_painter
+{
+	name			perlin_0
+	colora			col00
+	colorb			col01
+}
+
+perlin3d_painter
+{
+	name			perlin_1
+	colora			col02
+	colorb			col03
+}
+
+perlin3d_painter
+{
+	name			perlin_2
+	colora			col04
+	colorb			col05
+}
+
+worley3d_painter
+{
+	name			worley_0
+	colora			col00
+	colorb			col04
+	jitter			1.0
+	output			f1
+	scale			6 6 6
+}
+
+worley3d_painter
+{
+	name			worley_1
+	colora			col03
+	colorb			col07
+	jitter			1.0
+	output			f2
+	scale			6 6 6
+}
+
+worley3d_painter
+{
+	name			worley_2
+	colora			col06
+	colorb			col10
+	jitter			1.0
+	output			f2f1
+	scale			6 6 6
+}
+
+checker_painter
+{
+	name			checker_0
+	colora			col00
+	colorb			col08
+	size			0.18
+}
+
+checker_painter
+{
+	name			checker_1
+	colora			col01
+	colorb			col09
+	size			0.18
+}
+
+voronoi3d_painter
+{
+	name			voro_object
+	gen			-1.0  0.5  0.3  col00
+	gen			 0.2  1.1 -0.4  col07
+	gen			 1.2  0.2  0.6  col06
+	gen			-0.3 -0.6  1.0  col00
+	border			col06
+	bordersize		0.08
+}
+
+voronoi3d_painter
+{
+	name			voro_world
+	gen			-2.0  0.3  0.4  col01
+	gen			-1.4  1.4 -0.5  col02
+	gen			-0.6  0.6  0.6  col03
+	gen			 0.0  1.6 -0.3  col04
+	gen			 0.6  0.5  0.5  col05
+	gen			 1.3  1.5 -0.4  col09
+	border			col06
+	bordersize		0.10
+	space			world
+}
+
+##################################################
+# Painters -- expression_painter fields (full param metadata, arc requirement)
+##################################################
+
+expression_painter
+{
+	name			expr_marble
+	param			ring_freq 3.0 min 0.5 max 10 step 0.25 label "Vein frequency"
+	param			warp_amt 0.5 min 0.0 max 2.0 step 0.05 label "Domain warp strength"
+	def			warp_p P*ring_freq + warp_amt*vec3(fbm(P*ring_freq,4,0.5,2.0), fbm(P*ring_freq+vec3(5.2,1.3,7.7),4,0.5,2.0), fbm(P*ring_freq+vec3(9.1,2.6,4.4),4,0.5,2.0))
+	def			vein fbm(warp_p, 5, 0.55, 2.1)
+	expr			mix(vec3(0.04,0.04,0.06), vec3(0.88,0.86,0.82), clamp(0.5+0.5*sin(vein*6.0),0,1))
+}
+
+expression_painter
+{
+	name			expr_terrain
+	param			freq 1.6 min 0.5 max 4.0 step 0.1 label "Terrain frequency"
+	param			contrast 2.6 min 1.0 max 5.0 step 0.1 label "Elevation contrast"
+	def			h fbm(P*freq, 5, 0.5, 2.0)
+	def			t clamp(h*contrast, -1, 1)
+	expr			vec3(0.5+0.5*t, 0.5+0.5*t, 0.5+0.5*t)
+}
+
+expression_painter
+{
+	name			expr_rust
+	param			spot_freq 4.0 min 1.0 max 12.0 step 0.5 label "Rust spot frequency"
+	param			spot_thresh 0.3 min -1.0 max 1.0 step 0.05 label "Rust coverage threshold"
+	def			s fbm(P*spot_freq, 4, 0.5, 2.0)
+	def			m smoothstep(spot_thresh, spot_thresh+0.3, s)
+	expr			mix(vec3(0.55,0.30,0.10), vec3(0.20,0.08,0.03), m)
+}
+
+expression_painter
+{
+	name			expr_wood
+	param			along 3.0 min 0.5 max 12 step 0.25 label "Grain freq along"
+	param			across 14.0 min 2 max 40 step 1 label "Grain freq across"
+	def			wp vec3(P.x*across, P.y*along, P.z*along)
+	def			g fbm(wp, 5, 0.55, 2.1)
+	expr			vec3(clamp(g*2.2+0.5,0,1), clamp(g*2.0+0.45,0,1), clamp(g*1.8+0.4,0,1))
+}
+
+expression_painter
+{
+	name			expr_clouds
+	param			cfreq 1.2 min 0.2 max 5.0 step 0.1 label "Cloud frequency"
+	param			coverage 0.4 min 0.0 max 1.0 step 0.05 label "Cloud coverage"
+	def			c fbm(P*cfreq, 6, 0.5, 2.0)
+	def			m smoothstep(coverage-0.2, coverage+0.2, c)
+	expr			mix(vec3(0.10,0.20,0.45), vec3(0.95,0.95,0.98), m)
+}
+
+expression_painter
+{
+	name			expr_lava
+	param			lfreq 2.5 min 0.5 max 8.0 step 0.25 label "Lava crack frequency"
+	param			heat 0.6 min 0.0 max 1.0 step 0.05 label "Heat bias"
+	def			l fbm(P*lfreq, 5, 0.6, 2.2)
+	def			t clamp(l+heat, 0, 1)
+	expr			mix(vec3(0.05,0.02,0.02), vec3(0.95,0.35,0.05), t)
+}
+
+expression_painter
+{
+	name			expr_ice
+	param			ifreq 5.0 min 1.0 max 15.0 step 0.5 label "Ice crack frequency"
+	param			clarity 0.5 min 0.0 max 1.0 step 0.05 label "Ice clarity"
+	def			i fbm(P*ifreq, 4, 0.5, 2.0)
+	def			t clamp(i*clarity+0.5, 0, 1)
+	expr			mix(vec3(0.70,0.85,0.95), vec3(0.95,0.98,1.0), t)
+}
+
+expression_painter
+{
+	name			expr_moss
+	param			mfreq 6.0 min 1.0 max 20.0 step 0.5 label "Moss patch frequency"
+	param			patchiness 0.5 min 0.0 max 1.0 step 0.05 label "Moss patchiness"
+	def			m1 fbm(P*mfreq, 3, 0.5, 2.0)
+	def			t smoothstep(patchiness-0.25, patchiness+0.25, m1)
+	expr			mix(vec3(0.30,0.15,0.05), vec3(0.15,0.45,0.10), t)
+}
+
+##################################################
+# Painters -- ramp_painter (consumes the expression fields, arc requirement)
+##################################################
+
+ramp_painter
+{
+	name			ramp_marble
+	input			expr_marble
+	channel			R
+	interpolation		smooth
+	stop			-1.0   0.02 0.08 0.35
+	stop			-0.15   0.76 0.7 0.45
+	stop			0.15   0.2 0.55 0.15
+	stop			1.0   0.95 0.95 0.98
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_terrain
+	input			expr_terrain
+	channel			R
+	interpolation		smooth
+	stop			0.0   0.1 0.06 0.02
+	stop			0.35   0.32 0.17 0.07
+	stop			0.7   0.55 0.33 0.15
+	stop			1.0   0.78 0.55 0.3
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_rust
+	input			expr_rust
+	channel			R
+	interpolation		smooth
+	stop			-1.0   0.02 0.08 0.35
+	stop			-0.15   0.76 0.7 0.45
+	stop			0.15   0.2 0.55 0.15
+	stop			1.0   0.95 0.95 0.98
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_wood
+	input			expr_wood
+	channel			R
+	interpolation		smooth
+	stop			0.0   0.1 0.06 0.02
+	stop			0.35   0.32 0.17 0.07
+	stop			0.7   0.55 0.33 0.15
+	stop			1.0   0.78 0.55 0.3
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_clouds
+	input			expr_clouds
+	channel			R
+	interpolation		smooth
+	stop			-1.0   0.02 0.08 0.35
+	stop			-0.15   0.76 0.7 0.45
+	stop			0.15   0.2 0.55 0.15
+	stop			1.0   0.95 0.95 0.98
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_lava
+	input			expr_lava
+	channel			R
+	interpolation		smooth
+	stop			0.0   0.1 0.06 0.02
+	stop			0.35   0.32 0.17 0.07
+	stop			0.7   0.55 0.33 0.15
+	stop			1.0   0.78 0.55 0.3
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_ice
+	input			expr_ice
+	channel			R
+	interpolation		smooth
+	stop			-1.0   0.02 0.08 0.35
+	stop			-0.15   0.76 0.7 0.45
+	stop			0.15   0.2 0.55 0.15
+	stop			1.0   0.95 0.95 0.98
+	color_space		Rec709RGB_Linear
+}
+
+ramp_painter
+{
+	name			ramp_moss
+	input			expr_moss
+	channel			R
+	interpolation		smooth
+	stop			0.0   0.1 0.06 0.02
+	stop			0.35   0.32 0.17 0.07
+	stop			0.7   0.55 0.33 0.15
+	stop			1.0   0.78 0.55 0.3
+	color_space		Rec709RGB_Linear
+}
+
+##################################################
+# Painters -- mapping_painter reprojection (arc requirement)
+##################################################
+
+mapping_painter
+{
+	name			map_perlin_0
+	source			perlin_0
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 0 0
+	translate		0 0 0
+}
+
+mapping_painter
+{
+	name			map_perlin_1
+	source			perlin_1
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 15 0
+	translate		0 0 0
+}
+
+mapping_painter
+{
+	name			map_perlin_2
+	source			perlin_2
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 30 0
+	translate		0 0 0
+}
+
+mapping_painter
+{
+	name			map_worley_0
+	source			worley_0
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 45 0
+	translate		0 0 0
+}
+
+mapping_painter
+{
+	name			map_worley_1
+	source			worley_1
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 60 0
+	translate		0 0 0
+}
+
+mapping_painter
+{
+	name			map_worley_2
+	source			worley_2
+	projection		world
+	scale			1.0 1.0 1.0
+	rotate			0 75 0
+	translate		0 0 0
+}
+
+##################################################
+# Painters -- stochastic_tile_painter de-tiling (arc requirement)
+##################################################
+
+stochastic_tile_painter
+{
+	name			stile_0
+	source			map_perlin_0
+	tile_scale		8.0
+	seed			1
+	mean			0.42 0.42 0.43
+	blend_gamma		6.0
+	color_space		Rec709RGB_Linear
+}
+
+stochastic_tile_painter
+{
+	name			stile_1
+	source			map_perlin_1
+	tile_scale		8.0
+	seed			2
+	mean			0.42 0.42 0.43
+	blend_gamma		6.0
+	color_space		Rec709RGB_Linear
+}
+
+stochastic_tile_painter
+{
+	name			stile_2
+	source			map_perlin_2
+	tile_scale		8.0
+	seed			3
+	mean			0.42 0.42 0.43
+	blend_gamma		6.0
+	color_space		Rec709RGB_Linear
+}
+
+stochastic_tile_painter
+{
+	name			stile_3
+	source			map_worley_0
+	tile_scale		8.0
+	seed			4
+	mean			0.42 0.42 0.43
+	blend_gamma		6.0
+	color_space		Rec709RGB_Linear
+}
+
+stochastic_tile_painter
+{
+	name			stile_4
+	source			map_worley_1
+	tile_scale		8.0
+	seed			5
+	mean			0.42 0.42 0.43
+	blend_gamma		6.0
+	color_space		Rec709RGB_Linear
+}
+
+stochastic_tile_painter
+{
+	name			stile_5
+	source			map_worley_2
+	tile_scale		8.0
+	seed			6
+	mean			0.42 0.42 0.43
+	blend_gamma		6.0
+	color_space		Rec709RGB_Linear
+}
+
+##################################################
+# Painters -- scatter_painter stamps (arc requirement; several referrers back onto the HUB colours)
+##################################################
+
+scatter_painter
+{
+	name			scatter_0
+	source			col01
+	background		col07
+	cell_scale		6.0
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			11
+}
+
+scatter_painter
+{
+	name			scatter_1
+	source			col03
+	background		col07
+	cell_scale		6.5
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			12
+}
+
+scatter_painter
+{
+	name			scatter_2
+	source			col05
+	background		col07
+	cell_scale		7.0
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			13
+}
+
+scatter_painter
+{
+	name			scatter_3
+	source			col07
+	background		col07
+	cell_scale		7.5
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			14
+}
+
+scatter_painter
+{
+	name			scatter_4
+	source			col09
+	background		col07
+	cell_scale		8.0
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			15
+}
+
+scatter_painter
+{
+	name			scatter_5
+	source			col11
+	background		col07
+	cell_scale		8.5
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			16
+}
+
+scatter_painter
+{
+	name			scatter_6
+	source			col13
+	background		col07
+	cell_scale		9.0
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			17
+}
+
+scatter_painter
+{
+	name			scatter_7
+	source			col00
+	background		col07
+	cell_scale		9.5
+	stamp_scale		0.4
+	jitter_position		0.8
+	jitter_rotation		180.0
+	jitter_scale		0.25
+	probability		0.25
+	seed			18
+}
+
+##################################################
+# Painters -- blend_painter, all five modes (arc requirement); several fan out from a shared HUB node
+##################################################
+
+blend_painter
+{
+	name			blend_00
+	colora			perlin_0
+	colorb			ramp_marble
+	mask			col00
+	mode			mix
+}
+
+blend_painter
+{
+	name			blend_01
+	colora			perlin_1
+	colorb			worley_1
+	mask			col05
+	mode			multiply
+}
+
+blend_painter
+{
+	name			blend_02
+	colora			perlin_2
+	colorb			checker_1
+	mask			col10
+	mode			screen
+}
+
+blend_painter
+{
+	name			blend_03
+	colora			worley_0
+	colorb			ramp_marble
+	mask			col00
+	mode			overlay
+}
+
+blend_painter
+{
+	name			blend_04
+	colora			worley_1
+	colorb			ramp_marble
+	mask			col05
+	mode			add
+}
+
+blend_painter
+{
+	name			blend_05
+	colora			worley_2
+	colorb			ramp_ice
+	mask			col10
+	mode			mix
+}
+
+blend_painter
+{
+	name			blend_06
+	colora			checker_0
+	colorb			stile_1
+	mask			col00
+	mode			multiply
+}
+
+blend_painter
+{
+	name			blend_07
+	colora			checker_1
+	colorb			stile_4
+	mask			col05
+	mode			screen
+}
+
+blend_painter
+{
+	name			blend_08
+	colora			voro_object
+	colorb			ramp_marble
+	mask			col10
+	mode			overlay
+}
+
+blend_painter
+{
+	name			blend_09
+	colora			voro_world
+	colorb			scatter_4
+	mask			col00
+	mode			add
+}
+
+blend_painter
+{
+	name			blend_10
+	colora			ramp_marble
+	colorb			scatter_7
+	mask			col05
+	mode			mix
+}
+
+blend_painter
+{
+	name			blend_11
+	colora			ramp_terrain
+	colorb			perlin_2
+	mask			col10
+	mode			multiply
+}
+
+blend_painter
+{
+	name			blend_12
+	colora			ramp_rust
+	colorb			ramp_marble
+	mask			col00
+	mode			screen
+}
+
+blend_painter
+{
+	name			blend_13
+	colora			ramp_wood
+	colorb			voro_object
+	mask			col05
+	mode			overlay
+}
+
+blend_painter
+{
+	name			blend_14
+	colora			ramp_clouds
+	colorb			ramp_terrain
+	mask			col10
+	mode			add
+}
+
+blend_painter
+{
+	name			blend_15
+	colora			ramp_lava
+	colorb			ramp_clouds
+	mask			col00
+	mode			mix
+}
+
+blend_painter
+{
+	name			blend_16
+	colora			ramp_ice
+	colorb			ramp_marble
+	mask			col05
+	mode			multiply
+}
+
+blend_painter
+{
+	name			blend_17
+	colora			ramp_moss
+	colorb			stile_2
+	mask			col10
+	mode			screen
+}
+
+blend_painter
+{
+	name			blend_18
+	colora			stile_0
+	colorb			stile_5
+	mask			col00
+	mode			overlay
+}
+
+blend_painter
+{
+	name			blend_19
+	colora			stile_1
+	colorb			scatter_2
+	mask			col05
+	mode			add
+}
+
+blend_painter
+{
+	name			blend_20
+	colora			stile_2
+	colorb			ramp_marble
+	mask			col10
+	mode			mix
+}
+
+blend_painter
+{
+	name			blend_21
+	colora			stile_3
+	colorb			perlin_0
+	mask			col00
+	mode			multiply
+}
+
+blend_painter
+{
+	name			blend_deepchain_1
+	colora			stile_0
+	colorb			col02
+	mask			col07
+	mode			multiply
+}
+
+blend_painter
+{
+	name			blend_deepchain_2
+	colora			blend_deepchain_1
+	colorb			ramp_terrain
+	mask			col06
+	mode			overlay
+}
+
+##################################################
+# Painters -- scalar_painter bridges (both forms: {painter} and {expression})
+##################################################
+
+scalar_painter
+{
+	name			sp_bridge_0
+	painter			perlin_0
+	channel			R
+	scale			0.4
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_bridge_1
+	painter			checker_1
+	channel			R
+	scale			0.4
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_bridge_2
+	painter			ramp_clouds
+	channel			R
+	scale			0.4
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_bridge_3
+	painter			stile_3
+	channel			R
+	scale			0.4
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_bridge_4
+	painter			scatter_4
+	channel			R
+	scale			0.4
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_bridge_5
+	painter			worley_0
+	channel			R
+	scale			0.4
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_deepchain_rough
+	painter			blend_deepchain_2
+	channel			G
+	scale			0.35
+	bias			0.05
+}
+
+scalar_painter
+{
+	name			sp_expr_0
+	param			freq 8.0 min 2 max 30 step 0.5 label "Frequency"
+	param			rough_lo 0.05 min 0 max 1 step 0.01 label "Polished roughness"
+	param			rough_hi 0.5 min 0 max 1 step 0.01 label "Rough roughness"
+	def			f1 worley_f1(P*freq, 1.0)
+	expression		mix(rough_lo, rough_hi, clamp(f1, 0, 1))
+}
+
+scalar_painter
+{
+	name			sp_expr_1
+	param			freq 10.0 min 2 max 30 step 0.5 label "Frequency"
+	param			rough_lo 0.05 min 0 max 1 step 0.01 label "Polished roughness"
+	param			rough_hi 0.5 min 0 max 1 step 0.01 label "Rough roughness"
+	def			f1 worley_f1(P*freq, 1.0)
+	expression		mix(rough_lo, rough_hi, clamp(f1, 0, 1))
+}
+
+scalar_painter
+{
+	name			sp_expr_2
+	param			freq 12.0 min 2 max 30 step 0.5 label "Frequency"
+	param			rough_lo 0.05 min 0 max 1 step 0.01 label "Polished roughness"
+	param			rough_hi 0.5 min 0 max 1 step 0.01 label "Rough roughness"
+	def			f1 worley_f1(P*freq, 1.0)
+	expression		mix(rough_lo, rough_hi, clamp(f1, 0, 1))
+}
+
+scalar_painter
+{
+	name			sp_expr_3
+	param			freq 14.0 min 2 max 30 step 0.5 label "Frequency"
+	param			rough_lo 0.05 min 0 max 1 step 0.01 label "Polished roughness"
+	param			rough_hi 0.5 min 0 max 1 step 0.01 label "Rough roughness"
+	def			f1 worley_f1(P*freq, 1.0)
+	expression		mix(rough_lo, rough_hi, clamp(f1, 0, 1))
+}
+
+##################################################
+# Materials -- heavy sharing: hub_ramp_marble (5+ referrers) and hub_rough (8+ referrers)
+##################################################
+
+lambertian_material
+{
+	name			mat_lambert_00
+	reflectance		ramp_marble
+}
+
+lambertian_material
+{
+	name			mat_lambert_01
+	reflectance		ramp_marble
+}
+
+lambertian_material
+{
+	name			mat_lambert_02
+	reflectance		ramp_marble
+}
+
+lambertian_material
+{
+	name			mat_lambert_03
+	reflectance		ramp_marble
+}
+
+lambertian_material
+{
+	name			mat_lambert_04
+	reflectance		ramp_marble
+}
+
+lambertian_material
+{
+	name			mat_lambert_05
+	reflectance		ramp_marble
+}
+
+lambertian_material
+{
+	name			mat_lambert_06
+	reflectance		blend_deepchain_1
+}
+
+lambertian_material
+{
+	name			mat_lambert_07
+	reflectance		stile_3
+}
+
+lambertian_material
+{
+	name			mat_lambert_08
+	reflectance		ramp_rust
+}
+
+lambertian_material
+{
+	name			mat_lambert_09
+	reflectance		ramp_moss
+}
+
+ggx_material
+{
+	name			mat_ggx_00
+	rd			blend_00
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_01
+	rd			blend_01
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_02
+	rd			blend_02
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_03
+	rd			blend_03
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_04
+	rd			blend_04
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_05
+	rd			blend_05
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_06
+	rd			blend_06
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_07
+	rd			blend_07
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_08
+	rd			blend_08
+	rs			col07
+	alphax			sp_expr_1
+	alphay			sp_expr_1
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_09
+	rd			blend_09
+	rs			col07
+	alphax			sp_expr_2
+	alphay			sp_expr_2
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_10
+	rd			blend_10
+	rs			col07
+	alphax			sp_expr_3
+	alphay			sp_expr_3
+	ior			1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_ggx_11
+	rd			blend_11
+	rs			col07
+	alphax			sp_bridge_0
+	alphay			sp_bridge_0
+	ior			1.6
+	extinction		0.0
+}
+
+pbr_metallic_roughness_material
+{
+	name			mat_pbr_00
+	base_color		ramp_marble
+	metallic		0.0
+	roughness		0.2
+}
+
+pbr_metallic_roughness_material
+{
+	name			mat_pbr_01
+	base_color		blend_01
+	metallic		1.0
+	roughness		0.30000000000000004
+}
+
+pbr_metallic_roughness_material
+{
+	name			mat_pbr_02
+	base_color		blend_10
+	metallic		0.0
+	roughness		0.4
+}
+
+pbr_metallic_roughness_material
+{
+	name			mat_pbr_03
+	base_color		blend_19
+	metallic		1.0
+	roughness		0.5
+}
+
+pbr_metallic_roughness_material
+{
+	name			mat_pbr_04
+	base_color		stile_4
+	metallic		0.0
+	roughness		0.6000000000000001
+}
+
+pbr_metallic_roughness_material
+{
+	name			mat_pbr_05
+	base_color		ramp_moss
+	metallic		1.0
+	roughness		0.7
+}
+
+dielectric_material
+{
+	name			mat_glass_00
+	tau			1
+	ior			1.4
+}
+
+dielectric_material
+{
+	name			mat_glass_01
+	tau			1
+	ior			1.5
+}
+
+dielectric_material
+{
+	name			mat_glass_02
+	tau			1
+	ior			1.5999999999999999
+}
+
+dielectric_material
+{
+	name			mat_glass_03
+	tau			1
+	ior			1.7
+}
+
+##################################################
+# Geometry + objects -- one small sphere per material, gridded, cheap render
+##################################################
+
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.42
+}
+
+standard_object
+{
+	name			obj_00
+	geometry		geo_ball
+	material		mat_lambert_00
+	position		-3.850 0 -2.000
+}
+
+standard_object
+{
+	name			obj_01
+	geometry		geo_ball
+	material		mat_lambert_01
+	position		-2.750 0 -2.000
+}
+
+standard_object
+{
+	name			obj_02
+	geometry		geo_ball
+	material		mat_lambert_02
+	position		-1.650 0 -2.000
+}
+
+standard_object
+{
+	name			obj_03
+	geometry		geo_ball
+	material		mat_lambert_03
+	position		-0.550 0 -2.000
+}
+
+standard_object
+{
+	name			obj_04
+	geometry		geo_ball
+	material		mat_lambert_04
+	position		0.550 0 -2.000
+}
+
+standard_object
+{
+	name			obj_05
+	geometry		geo_ball
+	material		mat_lambert_05
+	position		1.650 0 -2.000
+}
+
+standard_object
+{
+	name			obj_06
+	geometry		geo_ball
+	material		mat_lambert_06
+	position		2.750 0 -2.000
+}
+
+standard_object
+{
+	name			obj_07
+	geometry		geo_ball
+	material		mat_lambert_07
+	position		3.850 0 -2.000
+}
+
+standard_object
+{
+	name			obj_08
+	geometry		geo_ball
+	material		mat_lambert_08
+	position		-3.850 0 -0.900
+}
+
+standard_object
+{
+	name			obj_09
+	geometry		geo_ball
+	material		mat_lambert_09
+	position		-2.750 0 -0.900
+}
+
+standard_object
+{
+	name			obj_10
+	geometry		geo_ball
+	material		mat_ggx_00
+	position		-1.650 0 -0.900
+}
+
+standard_object
+{
+	name			obj_11
+	geometry		geo_ball
+	material		mat_ggx_01
+	position		-0.550 0 -0.900
+}
+
+standard_object
+{
+	name			obj_12
+	geometry		geo_ball
+	material		mat_ggx_02
+	position		0.550 0 -0.900
+}
+
+standard_object
+{
+	name			obj_13
+	geometry		geo_ball
+	material		mat_ggx_03
+	position		1.650 0 -0.900
+}
+
+standard_object
+{
+	name			obj_14
+	geometry		geo_ball
+	material		mat_ggx_04
+	position		2.750 0 -0.900
+}
+
+standard_object
+{
+	name			obj_15
+	geometry		geo_ball
+	material		mat_ggx_05
+	position		3.850 0 -0.900
+}
+
+standard_object
+{
+	name			obj_16
+	geometry		geo_ball
+	material		mat_ggx_06
+	position		-3.850 0 0.200
+}
+
+standard_object
+{
+	name			obj_17
+	geometry		geo_ball
+	material		mat_ggx_07
+	position		-2.750 0 0.200
+}
+
+standard_object
+{
+	name			obj_18
+	geometry		geo_ball
+	material		mat_ggx_08
+	position		-1.650 0 0.200
+}
+
+standard_object
+{
+	name			obj_19
+	geometry		geo_ball
+	material		mat_ggx_09
+	position		-0.550 0 0.200
+}
+
+standard_object
+{
+	name			obj_20
+	geometry		geo_ball
+	material		mat_ggx_10
+	position		0.550 0 0.200
+}
+
+standard_object
+{
+	name			obj_21
+	geometry		geo_ball
+	material		mat_ggx_11
+	position		1.650 0 0.200
+}
+
+standard_object
+{
+	name			obj_22
+	geometry		geo_ball
+	material		mat_pbr_00
+	position		2.750 0 0.200
+}
+
+standard_object
+{
+	name			obj_23
+	geometry		geo_ball
+	material		mat_pbr_01
+	position		3.850 0 0.200
+}
+
+standard_object
+{
+	name			obj_24
+	geometry		geo_ball
+	material		mat_pbr_02
+	position		-3.850 0 1.300
+}
+
+standard_object
+{
+	name			obj_25
+	geometry		geo_ball
+	material		mat_pbr_03
+	position		-2.750 0 1.300
+}
+
+standard_object
+{
+	name			obj_26
+	geometry		geo_ball
+	material		mat_pbr_04
+	position		-1.650 0 1.300
+}
+
+standard_object
+{
+	name			obj_27
+	geometry		geo_ball
+	material		mat_pbr_05
+	position		-0.550 0 1.300
+}
+
+standard_object
+{
+	name			obj_28
+	geometry		geo_ball
+	material		mat_glass_00
+	position		0.550 0 1.300
+}
+
+standard_object
+{
+	name			obj_29
+	geometry		geo_ball
+	material		mat_glass_01
+	position		1.650 0 1.300
+}
+
+standard_object
+{
+	name			obj_30
+	geometry		geo_ball
+	material		mat_glass_02
+	position		2.750 0 1.300
+}
+
+standard_object
+{
+	name			obj_31
+	geometry		geo_ball
+	material		mat_glass_03
+	position		3.850 0 1.300
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.8 0.6
+}
+
+directional_light
+{
+	name		fill
+	power		1.2
+	color		0.85 0.9 1.0
+	direction	-0.4 0.5 0.7
+}
+

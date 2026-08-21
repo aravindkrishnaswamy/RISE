@@ -1,14 +1,69 @@
 # Node-Graph Canvas (doc-88 Phase 3 / MATERIAL_EDITOR C2)
 
-**Status: APPROVED (user review 2026-08-20) — all six design calls decided
-as recommended: C1 two-level model (defs = internal stage strip), C2
-sidecar layout, C3 read-only Phase A then editable Phase B immediately
-after, C4 shared headless C++ core + thin per-platform widgets, C5
-rank-by-dependency layout, C6 FULL plan S11-S23 committed.  One addition
-at approval: a set of GUI stress-test sample scenes ships at the end of
-the arc.  This doc supersedes MATERIAL_EDITOR.md §3/§3.7/§3.8 as the
-load-bearing spec (those sections remain as original rationale).
-Implementation begins at S11.**
+**Status: SHIPPED — S11 through S23 all complete (2026-08-20 → 2026-08-21).**
+All six design calls landed as approved: C1 two-level model (defs = internal
+stage strip), C2 sidecar layout, C3 read-only Phase A then editable Phase B
+immediately after, C4 shared headless C++ core + thin per-platform widgets,
+C5 rank-by-dependency layout, C6 the full S11-S23 plan.  This doc supersedes
+MATERIAL_EDITOR.md §3/§3.7/§3.8 as the load-bearing spec (those sections
+remain as original rationale).
+
+**Per-slice commit hashes** (`git log --oneline -- docs/gui/NODE_GRAPH_CANVAS.md`
+and the slice-tagged commit subjects are the source of truth; re-derive if
+this list ever drifts):
+
+| Slice | Commit | Subject |
+|---|---|---|
+| S11 | `c0528b06` | SceneReferenceGraph + painter/material DAG assembler |
+| S12+S13 | `4b581337` | graph layout core + layout sidecar |
+| S14 | `fde6ca2b` | laid-out graph snapshot through both bridges |
+| S15 | `33fd0431` | read-only node-graph canvas (Mac) |
+| S16 | `0397cbad` | Qt node canvas, read-only half (carried with S22, see below) |
+| S17 | `3ebd7c5a` | connection-legality validator + `ParameterSemantics.pipe` |
+| S18 | `fb4ab2ca` | structured chunk-node creation |
+| S19 | `a7335877` | ownership-closure rewrite + REFUSE path |
+| S20 | `8c1a994c` | reference-safe delete, positioned duplicate, cycle findings |
+| S21 | `459249d0` | edit canvas (Mac) |
+| S22 | `0397cbad` | Qt node canvas, edit half (carried with S16, see below) |
+| S23 | *(this pass)* | eval/regression pass + doc close-out + GUI stress-test scenes |
+
+S16 and S22 shipped as **one combined commit** (`0397cbad`, "Qt node canvas,
+read-only + edit (carry-only)") rather than two — the Windows mirror was
+written once, whole, against the finished Mac reference (S15+S21 both
+already shipped by the time the Windows session started), so there was no
+intermediate read-only-only Windows state worth a separate commit.
+
+**Standing debts carried forward, not silently dropped:**
+
+1. **MSVC verification of the Qt canvas + all carried bridges is still
+   owed.**  `0397cbad` was written and reviewed on this (non-Windows) host
+   against an embedded 27-row Mac↔Qt parity table and an explicit
+   MSVC-verification checklist (`build/VS2022/RISE-GUI/NodeGraphCanvas.cpp`,
+   the "MSVC-verification checklist (for the owed Windows build session)"
+   block near the end of the file) — compile-plausibility, moc/vcxproj
+   wiring, and bridge signature byte-matching were reviewed by inspection,
+   but no MSVC compiler has actually built this code.  Run that checklist
+   on a real Windows/MSVC host before trusting the Qt canvas in production.
+2. **Def-row scroll-anchor gap (Windows/Qt only).**  Mac's double-click-a-def
+   interaction (`RenderViewModel.focusPainterDefRows`) selects the owning
+   node AND scrolls/highlights that specific `def[i]` row in the property
+   panel.  Qt's mirror (`NodeGraphCanvas::openDefs`, see parity table row 10
+   in `NodeGraphCanvas.cpp`) only selects the node — there is no
+   `ViewportProperties` equivalent of a def-row scroll-anchor on Windows
+   today (grep confirms no `defStageIndex`/scroll-to-row concept there).
+   The def rows themselves ARE visible once the node is selected; they are
+   just not auto-scrolled-to.  Closing this is `ViewportProperties` work,
+   out of the canvas arc's own scope.
+3. **`fw` (filter-width) domain-scaling caveat still applies to canvas-authored
+   expression nodes.**  Not a canvas defect — a standing limitation of the
+   underlying expression VM this doc's nodes wrap, documented in
+   `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md`
+   §7 decision 3: `fw` is passed into noise builtins in whatever domain the
+   body's own position argument is already in (e.g. `fbm(P*10, ...)` makes
+   the fade threshold off by that 10x), since the VM has no autodiff to
+   track a caller's own scale multiply.  Pointed to here because the canvas
+   makes expression-family nodes easier to author and wire, which raises
+   the odds an author hits this while working visually rather than in text.
 
 
 Companion to `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §4 P5.4 and §7 decision 6 (canvas is ON the roadmap, Phase 3, "no longer only if data demands"), and to `docs/gui/MATERIAL_EDITOR.md` §3/§3.7/§3.8 (C2 node graph — the design this doc narrows into an implementable slice plan).
@@ -191,6 +246,93 @@ Same discipline as doc 88 §8: each slice runs the implementation-review-loop to
 - **S21 — Mac canvas widget: Phase B, edit** (sonnet; Mac-manual-checklist item: create a `ramp_painter` node, wire it into an existing material's `rd` slot, save, reload, confirm byte-stable re-open per `MATERIAL_EDITOR.md:366`'s round-trip criterion; then attempt a topology edit on a painter shared with a second material and confirm the REFUSE dialog + working Duplicate-node escape). Search/add palette, drag-to-wire, frames/comments (`MATERIAL_EDITOR.md` §3.5), all routed through `BeginTransaction`/`EndTransaction` (`SceneEditController.h:1900,1936`) so a multi-step create+rewire is one undo entry. **Cost: L.**
 - **S22 — Windows canvas widget: Phase B, edit (standing debt)** (sonnet; MSVC-gated, same caveat as S16). **Cost: L (owed).**
 - **S23 — Eval/regression pass**. `CstSaveFidelityTest.cpp`-pattern extension for graph round-trip (`MATERIAL_EDITOR.md:366`'s byte-stability acceptance test); no production-render regression check (integrators untouched, per `MATERIAL_EDITOR.md:369`'s correctness invariant); update this doc's status header + doc 88's status line to point here. **Cost: S.**
+
+  **S23 OUTCOME (2026-08-21).** Two parts.
+
+  *Part 1 — regression pass.* Added PART 10 to `GraphCanvasEditSmokeTest.cpp`
+  (the S21 headless probe that already drives create→wire→reposition→
+  duplicate→delete through `SceneEditController`, the exact verb set the Mac
+  and Qt canvases call) rather than a new file: after the create/rewire/
+  duplicate/delete sequence, it (a) re-parses and re-serializes the live
+  head's `SerializeCst` output and asserts byte-identity (the
+  `CstSaveFidelityTest` case-A invariant, now pinned on content the canvas
+  verbs themselves produced, not a hand-authored fixture), and (b) writes
+  that text to disk, reloads it into a fresh `Job`, and asserts the
+  reloaded document reserializes to the identical bytes — the actual
+  GUI Save-then-Open round trip. Both passed with no changes needed to
+  production code. Full relevant battery, one pass, all green:
+  ReferenceGraphTest 230/230, GraphLayoutTest 65/65, GraphLayoutSidecarTest
+  101/101, ConnectionLegalityTest 293/293, EntityTemplatesTest 417/417,
+  RewireConnectionTest 188/188, DeleteDuplicateGraphNodeTest 181/181,
+  GraphCanvasEditSmokeTest 49/49 (was 40 before the new PART 10 cases),
+  PainterIntrospectionRoundTripTest 285/285, AgentLiveCommitTest 883/883,
+  AgentChunkCrudTest 3535/3535, SceneEditorBasicsTest 66/66,
+  CstDeriveGoldenTest 404 MATCH / 0 DRIFT (411 corpus scenes, 0 UNCOVERED,
+  0 STALE — the +3 golden-manifest growth is the three new S23 stress
+  scenes below), SourceHygieneTest 158/158 (245 test files scanned). Both
+  `xcodebuild` targets (`rise`, `RISE-GUI`; Deployment, arm64, CLEAN
+  rebuild — the S14 reviewer's owed clean-rebuild note) built with **zero
+  compiler warnings**; the only `ld: warning:` lines are a pre-existing,
+  unrelated OIDN-install search-path notice (this sandbox never ran the
+  one-time `extlib/oidn` submodule build) present before and after this
+  slice's changes.
+
+  *Part 2 — GUI stress-test scenes.* Three scenes landed in
+  `scenes/Tests/GUI/` alongside the reattach-probe fixtures (not
+  `scenes/FeatureBased/Textures/` — these exist to stress the GUI's own
+  canvas/panel surfaces, not to showcase a render, matching the
+  reattach-probe pair's existing placement rationale). Each is both
+  render-verified (`bin/rise`, clean `RISE_Log.txt`, non-degenerate pixel
+  variance) and graph-verified (`SceneEditController::ReadPainterMaterialGraph`
+  node/edge counts via a throwaway probe, the same call `ReferenceGraphTest`
+  PART 5/6 uses):
+  - `graph_stress_wide.RISEscene` — 128 Painter/Material chunks (96
+    painters + 32 materials), 207 edges, 0 dangling; hub fan-out up to 24
+    referrers (several nodes at 5+); a 7-rank-deep chain (base colour →
+    `perlin3d_painter` → `mapping_painter` → `stochastic_tile_painter` →
+    `blend_painter` → a second `blend_painter` consuming the first →
+    `scalar_painter` → material); every arc chunk kind present at least
+    once (`expression_painter` ×8 with full param metadata,
+    `ramp_painter` ×8, `mapping_painter` ×6, `stochastic_tile_painter`
+    ×6, `scatter_painter` ×8, `voronoi3d_painter` ×2 incl. one
+    `space world`, `blend_painter` ×24 cycling all five modes). Film
+    96×72, 4 samples, `pixelpel_rasterizer` — renders in 14ms.
+  - `graph_stress_editing.RISEscene` — 20 Painter/Material chunks (12
+    painters + 8 materials), 15 edges, purpose-built for edit-flow
+    exercises, each documented in-file as "exercise X by doing Y": a
+    painter shared across exactly 3 `ggx_material`s (`pnt_shared_bronze`/
+    `pnt_spec_dull`, referrer count 3 each — the S19 ownership-REFUSE +
+    Duplicate-node escape hatch); three zero-referrer orphans
+    (`orphan_ripple`/`orphan_specks`/`orphan_tint` — the badge check);
+    a same-base-name-adjacent pair (`metal_trim`/`metal_trim_2` — the
+    create-node dedupe picker, which must land a third same-named create
+    on `metal_trim_3`); a `png_painter{file textures/waterbump.png}`
+    node (the file-slot picker flow, vs. a chunk-reference picker); a
+    `ggx_material` (`mat_unspelled`) with its optional `rs` slot left
+    unbound (the unspelled/unbound-slot bind flow). Film 80×60, 4
+    samples — renders in 17-19ms.
+  - `panel_stress_params.RISEscene` — 12 Painter/Material chunks (7
+    painters + 5 materials), 9 edges, the property-panel +
+    `PainterPreview` load test: three `expression_painter` nodes
+    (`panel_terrain_field` 12 params/6 defs, `panel_organic_field` 10
+    params/5 defs, `panel_metal_field` 11 params/5 defs), each with
+    fully-annotated (`min`/`max`/`step`/`label`) params and a strictly
+    sequential def chain (the def-stage thumbnail strip); a 12-stop
+    `ramp_painter`; two `scalar_painter{expression}` nodes with a
+    `vec3`-typed body — genuine per-channel R≠G≠B scalars, not a
+    broadcast (`panel_scalar_dispersion` drives a `dielectric_material`'s
+    dispersive `ior`, `panel_scalar_roughness_rgb` drives a
+    `ggx_material`'s `alphax`/`alphay`, confirming those slots accept a
+    per-channel scalar painter without a `requireSingle`-style refusal).
+    Film 80×60, 4 samples — renders in 30ms.
+
+  Golden manifest (`tests/data/cst_derive_golden.txt`) regenerated after
+  `git add`-ing the three new scenes (the ls-files coverage-sweep lesson):
+  diff is +3 lines only, 0 drift on any of the other 401 entries — verify
+  moved from 401 MATCH/408 corpus/0 UNCOVERED to 404 MATCH/411 corpus/0
+  UNCOVERED. `scenes/Tests/README.md`'s `GUI/` entry rewritten to describe
+  all five files (the two reattach probes plus the three new stress
+  scenes) and why they live there.
 
 **Sequencing:** S11 strictly first (everything reads its graph). S12/S13 can overlap S11's review. S14 after S11. S15 after S12+S13+S14; S16 can trail S15 indefinitely (explicitly non-blocking). S17 can overlap S15's review (independent subsystem). S18→S19→S20 strictly ordered (each is a precondition for the next's REFUSE/cycle logic to have something real to guard). S21 after S15+S17+S18+S19+S20. S22 trails S21 (same non-blocking posture as S16). S23 last.
 

@@ -377,6 +377,54 @@ int main()
 		}
 	}
 
+	// =====================================================================
+	// 10. SAVE ROUND-TRIP (S23 regression pass) -- the CstSaveFidelityTest
+	//     invariant, but exercised over content that PARTS 2-8 produced
+	//     through the canvas verbs themselves (create+rewire+duplicate+
+	//     delete), not through a hand-authored fixture.  Two properties:
+	//     (a) SerializeCst(retained head) is itself a stable fixpoint
+	//     (re-parsing it and re-serializing changes nothing -- the same
+	//     "unedited round-trip is byte-exact" invariant CstSaveFidelityTest
+	//     case A pins on a static fixture, pinned here on a document whose
+	//     every byte was produced by SceneEditController mutations); (b) a
+	//     real save-to-disk + fresh-Job-reload (the actual GUI "Save" then
+	//     "Open" pair) reproduces the identical bytes -- no verb left the
+	//     retained Document in a state that reserializes differently once
+	//     it has round-tripped through a file.
+	// =====================================================================
+	{
+		const Cst::Document* pHead = j->GetCstDocument();
+		Check( pHead != nullptr, "PART10: the live Job still retains its CST head after the edit sequence" );
+		if( pHead )
+		{
+			const std::string savedText = Cst::SerializeCst( *pHead );
+			Check( !savedText.empty(), "PART10: the edited document serializes to non-empty text" );
+
+			// (a) Parse -> Serialize is a fixpoint on canvas-authored content.
+			const std::string reparsed = Cst::SerializeCst( Cst::ParseToCst( savedText ) );
+			Check( reparsed == savedText,
+				"PART10a: re-parsing the canvas-edited save text and re-serializing is byte-identical (no drift)" );
+
+			// (b) A genuine save-to-disk + fresh-Job reload round-trips the same bytes.
+			const std::string reloadPath = TempPath( "test_graph_canvas_edit_smoke_reload.RISEscene" );
+			Job* pReloaded = LoadScene( savedText, reloadPath );
+			Check( pReloaded != nullptr, "PART10b: the saved canvas-edited scene reloads into a fresh Job" );
+			if( pReloaded )
+			{
+				const Cst::Document* pReloadedHead = pReloaded->GetCstDocument();
+				Check( pReloadedHead != nullptr, "PART10b: the reloaded Job retains a CST head" );
+				if( pReloadedHead )
+				{
+					const std::string reloadedText = Cst::SerializeCst( *pReloadedHead );
+					Check( reloadedText == savedText,
+						"PART10b: save -> reload -> re-serialize reproduces the identical bytes" );
+				}
+				pReloaded->release();
+			}
+			std::remove( reloadPath.c_str() );
+		}
+	}
+
 	j->release();
 	std::remove( path.c_str() );
 

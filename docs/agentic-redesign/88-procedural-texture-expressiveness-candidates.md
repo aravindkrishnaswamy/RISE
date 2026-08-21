@@ -14,7 +14,15 @@ longer "out of scope for this slice" (§10's earlier text); it is measurable
 by the same live run as (a)/(b), see §10.  The LIVE half (actually running
 the census against a hosted model and reading the §5 gates) has NOT run in
 this environment (no API keys) and is the next action item in §10.  §1's
-gap table describes the PRE-ARC state.**
+gap table describes the PRE-ARC state.  **Phase 3 (the P5.4 node canvas,
+§5 decision 6) is COMPLETE**: S11-S23 of `docs/gui/NODE_GRAPH_CANVAS.md`
+§6 all shipped 2026-08-20→2026-08-21 (per-slice commit hashes in that
+doc's own status header) — the shared C++ graph model/layout/legality/
+ownership-closure core, the Mac canvas (Phase A read-only + Phase B
+edit), and the Windows/Qt mirror (carried, MSVC-verification still owed)
+are all in tree, closed out by S23's regression pass + the three
+`scenes/Tests/GUI/graph_stress_*`/`panel_stress_params` GUI stress
+scenes.**
 
 This is the texture half of the directive that closed the creative-richness arc
 (CREATIVITY_JOURNAL.md, closing line: *"build even more expressive geometry and

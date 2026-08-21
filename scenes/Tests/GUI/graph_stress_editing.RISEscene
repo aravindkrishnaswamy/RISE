@@ -1,0 +1,383 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                             #
+#   File:           graph_stress_editing.RISEscene                                                          #
+#   Description:    doc-88 Phase 3 S23 GUI stress scene 2/3 -- a mid-size scene purpose-built to exercise    #
+#                   the canvas EDIT flows (not layout/perf like graph_stress_wide).  Every deliberate        #
+#                   trap below is commented at its own chunk with "exercise X by doing Y".  A regular        #
+#                   render still comes out of it (small film, low samples) so it graph-verifies AND          #
+#                   render-verifies like the other two S23 scenes.                                          #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-21                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/graph_stress_editing
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			80
+	height			60
+}
+
+pinhole_camera
+{
+	location		0 3.2 9.5
+	lookat			0 0 0
+	up				0 1 0
+	fov				38.0
+}
+
+##################################################
+# Painters -- EXERCISE 1: a painter shared across THREE materials.
+#
+# S19's OwnershipClosure computes OwnersOf(pnt_shared_bronze) = the union
+# of every referrer's own owners; three DIFFERENT materials referencing it
+# means |Owners| >= 2, so any attempt to REWIRE this painter's own slots
+# (or delete it) through the canvas must REFUSE (ClosureClassification !=
+# Clean) and offer the Duplicate-node escape hatch (S19's 1c'/1c'' flow:
+# Duplicate forks an owned copy, THEN the rewire lands on the copy).
+# Exercise: try to rewire mat_shared_a's `rd` away from pnt_shared_bronze
+# directly -- expect REFUSE; then Duplicate pnt_shared_bronze and retarget
+# mat_shared_a at the fork -- expect it to land clean.
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_shared_bronze
+	color			0.55 0.35 0.12
+}
+
+uniformcolor_painter
+{
+	name			pnt_spec_dull
+	color			0.25 0.22 0.18
+}
+
+ggx_material
+{
+	name			mat_shared_a
+	rd				pnt_shared_bronze
+	rs				pnt_spec_dull
+	alphax			0.3
+	alphay			0.3
+	ior				1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_shared_b
+	rd				pnt_shared_bronze
+	rs				pnt_spec_dull
+	alphax			0.5
+	alphay			0.5
+	ior				1.6
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_shared_c
+	rd				pnt_shared_bronze
+	rs				pnt_spec_dull
+	alphax			0.15
+	alphay			0.15
+	ior				1.6
+	extinction		0.0
+}
+
+##################################################
+# Painters -- EXERCISE 2: deliberate orphans (badge check).
+#
+# None of the three painters below are referenced by ANY material or
+# other painter -- the canvas's snapshot-derived orphan badge
+# (GraphNodeData::isOrphaned / RenderViewModel's Mac equivalent) must
+# light up on all three, and NONE of the other nodes in this scene.
+# Exercise: open the canvas, confirm exactly these three carry the
+# orphan badge, then either wire one into a material's slot (badge
+# should clear) or delete one via the orphan-safe TargetOnly delete
+# (S20 -- zero referrers means it can never hit the reference-refused
+# path).
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_ripple_lo
+	color			0.05 0.10 0.30
+}
+
+uniformcolor_painter
+{
+	name			pnt_ripple_hi
+	color			0.60 0.75 0.95
+}
+
+perlin3d_painter
+{
+	name			orphan_ripple
+	colora			pnt_ripple_lo
+	colorb			pnt_ripple_hi
+}
+
+worley3d_painter
+{
+	name			orphan_specks
+	colora			pnt_ripple_hi
+	colorb			pnt_ripple_lo
+	jitter			1.0
+	output			f1
+	scale			8 8 8
+}
+
+uniformcolor_painter
+{
+	name			orphan_tint
+	color			0.85 0.10 0.55
+}
+
+##################################################
+# Painters -- EXERCISE 3: same-name-adjacent names (dedup/_2 picker).
+#
+# `metal_trim` and `metal_trim_2` already exist side by side.  Exercise:
+# use the add-node palette to create a NEW uniformcolor_painter and type
+# the base name "metal_trim" -- the collision-free-name picker
+# (SceneEditController::CreateChunkNode's UniqueName dedup, the same
+# mechanism InstantiateEntityTemplate uses) must skip straight past both
+# existing names and land the new node on "metal_trim_3", not
+# "metal_trim_2_2" or any other malformed suffix.
+##################################################
+
+uniformcolor_painter
+{
+	name			metal_trim
+	color			0.72 0.72 0.75
+}
+
+uniformcolor_painter
+{
+	name			metal_trim_2
+	color			0.60 0.58 0.55
+}
+
+lambertian_material
+{
+	name			mat_trim
+	reflectance		metal_trim
+}
+
+lambertian_material
+{
+	name			mat_trim_alt
+	reflectance		metal_trim_2
+}
+
+##################################################
+# Painters -- EXERCISE 4: a FILE-slot painter (picker flow).
+#
+# `file` is a file-system reference slot, not a chunk reference -- the
+# canvas's add-node palette must offer a file BROWSER for this param
+# (per S18/S21's ChunkNodeRequirements file-slot pre-flight), not a
+# painter-reference picker.  Exercise: create a new png_painter from the
+# palette and confirm the `file` param prompts a file chooser rather
+# than a chunk-name dropdown; separately, re-point THIS node's `file`
+# at a different texture through the property panel and confirm the
+# thumbnail updates.
+##################################################
+
+png_painter
+{
+	name			pnt_file_grunge
+	file			textures/waterbump.png
+}
+
+lambertian_material
+{
+	name			mat_file
+	reflectance		pnt_file_grunge
+}
+
+##################################################
+# Materials -- EXERCISE 5: unspelled (unbound) OPTIONAL reference slots.
+#
+# ggx_material's `rs` is an OPTIONAL Reference-kind param (defaults to
+# "none" when omitted -- see ChunkParserRegistry.cpp bag.GetString("rs",
+# "none")).  `mat_unspelled` below deliberately leaves it unbound.
+# Exercise: select mat_unspelled on the canvas, confirm the property
+# panel shows `rs` as an empty/unbound slot (not a dangling reference --
+# it never had one), then bind a painter into it through the picker and
+# confirm the edge appears on the canvas as a NEW out-edge (the node's
+# edge count goes from N to N+1, not a rewire of an existing one).
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_unspelled_base
+	color			0.20 0.45 0.30
+}
+
+ggx_material
+{
+	name			mat_unspelled
+	rd				pnt_unspelled_base
+	alphax			0.4
+	alphay			0.4
+	ior				1.5
+	extinction		0.0
+}
+
+##################################################
+# A few ordinary painters/materials so the scene reads as a real, if
+# small, production scene rather than only a bag of edge cases.
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_floor_grey
+	color			0.30 0.30 0.32
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		pnt_floor_grey
+}
+
+##################################################
+# Geometry + objects
+##################################################
+
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.85
+}
+
+standard_object
+{
+	name			obj_shared_a
+	geometry		geo_ball
+	material		mat_shared_a
+	position		-3.0 0.85 0
+}
+
+standard_object
+{
+	name			obj_shared_b
+	geometry		geo_ball
+	material		mat_shared_b
+	position		-1.0 0.85 0
+}
+
+standard_object
+{
+	name			obj_shared_c
+	geometry		geo_ball
+	material		mat_shared_c
+	position		1.0 0.85 0
+}
+
+standard_object
+{
+	name			obj_trim
+	geometry		geo_ball
+	material		mat_trim
+	position		3.0 0.85 0
+}
+
+standard_object
+{
+	name			obj_trim_alt
+	geometry		geo_ball
+	material		mat_trim_alt
+	position		3.0 0.85 -2.0
+}
+
+standard_object
+{
+	name			obj_file
+	geometry		geo_ball
+	material		mat_file
+	position		-3.0 0.85 -2.0
+}
+
+standard_object
+{
+	name			obj_unspelled
+	geometry		geo_ball
+	material		mat_unspelled
+	position		-1.0 0.85 -2.0
+}
+
+standard_object
+{
+	name			obj_unspelled_2
+	geometry		geo_ball
+	material		mat_unspelled
+	position		1.0 0.85 -2.0
+}
+
+infiniteplane_geometry
+{
+	name			floor
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_floor
+	geometry		floor
+	material		mat_floor
+	position		0 0 0
+	orientation		-90 0 0
+	receives_shadows	false
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.8 0.6
+}
+
+directional_light
+{
+	name		fill
+	power		1.0
+	color		0.85 0.9 1.0
+	direction	-0.4 0.5 0.6
+}
