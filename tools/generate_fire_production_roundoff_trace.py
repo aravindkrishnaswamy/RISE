@@ -38,9 +38,8 @@ def transform(text: str, name: str, suffix: str) -> str:
                 "FireProductionRoundoffTrace::BranchSite::FlatStencil,[&](){ return "
                 "im2==center&&im1==center&&ip1==center&&ip2==center; }) )",
             "if( left==center&&right==center )":
-                "if( FireProductionRoundoffTrace::EvaluateBranch("
-                "FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return "
-                "left==center&&right==center; }) )",
+                "if( FireProductionRoundoffTrace::EvaluateFlatIntegralBranch("
+                "left,center,right) )",
             "while( remaining>0.0f )":
                 "while( FireProductionRoundoffTrace::EvaluateRemainingPositiveBranch("
                 "[&](){ return "

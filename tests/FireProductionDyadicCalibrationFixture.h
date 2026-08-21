@@ -1221,11 +1221,11 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="30f0a366b4ff65935576042f9fcabcb8a2254a20e4b0ee1eb68547312f5b9257"||
-			unresolvedBitmap!=0xdbdef6u||invalidBitmap!=0u||!finiteOutputs||
+			traceDigest!="264857ee8a3b94e9da4e676a97ac79ebf9919cf61bfec8402a20a328ca1f0d51"||
+			unresolvedBitmap!=0xc00000u||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=3972323u||
-			totalDischargedBranchObligationCount!=3351830u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=620493u||
+			totalDischargedBranchObligationCount!=3972321u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=2u||
 			frozenInflowAmbiguity!=1.7632415612658968e-38||
 			frozenInflowScale!=22.033558699237727||
 			frozenInflowPowerOfTwoFactor!=1.0||
@@ -1249,7 +1249,7 @@ namespace FireProductionDyadicCalibration
 			source.unresolvedBranch||
 			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
 			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r129 fractional tail certified; %llu of %llu site-class "
+		std::fprintf(stderr,"r130 flat integral certified; %llu of %llu site-class "
 			"obligations remain pending before B_fp32 and Metal measurement\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),

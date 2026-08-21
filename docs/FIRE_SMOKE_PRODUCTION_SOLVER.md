@@ -2447,6 +2447,25 @@ unresolved stage bitmap contracts to `0xdbdef6`. Durable evidence is
 `rendered/fire_production_calibration/r129_fractional_tail/fractional_tail.v1`,
 SHA-256 `7ed9b0be19306d1448c197d669b206578109a600d13369948ec861a436c6b1db`.
 
+### 7.47 Flat-integral equivalence envelope (r130)
+
+The curved PPM unit-cell integral and its flat shortcut coincide exactly when
+the left, center, and right values coincide. If either endpoint lies within
+the independently enclosed deviation `D` of the center, direct coefficient
+collection bounds the exact two-path difference by `8D`. The independent
+curved-polynomial and accumulation DAG contains 32 scalar operations, adding
+`gamma_32 M (8+D)` and a separate `32 FLT_MIN` FTZ term. Half-deviation,
+missing-curved-polynomial, missing-FTZ, and discontinuous-shortcut mutants all
+fail.
+
+All `620,491` flat-integral obligations close. The cumulative census is now
+`3,972,321 / 3,972,323`; only the two projection-reduction guards remain, so
+exact exit `237` continues. The maximum class envelope is
+`128175.45885830303`, a topology certificate term rather than an admitted
+`B_fp32` bound. The unresolved bitmap is `0xc00000`. Durable evidence is
+`rendered/fire_production_calibration/r130_flat_integral/flat_integral.v1`,
+SHA-256 `e3be09fa7b8bb286de8f65ccd7a1e26b5d0ddd9186ddf8bd4c342dea28783ac0`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

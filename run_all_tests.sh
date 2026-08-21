@@ -376,10 +376,10 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	fi
 done
 
-# The r129 derivation is an expected fail-closed evidence gate, not a test
+# The r130 derivation is an expected fail-closed evidence gate, not a test
 # source with its own executable name. Run the capability-isolated binary
 # explicitly and accept only the exact incomplete post-inflow class census.
-roundoff_name="FireProductionCalibrationOracle.r129"
+roundoff_name="FireProductionCalibrationOracle.r130"
 roundoff_path="$BIN_DIR/FireProductionCalibrationOracle"
 roundoff_log="$LOG_DIR/$roundoff_name.log"
 printf '[ evidence ] %-46s ... ' "$roundoff_name"

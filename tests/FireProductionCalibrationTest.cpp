@@ -135,6 +135,15 @@ int main()
 		fractionEvidence.find("executed_obligation_instances_pending 620493")!=
 			std::string::npos,
 		"r129 fractional-tail derivation and cumulative census are durable");
+	const std::string flatIntegralEvidence=ReadText(
+		"rendered/fire_production_calibration/r130_flat_integral/flat_integral.v1");
+	Check(!flatIntegralEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(flatIntegralEvidence.begin(),flatIntegralEvidence.end()))==
+		"e3be09fa7b8bb286de8f65ccd7a1e26b5d0ddd9186ddf8bd4c342dea28783ac0"&&
+		flatIntegralEvidence.find("class_flat_integral_pending 0")!=std::string::npos&&
+		flatIntegralEvidence.find("executed_obligation_instances_pending 2")!=
+			std::string::npos,
+		"r130 flat-integral derivation and cumulative census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -146,13 +155,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r129")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r130")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r129")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r130")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute the exact r129 proof stop and accept only exit 237");
+		"ordinary Unix and Windows suites execute the exact r130 proof stop and accept only exit 237");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -735,6 +744,52 @@ int main()
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;
+		const auto center=FireProductionRoundoffTrace::TraceFloat(1.0f);
+		const auto left=FireProductionRoundoffTrace::TraceFloat::Raw(1.0,0.01,1.0f,1u);
+		const auto right=FireProductionRoundoffTrace::TraceFloat::Raw(1.0,0.02,1.0f,1u);
+		{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> values={center};
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> leftValues={left};
+			const std::vector<FireProductionRoundoffTrace::TraceFloat> rightValues={right};
+			FireProductionRoundoffTrace::TransportProfileScope profile(
+				values,leftValues,rightValues,0u,1u,0.0f,0.0f);
+			Check(FireProductionRoundoffTrace::EvaluateFlatIntegralBranch(left,center,right),
+				"flat-integral fixture executes the rounded shortcut with two ambiguous equalities");
+		}
+		Check(counters.branchObligations.size()==2u&&
+			counters.dischargedBranchObligationCount==2u&&
+			counters.branchObligations[0].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			counters.branchObligations[1].certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence,
+			"trace discharges both executed flat-profile equality obligations");
+		const double profileUpper=std::nextafter(std::fabs(right.Center())+right.Radius(),
+			std::numeric_limits<double>::infinity());
+		FireProductionRoundoffWalker::FlatIntegralCertificate certificate,half,
+			missingPolynomial,missingFTZ,discontinuous;
+		Check(FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
+			center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,certificate)&&
+			counters.branchObligations[0].divergenceBound==certificate.totalEnvelope&&
+			counters.branchObligations[1].divergenceBound==certificate.totalEnvelope&&
+			certificate.curvedPathOperationCount==32u&&certificate.continuousAtFlatProfile,
+			"independent flat-integral walker matches both traced two-path envelopes");
+		Check(!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
+			center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,half,
+			FireProductionRoundoffWalker::FlatIntegralGraphVariant::HalfDeviation)&&
+			!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
+				center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,missingPolynomial,
+				FireProductionRoundoffWalker::FlatIntegralGraphVariant::MissingCurvedPolynomial)&&
+			!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
+				center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,missingFTZ,
+				FireProductionRoundoffWalker::FlatIntegralGraphVariant::MissingFTZ)&&
+			!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
+				center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,discontinuous,
+				FireProductionRoundoffWalker::FlatIntegralGraphVariant::DiscontinuousFlatPath),
+			"flat-integral certificate rejects deviation, curved-path, FTZ, and discontinuity mutants");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
 		{
 			FireProductionRoundoffTrace::Scope scope(counters);
 			Check(FireProductionRoundoffTrace::EvaluateContinuousInflowJoin(
@@ -900,9 +955,9 @@ int main()
 	Check(tracedOK&&tracedBytes&&tracedOperations==980u&&
 		std::equal(expectedTraceKinds.begin(),expectedTraceKinds.end(),
 			std::begin(tracedCounters.operation))&&tracedCounters.maximumDepth==14u&&
-		tracedCounters.comparisonCount==644u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.comparisonCount==644u&&!tracedCounters.unresolvedBranch&&
 		tracedCounters.branchObligations.size()==260u&&
-		tracedCounters.dischargedBranchObligationCount==220u&&
+		tracedCounters.dischargedBranchObligationCount==260u&&
 		tracedCounters.minimumDenominatorLowerBound>0.0&&
 		*std::max_element(std::begin(tracedCounters.maximumAbsoluteOperand),
 			std::end(tracedCounters.maximumAbsoluteOperand))==5.0&&
@@ -913,9 +968,9 @@ int main()
 		tracedCounters.maximumDepth==walkedTopology.maximumDepth,
 		"independent remap graph walk reproduces traced operation count and depth while the trace reproduces fp32 bytes");
 	if(!(tracedOK&&tracedBytes&&tracedOperations==980u&&
-		tracedCounters.comparisonCount==644u&&tracedCounters.unresolvedBranch&&
+		tracedCounters.comparisonCount==644u&&!tracedCounters.unresolvedBranch&&
 		tracedCounters.branchObligations.size()==260u&&
-		tracedCounters.dischargedBranchObligationCount==220u&&
+		tracedCounters.dischargedBranchObligationCount==260u&&
 		!tracedCounters.invalidDomain))std::fprintf(stderr,
 		"roundoff remap detail ok=%d bytes=%d ops=%llu comparisons=%llu obligations=%zu "
 		"discharged=%llu unresolved=%d invalid=%d denominator=%.17g max_operand=%.17g\n",

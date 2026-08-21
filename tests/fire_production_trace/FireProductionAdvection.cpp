@@ -189,7 +189,7 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat CellIntervalIntegral( FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat left, FireProductionRoundoffTrace::TraceFloat right,
 			FireProductionRoundoffTrace::TraceFloat beginning, FireProductionRoundoffTrace::TraceFloat end )
 		{
-			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return left==center&&right==center; }) ) return (end-beginning)*center;
+			if( FireProductionRoundoffTrace::EvaluateFlatIntegralBranch(left,center,right) ) return (end-beginning)*center;
 			const FireProductionRoundoffTrace::TraceFloat q6=6.0f*center-3.0f*(left+right);
 			const FireProductionRoundoffTrace::TraceFloat delta=end-beginning;
 			return delta*(left+0.5f*(right-left+q6)*(beginning+end)-
@@ -198,7 +198,7 @@ namespace RISEFireProductionTrace
 
 		FireProductionRoundoffTrace::TraceFloat CellTrailingIntegral( FireProductionRoundoffTrace::TraceFloat center, FireProductionRoundoffTrace::TraceFloat left, FireProductionRoundoffTrace::TraceFloat right, FireProductionRoundoffTrace::TraceFloat length )
 		{
-			if( FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::FlatIntegral,[&](){ return left==center&&right==center; }) ) return length*center;
+			if( FireProductionRoundoffTrace::EvaluateFlatIntegralBranch(left,center,right) ) return length*center;
 			const FireProductionRoundoffTrace::TraceFloat q6=6.0f*center-3.0f*(left+right);
 			return length*(right-0.5f*(right-left-q6)*length-
 				(q6/3.0f)*length*length);

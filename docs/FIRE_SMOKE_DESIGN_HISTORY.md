@@ -3054,3 +3054,14 @@ it was already tried and refuted here.
   `3,351,830 / 3,972,323` are discharged and `620,493` remain. Exact exit
   `237` and the block on B_fp32 remain. Maximum class envelope is
   `0.29684226235298722`; durable evidence is `7ed9b0be...6c6b1db`.
+
+- **r130 flat-integral class discharge (2026-08-21):** the curved PPM
+  integral and flat shortcut coincide at a flat profile. Direct coefficient
+  collection gives exact divergence `8D` for endpoint deviation `D`; the
+  independent 32-operation curved path adds `gamma_32 M (8+D)` and
+  `32 FLT_MIN`. Half-deviation, missing-polynomial, missing-FTZ, and
+  discontinuous-shortcut mutants RED. All `620,491` instances close;
+  `3,972,321 / 3,972,323` are discharged and only two projection-reduction
+  guards remain. Exact exit `237` stays fail-closed. The maximum class
+  envelope `128175.45885830303` is not promoted to `B_fp32`; durable evidence
+  is `e3be09fa...783ac0`.

@@ -587,6 +587,41 @@ namespace FireProductionRoundoffTrace
 			ActiveCounters->branchObligations.size();
 	}
 
+	inline void ApplyFlatIntegralCertificate(const std::size_t obligationIndex,
+		const TraceFloat& left,const TraceFloat& center,const TraceFloat& right)
+	{
+		if(!ActiveCounters||obligationIndex>=ActiveCounters->branchObligations.size()||
+			!(ActiveTransportProfileUpper>=0.0))return;
+		BranchObligation& obligation=ActiveCounters->branchObligations[obligationIndex];
+		if(obligation.site!=BranchSite::FlatIntegral||
+			obligation.certificate!=BranchCertificate::None)return;
+		const double leftDeviation=NextUp(std::fabs(left.Center()-center.Center())+
+			left.Radius()+center.Radius());
+		const double rightDeviation=NextUp(std::fabs(right.Center()-center.Center())+
+			right.Radius()+center.Radius());
+		const double deviation=std::max(leftDeviation,rightDeviation);
+		const std::uint64_t operations=32u;
+		const double exactTerm=NextUp(8.0*deviation);
+		const double magnitude=NextUp(ActiveTransportProfileUpper*(8.0+deviation));
+		const double roundedTerm=NextUp(Gamma(operations)*magnitude);
+		const double ftzTerm=NextUp(static_cast<double>(operations)*
+			static_cast<double>(std::numeric_limits<float>::min()));
+		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
+		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		obligation.certificate=BranchCertificate::Equivalence;
+		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
+		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
+		++ActiveCounters->dischargedBranchObligationCount;
+		const unsigned int site=static_cast<unsigned int>(BranchSite::FlatIntegral);
+		ActiveCounters->maximumBranchDivergence[site]=std::max(
+			ActiveCounters->maximumBranchDivergence[site],total);
+		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
+			sum=NextUp(sum+value);
+		ActiveCounters->transportBranchDivergenceBound=sum;
+		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
+			ActiveCounters->branchObligations.size();
+	}
+
 	template<class Predicate> inline bool EvaluateRemainingPositiveBranch(
 		const Predicate& predicate)
 	{
@@ -613,6 +648,20 @@ namespace FireProductionRoundoffTrace
 		const bool result=predicate();
 		if(LastScopedObligation!=std::numeric_limits<std::size_t>::max())
 			ApplyFractionPositiveCertificate(LastScopedObligation);
+		return result;
+	}
+
+	inline bool EvaluateFlatIntegralBranch(const TraceFloat& left,
+		const TraceFloat& center,const TraceFloat& right)
+	{
+		const std::size_t beginning=ActiveCounters?ActiveCounters->branchObligations.size():0u;
+		bool result=false;{
+			BranchSiteScope scope(BranchSite::FlatIntegral);
+			result=left==center&&right==center;
+		}
+		if(ActiveCounters)for(std::size_t index=beginning;
+			index<ActiveCounters->branchObligations.size();++index)
+			ApplyFlatIntegralCertificate(index,left,center,right);
 		return result;
 	}
 

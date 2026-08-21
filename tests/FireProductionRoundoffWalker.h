@@ -123,6 +123,14 @@ namespace FireProductionRoundoffWalker
 	};
 	enum class FractionGraphVariant { Certified,HalfAmbiguity,MissingTrailingIntegral,
 		MissingFTZ };
+	struct FlatIntegralCertificate
+	{
+		double deviationUpper=0.0,exactBranchTerm=0.0,roundedTerm=0.0,ftzTerm=0.0;
+		double totalEnvelope=0.0;std::uint64_t curvedPathOperationCount=0u;
+		bool continuousAtFlatProfile=false;
+	};
+	enum class FlatIntegralGraphVariant { Certified,HalfDeviation,MissingCurvedPolynomial,
+		MissingFTZ,DiscontinuousFlatPath };
 	struct InflowTransitionCertificate
 	{
 		double ambiguityWidth=0.0,widthLower=0.0,donorContrast=0.0;
@@ -449,6 +457,54 @@ namespace FireProductionRoundoffWalker
 		const double requiredFTZ=Detail::NextUp(24.0*static_cast<double>(
 			std::numeric_limits<float>::min()));
 		return certificate.zeroWidthAtSwitch&&std::isfinite(certificate.totalEnvelope)&&
+			certificate.exactBranchTerm>=requiredExact&&
+			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
+	}
+
+	// The general PPM integral and its flat shortcut coincide for l=c=r. Over
+	// independently enclosed endpoint deviations D, the unit-cell polynomial
+	// integral differs from the flat value by at most 8D. The curved polynomial
+	// and accumulation DAG has 32 scalar operations.
+	inline bool CertifyFlatIntegral(const double leftCenter,const double leftRadius,
+		const double centerCenter,const double centerRadius,const double rightCenter,
+		const double rightRadius,const double profileAbsoluteUpper,
+		FlatIntegralCertificate& certificate,const FlatIntegralGraphVariant variant=
+			FlatIntegralGraphVariant::Certified)
+	{
+		certificate=FlatIntegralCertificate();
+		if(!(leftRadius>=0.0&&centerRadius>=0.0&&rightRadius>=0.0&&
+			profileAbsoluteUpper>=0.0)||!std::isfinite(leftCenter)||
+			!std::isfinite(centerCenter)||!std::isfinite(rightCenter)||
+			!std::isfinite(profileAbsoluteUpper))return false;
+		const double fullDeviation=std::max(
+			Detail::NextUp(std::fabs(leftCenter-centerCenter)+leftRadius+centerRadius),
+			Detail::NextUp(std::fabs(rightCenter-centerCenter)+rightRadius+centerRadius));
+		certificate.deviationUpper=variant==FlatIntegralGraphVariant::HalfDeviation?
+			0.5*fullDeviation:fullDeviation;
+		certificate.curvedPathOperationCount=variant==
+			FlatIntegralGraphVariant::MissingCurvedPolynomial?8u:32u;
+		certificate.exactBranchTerm=Detail::NextUp(8.0*certificate.deviationUpper);
+		const double product=static_cast<double>(certificate.curvedPathOperationCount)*0x1p-24;
+		if(!(product<1.0))return false;
+		const double gamma=Detail::NextUp(product/(1.0-product));
+		const double magnitude=Detail::NextUp(profileAbsoluteUpper*
+			(8.0+certificate.deviationUpper));
+		certificate.roundedTerm=Detail::NextUp(gamma*magnitude);
+		certificate.ftzTerm=variant==FlatIntegralGraphVariant::MissingFTZ?0.0:
+			Detail::NextUp(static_cast<double>(certificate.curvedPathOperationCount)*
+				static_cast<double>(std::numeric_limits<float>::min()));
+		certificate.totalEnvelope=Detail::NextUp(certificate.exactBranchTerm+
+			certificate.roundedTerm+certificate.ftzTerm);
+		certificate.continuousAtFlatProfile=variant!=
+			FlatIntegralGraphVariant::DiscontinuousFlatPath;
+		const double requiredExact=Detail::NextUp(8.0*fullDeviation);
+		const double requiredProduct=32.0*0x1p-24;
+		const double requiredGamma=Detail::NextUp(requiredProduct/(1.0-requiredProduct));
+		const double requiredRounded=Detail::NextUp(requiredGamma*
+			Detail::NextUp(profileAbsoluteUpper*(8.0+fullDeviation)));
+		const double requiredFTZ=Detail::NextUp(32.0*static_cast<double>(
+			std::numeric_limits<float>::min()));
+		return certificate.continuousAtFlatProfile&&std::isfinite(certificate.totalEnvelope)&&
 			certificate.exactBranchTerm>=requiredExact&&
 			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
 	}
