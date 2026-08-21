@@ -1483,10 +1483,13 @@ int main()
 	// =================================================================
 	// PART 10 -- SceneEditController::AppearanceClosureForObject: the
 	// node-graph canvas "spotlight" query (viewport/outliner object pick
-	// -> chunk names to highlight).  Cases (a)-(f) are the ones named in
-	// the feature brief; a composite_material case is added to back this
-	// method's own header-comment claim that Material->Material edges
-	// (not just Painter/Function) are included in the closure.
+	// -> chunk (category,name) identities to highlight).  Cases (a)-(f)
+	// are the ones named in the feature brief; a composite_material case
+	// backs this method's own header-comment claim that Material->Material
+	// edges (not just Painter/Function) are included in the closure; case
+	// (g) and the standalone ResolveUniqueGraphNodeIndex cases below are
+	// review-round additions pinning the (category,name)-qualified result
+	// shape and the ambiguous-duplicate refusal.
 	// =================================================================
 	{
 		const char* path = "test_referencegraph_appearance.RISEscene";
@@ -1500,6 +1503,11 @@ int main()
 			"expression_painter\n{\nname field1\ndef n fbm(P*2.0, 2, 0.5, 2.0)\nexpr vec3(n,n,n)\n}\n"
 			"ramp_painter\n{\nname ramp1\ninput field1\nchannel R\ninterpolation linear\nstop 0.0 1 0 0\nstop 1.0 0 0 1\n}\n"
 			"lambertian_material\n{\nname matA\nreflectance ramp1\n}\n"
+			// A Painter chunk sharing the EXACT name "matA" -- a DIFFERENT
+			// category, unreferenced by anything (PART10g: proves the
+			// initial material lookup is category-qualified, not a bare
+			// name scan that could latch onto this instead).
+			"expression_painter\n{\nname matA\ndef n fbm(P*9.0, 2, 0.5, 2.0)\nexpr vec3(n,n,n)\n}\n"
 			// matB's own separate chain, referenced only through the
 			// composite material below (PART10 bonus: Material->Material).
 			"expression_painter\n{\nname field2\ndef n fbm(P*4.0, 2, 0.5, 2.0)\nexpr vec3(n,n,n)\n}\n"
@@ -1517,57 +1525,72 @@ int main()
 		Check( j != nullptr, "PART10: fixture scene loads" );
 		if( j ) {
 			SceneEditController c( *j, 0 );
+			typedef SceneEditController::AppearanceClosureEntry ACEntry;
 
 			// ---- (a) object with one material + painter chain: exact
 			// closure set + order (material first, then BFS discovery
-			// order down the single-branch chain) ----
+			// order down the single-branch chain), EACH ENTRY CARRYING THE
+			// CORRECT CATEGORY (review-round P1 fix: the result is
+			// (category,name) pairs, not bare names) ----
 			{
-				const std::vector<String> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "obj1" ) );
 				Check( closure.size() == 3, "PART10a: obj1's closure has exactly 3 entries (matA, ramp1, field1)" );
 				if( closure.size() == 3 ) {
-					CheckEq( std::string( closure[0].c_str() ), "matA", "PART10a: index 0 is the bound material" );
-					CheckEq( std::string( closure[1].c_str() ), "ramp1", "PART10a: index 1 is matA's direct painter reference" );
-					CheckEq( std::string( closure[2].c_str() ), "field1", "PART10a: index 2 is ramp1's own reference (transitive)" );
+					CheckEq( std::string( closure[0].name.c_str() ), "matA", "PART10a: index 0 is the bound material" );
+					Check( closure[0].category == ChunkCategory::Material, "PART10a: index 0's category is Material" );
+					CheckEq( std::string( closure[1].name.c_str() ), "ramp1", "PART10a: index 1 is matA's direct painter reference" );
+					Check( closure[1].category == ChunkCategory::Painter, "PART10a: index 1's category is Painter" );
+					CheckEq( std::string( closure[2].name.c_str() ), "field1", "PART10a: index 2 is ramp1's own reference (transitive)" );
+					Check( closure[2].category == ChunkCategory::Painter, "PART10a: index 2's category is Painter" );
 				}
 			}
 
 			// ---- (b) two objects sharing a material: each resolves to
 			// the SAME closure ----
 			{
-				const std::vector<String> closure1 = c.AppearanceClosureForObject( String( "obj1" ) );
-				const std::vector<String> closure2 = c.AppearanceClosureForObject( String( "obj2" ) );
+				const std::vector<ACEntry> closure1 = c.AppearanceClosureForObject( String( "obj1" ) );
+				const std::vector<ACEntry> closure2 = c.AppearanceClosureForObject( String( "obj2" ) );
 				Check( closure1.size() == closure2.size() && closure1.size() == 3,
 				       "PART10b: obj1 and obj2 (sharing matA) resolve to the same-size closure" );
 				bool same = closure1.size() == closure2.size();
 				for( std::size_t i = 0; same && i < closure1.size(); ++i )
-					if( std::string( closure1[i].c_str() ) != std::string( closure2[i].c_str() ) ) same = false;
+					if( closure1[i].category != closure2[i].category
+					 || std::string( closure1[i].name.c_str() ) != std::string( closure2[i].name.c_str() ) ) same = false;
 				Check( same, "PART10b: obj1 and obj2's closures are IDENTICAL, not merely same-sized" );
 			}
 
 			// ---- (c) material with a deep painter chain: transitive
 			// closure complete (field1, two hops from matA, is present) ----
 			{
-				const std::vector<String> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "obj1" ) );
 				bool hasField1 = false;
-				for( const String& s : closure ) if( std::string( s.c_str() ) == "field1" ) hasField1 = true;
+				for( const ACEntry& e : closure )
+					if( e.category == ChunkCategory::Painter && std::string( e.name.c_str() ) == "field1" ) hasField1 = true;
 				Check( hasField1, "PART10c: the 2-hop-away field1 is present -- the closure is transitive, not one-hop" );
 			}
 
 			// ---- (d) unknown object name -> empty ----
 			{
-				const std::vector<String> closure = c.AppearanceClosureForObject( String( "no_such_object_at_all" ) );
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "no_such_object_at_all" ) );
 				Check( closure.empty(), "PART10d: an unknown object name resolves to an empty closure" );
 			}
 
-			// ---- (e) object with no material bound -> empty (the
-			// object-level reading of "material slot none/unbound ->
-			// skipped"; the painter-slot-level reading -- a dangling or
-			// none-valued Reference param inside a material producing a
-			// node-less port, not a phantom node -- is BuildPainterMaterial
-			// Graph's own general mechanism, this method's Step 2 reuses
-			// verbatim and does not re-test here) ----
+			// ---- (e) object with no material bound -> empty.  Precise
+			// claim (review-round P2 fix -- the earlier wording overstated
+			// what this proves): objNoMat's `standard_object` chunk names
+			// no `material` param at all, so its live IObject::GetMaterial()
+			// returns null and FindObjectMaterialName reports "" -- this
+			// case exercises ONLY that object-level unbound path.  It does
+			// NOT exercise (and does not claim to exercise) a material
+			// chunk whose OWN painter slot is left at the `none` default;
+			// that is a node-less-PORT case inside BuildPainterMaterialGraph
+			// itself (dangling/out-of-scope references becoming a port with
+			// no node on the other end, never a phantom node), already
+			// covered by that assembler's own PART 2 tests -- this method's
+			// Step 2 reuses that mechanism verbatim rather than re-deriving
+			// it, so it is not re-proven here. ----
 			{
-				const std::vector<String> closure = c.AppearanceClosureForObject( String( "objNoMat" ) );
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "objNoMat" ) );
 				Check( closure.empty(), "PART10e: an object with no material bound resolves to an empty closure" );
 			}
 
@@ -1579,33 +1602,62 @@ int main()
 			// objInstance carries only `source obj1`, no `material` line
 			// at all ----
 			{
-				const std::vector<String> closureSrc = c.AppearanceClosureForObject( String( "obj1" ) );
-				const std::vector<String> closureInst = c.AppearanceClosureForObject( String( "objInstance" ) );
+				const std::vector<ACEntry> closureSrc = c.AppearanceClosureForObject( String( "obj1" ) );
+				const std::vector<ACEntry> closureInst = c.AppearanceClosureForObject( String( "objInstance" ) );
 				Check( closureInst.size() == closureSrc.size() && closureInst.size() == 3,
 				       "PART10f: the instancing chunk's OWN name resolves to a non-empty closure" );
 				bool same = closureInst.size() == closureSrc.size();
 				for( std::size_t i = 0; same && i < closureInst.size(); ++i )
-					if( std::string( closureInst[i].c_str() ) != std::string( closureSrc[i].c_str() ) ) same = false;
+					if( closureInst[i].category != closureSrc[i].category
+					 || std::string( closureInst[i].name.c_str() ) != std::string( closureSrc[i].name.c_str() ) ) same = false;
 				Check( same, "PART10f: an instance's closure is IDENTICAL to its source object's closure" );
+			}
+
+			// ---- (g) CROSS-CATEGORY NAME COLLISION (review-round P1 fix):
+			// a Painter chunk also named "matA" exists in this fixture
+			// (unreferenced), sharing the name with the Material "matA"
+			// obj1 is actually bound to.  The closure must still resolve
+			// to the MATERIAL "matA" and its real chain -- a name-only
+			// lookup (matching ANY category) could latch onto the
+			// unrelated Painter "matA" instead, which has no outEdges,
+			// and this test would then see a 1-entry closure instead of 3.
+			// The Painter "matA" node itself must never appear in the
+			// result (it is unreferenced by obj1's own material chain). ----
+			{
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "obj1" ) );
+				Check( closure.size() == 3,
+				       "PART10g: the cross-category matA collision does not change obj1's closure size (still 3, not 1)" );
+				if( !closure.empty() ) {
+					Check( closure[0].category == ChunkCategory::Material,
+					       "PART10g: index 0 resolves to the MATERIAL matA, not the same-named Painter" );
+				}
+				// The unreferenced Painter "matA" must be absent (it has no
+				// edge from the real matA chain -- confirms it was never
+				// mistakenly treated as part of this closure).
+				int painterMatACount = 0;
+				for( const ACEntry& e : closure )
+					if( e.category == ChunkCategory::Painter && std::string( e.name.c_str() ) == "matA" ) ++painterMatACount;
+				Check( painterMatACount == 0, "PART10g: the unreferenced same-named Painter matA is NOT in the closure" );
 			}
 
 			// ---- bonus: composite_material's Material->Material edges
 			// (top/bottom) are traversed, not treated as a closure
 			// boundary -- backs this method's own header-comment claim ----
 			{
-				const std::vector<String> closure = c.AppearanceClosureForObject( String( "objComposite" ) );
+				const std::vector<ACEntry> closure = c.AppearanceClosureForObject( String( "objComposite" ) );
 				Check( closure.size() == 6,
 				       "PART10-bonus: objComposite's closure has 6 entries (compo, matA, ramp1, field1, matB, field2)" );
-				Check( !closure.empty() && std::string( closure[0].c_str() ) == "compo",
+				Check( !closure.empty() && std::string( closure[0].name.c_str() ) == "compo"
+				    && closure[0].category == ChunkCategory::Material,
 				       "PART10-bonus: index 0 is the composite material itself" );
 				bool hasMatA = false, hasMatB = false, hasRamp1 = false, hasField1 = false, hasField2 = false;
-				for( const String& s : closure ) {
-					const std::string n( s.c_str() );
-					if( n == "matA" ) hasMatA = true;
-					if( n == "matB" ) hasMatB = true;
-					if( n == "ramp1" ) hasRamp1 = true;
-					if( n == "field1" ) hasField1 = true;
-					if( n == "field2" ) hasField2 = true;
+				for( const ACEntry& e : closure ) {
+					const std::string n( e.name.c_str() );
+					if( e.category == ChunkCategory::Material && n == "matA" ) hasMatA = true;
+					if( e.category == ChunkCategory::Material && n == "matB" ) hasMatB = true;
+					if( e.category == ChunkCategory::Painter  && n == "ramp1" ) hasRamp1 = true;
+					if( e.category == ChunkCategory::Painter  && n == "field1" ) hasField1 = true;
+					if( e.category == ChunkCategory::Painter  && n == "field2" ) hasField2 = true;
 				}
 				Check( hasMatA && hasMatB, "PART10-bonus: both sub-materials (matA, matB) are in the closure" );
 				Check( hasRamp1 && hasField1 && hasField2,
@@ -1613,6 +1665,75 @@ int main()
 			}
 
 			j->release();
+		}
+	}
+
+	// =================================================================
+	// PART 11 -- SceneEditController::ResolveUniqueGraphNodeIndex: the
+	// PURE "(category,name) -> unique index, or refuse" helper
+	// AppearanceClosureForObject uses to resolve the starting material
+	// (review-round P1/P2 fix).  Driven against SYNTHETIC graphs built via
+	// BuildPainterMaterialGraph (the SAME pure assembler PART 2 uses) --
+	// no controller, no Job, no live derive, which matters specifically
+	// because a REAL scene load CANNOT construct the duplicate-name case
+	// this is meant to pin: a live IMaterialManager::AddItem refuses a
+	// second material registered under a name already in use and fails
+	// the whole derive (GenericManager::AddItem's "Item of same name...
+	// already exists" refusal), so a Job-backed fixture could never reach
+	// this state even though the CST DOCUMENT (and therefore this
+	// document-seeded graph) tolerates it just fine.
+	// =================================================================
+	{
+		// A. Unique (category,name): resolves, matches == 1.
+		{
+			std::vector<NodeSeed> nodes;
+			nodes.push_back( MakeNodeSeed( 1, "onlyMat", ChunkCategory::Material, 0 ) );
+			nodes.push_back( MakeNodeSeed( 2, "onlyMat", ChunkCategory::Painter,  1 ) );   // cross-category same-name sibling -- must NOT count
+			const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, std::vector<EdgeSeed>() );
+			int matches = -1;
+			const int idx = SceneEditController::ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, String( "onlyMat" ), &matches );
+			Check( matches == 1, "PART11A: exactly one Material-category match (the Painter sibling is not counted)" );
+			Check( idx >= 0 && static_cast<std::size_t>( idx ) < g.nodes.size()
+			    && g.nodes[static_cast<std::size_t>(idx)].category == ChunkCategory::Material
+			    && std::string( g.nodes[static_cast<std::size_t>(idx)].name.c_str() ) == "onlyMat",
+			       "PART11A: the resolved index names the Material node, not its Painter sibling" );
+		}
+
+		// B. Not present at all: matches == 0, index -1.
+		{
+			std::vector<NodeSeed> nodes;
+			nodes.push_back( MakeNodeSeed( 1, "somethingElse", ChunkCategory::Material, 0 ) );
+			const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, std::vector<EdgeSeed>() );
+			int matches = -1;
+			const int idx = SceneEditController::ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, String( "notThere" ), &matches );
+			Check( matches == 0, "PART11B: zero matches for a name not in the graph" );
+			Check( idx < 0, "PART11B: refused (index -1), not a guess" );
+		}
+
+		// C. SAME-CATEGORY duplicate name: the case a real Job-backed scene
+		// cannot construct (see this PART's own header comment) -- two
+		// Material-category seeds sharing "dup_mat". Must REFUSE
+		// (matches == 2, index -1), never silently pick the first.
+		{
+			std::vector<NodeSeed> nodes;
+			nodes.push_back( MakeNodeSeed( 1, "dup_mat", ChunkCategory::Material, 0 ) );
+			nodes.push_back( MakeNodeSeed( 2, "dup_mat", ChunkCategory::Material, 1 ) );
+			const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, std::vector<EdgeSeed>() );
+			Check( g.nodes.size() == 2, "PART11C: the assembler seeds BOTH same-category same-name chunks as distinct nodes" );
+			int matches = -1;
+			const int idx = SceneEditController::ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, String( "dup_mat" ), &matches );
+			Check( matches == 2, "PART11C: the ambiguity is reported (matches == 2), not silently collapsed" );
+			Check( idx < 0, "PART11C: refused (index -1) rather than guessing which duplicate is the \"real\" one" );
+		}
+
+		// D. outMatches is optional -- a null pointer must not crash.
+		{
+			std::vector<NodeSeed> nodes;
+			nodes.push_back( MakeNodeSeed( 1, "dup_mat", ChunkCategory::Material, 0 ) );
+			nodes.push_back( MakeNodeSeed( 2, "dup_mat", ChunkCategory::Material, 1 ) );
+			const Graph g = SceneEditController::BuildPainterMaterialGraph( nodes, std::vector<EdgeSeed>() );
+			const int idx = SceneEditController::ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, String( "dup_mat" ), nullptr );
+			Check( idx < 0, "PART11D: a null outMatches pointer is tolerated (still refuses correctly)" );
 		}
 	}
 

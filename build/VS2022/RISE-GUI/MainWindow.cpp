@@ -2579,6 +2579,21 @@ void MainWindow::rebuildViewportForLoadedScene()
         // single-entity inspector below updates immediately.
         connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
                 m_viewportProps, &ViewportProperties::refresh);
+        // review-round P1 fix: the SAME gap applies to the node-graph
+        // canvas's object-pick spotlight (NodeGraphCanvas::refreshSpotlight)
+        // -- it was previously reachable ONLY via imageUpdated (a render
+        // frame arriving) or a CRUD's own refreshForce(), so an outliner
+        // pick with no render in flight (the common case: nothing is
+        // actively rendering, the user is just browsing the scene graph)
+        // never lit the spotlight up at all. refresh() is the SAME
+        // epoch-gated call the imageUpdated connect below already uses --
+        // cheap when nothing structural changed, and its tail unconditionally
+        // re-derives the spotlight regardless (see refreshSpotlight's own
+        // comment on why a plain selection change never bumps sceneEpoch()).
+        if (m_nodeGraphCanvas) {
+            connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
+                    m_nodeGraphCanvas, &NodeGraphCanvas::refresh);
+        }
     }
 
     if (m_environmentPanel) {

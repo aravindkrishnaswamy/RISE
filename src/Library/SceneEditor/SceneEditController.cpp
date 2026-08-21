@@ -5439,6 +5439,20 @@ unsigned int SceneEditController::ResolveGraphNodeHandle( const PainterMaterialG
 	return idx;
 }
 
+int SceneEditController::ResolveUniqueGraphNodeIndex( const PainterMaterialGraph& g, ChunkCategory category,
+                                                        const String& name, int* outMatches )
+{
+	int firstIdx = -1;
+	int matches = 0;
+	for( std::size_t i = 0; i < g.nodes.size(); ++i ) {
+		if( g.nodes[i].category != category || g.nodes[i].name != name ) continue;
+		if( matches == 0 ) firstIdx = static_cast<int>( i );
+		++matches;
+	}
+	if( outMatches ) *outMatches = matches;
+	return ( matches == 1 ) ? firstIdx : -1;
+}
+
 // =====================================================================
 // doc-88 Phase 3 S17 -- connection-legality passthrough. See the
 // declarations' own comments in SceneEditController.h.
@@ -6007,9 +6021,9 @@ void SceneEditController::ResyncObjectBoundSections_()
 // SceneEditController.h for the full contract.
 // =====================================================================
 
-std::vector<String> SceneEditController::AppearanceClosureForObject( const String& objectName ) const
+std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::AppearanceClosureForObject( const String& objectName ) const
 {
-	std::vector<String> result;
+	std::vector<AppearanceClosureEntry> result;
 	if( objectName.size() <= 1 ) return result;
 
 	// Step 1: resolve the object's LIVE bound material.  Reuses
@@ -6020,46 +6034,82 @@ std::vector<String> SceneEditController::AppearanceClosureForObject( const Strin
 	// expansion happens at Cst::DeriveToJob DERIVE time, never touching the
 	// retained Document, so an instancing chunk's own CST text can carry no
 	// `material` line at all while its live IObject is bound to the copied
-	// one. Same brief mMutex hold External review round 3 (2026-07-22)
-	// established for this exact pair of calls (races the live object
-	// manager against an any-thread agent D2 manager swap).
+	// one.
+	//
+	// LOCKING (review-round P1 fix): this is a POLLED, UI-thread-reached
+	// query -- both platform canvases call it on every selection-observing
+	// pass, not once on a user gesture -- so it must NEVER block behind a
+	// render the way a plain `std::lock_guard<std::mutex> lk( mMutex )`
+	// would (a render holds `mMutex` for its entire duration; blocking here
+	// would wedge the UI thread for that whole duration, and the shipped
+	// first draft did exactly that with no `mRenderOwnsScene` guard at all).
+	// Mirrors `ResolveTreeRowName`'s established pattern for this exact
+	// class of call (SceneEditController.cpp, above): check
+	// `mRenderOwnsScene` first, then a non-blocking `try_to_lock`, and
+	// degrade to an empty result on EITHER refusal -- a polling caller
+	// retries on its next pass rather than the UI thread stalling on this
+	// one.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return result;
 	String matName;
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+		if( !lk.owns_lock() ) return result;   // contended -- no spotlight this pass, not a block
 		matName = FindObjectMaterialName( mJob, objectName );
 	}
 	if( matName.size() <= 1 ) return result;   // unknown object, or no material bound
 
 	// Step 2: BFS the ALREADY-PUBLISHED S11 PainterMaterialGraph -- the SAME
 	// edges ReadPainterMaterialGraphLaidOut composes and the canvas itself
-	// draws from, so this closure can never disagree with what the canvas
-	// shows. No second reference-resolution mechanism: this deliberately
-	// does NOT re-derive edges from SceneReferenceGraph/Cst::BuildReferenceGraph
-	// itself.
+	// draws from. No second reference-resolution mechanism: this
+	// deliberately does NOT re-derive edges from SceneReferenceGraph/
+	// Cst::BuildReferenceGraph itself. See this method's own declaration
+	// comment (SceneEditController.h) for the eventual-consistency caveat
+	// between this read and the one just above.
 	PainterMaterialGraph g;
 	ReadPainterMaterialGraph( g );
 
-	// Name-based node lookup, same addressing CheckConnection/WouldCycle
-	// already use for this graph (GraphNodeHandle's own comment: a
-	// published GraphNode carries no raw Cst::NodeId for a caller to key
-	// off instead). A duplicate (category, name) pair -- two same-category
-	// chunks legally sharing a name, see BuildPainterMaterialGraph's own
-	// comment -- resolves to whichever node FindObjectMaterialName's own
-	// manager-name resolution would have found too (first match, same
-	// presentation order both surfaces share), so this stays consistent
-	// with the auto-fill it started from rather than independently
-	// guessing.
-	int matIdx = -1;
-	for( std::size_t i = 0; i < g.nodes.size(); ++i ) {
-		if( g.nodes[i].category == ChunkCategory::Material && g.nodes[i].name == matName ) { matIdx = static_cast<int>( i ); break; }
-	}
-	if( matIdx < 0 ) return result;
+	// Node lookup by (category, name), addressing the material node the
+	// SAME way CheckConnection/WouldCycle already do for this graph
+	// (GraphNodeHandle's own comment: a published GraphNode carries no raw
+	// Cst::NodeId for a caller to key off instead).
+	//
+	// AMBIGUITY (review-round P1 fix): unlike a live IMaterialManager --
+	// which cannot register two materials under one name -- the CST
+	// Document backing this graph CAN legally contain two
+	// `ChunkCategory::Material` chunks sharing `matName` (BuildPainter
+	// MaterialGraph's node identity is `GraphNodeSeed::id`, the chunk's own
+	// Cst::NodeId, NOT (category,name) -- "two same-category chunks... each
+	// gets its OWN node" is the documented behavior, not a corner case this
+	// graph avoids). The previous draft's "materials live in one flat
+	// IMaterialManager" comment claimed this could not happen on this path;
+	// that was FALSE precisely because the graph's node SEEDS come from the
+	// Document (every declared chunk), not from what actually derived
+	// successfully into the live manager -- a duplicate-name pair can sit
+	// in the Document even though only one of them (or neither) is what
+	// `FindObjectMaterialName`'s live answer above actually resolved to.
+	// `ResolveUniqueGraphNodeIndex` is the shared "refuse rather than
+	// guess" helper (see its own comment) -- matches
+	// `SceneReferenceGraph::ResolveChunk`'s established "ambiguous name ->
+	// refuse" convention (ReferenceGraph.h). A future refinement could
+	// resolve the tie by cross-referencing the live IMaterial pointer (the
+	// way `FindObjectMaterialName` itself does for the object->material
+	// step), but that needs a second live pointer-identity probe this
+	// method does not otherwise need; refusing is the honest,
+	// immediately-correct answer for what is, in practice, a hand-authored
+	// or hostile scene-authoring degenerate, not a normal scene shape.
+	const int matIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, matName );
+	if( matIdx < 0 ) return result;   // not in the graph at all, or ambiguous -- refuse rather than guess
 
 	std::vector<bool> visited( g.nodes.size(), false );
 	std::vector<unsigned int> frontier;
 	visited[ static_cast<std::size_t>( matIdx ) ] = true;
 	frontier.push_back( static_cast<unsigned int>( matIdx ) );
-	result.push_back( g.nodes[ static_cast<std::size_t>( matIdx ) ].name );   // primary material first
+	{
+		AppearanceClosureEntry e;
+		e.category = g.nodes[ static_cast<std::size_t>( matIdx ) ].category;
+		e.name     = g.nodes[ static_cast<std::size_t>( matIdx ) ].name;
+		result.push_back( e );   // primary material first
+	}
 
 	std::size_t head = 0;
 	while( head < frontier.size() ) {
@@ -6070,7 +6120,10 @@ std::vector<String> SceneEditController::AppearanceClosureForObject( const Strin
 			if( visited[ p.otherNode ] ) continue;
 			visited[ p.otherNode ] = true;
 			frontier.push_back( p.otherNode );
-			result.push_back( g.nodes[ p.otherNode ].name );
+			AppearanceClosureEntry e;
+			e.category = g.nodes[ p.otherNode ].category;
+			e.name     = g.nodes[ p.otherNode ].name;
+			result.push_back( e );
 		}
 	}
 	return result;

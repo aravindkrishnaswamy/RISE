@@ -117,6 +117,10 @@ NSString* NamedViewDisplayName( const char* bytes )
                     generation:(unsigned long long)generation;
 @end
 
+@interface RISEAppearanceClosureEntry ()
+- (instancetype)initWithCategory:(NSInteger)category name:(NSString *)name;
+@end
+
 // Class extension: private initializer for RISEViewportProperty.
 @interface RISEViewportProperty ()
 - (instancetype)initWithName:(NSString *)name
@@ -2066,14 +2070,15 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return [[RISEPainterMaterialGraph alloc] initWithNodes:nodes generation:g.graph.generation];
 }
 
-- (NSArray<NSString *> *)appearanceClosureForObject:(NSString *)objectName {
+- (NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName {
     if (!_controller || objectName.length == 0) return @[];
     const char* utf8 = [objectName UTF8String] ?: "";
-    const std::vector<RISE::String> closure = _controller->AppearanceClosureForObject(RISE::String(utf8));
-    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:closure.size()];
-    for (const RISE::String &name : closure) {
-        NSString *s = NamedViewDisplayName(name.c_str()) ?: @"";
-        [out addObject:s];
+    const std::vector<RISE::SceneEditController::AppearanceClosureEntry> closure =
+        _controller->AppearanceClosureForObject(RISE::String(utf8));
+    NSMutableArray<RISEAppearanceClosureEntry *> *out = [NSMutableArray arrayWithCapacity:closure.size()];
+    for (const RISE::SceneEditController::AppearanceClosureEntry &e : closure) {
+        NSString *s = NamedViewDisplayName(e.name.c_str()) ?: @"";
+        [out addObject:[[RISEAppearanceClosureEntry alloc] initWithCategory:static_cast<NSInteger>(e.category) name:s]];
     }
     return out;
 }
@@ -3478,6 +3483,26 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSInteger)occurrence { return _occurrence; }
 - (NSInteger)otherNodeIndex { return _otherNodeIndex; }
 - (NSString *)otherName { return _otherName; }
+
+@end
+
+@implementation RISEAppearanceClosureEntry {
+    NSInteger _category;
+    NSString *_name;
+}
+
+- (instancetype)initWithCategory:(NSInteger)category name:(NSString *)name
+{
+    self = [super init];
+    if (self) {
+        _category = category;
+        _name = [name copy] ?: @"";
+    }
+    return self;
+}
+
+- (NSInteger)category { return _category; }
+- (NSString *)name { return _name; }
 
 @end
 

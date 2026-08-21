@@ -270,6 +270,26 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly) unsigned long long generation;
 @end
 
+/// One entry of an `-appearanceClosureForObject:` result -- a node
+/// IDENTITY, not just a display string.  Mirrors
+/// `SceneEditController::AppearanceClosureEntry` field-for-field: a bare
+/// name is NOT enough to address a node in `RISEPainterMaterialGraph.nodes`
+/// (a Painter and a Material chunk may legally share a name), so a caller
+/// matching a returned entry against an already-fetched node list MUST
+/// compare BOTH `category` and `name`, never `name` alone (review-round P1
+/// fix -- an earlier draft of this bridge method returned bare
+/// `NSArray<NSString *> *` and both platform consumers matched by name
+/// only, which could silently spotlight the wrong node on a cross-category
+/// name collision).
+@interface RISEAppearanceClosureEntry : NSObject
+/// `RISE::ChunkCategory` cast to int -- the SAME ordinal `RISEGraphNode.category`
+/// already uses (Painter 0, Function 1, Material 2), so this compares
+/// directly against a `RISEGraphNode`/`RISEPainterMaterialGraph` node's own
+/// `category` field with no remapping.
+@property (nonatomic, readonly) NSInteger category;
+@property (nonatomic, readonly, copy) NSString *name;
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -1037,16 +1057,26 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// viewport/outliner pick, since a synthesized per-repetition/subtree-
 /// member name like `I[1,0]`/`I.child` is never itself an addressable
 /// chunk -- see `-selectionRowName`'s own comment), returns the chunk
-/// NAMES to highlight on the node-graph canvas: the object's bound
-/// material first, then the full transitive Painter/Function/Material
-/// closure reachable from it in the SAME published `PainterMaterialGraph`
-/// `-painterMaterialGraph` reads from, in BFS discovery order. Empty
-/// (never nil) when the object is unknown, has no material bound, or a
-/// temporarily unavailable controller. Called directly on the C++
-/// controller (`SceneEditController::AppearanceClosureForObject`), the
-/// same "this file already calls SceneEditController natively" reasoning
-/// `-painterMaterialGraph` documents above.
-- (NSArray<NSString *> *)appearanceClosureForObject:(NSString *)objectName
+/// (category, name) IDENTITIES to highlight on the node-graph canvas: the
+/// object's bound material first, then the full transitive Painter/
+/// Function/Material closure reachable from it in the SAME published
+/// `PainterMaterialGraph` `-painterMaterialGraph` reads from, in BFS
+/// discovery order -- see `RISEAppearanceClosureEntry`'s own comment on
+/// why a bare name is not enough to match against
+/// `RISEPainterMaterialGraph.nodes`.  Empty (never nil) when the object is
+/// unknown, has no material bound, the resolved material name is
+/// AMBIGUOUS in the current graph (more than one same-category chunk
+/// shares it -- refused rather than guessed, see
+/// `SceneEditController::AppearanceClosureForObject`'s own comment), or the
+/// controller could not get a non-blocking hold of the commit lock right
+/// now (a render owns the scene) -- this is a POLLED query (both platform
+/// canvases call it on every selection-observing pass), so it degrades to
+/// empty on contention rather than blocking the caller's thread behind a
+/// render; a polling caller retries on its next pass.  Called directly on
+/// the C++ controller (`SceneEditController::AppearanceClosureForObject`),
+/// the same "this file already calls SceneEditController natively"
+/// reasoning `-painterMaterialGraph` documents above.
+- (NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName
     NS_SWIFT_NAME(appearanceClosure(forObject:));
 
 /// Phase 4b: per-category panel selection.  Returns the entity

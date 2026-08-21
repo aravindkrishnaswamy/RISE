@@ -2811,6 +2811,38 @@ namespace RISE
 		//! live document.
 		static unsigned int ResolveGraphNodeHandle( const PainterMaterialGraph& g, GraphNodeHandle handle );
 
+		//! Resolve the UNIQUE node index in `g` for `(category, name)`, or
+		//! -1 when zero or MORE THAN ONE node matches -- refuse rather than
+		//! guess, the same posture `SceneReferenceGraph::ResolveChunk` uses
+		//! for the identical hazard (a graph seeded straight from the
+		//! Document, per `BuildPainterMaterialGraph`'s own comment, CAN
+		//! legally contain two same-category chunks sharing a name -- node
+		//! identity here is `GraphNodeSeed::id`, not `(category,name)`).
+		//! `outMatches`, when non-null, receives the raw match count so a
+		//! caller (or a test) can distinguish "not found" (0) from
+		//! "ambiguous, refused" (>1) -- an index of -1 alone cannot tell
+		//! those apart.
+		//!
+		//! PURE and static, same testability posture as
+		//! `BuildPainterMaterialGraph`/`ResolveGraphNodeHandle`: a test can
+		//! hand this a synthetic graph (built via `BuildPainterMaterialGraph`
+		//! from hand-authored seeds, exactly like this class's own PART-2-
+		//! style unit tests do) containing a deliberate same-category
+		//! same-name duplicate, with no controller, no lock, no live
+		//! document, no Job that would need to successfully DERIVE two
+		//! same-named chunks (which a real scene load cannot do -- the live
+		//! manager `AddItem` refuses a duplicate name and fails the whole
+		//! derive; the DOCUMENT-seeded graph this resolves against has no
+		//! such restriction, which is exactly the gap this method closes).
+		//!
+		//! Used by `AppearanceClosureForObject` to resolve the object's
+		//! bound material name into a graph node; exposed on this class's
+		//! public PURE-helper surface (not file-local) so callers/tests
+		//! needing the identical "unique (category,name) or refuse" answer
+		//! do not have to re-derive it.
+		static int ResolveUniqueGraphNodeIndex( const PainterMaterialGraph& g, ChunkCategory category,
+		                                         const String& name, int* outMatches = nullptr );
+
 		// =====================================================================
 		// doc-88 Phase 3 S17 -- connection-legality passthrough
 		// (ConnectionLegality.h/.cpp; docs/gui/NODE_GRAPH_CANVAS.md sect. 6
@@ -3172,32 +3204,74 @@ namespace RISE
 		// instancing-correct by construction -- see its own comment), and the
 		// S11 `PainterMaterialGraph` this class already publishes
 		// (`ReadPainterMaterialGraph`) -- the SAME edges the node-graph canvas
-		// itself draws from, so this query can never disagree with what the
-		// canvas shows.
+		// itself draws from.  "Never disagree with what the canvas shows" only
+		// holds WITHIN one call: the two reads below are two SEPARATE snapshot
+		// acquisitions (the live-manager name resolution, then a possibly-later
+		// `ReadPainterMaterialGraph` refresh), so a concurrent structural edit
+		// landing in the gap between them (a rename, or a duplicate-name chunk
+		// being added/removed) can, in principle, make this call's answer stale
+		// by one edit relative to what the canvas renders a moment later --
+		// review-round P1 fix note: this is an eventual-consistency window, not
+		// a "never" guarantee.
 		// =====================================================================
+
+		//! One entry in an `AppearanceClosureForObject` result: a node
+		//! IDENTITY, not just a display string -- (category, name), the SAME
+		//! two fields `SceneReferenceGraph::ResolveChunk`/`GraphNode` already
+		//! use to address a node, because a bare name is NOT unique here.
+		//! Two DIFFERENT-category chunks (a Painter and a Material) may
+		//! legally share a name; a caller matching by name alone against a
+		//! mixed-category node list (exactly what `PainterMaterialGraph::nodes`
+		//! is) can silently spotlight the wrong node (review-round P1 fix).
+		//! `category` is `RISE::ChunkCategory` cast to int -- the SAME ordinal
+		//! `GraphNode::category`/`RISEGraphNode.category` already use (Painter
+		//! 0, Function 1, Material 2 -- the only three this graph models), so
+		//! a caller matches an entry against an already-fetched
+		//! `PainterMaterialGraph`/`RISEPainterMaterialGraph` node by
+		//! `(category, name)` directly, no cast or remapping needed.
+		struct AppearanceClosureEntry
+		{
+			ChunkCategory category = ChunkCategory::Painter;
+			String        name;
+		};
 
 		//! For `objectName` (an Object-category chunk name -- a
 		//! `standard_object`/`csg_object`, addressed the same way
 		//! `selectionRowName` resolves an instancing pick back to its own
 		//! chunk, NOT a synthesized per-repetition/per-subtree-member name
 		//! like `I[1,0]`/`I.child`, neither of which is ever an addressable
-		//! chunk), returns the chunk NAMES to highlight on the Painter/
-		//! Material node-graph canvas: the object's bound material first
-		//! (index 0), then every node transitively reachable from it in the
-		//! published `PainterMaterialGraph` -- Painter, Function, AND
-		//! Material nodes alike (so a `composite_material`'s `top`/`bottom`
-		//! sub-materials, and their own painter chains, are included, not
-		//! just the primary material's own direct painter references) -- in
-		//! BFS discovery order.
+		//! chunk), returns the chunk (category, name) identities to highlight
+		//! on the Painter/Material node-graph canvas: the object's bound
+		//! material first (index 0), then every node transitively reachable
+		//! from it in the published `PainterMaterialGraph` -- Painter,
+		//! Function, AND Material nodes alike (so a `composite_material`'s
+		//! `top`/`bottom` sub-materials, and their own painter chains, are
+		//! included, not just the primary material's own direct painter
+		//! references) -- in BFS discovery order.
 		//!
 		//! Empty when: `objectName` does not name a live, registered Object
-		//! (unknown name, or a Painter/Material/other-category name passed
-		//! by mistake); the object has no material bound (`material none`/
-		//! unset, or a container node with no `geometry` to bind one to at
-		//! all); or the resolved material name is not present (uniquely) in
-		//! the current graph (a degenerate same-name-different-chunk
-		//! collision -- see `BuildPainterMaterialGraph`'s own node-identity
-		//! comment).
+		//! (unknown name, or a Painter/Material/other-category name passed by
+		//! mistake); the object has no material bound (`material none`/unset,
+		//! or a container node with no `geometry` to bind one to at all); the
+		//! resolved material name does not appear in the current graph at
+		//! all; the resolved material name is AMBIGUOUS in the current graph
+		//! -- more than one `ChunkCategory::Material` node shares it (the CST
+		//! Document tolerates two same-name Material chunks even though the
+		//! live `IMaterialManager` a real derive registers into cannot -- see
+		//! `BuildPainterMaterialGraphSeedsLocked_`'s own "two same-category
+		//! chunks... each gets its OWN node" comment; this method REFUSES
+		//! rather than guess which one `FindObjectMaterialName`'s live answer
+		//! actually meant, matching `SceneReferenceGraph::ResolveChunk`'s own
+		//! established "ambiguous name -> refuse" convention, review-round P1
+		//! fix); or the controller could not get a non-blocking hold of the
+		//! commit lock right now (a render owns the scene, or another editor
+		//! operation is already inside it) -- see this method's own `.cpp`
+		//! comment for the locking discipline, mirrored from
+		//! `ResolveTreeRowName`/`SelectionRowName`'s established
+		//! try-lock-and-degrade-to-empty pattern; a polling caller (both
+		//! platform canvases already poll on every selection-observing pass)
+		//! retries on the next call rather than blocking the UI thread behind
+		//! a render.
 		//!
 		//! `objectName` naming an INSTANCING chunk (a `standard_object` with
 		//! its own `source X` and no `material` of its own) resolves to the
@@ -3208,7 +3282,7 @@ namespace RISE
 		//! (`Cst::DeriveToJob` PASS-2 merges the source's bindings into the
 		//! Job-facing bag at DERIVE time, never into the retained Document;
 		//! see `standard_object`'s own descriptor comment on `source`).
-		std::vector<String> AppearanceClosureForObject( const String& objectName ) const;
+		std::vector<AppearanceClosureEntry> AppearanceClosureForObject( const String& objectName ) const;
 
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`

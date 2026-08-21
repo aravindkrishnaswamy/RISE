@@ -1313,6 +1313,7 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
 {
     if (!m_bridge) {
         m_lastSpotlightCategory = ViewportBridge::Category::None;
+        m_lastSpotlightSelectionName.clear();
         m_lastSpotlightObjectName.clear();
         if (!m_spotlightHandles.isEmpty() || forceReapply) {
             m_spotlightHandles.clear();
@@ -1321,7 +1322,24 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
         return;
     }
 
+    // CHEAP pre-check first (review-round P2 fix). selectionCategory() and
+    // selectionName() are both O(1) field reads; selectionRowName() below
+    // is an O(rows), per-row-heap-allocating tree walk
+    // (SelectionRowName -> ResolveTreeRowName's fold-chain search) -- and
+    // this method runs on EVERY preview frame (performReload's own
+    // per-frame poll cadence), not once per user gesture. selectionRowName()
+    // is a PURE function of (selectionCategory(), selectionName()): if
+    // NEITHER changed since the last time this ran, its answer cannot have
+    // either, so the expensive walk is safe to skip on the overwhelmingly
+    // common steady-state frame (an object sitting selected while nothing
+    // else happens) -- only derive the expensive row name when this cheap
+    // gate says the spotlight path might actually be live.
     const ViewportBridge::Category cat = m_bridge->selectionCategory();
+    const QString cheapName = (cat == ViewportBridge::Category::Object) ? m_bridge->selectionName() : QString();
+    if (!forceReapply && cat == m_lastSpotlightCategory && cheapName == m_lastSpotlightSelectionName) return;
+    m_lastSpotlightCategory = cat;
+    m_lastSpotlightSelectionName = cheapName;
+
     // selectionRowName(), NOT selectionName(): a viewport/outliner pick on
     // a count_u/count_v repeated or subtree-copied instance names a
     // SYNTHESIZED per-repetition/per-member entity (`I[1,0]`/`I.child`)
@@ -1331,17 +1349,29 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
     // appearanceClosureForObject() needs.
     const QString objectName = (cat == ViewportBridge::Category::Object) ? m_bridge->selectionRowName() : QString();
 
-    if (!forceReapply && cat == m_lastSpotlightCategory && objectName == m_lastSpotlightObjectName) return;
-    m_lastSpotlightCategory = cat;
+    // review-round P2 fix: auto-scroll must fire only when the ROW-NAME
+    // identity of the external selection actually CHANGED, computed BEFORE
+    // overwriting the cache below -- NOT on a forceReapply-only pass (a
+    // structural edit/rewire while the SAME object stays selected must not
+    // yank the view out from under an in-progress canvas edit). The
+    // closure/handle set below is still recomputed unconditionally on a
+    // forceReapply, since every GraphNodeItem is brand new and carries no
+    // prior spotlight state.
+    const bool selectionChanged = (objectName != m_lastSpotlightObjectName);
     m_lastSpotlightObjectName = objectName;
 
     QSet<quint64> handles;
     GraphNodeItem* primaryItem = nullptr;
     if (cat == ViewportBridge::Category::Object && !objectName.isEmpty()) {
-        const QStringList closureNames = m_bridge->appearanceClosureForObject(objectName);
-        for (const QString& name : closureNames) {
+        // (category, name) matching, NOT name alone (review-round P1 fix):
+        // a Painter and a Material chunk may legally share a name, so
+        // matching this closure's entries against m_nodes by name only
+        // could silently spotlight the wrong node on a cross-category
+        // collision.
+        const QVector<ViewportBridge::AppearanceClosureEntry> closureEntries = m_bridge->appearanceClosureForObject(objectName);
+        for (const ViewportBridge::AppearanceClosureEntry& entry : closureEntries) {
             for (int i = 0; i < m_nodes.size(); ++i) {
-                if (m_nodes[i].name != name) continue;
+                if (m_nodes[i].category != entry.category || m_nodes[i].name != entry.name) continue;
                 handles.insert(m_nodes[i].handle);
                 // First entry = the object's bound material, per
                 // appearanceClosureForObject's own contract -- the
@@ -1359,7 +1389,7 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
     // fully visible, matching centerIfNeeded's "don't move the view out
     // from under the user" posture on the Mac side without needing any
     // bespoke geometry math here.
-    if (primaryItem && m_view) m_view->ensureVisible(primaryItem);
+    if (selectionChanged && primaryItem && m_view) m_view->ensureVisible(primaryItem);
 }
 
 void NodeGraphCanvas::applySpotlightToItems()
@@ -1382,6 +1412,14 @@ void NodeGraphCanvas::selectNode(const GraphNodeData& node)
         (node.category == 2) ? ViewportBridge::Category::Material : ViewportBridge::Category::Painter;
     m_bridge->setSelection(cat, node.name);
     setSelectedHandle(node.handle, true);
+    // review-round P1 fix: per the spotlight contract (NODE_GRAPH_CANVAS.md
+    // sect. 5's interaction minimums), clicking a canvas node moves the
+    // shared selection to a non-Object category, so any live spotlight must
+    // clear IMMEDIATELY -- not wait for the next per-frame performReload()
+    // poll (which, on Mac, IS immediate via the refreshTrigger bump this
+    // same click already causes; this platform's poll has no such
+    // synchronous companion, so it needs an explicit call here).
+    refreshSpotlight(false);
     emit selectionActivated();
 }
 
@@ -1823,7 +1861,7 @@ qreal NodeGraphCanvas::currentScale() const
 // | 25 | Position persistence: sidecar file via `writeGraphNodeLayoutPosition`/S13 | `NodeGraphCanvas::commitNodeMove`, same bridge call | Direct port; shared C++ core (S13), no platform-specific behavior to diverge on. |
 // | 26 | Category/edge count header ("N nodes, M edges") | `updateHeaderCounts` | Direct port. |
 // | 27 | Node-graph model types (`GraphCanvasNode`/`GraphCanvasPort`) | `GraphNodeData`/`GraphPortData` | Structurally identical MINUS the `position` field's role — see #12; Qt's `GraphNodeData::position` is a "last-known-good" seed/revert value, not the live render position. |
-// | 28 | Object-pick spotlight: viewport/outliner Object selection → gold glow/border on the object's bound material + its full Painter/Function/Material closure, auto-scroll to the material, NEVER calls `setSelection` from the spotlight path | `NodeGraphCanvas::refreshSpotlight`/`applySpotlightToItems`, `GraphNodeItem::setNodeSpotlit`, `ViewportBridge::appearanceClosureForObject` | Direct port of the contract; two mechanism differences, neither a fidelity gap. (a) Mac's `.shadow` glow has no Qt equivalent without a whole-item `QGraphicsEffect`, so `GraphNodeItem::paint` approximates it with two concentric rounded-rect strokes drawn behind the card — same warm-gold (`Theme::gold`) read, different primitive. (b) Mac observes `refreshTrigger`/`sceneEpoch` via SwiftUI `.onChange`; Qt has no such push signal for a plain selection change (confirmed: `SceneEditController::SetSelectionInner_`'s UI-only Object/Material path never bumps `mSceneEpoch`), so `refreshSpotlight` instead runs on EVERY `performReload` call — this widget's existing per-frame `refresh()` poll (see row 24) — with its own cheap (selectionCategory, selectionRowName) early-exit, plus a `forceReapply` flag so a just-rebuilt node set (whose items are all new) always gets the spotlight re-applied even when the selection identity itself did not change. Auto-scroll uses `QGraphicsView::ensureVisible` (built-in, already a no-op when the target is fully visible) rather than porting Mac's by-hand screen↔content inversion. |
+// | 28 | Object-pick spotlight: viewport/outliner Object selection → gold glow/border on the object's bound material + its full Painter/Function/Material closure, auto-scroll to the material ONLY on an actual selection change, NEVER calls `setSelection` from the spotlight path | `NodeGraphCanvas::refreshSpotlight`/`applySpotlightToItems`, `GraphNodeItem::setNodeSpotlit`, `ViewportBridge::appearanceClosureForObject` | **NOT a direct port on first landing — an external review round caught a real gap, now closed; this row describes the FIXED state.** (a) Mac's `.shadow` glow has no Qt equivalent without a whole-item `QGraphicsEffect`, so `GraphNodeItem::paint` approximates it with two concentric rounded-rect strokes drawn behind the card — same warm-gold (`Theme::gold`) read, different primitive; a genuine cosmetic-only deviation. (b) Mac observes `refreshTrigger`/`sceneEpoch` via SwiftUI `.onChange`, and Mac's own `selectNode` bumps `refreshTrigger` SYNCHRONOUSLY on a canvas click, clearing a live spotlight immediately. Qt has no such push signal for a plain selection change (confirmed: `SceneEditController::SetSelectionInner_`'s UI-only Object/Material path never bumps `mSceneEpoch`), and `NodeGraphCanvas::refresh()` is NOT a true per-frame timer poll — it rides `ViewportBridge::imageUpdated` (MainWindow.cpp), which fires on a RENDERED FRAME, not on a bare selection change. The FIRST landing wired ONLY that connection, so a viewport/outliner Object pick with no render in flight (the common case: browsing the scene graph on an already-converged or static preview) never lit the spotlight at all, and a canvas-node click never cleared one immediately either. Fixed two ways: `MainWindow.cpp`'s `OutlinerWidget::selectionActivated` connect now ALSO calls `NodeGraphCanvas::refresh()` (the same explicit-follow pattern that connection already uses for `ViewportProperties::refresh`), and `NodeGraphCanvas::selectNode` now calls `refreshSpotlight(false)` directly, matching Mac's synchronous clear. `refreshSpotlight` itself runs on every `refresh()`/`performReload()` call (whichever of the two paths triggered it) with a two-tier early-exit: a CHEAP `(selectionCategory(), selectionName())` pre-check before ever paying the O(rows) `selectionRowName()` walk, plus a `forceReapply` flag so a just-rebuilt node set (whose items are all new) always gets the spotlight re-applied even when the selection identity itself did not change — but `forceReapply` does NOT by itself trigger a re-scroll; auto-scroll is gated on the RESOLVED row name actually differing from the last one computed, so a structural edit/rewire while the same object stays selected never yanks the view. Auto-scroll uses `QGraphicsView::ensureVisible` (built-in, already a no-op when the target is fully visible) rather than porting Mac's by-hand screen↔content inversion. |
 //
 // ---- Bridge gaps closed in this slice (build/VS2022/RISE-GUI/ViewportBridge.{h,cpp}) ----
 //
@@ -1899,17 +1937,25 @@ qreal NodeGraphCanvas::currentScale() const
 //  [ ] SourceHygieneTest and a clean `make -j8 all` both stay green (the
 //      Qt files are not in the make build by design; this is a
 //      regression check that the library side is untouched).
-//  [ ] Object-pick spotlight (row 28): pick an object in the viewport (or
-//      the outliner) whose material has a multi-stage painter chain;
-//      confirm its bound material AND every node in the painter chain
-//      light up with the gold glow/border, the view auto-scrolls to the
-//      material if it starts offscreen, and the properties panel keeps
+//  [ ] Object-pick spotlight (row 28) -- WHILE NOTHING IS ACTIVELY
+//      RENDERING (the scene has converged / is static, no imageUpdated
+//      frames arriving): pick an object in the OUTLINER whose material has
+//      a multi-stage painter chain; confirm the spotlight lights up
+//      IMMEDIATELY (this is the exact gap the review-round fix closed --
+//      it must NOT require nudging the viewport to force a render frame
+//      first). Confirm its bound material AND every node in the painter
+//      chain light up with the gold glow/border, the view auto-scrolls to
+//      the material if it starts offscreen, and the properties panel keeps
 //      showing the OBJECT the whole time (the spotlight must never steal
 //      selection onto a painter/material node). Pick an instanced copy
 //      (a `standard_object` with `source`, or a `count_u`/`count_v`
 //      repeated instance) and confirm the SAME material/closure lights up
 //      as picking the source directly. Then click a bare canvas node and
-//      confirm the spotlight clears (selection moved to a non-Object
-//      category).
+//      confirm the spotlight clears IMMEDIATELY (not on the next render
+//      frame). Separately: construct a scene where a Painter and a
+//      Material chunk share one name (only the Material is the object's
+//      actual binding) and confirm the spotlight lights up the MATERIAL,
+//      not a same-named Painter -- the (category, name) matching this
+//      review round added.
 //
 // ======================================================================

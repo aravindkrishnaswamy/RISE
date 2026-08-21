@@ -188,17 +188,27 @@ private:
     // ---- object-pick spotlight (viewport/outliner -> canvas) -----------
     /// Re-derive m_spotlightHandles from the CURRENT shared (viewport/
     /// outliner) selection and re-apply it to every live GraphNodeItem.
-    /// Called from performReload() on EVERY call (this widget's own
-    /// per-frame refresh() cadence, see NodeGraphCanvas.h's class-level
-    /// comment) -- independent of performReload's own epoch gate, since a
-    /// plain Object pick does NOT bump ViewportBridge::sceneEpoch() (only
-    /// a structural mutation does -- SceneEditController::SceneEpoch's own
-    /// comment), so this cannot piggyback on that early-return the way the
-    /// structural graph refetch does. Internally cheap-exits when neither
-    /// the selection identity NOR `forceReapply` (a just-rebuilt node set,
-    /// whose items are all new and therefore all un-spotlit until this
-    /// runs) requires redoing the work, so the per-frame cost is one enum
-    /// + one QString compare in the overwhelmingly common case.
+    /// Called from THREE places: (a) performReload() on EVERY call (this
+    /// widget's own per-frame refresh() cadence, see NodeGraphCanvas.h's
+    /// class-level comment) -- independent of performReload's own epoch
+    /// gate, since a plain Object pick does NOT bump
+    /// ViewportBridge::sceneEpoch() (only a structural mutation does --
+    /// SceneEditController::SceneEpoch's own comment), so this cannot
+    /// piggyback on that early-return the way the structural graph refetch
+    /// does; (b) selectNode(), so clicking a canvas node clears a live
+    /// spotlight IMMEDIATELY rather than waiting for the next preview
+    /// frame; (c) MainWindow's own explicit-follow wiring on a VIEWPORT/
+    /// OUTLINER pick (selectionActivated's existing consumer,
+    /// MainWindow.cpp), which is what makes a plain object pick with NO
+    /// render in flight (so no imageUpdated to ride) actually light the
+    /// canvas up at all.
+    ///
+    /// Internally cheap-exits BEFORE the expensive selectionRowName() walk
+    /// using a CHEAP (selectionCategory(), selectionName()) pre-check --
+    /// see the .cpp's own comment for why the two-tier check exists and why
+    /// `forceReapply` (a just-rebuilt node set, whose items are all new and
+    /// therefore all un-spotlit until this runs) bypasses only the cheap
+    /// gate, never the auto-scroll-only-on-actual-change rule.
     ///
     /// CRITICAL (per NODE_GRAPH_CANVAS.md's own interaction contract):
     /// never calls ViewportBridge::setSelection. The shared selection
@@ -320,10 +330,17 @@ private:
 
     // ---- object-pick spotlight state ------------------------------------
     QSet<quint64> m_spotlightHandles;
-    /// Last selection identity `refreshSpotlight` actually acted on --
-    /// the cheap early-exit key. `Category::None` + empty name is the
-    /// initial (never-run) state, matching "nothing spotlit yet."
+    /// Last selection CATEGORY `refreshSpotlight` actually acted on, plus
+    /// the CHEAP `selectionName()` value paired with it -- the cheap
+    /// early-exit key checked BEFORE the expensive `selectionRowName()`
+    /// walk (see `refreshSpotlight`'s own comment). `Category::None` +
+    /// empty name is the initial (never-run) state.
     ViewportBridge::Category m_lastSpotlightCategory = ViewportBridge::Category::None;
+    QString                  m_lastSpotlightSelectionName;
+    /// The RESOLVED row name (`selectionRowName()`) the spotlight was last
+    /// computed for -- what actually gates the auto-scroll (a `forceReapply`
+    /// pass with the SAME row name must re-apply spotlight state to the new
+    /// items without re-scrolling; see `refreshSpotlight`'s own comment).
     QString                  m_lastSpotlightObjectName;
 
     bool          m_wireDragActive = false;

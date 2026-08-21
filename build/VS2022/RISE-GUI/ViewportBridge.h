@@ -231,6 +231,25 @@ struct PainterGraph {
     quint64                   generation = 0;
 };
 
+/// One entry of an `appearanceClosureForObject()` result -- a node
+/// IDENTITY, not just a display string.  Mirrors
+/// `SceneEditController::AppearanceClosureEntry` field-for-field: a bare
+/// name is NOT enough to address a node in `PainterGraph::nodes` (a
+/// Painter and a Material chunk may legally share a name), so a caller
+/// matching a returned entry against an already-fetched node list MUST
+/// compare BOTH `category` and `name`, never `name` alone (review-round P1
+/// fix -- an earlier draft of this bridge method returned a bare
+/// `QStringList` and the Qt canvas matched by name only, which could
+/// silently spotlight the wrong node on a cross-category name collision).
+struct AppearanceClosureEntry {
+    /// `RISE::ChunkCategory` cast to int -- the SAME ordinal
+    /// `PainterGraphNode::category` already uses (Painter 0, Function 1,
+    /// Material 2), so this compares directly against a node's own
+    /// `category` field with no remapping.
+    int     category = -1;
+    QString name;
+};
+
 class ViewportBridge : public QObject
 {
     Q_OBJECT
@@ -1187,16 +1206,27 @@ public:
     /// a viewport/outliner pick, since a synthesized per-repetition/
     /// subtree-member name like `I[1,0]`/`I.child` is never itself an
     /// addressable chunk -- see `selectionRowName()`'s own comment),
-    /// returns the chunk NAMES to highlight on the node-graph canvas: the
-    /// object's bound material first, then the full transitive Painter/
-    /// Function/Material closure reachable from it in the SAME published
-    /// PainterGraph `painterMaterialGraph()` reads from, in BFS discovery
-    /// order.  Empty when the object is unknown, has no material bound, or
-    /// a null controller.  Called directly on the C++ controller
+    /// returns the chunk (category, name) IDENTITIES to highlight on the
+    /// node-graph canvas: the object's bound material first, then the full
+    /// transitive Painter/Function/Material closure reachable from it in
+    /// the SAME published PainterGraph `painterMaterialGraph()` reads from,
+    /// in BFS discovery order -- see `AppearanceClosureEntry`'s own comment
+    /// on why a bare name is not enough to match against
+    /// `PainterGraph::nodes`.  Empty when the object is unknown, has no
+    /// material bound, the resolved material name is AMBIGUOUS in the
+    /// current graph (more than one same-category chunk shares it --
+    /// refused rather than guessed, see
+    /// SceneEditController::AppearanceClosureForObject's own comment), or
+    /// the controller could not get a non-blocking hold of the commit lock
+    /// right now (a render owns the scene) -- this is a POLLED query (the
+    /// Qt canvas calls it from every performReload() pass), so it degrades
+    /// to empty on contention rather than blocking the caller's thread
+    /// behind a render; a polling caller retries on its next pass.  Called
+    /// directly on the C++ controller
     /// (SceneEditController::AppearanceClosureForObject), the same "this
     /// file already calls SceneEditController natively" reasoning
     /// painterMaterialGraph() documents above.
-    QStringList appearanceClosureForObject(const QString& objectName) const;
+    QVector<AppearanceClosureEntry> appearanceClosureForObject(const QString& objectName) const;
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →

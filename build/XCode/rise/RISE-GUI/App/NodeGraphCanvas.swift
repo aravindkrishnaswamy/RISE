@@ -391,6 +391,12 @@ struct NodeGraphCanvas: View {
     /// canvas selecting anything itself: see `refreshSpotlight`'s own
     /// comment for why this must NEVER call `bridge.setSelection`.
     @State private var spotlightHandles: Set<UInt64> = []
+    /// The object name (`selectionRowName`) the spotlight was last computed
+    /// for -- `nil` when nothing is currently spotlit. Lets
+    /// `refreshSpotlight` tell "the same object is still selected, just
+    /// recomputing the closure" apart from "the selection actually moved,"
+    /// which is what gates the auto-scroll (see that function's comment).
+    @State private var lastSpotlightObjectName: String? = nil
 
     // -------- S21: drag-to-reposition --------
     /// The single node currently mid-drag, at its LIVE (uncommitted)
@@ -724,13 +730,24 @@ struct NodeGraphCanvas: View {
     /// structural graph refetch does; it must always re-read the current
     /// selection and act on it.
     ///
+    /// - Parameter freshNodes: when `performReload` just rebuilt the node
+    ///   list, pass that LOCAL array directly rather than letting this read
+    ///   back through `snapshot` (`@State`) -- review-round P2 fix: don't
+    ///   make the one caller with a fresher answer already in hand take a
+    ///   dependency on `@State`'s own write-then-read timing at all.
+    ///   `nil` (the two independent call sites, `.onAppear`/
+    ///   `.onChange(of: refreshTrigger)`) falls back to the current
+    ///   `snapshot.nodes`.
+    ///
     /// CRITICAL (per NODE_GRAPH_CANVAS.md's own interaction contract):
     /// never calls `bridge.setSelection`. The shared selection stays on
     /// the object the properties panel is inspecting; this canvas only
     /// LOOKS at it, it never claims it.
-    private func refreshSpotlight() {
+    private func refreshSpotlight(freshNodes: [GraphCanvasNode]? = nil) {
+        let nodes = freshNodes ?? snapshot.nodes
         guard let bridge, bridge.selectionCategory == .object else {
             spotlightHandles = []
+            lastSpotlightObjectName = nil
             return
         }
         // `selectionRowName`, NOT `selectionName`: a viewport/outliner pick
@@ -744,22 +761,37 @@ struct NodeGraphCanvas: View {
         let objectName = bridge.selectionRowName
         guard !objectName.isEmpty else {
             spotlightHandles = []
+            lastSpotlightObjectName = nil
             return
         }
-        let closureNames = bridge.appearanceClosure(forObject: objectName)
-        guard !closureNames.isEmpty else {
+        // review-round P2 fix: auto-scroll must only fire when the OBJECT
+        // selection itself changed since the last time this ran, not on
+        // every reload -- otherwise a drag/edit while an object stays
+        // selected would re-trigger `scrollToNodeIfNeeded` and yank the
+        // view out from under an in-progress canvas edit. The closure set
+        // itself is still recomputed unconditionally below (a rewire can
+        // add/remove a member while the SAME object stays selected).
+        let selectionChanged = (objectName != lastSpotlightObjectName)
+        lastSpotlightObjectName = objectName
+
+        // (category, name) matching, NOT name alone (review-round P1 fix):
+        // a Painter and a Material chunk may legally share a name, so
+        // matching this closure's entries against `nodes` by name only can
+        // silently spotlight the wrong node on a cross-category collision.
+        let closureEntries = bridge.appearanceClosure(forObject: objectName)
+        guard !closureEntries.isEmpty else {
             spotlightHandles = []
             return
         }
         var handles: Set<UInt64> = []
         var primaryNode: GraphCanvasNode? = nil
-        for name in closureNames {
-            guard let node = snapshot.nodes.first(where: { $0.name == name }) else { continue }
+        for entry in closureEntries {
+            guard let node = nodes.first(where: { $0.category == entry.category && $0.name == entry.name }) else { continue }
             handles.insert(node.handle)
             if primaryNode == nil { primaryNode = node }   // first entry = the object's material, per the bridge's own contract
         }
         spotlightHandles = handles
-        if let primaryNode { scrollToNodeIfNeeded(primaryNode) }
+        if selectionChanged, let primaryNode { scrollToNodeIfNeeded(primaryNode) }
     }
 
     /// Auto-scroll (never re-zoom) so `node`'s box is visible within the
@@ -837,8 +869,9 @@ struct NodeGraphCanvas: View {
         // the spotlight against the fresh snapshot rather than pruning the
         // stale handle set in place, since the closure itself may have
         // grown or shrunk (a rewire adding/removing a painter reference),
-        // not just lost a node outright.
-        refreshSpotlight()
+        // not just lost a node outright. Pass `nodes` directly (see
+        // `refreshSpotlight`'s own `freshNodes` parameter comment).
+        refreshSpotlight(freshNodes: nodes)
     }
 
     // MARK: - S21: drag-to-reposition
