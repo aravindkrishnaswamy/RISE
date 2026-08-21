@@ -308,6 +308,10 @@ namespace RISE
 							remainingCoordinate);
 				}
 			}
+			if( AxisIsPeriodic(request,sweepAxis) )
+				for( std::size_t line=0u;line<lines;++line )
+					lineRequest.faceVelocityMPerS[line*(length+1u)+length]=
+						lineRequest.faceVelocityMPerS[line*(length+1u)];
 			if( lineRequest.lineSpecificAmbientValues ) for( std::size_t line=0u;line<lines;++line ) {
 				lineRequest.lowerAmbientValues[line]=request.ambientDensityKGPerM3;
 				lineRequest.upperAmbientValues[line]=request.ambientDensityKGPerM3;
@@ -368,21 +372,26 @@ namespace RISE
 			return true;
 		}
 
+		bool SamePeriodicFaceValue( const float first, const float second )
+		{
+			return first==second;
+		}
+
 		bool PeriodicFaceSeamEqual( const FireProductionProjectionShape& shape,
 			const std::vector<float>& values, unsigned int axis )
 		{
 			if( axis==0u ) for( std::size_t z=0u;z<shape.nz;++z )
 				for( std::size_t y=0u;y<shape.ny;++y )
-					if( values[FaceIndex(shape,axis,0u,y,z)]!=
-						values[FaceIndex(shape,axis,shape.nx,y,z)] ) return false;
+					if( !SamePeriodicFaceValue(values[FaceIndex(shape,axis,0u,y,z)],
+						values[FaceIndex(shape,axis,shape.nx,y,z)]) ) return false;
 			if( axis==1u ) for( std::size_t z=0u;z<shape.nz;++z )
 				for( std::size_t x=0u;x<shape.nx;++x )
-					if( values[FaceIndex(shape,axis,x,0u,z)]!=
-						values[FaceIndex(shape,axis,x,shape.ny,z)] ) return false;
+					if( !SamePeriodicFaceValue(values[FaceIndex(shape,axis,x,0u,z)],
+						values[FaceIndex(shape,axis,x,shape.ny,z)]) ) return false;
 			if( axis==2u ) for( std::size_t y=0u;y<shape.ny;++y )
 				for( std::size_t x=0u;x<shape.nx;++x )
-					if( values[FaceIndex(shape,axis,x,y,0u)]!=
-						values[FaceIndex(shape,axis,x,y,shape.nz)] ) return false;
+					if( !SamePeriodicFaceValue(values[FaceIndex(shape,axis,x,y,0u)],
+						values[FaceIndex(shape,axis,x,y,shape.nz)]) ) return false;
 			return true;
 		}
 

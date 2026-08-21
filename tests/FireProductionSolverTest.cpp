@@ -873,6 +873,31 @@ int main()
 	const FireSimulationGasOpacityRecord& opacity=
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	std::string error;
+	{
+		const float width=0x1p-10f;
+		const float farPositive=FireProductionContinuousSharedLimiterAlpha(
+			0.75f,0.25f,1.0f,0.0f,0.25f);
+		const float farNegative=FireProductionContinuousSharedLimiterAlpha(
+			0.75f,0.0f,-1.0f,0.0f,0.0f);
+		Check(SameFloatBytes(farPositive,0.25f)&&
+			SameFloatBytes(farNegative,0.75f),
+			"r124 limiter is byte-identical to the legacy cap outside the derived transition width");
+		const float atNegativeWidth=FireProductionContinuousSharedLimiterAlpha(
+			1.0f,0.0f,-width,1.0f,1.0f);
+		const float atNegativeHalf=FireProductionContinuousSharedLimiterAlpha(
+			1.0f,0.0f,-0.5f*width,1.0f,1.0f);
+		const float atZero=FireProductionContinuousSharedLimiterAlpha(
+			1.0f,0.0f,0.0f,1.0f,1.0f);
+		const float atPositiveHalf=FireProductionContinuousSharedLimiterAlpha(
+			1.0f,0.0f,0.5f*width,1.0f,1.0f);
+		const float atPositiveWidth=FireProductionContinuousSharedLimiterAlpha(
+			1.0f,0.0f,width,1.0f,1.0f);
+		Check(SameFloatBytes(atNegativeWidth,1.0f)&&
+			SameFloatBytes(atNegativeHalf,0.5f)&&SameFloatBytes(atZero,0.0f)&&
+			SameFloatBytes(atPositiveHalf,0.0f)&&
+			SameFloatBytes(atPositiveWidth,0.0f),
+			"r124 zero-headroom alpha ramp is continuous, monotone, and exactly inactive at the negative edge");
+	}
 	FireProductionTablePackage package,repeated;
 	Check(BuildFireProductionTablePackage(methane,opacity,package,&error),
 		"record-derived production table package compiles");

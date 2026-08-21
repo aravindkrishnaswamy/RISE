@@ -162,6 +162,13 @@ inline void deviation_range(float dl,float dr,thread float& mn,thread float& mx)
  mn=min(dl,dr);mx=max(dl,dr);float a=3.0f*(dl+dr);float b=-4.0f*dl-2.0f*dr;
  if(a!=0.0f){float s=-b/(2.0f*a);if(s>0.0f&&s<1.0f){float v=(a*s+b)*s+dl;mn=min(mn,v);mx=max(mx,v);}}
 }
+inline float continuous_shared_alpha(float alpha,float headroom,float d,float center,float envelope){
+ float scale=max(0x1p-126f,max(abs(center),max(abs(envelope),abs(d))));
+ float width=0x1p-10f*scale;
+ float numerator=headroom+max(0.0f,-d);
+ float denominator=max(d,width);
+ return min(alpha,min(1.0f,numerator/denominator));
+}
 kernel void reconstruct(device const float* q [[buffer(0)]],device const float* u [[buffer(1)]],
  device const float* lowerAmbient [[buffer(2)]],device const float* upperAmbient [[buffer(3)]],
  device float* left [[buffer(4)]],device float* right [[buffer(5)]],
@@ -174,8 +181,8 @@ kernel void reconstruct(device const float* q [[buffer(0)]],device const float* 
   float qm=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,int(cell)-1);
   float qp=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,int(cell)+1);
   float mn=min(center,min(qm,qp)),mx=max(center,max(qm,qp));
-  if(mxDev>0.0f)alpha=min(alpha,(mx-center)/mxDev);
-  if(mnDev<0.0f)alpha=min(alpha,(center-mn)/(-mnDev));
+  alpha=continuous_shared_alpha(alpha,mx-center,mxDev,center,mx);
+  alpha=continuous_shared_alpha(alpha,center-mn,-mnDev,center,mn);
  }
  alpha=clamp(alpha,0.0f,1.0f);alphaOut[gid]=alpha;
  for(uint c=0;c<p.comps;++c){uint index=value_index(p,c,l,cell);float center=q[index];

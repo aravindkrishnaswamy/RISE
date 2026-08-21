@@ -72,6 +72,11 @@ namespace RISEFireProductionFP64
 		const FireProductionRemapRequest& request,
 		std::string* error=0 );
 
+	//! r124 continuous common-alpha cap. Exposed for independent contract gates.
+	double FireProductionContinuousSharedLimiterAlpha(
+		double alpha, double headroom, double signedConsumption,
+		double center, double envelope ) noexcept;
+
 	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
 	bool RemapFireProductionCPU(
 		const FireProductionRemapRequest& request,

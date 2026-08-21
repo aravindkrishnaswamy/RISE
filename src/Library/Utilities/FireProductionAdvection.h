@@ -70,6 +70,11 @@ namespace RISE
 		const FireProductionRemapRequest& request,
 		std::string* error=0 );
 
+	//! r124 continuous common-alpha cap. Exposed for independent contract gates.
+	float FireProductionContinuousSharedLimiterAlpha(
+		float alpha, float headroom, float signedConsumption,
+		float center, float envelope ) noexcept;
+
 	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
 	bool RemapFireProductionCPU(
 		const FireProductionRemapRequest& request,

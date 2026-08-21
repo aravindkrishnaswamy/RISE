@@ -138,6 +138,18 @@ namespace RISE
 			}
 		}
 
+		float ContinuousSharedLimiterAlpha( const float alpha, const float headroom,
+			const float signedConsumption, const float center, const float envelope )
+		{
+			const float scale=std::max(0x1p-126f,std::max(std::fabs(center),
+				std::max(std::fabs(envelope),std::fabs(signedConsumption))));
+			const float width=0x1p-10f*scale;
+			const float numerator=headroom+std::max(0.0f,-signedConsumption);
+			const float denominator=std::max(signedConsumption,width);
+			const float cap=std::min(1.0f,numerator/denominator);
+			return std::min(alpha,cap);
+		}
+
 		float CellIntervalIntegral( float center, float left, float right,
 			float beginning, float end )
 		{
@@ -339,6 +351,14 @@ namespace RISE
 		bytes=total;return true;
 	}
 
+	float FireProductionContinuousSharedLimiterAlpha( const float alpha,
+		const float headroom, const float signedConsumption, const float center,
+		const float envelope ) noexcept
+	{
+		return ContinuousSharedLimiterAlpha(alpha,headroom,signedConsumption,
+			center,envelope);
+	}
+
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,
 		std::string* error )
 	{
@@ -435,10 +455,10 @@ namespace RISE
 				const float envelopeMaximum=std::max(center,std::max(
 					Sample(request,component,line,static_cast<long>(cell)-1),
 					Sample(request,component,line,static_cast<long>(cell)+1)));
-				if( maximumDeviation>0.0f ) alpha=std::min(alpha,
-					(envelopeMaximum-center)/maximumDeviation);
-				if( minimumDeviation<0.0f ) alpha=std::min(alpha,
-					(center-envelopeMinimum)/(-minimumDeviation));
+				alpha=ContinuousSharedLimiterAlpha(alpha,envelopeMaximum-center,
+					maximumDeviation,center,envelopeMaximum);
+				alpha=ContinuousSharedLimiterAlpha(alpha,center-envelopeMinimum,
+					-minimumDeviation,center,envelopeMinimum);
 			}
 			alpha=std::max(0.0f,std::min(1.0f,alpha));
 			result.sharedLimiterAlpha[line*request.lineLength+cell]=alpha;

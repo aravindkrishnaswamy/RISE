@@ -140,6 +140,18 @@ namespace RISEFireProductionFP64
 			}
 		}
 
+		double ContinuousSharedLimiterAlpha( const double alpha, const double headroom,
+			const double signedConsumption, const double center, const double envelope )
+		{
+			const double scale=std::max(0x1p-126,std::max(std::fabs(center),
+				std::max(std::fabs(envelope),std::fabs(signedConsumption))));
+			const double width=0x1p-10*scale;
+			const double numerator=headroom+std::max(0.0,-signedConsumption);
+			const double denominator=std::max(signedConsumption,width);
+			const double cap=std::min(1.0,numerator/denominator);
+			return std::min(alpha,cap);
+		}
+
 		double CellIntervalIntegral( double center, double left, double right,
 			double beginning, double end )
 		{
@@ -341,6 +353,14 @@ namespace RISEFireProductionFP64
 		bytes=total;return true;
 	}
 
+	double FireProductionContinuousSharedLimiterAlpha( const double alpha,
+		const double headroom, const double signedConsumption, const double center,
+		const double envelope ) noexcept
+	{
+		return ContinuousSharedLimiterAlpha(alpha,headroom,signedConsumption,
+			center,envelope);
+	}
+
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,
 		std::string* error )
 	{
@@ -437,10 +457,10 @@ namespace RISEFireProductionFP64
 				const double envelopeMaximum=std::max(center,std::max(
 					Sample(request,component,line,static_cast<long>(cell)-1),
 					Sample(request,component,line,static_cast<long>(cell)+1)));
-				if( maximumDeviation>0.0 ) alpha=std::min(alpha,
-					(envelopeMaximum-center)/maximumDeviation);
-				if( minimumDeviation<0.0 ) alpha=std::min(alpha,
-					(center-envelopeMinimum)/(-minimumDeviation));
+				alpha=ContinuousSharedLimiterAlpha(alpha,envelopeMaximum-center,
+					maximumDeviation,center,envelopeMaximum);
+				alpha=ContinuousSharedLimiterAlpha(alpha,center-envelopeMinimum,
+					-minimumDeviation,center,envelopeMinimum);
 			}
 			alpha=std::max(0.0,std::min(1.0,alpha));
 			result.sharedLimiterAlpha[line*request.lineLength+cell]=alpha;
