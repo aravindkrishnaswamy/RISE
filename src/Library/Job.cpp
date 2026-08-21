@@ -3327,7 +3327,7 @@ static IScalarPainter* ResolveOrDiagnoseScalar(
 		IScalarPainter* named = smgr->GetItem( value );
 		if( named && named->HasPerChannelVariation() ) {
 			GlobalLog()->PrintEx( eLog_Error,
-				"%s `%s`: parameter `%s` is bound to per-channel scalar_painter `%s`, but this slot reads a single scalar — use a wavelength-uniform painter (`value` or `file` / `sellmeier` / etc.) instead.",
+				kScalarBoundToPerChannelFmt,
 				chunkKind, chunkName, paramName, value );
 			return nullptr;
 		}
@@ -3336,7 +3336,7 @@ static IScalarPainter* ResolveOrDiagnoseScalar(
 	IPainter* legacy = pmgr ? pmgr->GetItem( value ) : nullptr;
 	if( legacy ) {
 		GlobalLog()->PrintEx( eLog_Error,
-			"%s `%s`: parameter `%s` is bound to `IPainter` chunk `%s`; this slot now requires a `scalar_painter` (physical scalar, no JH spectral uplift).  See docs/ISCALARPAINTER_REFACTOR.md.",
+			kScalarBoundToIPainterFmt,
 			chunkKind, chunkName, paramName, value );
 	} else if( requireSingle ) {
 		// Inline-triple-in-single-slot path: scrub the value to see
@@ -3356,12 +3356,12 @@ static IScalarPainter* ResolveOrDiagnoseScalar(
 				chunkKind, chunkName, paramName, value );
 		} else {
 			GlobalLog()->PrintEx( eLog_Error,
-				"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline numeric literal — see docs/ISCALARPAINTER_REFACTOR.md",
+				kScalarUnknownFmt,
 				chunkKind, chunkName, paramName, value );
 		}
 	} else {
 		GlobalLog()->PrintEx( eLog_Error,
-			"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline numeric literal — see docs/ISCALARPAINTER_REFACTOR.md",
+			kScalarUnknownFmt,
 			chunkKind, chunkName, paramName, value );
 	}
 	return nullptr;

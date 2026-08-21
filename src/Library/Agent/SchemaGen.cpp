@@ -72,6 +72,25 @@ namespace RISE
 				}
 			}
 
+			//! A stable lowercase name for a ParameterSemantics::pipe value
+			//! (S17, ChunkDescriptor.h).  Own small vocabulary, deliberately
+			//! NOT reusing CategoryName below -- pipe is a finer split than
+			//! ChunkCategory (`Painter` alone splits into `color` and `scalar`).
+			const char* PipeName( ParameterPipe p )
+			{
+				switch( p ) {
+					case ParameterPipe::Unspecified: return "unspecified";
+					case ParameterPipe::Color:       return "color";
+					case ParameterPipe::Scalar:      return "scalar";
+					case ParameterPipe::Material:    return "material";
+					case ParameterPipe::Function1D:  return "function1d";
+					case ParameterPipe::Function2D:  return "function2d";
+					case ParameterPipe::Geometry:    return "geometry";
+					case ParameterPipe::Other:       return "other";
+				}
+				return "other";
+			}
+
 			//! A stable lowercase name for a ChunkCategory (for a Reference
 			//! param's `references` array).  Mirrors the descriptor category
 			//! namespace the design keys references on (§2.5).
@@ -133,6 +152,32 @@ namespace RISE
 						AppendJsonString( out, CategoryName( p.referenceCategories[i] ) );
 					}
 					out += ']';
+				}
+
+				// S17, additive: which manager/pipe a Reference-kind param's value
+				// actually resolves against (ParameterSemantics, ChunkDescriptor.h).
+				// Emitted ONLY when audited (pipe != Unspecified) -- most chunk
+				// families outside this slice's Painter/Material scope have no
+				// semantics populated yet, and an unaudited "unspecified" pipe on
+				// the wire would read as a claim rather than an honest "don't know".
+				if( p.semantics.pipe != ParameterPipe::Unspecified ) {
+					out += ",\"pipe\":";
+					AppendJsonString( out, PipeName( p.semantics.pipe ) );
+					if( p.semantics.requireSingle ) {
+						out += ",\"pipeRequireSingle\":true";
+					}
+					if( !p.semantics.keywordAllowlist.empty() ) {
+						out += ",\"pipeKeywordAllowlist\":[";
+						for( size_t i = 0; i < p.semantics.keywordAllowlist.size(); ++i ) {
+							if( i ) out += ',';
+							AppendJsonString( out, p.semantics.keywordAllowlist[i] );
+						}
+						out += ']';
+					}
+					if( !p.semantics.note.empty() ) {
+						out += ",\"pipeNote\":";
+						AppendJsonString( out, p.semantics.note );
+					}
 				}
 
 				out += ",\"required\":";

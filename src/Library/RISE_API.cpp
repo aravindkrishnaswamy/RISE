@@ -9916,6 +9916,40 @@ namespace RISE
 		return ok;
 	}
 
+	// doc-88 Phase 3 S17 -- connection-legality passthrough. See RISE_API.h.
+	bool RISE_API_SceneEditController_CheckConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* paramName,
+		int candidateCategory, const char* candidateName,
+		char* outDiagBuf, unsigned int outDiagBufLen )
+	{
+		if( outDiagBuf && outDiagBufLen > 0 ) outDiagBuf[0] = '\0';
+		if( !p || !targetName || !paramName || !candidateName ) return false;
+		const ConnectionVerdict v = p->CheckConnection(
+			static_cast<ChunkCategory>( targetCategory ), String( targetName ),
+			String( paramName ),
+			static_cast<ChunkCategory>( candidateCategory ), String( candidateName ) );
+		if( !v.legal && outDiagBuf && outDiagBufLen > 0 && !v.diagnostic.empty() ) {
+			const unsigned int n =
+				( v.diagnostic.size() + 1 < outDiagBufLen ) ? (unsigned int)v.diagnostic.size() : ( outDiagBufLen - 1 );
+			std::memcpy( outDiagBuf, v.diagnostic.data(), n );
+			outDiagBuf[n] = '\0';
+		}
+		return v.legal;
+	}
+
+	bool RISE_API_SceneEditController_WouldCycle(
+		SceneEditController* p,
+		int fromCategory, const char* fromName,
+		int toCategory, const char* toName )
+	{
+		if( !p || !fromName || !toName ) return false;
+		return p->WouldCycle(
+			static_cast<ChunkCategory>( fromCategory ), String( fromName ),
+			static_cast<ChunkCategory>( toCategory ), String( toName ) );
+	}
+
 	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
 	{
 		if( !p ) return 0;

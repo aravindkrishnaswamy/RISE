@@ -459,6 +459,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/PainterPreview.cpp					\
 	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp					\
 	$(PATHLIBRARY)SceneEditor/ReferenceGraph.cpp					\
+	$(PATHLIBRARY)SceneEditor/ConnectionLegality.cpp				\
 	$(PATHLIBRARY)SceneEditor/GraphLayout.cpp						\
 	$(PATHLIBRARY)SceneEditor/GraphLayoutSidecar.cpp
 

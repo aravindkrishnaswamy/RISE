@@ -37,6 +37,40 @@
 
 namespace RISE
 {
+	// ---- shared parser diagnostic strings --------------------------------
+	//
+	// These `printf`-style format strings are the SOLE definition of a
+	// handful of diagnostics that two or three independent .cpp files need
+	// to either emit (the real parser) or quote verbatim (a validator that
+	// mirrors the parser's behaviour without re-running it).  Living here
+	// keeps every consumer byte-identical by construction -- no consumer
+	// may hold its own copy of the literal text.
+	//
+	//   - kUndeclaredParameterFmt : ChunkParserRegistry.cpp's
+	//     DispatchChunkParameters, on an unrecognized parameter name.
+	//   - kScalarBoundToPerChannelFmt / kScalarBoundToIPainterFmt /
+	//     kScalarUnknownFmt : Job.cpp's ResolveOrDiagnoseScalar, the
+	//     three-way Scalar-pipe failure diagnostic (branches a/b/c).
+	//
+	// Consumed verbatim (not copied) by
+	// SceneEditor/ConnectionLegality.cpp, which has no other way to stay
+	// in lockstep with the real parser's wording -- see that file's
+	// header comment for why a validator quoting the parser's own
+	// diagnostics, rather than re-deriving them, is load-bearing.
+	// `inline constexpr` (C++17) gives every TU the same address-stable
+	// definition with no companion .cpp and no ODR risk.
+	inline constexpr const char* const kUndeclaredParameterFmt =
+		"ChunkParser:: Failed to parse parameter name `%s` (not declared in `%s` descriptor)";
+	inline constexpr const char* const kScalarBoundToPerChannelFmt =
+		"%s `%s`: parameter `%s` is bound to per-channel scalar_painter `%s`, but this slot reads "
+		"a single scalar \xE2\x80\x94 use a wavelength-uniform painter (`value` or `file` / `sellmeier` / etc.) instead.";
+	inline constexpr const char* const kScalarBoundToIPainterFmt =
+		"%s `%s`: parameter `%s` is bound to `IPainter` chunk `%s`; this slot now requires a "
+		"`scalar_painter` (physical scalar, no JH spectral uplift).  See docs/ISCALARPAINTER_REFACTOR.md.";
+	inline constexpr const char* const kScalarUnknownFmt =
+		"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline "
+		"numeric literal \xE2\x80\x94 see docs/ISCALARPAINTER_REFACTOR.md";
+
 	//
 	// to_hint() — formats a typed default value into the string form
 	// used by ParameterDescriptor::defaultValueHint.  Centralised so
@@ -119,6 +153,96 @@ namespace RISE
 		Filename,     // path, resolved via RISE_MEDIA_PATH
 		Enum,         // fixed set — see ParameterDescriptor::enumValues
 		Reference     // name of another chunk — see ParameterDescriptor::referenceCategory
+	};
+
+	// ParameterSemantics.pipe -- S17 (docs/gui/NODE_GRAPH_CANVAS.md sect.
+	// 6; docs/gui/MATERIAL_EDITOR.md sect. 6.4; docs/GUI_ROADMAP.md:361).
+	// A Reference-kind parameter's `referenceCategories` says which
+	// CHUNK CATEGORIES may bind (e.g. {Painter} for `reflectance`) but
+	// several of those categories are internally split across TWO OR
+	// MORE runtime managers a chunk's own keyword doesn't disclose --
+	// `ChunkCategory::Painter` alone covers 41 distinct keywords, of
+	// which exactly one (`scalar_painter`) resolves through
+	// IScalarPainterManager and every other one resolves through
+	// IPainterManager.  `pipe` is the DOWNSTREAM manager a parameter's
+	// value is actually resolved against in Job.cpp -- audited per
+	// parameter against the real `Add*` resolution code (never guessed
+	// from the parameter's name; see ChunkParserRegistry.cpp's
+	// `p.semantics.pipe = ...` assignments and their audit comments).
+	//
+	// Function2D is its own case worth flagging up front: MOST colour
+	// `IPainter` chunks dual-register into IFunction2DManager too (see
+	// Job.cpp's `RegisterPainterDual` -- any painter usable in a
+	// `function2d`-typed slot) with exactly one carve-out
+	// (`expression_painter`, single-registered -- see its Job.cpp
+	// comment "Deliberately SINGLE-manager registration").  A
+	// Function2D-piped slot's legal candidate set is therefore NOT
+	// "chunks whose own category is Function" -- ConnectionLegality
+	// encodes the real rule (Function-category chunks, PLUS every
+	// Painter-category chunk except `expression_painter` and
+	// `scalar_painter`), not this enum alone.
+	enum class ParameterPipe
+	{
+		Unspecified,  // not yet audited for this parameter (default) -- non-Reference kinds, and any chunk family outside this slice's Painter/Material audit scope, stay Unspecified rather than guessed
+		Color,        // IPainterManager -- the colour/reflectance/emission pipe; spectral rasterizers JH-uplift an inline numeric value read through this pipe (docs/ISCALARPAINTER_REFACTOR.md)
+		Scalar,       // IScalarPainterManager -- the physical-scalar pipe (IOR, roughness, scattering, absorption, phase asymmetry, ...); NEVER JH-uplifted
+		Material,     // IMaterialManager
+		Function1D,   // IFunction1DManager -- today only `piecewise_linear_function` registers here
+		Function2D,   // IFunction2DManager -- see the dual-registration note above; ConnectionLegality, not this enum, carries the exact legal-candidate rule
+		Geometry,     // IGeometryManager / IObjectManager
+		Other         // resolves against something else again; `note` explains
+	};
+
+	//! Companion constraint fields for a `ParameterPipe`-bearing Reference
+	//! parameter.  Deliberately a STRUCT with separate fields, not a
+	//! richer `pipe` enum -- MATERIAL_EDITOR.md sect. 6.4's adopted shape
+	//! (the review's correction: "a single `pipe` enum is too weak on its
+	//! own"). This slice (S17) populates `pipe` + `requireSingle` +
+	//! `keywordAllowlist` + `note`; the sibling fields MATERIAL_EDITOR.md
+	//! sect. 6.4 lists for a LATER slice (cardinality beyond
+	//! requireSingle, units, colour space, spatial-vs-spectral) are not
+	//! added here -- this is the "minimal, additive" first cut the S17
+	//! brief calls for, not the full structure.
+	struct ParameterSemantics
+	{
+		ParameterPipe pipe = ParameterPipe::Unspecified;
+
+		//! Scalar pipe only: mirrors `ResolveOrDiagnoseScalar`'s own
+		//! `requireSingle` argument for THIS parameter -- true rejects a
+		//! per-channel/triple scalar_painter binding (the slot reads
+		//! `.v[0]` only and would silently drop G/B).  Meaningless
+		//! (false) outside the Scalar pipe.
+		bool requireSingle = false;
+
+		//! Optional: narrows legality to a specific chunk KEYWORD set
+		//! that is STRICTER than "every chunk of the matching pipe" --
+		//! e.g. `scalar_painter`'s `texture` form only accepts a
+		//! raster-image painter chunk (png_painter / jpg_painter /
+		//! hdr_painter / exr_painter / tiff_painter), never any other
+		//! Color-pipe chunk, because the resolution code
+		//! `dynamic_cast<TexturePainter*>`s the resolved painter.  Empty
+		//! means "every chunk whose pipe/category matches is legal" (the
+		//! common case).
+		std::vector<std::string> keywordAllowlist;
+
+		//! Free-text audit annotation for an oddball binding -- pipe says
+		//! one thing (e.g. Color) while the authored MEANING is something
+		//! else (e.g. an angle, or a physical scalar bridged through the
+		//! colour manager).  Empty for the ordinary case.  The two named
+		//! oddballs this slice documents: GGX's `tangent_rotation` and
+		//! PBRMetallicRoughness's `anisotropy_rotation` (both Color pipe,
+		//! both semantically an angle in radians -- ISCALARPAINTER_-
+		//! REFACTOR.md / MATERIAL_EDITOR.md sect. 1's documented
+		//! oddball), and PBRMetallicRoughness's `metallic` / `roughness`
+		//! / `specular_factor` / `specular_color` / `anisotropy_factor`
+		//! (Color pipe by construction: `Job::AddPBRMetallicRoughnessMaterial`'s
+		//! `resolveOrSynth` helper checks `pPntManager->GetItem` and, on a
+		//! miss, falls back to `atof` + a synthesized uniform-colour
+		//! painter -- a `scalar_painter` name here silently synthesizes
+		//! ZERO rather than binding, since `atof` on a non-numeric name
+		//! is 0.0 -- MATERIAL_EDITOR.md sect. 6.4 names this "pbr's
+		//! colour-manager roughness").
+		std::string note;
 	};
 
 	enum class ChunkCategory
@@ -307,6 +431,7 @@ namespace RISE
 		std::string                  description;
 		std::string                  defaultValueHint;
 		std::string                  unitLabel;                              // optional short unit suffix shown next to the editor field (e.g. "mm", "°", "scene units", ""). Pure presentation hint — the parser ignores it. Empty means dimensionless / no label.
+		ParameterSemantics           semantics;                              // S17, additive: which manager/pipe a Reference-kind param's value actually resolves against (ChunkDescriptor.h's ParameterPipe doc comment). Default-constructed (Unspecified) for every non-Reference param and every family this slice didn't audit.
 		ApplyParameterFn             apply      = nullptr;
 	};
 

@@ -5440,6 +5440,36 @@ unsigned int SceneEditController::ResolveGraphNodeHandle( const PainterMaterialG
 }
 
 // =====================================================================
+// doc-88 Phase 3 S17 -- connection-legality passthrough. See the
+// declarations' own comments in SceneEditController.h.
+// =====================================================================
+
+ConnectionVerdict SceneEditController::CheckConnection(
+	ChunkCategory targetCategory, const String& targetName,
+	const String& paramName,
+	ChunkCategory candidateCategory, const String& candidateName ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return { false, "no document loaded" };
+	return ConnectionLegality::CheckConnectionByName(
+		*doc, targetCategory, targetName, paramName, candidateCategory, candidateName );
+}
+
+bool SceneEditController::WouldCycle(
+	ChunkCategory fromCategory, const String& fromName,
+	ChunkCategory toCategory, const String& toName ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+	const Cst::NodeId fromId = SceneReferenceGraph::ResolveChunk( *doc, fromCategory, fromName );
+	const Cst::NodeId toId   = SceneReferenceGraph::ResolveChunk( *doc, toCategory, toName );
+	if( fromId == 0 || toId == 0 ) return false;
+	return ConnectionLegality::WouldCycle( *doc, fromId, toId );
+}
+
+// =====================================================================
 // doc-88 Phase 3 S14 -- see the declarations' own comments in
 // SceneEditController.h for the full design (scene-path contract, why
 // position is not folded into the compare-then-publish graph snapshot,

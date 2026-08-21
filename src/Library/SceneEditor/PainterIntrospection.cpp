@@ -121,6 +121,20 @@ unsigned int PainterIntrospection::PipesFor( IJobPriv& job, const String& painte
 	return mask;
 }
 
+unsigned int PainterIntrospection::PipeFromDescriptor( const String& keyword )
+{
+	if( keyword.size() <= 1 ) return PipeNone;
+	const ChunkDescriptor* d = DescriptorForKeyword( keyword );
+	if( !d || d->category != ChunkCategory::Painter ) return PipeNone;
+	// `scalar_painter` is the ONLY Painter-category keyword that registers
+	// into IScalarPainterManager (Job.cpp: `pPriv->GetScalarPainters()->
+	// AddItem(...)`) -- every other one registers into IPainterManager
+	// (`RegisterOrDiag(pPntManager, ...)` / `RegisterPainterDual`). See
+	// ChunkDescriptor.h's ParameterPipe doc comment for the full audit
+	// this fact is drawn from.
+	return ( std::string( keyword.c_str() ) == "scalar_painter" ) ? PipeScalar : PipeColour;
+}
+
 bool PainterIntrospection::IsOccurrenceRowName( const String& rowName )
 {
 	if( rowName.size() <= 1 ) return false;
@@ -172,9 +186,16 @@ std::vector<CameraProperty> PainterIntrospection::Inspect(
 		CstIntrospection::Inspect( doc, job, painterName, "painter", "Painter chunk keyword" );
 	if( rows.empty() ) return rows;   // unresolved / no descriptor -- generic contract
 
-	// ---- row 2: the pipe (the one genuinely live-object-sourced fact) ----
+	// ---- row 2: the pipe ----
 	{
-		const unsigned int pipes = PipesFor( job, painterName );
+		// S17 migration: try the descriptor-driven answer FIRST (no live job
+		// needed -- rows[0].value is the generic surface's leading identity
+		// row, which is always the chunk's own keyword; see CstIntrospection).
+		// PipesFor (the original live-manager lookup) stays as the FALLBACK
+		// for the rare case PipeFromDescriptor can't answer (an unregistered
+		// keyword) and remains independently correct/testable.
+		unsigned int pipes = PipeFromDescriptor( rows[0].value );
+		if( pipes == PipeNone ) pipes = PipesFor( job, painterName );
 		CameraProperty row;
 		row.name        = String( "pipe" );
 		row.kind        = ValueKind::String;

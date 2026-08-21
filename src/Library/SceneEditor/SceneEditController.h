@@ -30,6 +30,7 @@
 #include "CancellableProgressCallback.h"
 #include "CameraIntrospection.h"
 #include "ReferenceGraph.h"                 // doc-88 Phase 3 S11 round 2 P2-b: ReferenceEdge, for the public ExpandFunctionPromotionFrontier helper's signature
+#include "ConnectionLegality.h"             // doc-88 Phase 3 S17: ConnectionVerdict, for CheckConnection/WouldCycle below
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IRasterizerOutput.h"
@@ -2808,6 +2809,43 @@ namespace RISE
 		//! cross-generation handle directly, with no controller, no lock, no
 		//! live document.
 		static unsigned int ResolveGraphNodeHandle( const PainterMaterialGraph& g, GraphNodeHandle handle );
+
+		// =====================================================================
+		// doc-88 Phase 3 S17 -- connection-legality passthrough
+		// (ConnectionLegality.h/.cpp; docs/gui/NODE_GRAPH_CANVAS.md sect. 6
+		// S17). Thin, controller-scoped wrappers over the standalone
+		// (Document + NodeId)-only `ConnectionLegality` module -- the
+		// FUTURE S21 drag-drop canvas's pre-commit checks. Addressed by
+		// (category, name) rather than `GraphNodeHandle`, matching
+		// `SceneReferenceGraph::ResolveChunk`'s own addressing (a
+		// `GraphNode` published to the ABI carries no raw `Cst::NodeId` by
+		// design -- see `GraphNodeHandle`'s comment above -- so a
+		// name-based resolve is this passthrough's natural seam; S21 can
+		// read `chunkKeyword`/`category`/`name` directly off the
+		// `GraphNode` it already has cached from `ReadPainterMaterialGraph`).
+		// =====================================================================
+
+		//! `ConnectionLegality::CheckConnectionByName` over this
+		//! controller's CURRENT document (`mJob.GetCstDocument()`).
+		//! Illegal (with a diagnostic) when either name fails to resolve,
+		//! `paramName` is not a declared Reference-kind parameter on the
+		//! target's descriptor, or the candidate's category/pipe is
+		//! rejected -- see ConnectionLegality.h for the full contract.
+		ConnectionVerdict CheckConnection(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& paramName,
+			ChunkCategory candidateCategory, const String& candidateName ) const;
+
+		//! `ConnectionLegality::WouldCycle` over this controller's CURRENT
+		//! document, with `from`/`to` resolved by (category, name) via
+		//! `SceneReferenceGraph::ResolveChunk`. Returns false (never a
+		//! crash) when either name fails to resolve or is ambiguous --
+		//! the caller should treat an unresolved name as "cannot commit
+		//! this wire at all" via `CheckConnection` first, not infer
+		//! safety from a false `WouldCycle` alone.
+		bool WouldCycle(
+			ChunkCategory fromCategory, const String& fromName,
+			ChunkCategory toCategory, const String& toName ) const;
 
 		//! ONE FULL PASS of the transitive Function-node promotion BFS that
 		//! `BuildPainterMaterialGraphSeedsLocked_` runs to find every

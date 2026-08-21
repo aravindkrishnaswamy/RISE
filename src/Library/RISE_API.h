@@ -4726,6 +4726,33 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, const char* nodeName, double x, double y,
 		char* outError, unsigned int outErrorLen );
 
+	//! doc-88 Phase 3 S17 -- connection-legality passthrough for the future
+	//! S21 drag-drop canvas (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S17;
+	//! ConnectionLegality.h). `targetCategory`/`candidateCategory` are
+	//! `RISE::ChunkCategory` ordinals -- the SAME convention
+	//! `RISE_API_SceneEditController_PainterGraphNodeCategory` already
+	//! returns, NOT `SceneEditController::Category` (the panel's own,
+	//! coarser union enum -- see ConnectionLegality.h's own note on why a
+	//! Function/Painter distinction matters here and Category can't carry
+	//! it). Returns the legality verdict directly; `outDiagBuf` (optional,
+	//! may be null/0-length) receives the diagnostic text -- empty iff the
+	//! return is true. Returns false with no diagnostic written on a null
+	//! controller.
+	bool RISE_API_SceneEditController_CheckConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* paramName,
+		int candidateCategory, const char* candidateName,
+		char* outDiagBuf, unsigned int outDiagBufLen );
+
+	//! `SceneEditController::WouldCycle` passthrough -- same (category,
+	//! name) addressing as `_CheckConnection` above. Returns false (never
+	//! a crash) on a null controller or either name failing to resolve.
+	bool RISE_API_SceneEditController_WouldCycle(
+		SceneEditController* p,
+		int fromCategory, const char* fromName,
+		int toCategory, const char* toName );
+
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache
 	//! (epoch, category) → entity-name list and re-pull when this

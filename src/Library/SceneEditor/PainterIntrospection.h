@@ -129,7 +129,28 @@ namespace RISE
 		//! The pipe mask for `painterName`, read from the LIVE managers.
 		//! PipeNone when the name resolves in neither (a chunk that
 		//! failed to derive, or a name that is not a painter at all).
+		//!
+		//! S17 MIGRATION NOTE: `Inspect`'s pipe row now sources from
+		//! `PipeFromDescriptor` (below) FIRST -- it needs only the
+		//! chunk's own KEYWORD (no live job / no manager lookup) because
+		//! `scalar_painter` is the only Painter-category keyword that
+		//! resolves through IScalarPainterManager; every other one
+		//! resolves through IPainterManager (Job.cpp's registration
+		//! code -- see ChunkDescriptor.h's ParameterPipe doc comment for
+		//! the full audit). This method stays as the FALLBACK for a
+		//! chunk whose keyword has no registered descriptor (so
+		//! `PipeFromDescriptor` can't answer) and for tests/callers that
+		//! still want the live-manager ground truth directly.
 		static unsigned int PipesFor( IJobPriv& job, const String& painterName );
+
+		//! Descriptor-driven pipe classification for a PAINTER CHUNK'S
+		//! OWN keyword (not a parameter's `ParameterSemantics.pipe` --
+		//! that answers "what pipe does THIS PARAMETER accept", this
+		//! answers "what pipe IS this named painter"). No live job
+		//! needed. Returns `PipeNone` when `keyword` has no registered
+		//! descriptor or is not `ChunkCategory::Painter` -- the caller
+		//! should fall back to `PipesFor` in that case.
+		static unsigned int PipeFromDescriptor( const String& keyword );
 
 		//! One panel row per surfaceable parameter of the painter chunk
 		//! named `painterName`, in this order:

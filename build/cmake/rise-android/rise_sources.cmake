@@ -399,6 +399,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/PainterPreview.cpp"
     "${RISE_LIB}/SceneEditor/EntityTemplates.cpp"
     "${RISE_LIB}/SceneEditor/ReferenceGraph.cpp"
+    "${RISE_LIB}/SceneEditor/ConnectionLegality.cpp"
     "${RISE_LIB}/SceneEditor/GraphLayout.cpp"
     "${RISE_LIB}/SceneEditor/GraphLayoutSidecar.cpp"
 
