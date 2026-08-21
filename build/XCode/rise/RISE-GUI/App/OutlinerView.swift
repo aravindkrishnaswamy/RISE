@@ -287,7 +287,11 @@ private func outlinerVisibleRows(_ nodes: [OutlinerNode],
 // MARK: - OutlinerView
 
 struct OutlinerView: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime, so a nil read means the scene was torn down and this
+    /// panel is leaving the tree — the last-drawn rows stand until it
+    /// does, which is what the user already sees.
+    weak var bridge: RISEViewportBridge?
     @Binding var refreshTrigger: Int
     // "Reveal in scene file" context-menu item routes through the shared
     // view model (same bridge call PropertiesPanel's ⌗ chip uses) —
@@ -466,6 +470,7 @@ struct OutlinerView: View {
     }
 
     private func toggleCategory(_ cat: OutlinerCategoryDef) {
+        guard let bridge else { return }
         let expanded = expandedByCategory[cat.category.rawValue] ?? false
         if expanded {
             bridge.collapseSection(for: cat.category)
@@ -488,6 +493,7 @@ struct OutlinerView: View {
     }
 
     private func selectChild(cat: OutlinerCategoryDef, name: String) {
+        guard let bridge else { return }
         _ = bridge.setSelection(cat.category, name: name)
         refreshTrigger &+= 1
     }
@@ -499,6 +505,7 @@ struct OutlinerView: View {
     /// on chunk CRUD too, so the non-forced path also catches structural
     /// changes — including agent-driven ones.)
     private func reload(force: Bool = false) {
+        guard let bridge else { return }
         selectionCategory = bridge.selectionCategory
 
         var freshExpanded: [Int: Bool] = [:]

@@ -16,7 +16,10 @@
 import SwiftUI
 
 struct ViewportNavOverlay: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime.  A nil read means the scene was torn down and this
+    /// overlay is leaving the tree, so routing a nav action is a no-op.
+    weak var bridge: RISEViewportBridge?
     /// user-review P1-1: the pane this overlay is drawn on (0 in the single
     /// viewport, the PRIMARY pane in N-up).  Every nav action targets THIS
     /// pane via the bridge's pane-indexed twins, so a secondary primary is
@@ -82,6 +85,7 @@ struct ViewportNavOverlay: View {
         .frame(width: ballBox, height: ballBox)
         .contentShape(Rectangle())
         .onTapGesture(coordinateSpace: .local) { loc in
+            guard let bridge else { return }
             let idx = bridge.navGizmoNubAt(x: loc.x, y: loc.y)
             if idx >= 0, Int(idx) < nubs.count {
                 let n = nubs[Int(idx)]
@@ -97,19 +101,23 @@ struct ViewportNavOverlay: View {
     @ViewBuilder private var controls: some View {
         HStack(spacing: 6) {
             navButton(system: "house.fill", help: "Go to home view", enabled: homeSet) {
+                guard let bridge else { return }
                 _ = bridge.paneGoToHomeView(pane); reload()
             }
             navButton(system: "mappin.and.ellipse", help: "Set current view as home", enabled: true) {
+                guard let bridge else { return }
                 _ = bridge.paneSetHomeView(pane); reload()
             }
             if freeFly {
                 navButton(system: "camera.badge.plus", help: "Stamp this view into a new camera", enabled: true) {
                     // Auto-named + dedup-suffixed by the core; the new camera
                     // becomes active. The outliner picks it up on its next poll.
+                    guard let bridge else { return }
                     _ = bridge.stampPaneViewToNewCamera(pane, proposedName: "view_camera")
                     reload()
                 }
                 navButton(system: "camera.fill", help: "Back to scene camera", enabled: true) {
+                    guard let bridge else { return }
                     _ = bridge.paneExitFreeFly(pane); reload()
                 }
             }
@@ -139,7 +147,7 @@ struct ViewportNavOverlay: View {
         // refreshTrigger bump (e.g. a tool switch, which isn't a viewport
         // gesture and so isn't otherwise gated) during a chat render can't
         // wedge the main thread.  Nav state can't change during a render.
-        guard sceneEditable else { return }
+        guard let bridge, sceneEditable else { return }
         let center = CGPoint(x: ballBox / 2, y: ballBox / 2)
         _ = bridge.refreshNavGizmo(centerX: center.x, centerY: center.y,
                                    ballRadius: ballRadius, nubRadius: nubRadius)

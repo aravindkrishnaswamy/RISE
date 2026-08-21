@@ -11,7 +11,10 @@
 import SwiftUI
 
 struct NamedViewsPanel: View {
-    let bridge: RISEViewportBridge
+    // Weak: RenderViewModel owns the live bridge for the whole scene lifetime.
+    // A nil read here means the scene was torn down and this view is leaving
+    // the tree, so every action below is correctly a no-op.
+    weak var bridge: RISEViewportBridge?
     @Binding var refreshTrigger: Int
     @EnvironmentObject var viewModel: RenderViewModel
 
@@ -92,7 +95,7 @@ struct NamedViewsPanel: View {
                 .font(Theme.sans(11))
                 .frame(maxWidth: .infinity)
             Button {
-                guard viewModel.isSceneEditableForAgents else { return }
+                guard let bridge, viewModel.isSceneEditableForAgents else { return }
                 let proposed = captureText.trimmingCharacters(in: .whitespaces)
                 let name = proposed.isEmpty ? "View \(names.count + 1)" : proposed
                 if bridge.captureNamedView(name) {
@@ -111,7 +114,7 @@ struct NamedViewsPanel: View {
         HStack(spacing: 6) {
             // Restore on the label tap (the primary, non-destructive action).
             Button {
-                guard viewModel.isSceneEditableForAgents else { return }
+                guard let bridge, viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.restoreNamedView(idx)
             } label: {
                 HStack(spacing: 6) {
@@ -130,17 +133,17 @@ struct NamedViewsPanel: View {
             .help("Restore this view (non-destructive)")
 
             iconButton("arrow.clockwise", help: "Update to current view") {
-                guard viewModel.isSceneEditableForAgents else { return }
+                guard let bridge, viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.updateNamedView(idx); reload()
             }
             iconButton("camera.badge.plus", help: "Promote to a scene camera") {
-                guard viewModel.isSceneEditableForAgents else { return }
+                guard let bridge, viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.promoteNamedView(idx, name: name)
                 // The new active camera surfaces in the outliner via its poll.
                 viewModel.entityListEpoch &+= 1
             }
             iconButton("trash", help: "Delete this view") {
-                guard viewModel.isSceneEditableForAgents else { return }
+                guard let bridge, viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.deleteNamedView(idx); reload()
             }
         }
@@ -162,7 +165,7 @@ struct NamedViewsPanel: View {
     // MARK: - State pull
 
     private func reload() {
-        guard viewModel.isSceneEditableForAgents else { return }
+        guard let bridge, viewModel.isSceneEditableForAgents else { return }
         names = bridge.namedViewNames
     }
 }

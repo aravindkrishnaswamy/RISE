@@ -88,14 +88,18 @@ enum SkillsRootBootstrap {
 /// unconditionally called `[_host attachSceneEditController:nullptr]` as
 /// its FIRST line, with no guard -- so if anything else in the app holds
 /// a transient extra strong reference to an outgoing `RISEViewportBridge`
-/// (e.g. a SwiftUI view struct's stored `let bridge: RISEViewportBridge`
-/// property from a not-yet-discarded body evaluation) past the point
-/// `viewportBridge = nil` runs, that instance's EVENTUAL `-dealloc` calls
-/// `-shutdown` a SECOND time and re-detaches the host -- silently
-/// clobbering whatever NEWER `RISEViewportBridge` had since registered
+/// past the point `viewportBridge = nil` runs, that instance's EVENTUAL
+/// `-dealloc` calls `-shutdown` a SECOND time and re-detaches the host
+/// -- silently clobbering whatever NEWER `RISEViewportBridge` had since registered
 /// for the next scene.  A synchronous, single-threaded harness with no
 /// stray retainer can't see this; this probe manufactures the stray
 /// retain explicitly (`strayA`) to drive the exact mechanism.
+///
+/// The original real-app suspect was a SwiftUI view struct's stored `let
+/// bridge: RISEViewportBridge` property held by a not-yet-discarded body
+/// evaluation.  Every such holder is `weak var bridge:
+/// RISEViewportBridge?` now, but a future one could reintroduce the
+/// pattern -- which is why both the guard and this probe stay.
 ///
 /// Enable with `RISE_GUI_HEADLESS_PROBE=viewport_reattach` plus
 /// `RISE_GUI_HEADLESS_PROBE_SCENE_A` / `_SCENE_B` pointing at two loadable
@@ -137,7 +141,8 @@ enum ViewportReattachProbe {
         var vbA: RISEViewportBridge? = RISEViewportBridge(hostBridge: bridge)
         allOK = step("scene A viewport bridge constructed", vbA != nil) && allOK
         // The stray extra strong reference a SwiftUI view struct's stored
-        // `let bridge:` property could hold past the official swap below.
+        // `let bridge:` property used to be able to hold past the official
+        // swap below (those holders are weak now -- see the type doc).
         var strayA = vbA
         allOK = step("render scene A", bridge.rasterize(atSceneTime: 0)) && allOK
 
