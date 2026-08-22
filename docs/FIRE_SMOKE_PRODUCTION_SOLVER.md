@@ -2781,8 +2781,8 @@ the pilot reused one smooth tier-6 beginning and therefore remains diagnostic.
 Before golden evidence, r138a seals the root plus all seven r95 continuation
 hashes.  The corrected campaign then fails closed on slice zero before its
 precision result may publish.  The physical projection validates
-(`37.872448 -> 0.00374865532 s^-1`), but the restoration projection plateaus
-at `9.97165444e-6 s^-1` against its own unchanged
+(`37.872448 -> 0.00374865532 s^-1`), but the 16-cycle restoration projection
+ends at `9.97165444e-6 s^-1` against its own unchanged
 `1.06855828e-6 s^-1` band, a `9.331877` miss.  No fp64/Metal precision result
 is admitted or recorded after that failed prerequisite.  Exact exit `244`
 is emitted only after the slice index, projection topology, all six diagnostic

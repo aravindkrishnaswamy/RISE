@@ -3198,8 +3198,9 @@ it was already tried and refuted here.
   `659462.05745125038` margin; minimum scalar and inventory margins are
   `1542.2120195226826` and `2361.071848300599`.  Both projections validate
   `8/8`, the resident seam reports zero interstage transfers, and the oracle
-  is absent.  The old `3e-5 m/s` preliminary guard is explicitly superseded;
-  the measurement also fits it by `26869.024888297707`.  Exact exit `243`,
+  is absent.  The measurement also fits the old `3e-5 m/s` preliminary guard
+  by `26869.024888297707`, but supersession remains pending the golden-slice
+  measurement.  Exact exit `243`,
   trace `f90a2508...551cebf`, and durable evidence
   `ffeeaa6e...1e50e0e` bind the tier-6 pilot.  Fresh review later established
   that the repeated analytic beginning does not certify the promised golden
