@@ -3936,6 +3936,24 @@ int main()
 	Check(restorationMiswireRejected&&fullStepResultIsDefault(rejectedFullStep)&&
 		error.find("restoration projection target ownership")!=std::string::npos,
 		"restoration P2 rejects a physical-target miswire before its command and publishes nothing");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	setenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE","1",1);
+	const bool unauthorizedRestorationCycleRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
+	Check(unauthorizedRestorationCycleRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		error.find("cycle probe is not authorized")!=std::string::npos,
+		"restoration cycle instrumentation is unavailable outside its exact plateau campaign");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	setenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE","1",1);
+	setenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE","17",1);
+	const bool outOfRangeRestorationCycleRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
+	unsetenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+	Check(outOfRangeRestorationCycleRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		error.find("outside 1..16")!=std::string::npos,
+		"restoration cycle instrumentation rejects post-protocol work-count tuning");
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;

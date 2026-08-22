@@ -3135,8 +3135,8 @@ int main(int argc,char** argv)
 	if(argc==1)Check(FireProductionDyadicCalibration::DiagnoseRoundoff(
 		"rendered/fire_production_calibration/r112_dyadic_smooth_open",
 		"42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed",
-		"d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b")==241,
-		"r134 projection a-posteriori derivation remains an exact normal-suite gate");
+		"d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b")==237,
+		"r136 full-step a-priori refusal remains an exact normal-suite gate");
 #endif
 #if !defined(RISE_ENABLE_OPENVDB)
 	if(argc==5&&std::strcmp(argv[1],"--fire-r80-golden-continuation")==0)

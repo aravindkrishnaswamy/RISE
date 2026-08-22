@@ -3255,3 +3255,20 @@ it was already tried and refuted here.
   curve.  The 104-step final-32 field gate `<=7.5e-4` is the load-bearing
   physics oracle.  The protocol artifact records `measurement_performed=false`;
   no production criterion, solver, or golden byte changed in this entry.
+- **r142 burning plateau capacity stop (2026-08-22):** the exact r141
+  campaign closes the design-level band question by finding that no admissible
+  restoration band or cycle count exists for the frozen burning slice.  The
+  removed-restoration field generation is `G_field=2.5328069638265172e-3`
+  at cell `3227`, versus `1.2031080315666465e-4` in the cold tier-12 slice:
+  a `21.052198949485707` regime increase.  With `C(1-h)=7.5e-4`, burning
+  requires drain fraction `r_req=3.3770759517686897`; even mathematical
+  deadbeat drain `r=1` cannot meet the plateau.  Sixteen cycles deliver
+  `r_16=0.9533406144549903` and end at `9.971654435503297e-6`, but additional
+  contraction cannot remove generation already larger than the complete
+  field allowance.  Cold would require only `0.1604144042088862` and its
+  16-cycle drain is `0.99562928290235475`.  Exact exit `253` binds both
+  1-through-16 curves, cell/sign witnesses, sweep counts, source identities,
+  and the unchanged golden SHA.  The preregistered long shadow is not run:
+  its necessary generation bound is already false.  No validation criterion,
+  cycle count, `B_fp32`, temporal term, or production source changed.  This is
+  the owner-requested architecture-capacity stop, not a residual-floor finding.

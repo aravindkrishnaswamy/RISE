@@ -482,6 +482,34 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			ProjectionResidentRestorationTerminal
 		};
 
+		bool ProjectionCycleCount( ProjectionExecutionKind execution,bool hasOpenBoundary,
+			unsigned int& cycleCount,std::string* error )
+		{
+			cycleCount=hasOpenBoundary?
+				(execution==ProjectionResidentStateOnly?17u:16u):12u;
+			const char* value=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
+			if( !value ) return true;
+			const char* activation=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+			if( !activation||std::strcmp(activation,"1")!=0||!*value ) {
+				if( error ) *error="production fire restoration cycle probe is not authorized";
+				return false;
+			}
+			if( execution!=ProjectionResidentRestorationTerminal ) return true;
+			unsigned int parsed=0u;
+			for( const char* digit=value;*digit;++digit ) {
+				if( *digit<'0'||*digit>'9'||parsed>16u ) {
+					if( error ) *error="production fire restoration cycle probe is malformed";
+					return false;
+				}
+				parsed=10u*parsed+static_cast<unsigned int>(*digit-'0');
+			}
+			if( parsed<1u||parsed>16u ) {
+				if( error ) *error="production fire restoration cycle probe is outside 1..16";
+				return false;
+			}
+			cycleCount=parsed;return true;
+		}
+
 		std::size_t NextPowerOfTwo( std::size_t value )
 		{
 			std::size_t result=1u;while( result<value ) result<<=1u;return result;
@@ -672,6 +700,11 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			const std::uint64_t beginningAllocationBytes=projectionBufferAllocationBytes;
 			std::uint64_t observedActualMetalBytes=0u,certifiedWorkingSetBytes=0u;
 			if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
+			const bool hasOpenBoundary=std::any_of(request.boundary.begin(),
+				request.boundary.end(),[](const FireProductionProjectionBoundary boundary){
+					return boundary==FireProductionProjectionPressureOpen;});
+			unsigned int cycleCount=0u;
+			if( !ProjectionCycleCount(execution,hasOpenBoundary,cycleCount,error) ) return false;
 			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes) )
 				return false;
 			if( residentInput ) for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -970,10 +1003,6 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					Dispatch(encoder,context.clearValues,count);[encoder endEncoding];
 				}
 				std::uint32_t executedCycles=0u;std::uint64_t executedSweeps=0u;
-				unsigned int cycleCount=12u;
-				for( FireProductionProjectionBoundary boundary:request.boundary )
-					if( boundary==FireProductionProjectionPressureOpen )
-						cycleCount=execution==ProjectionResidentStateOnly?17u:16u;
 				for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
 					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,
 						executedSweeps,error) ) return false;

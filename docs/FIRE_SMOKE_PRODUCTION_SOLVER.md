@@ -2817,6 +2817,41 @@ blowthrough, and substituting the physical target must still fail the resident
 ownership seam.  The pre-evidence artifact records no measurement and changes
 no production behavior.
 
+### 7.55b Burning-regime capacity result (r142)
+
+The exact preregistered campaign finds a capacity failure before a replacement
+validation band can be admitted.  At golden slice zero, removing restoration
+produces
+
+`G_field=2.5328069638265172e-3`
+
+at cell `3227` (beginning deviation `-1.1871614802316799e-12`, output
+deviation `-2.5328069650136786e-3`).  The corresponding cold tier-12 result is
+`1.2031080315666465e-4`, so burning generation is
+`21.052198949485707` times the cold value.  The frozen headroom allows only
+`C(1-h)=7.5e-4`; therefore the burning requirement is
+`r_req=3.3770759517686897 > 1`.  This violates a necessary condition even for
+perfect deadbeat restoration.
+
+The mechanism curve confirms that work count is not the limiting variable.
+Sixteen cycles drain `0.9533406144549903` of the initial restoration residual,
+ending at `9.971654435503297e-6`; cycles 4 through 16 are effectively flat at
+that endpoint.  Cold requires drain `0.1604144042088862` and receives
+`0.99562928290235475`.  More burning cycles cannot compensate for
+`G_field>C(1-h)`, so no derived cycle count exists and the 104-step long-shadow
+gate cannot possibly satisfy its necessary field-generation bound.  Calling
+this a projection residual floor would be incorrect: the stop is caused by
+per-step manifold generation exceeding the ruled plateau capacity.
+
+The exact replay returns `253` only after byte-pinning both residual curves,
+their sweep topologies, the signed field witnesses, the cold/burning ratio,
+and the post-run golden digest.  Durable evidence is
+`rendered/fire_production_calibration/r142_burning_plateau_capacity/restoration_capacity_evidence.v1`.
+No replacement validation band is installed, no production arithmetic is
+changed, and precision measurement, temporal refinement, additive-contract
+formation, source maps, and first light remain blocked pending an explicit
+architecture ruling.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
@@ -2828,7 +2863,7 @@ land at the exact represented horizon `0x1.e54eeep-7 s`
 (`0.01481043454259634 s`).
 
 Production temporal distance is measured with the strict binary64 same-scheme
-mirror at formal order one; `B_fp32` remains blocked by r140.  Oracle
+mirror at formal order one; `B_fp32` remains blocked by r142.  Oracle
 temporal distance uses the certified Heun advance at formal order two.  A
 capability-isolated no-Metal process writes the three divergence-target
 schedules before either solver-output comparison; the read-only evaluator

@@ -68,6 +68,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	std::array<double,2> minimumPinnedProbeContrast={{
 		std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity()}};
 	unsigned int monitoredProjectionMisses=0u;
+	const char* plateauProbeValue=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+	if(plateauProbeValue&&std::strcmp(plateauProbeValue,"1")!=0)return 246;
+	const bool plateauProbe=plateauProbeValue!=nullptr;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -232,6 +235,178 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				beginning.states[cell].producerPrecision,volumeRatio,&error))return 117;
 			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
 				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
+		}
+		if(plateauProbe){
+			if(slice!=0u)return 247;
+			struct PlateauRegimeEvidence
+			{
+				double generationField=0.0,generationBeginning=0.0,generationOutput=0.0,
+					removedField=0.0;
+				std::size_t generationCell=0u;
+				std::array<float,17> residual={{}};
+				std::array<std::uint32_t,16> sweeps={{}};
+			};
+			auto setEnvironment=[](const char* name,const std::string& value){
+#if defined(_WIN32)
+				return _putenv_s(name,value.c_str())==0;
+#else
+				return setenv(name,value.c_str(),1)==0;
+#endif
+			};
+			auto clearEnvironment=[](const char* name){
+#if defined(_WIN32)
+				return _putenv_s(name,"")==0;
+#else
+				return unsetenv(name)==0;
+#endif
+			};
+			auto measureRegime=[&](const char* label,const MethaneRunCheckpoint& state,
+				const RISE::FireProductionResidentStepRequest& regimeRequest,
+				PlateauRegimeEvidence& evidence){
+				std::vector<double> beginningDeviation(state.states.size(),0.0);
+				for(std::size_t cell=0u;cell<state.states.size();++cell){double ratio=0.0;
+					if(!AcceptedConservativeVolumeRatio(ToConservativeVector(state.states[cell]),fuel,
+						state.states[cell].producerPrecision,ratio,&error)){std::fprintf(stderr,
+						"RESTORATION_PLATEAU regime=%s beginning_cell=%zu failed: %s\n",
+						label,cell,error.c_str());return false;}
+					beginningDeviation[cell]=ratio-1.0;}
+				if(!setEnvironment("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed"))return false;
+				RISE::FireProductionResidentStepResult removed;
+				const bool removedSucceeded=RISE::AdvanceFireProductionResidentStepMetal(
+					regimeRequest,removed,&error);
+				const bool removedEnvironmentCleared=clearEnvironment(
+					"RISE_FIRE_PRODUCTION_RESTORATION_TEST");
+				if(!removedEnvironmentCleared||!removedSucceeded||
+					removed.residentProjectionInvocationCount!=1u||
+					removed.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
+					"RESTORATION_PLATEAU regime=%s removed failed success=%d invocations=%u "
+					"transfers=%u error=%s\n",label,removedSucceeded?1:0,
+					removed.residentProjectionInvocationCount,
+					removed.interstageFullGridTransferCount,error.c_str());return false;}
+				std::vector<ConservativeVector> removedConservative;
+				if(!FireProductionDyadicCalibration::UnpackProductionConservative(
+					removed.conservativeValues,state.states.size(),removedConservative))return false;
+				double generationField=0.0,removedField=0.0,generationBeginning=0.0,
+					generationOutput=0.0;std::size_t generationCell=0u;
+				for(std::size_t cell=0u;cell<state.states.size();++cell){double ratio=0.0;
+					if(!AcceptedConservativeVolumeRatio(removedConservative[cell],fuel,
+						FireStateProducerPrecision::Binary32,ratio,&error)){std::fprintf(stderr,
+						"RESTORATION_PLATEAU regime=%s removed_cell=%zu failed: %s\n",
+						label,cell,error.c_str());return false;}
+					const double deviation=ratio-1.0;
+					const double generation=std::fabs(deviation-beginningDeviation[cell]);
+					if(generation>generationField){generationField=generation;
+						generationCell=cell;generationBeginning=beginningDeviation[cell];
+						generationOutput=deviation;}
+					removedField=std::max(removedField,std::fabs(deviation));}
+				std::array<float,17> residual={{}};std::array<std::uint32_t,16> sweeps={{}};
+				for(unsigned int cycles=1u;cycles<=16u;++cycles){
+					if(!setEnvironment("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE",
+						std::to_string(cycles)))return false;
+					RISE::FireProductionResidentStepResult result;
+					const bool succeeded=RISE::AdvanceFireProductionResidentStepMetal(
+						regimeRequest,result,&error);
+					const bool cycleEnvironmentCleared=clearEnvironment(
+						"RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
+					if(!cycleEnvironmentCleared||!succeeded||
+						result.residentProjectionInvocationCount!=2u||
+						result.interstageFullGridTransferCount!=0u||
+						result.projection.executedVCycleCount!=cycles){std::fprintf(stderr,
+						"RESTORATION_PLATEAU regime=%s cycles=%u failed success=%d "
+						"executed=%u invocations=%u transfers=%u error=%s\n",label,cycles,
+						succeeded?1:0,result.projection.executedVCycleCount,
+						result.residentProjectionInvocationCount,
+						result.interstageFullGridTransferCount,error.c_str());return false;}
+					if(cycles==1u)residual[0]=result.projection.maximumPreProjectionResidualPerS;
+					else if(residual[0]!=result.projection.maximumPreProjectionResidualPerS)return false;
+					residual[cycles]=result.projection.maximumPostProjectionResidualPerS;
+					sweeps[cycles-1u]=result.projection.executedJacobiSweepCount;
+				}
+				std::fprintf(stderr,"RESTORATION_PLATEAU regime=%s G_field=%.17g "
+					"G_cell=%zu G_beginning=%.17g G_output=%.17g removed_field=%.17g "
+					"residual=",label,generationField,generationCell,generationBeginning,
+					generationOutput,removedField);
+				for(const float value:residual)std::fprintf(stderr," %.17g",
+					static_cast<double>(value));
+				std::fprintf(stderr," contraction=");
+				for(std::size_t cycle=1u;cycle<residual.size();++cycle)
+					std::fprintf(stderr," %.17g",static_cast<double>(residual[cycle])/
+						static_cast<double>(residual[cycle-1u]));
+				std::fprintf(stderr," sweeps=");
+				for(const std::uint32_t value:sweeps)std::fprintf(stderr," %u",value);
+				std::fprintf(stderr,"\n");
+				evidence.generationField=generationField;
+				evidence.generationBeginning=generationBeginning;
+				evidence.generationOutput=generationOutput;
+				evidence.removedField=removedField;evidence.generationCell=generationCell;
+				evidence.residual=residual;evidence.sweeps=sweeps;return true;
+			};
+			PlateauRegimeEvidence burningEvidence,coldEvidence;
+			if(!measureRegime("burning",beginning,request,burningEvidence))return 248;
+			std::array<std::string,4> stateDigests,targetDigests;
+			const std::filesystem::path coldDirectory=
+				"rendered/fire_production_calibration/r112_dyadic_smooth_open";
+			if(!FireProductionDyadicCalibration::ReadProtocolStateDigests(
+				coldDirectory/"dyadic_protocol.v1",stateDigests)||
+				!FireProductionDyadicCalibration::ReadTargetDigests(
+				coldDirectory/"dyadic_targets.v1",targetDigests))return 249;
+			MethaneRunCheckpoint cold;
+			if(!FireProductionDyadicCalibration::BuildAnalyticState(12u,cold,error)||
+				FireProductionDyadicCalibration::AnalyticStateDigest(cold)!=stateDigests[3])return 249;
+			std::vector<std::vector<double> > coldTargets;
+			const std::filesystem::path coldTarget=coldDirectory/"oracle_tier12_sdiv_x8.f64";
+			if(DigestFile(coldTarget)!=targetDigests[3]||
+				!ReadCalibrationDoublePayload(coldTarget,
+					cold.states.size(),8u,coldTargets))return 249;
+			const double coldFlow=6.0*std::sqrt(cold.values.characteristicDiameterM/
+				FireProductionDyadicCalibration::Gravity);
+			RISE::FireProductionResidentStepRequest coldRequest;
+			if(!FireProductionDyadicCalibration::BuildProductionRequest(cold,coldTargets[0],
+				coldFlow/512.0,coldRequest,error)||
+				!measureRegime("cold",cold,coldRequest,coldEvidence))return 250;
+			static const std::array<float,17> expectedBurningResidual={{
+				0x1.c02f92p-13f,0x1.46e7dcp-17f,0x1.46e7dcp-17f,0x1.46e7dcp-17f,
+				0x1.4e97dcp-17f,0x1.4e97dcp-17f,0x1.4e97dcp-17f,0x1.4e97dcp-17f,
+				0x1.4e97dcp-17f,0x1.4e97dcp-17f,0x1.4e97dcp-17f,0x1.4e97dcp-17f,
+				0x1.4e97dcp-17f,0x1.4e97dcp-17f,0x1.4e97dcp-17f,0x1.4e97dcp-17f,
+				0x1.4e97dcp-17f}};
+			static const std::array<float,17> expectedColdResidual={{
+				0x1.7e3b26p-4f,0x1.f8d616p-2f,0x1.2bc126p-3f,0x1.a4abbcp-4f,
+				0x1.db4c28p-5f,0x1.2eb028p-5f,0x1.81bc28p-6f,0x1.f670ep-7f,
+				0x1.49e27p-7f,0x1.b41f6p-8f,0x1.23406p-8f,0x1.86734p-9f,
+				0x1.060b4p-9f,0x1.5ff88p-10f,0x1.d8fap-11f,0x1.3e14p-11f,
+				0x1.abaep-12f}};
+			bool exact=burningEvidence.generationField==0.0025328069638265172&&
+				burningEvidence.generationCell==3227u&&
+				burningEvidence.generationBeginning==-1.1871614802316799e-12&&
+				burningEvidence.generationOutput==-0.0025328069650136786&&
+				burningEvidence.removedField==0.0025328069650136786&&
+				burningEvidence.residual==expectedBurningResidual&&
+				coldEvidence.generationField==0.00012031080315666465&&
+				coldEvidence.generationCell==81216u&&
+				coldEvidence.generationBeginning==0.00013951373206966267&&
+				coldEvidence.generationOutput==0.00025982453522632731&&
+				coldEvidence.removedField==0.00026066224468057619&&
+				coldEvidence.residual==expectedColdResidual;
+			for(std::size_t cycle=0u;cycle<16u;++cycle)exact=exact&&
+				burningEvidence.sweeps[cycle]==68u*(cycle+1u)&&
+				coldEvidence.sweeps[cycle]==62u*(cycle+1u);
+			const double burningRequiredDrain=burningEvidence.generationField/0.00075;
+			const double coldRequiredDrain=coldEvidence.generationField/0.00075;
+			const double burningDeliveredDrain=1.0-static_cast<double>(
+				burningEvidence.residual[16])/static_cast<double>(burningEvidence.residual[0]);
+			const double coldDeliveredDrain=1.0-static_cast<double>(
+				coldEvidence.residual[16])/static_cast<double>(coldEvidence.residual[0]);
+			exact=exact&&burningRequiredDrain==3.3770759517686897&&
+				coldRequiredDrain==0.1604144042088862&&
+				burningDeliveredDrain==0.9533406144549903&&
+				coldDeliveredDrain==0.99562928290235475&&burningRequiredDrain>1.0&&
+				DigestFile(checkpointPath)==checkpointDigest;
+			std::fprintf(stderr,"RESTORATION_PLATEAU decision burning_r_req=%.17g "
+				"burning_r16=%.17g cold_r_req=%.17g cold_r16=%.17g G_ratio=%.17g\n",
+				burningRequiredDrain,burningDeliveredDrain,coldRequiredDrain,
+				coldDeliveredDrain,burningEvidence.generationField/coldEvidence.generationField);
+			return exact?253:254;
 		}
 		RISE::FireProductionResidentStepResult production;
 		if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){std::fprintf(stderr,

@@ -293,7 +293,7 @@ int main()
 	Check(!subdominanceMeasurement.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(subdominanceMeasurement.begin(),
 			subdominanceMeasurement.end()))==
-		"423e62e74b83e34c7667f508f07117d2d4962c72e029e5c0494285d480c918e8"&&
+		"6e23debe9e5ed08445175d8250b1077df249705faf09f6e9eb891ccb7365ce5a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 		"b32cd74d7eab2ab0872bf04d25c54ac5279315380837be222bb36079f3f15674"&&
@@ -314,7 +314,7 @@ int main()
 		"165602c9a142c999ee38a2a4a7321e91204e0ba7ef7a0e6cfd5662dcf3229996"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
-		"a4f10b2f21ac905f0e105dfb966d72c606927662336d7c9f4cc9dde44b43fb2b"&&
+		"05be020a5ed9a8558318e083638095c668ea71f982d28d10876c57c2a644d6a1"&&
 		subdominanceMeasurement.find("measurement_trace_sha256 "
 			"f90a2508803f769665e68fc2c10e7672ea5f7ee5bf647fa2b8ff8b227551cebf")!=
 			std::string::npos&&
@@ -345,7 +345,7 @@ int main()
 		"ff15255af16cd650606bda2cae1c8cf3f422b1b24211b6c9b55f621ec5aba99a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"b812c0960e62ac0ddbd6bf6533be343804f7e9497dda5ac9dc081eec7acace5c"&&
+		"075fc16c10497a2c81befb2fc597e9f21a67611193b7a597f750afbb631970ee"&&
 		goldenSubdominanceInputs.find("measurement_performed false")!=std::string::npos&&
 		goldenSubdominanceInputs.find("slice_restart_policy shared_golden_beginning_per_slice")!=
 			std::string::npos&&
@@ -378,6 +378,37 @@ int main()
 		restorationPlateauProtocol.find("production_validation_changed false")!=
 			std::string::npos,
 		"r141 freezes plateau-derived restoration validation before measurement");
+	const std::string restorationCapacityEvidence=ReadText(
+		"rendered/fire_production_calibration/r142_burning_plateau_capacity/"
+		"restoration_capacity_evidence.v1");
+	const std::string solverTestSource=ReadText("tests/FireProductionSolverTest.cpp");
+	Check(!restorationCapacityEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(restorationCapacityEvidence.begin(),
+			restorationCapacityEvidence.end()))==
+		"60ad7485165360cbc66d8acc89a19144f233e893cb7d3af13b36d1e36bafa36c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMetal.begin(),projectionMetal.end()))==
+		"05be020a5ed9a8558318e083638095c668ea71f982d28d10876c57c2a644d6a1"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+		"075fc16c10497a2c81befb2fc597e9f21a67611193b7a597f750afbb631970ee"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			solverTestSource.begin(),solverTestSource.end()))==
+		"0a9723b4e5eb1f688bcdf575dd92e5b38dc50fbf2a87540ea35165616ad0b1b3"&&
+		restorationCapacityEvidence.find(
+			"burning_G_field 0.0025328069638265172")!=std::string::npos&&
+		restorationCapacityEvidence.find(
+			"cold_G_field 0.00012031080315666465")!=std::string::npos&&
+		restorationCapacityEvidence.find(
+			"burning_required_drain 3.3770759517686897")!=std::string::npos&&
+		restorationCapacityEvidence.find(
+			"burning_delivered_drain_16 0.9533406144549903")!=std::string::npos&&
+		restorationCapacityEvidence.find("no_validation_band_admitted true")!=
+			std::string::npos&&
+		restorationCapacityEvidence.find("no_cycle_count_can_satisfy true")!=
+			std::string::npos&&
+		restorationCapacityEvidence.find("canonical_exit 253")!=std::string::npos,
+		"r142 byte-binds the burning capacity stop and admits no replacement band");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
@@ -428,13 +459,14 @@ int main()
 		unixTestDriver.find("PASS (exact exit=243)")!=std::string::npos&&
 		unixTestDriver.find("expected 243")!=std::string::npos,
 		"ordinary macOS suite executes and exact-binds the retained r138 precision pilot");
-	Check(unixTestDriver.find("FireSequenceTest.r140_golden_restoration_refusal")!=
+	Check(unixTestDriver.find("FireSequenceTest.r142_burning_plateau_capacity")!=
 			std::string::npos&&
+		unixTestDriver.find("RISE_FIRE_RESTORATION_PLATEAU_PROBE=1")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-golden-composition")!=std::string::npos&&
-		unixTestDriver.find("golden_refusal_rc\" -eq 244")!=std::string::npos&&
-		unixTestDriver.find("PASS (exact exit=244)")!=std::string::npos&&
-		unixTestDriver.find("expected 244")!=std::string::npos,
-		"ordinary macOS suite exact-binds the r140 golden restoration refusal");
+		unixTestDriver.find("golden_refusal_rc\" -eq 253")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=253)")!=std::string::npos&&
+		unixTestDriver.find("expected 253")!=std::string::npos,
+		"ordinary macOS suite exact-binds the r142 burning capacity stop");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
