@@ -2855,6 +2855,48 @@ changed, and precision measurement, temporal refinement, additive-contract
 formation, source maps, and first light remain blocked pending an explicit
 architecture ruling.
 
+### 7.55c Manifold timestep protocol (r143, pre-evidence)
+
+The r142 capacity finding is resolved in the existing section-3.9 pin-4
+timestep class.  `G_field` is the per-step advective dose at the transported
+burning front; the measured `21.052198949485707` burning/cold ratio is physical
+contrast, not a producer defect.  Every accepted step atomically records its
+represented timestep `dt_prev`, field generation `G_prev`, and delivered
+restoration drain `r_prev`.  The next selector forms
+
+`dt_manifold = dt_prev * ((1-h) * C * r_prev) / G_prev`,
+
+where `C=1e-3` and `h=2^-2`, and takes the minimum with the advective,
+buoyant, explicit-diffusion, and `1.1*dt_prev` growth limits.  Exact positive
+zero generation contributes no limit.  Missing metadata on the first step of
+a run is intentional: that step uses only the CFL-family and growth rules.
+Partial, nonfinite, or nonphysical metadata on a resumed accepted trajectory
+fails closed rather than silently disabling the limiter.
+
+The current step's scalar transport determines `G_field` before restoration.
+It therefore also determines the mechanism criterion
+`r_req=G_field/(C*(1-h))` and
+`post_residual <= (1-r_req)*pre_residual`.  `G_field>C*(1-h)` is impossible for
+that step and fails acceptance.  Independently, terminal accepted scalars must
+satisfy `max |V(Q)-1|<=C*(1-h)`.  This function-level gate detects a burning
+regime change that grows faster than the previous-step predictor.  Only scalar
+reductions may cross the diagnostic seam; no full grid may leave residency.
+
+Using r142's represented inputs predicts `dt_manifold=
+1.589201814710624e-5 s`, a `3.542360307075882x` tightening from
+`5.629525428363875e-5 s`.  This is explicitly not evidence.  The frozen Metal
+campaign must reproduce the selector, realized plateau, device/wall p95,
+tier-10 times 25-second projection, and at least 100 resident steps before the
+protocol can unlock golden-slice precision work.  The pre-evidence artifact is
+`rendered/fire_production_calibration/r143_manifold_timestep_protocol/manifold_timestep_protocol.v1`.
+
+Rejected alternatives remain explicit.  A restoration gain would introduce a
+regime-dependent gamma window and abandon deadbeat semantics.  Widening `C`
+mixes solver capacity with the r60 admissibility unit system.  State repair
+mutates conservation ledgers and masks producer defects.  Production's omitted
+r70 Picard advective-anomaly closure remains a follow-up only if the two-pass
+cost threatens the certified budget; it is not the current remedy.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

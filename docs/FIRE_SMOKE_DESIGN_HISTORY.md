@@ -3280,3 +3280,23 @@ it was already tried and refuted here.
   `1054` cold sweeps) and matches its pre/post diagnostics on every curve run.
   The retained r138 pilot was rerun after adding the isolated probe seam and
   reproduced exact exit `243` and trace `f90a2508...551cebf`.
+- **r143 manifold-timestep protocol (2026-08-22; pre-evidence):** the owner
+  resolves r142 in the existing section-3.9 pin-4 remedy class.  The measured
+  `21.052198949485707` burning/cold generation ratio is classified as physical
+  front contrast: for a fixed regime, manifold generation scales with the
+  per-step advective dose, so the timestep—not the EOS ceiling or restoration
+  gain—owns capacity.  With `h=2^-2`, an accepted step publishes `(dt,G,r)` and
+  the next candidate is
+  `dt_manifold=dt*((1-h)*1e-3*r)/G`, entering the same minimum as advective,
+  buoyant, explicit-diffusion, and `1.1x` growth limits.  A run's first step
+  has no prior manifold observation and therefore uses the CFL-family limits
+  alone.  Each new step derives its restoration band from its own measured
+  `G`, and independently fails if the realized EOS plateau exceeds `7.5e-4`;
+  this catches a regime transition that outruns the one-step predictor.
+  r142 predicts `1.589201814710624e-5 s`, `3.542360307075882x` below its
+  previous `5.629525428363875e-5 s`, but these numbers remain predictions until
+  the Metal campaign.  Restoration gain is rejected because its admissible
+  gamma window is regime-dependent; widening the EOS ceiling confuses solver
+  capacity with r60 admissibility; per-step repair mutates ledgers; and an r70
+  Picard anomaly pass remains only a budget-triggered follow-up.  Artifact
+  `ba03dbda...e5b5f0` is pre-measurement and changes no production behavior.

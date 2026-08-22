@@ -423,6 +423,30 @@ int main()
 			std::string::npos&&
 		restorationCapacityEvidence.find("canonical_exit 253")!=std::string::npos,
 		"r142 byte-binds the burning capacity stop and admits no replacement band");
+	const std::string manifoldTimeStepProtocol=ReadText(
+		"rendered/fire_production_calibration/r143_manifold_timestep_protocol/"
+		"manifold_timestep_protocol.v1");
+	Check(!manifoldTimeStepProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(manifoldTimeStepProtocol.begin(),
+			manifoldTimeStepProtocol.end()))==
+		"ba03dbda86733b6e0248204ae539ecce8002ac7ecbcdaaa344dd997721e5b5f0"&&
+		manifoldTimeStepProtocol.find("protocol_before_measurement true")!=
+			std::string::npos&&
+		manifoldTimeStepProtocol.find("measurement_performed false")!=
+			std::string::npos&&
+		manifoldTimeStepProtocol.find(
+			"manifold_limit_rule dt_prev*((1-headroom)*eos_ceiling*r_prev)/G_prev")!=
+			std::string::npos&&
+		manifoldTimeStepProtocol.find(
+			"first_step_rule cfl_buoyant_diffusive_limits_only_without_prior_manifold_metadata")!=
+			std::string::npos&&
+		manifoldTimeStepProtocol.find(
+			"realized_plateau_rule max_cell_abs(V(Q_accepted)-1)<=plateau_allowance")!=
+			std::string::npos&&
+		manifoldTimeStepProtocol.find("prediction_is_not_evidence true")!=
+			std::string::npos&&
+		manifoldTimeStepProtocol.find("production_changed false")!=std::string::npos,
+		"r143 freezes the manifold timestep remedy before production evidence");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
