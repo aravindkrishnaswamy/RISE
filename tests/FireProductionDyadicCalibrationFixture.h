@@ -793,11 +793,13 @@ namespace FireProductionDyadicCalibration
 		request.cellSourceIncrement.assign(9u*cells,0.0f);
 		request.divergenceTargetPerS.resize(cells);
 		request.restorationDivergenceTargetPerS.resize(cells);
+		request.beginningManifoldDeviationPerCell.resize(cells);
 		for(std::size_t cell=0u;cell<cells;++cell){
 			request.divergenceTargetPerS[cell]=static_cast<float>(divergenceTarget[cell]);
 			double volumeRatio=0.0;
 			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(state.states[cell]),fuel,
 				state.states[cell].producerPrecision,volumeRatio,&error))return false;
+			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
 			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
 				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
 		}
@@ -1455,7 +1457,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="c917ea32e06dd4bfb17aa6246776d0bc36e353651c7375e3ac0fa3b68ccfcf94"||
+			traceDigest!="4cb7e6cf31946dc300ab65e5829e615d212f15a74b33a094e6b3b9e075ef3bcb"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1586,12 +1588,19 @@ namespace FireProductionDyadicCalibration
 			state.states.size(),8u,sealed))return 218;
 		const double flowThrough=6.0*std::sqrt(
 			state.values.characteristicDiameterM/Gravity);
+		const double baseStep=flowThrough/512.0;
 		std::vector<double> probe(StepCount),fieldMaximum(StepCount),deviceTimes,wallTimes;
 		RISECBOR64::Bytes trace;
 		std::uint64_t maximumCertified=0u,maximumActual=0u;
 		for(std::size_t step=0u;step<StepCount;++step){
+			RISE::FireProductionStableTimeStep selected;
+			const double previousStep=state.productionManifoldObservation.available?
+				state.productionManifoldObservation.timeStepS:0.0;
+			if(!RISE::SelectFireProductionStableTimeStep(state.cellWidthM,
+				0.5*state.cellWidthM/baseStep,0.0,0.0,previousStep,
+				state.productionManifoldObservation,selected,&error))return 219;
 			RISE::FireProductionResidentStepRequest request;
-			if(!BuildProductionRequest(state,sealed[step%sealed.size()],flowThrough/512.0,
+			if(!BuildProductionRequest(state,sealed[step%sealed.size()],selected.seconds,
 				request,error))return 219;
 			RISE::FireProductionResidentStepResult production;
 			const std::chrono::steady_clock::time_point beginning=
@@ -1637,9 +1646,13 @@ namespace FireProductionDyadicCalibration
 			trace.insert(trace.end(),payload.begin(),payload.end());
 			if(step>=WarmupCount){deviceTimes.push_back(production.deviceElapsedMS);
 				wallTimes.push_back(wall);}
+			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
+			if(!RISE::PublishFireProductionAcceptedManifoldObservation(
+				selected.seconds,production,acceptedObservation,&error))return 223;
 			if(!ApplyProductionResult(production,state,error)){
 				std::fprintf(stderr,"r118 long consumer step=%zu failed: %s\n",step,error.c_str());
 				return 223;}
+			state.productionManifoldObservation=acceptedObservation;
 		}
 		double plateau=0.0,fieldPlateau=0.0;
 		for(std::size_t step=StepCount-PlateauCount;step<StepCount;++step){

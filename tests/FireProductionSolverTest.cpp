@@ -3916,9 +3916,17 @@ int main()
 		"full resident force, transport, explicit zero-source, and two-projection step matches "
 		"the independent CPU composition with no interstage transfer");
 	FireProductionResidentStepResult acceptedObservationStep=composedGPU;
-	acceptedObservationStep.maximumManifoldGeneration=0.001;
+	acceptedObservationStep.maximumManifoldGeneration=0.0007;
 	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0005;
-	acceptedObservationStep.deliveredRestorationDrainFraction=0.95;
+	acceptedObservationStep.projection.maximumPreProjectionResidualPerS=0.1f;
+	acceptedObservationStep.projection.maximumPostProjectionResidualPerS=0.005f;
+	acceptedObservationStep.requiredRestorationDrainFraction=0.0007/0.00075;
+	acceptedObservationStep.deliveredRestorationDrainFraction=1.0-
+		static_cast<double>(acceptedObservationStep.projection.maximumPostProjectionResidualPerS)/
+		static_cast<double>(acceptedObservationStep.projection.maximumPreProjectionResidualPerS);
+	acceptedObservationStep.restorationResidualBandPerS=
+		(1.0-acceptedObservationStep.requiredRestorationDrainFraction)*
+		static_cast<double>(acceptedObservationStep.projection.maximumPreProjectionResidualPerS);
 	acceptedObservationStep.manifoldPlateauPassed=true;
 	acceptedObservationStep.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 	FireProductionAcceptedManifoldObservation acceptedObservation;
@@ -3928,17 +3936,25 @@ int main()
 		0.001,acceptedObservationStep,acceptedObservation,&error);
 	const bool observationSelected=observationPublished&&SelectFireProductionStableTimeStep(
 		0.1,0.0,0.0,0.0,0.001,acceptedObservation,observationLimitedStep,&error);
-	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0008;
+	const double expectedObservationStep=0.001*0.00075*
+		acceptedObservationStep.deliveredRestorationDrainFraction/0.0007;
 	FireProductionAcceptedManifoldObservation rejectedObservation;
+	FireProductionResidentStepResult forgedObservationStep=acceptedObservationStep;
+	forgedObservationStep.requiredRestorationDrainFraction=0.0;
+	const bool forgedObservationRejected=!PublishFireProductionAcceptedManifoldObservation(
+		0.001,forgedObservationStep,rejectedObservation,&error);
+	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0008;
 	const bool overAllowanceObservationRejected=
 		!PublishFireProductionAcceptedManifoldObservation(0.001,
 			acceptedObservationStep,rejectedObservation,&error);
 	Check(observationSelected&&acceptedObservation.available&&
-		acceptedObservation.timeStepS==0.001&&acceptedObservation.maximumGeneration==0.001&&
-		acceptedObservation.restorationDrainFraction==0.95&&
-		observationLimitedStep.seconds==0.0007125&&
+		acceptedObservation.timeStepS==0.001&&acceptedObservation.maximumGeneration==0.0007&&
+		acceptedObservation.restorationDrainFraction==
+			acceptedObservationStep.deliveredRestorationDrainFraction&&
+		observationLimitedStep.seconds==expectedObservationStep&&
 		std::string(observationLimitedStep.activeLimit)=="manifold_plateau"&&
-		overAllowanceObservationRejected&&!rejectedObservation.available,
+		forgedObservationRejected&&overAllowanceObservationRejected&&
+		!rejectedObservation.available,
 		"only an accepted binary32 plateau result publishes the next-step manifold selector state");
 	auto seedFullStepResult=[&](FireProductionResidentStepResult& seeded) {
 		seeded.conservativeValues.push_back(1.0f);seedDualResult(seeded.transportedDual);

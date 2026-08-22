@@ -135,6 +135,11 @@ namespace RISE
 		std::string* error )
 	{
 		result=FireProductionAcceptedManifoldObservation();
+		FireProductionRestorationPlateauValidation recomputed;
+		const bool plateauDiagnosticsValid=FireProductionRestorationPlateauWithinBand(
+			acceptedStep.maximumManifoldGeneration,
+			acceptedStep.projection.maximumPreProjectionResidualPerS,
+			acceptedStep.projection.maximumPostProjectionResidualPerS,recomputed);
 		if(!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
 			acceptedStep.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32||
 			!acceptedStep.physicalProjection.validationPassed||
@@ -148,14 +153,11 @@ namespace RISE
 			acceptedStep.maximumAcceptedManifoldDeviation<0.0||
 			acceptedStep.maximumAcceptedManifoldDeviation>
 				(1.0-ManifoldHeadroom)*ManifoldEOSCeiling||
-			!std::isfinite(acceptedStep.requiredRestorationDrainFraction)||
-			acceptedStep.requiredRestorationDrainFraction<0.0||
-			acceptedStep.requiredRestorationDrainFraction>1.0||
-			!std::isfinite(acceptedStep.deliveredRestorationDrainFraction)||
-			acceptedStep.deliveredRestorationDrainFraction<0.0||
-			acceptedStep.deliveredRestorationDrainFraction>1.0||
-			!std::isfinite(acceptedStep.restorationResidualBandPerS)||
-			acceptedStep.restorationResidualBandPerS<0.0)
+			!plateauDiagnosticsValid||recomputed.requiredDrainFraction>1.0||
+			!recomputed.mechanismPassed||
+			acceptedStep.requiredRestorationDrainFraction!=recomputed.requiredDrainFraction||
+			acceptedStep.deliveredRestorationDrainFraction!=recomputed.deliveredDrainFraction||
+			acceptedStep.restorationResidualBandPerS!=recomputed.maximumPostResidualPerS)
 			return Fail(error,"production accepted manifold observation is invalid");
 		result.available=true;
 		result.timeStepS=acceptedStepS;

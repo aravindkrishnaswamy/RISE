@@ -468,8 +468,8 @@ int main()
 			std::string::npos&&unixTestDriver.find("expected 254")!=std::string::npos,
 		"r144 binds the exact burning predictor miss and atomic fail-closed publication");
 	const std::string manifoldClosure=ReadText(
-		"rendered/fire_production_calibration/r145_manifold_predictor_closure/"
-		"manifold_predictor_closure.v1");
+		"rendered/fire_production_calibration/r146_accepted_manifold_lifecycle/"
+		"accepted_manifold_lifecycle.v1");
 	const std::string productionSolverTest=ReadText("tests/FireProductionSolverTest.cpp");
 	const std::string sequenceTest=ReadText("tests/FireSequenceTest.cpp");
 	const std::string simulationSolverTest=ReadText("tests/FireSimulationSolverTest.cpp");
@@ -480,13 +480,13 @@ int main()
 		"tests/fire_production_trace/SourceManifest.h");
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"3e8bf30a210938a0b6ff8beded6bdcaa12e0c05695f01e92db3e714a13fa8c06"&&
+		"1bc3ff98d4228fcd4a8a2f56cccaa7937b1db64a300870d624bbea909bbe06cc"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
 		"bd58790a56a4ca1aa32d392e474e7f569905727826202f572339373c1f6cb97b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"763187b74ee63e41b3a7c32e7c99e56506a024ce90fd1faebe2e62a72dcb05b9"&&
+		"d4d59f5b17342f59fa084e68dc37bf4267d56242a4992ecf99a6d3a43963b8c1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
 		"58678ae858017c68fc33dc7c5528cb7b0eaa3752529435b439b421b96ad1a739"&&
@@ -498,7 +498,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"67c3c948aeaad07bcd8649fa15c27709141661a3282028adf927b7dccfbd8804"&&
+		"229a8a223f0467fb36ff53d4afdb60bde70ed608b584a16f8f50e0c247337d9a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -507,10 +507,10 @@ int main()
 		"11bf1ae47556744c816143f1603019b56a64af2df1a1d1342f82f4a48a442429"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-		"d62efc6fefcde671ff22105c16715bff216ca1c0f7c95c73e09e9d95326f8d13"&&
+		"43760811ff16beb9a07c535cc4ea4a16a9a1a5de3e38914fd9cac1bd56b6f3c5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"2dad0927256a1587e3269fdcb608e11254293fda634142af135feba4a7fd815e"&&
+		"03766ef8cdaee0751bdbdfcd691a346630fbc5098cc3f22f098ddaaa746da9eb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -519,18 +519,21 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"b67162e402d00c8c238d7553929dc7288a1deb2855c5d6995e7b8c8ec7f1e1f4"&&
+		"593b5cb222566640d8e708b42d50c7baf447bfdc7659b3fb43f570d2d803a583"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"6299672b72c0b7235dee9ee385a4d7f6edb968d24cfd920ebafed283d1c08112"&&
-		manifoldClosure.find("single_r60_predicate_shared true")!=std::string::npos&&
-		manifoldClosure.find("full_public_result_atomic_rejection true")!=
+		"1ee33642f4b29e102a5550a8262b2c539a63cac5e88f59d069333cd735852d4e"&&
+		manifoldClosure.find("accepted_observation_publication_recomputes_required_drain true")!=
 			std::string::npos&&
-		manifoldClosure.find("r136_exact_exit 237")!=std::string::npos&&
-		manifoldClosure.find("r138_retained_exact_exit 243")!=std::string::npos&&
+		manifoldClosure.find("checkpoint_versions_5_through_9_clear_stale_observation true")!=
+			std::string::npos&&
+		manifoldClosure.find("r118_retained_performance_acceptance false")!=
+			std::string::npos&&
+		manifoldClosure.find("r119_all_scalar_velocity_inventory_channels_accepted true")!=
+			std::string::npos&&
 		manifoldClosure.find("r142_retained_exact_exit 253")!=std::string::npos&&
 		manifoldClosure.find("r144_exact_exit 254")!=std::string::npos,
-		"r145 closes producer lifecycle, EOS totality, source provenance, and retained gates");
+		"r146 closes accepted-observation lifecycle and records the retained wall-budget miss");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

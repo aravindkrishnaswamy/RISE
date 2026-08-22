@@ -48,6 +48,15 @@ def source_manifest() -> str:
 
 
 def transform(text: str, name: str, suffix: str) -> str:
+    if name == "FireProductionForce" and suffix == ".cpp":
+        # This owner-only publication seam consumes a completed binary32
+        # resident result.  It is outside the same-scheme arithmetic mirror
+        # and has no binary64 producer analogue.
+        begin = text.find("\n\tbool PublishFireProductionAcceptedManifoldObservation(")
+        end = text.find("\n\tbool EvaluateFireProductionVremanEddyViscosity(", begin)
+        if begin < 0 or end < 0:
+            raise RuntimeError("accepted manifold publication seam changed")
+        text = text[:begin] + text[end:]
     text = text.replace("namespace RISE", "namespace RISEFireProductionFP64")
     text = text.replace(
         '#include "FireSimulationRecords.h"',

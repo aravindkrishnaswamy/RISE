@@ -18,6 +18,17 @@ NAMES = ("FireProductionAdvection", "FireProductionProjection",
 
 
 def transform(text: str, name: str, suffix: str) -> str:
+    if name == "FireProductionForce" and suffix == ".cpp":
+        # Accepted-observation publication is owner lifecycle logic, not part
+        # of the arithmetic mirror.  In particular it consumes the completed
+        # binary32 result as metadata and must not be scalar-substituted with
+        # TraceFloat.  Keep the removal seam exact so source drift fails the
+        # generator instead of silently changing the traced DAG.
+        begin = text.find("\n\tbool PublishFireProductionAcceptedManifoldObservation(")
+        end = text.find("\n\tbool EvaluateFireProductionVremanEddyViscosity(", begin)
+        if begin < 0 or end < 0:
+            raise RuntimeError("accepted manifold publication seam changed")
+        text = text[:begin] + text[end:]
     text = text.replace("namespace RISE", "namespace RISEFireProductionTrace")
     text = text.replace('#include "FireSimulationRecords.h"',
                         '#include "../../src/Library/Utilities/FireSimulationRecords.h"')

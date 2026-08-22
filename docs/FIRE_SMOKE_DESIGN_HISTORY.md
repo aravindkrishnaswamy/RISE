@@ -3341,3 +3341,30 @@ it was already tried and refuted here.
   SHA remains `1b944176...4947`.  Because the first limited burning step still
   requires drain `3.3442>1`, the long shadow and subsequent contract campaign
   remain correctly blocked.
+- **r146 accepted-observation lifecycle correction (2026-08-22):** a second
+  fresh review found that r145 had serialized the observation without making
+  it authoritative.  Publication trusted caller-authored required drain and
+  band fields, checkpoint v10 did not bind the observation timestep to the
+  accepted step, a reused v5--v9 destination could retain stale metadata, and
+  the retained resident campaign did not feed accepted `(dt,G,r)` into its
+  next selector.  All four seams now fail closed: publication independently
+  recomputes the plateau mechanism and rejects forged results; v10 requires
+  `observation.dt==previousStep==lastAcceptedStep`; legacy decoding clears the
+  tuple; and r118 executes the real publish--select lifecycle before every
+  resident step.  Owner-only publication is deliberately omitted from the
+  generated arithmetic mirrors, moving the source-bound r136 trace to
+  `4cb7e6cf...75ef3bcb` without changing its arithmetic census or refusal.
+
+  The retained numerical evidence is unchanged.  r118 reproduces plateau
+  `1.5439012582030287e-4`, field plateau `6.5237316812827295e-4`, trace
+  `719ee45e...f68cb`, and final digest `d9a1a0ea...c9dc2`; r119 again accepts
+  every scalar, velocity, and inventory channel; r138 retains
+  `f90a2508...551cebf`; r142 and r144 retain exact exits `253/254`.  The
+  lifecycle rerun does expose a separate performance fact: r118 device p95 is
+  stable at `27.6619 ms`, but wall p95 is `329.4053 ms`, so its historical
+  `200 ms` wall acceptance is not re-certified.  A one-variable parallel EOS
+  reduction experiment measured `328.0007 ms` and was reverted as noise-level
+  benefit with bit-identical outputs.  The burning stop remains decisive:
+  the limited step reaches `2.5081625764804549e-3`, requires drain
+  `3.3442167670577247`, and atomically rejects.  Durable correction evidence
+  is `1bc3ff98...be06cc`; golden remains `1b944176...4947`.

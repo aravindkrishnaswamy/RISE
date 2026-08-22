@@ -2970,6 +2970,39 @@ still `3.3442167670577247>1`.  The long shadow, golden `B_fp32`, temporal
 refinement, eight-slice readmission, source maps, and first light therefore
 remain unrun and blocked at the same function-level detector.
 
+### 7.55f Authoritative accepted-observation lifecycle (r146)
+
+Fresh review found that r145's serialized tuple was not yet authoritative.
+The publication seam now recomputes required drain, delivered drain, and the
+mechanism band from the accepted result and rejects any caller-authored
+disagreement.  Checkpoint v10 requires the observation timestep to equal both
+`previousStepS` and `lastAcceptedStepS`; v5--v9 decoding resets the complete
+tuple before reading, so a reused destination cannot inherit stale capacity
+state.  The retained r118 resident owner now performs the actual lifecycle:
+successful Binary32 result -> validated observation publication -> next-step
+selection -> checkpoint state.  The binary64 capstone/oracle loop remains a
+different producer and intentionally uses its own CFL selector.
+
+Publication is lifecycle logic, not same-scheme arithmetic, and is therefore
+mechanically removed from both generated numeric mirrors.  The current r136
+source-bound trace is `4cb7e6cf...75ef3bcb`; its 24-stage values, complete
+branch census, `0xff` proof-gap bitmap, and exact refusal are unchanged.
+Retained r119 accepts all scalar/velocity/inventory channels, r138 reproduces
+`f90a2508...551cebf`, and r142/r144 reproduce exact `253/254`.
+
+The function result remains a stop.  At represented
+`1.5892017472651787e-5 s`, realized field deviation is
+`2.5081625764804549e-3` against `7.5e-4`; required drain is
+`3.3442167670577247` while delivered drain is `0.97489008508207653`.
+The latest five-trial r144 observation is `71.6713 ms` device and
+`633.3460 ms` wall p95, approximately `31.32/276.76 h` for tier-10 times
+25 s.  The retained r118 lifecycle replay is numerically byte-identical and
+device-stable (`27.6619 ms` p95), but its `329.4053 ms` wall p95 does not
+re-certify the historical `200 ms` wall budget.  A measured parallel host-EOS
+experiment changed that to only `328.0007 ms` and was reverted.  No budget or
+physics bound moved.  Evidence is
+`rendered/fire_production_calibration/r146_accepted_manifold_lifecycle/accepted_manifold_lifecycle.v1`.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
