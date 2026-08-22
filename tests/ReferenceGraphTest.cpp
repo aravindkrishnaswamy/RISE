@@ -2253,6 +2253,26 @@ int main()
 				Check( has( "lantern" ), "PART14e: SOURCE -- the one-hop source target is present" );
 				Check( !has( "lantern_post" ) && !has( "lantern_head" ) && !has( "lantern_globe" ) && !has( "lantern_cap" ),
 				       "PART14e: SOURCE does NOT recurse into the source's own subtree (one hop only)" );
+
+				// review-round P3-c: `pair_b`'s source (`lantern`) is a
+				// CONTAINER with no geometry of its own, so the "one hop
+				// only" claim above is not yet proven against a source that
+				// actually HAS geometry to leak. `globe_solo` sources
+				// `lantern_globe` directly, and `lantern_globe` carries
+				// `geometry geo_globe` -- SOURCE must add `lantern_globe`
+				// itself but NOT run GEO on it (GEO only runs over the
+				// UP/DOWN/start object set, never over a SOURCE one-hop
+				// addition -- see ObjectGraphFocusedClosure's own comment).
+				ObjLaidOutGraph focusedLeaf;
+				c.ReadObjectGraphLaidOutFocused( String( "globe_solo" ), focusedLeaf, nullptr );
+				auto hasLeaf = [&]( const char* name ) {
+					return FindNode( focusedLeaf.graph, ChunkCategory::Object, name ) != nullptr
+					    || FindNode( focusedLeaf.graph, ChunkCategory::Geometry, name ) != nullptr;
+				};
+				Check( hasLeaf( "globe_solo" ), "PART14e: (globe_solo) the target itself is present" );
+				Check( hasLeaf( "lantern_globe" ), "PART14e: (globe_solo) SOURCE -- the one-hop source target is present" );
+				Check( !hasLeaf( "geo_globe" ),
+				       "PART14e: (globe_solo) the source target's OWN geometry (geo_globe) does NOT leak in -- SOURCE never runs GEO" );
 				j->release();
 			}
 		}
@@ -2304,6 +2324,99 @@ int main()
 
 			renderThread.join();
 			rj->release();
+		}
+
+		// ---- (h) FOCUSED on the synthetic csg fixture (review-round P2-2):
+		// (i) UP's composite-ownership rule -- focusing an OPERAND pulls in
+		// the owning composite PLUS the composite's own parent chain, but
+		// NOT the composite's OTHER operand (reaching that is a DOWN-only
+		// rule -- see ObjectGraphFocusedClosure's own comment for why UP
+		// never applies DOWN's rules); (ii) DOWN's own-operand expansion --
+		// focusing an ANCESTOR of the composite transitively reaches BOTH
+		// operands once the composite itself enters the DOWN worklist, not
+		// just the trivial start==composite case. RED-PROVED below
+		// (temporarily dropping UP's composite-ownership rule). ----
+		{
+			const char* path = "test_referencegraph_objgraph_csg_focus.RISEscene";
+			Job* j = LoadFixture( path,
+				"RISE ASCII SCENE 7\n"
+				"film\n{\nwidth 32\nheight 24\n}\n"
+				"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+				"sphere_geometry\n{\nname gs\nradius 1\n}\n"
+				"box_geometry\n{\nname gb\nwidth 1\nheight 1\ndepth 1\n}\n"
+				"standard_object\n{\nname root\nposition 0 0 0\n}\n"
+				"standard_object\n{\nname opA\ngeometry gs\nposition -1 0 0\n}\n"
+				"standard_object\n{\nname opB\ngeometry gb\nposition 1 0 0\n}\n"
+				"csg_object\n{\nname combo\nparent root\noperation union\nobja opA\nobjb opB\n}\n" );
+			Check( j != nullptr, "PART14h: synthetic csg-focus fixture loads" );
+			if( j ) {
+				SceneEditController c( *j, 0 );
+
+				// (i) focus opA (an operand).
+				{
+					ObjLaidOutGraph focused;
+					c.ReadObjectGraphLaidOutFocused( String( "opA" ), focused, nullptr );
+					auto has = [&]( const char* name ) {
+						return FindNode( focused.graph, ChunkCategory::Object, name ) != nullptr
+						    || FindNode( focused.graph, ChunkCategory::Geometry, name ) != nullptr;
+					};
+					Check( has( "opA" ), "PART14h(i): the target itself is present" );
+					Check( has( "combo" ), "PART14h(i): UP -- the owning composite is present" );
+					Check( has( "root" ), "PART14h(i): UP -- the composite's own parent is present (transitive climb)" );
+					Check( has( "gs" ), "PART14h(i): GEO -- opA's own geometry is present" );
+					Check( !has( "opB" ), "PART14h(i): EXCLUDES the composite's OTHER operand (a DOWN-only rule, not reachable climbing UP)" );
+					Check( !has( "gb" ), "PART14h(i): EXCLUDES opB's own geometry too" );
+				}
+
+				// (ii) focus root (an ancestor of the composite) -- DOWN
+				// must transitively reach BOTH operands once `combo` itself
+				// enters the DOWN worklist.
+				{
+					ObjLaidOutGraph focused;
+					c.ReadObjectGraphLaidOutFocused( String( "root" ), focused, nullptr );
+					auto has = [&]( const char* name ) {
+						return FindNode( focused.graph, ChunkCategory::Object, name ) != nullptr
+						    || FindNode( focused.graph, ChunkCategory::Geometry, name ) != nullptr;
+					};
+					Check( has( "root" ), "PART14h(ii): the target itself is present" );
+					Check( has( "combo" ), "PART14h(ii): DOWN -- the child composite is present" );
+					Check( has( "opA" ) && has( "opB" ),
+					       "PART14h(ii): DOWN -- BOTH of the composite's own operands are present (own-operand expansion, transitive through an ancestor focus)" );
+					Check( has( "gs" ) && has( "gb" ), "PART14h(ii): GEO -- both operands' geometry is present" );
+				}
+				j->release();
+			}
+		}
+
+		// ---- (i) repeatCount edge cases (review-round P2-1/P3-b): a count
+		// may be `expr(...)` over a document `let`, and `count_u 1` ALONE
+		// (no `count_v`) is a genuine repeat of size 1, not "uncounted". ----
+		{
+			const char* path = "test_referencegraph_objgraph_repeatcount.RISEscene";
+			Job* j = LoadFixture( path,
+				"RISE ASCII SCENE 7\n"
+				"film\n{\nwidth 32\nheight 24\n}\n"
+				"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+				"let\n{\nN 4\n}\n"
+				"standard_object\n{\nname base\nposition 0 0 0\n}\n"
+				"standard_object\n{\nname exprRow\nsource base\ncount_u expr(N+1)\nposition 0 0 0\n}\n"
+				"standard_object\n{\nname oneRow\nsource base\ncount_u 1\nposition 0 0 0\n}\n" );
+			Check( j != nullptr, "PART14i: repeatCount edge-case fixture loads" );
+			if( j ) {
+				SceneEditController c( *j, 0 );
+				ObjGraph g;
+				c.ReadObjectGraph( g );
+				const GNode* exprRow = FindNode( g, ChunkCategory::Object, "exprRow" );
+				const GNode* oneRow  = FindNode( g, ChunkCategory::Object, "oneRow" );
+				Check( exprRow && oneRow, "PART14i: sanity -- both nodes resolve" );
+				if( exprRow )
+					Check( exprRow->repeatCount == 5,
+					       "PART14i: `count_u expr(N+1)` with let N=4 evaluates to repeatCount 5, NOT 0 (a bare strtoull on the raw text would read 0)" );
+				if( oneRow )
+					Check( oneRow->repeatCount == 1,
+					       "PART14i: `count_u 1` alone is a genuine repeat of size 1 -- PRESENCE selects the repeated form, so this publishes 1, not 0" );
+				j->release();
+			}
 		}
 	}
 

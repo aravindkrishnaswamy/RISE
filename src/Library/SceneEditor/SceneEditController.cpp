@@ -38,7 +38,6 @@
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
 #include <set>                            // 87 step 4a: the object-tree fold's visible-name set
-#include <cstdlib>                        // Object Graph slice: std::strtoull for count_u/count_v parsing
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "../Animation/KeyframableHelper.h"
 #include "ObjectIntrospection.h"
@@ -6346,6 +6345,16 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 	// document walk (a plain std::set lookup over data this same loop
 	// already produces).
 	std::set<RISE::Cst::NodeId> inScopeIds;
+	// review-round fix: the RE-CATEGORIZED category (Object for a
+	// rect_light/shape_light node, matching `GraphNodeSeed::category`
+	// above) by id -- so GraphEdgeSeed::fromCategory/toCategory below can
+	// agree with the NODE they address rather than repeating the raw
+	// document category (Light for a light-sugar chunk). Unused by
+	// BuildPainterMaterialGraph itself (it matches edges to nodes by id
+	// only, never by these fields), but a future reader of a
+	// GraphEdgeSeed in isolation should not be able to observe a node
+	// addressed as Object over here and as Light over there.
+	std::map<RISE::Cst::NodeId, ChunkCategory> nodeCategoryById;
 
 	for( const SceneReferenceGraph::DocumentChunk& c : chunks ) {
 		if( !c.hasCategory ) continue;
@@ -6379,25 +6388,37 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 
 		// repeatCount: standard_object's count_u/count_v repeat sugar (87
 		// step 3c) -- see GraphNode::repeatCount's own header comment.
-		// PRESENCE of count_u alone selects the repeated form (that
-		// param's own descriptor comment: "count_u 1 names its one entry
-		// [0,0], it does not fall back to the plain name"), so absence of
-		// count_u means "not a repeat chunk" (repeatCount stays 0) even if
-		// count_v were somehow present alone (not a legal authoring, but
-		// defensively harmless here either way).
+		// review-round fix: counts are documented to accept `expr(...)`
+		// over a document `let` (Cst.cpp's ExpandSourceInstance, SCENE_
+		// CONVENTIONS.md's instancing section), so this MUST go through
+		// the real derive-time evaluator (`RISE::Cst::EvaluateObjectRepeatCounts`,
+		// itself a thin public seam onto Cst.cpp's private EvalInstanceCount/
+		// EvalInstanceValue) rather than a bare strtoull on the raw param
+		// text -- a first draft of this seeder did the latter, and
+		// `strtoull("expr(3+2)", ...)` silently reads 0, publishing
+		// repeatCount 0 ("not a repeat chunk") for a genuine 5-way repeat.
+		// EvaluateObjectRepeatCounts itself returns false (leaving
+		// cu/cv at their pre-set 1/1, never consulted below) when `c.item`
+		// carries no `count_u` at all -- exactly the "not a repeat chunk"
+		// case this seeder already needs to leave at 0.
+		//
+		// AMBIGUITY, ACCEPTED: `count_u 0` (with or without `count_v`) is a
+		// LEGAL authoring that synthesizes ZERO entries (Cst.cpp's own
+		// comment: "A count of ZERO is legal and produces NO entries").
+		// Its product is therefore ALSO 0 -- indistinguishable here from
+		// "not a repeat chunk at all". This is a deliberate, accepted fold,
+		// not a bug: a chunk that synthesizes nothing has nothing for a
+		// shell's "xN" badge to usefully report either way, so publishing
+		// the same 0 a plain non-repeat chunk gets is the honest answer,
+		// not a distortion of one into the other.
 		if( c.item && std::string( c.keyword.c_str() ) == "standard_object" ) {
-			bool hasCountU = false;
-			const std::string cuStr = RISE::Cst::ParamValueAsParsed( c.item, "count_u", &hasCountU );
-			if( hasCountU ) {
-				bool hasCountV = false;
-				const std::string cvStr = RISE::Cst::ParamValueAsParsed( c.item, "count_v", &hasCountV );
-				const unsigned long long cu = std::strtoull( cuStr.c_str(), nullptr, 10 );
-				const unsigned long long cv = hasCountV ? std::strtoull( cvStr.c_str(), nullptr, 10 ) : 1ull;
-				s.repeatCount = static_cast<int>( cu * cv );
-			}
+			int cu = 1, cv = 1;
+			if( doc && RISE::Cst::EvaluateObjectRepeatCounts( *doc, c.item, cu, cv ) )
+				s.repeatCount = cu * cv;
 		}
 
 		inScopeIds.insert( c.id );
+		nodeCategoryById[ c.id ] = s.category;
 		outNodes.push_back( s );
 	}
 
@@ -6414,6 +6435,16 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 	for( const ReferenceEdge& e : snapshot.edges ) {
 		if( inScopeIds.find( e.referrerId ) == inScopeIds.end() ) continue;   // referrer not one of our nodes (also excludes override_object, unnamed chunks, out-of-scope categories)
 
+		// review-round fix: prefer the RE-CATEGORIZED category (falls back
+		// to the raw document category for a target outside this graph's
+		// node set, e.g. a dangling/out-of-scope toId -- there is no
+		// re-categorized value to look up for a node we never seeded) --
+		// see nodeCategoryById's own comment above.
+		const std::map<RISE::Cst::NodeId, ChunkCategory>::const_iterator fromCatIt = nodeCategoryById.find( e.referrerId );
+		const ChunkCategory referrerCat = ( fromCatIt != nodeCategoryById.end() ) ? fromCatIt->second : e.referrerCategory;
+		const std::map<RISE::Cst::NodeId, ChunkCategory>::const_iterator toCatIt = nodeCategoryById.find( e.targetId );
+		const ChunkCategory targetCat = ( toCatIt != nodeCategoryById.end() ) ? toCatIt->second : e.targetCategory;
+
 		const std::string pn( e.paramName.c_str() );
 		if( pn == "parent" || pn == "source" || pn == "obja" || pn == "objb" ) {
 			// HIERARCHY family: seeded AS-IS (referrer -> target) -- the
@@ -6423,13 +6454,13 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 			// ReadObjectGraph's own header comment).
 			GraphEdgeSeed s;
 			s.fromId         = e.referrerId;
-			s.fromCategory    = e.referrerCategory;
+			s.fromCategory    = referrerCat;
 			s.fromName        = e.referrerName;
 			s.paramName       = e.paramName;
 			s.occurrence      = e.occurrence;
 			s.portCategories  = e.portCategories;
 			s.toId            = e.targetId;
-			s.toCategory      = e.targetCategory;
+			s.toCategory      = targetCat;
 			s.toName          = e.targetName;
 			outEdges.push_back( s );
 		} else if( pn == "geometry" || pn == "base_geometry" ) {
@@ -6441,13 +6472,13 @@ void SceneEditController::BuildObjectGraphSeedsLocked_(
 			// port correctly.
 			GraphEdgeSeed s;
 			s.fromId         = e.targetId;      // FLIPPED: the geometry chunk becomes the "referrer" here
-			s.fromCategory    = e.targetCategory;
+			s.fromCategory    = targetCat;
 			s.fromName        = e.targetName;
 			s.paramName       = e.paramName;
 			s.occurrence      = e.occurrence;
 			s.portCategories  = e.portCategories;
 			s.toId            = e.referrerId;   // FLIPPED: the consumer (an object, or another geometry chunk) becomes the "target"
-			s.toCategory      = e.referrerCategory;
+			s.toCategory      = referrerCat;
 			s.toName          = e.referrerName;
 			outEdges.push_back( s );
 		}
