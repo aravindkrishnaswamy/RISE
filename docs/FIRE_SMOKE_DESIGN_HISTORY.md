@@ -3371,25 +3371,33 @@ it was already tried and refuted here.
 - **r147 producer-owned observation authority (2026-08-22):** fresh review
   corrects r146's remaining public-authority gaps without changing the r144
   stop.  A successful resident step now records its represented binary32
-  timestep and receives a private token only after its mechanism and field
-  plateau gates pass.  Publication exact-matches the token against timestep,
-  `G`, terminal field deviation, required/delivered drain, and mechanism band;
-  a coordinated rewrite of every public diagnostic therefore REDs.  The
+  timestep and receives a private, copy-clearing token only after its mechanism
+  and field plateau gates pass.  The token binds the complete resident payload
+  plus timestep, `G`, terminal field deviation, required/delivered drain, and
+  mechanism band.  Publication consumes it; payload mutation, a coordinated
+  diagnostic rewrite, copying, and replay therefore RED.  The published
+  observation is opaque outside the producer and the validated checkpoint
+  codec, so authority cannot be regained by rewriting `(dt,G,r)`.  The
   production selector also rejects unavailable metadata whenever
   `previousStepS>0`, so v5--v9 production resume cannot silently bypass the
-  manifold limit.  Owner-only publication declarations are absent from both
-  generated arithmetic mirrors.
+  manifold limit.  The binary64 oracle retains its separate five-argument CFL
+  selector and never inherits that production-only stop.  Owner-only
+  publication declarations are absent from both generated arithmetic mirrors.
 
   Exact exit `255` now exercises a real two-step Metal lifecycle: first-step
-  token publication, represented timing update, v10 checkpoint, reload, and
-  resumed selection.  It pins `G=1.2031080315688669e-4`,
+  token publication, single-use/copy/payload/diagnostic REDs, represented timing
+  update, v10 checkpoint, reload, and resumed selection.  Writer-side and
+  checksum-valid loader-side timestep mismatch REDs bind both v10 equalities.
+  It pins `G=1.2031080315688669e-4`,
   `r=0.99562928290235475`, and resumed CFL selection
   `0.0018513042677754073 s`.  Retained r118 physics remains byte-identical
   (`719ee45e...f68cb`, `d9a1a0ea...c9dc2`), though wall p95 is still a failed
   `325.3877 ms` observation against the historical `200 ms` budget.  r119
   accepts every channel; r138 retains `f90a2508...551cebf`; r142/r144 retain
-  exact `253/254`.  The burning result remains tokenless and rejected at field
+  exact `253/254`.  The owner-only header change moves the source-bound r136
+  trace to `295b1f4f...7a9278b` without changing any arithmetic pin or the
+  `0xff` refusal.  The burning result remains tokenless and rejected at field
   `2.5081625764804549e-3`, required drain `3.3442167670577247`, delivered
-  `0.97489008508207653`.  Durable evidence is `182f3250...7c54c1c7`; golden
+  `0.97489008508207653`.  Durable evidence is the SHA-bound r147 artifact; golden
   remains `1b944176...4947`.  Later contract stages remain blocked at the same
   function-level capacity finding.

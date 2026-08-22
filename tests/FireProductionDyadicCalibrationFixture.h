@@ -1457,7 +1457,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="737175ca6a4c7517eccf1b248c7b6c481a38794da631eeeae615a0563d065060"||
+			traceDigest!="295b1f4f8da18db1cdaf7e54a4c4b14091f9d66ea55b584abd7b582787a9278b"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1593,7 +1593,7 @@ namespace FireProductionDyadicCalibration
 		std::vector<double> probe(StepCount),fieldMaximum(StepCount),deviceTimes,wallTimes;
 		RISECBOR64::Bytes trace;
 		std::uint64_t maximumCertified=0u,maximumActual=0u;
-		bool acceptedLifecyclePassed=false;
+		bool acceptedLifecyclePassed=false,authorityMutationREDsPassed=false;
 		double selectedAfterResume=0.0,firstGeneration=0.0,firstDrain=0.0;
 		std::string selectedAfterResumeLimit;
 		const std::filesystem::path lifecycleCheckpoint=
@@ -1601,8 +1601,8 @@ namespace FireProductionDyadicCalibration
 		{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
 		for(std::size_t step=0u;step<StepCount;++step){
 			RISE::FireProductionStableTimeStep selected;
-			const double previousStep=state.productionManifoldObservation.available?
-				state.productionManifoldObservation.timeStepS:0.0;
+			const double previousStep=state.productionManifoldObservation.Available()?
+				state.productionManifoldObservation.TimeStepS():0.0;
 			if(!RISE::SelectFireProductionStableTimeStep(state.cellWidthM,
 				0.5*state.cellWidthM/baseStep,0.0,0.0,previousStep,
 				state.productionManifoldObservation,selected,&error))return 219;
@@ -1655,12 +1655,66 @@ namespace FireProductionDyadicCalibration
 			trace.insert(trace.end(),payload.begin(),payload.end());
 			if(step>=WarmupCount){deviceTimes.push_back(production.deviceElapsedMS);
 				wallTimes.push_back(wall);}
+			if(step==0u){
+				const double represented=static_cast<double>(production.representedTimeStepS);
+				RISE::FireProductionResidentStepResult copied=production;
+				RISE::FireProductionAcceptedManifoldObservation rejected;
+				const bool copyClearsToken=!copied.HasAcceptedManifoldToken();
+				const bool wrongStepRejected=!RISE::PublishFireProductionAcceptedManifoldObservation(
+					std::nextafter(represented,std::numeric_limits<double>::infinity()),production,
+					rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				const float savedPayload=production.conservativeValues.front();
+				production.conservativeValues.front()=
+					std::nextafter(savedPayload,std::numeric_limits<float>::infinity());
+				const bool payloadMutationRejected=
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
+						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				production.conservativeValues.front()=savedPayload;
+				const double savedGeneration=production.maximumManifoldGeneration;
+				const double savedRequired=production.requiredRestorationDrainFraction;
+				const double savedDelivered=production.deliveredRestorationDrainFraction;
+				const double savedBand=production.restorationResidualBandPerS;
+				production.maximumManifoldGeneration*=0.5;
+				RISE::FireProductionRestorationPlateauValidation coherent;
+				const bool coherentDerived=RISE::FireProductionRestorationPlateauWithinBand(
+					production.maximumManifoldGeneration,
+					production.projection.maximumPreProjectionResidualPerS,
+					production.projection.maximumPostProjectionResidualPerS,coherent);
+				production.requiredRestorationDrainFraction=coherent.requiredDrainFraction;
+				production.deliveredRestorationDrainFraction=coherent.deliveredDrainFraction;
+				production.restorationResidualBandPerS=coherent.maximumPostResidualPerS;
+				const bool coherentDiagnosticForgeryRejected=coherentDerived&&
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
+						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				production.maximumManifoldGeneration=savedGeneration;
+				production.requiredRestorationDrainFraction=savedRequired;
+				production.deliveredRestorationDrainFraction=savedDelivered;
+				production.restorationResidualBandPerS=savedBand;
+				const double savedDeviation=production.maximumAcceptedManifoldDeviation;
+				production.maximumAcceptedManifoldDeviation=0.0;
+				const bool deviationMutationRejected=
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
+						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				production.maximumAcceptedManifoldDeviation=savedDeviation;
+				authorityMutationREDsPassed=copyClearsToken&&wrongStepRejected&&
+					payloadMutationRejected&&coherentDiagnosticForgeryRejected&&
+					deviationMutationRejected;
+				if(!authorityMutationREDsPassed)return 223;
+			}
 			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
 			if(!RISE::PublishFireProductionAcceptedManifoldObservation(
 				static_cast<double>(request.force.timeStepS),production,
 				acceptedObservation,&error))return 223;
-			if(step==0u){firstGeneration=acceptedObservation.maximumGeneration;
-				firstDrain=acceptedObservation.restorationDrainFraction;}
+			if(step==0u){
+				RISE::FireProductionAcceptedManifoldObservation replayed;
+				const bool replayRejected=!RISE::PublishFireProductionAcceptedManifoldObservation(
+					static_cast<double>(request.force.timeStepS),production,replayed,&error)&&
+					!replayed.Available()&&!production.HasAcceptedManifoldToken();
+				authorityMutationREDsPassed=authorityMutationREDsPassed&&replayRejected;
+				if(!authorityMutationREDsPassed)return 223;
+			}
+			if(step==0u){firstGeneration=acceptedObservation.MaximumGeneration();
+				firstDrain=acceptedObservation.RestorationDrainFraction();}
 			if(!ApplyProductionResult(production,state,error)){
 				std::fprintf(stderr,"r118 long consumer step=%zu failed: %s\n",step,error.c_str());
 				return 223;}
@@ -1681,24 +1735,25 @@ namespace FireProductionDyadicCalibration
 					loaded.simulationTimeS==state.simulationTimeS&&
 					loaded.previousStepS==representedStep&&
 					loaded.lastAcceptedStepS==representedStep&&
-					loaded.productionManifoldObservation.available&&
-					loaded.productionManifoldObservation.timeStepS==representedStep&&
-					loaded.productionManifoldObservation.maximumGeneration==
-						acceptedObservation.maximumGeneration&&
-					loaded.productionManifoldObservation.restorationDrainFraction==
-						acceptedObservation.restorationDrainFraction&&
+					loaded.productionManifoldObservation.Available()&&
+					loaded.productionManifoldObservation.TimeStepS()==representedStep&&
+					loaded.productionManifoldObservation.MaximumGeneration()==
+						acceptedObservation.MaximumGeneration()&&
+					loaded.productionManifoldObservation.RestorationDrainFraction()==
+						acceptedObservation.RestorationDrainFraction()&&
 					AnalyticStateDigest(loaded)==stateDigestBefore;
 				if(!acceptedLifecyclePassed)return 223;
 				state=std::move(loaded);
 			}
 		}
 		if(lifecycleOnly){
-			std::fprintf(stderr,"r147 accepted lifecycle checkpoint=%d steps=%llu "
+			std::fprintf(stderr,"r147 accepted lifecycle checkpoint=%d authority_reds=%d steps=%llu "
 				"first_G=%.17g first_r=%.17g selected_after_resume=%.17g limit=%s\n",
-				acceptedLifecyclePassed?1:0,static_cast<unsigned long long>(state.acceptedSteps),
-				firstGeneration,firstDrain,selectedAfterResume,selectedAfterResumeLimit.c_str());
-			return acceptedLifecyclePassed&&state.acceptedSteps==2u&&
-				state.productionManifoldObservation.available&&
+				acceptedLifecyclePassed?1:0,authorityMutationREDsPassed?1:0,
+				static_cast<unsigned long long>(state.acceptedSteps),firstGeneration,firstDrain,selectedAfterResume,
+				selectedAfterResumeLimit.c_str());
+			return acceptedLifecyclePassed&&authorityMutationREDsPassed&&state.acceptedSteps==2u&&
+				state.productionManifoldObservation.Available()&&
 				firstGeneration==0.00012031080315688669&&
 				firstDrain==0.99562928290235475&&
 				selectedAfterResume==0.0018513042677754073&&

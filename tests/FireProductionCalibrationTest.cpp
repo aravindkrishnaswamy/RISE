@@ -20,6 +20,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 namespace
 {
@@ -472,6 +473,8 @@ int main()
 		"producer_authority_lifecycle.v1");
 	const std::string productionSolverTest=ReadText("tests/FireProductionSolverTest.cpp");
 	const std::string sequenceTest=ReadText("tests/FireSequenceTest.cpp");
+	const std::string fireCaseSource=ReadText("src/Library/Utilities/FireCase.cpp");
+	const std::string fireCaseHeader=ReadText("src/Library/Utilities/FireCase.h");
 	const std::string simulationSolverTest=ReadText("tests/FireSimulationSolverTest.cpp");
 	const std::string simulationCore=ReadText("tools/fire_simulator_core.h");
 	const std::string fp64SourceManifest=ReadText(
@@ -488,16 +491,22 @@ int main()
 		"tools/generate_fire_production_roundoff_trace.py");
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"182f32505e9e95f5c694ee1328f71c9b3be3d17235a82f68855a027f7c54c1c7"&&
+		"a166f8620d810d40ca2e97031b2a206f7c2994794a838ced6c3803a168f3c4b4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"8b5749931b62ddabdb28e976fa5937bb0340ea44e24a7304391d7eff2d95dbfd"&&
+		"d57057499515fec8a45cc6a3b28726908934dc94d7efc5bcec1bc18ea014b2b6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"8291a39b277a908d8446e7fc1b9b2e057ecd66fe151622d397b079cfdaedffa9"&&
+		"9f9b6a96a93a2bc0a4d60d35850b10be141bbcb41d1c56ba681459ba60f2f9f2"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-		"c10b50cd6f02fc1e6e9d365e5916a90b9ec56055b0cb771e4a22943dcdd008a4"&&
+		"a4d8b1d959123ec650d497b1e27b57e04b3628d24c8fc5476b9fee27b56c22a3"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireCaseSource.begin(),fireCaseSource.end()))==
+		"ccec8ac875bd2922217a90dad0c114cb2ef1e3ccab47c05bdc65208459adb003"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireCaseHeader.begin(),fireCaseHeader.end()))==
+		"48d640638cc1ee2704be3a880d72eba2e609ff6374ae7b50400a497ab3822f5d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			recordsSource.begin(),recordsSource.end()))==
 		"04d7f0b21ae1e078f125759a2a08d8b82da68c7a2bdc1a1c8b8aff8f4c8ddc96"&&
@@ -506,19 +515,19 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"6a338bd13b6897de725f2d7a3d9a7bfb607f910e78c49ad496dab16c99622913"&&
+		"48282c4168e6d05986293845abcfcae47f34c50aa286bdbf4b999961e3b9cc7c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"9a27b6cb7d9b744b46960fd610a33504390e7298e1a340c2a8f7a698c4e6c194"&&
+		"1ef7ca0a0d095e52d31fc88e9eca2ed5ed002ae26e8574b3ffb8d106559316e8"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-		"d2916d1eab8f9cef2b0e8c8590492140de14a37c1f49219dc64bf32034c6e634"&&
+		"2af11bfb9e3e45487a202fc0fe801e7a39dc59a0dda8815ef1a46a8af8c68d81"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"23ae3e1449038a4c48d26def5c5f8c9bdcec945f4bc39bcea0517b74a95b11df"&&
+		"90040d94db8b33e5d07fe8091e742698b6a5258041ac2ddb797037809c7b0ea5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -527,22 +536,28 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"b2d9720cdaf388a3f852f7c592a6927b91fc248a547541453e0dd0748f060e55"&&
+		"33fbe0af2d2019de21f5a48fd7bf8da9fd1c3ba8ed9669c27add24bc1f2719cb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"a14526d4d8ae1f3e8d7b929a71e3b9f9ced14f2d23f3c134da4e413e90d2fece"&&
+		"24bf0df98e39e6ab0749311e89f561e0cb6161a3dad40dbbf01fa998cc979b6d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
-		"0d2309a2d9f862bb5e1fa68ed6576ec26ca5a90bb0893f831e136aed56e7314b"&&
+		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceGenerator.begin(),traceGenerator.end()))==
-		"98036e70988be2833fdcf9466b4a9500c823df8c6abc469c13e0ecf39743e49e"&&
+		"d458859a7aa66ad0e656b4063cf22512bcc3a431c9187aa0152aa451c95e08bf"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 		"e3ff82b1513a6b78da0da0f10e4f72bb6b26c2eae09c23fb54e51e95d2811328"&&
 		manifoldClosure.find("accepted_observation_requires_private_producer_token true")!=
 			std::string::npos&&
 		manifoldClosure.find("coherent_public_diagnostic_forgery_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_observation_token_is_single_use true")!=
+			std::string::npos&&
+		manifoldClosure.find("genuine_token_payload_mutation_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("v10_checksum_valid_timing_mismatch_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("legacy_v9_production_resume_rejected true")!=
 			std::string::npos&&
@@ -557,6 +572,7 @@ int main()
 			std::string::npos&&
 		traceForceHeader.find("PublishFireProductionAcceptedManifoldObservation")==
 			std::string::npos&&
+		!std::is_aggregate<RISE::FireProductionAcceptedManifoldObservation>::value&&
 		unixTestDriver.find("FireSequenceTest.r147_manifold_lifecycle")!=std::string::npos&&
 		unixTestDriver.find("RISE_FIRE_MANIFOLD_LIFECYCLE_PROBE=1")!=std::string::npos&&
 		unixTestDriver.find("lifecycle_rc\" -eq 255")!=std::string::npos&&

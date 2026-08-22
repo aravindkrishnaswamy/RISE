@@ -19,15 +19,33 @@ NAMES = ("FireProductionAdvection", "FireProductionProjection",
 
 def transform(text: str, name: str, suffix: str) -> str:
     if name == "FireProductionForce" and suffix == ".h":
-        token_begin = text.find("\n\tstruct FireProductionResidentStepResult;\n\n\t//! Opaque proof")
+        publication_friend = """\n\t\tfriend bool PublishFireProductionAcceptedManifoldObservation(
+\t\t\tdouble,FireProductionResidentStepResult&,
+\t\t\tFireProductionAcceptedManifoldObservation&,std::string* );"""
+        if text.count(publication_friend) != 1:
+            raise RuntimeError("accepted manifold observation friend seam changed")
+        text = text.replace(publication_friend, "")
+        result_publication_friend = """\n\t\tfriend bool PublishFireProductionAcceptedManifoldObservation(
+\t\t\tdouble,
+\t\t\tFireProductionResidentStepResult&,
+\t\t\tFireProductionAcceptedManifoldObservation&,
+\t\t\tstd::string* );"""
+        if text.count(result_publication_friend) != 2:
+            raise RuntimeError("accepted manifold result friend seam changed")
+        text = text.replace(result_publication_friend, "")
+        token_begin = text.find("\n\t//! Opaque proof")
         token_end = text.find("\n\t//! Selects the production step", token_begin)
         if token_begin < 0 or token_end < 0:
             raise RuntimeError("accepted manifold token declaration seam changed")
         text = text[:token_begin] + text[token_end:]
-        token_field = "\n\t\tFireProductionAcceptedManifoldToken acceptedManifoldToken;"
+        token_field = "\n\t\tFireProductionAcceptedManifoldToken acceptedManifoldToken_;"
         if text.count(token_field) != 1:
             raise RuntimeError("accepted manifold token field seam changed")
         text = text.replace(token_field, "")
+        token_accessor = "\n\t\tbool HasAcceptedManifoldToken() const { return acceptedManifoldToken_.Available(); }"
+        if text.count(token_accessor) != 1:
+            raise RuntimeError("accepted manifold token accessor seam changed")
+        text = text.replace(token_accessor, "")
         begin = text.find("\n\t//! Publishes the only manifold metadata")
         end = text.find("\n\t//! Full resident P3 shadow step:", begin)
         if begin < 0 or end < 0:

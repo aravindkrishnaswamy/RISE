@@ -245,9 +245,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(manifoldProbe){
 			if(slice!=0u)return 255;
 			RISE::FireProductionAcceptedManifoldObservation previous;
-			previous.available=true;previous.timeStepS=dt;
-			previous.maximumGeneration=0.0025328069638265172;
-			previous.restorationDrainFraction=0.9533406144549903;
+			if(!RISE::FireProductionCheckpointManifoldAccess::Restore(true,dt,
+				0.0025328069638265172,0.9533406144549903,dt,dt,previous))return 255;
 			RISE::FireProductionStableTimeStep selected;
 			if(!RISE::SelectFireProductionStableTimeStep(shape.cellWidthM,0.0,0.0,0.0,
 				dt,previous,selected,&error))return 255;
@@ -360,7 +359,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					value.requiredRestorationDrainFraction==0.0&&
 					value.deliveredRestorationDrainFraction==0.0&&
 					value.restorationResidualBandPerS==0.0&&!value.manifoldPlateauPassed&&
-					!value.acceptedManifoldToken.Available()&&
+					!value.HasAcceptedManifoldToken()&&
 					value.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 			};
 			RISE::FireProductionResidentStepResult rejected=limited;

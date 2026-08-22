@@ -57,6 +57,36 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace RISE
+{
+	//! The checkpoint codec is the only non-producer authority allowed to
+	//! reconstruct an accepted observation.  It validates the persisted tuple
+	//! against the accepted-step timing before touching the opaque value.
+	class FireProductionCheckpointManifoldAccess
+	{
+	public:
+		static bool Restore(const bool available,const double timeStepS,
+			const double maximumGeneration,const double restorationDrainFraction,
+			const double previousStepS,const double lastAcceptedStepS,
+			FireProductionAcceptedManifoldObservation& result)
+		{
+			result.Clear();
+			if(available){
+				if(!std::isfinite(timeStepS)||timeStepS<=0.0||
+					!std::isfinite(maximumGeneration)||maximumGeneration<0.0||
+					!std::isfinite(restorationDrainFraction)||
+					restorationDrainFraction<0.0||restorationDrainFraction>1.0||
+					timeStepS!=previousStepS||timeStepS!=lastAcceptedStepS)return false;
+				result.available_=true;result.timeStepS_=timeStepS;
+				result.maximumGeneration_=maximumGeneration;
+				result.restorationDrainFraction_=restorationDrainFraction;
+				return true;
+			}
+			return timeStepS==0.0&&maximumGeneration==0.0&&restorationDrainFraction==0.0;
+		}
+	};
+}
+
 namespace
 {
 	constexpr double CapstonePoolDiameterM=0.30;
@@ -68,6 +98,7 @@ namespace
 	using namespace RISE::FireSim;
 	int failures = 0;
 	bool forcePostRenameDirectorySyncFailureForTest=false;
+	bool forceMalformedManifoldTimingWriteForTest=false;
 
 	class FrozenPainterProbe final : public Perlin3DPainter
 	{
@@ -608,23 +639,24 @@ namespace
 		if(version<10u)return true;
 		const FireProductionAcceptedManifoldObservation& observation=
 			checkpoint.productionManifoldObservation;
-		if((observation.available&&(!std::isfinite(observation.timeStepS)||
-			observation.timeStepS<=0.0||!std::isfinite(observation.maximumGeneration)||
-			observation.maximumGeneration<0.0||
-			!std::isfinite(observation.restorationDrainFraction)||
-			observation.restorationDrainFraction<0.0||
-			observation.restorationDrainFraction>1.0||
-			observation.timeStepS!=checkpoint.previousStepS||
-			observation.timeStepS!=checkpoint.lastAcceptedStepS))||
-			(!observation.available&&(observation.timeStepS!=0.0||
-				observation.maximumGeneration!=0.0||
-				observation.restorationDrainFraction!=0.0)))return false;
+		if(!forceMalformedManifoldTimingWriteForTest&&
+			((observation.Available()&&(!std::isfinite(observation.TimeStepS())||
+			observation.TimeStepS()<=0.0||!std::isfinite(observation.MaximumGeneration())||
+			observation.MaximumGeneration()<0.0||
+			!std::isfinite(observation.RestorationDrainFraction())||
+			observation.RestorationDrainFraction()<0.0||
+			observation.RestorationDrainFraction()>1.0||
+			observation.TimeStepS()!=checkpoint.previousStepS||
+			observation.TimeStepS()!=checkpoint.lastAcceptedStepS))||
+			(!observation.Available()&&(observation.TimeStepS()!=0.0||
+				observation.MaximumGeneration()!=0.0||
+				observation.RestorationDrainFraction()!=0.0))))return false;
 		const unsigned char manifoldAvailable=
-			observation.available?1u:0u;
+			observation.Available()?1u:0u;
 		return writer.Pod(manifoldAvailable)&&
-			writer.Pod(checkpoint.productionManifoldObservation.timeStepS)&&
-			writer.Pod(checkpoint.productionManifoldObservation.maximumGeneration)&&
-			writer.Pod(checkpoint.productionManifoldObservation.restorationDrainFraction);
+			writer.Pod(observation.TimeStepS())&&
+			writer.Pod(observation.MaximumGeneration())&&
+			writer.Pod(observation.RestorationDrainFraction());
 	}
 
 	bool ReadCheckpointPayload(CheckpointReader& reader,MethaneRunCheckpoint& checkpoint,
@@ -662,25 +694,14 @@ namespace
 			!reader.Pod(checkpoint.values.activeSetThreadIdentity)||
 			!reader.Pod(checkpoint.values.activeSetThreadIdentityChecked)))return false;
 		if(version>=8u&&!reader.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
-		if(version>=10u){unsigned char manifoldAvailable=0u;
-			if(!reader.Pod(manifoldAvailable)||manifoldAvailable>1u||
-				!reader.Pod(checkpoint.productionManifoldObservation.timeStepS)||
-				!reader.Pod(checkpoint.productionManifoldObservation.maximumGeneration)||
-				!reader.Pod(checkpoint.productionManifoldObservation.restorationDrainFraction))return false;
-			checkpoint.productionManifoldObservation.available=manifoldAvailable!=0u;
-			const FireProductionAcceptedManifoldObservation& observation=
-				checkpoint.productionManifoldObservation;
-			if((observation.available&&(
-				!std::isfinite(observation.timeStepS)||observation.timeStepS<=0.0||
-				!std::isfinite(observation.maximumGeneration)||observation.maximumGeneration<0.0||
-				!std::isfinite(observation.restorationDrainFraction)||
-				observation.restorationDrainFraction<0.0||
-				observation.restorationDrainFraction>1.0||
-				observation.timeStepS!=checkpoint.previousStepS||
-				observation.timeStepS!=checkpoint.lastAcceptedStepS))||
-				(!observation.available&&(observation.timeStepS!=0.0||
-					observation.maximumGeneration!=0.0||
-					observation.restorationDrainFraction!=0.0)))return false;
+		if(version>=10u){unsigned char manifoldAvailable=0u;double timeStepS=0.0;
+			double maximumGeneration=0.0,restorationDrainFraction=0.0;
+			if(!reader.Pod(manifoldAvailable)||manifoldAvailable>1u||!reader.Pod(timeStepS)||
+				!reader.Pod(maximumGeneration)||!reader.Pod(restorationDrainFraction)||
+				!FireProductionCheckpointManifoldAccess::Restore(manifoldAvailable!=0u,
+					timeStepS,maximumGeneration,restorationDrainFraction,
+					checkpoint.previousStepS,checkpoint.lastAcceptedStepS,
+					checkpoint.productionManifoldObservation))return false;
 		}
 		checkpoint.checkpointFormatVersion=version;
 		if(version<7u)checkpoint.values.activeSetAlgorithmVersion=
@@ -3424,13 +3445,10 @@ int main(int argc,char** argv)
 	precisionRoundTrip.simulationTimeS=checkpointRepresentedStep;
 	precisionRoundTrip.previousStepS=checkpointRepresentedStep;
 	precisionRoundTrip.lastAcceptedStepS=checkpointRepresentedStep;
-	precisionRoundTrip.productionManifoldObservation.available=true;
-	precisionRoundTrip.productionManifoldObservation.timeStepS=checkpointRepresentedStep;
-	precisionRoundTrip.productionManifoldObservation.maximumGeneration=
-		checkpointAcceptedStep.maximumManifoldGeneration;
-	precisionRoundTrip.productionManifoldObservation.restorationDrainFraction=
-		checkpointAcceptedStep.deliveredRestorationDrainFraction;
-	Check(precisionRoundTrip.productionManifoldObservation.available,
+	Check(FireProductionCheckpointManifoldAccess::Restore(true,checkpointRepresentedStep,
+		checkpointAcceptedStep.maximumManifoldGeneration,
+		checkpointAcceptedStep.deliveredRestorationDrainFraction,checkpointRepresentedStep,
+		checkpointRepresentedStep,precisionRoundTrip.productionManifoldObservation),
 		"r143 checkpoint fixture authors a complete internally consistent manifold observation");
 	if(!precisionRoundTrip.states.empty()){
 		const double excursion=0.5*AcceptedStateRoundoffFactor(
@@ -3463,6 +3481,32 @@ int main(int argc,char** argv)
 		SaveMethaneRunCheckpoint(precisionCheckpoint,
 		precisionRoundTrip,checkpointFixtureError)&&LoadMethaneRunCheckpoint(precisionCheckpoint,
 		loadedPrecisionRoundTrip,checkpointFixtureError);
+	MethaneRunCheckpoint mismatchedPrevious=precisionRoundTrip;
+	mismatchedPrevious.previousStepS=std::nextafter(mismatchedPrevious.previousStepS,
+		std::numeric_limits<double>::infinity());
+	MethaneRunCheckpoint mismatchedLast=precisionRoundTrip;
+	mismatchedLast.lastAcceptedStepS=std::nextafter(mismatchedLast.lastAcceptedStepS,
+		std::numeric_limits<double>::infinity());
+	const std::filesystem::path mismatchedPreviousPath=
+		checkpointFixture/"manifold_mismatched_previous.checkpoint";
+	const std::filesystem::path mismatchedLastPath=
+		checkpointFixture/"manifold_mismatched_last.checkpoint";
+	const std::filesystem::path malformedV10Path=
+		checkpointFixture/"manifold_checksum_valid_malformed_v10.checkpoint";
+	const bool mismatchedWritesRejected=
+		!SaveMethaneRunCheckpoint(mismatchedPreviousPath,mismatchedPrevious,
+			checkpointFixtureError)&&!std::filesystem::exists(mismatchedPreviousPath)&&
+		!SaveMethaneRunCheckpoint(mismatchedLastPath,mismatchedLast,
+			checkpointFixtureError)&&!std::filesystem::exists(mismatchedLastPath);
+	forceMalformedManifoldTimingWriteForTest=true;
+	const bool malformedWritten=SaveMethaneRunCheckpoint(malformedV10Path,
+		mismatchedPrevious,checkpointFixtureError);
+	forceMalformedManifoldTimingWriteForTest=false;
+	MethaneRunCheckpoint rejectedMalformedV10;
+	const bool malformedLoadRejected=malformedWritten&&
+		!LoadMethaneRunCheckpoint(malformedV10Path,rejectedMalformedV10,checkpointFixtureError);
+	Check(mismatchedWritesRejected&&malformedLoadRejected,
+		"r147 v10 writer and checksum-valid loader reject each accepted-observation timestep mismatch");
 	FireStateProducerPrecision loadedPrecision=FireStateProducerPrecision::Unknown;
 	const int precisionResumeExit=precisionSave?RunCheckpointSubprocess(self,
 		"resume-one-fp64-reject",
@@ -3478,11 +3522,11 @@ int main(int argc,char** argv)
 		loadedPrecisionRoundTrip.checkpointFormatVersion==10u&&
 		HomogeneousStateProducerPrecision(loadedPrecisionRoundTrip.states,loadedPrecision)&&
 		loadedPrecision==FireStateProducerPrecision::Binary32&&
-		loadedPrecisionRoundTrip.productionManifoldObservation.available&&
-		loadedPrecisionRoundTrip.productionManifoldObservation.timeStepS==
+		loadedPrecisionRoundTrip.productionManifoldObservation.Available()&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.TimeStepS()==
 			checkpointRepresentedStep&&
-		loadedPrecisionRoundTrip.productionManifoldObservation.maximumGeneration==0.0007&&
-		loadedPrecisionRoundTrip.productionManifoldObservation.restorationDrainFraction==
+		loadedPrecisionRoundTrip.productionManifoldObservation.MaximumGeneration()==0.0007&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.RestorationDrainFraction()==
 			checkpointAcceptedStep.deliveredRestorationDrainFraction&&
 		precisionResumeExit==0&&
 		LoadMethaneRunCheckpoint(precisionCheckpoint,resumedPrecisionRoundTrip,
@@ -3497,8 +3541,8 @@ int main(int argc,char** argv)
 	Check(SaveMethaneRunCheckpoint(version9Checkpoint,precisionRoundTrip,
 		checkpointFixtureError,9u)&&LoadMethaneRunCheckpoint(version9Checkpoint,loadedVersion9,
 		checkpointFixtureError)&&loadedVersion9.checkpointFormatVersion==9u&&
-		!loadedVersion9.productionManifoldObservation.available&&
-		loadedVersion9.productionManifoldObservation.timeStepS==0.0&&
+		!loadedVersion9.productionManifoldObservation.Available()&&
+		loadedVersion9.productionManifoldObservation.TimeStepS()==0.0&&
 		!SelectFireProductionStableTimeStep(0.1,0.0,0.0,0.0,loadedVersion9.previousStepS,
 			loadedVersion9.productionManifoldObservation,resumedManifoldLimit,
 			&checkpointFixtureError),

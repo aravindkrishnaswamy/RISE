@@ -172,22 +172,17 @@ double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
 double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
 	const double reducedGravity,const double diffusivity,const double previous)
 {
-	return SelectTimeStepS(dx,speed,reducedGravity,diffusivity,previous,0.0,0.0,false);
-}
-
-double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
-	const double reducedGravity,const double diffusivity,const double previous,
-	const double previousGeneration,const double previousDrain,
-	const bool hasPreviousManifoldObservation)
-{
-	FireProductionAcceptedManifoldObservation observation;
-	observation.available=hasPreviousManifoldObservation;
-	if(hasPreviousManifoldObservation){observation.timeStepS=previous;
-		observation.maximumGeneration=previousGeneration;
-		observation.restorationDrainFraction=previousDrain;}
-	FireProductionStableTimeStep selected;
-	return SelectFireProductionStableTimeStep(dx,speed,reducedGravity,diffusivity,previous,
-		observation,selected,0)?selected.seconds:0.0;
+	if(!FinitePositive(dx)||!std::isfinite(speed)||speed<0.0||
+		!std::isfinite(reducedGravity)||reducedGravity<0.0||
+		!std::isfinite(diffusivity)||diffusivity<0.0||
+		!std::isfinite(previous)||previous<0.0)return 0.0;
+	double selected=std::numeric_limits<double>::infinity();
+	if(speed>0.0)selected=std::min(selected,0.5*dx/speed);
+	if(reducedGravity>0.0)selected=std::min(selected,
+		0.5*std::sqrt(2.0*dx/reducedGravity));
+	if(diffusivity>0.0)selected=std::min(selected,dx*dx/(8.0*diffusivity));
+	if(previous>0.0)selected=std::min(selected,1.1*previous);
+	return selected>0.0&&!std::isnan(selected)?selected:0.0;
 }
 
 bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,

@@ -2441,17 +2441,19 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					computed.projection.validationPassed=plateauValidation.mechanismPassed;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 				if( enforcePlateau&&plateauPassed ) {
-					computed.acceptedManifoldToken.available_=true;
-					computed.acceptedManifoldToken.representedTimeStepS_=
+					computed.acceptedManifoldToken_.available_=true;
+					computed.acceptedManifoldToken_.representedTimeStepS_=
 						static_cast<double>(request.force.timeStepS);
-					computed.acceptedManifoldToken.maximumGeneration_=maximumManifoldGeneration;
-					computed.acceptedManifoldToken.maximumAcceptedDeviation_=maximumTerminalDeviation;
-					computed.acceptedManifoldToken.requiredDrainFraction_=
+					computed.acceptedManifoldToken_.maximumGeneration_=maximumManifoldGeneration;
+					computed.acceptedManifoldToken_.maximumAcceptedDeviation_=maximumTerminalDeviation;
+					computed.acceptedManifoldToken_.requiredDrainFraction_=
 						plateauValidation.requiredDrainFraction;
-					computed.acceptedManifoldToken.deliveredDrainFraction_=
+					computed.acceptedManifoldToken_.deliveredDrainFraction_=
 						plateauValidation.deliveredDrainFraction;
-					computed.acceptedManifoldToken.maximumPostResidualPerS_=
+					computed.acceptedManifoldToken_.maximumPostResidualPerS_=
 						plateauValidation.maximumPostResidualPerS;
+					computed.acceptedManifoldToken_.payloadDigest_=
+						FireProductionAcceptedManifoldPayloadDigest(computed);
 				}
 				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=1u||

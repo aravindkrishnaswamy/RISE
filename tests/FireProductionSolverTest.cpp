@@ -880,38 +880,10 @@ int main()
 			first,&error)&&first.seconds==0.025&&
 			std::string(first.activeLimit)=="advective_CFL",
 			"r143 first-step selection uses only the frozen CFL-family limits");
-		FireProductionAcceptedManifoldObservation burning;
-		burning.available=true;burning.timeStepS=5.629525428363875e-5;
-		burning.maximumGeneration=0.0025328069638265172;
-		burning.restorationDrainFraction=0.9533406144549903;
-		FireProductionStableTimeStep limited;
-		Check(SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
-			burning.timeStepS,burning,limited,&error)&&
-			limited.seconds==1.589201814710624e-5&&
-			std::string(limited.activeLimit)=="manifold_plateau",
-			"r143 manifold limit reproduces the pre-registered burning prediction");
-		FireProductionAcceptedManifoldObservation zero=burning;
-		zero.maximumGeneration=0.0;
-		FireProductionStableTimeStep zeroResult;
-		Check(SelectFireProductionStableTimeStep(0.1,0.0,0.0,0.0,
-			zero.timeStepS,zero,zeroResult,&error)&&
-			zeroResult.seconds==1.1*zero.timeStepS&&
-			std::string(zeroResult.activeLimit)=="growth_limit",
-			"r143 exact-positive-zero generation contributes no manifold limit");
-		FireProductionAcceptedManifoldObservation partial;
-		partial.timeStepS=burning.timeStepS;
 		FireProductionStableTimeStep rejected;
 		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
-			burning.timeStepS,partial,rejected,&error)&&rejected.seconds==0.0,
-			"r143 partial accepted-step metadata fails closed");
-		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
-			burning.timeStepS,none,rejected,&error)&&rejected.seconds==0.0,
+			5.629525428363875e-5,none,rejected,&error)&&rejected.seconds==0.0,
 			"r143 a resumed production step cannot bypass the manifold limit with unavailable metadata");
-		burning.maximumGeneration=0.01;
-		burning.restorationDrainFraction=0.0;
-		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
-			burning.timeStepS,burning,rejected,&error),
-			"r143 a nonzero generation with zero drain cannot manufacture a step");
 	}
 	{
 		const float width=0x1p-10f;
@@ -3920,72 +3892,22 @@ int main()
 	Check(composedMatches,
 		"full resident force, transport, explicit zero-source, and two-projection step matches "
 		"the independent CPU composition with no interstage transfer");
-	FireProductionResidentStepResult acceptedObservationStep=composedGPU;
-	acceptedObservationStep.maximumManifoldGeneration=0.0007;
-	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0005;
-	acceptedObservationStep.projection.maximumPreProjectionResidualPerS=0.1f;
-	acceptedObservationStep.projection.maximumPostProjectionResidualPerS=0.005f;
-	acceptedObservationStep.requiredRestorationDrainFraction=0.0007/0.00075;
-	acceptedObservationStep.deliveredRestorationDrainFraction=1.0-
-		static_cast<double>(acceptedObservationStep.projection.maximumPostProjectionResidualPerS)/
-		static_cast<double>(acceptedObservationStep.projection.maximumPreProjectionResidualPerS);
-	acceptedObservationStep.restorationResidualBandPerS=
-		(1.0-acceptedObservationStep.requiredRestorationDrainFraction)*
-		static_cast<double>(acceptedObservationStep.projection.maximumPreProjectionResidualPerS);
-	acceptedObservationStep.manifoldPlateauPassed=true;
-	acceptedObservationStep.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
-	acceptedObservationStep.representedTimeStepS=0.001f;
-	const double acceptedRepresentedStep=
-		static_cast<double>(acceptedObservationStep.representedTimeStepS);
-	FireProductionAcceptedManifoldObservation acceptedObservation;
-	FireProductionStableTimeStep observationLimitedStep;
-	error.clear();
-	acceptedObservation.available=true;acceptedObservation.timeStepS=acceptedRepresentedStep;
-	acceptedObservation.maximumGeneration=acceptedObservationStep.maximumManifoldGeneration;
-	acceptedObservation.restorationDrainFraction=
-		acceptedObservationStep.deliveredRestorationDrainFraction;
-	const bool observationSelected=SelectFireProductionStableTimeStep(
-		0.1,0.0,0.0,0.0,acceptedRepresentedStep,acceptedObservation,
-		observationLimitedStep,&error);
-	const double expectedObservationStep=acceptedRepresentedStep*((1.0-0.25)*0.001*
-		acceptedObservationStep.deliveredRestorationDrainFraction)/
-		acceptedObservationStep.maximumManifoldGeneration;
+	FireProductionResidentStepResult callerAuthoredObservationStep=composedGPU;
+	callerAuthoredObservationStep.maximumManifoldGeneration=1.0e-9;
+	callerAuthoredObservationStep.maximumAcceptedManifoldDeviation=0.0;
+	callerAuthoredObservationStep.manifoldPlateauPassed=true;
+	callerAuthoredObservationStep.conservativeProducerPrecision=
+		FireStateProducerPrecision::Binary32;
+	callerAuthoredObservationStep.representedTimeStepS=0.001f;
 	FireProductionAcceptedManifoldObservation rejectedObservation;
-	const bool unrepresentedStepRejected=!PublishFireProductionAcceptedManifoldObservation(
-		0.001,acceptedObservationStep,rejectedObservation,&error);
-	FireProductionResidentStepResult forgedObservationStep=acceptedObservationStep;
-	forgedObservationStep.maximumManifoldGeneration=1.0e-9;
-	forgedObservationStep.maximumAcceptedManifoldDeviation=0.0;
-	FireProductionRestorationPlateauValidation forgedValidation;
-	const bool forgedDiagnosticsCoherent=FireProductionRestorationPlateauWithinBand(
-		forgedObservationStep.maximumManifoldGeneration,
-		forgedObservationStep.projection.maximumPreProjectionResidualPerS,
-		forgedObservationStep.projection.maximumPostProjectionResidualPerS,forgedValidation);
-	forgedObservationStep.requiredRestorationDrainFraction=forgedValidation.requiredDrainFraction;
-	forgedObservationStep.deliveredRestorationDrainFraction=forgedValidation.deliveredDrainFraction;
-	forgedObservationStep.restorationResidualBandPerS=forgedValidation.maximumPostResidualPerS;
-	const bool forgedObservationRejected=!PublishFireProductionAcceptedManifoldObservation(
-		acceptedRepresentedStep,forgedObservationStep,rejectedObservation,&error);
-	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0008;
-	const bool overAllowanceObservationRejected=
-		!PublishFireProductionAcceptedManifoldObservation(acceptedRepresentedStep,
-			acceptedObservationStep,rejectedObservation,&error);
-	const bool coherentCallerAuthoredObservationRejected=
-		!PublishFireProductionAcceptedManifoldObservation(acceptedRepresentedStep,
-			acceptedObservationStep,rejectedObservation,&error);
-	Check(observationSelected&&acceptedObservation.available&&
-		acceptedObservation.timeStepS==acceptedRepresentedStep&&
-		acceptedObservation.maximumGeneration==acceptedObservationStep.maximumManifoldGeneration&&
-		acceptedObservation.restorationDrainFraction==
-			acceptedObservationStep.deliveredRestorationDrainFraction&&
-		observationLimitedStep.seconds==expectedObservationStep&&
-		std::string(observationLimitedStep.activeLimit)=="manifold_plateau"&&
-		unrepresentedStepRejected&&coherentCallerAuthoredObservationRejected&&
-		forgedDiagnosticsCoherent&&forgedObservationRejected&&
-		overAllowanceObservationRejected&&
-		!rejectedObservation.available,
-		"only a producer-tokened binary32 plateau result publishes while the selector consumes "
-		"a complete accepted observation");
+	error.clear();
+	const bool callerAuthoredObservationRejected=
+		!PublishFireProductionAcceptedManifoldObservation(
+			static_cast<double>(callerAuthoredObservationStep.representedTimeStepS),
+			callerAuthoredObservationStep,rejectedObservation,&error);
+	Check(!callerAuthoredObservationStep.HasAcceptedManifoldToken()&&
+		callerAuthoredObservationRejected&&!rejectedObservation.Available(),
+		"public diagnostics without a producer-owned token cannot publish an accepted observation");
 	auto seedFullStepResult=[&](FireProductionResidentStepResult& seeded) {
 		seeded.conservativeValues.push_back(1.0f);seedDualResult(seeded.transportedDual);
 		FireProductionResidentForceProjectionResult nested;seedResidentResult(nested);
@@ -4023,7 +3945,7 @@ int main()
 			rejected.requiredRestorationDrainFraction==0.0&&
 			rejected.deliveredRestorationDrainFraction==0.0&&
 			rejected.restorationResidualBandPerS==0.0&&!rejected.manifoldPlateauPassed&&
-			!rejected.acceptedManifoldToken.Available()&&
+			!rejected.HasAcceptedManifoldToken()&&
 			rejected.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 	};
 	FireProductionResidentStepResult rejectedFullStep;

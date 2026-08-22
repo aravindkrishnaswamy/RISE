@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -276,15 +277,32 @@ namespace RISEFireProductionFP64
 		FireProductionResidentStepRequest() : enforceManifoldPlateau(true) {}
 	};
 
-	struct FireProductionAcceptedManifoldObservation
-	{
-		bool available;
-		double timeStepS;
-		double maximumGeneration;
-		double restorationDrainFraction;
+	class FireProductionCheckpointManifoldAccess;
+	struct FireProductionStableTimeStep;
+	struct FireProductionResidentStepResult;
 
-		FireProductionAcceptedManifoldObservation() : available(false),timeStepS(0.0),
-			maximumGeneration(0.0),restorationDrainFraction(0.0) {}
+	class FireProductionAcceptedManifoldObservation
+	{
+	public:
+		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
+			maximumGeneration_(0.0),restorationDrainFraction_(0.0) {}
+		bool Available() const { return available_; }
+		double TimeStepS() const { return timeStepS_; }
+		double MaximumGeneration() const { return maximumGeneration_; }
+		double RestorationDrainFraction() const { return restorationDrainFraction_; }
+
+	private:
+		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
+			restorationDrainFraction_=0.0; }
+		bool available_;
+		double timeStepS_;
+		double maximumGeneration_;
+		double restorationDrainFraction_;
+		friend class FireProductionCheckpointManifoldAccess;
+		friend bool SelectFireProductionStableTimeStep(
+			double,double,double,double,double,
+			const FireProductionAcceptedManifoldObservation&,
+			FireProductionStableTimeStep&,std::string* );
 	};
 
 	struct FireProductionStableTimeStep
@@ -343,6 +361,12 @@ namespace RISEFireProductionFP64
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(RISE::FireStateProducerPrecision::Unknown) {}
+
+	private:
+		friend bool AdvanceFireProductionResidentStepMetal(
+			const FireProductionResidentStepRequest&,
+			FireProductionResidentStepResult&,
+			std::string* );
 	};
 
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,

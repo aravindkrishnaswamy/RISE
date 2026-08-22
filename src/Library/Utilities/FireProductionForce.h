@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -274,15 +275,35 @@ namespace RISE
 		FireProductionResidentStepRequest() : enforceManifoldPlateau(true) {}
 	};
 
-	struct FireProductionAcceptedManifoldObservation
-	{
-		bool available;
-		double timeStepS;
-		double maximumGeneration;
-		double restorationDrainFraction;
+	class FireProductionCheckpointManifoldAccess;
+	struct FireProductionStableTimeStep;
+	struct FireProductionResidentStepResult;
 
-		FireProductionAcceptedManifoldObservation() : available(false),timeStepS(0.0),
-			maximumGeneration(0.0),restorationDrainFraction(0.0) {}
+	class FireProductionAcceptedManifoldObservation
+	{
+	public:
+		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
+			maximumGeneration_(0.0),restorationDrainFraction_(0.0) {}
+		bool Available() const { return available_; }
+		double TimeStepS() const { return timeStepS_; }
+		double MaximumGeneration() const { return maximumGeneration_; }
+		double RestorationDrainFraction() const { return restorationDrainFraction_; }
+
+	private:
+		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
+			restorationDrainFraction_=0.0; }
+		bool available_;
+		double timeStepS_;
+		double maximumGeneration_;
+		double restorationDrainFraction_;
+		friend class FireProductionCheckpointManifoldAccess;
+		friend bool SelectFireProductionStableTimeStep(
+			double,double,double,double,double,
+			const FireProductionAcceptedManifoldObservation&,
+			FireProductionStableTimeStep&,std::string* );
+		friend bool PublishFireProductionAcceptedManifoldObservation(
+			double,FireProductionResidentStepResult&,
+			FireProductionAcceptedManifoldObservation&,std::string* );
 	};
 
 	struct FireProductionStableTimeStep
@@ -293,8 +314,6 @@ namespace RISE
 		FireProductionStableTimeStep() : seconds(0.0),activeLimit(0) {}
 	};
 
-	struct FireProductionResidentStepResult;
-
 	//! Opaque proof that the resident owner, rather than a caller rewriting the
 	//! public diagnostics, accepted the manifold mechanism and field gates.
 	class FireProductionAcceptedManifoldToken
@@ -302,10 +321,37 @@ namespace RISE
 	public:
 		FireProductionAcceptedManifoldToken() : available_(false),representedTimeStepS_(0.0),
 			maximumGeneration_(0.0),maximumAcceptedDeviation_(0.0),requiredDrainFraction_(0.0),
-			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0) {}
+			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0),payloadDigest_(0u) {}
+		FireProductionAcceptedManifoldToken(const FireProductionAcceptedManifoldToken&) :
+			FireProductionAcceptedManifoldToken() {}
+		FireProductionAcceptedManifoldToken& operator=(
+			const FireProductionAcceptedManifoldToken&) { Clear();return *this; }
+		FireProductionAcceptedManifoldToken(FireProductionAcceptedManifoldToken&& other) noexcept :
+			available_(other.available_),representedTimeStepS_(other.representedTimeStepS_),
+			maximumGeneration_(other.maximumGeneration_),
+			maximumAcceptedDeviation_(other.maximumAcceptedDeviation_),
+			requiredDrainFraction_(other.requiredDrainFraction_),
+			deliveredDrainFraction_(other.deliveredDrainFraction_),
+			maximumPostResidualPerS_(other.maximumPostResidualPerS_),
+			payloadDigest_(other.payloadDigest_) { other.Clear(); }
+		FireProductionAcceptedManifoldToken& operator=(
+			FireProductionAcceptedManifoldToken&& other) noexcept {
+			if(this!=&other){available_=other.available_;
+				representedTimeStepS_=other.representedTimeStepS_;
+				maximumGeneration_=other.maximumGeneration_;
+				maximumAcceptedDeviation_=other.maximumAcceptedDeviation_;
+				requiredDrainFraction_=other.requiredDrainFraction_;
+				deliveredDrainFraction_=other.deliveredDrainFraction_;
+				maximumPostResidualPerS_=other.maximumPostResidualPerS_;
+				payloadDigest_=other.payloadDigest_;other.Clear();}
+			return *this;
+		}
 		bool Available() const { return available_; }
 
 	private:
+		void Clear() { available_=false;representedTimeStepS_=0.0;maximumGeneration_=0.0;
+			maximumAcceptedDeviation_=0.0;requiredDrainFraction_=0.0;
+			deliveredDrainFraction_=0.0;maximumPostResidualPerS_=0.0;payloadDigest_=0u; }
 		bool available_;
 		double representedTimeStepS_;
 		double maximumGeneration_;
@@ -313,13 +359,14 @@ namespace RISE
 		double requiredDrainFraction_;
 		double deliveredDrainFraction_;
 		double maximumPostResidualPerS_;
+		std::uint64_t payloadDigest_;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
 			std::string* );
 		friend bool PublishFireProductionAcceptedManifoldObservation(
 			double,
-			const FireProductionResidentStepResult&,
+			FireProductionResidentStepResult&,
 			FireProductionAcceptedManifoldObservation&,
 			std::string* );
 	};
@@ -362,7 +409,7 @@ namespace RISE
 		double restorationResidualBandPerS;
 		bool manifoldPlateauPassed;
 		FireStateProducerPrecision conservativeProducerPrecision;
-		FireProductionAcceptedManifoldToken acceptedManifoldToken;
+		bool HasAcceptedManifoldToken() const { return acceptedManifoldToken_.Available(); }
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
@@ -373,14 +420,58 @@ namespace RISE
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(FireStateProducerPrecision::Unknown) {}
+
+	private:
+		FireProductionAcceptedManifoldToken acceptedManifoldToken_;
+		friend bool AdvanceFireProductionResidentStepMetal(
+			const FireProductionResidentStepRequest&,
+			FireProductionResidentStepResult&,
+			std::string* );
+		friend bool PublishFireProductionAcceptedManifoldObservation(
+			double,
+			FireProductionResidentStepResult&,
+			FireProductionAcceptedManifoldObservation&,
+			std::string* );
 	};
 
 	//! Publishes the only manifold metadata that may constrain the next
 	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot
 	//! create an accepted observation.
+	inline std::uint64_t FireProductionAcceptedManifoldPayloadDigest(
+		const FireProductionResidentStepResult& value )
+	{
+		std::uint64_t digest=UINT64_C(14695981039346656037);
+		auto append=[&](const std::vector<float>& values) {
+			for(const float scalar:values){std::uint32_t bits=0u;
+				std::memcpy(&bits,&scalar,sizeof(bits));
+				for(unsigned int byte=0u;byte<4u;++byte){
+					digest^=static_cast<unsigned char>(bits>>(8u*byte));
+					digest*=UINT64_C(1099511628211);}}
+		};
+		append(value.conservativeValues);
+		for(unsigned int axis=0u;axis<3u;++axis){
+			append(value.transportedDual.auxiliaryFaceDensity[axis]);
+			append(value.transportedDual.momentum[axis]);
+			append(value.physicalProjection.faceDensityKGPerM3[axis]);
+			append(value.physicalProjection.velocityMPerS[axis]);
+			append(value.physicalProjection.momentumKGPerM2S[axis]);
+			append(value.projection.faceDensityKGPerM3[axis]);
+			append(value.projection.velocityMPerS[axis]);
+			append(value.projection.momentumKGPerM2S[axis]);
+		}
+		append(value.physicalProjection.pressurePa);
+		append(value.projection.pressurePa);
+		auto appendBytes=[&](const std::vector<unsigned char>& values) {
+			for(const unsigned char scalar:values){digest^=scalar;
+				digest*=UINT64_C(1099511628211);}
+		};
+		for(const auto& side:value.physicalProjection.pressureOpenInflow)appendBytes(side);
+		for(const auto& side:value.projection.pressureOpenInflow)appendBytes(side);
+		return digest;
+	}
 	bool PublishFireProductionAcceptedManifoldObservation(
 		double acceptedStepS,
-		const FireProductionResidentStepResult& acceptedStep,
+		FireProductionResidentStepResult& acceptedStep,
 		FireProductionAcceptedManifoldObservation& result,
 		std::string* error=0 );
 

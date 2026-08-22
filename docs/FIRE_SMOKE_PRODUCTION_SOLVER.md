@@ -3009,18 +3009,27 @@ Fresh review found three remaining authority gaps in r146.  The public resident
 result could be published with a caller-selected timestep, a coordinated rewrite
 of `G`, field deviation, drain, and band could remain internally consistent, and
 an unavailable v5--v9 observation could bypass the production limiter after a
-resume.  The resident owner now records the represented binary32 timestep and
-creates a private accepted-manifold token only after both the mechanism and
-function gates pass.  Publication requires exact agreement between that token,
-the public diagnostics, and the promoted represented timestep.  Public
-diagnostics remain observable, but they no longer confer authority.  An
+resume.  A second review also found that a bearer token and mutable published
+tuple would merely move those authority gaps.  The resident owner now records
+the represented binary32 timestep and creates a private, copy-clearing token
+only after both the mechanism and function gates pass.  The token binds the
+complete resident payload and all load-bearing diagnostics.  Publication
+requires exact agreement, consumes the token, and returns an opaque observation
+whose fields are read-only outside the producer and validated checkpoint codec.
+Public diagnostics remain observable, but they no longer confer authority.  An
 unavailable observation is accepted only with `previousStepS=0`; legacy
 production resume therefore fails closed instead of silently reverting to CFL.
+The binary64 oracle remains on its independent five-argument CFL/growth selector;
+the missing-observation rule is production-only rather than a mixed lifecycle.
 
 The lifecycle gate is now executable rather than format-only.  It advances two
-real tier-12 resident steps, publishes the first producer token, updates the
-represented timing fields, writes and reloads checkpoint v10, and passes the
-reloaded observation to the second selector.  Exact exit `255` binds first-step
+real tier-12 resident steps.  Before the first publication it proves that token
+copy, wrong caller timestep, payload mutation, coherent diagnostic forgery, and
+field mutation all reject; successful publication consumes the token and an
+immediate replay also rejects.  It then updates the represented timing fields,
+writes and reloads checkpoint v10, and passes the reloaded observation to the
+second selector.  Separate REDs reject both writer-side timing mismatches and a
+checksum-valid malformed-v10 reload.  Exact exit `255` binds first-step
 `G=1.2031080315688669e-4`, drain `0.99562928290235475`, and resumed selection
 `0.0018513042677754073 s` (`advective_CFL`).  The cold manifold candidate is
 valid but subdominant to CFL; the separately bound selector RED proves that an
@@ -3033,6 +3042,9 @@ Retained r118 physics is unchanged: probe plateau
 wall acceptance remains false.  r119 still accepts every spatial scalar,
 velocity, and inventory channel; r138 retains trace `f90a2508...551cebf`; and
 r142/r144 retain exact `253/254`.  r144's rejected burning result has no token.
+The source-bound r136 trace moves to `295b1f4f...7a9278b` solely because this
+owner API is in the generated source manifest; the arithmetic census, `0xff`
+proof gap, and exit `237` are unchanged.
 The function-level stop is therefore unchanged: field deviation is still
 `2.5081625764804549e-3`, required drain `3.3442167670577247`, and delivered
 drain `0.97489008508207653`.  No long burning shadow, golden `B_fp32`, temporal
