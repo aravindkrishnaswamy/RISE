@@ -89,15 +89,31 @@ inline std::string ReverseName( Mgr* m, const Item* ptr )
 	return "(unknown)";
 }
 
-// Dump a medium's discriminating, cheaply-readable state: coefficients sampled at the bbox CENTRE for a
-// bounded/heterogeneous medium (so the sample is not vacuum -- homogeneous media ignore the point), the
-// phase asymmetry g (GetMeanCosine), homogeneity, and the world bbox when bounded (placement). The spatial
-// FIELD of a heterogeneous medium beyond that one centre sample is still by-construction (a render
-// spot-check covers it); a single non-vacuum sample + bbox is far stronger than the prior origin-only one.
+// Dump a medium's discriminating, cheaply-readable state: coefficients sampled at an ASYMMETRIC interior point
+// of the bbox for a bounded/heterogeneous medium (so the sample is neither vacuum nor a lattice tie -- see the
+// probe-point comment below; homogeneous media ignore the point), the phase asymmetry g (GetMeanCosine),
+// homogeneity, and the world bbox when bounded (placement). The spatial FIELD of a heterogeneous medium beyond
+// that one sample is still by-construction (a render spot-check covers it).
 inline void DumpMedium( std::ostream& o, const IMedium* m )
 {
 	Point3 bbMin, bbMax; const bool bounded = m->GetBoundingBox( bbMin, bbMax );
-	const Point3 sp = bounded ? Point3( (bbMin.x+bbMax.x)*0.5, (bbMin.y+bbMax.y)*0.5, (bbMin.z+bbMax.z)*0.5 ) : Point3(0,0,0);
+	// PROBE POINT: an ASYMMETRIC interior fraction, deliberately NOT the bbox
+	// centre.  The centre is a symmetry point, and for scenes with round-numbered
+	// geometry it lands ON the procedural lattice: pt_painter_simplex3d_grid's
+	// med_r1c3 (bbox centre 150,60,0 x scale 0.05) probes simplex noise at exactly
+	// (7.5, 3, 0), where the gradient contributions cancel to EXACTLY 0 in strict
+	// IEEE -- density exactly 0.5 -- but not under macOS's -ffast-math, which
+	// reassociates the sum.  That made this one scene's digest platform-dependent
+	// (the 2026-08-21 Mac-vs-Windows golden DRIFT), and no print precision can fix
+	// a knife-edge tie.  These fractions are irrational-ish and share no common
+	// factor, so the probe misses lattice/simplex ties generically -- which also
+	// makes it a STRONGER discriminator: a probe sitting where noise is
+	// identically zero cannot tell two different density painters apart.
+	const Point3 sp = bounded
+		? Point3( bbMin.x + ( bbMax.x - bbMin.x ) * 0.4703,
+		          bbMin.y + ( bbMax.y - bbMin.y ) * 0.5279,
+		          bbMin.z + ( bbMax.z - bbMin.z ) * 0.4391 )
+		: Point3( 0, 0, 0 );
 	const MediumCoefficients c = m->GetCoefficients( sp ); const IPhaseFunction* pf = m->GetPhaseFunction();
 	char b[480];
 	std::snprintf( b, sizeof(b), " sigma_t=[%.9g %.9g %.9g] sigma_s=[%.9g %.9g %.9g] emission=[%.9g %.9g %.9g] g=%.9g homog=%d",

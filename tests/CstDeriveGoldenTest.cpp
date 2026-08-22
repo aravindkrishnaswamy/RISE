@@ -490,5 +490,21 @@ int Verify() {
 
 int main( int argc, char** argv ) {
 	if( argc > 1 && std::strcmp( argv[1], "--generate" ) == 0 ) return Generate();
+	// --dump <scene>: print ONE scene's canonical DumpJob text to stdout.
+	// The digests this test compares are opaque, so a cross-platform DRIFT
+	// (macOS builds -ffast-math, Windows/Linux strict IEEE -- see DumpJob's
+	// comment in CstRenderEquivalence.h) is undiagnosable from the manifest
+	// alone.  Run this on both machines and diff the output to see WHICH
+	// field diverged, and by how much.
+	if( argc > 2 && std::strcmp( argv[1], "--dump" ) == 0 ) {
+		char cwd[4096];
+		if( GetWorkingDirectory( cwd, sizeof(cwd) ) )
+			SetEnvironmentIfUnset( "RISE_MEDIA_PATH", ( std::string(cwd) + "/" ).c_str() );
+		std::size_t diagCount = 0;
+		const std::string dump = DeriveDump( argv[2], &diagCount );
+		std::fputs( dump.c_str(), stdout );
+		std::fprintf( stderr, "(derive diagnostics: %zu)\n", diagCount );
+		return 0;
+	}
 	return Verify();
 }
