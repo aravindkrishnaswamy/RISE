@@ -2427,6 +2427,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
 					(restorationRemoved?computed.projection.deviceElapsedMS:
 						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS);
+				computed.representedTimeStepS=request.force.timeStepS;
 				computed.maximumManifoldGeneration=maximumManifoldGeneration;
 				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
 				computed.requiredRestorationDrainFraction=
@@ -2439,6 +2440,19 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				if( enforcePlateau )
 					computed.projection.validationPassed=plateauValidation.mechanismPassed;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
+				if( enforcePlateau&&plateauPassed ) {
+					computed.acceptedManifoldToken.available_=true;
+					computed.acceptedManifoldToken.representedTimeStepS_=
+						static_cast<double>(request.force.timeStepS);
+					computed.acceptedManifoldToken.maximumGeneration_=maximumManifoldGeneration;
+					computed.acceptedManifoldToken.maximumAcceptedDeviation_=maximumTerminalDeviation;
+					computed.acceptedManifoldToken.requiredDrainFraction_=
+						plateauValidation.requiredDrainFraction;
+					computed.acceptedManifoldToken.deliveredDrainFraction_=
+						plateauValidation.deliveredDrainFraction;
+					computed.acceptedManifoldToken.maximumPostResidualPerS_=
+						plateauValidation.maximumPostResidualPerS;
+				}
 				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=1u||
 					computed.residentProjectionInvocationCount!=(restorationRemoved?1u:2u)||

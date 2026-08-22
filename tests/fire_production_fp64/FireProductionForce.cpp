@@ -99,6 +99,8 @@ namespace RISEFireProductionFP64
 				previousManifold.restorationDrainFraction<0.0||
 				previousManifold.restorationDrainFraction>1.0 )
 				return Fail(error,"production accepted manifold metadata is invalid");
+		} else if( previousStepS>0.0 ) {
+			return Fail(error,"production manifold metadata is unavailable after the first step");
 		} else if( previousManifold.timeStepS!=0.0||
 			previousManifold.maximumGeneration!=0.0||
 			previousManifold.restorationDrainFraction!=0.0 ) {

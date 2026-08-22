@@ -904,6 +904,9 @@ int main()
 		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
 			burning.timeStepS,partial,rejected,&error)&&rejected.seconds==0.0,
 			"r143 partial accepted-step metadata fails closed");
+		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
+			burning.timeStepS,none,rejected,&error)&&rejected.seconds==0.0,
+			"r143 a resumed production step cannot bypass the manifold limit with unavailable metadata");
 		burning.maximumGeneration=0.01;
 		burning.restorationDrainFraction=0.0;
 		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
@@ -3885,6 +3888,8 @@ int main()
 		"one-command resident mixed dual transport matches all wall/open CPU bytes within the "
 		"production Metal comparator band with zero interstage transfer");
 	FireProductionResidentStepResult composedGPU,composedGPURepeat;
+	composedStep.beginningManifoldDeviationPerCell.assign(
+		composedStep.force.shape.CellCount(),0.0);
 	composedStep.enforceManifoldPlateau=false;
 	const bool composedMetal=AdvanceFireProductionResidentStepMetal(
 		composedStep,composedGPU,&error);
@@ -3929,33 +3934,58 @@ int main()
 		static_cast<double>(acceptedObservationStep.projection.maximumPreProjectionResidualPerS);
 	acceptedObservationStep.manifoldPlateauPassed=true;
 	acceptedObservationStep.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
+	acceptedObservationStep.representedTimeStepS=0.001f;
+	const double acceptedRepresentedStep=
+		static_cast<double>(acceptedObservationStep.representedTimeStepS);
 	FireProductionAcceptedManifoldObservation acceptedObservation;
 	FireProductionStableTimeStep observationLimitedStep;
 	error.clear();
-	const bool observationPublished=PublishFireProductionAcceptedManifoldObservation(
-		0.001,acceptedObservationStep,acceptedObservation,&error);
-	const bool observationSelected=observationPublished&&SelectFireProductionStableTimeStep(
-		0.1,0.0,0.0,0.0,0.001,acceptedObservation,observationLimitedStep,&error);
-	const double expectedObservationStep=0.001*0.00075*
-		acceptedObservationStep.deliveredRestorationDrainFraction/0.0007;
+	acceptedObservation.available=true;acceptedObservation.timeStepS=acceptedRepresentedStep;
+	acceptedObservation.maximumGeneration=acceptedObservationStep.maximumManifoldGeneration;
+	acceptedObservation.restorationDrainFraction=
+		acceptedObservationStep.deliveredRestorationDrainFraction;
+	const bool observationSelected=SelectFireProductionStableTimeStep(
+		0.1,0.0,0.0,0.0,acceptedRepresentedStep,acceptedObservation,
+		observationLimitedStep,&error);
+	const double expectedObservationStep=acceptedRepresentedStep*((1.0-0.25)*0.001*
+		acceptedObservationStep.deliveredRestorationDrainFraction)/
+		acceptedObservationStep.maximumManifoldGeneration;
 	FireProductionAcceptedManifoldObservation rejectedObservation;
+	const bool unrepresentedStepRejected=!PublishFireProductionAcceptedManifoldObservation(
+		0.001,acceptedObservationStep,rejectedObservation,&error);
 	FireProductionResidentStepResult forgedObservationStep=acceptedObservationStep;
-	forgedObservationStep.requiredRestorationDrainFraction=0.0;
+	forgedObservationStep.maximumManifoldGeneration=1.0e-9;
+	forgedObservationStep.maximumAcceptedManifoldDeviation=0.0;
+	FireProductionRestorationPlateauValidation forgedValidation;
+	const bool forgedDiagnosticsCoherent=FireProductionRestorationPlateauWithinBand(
+		forgedObservationStep.maximumManifoldGeneration,
+		forgedObservationStep.projection.maximumPreProjectionResidualPerS,
+		forgedObservationStep.projection.maximumPostProjectionResidualPerS,forgedValidation);
+	forgedObservationStep.requiredRestorationDrainFraction=forgedValidation.requiredDrainFraction;
+	forgedObservationStep.deliveredRestorationDrainFraction=forgedValidation.deliveredDrainFraction;
+	forgedObservationStep.restorationResidualBandPerS=forgedValidation.maximumPostResidualPerS;
 	const bool forgedObservationRejected=!PublishFireProductionAcceptedManifoldObservation(
-		0.001,forgedObservationStep,rejectedObservation,&error);
+		acceptedRepresentedStep,forgedObservationStep,rejectedObservation,&error);
 	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0008;
 	const bool overAllowanceObservationRejected=
-		!PublishFireProductionAcceptedManifoldObservation(0.001,
+		!PublishFireProductionAcceptedManifoldObservation(acceptedRepresentedStep,
+			acceptedObservationStep,rejectedObservation,&error);
+	const bool coherentCallerAuthoredObservationRejected=
+		!PublishFireProductionAcceptedManifoldObservation(acceptedRepresentedStep,
 			acceptedObservationStep,rejectedObservation,&error);
 	Check(observationSelected&&acceptedObservation.available&&
-		acceptedObservation.timeStepS==0.001&&acceptedObservation.maximumGeneration==0.0007&&
+		acceptedObservation.timeStepS==acceptedRepresentedStep&&
+		acceptedObservation.maximumGeneration==acceptedObservationStep.maximumManifoldGeneration&&
 		acceptedObservation.restorationDrainFraction==
 			acceptedObservationStep.deliveredRestorationDrainFraction&&
 		observationLimitedStep.seconds==expectedObservationStep&&
 		std::string(observationLimitedStep.activeLimit)=="manifold_plateau"&&
-		forgedObservationRejected&&overAllowanceObservationRejected&&
+		unrepresentedStepRejected&&coherentCallerAuthoredObservationRejected&&
+		forgedDiagnosticsCoherent&&forgedObservationRejected&&
+		overAllowanceObservationRejected&&
 		!rejectedObservation.available,
-		"only an accepted binary32 plateau result publishes the next-step manifold selector state");
+		"only a producer-tokened binary32 plateau result publishes while the selector consumes "
+		"a complete accepted observation");
 	auto seedFullStepResult=[&](FireProductionResidentStepResult& seeded) {
 		seeded.conservativeValues.push_back(1.0f);seedDualResult(seeded.transportedDual);
 		FireProductionResidentForceProjectionResult nested;seedResidentResult(nested);
@@ -3966,6 +3996,7 @@ int main()
 		seeded.residentProjectionInvocationCount=2u;seeded.interstageFullGridTransferCount=1u;
 		seeded.terminalStagingCount=1u;seeded.combinedCertifiedWorkingSetBytes=1u;
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
+		seeded.representedTimeStepS=1.0f;
 		seeded.maximumManifoldGeneration=1.0;seeded.maximumAcceptedManifoldDeviation=1.0;
 		seeded.requiredRestorationDrainFraction=1.0;
 		seeded.deliveredRestorationDrainFraction=1.0;
@@ -3986,11 +4017,13 @@ int main()
 			rejected.interstageFullGridTransferCount==0u&&rejected.terminalStagingCount==0u&&
 			rejected.combinedCertifiedWorkingSetBytes==0u&&
 			rejected.combinedActualMetalAllocationBytes==0u&&rejected.deviceElapsedMS==0.0&&
+			rejected.representedTimeStepS==0.0f&&
 			rejected.maximumManifoldGeneration==0.0&&
 			rejected.maximumAcceptedManifoldDeviation==0.0&&
 			rejected.requiredRestorationDrainFraction==0.0&&
 			rejected.deliveredRestorationDrainFraction==0.0&&
 			rejected.restorationResidualBandPerS==0.0&&!rejected.manifoldPlateauPassed&&
+			!rejected.acceptedManifoldToken.Available()&&
 			rejected.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 	};
 	FireProductionResidentStepResult rejectedFullStep;

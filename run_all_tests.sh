@@ -407,6 +407,40 @@ else
 	failed=$((failed + 1))
 fi
 
+# r147 exercises the accepted resident observation through an actual v10
+# checkpoint/reload before the second production timestep selection.  Exact
+# 255 is success for this two-step lifecycle-only probe.
+if [ "$(uname -s)" = "Darwin" ]; then
+	lifecycle_name="FireSequenceTest.r147_manifold_lifecycle"
+	lifecycle_path="$BIN_DIR/FireSequenceTest"
+	lifecycle_log="$LOG_DIR/$lifecycle_name.log"
+	printf '[ evidence ] %-46s ... ' "$lifecycle_name"
+	lifecycle_rc=0
+	if [ ! -x "$lifecycle_path" ]; then
+		lifecycle_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_MANIFOLD_LIFECYCLE_PROBE=1 \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$lifecycle_path" \
+			--fire-production-calibration-check-dyadic-production \
+			"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
+			"$FIRE_PRODUCTION_TARGETS_SHA" >"$lifecycle_log" 2>&1 || lifecycle_rc=$?
+	else
+		RISE_FIRE_MANIFOLD_LIFECYCLE_PROBE=1 \
+			"$lifecycle_path" --fire-production-calibration-check-dyadic-production \
+			"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
+			"$FIRE_PRODUCTION_TARGETS_SHA" >"$lifecycle_log" 2>&1 || lifecycle_rc=$?
+	fi
+	if [ "$lifecycle_rc" -eq 255 ]; then
+		echo 'PASS (exact exit=255)'
+		rm -f "$lifecycle_log"
+	else
+		echo "FAIL (exit=$lifecycle_rc; expected 255)"
+		printf '%s\t%d\t%s\n' "$lifecycle_name" "$lifecycle_rc" \
+			"$lifecycle_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 # r138 is the retained tier-6 on-device precision pilot and therefore runs only
 # on Metal.  Exact 243 binds all pilot channels; r140 separately records that
 # the promised golden-slice class remains fail-closed.

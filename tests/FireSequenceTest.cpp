@@ -3400,8 +3400,7 @@ int main(int argc,char** argv)
 	precisionRoundTrip.planeHeatReleaseIntegral.assign(
 		precisionRoundTrip.planeHeatReleaseIntegral.size(),0.0);
 	precisionRoundTrip.centerlineStatisticsDurationS=0.0;
-	precisionRoundTrip.simulationTimeS=0.001;precisionRoundTrip.previousStepS=0.001;
-	precisionRoundTrip.lastAcceptedStepS=0.001;precisionRoundTrip.acceptedSteps=1u;
+	precisionRoundTrip.acceptedSteps=1u;
 	FireProductionResidentStepResult checkpointAcceptedStep;
 	checkpointAcceptedStep.physicalProjection.validationPassed=true;
 	checkpointAcceptedStep.projection.validationPassed=true;
@@ -3419,9 +3418,20 @@ int main(int argc,char** argv)
 		static_cast<double>(checkpointAcceptedStep.projection.maximumPreProjectionResidualPerS);
 	checkpointAcceptedStep.manifoldPlateauPassed=true;
 	checkpointAcceptedStep.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
-	Check(PublishFireProductionAcceptedManifoldObservation(0.001,checkpointAcceptedStep,
-		precisionRoundTrip.productionManifoldObservation,&checkpointFixtureError),
-		"r143 accepted resident diagnostics publish checkpoint manifold metadata");
+	checkpointAcceptedStep.representedTimeStepS=0.001f;
+	const double checkpointRepresentedStep=
+		static_cast<double>(checkpointAcceptedStep.representedTimeStepS);
+	precisionRoundTrip.simulationTimeS=checkpointRepresentedStep;
+	precisionRoundTrip.previousStepS=checkpointRepresentedStep;
+	precisionRoundTrip.lastAcceptedStepS=checkpointRepresentedStep;
+	precisionRoundTrip.productionManifoldObservation.available=true;
+	precisionRoundTrip.productionManifoldObservation.timeStepS=checkpointRepresentedStep;
+	precisionRoundTrip.productionManifoldObservation.maximumGeneration=
+		checkpointAcceptedStep.maximumManifoldGeneration;
+	precisionRoundTrip.productionManifoldObservation.restorationDrainFraction=
+		checkpointAcceptedStep.deliveredRestorationDrainFraction;
+	Check(precisionRoundTrip.productionManifoldObservation.available,
+		"r143 checkpoint fixture authors a complete internally consistent manifold observation");
 	if(!precisionRoundTrip.states.empty()){
 		const double excursion=0.5*AcceptedStateRoundoffFactor(
 			checkpointFuel.AcceptedStateFeasibilityEnvelope(),FireStateProducerPrecision::Binary32)*
@@ -3469,7 +3479,8 @@ int main(int argc,char** argv)
 		HomogeneousStateProducerPrecision(loadedPrecisionRoundTrip.states,loadedPrecision)&&
 		loadedPrecision==FireStateProducerPrecision::Binary32&&
 		loadedPrecisionRoundTrip.productionManifoldObservation.available&&
-		loadedPrecisionRoundTrip.productionManifoldObservation.timeStepS==0.001&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.timeStepS==
+			checkpointRepresentedStep&&
 		loadedPrecisionRoundTrip.productionManifoldObservation.maximumGeneration==0.0007&&
 		loadedPrecisionRoundTrip.productionManifoldObservation.restorationDrainFraction==
 			checkpointAcceptedStep.deliveredRestorationDrainFraction&&
@@ -3482,14 +3493,18 @@ int main(int argc,char** argv)
 		"r115 binary32 checkpoint metadata survives serialization and a binary64 CPU resume cannot relabel the inherited excursion");
 	const std::filesystem::path version9Checkpoint=checkpointFixture/"precision_class_v9.checkpoint";
 	MethaneRunCheckpoint loadedVersion9=loadedPrecisionRoundTrip;
+	FireProductionStableTimeStep resumedManifoldLimit;
 	Check(SaveMethaneRunCheckpoint(version9Checkpoint,precisionRoundTrip,
 		checkpointFixtureError,9u)&&LoadMethaneRunCheckpoint(version9Checkpoint,loadedVersion9,
 		checkpointFixtureError)&&loadedVersion9.checkpointFormatVersion==9u&&
 		!loadedVersion9.productionManifoldObservation.available&&
-		loadedVersion9.productionManifoldObservation.timeStepS==0.0,
-		"r143 checkpoint v10 adds manifold metadata while v9 decodes it as unavailable");
-	FireProductionStableTimeStep resumedManifoldLimit;
-	const double expectedResumedManifoldStep=0.001*((1.0-0.25)*0.001*
+		loadedVersion9.productionManifoldObservation.timeStepS==0.0&&
+		!SelectFireProductionStableTimeStep(0.1,0.0,0.0,0.0,loadedVersion9.previousStepS,
+			loadedVersion9.productionManifoldObservation,resumedManifoldLimit,
+			&checkpointFixtureError),
+		"r143 checkpoint v10 adds manifold metadata while a resumed v9 production selector "
+		"fails closed rather than bypassing the manifold limit");
+	const double expectedResumedManifoldStep=checkpointRepresentedStep*((1.0-0.25)*0.001*
 		checkpointAcceptedStep.deliveredRestorationDrainFraction)/0.0007;
 	Check(SelectFireProductionStableTimeStep(0.1,0.0,0.0,0.0,
 		loadedPrecisionRoundTrip.previousStepS,

@@ -97,6 +97,8 @@ namespace RISE
 				previousManifold.restorationDrainFraction<0.0||
 				previousManifold.restorationDrainFraction>1.0 )
 				return Fail(error,"production accepted manifold metadata is invalid");
+		} else if( previousStepS>0.0 ) {
+			return Fail(error,"production manifold metadata is unavailable after the first step");
 		} else if( previousManifold.timeStepS!=0.0||
 			previousManifold.maximumGeneration!=0.0||
 			previousManifold.restorationDrainFraction!=0.0 ) {
@@ -140,7 +142,11 @@ namespace RISE
 			acceptedStep.maximumManifoldGeneration,
 			acceptedStep.projection.maximumPreProjectionResidualPerS,
 			acceptedStep.projection.maximumPostProjectionResidualPerS,recomputed);
-		if(!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
+		const FireProductionAcceptedManifoldToken& token=acceptedStep.acceptedManifoldToken;
+		if(!token.available_||!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
+			!std::isfinite(acceptedStep.representedTimeStepS)||
+			acceptedStep.representedTimeStepS<=0.0f||
+			acceptedStepS!=static_cast<double>(acceptedStep.representedTimeStepS)||
 			acceptedStep.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32||
 			!acceptedStep.physicalProjection.validationPassed||
 			!acceptedStep.projection.validationPassed||
@@ -159,6 +165,13 @@ namespace RISE
 			acceptedStep.deliveredRestorationDrainFraction!=recomputed.deliveredDrainFraction||
 			acceptedStep.restorationResidualBandPerS!=recomputed.maximumPostResidualPerS)
 			return Fail(error,"production accepted manifold observation is invalid");
+		if(token.representedTimeStepS_!=acceptedStepS||
+			token.maximumGeneration_!=acceptedStep.maximumManifoldGeneration||
+			token.maximumAcceptedDeviation_!=acceptedStep.maximumAcceptedManifoldDeviation||
+			token.requiredDrainFraction_!=acceptedStep.requiredRestorationDrainFraction||
+			token.deliveredDrainFraction_!=acceptedStep.deliveredRestorationDrainFraction||
+			token.maximumPostResidualPerS_!=acceptedStep.restorationResidualBandPerS)
+			return Fail(error,"production accepted manifold token does not match diagnostics");
 		result.available=true;
 		result.timeStepS=acceptedStepS;
 		result.maximumGeneration=acceptedStep.maximumManifoldGeneration;

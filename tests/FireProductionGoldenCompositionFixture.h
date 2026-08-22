@@ -355,10 +355,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					value.interstageFullGridTransferCount==0u&&value.terminalStagingCount==0u&&
 					value.combinedCertifiedWorkingSetBytes==0u&&
 					value.combinedActualMetalAllocationBytes==0u&&value.deviceElapsedMS==0.0&&
+					value.representedTimeStepS==0.0f&&
 					value.maximumManifoldGeneration==0.0&&value.maximumAcceptedManifoldDeviation==0.0&&
 					value.requiredRestorationDrainFraction==0.0&&
 					value.deliveredRestorationDrainFraction==0.0&&
 					value.restorationResidualBandPerS==0.0&&!value.manifoldPlateauPassed&&
+					!value.acceptedManifoldToken.Available()&&
 					value.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 			};
 			RISE::FireProductionResidentStepResult rejected=limited;

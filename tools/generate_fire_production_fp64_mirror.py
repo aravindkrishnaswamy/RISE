@@ -48,6 +48,21 @@ def source_manifest() -> str:
 
 
 def transform(text: str, name: str, suffix: str) -> str:
+    if name == "FireProductionForce" and suffix == ".h":
+        token_begin = text.find("\n\tstruct FireProductionResidentStepResult;\n\n\t//! Opaque proof")
+        token_end = text.find("\n\t//! Selects the production step", token_begin)
+        if token_begin < 0 or token_end < 0:
+            raise RuntimeError("accepted manifold token declaration seam changed")
+        text = text[:token_begin] + text[token_end:]
+        token_field = "\n\t\tFireProductionAcceptedManifoldToken acceptedManifoldToken;"
+        if text.count(token_field) != 1:
+            raise RuntimeError("accepted manifold token field seam changed")
+        text = text.replace(token_field, "")
+        begin = text.find("\n\t//! Publishes the only manifold metadata")
+        end = text.find("\n\t//! Full resident P3 shadow step:", begin)
+        if begin < 0 or end < 0:
+            raise RuntimeError("accepted manifold publication declaration seam changed")
+        text = text[:begin] + text[end:]
     if name == "FireProductionForce" and suffix == ".cpp":
         # This owner-only publication seam consumes a completed binary32
         # resident result.  It is outside the same-scheme arithmetic mirror

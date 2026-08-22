@@ -468,8 +468,8 @@ int main()
 			std::string::npos&&unixTestDriver.find("expected 254")!=std::string::npos,
 		"r144 binds the exact burning predictor miss and atomic fail-closed publication");
 	const std::string manifoldClosure=ReadText(
-		"rendered/fire_production_calibration/r146_accepted_manifold_lifecycle/"
-		"accepted_manifold_lifecycle.v1");
+		"rendered/fire_production_calibration/r147_producer_authority_lifecycle/"
+		"producer_authority_lifecycle.v1");
 	const std::string productionSolverTest=ReadText("tests/FireProductionSolverTest.cpp");
 	const std::string sequenceTest=ReadText("tests/FireSequenceTest.cpp");
 	const std::string simulationSolverTest=ReadText("tests/FireSimulationSolverTest.cpp");
@@ -478,18 +478,26 @@ int main()
 		"tests/fire_production_fp64/SourceManifest.h");
 	const std::string traceSourceManifest=ReadText(
 		"tests/fire_production_trace/SourceManifest.h");
+	const std::string fp64ForceHeader=ReadText(
+		"tests/fire_production_fp64/FireProductionForce.h");
+	const std::string traceForceHeader=ReadText(
+		"tests/fire_production_trace/FireProductionForce.h");
+	const std::string fp64Generator=ReadText(
+		"tools/generate_fire_production_fp64_mirror.py");
+	const std::string traceGenerator=ReadText(
+		"tools/generate_fire_production_roundoff_trace.py");
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"1bc3ff98d4228fcd4a8a2f56cccaa7937b1db64a300870d624bbea909bbe06cc"&&
+		"182f32505e9e95f5c694ee1328f71c9b3be3d17235a82f68855a027f7c54c1c7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"bd58790a56a4ca1aa32d392e474e7f569905727826202f572339373c1f6cb97b"&&
+		"8b5749931b62ddabdb28e976fa5937bb0340ea44e24a7304391d7eff2d95dbfd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"d4d59f5b17342f59fa084e68dc37bf4267d56242a4992ecf99a6d3a43963b8c1"&&
+		"8291a39b277a908d8446e7fc1b9b2e057ecd66fe151622d397b079cfdaedffa9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-		"58678ae858017c68fc33dc7c5528cb7b0eaa3752529435b439b421b96ad1a739"&&
+		"c10b50cd6f02fc1e6e9d365e5916a90b9ec56055b0cb771e4a22943dcdd008a4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			recordsSource.begin(),recordsSource.end()))==
 		"04d7f0b21ae1e078f125759a2a08d8b82da68c7a2bdc1a1c8b8aff8f4c8ddc96"&&
@@ -498,19 +506,19 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"229a8a223f0467fb36ff53d4afdb60bde70ed608b584a16f8f50e0c247337d9a"&&
+		"6a338bd13b6897de725f2d7a3d9a7bfb607f910e78c49ad496dab16c99622913"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"11bf1ae47556744c816143f1603019b56a64af2df1a1d1342f82f4a48a442429"&&
+		"9a27b6cb7d9b744b46960fd610a33504390e7298e1a340c2a8f7a698c4e6c194"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-		"43760811ff16beb9a07c535cc4ea4a16a9a1a5de3e38914fd9cac1bd56b6f3c5"&&
+		"d2916d1eab8f9cef2b0e8c8590492140de14a37c1f49219dc64bf32034c6e634"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"03766ef8cdaee0751bdbdfcd691a346630fbc5098cc3f22f098ddaaa746da9eb"&&
+		"23ae3e1449038a4c48d26def5c5f8c9bdcec945f4bc39bcea0517b74a95b11df"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -519,21 +527,42 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"593b5cb222566640d8e708b42d50c7baf447bfdc7659b3fb43f570d2d803a583"&&
+		"b2d9720cdaf388a3f852f7c592a6927b91fc248a547541453e0dd0748f060e55"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"1ee33642f4b29e102a5550a8262b2c539a63cac5e88f59d069333cd735852d4e"&&
-		manifoldClosure.find("accepted_observation_publication_recomputes_required_drain true")!=
+		"a14526d4d8ae1f3e8d7b929a71e3b9f9ced14f2d23f3c134da4e413e90d2fece"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fp64Generator.begin(),fp64Generator.end()))==
+		"0d2309a2d9f862bb5e1fa68ed6576ec26ca5a90bb0893f831e136aed56e7314b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			traceGenerator.begin(),traceGenerator.end()))==
+		"98036e70988be2833fdcf9466b4a9500c823df8c6abc469c13e0ecf39743e49e"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+		"e3ff82b1513a6b78da0da0f10e4f72bb6b26c2eae09c23fb54e51e95d2811328"&&
+		manifoldClosure.find("accepted_observation_requires_private_producer_token true")!=
 			std::string::npos&&
-		manifoldClosure.find("checkpoint_versions_5_through_9_clear_stale_observation true")!=
+		manifoldClosure.find("coherent_public_diagnostic_forgery_rejected true")!=
 			std::string::npos&&
+		manifoldClosure.find("legacy_v9_production_resume_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("r147_lifecycle_exact_exit 255")!=std::string::npos&&
 		manifoldClosure.find("r118_retained_performance_acceptance false")!=
 			std::string::npos&&
 		manifoldClosure.find("r119_all_scalar_velocity_inventory_channels_accepted true")!=
 			std::string::npos&&
 		manifoldClosure.find("r142_retained_exact_exit 253")!=std::string::npos&&
-		manifoldClosure.find("r144_exact_exit 254")!=std::string::npos,
-		"r146 closes accepted-observation lifecycle and records the retained wall-budget miss");
+		manifoldClosure.find("r144_retained_exact_exit 254")!=std::string::npos&&
+		fp64ForceHeader.find("PublishFireProductionAcceptedManifoldObservation")==
+			std::string::npos&&
+		traceForceHeader.find("PublishFireProductionAcceptedManifoldObservation")==
+			std::string::npos&&
+		unixTestDriver.find("FireSequenceTest.r147_manifold_lifecycle")!=std::string::npos&&
+		unixTestDriver.find("RISE_FIRE_MANIFOLD_LIFECYCLE_PROBE=1")!=std::string::npos&&
+		unixTestDriver.find("lifecycle_rc\" -eq 255")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=255)")!=std::string::npos&&
+		unixTestDriver.find("expected 255")!=std::string::npos,
+		"r147 makes accepted-observation authority producer-owned and executes checkpoint resume");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

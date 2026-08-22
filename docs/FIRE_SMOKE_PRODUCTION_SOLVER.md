@@ -3003,6 +3003,42 @@ experiment changed that to only `328.0007 ms` and was reverted.  No budget or
 physics bound moved.  Evidence is
 `rendered/fire_production_calibration/r146_accepted_manifold_lifecycle/accepted_manifold_lifecycle.v1`.
 
+### 7.55g Producer-owned observation authority (r147)
+
+Fresh review found three remaining authority gaps in r146.  The public resident
+result could be published with a caller-selected timestep, a coordinated rewrite
+of `G`, field deviation, drain, and band could remain internally consistent, and
+an unavailable v5--v9 observation could bypass the production limiter after a
+resume.  The resident owner now records the represented binary32 timestep and
+creates a private accepted-manifold token only after both the mechanism and
+function gates pass.  Publication requires exact agreement between that token,
+the public diagnostics, and the promoted represented timestep.  Public
+diagnostics remain observable, but they no longer confer authority.  An
+unavailable observation is accepted only with `previousStepS=0`; legacy
+production resume therefore fails closed instead of silently reverting to CFL.
+
+The lifecycle gate is now executable rather than format-only.  It advances two
+real tier-12 resident steps, publishes the first producer token, updates the
+represented timing fields, writes and reloads checkpoint v10, and passes the
+reloaded observation to the second selector.  Exact exit `255` binds first-step
+`G=1.2031080315688669e-4`, drain `0.99562928290235475`, and resumed selection
+`0.0018513042677754073 s` (`advective_CFL`).  The cold manifold candidate is
+valid but subdominant to CFL; the separately bound selector RED proves that an
+accepted burning observation can own the active `manifold_plateau` limit.
+
+Retained r118 physics is unchanged: probe plateau
+`1.5439012582030287e-4`, field plateau `6.5237316812827295e-4`, trace
+`719ee45e...f68cb`, and final state `d9a1a0ea...c9dc2`.  Its latest timing is
+`27.7856 ms` device and `325.3877 ms` wall p95, so the historical `200 ms`
+wall acceptance remains false.  r119 still accepts every spatial scalar,
+velocity, and inventory channel; r138 retains trace `f90a2508...551cebf`; and
+r142/r144 retain exact `253/254`.  r144's rejected burning result has no token.
+The function-level stop is therefore unchanged: field deviation is still
+`2.5081625764804549e-3`, required drain `3.3442167670577247`, and delivered
+drain `0.97489008508207653`.  No long burning shadow, golden `B_fp32`, temporal
+refinement, readmission, source map, or preview runs.  Evidence is
+`rendered/fire_production_calibration/r147_producer_authority_lifecycle/producer_authority_lifecycle.v1`.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

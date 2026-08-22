@@ -293,6 +293,37 @@ namespace RISE
 		FireProductionStableTimeStep() : seconds(0.0),activeLimit(0) {}
 	};
 
+	struct FireProductionResidentStepResult;
+
+	//! Opaque proof that the resident owner, rather than a caller rewriting the
+	//! public diagnostics, accepted the manifold mechanism and field gates.
+	class FireProductionAcceptedManifoldToken
+	{
+	public:
+		FireProductionAcceptedManifoldToken() : available_(false),representedTimeStepS_(0.0),
+			maximumGeneration_(0.0),maximumAcceptedDeviation_(0.0),requiredDrainFraction_(0.0),
+			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0) {}
+		bool Available() const { return available_; }
+
+	private:
+		bool available_;
+		double representedTimeStepS_;
+		double maximumGeneration_;
+		double maximumAcceptedDeviation_;
+		double requiredDrainFraction_;
+		double deliveredDrainFraction_;
+		double maximumPostResidualPerS_;
+		friend bool AdvanceFireProductionResidentStepMetal(
+			const FireProductionResidentStepRequest&,
+			FireProductionResidentStepResult&,
+			std::string* );
+		friend bool PublishFireProductionAcceptedManifoldObservation(
+			double,
+			const FireProductionResidentStepResult&,
+			FireProductionAcceptedManifoldObservation&,
+			std::string* );
+	};
+
 	//! Selects the production step from the CFL family, the 1.1 growth cap, and
 	//! the r143 accepted-step manifold observation.  An unavailable observation
 	//! is valid only for the first step of a run.
@@ -323,6 +354,7 @@ namespace RISE
 		std::uint64_t combinedCertifiedWorkingSetBytes;
 		std::uint64_t combinedActualMetalAllocationBytes;
 		double deviceElapsedMS;
+		float representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
 		double requiredRestorationDrainFraction;
@@ -330,12 +362,13 @@ namespace RISE
 		double restorationResidualBandPerS;
 		bool manifoldPlateauPassed;
 		FireStateProducerPrecision conservativeProducerPrecision;
+		FireProductionAcceptedManifoldToken acceptedManifoldToken;
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0),maximumManifoldGeneration(0.0),
+			deviceElapsedMS(0.0),representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
 			maximumAcceptedManifoldDeviation(0.0),requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			manifoldPlateauPassed(false),

@@ -1457,7 +1457,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="4cb7e6cf31946dc300ab65e5829e615d212f15a74b33a094e6b3b9e075ef3bcb"||
+			traceDigest!="737175ca6a4c7517eccf1b248c7b6c481a38794da631eeeae615a0563d065060"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1576,9 +1576,10 @@ namespace FireProductionDyadicCalibration
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,
-		const std::array<std::string,4>& targetDigests)
+		const std::array<std::string,4>& targetDigests,const bool lifecycleOnly=false)
 	{
-		static const std::size_t StepCount=104u,WarmupCount=8u,PlateauCount=32u;
+		const std::size_t StepCount=lifecycleOnly?2u:104u;
+		static const std::size_t WarmupCount=8u,PlateauCount=32u;
 		static const std::size_t FailingProbeCell=2256u;
 		MethaneRunCheckpoint state;std::string error;
 		if(!BuildAnalyticState(12u,state,error))return 217;
@@ -1592,6 +1593,12 @@ namespace FireProductionDyadicCalibration
 		std::vector<double> probe(StepCount),fieldMaximum(StepCount),deviceTimes,wallTimes;
 		RISECBOR64::Bytes trace;
 		std::uint64_t maximumCertified=0u,maximumActual=0u;
+		bool acceptedLifecyclePassed=false;
+		double selectedAfterResume=0.0,firstGeneration=0.0,firstDrain=0.0;
+		std::string selectedAfterResumeLimit;
+		const std::filesystem::path lifecycleCheckpoint=
+			std::filesystem::temp_directory_path()/"rise_r147_manifold_lifecycle.checkpoint";
+		{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
 		for(std::size_t step=0u;step<StepCount;++step){
 			RISE::FireProductionStableTimeStep selected;
 			const double previousStep=state.productionManifoldObservation.available?
@@ -1599,6 +1606,8 @@ namespace FireProductionDyadicCalibration
 			if(!RISE::SelectFireProductionStableTimeStep(state.cellWidthM,
 				0.5*state.cellWidthM/baseStep,0.0,0.0,previousStep,
 				state.productionManifoldObservation,selected,&error))return 219;
+			if(step==1u){selectedAfterResume=selected.seconds;
+				selectedAfterResumeLimit=selected.activeLimit?selected.activeLimit:"";}
 			RISE::FireProductionResidentStepRequest request;
 			if(!BuildProductionRequest(state,sealed[step%sealed.size()],selected.seconds,
 				request,error))return 219;
@@ -1648,11 +1657,52 @@ namespace FireProductionDyadicCalibration
 				wallTimes.push_back(wall);}
 			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
 			if(!RISE::PublishFireProductionAcceptedManifoldObservation(
-				selected.seconds,production,acceptedObservation,&error))return 223;
+				static_cast<double>(request.force.timeStepS),production,
+				acceptedObservation,&error))return 223;
+			if(step==0u){firstGeneration=acceptedObservation.maximumGeneration;
+				firstDrain=acceptedObservation.restorationDrainFraction;}
 			if(!ApplyProductionResult(production,state,error)){
 				std::fprintf(stderr,"r118 long consumer step=%zu failed: %s\n",step,error.c_str());
 				return 223;}
+			const double representedStep=static_cast<double>(production.representedTimeStepS);
+			state.simulationTimeS+=representedStep;
+			state.previousStepS=representedStep;
+			state.lastAcceptedStepS=representedStep;
+			++state.acceptedSteps;
 			state.productionManifoldObservation=acceptedObservation;
+			if(step==0u){
+				const std::string stateDigestBefore=AnalyticStateDigest(state);
+				MethaneRunCheckpoint loaded;
+				const bool saved=SaveMethaneRunCheckpoint(lifecycleCheckpoint,state,error);
+				const bool loadedOK=saved&&LoadMethaneRunCheckpoint(lifecycleCheckpoint,loaded,error);
+				{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
+				acceptedLifecyclePassed=loadedOK&&loaded.checkpointFormatVersion==10u&&
+					loaded.acceptedSteps==state.acceptedSteps&&
+					loaded.simulationTimeS==state.simulationTimeS&&
+					loaded.previousStepS==representedStep&&
+					loaded.lastAcceptedStepS==representedStep&&
+					loaded.productionManifoldObservation.available&&
+					loaded.productionManifoldObservation.timeStepS==representedStep&&
+					loaded.productionManifoldObservation.maximumGeneration==
+						acceptedObservation.maximumGeneration&&
+					loaded.productionManifoldObservation.restorationDrainFraction==
+						acceptedObservation.restorationDrainFraction&&
+					AnalyticStateDigest(loaded)==stateDigestBefore;
+				if(!acceptedLifecyclePassed)return 223;
+				state=std::move(loaded);
+			}
+		}
+		if(lifecycleOnly){
+			std::fprintf(stderr,"r147 accepted lifecycle checkpoint=%d steps=%llu "
+				"first_G=%.17g first_r=%.17g selected_after_resume=%.17g limit=%s\n",
+				acceptedLifecyclePassed?1:0,static_cast<unsigned long long>(state.acceptedSteps),
+				firstGeneration,firstDrain,selectedAfterResume,selectedAfterResumeLimit.c_str());
+			return acceptedLifecyclePassed&&state.acceptedSteps==2u&&
+				state.productionManifoldObservation.available&&
+				firstGeneration==0.00012031080315688669&&
+				firstDrain==0.99562928290235475&&
+				selectedAfterResume==0.0018513042677754073&&
+				selectedAfterResumeLimit=="advective_CFL"?255:223;
 		}
 		double plateau=0.0,fieldPlateau=0.0;
 		for(std::size_t step=StepCount-PlateauCount;step<StepCount;++step){
@@ -1675,7 +1725,7 @@ namespace FireProductionDyadicCalibration
 				traceDigest!="719ee45e254a65dc7b6a37ece81720d27213cd69d761312348d102a78f5f68cb"||
 				AnalyticStateDigest(state)!=
 					"d9a1a0ea021f38792ff9fa3c1446c239ab66d3981f4154e519e568d0030c9dc2"||
-			!(plateau<0.001)||!(fieldPlateau<0.001)||
+			!acceptedLifecyclePassed||!(plateau<0.001)||!(fieldPlateau<0.001)||
 			!std::isfinite(deviceP95)||!std::isfinite(wallP95)||wallP95>200.0)return 224;
 		return 228;
 	}
@@ -1690,13 +1740,18 @@ namespace FireProductionDyadicCalibration
 		if(restorationProbeEnvironment&&std::strcmp(restorationProbeEnvironment,"1")!=0)return 226;
 		const bool restorationProbe=restorationProbeEnvironment&&
 			std::strcmp(restorationProbeEnvironment,"1")==0;
-		if(eosProbe&&restorationProbe)return 227;
+		const char* lifecycleEnvironment=std::getenv("RISE_FIRE_MANIFOLD_LIFECYCLE_PROBE");
+		if(lifecycleEnvironment&&std::strcmp(lifecycleEnvironment,"1")!=0)return 256;
+		const bool lifecycleProbe=lifecycleEnvironment&&
+			std::strcmp(lifecycleEnvironment,"1")==0;
+		if((eosProbe?1:0)+(restorationProbe?1:0)+(lifecycleProbe?1:0)>1)return 227;
 		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
 			std::strlen(expectedTargets)!=64u||DigestFile(directory/"dyadic_protocol.v1")!=
 			expectedProtocol||DigestFile(directory/"dyadic_targets.v1")!=expectedTargets)return 180;
 		std::array<std::string,4> targetDigests;if(!ReadTargetDigests(
 			directory/"dyadic_targets.v1",targetDigests))return 181;
-		if(restorationProbe)return CheckRestorationLong(directory,targetDigests);
+		if(restorationProbe||lifecycleProbe)
+			return CheckRestorationLong(directory,targetDigests,lifecycleProbe);
 		if(eosProbe)setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed",1);
 		std::array<MethaneRunCheckpoint,4> states;std::array<FilteredField,4> filtered;
 		std::array<FilteredVelocityField,4> productionVelocity;

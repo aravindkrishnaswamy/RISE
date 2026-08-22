@@ -326,6 +326,7 @@ namespace RISEFireProductionTrace
 		std::uint64_t combinedCertifiedWorkingSetBytes;
 		std::uint64_t combinedActualMetalAllocationBytes;
 		double deviceElapsedMS;
+		FireProductionRoundoffTrace::TraceFloat representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
 		double requiredRestorationDrainFraction;
@@ -338,21 +339,12 @@ namespace RISEFireProductionTrace
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0),maximumManifoldGeneration(0.0),
+			deviceElapsedMS(0.0),representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
 			maximumAcceptedManifoldDeviation(0.0),requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(RISE::FireStateProducerPrecision::Unknown) {}
 	};
-
-	//! Publishes the only manifold metadata that may constrain the next
-	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot
-	//! create an accepted observation.
-	bool PublishFireProductionAcceptedManifoldObservation(
-		double acceptedStepS,
-		const FireProductionResidentStepResult& acceptedStep,
-		FireProductionAcceptedManifoldObservation& result,
-		std::string* error=0 );
 
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,
 	//! explicit source operands, one physical P2 projection, and one deadbeat
