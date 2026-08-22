@@ -1088,6 +1088,19 @@ struct NodeGraphCanvas: View {
     /// call on every `performReload`, regardless of `viewScope`, so the
     /// memo is already current the moment the user toggles INTO Focused
     /// mode rather than lagging a frame behind.
+    ///
+    /// DELIBERATELY NO cheap `(selectionCategory, selectionName)` pre-gate
+    /// here, unlike the Qt twin's `updateStickyFocusObject()` (review-round
+    /// P2 fix on `5992a70d`) -- do not port one over reflexively. Qt's
+    /// version needed one because ITS `performReload` runs on EVERY
+    /// preview frame (`ViewportBridge::imageUpdated`'s per-frame poll
+    /// cadence), so an object sitting selected through a long render would
+    /// otherwise re-pay `selectionRowName`'s O(rows) walk every single
+    /// frame. THIS `performReload` runs only on discrete triggers
+    /// (`.onAppear`, a `refreshTrigger` bump, a `viewScope` toggle) --
+    /// never a bare per-frame poll -- so there is no steady-state
+    /// per-frame cost here to guard against, and adding one would just be
+    /// unneeded complexity chasing a non-existent hot path.
     private func updateStickyFocusObject(bridge: RISEViewportBridge) {
         let bridgeID = ObjectIdentifier(bridge)
         if stickyFocusBridgeID != bridgeID {

@@ -191,8 +191,14 @@ private:
     /// must show its details in the panel WITHOUT retargeting the focused
     /// subgraph). Called at the top of performReload() on every call,
     /// regardless of m_viewScope, so the memo is already current the
-    /// moment the user toggles INTO Focused mode. See NodeGraphCanvas.cpp's
-    /// own comment for the full rationale.
+    /// moment the user toggles INTO Focused mode. Review-round P2 fix:
+    /// gated behind its OWN cheap (m_lastStickyFocusCategory,
+    /// m_lastStickyFocusSelectionName) pre-check, mirroring
+    /// refreshSpotlight's -- this runs on EVERY preview frame, so it must
+    /// not re-pay selectionRowName()'s O(rows) walk while an object
+    /// merely sits selected through a long render. See
+    /// NodeGraphCanvas.cpp's own comment for the full rationale,
+    /// including why the Mac twin deliberately has NO equivalent gate.
     void updateStickyFocusObject();
     /// The (category, name) the Focused view should root its subgraph at
     /// -- ALWAYS the sticky object memo (RISE::ChunkCategory::Object).
@@ -390,6 +396,16 @@ private:
     /// else would ever reset a stale name from a previous scene.
     bool    m_stickyFocusHasObject   = false;
     QString m_stickyFocusObjectName;
+    /// Review-round P2 fix: CHEAP `(selectionCategory(), selectionName())`
+    /// pre-check gate for updateStickyFocusObject() -- SAME pattern as
+    /// m_lastSpotlightCategory/m_lastSpotlightSelectionName above, added
+    /// because updateStickyFocusObject() (unlike that Object-only Mac
+    /// twin) runs on EVERY preview frame via performReload's per-frame
+    /// poll cadence, so it must not re-pay the O(rows) selectionRowName()
+    /// walk on every frame while an object merely sits selected through a
+    /// long render. Cleared alongside the sticky memo in setBridge().
+    ViewportBridge::Category m_lastStickyFocusCategory = ViewportBridge::Category::None;
+    QString                  m_lastStickyFocusSelectionName;
 
     // ---- object-pick spotlight state ------------------------------------
     QSet<quint64> m_spotlightHandles;
