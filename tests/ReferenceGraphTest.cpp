@@ -257,6 +257,8 @@ typedef SceneEditController::GraphPort     GPort;
 typedef SceneEditController::PainterMaterialGraph Graph;
 typedef SceneEditController::PainterMaterialGraphLaidOut LaidOutGraph;
 typedef SceneEditController::GraphNodePositionUpdate     PosUpdate;
+typedef SceneEditController::SceneGraphModel   ObjGraph;       // PART 14: Object Graph slice -- same concrete type as Graph, distinct spelling for readability
+typedef SceneEditController::ObjectGraphLaidOut ObjLaidOutGraph;
 
 static NodeSeed MakeNodeSeed( Cst::NodeId id, const char* name, ChunkCategory cat,
                                unsigned long long order, unsigned long long serial = 0 )
@@ -2021,6 +2023,283 @@ int main()
 				dc.ReadPainterMaterialGraphLaidOutFocused( ChunkCategory::Object, String( "obj1" ), focused, &degraded );
 				Check( degraded, "PART13d: a focused Object read made WHILE a render owns the scene reports outDegraded == true" );
 				Check( focused.graph.nodes.empty(), "PART13d: a degraded focused read returns an empty graph" );
+			}
+
+			renderThread.join();
+			rj->release();
+		}
+	}
+
+	// =====================================================================
+	// PART 14 -- Object Graph slice (S1 core): SceneEditController::
+	// ReadObjectGraph / ReadObjectGraphLaidOut / ReadObjectGraphLaidOutFocused,
+	// BuildObjectGraphSeedsLocked_, ObjectGraphFocusedClosure. Reuses the
+	// SAME shared model (SceneGraphModel == PainterMaterialGraph) PART 1-13
+	// already exercise, so FindNode/FindPort/Graph work unchanged -- only
+	// the SEEDING and the FOCUSED closure are new logic to pin here.
+	// =====================================================================
+	{
+		// ---- (a) object_parenting.RISEscene: node set (objects+geometry
+		// ONLY, no painters/materials), a container has no geometry edge,
+		// rank ordering (parent rank < child rank; geometry rank > every
+		// object that consumes it) ----
+		{
+			const char* path = "scenes/Tests/Geometry/object_parenting.RISEscene";
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path );
+			Check( loaded, "PART14a: object_parenting.RISEscene loads" );
+			if( loaded ) {
+				SceneEditController c( *j, 0 );
+				ObjLaidOutGraph lg;
+				c.ReadObjectGraphLaidOut( lg );
+				const ObjGraph& g = lg.graph;
+
+				std::size_t objCount = 0, geoCount = 0, otherCount = 0;
+				for( const GNode& n : g.nodes ) {
+					if( n.category == ChunkCategory::Object ) ++objCount;
+					else if( n.category == ChunkCategory::Geometry ) ++geoCount;
+					else ++otherCount;
+				}
+				Check( objCount == 14, "PART14a: 14 standard_object chunks become 14 Object nodes" );
+				Check( geoCount == 4, "PART14a: 4 geometry chunks become 4 Geometry nodes" );
+				Check( otherCount == 0, "PART14a: no Painter/Material nodes leak into the Object Graph" );
+				Check( g.nodes.size() == 18, "PART14a: 18 total nodes (14 objects + 4 geometry)" );
+
+				const GNode* pedestalRoot = FindNode( g, ChunkCategory::Object, "pedestal_root" );
+				const GNode* pedestal     = FindNode( g, ChunkCategory::Object, "pedestal" );
+				const GNode* shoulder     = FindNode( g, ChunkCategory::Object, "shoulder" );
+				const GNode* elbow        = FindNode( g, ChunkCategory::Object, "elbow" );
+				const GNode* handRoot     = FindNode( g, ChunkCategory::Object, "hand_root" );
+				const GNode* palm         = FindNode( g, ChunkCategory::Object, "palm" );
+				const GNode* geoBall      = FindNode( g, ChunkCategory::Geometry, "geo_ball" );
+				Check( pedestalRoot && pedestal && shoulder && elbow && handRoot && palm && geoBall,
+				       "PART14a: sanity -- every referenced node resolves" );
+
+				if( pedestalRoot ) {
+					Check( FindPort( pedestalRoot->inEdges, "geometry", 0 ) == nullptr,
+					       "PART14a: pedestal_root (a container, no `geometry` line) has NO geometry inEdge" );
+					Check( FindPort( pedestalRoot->outEdges, "parent", 0 ) == nullptr,
+					       "PART14a: pedestal_root (a root) has no `parent` outEdge" );
+				}
+				if( pedestal ) {
+					const GPort* p = FindPort( pedestal->outEdges, "parent", 0 );
+					Check( p && std::string( p->otherName.c_str() ) == "pedestal_root" && p->otherNode != SceneEditController::kInvalidNodeIndex,
+					       "PART14a: pedestal.parent -> pedestal_root resolves" );
+				}
+
+				// Rank ordering via laid-out x (rank * columnSpacing, strictly
+				// increasing root -> leaf -> geometry): pedestal_root(0) <
+				// shoulder(1) < elbow(2) < hand_root(3) < palm(4) < geo_ball(5,
+				// consumed by palm among others).
+				auto xOf = [&]( const char* name, ChunkCategory cat ) -> double {
+					for( std::size_t i = 0; i < g.nodes.size(); ++i )
+						if( g.nodes[i].category == cat && std::string( g.nodes[i].name.c_str() ) == name )
+							return lg.positions[i].x;
+					return -1.0;
+				};
+				const double xRoot  = xOf( "pedestal_root", ChunkCategory::Object );
+				const double xShldr = xOf( "shoulder",      ChunkCategory::Object );
+				const double xElbow = xOf( "elbow",         ChunkCategory::Object );
+				const double xHand  = xOf( "hand_root",     ChunkCategory::Object );
+				const double xPalm  = xOf( "palm",          ChunkCategory::Object );
+				const double xBall  = xOf( "geo_ball",      ChunkCategory::Geometry );
+				Check( xRoot >= 0.0 && xRoot < xShldr && xShldr < xElbow && xElbow < xHand && xHand < xPalm && xPalm < xBall,
+				       "PART14a: rank ordering strictly increases pedestal_root -> shoulder -> elbow -> hand_root -> palm -> geo_ball" );
+				j->release();
+			}
+		}
+
+		// ---- (b) object_instancing.RISEscene: DOCUMENT-seeded node count
+		// (9 authored object chunks, NOT the 42 live instanced objects),
+		// repeatCount on the counted chunk, `source` edges (whole-subtree
+		// AND leaf-collapse forms) ----
+		{
+			const char* path = "scenes/Tests/Geometry/object_instancing.RISEscene";
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path );
+			Check( loaded, "PART14b: object_instancing.RISEscene loads" );
+			if( loaded ) {
+				SceneEditController c( *j, 0 );
+				ObjGraph g;
+				c.ReadObjectGraph( g );
+
+				std::size_t objCount = 0, geoCount = 0;
+				for( const GNode& n : g.nodes ) {
+					if( n.category == ChunkCategory::Object ) ++objCount;
+					else if( n.category == ChunkCategory::Geometry ) ++geoCount;
+				}
+				Check( objCount == 9, "PART14b: 9 AUTHORED object chunks (not the 42 live instanced objects) become 9 Object nodes" );
+				Check( geoCount == 4, "PART14b: 4 geometry chunks become 4 Geometry nodes" );
+
+				const GNode* row      = FindNode( g, ChunkCategory::Object, "row" );
+				const GNode* pairB    = FindNode( g, ChunkCategory::Object, "pair_b" );
+				const GNode* globeSolo= FindNode( g, ChunkCategory::Object, "globe_solo" );
+				const GNode* lantern  = FindNode( g, ChunkCategory::Object, "lantern" );
+				const GNode* lanternGlobe = FindNode( g, ChunkCategory::Object, "lantern_globe" );
+				Check( row && pairB && globeSolo && lantern && lanternGlobe, "PART14b: sanity -- every referenced node resolves" );
+
+				if( row )      Check( row->repeatCount == 6, "PART14b: `row` (count_u 3 count_v 2) has repeatCount == 6" );
+				if( pairB )    Check( pairB->repeatCount == 0, "PART14b: `pair_b` (no count_u) has repeatCount == 0" );
+				if( lantern )  Check( lantern->repeatCount == 0, "PART14b: `lantern` (the authored root) has repeatCount == 0" );
+
+				if( pairB ) {
+					const GPort* p = FindPort( pairB->outEdges, "source", 0 );
+					Check( p && std::string( p->otherName.c_str() ) == "lantern" && p->otherNode != SceneEditController::kInvalidNodeIndex,
+					       "PART14b: pair_b.source -> lantern (whole-subtree instancing) resolves" );
+				}
+				if( globeSolo ) {
+					const GPort* p = FindPort( globeSolo->outEdges, "source", 0 );
+					Check( p && std::string( p->otherName.c_str() ) == "lantern_globe" && p->otherNode != SceneEditController::kInvalidNodeIndex,
+					       "PART14b: globe_solo.source -> lantern_globe (leaf-collapse instancing) resolves" );
+				}
+				j->release();
+			}
+		}
+
+		// ---- (c) synthetic csg_object fixture: obja/objb edges present,
+		// rank(composite) > rank(operand) ----
+		{
+			const char* path = "test_referencegraph_objgraph_csg.RISEscene";
+			Job* j = LoadFixture( path,
+				"RISE ASCII SCENE 7\n"
+				"film\n{\nwidth 32\nheight 24\n}\n"
+				"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+				"sphere_geometry\n{\nname gs\nradius 1\n}\n"
+				"box_geometry\n{\nname gb\nwidth 1\nheight 1\ndepth 1\n}\n"
+				"standard_object\n{\nname opA\ngeometry gs\nposition -1 0 0\n}\n"
+				"standard_object\n{\nname opB\ngeometry gb\nposition 1 0 0\n}\n"
+				"csg_object\n{\nname combo\noperation union\nobja opA\nobjb opB\n}\n" );
+			Check( j != nullptr, "PART14c: synthetic csg fixture loads" );
+			if( j ) {
+				SceneEditController c( *j, 0 );
+				ObjLaidOutGraph lg;
+				c.ReadObjectGraphLaidOut( lg );
+				const ObjGraph& g = lg.graph;
+
+				const GNode* combo = FindNode( g, ChunkCategory::Object, "combo" );
+				const GNode* opA   = FindNode( g, ChunkCategory::Object, "opA" );
+				const GNode* opB   = FindNode( g, ChunkCategory::Object, "opB" );
+				Check( combo && opA && opB, "PART14c: sanity -- combo/opA/opB all resolve" );
+				if( combo ) {
+					const GPort* a = FindPort( combo->outEdges, "obja", 0 );
+					const GPort* b = FindPort( combo->outEdges, "objb", 0 );
+					Check( a && std::string( a->otherName.c_str() ) == "opA" && a->otherNode != SceneEditController::kInvalidNodeIndex,
+					       "PART14c: combo.obja -> opA resolves" );
+					Check( b && std::string( b->otherName.c_str() ) == "opB" && b->otherNode != SceneEditController::kInvalidNodeIndex,
+					       "PART14c: combo.objb -> opB resolves" );
+				}
+				auto xOf = [&]( const char* name ) -> double {
+					for( std::size_t i = 0; i < g.nodes.size(); ++i )
+						if( g.nodes[i].category == ChunkCategory::Object && std::string( g.nodes[i].name.c_str() ) == name )
+							return lg.positions[i].x;
+					return -1.0;
+				};
+				Check( xOf( "opA" ) >= 0.0 && xOf( "opA" ) < xOf( "combo" ) && xOf( "opB" ) < xOf( "combo" ),
+				       "PART14c: rank(combo) > rank(opA) and rank(combo) > rank(opB) -- operands sit LEFT of the composite" );
+				j->release();
+			}
+		}
+
+		// ---- (d) FOCUSED: mid-tree object (`shoulder`) = ancestors
+		// (pedestal_root) + descendants (everything under shoulder) + geo
+		// (every included object's geometry) -- and EXCLUDES the unrelated
+		// sibling subtree (`pedestal`) and the unrelated `floor` root.
+		// RED-PROVED below: a combined UP+DOWN worklist (the bug this
+		// design deliberately avoids) pulls `pedestal` in too. ----
+		{
+			const char* path = "scenes/Tests/Geometry/object_parenting.RISEscene";
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path );
+			Check( loaded, "PART14d: object_parenting.RISEscene loads" );
+			if( loaded ) {
+				SceneEditController c( *j, 0 );
+				bool degraded = true;
+				ObjLaidOutGraph focused;
+				c.ReadObjectGraphLaidOutFocused( String( "shoulder" ), focused, &degraded );
+				Check( !degraded, "PART14d: a non-contended focused read reports outDegraded == false" );
+
+				auto has = [&]( const char* name ) {
+					return FindNode( focused.graph, ChunkCategory::Object, name ) != nullptr
+					    || FindNode( focused.graph, ChunkCategory::Geometry, name ) != nullptr;
+				};
+				Check( has( "shoulder" ), "PART14d: the target itself is present" );
+				Check( has( "pedestal_root" ), "PART14d: UP -- the parent is present" );
+				Check( has( "upper_arm" ) && has( "shoulder_joint" ) && has( "elbow" )
+				    && has( "elbow_joint" ) && has( "fore_arm" ) && has( "hand_root" )
+				    && has( "palm" ) && has( "finger_a" ) && has( "finger_b" ) && has( "finger_c" ),
+				       "PART14d: DOWN -- every descendant is present" );
+				Check( has( "geo_bar" ) && has( "geo_ball" ), "PART14d: GEO -- the descendants' geometry is present" );
+				Check( !has( "pedestal" ), "PART14d: EXCLUDES the unrelated SIBLING subtree (pedestal, pedestal_root's OTHER child)" );
+				Check( !has( "floor" ) && !has( "geo_floor" ) && !has( "geo_column" ),
+				       "PART14d: EXCLUDES the wholly unrelated floor root and its geometry" );
+				j->release();
+			}
+		}
+
+		// ---- (e) FOCUSED: SOURCE is one hop only -- `pair_b` (source
+		// lantern) includes `lantern` itself but NOT lantern's own
+		// descendants (lantern_post/lantern_head/lantern_globe/lantern_cap) ----
+		{
+			const char* path = "scenes/Tests/Geometry/object_instancing.RISEscene";
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path );
+			Check( loaded, "PART14e: object_instancing.RISEscene loads" );
+			if( loaded ) {
+				SceneEditController c( *j, 0 );
+				ObjLaidOutGraph focused;
+				c.ReadObjectGraphLaidOutFocused( String( "pair_b" ), focused, nullptr );
+				auto has = [&]( const char* name ) { return FindNode( focused.graph, ChunkCategory::Object, name ) != nullptr; };
+				Check( has( "pair_b" ), "PART14e: the target itself is present" );
+				Check( has( "lantern" ), "PART14e: SOURCE -- the one-hop source target is present" );
+				Check( !has( "lantern_post" ) && !has( "lantern_head" ) && !has( "lantern_globe" ) && !has( "lantern_cap" ),
+				       "PART14e: SOURCE does NOT recurse into the source's own subtree (one hop only)" );
+				j->release();
+			}
+		}
+
+		// ---- (f) unknown/ambiguous name -> empty, non-degraded ----
+		{
+			const char* path = "scenes/Tests/Geometry/object_parenting.RISEscene";
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path );
+			Check( loaded, "PART14f: object_parenting.RISEscene loads" );
+			if( loaded ) {
+				SceneEditController c( *j, 0 );
+				bool degraded = true;
+				ObjLaidOutGraph focused;
+				c.ReadObjectGraphLaidOutFocused( String( "no_such_object_at_all" ), focused, &degraded );
+				Check( !degraded, "PART14f: an unknown name reports outDegraded == false" );
+				Check( focused.graph.nodes.empty(), "PART14f: an unknown name resolves to an empty graph" );
+				j->release();
+			}
+		}
+
+		// ---- (g) degraded propagation: a focused read made WHILE a render
+		// owns the scene reports outDegraded == true and an empty graph --
+		// same RunPreviewRenderParked technique PART12(e)/PART13(d)
+		// established. ----
+		{
+			Job* rj = new Job();
+			SceneEditController dc( *rj, /*interactiveRasterizer*/0 );
+			std::thread renderThread( [&dc]() {
+				dc.RunPreviewRenderParked( []() {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+				} );
+			} );
+
+			bool sawRenderOwn = false;
+			for( int i = 0; i < 200; ++i ) {
+				if( dc.ForTest_RenderOwnsScene() ) { sawRenderOwn = true; break; }
+				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			}
+			Check( sawRenderOwn, "PART14g: the parked render is observed genuinely owning the scene" );
+
+			if( sawRenderOwn ) {
+				bool degraded = false;
+				ObjLaidOutGraph focused;
+				dc.ReadObjectGraphLaidOutFocused( String( "anything" ), focused, &degraded );
+				Check( degraded, "PART14g: a focused read made WHILE a render owns the scene reports outDegraded == true" );
+				Check( focused.graph.nodes.empty(), "PART14g: a degraded focused read returns an empty graph" );
 			}
 
 			renderThread.join();
