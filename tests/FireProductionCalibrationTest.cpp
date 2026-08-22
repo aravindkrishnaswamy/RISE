@@ -39,6 +39,12 @@ namespace
 		std::ifstream input(path,std::ios::binary);std::ostringstream output;
 		output<<input.rdbuf();return output.str();
 	}
+	std::size_t CountText(const std::string& text,const std::string& token)
+	{
+		std::size_t count=0u,position=0u;
+		while((position=text.find(token,position))!=std::string::npos){++count;position+=token.size();}
+		return count;
+	}
 }
 
 int main()
@@ -64,6 +70,29 @@ int main()
 	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
 	const std::string tracedTransportSource=ReadText(
 		"tests/fire_production_trace/FireProductionTransport.cpp");
+	const std::string projectionSource=ReadText(
+		"src/Library/Utilities/FireProductionProjection.cpp");
+	const std::string projectionHeader=ReadText(
+		"src/Library/Utilities/FireProductionProjection.h");
+	const std::string tracedProjectionSource=ReadText(
+		"tests/fire_production_trace/FireProductionProjection.cpp");
+	const std::string advectionSource=ReadText(
+		"src/Library/Utilities/FireProductionAdvection.cpp");
+	Check(CountText(projectionSource,
+		"result.maximumPostProjectionResidualPerS=std::max(")==1u&&
+		CountText(projectionSource,"std::fabs(residual)")==2u&&
+		CountText(projectionHeader,"maximumPostProjectionResidualPerS(0.0f)")==1u&&
+		CountText(tracedProjectionSource,
+			"EvaluateNonnegativeReductionGuard(maximumResidualPerS)")==2u,
+		"projection guard proof is source-bound to +0 seed, abs/max reduction, and both consumers");
+	Check(CountText(advectionSource,
+		"const float q6=6.0f*center-3.0f*(left+right);")==2u&&
+		CountText(advectionSource,"if( left==center&&right==center )")==2u&&
+		CountText(advectionSource,
+			"return delta*(left+0.5f*(right-left+q6)*(beginning+end)-")==1u&&
+		CountText(advectionSource,
+			"return length*(right-0.5f*(right-left-q6)*length-")==1u,
+		"flat-integral proof is source-bound to both production polynomial graphs and shortcuts");
 	const std::string roundoffStopEvidence=ReadText(
 		"rendered/fire_production_calibration/r122_roundoff_derivation/"
 		"roundoff_derivation_stop.v1");
@@ -139,11 +168,21 @@ int main()
 		"rendered/fire_production_calibration/r130_flat_integral/flat_integral.v1");
 	Check(!flatIntegralEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(flatIntegralEvidence.begin(),flatIntegralEvidence.end()))==
-		"e3be09fa7b8bb286de8f65ccd7a1e26b5d0ddd9186ddf8bd4c342dea28783ac0"&&
+		"1468fed5cbab33d7f79282fde50b9a83a5d0bbc7b874ca5a8355ca7fd89db608"&&
 		flatIntegralEvidence.find("class_flat_integral_pending 0")!=std::string::npos&&
 		flatIntegralEvidence.find("executed_obligation_instances_pending 2")!=
 			std::string::npos,
 		"r130 flat-integral derivation and cumulative census are durable");
+	const std::string reductionEvidence=ReadText(
+		"rendered/fire_production_calibration/r131_projection_reduction/projection_reduction.v1");
+	Check(!reductionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(reductionEvidence.begin(),reductionEvidence.end()))==
+		"d6cdacdbbcd02f9a1d6262553c3098a9abc1cb90001b012840581908bdf7c8a4"&&
+		reductionEvidence.find("class_projection_reduction_pending 0")!=
+			std::string::npos&&
+		reductionEvidence.find("executed_obligation_instances_pending 0")!=
+			std::string::npos&&reductionEvidence.find("canonical_exit 240")!=std::string::npos,
+		"r131 projection-reduction proof and zero-pending census are durable");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -155,13 +194,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r130")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r131")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r130")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 240")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r131")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute the exact r130 proof stop and accept only exit 237");
+		windowsTestDriver.find("roundoffRC -eq 240")!=std::string::npos,
+		"ordinary Unix and Windows suites execute r131 and accept only exact branch-proof completion");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -173,13 +212,18 @@ int main()
 		std::string::npos&&makeRules.find("otool -L $@ | grep -q 'Metal.framework'")!=
 		std::string::npos&&makeRules.find("nm $@ | grep -q 'ProjectFireProductionMetalImpl'")!=
 		std::string::npos,"calibration oracle target is source-bound to a no-Metal link audit");
+	const std::size_t windowsTraceGenerator=windowsRules.find(
+		"generate_fire_production_roundoff_trace.py\" --check");
+	const std::size_t windowsTraceCondition=windowsRules.rfind(
+		"if(test_name STREQUAL \"FireProductionCalibrationTest\"",windowsTraceGenerator);
 	Check(makeRules.find("fire_production_trace/%.o")!=std::string::npos&&
 		makeRules.find("-fno-fast-math -ffp-contract=off")!=std::string::npos&&
 		makeRules.find("$(FIREPRODUCTIONTRACEOBJECTS) $(OBJDRISE)")!=std::string::npos&&
 		makeRules.find("check-fire-production-trace")!=std::string::npos&&
 		windowsRules.find("fire_production_trace/*.cpp")!=std::string::npos&&
-		windowsRules.find("generate_fire_production_roundoff_trace.py\" --check")!=
-			std::string::npos&&windowsRules.find("COMPILE_OPTIONS \"/fp:strict\"")!=
+		windowsTraceGenerator!=std::string::npos&&windowsTraceCondition!=std::string::npos&&
+		windowsRules.find("test_name STREQUAL \"FireSequenceTest\"",windowsTraceCondition)<
+			windowsTraceGenerator&&windowsRules.find("COMPILE_OPTIONS \"/fp:strict\"")!=
 			std::string::npos,
 		"roundoff trace is source-check-bound and strict on Make and Windows test surfaces");
 	Check(walkerSource.find("RISEFireProductionTrace")==std::string::npos&&
@@ -767,12 +811,13 @@ int main()
 		const double profileUpper=std::nextafter(std::fabs(right.Center())+right.Radius(),
 			std::numeric_limits<double>::infinity());
 		FireProductionRoundoffWalker::FlatIntegralCertificate certificate,half,
-			missingPolynomial,missingFTZ,discontinuous;
+			missingPolynomial,missingFTZ,discontinuous,mutatedCoefficient;
 		Check(FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
 			center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,certificate)&&
 			counters.branchObligations[0].divergenceBound==certificate.totalEnvelope&&
 			counters.branchObligations[1].divergenceBound==certificate.totalEnvelope&&
-			certificate.curvedPathOperationCount==32u&&certificate.continuousAtFlatProfile,
+			certificate.curvedPathOperationCount==32u&&certificate.continuousAtFlatProfile&&
+			certificate.productionGraphMatched,
 			"independent flat-integral walker matches both traced two-path envelopes");
 		Check(!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
 			center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,half,
@@ -785,8 +830,56 @@ int main()
 				FireProductionRoundoffWalker::FlatIntegralGraphVariant::MissingFTZ)&&
 			!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
 				center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,discontinuous,
-				FireProductionRoundoffWalker::FlatIntegralGraphVariant::DiscontinuousFlatPath),
-			"flat-integral certificate rejects deviation, curved-path, FTZ, and discontinuity mutants");
+				FireProductionRoundoffWalker::FlatIntegralGraphVariant::DiscontinuousFlatPath)&&
+			!FireProductionRoundoffWalker::CertifyFlatIntegral(left.Center(),left.Radius(),
+				center.Center(),center.Radius(),right.Center(),right.Radius(),profileUpper,
+				mutatedCoefficient,FireProductionRoundoffWalker::FlatIntegralGraphVariant::
+					MutatedQuadraticCoefficient),
+			"flat-integral certificate rejects deviation, graph, FTZ, discontinuity, and coefficient mutants");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		Check(!FireProductionRoundoffTrace::TraceFloat::Raw(-1.0,0.0,-1.0f,1u).
+			NonnegativeByConstruction()&&
+			!(FireProductionRoundoffTrace::TraceFloat(1.0f)-
+				FireProductionRoundoffTrace::TraceFloat(2.0f)).NonnegativeByConstruction(),
+			"raw and subtractive signed arithmetic cannot inherit positive-zero provenance");
+		bool negative=false;{
+			FireProductionRoundoffTrace::Scope scope(counters);
+			FireProductionRoundoffTrace::TraceFloat maximum=0.0f;
+			const std::array<FireProductionRoundoffTrace::TraceFloat,3u> residuals={{
+				FireProductionRoundoffTrace::TraceFloat::Raw(-0x1p-24,0x1p-22,-0x1p-24f,1u),
+				FireProductionRoundoffTrace::TraceFloat::Raw(0.0,0x1p-23,0.0f,1u),
+				FireProductionRoundoffTrace::TraceFloat::Raw(0x1p-25,0x1p-22,0x1p-25f,1u)}};
+			for(const auto& residual:residuals)maximum=std::max(maximum,std::fabs(residual));
+			negative=FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard(maximum);
+		}
+		Check(!negative&&!counters.branchObligations.empty()&&
+			counters.branchObligations.back().site==
+				FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard&&
+			counters.branchObligations.back().certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Equivalence&&
+			counters.branchObligations.back().divergenceBound==0.0,
+			"trace discharges the negative projection-reduction guard from abs/max provenance");
+		const std::vector<double> residuals={-3.0,2.0,-0.5};
+		FireProductionRoundoffWalker::NonnegativeReductionCertificate certificate,
+			signedLeaf,negativeSeed,subtractive;
+		Check(FireProductionRoundoffWalker::CertifyNonnegativeMaximumReduction(
+			residuals,certificate)&&certificate.leafCount==3u&&
+			certificate.absoluteCount==3u&&certificate.maximumCount==3u&&
+			certificate.positiveZeroSeed&&certificate.allLeavesAbsolute&&
+			certificate.maximumOnly&&certificate.totalEnvelope==0.0,
+			"independent walker proves the positive-zero abs/max reduction topology");
+		Check(!FireProductionRoundoffWalker::CertifyNonnegativeMaximumReduction(
+			residuals,signedLeaf,
+			FireProductionRoundoffWalker::NonnegativeReductionGraphVariant::SignedLeaf)&&
+			!FireProductionRoundoffWalker::CertifyNonnegativeMaximumReduction(
+				residuals,negativeSeed,
+				FireProductionRoundoffWalker::NonnegativeReductionGraphVariant::NegativeSeed)&&
+			!FireProductionRoundoffWalker::CertifyNonnegativeMaximumReduction(
+				residuals,subtractive,
+				FireProductionRoundoffWalker::NonnegativeReductionGraphVariant::SubtractiveReduction),
+			"projection-reduction proof rejects signed-leaf, negative-seed, and subtract mutants");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;

@@ -127,10 +127,18 @@ namespace FireProductionRoundoffWalker
 	{
 		double deviationUpper=0.0,exactBranchTerm=0.0,roundedTerm=0.0,ftzTerm=0.0;
 		double totalEnvelope=0.0;std::uint64_t curvedPathOperationCount=0u;
-		bool continuousAtFlatProfile=false;
+		bool continuousAtFlatProfile=false,productionGraphMatched=false;
 	};
 	enum class FlatIntegralGraphVariant { Certified,HalfDeviation,MissingCurvedPolynomial,
-		MissingFTZ,DiscontinuousFlatPath };
+		MissingFTZ,DiscontinuousFlatPath,MutatedQuadraticCoefficient };
+	struct NonnegativeReductionCertificate
+	{
+		double exactBranchTerm=0.0,roundedTerm=0.0,ftzTerm=0.0,totalEnvelope=0.0;
+		std::uint64_t leafCount=0u,absoluteCount=0u,maximumCount=0u;
+		bool positiveZeroSeed=false,allLeavesAbsolute=false,maximumOnly=false;
+	};
+	enum class NonnegativeReductionGraphVariant { Certified,SignedLeaf,NegativeSeed,
+		SubtractiveReduction };
 	struct InflowTransitionCertificate
 	{
 		double ambiguityWidth=0.0,widthLower=0.0,donorContrast=0.0;
@@ -481,6 +489,12 @@ namespace FireProductionRoundoffWalker
 			Detail::NextUp(std::fabs(rightCenter-centerCenter)+rightRadius+centerRadius));
 		certificate.deviationUpper=variant==FlatIntegralGraphVariant::HalfDeviation?
 			0.5*fullDeviation:fullDeviation;
+		const double qCenter=6.0;
+		const double qLeft=variant==FlatIntegralGraphVariant::MutatedQuadraticCoefficient?
+			-2.0:-3.0;
+		const double qRight=-3.0;
+		certificate.productionGraphMatched=qCenter==6.0&&qLeft==-3.0&&qRight==-3.0&&
+			qCenter+qLeft+qRight==0.0;
 		certificate.curvedPathOperationCount=variant==
 			FlatIntegralGraphVariant::MissingCurvedPolynomial?8u:32u;
 		certificate.exactBranchTerm=Detail::NextUp(8.0*certificate.deviationUpper);
@@ -504,9 +518,40 @@ namespace FireProductionRoundoffWalker
 			Detail::NextUp(profileAbsoluteUpper*(8.0+fullDeviation)));
 		const double requiredFTZ=Detail::NextUp(32.0*static_cast<double>(
 			std::numeric_limits<float>::min()));
-		return certificate.continuousAtFlatProfile&&std::isfinite(certificate.totalEnvelope)&&
+		return certificate.productionGraphMatched&&certificate.continuousAtFlatProfile&&
+			std::isfinite(certificate.totalEnvelope)&&
 			certificate.exactBranchTerm>=requiredExact&&
 			certificate.roundedTerm>=requiredRounded&&certificate.ftzTerm>=requiredFTZ;
+	}
+
+	// Independent topology walk for max_i(abs(r_i)). IEEE absolute value and
+	// maximum preserve nonnegativity exactly, including underflow/FTZ, so the
+	// negative guard's alternate path is unreachable and all three envelope
+	// terms are exactly zero. This proof is about sign topology, not magnitude.
+	inline bool CertifyNonnegativeMaximumReduction(const std::vector<double>& residuals,
+		NonnegativeReductionCertificate& certificate,
+		const NonnegativeReductionGraphVariant variant=
+			NonnegativeReductionGraphVariant::Certified)
+	{
+		certificate=NonnegativeReductionCertificate();
+		if(residuals.empty())return false;
+		certificate.leafCount=residuals.size();
+		certificate.positiveZeroSeed=variant!=NonnegativeReductionGraphVariant::NegativeSeed;
+		certificate.allLeavesAbsolute=variant!=NonnegativeReductionGraphVariant::SignedLeaf;
+		certificate.maximumOnly=variant!=NonnegativeReductionGraphVariant::SubtractiveReduction;
+		double reduced=certificate.positiveZeroSeed?0.0:-1.0;
+		for(const double residual:residuals){
+			if(!std::isfinite(residual))return false;
+			const double leaf=certificate.allLeavesAbsolute?std::fabs(residual):residual;
+			++certificate.absoluteCount;
+			reduced=certificate.maximumOnly?std::max(reduced,leaf):reduced-leaf;
+			++certificate.maximumCount;
+		}
+		certificate.exactBranchTerm=0.0;certificate.roundedTerm=0.0;
+		certificate.ftzTerm=0.0;certificate.totalEnvelope=0.0;
+		return certificate.positiveZeroSeed&&certificate.allLeavesAbsolute&&
+			certificate.maximumOnly&&reduced>=0.0&&certificate.absoluteCount==residuals.size()&&
+			certificate.maximumCount==residuals.size();
 	}
 
 	// The r127 donor is a convex linear transition from nearest to ambient over

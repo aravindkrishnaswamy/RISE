@@ -2455,8 +2455,8 @@ the independently enclosed deviation `D` of the center, direct coefficient
 collection bounds the exact two-path difference by `8D`. The independent
 curved-polynomial and accumulation DAG contains 32 scalar operations, adding
 `gamma_32 M (8+D)` and a separate `32 FLT_MIN` FTZ term. Half-deviation,
-missing-curved-polynomial, missing-FTZ, and discontinuous-shortcut mutants all
-fail.
+missing-curved-polynomial, missing-FTZ, discontinuous-shortcut, and mutated
+quadratic-coefficient/source-topology mutants all fail.
 
 All `620,491` flat-integral obligations close. The cumulative census is now
 `3,972,321 / 3,972,323`; only the two projection-reduction guards remain, so
@@ -2464,7 +2464,29 @@ exact exit `237` continues. The maximum class envelope is
 `128175.45885830303`, a topology certificate term rather than an admitted
 `B_fp32` bound. The unresolved bitmap is `0xc00000`. Durable evidence is
 `rendered/fire_production_calibration/r130_flat_integral/flat_integral.v1`,
-SHA-256 `e3be09fa7b8bb286de8f65ccd7a1e26b5d0ddd9186ddf8bd4c342dea28783ac0`.
+SHA-256 `1468fed5cbab33d7f79282fde50b9a83a5d0bbc7b874ca5a8355ca7fd89db608`.
+
+### 7.48 Projection-reduction guard proof and campaign closure (r131)
+
+Both physical and restoration validation guards consume a reduction initialized
+from positive zero and updated only as `max(current, abs(residual))`. Absolute
+value and maximum preserve nonnegativity for every finite IEEE binary32 input,
+including underflow and FTZ. Therefore the negative alternate is structurally
+unreachable: the exact branch, rounded, and FTZ divergence terms are all zero.
+An independent graph walk counts every leaf absolute and maximum update and
+rejects signed-leaf, negative-seed, subtractive-reduction, and raw-provenance
+mutants. Raw arithmetic is explicitly untagged; only the positive-zero seed,
+absolute leaves, and maximum nodes may carry the proof. Source gates bind the
+production result's `+0` initialization, the post-residual `max(abs())`
+reduction, and both validation consumers.
+
+The last two obligations close. The final census is
+`3,972,323 / 3,972,323`, pending zero, with unresolved and invalid bitmaps both
+`0x000000`. Exit `237` remains reserved for incomplete branch proofs; exact
+exit `240` denotes branch-campaign completion. This unlocks derivation of
+`B_fp32` but does not define or measure it. Durable evidence is
+`rendered/fire_production_calibration/r131_projection_reduction/projection_reduction.v1`,
+SHA-256 `d6cdacdbbcd02f9a1d6262553c3098a9abc1cb90001b012840581908bdf7c8a4`.
 
 ## 8. Rejected directions and future work
 

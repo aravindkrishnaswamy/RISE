@@ -334,7 +334,8 @@ foreach(test_src ${TEST_SOURCES})
 				"${RISE_ROOT}/tools/generate_fire_production_fp64_mirror.py" --check
 			WORKING_DIRECTORY "${RISE_ROOT}")
 	endif()
-	if(test_name STREQUAL "FireProductionCalibrationTest")
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
 		add_custom_command(TARGET ${test_name} PRE_BUILD
 			COMMAND ${Python3_EXECUTABLE}
 				"${RISE_ROOT}/tools/generate_fire_production_roundoff_trace.py" --check

@@ -1221,11 +1221,11 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="264857ee8a3b94e9da4e676a97ac79ebf9919cf61bfec8402a20a328ca1f0d51"||
-			unresolvedBitmap!=0xc00000u||invalidBitmap!=0u||!finiteOutputs||
+			traceDigest!="b194b7edb39cc16438e24682b1f1bfdd4415b78506e2f94c63dd68ddd1d1e19d"||
+			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=3972323u||
-			totalDischargedBranchObligationCount!=3972321u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=2u||
+			totalDischargedBranchObligationCount!=3972323u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=0u||
 			frozenInflowAmbiguity!=1.7632415612658968e-38||
 			frozenInflowScale!=22.033558699237727||
 			frozenInflowPowerOfTwoFactor!=1.0||
@@ -1246,15 +1246,15 @@ namespace FireProductionDyadicCalibration
 			ppmCertificate.ambiguityWidth!=2.008640214894198e-6||
 			ppmCertificate.arithmeticResidualBound!=2.6783670818887366e-6||
 			ppmCertificate.divergenceBound!=3.1805271356122864e-6||
-			source.unresolvedBranch||
-			source.invalidDomain||!physical.unresolvedBranch||physical.invalidDomain||
-			!restoration.unresolvedBranch||restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r130 flat integral certified; %llu of %llu site-class "
-			"obligations remain pending before B_fp32 and Metal measurement\n",
+			source.unresolvedBranch||source.invalidDomain||physical.unresolvedBranch||
+			physical.invalidDomain||restoration.unresolvedBranch||
+			restoration.invalidDomain)return 238;
+		std::fprintf(stderr,"r131 branch campaign complete; %llu of %llu site-class "
+			"obligations remain pending; B_fp32 is now unblocked but not yet defined\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),
 			static_cast<unsigned long long>(totalBranchObligationCount));
-		return 237;
+		return 240;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

@@ -3059,9 +3059,22 @@ it was already tried and refuted here.
   integral and flat shortcut coincide at a flat profile. Direct coefficient
   collection gives exact divergence `8D` for endpoint deviation `D`; the
   independent 32-operation curved path adds `gamma_32 M (8+D)` and
-  `32 FLT_MIN`. Half-deviation, missing-polynomial, missing-FTZ, and
-  discontinuous-shortcut mutants RED. All `620,491` instances close;
+  `32 FLT_MIN`. Half-deviation, missing-polynomial, missing-FTZ,
+  discontinuous-shortcut, and quadratic-coefficient/source-topology mutants
+  RED. All `620,491` instances close;
   `3,972,321 / 3,972,323` are discharged and only two projection-reduction
   guards remain. Exact exit `237` stays fail-closed. The maximum class
   envelope `128175.45885830303` is not promoted to `B_fp32`; durable evidence
-  is `e3be09fa...783ac0`.
+  is `1468fed5...db608`.
+
+- **r131 projection-reduction proof and branch-campaign closure
+  (2026-08-21):** the physical and restoration residual maxima are both
+  positive-zero-seeded `max(abs(residual))` reductions. The independent graph
+  proof makes the guard's negative alternate unreachable, so exact, rounded,
+  and FTZ divergence are each zero. Signed-leaf, negative-seed, subtractive,
+  and false raw-provenance mutants RED; only abs/max may propagate the tag.
+  Source gates bind the actual seed/reduction/two consumers.
+  The last two obligations close: `3,972,323 / 3,972,323`, pending zero,
+  unresolved/invalid bitmaps `0x000000`. Exit `240` replaces incomplete-proof
+  exit `237`; `B_fp32` is unlocked but remains undefined. Durable evidence is
+  `d6cdacdb...f7c8a4`. No production or golden-checkpoint bytes changed.

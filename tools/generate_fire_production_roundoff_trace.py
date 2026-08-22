@@ -178,9 +178,8 @@ def transform(text: str, name: str, suffix: str) -> str:
         if text.count(negative_maximum) != 2:
             raise RuntimeError("projection nonnegative-reduction guards changed")
         text = text.replace(negative_maximum,
-            "FireProductionRoundoffTrace::EvaluateBranch("
-            "FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard,"
-            "[&](){return maximumResidualPerS<0.0f;})")
+            "FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard("
+            "maximumResidualPerS)")
         band = "maximumResidualPerS<=tolerance"
         if text.count(band) != 2:
             raise RuntimeError("projection validation predicates changed")

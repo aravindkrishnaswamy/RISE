@@ -13,6 +13,7 @@ mutant_half_deviation rejected
 mutant_missing_curved_polynomial rejected
 mutant_missing_ftz rejected
 mutant_discontinuous_flat_path rejected
+mutant_quadratic_coefficient rejected
 executed_obligation_instances_total 3972323
 executed_obligation_instances_discharged 3972321
 executed_obligation_instances_pending 2

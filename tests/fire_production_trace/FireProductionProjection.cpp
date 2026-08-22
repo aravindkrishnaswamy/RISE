@@ -487,7 +487,7 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat maximumVelocityMPerS,FireProductionRoundoffTrace::TraceFloat domainLengthM,bool& withinBand )
 	{
 		withinBand=false;
-		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard,[&](){return maximumResidualPerS<0.0f;})||
+		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard(maximumResidualPerS)||
 			!std::isfinite(maximumVelocityMPerS)||maximumVelocityMPerS<0.0f||
 			!std::isfinite(domainLengthM)||!(domainLengthM>0.0f) ) return false;
 		const FireProductionRoundoffTrace::TraceFloat tolerance=0.005f*maximumVelocityMPerS/domainLengthM;
@@ -499,7 +499,7 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat maximumResidualPerS,FireProductionRoundoffTrace::TraceFloat maximumRestorationTargetPerS,bool& withinBand )
 	{
 		withinBand=false;
-		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateBranch(FireProductionRoundoffTrace::BranchSite::NonnegativeReductionGuard,[&](){return maximumResidualPerS<0.0f;})||
+		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard(maximumResidualPerS)||
 			!std::isfinite(maximumRestorationTargetPerS)||
 			maximumRestorationTargetPerS<0.0f ) return false;
 		// The main certificate is 0.5% of its characteristic divergence U/L.

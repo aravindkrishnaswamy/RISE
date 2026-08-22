@@ -124,9 +124,9 @@ namespace FireProductionRoundoffTrace
 	{
 	public:
 		TraceFloat():center_(0.0),radius_(0.0),rounded_(0.0f),depth_(0u),
-			identity_(NextTraceIdentity++){}
+			identity_(NextTraceIdentity++),nonnegativeByConstruction_(true){}
 		TraceFloat(const float value):center_(value),radius_(0.0),rounded_(value),depth_(0u),
-			identity_(NextTraceIdentity++){}
+			identity_(NextTraceIdentity++),nonnegativeByConstruction_(value>=0.0f){}
 		TraceFloat(const double value):TraceFloat(Convert(value)){}
 		template<class Integer,typename std::enable_if<std::is_integral<Integer>::value,int>::type=0>
 		TraceFloat(const Integer value):TraceFloat(Convert(static_cast<double>(value))){}
@@ -136,6 +136,7 @@ namespace FireProductionRoundoffTrace
 		{
 			TraceFloat result;result.center_=center;result.radius_=NextUp(radius);
 			result.rounded_=rounded;result.depth_=depth;result.identity_=NextTraceIdentity++;
+			result.nonnegativeByConstruction_=false;
 			return result;
 		}
 		void ExpandRadius(const double amount)
@@ -148,6 +149,8 @@ namespace FireProductionRoundoffTrace
 		float Rounded()const{return rounded_;}
 		std::uint32_t Depth()const{return depth_;}
 		std::uint64_t Identity()const{return identity_;}
+		bool NonnegativeByConstruction()const{return nonnegativeByConstruction_;}
+		TraceFloat& MarkNonnegative(){nonnegativeByConstruction_=true;return *this;}
 		explicit operator float()const{return rounded_;}
 		explicit operator double()const{return static_cast<double>(rounded_);}
 		template<class Integer,typename std::enable_if<std::is_integral<Integer>::value,int>::type=0>
@@ -295,6 +298,7 @@ namespace FireProductionRoundoffTrace
 		float rounded_;
 		std::uint32_t depth_;
 		std::uint64_t identity_;
+		bool nonnegativeByConstruction_=false;
 	};
 
 	class TransportProfileScope
@@ -665,6 +669,29 @@ namespace FireProductionRoundoffTrace
 		return result;
 	}
 
+	inline bool EvaluateNonnegativeReductionGuard(const TraceFloat& maximum)
+	{
+		const std::size_t beginning=ActiveCounters?ActiveCounters->branchObligations.size():0u;
+		bool result=false;{
+			BranchSiteScope scope(BranchSite::NonnegativeReductionGuard);
+			result=maximum<0.0f;
+		}
+		if(ActiveCounters&&maximum.NonnegativeByConstruction())for(std::size_t index=beginning;
+			index<ActiveCounters->branchObligations.size();++index){
+			BranchObligation& obligation=ActiveCounters->branchObligations[index];
+			if(obligation.site!=BranchSite::NonnegativeReductionGuard||
+				obligation.certificate!=BranchCertificate::None)continue;
+			obligation.certificate=BranchCertificate::Equivalence;
+			obligation.divergenceBound=0.0;obligation.proofLower=0.0;
+			obligation.proofRequired=0.0;
+			++ActiveCounters->dischargedBranchObligationCount;
+		}
+		if(ActiveCounters)ActiveCounters->unresolvedBranch=
+			ActiveCounters->dischargedBranchObligationCount<
+			ActiveCounters->branchObligations.size();
+		return result;
+	}
+
 	inline bool EvaluateContinuousInflowJoin(const TraceFloat& signedVelocity,
 		const TraceFloat& width,const TraceFloat& nearest,const TraceFloat& ambient,
 		const bool lowerJoin)
@@ -743,8 +770,11 @@ namespace FireProductionRoundoffTrace
 		const double radius=NextUp(std::max(std::max(std::fabs(chosen.Center()-low),
 			std::fabs(high-chosen.Center())),std::fabs(
 				static_cast<double>(chosen.Rounded())-chosen.Center())));
-		return TraceFloat::Raw(chosen.Center(),radius,chosen.Rounded(),
+		TraceFloat result=TraceFloat::Raw(chosen.Center(),radius,chosen.Rounded(),
 			std::max(first.Depth(),second.Depth()));
+		if(first.NonnegativeByConstruction()&&second.NonnegativeByConstruction())
+			result.MarkNonnegative();
+		return result;
 	}
 
 	inline TraceFloat ApplyLimiterBranch(const TraceFloat& alpha,
@@ -811,8 +841,9 @@ namespace FireProductionRoundoffTrace
 
 	inline TraceFloat abs(const TraceFloat& value)
 	{
-		return TraceFloat::Unary(Operation::Absolute,value,std::fabs(value.Center()),
+		TraceFloat result=TraceFloat::Unary(Operation::Absolute,value,std::fabs(value.Center()),
 			value.Radius(),std::fabs(value.Rounded()));
+		return result.MarkNonnegative();
 	}
 	inline TraceFloat fabs(const TraceFloat& value){return abs(value);}
 	inline TraceFloat sqrt(const TraceFloat& value)
