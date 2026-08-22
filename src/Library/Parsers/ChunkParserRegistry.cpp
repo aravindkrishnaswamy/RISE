@@ -36,6 +36,7 @@
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <cstdlib>   // strtod for the ar_layer numeric parse
+#include <cstdarg>  // va_list / va_start -- SweepReject's formatted refusal channel
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
 #include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
                      // only transitively available via ChunkDescriptor.h today; include directly
@@ -578,6 +579,29 @@ namespace RISE
 				}
 				const long net = isHex ? ( 4 * order + expVal ) : ( order + expVal );
 				return net < 0;
+			}
+
+			//! EVERY sweep_geometry refusal goes through this ONE helper so
+			//! the author's specific reason reaches BOTH the log and the CST
+			//! Finalize diagnostic sink -- the same channel lathe_geometry's
+			//! `Reject` and skeleton_geometry's already use.  Without it a
+			//! chunk-level refusal (a malformed point_scale arity, a
+			//! point_morph with no second profile, the profile2 trio's mutual
+			//! exclusion) surfaced to the author, and to the agent surface
+			//! reading those diagnostics, as the generic "sweep_geometry:
+			//! apply failed (e.g. unresolved reference); see log" -- actively
+			//! misleading, since no reference is involved.  Call sites keep
+			//! their printf form, so the message texts are unchanged.
+			inline bool SweepReject( const char* fmt, ... )
+			{
+				char buf[1024];
+				va_list ap;
+				va_start( ap, fmt );
+				vsnprintf( buf, sizeof(buf), fmt, ap );
+				va_end( ap );
+				if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = buf;
+				GlobalLog()->Print( eLog_Error, buf );
+				return false;
 			}
 
 			inline bool AllTokensAreFiniteNumbers( const char* sz, int* outTokenCount = 0 )
@@ -6562,49 +6586,76 @@ namespace RISE
 
 			struct SweepGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				//! Expand ONE profile-source family -- the point / circle / rect
+				//! trio -- into a flat CCW (x, h) point list.  Both the primary
+				//! `profile_*` slot and the loft's `profile2_*` slot go through
+				//! this ONE function (doc 89 slice A), so the three forms cannot
+				//! drift apart between the two slots, and the factory only ever
+				//! sees plain point lists -- which is what collapses the nine
+				//! profile x profile2 authoring combinations to a single morph
+				//! code path.  `required` FALSE makes an unauthored family a
+				//! no-op (`present` FALSE) instead of an error.
+				static bool ExpandProfileFamily(
+						const ParseStateBag& bag, const std::string& name,
+						const char* pointKey, const char* circleKey, const char* rectKey,
+						const char* label, const bool required,
+						std::vector<double>& prof, bool& present )
 				{
-					std::string name = bag.GetString( "name", "noname" );
-
-					// The profile is authored EXACTLY one of three ways: repeatable
-					// `profile_point` lines (hand-authored polygon), OR the
-					// `profile_circle` convenience (regular n-gon), OR the
-					// `profile_rect` convenience (box, optionally rounded).
-					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
-					const bool hasCircle = bag.Has( "profile_circle" );
-					const bool hasRect   = bag.Has( "profile_rect" );
+					present = false;
+					// A profile family is authored EXACTLY one of three ways:
+					// repeatable point lines (hand-authored polygon), OR the
+					// circle convenience (regular n-gon), OR the rect
+					// convenience (box, optionally rounded) -- named here by
+					// pointKey / circleKey / rectKey so this one body serves
+					// both the `profile_*` and the `profile2_*` family.
+					const std::vector<std::string>& profLines = bag.GetRepeatable( pointKey );
+					const bool hasCircle = bag.Has( circleKey );
+					const bool hasRect   = bag.Has( rectKey );
 					const int profileFormCount = ( profLines.empty() ? 0 : 1 ) + ( hasCircle ? 1 : 0 ) + ( hasRect ? 1 : 0 );
+					present = ( profileFormCount > 0 );
+					if( profileFormCount == 0 && !required ) {
+						return true;	// this family is OPTIONAL and was not authored
+					}
 					if( profileFormCount == 0 ) {
-						GlobalLog()->PrintEx( eLog_Error,
-							"sweep_geometry `%s`: missing profile -- supply repeatable `profile_point <x> <h>` lines, OR `profile_circle <r> [n]`, OR `profile_rect <w> <h> [r]`",
-							name.c_str() );
-						return false;
+						return SweepReject(
+							"sweep_geometry `%s`: missing %s -- supply repeatable `%s <x> <h>` lines, OR `%s <r> [n]`, OR `%s <w> <h> [r]`",
+							name.c_str(), label, pointKey, circleKey, rectKey );
 					}
 					if( profileFormCount > 1 ) {
-						GlobalLog()->PrintEx( eLog_Error,
-							"sweep_geometry `%s`: profile_point, profile_circle, and profile_rect are mutually exclusive -- author exactly ONE profile source",
-							name.c_str() );
-						return false;
+						return SweepReject(
+							"sweep_geometry `%s`: %s, %s, and %s are mutually exclusive -- author exactly ONE %s source",
+							name.c_str(), pointKey, circleKey, rectKey, label );
 					}
 
-					std::vector<double> prof;
+					prof.clear();
 					if( !profLines.empty() ) {
 						if( profLines.size() < 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
-								name.c_str(), (unsigned int)profLines.size() );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: need at least 3 repeatable `%s <x> <h>` entries (a closed polygon; got %u)",
+								name.c_str(), pointKey, (unsigned int)profLines.size() );
 						}
 						prof.reserve( profLines.size() * 2 );
 						for( std::size_t i = 0; i < profLines.size(); ++i ) {
-							double x = 0, h = 0;
-							char trailing[8] = {0};
-							if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
-								GlobalLog()->PrintEx( eLog_Error,
-									"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
-									name.c_str(), (unsigned int)i, profLines[i].c_str() );
-								return false;
+							// TEXT-validate first, exactly as every sibling
+							// branch here (profile_circle / profile_rect) and
+							// lathe_geometry's own profile_point loop already
+							// do.  A bare sscanf conversion count is NOT that
+							// gate: sscanf happily converts `nan` and `inf`,
+							// so `profile_point inf 0` returned 2 and sailed
+							// through -- and a non-finite profile coordinate
+							// poisons the shoelace area, the arc-length
+							// parameters and every vertex, while each
+							// downstream gate is a COMPARISON that a NaN
+							// silently passes.
+							int nTok = 0;
+							if( !AllTokensAreFiniteNumbers( profLines[i].c_str(), &nTok ) || nTok != 2 ) {
+								return SweepReject(
+									"sweep_geometry `%s`: %s %u (`%s`) must be exactly two FINITE numbers `<x> <h>` "
+									"(no trailing garbage, no nan/inf)",
+									name.c_str(), pointKey, (unsigned int)i, profLines[i].c_str() );
 							}
+							double x = 0, h = 0;
+							sscanf( profLines[i].c_str(), "%lf %lf", &x, &h );
 							prof.push_back( x );
 							prof.push_back( h );
 						}
@@ -6613,7 +6664,7 @@ namespace RISE
 						// centred at the profile origin -- the same winding /
 						// (x,h)=(r cos, r sin) convention a hand-authored circular
 						// profile_point ring already uses elsewhere in the codebase.
-						const std::string cs = bag.GetString( "profile_circle", "" );
+						const std::string cs = bag.GetString( circleKey, "" );
 						// profile_circle has OPTIONAL arity (`<r>` or `<r> <n>`), so a
 						// bare sscanf conversion count can't tell "n legitimately
 						// omitted" from "garbage glued onto r" (`1.0abc` stops %lf at
@@ -6624,31 +6675,28 @@ namespace RISE
 						// no trailing garbage, no nan/inf spellings.
 						int nTok = 0;
 						if( !AllTokensAreFiniteNumbers( cs.c_str(), &nTok ) || nTok < 1 || nTok > 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_circle `%s` must be `<r>` or `<r> <n>` (finite numbers, no trailing garbage)",
-								name.c_str(), cs.c_str() );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: %s `%s` must be `<r>` or `<r> <n>` (finite numbers, no trailing garbage)",
+								name.c_str(), circleKey, cs.c_str() );
 						}
 						double r = 0, nD = 24;
 						const int nf = sscanf( cs.c_str(), "%lf %lf", &r, &nD );
 						if( !( r > 0 ) ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_circle radius (%g) must be > 0", name.c_str(), r );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: %s radius (%g) must be > 0", name.c_str(), circleKey, r );
 						}
 						// nD is already finite (AllTokensAreFiniteNumbers above), but an
 						// absurdly large magnitude is still UB to (int)-cast -- reject
 						// outright rather than clamp-and-warn like the in-range case.
 						if( nf == 2 && fabs( nD ) >= 1e9 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_circle n (%g) is absurdly out of range", name.c_str(), nD );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: %s n (%g) is absurdly out of range", name.c_str(), circleKey, nD );
 						}
 						int n = ( nf == 2 ) ? (int)( nD + 0.5 ) : 24;
 						if( n < 3 || n > 512 ) {
 							const int clamped = n < 3 ? 3 : 512;
 							GlobalLog()->PrintEx( eLog_Warning,
-								"sweep_geometry `%s`: profile_circle n (%d) clamped to %d", name.c_str(), n, clamped );
+								"sweep_geometry `%s`: %s n (%d) clamped to %d", name.c_str(), circleKey, n, clamped );
 							n = clamped;
 						}
 						prof.reserve( (std::size_t)n * 2 );
@@ -6664,25 +6712,23 @@ namespace RISE
 						// each corner with a 5-point (4-interval) quarter-circle arc;
 						// the four corners are emitted in CCW order BR -> TR -> TL ->
 						// BL, matching the sharp box's corner order at r == 0.
-						const std::string rs = bag.GetString( "profile_rect", "" );
+						const std::string rs = bag.GetString( rectKey, "" );
 						// Same optional-arity trailing-garbage trap as profile_circle
 						// above (`2 2extra` -> w=2, h=2, the "extra" silently dropped
 						// because the 3rd %lf's parse failure halts sscanf before it
 						// ever reaches a trailing %s catch-all) -- TEXT-validate first.
 						int nTok = 0;
 						if( !AllTokensAreFiniteNumbers( rs.c_str(), &nTok ) || nTok < 2 || nTok > 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_rect `%s` must be `<w> <h>` or `<w> <h> <r>` (finite numbers, no trailing garbage)",
-								name.c_str(), rs.c_str() );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: %s `%s` must be `<w> <h>` or `<w> <h> <r>` (finite numbers, no trailing garbage)",
+								name.c_str(), rectKey, rs.c_str() );
 						}
 						double w = 0, h = 0, r = 0;
 						const int nf = sscanf( rs.c_str(), "%lf %lf %lf", &w, &h, &r );
 						if( nf == 2 ) { r = 0; }
 						if( !( w > 0 ) || !( h > 0 ) ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_rect width/height (%g, %g) must both be > 0", name.c_str(), w, h );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: %s width/height (%g, %g) must both be > 0", name.c_str(), rectKey, w, h );
 						}
 						const double halfMin = ( w < h ? w : h ) * 0.5;
 						// C2 fix round (comment corrected 2026-08-14): a NaN corner
@@ -6694,10 +6740,9 @@ namespace RISE
 						// `r < 0 || r > halfMin` which passes a NaN r through both
 						// branches) is DEFENSE IN DEPTH, not the primary guard.
 						if( !( r >= 0.0 && r <= halfMin ) ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_rect corner radius (%g) must be in [0, min(w,h)/2] = [0, %g]",
-								name.c_str(), r, halfMin );
-							return false;
+							return SweepReject(
+								"sweep_geometry `%s`: %s corner radius (%g) must be in [0, min(w,h)/2] = [0, %g]",
+								name.c_str(), rectKey, r, halfMin );
 						}
 						const double hw = w * 0.5, hh = h * 0.5;
 						if( r <= 0 ) {
@@ -6757,13 +6802,38 @@ namespace RISE
 							prof.swap( deduped );
 						}
 					}
+					return true;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// The profile is authored EXACTLY one of three ways: repeatable
+					// `profile_point` lines (hand-authored polygon), OR the
+					// `profile_circle` convenience (regular n-gon), OR the
+					// `profile_rect` convenience (box, optionally rounded).  The
+					// OPTIONAL second profile (`profile2_*`, doc 89 slice A) offers
+					// the identical trio with the identical mutual exclusion, and
+					// runs through the same expander.
+					std::vector<double> prof;
+					bool haveProfile = false;
+					if( !ExpandProfileFamily( bag, name, "profile_point", "profile_circle", "profile_rect",
+							"profile", true, prof, haveProfile ) ) {
+						return false;
+					}
+					std::vector<double> prof2;
+					bool haveProfile2 = false;
+					if( !ExpandProfileFamily( bag, name, "profile2_point", "profile2_circle", "profile2_rect",
+							"second profile", false, prof2, haveProfile2 ) ) {
+						return false;
+					}
 
 					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
 					if( pointLines.size() < 2 ) {
-						GlobalLog()->PrintEx( eLog_Error,
+						return SweepReject(
 							"sweep_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
 							name.c_str(), (unsigned int)pointLines.size() );
-						return false;
 					}
 					std::vector<double> pts;
 					pts.reserve( pointLines.size() * 3 );
@@ -6771,10 +6841,9 @@ namespace RISE
 						double x = 0, y = 0, z = 0;
 						char trailing[8] = {0};
 						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
 								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
-							return false;
 						}
 						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
 					}
@@ -6785,59 +6854,118 @@ namespace RISE
 					std::vector<double> widths;
 					if( !widthLines.empty() ) {
 						if( widthLines.size() > pointLines.size() ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: %u `point_width` entries exceed %u `point` path control points (one width per point; pad with 1.0)",
 								name.c_str(), (unsigned int)widthLines.size(), (unsigned int)pointLines.size() );
-							return false;
 						}
 						widths.reserve( widthLines.size() );
 						for( std::size_t i = 0; i < widthLines.size(); ++i ) {
 							double w = 0;
 							char trailing[8] = {0};
 							if( sscanf( widthLines[i].c_str(), "%lf %7s", &w, trailing ) != 1 ) {
-								GlobalLog()->PrintEx( eLog_Error,
+								return SweepReject(
 									"sweep_geometry `%s`: point_width %u (`%s`) must be exactly one number `<sx>`",
 									name.c_str(), (unsigned int)i, widthLines[i].c_str() );
-								return false;
 							}
 							if( !( w > 0 ) ) {
-								GlobalLog()->PrintEx( eLog_Error,
+								return SweepReject(
 									"sweep_geometry `%s`: point_width %u (%g) must be > 0", name.c_str(), (unsigned int)i, w );
-								return false;
 							}
 							widths.push_back( w );
 						}
 					}
 
-					// OPTIONAL repeatable per-control-point UNIFORM (both profile
-					// axes) scale multipliers, one per `point` (the rest pad with
-					// 1.0) -- the ROUND-taper twin of `point_width` (which only
-					// ever scales x).  Same validation/error idiom as point_width.
+					// OPTIONAL repeatable per-control-point scale multipliers,
+					// one per `point` (the rest pad with 1.0).  TWO arities:
+					//   `point_scale <s>`       -- UNIFORM on both profile axes
+					//                              (the historical form; a round
+					//                              varying radius)
+					//   `point_scale <sx> <sy>` -- ANISOTROPIC (doc 89 slice A):
+					//                              sx along the profile's local x
+					//                              (binormal), sy along its local
+					//                              y (frame normal), so a section
+					//                              can be flatter than it is wide
+					//                              and change that ratio station
+					//                              to station.
+					// A 1-arg line inside an otherwise 2-arg track simply means
+					// sx == sy at that station, so the two forms mix freely; the
+					// y track is only handed to the factory when at least one
+					// line actually used the 2-arg form, which keeps every
+					// pre-slice-A scene on the byte-identical uniform path.
+					// Same optional-arity trailing-garbage trap profile_circle /
+					// profile_rect have, so TEXT-validate the token count first.
 					const std::vector<std::string>& scaleLines = bag.GetRepeatable( "point_scale" );
-					std::vector<double> scales;
+					std::vector<double> scales, scalesY;
+					bool anyAnisotropic = false;
 					if( !scaleLines.empty() ) {
 						if( scaleLines.size() > pointLines.size() ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: %u `point_scale` entries exceed %u `point` path control points (one scale per point; pad with 1.0)",
 								name.c_str(), (unsigned int)scaleLines.size(), (unsigned int)pointLines.size() );
-							return false;
 						}
 						scales.reserve( scaleLines.size() );
+						scalesY.reserve( scaleLines.size() );
 						for( std::size_t i = 0; i < scaleLines.size(); ++i ) {
-							double s = 0;
-							char trailing[8] = {0};
-							if( sscanf( scaleLines[i].c_str(), "%lf %7s", &s, trailing ) != 1 ) {
-								GlobalLog()->PrintEx( eLog_Error,
-									"sweep_geometry `%s`: point_scale %u (`%s`) must be exactly one number `<s>`",
+							int nTok = 0;
+							if( !AllTokensAreFiniteNumbers( scaleLines[i].c_str(), &nTok ) || nTok < 1 || nTok > 2 ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_scale %u (`%s`) must be `<s>` (uniform) or `<sx> <sy>` (anisotropic) -- finite numbers, no trailing garbage",
 									name.c_str(), (unsigned int)i, scaleLines[i].c_str() );
-								return false;
 							}
-							if( !( s > 0 ) ) {
-								GlobalLog()->PrintEx( eLog_Error,
-									"sweep_geometry `%s`: point_scale %u (%g) must be > 0", name.c_str(), (unsigned int)i, s );
-								return false;
+							double sx = 0, sy = 0;
+							const int nf = sscanf( scaleLines[i].c_str(), "%lf %lf", &sx, &sy );
+							if( nf < 2 ) { sy = sx; } else { anyAnisotropic = true; }
+							if( !( sx > 0 ) || !( sy > 0 ) ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_scale %u (%g %g) must be > 0 on both axes", name.c_str(), (unsigned int)i, sx, sy );
 							}
-							scales.push_back( s );
+							scales.push_back( sx );
+							scalesY.push_back( sy );
+						}
+					}
+					if( !anyAnisotropic ) {
+						scalesY.clear();
+					}
+
+					// OPTIONAL repeatable per-control-point MORPH blend factors
+					// (doc 89 slice A), one per `point` (the rest pad with 1.0 --
+					// "finish the morph").  t = 0 is `profile`, t = 1 is
+					// `profile2`; the two halves of the loft are useless apart,
+					// so authoring either one alone is an error that NAMES the
+					// missing half.
+					const std::vector<std::string>& morphLines = bag.GetRepeatable( "point_morph" );
+					std::vector<double> morphs;
+					if( !morphLines.empty() && !haveProfile2 ) {
+						return SweepReject(
+							"sweep_geometry `%s`: `point_morph` needs a SECOND profile to morph toward -- add profile2_point / profile2_circle / profile2_rect (or drop the point_morph lines)",
+							name.c_str() );
+					}
+					if( !morphLines.empty() ) {
+						if( morphLines.size() > pointLines.size() ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %u `point_morph` entries exceed %u `point` path control points (one morph per point; pad with 1.0)",
+								name.c_str(), (unsigned int)morphLines.size(), (unsigned int)pointLines.size() );
+						}
+						morphs.reserve( morphLines.size() );
+						for( std::size_t i = 0; i < morphLines.size(); ++i ) {
+							int nTok = 0;
+							if( !AllTokensAreFiniteNumbers( morphLines[i].c_str(), &nTok ) || nTok != 1 ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_morph %u (`%s`) must be exactly one finite number `<t>` (no trailing garbage, no nan/inf)",
+									name.c_str(), (unsigned int)i, morphLines[i].c_str() );
+							}
+							double t = 0;
+							sscanf( morphLines[i].c_str(), "%lf", &t );
+							// negated idiom: refuse (rather than clamp) an
+							// authored value outside [0, 1] -- past either end
+							// there is no profile left to blend toward, so the
+							// author meant something else and should be told.
+							if( !( t >= 0.0 && t <= 1.0 ) ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_morph %u (%g) must be in [0, 1] (0 = profile, 1 = profile2)",
+									name.c_str(), (unsigned int)i, t );
+							}
+							morphs.push_back( t );
 						}
 					}
 
@@ -6859,16 +6987,14 @@ namespace RISE
 						// silently drop the default but reject an explicit contradiction
 						// rather than silently ignoring authored intent.
 						if( bag.Has( "cap_start" ) && bag.GetBool( "cap_start", true ) ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: cap_start TRUE is incompatible with path_closed (a closed loop has no start cross-section)",
 								name.c_str() );
-							return false;
 						}
 						if( bag.Has( "cap_end" ) && bag.GetBool( "cap_end", true ) ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: cap_end TRUE is incompatible with path_closed (a closed loop has no end cross-section)",
 								name.c_str() );
-							return false;
 						}
 					}
 					if( !widths.empty() ) {
@@ -6879,15 +7005,26 @@ namespace RISE
 						d.pointScales    = &scales[0];
 						d.numPointScales = (unsigned int)scales.size();
 					}
+					if( !scalesY.empty() ) {
+						d.pointScalesY    = &scalesY[0];
+						d.numPointScalesY = (unsigned int)scalesY.size();
+					}
+					if( !prof2.empty() ) {
+						d.profile2Points    = &prof2[0];
+						d.numProfile2Points = (unsigned int)( prof2.size() / 2 );
+					}
+					if( !morphs.empty() ) {
+						d.pointMorphs    = &morphs[0];
+						d.numPointMorphs = (unsigned int)morphs.size();
+					}
 					{
 						const std::string fh = bag.GetString( "frame_hint", "" );
 						if( !fh.empty() ) {
 							double hx = 0, hy = 0, hz = 0;
 							char trailing[8] = {0};
 							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
-								GlobalLog()->PrintEx( eLog_Error,
+								return SweepReject(
 									"sweep_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
-								return false;
 							}
 							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
 						}
@@ -6899,15 +7036,19 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Sweeps a CLOSED 2D profile (profile_point lines, or profile_circle/profile_rect) along a 3D Catmull-Rom path (point lines) with rotation-minimizing frames.  x -> binormal, h -> normal; UV = (profile arc frac, path frac), U wraps seamlessly.  Optional end_scale taper, per-station point_width (x only) and point_scale (both axes, round taper), composed multiplicatively.  Optional ear-clipped caps.  path_closed TRUE: seamless closed loop (periodic sampling, holonomy-corrected frame, cyclic stitching, no caps; end_scale forced 1.0, point_width/point_scale still periodic).";
+						cd.description = "Sweeps (LOFTS) a CLOSED 2D profile along a 3D Catmull-Rom path (point lines) with rotation-minimizing frames.  x -> binormal, h -> normal; UV = (profile arc frac, path frac), U wraps seamlessly.  Optional ear-clipped caps.  The section is NOT stuck round and NOT stuck at one shape: `point_scale <sx> <sy>` scales the two profile axes INDEPENDENTLY per station -- a TORSO, fin, strap, hull, keel, seat rail: flatter than it is wide, and changing that ratio along the spine.  A second profile (profile2_*) plus per-station `point_morph <t>` changes the section's OUTLINE along the path -- a SNOUT (round skull -> narrow muzzle), a round-to-square furniture leg, a duct meeting a rectangular vent.  Order: morph shapes the section, THEN point_scale / point_width (x only) / end_scale size it, all multiplicative.  path_closed TRUE: seamless loop (periodic sampling, holonomy-corrected frame, no caps; end_scale forced 1.0; a loop may morph only with EXPLICIT point_morph values).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` (repeatable, >= 3, CCW = outward normals).  Exclusive with profile_circle/profile_rect"; }
 						{ auto& p = P(); p.name = "profile_circle"; p.kind = ValueKind::String; p.description = "Convenience profile `<r> [n]`: CCW n-gon, r > 0, n default 24 (clamped 3..512).  Exclusive with profile_point/profile_rect"; }
 						{ auto& p = P(); p.name = "profile_rect";  p.kind = ValueKind::String; p.description = "Convenience profile `<w> <h> [r]`: CCW rect, w/h > 0, optional corner radius r (default 0, <= min(w,h)/2).  Exclusive with profile_point/profile_circle"; }
+						{ auto& p = P(); p.name = "profile2_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL SECOND profile vertex `<x> <h>` (repeatable, >= 3, same CCW rule).  Its presence LOFTS the sweep: the section morphs profile -> profile2 along the path.  Exclusive with the other profile2_*"; }
+						{ auto& p = P(); p.name = "profile2_circle"; p.kind = ValueKind::String; p.description = "OPTIONAL second profile, circle form `<r> [n]` (as profile_circle).  Exclusive with the other profile2_*"; }
+						{ auto& p = P(); p.name = "profile2_rect";  p.kind = ValueKind::String; p.description = "OPTIONAL second profile, rect form `<w> <h> [r]` (as profile_rect).  Exclusive with the other profile2_*"; }
 						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable; >= 2, or >= 3 when path_closed).  Catmull-Rom spline through these"; }
-						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point x-axis width `<sx>` (repeatable, > 0, missing padded 1.0; periodic when path_closed).  Composed multiplicatively with end_scale_x and point_scale.  Omit = uniform 1.0"; }
-						{ auto& p = P(); p.name = "point_scale";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point UNIFORM scale `<s>` (repeatable, > 0, missing padded 1.0; same sampler as point_width) -- composed with point_width (x) and end_scale.  ROUND taper; point_width alone only flattens.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point x-axis width `<sx>` (repeatable, > 0, missing padded 1.0; periodic when path_closed).  HISTORICAL x-only control -- prefer `point_scale <sx> <sy>`, which states both axes.  Composed with end_scale_x and point_scale.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "point_scale";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point section scale: `<s>` (UNIFORM, a round taper) or `<sx> <sy>` (ANISOTROPIC -- x = binormal axis, y = normal axis; the RECOMMENDED form for any non-circular body, e.g. a torso 1.0 0.55 flattening to 0.6 0.4).  Repeatable, > 0, missing padded 1.0, periodic when path_closed; arities mix freely.  Composed with point_width and end_scale, applied AFTER the morph.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "point_morph";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point morph blend `<t>` in [0, 1]: 0 = profile, 1 = profile2 (repeatable).  A SHORT track is padded with 1.0 -- i.e. FULLY profile2 -- so the remaining stations finish the morph rather than holding the last authored value.  The morphed section is anchored at profile's VERTEX MEAN (not its area centroid), so a profile2 whose vertices are clustered along one side anchors off its visual centre.  Requires a profile2_* source.  Omit = a linear 0 -> 1 ramp along the stations, which path_closed refuses (a ramp jumps at the seam) -- give a loop explicit values like 0/1/0 instead"; }
 						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096)"; p.defaultValueHint = "64"; }
 						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at path end (taper from 1).  Must stay 1.0 when path_closed"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at path end (taper from 1).  Must stay 1.0 when path_closed"; p.defaultValueHint = "1.0"; }

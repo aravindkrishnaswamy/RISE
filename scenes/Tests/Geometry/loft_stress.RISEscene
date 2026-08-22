@@ -1,0 +1,394 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           loft_stress.RISEscene                                                                   #
+#   Description:    A REGRESSION INSTRUMENT for the LOFT half of `sweep_geometry` (doc 89 slice A):          #
+#                   the 2-arg `point_scale <sx> <sy>` (ANISOTROPIC per-station section scale) and the        #
+#                   second profile (`profile2_*`) plus per-station `point_morph <t>`.  Companion to          #
+#                   sweep_stress.RISEscene, which covers the FIXED-section sweep; nothing here repeats a     #
+#                   specimen from that file.  Every specimen is laid out in one band so a human can spot a   #
+#                   regression BY EYE.                                                                      #
+#                                                                                                           #
+#   LAYOUT: one band at z = 0, left to right --                                                             #
+#                   SLATE control tube / TEAL torso / GOLD table leg / JADE vent duct / COPPER morph ring    #
+#                                                                                                           #
+#   SPECIMENS (what it stresses -> what CORRECT looks like):                                                #
+#                                                                                                           #
+#     SLATE control, far left -- the SAME circular profile and the SAME path as the TEAL torso, with NO      #
+#       loft parameter at all.  It is the back-compat witness: the loft code must be a strict no-op on a     #
+#       sweep that does not ask for it.                                                                     #
+#       CORRECT: a plain ROUND tube of constant bore, circular in cross-section everywhere.  If this one     #
+#       ever flattens, tapers or twists, the loft path is leaking into the ordinary sweep.                   #
+#                                                                                                           #
+#     TEAL torso -- `point_scale <sx> <sy>`, the two profile axes driven INDEPENDENTLY per station: wide     #
+#       and shallow at the hips (1.15 x 0.62), narrowing and flattening further toward the shoulders         #
+#       (0.55 x 0.34).  This is the shape class that was previously unsayable -- the vocabulary could ask    #
+#       for "smaller" (`point_scale <s>`, both axes together) or for "flatter" (`point_width`, x only, and   #
+#       only by leaving y implicit), but not for "flatter than it is wide, and changing that RATIO along     #
+#       the spine".                                                                                          #
+#       CORRECT: seen from the camera the body narrows toward the top; seen in its DEPTH (the shading        #
+#       gradient across it, and the ellipse of the lit end cap) it is markedly SHALLOWER than it is wide     #
+#       at every station.  A regression that dropped the second argument would render a round, merely        #
+#       tapering tube -- i.e. it would look like the SLATE control with a taper.                             #
+#                                                                                                           #
+#     GOLD table leg -- `profile_circle` morphing into `profile2_rect` with an EXPLICIT `point_morph`        #
+#       track that holds the section round through the top third (0, 0.10) and then runs it to fully         #
+#       square (1.0).  The classic turned-to-square furniture leg, and the reason the morph exists: the      #
+#       OUTLINE, not just the size, changes station to station.                                              #
+#       CORRECT: a round shaft at the top that becomes a clean square post at the bottom, with the           #
+#       transition smooth (no waist, no pinch, no crease running down one side) and the bottom END CAP a     #
+#       true square -- the caps close the section that is ACTUALLY there at each end, so a round top cap     #
+#       and a square bottom cap is the correct, asymmetric result.  A section that self-intersected mid-     #
+#       morph would show as a dark folded band around the middle of the leg.                                 #
+#                                                                                                           #
+#     JADE vent duct -- the REVERSE direction (`profile_rect` -> `profile2_circle`) with the anisotropic     #
+#       `point_scale` running at the SAME time.  This is the composition-order specimen: the morph shapes    #
+#       the section, and (sx, sy) sizes what came out of it.  The two operations are applied in that order   #
+#       and only in that order.                                                                              #
+#       CORRECT: a SQUARE mouth at the TOP opening into a round section at the floor, flattened in depth    #
+#       the whole way.  The top mouth is authored square (1.10 x 1.10) and only the (sx, sy) scale makes it  #
+#       wide-and-shallow -- so it reads as a WIDE, SHALLOW rectangle, which is the morph-then-scale order.   #
+#       Scaling the two PROFILES first and blending afterwards would put a different outline in between.     #
+#                                                                                                           #
+#     COPPER morph ring -- `path_closed TRUE` WITH a morph.  A loop's implicit 0 -> 1 ramp would jump at     #
+#       the seam, so that combination is REFUSED; explicit `point_morph` values sample PERIODICALLY and      #
+#       close smoothly, which is what this specimen authors (0 / 1 / 0 / 1 around four control points).      #
+#       The periodic rotation-minimizing frame and its holonomy correction have to survive a section whose   #
+#       SHAPE is changing underneath them.                                                                   #
+#       CORRECT: a torus-like ring whose cross-section breathes round -> flat -> round -> flat twice around  #
+#       the loop, with NO seam: you should not be able to find the closure point.  A sharp twist, crease or  #
+#       discontinuity anywhere on the ring is a regression.                                                  #
+#                                                                                                           #
+#   NOT LEGAL, and deliberately absent: a closed loop with a second profile but NO `point_morph` lines.      #
+#   The default ramp is discontinuous across the seam, so the factory refuses it with that reason; the       #
+#   COPPER ring is the legal form of the same idea.                                                          #
+#                                                                                                           #
+#   No specimen here should produce a log line.  A clean render leaves RISE_Log.txt free of any `Error` or   #
+#   `Warning` entry.                                                                                        #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				16
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/loft_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1500
+	height			560
+}
+
+pinhole_camera
+{
+	location			0 11.5 23
+	lookat				0 1.6 0
+	up					0 1 0
+	fov					25.0
+}
+
+##################################################
+# Painters + materials, one distinct colour per specimen
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_slate
+	color				0.34 0.44 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_teal
+	color				0.10 0.52 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.78 0.62 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.20 0.58 0.40
+}
+
+uniformcolor_painter
+{
+	name				pnt_copper
+	color				0.68 0.30 0.14
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.46 0.46 0.48
+}
+
+lambertian_material
+{
+	name				mat_slate
+	reflectance			pnt_slate
+}
+
+lambertian_material
+{
+	name				mat_teal
+	reflectance			pnt_teal
+}
+
+lambertian_material
+{
+	name				mat_gold
+	reflectance			pnt_gold
+}
+
+lambertian_material
+{
+	name				mat_jade
+	reflectance			pnt_jade
+}
+
+lambertian_material
+{
+	name				mat_copper
+	reflectance			pnt_copper
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+#############################################################################
+# SPECIMEN 1 -- CONTROL.  Identical profile and identical path to SPECIMEN 2,
+# with no `point_scale`, no `profile2_*` and no `point_morph`.  A plain round
+# tube: the witness that the loft machinery is a strict no-op when unused.
+#############################################################################
+sweep_geometry
+{
+	name				controlgeom
+	profile_circle		0.85 28
+	point				0 0.0 0
+	point				0 1.4 0
+	point				0 2.8 0
+	point				0 4.2 0
+	n_len				96
+	frame_hint			1 0 0
+}
+
+standard_object
+{
+	name				control
+	geometry			controlgeom
+	material			mat_slate
+	position			-9.0 0 0
+}
+
+#############################################################################
+# SPECIMEN 2 -- ANISOTROPIC TAPER (`point_scale <sx> <sy>`).
+#
+# Same profile, same path, same station count as SPECIMEN 1.  The section is
+# wide-and-shallow at the base and narrows AND flattens further toward the
+# top: a torso, a hull, a fin root -- the "flatter than it is wide, and
+# changing that ratio along the spine" shape.
+#
+# `frame_hint 1 0 0` pins the profile's x axis to world X, so sx is the WIDTH
+# the camera sees and sy is the DEPTH.
+#############################################################################
+sweep_geometry
+{
+	name				torsogeom
+	profile_circle		0.85 28
+	point				0 0.0 0
+	point				0 1.4 0
+	point				0 2.8 0
+	point				0 4.2 0
+	point_scale			1.15 0.62
+	point_scale			1.05 0.58
+	point_scale			0.78 0.44
+	point_scale			0.55 0.34
+	n_len				96
+	frame_hint			1 0 0
+}
+
+standard_object
+{
+	name				torso
+	geometry			torsogeom
+	material			mat_teal
+	position			-4.5 0 0
+}
+
+#############################################################################
+# SPECIMEN 3 -- ROUND -> SQUARE (`profile2_rect` + explicit `point_morph`).
+#
+# The morph track holds the section round through the top third and then runs
+# it fully square, so the transition is a deliberate, visible band rather than
+# a uniform ramp.  The two end caps are DIFFERENT polygons -- a disc at the
+# top, a square at the bottom -- which is the point: a cap closes the section
+# that is actually there at its own station.
+#############################################################################
+sweep_geometry
+{
+	name				leggeom
+	profile_circle		0.52 28
+	profile2_rect		1.30 1.30 0.06
+	point				0 4.2 0
+	point				0 2.8 0
+	point				0 1.4 0
+	point				0 0.0 0
+	point_morph			0
+	point_morph			0.10
+	point_morph			0.55
+	point_morph			1.0
+	n_len				96
+	frame_hint			1 0 0
+}
+
+standard_object
+{
+	name				leg
+	geometry			leggeom
+	material			mat_gold
+	position			0 0 0
+}
+
+#############################################################################
+# SPECIMEN 4 -- SQUARE -> ROUND WITH ANISOTROPY (the composition-order case).
+#
+# `profile_rect` -> `profile2_circle` with a 2-arg `point_scale` running at
+# the same time.  Section = morph(t) FIRST, then diag(sx, sy).  The near
+# (rectangular) mouth is authored SQUARE, and is only made wide-and-shallow by
+# the scale -- so its final aspect is the scale's, applied to the morphed
+# outline, and no other order reproduces it.
+#############################################################################
+sweep_geometry
+{
+	name				ventgeom
+	profile_rect		1.10 1.10 0.04
+	profile2_circle		0.62 28
+	point				0 4.3 0
+	point				0 3.0 0
+	point				0 1.7 0
+	point				0 0.4 0
+	point_morph			0
+	point_morph			0.35
+	point_morph			0.8
+	point_morph			1.0
+	point_scale			1.00 0.80
+	point_scale			0.96 0.74
+	point_scale			0.90 0.64
+	point_scale			0.84 0.58
+	n_len				96
+	frame_hint			1 0 0
+}
+
+standard_object
+{
+	name				vent
+	geometry			ventgeom
+	material			mat_jade
+	orientation			0 24 0
+	position			4.5 0 0
+}
+
+#############################################################################
+# SPECIMEN 5 -- MORPH ON A CLOSED LOOP.
+#
+# `path_closed TRUE` with an EXPLICIT, periodic `point_morph` track (0 / 1 /
+# 0 / 1).  The implicit 0 -> 1 ramp is refused on a loop precisely because it
+# would jump at the seam; explicit values sample periodically and close.  The
+# cross-section therefore breathes round -> flat -> round -> flat twice around
+# the ring while the holonomy-corrected frame carries it.
+#############################################################################
+sweep_geometry
+{
+	name				morphringgeom
+	profile_circle		0.40 20
+	profile2_rect		0.86 0.18 0.05
+	point				1.9 0.0 0
+	point				0 0.0 1.9
+	point				-1.9 0.0 0
+	point				0 0.0 -1.9
+	path_closed			TRUE
+	point_morph			0
+	point_morph			1
+	point_morph			0
+	point_morph			1
+	n_len				320
+}
+
+standard_object
+{
+	name				morphring
+	geometry			morphringgeom
+	material			mat_copper
+	orientation			-38 0 0
+	position			9.5 2.0 0
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				2200
+	color				1.0 0.98 0.94
+	position			-9 14 16
+}
+
+omni_light
+{
+	name				filllight
+	power				1000
+	color				0.90 0.94 1.0
+	position			11 8 14
+}
+
+omni_light
+{
+	name				rimlight
+	power				700
+	color				1.0 1.0 1.0
+	position			0 11 -14
+}

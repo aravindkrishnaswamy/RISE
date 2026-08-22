@@ -2418,6 +2418,90 @@ int main()
 				j->release();
 			}
 		}
+
+		// ---- (j) doc 89 slice A (loft): a MORPHED sweep_geometry still
+		// lands in the object graph as a well-formed Geometry node with the
+		// object's `geometry` edge resolving and NO dangling port.  Slice A
+		// adds no cross-chunk pointer (profile2 and the morph track are
+		// inline numbers, not references), so this is the guard that it
+		// stayed that way: the loft node's edge lists must hold EXACTLY the
+		// one geometry->consumer edge and nothing else.
+		//
+		// FIX-ROUND CORRECTION to what this row claims to catch.  The
+		// earlier comment said a BARE-STRING pointer (the thing the doc's
+		// rule 1 forbids) "would show up as an edge that is MISSING" and
+		// leaned on the no-dangling-port assertion for it.  It cannot:
+		// SceneReferenceGraph only emits edges for DECLARED references, so an
+		// undeclared bare-string pointer produces no edge at all -- nothing
+		// dangles, and nothing fails.  What IS mechanically caught here is a
+		// declared reference appearing (or the existing one disappearing),
+		// which is why the counts below are asserted explicitly instead of
+		// only scanning the ports that happen to exist.  Rule 1's bare-string
+		// case is caught by the descriptor's own ValueKind, not by this
+		// graph. ----
+		{
+			const char* path = "test_referencegraph_objgraph_loft.RISEscene";
+			Job* j = LoadFixture( path,
+				"RISE ASCII SCENE 7\n"
+				"film\n{\nwidth 32\nheight 24\n}\n"
+				"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+				"sweep_geometry\n{\nname loftg\nprofile_circle 0.6 16\nprofile2_rect 0.9 0.5\n"
+				"point 0 0 0\npoint 0 1.5 0\npoint 0 3 0\n"
+				"point_morph 0\npoint_morph 0.4\npoint_morph 1\n"
+				"point_scale 1.0 0.7\npoint_scale 0.9 0.5\npoint_scale 0.7 0.45\n}\n"
+				"standard_object\n{\nname loftobj\ngeometry loftg\nposition 0 0 0\n}\n" );
+			Check( j != nullptr, "PART14j: morphed-sweep fixture loads" );
+			if( j ) {
+				SceneEditController c( *j, 0 );
+				ObjGraph g;
+				c.ReadObjectGraph( g );
+				const GNode* geo = FindNode( g, ChunkCategory::Geometry, "loftg" );
+				const GNode* obj = FindNode( g, ChunkCategory::Object,   "loftobj" );
+				Check( geo != 0, "PART14j: the morphed sweep_geometry becomes a Geometry node" );
+				Check( obj != 0, "PART14j: its consumer becomes an Object node" );
+				if( obj ) {
+					// the object CONSUMES the geometry, so the edge is published
+					// on the object's inEdges (PART14a's pedestal_root row pins
+					// the same convention from the negative side)
+					const GPort* p = FindPort( obj->inEdges, "geometry", 0 );
+					Check( p && std::string( p->otherName.c_str() ) == "loftg" &&
+					       p->otherNode != SceneEditController::kInvalidNodeIndex,
+					       "PART14j: loftobj.geometry -> loftg resolves (no dangling port)" );
+				}
+				if( geo ) {
+					bool anyDangling = false;
+					for( const GPort& p : geo->outEdges ) {
+						if( p.otherNode == SceneEditController::kInvalidNodeIndex ) anyDangling = true;
+					}
+					for( const GPort& p : geo->inEdges ) {
+						if( p.otherNode == SceneEditController::kInvalidNodeIndex ) anyDangling = true;
+					}
+					Check( !anyDangling,
+					       "PART14j: the loft chunk publishes no dangling port" );
+					// The MONEY assertions: EXACT counts.  ReadObjectGraph
+					// FLIPS the geometry family at seeding (geometry chunk ->
+					// consumer), so the loft geometry owns exactly ONE
+					// out-edge -- to loftobj -- and NO in-edge.  A new
+					// declared Reference on the loft grammar (a painter slot,
+					// a profile source chunk) moves one of these numbers, and
+					// so does silently dropping the geometry edge.
+					if( geo->outEdges.size() == 1 ) {
+						Check( std::string( geo->outEdges[0].otherName.c_str() ) == "loftobj" &&
+						       std::string( geo->outEdges[0].paramName.c_str() ) == "geometry",
+						       "PART14j: the loft geometry's single out-edge is the flipped `geometry` edge to its consumer" );
+					} else {
+						Check( false, "PART14j: the loft geometry's single out-edge is the flipped `geometry` edge to its consumer" );
+					}
+					Check( geo->outEdges.size() == 1,
+					       "PART14j: MONEY ASSERTION -- the loft chunk publishes EXACTLY ONE out-edge "
+					       "(slice A added no cross-chunk reference; profile2 and point_morph are inline numbers)" );
+					Check( geo->inEdges.size() == 0,
+					       "PART14j: MONEY ASSERTION -- the loft chunk publishes NO in-edge "
+					       "(nothing in the scene refers INTO a geometry chunk in this graph's direction)" );
+				}
+				j->release();
+			}
+		}
 	}
 
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;

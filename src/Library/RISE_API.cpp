@@ -74,7 +74,9 @@ namespace RISE
 }
 
 #include <string.h>										// for strncpy
-#include <cstdio>										// for the SDF parts-file read in RISE_API_CreateSDFGeometry
+#include <cstdio>										// for the SDF parts-file read in RISE_API_CreateSDFGeometry, and vsnprintf in SweepFail
+#include <cstdarg>										// va_list / va_start -- SweepFail's formatted refusal channel
+#include <algorithm>									// std::reverse -- the loft's opposite-winding profile2 fix-up
 #include <string>										// parts-file buffer in RISE_API_CreateSDFGeometry
 #include <vector>
 
@@ -1250,6 +1252,199 @@ namespace RISE
 			}
 			return true;
 		}
+
+		// EVERY sweep refusal goes through this ONE helper so the author's
+		// specific reason reaches BOTH the log and the CST Finalize
+		// diagnostic sink (GenericManager.h's documented "however deep the
+		// call stack" channel) -- the same move RISE_API_CreateLatheGeometry
+		// already makes with its `fail` lambda, and for the same reason:
+		// without it a factory-only gate (the profile-point cap, a zero-area
+		// second profile, the ear-clip failure, a morph-vs-path_closed
+		// contradiction) surfaced to a scene author as the generic
+		// "apply failed (e.g. unresolved reference); see log", which is
+		// actively misleading since no reference is involved.  Job::
+		// AddSweepGeometry prepends the geometry's name.
+		bool SweepFail( const char* fmt, ... )
+		{
+			char buf[1024];
+			va_list ap;
+			va_start( ap, fmt );
+			vsnprintf( buf, sizeof(buf), fmt, ap );
+			va_end( ap );
+			// The SINK gets the RAW reason; only the LOG line carries the
+			// factory's own name.  Job::AddSweepGeometry prepends the
+			// geometry's name to the sink and DeriveToJob prepends
+			// `sweep_geometry: `, so baking "RISE_API_CreateSweepGeometry: "
+			// into the sink too would stutter three qualifiers deep in front
+			// of the author's actual reason -- which is exactly the shape
+			// RISE_API_CreateLatheGeometry's `fail` lambda already avoids.
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateSweepGeometry: %s", buf );
+			if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = buf;
+			return false;
+		}
+
+		// Twice the signed area of a closed polygon (shoelace).  Positive =
+		// CCW.  The sweep derives "which side is outward" from this sign, and
+		// the loft uses it to decide whether profile2 was authored with the
+		// OPPOSITE winding to profile (which would fold the morph inside out).
+		Scalar ProfileSignedArea2( const std::vector<Scalar>& px, const std::vector<Scalar>& ph )
+		{
+			const size_t n = px.size();
+			Scalar a2 = 0;
+			for( size_t k = 0; k < n; k++ ) {
+				const size_t j = ( k + 1 ) % n;
+				a2 += px[k] * ph[j] - px[j] * ph[k];
+			}
+			return a2;
+		}
+
+		// Normalized cumulative arc-length parameter of EVERY vertex of a
+		// closed polygon: par[k] in [0, 1), par[0] == 0, non-decreasing.
+		// Two consecutive entries are EQUAL exactly when the segment between
+		// them has zero length -- the documented duplicate-a-point hard-edge
+		// idiom -- and the union merge below is written to keep both of them.
+		//
+		// A polygon with zero total perimeter (every vertex coincident) has
+		// no arc length to walk at all, so its vertices are parameterized by
+		// INDEX instead.  That keeps them DISTINCT, which is what keeps every
+		// one of them in the union; collapsing them all to parameter 0 would
+		// be the same silent vertex loss this whole helper exists to prevent.
+		void ProfileArcParams(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			std::vector<Scalar>& par )
+		{
+			const size_t n = px.size();
+			par.assign( n, Scalar(0) );
+			std::vector<Scalar> cum( n + 1, Scalar(0) );
+			for( size_t k = 0; k < n; k++ ) {
+				const size_t j = ( k + 1 ) % n;
+				const Scalar dx = px[j] - px[k], dh = ph[j] - ph[k];
+				cum[ k + 1 ] = cum[k] + sqrt( dx*dx + dh*dh );
+			}
+			const Scalar total = cum[n];
+			if( !( total > 0 ) ) {
+				for( size_t k = 0; k < n; k++ ) {
+					par[k] = Scalar(k) / Scalar(n);
+				}
+				return;
+			}
+			for( size_t k = 0; k < n; k++ ) {
+				par[k] = cum[k] / total;
+			}
+		}
+
+		// The point ON a closed polygon at normalized arc-length parameter p
+		// (par as produced by ProfileArcParams; p in [0, 1)).  Used ONLY for
+		// the parameters the OTHER profile contributed -- a parameter that is
+		// this profile's own is emitted as the authored vertex VERBATIM, never
+		// through this function, so no authored corner is ever rounded off by
+		// a floating-point round trip.
+		void ProfilePointAt(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			const std::vector<Scalar>& par, const Scalar p,
+			Scalar& ox, Scalar& oh )
+		{
+			const size_t n = px.size();
+			size_t seg = 0;
+			while( seg + 1 < n && par[ seg + 1 ] <= p ) {
+				seg++;
+			}
+			const Scalar p0 = par[ seg ];
+			const Scalar p1 = ( seg + 1 < n ) ? par[ seg + 1 ] : Scalar(1);
+			const Scalar span = p1 - p0;
+			const Scalar f = ( span > 0 ) ? ( ( p - p0 ) / span ) : Scalar(0);
+			const size_t a = seg, b = ( seg + 1 ) % n;
+			ox = px[a] + ( px[b] - px[a] ) * f;
+			oh = ph[a] + ( ph[b] - ph[a] ) * f;
+		}
+
+		// UNION resample: put the two closed profiles onto the MERGED set of
+		// their own normalized arc-length parameters, so that EVERY authored
+		// vertex of BOTH profiles survives verbatim into the common list.
+		//
+		// The obvious alternative -- pick N = max(n1, n2) and uniformly
+		// arc-length resample both -- silently destroys the smaller (usually
+		// hand-authored) profile: its corners survive only where they happen
+		// to land on the j/N grid.  A `profile_rect 2 2` (corners at arc
+		// 2.0 and 6.0 of perimeter 8) against a `profile2_circle r 30` keeps
+		// only two of its four corners, and since the morph delta is applied
+		// from t = 0 onward the damage lands at EVERY station and on the caps
+		// -- the authored square simply is not in the mesh.
+		//
+		// The merge is a two-pointer walk over the two sorted parameter
+		// lists.  A parameter present in BOTH (within paramEps) yields ONE
+		// union entry carrying both authored vertices; a parameter present in
+		// only one yields an entry with that profile's authored vertex and
+		// the OTHER profile evaluated on its polygon at that parameter.  So:
+		//
+		//   * no authored vertex is ever dropped -- the eps only decides
+		//     whether two vertices PAIR UP, never whether they are kept;
+		//   * a zero-length segment (the hard-edge idiom) produces two
+		//     entries at the same parameter, because the walk advances the
+		//     pointer rather than the parameter;
+		//   * N <= n1 + n2, and the identical-parameter case (which includes
+		//     profile == profile2) degenerates to both lists VERBATIM, so
+		//     the morph delta is bit-exactly zero with no special case.
+		//
+		// What the union does NOT preserve, and no common resample can, is
+		// the SHADING: the parameters the other profile contributes are real
+		// vertices, and a section's closed-loop central-difference normals
+		// are computed from the section it actually has.  A square section
+		// carrying a circle's parameters therefore shades its faces nearly
+		// flat where a bare 4-point square interpolated across its corners.
+		// Positions stay exact either way; only the normal field gets finer,
+		// which is the right trade -- the alternative loses the corner
+		// POSITIONS, which is a silhouette error, not a shading one.
+		void UnionResampleProfiles(
+			const std::vector<Scalar>& px,  const std::vector<Scalar>& ph,
+			const std::vector<Scalar>& p2x, const std::vector<Scalar>& p2h,
+			std::vector<Scalar>& rx,  std::vector<Scalar>& rh,
+			std::vector<Scalar>& r2x, std::vector<Scalar>& r2h )
+		{
+			std::vector<Scalar> par1, par2;
+			ProfileArcParams( px,  ph,  par1 );
+			ProfileArcParams( p2x, p2h, par2 );
+
+			// Parameters live in [0, 1), so this is an ABSOLUTE tolerance on
+			// a normalized quantity -- 1e-9 of the perimeter.  It only
+			// controls PAIRING (see above), so an over- or under-merge costs
+			// at most one redundant union entry, never a lost vertex.
+			const Scalar paramEps = Scalar(1e-9);
+
+			const size_t n1 = par1.size(), n2 = par2.size();
+			rx.clear();  rh.clear();  r2x.clear();  r2h.clear();
+			rx.reserve( n1 + n2 );  rh.reserve( n1 + n2 );
+			r2x.reserve( n1 + n2 ); r2h.reserve( n1 + n2 );
+
+			size_t ia = 0, ib = 0;
+			while( ia < n1 || ib < n2 ) {
+				const bool haveA = ( ia < n1 );
+				const bool haveB = ( ib < n2 );
+				bool takeA = false, takeB = false;
+				Scalar p = 0;
+				if( haveA && haveB && fabs( par1[ia] - par2[ib] ) <= paramEps ) {
+					takeA = true; takeB = true; p = par1[ia];
+				} else if( haveA && ( !haveB || par1[ia] < par2[ib] ) ) {
+					takeA = true; p = par1[ia];
+				} else {
+					takeB = true; p = par2[ib];
+				}
+				if( takeA ) {
+					rx.push_back( px[ia] ); rh.push_back( ph[ia] ); ia++;
+				} else {
+					Scalar x = 0, h = 0;
+					ProfilePointAt( px, ph, par1, p, x, h );
+					rx.push_back( x ); rh.push_back( h );
+				}
+				if( takeB ) {
+					r2x.push_back( p2x[ib] ); r2h.push_back( p2h[ib] ); ib++;
+				} else {
+					Scalar x = 0, h = 0;
+					ProfilePointAt( p2x, p2h, par2, p, x, h );
+					r2x.push_back( x ); r2h.push_back( h );
+				}
+			}
+		}
 	}
 
 	// General profile sweep: an arbitrary CLOSED 2D profile polygon swept
@@ -1272,23 +1467,19 @@ namespace RISE
 		*ppi = 0;
 
 		if( !desc.profilePoints || desc.numProfilePoints < 3 ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: need at least 3 `profile_point` entries (a closed polygon)" );
-			return false;
+			return SweepFail( "need at least 3 `profile_point` entries (a closed polygon)" );
 		}
 		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: need at least 2 `point` path control points" );
-			return false;
+			return SweepFail( "need at least 2 `point` path control points" );
 		}
 		if( !( desc.endScaleX > 0 ) || !( desc.endScaleY > 0 ) ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: end_scale_x / end_scale_y must be > 0" );
-			return false;
+			return SweepFail( "end_scale_x / end_scale_y must be > 0" );
 		}
 		if( desc.pathClosed ) {
 			if( desc.numPathPoints < 3 ) {
-				GlobalLog()->PrintEx( eLog_Error,
-					"RISE_API_CreateSweepGeometry: path_closed needs at least 3 `point` path control points (got %u)",
+				return SweepFail(
+					"path_closed needs at least 3 `point` path control points (got %u)",
 					desc.numPathPoints );
-				return false;
 			}
 			const double dx = desc.pathPoints[0] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 0 ];
 			const double dy = desc.pathPoints[1] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 1 ];
@@ -1316,30 +1507,170 @@ namespace RISE
 			const double diag = sqrt( diagX*diagX + diagY*diagY + diagZ*diagZ );
 			const double coincidentTol = 1e-9 * ( diag > 1.0 ? diag : 1.0 );
 			if( dx*dx + dy*dy + dz*dz < coincidentTol*coincidentTol ) {
-				GlobalLog()->Print( eLog_Error,
-					"RISE_API_CreateSweepGeometry: path_closed TRUE with the first and last `point` authored coincident -- drop the duplicate, the loop closes itself" );
-				return false;
+				return SweepFail(
+					"path_closed TRUE with the first and last `point` authored coincident -- drop the duplicate, the loop closes itself" );
 			}
 			if( !( desc.endScaleX == 1.0 ) || !( desc.endScaleY == 1.0 ) ) {
-				GlobalLog()->Print( eLog_Error,
-					"RISE_API_CreateSweepGeometry: end_scale_x / end_scale_y must stay 1.0 with path_closed (a loop has no end to taper toward)" );
-				return false;
+				return SweepFail(
+					"end_scale_x / end_scale_y must stay 1.0 with path_closed (a loop has no end to taper toward)" );
 			}
 		}
 		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
 		if( nLen != desc.nLen ) {
 			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSweepGeometry: n_len %d clamped to %d", desc.nLen, nLen );
 		}
-		const unsigned int nProf = desc.numProfilePoints;
+		unsigned int nProf = desc.numProfilePoints;
 		if( nProf > 4096 ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: more than 4096 profile points" );
-			return false;
+			return SweepFail( "more than 4096 profile points" );
+		}
+
+		// BELT AND BRACES over the parser's own token-level finiteness gate:
+		// a NaN or Inf profile coordinate propagates through the shoelace
+		// area, the arc-length parameters, the frames and the vertex stream,
+		// and every downstream GATE is a COMPARISON -- which is FALSE for a
+		// NaN, so a NaN slips past `a2 == 0`, past the winding test, and
+		// bakes a mesh whose every vertex is NaN.  RISE_API is a PUBLIC
+		// entry point (the GUI, the agent surface and the tests all reach it
+		// without going through the scene parser), so it must not rely on a
+		// caller having validated for it.
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			if( !IsFiniteDouble( desc.profilePoints[ 2*k ] ) || !IsFiniteDouble( desc.profilePoints[ 2*k + 1 ] ) ) {
+				return SweepFail(
+					"profile point %u (%g, %g) must be two FINITE numbers (no nan, no inf)",
+					k, desc.profilePoints[ 2*k ], desc.profilePoints[ 2*k + 1 ] );
+			}
 		}
 
 		std::vector<Scalar> px( nProf ), ph( nProf );
 		for( unsigned int k = 0; k < nProf; k++ ) {
 			px[k] = desc.profilePoints[ 2*k ];
 			ph[k] = desc.profilePoints[ 2*k + 1 ];
+		}
+
+		//////////////////////////////////////////////////////////////////
+		// LOFT (doc 89 slice A): an OPTIONAL second profile the section
+		// morphs toward along the path.  Everything below reduces the nine
+		// profile x profile2 authoring combinations to ONE code path: both
+		// profiles are already plain point lists by the time they reach the
+		// factory (the chunk parser expands profile_circle / profile_rect
+		// for BOTH slots), they are arc-length resampled to a common N,
+		// profile2 is index-rotated into the twist-free alignment, and the
+		// per-station section is a straight lerp of the CENTRED lists.
+		//
+		// Stored as a DELTA (morphDX/morphDH) rather than as a second point
+		// list on purpose: the per-station section is then
+		//     section[k] = px[k] + t * morphDX[k]
+		// which is EXACTLY px[k] at t == 0 and EXACTLY px[k] when the two
+		// profiles are the same shape (the delta is then identically zero,
+		// bit-for-bit) -- so a loft whose profiles agree bakes the very mesh
+		// a plain sweep bakes, with no tolerance argument required.
+		//////////////////////////////////////////////////////////////////
+		const bool morphActive = ( desc.numProfile2Points > 0 );
+		std::vector<Scalar> morphDX, morphDH;
+		if( desc.numPointMorphs > 0 && !morphActive ) {
+			return SweepFail(
+				"point_morph values were supplied with no second profile -- "
+				"a morph needs BOTH halves (add profile2_point / profile2_circle / profile2_rect, or drop point_morph)" );
+		}
+		if( morphActive ) {
+			if( !desc.profile2Points ) {
+				return SweepFail( "numProfile2Points > 0 but profile2Points is null" );
+			}
+			if( desc.numProfile2Points < 3 ) {
+				return SweepFail(
+					"the second profile needs at least 3 points (a closed polygon; got %u)",
+					desc.numProfile2Points );
+			}
+			if( desc.numProfile2Points > 4096 ) {
+				return SweepFail( "more than 4096 second-profile points" );
+			}
+			// Same belt-and-braces finiteness gate as the first profile
+			// above, and for the same reason: the zero-area gate just below
+			// is an EQUALITY compare, which a NaN passes, and the winding
+			// test after it would then print a bogus "wound OPPOSITE"
+			// warning before baking a NaN mesh.
+			for( unsigned int k = 0; k < desc.numProfile2Points; k++ ) {
+				if( !IsFiniteDouble( desc.profile2Points[ 2*k ] ) || !IsFiniteDouble( desc.profile2Points[ 2*k + 1 ] ) ) {
+					return SweepFail(
+						"second-profile point %u (%g, %g) must be two FINITE numbers (no nan, no inf)",
+						k, desc.profile2Points[ 2*k ], desc.profile2Points[ 2*k + 1 ] );
+				}
+			}
+			std::vector<Scalar> p2x( desc.numProfile2Points ), p2h( desc.numProfile2Points );
+			for( unsigned int k = 0; k < desc.numProfile2Points; k++ ) {
+				p2x[k] = desc.profile2Points[ 2*k ];
+				p2h[k] = desc.profile2Points[ 2*k + 1 ];
+			}
+			const Scalar a2First  = ProfileSignedArea2( px, ph );
+			const Scalar a2Second = ProfileSignedArea2( p2x, p2h );
+			if( a2Second == 0 ) {
+				return SweepFail(
+					"the second profile encloses ZERO area (collinear or self-cancelling points) -- "
+					"a morph target must be a real closed section" );
+			}
+			// A profile2 authored with the OPPOSITE winding would run its
+			// points backwards around the section, so the lerp would drag
+			// every vertex across the middle and the section would collapse
+			// through a self-intersecting star before re-inflating.  Reverse
+			// it instead (keeping vertex 0 fixed, so the alignment search
+			// below still starts from the authored origin) and say so.
+			if( a2First != 0 && ( ( a2First > 0 ) != ( a2Second > 0 ) ) ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: the second profile is wound OPPOSITE the first -- reversing it so the morph "
+					"does not fold the section inside out (author both profiles CCW to silence this)" );
+				std::reverse( p2x.begin() + 1, p2x.end() );
+				std::reverse( p2h.begin() + 1, p2h.end() );
+			}
+			// Common N: the UNION of the two profiles' own normalized
+			// arc-length parameter sets, so EVERY authored vertex of BOTH
+			// profiles is reproduced exactly (see UnionResampleProfiles for
+			// why max(n1, n2) + uniform resampling is not good enough --
+			// it eats the smaller, usually hand-authored, profile's corners).
+			// max(n1, n2) <= N <= n1 + n2.
+			std::vector<Scalar> rx, rh, r2x, r2h;
+			UnionResampleProfiles( px, ph, p2x, p2h, rx, rh, r2x, r2h );
+			const size_t N = rx.size();
+
+			// Centroids (vertex means).  The morph runs on the CENTRED lists
+			// so profile2's own offset never TRANSLATES the section -- a
+			// circle morphing into an off-centre rect stays put on the path
+			// and only changes shape.  The section stays anchored at
+			// PROFILE's centroid, which is what preserves the authored
+			// "offset the tube from its path" idiom at every t.
+			Scalar c1x = 0, c1h = 0, c2x = 0, c2h = 0;
+			for( size_t k = 0; k < N; k++ ) { c1x += rx[k]; c1h += rh[k]; c2x += r2x[k]; c2h += r2h[k]; }
+			c1x /= Scalar(N); c1h /= Scalar(N); c2x /= Scalar(N); c2h /= Scalar(N);
+
+			// Twist-free start-vertex alignment: rotate profile2's index
+			// origin to the offset that minimizes the summed squared distance
+			// between the two CENTRED lists.  Without this, two profiles that
+			// merely start at different vertices would make the section
+			// SPIRAL along the path.  Ties resolve to the smallest rotation
+			// (strict <), so an already-aligned pair keeps offset 0 -- which
+			// is what makes the same-shape case exactly identity.
+			size_t bestRot = 0;
+			Scalar bestCost = 0;
+			for( size_t r = 0; r < N; r++ ) {
+				Scalar cost = 0;
+				for( size_t k = 0; k < N; k++ ) {
+					const size_t j = ( k + r ) % N;
+					const Scalar dx = ( rx[k] - c1x ) - ( r2x[j] - c2x );
+					const Scalar dh = ( rh[k] - c1h ) - ( r2h[j] - c2h );
+					cost += dx*dx + dh*dh;
+				}
+				if( r == 0 || cost < bestCost ) { bestCost = cost; bestRot = r; }
+			}
+
+			morphDX.resize( N );
+			morphDH.resize( N );
+			for( size_t k = 0; k < N; k++ ) {
+				const size_t j = ( k + bestRot ) % N;
+				morphDX[k] = ( r2x[j] - c2x ) - ( rx[k] - c1x );
+				morphDH[k] = ( r2h[j] - c2h ) - ( rh[k] - c1h );
+			}
+			px.swap( rx );
+			ph.swap( rh );
+			nProf = (unsigned int)N;
 		}
 
 		// closed-loop central-difference profile normals, oriented OUTWARD
@@ -1400,21 +1731,18 @@ namespace RISE
 		std::vector<Scalar> widthMul;
 		if( desc.numPointWidths > 0 ) {
 			if( !desc.pointWidths ) {
-				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: numPointWidths > 0 but pointWidths is null" );
-				return false;
+				return SweepFail( "numPointWidths > 0 but pointWidths is null" );
 			}
 			if( desc.numPointWidths > desc.numPathPoints ) {
-				GlobalLog()->PrintEx( eLog_Error,
-					"RISE_API_CreateSweepGeometry: %u point widths exceed %u path points (one per point; pad the rest with 1.0)",
+				return SweepFail(
+					"%u point widths exceed %u path points (one per point; pad the rest with 1.0)",
 					desc.numPointWidths, desc.numPathPoints );
-				return false;
 			}
 			std::vector<Scalar> wCtrl( desc.numPathPoints, Scalar(1) );
 			for( unsigned int j = 0; j < desc.numPointWidths; j++ ) {
 				if( !( desc.pointWidths[j] > 0 ) ) {
-					GlobalLog()->PrintEx( eLog_Error,
-						"RISE_API_CreateSweepGeometry: point width %u (%g) must be > 0", j, desc.pointWidths[j] );
-					return false;
+					return SweepFail(
+						"point width %u (%g) must be > 0", j, desc.pointWidths[j] );
 				}
 				wCtrl[j] = (Scalar)desc.pointWidths[j];
 			}
@@ -1451,21 +1779,18 @@ namespace RISE
 		std::vector<Scalar> scaleMul;
 		if( desc.numPointScales > 0 ) {
 			if( !desc.pointScales ) {
-				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: numPointScales > 0 but pointScales is null" );
-				return false;
+				return SweepFail( "numPointScales > 0 but pointScales is null" );
 			}
 			if( desc.numPointScales > desc.numPathPoints ) {
-				GlobalLog()->PrintEx( eLog_Error,
-					"RISE_API_CreateSweepGeometry: %u point scales exceed %u path points (one per point; pad the rest with 1.0)",
+				return SweepFail(
+					"%u point scales exceed %u path points (one per point; pad the rest with 1.0)",
 					desc.numPointScales, desc.numPathPoints );
-				return false;
 			}
 			std::vector<Scalar> sCtrl( desc.numPathPoints, Scalar(1) );
 			for( unsigned int j = 0; j < desc.numPointScales; j++ ) {
 				if( !( desc.pointScales[j] > 0 ) ) {
-					GlobalLog()->PrintEx( eLog_Error,
-						"RISE_API_CreateSweepGeometry: point scale %u (%g) must be > 0", j, desc.pointScales[j] );
-					return false;
+					return SweepFail(
+						"point scale %u (%g) must be > 0", j, desc.pointScales[j] );
 				}
 				sCtrl[j] = (Scalar)desc.pointScales[j];
 			}
@@ -1485,6 +1810,114 @@ namespace RISE
 			}
 		}
 
+		// OPTIONAL SECOND HALF of the ANISOTROPIC `point_scale <sx> <sy>`
+		// form (doc 89 slice A): when present, `scaleMul` above drives the
+		// profile's x (binormal) axis and this track drives its y
+		// (frame-normal) axis independently -- a section that is, say, twice
+		// as wide as it is deep, flattening further toward one end.  ABSENT
+		// (the 1-arg `point_scale <s>` form and every pre-slice-A scene) the
+		// single track drives BOTH axes, exactly as before.
+		std::vector<Scalar> scaleMulY;
+		if( desc.numPointScalesY > 0 ) {
+			if( !desc.pointScalesY ) {
+				return SweepFail( "numPointScalesY > 0 but pointScalesY is null" );
+			}
+			if( desc.numPointScalesY != desc.numPointScales ) {
+				return SweepFail(
+					"%u y-axis point scales but %u x-axis point scales -- the anisotropic form supplies BOTH axes per station",
+					desc.numPointScalesY, desc.numPointScales );
+			}
+			std::vector<Scalar> sCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointScalesY; j++ ) {
+				if( !( desc.pointScalesY[j] > 0 ) ) {
+					return SweepFail(
+						"point scale y %u (%g) must be > 0", j, desc.pointScalesY[j] );
+				}
+				sCtrl[j] = (Scalar)desc.pointScalesY[j];
+			}
+			if( desc.pathClosed ) {
+				SampleCatmullRom1Periodic( sCtrl, nLen, scaleMulY );
+			} else {
+				SampleCatmullRom1( sCtrl, nLen, scaleMulY );
+			}
+			bool scaleYClamped = false;
+			for( size_t i = 0; i < scaleMulY.size(); i++ ) {
+				if( !( scaleMulY[i] > 0 ) ) { scaleMulY[i] = Scalar(1e-4); scaleYClamped = true; }
+			}
+			if( scaleYClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station y scale undershot <= 0 (aggressive non-monotone point scales); floored to avoid ring inversion" );
+			}
+		}
+
+		// OPTIONAL per-station MORPH track (doc 89 slice A): the blend factor
+		// t in [0, 1] taking the section from `profile` (0) to `profile2`
+		// (1).  Same sampler and same one-per-control-point / pad-the-rest
+		// idiom as the width and scale tracks above; the pad value is 1.0
+		// ("finish the morph"), matching the default ramp's endpoint.
+		std::vector<Scalar> morphMul;
+		if( morphActive ) {
+			if( desc.numPointMorphs > 0 ) {
+				if( !desc.pointMorphs ) {
+					return SweepFail( "numPointMorphs > 0 but pointMorphs is null" );
+				}
+				if( desc.numPointMorphs > desc.numPathPoints ) {
+					return SweepFail(
+						"%u point morphs exceed %u path points (one per point; pad the rest with 1.0)",
+						desc.numPointMorphs, desc.numPathPoints );
+				}
+				std::vector<Scalar> mCtrl( desc.numPathPoints, Scalar(1) );
+				for( unsigned int j = 0; j < desc.numPointMorphs; j++ ) {
+					// REFUSE an authored value outside [0, 1] (as opposed to
+					// clamping it): outside that range the author is asking to
+					// extrapolate past both profiles, which is never what they
+					// meant, and silently clamping would hide the typo.  The
+					// negated idiom also rejects a NaN that reached the API
+					// past the parser's token gate.
+					if( !( desc.pointMorphs[j] >= 0.0 && desc.pointMorphs[j] <= 1.0 ) ) {
+						return SweepFail(
+							"point morph %u (%g) must be in [0, 1] (0 = the first profile, 1 = the second)",
+							j, desc.pointMorphs[j] );
+					}
+					mCtrl[j] = (Scalar)desc.pointMorphs[j];
+				}
+				if( desc.pathClosed ) {
+					SampleCatmullRom1Periodic( mCtrl, nLen, morphMul );
+				} else {
+					SampleCatmullRom1( mCtrl, nLen, morphMul );
+				}
+				// The AUTHORED values are in range, but Catmull-Rom overshoots
+				// between non-monotone controls -- and an overshoot here would
+				// extrapolate the section past profile2 (or back behind
+				// profile), which is a different shape entirely rather than a
+				// mere pinch.  CLAMP the interpolated track (the authored
+				// values are already refused above if out of range) and warn
+				// once, mirroring the width/scale floor.
+				bool morphClamped = false;
+				for( size_t i = 0; i < morphMul.size(); i++ ) {
+					if( !( morphMul[i] >= 0 ) )      { morphMul[i] = Scalar(0); morphClamped = true; }
+					else if( !( morphMul[i] <= 1 ) ) { morphMul[i] = Scalar(1); morphClamped = true; }
+				}
+				if( morphClamped ) {
+					GlobalLog()->Print( eLog_Warning,
+						"RISE_API_CreateSweepGeometry: a per-station morph overshot [0, 1] between non-monotone point morphs; clamped" );
+				}
+			} else if( desc.pathClosed ) {
+				// The implicit default is a linear 0 -> 1 ramp along the
+				// stations, which is DISCONTINUOUS across a loop's seam
+				// (station n-1 sits next to station 0, so the section would
+				// jump from profile2 straight back to profile).  Explicit
+				// point_morph values are fine on a loop -- they sample
+				// PERIODICALLY, so they close smoothly.
+				return SweepFail(
+					"a second profile with NO point_morph values defaults to a linear 0->1 ramp, "
+					"which is discontinuous at a closed loop's seam -- author explicit point_morph values (they sample periodically, "
+					"so a loop can morph out and back) or drop path_closed" );
+			}
+			// (no point_morph on an OPEN path => the default linear ramp,
+			//  computed inline from `frac` in the ring loop below)
+		}
+
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
 		pGeom->BeginIndexedTriangles();
@@ -1493,23 +1926,75 @@ namespace RISE
 		// coordinate; a closed loop has no start/end to taper toward (end_scale_x/y
 		// are forced to 1.0 above) so it uses i/n (wraps at the seam with no
 		// duplicated ring, matching the profile U convention) instead of i/(n-1).
+		// Per-station SECTION scratch, used only when a morph is active.  The
+		// no-morph path keeps pointing straight at the loop-invariant px/ph
+		// and pnx/pnh arrays, so it does exactly the arithmetic it always did.
+		std::vector<Scalar> secX, secH, secNx, secNh;
+		if( morphActive ) {
+			secX.resize( nProf ); secH.resize( nProf );
+			secNx.resize( nProf ); secNh.resize( nProf );
+		}
+		// COMPOSITION ORDER (documented in the chunk descriptor too):
+		//     section  = morph( profile -> profile2, t_i )      [shape]
+		//     ring[k]  = section[k] * diag( sx_i, sy_i )        [scale]
+		// with sx_i = end_scale_x taper * point_width * point_scale_x and
+		//      sy_i = end_scale_y taper *                point_scale_y.
+		// The scale factors are scalars, so their own order among themselves
+		// does not matter; what does matter is that the morph happens FIRST,
+		// in the profile plane, and the anisotropic scale is applied to the
+		// already-morphed section.
 		int vc = 0;
 		for( size_t i = 0; i < n; i++ ) {
 			const Scalar frac = desc.pathClosed ? ( Scalar(i) / Scalar(n) ) : ( Scalar(i) / Scalar( n - 1 ) );
 			const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
 			const Scalar sm = scaleMul.empty() ? Scalar(1) : scaleMul[i];
+			const Scalar smy = scaleMulY.empty() ? sm : scaleMulY[i];
 			const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm * sm;
-			const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * sm;
+			const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * smy;
+			const Scalar* secPx = &px[0];
+			const Scalar* secPh = &ph[0];
+			const Scalar* secPnx = &pnx[0];
+			const Scalar* secPnh = &pnh[0];
+			if( morphActive ) {
+				// no explicit point_morph track on an open path => the
+				// documented default linear 0 -> 1 ramp along the stations
+				const Scalar t = morphMul.empty() ? frac : morphMul[i];
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					secX[k] = px[k] + t * morphDX[k];
+					secH[k] = ph[k] + t * morphDH[k];
+				}
+				// The section's OWN closed-loop central-difference normals,
+				// oriented by the FIRST profile's winding (`outward`): the
+				// alignment step above already put both profiles on the same
+				// winding, so one sign serves every station -- and it must,
+				// since the side-quad winding below is emitted once for the
+				// whole mesh.
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					const unsigned int kp = ( k + nProf - 1 ) % nProf;
+					const unsigned int kn = ( k + 1 ) % nProf;
+					const Scalar dx = secX[kn] - secX[kp];
+					const Scalar dh = secH[kn] - secH[kp];
+					const Scalar l = sqrt( dx*dx + dh*dh );
+					if( l > 0 ) {
+						secNx[k] =  outward * dh / l;
+						secNh[k] = -outward * dx / l;
+					} else {
+						secNx[k] = 0; secNh[k] = 1;
+					}
+				}
+				secPx = &secX[0]; secPh = &secH[0];
+				secPnx = &secNx[0]; secPnh = &secNh[0];
+			}
 			for( unsigned int k = 0; k < nProf; k++ ) {
-				const Scalar lx = px[k] * sx;
-				const Scalar lh = ph[k] * sy;
+				const Scalar lx = secPx[k] * sx;
+				const Scalar lh = secPh[k] * sy;
 				pGeom->AddVertex( Vertex(
 					path[i].x + lx * B[i].x + lh * N[i].x,
 					path[i].y + lx * B[i].y + lh * N[i].y,
 					path[i].z + lx * B[i].z + lh * N[i].z ) );
 				// taper-corrected profile normal mapped through the frame
-				const Scalar nx = pnx[k] / sx;
-				const Scalar nh = pnh[k] / sy;
+				const Scalar nx = secPnx[k] / sx;
+				const Scalar nh = secPnh[k] / sy;
 				const Scalar nl = sqrt( nx*nx + nh*nh );
 				const Scalar nxn = ( nl > 0 ) ? nx / nl : 0;
 				const Scalar nhn = ( nl > 0 ) ? nh / nl : 1;
@@ -1552,22 +2037,6 @@ namespace RISE
 		// capEnd (the parser rejects an explicit TRUE for either alongside
 		// path_closed; this guard is the structural belt-and-suspenders).
 		if( !desc.pathClosed && ( desc.capStart || desc.capEnd ) ) {
-			std::vector<unsigned int> capTris;
-			if( !EarClipProfile( px, ph, capTris ) ) {
-				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: profile triangulation failed (self-intersecting or degenerate polygon)" );
-				pGeom->release();
-				return false;
-			}
-			// profile bbox for cap UV
-			Scalar bx0 = px[0], bx1 = px[0], bh0 = ph[0], bh1 = ph[0];
-			for( unsigned int k = 1; k < nProf; k++ ) {
-				if( px[k] < bx0 ) bx0 = px[k];
-				if( px[k] > bx1 ) bx1 = px[k];
-				if( ph[k] < bh0 ) bh0 = ph[k];
-				if( ph[k] > bh1 ) bh1 = ph[k];
-			}
-			const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1)/( bx1-bx0 ) : Scalar(1);
-			const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1)/( bh1-bh0 ) : Scalar(1);
 			for( int side = 0; side < 2; side++ ) {
 				const bool isStart = ( side == 0 );
 				if( isStart ? !desc.capStart : !desc.capEnd ) {
@@ -1577,21 +2046,75 @@ namespace RISE
 				const Scalar frac = Scalar(i) / Scalar( n - 1 );
 				const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
 				const Scalar sm = scaleMul.empty() ? Scalar(1) : scaleMul[i];
+				const Scalar smy = scaleMulY.empty() ? sm : scaleMulY[i];
 				const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm * sm;
-				const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * sm;
+				const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * smy;
+				// A cap closes the section that is ACTUALLY there at its own
+				// station, so under a morph the two ends are DIFFERENT
+				// polygons and each is ear-clipped (and UV-bounded) on its
+				// own.  Without a morph both sides see the identical px/ph and
+				// this reduces to the single clip it always was.
+				const std::vector<Scalar>* capPx = &px;
+				const std::vector<Scalar>* capPh = &ph;
+				std::vector<Scalar> capMorphX, capMorphH;
+				if( morphActive ) {
+					const Scalar t = morphMul.empty() ? frac : morphMul[i];
+					capMorphX.resize( nProf ); capMorphH.resize( nProf );
+					for( unsigned int k = 0; k < nProf; k++ ) {
+						capMorphX[k] = px[k] + t * morphDX[k];
+						capMorphH[k] = ph[k] + t * morphDH[k];
+					}
+					capPx = &capMorphX; capPh = &capMorphH;
+				}
+				// The cap's own winding, from the CAP polygon's shoelace --
+				// NOT from the first profile's `outward`.  Without a morph the
+				// cap polygon IS px/ph, so this is bit-identically `outward`
+				// and every existing sweep bakes unchanged.  WITH a morph the
+				// cap closes the MORPHED section, whose signed area is the
+				// quadratic (1-t)^2*A1 + 2t(1-t)*Amix + t^2*A2 -- so a
+				// sufficiently anti-aligned correspondence (a large negative
+				// mixed term) can carry it through zero even though both
+				// authored profiles are CCW, and the cap would then be emitted
+				// inside out while the side wall stayed correct.  Deriving the
+				// sign from the polygon actually being triangulated removes
+				// the assumption instead of betting on it.
+				const Scalar capArea2 = ProfileSignedArea2( *capPx, *capPh );
+				const Scalar capOutward = ( capArea2 >= 0 ) ? Scalar(1) : Scalar(-1);
+				std::vector<unsigned int> capTris;
+				if( !EarClipProfile( *capPx, *capPh, capTris ) ) {
+					pGeom->release();
+					// Name the SIDE and the STATION: under a morph the two
+					// caps are DIFFERENT polygons, so "the profile failed to
+					// triangulate" does not tell an author which of their two
+					// profiles (or which point on the morph track) is at fault.
+					return SweepFail(
+						"the %s cap's cross-section at path station %u failed to triangulate "
+						"(self-intersecting or degenerate polygon)",
+						isStart ? "START" : "END", (unsigned int)i );
+				}
+				// profile bbox for cap UV
+				Scalar bx0 = (*capPx)[0], bx1 = (*capPx)[0], bh0 = (*capPh)[0], bh1 = (*capPh)[0];
+				for( unsigned int k = 1; k < nProf; k++ ) {
+					if( (*capPx)[k] < bx0 ) bx0 = (*capPx)[k];
+					if( (*capPx)[k] > bx1 ) bx1 = (*capPx)[k];
+					if( (*capPh)[k] < bh0 ) bh0 = (*capPh)[k];
+					if( (*capPh)[k] > bh1 ) bh1 = (*capPh)[k];
+				}
+				const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1)/( bx1-bx0 ) : Scalar(1);
+				const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1)/( bh1-bh0 ) : Scalar(1);
 				// cap faces along -T at the start, +T at the end
 				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
 				const Normal capN( sgn * T[i].x, sgn * T[i].y, sgn * T[i].z );
 				const int base = vc;
 				for( unsigned int k = 0; k < nProf; k++ ) {
-					const Scalar lx = px[k] * sx;
-					const Scalar lh = ph[k] * sy;
+					const Scalar lx = (*capPx)[k] * sx;
+					const Scalar lh = (*capPh)[k] * sy;
 					pGeom->AddVertex( Vertex(
 						path[i].x + lx * B[i].x + lh * N[i].x,
 						path[i].y + lx * B[i].y + lh * N[i].y,
 						path[i].z + lx * B[i].z + lh * N[i].z ) );
 					pGeom->AddNormal( capN );
-					pGeom->AddTexCoord( TexCoord( ( px[k]-bx0 ) * bxs, ( ph[k]-bh0 ) * bhs ) );
+					pGeom->AddTexCoord( TexCoord( ( (*capPx)[k]-bx0 ) * bxs, ( (*capPh)[k]-bh0 ) * bhs ) );
 					vc++;
 				}
 				for( size_t t = 0; t + 2 < capTris.size(); t += 3 ) {
@@ -1601,9 +2124,9 @@ namespace RISE
 					// orient the cap triangles along the cap normal.  In the
 					// (B, N) profile basis B x N = -T, so triangles emitted in
 					// profile winding carry geometric normal -T for a CCW
-					// (outward > 0) profile: the END cap (faces +T) must flip
+					// (capOutward > 0) polygon: the END cap (faces +T) must flip
 					// them, the START cap (faces -T) keeps them.
-					const bool flip = isStart ? ( outward < 0 ) : ( outward > 0 );
+					const bool flip = isStart ? ( capOutward < 0 ) : ( capOutward > 0 );
 					if( flip ) {
 						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
 					} else {

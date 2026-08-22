@@ -5118,7 +5118,19 @@ bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
 	if( !RISE_API_CreateSweepGeometry( &pGeometry, desc ) ) {
-		return false;   // the factory already logged why
+		// The factory logged the reason AND (per GenericManager.h's
+		// "however deep the call stack" contract) left it in the CST
+		// Finalize diag sink.  It cannot know the geometry's name, so
+		// qualify it here to match the chunk parser's own Reject() form --
+		// DeriveToJob prepends `sweep_geometry: ` to whatever lands here.
+		// Without this a scene with several sweeps reports a factory-level
+		// refusal with no way to tell WHICH chunk it came from.  Mirrors
+		// AddLatheGeometry immediately below.
+		if( RISE::g_cstFinalizeDiagSink && !RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"`" + std::string( name ? name : "" ) + "`: " + *RISE::g_cstFinalizeDiagSink;
+		}
+		return false;
 	}
 	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );

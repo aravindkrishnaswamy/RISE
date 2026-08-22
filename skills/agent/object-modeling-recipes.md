@@ -26,7 +26,7 @@ not listed here.
 | `sdf_geometry` | melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers.  **Before composing several parts for one rounded MASS -- a cushion, a torso, a pebble, a soft-cornered slab -- try a single `superellipsoid` part**, the continuum primitive: `a` = radius, `b` = e1 (north-south exponent), `c` = e2 (east-west), proportions from the part's own `<sx sy sz>`, `round` unused.  `b`=`c`=1 is an ellipsoid, both toward 0 a box, `b` toward 0 with `c`=1 a cylinder, `b`=`c`=2 an octahedron, and **0.4-0.7 is the cushion/torso range** (both clamped to [0.1, 2]).  One part spans that whole family, so a roundbox-plus-blend stack, or a box intersected with a sphere, for the same shape is work you no longer have to do | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp recipe below for the field layout |
 | `lathe_geometry` | **SURFACES OF REVOLUTION -- the turned/lathe verb** (bottles, jars, vases, mortars, goblets, urns, turned legs, finials, lamp bases -- see "Turned forms" below) | mesh cost (tessellated once), no sphere-tracing | repeated `profile_point <r> <h>` lines ARE the silhouette (`r` = radius from the axis, `h` = height along it), spun about `axis` (default `y`); a point at `r 0` sits ON the axis and collapses to a single pole, so a profile that starts and ends there is closed and watertight with no caps; `sweep_degrees` under 360 cuts a capped section; the baked mesh is DOUBLE-SIDED, so a luminaire material on it radiates inward too |
 | `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius>` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; still just roundcones, so every bone is a capsule -- a body MASS that is really a cushion (a torso, an abdomen) is one `superellipsoid` part in a plain `sdf_geometry`, and a limb that FOLLOWS A CURVE is `sweep_geometry`; the manual `part` grammar stays the fallback for anything the joint graph can't express |
-| `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
+| `sweep_geometry` | tubes, rails, mouldings, cable runs, any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail), and -- via the per-station controls -- BODIES WITH A NON-CIRCULAR, CHANGING SECTION (a torso, a fin, a snout, a strap, a hull, a round-to-square leg) | mesh cost (tessellated once) | the cross-section is NOT fixed: `point_scale <sx> <sy>` scales the two profile axes independently per station, and a second profile (`profile2_*`) plus `point_morph <t>` changes the section's OUTLINE along the path -- but it still interpolates at most TWO sections, so it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
 | `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson) |
 | `circulardisk_geometry`, `cartesian_disk_geometry` | flat disks (dials, coins, disk-shaped bases) | cheap | `cartesian_disk_geometry` has uniform Cartesian UV density; the polar disk does not -- pick by what you're displacing/texturing onto it |
@@ -109,25 +109,43 @@ Two things the profile approach needs:
   table.  End THAT part list with `part box subtract 0` positioned so
   the box's top face sits at the intended base plane.  (A round-bottomed
   florence flask genuinely wants the cap; leave it in that one case.)
-- **`sweep_geometry` is still NOT the lathe verb, even though it now has
-  a round per-station taper.**  `point_scale` (per-station, UNIFORM on
-  BOTH profile axes, composed multiplicatively with `point_width` and
-  `end_scale`) gives a genuinely ROUND varying radius -- a tapered
-  tentacle, a tendril that thins toward its tip -- without going
-  elliptical; use it for that.  `point_width` remains the OTHER,
-  deliberate-flattening control: x-axis only, for when you actually
-  want an oval/flattened cross-section (a strap, a ribbon).  Neither
-  one makes `sweep_geometry` a lathe: it still sweeps a FIXED profile
-  SHAPE along a path (only its overall scale varies per station, not
-  the shape itself), so it cannot produce a profile whose OUTLINE
-  changes character station to station (a belly that a neck doesn't
-  share).  What `sweep_geometry` is genuinely the right verb for is a
-  TUBE THAT FOLLOWS A CURVE at roughly constant bore, optionally
-  tapering smoothly: a retort's curved neck, a spout, a handle, a bail,
-  a cable, a tapered tentacle.  A retort is therefore both verbs -- a
-  lathe profile for the bulb, a sweep for the neck -- and Recipe 4 shows
-  the pair.  For a round cross-section, `profile_circle <r> [n]` writes
-  the bore in one line instead of a hand-listed `profile_point` N-gon.
+- **`sweep_geometry` is still NOT the lathe verb -- but it is no longer
+  a fixed-shape verb either.**  Three per-station controls, composed
+  multiplicatively and applied in this order:
+  - `point_morph <t>` with a second profile (`profile2_point` /
+    `profile2_circle` / `profile2_rect`) changes the section's
+    **OUTLINE** along the path: round skull into a narrow muzzle, a
+    round shaft into a square post, a forearm flattening into a hand, a
+    duct meeting a rectangular vent.  `t` runs 0 (first profile) to 1
+    (second); omit `point_morph` and you get a linear 0 -> 1 ramp.
+    A closed loop (`path_closed TRUE`) instead requires explicit
+    `point_morph` values -- the ramp is refused there, since it would
+    jump at the seam.
+  - `point_scale <sx> <sy>` scales the two profile axes
+    **INDEPENDENTLY** per station -- flatter than it is wide, and
+    changing that ratio along the spine.  This is the torso / fin /
+    strap / hull / keel / seat-rail control, and it is the form to
+    reach for by default.  The 1-arg `point_scale <s>` still means
+    UNIFORM on both axes (a genuinely round varying radius: a tapered
+    tentacle, a tendril thinning to its tip).
+  - `point_width <sx>` is the HISTORICAL x-only control.  Anything it
+    can say, `point_scale <sx> <sy>` says with the y axis stated
+    instead of left implicit; prefer the 2-arg form in new work.
+
+  What still separates the two verbs: a lathe spins ONE silhouette
+  about a fixed straight axis, so its outline is free to swell and neck
+  arbitrarily along that axis; a sweep interpolates between at most TWO
+  sections along an arbitrary 3D path.  A body whose profile changes
+  character three or more times (a belly, then a waist, then a
+  shoulder) is a lathe, or two chained sweeps -- not one sweep.  A TUBE
+  THAT FOLLOWS A CURVE, with or without a changing section, is the
+  sweep: a retort's curved neck, a spout, a handle, a bail, a cable, a
+  tapered tentacle, a snout, a limb.  A retort is therefore both verbs
+  -- a lathe profile for the bulb, a sweep for the neck -- and Recipe 4
+  shows the pair.  For a round cross-section, `profile_circle <r> [n]`
+  writes the bore in one line instead of a hand-listed `profile_point`
+  N-gon (and `profile2_circle` / `profile2_rect` do the same for the
+  morph target).
 
 **When a cylinder IS the right answer** -- do not cargo-cult this into
 banning cylinders.  `cylinder_geometry` is correct, and cheaper and

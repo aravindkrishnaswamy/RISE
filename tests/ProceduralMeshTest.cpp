@@ -52,6 +52,139 @@ struct VertGolden {
 };
 
 //////////////////////////////////////////////////////////////////////
+// Slice A (doc 89 sect. 2 -- loft: anisotropic point_scale + profile2
+// morph) shared instruments.
+//
+// MeshDigest is the BACK-COMPAT instrument: an order-sensitive FNV-1a
+// folding every count, every vertex position, every normal, every
+// texcoord and the per-face vertex INDEX stream into one number, so any
+// change to the sweep bake -- a reordered ring, a shifted UV, one extra
+// cap triangle -- moves it.  Values are QUANTIZED before hashing
+// (positions to 1e-6, normals/UVs to 1e-9) rather than hashed bit-exactly
+// ON PURPOSE: the constants below are checked in as goldens that must
+// hold on Linux and MSVC too, and a bit-exact fingerprint of double
+// arithmetic would be a fingerprint of THIS Clang on THIS Mac instead
+// (the OSX build pairs -ffast-math with -fno-finite-math-only; other
+// toolchains reassociate differently).  Every regression this guard
+// exists to catch moves geometry by many orders of magnitude more than
+// one quantum.
+//////////////////////////////////////////////////////////////////////
+
+static void DigestMix( unsigned long long& h, unsigned long long v )
+{
+	h ^= v;
+	h *= 1099511628211ULL;
+}
+
+static void DigestQ( unsigned long long& h, Scalar v, Scalar quantum )
+{
+	// llround of the quantized value; +0.0 and -0.0 fold to the same key.
+	const long long q = (long long)std::llround( (double)v / (double)quantum );
+	DigestMix( h, (unsigned long long)( q == 0 ? 0 : q ) );
+}
+
+static unsigned long long MeshDigest( const TriangleMeshGeometryIndexed* m )
+{
+	unsigned long long h = 14695981039346656037ULL;
+	if( !m ) { return 0; }
+	const unsigned int nv = m->numPoints();
+	DigestMix( h, nv );
+	DigestMix( h, (unsigned long long)m->getFaces().size() );
+	DigestMix( h, (unsigned long long)m->getNormals().size() );
+	DigestMix( h, (unsigned long long)m->getCoords().size() );
+	for( unsigned int i = 0; i < nv; ++i ) {
+		const Vertex& p = m->getVertices()[i];
+		DigestQ( h, p.x, Scalar(1e-6) ); DigestQ( h, p.y, Scalar(1e-6) ); DigestQ( h, p.z, Scalar(1e-6) );
+	}
+	for( std::size_t i = 0; i < m->getNormals().size(); ++i ) {
+		const Normal& n = m->getNormals()[i];
+		DigestQ( h, n.x, Scalar(1e-9) ); DigestQ( h, n.y, Scalar(1e-9) ); DigestQ( h, n.z, Scalar(1e-9) );
+	}
+	for( std::size_t i = 0; i < m->getCoords().size(); ++i ) {
+		const TexCoord& c = m->getCoords()[i];
+		DigestQ( h, c.x, Scalar(1e-9) ); DigestQ( h, c.y, Scalar(1e-9) );
+	}
+	const Vertex* base = m->getVertices().empty() ? 0 : &m->getVertices()[0];
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		for( int k = 0; k < 3; ++k ) {
+			DigestMix( h, (unsigned long long)( face.pVertices[k] - base ) );
+		}
+	}
+	return h;
+}
+
+static bool CheckDigest( const TriangleMeshGeometryIndexed* m, unsigned long long want, const char* name )
+{
+	const unsigned long long got = MeshDigest( m );
+	if( got == want ) { ++passCount; return true; }
+	++failCount;
+	std::cout << "  FAIL: " << name << "  digest got 0x" << std::hex << got
+	          << " want 0x" << want << std::dec << std::endl;
+	return false;
+}
+
+// CCW regular n-gon of radius r -- the exact expansion `profile_circle`
+// performs, so a factory-level fixture matches a scene-level one.
+static std::vector<double> NGon( double r, int n )
+{
+	std::vector<double> v;
+	v.reserve( (std::size_t)n * 2 );
+	for( int k = 0; k < n; ++k ) {
+		const double a = 2.0 * 3.14159265358979323846 * k / n;
+		v.push_back( r * std::cos( a ) );
+		v.push_back( r * std::sin( a ) );
+	}
+	return v;
+}
+
+// CCW sharp rect -- the exact expansion `profile_rect <w> <h>` performs
+// (corner order BR -> TR -> TL -> BL).
+static std::vector<double> RectProfile( double w, double h )
+{
+	const double hw = w * 0.5, hh = h * 0.5;
+	std::vector<double> v;
+	v.push_back(  hw ); v.push_back( -hh );
+	v.push_back(  hw ); v.push_back(  hh );
+	v.push_back( -hw ); v.push_back(  hh );
+	v.push_back( -hw ); v.push_back( -hh );
+	return v;
+}
+
+// The sweep's STATION (ring) count for an OPEN path, reproducing
+// SampleCatmullRom3's own arithmetic: `per = max(2, n_len / segs)` samples
+// per segment, plus the final control point.
+//
+// Fixtures used to derive the ring count as numPoints() / numProfilePoints.
+// That stopped being valid when the loft moved to a UNION resample: a
+// morphed sweep's section carries every authored vertex of BOTH profiles, so
+// its size is a function of the two profiles' arc-length parameter sets, not
+// of either count alone.  Deriving the RINGS from the path instead lets a
+// fixture recover the section size as numPoints() / rings -- and assert it.
+static unsigned int SweepStationCount( int nLen, unsigned int nCtrl )
+{
+	const int segs = int(nCtrl) - 1;
+	const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+	return (unsigned int)( segs * per + 1 );
+}
+
+// Does SOME vertex of ring `ring` reproduce the authored profile point
+// (x, h)?  Presence rather than index equality on purpose: the loft is free
+// to rotate the section's index origin (the twist-free alignment) and to
+// interleave the other profile's parameters, so "vertex k is the corner" is
+// not a property the loft owes anyone -- "the corner is IN there, exactly"
+// is.
+static bool RingContainsLocalPoint( const TriangleMeshGeometryIndexed* m,
+		unsigned int ring, unsigned int np, Scalar x, Scalar h, Scalar tol )
+{
+	for( unsigned int k = 0; k < np; ++k ) {
+		const Vertex& p = m->getVertices()[ ring * np + k ];
+		if( std::fabs( p.x - x ) <= tol && std::fabs( -p.y - h ) <= tol ) return true;
+	}
+	return false;
+}
+
+//////////////////////////////////////////////////////////////////////
 
 static void TestSweepCylinder()
 {
@@ -945,6 +1078,1008 @@ static void TestSweepClosedLoopPerStationWidthScale()
 	       "profR*point_width*point_scale (angle 0) and profR*point_scale (angle 90) EXACTLY at every "
 	       "control station (periodic sampler lockstep, orientation-independent measurement)" );
 	pi->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Slice A (doc 89 sect. 2): loft -- 2-arg point_scale (anisotropic
+// per-station section scale) and profile2 + point_morph (a section whose
+// OUTLINE changes character station to station).
+//////////////////////////////////////////////////////////////////////
+
+// The three BACK-COMPAT fixtures, shaped like the sweeps existing scenes
+// author: 1-arg point_scale, no profile2.  Their digests were captured
+// from the PRE-slice-A tree and are pasted below as constants; the slice
+// must reproduce them byte-for-byte (modulo the documented quantum).
+namespace BackCompat {
+
+	// (1) a plain capped tube: circular profile, straight 3-point path.
+	static bool BuildTube( ITriangleMeshGeometryIndexed** ppi )
+	{
+		static std::vector<double> prof = NGon( 1.0, 16 );
+		static const double pts[] = { 0,0,0,  0,0,5,  0,0,10 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = 16;
+		d.pathPoints = pts; d.numPathPoints = 3;
+		d.nLen = 24;
+		return RISE_API_CreateSweepGeometry( ppi, d );
+	}
+
+	// (2) every legacy per-station control at once: rect profile, curved
+	// path, end_scale taper on BOTH axes, point_width AND 1-arg
+	// point_scale, caps on.
+	static bool BuildTaperedRail( ITriangleMeshGeometryIndexed** ppi )
+	{
+		static std::vector<double> prof = RectProfile( 2.0, 0.5 );
+		static const double pts[] = { 0,0,0,  0.4,1.5,0.2,  1.2,2.8,0.9,  1.6,3.6,2.0 };
+		static const double pw[]  = { 1.0, 0.8, 0.6, 0.5 };
+		static const double ps[]  = { 1.0, 0.9, 0.7, 0.5 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = 4;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 20;
+		d.endScaleX = 0.8; d.endScaleY = 1.2;
+		d.pointWidths = pw; d.numPointWidths = 4;
+		d.pointScales = ps; d.numPointScales = 4;
+		return RISE_API_CreateSweepGeometry( ppi, d );
+	}
+
+	// (3) the closed-loop path (periodic sampler + holonomy correction),
+	// with a periodic 1-arg point_scale track.
+	static bool BuildClosedLoop( ITriangleMeshGeometryIndexed** ppi )
+	{
+		static std::vector<double> prof = NGon( 0.4, 12 );
+		static const double pts[] = { 3,0,0,  0,0,3,  -3,0,0,  0,0,-3 };
+		static const double ps[]  = { 1.0, 0.7, 1.3, 0.8 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = 12;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 32;
+		d.pathClosed = true;
+		d.pointScales = ps; d.numPointScales = 4;
+		return RISE_API_CreateSweepGeometry( ppi, d );
+	}
+}
+
+// Test A0: BACK-COMPAT.  The three legacy-shaped sweeps must bake to the
+// EXACT meshes the pre-slice-A tree produced.  Red-proof by construction:
+// the constants were read off the unmodified tree before a line of the
+// slice was written, so the assertion cannot have been fitted to the new
+// code.
+static void TestSweepBackCompatDigests()
+{
+	std::cout << "Test 3f: loft slice -- back-compat digests (legacy-shaped sweeps unchanged)" << std::endl;
+	struct Row { bool (*build)( ITriangleMeshGeometryIndexed** ); unsigned long long digest; const char* what; };
+	const Row rows[] = {
+		{ &BackCompat::BuildTube,        0x65aa3707f1f5678dULL, "back-compat (1): capped circular tube on a straight path" },
+		{ &BackCompat::BuildTaperedRail, 0x5026613b3178e99cULL, "back-compat (2): rect profile + end_scale + point_width + 1-arg point_scale" },
+		{ &BackCompat::BuildClosedLoop,  0x50894075681f42ccULL, "back-compat (3): path_closed loop + periodic 1-arg point_scale" },
+	};
+	for( std::size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( rows[i].build( &pi ), "back-compat fixture bakes" );
+		if( !pi ) continue;
+		CheckDigest( dynamic_cast<TriangleMeshGeometryIndexed*>( pi ), rows[i].digest, rows[i].what );
+		pi->release();
+	}
+}
+
+// On a STRAIGHT +Z path with no frame hint, BuildPathFrames picks the world
+// axis most perpendicular to the tangent, giving B = +X and N = B x T = -Y.
+// So a ring vertex's profile-plane coordinates read straight off the world
+// position: local x is world x, local h is MINUS world y.  Every fixture
+// below that measures "local x / local y" uses a straight +Z path for
+// exactly this reason -- it makes the assertion a statement about the baked
+// vertex, not about a reconstruction of the frame.
+static void LocalOfZPathVertex( const TriangleMeshGeometryIndexed* m,
+		unsigned int ring, unsigned int np, unsigned int k, Scalar& lx, Scalar& lh )
+{
+	const Vertex& p = m->getVertices()[ ring * np + k ];
+	lx =  p.x;
+	lh = -p.y;
+}
+
+// Position-keyed watertightness: every DIRECTED edge must have exactly one
+// reverse partner.  Keyed on quantized POSITIONS rather than on vertex
+// indices because the sweep intentionally duplicates its cap ring (the caps
+// carry a flat normal), so an index-keyed check would report the seam
+// between the side wall and its own cap as a boundary.
+static bool MeshIsWatertightByPosition( const TriangleMeshGeometryIndexed* m )
+{
+	struct Key { long long ax, ay, az, bx, by, bz; };
+	std::vector<Key> edges;
+	const Scalar q = Scalar(1e-7);
+	auto Q = []( Scalar v, Scalar quantum ) { return (long long)std::llround( (double)v / (double)quantum ); };
+	edges.reserve( m->getFaces().size() * 3 );
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		for( int e = 0; e < 3; ++e ) {
+			const Point3& a = *face.pVertices[e];
+			const Point3& b = *face.pVertices[ ( e + 1 ) % 3 ];
+			Key k; k.ax = Q(a.x,q); k.ay = Q(a.y,q); k.az = Q(a.z,q);
+			k.bx = Q(b.x,q); k.by = Q(b.y,q); k.bz = Q(b.z,q);
+			edges.push_back( k );
+		}
+	}
+	std::vector<bool> matched( edges.size(), false );
+	for( std::size_t i = 0; i < edges.size(); ++i ) {
+		if( matched[i] ) continue;
+		bool found = false;
+		for( std::size_t j = 0; j < edges.size() && !found; ++j ) {
+			if( j == i || matched[j] ) continue;
+			if( edges[j].ax == edges[i].bx && edges[j].ay == edges[i].by && edges[j].az == edges[i].bz &&
+			    edges[j].bx == edges[i].ax && edges[j].by == edges[i].ay && edges[j].bz == edges[i].az ) {
+				matched[i] = matched[j] = true;
+				found = true;
+			}
+		}
+		if( !found ) return false;
+	}
+	return true;
+}
+
+// Signed volume of the closed mesh (divergence theorem over the triangles).
+static Scalar MeshSignedVolume( const TriangleMeshGeometryIndexed* m )
+{
+	Scalar v6 = 0;
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		v6 += a.x * ( b.y*c.z - b.z*c.y ) - a.y * ( b.x*c.z - b.z*c.x ) + a.z * ( b.x*c.y - b.y*c.x );
+	}
+	return v6 / Scalar(6);
+}
+
+// Does any non-adjacent pair of the closed polygon's segments cross?  A
+// morphing section must stay SIMPLE at every intermediate station or the
+// mesh self-intersects.
+static bool PolygonIsSimple( const std::vector<Scalar>& px, const std::vector<Scalar>& ph )
+{
+	const std::size_t n = px.size();
+	auto Cross = []( Scalar ox, Scalar oy, Scalar ax, Scalar ay, Scalar bx, Scalar by ) {
+		return ( ax - ox ) * ( by - oy ) - ( ay - oy ) * ( bx - ox );
+	};
+	for( std::size_t i = 0; i < n; ++i ) {
+		const std::size_t i2 = ( i + 1 ) % n;
+		for( std::size_t j = i + 1; j < n; ++j ) {
+			const std::size_t j2 = ( j + 1 ) % n;
+			if( i == j || i2 == j || j2 == i ) continue;	// share an endpoint
+			const Scalar d1 = Cross( px[i], ph[i], px[i2], ph[i2], px[j],  ph[j]  );
+			const Scalar d2 = Cross( px[i], ph[i], px[i2], ph[i2], px[j2], ph[j2] );
+			const Scalar d3 = Cross( px[j], ph[j], px[j2], ph[j2], px[i],  ph[i]  );
+			const Scalar d4 = Cross( px[j], ph[j], px[j2], ph[j2], px[i2], ph[i2] );
+			if( ( ( d1 > 0 ) != ( d2 > 0 ) ) && ( ( d3 > 0 ) != ( d4 > 0 ) ) ) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// Test A1: the 2-arg `point_scale <sx> <sy>` form -- ANISOTROPIC per-station
+// section scale.  The money assertion is on BAKED VERTEX POSITIONS in the
+// profile frame (not on the bounding box, which a sheared or rotated ring
+// would also satisfy): every ring vertex's local y must be exactly half its
+// profile's h, while its local x is untouched.
+static void TestSweepAnisotropicPointScale()
+{
+	std::cout << "Test 3g: loft slice -- 2-arg point_scale (anisotropic per-station section scale)" << std::endl;
+	const unsigned int NP = 16;
+	std::vector<double> prof = NGon( 1.0, NP );
+	const double pts[] = { 0,0,0,  0,0,4,  0,0,8 };
+	const double sxs[] = { 1.0, 1.0, 1.0 };
+	const double sys[] = { 0.5, 0.5, 0.5 };
+	SweepDescriptor d;
+	d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.nLen = 8;
+	d.pointScales  = sxs; d.numPointScales  = 3;
+	d.pointScalesY = sys; d.numPointScalesY = 3;
+	d.capStart = false; d.capEnd = false;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "anisotropic point_scale factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "anisotropic: concrete type" ); pi->release(); return; }
+
+	const unsigned int nRings = m->numPoints() / NP;
+	bool exactOK = true, halfOK = true;
+	Scalar worstX = 0, worstH = 0;
+	for( unsigned int i = 0; i < nRings; ++i ) {
+		for( unsigned int k = 0; k < NP; ++k ) {
+			Scalar lx = 0, lh = 0;
+			LocalOfZPathVertex( m, i, NP, k, lx, lh );
+			const Scalar wantX = (Scalar)prof[ 2*k ];
+			const Scalar wantH = (Scalar)prof[ 2*k + 1 ] * Scalar(0.5);
+			if( std::fabs( lx - wantX ) > worstX ) worstX = std::fabs( lx - wantX );
+			if( std::fabs( lh - wantH ) > worstH ) worstH = std::fabs( lh - wantH );
+			if( std::fabs( lx - wantX ) > 1e-12 ) exactOK = false;
+			if( std::fabs( lh - wantH ) > 1e-12 ) halfOK = false;
+		}
+	}
+	Check( exactOK, "anisotropic: MONEY ASSERTION -- every ring vertex's local x is the profile x UNSCALED (sx = 1)" );
+	Check( halfOK,  "anisotropic: MONEY ASSERTION -- every ring vertex's local y is EXACTLY half the profile h (sy = 0.5)" );
+	// and the section is genuinely an ellipse, not a rotated circle
+	Scalar halfX = 0, halfY = 0;
+	RingExtent( m, nRings / 2, NP, halfX, halfY );
+	Check( std::fabs( halfX - 1.0 ) < 1e-12 && std::fabs( halfY - 0.5 ) < 1e-12,
+	       "anisotropic: mid-station half-extents are (1.0, 0.5), a 2:1 flattened section" );
+	pi->release();
+}
+
+// Test A2: MORPH IDENTITY -- the no-twist / no-drift guard.  A loft whose
+// two profiles are the SAME shape at the SAME size must bake the EXACT mesh
+// the plain sweep bakes, at every morph value.  This is what proves the
+// resample (verbatim at equal counts), the start-vertex alignment (rotation
+// 0 on a tie) and the delta formulation (identically zero) all behave.  The
+// profile is deliberately IRREGULAR -- its vertices are NOT uniformly spaced
+// in arc length -- so an accidental unconditional resample would show up.
+static void TestSweepMorphIdentity()
+{
+	std::cout << "Test 3h: loft slice -- profile == profile2 bakes the plain sweep, bit for bit" << std::endl;
+	const double prof[] = { 1.2,-0.3,  0.9,0.8,  -0.1,1.1,  -1.0,0.2,  -0.4,-0.9 };	// irregular CCW pentagon
+	const double pts[]  = { 0,0,0,  0.3,1.1,0.4,  0.9,2.0,1.4,  1.1,2.9,2.6 };
+	const double morphs[] = { 0.0, 0.37, 0.91, 1.0 };
+
+	SweepDescriptor base;
+	base.profilePoints = prof; base.numProfilePoints = 5;
+	base.pathPoints = pts; base.numPathPoints = 4;
+	base.nLen = 16;
+
+	ITriangleMeshGeometryIndexed* plain = 0;
+	Check( RISE_API_CreateSweepGeometry( &plain, base ), "identity: plain sweep bakes" );
+
+	SweepDescriptor lofted = base;
+	lofted.profile2Points = prof; lofted.numProfile2Points = 5;
+	lofted.pointMorphs = morphs; lofted.numPointMorphs = 4;
+	ITriangleMeshGeometryIndexed* lofty = 0;
+	Check( RISE_API_CreateSweepGeometry( &lofty, lofted ), "identity: same-profile loft bakes" );
+
+	if( plain && lofty ) {
+		const TriangleMeshGeometryIndexed* a = dynamic_cast<TriangleMeshGeometryIndexed*>( plain );
+		const TriangleMeshGeometryIndexed* b = dynamic_cast<TriangleMeshGeometryIndexed*>( lofty );
+		Check( a && b && MeshDigest( a ) == MeshDigest( b ),
+		       "identity: MONEY ASSERTION -- profile == profile2 with arbitrary point_morph values "
+		       "bakes the IDENTICAL mesh to the plain sweep (no twist, no drift, no resample)" );
+		// and the strictest form: every vertex bit-identical, not merely
+		// within the digest's quantum
+		if( a && b && a->numPoints() == b->numPoints() ) {
+			bool bitOK = true;
+			for( unsigned int i = 0; i < a->numPoints(); ++i ) {
+				const Vertex& pa = a->getVertices()[i];
+				const Vertex& pb = b->getVertices()[i];
+				if( !( pa.x == pb.x && pa.y == pb.y && pa.z == pb.z ) ) { bitOK = false; break; }
+			}
+			Check( bitOK, "identity: every vertex is BIT-identical (the morph delta is exactly zero)" );
+		} else {
+			Check( false, "identity: vertex counts agree" );
+		}
+	}
+	if( plain ) plain->release();
+	if( lofty ) lofty->release();
+}
+
+// Test A3: MORPH ENDPOINTS + no-spiral.  t = 0 is the first profile, t = 1
+// is the second CENTRED ON THE FIRST'S centroid (so an off-centre profile2
+// changes the SHAPE without TRANSLATING the section), and a morph between
+// two same-shaped profiles never spirals -- even when profile2 is authored
+// starting from a different vertex.
+static void TestSweepMorphEndpointsAndAlignment()
+{
+	std::cout << "Test 3i: loft slice -- morph endpoints, centroid anchoring, start-vertex alignment" << std::endl;
+	const unsigned int NP = 12;
+	std::vector<double> prof = NGon( 1.0, NP );
+	// profile2: the SAME shape at half size, translated off-centre AND
+	// listed starting from vertex 5 instead of vertex 0.  Both of those are
+	// things the loft must absorb: the offset must not translate the
+	// section, and the index shift must not spiral it.
+	std::vector<double> ring2 = NGon( 0.5, NP );
+	std::vector<double> prof2;
+	for( unsigned int k = 0; k < NP; ++k ) {
+		const unsigned int j = ( k + 5 ) % NP;
+		prof2.push_back( ring2[ 2*j ]     + 0.30 );
+		prof2.push_back( ring2[ 2*j + 1 ] - 0.20 );
+	}
+	const double pts[] = { 0,0,0,  0,0,4,  0,0,8 };
+	const double morphs[] = { 0.0, 0.5, 1.0 };
+	SweepDescriptor d;
+	d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+	d.profile2Points = &prof2[0]; d.numProfile2Points = NP;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.pointMorphs = morphs; d.numPointMorphs = 3;
+	d.nLen = 8;
+	d.capStart = false; d.capEnd = false;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "morph endpoints factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "morph endpoints: concrete type" ); pi->release(); return; }
+	const unsigned int nRings = m->numPoints() / NP;
+
+	// t = 0 -> exactly the first profile
+	bool startOK = true;
+	for( unsigned int k = 0; k < NP; ++k ) {
+		Scalar lx = 0, lh = 0;
+		LocalOfZPathVertex( m, 0, NP, k, lx, lh );
+		if( std::fabs( lx - (Scalar)prof[2*k] ) > 1e-12 || std::fabs( lh - (Scalar)prof[2*k+1] ) > 1e-12 ) startOK = false;
+	}
+	Check( startOK, "morph endpoints: at t = 0 the section is EXACTLY the first profile" );
+
+	// t = 1 -> the second profile RE-CENTRED on the first's centroid, i.e.
+	// the radius-0.5 ring about the origin, with its authored (0.30, -0.20)
+	// offset dropped and its index shift undone.
+	bool endOK = true, endCentredOK = true;
+	Scalar cx = 0, ch = 0;
+	for( unsigned int k = 0; k < NP; ++k ) {
+		Scalar lx = 0, lh = 0;
+		LocalOfZPathVertex( m, nRings - 1, NP, k, lx, lh );
+		cx += lx; ch += lh;
+		if( std::fabs( lx - (Scalar)ring2[2*k] ) > 1e-9 || std::fabs( lh - (Scalar)ring2[2*k+1] ) > 1e-9 ) endOK = false;
+	}
+	cx /= Scalar(NP); ch /= Scalar(NP);
+	if( std::fabs( cx ) > 1e-9 || std::fabs( ch ) > 1e-9 ) endCentredOK = false;
+	Check( endOK, "morph endpoints: MONEY ASSERTION -- at t = 1 the section is the second profile with its "
+	              "index origin realigned (no spiral) and its own offset dropped (no translation)" );
+	Check( endCentredOK, "morph endpoints: the t = 1 section's centroid sits at the FIRST profile's centroid" );
+
+	// no spiral at the INTERMEDIATE station either: every vertex must stay
+	// on its own profile ray (the two profiles are concentric circles, so a
+	// correct morph is a pure radial shrink -- any residual index rotation
+	// would show as an angular offset).
+	bool noSpiral = true;
+	Scalar worstAngle = 0;
+	for( unsigned int k = 0; k < NP; ++k ) {
+		Scalar lx = 0, lh = 0;
+		LocalOfZPathVertex( m, nRings / 2, NP, k, lx, lh );
+		const Scalar rx = (Scalar)prof[2*k], rh = (Scalar)prof[2*k+1];
+		const Scalar cross = rx * lh - rh * lx;
+		const Scalar dot   = rx * lx + rh * lh;
+		const Scalar ang = std::fabs( std::atan2( cross, dot ) );
+		if( ang > worstAngle ) worstAngle = ang;
+		if( ang > 1e-9 || dot <= 0 ) noSpiral = false;
+	}
+	Check( noSpiral, "morph endpoints: MONEY ASSERTION -- the mid-morph section does NOT spiral "
+	                 "(every vertex stays on its own profile ray)" );
+	pi->release();
+}
+
+// Test A4: a circle -> rect morph keeps every INTERMEDIATE section SIMPLE
+// (no self-intersection), which is what makes a round-to-square furniture
+// leg or a duct-to-vent transition renderable rather than a folded shell.
+static void TestSweepMorphCircleToRectSimple()
+{
+	std::cout << "Test 3j: loft slice -- circle -> rect morph, every intermediate section stays simple" << std::endl;
+	const unsigned int NP = 24;
+	std::vector<double> prof = NGon( 1.0, NP );
+	std::vector<double> prof2 = RectProfile( 1.4, 0.8 );
+	const double pts[] = { 0,0,0,  0,0,3,  0,0,6 };
+	SweepDescriptor d;
+	d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+	d.profile2Points = &prof2[0]; d.numProfile2Points = 4;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.nLen = 24;			// many stations => many intermediate t values
+	d.capStart = false; d.capEnd = false;
+	// no point_morph => the documented default linear 0 -> 1 ramp
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "circle->rect morph factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "circle->rect: concrete type" ); pi->release(); return; }
+	// The UNION resample decides the section size, so derive the RINGS from
+	// the path and read the section size back off the mesh.  The 24-gon's
+	// parameters are k/24; the rect's four corners sit at 0, 0.8/4.4,
+	// 0.5 and 3.0/4.4 of its perimeter, of which 0 and 0.5 land on the
+	// 24-gon's grid -- so the union is 24 + 4 - 2 = 26 points, and both
+	// profiles are in there whole.
+	const unsigned int nRings = SweepStationCount( d.nLen, d.numPathPoints );
+	Check( m->numPoints() % nRings == 0, "circle->rect: the vertex stream is a whole number of rings" );
+	const unsigned int NS = m->numPoints() / nRings;
+	Check( NS == 26, "circle->rect: the section is the UNION of both profiles' arc parameters (26 = 24 + 4 - 2 shared)" );
+	Check( nRings > 8, "circle->rect: the fixture really does have many intermediate stations" );
+
+	bool allSimple = true;
+	unsigned int firstBad = 0;
+	for( unsigned int i = 0; i < nRings && allSimple; ++i ) {
+		std::vector<Scalar> sx( NS ), sh( NS );
+		for( unsigned int k = 0; k < NS; ++k ) {
+			LocalOfZPathVertex( m, i, NS, k, sx[k], sh[k] );
+		}
+		if( !PolygonIsSimple( sx, sh ) ) { allSimple = false; firstBad = i; }
+	}
+	if( !allSimple ) std::cout << "    first self-intersecting station: " << firstBad << std::endl;
+	Check( allSimple, "circle->rect: MONEY ASSERTION -- NO station's section self-intersects across the whole morph" );
+
+	// the last station really is the rect (its section's half-extents match)
+	Scalar halfX = 0, halfY = 0;
+	RingExtent( m, nRings - 1, NS, halfX, halfY );
+	Check( std::fabs( halfX - 0.7 ) < 1e-9 && std::fabs( halfY - 0.4 ) < 1e-9,
+	       "circle->rect: the final section's half-extents are the rect's (0.7, 0.4)" );
+
+	// CORNER PRESENCE, both ends.  Half-extents are a WEAK witness: a rect
+	// whose two off-grid corners were rounded off by a uniform arc-length
+	// resample still reports the same bounding box (the surviving corners
+	// pin it), which is exactly how the max(n1,n2) resample destroyed
+	// hand-authored profiles unnoticed.  Assert instead that every AUTHORED
+	// vertex of each profile is reproduced, to 1e-12, in the ring where that
+	// profile is the section.
+	{
+		bool startVertsOK = true;
+		for( unsigned int k = 0; k < NP; ++k ) {
+			if( !RingContainsLocalPoint( m, 0, NS, (Scalar)prof[2*k], (Scalar)prof[2*k+1], Scalar(1e-12) ) ) {
+				startVertsOK = false;
+			}
+		}
+		Check( startVertsOK, "circle->rect: MONEY ASSERTION -- every one of the 24 authored circle vertices is "
+		                     "reproduced EXACTLY in the t = 0 ring" );
+		bool endCornersOK = true;
+		unsigned int missing = 0;
+		for( unsigned int k = 0; k < 4; ++k ) {
+			if( !RingContainsLocalPoint( m, nRings - 1, NS, (Scalar)prof2[2*k], (Scalar)prof2[2*k+1], Scalar(1e-9) ) ) {
+				endCornersOK = false; ++missing;
+			}
+		}
+		if( !endCornersOK ) std::cout << "    authored rect corners MISSING from the t = 1 ring: " << missing << " of 4" << std::endl;
+		Check( endCornersOK, "circle->rect: MONEY ASSERTION -- all FOUR authored rect corners are present in the "
+		                     "t = 1 ring (a uniform max(n1,n2) resample keeps only the two that land on the grid)" );
+	}
+	pi->release();
+}
+
+// Test A4b: the REGRESSION FIXTURE for the unequal-count resample.  A
+// hand-authored `profile_rect 2 2` (4 points) against a near-degenerate
+// `profile2_circle 0.001 30` (30 points) with an ALL-ZERO morph track: every
+// station's section is t = 0, i.e. the authored rect and nothing else.
+//
+// Under the old max(n1, n2) rule this baked N = 30 uniformly arc-length
+// resampled samples of the rect, and only the corners whose arc positions
+// (2.0 and 6.0 of perimeter 8) landed on the j/30 grid survived -- the other
+// two were replaced by points partway along an edge, rounding the square off
+// at EVERY station and on both caps.  A renderer's-eye version of this same
+// fixture put 311 pixels' worth of difference (max dL 253/255) between it and
+// the plain-rect control.
+static void TestSweepMorphUnionKeepsAuthoredCorners()
+{
+	std::cout << "Test 3n: loft slice -- the union resample keeps EVERY authored vertex of BOTH profiles" << std::endl;
+	std::vector<double> rect = RectProfile( 2.0, 2.0 );
+	std::vector<double> tiny = NGon( 0.001, 30 );
+	const double pts[] = { 0,0,0,  0,0,3,  0,0,6 };
+	const double zeros[] = { 0.0, 0.0, 0.0 };
+	SweepDescriptor d;
+	d.profilePoints = &rect[0]; d.numProfilePoints = 4;
+	d.profile2Points = &tiny[0]; d.numProfile2Points = 30;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.pointMorphs = zeros; d.numPointMorphs = 3;
+	d.nLen = 12;
+	d.capStart = false; d.capEnd = false;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "union corners: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "union corners: concrete type" ); pi->release(); return; }
+	const unsigned int nRings = SweepStationCount( d.nLen, d.numPathPoints );
+	Check( m->numPoints() % nRings == 0, "union corners: the vertex stream is a whole number of rings" );
+	const unsigned int NS = m->numPoints() / nRings;
+
+	// Every AUTHORED rect corner, exactly, in the t = 0 ring.
+	bool cornersOK = true;
+	unsigned int found = 0;
+	for( unsigned int k = 0; k < 4; ++k ) {
+		if( RingContainsLocalPoint( m, 0, NS, (Scalar)rect[2*k], (Scalar)rect[2*k+1], Scalar(1e-12) ) ) ++found;
+		else cornersOK = false;
+	}
+	std::cout << "    authored rect corners reproduced in the t = 0 ring: " << found << " of 4"
+	          << " (section size " << NS << ")" << std::endl;
+	Check( cornersOK, "union corners: MONEY ASSERTION -- all FOUR authored rect corners are reproduced EXACTLY "
+	                  "in the t = 0 ring (max(n1,n2) uniform resampling keeps only 2)" );
+
+	// ...and the morph being identically zero means EVERY station is that
+	// same authored rect, not just the first.
+	bool allStationsOK = true;
+	for( unsigned int i = 0; i < nRings; ++i ) {
+		for( unsigned int k = 0; k < 4; ++k ) {
+			if( !RingContainsLocalPoint( m, i, NS, (Scalar)rect[2*k], (Scalar)rect[2*k+1], Scalar(1e-12) ) ) allStationsOK = false;
+		}
+	}
+	Check( allStationsOK, "union corners: every station reproduces the authored corners (an all-zero morph "
+	                      "track is a no-op on the SHAPE, at every station and both caps)" );
+	pi->release();
+}
+
+// Test A4c: MORPH IDENTITY through the union path, at UNEQUAL counts.  The
+// same shape authored with 5 points and with 6 (one extra vertex sitting on
+// an edge midpoint) must still morph to NOTHING: the section is constant
+// along the path.  Test 3h pins the equal-count case bit-for-bit; this one
+// pins that the property is a property of the RESAMPLE, not of an
+// equal-count shortcut around it.
+static void TestSweepMorphIdentityUnequalCounts()
+{
+	std::cout << "Test 3o: loft slice -- same shape at UNEQUAL counts still morphs to nothing" << std::endl;
+	// irregular CCW pentagon, and the SAME pentagon with the midpoint of its
+	// first edge listed explicitly
+	const double prof[]  = { 1.2,-0.3,  0.9,0.8,  -0.1,1.1,  -1.0,0.2,  -0.4,-0.9 };
+	const double prof2[] = { 1.2,-0.3,  1.05,0.25,  0.9,0.8,  -0.1,1.1,  -1.0,0.2,  -0.4,-0.9 };
+	const double pts[] = { 0,0,0,  0,0,3,  0,0,6 };
+	SweepDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 5;
+	d.profile2Points = prof2; d.numProfile2Points = 6;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.nLen = 12;
+	d.capStart = false; d.capEnd = false;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "unequal identity: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "unequal identity: concrete type" ); pi->release(); return; }
+	const unsigned int nRings = SweepStationCount( d.nLen, d.numPathPoints );
+	const unsigned int NS = m->numPoints() / nRings;
+	Check( NS == 6, "unequal identity: the union is 6 points (the 5 pentagon vertices plus the extra midpoint)" );
+
+	// the default 0 -> 1 ramp is running, so if the delta were not zero the
+	// last station would differ from the first
+	bool constantOK = true;
+	Scalar worst = 0;
+	for( unsigned int i = 0; i < nRings; ++i ) {
+		for( unsigned int k = 0; k < NS; ++k ) {
+			Scalar lx = 0, lh = 0, l0x = 0, l0h = 0;
+			LocalOfZPathVertex( m, i, NS, k, lx, lh );
+			LocalOfZPathVertex( m, 0, NS, k, l0x, l0h );
+			worst = std::max( worst, std::max( std::fabs( lx - l0x ), std::fabs( lh - l0h ) ) );
+			if( std::fabs( lx - l0x ) > 1e-12 || std::fabs( lh - l0h ) > 1e-12 ) constantOK = false;
+		}
+	}
+	std::cout << "    worst station-to-station section drift: " << worst << std::endl;
+	Check( constantOK, "unequal identity: MONEY ASSERTION -- the section is CONSTANT along the path "
+	                   "(the same shape at unequal counts has a zero morph delta through the union path)" );
+
+	// and every AUTHORED pentagon vertex is still in there, exactly
+	bool vertsOK = true;
+	for( unsigned int k = 0; k < 5; ++k ) {
+		if( !RingContainsLocalPoint( m, 0, NS, (Scalar)prof[2*k], (Scalar)prof[2*k+1], Scalar(1e-12) ) ) vertsOK = false;
+	}
+	Check( vertsOK, "unequal identity: every authored pentagon vertex is reproduced exactly" );
+	pi->release();
+}
+
+// Test A4d: the documented duplicate-a-point HARD-EDGE idiom survives the
+// union resample.  A zero-length profile segment has TWO vertices at the
+// same arc-length parameter; a parameter-keyed union that deduplicated by
+// VALUE would silently drop one of them and take the hard edge with it.
+static void TestSweepMorphUnionKeepsDuplicatePoint()
+{
+	std::cout << "Test 3p: loft slice -- a duplicated profile point (hard edge) survives the union resample" << std::endl;
+	// square with a duplicated corner -- the idiom Test 2b pins for the
+	// no-morph path
+	const double prof[] = { -1,-1,  1,-1,  1,1,  1,1,  -1,1 };
+	std::vector<double> circ = NGon( 1.2, 9 );
+	const double pts[] = { 0,0,0,  0,0,3,  0,0,6 };
+	const double zeros[] = { 0.0, 0.0, 0.0 };
+	SweepDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 5;
+	d.profile2Points = &circ[0]; d.numProfile2Points = 9;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.pointMorphs = zeros; d.numPointMorphs = 3;
+	d.nLen = 8;
+	d.capStart = true; d.capEnd = true;		// the caps ear-clip the same section
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "hard edge under morph: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "hard edge under morph: concrete type" ); pi->release(); return; }
+	const unsigned int nRings = SweepStationCount( d.nLen, d.numPathPoints );
+	// numPoints = nRings*NS + 2*NS (the two caps duplicate their ring)
+	Check( m->numPoints() % ( nRings + 2 ) == 0, "hard edge under morph: vertex stream is rings + two cap rings" );
+	const unsigned int NSec = m->numPoints() / ( nRings + 2 );
+
+	// every AUTHORED square vertex present, INCLUDING both copies of the
+	// duplicated corner: count coincident-with-(1,1) ring vertices
+	unsigned int dupCount = 0;
+	for( unsigned int k = 0; k < NSec; ++k ) {
+		Scalar lx = 0, lh = 0;
+		LocalOfZPathVertex( m, 0, NSec, k, lx, lh );
+		if( std::fabs( lx - 1.0 ) < 1e-12 && std::fabs( lh - 1.0 ) < 1e-12 ) ++dupCount;
+	}
+	std::cout << "    copies of the duplicated corner (1, 1) in the t = 0 ring: " << dupCount << std::endl;
+	Check( dupCount == 2, "hard edge under morph: MONEY ASSERTION -- BOTH copies of the duplicated corner "
+	                      "survive the union (a value-keyed dedup would collapse them and lose the hard edge)" );
+	bool vertsOK = true;
+	for( unsigned int k = 0; k < 5; ++k ) {
+		if( !RingContainsLocalPoint( m, 0, NSec, (Scalar)prof[2*k], (Scalar)prof[2*k+1], Scalar(1e-12) ) ) vertsOK = false;
+	}
+	Check( vertsOK, "hard edge under morph: every authored square vertex is reproduced exactly" );
+	Check( m->getFaces().size() > 0, "hard edge under morph: the caps still ear-clip (zero-length edge tolerated)" );
+	pi->release();
+}
+
+// Test A5: anisotropy composes with the morph, and the scale is applied
+// AFTER it.  With a constant morph t = 0.5 between concentric circles of
+// radius 1 and 0.5 the section is the radius-0.75 circle; a per-station
+// (sx, sy) = (1.0, 0.5) then makes it a 0.75 x 0.375 ellipse.  Reversing the
+// order (scale the profiles, then morph) would give the same answer here
+// ONLY because both operations are linear about the centroid -- so the
+// fixture also checks the ASYMMETRIC case where the two profiles differ in
+// shape, where the two orders genuinely disagree.
+static void TestSweepMorphComposesWithAnisotropy()
+{
+	std::cout << "Test 3k: loft slice -- anisotropic point_scale composes with the morph (scale applied post-morph)" << std::endl;
+	const unsigned int NP = 12;
+	std::vector<double> prof  = NGon( 1.0, NP );
+	std::vector<double> ring2 = NGon( 0.5, NP );
+	const double pts[]    = { 0,0,0,  0,0,4,  0,0,8 };
+	const double morphs[] = { 0.5, 0.5, 0.5 };
+	const double sxs[]    = { 1.0, 1.0, 1.0 };
+	const double sys[]    = { 0.5, 0.5, 0.5 };
+	SweepDescriptor d;
+	d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+	d.profile2Points = &ring2[0]; d.numProfile2Points = NP;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.pointMorphs = morphs; d.numPointMorphs = 3;
+	d.pointScales = sxs; d.numPointScales = 3;
+	d.pointScalesY = sys; d.numPointScalesY = 3;
+	d.nLen = 8;
+	d.capStart = false; d.capEnd = false;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "morph x anisotropy factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "morph x anisotropy: concrete type" ); pi->release(); return; }
+	const unsigned int nRings = m->numPoints() / NP;
+
+	bool composeOK = true;
+	Scalar worst = 0;
+	for( unsigned int i = 0; i < nRings; ++i ) {
+		for( unsigned int k = 0; k < NP; ++k ) {
+			Scalar lx = 0, lh = 0;
+			LocalOfZPathVertex( m, i, NP, k, lx, lh );
+			// morph(0.5) of r=1 -> r=0.5 is r=0.75, THEN diag(1.0, 0.5)
+			const Scalar wantX = (Scalar)prof[2*k]   * Scalar(0.75) * Scalar(1.0);
+			const Scalar wantH = (Scalar)prof[2*k+1] * Scalar(0.75) * Scalar(0.5);
+			worst = std::max( worst, std::max( std::fabs(lx-wantX), std::fabs(lh-wantH) ) );
+			if( std::fabs( lx - wantX ) > 1e-12 || std::fabs( lh - wantH ) > 1e-12 ) composeOK = false;
+		}
+	}
+	Check( composeOK, "morph x anisotropy: MONEY ASSERTION -- section == morph(t) THEN diag(sx, sy), "
+	                  "matching the documented composition order" );
+
+	// The asymmetric case: circle -> rect at t = 0.5 with sy = 0.5.  Scale
+	// AFTER the morph flattens the blended section; scaling the two profiles
+	// FIRST and blending afterwards would give a different intermediate
+	// outline, so the half-extent pair below distinguishes the two orders.
+	{
+		std::vector<double> rectp = RectProfile( 1.4, 0.8 );
+		SweepDescriptor e = d;
+		e.profile2Points = &rectp[0]; e.numProfile2Points = 4;
+		ITriangleMeshGeometryIndexed* pe = 0;
+		Check( RISE_API_CreateSweepGeometry( &pe, e ), "asymmetric morph x anisotropy factory succeeds" );
+		if( pe ) {
+			const TriangleMeshGeometryIndexed* me = dynamic_cast<TriangleMeshGeometryIndexed*>( pe );
+			if( me ) {
+				Scalar halfX = 0, halfY = 0;
+				// circle-vs-rect: the section is the UNION of the two
+				// profiles' arc parameters, so read its size off the mesh
+				// (the rings come from the path) rather than assuming NP.
+				const unsigned int eRings = SweepStationCount( e.nLen, e.numPathPoints );
+				const unsigned int eNS = me->numPoints() / eRings;
+				RingExtent( me, eRings / 2, eNS, halfX, halfY );
+				// half-x: blend of circle 1.0 and rect 0.7 at t=0.5 == 0.85, times sx=1.0
+				// half-y: blend of circle 1.0 and rect 0.4 at t=0.5 == 0.70, times sy=0.5 == 0.35
+				Check( std::fabs( halfX - 0.85 ) < 1e-9 && std::fabs( halfY - 0.35 ) < 1e-9,
+				       "asymmetric morph x anisotropy: half-extents are (0.85, 0.35) -- the blend sized AFTER morphing" );
+			}
+			pe->release();
+		}
+	}
+	pi->release();
+}
+
+// Test A6: a MORPHED sweep's end caps close the section that is actually
+// there at each end -- so the solid is watertight and positively oriented
+// even though the two caps are different polygons.
+static void TestSweepMorphCapsWatertight()
+{
+	std::cout << "Test 3l: loft slice -- morphed end caps are watertight and correctly oriented" << std::endl;
+	const unsigned int NP = 16;
+	std::vector<double> prof  = NGon( 1.0, NP );
+	std::vector<double> prof2 = RectProfile( 1.4, 0.7 );
+	const double pts[] = { 0,0,0,  0,0,3,  0,0,6 };
+	SweepDescriptor d;
+	d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+	d.profile2Points = &prof2[0]; d.numProfile2Points = 4;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.nLen = 8;
+	d.capStart = true; d.capEnd = true;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "morphed caps factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "morphed caps: concrete type" ); pi->release(); return; }
+
+	Check( MeshIsWatertightByPosition( m ),
+	       "morphed caps: MONEY ASSERTION -- every directed edge has its reverse partner (closed, no boundary edge)" );
+	const Scalar vol = MeshSignedVolume( m );
+	Check( vol > 0, "morphed caps: signed volume is POSITIVE (outward winding survives the morph)" );
+	// sanity on magnitude: the solid runs 6 long between a unit-ish circle
+	// (area ~pi) and a 1.4 x 0.7 rect (area 0.98), so its volume must sit
+	// well inside those two extruded bounds.
+	Check( vol > 0.98 * 6.0 * 0.5 && vol < 3.15 * 6.0,
+	       "morphed caps: volume lies between the two profiles' own extrusions" );
+
+	// the same fixture WITHOUT the morph must also be watertight -- proving
+	// the probe is measuring the morph, not a pre-existing hole
+	SweepDescriptor plain = d;
+	plain.profile2Points = 0; plain.numProfile2Points = 0;
+	ITriangleMeshGeometryIndexed* pp = 0;
+	if( RISE_API_CreateSweepGeometry( &pp, plain ) ) {
+		const TriangleMeshGeometryIndexed* mp = dynamic_cast<TriangleMeshGeometryIndexed*>( pp );
+		Check( mp && MeshIsWatertightByPosition( mp ), "morphed caps: control -- the UNMORPHED twin is watertight too" );
+		pp->release();
+	} else {
+		Check( false, "morphed caps: control fixture bakes" );
+	}
+	pi->release();
+}
+
+// Test A6b: the CAP's winding comes from the CAP polygon's OWN shoelace, not
+// from the first profile's.
+//
+// The morphed section's signed area is the quadratic
+//     A(t) = (1-t)^2*A1 + 2t(1-t)*Amix + t^2*A2,
+// so a sufficiently anti-aligned correspondence (a strongly negative mixed
+// term) carries it through zero and out the other side even though BOTH
+// authored profiles are CCW.  The two triangles below are exactly that case
+// -- found by search over simple star-shaped polygons -- and at t = 0.4 the
+// section is a SIMPLE polygon wound CLOCKWISE.  Taking the flip sign from
+// the first profile's `outward` emitted both caps inside out there while the
+// side wall stayed correct; taking it from the polygon actually being
+// triangulated cannot.
+static void TestSweepMorphCapWindingFollowsSection()
+{
+	std::cout << "Test 3q: loft slice -- a section whose winding FLIPS mid-morph still caps outward" << std::endl;
+	const double prof[]  = { -0.772186, 0.469352,  -0.134439, -0.492234,  -0.068175, -0.385729 };
+	const double prof2[] = {  0.167965, 0.372948,   0.119310,  0.678440,  -0.056223, -0.805472 };
+	const double pts[] = { 0,0,0,  0,0,2,  0,0,4 };
+	// a CONSTANT morph track parks every station -- and therefore both caps
+	// -- at the t where the section is clockwise
+	const double morphs[] = { 0.4, 0.4, 0.4 };
+	SweepDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 3;
+	d.profile2Points = prof2; d.numProfile2Points = 3;
+	d.pathPoints = pts; d.numPathPoints = 3;
+	d.pointMorphs = morphs; d.numPointMorphs = 3;
+	d.nLen = 6;
+	d.capStart = true; d.capEnd = true;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateSweepGeometry( &pi, d ), "cap winding flip: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "cap winding flip: concrete type" ); pi->release(); return; }
+	const unsigned int nRings = SweepStationCount( d.nLen, d.numPathPoints );
+	const unsigned int NS = m->numPoints() / ( nRings + 2 );
+
+	// FIXTURE PRECONDITION: the section really is wound the other way from
+	// the first profile.  Without this the test would pass vacuously if the
+	// search result ever stopped reproducing.
+	Scalar secArea2 = 0;
+	for( unsigned int k = 0; k < NS; ++k ) {
+		Scalar ax = 0, ah = 0, bx = 0, bh = 0;
+		LocalOfZPathVertex( m, 0, NS, k, ax, ah );
+		LocalOfZPathVertex( m, 0, NS, ( k + 1 ) % NS, bx, bh );
+		secArea2 += ax * bh - bx * ah;
+	}
+	Scalar profArea2 = 0;
+	for( unsigned int k = 0; k < 3; ++k ) {
+		const unsigned int j = ( k + 1 ) % 3;
+		profArea2 += (Scalar)prof[2*k] * (Scalar)prof[2*j+1] - (Scalar)prof[2*j] * (Scalar)prof[2*k+1];
+	}
+	std::cout << "    profile signed area2 " << profArea2 << ", morphed section signed area2 " << secArea2 << std::endl;
+	Check( profArea2 > 0 && secArea2 < 0,
+	       "cap winding flip: FIXTURE PRECONDITION -- both profiles are CCW but the morphed section is CW" );
+
+	// MONEY: every cap face's geometric normal agrees with its own cap
+	// normal.  The path runs along +Z, so the start cap faces -Z and the end
+	// cap faces +Z; cap faces are the LAST 2*(NS-2) in the stream.
+	const std::size_t sideFaces = (std::size_t)( nRings - 1 ) * NS * 2;
+	bool capWindOK = true;
+	unsigned int badCaps = 0;
+	for( std::size_t f = sideFaces; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		const Scalar gz = ( b.x - a.x ) * ( c.y - a.y ) - ( b.y - a.y ) * ( c.x - a.x );
+		const Scalar capZ = ( a.z < 2.0 ) ? Scalar(-1) : Scalar(1);
+		if( gz * capZ <= 0 ) { capWindOK = false; ++badCaps; }
+	}
+	if( !capWindOK ) std::cout << "    inside-out cap triangles: " << badCaps << std::endl;
+	Check( capWindOK, "cap winding flip: MONEY ASSERTION -- every cap triangle's GEOMETRIC normal agrees with its "
+	                  "cap normal (the flip sign comes from the CAP polygon, not from profile 1)" );
+
+	// NOT asserted here, deliberately: watertight-by-orientation.  A section
+	// that inverts mid-morph passes through ZERO area on the way, so the
+	// solid genuinely self-intersects and has no globally consistent
+	// orientation -- and the SIDE wall's winding is chosen ONCE for the whole
+	// mesh from profile 1, so wherever the section is CW the side wall faces
+	// inward and cannot pair its edges with a correctly-oriented cap.  What
+	// IS achievable, and is what the cap normal means, is that the cap's
+	// GEOMETRIC winding agrees with the flat normal (+/-T) it is actually
+	// given -- which the assertion above pins, and which the pre-fix code
+	// (taking the sign from profile 1) got wrong here.  Test 3l pins
+	// watertightness for the ordinary, non-inverting morph.
+	pi->release();
+}
+
+// Test A7: degenerate / contradictory loft inputs REFUSE (and leave the out
+// pointer null), and the documented CLAMP behaves as documented.
+static void TestSweepLoftValidation()
+{
+	std::cout << "Test 3m: loft slice -- degenerate inputs refuse; the morph overshoot clamps" << std::endl;
+	const unsigned int NP = 12;
+	std::vector<double> prof = NGon( 1.0, NP );
+	const double pts4[] = { 0,0,0,  0,0,2,  0,0,4,  0,0,6 };
+	const double pts3[] = { 0,0,0,  0,0,4,  0,0,8 };
+	const double loop[] = { 3,0,0,  0,0,3,  -3,0,0,  0,0,-3 };
+
+	SweepDescriptor base;
+	base.profilePoints = &prof[0]; base.numProfilePoints = NP;
+	base.pathPoints = pts3; base.numPathPoints = 3;
+	base.nLen = 8;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	// (a) profile2 with fewer than 3 points
+	{
+		const double two[] = { 0,0,  1,0 };
+		SweepDescriptor d = base;
+		d.profile2Points = two; d.numProfile2Points = 2;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: profile2 with 2 points rejects" );
+	}
+	// (b) a ZERO-AREA profile2 (three collinear points)
+	{
+		const double flat[] = { -1,0,  0,0,  1,0 };
+		SweepDescriptor d = base;
+		d.profile2Points = flat; d.numProfile2Points = 3;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: zero-area profile2 rejects" );
+	}
+	// (c) point_morph with no profile2 at all -- names the missing half
+	{
+		const double morphs[] = { 0.0, 1.0, 1.0 };
+		SweepDescriptor d = base;
+		d.pointMorphs = morphs; d.numPointMorphs = 3;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: point_morph without profile2 rejects" );
+	}
+	// (d) an AUTHORED morph value outside [0, 1] is REFUSED, not clamped
+	{
+		std::vector<double> prof2 = NGon( 0.5, NP );
+		const double bad[] = { 0.0, 1.4, 1.0 };
+		SweepDescriptor d = base;
+		d.profile2Points = &prof2[0]; d.numProfile2Points = NP;
+		d.pointMorphs = bad; d.numPointMorphs = 3;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: an authored point_morph of 1.4 rejects" );
+	}
+	// (e) a non-finite morph value is refused by the same negated range test
+	{
+		std::vector<double> prof2 = NGon( 0.5, NP );
+		const double nan3[] = { 0.0, std::numeric_limits<double>::quiet_NaN(), 1.0 };
+		SweepDescriptor d = base;
+		d.profile2Points = &prof2[0]; d.numProfile2Points = NP;
+		d.pointMorphs = nan3; d.numPointMorphs = 3;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: a NaN point_morph rejects" );
+	}
+	// (e2) a NON-FINITE profile COORDINATE, in either slot.  The factory is
+	// a PUBLIC entry point -- the GUI, the agent surface and these tests all
+	// reach it without going through the scene parser's token gate -- and a
+	// NaN coordinate passes every downstream gate (they are all COMPARISONS,
+	// which are false for a NaN), so it used to bake a mesh of NaN vertices
+	// after printing a bogus "wound OPPOSITE" warning on the way.
+	{
+		const double qNaN = std::numeric_limits<double>::quiet_NaN();
+		const double inf  = std::numeric_limits<double>::infinity();
+		double bad[10] = { 1.2,-0.3,  0.9,0.8,  -0.1,1.1,  -1.0,0.2,  -0.4,-0.9 };
+		for( int slot = 0; slot < 2; ++slot ) {
+			for( int which = 0; which < 2; ++which ) {
+				double p1[10]; for( int q = 0; q < 10; ++q ) p1[q] = bad[q];
+				double p2[10]; for( int q = 0; q < 10; ++q ) p2[q] = bad[q] * 0.5;
+				const double poison = ( which == 0 ) ? qNaN : inf;
+				// poison the x of point 2 in slot 0, the h of point 3 in slot 1
+				if( slot == 0 ) p1[4] = poison; else p2[7] = poison;
+				SweepDescriptor d = base;
+				d.profilePoints = p1; d.numProfilePoints = 5;
+				d.profile2Points = p2; d.numProfile2Points = 5;
+				Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0,
+				       slot == 0
+				         ? ( which == 0 ? "loft validation: a NaN in the FIRST profile rejects"
+				                        : "loft validation: an Inf in the FIRST profile rejects" )
+				         : ( which == 0 ? "loft validation: a NaN in the SECOND profile rejects"
+				                        : "loft validation: an Inf in the SECOND profile rejects" ) );
+			}
+		}
+		// ...and the same guard on a plain, UNLOFTED sweep (the pre-existing
+		// `profile_point inf 0` hole, which had nothing to do with the loft)
+		double p1[10]; for( int q = 0; q < 10; ++q ) p1[q] = bad[q];
+		p1[0] = inf;
+		SweepDescriptor d = base;
+		d.profilePoints = p1; d.numProfilePoints = 5;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0,
+		       "loft validation: an Inf in the profile of a sweep with NO loft at all rejects too" );
+	}
+	// (f) an anisotropic y track with no x track / a mismatched count
+	{
+		const double sys[] = { 1.0, 0.5, 0.5 };
+		SweepDescriptor d = base;
+		d.pointScalesY = sys; d.numPointScalesY = 3;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: a y scale track with no x track rejects" );
+		const double sxs[] = { 1.0, 1.0 };
+		d.pointScales = sxs; d.numPointScales = 2;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: mismatched x/y scale counts reject" );
+	}
+	// (g) a non-positive y scale
+	{
+		const double sxs[] = { 1.0, 1.0, 1.0 };
+		const double sys[] = { 1.0, 0.0, 1.0 };
+		SweepDescriptor d = base;
+		d.pointScales = sxs; d.numPointScales = 3;
+		d.pointScalesY = sys; d.numPointScalesY = 3;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0, "loft validation: point_scale y of 0 rejects" );
+	}
+	// (h) profile2 on a CLOSED loop with NO explicit morph track: the
+	// implicit 0 -> 1 ramp would jump at the seam, so it is refused...
+	{
+		std::vector<double> prof2 = NGon( 0.5, NP );
+		SweepDescriptor d = base;
+		d.pathPoints = loop; d.numPathPoints = 4;
+		d.pathClosed = true;
+		d.capStart = false; d.capEnd = false;
+		d.profile2Points = &prof2[0]; d.numProfile2Points = NP;
+		Check( !RISE_API_CreateSweepGeometry( &pi, d ) && pi == 0,
+		       "loft validation: profile2 + path_closed with no point_morph rejects (the default ramp jumps at the seam)" );
+		// ...but EXPLICIT values sample periodically and are legal
+		const double outAndBack[] = { 0.0, 1.0, 0.0, 1.0 };
+		d.pointMorphs = outAndBack; d.numPointMorphs = 4;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ) && pi != 0,
+		       "loft validation: profile2 + path_closed WITH explicit point_morph is legal (periodic, closes smoothly)" );
+		if( pi ) { pi->release(); pi = 0; }
+	}
+	// (i) the documented CLAMP: Catmull-Rom between non-monotone morph
+	// controls overshoots [0, 1], and the clamp keeps every section inside
+	// the two profiles' own radii instead of extrapolating past them.
+	{
+		std::vector<double> prof2 = NGon( 0.5, NP );
+		const double zigzag[] = { 0.0, 1.0, 0.0, 1.0 };
+		SweepDescriptor d = base;
+		d.pathPoints = pts4; d.numPathPoints = 4;
+		d.profile2Points = &prof2[0]; d.numProfile2Points = NP;
+		d.pointMorphs = zigzag; d.numPointMorphs = 4;
+		d.nLen = 40;
+		d.capStart = false; d.capEnd = false;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ) && pi != 0, "loft validation: a non-monotone morph track bakes" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			bool inEnvelope = true;
+			Scalar worstR = 0;
+			if( m ) {
+				for( unsigned int i = 0; i < m->numPoints() / NP; ++i ) {
+					for( unsigned int k = 0; k < NP; ++k ) {
+						Scalar lx = 0, lh = 0;
+						LocalOfZPathVertex( m, i, NP, k, lx, lh );
+						const Scalar r = std::sqrt( lx*lx + lh*lh );
+						worstR = std::max( worstR, std::fabs( r - 0.75 ) );
+						if( r < 0.5 - 1e-9 || r > 1.0 + 1e-9 ) inEnvelope = false;
+					}
+				}
+			}
+			Check( inEnvelope, "loft validation: MONEY ASSERTION -- the CLAMP keeps every section radius inside "
+			                   "[0.5, 1.0] despite spline overshoot between non-monotone point_morph controls" );
+			pi->release(); pi = 0;
+		}
+	}
 }
 
 static void TestSweepPerStationWidth()
@@ -2327,6 +3462,18 @@ int main( int, char** )
 	TestSweepClosedLoopRing();
 	TestSweepClosedLoopTorsionalHolonomy();
 	TestSweepClosedLoopPerStationWidthScale();
+	TestSweepBackCompatDigests();
+	TestSweepAnisotropicPointScale();
+	TestSweepMorphIdentity();
+	TestSweepMorphEndpointsAndAlignment();
+	TestSweepMorphCircleToRectSimple();
+	TestSweepMorphUnionKeepsAuthoredCorners();
+	TestSweepMorphIdentityUnequalCounts();
+	TestSweepMorphUnionKeepsDuplicatePoint();
+	TestSweepMorphComposesWithAnisotropy();
+	TestSweepMorphCapsWatertight();
+	TestSweepMorphCapWindingFollowsSection();
+	TestSweepLoftValidation();
 	TestSweepPerStationWidth();
 	TestPathInstances();
 	TestLatheCylinderIdentity();

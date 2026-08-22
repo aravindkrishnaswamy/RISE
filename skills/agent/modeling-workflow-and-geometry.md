@@ -411,13 +411,21 @@ height/radius span) joined with `smin`, whose blend radius fillets the
 joints into a continuous curve -- use it when the turned form must also
 take part in CSG, needs a non-circular cross-section, or has to blend
 into a larger implicit body.
-`sweep_geometry` is NOT the lathe verb -- it sweeps a FIXED profile
-SHAPE along a path (`point_scale` can taper that shape's overall size
-per station, round or via `point_width`'s deliberate x-only flattening,
-but never changes the outline itself), so it is right for a tube that
-FOLLOWS A CURVE and may thin along the way (a retort's neck, a spout, a
-handle, a tapered tentacle) and wrong for a body whose outline changes
-character station to station (a belly a neck doesn't share).  Its
+`sweep_geometry` is NOT the lathe verb, but its cross-section is no
+longer fixed either: `point_scale <sx> <sy>` scales the two profile
+axes INDEPENDENTLY per station (flatter than it is wide, and changing
+that ratio along the spine -- a torso, a fin, a strap, a hull), and a
+second profile (`profile2_point` / `profile2_circle` / `profile2_rect`)
+with per-station `point_morph <t>` changes the OUTLINE along the path
+(a round skull into a narrow muzzle, a round shaft into a square post);
+omitting `point_morph` gives a linear 0 -> 1 ramp, but a closed loop
+instead requires explicit `point_morph` values -- the ramp is refused
+there, since it would jump at the seam.
+What it still cannot do is interpolate more than TWO sections, so it is
+right for a body that follows a curve and changes section once (a
+retort's neck, a spout, a handle, a snout, a limb) and wrong for one
+whose outline changes character three or more times (a belly, then a
+waist, then a shoulder) -- that is a lathe, or two chained sweeps.  Its
 cross-section is `profile_circle <r> [n]` or `profile_rect <w> <h> [r]`
 (one line each) instead of a hand-listed `profile_point` polygon, and
 `path_closed TRUE` sweeps a seamless loop (a handle, a wreath) without

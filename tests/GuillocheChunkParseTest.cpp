@@ -313,6 +313,71 @@ static void TestRejections()
 		  "profile_circle radius with glued trailing garbage rejects" },
 		{ "rect_trailing", "sweep_geometry\n{\nname b\nprofile_rect 2 2extra\npoint 0 0 0\npoint 0 0 10\n}\n",
 		  "profile_rect height with glued trailing garbage rejects" },
+		// Doc 89 slice A (loft): the profile2_* trio mirrors the profile_*
+		// trio exactly -- same three forms, same mutual exclusion AMONG
+		// THEMSELVES, same per-form validation -- because both families run
+		// through the one ExpandProfileFamily body.
+		{ "p2_pt_circ",   "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point -1 0\nprofile2_point 1 0\nprofile2_point 0 1\nprofile2_circle 0.5\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_point + profile2_circle together rejects (mutually exclusive)" },
+		{ "p2_circ_rect", "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_circle 0.5\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_circle + profile2_rect together rejects (mutually exclusive)" },
+		{ "p2_pt_rect",   "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point -1 0\nprofile2_point 1 0\nprofile2_point 0 1\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_point + profile2_rect together rejects (mutually exclusive)" },
+		{ "p2_two_pts",   "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point -1 0\nprofile2_point 1 0\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: fewer than 3 profile2_point entries rejects" },
+		{ "p2_circ_bad",  "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_circle 0\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_circle radius <= 0 rejects" },
+		{ "p2_rect_bad",  "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 2 2 5\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_rect corner radius > min(w,h)/2 rejects" },
+		{ "p2_trailing",  "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_circle 0.5abc\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_circle with glued trailing garbage rejects" },
+		// point_morph: needs its other half, one per point, in [0, 1]
+		{ "pm_no_p2",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npoint_morph 0.5\n}\n",
+		  "loft: point_morph with no profile2 rejects" },
+		{ "pm_toomany",   "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\npoint_morph 0\npoint_morph 0.5\npoint_morph 1\n}\n",
+		  "loft: more point_morph than path points rejects" },
+		{ "pm_badnum",    "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\npoint_morph abc\n}\n",
+		  "loft: malformed point_morph rejects" },
+		{ "pm_range",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\npoint_morph 1.4\n}\n",
+		  "loft: point_morph above 1 rejects" },
+		{ "pm_neg",       "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\npoint_morph -0.2\n}\n",
+		  "loft: point_morph below 0 rejects" },
+		{ "pm_nan",       "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\npoint_morph nan\n}\n",
+		  "loft: point_morph nan rejects at the token gate" },
+		{ "pm_closed",    "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 3 0 0\npoint 0 0 3\npoint -3 0 0\npoint 0 0 -3\npath_closed TRUE\n}\n",
+		  "loft: profile2 + path_closed with no point_morph rejects (the default ramp jumps at the seam)" },
+		// 2-arg point_scale: the second axis obeys the same rules as the first
+		{ "ps2_nonpos",   "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npoint_scale 1.0 0\n}\n",
+		  "loft: anisotropic point_scale with a zero y rejects" },
+		{ "ps2_toomany",  "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npoint_scale 1 1 1\n}\n",
+		  "loft: point_scale with THREE numbers rejects (arity is 1 or 2)" },
+		{ "ps2_trailing", "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npoint_scale 1.0 0.5abc\n}\n",
+		  "loft: anisotropic point_scale with glued trailing garbage rejects" },
+		// Fix round: the profile_point / profile2_point branch validated with
+		// a bare `sscanf(..., "%lf %lf %7s") != 2`, and sscanf CONVERTS the
+		// nan/inf spellings -- so a non-finite profile coordinate returned 2
+		// and sailed through, in BOTH slots (the profile_point half was a
+		// PRE-EXISTING hole, older than the loft).  Every sibling branch in
+		// this expander, and lathe_geometry's own profile_point loop, already
+		// went through AllTokensAreFiniteNumbers.
+		{ "pp_nan_x",     "sweep_geometry\n{\nname b\nprofile_point nan 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_point with a NaN x rejects at the token gate" },
+		{ "pp_inf_x",     "sweep_geometry\n{\nname b\nprofile_point inf 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_point with an Inf x rejects at the token gate" },
+		{ "pp_nan_h",     "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 nan\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_point with a NaN h rejects at the token gate" },
+		{ "pp_inf_h",     "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 -inf\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_point with a -Inf h rejects at the token gate" },
+		{ "pp_trailing",  "sweep_geometry\n{\nname b\nprofile_point -1 0abc\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_point with glued trailing garbage rejects" },
+		{ "p2_nan_x",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point nan 0\nprofile2_point 1 0\nprofile2_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_point with a NaN x rejects at the token gate" },
+		{ "p2_inf_x",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point inf 0\nprofile2_point 1 0\nprofile2_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_point with an Inf x rejects at the token gate" },
+		{ "p2_nan_h",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point -1 0\nprofile2_point 1 nan\nprofile2_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_point with a NaN h rejects at the token gate" },
+		{ "p2_inf_h",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile2_point -1 0\nprofile2_point 1 inf\nprofile2_point 0 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "loft: profile2_point with an Inf h rejects at the token gate" },
 	};
 	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
 		Check( !ParseBody( rows[i].tag, rows[i].body ), rows[i].what );
@@ -358,6 +423,102 @@ static void TestProfileConveniencesAndClosedLoop()
 		Check( priv->GetGeometries()->GetItem( "scaleloopg" ) != 0, "point_scale on a closed loop sweep registered" );
 	}
 	job->release();
+}
+
+// Doc 89 slice A (loft): the new grammar's HAPPY paths through the real
+// parser -- the 2-arg point_scale arity (and its free mixing with the 1-arg
+// form), all three profile2_* sources, the default 0 -> 1 ramp, an explicit
+// point_morph track, and a CLOSED loop that morphs out and back -- plus the
+// SPECIFIC diagnostic each refusal hands back (not the generic
+// "apply failed (e.g. unresolved reference)" the CST would otherwise show).
+static void TestLoftGrammar()
+{
+	std::cout << "Test 3c: loft grammar -- 2-arg point_scale, the profile2_* trio, point_morph" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const bool ok = ParseBody( "loft",
+		// 2-arg point_scale on its own -- a flattened, tapering body
+		"sweep_geometry\n{\nname torsog\nprofile_circle 1.0 16\npoint 0 0 0\npoint 0 2 0\npoint 0 4 0\n"
+		"point_scale 1.0 0.55\npoint_scale 0.9 0.5\npoint_scale 0.6 0.4\n}\n"
+		// the two arities MIXED in one track (a 1-arg line means sx == sy there)
+		"sweep_geometry\n{\nname mixedg\nprofile_circle 1.0 12\npoint 0 0 0\npoint 0 2 0\npoint 0 4 0\n"
+		"point_scale 1.0\npoint_scale 0.8 0.4\npoint_scale 0.5\n}\n"
+		// profile2_circle + the DEFAULT linear 0 -> 1 ramp (no point_morph)
+		"sweep_geometry\n{\nname morphdefg\nprofile_circle 1.0 16\nprofile2_circle 0.3 16\n"
+		"point 0 0 0\npoint 0 3 0\npoint 0 6 0\n}\n"
+		// profile2_rect + an EXPLICIT morph track (the round-to-square leg)
+		"sweep_geometry\n{\nname legg\nprofile_circle 0.6 20\nprofile2_rect 0.9 0.9 0.1\n"
+		"point 0 0 0\npoint 0 1.5 0\npoint 0 3 0\n"
+		"point_morph 0\npoint_morph 0.2\npoint_morph 1\n}\n"
+		// profile2_point (the hand-authored form) + anisotropy together
+		"sweep_geometry\n{\nname handg\nprofile_circle 0.5 8\n"
+		"profile2_point 0.9 -0.2\nprofile2_point 0.7 0.5\nprofile2_point -0.6 0.4\nprofile2_point -0.8 -0.5\n"
+		"point 0 0 0\npoint 0 2 0\npoint 0 4 0\n"
+		"point_morph 0\npoint_morph 0.5\npoint_morph 1\n"
+		"point_scale 1.0 0.8\npoint_scale 0.9 0.6\npoint_scale 0.7 0.5\n}\n"
+		// a CLOSED loop that morphs out and back (explicit, periodic values)
+		"sweep_geometry\n{\nname loopmorphg\nprofile_circle 0.4 12\nprofile2_rect 0.7 0.3\n"
+		"point 3 0 0\npoint 0 0 3\npoint -3 0 0\npoint 0 0 -3\npath_closed TRUE\n"
+		"point_morph 0\npoint_morph 1\npoint_morph 0\npoint_morph 1\n}\n",
+		*job );
+	Check( ok, "loft: the whole new-grammar scene parses" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	Check( priv != 0, "loft: IJobPriv available" );
+	if( priv ) {
+		Check( priv->GetGeometries()->GetItem( "torsog" ) != 0,      "loft: 2-arg point_scale sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "mixedg" ) != 0,      "loft: MIXED 1-arg/2-arg point_scale sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "morphdefg" ) != 0,   "loft: profile2_circle with the DEFAULT ramp registered" );
+		Check( priv->GetGeometries()->GetItem( "legg" ) != 0,        "loft: profile2_rect + explicit point_morph registered" );
+		Check( priv->GetGeometries()->GetItem( "handg" ) != 0,       "loft: profile2_point + anisotropy registered" );
+		Check( priv->GetGeometries()->GetItem( "loopmorphg" ) != 0,  "loft: path_closed loop with a periodic morph registered" );
+	}
+	job->release();
+
+	// ---- the SPECIFIC diagnostic, not the generic one -------------------
+	// Chunk-level refusals (arity, range, the missing other half) and
+	// FACTORY-level ones (a degenerate second profile) both have to reach
+	// the CST diagnostic, or a scene author -- and the agent surface reading
+	// those diagnostics -- is told only "apply failed (e.g. unresolved
+	// reference)", which is false: no reference is involved.
+	// Every row also has to NAME the chunk it refused: a scene with several
+	// sweep_geometry chunks otherwise reports a refusal an author cannot
+	// attribute to one of them.  The chunk-parser rows got that for free
+	// (SweepReject formats the name in); the FACTORY-level rows did NOT
+	// until Job::AddSweepGeometry started prepending it, the way
+	// Job::AddLatheGeometry already did -- so `geomName` is asserted on
+	// every row, not just the chunk-parser ones.
+	struct DiagRow { const char* body; const char* needle; const char* geomName; const char* what; };
+	const DiagRow diags[] = {
+		{ "sweep_geometry\n{\nname dm\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npoint_morph 0.5\n}\n",
+		  "needs a SECOND profile", "`dm`",
+		  "loft diagnostic: point_morph with no profile2 NAMES the missing half" },
+		{ "sweep_geometry\n{\nname dr\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\npoint_morph 1.4\n}\n",
+		  "must be in [0, 1]", "`dr`",
+		  "loft diagnostic: an out-of-range point_morph states the legal range" },
+		{ "sweep_geometry\n{\nname da\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npoint_scale 1 1 1\n}\n",
+		  "`<s>` (uniform) or `<sx> <sy>` (anisotropic)", "`da`",
+		  "loft diagnostic: a bad point_scale arity states BOTH accepted forms" },
+		{ "sweep_geometry\n{\nname dx\nprofile_circle 1.0\nprofile2_circle 0.5\nprofile2_rect 1 1\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "author exactly ONE second profile source", "`dx`",
+		  "loft diagnostic: the profile2 trio's mutual exclusion says SECOND profile, not just profile" },
+		{ "sweep_geometry\n{\nname dz\nprofile_circle 1.0\nprofile2_point -1 0\nprofile2_point 0 0\nprofile2_point 1 0\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "encloses ZERO area", "`dz`",
+		  "loft diagnostic: a FACTORY-level refusal (collinear profile2) reaches the CST diagnostic" },
+		{ "sweep_geometry\n{\nname dc\nprofile_circle 1.0\nprofile2_rect 1 1\npoint 3 0 0\npoint 0 0 3\npoint -3 0 0\npoint 0 0 -3\npath_closed TRUE\n}\n",
+		  "discontinuous at a closed loop's seam", "`dc`",
+		  "loft diagnostic: profile2 + path_closed explains the seam, and how to fix it" },
+		{ "sweep_geometry\n{\nname dn\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 nan\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "FINITE", "`dn`",
+		  "loft diagnostic: a non-finite profile_point says FINITE and names the chunk" },
+	};
+	for( std::size_t i = 0; i < sizeof(diags)/sizeof(diags[0]); ++i ) {
+		const std::string diag = DeriveDiagnostics( diags[i].body );
+		Check( diag.find( diags[i].needle ) != std::string::npos, diags[i].what );
+		Check( diag.find( diags[i].geomName ) != std::string::npos,
+		       "loft diagnostic: the refusal NAMES the sweep_geometry it refused" );
+		Check( diag.find( "unresolved reference" ) == std::string::npos,
+		       "loft diagnostic: does NOT fold into the generic unresolved-reference message" );
+	}
 }
 
 static void TestFunction2DColorPainter()
@@ -882,6 +1043,7 @@ int main( int, char** )
 	TestRejections();
 	TestProfileConveniencesAndClosedLoop();
 	TestProfileConvenienceRealParserCoverage();
+	TestLoftGrammar();
 	TestFunction2DColorPainter();
 	TestExpressionAndDisplacement();
 	TestLatheChunk();

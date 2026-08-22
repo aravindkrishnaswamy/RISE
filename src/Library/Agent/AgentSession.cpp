@@ -15362,7 +15362,14 @@ namespace RISE
 						// the prose promised.  point_scale (both axes) is the
 						// correct grammar for a round non-linear taper, so the
 						// new example uses ONLY that -- no point_width, no
-						// end_scale lines (both default 1.0, omitted).  The path
+						// end_scale lines (both default 1.0, omitted).  Doc 89
+						// slice A then made point_scale's SECOND argument the
+						// recommended surface (`<sx> <sy>`, the two profile axes
+						// independently), so the same five lines now carry it:
+						// one line-level edit, ~20 bytes, and the example shows a
+						// body that is flatter than it is wide instead of a
+						// perfectly round one -- which is the whole silhouette
+						// complaint the slice exists to answer.  The path
 						// also now satisfies LocalFrameContract (lowest point at
 						// y=0): it starts at the origin with a near-vertical
 						// initial tangent (the first two points differ far more
@@ -15378,11 +15385,11 @@ namespace RISE
 						     "\tpoint 0.1 1.0 0.3\n"
 						     "\tpoint 0.18 1.3 0.65\n"
 						     "\tpoint 0.15 1.45 1.0\n"
-						     "\tpoint_scale 1.0\n"
-						     "\tpoint_scale 0.8\n"
-						     "\tpoint_scale 0.6\n"
-						     "\tpoint_scale 0.45\n"
-						     "\tpoint_scale 0.3\n"
+						     "\tpoint_scale 1.0 0.7\n"
+						     "\tpoint_scale 0.8 0.55\n"
+						     "\tpoint_scale 0.6 0.4\n"
+						     "\tpoint_scale 0.45 0.28\n"
+						     "\tpoint_scale 0.3 0.18\n"
 						     "\tn_len 32\n"
 						     "}\n"
 						     "lambertian_material\n"
