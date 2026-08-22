@@ -658,7 +658,7 @@ namespace RISEFireProductionTrace
 			const FireProductionRoundoffTrace::TraceFloat steps[]={halfStep,halfStep,request.timeStepS,halfStep,halfStep};
 			for( unsigned int pass=0u;pass<5u;++pass ) {
 				if( !ApplyAxis(request,axes[pass],steps[pass],values,error) ) return false;
-				FireProductionRoundoffTrace::SealStageAndReset(values);
+				FireProductionRoundoffTrace::SealCellStageAndReset(values,request.componentCount,request.shape.CellCount());
 			}
 			result.conservativeValues=std::move(values);
 			result.executedSubmapCount=5u;

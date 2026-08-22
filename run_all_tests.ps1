@@ -544,7 +544,7 @@ foreach ($src in $testSources) {
 }
 
 if (-not $Filter) {
-    $roundoffName = 'FireProductionCalibrationOracle.r132'
+    $roundoffName = 'FireProductionCalibrationOracle.r133'
     $roundoffExe = Join-Path $BinDir 'FireSequenceTest.exe'
     $roundoffLog = Join-Path $LogDir "$roundoffName.log"
     Write-Host -NoNewline ('[ evidence ] {0,-46} ... ' -f $roundoffName)
@@ -556,11 +556,11 @@ if (-not $Filter) {
             $FireProductionTargetsSHA *>&1 | Out-File -FilePath $roundoffLog -Encoding utf8
         $roundoffRC = $LASTEXITCODE
     }
-    if ($roundoffRC -eq 240) {
-        Write-Host 'PASS (exact exit=240)'
+    if ($roundoffRC -eq 237) {
+		Write-Host 'PASS (exact exit=237)'
         Remove-Item -LiteralPath $roundoffLog -ErrorAction SilentlyContinue
     } else {
-        Write-Host ("FAIL (exit={0}; expected 240)" -f $roundoffRC)
+        Write-Host ("FAIL (exit={0}; expected 237)" -f $roundoffRC)
         $runFailures += [pscustomobject]@{ Name = $roundoffName; Code = $roundoffRC;
             Log = $roundoffLog; Reason = 'fail' }
         $failed++

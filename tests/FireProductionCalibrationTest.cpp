@@ -68,6 +68,7 @@ int main()
 	const std::string unixTestDriver=ReadText("run_all_tests.sh");
 	const std::string windowsTestDriver=ReadText("run_all_tests.ps1");
 	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
+	const std::string traceCoreSource=ReadText("tests/FireProductionRoundoffTrace.h");
 	const std::string tracedTransportSource=ReadText(
 		"tests/fire_production_trace/FireProductionTransport.cpp");
 	const std::string projectionSource=ReadText(
@@ -198,6 +199,19 @@ int main()
 			std::string::npos&&
 		interpolationEvidence.find("canonical_exit 240")!=std::string::npos,
 		"r132 fixed-grid interpolation proof removes the misapplied pressure envelope");
+	const std::string bfp32RefusalEvidence=ReadText(
+		"rendered/fire_production_calibration/r133_bfp32_projection_refusal/"
+		"bfp32_projection_refusal.v1");
+	Check(!bfp32RefusalEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(bfp32RefusalEvidence.begin(),
+			bfp32RefusalEvidence.end()))==
+		"c602b40eba99a19e72459f1609593c3e4a12380be6b86576843247d833eec13a"&&
+		bfp32RefusalEvidence.find("executed_obligation_instances_pending 3")!=
+			std::string::npos&&
+		bfp32RefusalEvidence.find("metal_measurement_performed false")!=
+			std::string::npos&&
+		bfp32RefusalEvidence.find("canonical_exit 237")!=std::string::npos,
+		"r133 nonfinite projection amplification refuses B_fp32 before measurement");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -209,13 +223,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r132")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r133")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		unixTestDriver.find("roundoff_rc\" -eq 240")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r132")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r133")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 240")!=std::string::npos,
-		"ordinary Unix and Windows suites execute r132 and accept only exact topology completion");
+		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
+		"ordinary Unix and Windows suites execute r133 and accept only exact derivation refusal");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -247,9 +261,8 @@ int main()
 		"independent topology walker shares neither trace counts nor generated arithmetic code");
 	const std::size_t firstStageSeam=tracedTransportSource.find("SealStageAndReset");
 	Check(firstStageSeam!=std::string::npos&&tracedTransportSource.find(
-		"SealStageAndReset",firstStageSeam+1u)!=std::string::npos&&
-		tracedTransportSource.find("SealStageAndReset",tracedTransportSource.find(
-			"SealStageAndReset",firstStageSeam+1u)+1u)==std::string::npos,
+		"SealStageAndReset",firstStageSeam+1u)==std::string::npos&&
+		CountText(tracedTransportSource,"SealCellStageAndReset")==1u,
 		"generated transport trace owns exactly the cell and dual stage-reset seams");
 	Check(CountText(tracedProjectionSource,"ProjectionInterpolationScope")==1u&&
 		tracedProjectionSource.find("topologyScope(fine,fineExtent,coarseExtent)")!=
@@ -258,6 +271,13 @@ int main()
 			std::string::npos&&
 		walkerSource.find("CountProjectionInterpolationObligations")!=std::string::npos,
 		"projection floor obligations use fixed-grid topology rather than a pressure envelope");
+	Check(CountText(ReadText("tests/fire_production_trace/FireProductionAdvection.cpp"),
+		"LocalTransportBranchScope branchScope")==2u&&
+		CountText(ReadText("tests/fire_production_trace/FireProductionAdvection.cpp"),
+			"FinalizeTransportBranchEnvelope")==4u&&
+		traceCoreSource.find("value.ExpandRadius(ActiveCounters->"
+			"transportBranchDivergenceBound)")==std::string::npos,
+		"branch envelopes attach to their swept integral rather than every stage output");
 
 	{
 		double derivedFactor=0.0,derivedWidth=0.0,mutantFactor=0.0,mutantWidth=0.0;
@@ -989,6 +1009,35 @@ int main()
 				FireProductionRoundoffWalker::ProjectionInterpolationGraphVariant::
 					ReassociatedDivision),
 			"projection interpolation certificate rejects coordinate and association mutants");
+	}
+	{
+		FireProductionRoundoffTrace::Counters counters;
+		FireProductionRoundoffTrace::TraceFloat affected,unrelated;
+		{
+			FireProductionRoundoffTrace::Scope traceScope(counters);
+			{
+				FireProductionRoundoffTrace::LocalTransportBranchScope localScope;
+				FireProductionRoundoffTrace::RecordBranchDivergence(
+					FireProductionRoundoffTrace::BranchSite::FlatIntegral,0.25);
+				affected=FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(
+					FireProductionRoundoffTrace::TraceFloat(1.0f));
+			}
+			unrelated=FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(
+				FireProductionRoundoffTrace::TraceFloat(1.0f));
+		}
+		Check(affected.Radius()>0.25&&unrelated.Radius()==0.0,
+			"local branch envelope affects only the swept integral that owns it");
+		std::vector<FireProductionRoundoffTrace::TraceFloat> nonfinite={
+			FireProductionRoundoffTrace::TraceFloat::Raw(1.0,
+				std::numeric_limits<double>::quiet_NaN(),1.0f,1u)};
+		FireProductionRoundoffTrace::Counters metricCounters;{
+			FireProductionRoundoffTrace::Scope traceScope(metricCounters);
+			FireProductionRoundoffTrace::ObserveMetricRangeAndReset(nonfinite,0u,1u,9u);
+		}
+		Check(std::isinf(metricCounters.firstNonfiniteMetricOutputCenter[9])==false&&
+			metricCounters.nonfiniteMetricOutputRadiusCount[9]==1u&&
+			metricCounters.invalidDomain,
+			"NaN interval radii canonicalize to a fail-closed unbounded metric");
 	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;

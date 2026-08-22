@@ -238,6 +238,7 @@ namespace RISEFireProductionTrace
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& left, const std::vector<FireProductionRoundoffTrace::TraceFloat>& right,
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& prefix )
 		{
+			FireProductionRoundoffTrace::LocalTransportBranchScope branchScope;
 			const std::size_t profileBase=ValueIndex(request,component,line,0u);
 			FireProductionRoundoffTrace::TransportProfileScope profileScope(
 				request.values,left,right,profileBase,request.lineLength,0.0f,0.0f);
@@ -259,11 +260,11 @@ namespace RISEFireProductionTrace
 				}
 				result+=PeriodicLocalForwardIntegral(request,component,line,wholeBeginning,
 					0.0f,whole,left,right);
-				return result;
+				return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(result);
 			}
 			result+=PeriodicLocalForwardIntegral(request,component,line,
 				static_cast<long>(face),0.0f,localLength,left,right);
-			return -result;
+			return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(-result);
 		}
 
 		FireProductionRoundoffTrace::TraceFloat OpenLocalForwardIntegral( const FireProductionRemapRequest& request,
@@ -291,6 +292,7 @@ namespace RISEFireProductionTrace
 			FireProductionRoundoffTrace::TraceFloat faceVelocity, const std::vector<FireProductionRoundoffTrace::TraceFloat>& left,
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& right )
 		{
+			FireProductionRoundoffTrace::LocalTransportBranchScope branchScope;
 			const FireProductionRoundoffTrace::TraceFloat magnitude=std::fabs(courant);
 			const FireProductionRoundoffTrace::TraceFloat leftNearest=request.values[ValueIndex(request,component,line,0u)];
 			const FireProductionRoundoffTrace::TraceFloat rightNearest=request.values[ValueIndex(request,component,line,
@@ -316,13 +318,13 @@ namespace RISEFireProductionTrace
 					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
 						fractional);
 				}
-				return result+OpenLocalForwardIntegral(request,component,line,wholeBeginning,
-					0.0f,whole,left,right);
+				return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(result+OpenLocalForwardIntegral(request,component,line,wholeBeginning,
+					0.0f,whole,left,right));
 			}
 			const FireProductionRoundoffTrace::TraceFloat interiorLength=std::min(magnitude,
 				static_cast<FireProductionRoundoffTrace::TraceFloat>(request.lineLength-face));
-			return -(OpenLocalForwardIntegral(request,component,line,face,0.0f,
-				interiorLength,left,right)+(magnitude-interiorLength)*rightExtension);
+			return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(-(OpenLocalForwardIntegral(request,component,line,face,0.0f,
+				interiorLength,left,right)+(magnitude-interiorLength)*rightExtension));
 		}
 
 		std::size_t NextPowerOfTwo( std::size_t value )

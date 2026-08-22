@@ -2518,6 +2518,39 @@ the full-stage recurrence can be attempted.  Durable evidence is
 `rendered/fire_production_calibration/r132_projection_interpolation/projection_interpolation.v1`,
 SHA-256 `d8df1a96842b52ff053017014f177096a08e0591307a0d196b0bf14b31549198`.
 
+### 7.50 Metric-level B_fp32 derivation refusal (r133)
+
+The first metric-level recurrence does not produce `B_fp32`.  Before this
+attempt, branch-class maxima were added to every stage output and NaN radii
+were silently ignored by `std::max`.  r133 makes both behaviors fail closed:
+each two-path envelope is attached only to the swept integral that executed
+it, metric channels retain mean/RMS/count evidence, and every NaN radius is
+canonical positive infinity.
+
+All nine scalar channels remain finite through the five cell maps and the
+explicit `+0` source stage.  The fixed-cycle projection interval, however,
+becomes unbounded under naive dependency propagation.  Every published
+velocity radius is nonfinite: `21600,21600,21312` faces for each of the
+physical and restoration solves.  The first physical x-face still has finite
+center/rounded values `0.020628967447918926` / `0.0206289645`; this is a proof
+instrument failure, not a nonfinite kernel result.  The corresponding
+restoration pair is `0.019031353974387526` / `0.0190313533`.
+
+Canonicalizing the hidden NaNs exposes three genuine pending obligations: one
+unclassified comparison and both projection-validation predicates.  The
+census is therefore `3,972,323 / 3,972,326`, and the projection bits in both
+the unresolved and invalid maps are `0xc00000`.  Under the amended r120 rule,
+exit `237` is restored.  The required repair is an independent finite
+condition/amplification proof for the fixed multigrid schedule, with local
+per-sweep rounding terms; a Metal/fp64 measurement may neither define nor
+widen that proof.  Consequently Metal confirmation, temporal refinement,
+eight-slice readmission, and thermo/source maps remain unrun.
+
+Durable evidence is
+`rendered/fire_production_calibration/r133_bfp32_projection_refusal/bfp32_projection_refusal.v1`,
+SHA-256 `c602b40eba99a19e72459f1609593c3e4a12380be6b86576843247d833eec13a`.
+The golden checkpoint is unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

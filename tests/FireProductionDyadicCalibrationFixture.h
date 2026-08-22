@@ -1056,6 +1056,16 @@ namespace FireProductionDyadicCalibration
 			AppendDouble(encoded,stage.minimumSqrtDomainLowerBound);
 			AppendDouble(encoded,stage.maximumAbsoluteOutput);
 			AppendDouble(encoded,stage.maximumOutputRadius);
+			for(const double value:stage.metricOutputRadiusSum)AppendDouble(encoded,value);
+			for(const double value:stage.metricOutputRadiusSquareSum)AppendDouble(encoded,value);
+			for(const std::uint64_t value:stage.metricOutputCount)AppendInteger(encoded,value);
+			for(const std::uint64_t value:stage.nonfiniteMetricOutputRadiusCount)
+				AppendInteger(encoded,value);
+			for(const std::uint64_t value:stage.firstNonfiniteMetricOutputIndex)
+				AppendInteger(encoded,value);
+			for(const double value:stage.firstNonfiniteMetricOutputCenter)AppendDouble(encoded,value);
+			for(const float value:stage.firstNonfiniteMetricOutputRounded){std::uint32_t bits=0u;
+				std::memcpy(&bits,&value,sizeof(bits));AppendInteger(encoded,bits);}
 			AppendDouble(encoded,stage.transportBranchDivergenceBound);
 			for(const double divergence:stage.maximumBranchDivergence)
 				AppendDouble(encoded,divergence);
@@ -1165,6 +1175,27 @@ namespace FireProductionDyadicCalibration
 					static_cast<unsigned long long>(pendingCount[site]),
 					static_cast<unsigned long long>(siteCount[site]));
 			std::fprintf(stderr," (pending/total)\n");
+			std::fprintf(stderr,"r132 stage=%zu metric_radius",index);
+			for(unsigned int channel=0u;channel<
+				FireProductionRoundoffTrace::Observation::MetricChannelCount;++channel)
+				if(stage.metricOutputCount[channel])std::fprintf(stderr,
+					" %u=%.17g/%.17g/%llu/nonfinite=%llu",
+					channel,stage.metricOutputRadiusSum[channel]/static_cast<double>(
+						stage.metricOutputCount[channel]),std::sqrt(
+						stage.metricOutputRadiusSquareSum[channel]/static_cast<double>(
+							stage.metricOutputCount[channel])),static_cast<unsigned long long>(
+							stage.metricOutputCount[channel]),static_cast<unsigned long long>(
+							stage.nonfiniteMetricOutputRadiusCount[channel]));
+			std::fprintf(stderr," (mean/rms/count)\n");
+			for(unsigned int channel=0u;channel<
+				FireProductionRoundoffTrace::Observation::MetricChannelCount;++channel)
+				if(stage.nonfiniteMetricOutputRadiusCount[channel])std::fprintf(stderr,
+					"r133 stage=%zu nonfinite_metric channel=%u count=%llu first=%llu "
+					"center=%.17g rounded=%.9g\n",index,channel,
+					static_cast<unsigned long long>(stage.nonfiniteMetricOutputRadiusCount[channel]),
+					static_cast<unsigned long long>(stage.firstNonfiniteMetricOutputIndex[channel]),
+					stage.firstNonfiniteMetricOutputCenter[channel],
+					stage.firstNonfiniteMetricOutputRounded[channel]);
 			std::array<unsigned int,static_cast<unsigned int>(
 				FireProductionRoundoffTrace::BranchSite::Count)> printed={};
 			for(const FireProductionRoundoffTrace::BranchObligation& obligation:
@@ -1236,11 +1267,15 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="4da9028bc00b6185b9d3c37defc3b9eb6b33bce6ea78e08d99d4e59b56cae630"||
-			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteOutputs||
-			totalBranchObligationCount!=3972323u||
+			traceDigest!="348905bff27bfb88ee83cbc255f8655492bb46046f8198b2e6e4f636dbe84c4f"||
+			unresolvedBitmap!=0xc00000u||invalidBitmap!=0xc00000u||finiteOutputs||
+			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972323u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=0u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=3u||
+			totalPendingSiteCount[static_cast<unsigned int>(
+				FireProductionRoundoffTrace::BranchSite::Unknown)]!=1u||
+			totalPendingSiteCount[static_cast<unsigned int>(
+				FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand)]!=2u||
 			frozenInflowAmbiguity!=1.7632415612658968e-38||
 			frozenInflowScale!=22.033558699237727||
 			frozenInflowPowerOfTwoFactor!=1.0||
@@ -1267,17 +1302,25 @@ namespace FireProductionDyadicCalibration
 				FireProductionRoundoffTrace::BranchSite::FloorBoundary)]!=0.0||
 			restoration.maximumBranchDivergence[static_cast<unsigned int>(
 				FireProductionRoundoffTrace::BranchSite::FloorBoundary)]!=0.0||
-			physical.maximumOutputRadius!=1.352840804874779e-7||
-			restoration.maximumOutputRadius!=1.352840804874779e-7||
-			source.unresolvedBranch||source.invalidDomain||physical.unresolvedBranch||
-			physical.invalidDomain||restoration.unresolvedBranch||
-			restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r132 projection interpolation topology certified; %llu of %llu "
-			"site-class obligations remain pending; B_fp32 derivation remains next\n",
+			!std::isinf(physical.maximumOutputRadius)||
+			!std::isinf(restoration.maximumOutputRadius)||
+			physical.nonfiniteMetricOutputRadiusCount[9]!=21600u||
+			physical.nonfiniteMetricOutputRadiusCount[10]!=21600u||
+			physical.nonfiniteMetricOutputRadiusCount[11]!=21312u||
+			restoration.nonfiniteMetricOutputRadiusCount[9]!=21600u||
+			restoration.nonfiniteMetricOutputRadiusCount[10]!=21600u||
+			restoration.nonfiniteMetricOutputRadiusCount[11]!=21312u||
+			physical.firstNonfiniteMetricOutputCenter[9]!=0.020628967447918926||
+			restoration.firstNonfiniteMetricOutputCenter[9]!=0.019031353974387526||
+			source.unresolvedBranch||source.invalidDomain||!physical.unresolvedBranch||
+			!physical.invalidDomain||!restoration.unresolvedBranch||
+			!restoration.invalidDomain)return 238;
+		std::fprintf(stderr,"r133 B_fp32 derivation refused; %llu of %llu obligations "
+			"remain pending after projection interval amplification; Metal measurement forbidden\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),
 			static_cast<unsigned long long>(totalBranchObligationCount));
-		return 240;
+		return 237;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

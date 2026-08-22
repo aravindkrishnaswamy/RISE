@@ -88,6 +88,43 @@ def transform(text: str, name: str, suffix: str) -> str:
             "\t\t\t\trequest.values,left,right,profileBase,request.lineLength,\n"
             "\t\t\t\tleftExtension,rightExtension);\n")
         text = text[:second_courant] + open_profile_scope + text[second_courant:]
+        periodic_begin = text.find("\t\tFireProductionRoundoffTrace::TraceFloat "
+                                   "PeriodicSweptIntegral(")
+        periodic_end = text.find("\n\t\tFireProductionRoundoffTrace::TraceFloat "
+                                 "OpenLocalForwardIntegral(", periodic_begin)
+        open_begin = text.find("\t\tFireProductionRoundoffTrace::TraceFloat "
+                               "OpenSweptIntegral(", periodic_end)
+        open_end = text.find("\n\tbool ValidateFireProduction", open_begin)
+        if min(periodic_begin, periodic_end, open_begin, open_end) < 0:
+            raise RuntimeError("swept-integral local envelope regions changed")
+        periodic = text[periodic_begin:periodic_end]
+        opened = text[open_begin:open_end]
+        periodic = periodic.replace("\n\t\t{", "\n\t\t{\n\t\t\t"
+            "FireProductionRoundoffTrace::LocalTransportBranchScope branchScope;", 1)
+        opened = opened.replace("\n\t\t{", "\n\t\t{\n\t\t\t"
+            "FireProductionRoundoffTrace::LocalTransportBranchScope branchScope;", 1)
+        if periodic.count("return result;") != 1 or periodic.count("return -result;") != 1:
+            raise RuntimeError("periodic swept return topology changed")
+        periodic = periodic.replace("return result;",
+            "return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(result);")
+        periodic = periodic.replace("return -result;",
+            "return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope(-result);")
+        open_positive = ("return result+OpenLocalForwardIntegral(request,component,line,"
+                         "wholeBeginning,\n\t\t\t\t\t0.0f,whole,left,right);")
+        open_negative = ("return -(OpenLocalForwardIntegral(request,component,line,face,0.0f,"
+                         "\n\t\t\t\tinteriorLength,left,right)+(magnitude-interiorLength)*"
+                         "rightExtension);")
+        if opened.count(open_positive) != 1 or opened.count(open_negative) != 1:
+            raise RuntimeError("open swept return topology changed")
+        opened = opened.replace(open_positive,
+            "return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope("
+            "result+OpenLocalForwardIntegral(request,component,line,wholeBeginning,\n"
+            "\t\t\t\t\t0.0f,whole,left,right));")
+        opened = opened.replace(open_negative,
+            "return FireProductionRoundoffTrace::FinalizeTransportBranchEnvelope("
+            "-(OpenLocalForwardIntegral(request,component,line,face,0.0f,\n"
+            "\t\t\t\tinteriorLength,left,right)+(magnitude-interiorLength)*rightExtension));")
+        text = text[:periodic_begin] + periodic + text[periodic_end:open_begin] + opened + text[open_end:]
         seam = ("request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+"
                 "request.lineLength]")
         if text.count(seam) != 1:
@@ -217,7 +254,8 @@ def transform(text: str, name: str, suffix: str) -> str:
                      "\t\t\t\tif( !ApplyAxis(request,axes[pass],steps[pass],values,error) ) return false;")
         traced_cell_loop = ("for( unsigned int pass=0u;pass<5u;++pass ) {\n"
                             "\t\t\t\tif( !ApplyAxis(request,axes[pass],steps[pass],values,error) ) return false;\n"
-                            "\t\t\t\tFireProductionRoundoffTrace::SealStageAndReset(values);\n"
+                            "\t\t\t\tFireProductionRoundoffTrace::SealCellStageAndReset(values,"
+                            "request.componentCount,request.shape.CellCount());\n"
                             "\t\t\t}")
         if text.count(cell_loop) != 1:
             raise RuntimeError("cell palindrome stage seam changed")

@@ -3093,3 +3093,19 @@ it was already tried and refuted here.
   `3,972,323 / 3,972,323` census and exit `240` remain.  This is a topology
   correction, not a `B_fp32` bound.  Durable evidence is `d8df1a96...9198`;
   production and golden-checkpoint bytes are unchanged.
+
+- **r133 metric-level B_fp32 derivation refusal (2026-08-21):** local branch
+  envelopes now attach only to the swept integral that owns them, and metric
+  reducers retain channel mean/RMS/count evidence.  Canonicalizing NaN radii
+  to positive infinity exposed what the former `std::max` summary hid: naive
+  dependency intervals through both fixed multigrid schedules are unbounded
+  for every velocity face (`21600,21600,21312` per solve), although the actual
+  centers and rounded outputs remain finite.  Three obligations re-open—one
+  unknown comparison and the two projection-validation predicates—so the
+  census is `3,972,323 / 3,972,326`, both projection bits are set in the
+  unresolved/invalid maps (`0xc00000`), and exact exit `237` is restored.
+  This is a walker/condition-proof defect, not a measured Metal miss; no Metal
+  comparison ran and no `B_fp32` term exists.  A finite independent
+  per-sweep multigrid amplification derivation is required next.  Durable
+  evidence is `c602b40e...c13a`; production and golden-checkpoint bytes are
+  unchanged.

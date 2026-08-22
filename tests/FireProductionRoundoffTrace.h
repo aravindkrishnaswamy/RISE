@@ -36,6 +36,7 @@ namespace FireProductionRoundoffTrace
 
 	struct Observation
 	{
+		static constexpr unsigned int MetricChannelCount=12u;
 		std::uint64_t operation[static_cast<unsigned int>(Operation::Count)]={};
 		double maximumAbsoluteOperand[static_cast<unsigned int>(Operation::Count)]={};
 		double maximumResultRadius[static_cast<unsigned int>(Operation::Count)]={};
@@ -56,6 +57,13 @@ namespace FireProductionRoundoffTrace
 		float invalidDenominatorRounded=0.0f;
 		double maximumAbsoluteOutput=0.0;
 		double maximumOutputRadius=0.0;
+		double metricOutputRadiusSum[MetricChannelCount]={};
+		double metricOutputRadiusSquareSum[MetricChannelCount]={};
+		std::uint64_t metricOutputCount[MetricChannelCount]={};
+		std::uint64_t nonfiniteMetricOutputRadiusCount[MetricChannelCount]={};
+		std::uint64_t firstNonfiniteMetricOutputIndex[MetricChannelCount]={};
+		double firstNonfiniteMetricOutputCenter[MetricChannelCount]={};
+		float firstNonfiniteMetricOutputRounded[MetricChannelCount]={};
 		double transportBranchDivergenceBound=0.0;
 		double maximumBranchDivergence[static_cast<unsigned int>(BranchSite::Count)]={};
 		std::vector<BranchObligation> branchObligations;
@@ -81,6 +89,9 @@ namespace FireProductionRoundoffTrace
 	inline thread_local std::size_t ActiveProjectionFine=0u;
 	inline thread_local std::size_t ActiveProjectionFineExtent=0u;
 	inline thread_local std::size_t ActiveProjectionCoarseExtent=0u;
+	inline thread_local bool ActiveLocalTransportBranchEnvelope=false;
+	inline thread_local std::array<double,static_cast<unsigned int>(
+		BranchSite::Count)> LocalTransportBranchDivergence={};
 
 	class BranchSiteScope
 	{
@@ -138,7 +149,9 @@ namespace FireProductionRoundoffTrace
 		static TraceFloat Raw(const double center,const double radius,const float rounded,
 			const std::uint32_t depth)
 		{
-			TraceFloat result;result.center_=center;result.radius_=NextUp(radius);
+			TraceFloat result;result.center_=center;result.radius_=
+				std::isfinite(radius)&&radius>=0.0?NextUp(radius):
+				std::numeric_limits<double>::infinity();
 			result.rounded_=rounded;result.depth_=depth;result.identity_=NextTraceIdentity++;
 			result.nonnegativeByConstruction_=false;
 			return result;
@@ -371,6 +384,44 @@ namespace FireProductionRoundoffTrace
 			previousCoarseExtent_;
 	};
 
+	class LocalTransportBranchScope
+	{
+	public:
+		LocalTransportBranchScope():previousActive_(ActiveLocalTransportBranchEnvelope),
+			previous_(LocalTransportBranchDivergence)
+		{
+			ActiveLocalTransportBranchEnvelope=true;LocalTransportBranchDivergence.fill(0.0);
+		}
+		~LocalTransportBranchScope()
+		{
+			ActiveLocalTransportBranchEnvelope=previousActive_;
+			LocalTransportBranchDivergence=previous_;
+		}
+	private:
+		bool previousActive_;std::array<double,static_cast<unsigned int>(
+			BranchSite::Count)> previous_;
+	};
+
+	inline void RecordBranchDivergence(const BranchSite branchSite,const double value)
+	{
+		if(!ActiveCounters)return;const unsigned int site=static_cast<unsigned int>(branchSite);
+		ActiveCounters->maximumBranchDivergence[site]=std::max(
+			ActiveCounters->maximumBranchDivergence[site],value);
+		if(ActiveLocalTransportBranchEnvelope)LocalTransportBranchDivergence[site]=std::max(
+			LocalTransportBranchDivergence[site],value);
+		double sum=0.0;for(const double divergence:ActiveCounters->maximumBranchDivergence)
+			sum=NextUp(sum+divergence);
+		ActiveCounters->transportBranchDivergenceBound=sum;
+	}
+
+	inline TraceFloat FinalizeTransportBranchEnvelope(TraceFloat value)
+	{
+		double sum=0.0;if(ActiveLocalTransportBranchEnvelope)
+			for(const double divergence:LocalTransportBranchDivergence)
+				sum=NextUp(sum+divergence);
+		if(sum>0.0)value.ExpandRadius(sum);return value;
+	}
+
 	inline bool PPMQuadraticZeroObligationPending()
 	{
 		return ActiveCounters&&LastScopedObligation!=std::numeric_limits<std::size_t>::max()&&
@@ -550,12 +601,7 @@ namespace FireProductionRoundoffTrace
 		obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
 		++ActiveCounters->dischargedBranchObligationCount;
-		const unsigned int site=static_cast<unsigned int>(BranchSite::FloorBoundary);
-		ActiveCounters->maximumBranchDivergence[site]=std::max(
-			ActiveCounters->maximumBranchDivergence[site],total);
-		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
-			sum=NextUp(sum+value);
-		ActiveCounters->transportBranchDivergenceBound=sum;
+		RecordBranchDivergence(BranchSite::FloorBoundary,total);
 		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
 			ActiveCounters->branchObligations.size();
 	}
@@ -581,12 +627,7 @@ namespace FireProductionRoundoffTrace
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
 		++ActiveCounters->dischargedBranchObligationCount;
-		const unsigned int site=static_cast<unsigned int>(BranchSite::RemainingPositive);
-		ActiveCounters->maximumBranchDivergence[site]=std::max(
-			ActiveCounters->maximumBranchDivergence[site],total);
-		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
-			sum=NextUp(sum+value);
-		ActiveCounters->transportBranchDivergenceBound=sum;
+		RecordBranchDivergence(BranchSite::RemainingPositive,total);
 		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
 			ActiveCounters->branchObligations.size();
 	}
@@ -612,12 +653,7 @@ namespace FireProductionRoundoffTrace
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
 		++ActiveCounters->dischargedBranchObligationCount;
-		const unsigned int site=static_cast<unsigned int>(BranchSite::CourantNonnegative);
-		ActiveCounters->maximumBranchDivergence[site]=std::max(
-			ActiveCounters->maximumBranchDivergence[site],total);
-		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
-			sum=NextUp(sum+value);
-		ActiveCounters->transportBranchDivergenceBound=sum;
+		RecordBranchDivergence(BranchSite::CourantNonnegative,total);
 		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
 			ActiveCounters->branchObligations.size();
 	}
@@ -643,12 +679,7 @@ namespace FireProductionRoundoffTrace
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
 		++ActiveCounters->dischargedBranchObligationCount;
-		const unsigned int site=static_cast<unsigned int>(BranchSite::FractionPositive);
-		ActiveCounters->maximumBranchDivergence[site]=std::max(
-			ActiveCounters->maximumBranchDivergence[site],total);
-		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
-			sum=NextUp(sum+value);
-		ActiveCounters->transportBranchDivergenceBound=sum;
+		RecordBranchDivergence(BranchSite::FractionPositive,total);
 		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
 			ActiveCounters->branchObligations.size();
 	}
@@ -678,12 +709,7 @@ namespace FireProductionRoundoffTrace
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
 		++ActiveCounters->dischargedBranchObligationCount;
-		const unsigned int site=static_cast<unsigned int>(BranchSite::FlatIntegral);
-		ActiveCounters->maximumBranchDivergence[site]=std::max(
-			ActiveCounters->maximumBranchDivergence[site],total);
-		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
-			sum=NextUp(sum+value);
-		ActiveCounters->transportBranchDivergenceBound=sum;
+		RecordBranchDivergence(BranchSite::FlatIntegral,total);
 		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
 			ActiveCounters->branchObligations.size();
 	}
@@ -785,12 +811,7 @@ namespace FireProductionRoundoffTrace
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
 		++ActiveCounters->dischargedBranchObligationCount;
-		const unsigned int site=static_cast<unsigned int>(BranchSite::InflowSign);
-		ActiveCounters->maximumBranchDivergence[site]=std::max(
-			ActiveCounters->maximumBranchDivergence[site],total);
-		double sum=0.0;for(const double value:ActiveCounters->maximumBranchDivergence)
-			sum=NextUp(sum+value);
-		ActiveCounters->transportBranchDivergenceBound=sum;
+		RecordBranchDivergence(BranchSite::InflowSign,total);
 		ActiveCounters->unresolvedBranch=ActiveCounters->dischargedBranchObligationCount<
 			ActiveCounters->branchObligations.size();
 		LastScopedObligation=std::numeric_limits<std::size_t>::max();
@@ -976,14 +997,53 @@ namespace FireProductionRoundoffTrace
 	inline void ObserveAndReset(std::vector<TraceFloat>& values)
 	{
 		for(TraceFloat& value:values){
-			if(ActiveCounters&&ActiveCounters->transportBranchDivergenceBound>0.0)
-				value.ExpandRadius(ActiveCounters->transportBranchDivergenceBound);
 			if(ActiveCounters){ActiveCounters->maximumAbsoluteOutput=std::max(
 				ActiveCounters->maximumAbsoluteOutput,std::fabs(value.Center())+value.Radius());
 				ActiveCounters->maximumOutputRadius=std::max(
 					ActiveCounters->maximumOutputRadius,value.Radius());}
 			value=TraceFloat(value.Rounded());
 		}
+	}
+
+	inline void ObserveMetricRangeAndReset(std::vector<TraceFloat>& values,
+		const std::size_t begin,const std::size_t count,const unsigned int channel)
+	{
+		if(begin>values.size()||count>values.size()-begin||
+			channel>=Observation::MetricChannelCount)return;
+		for(std::size_t offset=0u;offset<count;++offset){TraceFloat& value=values[begin+offset];
+			if(ActiveCounters){const double radius=value.Radius();
+				if(!std::isfinite(radius)){
+					if(!ActiveCounters->nonfiniteMetricOutputRadiusCount[channel]){
+						ActiveCounters->firstNonfiniteMetricOutputIndex[channel]=begin+offset;
+						ActiveCounters->firstNonfiniteMetricOutputCenter[channel]=value.Center();
+						ActiveCounters->firstNonfiniteMetricOutputRounded[channel]=value.Rounded();}
+					++ActiveCounters->nonfiniteMetricOutputRadiusCount[channel];
+					ActiveCounters->invalidDomain=true;
+				}else{
+				ActiveCounters->maximumAbsoluteOutput=std::max(
+					ActiveCounters->maximumAbsoluteOutput,std::fabs(value.Center())+radius);
+				ActiveCounters->maximumOutputRadius=std::max(
+					ActiveCounters->maximumOutputRadius,radius);
+				ActiveCounters->metricOutputRadiusSum[channel]=NextUp(
+					ActiveCounters->metricOutputRadiusSum[channel]+radius);
+				ActiveCounters->metricOutputRadiusSquareSum[channel]=NextUp(
+					ActiveCounters->metricOutputRadiusSquareSum[channel]+radius*radius);
+				}
+				++ActiveCounters->metricOutputCount[channel];}
+			value=TraceFloat(value.Rounded());
+		}
+	}
+
+	inline void SealCurrentStage();
+	inline void SealCellStageAndReset(std::vector<TraceFloat>& values,
+		const std::size_t componentCount,const std::size_t cellCount)
+	{
+		if(componentCount>9u||!cellCount||values.size()!=componentCount*cellCount){
+			if(ActiveCounters)ActiveCounters->invalidDomain=true;return;}
+		for(std::size_t component=0u;component<componentCount;++component)
+			ObserveMetricRangeAndReset(values,component*cellCount,cellCount,
+				static_cast<unsigned int>(component));
+		SealCurrentStage();
 	}
 
 	inline void SealStageAndReset(std::vector<TraceFloat>& first)

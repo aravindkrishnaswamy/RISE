@@ -104,7 +104,8 @@ namespace FireProductionRoundoffAdapter
 	{
 		for(unsigned int axis=0u;axis<3u;++axis){
 			FireProductionRoundoffTrace::ObserveAndReset(projection.faceDensityKGPerM3[axis]);
-			FireProductionRoundoffTrace::ObserveAndReset(projection.velocityMPerS[axis]);
+			FireProductionRoundoffTrace::ObserveMetricRangeAndReset(
+				projection.velocityMPerS[axis],0u,projection.velocityMPerS[axis].size(),9u+axis);
 			FireProductionRoundoffTrace::ObserveAndReset(projection.momentumKGPerM2S[axis]);
 		}
 		FireProductionRoundoffTrace::ObserveAndReset(projection.pressurePa);
@@ -162,7 +163,10 @@ namespace FireProductionRoundoffAdapter
 				for(std::size_t component=2u;component<=6u;++component)
 					gas[index]+=computed.conservativeValues[component*cells+index];
 			}
-			FireProductionRoundoffTrace::ObserveAndReset(computed.conservativeValues);
+			for(std::size_t component=0u;component<9u;++component)
+				FireProductionRoundoffTrace::ObserveMetricRangeAndReset(
+					computed.conservativeValues,component*cells,cells,
+					static_cast<unsigned int>(component));
 			FireProductionRoundoffTrace::ObserveAndReset(computed.dual.momentum[0]);
 			FireProductionRoundoffTrace::ObserveAndReset(computed.dual.momentum[1]);
 			FireProductionRoundoffTrace::ObserveAndReset(computed.dual.momentum[2]);
