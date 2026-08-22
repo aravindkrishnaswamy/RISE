@@ -288,7 +288,8 @@ def manifest() -> str:
         for suffix in (".h", ".cpp"):
             digest = hashlib.sha256((SOURCE / (name + suffix)).read_bytes()).hexdigest()
             lines.append(f'inline constexpr const char* {name}{"Header" if suffix == ".h" else "Source"}="{digest}";\n')
-    support = (("TraceCore", ROOT / "tests" / "FireProductionRoundoffTrace.h"),
+    support = (("TraceAdapter", ROOT / "tests" / "FireProductionRoundoffTraceAdapter.h"),
+               ("TraceCore", ROOT / "tests" / "FireProductionRoundoffTrace.h"),
                ("IndependentWalker", ROOT / "tests" / "FireProductionRoundoffWalker.h"))
     for name, path in support:
         lines.append(f'inline constexpr const char* {name}="{hashlib.sha256(path.read_bytes()).hexdigest()}";\n')

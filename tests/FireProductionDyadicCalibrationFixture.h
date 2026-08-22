@@ -1032,6 +1032,7 @@ namespace FireProductionDyadicCalibration
 			RISEFireProductionTrace::SourceManifest::FireProductionForceSource,
 			RISEFireProductionTrace::SourceManifest::FireProductionProjectionHeader,
 			RISEFireProductionTrace::SourceManifest::FireProductionProjectionSource,
+			RISEFireProductionTrace::SourceManifest::TraceAdapter,
 			RISEFireProductionTrace::SourceManifest::TraceCore,
 			RISEFireProductionTrace::SourceManifest::IndependentWalker};
 		for(const char* source:traceSources)AppendText(encoded,source);
@@ -1267,7 +1268,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="348905bff27bfb88ee83cbc255f8655492bb46046f8198b2e6e4f636dbe84c4f"||
+			traceDigest!="4e2e9c925504c72a4a859b72c37812b1478d15649f8a215c59ff2462fe5a9a9a"||
 			unresolvedBitmap!=0xc00000u||invalidBitmap!=0xc00000u||finiteOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972323u||

@@ -59,6 +59,7 @@ int main()
 		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionProjectionSource)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionTransportSource)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::FireProductionForceSource)==64u&&
+		std::strlen(RISEFireProductionTrace::SourceManifest::TraceAdapter)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::TraceCore)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::IndependentWalker)==64u&&
 		std::strlen(RISEFireProductionTrace::SourceManifest::Generator)==64u,
@@ -69,6 +70,8 @@ int main()
 	const std::string windowsTestDriver=ReadText("run_all_tests.ps1");
 	const std::string walkerSource=ReadText("tests/FireProductionRoundoffWalker.h");
 	const std::string traceCoreSource=ReadText("tests/FireProductionRoundoffTrace.h");
+	const std::string traceAdapterSource=ReadText(
+		"tests/FireProductionRoundoffTraceAdapter.h");
 	const std::string tracedTransportSource=ReadText(
 		"tests/fire_production_trace/FireProductionTransport.cpp");
 	const std::string projectionSource=ReadText(
@@ -205,7 +208,7 @@ int main()
 	Check(!bfp32RefusalEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(bfp32RefusalEvidence.begin(),
 			bfp32RefusalEvidence.end()))==
-		"c602b40eba99a19e72459f1609593c3e4a12380be6b86576843247d833eec13a"&&
+		"1512191c5966ad3eb981b2a2e6e205f79d9666f26d3cbfb58a3094c47b5c853e"&&
 		bfp32RefusalEvidence.find("executed_obligation_instances_pending 3")!=
 			std::string::npos&&
 		bfp32RefusalEvidence.find("metal_measurement_performed false")!=
@@ -278,6 +281,15 @@ int main()
 		traceCoreSource.find("value.ExpandRadius(ActiveCounters->"
 			"transportBranchDivergenceBound)")==std::string::npos,
 		"branch envelopes attach to their swept integral rather than every stage output");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		traceAdapterSource.begin(),traceAdapterSource.end()))==
+		RISEFireProductionTrace::SourceManifest::TraceAdapter&&
+		CountText(traceAdapterSource,"ObserveMetricRangeAndReset(")==2u&&
+		traceAdapterSource.find("projection.velocityMPerS[axis],0u,"
+			"projection.velocityMPerS[axis].size(),9u+axis")!=std::string::npos&&
+		traceAdapterSource.find("computed.conservativeValues,component*cells,cells,")!=
+			std::string::npos,
+		"trace adapter identity and scalar/velocity metric channel wiring are source-bound");
 
 	{
 		double derivedFactor=0.0,derivedWidth=0.0,mutantFactor=0.0,mutantWidth=0.0;

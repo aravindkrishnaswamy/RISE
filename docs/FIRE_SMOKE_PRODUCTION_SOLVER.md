@@ -2548,7 +2548,7 @@ eight-slice readmission, and thermo/source maps remain unrun.
 
 Durable evidence is
 `rendered/fire_production_calibration/r133_bfp32_projection_refusal/bfp32_projection_refusal.v1`,
-SHA-256 `c602b40eba99a19e72459f1609593c3e4a12380be6b86576843247d833eec13a`.
+SHA-256 `1512191c5966ad3eb981b2a2e6e205f79d9666f26d3cbfb58a3094c47b5c853e`.
 The golden checkpoint is unchanged.
 
 ## 8. Rejected directions and future work

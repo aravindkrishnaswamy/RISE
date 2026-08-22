@@ -3107,5 +3107,5 @@ it was already tried and refuted here.
   This is a walker/condition-proof defect, not a measured Metal miss; no Metal
   comparison ran and no `B_fp32` term exists.  A finite independent
   per-sweep multigrid amplification derivation is required next.  Durable
-  evidence is `c602b40e...c13a`; production and golden-checkpoint bytes are
+  evidence is `1512191c...853e`; production and golden-checkpoint bytes are
   unchanged.
