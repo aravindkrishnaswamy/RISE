@@ -1391,30 +1391,9 @@ namespace RISE
 			const FireStateProducerPrecision producerPrecision,
 			std::string* error=0 )
 		{
-			const FireAcceptedStateFeasibilityEnvelope& envelope=
-				fuel.AcceptedStateFeasibilityEnvelope();
-			const double roundoffFactor=AcceptedStateRoundoffFactor(envelope,producerPrecision);
-			if(!fuel.IsValid()||!(roundoffFactor>0.0)||!std::isfinite(roundoffFactor))return Fail(error,
-				"fire solver accepted-state envelope record is invalid");
-			double total=0.0;
-			for(std::size_t component=0;component<MethaneConservativeDimension;++component)
-				if(!std::isfinite(state[component]))return Fail(error,
-					"fire solver accepted state is non-finite");
-			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
-				total+=state[1+species];
-			if(!(total>0.0)||!std::isfinite(total))return Fail(error,
-				"fire solver accepted state has no finite positive mass");
-			for(std::size_t inequality=0;inequality<4+MethaneSpeciesCount;++inequality){
-				const double value=InequalityValue(state,inequality,ambientEnthalpy,
-					adiabaticEnthalpy);
-				const double bound=roundoffFactor*InequalityRoundoffScale(state,
-						inequality,ambientEnthalpy,adiabaticEnthalpy);
-				if(!std::isfinite(value)||value>bound)return Fail(error,
-					"fire solver accepted state violates the single r60 feasibility envelope");
-			}
-			return CertifiedConstraintRowsSatisfied(state,fuel.ConservativeReconstruction(),
-				envelope,producerPrecision)||Fail(error,
-				"fire solver accepted state violates the certified affine rows");
+			return fuel.AcceptedConservativeStateAdmissibleByComponentOrder(
+				state.value.data(),state.value.size(),ambientEnthalpy.data(),adiabaticEnthalpy.data(),
+				ambientEnthalpy.size(),producerPrecision,error);
 		}
 
 		inline bool AcceptedMethaneCellStateAdmissible(

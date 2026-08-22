@@ -502,6 +502,7 @@ namespace
 		double centerlineStatisticsDurationS=0.0;
 		double simulationTimeS=0.0,previousStepS=0.0,lastAcceptedStepS=0.0;
 		std::uint64_t acceptedSteps=0u;
+		FireProductionAcceptedManifoldObservation productionManifoldObservation;
 	};
 
 	bool HomogeneousStateProducerPrecision(const std::vector<MethaneCellState>& states,
@@ -603,7 +604,25 @@ namespace
 			writer.Pod(checkpoint.values.activeSetThreadIdentity)&&
 			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
 		if(!activeSetWritten)return false;
-		return version<8u||writer.String(checkpoint.values.priorActiveSetAlgorithmVersion);
+		if(version>=8u&&!writer.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
+		if(version<10u)return true;
+		const FireProductionAcceptedManifoldObservation& observation=
+			checkpoint.productionManifoldObservation;
+		if((observation.available&&(!std::isfinite(observation.timeStepS)||
+			observation.timeStepS<=0.0||!std::isfinite(observation.maximumGeneration)||
+			observation.maximumGeneration<0.0||
+			!std::isfinite(observation.restorationDrainFraction)||
+			observation.restorationDrainFraction<0.0||
+			observation.restorationDrainFraction>1.0))||
+			(!observation.available&&(observation.timeStepS!=0.0||
+				observation.maximumGeneration!=0.0||
+				observation.restorationDrainFraction!=0.0)))return false;
+		const unsigned char manifoldAvailable=
+			observation.available?1u:0u;
+		return writer.Pod(manifoldAvailable)&&
+			writer.Pod(checkpoint.productionManifoldObservation.timeStepS)&&
+			writer.Pod(checkpoint.productionManifoldObservation.maximumGeneration)&&
+			writer.Pod(checkpoint.productionManifoldObservation.restorationDrainFraction);
 	}
 
 	bool ReadCheckpointPayload(CheckpointReader& reader,MethaneRunCheckpoint& checkpoint,
@@ -622,24 +641,41 @@ namespace
 			ReadArithmeticVector(reader,checkpoint.planeHeatReleaseIntegral)&&
 			reader.Pod(checkpoint.centerlineStatisticsDurationS)&&
 			reader.Pod(checkpoint.simulationTimeS)&&reader.Pod(checkpoint.previousStepS)&&
-			reader.Pod(checkpoint.lastAcceptedStepS)&&reader.Pod(checkpoint.acceptedSteps)&&
-			(version<6u||(ReadArithmeticVector(reader,
-				checkpoint.values.acceptedMaximumTemperatureHistoryK,1000000u)&&
-				reader.String(checkpoint.values.migrationCertificateId)&&
-				reader.String(checkpoint.values.migrationOldBuildId)&&
-				reader.String(checkpoint.values.migrationNewBuildId)&&
-				reader.Pod(checkpoint.values.migrationAcceptedStepCount)&&
-				reader.Pod(checkpoint.values.migrationResumedFromStep)&&
-				(version<7u||(reader.String(checkpoint.values.activeSetAlgorithmVersion)&&
-					reader.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)&&
-					reader.Pod(checkpoint.values.discontinuousActiveSetEvents)&&
-					reader.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
-					reader.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
-					reader.Pod(checkpoint.values.activeSetThreadIdentity)&&
-					reader.Pod(checkpoint.values.activeSetThreadIdentityChecked)&&
-					(version<8u||reader.String(
-						checkpoint.values.priorActiveSetAlgorithmVersion))))));
+			reader.Pod(checkpoint.lastAcceptedStepS)&&reader.Pod(checkpoint.acceptedSteps);
 		if(!decoded)return false;
+		if(version>=6u&&(!ReadArithmeticVector(reader,
+			checkpoint.values.acceptedMaximumTemperatureHistoryK,1000000u)||
+			!reader.String(checkpoint.values.migrationCertificateId)||
+			!reader.String(checkpoint.values.migrationOldBuildId)||
+			!reader.String(checkpoint.values.migrationNewBuildId)||
+			!reader.Pod(checkpoint.values.migrationAcceptedStepCount)||
+			!reader.Pod(checkpoint.values.migrationResumedFromStep)))return false;
+		if(version>=7u&&(!reader.String(checkpoint.values.activeSetAlgorithmVersion)||
+			!reader.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)||
+			!reader.Pod(checkpoint.values.discontinuousActiveSetEvents)||
+			!reader.Pod(checkpoint.values.maximumActiveSetCycleLength)||
+			!reader.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)||
+			!reader.Pod(checkpoint.values.activeSetThreadIdentity)||
+			!reader.Pod(checkpoint.values.activeSetThreadIdentityChecked)))return false;
+		if(version>=8u&&!reader.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
+		if(version>=10u){unsigned char manifoldAvailable=0u;
+			if(!reader.Pod(manifoldAvailable)||manifoldAvailable>1u||
+				!reader.Pod(checkpoint.productionManifoldObservation.timeStepS)||
+				!reader.Pod(checkpoint.productionManifoldObservation.maximumGeneration)||
+				!reader.Pod(checkpoint.productionManifoldObservation.restorationDrainFraction))return false;
+			checkpoint.productionManifoldObservation.available=manifoldAvailable!=0u;
+			const FireProductionAcceptedManifoldObservation& observation=
+				checkpoint.productionManifoldObservation;
+			if((observation.available&&(
+				!std::isfinite(observation.timeStepS)||observation.timeStepS<=0.0||
+				!std::isfinite(observation.maximumGeneration)||observation.maximumGeneration<0.0||
+				!std::isfinite(observation.restorationDrainFraction)||
+				observation.restorationDrainFraction<0.0||
+				observation.restorationDrainFraction>1.0))||
+				(!observation.available&&(observation.timeStepS!=0.0||
+					observation.maximumGeneration!=0.0||
+					observation.restorationDrainFraction!=0.0)))return false;
+		}
 		checkpoint.checkpointFormatVersion=version;
 		if(version<7u)checkpoint.values.activeSetAlgorithmVersion=
 			LegacyActiveSetAlgorithmVersion();
@@ -697,9 +733,9 @@ namespace
 
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
-		const std::uint64_t version=9u)
+		const std::uint64_t version=10u)
 	{
-		if(version<5u||version>9u){error="run checkpoint output version is invalid";return false;}
+		if(version<5u||version>10u){error="run checkpoint output version is invalid";return false;}
 		if(path.has_parent_path())std::filesystem::create_directories(path.parent_path());
 #if defined(_WIN32)
 		const long long processId=static_cast<long long>(::_getpid());
@@ -757,7 +793,8 @@ namespace
 		const char expected[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
 		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
 			!reader.HeaderBytes(&version,sizeof(version))||
-				(version!=5u&&version!=6u&&version!=7u&&version!=8u&&version!=9u)||
+				(version!=5u&&version!=6u&&version!=7u&&version!=8u&&version!=9u&&
+					version!=10u)||
 			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
 			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
@@ -3357,6 +3394,10 @@ int main(int argc,char** argv)
 	precisionRoundTrip.centerlineStatisticsDurationS=0.0;
 	precisionRoundTrip.simulationTimeS=0.0;precisionRoundTrip.previousStepS=0.0;
 	precisionRoundTrip.lastAcceptedStepS=0.0;precisionRoundTrip.acceptedSteps=0u;
+	precisionRoundTrip.productionManifoldObservation.available=true;
+	precisionRoundTrip.productionManifoldObservation.timeStepS=0.001;
+	precisionRoundTrip.productionManifoldObservation.maximumGeneration=0.001;
+	precisionRoundTrip.productionManifoldObservation.restorationDrainFraction=0.95;
 	if(!precisionRoundTrip.states.empty()){
 		const double excursion=0.5*AcceptedStateRoundoffFactor(
 			checkpointFuel.AcceptedStateFeasibilityEnvelope(),FireStateProducerPrecision::Binary32)*
@@ -3394,15 +3435,34 @@ int main(int argc,char** argv)
 		precisionCheckpoint,precisionFrame,4u):-1;
 	MethaneRunCheckpoint resumedPrecisionRoundTrip;
 	Check(precisionSave&&
-		loadedPrecisionRoundTrip.checkpointFormatVersion==9u&&
+		loadedPrecisionRoundTrip.checkpointFormatVersion==10u&&
 		HomogeneousStateProducerPrecision(loadedPrecisionRoundTrip.states,loadedPrecision)&&
-		loadedPrecision==FireStateProducerPrecision::Binary32&&precisionResumeExit==0&&
+		loadedPrecision==FireStateProducerPrecision::Binary32&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.available&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.timeStepS==0.001&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.maximumGeneration==0.001&&
+		loadedPrecisionRoundTrip.productionManifoldObservation.restorationDrainFraction==0.95&&
+		precisionResumeExit==0&&
 		LoadMethaneRunCheckpoint(precisionCheckpoint,resumedPrecisionRoundTrip,
 			checkpointFixtureError)&&
 		HomogeneousStateProducerPrecision(resumedPrecisionRoundTrip.states,loadedPrecision)&&
 		loadedPrecision==FireStateProducerPrecision::Binary32&&
 		resumedPrecisionRoundTrip.acceptedSteps==precisionRoundTrip.acceptedSteps,
 		"r115 binary32 checkpoint metadata survives serialization and a binary64 CPU resume cannot relabel the inherited excursion");
+	const std::filesystem::path version9Checkpoint=checkpointFixture/"precision_class_v9.checkpoint";
+	MethaneRunCheckpoint loadedVersion9;
+	Check(SaveMethaneRunCheckpoint(version9Checkpoint,precisionRoundTrip,
+		checkpointFixtureError,9u)&&LoadMethaneRunCheckpoint(version9Checkpoint,loadedVersion9,
+		checkpointFixtureError)&&loadedVersion9.checkpointFormatVersion==9u&&
+		!loadedVersion9.productionManifoldObservation.available&&
+		loadedVersion9.productionManifoldObservation.timeStepS==0.0,
+		"r143 checkpoint v10 adds manifold metadata while v9 decodes it as unavailable");
+	FireProductionStableTimeStep resumedManifoldLimit;
+	Check(SelectFireProductionStableTimeStep(0.1,0.0,0.0,0.0,0.001,
+		loadedPrecisionRoundTrip.productionManifoldObservation,resumedManifoldLimit,
+		&checkpointFixtureError)&&resumedManifoldLimit.seconds==0.0007125&&
+		std::string(resumedManifoldLimit.activeLimit)=="manifold_plateau",
+		"r143 checkpoint-resumed accepted observation constrains the next selector");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
 	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
 	const std::filesystem::path corruptedCheckpointPath=checkpointFixture/"corrupt.checkpoint";

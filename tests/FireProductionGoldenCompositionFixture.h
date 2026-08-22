@@ -309,17 +309,67 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				return unsetenv(name)==0;
 #endif
 			};
-			RISE::FireProductionResidentStepResult rejected;
-			rejected.conservativeValues.push_back(1.0f);rejected.cellSubmapCount=1u;
-			rejected.maximumManifoldGeneration=1.0;rejected.manifoldPlateauPassed=true;
+			auto projectionDefault=[](const RISE::FireProductionProjectionResult& value){
+				bool empty=value.pressurePa.empty();
+				for(unsigned int axis=0u;axis<3u;++axis)empty=empty&&
+					value.faceDensityKGPerM3[axis].empty()&&value.velocityMPerS[axis].empty()&&
+					value.momentumKGPerM2S[axis].empty();
+				for(const auto& side:value.pressureOpenInflow)empty=empty&&side.empty();
+				return empty&&value.maximumPreProjectionResidualPerS==0.0f&&
+					value.maximumPostProjectionResidualPerS==0.0f&&
+					value.maximumOpenComplementarityDiscrepancyMPerS==0.0f&&
+					value.removedFineRightHandSideMean==0.0f&&value.executedVCycleCount==0u&&
+					value.executedJacobiSweepCount==0u&&value.residentUploadStagingCount==0u&&
+					value.residentInterstageDeviceToHostTransferCount==0u&&
+					value.residentTerminalStagingCount==0u&&value.residentCommandCommitCount==0u&&
+					value.residentProjectionInvocationCount==0u&&
+					value.residentCertifiedWorkingSetBytes==0u&&
+					value.residentActualMetalAllocationBytes==0u&&!value.validationPassed&&
+					value.deviceElapsedMS==0.0;
+			};
+			auto residentStepDefault=[&](const RISE::FireProductionResidentStepResult& value){
+				bool dualEmpty=true;for(unsigned int axis=0u;axis<3u;++axis)dualEmpty=dualEmpty&&
+					value.transportedDual.auxiliaryFaceDensity[axis].empty()&&
+					value.transportedDual.momentum[axis].empty();
+				return value.conservativeValues.empty()&&dualEmpty&&
+					value.transportedDual.executedSubmapCount==0u&&
+					value.transportedDual.canonicalSeamCopyCount==0u&&
+					value.transportedDual.commandCommitCount==0u&&
+					value.transportedDual.interstageFullGridTransferCount==0u&&
+					value.transportedDual.actualMetalAllocationBytes==0u&&
+					value.transportedDual.deviceElapsedMS==0.0&&projectionDefault(value.physicalProjection)&&
+					projectionDefault(value.projection)&&value.forceSchedule.substepCount==0u&&
+					value.forceSchedule.substepTimeS==0.0f&&value.forceSchedule.outwardWork==0.0&&
+					value.forceSchedule.representedProductUpper==0.0&&
+					value.forceDiagnostics.outwardLambdaPerS==0.0f&&
+					value.forceDiagnostics.scalarDiagnosticTransferCount==0u&&
+					value.forceDiagnostics.substepLoopDeviceToHostTransferCount==0u&&
+					value.forceDiagnostics.terminalStagingCount==0u&&
+					value.forceDiagnostics.commandCommitCount==0u&&
+					value.forceDiagnostics.certifiedWorkingSetBytes==0u&&
+					value.forceDiagnostics.actualMetalAllocationBytes==0u&&
+					value.forceDiagnostics.preflightDeviceElapsedMS==0.0&&
+					value.forceDiagnostics.advanceDeviceElapsedMS==0.0&&
+					value.cellSubmapCount==0u&&value.dualSubmapCount==0u&&
+					value.sourceCommandCommitCount==0u&&value.residentProjectionInvocationCount==0u&&
+					value.interstageFullGridTransferCount==0u&&value.terminalStagingCount==0u&&
+					value.combinedCertifiedWorkingSetBytes==0u&&
+					value.combinedActualMetalAllocationBytes==0u&&value.deviceElapsedMS==0.0&&
+					value.maximumManifoldGeneration==0.0&&value.maximumAcceptedManifoldDeviation==0.0&&
+					value.requiredRestorationDrainFraction==0.0&&
+					value.deliveredRestorationDrainFraction==0.0&&
+					value.restorationResidualBandPerS==0.0&&!value.manifoldPlateauPassed&&
+					value.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
+			};
+			RISE::FireProductionResidentStepResult rejected=limited;
 			if(!clearEnvironment("RISE_FIRE_MANIFOLD_TIMESTEP_PROBE"))return 258;
+			error.clear();
 			const bool unexpectedlyAccepted=RISE::AdvanceFireProductionResidentStepMetal(
 				request,rejected,&error);
 			if(!setEnvironment("RISE_FIRE_MANIFOLD_TIMESTEP_PROBE","1"))return 258;
-			const bool atomicRejection=!unexpectedlyAccepted&&rejected.conservativeValues.empty()&&
-				rejected.cellSubmapCount==0u&&rejected.maximumManifoldGeneration==0.0&&
-				!rejected.manifoldPlateauPassed&&rejected.conservativeProducerPrecision==
-					FireStateProducerPrecision::Unknown;
+			const bool atomicRejection=!unexpectedlyAccepted&&residentStepDefault(rejected)&&
+				error.find("production manifold generation exceeds the accepted-step allowance")!=
+					std::string::npos;
 			std::fprintf(stderr,"MANIFOLD_TIMESTEP cfl_dt=%.17g derived_dt=%.17g "
 				"represented_dt=%.17g tightening=%.17g G=%.17g field=%.17g "
 				"required=%.17g delivered=%.17g band=%.17g pre=%.17g post=%.17g "

@@ -344,6 +344,15 @@ namespace RISEFireProductionFP64
 			conservativeProducerPrecision(RISE::FireStateProducerPrecision::Unknown) {}
 	};
 
+	//! Publishes the only manifold metadata that may constrain the next
+	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot
+	//! create an accepted observation.
+	bool PublishFireProductionAcceptedManifoldObservation(
+		double acceptedStepS,
+		const FireProductionResidentStepResult& acceptedStep,
+		FireProductionAcceptedManifoldObservation& result,
+		std::string* error=0 );
+
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,
 	//! explicit source operands, one physical P2 projection, and one deadbeat
 	//! manifold-restoration projection. Full-grid host access is limited to the

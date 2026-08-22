@@ -3317,3 +3317,27 @@ it was already tried and refuted here.
   No long shadow or later calibration stage runs because the first limited
   step already fails the function-level detector.  Durable evidence is
   `93409b4d...8ace2b8`; golden bytes remain unchanged.
+- **r145 manifold-predictor review closure (2026-08-22):** fresh review leaves
+  the r144 numerical verdict unchanged and makes its lifecycle claims
+  load-bearing.  The terminal manifold measurement now sends the complete
+  nine-component Binary32 state through the single r60 predicate before EOS
+  inversion; arbitrary below/above-bracket energy and affine-row mutants RED.
+  Plateau-evidence activation is exactly `1` or fails before Metal, and the
+  normal rejection poisons then verifies every public result field.  Only a
+  Binary32 result with both projections validated, two resident invocations,
+  zero interstage transfers, a passing `7.5e-4` function gate, and finite
+  derived diagnostics can publish the `(dt,G,r)` observation used by the next
+  selector.  Checkpoint format 10 persists that observation; versions 5--9
+  decode it as unavailable, preserving old golden bytes.
+
+  Retained r138 reproduces trace `f90a2508...551cebf` and exit `243`; retained
+  r142 reproduces exit `253`.  The r136 trace is re-pinned to
+  `c917ea32...ccfcf94` after the r143 force API entered its generated source
+  manifest; all numerical stage pins and the `0xff` refusal are unchanged.
+  The strengthened r144 replay again exits `254` with identical selector,
+  generation, field, and drain values.  Its new timing observation is
+  `70.0796 ms` device / `600.4716 ms` wall p95, or `30.62/262.39 h` for
+  tier-10 times 25 s.  The closure artifact is `3e8bf30a...3fa8c06`; golden
+  SHA remains `1b944176...4947`.  Because the first limited burning step still
+  requires drain `3.3442>1`, the long shadow and subsequent contract campaign
+  remain correctly blocked.

@@ -2932,6 +2932,44 @@ and first light remain blocked.  Evidence is
 `rendered/fire_production_calibration/r144_manifold_predictor_stop/manifold_predictor_evidence.v1`;
 the golden checkpoint remains byte-identical.
 
+### 7.55e Review closure and accepted-observation lifecycle (r145)
+
+Review did not change the r144 physical result.  It strengthened the boundary
+around it.  The resident terminal EOS observable now validates the complete
+nine-component Binary32 state through the single r60 admissibility predicate
+before temperature/volume reconstruction.  Gross energy underflow/overflow
+and affine-row violations therefore fail rather than being converted into an
+endpoint temperature.  A malformed plateau-evidence environment value fails
+before Metal, and the normal plateau rejection is checked against the complete
+default public result, not a selected subset.
+
+The next-step manifold observation has one publication seam.  It requires a
+finite positive accepted step, Binary32 producer metadata, validated physical
+and restoration projections, exactly two resident projection invocations,
+zero interstage full-grid transfers, a passing function-level plateau, and
+finite `G`, required/delivered drain, and mechanism-band diagnostics.  Only
+then may `(dt,G,r)` enter the selector.  Checkpoint format 10 persists this
+tuple; legacy formats 5 through 9 explicitly restore it as unavailable, which
+is the first-step/CFL state rather than an inferred zero-generation sample.
+
+The exact closure replay retains r138 exit `243` and trace
+`f90a2508...551cebf`, r142 exit `253`, and r144 exit `254` with the same
+`3.5423604574130363x` tightening, `G=2.5081625752932935e-3`, field ratio
+`3.3442167686406066`, and delivered drain `0.97489008508207653`.  r136's
+source-bound trace becomes `c917ea32...ccfcf94` because the r143 force API is
+now present in the generated trace manifest; its arithmetic pins, topology,
+and `0xff` refusal are unchanged.  Five new timing trials observe
+`70.079583441838622 ms` device and `600.47158400000001 ms` wall p95,
+projecting to `30.623158748670253` device-hours and
+`262.3922080838077` completed-call hours for tier-10 times 25 s.  Timing is
+still diagnostic, not an acceptance constant.  Durable closure evidence is
+`rendered/fire_production_calibration/r145_manifold_predictor_closure/manifold_predictor_closure.v1`.
+
+The strengthened lifecycle does not rescue the predictor: required drain is
+still `3.3442167670577247>1`.  The long shadow, golden `B_fp32`, temporal
+refinement, eight-slice readmission, source maps, and first light therefore
+remain unrun and blocked at the same function-level detector.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

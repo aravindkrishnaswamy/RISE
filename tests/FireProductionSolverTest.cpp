@@ -3915,6 +3915,31 @@ int main()
 	Check(composedMatches,
 		"full resident force, transport, explicit zero-source, and two-projection step matches "
 		"the independent CPU composition with no interstage transfer");
+	FireProductionResidentStepResult acceptedObservationStep=composedGPU;
+	acceptedObservationStep.maximumManifoldGeneration=0.001;
+	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0005;
+	acceptedObservationStep.deliveredRestorationDrainFraction=0.95;
+	acceptedObservationStep.manifoldPlateauPassed=true;
+	acceptedObservationStep.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
+	FireProductionAcceptedManifoldObservation acceptedObservation;
+	FireProductionStableTimeStep observationLimitedStep;
+	error.clear();
+	const bool observationPublished=PublishFireProductionAcceptedManifoldObservation(
+		0.001,acceptedObservationStep,acceptedObservation,&error);
+	const bool observationSelected=observationPublished&&SelectFireProductionStableTimeStep(
+		0.1,0.0,0.0,0.0,0.001,acceptedObservation,observationLimitedStep,&error);
+	acceptedObservationStep.maximumAcceptedManifoldDeviation=0.0008;
+	FireProductionAcceptedManifoldObservation rejectedObservation;
+	const bool overAllowanceObservationRejected=
+		!PublishFireProductionAcceptedManifoldObservation(0.001,
+			acceptedObservationStep,rejectedObservation,&error);
+	Check(observationSelected&&acceptedObservation.available&&
+		acceptedObservation.timeStepS==0.001&&acceptedObservation.maximumGeneration==0.001&&
+		acceptedObservation.restorationDrainFraction==0.95&&
+		observationLimitedStep.seconds==0.0007125&&
+		std::string(observationLimitedStep.activeLimit)=="manifold_plateau"&&
+		overAllowanceObservationRejected&&!rejectedObservation.available,
+		"only an accepted binary32 plateau result publishes the next-step manifold selector state");
 	auto seedFullStepResult=[&](FireProductionResidentStepResult& seeded) {
 		seeded.conservativeValues.push_back(1.0f);seedDualResult(seeded.transportedDual);
 		FireProductionResidentForceProjectionResult nested;seedResidentResult(nested);
@@ -3963,6 +3988,17 @@ int main()
 	Check(malformedManifoldProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
 		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeMalformedManifoldProbe,
 		"r143 malformed diagnostic activation fails before Metal work and publishes no result");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedPlateauProbe=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE","bogus",1);
+	const bool malformedPlateauProbeRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+	Check(malformedPlateauProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeMalformedPlateauProbe&&
+		error.find("plateau probe activation is invalid")!=std::string::npos,
+		"r143 malformed plateau evidence activation fails before Metal work");
 	FireProductionResidentStepRequest malformedFullStep=composedStep;
 	malformedFullStep.force.cellGasDensityKGPerM3.clear();
 	seedFullStepResult(rejectedFullStep);error.clear();

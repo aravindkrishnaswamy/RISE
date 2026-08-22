@@ -242,12 +242,22 @@ namespace RISE
 		bool InvertMixtureTemperatureBySpeciesOrderK(
 			const double* massDensitiesKGPerM3, std::size_t count,
 			double sensibleEnergyJPerM3, double& result, std::string* error = 0 ) const;
+		//! The single r60 accepted-state predicate over the production component
+		//! order [rhoTotalZ, seven species, sensible energy].
+		bool AcceptedConservativeStateAdmissibleByComponentOrder(
+			const double* conservativeValues, std::size_t count,
+			const double* lowerSensibleEnthalpyJPerKG,
+			const double* upperSensibleEnthalpyJPerKG,
+			std::size_t enthalpyCount,
+			FireStateProducerPrecision producerPrecision,
+			std::string* error = 0 ) const;
 		//! Accepted-state EOS volume ratio used by the resident manifold gate.
-		//! Signed stored densities participate in energy inversion; positive-part
-		//! gas availability participates in the ideal-gas volume, matching r60.
-		bool AcceptedVolumeRatioBySpeciesOrder(
-			const double* massDensitiesKGPerM3, std::size_t count,
-			double sensibleEnergyJPerM3, FireStateProducerPrecision producerPrecision,
+		//! This first executes the single r60 predicate above; signed stored
+		//! densities participate in energy inversion and positive-part gas
+		//! availability participates in the ideal-gas volume.
+		bool AcceptedConservativeVolumeRatioByComponentOrder(
+			const double* conservativeValues, std::size_t count,
+			FireStateProducerPrecision producerPrecision,
 			double& result, std::string* error = 0 ) const;
 		const std::vector<std::string>& ElementOrder() const { return m_elementOrder; }
 		const std::vector<double>& ElementMassFractionMatrix() const

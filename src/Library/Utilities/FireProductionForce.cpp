@@ -128,6 +128,42 @@ namespace RISE
 			Fail(error,"production timestep selection failed");
 	}
 
+	bool PublishFireProductionAcceptedManifoldObservation(
+		const double acceptedStepS,
+		const FireProductionResidentStepResult& acceptedStep,
+		FireProductionAcceptedManifoldObservation& result,
+		std::string* error )
+	{
+		result=FireProductionAcceptedManifoldObservation();
+		if(!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
+			acceptedStep.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32||
+			!acceptedStep.physicalProjection.validationPassed||
+			!acceptedStep.projection.validationPassed||
+			acceptedStep.residentProjectionInvocationCount!=2u||
+			acceptedStep.interstageFullGridTransferCount!=0u||
+			!acceptedStep.manifoldPlateauPassed||
+			!std::isfinite(acceptedStep.maximumManifoldGeneration)||
+			acceptedStep.maximumManifoldGeneration<0.0||
+			!std::isfinite(acceptedStep.maximumAcceptedManifoldDeviation)||
+			acceptedStep.maximumAcceptedManifoldDeviation<0.0||
+			acceptedStep.maximumAcceptedManifoldDeviation>
+				(1.0-ManifoldHeadroom)*ManifoldEOSCeiling||
+			!std::isfinite(acceptedStep.requiredRestorationDrainFraction)||
+			acceptedStep.requiredRestorationDrainFraction<0.0||
+			acceptedStep.requiredRestorationDrainFraction>1.0||
+			!std::isfinite(acceptedStep.deliveredRestorationDrainFraction)||
+			acceptedStep.deliveredRestorationDrainFraction<0.0||
+			acceptedStep.deliveredRestorationDrainFraction>1.0||
+			!std::isfinite(acceptedStep.restorationResidualBandPerS)||
+			acceptedStep.restorationResidualBandPerS<0.0)
+			return Fail(error,"production accepted manifold observation is invalid");
+		result.available=true;
+		result.timeStepS=acceptedStepS;
+		result.maximumGeneration=acceptedStep.maximumManifoldGeneration;
+		result.restorationDrainFraction=acceptedStep.deliveredRestorationDrainFraction;
+		return true;
+	}
+
 	bool EvaluateFireProductionVremanEddyViscosity(
 		const FireProductionVremanInput& input,
 		float& eddyViscosityM2PerS,

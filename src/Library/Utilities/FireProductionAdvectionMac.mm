@@ -43,14 +43,13 @@ namespace RISE
 			const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 			if(!fuel.IsValid()||fuel.SpeciesOrder().size()!=7u)return false;
 			for(std::size_t cell=0u;cell<cells;++cell){
-				double terminalSpecies[7];
-				for(std::size_t species=0u;species<7u;++species){
-					terminalSpecies[species]=terminal[(1u+species)*cells+cell];
-				}
+				double terminalState[9];
+				for(std::size_t component=0u;component<9u;++component)
+					terminalState[component]=terminal[component*cells+cell];
 				double terminalRatio=0.0;
 				if(!std::isfinite(beginningDeviation[cell])||
-					!fuel.AcceptedVolumeRatioBySpeciesOrder(terminalSpecies,7u,
-						terminal[8u*cells+cell],FireStateProducerPrecision::Binary32,
+					!fuel.AcceptedConservativeVolumeRatioByComponentOrder(terminalState,9u,
+						FireStateProducerPrecision::Binary32,
 						terminalRatio,error))return false;
 				const double terminalDeviation=terminalRatio-1.0;
 				maximumGeneration=std::max(maximumGeneration,
@@ -2072,6 +2071,14 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					"production manifold timestep probe activation is invalid";
 				return false;
 			}
+			const char* plateauEvidenceActivation=std::getenv(
+				"RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+			if( plateauEvidenceActivation&&std::strcmp(plateauEvidenceActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production restoration plateau probe activation is invalid";
+				return false;
+			}
+			const bool plateauEvidenceEnabled=plateauEvidenceActivation!=0;
 			unsigned int restorationProbeCycles=0u;bool restorationProbeEnabled=false;
 			if( !ValidateFireProductionRestorationCycleProbe(restorationProbeCycles,
 				restorationProbeEnabled,structuredError) ) return false;
@@ -2113,15 +2120,13 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.restorationDivergenceTargetPerS.size()!=cells||
 				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError)||
 				!ValidateFireProductionDualMomentumRequest(request.dualTransport,structuredError) ) return false;
-			const char* plateauEvidenceActivation=std::getenv(
-				"RISE_FIRE_RESTORATION_PLATEAU_PROBE");
-			if( request.enforceManifoldPlateau&&!plateauEvidenceActivation&&
+			if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled&&
 				request.beginningManifoldDeviationPerCell.size()!=cells ) {
 				if( structuredError ) *structuredError=
 					"production resident step lacks beginning manifold metadata";
 				return false;
 			}
-			if( request.enforceManifoldPlateau&&!plateauEvidenceActivation )
+			if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled )
 				for( const double value:request.beginningManifoldDeviationPerCell )
 					if( !std::isfinite(value) ) {
 						if( structuredError ) *structuredError=
@@ -2361,9 +2366,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 						values[9u*cells+face]>0.0f&&
 						std::isfinite(values[9u*cells+allFaces+face]);
 				if( !terminalValid ) return false;
-				const char* plateauProbe=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 				const bool enforcePlateau=request.enforceManifoldPlateau&&
-					!restorationRemoved&&!plateauProbe;
+					!restorationRemoved&&!plateauEvidenceEnabled;
 				double maximumManifoldGeneration=0.0,maximumTerminalDeviation=0.0;
 				FireProductionRestorationPlateauValidation plateauValidation;
 				if( enforcePlateau&&(!MeasureMethaneManifold(

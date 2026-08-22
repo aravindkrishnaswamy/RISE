@@ -676,6 +676,28 @@ int main()
 		fp32NegativeZeroSourceRejects&&
 		fp32MixedSourceBlockedUntilCertified&&fp32MixedSourceRejectsWidening,
 		"fp32-envelope states keep physical consumers total and uncertified sources fail closed");
+	ConservativeVector residentVolumeState=ToConservativeVector(eosFixture);
+	double residentVolumeRatio=0.0;
+	const bool residentVolumeAccepted=fuel.AcceptedConservativeVolumeRatioByComponentOrder(
+		residentVolumeState.value.data(),residentVolumeState.value.size(),
+		FireStateProducerPrecision::Binary64,residentVolumeRatio,&error);
+	ConservativeVector residentEnergyBelow=residentVolumeState;
+	residentEnergyBelow[MethaneMassStateDimension]=-std::numeric_limits<double>::max()/4.0;
+	ConservativeVector residentEnergyAbove=residentVolumeState;
+	residentEnergyAbove[MethaneMassStateDimension]=std::numeric_limits<double>::max()/4.0;
+	ConservativeVector residentAffineViolation=residentVolumeState;
+	residentAffineViolation[0]+=1.0;
+	Check(residentVolumeAccepted&&residentVolumeRatio>0.0&&
+		!fuel.AcceptedConservativeVolumeRatioByComponentOrder(
+			residentEnergyBelow.value.data(),residentEnergyBelow.value.size(),
+			FireStateProducerPrecision::Binary64,residentVolumeRatio,&error)&&
+		!fuel.AcceptedConservativeVolumeRatioByComponentOrder(
+			residentEnergyAbove.value.data(),residentEnergyAbove.value.size(),
+			FireStateProducerPrecision::Binary64,residentVolumeRatio,&error)&&
+		!fuel.AcceptedConservativeVolumeRatioByComponentOrder(
+			residentAffineViolation.value.data(),residentAffineViolation.value.size(),
+			FireStateProducerPrecision::Binary64,residentVolumeRatio,&error),
+		"resident manifold EOS uses the single r60 predicate before endpoint inversion");
 	MethaneCellState spoofedPrecisionState=fp32EnvelopeState;
 	spoofedPrecisionState.producerPrecision=FireStateProducerPrecision::Binary64;
 	double spoofedTemperature=0.0;

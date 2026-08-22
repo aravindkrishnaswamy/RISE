@@ -88,6 +88,10 @@ namespace FireProductionDyadicCalibration
 			RISE::FireProductionResidentStepRequest request;
 			if(!BuildProductionRequest(beginning,sealed[step],flowThrough/512.0,
 				request,error))return 250;
+			// r138 is a retained zero-source precision diagnostic, not an accepted
+			// production trajectory.  The SHA-bound golden owner supplies and gates
+			// the r143 beginning-manifold metadata.
+			request.enforceManifoldPlateau=false;
 			RISE::FireProductionResidentStepResult production32;
 			if(!RISE::AdvanceFireProductionResidentStepMetal(request,production32,&error)){
 				std::fprintf(stderr,"subdominance Metal slice=%zu failed: %s\n",step,
