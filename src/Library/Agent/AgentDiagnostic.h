@@ -177,6 +177,20 @@ namespace RISE
 			//! (a Material is this graph's natural root -- nothing
 			//! references IT). Severity::Info, self-disarming, same
 			//! bounded-list formatting as DESIGN_PARAM_METADATA_EROSION.
+			//!
+			//! TRANSITIVE-DEAD-CHAIN SCOPE (review-round P3-d): only the
+			//! CHAIN HEAD is flagged per scan pass.  If A references B and
+			//! nothing references A (A is the orphan), B still has A as a
+			//! referrer and does NOT fire even though the whole A->B chain
+			//! is unreachable from anything live -- the referrer-count check
+			//! only sees "does at least one edge point here", not "is that
+			//! edge itself reachable from something live".  This SELF-
+			//! CORRECTS iteratively rather than needing a reachability walk:
+			//! removing A (the flagged head, via `remove_chunk`) drops its
+			//! outgoing edge to B, so the NEXT scan pass flags B as the new
+			//! head.  A chain of length N surfaces one link at a time across
+			//! N passes, not all at once -- acceptable for an advisory that
+			//! is re-computed on every render/validate call anyway.
 			static const char* const DESIGN_ORPHANED_PAINTERS = "DESIGN_ORPHANED_PAINTERS";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material

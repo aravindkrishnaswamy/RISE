@@ -3374,9 +3374,17 @@ namespace RISE
 
 			//! Adoption polish item 1: distinct numeric-literal TOKENS in
 			//! `text` (an expression body -- one or more `def`/`expr` lines
-			//! joined), counted by VALUE not occurrence (`0.5` appearing
-			//! three times is one literal reused, not three erosion
-			//! candidates).  A digit run that is part of an identifier
+			//! joined), deduped by their literal TEXT, not their numeric
+			//! VALUE (review-round P3-c: `0.5` appearing three times is one
+			//! literal reused, not three erosion candidates -- but `"0"` and
+			//! `"0.0"`, or `"1.5"` and `"1.50"`, are DIFFERENT strings and
+			//! count as two distinct entries despite being the same number).
+			//! Directionally SAFE for this heuristic, never harmful: text-
+			//! dedupe can only OVER-count relative to value-dedupe, which
+			//! only makes the >= kParamErosionLiteralGate gate easier to
+			//! reach, i.e. biases toward firing on a body that already has
+			//! plenty of bare numbers -- it can never cause a miss.  A digit
+			//! run that is part of an identifier
 			//! (immediately preceded by a letter, digit, or underscore --
 			//! the "3" in `vec3`, the "1" in `worley_f1`) is NOT a literal;
 			//! walking identifiers as a whole token first is what keeps
@@ -3457,10 +3465,19 @@ namespace RISE
 			//! comfortably above the 0-2 literals a genuinely tiny paramless
 			//! body (e.g. a bare `expr sin(u)+cos(v)`) would carry.
 			static const int kParamErosionLiteralGate = 6;
-			//! "Zero, or nearly zero" (the brief's own phrasing) params: a
-			//! chunk that spelled out exactly one `param` line already
-			//! reached for the mechanism the note teaches, so it is not an
-			//! erosion candidate.
+			//! "Zero, or nearly zero" (the brief's own phrasing) params: the
+			//! gate in ParamErosionFires_ below is `occurrences >
+			//! kParamErosionMaxParams` disqualifies, so a chunk with EXACTLY
+			//! kParamErosionMaxParams (i.e. one) `param` line still QUALIFIES
+			//! as an erosion candidate (subject to the literal-count gate) --
+			//! review-round P2-2: an earlier draft of this comment claimed
+			//! the opposite ("already reached for the mechanism, so it is
+			//! not a candidate"), which matched neither the code nor
+			//! AgentDiagnostic.h's own doc comment nor the shipped commit
+			//! message.  One real param is a start, not proof the author is
+			//! done -- a chunk with one named param and a dozen bare
+			//! literals is still worth flagging.  Only TWO OR MORE `param`
+			//! lines disarm the note.
 			static const int kParamErosionMaxParams = 1;
 
 			//! Adoption polish item 1's per-chunk verdict: TRUE when
@@ -3858,6 +3875,15 @@ namespace RISE
 				// NodeGraphCanvas.swift's `isOrphaned` excludes them: a
 				// Material is this graph's natural ROOT, so zero referrers
 				// there is normal, not an orphan.
+				//
+				// TRANSITIVE-DEAD-CHAIN SCOPE (review-round P3-d, see
+				// AgentDiagnosticCode::DESIGN_ORPHANED_PAINTERS's own longer
+				// note): `referredIds` only asks "does >= 1 edge target this
+				// chunk", so a chain A->B where nothing references A still
+				// leaves B with a referrer (A) and B stays silent this pass
+				// -- only the chain HEAD (A) is flagged.  Removing A drops
+				// its edge to B, so the next scan flags B; a length-N chain
+				// surfaces one link per pass, not all at once.
 				{
 					const std::vector<SceneReferenceGraph::DocumentChunk> refChunks = SceneReferenceGraph::AllChunks( doc );
 					const SceneReferenceGraph::Snapshot refSnap = SceneReferenceGraph::EdgesAndDangling( doc, &refChunks );
@@ -4128,15 +4154,18 @@ namespace RISE
 			//! retunable.
 			std::string FormatParamErosionClause_( const std::vector<std::string>& chunkNames )
 			{
+				const bool plural = chunkNames.size() != 1;
 				return std::to_string( chunkNames.size() ) + " expression chunk" +
-					( chunkNames.size() == 1 ? std::string() : std::string( "s" ) ) + " (" +
-					FormatBoundedNameList_( chunkNames ) + ") declare no (or almost no) `param` lines "
+					( plural ? std::string( "s" ) : std::string() ) + " (" +
+					FormatBoundedNameList_( chunkNames ) + ") " + ( plural ? std::string( "declare" ) : std::string( "declares" ) ) +
+					" no (or almost no) `param` lines "
 					"despite a body full of bare numbers -- art-directability was traded away somewhere "
 					"along the way. Promote the literals that matter to named params: `param <name> "
 					"<value> min <a> max <b> step <s> label \"<text>\"` (visible to every `def` and the "
 					"final `expr`/`expression` by name), then reference the name instead of the number. "
 					"The render does not change -- this is purely about leaving retunable knobs behind "
-					"for the next revision pass.";
+					"for the next revision pass. If this is a deliberate one-off/throwaway expression "
+					"that will never be retuned, this is fine -- ignore and do not churn.";
 			}
 
 			//! Adoption polish item 2's whole clause, SHARED by the note
@@ -4323,11 +4352,14 @@ namespace RISE
 					AgentDiagnostic d;
 					d.severity = AgentDiagnostic::Severity::Info;
 					d.code     = AgentDiagnosticCode::DESIGN_PARAM_METADATA_EROSION;
-					// SHARED formatter -- cannot drift from the note's E clause.
-					// kSelfDisarm applies (a deliberately quick, throwaway
-					// expression is a legitimate reason to skip params).
+					// SHARED formatter -- cannot drift from the note's E
+					// clause.  No kSelfDisarm here, deliberately (review-
+					// round P3-b): that suffix disarms "flat/simple STYLING",
+					// which is topically wrong for a param-erosion complaint
+					// -- the clause carries its OWN targeted escape ("a
+					// deliberate one-off/throwaway expression"), the same
+					// condition C/D precedent of not carrying two.
 					d.message  = FormatParamErosionClause_( c.paramErodedChunkNames );
-					d.message += kSelfDisarm;
 					out.push_back( d );
 				}
 				if( c.conditionF ) {

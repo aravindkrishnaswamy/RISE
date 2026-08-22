@@ -451,9 +451,14 @@ static void RunDesignNoteScanTest()
 		// silences the note (that WAS the bug -- a decoy chunk used to be
 		// enough).  This fixture now genuinely varies a physical-scalar
 		// material slot: ggx_material's `alphax` bound to a scalar_painter
-		// carrying the "expression" (spatially-varying) form.
-		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
-		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n";
+		// carrying the "expression" (spatially-varying) form.  DECLARE
+		// scalar_painter `r` BEFORE ggx_material `rm` -- DeriveToJob is
+		// strict declare-before-use, and a forward reference here left the
+		// material's `alphax` unresolved at derive time (review-round P2-1:
+		// the CST-level design scan is order-independent so the assertions
+		// still passed, but every run spammed an eLog_Error).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n";
 	{
 		const std::string note = AgentSession::ComputeDesignNote( docA3WithScalar );
 		Check( note.empty(),
@@ -464,9 +469,10 @@ static void RunDesignNoteScanTest()
 	const std::string docB4AllBoxWithScalar =
 		"RISE ASCII SCENE 7\n"
 		// Same fix as docA3WithScalar above -- a genuinely-varying binding,
-		// not a decoy chunk (adoption polish item 3).
-		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
+		// not a decoy chunk (adoption polish item 3), declared BEFORE the
+		// ggx_material that references it (declare-before-use, P2-1).
 		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
 		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
 		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
@@ -725,9 +731,14 @@ static void RunValidateDesignDiagnosticsScanTest()
 		// silences the note (that WAS the bug -- a decoy chunk used to be
 		// enough).  This fixture now genuinely varies a physical-scalar
 		// material slot: ggx_material's `alphax` bound to a scalar_painter
-		// carrying the "expression" (spatially-varying) form.
-		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
-		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n";
+		// carrying the "expression" (spatially-varying) form.  DECLARE
+		// scalar_painter `r` BEFORE ggx_material `rm` -- DeriveToJob is
+		// strict declare-before-use, and a forward reference here left the
+		// material's `alphax` unresolved at derive time (review-round P2-1:
+		// the CST-level design scan is order-independent so the assertions
+		// still passed, but every run spammed an eLog_Error).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n";
 	{
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docA3WithScalar );
 		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
@@ -737,9 +748,10 @@ static void RunValidateDesignDiagnosticsScanTest()
 	const std::string docB4AllBoxWithScalar =
 		"RISE ASCII SCENE 7\n"
 		// Same fix as docA3WithScalar above -- a genuinely-varying binding,
-		// not a decoy chunk (adoption polish item 3).
-		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
+		// not a decoy chunk (adoption polish item 3), declared BEFORE the
+		// ggx_material that references it (declare-before-use, P2-1).
 		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
 		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
 		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
@@ -843,9 +855,11 @@ static void RunDesignRepeatedCopiesScanTest()
 		// unreferenced decoy scalar_painter no longer silences it -- this
 		// preamble now genuinely varies a physical-scalar slot (a
 		// ggx_material, unused by any object, whose `alphax` binds to the
-		// scalar_painter's spatially-varying "expression" form).
-		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
+		// scalar_painter's spatially-varying "expression" form), declared
+		// BEFORE the ggx_material that references it (declare-before-use,
+		// review-round P2-1).
 		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"sdf_geometry\n{\n\tname sdf_geo\n\tpart\t\tsphere union 0 0 0 0 0 0 0 0 0 1 0\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
@@ -1168,6 +1182,25 @@ static void RunAdoptionPolishScanTest()
 		Check( !hasCode( AgentSession::ValidateText( docNotEroded ), "DESIGN_PARAM_METADATA_EROSION" ),
 		       "ITEM 1 GREEN-PROVE: the SAME body-shaped chunk with 2 real `param` lines (already "
 		       "above kParamErosionMaxParams) stays silent -- real params disarm the note" );
+	}
+	{
+		// Review-round P2-2's boundary pin: kParamErosionMaxParams == 1
+		// means EXACTLY one `param` line still QUALIFIES as a candidate
+		// (the gate that disarms is `occurrences > kParamErosionMaxParams`,
+		// i.e. TWO or more) -- one named param is a start, not proof the
+		// author is done.  Same body-shape as docNotEroded above but with
+		// only ONE `param` line, so it must still fire.
+		const std::string docOneParamStillFires =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname pnt_shelf_wear_mask_v3\n"
+			"\tparam edge_lo 0.02 min 0 max 1 step 0.01 label \"Edge low\"\n"
+			"\tdef edge_dist smoothstep(edge_lo, 0.12, P.z)\n"
+			"\tdef chipping fbm(P * vec3(120.0, 50.0, 120.0) + vec3(11.0, 0, 7.0), 4, 0.55, 2.0)\n"
+			"\tdef wear edge_dist * 0.82 + chipping * 0.38\n"
+			"\texpr smoothstep(0.40, 0.58, wear)\n}\n";
+		Check( hasCode( AgentSession::ValidateText( docOneParamStillFires ), "DESIGN_PARAM_METADATA_EROSION" ),
+		       "ITEM 1 BOUNDARY: exactly ONE `param` line (== kParamErosionMaxParams) still fires -- "
+		       "only TWO OR MORE param lines disarm the note (review-round P2-2)" );
 	}
 	{
 		// Bounded-list formatting: more than 3 eroded chunks lists 3 +
