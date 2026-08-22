@@ -3173,3 +3173,19 @@ it was already tried and refuted here.
   durable evidence `19732a38...ff33ad` keep measurement, additive tolerance,
   temporal refinement, and readmission blocked.  No Metal evidence ran; the
   golden checkpoint remains unchanged.
+- **r137 subdominance protocol amendment (2026-08-22):** owner ruling replaces
+  only a-priori *full-step* composition with an a-posteriori same-scheme gate;
+  streaming walker envelopes remain diagnostics.  Before measurement, the
+  protocol seals `|P32-P64| <= 2^-3 E_P` independently per slice and quantity,
+  with strict binary64 production mirror `P64` and no oracle participation.
+  Scheme fidelity is separately `|P64-O| <= E_P+E_O`.  `E_P` is the outward
+  maximum of r119's `{5,10}` distance rescaled to tier 6 and its `{6,12}`
+  distance at verified order `1.8`.  The velocity values are
+  `E_P=5.890459160549289e-3` and `B=7.363073950686612e-4 m/s`; all nine scalar
+  and inventory values are sealed in artifact `833137b5...d63922`.  The old
+  `3e-5` velocity guard remains preliminary pending explicit supersession with
+  both numbers.  Source maps retain exact `+0` until the same mechanism
+  certifies their producer term.  Once Metal source maps execute, an honest
+  `preview_primary`, `sequence_backed`, uncertified tier-6 animation is
+  authorized in parallel with validation.  No measurement ran in this entry;
+  golden SHA remains `1b944176...4947`.

@@ -2702,6 +2702,49 @@ permitted.  Canonical exit is again `237`; evidence is
 `rendered/fire_production_calibration/r136_full_step_refusal/full_step_bfp32_refusal.v1`
 (SHA-256 `19732a3864fbcbe43a4fa872d4c4311732820248934bfc9bc1627b0ae0ff33ad`).
 
+### 7.54 A-posteriori full-step B_fp32 by subdominance (r137 amendment)
+
+Owner ruling amends only the composed full-step part of the frozen r120
+protocol.  The streaming-stage walker envelopes remain finite diagnostics,
+but they are not composed through nonlinear FCT or the variable-density
+projection resolvent.  Instead, each of the eight independently restarted
+golden slices must execute the same production scheme twice: the resident
+binary32 Metal path and the strict binary64 CPU mirror with identical
+stencils, force substeps, five cell remaps, fifteen dual remaps, physical
+projection, and restoration projection.  The oracle is forbidden from this
+precision comparison.
+
+For every filtered scalar, filtered velocity, and inventory quantity `q`,
+precision certifies only when
+
+`|P32_q - P64_q| <= 2^-3 E_P,q`,
+
+where `E_P,q` is the already-derived tier-6 production distance to the mutual
+limit.  It is the outward maximum of the `{5,10}` coarse distance rescaled by
+`(5/6)^1.8` and the `{6,12}` coarse distance, with each coarse distance
+`D/(1-2^-1.8)`.  Separately, scheme fidelity requires
+
+`|P64_q - O_q| <= E_P,q + E_O,q`.
+
+These are independent gates: passing the scheme triangle cannot excuse a
+precision miss, and passing subdominance cannot excuse a scheme miss.  The
+pre-registered tier-6 velocity terms are `E_P=5.890459160549289e-3 m/s` and
+subdominance `7.363073950686612e-4 m/s`.  The old `3e-5 m/s` preliminary guard
+is retained until measurement; if the new derived rule supersedes it, the
+measurement entry must report both numbers.  Source-map production remains
+restricted to bit-exact `+0` until a same-scheme binary64 source mirror passes
+this mechanism.  First-light is authorized only after Metal source maps run,
+as an uncertified monitored-acceptance `preview_primary`, `sequence_backed`
+artifact alongside—not as evidence for—the burning-state campaign.
+
+This amendment is sealed before measurement in
+`rendered/fire_production_calibration/r137_subdominance_protocol/subdominance_protocol.v1`
+(SHA-256 `833137b54fbd507fc3b6bdcc960a23b89be60ee835f7b1ca177f93cc57d63922`).
+Its rationale is the exact r136 `0xff` review: useful a-priori composition is
+blocked by nonlinear shared-alpha gains, coefficient/resolvent interactions,
+and the six evidence-surface gaps.  The rejected `2.1145e-2 m/s` candidate is
+diagnostic only; no empirical value selects any bound in this amendment.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

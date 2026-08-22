@@ -110,6 +110,22 @@ namespace FireProductionCalibration
 		return extrapolatedDifference<=NextUp(first.fineRadius+second.fineRadius);
 	}
 
+	inline bool Tier6DistanceFromDyadicPairs(const double difference5To10,
+		const double difference6To12,const double verifiedOrder,double& distance,
+		double& subdominanceBound)
+	{
+		distance=0.0;subdominanceBound=0.0;
+		DyadicDistanceEstimate first,second;
+		if(!DyadicDistanceAtVerifiedOrder(difference5To10,verifiedOrder,first)||
+			!DyadicDistanceAtVerifiedOrder(difference6To12,verifiedOrder,second))return false;
+		const double rescaled=NextUp(first.coarseDistance*
+			std::pow(5.0/6.0,verifiedOrder));
+		distance=std::max(rescaled,second.coarseDistance);
+		subdominanceBound=NextUp(0.125*distance);
+		return std::isfinite(distance)&&std::isfinite(subdominanceBound)&&distance>0.0&&
+			subdominanceBound>0.0;
+	}
+
 	inline bool TriangleTolerance(const double productionGrid,const double productionTime,
 		const double oracleGrid,const double oracleTime,const double rounding,double& tolerance)
 	{

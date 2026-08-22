@@ -258,6 +258,24 @@ int main()
 		fullStepRefusal.find("metal_measurement_performed false")!=std::string::npos&&
 		fullStepRefusal.find("canonical_exit 237")!=std::string::npos,
 		"r136 source-binds the rejected candidate and refuses B_fp32 before Metal");
+	const std::string subdominanceProtocol=ReadText(
+		"rendered/fire_production_calibration/r137_subdominance_protocol/"
+		"subdominance_protocol.v1");
+	Check(!subdominanceProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(subdominanceProtocol.begin(),
+			subdominanceProtocol.end()))==
+		"833137b54fbd507fc3b6bdcc960a23b89be60ee835f7b1ca177f93cc57d63922"&&
+		subdominanceProtocol.find("amendment_before_measurement true")!=
+			std::string::npos&&
+		subdominanceProtocol.find("measurement_performed false")!=std::string::npos&&
+		subdominanceProtocol.find("subdominance_power_of_two 0.125")!=
+			std::string::npos&&
+		subdominanceProtocol.find("same_scheme_binary64_mirror_required true")!=
+			std::string::npos&&
+		subdominanceProtocol.find("oracle_forbidden_for_precision_test true")!=
+			std::string::npos&&
+		subdominanceProtocol.find("r136_proof_gap_bitmap 0xff")!=std::string::npos,
+		"r137 pre-registers the subdominance amendment before any Metal measurement");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -1318,6 +1336,13 @@ int main()
 		"roundoff derivation rejects n*u >= 1");
 
 	double order=0.0,distance=0.0;
+	double subdominance=0.0;
+	Check(Tier6DistanceFromDyadicPairs(0.005031015340016892,
+		0.0041988689735742426,1.8,distance,subdominance)&&
+		distance==0.005890459160549289&&subdominance==0.0007363073950686612&&
+		!Tier6DistanceFromDyadicPairs(0.0,0.0041988689735742426,1.8,
+			distance,subdominance),
+		"r137 derives the tier-6 production distance and exact one-eighth subdominance bound");
 	const double h5=0.05,h6=1.0/24.0,h7=1.0/28.0;
 	const double d56=h5*h5-h6*h6,d67=h6*h6-h7*h7;
 	const bool gridRichardson=GeneralizedGridRichardson(d56,d67,h5,h6,h7,2.0,order,distance);
