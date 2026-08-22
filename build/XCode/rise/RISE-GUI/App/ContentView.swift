@@ -175,10 +175,15 @@ struct ContentView: View {
                 SceneEditorPanel()
             case .graph:
                 // doc-88 Phase 3 S15: the read-only Painter/Material node
-                // canvas. `viewModel.viewportBridge` is guaranteed non-nil
-                // here — `leftPanel` itself is only rendered from
-                // `mainArea` when `viewModel.viewportBridge != nil`.
+                // canvas ("Material Graph" in the tab strip).
+                // `viewModel.viewportBridge` is guaranteed non-nil here —
+                // `leftPanel` itself is only rendered from `mainArea` when
+                // `viewModel.viewportBridge != nil`.
                 NodeGraphCanvas(bridge: viewModel.viewportBridge, refreshTrigger: $propertyRefresh)
+            case .objects:
+                // Object Graph slice (S2): a fourth tab, sibling of
+                // `.graph`, same non-nil guarantee.
+                ObjectGraphCanvas(bridge: viewModel.viewportBridge, refreshTrigger: $propertyRefresh)
             }
         }
         .frame(width: CGFloat(leftPanelWidth))
@@ -224,8 +229,16 @@ struct ContentView: View {
             }
             // doc-88 Phase 3 S15: third tab for the read-only Painter/
             // Material node canvas — same tab-strip idiom, zero new chrome.
-            leftPanelTabButton(title: "Graph", isActive: viewModel.leftTab == .graph, showDot: false) {
+            // Label RENAMED to "Material Graph" (was the generic "Graph")
+            // once the Object Graph tab shipped as a sibling -- display
+            // string only, the `.graph` case name is unchanged.
+            leftPanelTabButton(title: "Material Graph", isActive: viewModel.leftTab == .graph, showDot: false) {
                 viewModel.leftTab = .graph
+            }
+            // Object Graph slice (S2): fourth tab, sibling of the above --
+            // the object hierarchy down to geometry (`ObjectGraphCanvas.swift`).
+            leftPanelTabButton(title: "Object Graph", isActive: viewModel.leftTab == .objects, showDot: false) {
+                viewModel.leftTab = .objects
             }
             Spacer(minLength: 0)
         }

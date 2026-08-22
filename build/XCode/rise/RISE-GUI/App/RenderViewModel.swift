@@ -41,8 +41,15 @@ enum LeftPanelTab {
     case sceneFile
     /// doc-88 Phase 3 S15: the read-only Painter/Material node canvas
     /// (`NodeGraphCanvas.swift`) — a third tab alongside Agent/Scene file,
-    /// same tab-strip idiom, no new chrome pattern.
+    /// same tab-strip idiom, no new chrome pattern. User-facing tab label
+    /// is "Material Graph" (renamed from the original generic "Graph" once
+    /// `.objects` shipped as a sibling) — the case name stays `graph`,
+    /// unrenamed, per this slice's "display strings only" scoping.
     case graph
+    /// Object Graph slice (S2): a fourth tab, sibling of `.graph` --
+    /// `ObjectGraphCanvas.swift`, the object hierarchy down to geometry.
+    /// User-facing tab label is "Object Graph".
+    case objects
 }
 
 /// Thread-safe image buffer that accumulates progressive RGBA16 render updates

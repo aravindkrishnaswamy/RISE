@@ -106,6 +106,7 @@ NSString* NamedViewDisplayName( const char* bytes )
                    chunkKeyword:(NSString *)chunkKeyword
                        category:(NSInteger)category
                        defCount:(NSInteger)defCount
+                     repeatCount:(NSInteger)repeatCount
                               x:(double)x
                               y:(double)y
                        outEdges:(NSArray<RISEGraphPort *> *)outEdges
@@ -2035,7 +2036,17 @@ static NSArray<RISEGraphPort *>* ConvertGraphPortsToRISE(const std::vector<RISE:
     return out;
 }
 
-static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const RISE::SceneEditController::PainterMaterialGraphLaidOut& g) {
+// TEMPLATE, not two independently maintained copies: `PainterMaterialGraphLaidOut`
+// (S14) and `ObjectGraphLaidOut` (S1 core, the Object Graph slice) are two
+// DIFFERENT C++ struct types with the IDENTICAL `{graph, positions}` shape
+// (see `SceneEditController::SceneGraphModel`'s own comment on why the two
+// graphs share every building block but this ONE composed wrapper stayed
+// deliberately distinct on the C++ side) -- a template lets this one
+// conversion serve both `-painterMaterialGraph`/`-painterMaterialGraphFocusedForCategory:name:`
+// AND `-objectGraph`/`-objectGraphFocusedForObject:name:` without a second
+// near-identical function to keep in sync.
+template <typename LaidOutGraphT>
+static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& g) {
     const std::size_t n = g.graph.nodes.size();
     NSMutableArray<RISEGraphNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
     for (std::size_t i = 0; i < n; ++i) {
@@ -2048,6 +2059,7 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const RISE::SceneEdit
                                                     chunkKeyword:chunkKeyword
                                                         category:static_cast<NSInteger>(gn.category)
                                                         defCount:gn.defCount
+                                                     repeatCount:gn.repeatCount
                                                                x:pos.x
                                                                y:pos.y
                                                         outEdges:ConvertGraphPortsToRISE(gn.outEdges)
@@ -2089,6 +2101,34 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const RISE::SceneEdit
     // nil vs empty is load-bearing here -- the SAME contract
     // -appearanceClosureForObject: documents (see this method's own
     // header comment). Do NOT collapse this to "return empty either way".
+    if (degraded) return nil;
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+}
+
+- (RISEPainterMaterialGraph *)objectGraph {
+    if (!_controller) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+    }
+    // ONE TRANSACTIONAL READ -- same discipline -painterMaterialGraph
+    // documents above; ReadObjectGraphLaidOut composes the object graph
+    // + a fresh (never sidecar-backed) auto-layout under one snapshot
+    // lock hold.
+    SceneEditController::ObjectGraphLaidOut g;
+    _controller->ReadObjectGraphLaidOut(g);
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
+}
+
+- (nullable RISEPainterMaterialGraph *)objectGraphFocusedForObject:(NSString *)name {
+    if (!_controller || name.length == 0) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0];
+    }
+    const char* utf8 = [name UTF8String] ?: "";
+    bool degraded = false;
+    SceneEditController::ObjectGraphLaidOut g;
+    _controller->ReadObjectGraphLaidOutFocused(RISE::String(utf8), g, &degraded);
+    // nil vs empty is load-bearing here -- the SAME contract
+    // -painterMaterialGraphFocusedForCategory:name: documents. Do NOT
+    // collapse this to "return empty either way".
     if (degraded) return nil;
     return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation];
 }
@@ -3542,6 +3582,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     NSString *_chunkKeyword;
     NSInteger _category;
     NSInteger _defCount;
+    NSInteger _repeatCount;
     double _x;
     double _y;
     NSArray<RISEGraphPort *> *_outEdges;
@@ -3553,6 +3594,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
                    chunkKeyword:(NSString *)chunkKeyword
                        category:(NSInteger)category
                        defCount:(NSInteger)defCount
+                     repeatCount:(NSInteger)repeatCount
                               x:(double)x
                               y:(double)y
                        outEdges:(NSArray<RISEGraphPort *> *)outEdges
@@ -3565,6 +3607,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         _chunkKeyword = [chunkKeyword copy] ?: @"";
         _category = category;
         _defCount = defCount;
+        _repeatCount = repeatCount;
         _x = x;
         _y = y;
         _outEdges = [outEdges copy] ?: @[];
@@ -3578,6 +3621,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSString *)chunkKeyword { return _chunkKeyword; }
 - (NSInteger)category { return _category; }
 - (NSInteger)defCount { return _defCount; }
+- (NSInteger)repeatCount { return _repeatCount; }
 - (double)x { return _x; }
 - (double)y { return _y; }
 - (NSArray<RISEGraphPort *> *)outEdges { return _outEdges; }

@@ -189,15 +189,18 @@ enum ViewportReattachProbe {
 }
 
 /// Headless regression probe for doc-88 Phase 3 S15's Mac node canvas
-/// (`NodeGraphCanvas.swift`). Pixels are manual-checklist only (a real
-/// node-box layout needs eyes), but the DATA path underneath every pixel
-/// -- one transactional `-[RISEViewportBridge painterMaterialGraph]`
-/// call, exactly what `NodeGraphCanvas.performReload` itself calls -- is
-/// fully exercisable headless, so this pins that end-to-end: load a real
-/// scene, fetch the laid-out graph, and assert the shape a canvas render
-/// depends on (non-empty nodes/edges, non-origin laid-out positions, a
-/// known material node with out-edges, a known expression-family node
-/// with `def` stages).
+/// (`NodeGraphCanvas.swift`), EXTENDED (S2) to also cover the sibling
+/// Object Graph canvas (`ObjectGraphCanvas.swift`). Pixels are
+/// manual-checklist only (a real node-box layout needs eyes), but the
+/// DATA path underneath every pixel -- one transactional
+/// `-[RISEViewportBridge painterMaterialGraph]` / `-objectGraph` call,
+/// exactly what each canvas's own `performReload` calls -- is fully
+/// exercisable headless, so this pins both end-to-end: load a real
+/// scene, fetch each laid-out graph, and assert the shape a canvas
+/// render depends on (non-empty nodes/edges, non-origin laid-out
+/// positions, a known material node with out-edges, a known
+/// expression-family node with `def` stages, and -- Object Graph -- at
+/// least one Object-category and one Geometry-category node present).
 ///
 /// Enable with `RISE_GUI_HEADLESS_PROBE=graph_canvas_smoke`.  Defaults to
 /// `scenes/FeatureBased/Textures/weathered_workbench.RISEscene` (the
@@ -262,6 +265,23 @@ enum GraphCanvasSmokeProbe {
         } else {
             allOK = step("known expression node 'sp_pit_rough' present", false) && allOK
         }
+
+        // Object Graph slice (S2): the SAME bulk transactional read
+        // ObjectGraphCanvas.performReload itself calls -- cheap coverage
+        // of the new canvas's data path without a real SwiftUI window
+        // (this probe never constructs one).
+        let objGraph = vb.objectGraph()
+        allOK = step("object graph: nodes non-empty (\(objGraph.nodes.count))", !objGraph.nodes.isEmpty) && allOK
+        allOK = step("object graph: generation non-zero (\(objGraph.generation))", objGraph.generation != 0) && allOK
+        // RISE::ChunkCategory ordinals: Geometry=5, Object=8 (ChunkDescriptor.h)
+        // -- the SAME "cast the parser's enum" convention every other
+        // category check in this probe/canvas already uses.
+        let hasObjectNode = objGraph.nodes.contains { $0.category == 8 }
+        let hasGeometryNode = objGraph.nodes.contains { $0.category == 5 }
+        allOK = step("object graph: at least one Object-category node present", hasObjectNode) && allOK
+        allOK = step("object graph: at least one Geometry-category node present", hasGeometryNode) && allOK
+        let objHasLaidOutPosition = objGraph.nodes.contains { $0.x > 0 || $0.y > 0 }
+        allOK = step("object graph: at least one node has a non-origin laid-out position", objHasLaidOutPosition) && allOK
 
         vb.shutdown()
         print(allOK ? "GraphCanvasSmokeProbe: ALL PASS" : "GraphCanvasSmokeProbe: FAILURE (see above)")
