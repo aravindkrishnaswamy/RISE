@@ -212,7 +212,7 @@ namespace RISE
 				static ChatHttpResponse Finish( ChatHttpResponse out,
 				                                std::chrono::steady_clock::time_point t0 )
 				{
-					out.elapsedMs = static_cast<long>(
+					out.elapsedMs = static_cast<std::int64_t>(
 						std::chrono::duration_cast<std::chrono::milliseconds>(
 							std::chrono::steady_clock::now() - t0 ).count() );
 					// A genuine transport error (a failed status query or a
