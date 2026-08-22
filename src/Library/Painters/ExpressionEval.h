@@ -404,9 +404,14 @@ namespace RISE
 				//! `time`, `P`, etc. stay hard "unknown variable" compile errors there
 				//! UNLESS the author let-binds a same-named param, which shadows via
 				//! m_index regardless of this flag (see the Builder() ctor comment).
-				//! The texture-authoring surface (expression_function2d,
-				//! ChunkParserRegistry.cpp) turns this ON -- that surface is what
-				//! P/Po/N/fw/time were added FOR (doc 88).
+				//! The texture-authoring surface (expression_painter,
+				//! Job.cpp / scalar_painter{expression}, ChunkParserRegistry.cpp)
+				//! turns this ON -- that surface is what P/Po/N/fw/time were
+				//! added FOR (doc 88).  expression_function2d (also
+				//! ChunkParserRegistry.cpp) is the OLDER, UV-only surface and
+				//! must stay OFF -- see ExpressionPainter.h's
+				//! BuildExpressionProgramFromChunkFields doc comment for the
+				//! frozen-contract rationale.
 				void EnableContextVars( bool enable = true ) { m_contextVarsEnabled = enable; }
 
 			private:

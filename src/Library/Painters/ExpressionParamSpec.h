@@ -10,13 +10,16 @@
 //  compiler ignores this metadata entirely (ExpressionEval's
 //  Builder::AddParam only ever sees `name`/`value`), it exists purely
 //  for a future inspector to render a param as a slider/field with a
-//  sensible range instead of a bare text box.  Wired into two chunk
-//  parsers as of S2: the `expression_painter` chunk and the
-//  `expression` form of `scalar_painter` (both in
+//  sensible range instead of a bare text box.  Wired into three chunk
+//  parsers as of the expression_function2d unification (doc 88 sect. 7
+//  decision 5): the `expression_painter` chunk, the `expression` form
+//  of `scalar_painter`, and `expression_function2d` (all in
 //  ChunkParserRegistry.cpp, via BuildExpressionProgramFromChunkFields
-//  in ExpressionPainter.h/.cpp), both of which parse `param` lines with
-//  this scanner.  expression_function2d still calls the plain
-//  `<name> <number>` scanner and does not carry this metadata.
+//  in ExpressionPainter.h/.cpp) all parse `param` lines with this
+//  scanner.  expression_function2d parses-then-discards the metadata
+//  (min/max/step/label are read but never surfaced -- that surface is
+//  frozen UV-only, not extended with S1 introspection); the other two
+//  keep it for the property-panel work above.
 //
 //  Tabs: 4
 //

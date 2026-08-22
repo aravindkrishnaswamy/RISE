@@ -803,8 +803,9 @@ static void TestUnifiedEngineEquivalence()
 
 	// A body deliberately shaped like the in-tree scenes' usage: a param,
 	// a def referencing that param, and a u/v-only final expression.  Every
-	// `param` line here is the plain `<name> <number>` form used by all 13
-	// in-tree scenes that reference expression_function2d.
+	// `param` line here is the plain `<name> <number>` form used across all
+	// 10 in-tree scene files (38 expression_function2d chunk instances)
+	// that reference expression_function2d.
 	const char* kName = "unif_eq";
 	const char* kBody =
 		"expression_function2d\n{\n"
@@ -822,6 +823,17 @@ static void TestUnifiedEngineEquivalence()
 	// by ExpressionFunction2DTest.cpp's Test 1).
 	Check( !ParseBody( "unif_ctxvar", "expression_function2d\n{\nname e\nexpr time*2+1\n}\n" ),
 		"context var `time` still rejects through the chunk parser (frozen UV-only contract)" );
+
+	// Sibling half of the frozen contract: autoRegisterSeed=false means
+	// expression_function2d never auto-registers a `seed` param the way
+	// expression_painter does -- a body referencing `seed` with no
+	// explicit `param seed <v>` line of its own must hard-reject as an
+	// unknown variable, not silently resolve.  A seed-free body (the one
+	// above) can't distinguish this flag either way, so it needs its own
+	// pin -- without this, a future flip of ONLY autoRegisterSeed would
+	// sail through every other check in this test.
+	Check( !ParseBody( "unif_noseed", "expression_function2d\n{\nname e\nexpr seed+u*v\n}\n" ),
+		"unqualified `seed` still rejects through the chunk parser (no auto-registered seed param)" );
 
 	Job* job = new Job();
 	job->addref();
