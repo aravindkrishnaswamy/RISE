@@ -23,6 +23,10 @@
 
 namespace RISE
 {
+	// Internal test-evidence preflight shared with FireProductionProjectionMac.mm.
+	bool ValidateFireProductionRestorationCycleProbe(
+		unsigned int& cycleCount,bool& enabled,std::string* error );
+
 	namespace
 	{
 		struct MetalParameters
@@ -2028,6 +2032,9 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 	{
 		result=FireProductionResidentStepResult();
 		try {
+			unsigned int restorationProbeCycles=0u;bool restorationProbeEnabled=false;
+			if( !ValidateFireProductionRestorationCycleProbe(restorationProbeCycles,
+				restorationProbeEnabled,structuredError) ) return false;
 			const FireProductionProjectionShape& shape=request.force.shape;
 			auto sameShape=[](const FireProductionProjectionShape& a,
 				const FireProductionProjectionShape& b) {

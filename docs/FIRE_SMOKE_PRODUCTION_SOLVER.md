@@ -2845,7 +2845,10 @@ per-step manifold generation exceeding the ruled plateau capacity.
 
 The exact replay returns `253` only after byte-pinning both residual curves,
 their sweep topologies, the signed field witnesses, the cold/burning ratio,
-and the post-run golden digest.  Durable evidence is
+and the post-run golden digest.  The removed-restoration counterfactual uses
+the same 17-cycle physical arithmetic as the production path and must match
+its physical pre/post diagnostics on every cycle-curve invocation; the pinned
+physical sweep counts are `1156` burning and `1054` cold.  Durable evidence is
 `rendered/fire_production_calibration/r142_burning_plateau_capacity/restoration_capacity_evidence.v1`.
 No replacement validation band is installed, no production arithmetic is
 changed, and precision measurement, temporal refinement, additive-contract

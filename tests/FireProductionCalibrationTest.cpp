@@ -293,7 +293,7 @@ int main()
 	Check(!subdominanceMeasurement.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(subdominanceMeasurement.begin(),
 			subdominanceMeasurement.end()))==
-		"6e23debe9e5ed08445175d8250b1077df249705faf09f6e9eb891ccb7365ce5a"&&
+		"fbeed0d8a5dad9d8eabcea3236154cec702c6029376fa59456850d42feb7b003"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 		"b32cd74d7eab2ab0872bf04d25c54ac5279315380837be222bb36079f3f15674"&&
@@ -308,13 +308,13 @@ int main()
 		"22a352d220eaf035e2b94537d976545208dda1912a10ae21da9eac15c6fd0922"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"1512ee6476728b723abef0f05e10567156a2eae603905d18c198d7b2292c55ad"&&
+		"0f04feacb11066bb6fcc168f26fe3881fd715e87235f757e6f96691a1703633c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceMetal.begin(),forceMetal.end()))==
 		"165602c9a142c999ee38a2a4a7321e91204e0ba7ef7a0e6cfd5662dcf3229996"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
-		"05be020a5ed9a8558318e083638095c668ea71f982d28d10876c57c2a644d6a1"&&
+		"2b3e518e7b69a2d3b0f2014fa42099f650d304212987d7d27e2941173494c331"&&
 		subdominanceMeasurement.find("measurement_trace_sha256 "
 			"f90a2508803f769665e68fc2c10e7672ea5f7ee5bf647fa2b8ff8b227551cebf")!=
 			std::string::npos&&
@@ -345,7 +345,7 @@ int main()
 		"ff15255af16cd650606bda2cae1c8cf3f422b1b24211b6c9b55f621ec5aba99a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"075fc16c10497a2c81befb2fc597e9f21a67611193b7a597f750afbb631970ee"&&
+		"70ba604ea75f529127eed10f248cd9a02328b1c831365d7ffe4cc7db3ea92e8c"&&
 		goldenSubdominanceInputs.find("measurement_performed false")!=std::string::npos&&
 		goldenSubdominanceInputs.find("slice_restart_policy shared_golden_beginning_per_slice")!=
 			std::string::npos&&
@@ -385,16 +385,19 @@ int main()
 	Check(!restorationCapacityEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(restorationCapacityEvidence.begin(),
 			restorationCapacityEvidence.end()))==
-		"60ad7485165360cbc66d8acc89a19144f233e893cb7d3af13b36d1e36bafa36c"&&
+		"fb03d79e83ba2f934d1929be722c4de7942ea6421755b4b0873d103b0956f0cf"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+		"0f04feacb11066bb6fcc168f26fe3881fd715e87235f757e6f96691a1703633c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
-		"05be020a5ed9a8558318e083638095c668ea71f982d28d10876c57c2a644d6a1"&&
+		"2b3e518e7b69a2d3b0f2014fa42099f650d304212987d7d27e2941173494c331"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"075fc16c10497a2c81befb2fc597e9f21a67611193b7a597f750afbb631970ee"&&
+		"70ba604ea75f529127eed10f248cd9a02328b1c831365d7ffe4cc7db3ea92e8c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverTestSource.begin(),solverTestSource.end()))==
-		"0a9723b4e5eb1f688bcdf575dd92e5b38dc50fbf2a87540ea35165616ad0b1b3"&&
+		"5953171b9ea96481a23b852f4a79db4dd9e91944f9851c48abe494248ecc575a"&&
 		restorationCapacityEvidence.find(
 			"burning_G_field 0.0025328069638265172")!=std::string::npos&&
 		restorationCapacityEvidence.find(
@@ -403,6 +406,13 @@ int main()
 			"burning_required_drain 3.3770759517686897")!=std::string::npos&&
 		restorationCapacityEvidence.find(
 			"burning_delivered_drain_16 0.9533406144549903")!=std::string::npos&&
+		restorationCapacityEvidence.find("burning_physical_cycles 17")!=
+			std::string::npos&&
+		restorationCapacityEvidence.find("cold_physical_cycles 17")!=
+			std::string::npos&&
+		restorationCapacityEvidence.find(
+			"retained_r138_replay_after_instrumentation exact_exit_243")!=
+			std::string::npos&&
 		restorationCapacityEvidence.find("no_validation_band_admitted true")!=
 			std::string::npos&&
 		restorationCapacityEvidence.find("no_cycle_count_can_satisfy true")!=

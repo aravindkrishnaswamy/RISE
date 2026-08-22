@@ -3270,5 +3270,13 @@ it was already tried and refuted here.
   1-through-16 curves, cell/sign witnesses, sweep counts, source identities,
   and the unchanged golden SHA.  The preregistered long shadow is not run:
   its necessary generation bound is already false.  No validation criterion,
-  cycle count, `B_fp32`, temporal term, or production source changed.  This is
+  cycle count, `B_fp32`, temporal term, or default production arithmetic
+  changed; the only production-source delta is the fail-closed, environment-
+  authorized evidence seam.  This is
   the owner-requested architecture-capacity stop, not a residual-floor finding.
+  Fresh review found and repaired an initial counterfactual-topology defect:
+  the accepted artifact is produced only after the removed-restoration control
+  executes the same 17-cycle physical solve as production (`1156` burning and
+  `1054` cold sweeps) and matches its pre/post diagnostics on every curve run.
+  The retained r138 pilot was rerun after adding the isolated probe seam and
+  reproduced exact exit `243` and trace `f90a2508...551cebf`.

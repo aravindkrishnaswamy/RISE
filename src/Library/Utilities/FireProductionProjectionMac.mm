@@ -21,6 +21,32 @@
 
 namespace RISE
 {
+	bool ValidateFireProductionRestorationCycleProbe(
+		unsigned int& cycleCount,bool& enabled,std::string* error )
+	{
+		cycleCount=0u;enabled=false;
+		const char* value=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
+		if( !value ) return true;
+		const char* activation=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+		if( !activation||std::strcmp(activation,"1")!=0||!*value ) {
+			if( error ) *error="production fire restoration cycle probe is not authorized";
+			return false;
+		}
+		unsigned int parsed=0u;
+		for( const char* digit=value;*digit;++digit ) {
+			if( *digit<'0'||*digit>'9'||parsed>16u ) {
+				if( error ) *error="production fire restoration cycle probe is malformed";
+				return false;
+			}
+			parsed=10u*parsed+static_cast<unsigned int>(*digit-'0');
+		}
+		if( parsed<1u||parsed>16u ) {
+			if( error ) *error="production fire restoration cycle probe is outside 1..16";
+			return false;
+		}
+		cycleCount=parsed;enabled=true;return true;
+	}
+
 	namespace
 	{
 		enum ProjectionHostAccessKind
@@ -487,27 +513,17 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 		{
 			cycleCount=hasOpenBoundary?
 				(execution==ProjectionResidentStateOnly?17u:16u):12u;
-			const char* value=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
-			if( !value ) return true;
 			const char* activation=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
-			if( !activation||std::strcmp(activation,"1")!=0||!*value ) {
-				if( error ) *error="production fire restoration cycle probe is not authorized";
-				return false;
-			}
-			if( execution!=ProjectionResidentRestorationTerminal ) return true;
-			unsigned int parsed=0u;
-			for( const char* digit=value;*digit;++digit ) {
-				if( *digit<'0'||*digit>'9'||parsed>16u ) {
-					if( error ) *error="production fire restoration cycle probe is malformed";
-					return false;
-				}
-				parsed=10u*parsed+static_cast<unsigned int>(*digit-'0');
-			}
-			if( parsed<1u||parsed>16u ) {
-				if( error ) *error="production fire restoration cycle probe is outside 1..16";
-				return false;
-			}
-			cycleCount=parsed;return true;
+			const char* restorationTest=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
+			if( execution==ProjectionResidentTerminal&&hasOpenBoundary&&activation&&
+				std::strcmp(activation,"1")==0&&restorationTest&&
+				std::strcmp(restorationTest,"removed")==0 ) cycleCount=17u;
+			unsigned int probeCycles=0u;bool probeEnabled=false;
+			if( !ValidateFireProductionRestorationCycleProbe(
+				probeCycles,probeEnabled,error) ) return false;
+			if( probeEnabled&&execution==ProjectionResidentRestorationTerminal )
+				cycleCount=probeCycles;
+			return true;
 		}
 
 		std::size_t NextPowerOfTwo( std::size_t value )

@@ -243,6 +243,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				double generationField=0.0,generationBeginning=0.0,generationOutput=0.0,
 					removedField=0.0;
 				std::size_t generationCell=0u;
+				float physicalPreResidual=0.0f,physicalPostResidual=0.0f;
+				std::uint32_t physicalSweeps=0u;
 				std::array<float,17> residual={{}};
 				std::array<std::uint32_t,16> sweeps={{}};
 			};
@@ -278,11 +280,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					"RISE_FIRE_PRODUCTION_RESTORATION_TEST");
 				if(!removedEnvironmentCleared||!removedSucceeded||
 					removed.residentProjectionInvocationCount!=1u||
-					removed.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
+					removed.interstageFullGridTransferCount!=0u||
+					removed.projection.executedVCycleCount!=17u){std::fprintf(stderr,
 					"RESTORATION_PLATEAU regime=%s removed failed success=%d invocations=%u "
-					"transfers=%u error=%s\n",label,removedSucceeded?1:0,
+					"transfers=%u cycles=%u error=%s\n",label,removedSucceeded?1:0,
 					removed.residentProjectionInvocationCount,
-					removed.interstageFullGridTransferCount,error.c_str());return false;}
+					removed.interstageFullGridTransferCount,
+					removed.projection.executedVCycleCount,error.c_str());return false;}
 				std::vector<ConservativeVector> removedConservative;
 				if(!FireProductionDyadicCalibration::UnpackProductionConservative(
 					removed.conservativeValues,state.states.size(),removedConservative))return false;
@@ -311,7 +315,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					if(!cycleEnvironmentCleared||!succeeded||
 						result.residentProjectionInvocationCount!=2u||
 						result.interstageFullGridTransferCount!=0u||
-						result.projection.executedVCycleCount!=cycles){std::fprintf(stderr,
+						result.projection.executedVCycleCount!=cycles||
+						result.physicalProjection.executedVCycleCount!=17u||
+						result.physicalProjection.executedJacobiSweepCount!=
+							removed.projection.executedJacobiSweepCount||
+						result.physicalProjection.validationPassed!=
+							removed.projection.validationPassed||
+						result.physicalProjection.maximumPreProjectionResidualPerS!=
+							removed.projection.maximumPreProjectionResidualPerS||
+						result.physicalProjection.maximumPostProjectionResidualPerS!=
+							removed.projection.maximumPostProjectionResidualPerS||
+						result.physicalProjection.maximumOpenComplementarityDiscrepancyMPerS!=
+							removed.projection.maximumOpenComplementarityDiscrepancyMPerS){std::fprintf(stderr,
 						"RESTORATION_PLATEAU regime=%s cycles=%u failed success=%d "
 						"executed=%u invocations=%u transfers=%u error=%s\n",label,cycles,
 						succeeded?1:0,result.projection.executedVCycleCount,
@@ -324,8 +339,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				}
 				std::fprintf(stderr,"RESTORATION_PLATEAU regime=%s G_field=%.17g "
 					"G_cell=%zu G_beginning=%.17g G_output=%.17g removed_field=%.17g "
-					"residual=",label,generationField,generationCell,generationBeginning,
-					generationOutput,removedField);
+					"physical_pre=%.17g physical_post=%.17g physical_sweeps=%llu residual=",
+					label,generationField,generationCell,generationBeginning,
+					generationOutput,removedField,static_cast<double>(
+						removed.projection.maximumPreProjectionResidualPerS),static_cast<double>(
+						removed.projection.maximumPostProjectionResidualPerS),
+					static_cast<unsigned long long>(
+						removed.projection.executedJacobiSweepCount));
 				for(const float value:residual)std::fprintf(stderr," %.17g",
 					static_cast<double>(value));
 				std::fprintf(stderr," contraction=");
@@ -339,6 +359,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				evidence.generationBeginning=generationBeginning;
 				evidence.generationOutput=generationOutput;
 				evidence.removedField=removedField;evidence.generationCell=generationCell;
+				evidence.physicalPreResidual=
+					removed.projection.maximumPreProjectionResidualPerS;
+				evidence.physicalPostResidual=
+					removed.projection.maximumPostProjectionResidualPerS;
+				evidence.physicalSweeps=removed.projection.executedJacobiSweepCount;
 				evidence.residual=residual;evidence.sweeps=sweeps;return true;
 			};
 			PlateauRegimeEvidence burningEvidence,coldEvidence;
@@ -381,12 +406,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				burningEvidence.generationBeginning==-1.1871614802316799e-12&&
 				burningEvidence.generationOutput==-0.0025328069650136786&&
 				burningEvidence.removedField==0.0025328069650136786&&
+				burningEvidence.physicalPreResidual==0x1.2efac6p+5f&&
+				burningEvidence.physicalPostResidual==0x1.eb58p-9f&&
+				burningEvidence.physicalSweeps==1156u&&
 				burningEvidence.residual==expectedBurningResidual&&
 				coldEvidence.generationField==0.00012031080315666465&&
 				coldEvidence.generationCell==81216u&&
 				coldEvidence.generationBeginning==0.00013951373206966267&&
 				coldEvidence.generationOutput==0.00025982453522632731&&
 				coldEvidence.removedField==0.00026066224468057619&&
+				coldEvidence.physicalPreResidual==0x1.3bd084p-3f&&
+				coldEvidence.physicalPostResidual==0x1.7b8c4p-17f&&
+				coldEvidence.physicalSweeps==1054u&&
 				coldEvidence.residual==expectedColdResidual;
 			for(std::size_t cycle=0u;cycle<16u;++cycle)exact=exact&&
 				burningEvidence.sweeps[cycle]==68u*(cycle+1u)&&

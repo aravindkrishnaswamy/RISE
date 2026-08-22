@@ -3945,6 +3945,8 @@ int main()
 		error.find("cycle probe is not authorized")!=std::string::npos,
 		"restoration cycle instrumentation is unavailable outside its exact plateau campaign");
 	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeOutOfRangeRestorationCycle=
+		FireProductionResidentStepMetalCommandCommitCount();
 	setenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE","1",1);
 	setenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE","17",1);
 	const bool outOfRangeRestorationCycleRejected=!AdvanceFireProductionResidentStepMetal(
@@ -3952,8 +3954,10 @@ int main()
 	unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE");
 	unsetenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 	Check(outOfRangeRestorationCycleRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			commitsBeforeOutOfRangeRestorationCycle&&
 		error.find("outside 1..16")!=std::string::npos,
-		"restoration cycle instrumentation rejects post-protocol work-count tuning");
+		"restoration cycle instrumentation rejects post-protocol work-count tuning before Metal work");
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;
