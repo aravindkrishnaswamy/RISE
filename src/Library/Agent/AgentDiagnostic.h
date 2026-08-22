@@ -133,6 +133,51 @@ namespace RISE
 			//! rewrite -- so the note can never advertise a call that then edits a
 			//! different material.
 			static const char* const DESIGN_CONSTANT_MICROSURFACE = "DESIGN_CONSTANT_MICROSURFACE";
+			//! "Adoption polish" (2026-08-21), the same advisory family:
+			//! motivated by a Gemini trajectory analysis showing revision
+			//! passes (v2+) repeatedly DROP min/max/step/label `param`
+			//! metadata in favour of hardcoded literals in the body/defs --
+			//! the capability exists (a prompt that demands params gets
+			//! 51/51 compliance) but iteration pressure erodes it (a floor
+			//! run kept params on only 6 of 29 final expression chunks).
+			//! Fires per `expression_painter` / `scalar_painter{expression}`
+			//! chunk whose body (its `def` lines plus its final `expr` /
+			//! `expression` line) contains at least `kParamErosionLiteralGate`
+			//! DISTINCT numeric literals while the chunk declares at most
+			//! `kParamErosionMaxParams` `param` lines -- see
+			//! ComputeDesignNoteConditionsFromDoc_'s condition E for the
+			//! calibration evidence (the whole in-tree scene corpus has ZERO
+			//! genuine chunks in that gap; every real expression-family chunk
+			//! either declares real params or has too few literals to be a
+			//! candidate). Severity::Info, teaches rather than scores --
+			//! names the chunk and suggests promoting the literals to
+			//! `param <name> <value> min .. max .. step .. label ".."`.  Same
+			//! self-disarming convention as its siblings; the bounded-list
+			//! formatting (up to 3 named chunks + "and N more") is shared
+			//! with DESIGN_ORPHANED_PAINTERS below so neither can flood a big
+			//! document.
+			static const char* const DESIGN_PARAM_METADATA_EROSION = "DESIGN_PARAM_METADATA_EROSION";
+			//! "Adoption polish" (2026-08-21), the same advisory family:
+			//! motivated by the same trajectory analysis -- 14 superseded
+			//! expression chunks left dead in one floor-run document.  The
+			//! node-graph canvas already badges an unreferenced Painter/
+			//! Function node for a human (NodeGraphCanvas.swift's
+			//! `isOrphaned`); this gives the agent the same signal.  Fires
+			//! when the document contains a Painter- or Function-category
+			//! chunk with a name that NO reference anywhere in the document
+			//! resolves to -- computed from `SceneReferenceGraph::EdgesAndDangling`'s
+			//! FULL, document-wide edge list (every referrer category, not
+			//! only Painter/Material), so a painter bound only as a
+			//! rasterizer's `radiance_map` (the environment dome) or another
+			//! non-Painter/Material referrer still counts as referenced --
+			//! deliberately BROADER than the canvas's own `isOrphaned`, whose
+			//! `PainterMaterialGraph` only seeds edges from a Painter/
+			//! Material (or promoted Function) referrer.  Materials are
+			//! excluded from candidacy the same way the canvas excludes them
+			//! (a Material is this graph's natural root -- nothing
+			//! references IT). Severity::Info, self-disarming, same
+			//! bounded-list formatting as DESIGN_PARAM_METADATA_EROSION.
+			static const char* const DESIGN_ORPHANED_PAINTERS = "DESIGN_ORPHANED_PAINTERS";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

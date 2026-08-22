@@ -3150,6 +3150,66 @@ namespace RISE
 				return materialKind == "pbr_metallic_roughness_material";
 			}
 
+			//! Adoption-polish item 3 (2026-08-21) -- condition A's binding-
+			//! aware rewrite.  The OLD condition A fired whenever no
+			//! `scalar_painter` KEYWORD appeared anywhere in the document,
+			//! which is wrong for `pbr_metallic_roughness_material`: its
+			//! `roughness`/`metallic` resolve through the COLOUR painter
+			//! manager (MicrosurfaceKindUsesColourPipe_ above, same c33734c7
+			//! audit), so a scene that varies pbr roughness spatially via
+			//! `expression_painter` alone -- zero `scalar_painter` chunks,
+			//! entirely correct authoring -- still tripped the note on every
+			//! one of 11 live-census renders.
+			//!
+			//! Every Material-category chunk keyword's PHYSICALLY-SCALAR slot
+			//! names, enumerated from the chunk descriptors themselves (never
+			//! hand-guessed) via `ParameterSemantics.pipe ==
+			//! ParameterPipe::Scalar` -- audited against ChunkParserRegistry.cpp
+			//! 2026-08-21, covers every Reference-kind param the parser itself
+			//! marks as resolving through `IScalarPainterManager`: roughness /
+			//! alphax / alphay / facets / isotropy / sheen_roughness (condition
+			//! D's narrower microsurface-only kMicrosurfaceKinds table is a
+			//! SUBSET of this) PLUS, beyond that table's deliberately-excluded
+			//! scope, ior / tau / scattering / absorption / extinction on
+			//! dielectric_material / translucent_material / schlick_material --
+			//! condition A's complaint ("any physical-scalar material
+			//! parameter... is a constant") was always broader than condition
+			//! D's ("microsurface... constant"), so its slot set should be too.
+			//! PLUS the one documented Color-pipe-by-construction exception:
+			//! wherever `MicrosurfaceKindUsesColourPipe_` is true, `roughness`/
+			//! `metallic` count as scalar-meaning despite their `pipe ==
+			//! ParameterPipe::Color` (the SAME two names that oddball's own
+			//! descriptor comments name -- deliberately not swept wider to the
+			//! kind's OTHER Color-pipe params, e.g. `specular_factor` /
+			//! `anisotropy_factor`, which this diagnostic was never calibrated
+			//! against). Lazily built once (function-static, mirroring
+			//! ChunkDescriptorRegistry's own cache) since it is a pure function
+			//! of the registered descriptors.
+			const std::map<std::string, std::vector<std::string> >& ScalarMaterialSlotsByKind_()
+			{
+				static const std::map<std::string, std::vector<std::string> > table = [] {
+					std::map<std::string, std::vector<std::string> > out;
+					for( const String& kw : AllKeywordsForCategory( ChunkCategory::Material ) ) {
+						const ChunkDescriptor* d = DescriptorForKeyword( kw );
+						if( !d ) continue;
+						const std::string kind = std::string( kw.c_str() );
+						std::vector<std::string> slots;
+						for( const ParameterDescriptor& p : d->parameters ) {
+							if( p.kind != ValueKind::Reference ) continue;
+							bool scalarMeaning = ( p.semantics.pipe == ParameterPipe::Scalar );
+							if( !scalarMeaning && p.semantics.pipe == ParameterPipe::Color &&
+							    MicrosurfaceKindUsesColourPipe_( kind ) &&
+							    ( p.name == "roughness" || p.name == "metallic" ) )
+								scalarMeaning = true;
+							if( scalarMeaning ) slots.push_back( p.name );
+						}
+						if( !slots.empty() ) out[kind] = slots;
+					}
+					return out;
+				}();
+				return table;
+			}
+
 			//! "MOST PROMINENT" -- ONE definition, read by design-note condition D
 			//! (which NAMES the material in its clause) and by a bare
 			//! `vary_material` call (which REWRITES it).  If these two ever
@@ -3173,10 +3233,12 @@ namespace RISE
 
 			struct DesignNoteConditions_
 			{
-				bool conditionA = false;   //!< scalar pipe unused
+				bool conditionA = false;   //!< scalar pipe unused (binding-aware as of adoption-polish item 3)
 				bool conditionB = false;   //!< no advanced geometry
 				bool conditionC = false;   //!< hand-fanned repetition of one geometry (88)
 				bool conditionD = false;   //!< every material's microsurface is a bare number (88 S5)
+				bool conditionE = false;   //!< adoption polish item 1: param-metadata erosion
+				bool conditionF = false;   //!< adoption polish item 2: orphaned Painter/Function chunks
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -3210,6 +3272,20 @@ namespace RISE
 				std::string varyMaterialKind;
 				double      varyMaterialRoughness = 0.0;
 				int         constantMicrosurfaceCount = 0;
+
+				//! Adoption polish item 1: every `expression_painter` /
+				//! `scalar_painter{expression}` chunk name whose body eroded
+				//! its params, in DOCUMENT order.  Condition E reads it
+				//! through kParamErosionLiteralGate/kParamErosionMaxParams;
+				//! the clause formatter reads it bounded (first 3 + "and N
+				//! more").
+				std::vector<std::string> paramErodedChunkNames;
+
+				//! Adoption polish item 2: every Painter/Function-category
+				//! chunk name with zero document-wide referrers, in DOCUMENT
+				//! order.  Condition F's population; same bounded-list
+				//! formatting as paramErodedChunkNames.
+				std::vector<std::string> orphanedPainterNames;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -3271,6 +3347,140 @@ namespace RISE
 					if( !pname.empty() ) out[pname] = val;   // LAST occurrence wins
 				}
 				return out;
+			}
+
+			//! Adoption polish item 1's sibling of `ChunkParamMap_`: every
+			//! OCCURRENCE of a repeatable param (e.g. `param`, `def`), in
+			//! document order, rather than `ChunkParamMap_`'s single
+			//! last-wins entry -- condition E needs the actual COUNT of
+			//! `param` lines and the text of EVERY `def`/`expr` line, not
+			//! just one collapsed value per name.
+			std::vector<std::string> ChunkParamOccurrences_( const NodeRef& chunkItem, const std::string& paramName )
+			{
+				std::vector<std::string> out;
+				if( !chunkItem ) return out;
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string pname, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) pname = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( pname == paramName ) out.push_back( val );
+				}
+				return out;
+			}
+
+			//! Adoption polish item 1: distinct numeric-literal TOKENS in
+			//! `text` (an expression body -- one or more `def`/`expr` lines
+			//! joined), counted by VALUE not occurrence (`0.5` appearing
+			//! three times is one literal reused, not three erosion
+			//! candidates).  A digit run that is part of an identifier
+			//! (immediately preceded by a letter, digit, or underscore --
+			//! the "3" in `vec3`, the "1" in `worley_f1`) is NOT a literal;
+			//! walking identifiers as a whole token first is what keeps
+			//! those out.  Deliberately simple (no bit-identical-with-the-
+			//! parser ambition): this is a HEURISTIC advisory count, not a
+			//! second expression parser, so an edge case that reads as "one
+			//! literal off" costs nothing -- see ComputeDesignNoteConditionsFromDoc_
+			//! condition E for the calibration evidence this threshold rests on.
+			int CountDistinctNumericLiterals_( const std::string& text )
+			{
+				std::set<std::string> distinct;
+				const std::size_t n = text.size();
+				std::size_t i = 0;
+				while( i < n ) {
+					const char ch = text[i];
+					if( std::isalpha( static_cast<unsigned char>( ch ) ) || ch == '_' ) {
+						std::size_t j = i + 1;
+						while( j < n && ( std::isalnum( static_cast<unsigned char>( text[j] ) ) || text[j] == '_' ) ) ++j;
+						i = j;
+						continue;
+					}
+					const bool digitStart = std::isdigit( static_cast<unsigned char>( ch ) ) ||
+						( ch == '.' && i + 1 < n && std::isdigit( static_cast<unsigned char>( text[i + 1] ) ) );
+					if( digitStart ) {
+						std::size_t j = i;
+						while( j < n && ( std::isdigit( static_cast<unsigned char>( text[j] ) ) || text[j] == '.' ) ) ++j;
+						if( j < n && ( text[j] == 'e' || text[j] == 'E' ) && j + 1 < n &&
+						    ( std::isdigit( static_cast<unsigned char>( text[j + 1] ) ) ||
+						      ( ( text[j + 1] == '+' || text[j + 1] == '-' ) && j + 2 < n &&
+						        std::isdigit( static_cast<unsigned char>( text[j + 2] ) ) ) ) ) {
+							std::size_t k = j + 1;
+							if( text[k] == '+' || text[k] == '-' ) ++k;
+							while( k < n && std::isdigit( static_cast<unsigned char>( text[k] ) ) ) ++k;
+							j = k;
+						}
+						distinct.insert( text.substr( i, j - i ) );
+						i = j;
+						continue;
+					}
+					++i;
+				}
+				return static_cast<int>( distinct.size() );
+			}
+
+			//! Adoption polish items 1 + 2: render up to `kBoundedListCap`
+			//! backtick-quoted names, comma-joined, with the truncation
+			//! STATED (never a quietly short list -- the same rule
+			//! PopulateScene's own per-geometry user list follows) when
+			//! there are more.  Shared by both new clause formatters so
+			//! neither invents its own bounding convention.
+			static const std::size_t kBoundedListCap = 3;
+			std::string FormatBoundedNameList_( const std::vector<std::string>& names )
+			{
+				std::string out;
+				const std::size_t shown = ( names.size() > kBoundedListCap ) ? kBoundedListCap : names.size();
+				for( std::size_t i = 0; i < shown; ++i ) {
+					if( i ) out += ", ";
+					out += "`" + names[i] + "`";
+				}
+				if( shown < names.size() )
+					out += ", and " + std::to_string( names.size() - shown ) + " more";
+				return out;
+			}
+
+			//! Adoption polish item 1's gate: how many DISTINCT numeric
+			//! literals a paramless (or near-paramless) expression body needs
+			//! before the erosion note fires.  6, calibrated against a
+			//! full-corpus scan (scenes/**/*.RISEscene, docs/**/*.RISEscene,
+			//! 2026-08-21): every genuine expression_painter / scalar_painter
+			//! {expression} chunk in-tree that declares <= kParamErosionMaxParams
+			//! params has EITHER real params (so it never reaches this gate)
+			//! or fewer than 3 distinct literals -- the corpus has ZERO
+			//! chunks in the gap this note targets, so 6 has wide margin on
+			//! both sides: comfortably below the ~14 distinct literals in the
+			//! live-census floor-run chunk this note is calibrated to catch
+			//! (`pnt_shelf_wear_mask_v3`: 0 `param` lines, 3 `def`s, one
+			//! `expr` -- smoothstep/fbm calls over ~14 distinct numbers), and
+			//! comfortably above the 0-2 literals a genuinely tiny paramless
+			//! body (e.g. a bare `expr sin(u)+cos(v)`) would carry.
+			static const int kParamErosionLiteralGate = 6;
+			//! "Zero, or nearly zero" (the brief's own phrasing) params: a
+			//! chunk that spelled out exactly one `param` line already
+			//! reached for the mechanism the note teaches, so it is not an
+			//! erosion candidate.
+			static const int kParamErosionMaxParams = 1;
+
+			//! Adoption polish item 1's per-chunk verdict: TRUE when
+			//! `chunkItem` (an `expression_painter`, or a `scalar_painter`
+			//! already confirmed to carry the "expression" form) declares at
+			//! most `kParamErosionMaxParams` `param` lines while its
+			//! def(s)-plus-final-expression body carries at least
+			//! `kParamErosionLiteralGate` DISTINCT numeric literals.
+			//! `finalKey` is "expr" for expression_painter, "expression" for
+			//! scalar_painter -- the two chunks' own names for the same slot
+			//! (BuildExpressionProgramFromChunkFields's two callers use the
+			//! same two keys, ExpressionPainter.h).
+			bool ParamErosionFires_( const NodeRef& chunkItem, const std::string& finalKey )
+			{
+				if( static_cast<int>( ChunkParamOccurrences_( chunkItem, "param" ).size() ) > kParamErosionMaxParams )
+					return false;
+				std::string body;
+				for( const std::string& def : ChunkParamOccurrences_( chunkItem, "def" ) ) body += def + "\n";
+				for( const std::string& fin : ChunkParamOccurrences_( chunkItem, finalKey ) ) body += fin + "\n";
+				return CountDistinctNumericLiterals_( body ) >= kParamErosionLiteralGate;
 			}
 
 			//! 88 S5: forward declarations of two value-parsing primitives whose
@@ -3416,7 +3626,6 @@ namespace RISE
 			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc )
 			{
 				DesignNoteConditions_ c;
-				bool hasScalarPainter    = false;
 				bool hasAdvancedGeometry = false;
 
 				// -- Condition D accumulators (88 S5) ----------------------
@@ -3527,7 +3736,6 @@ namespace RISE
 						continue;
 					}
 					if( role == "scalar_painter" ) {
-						hasScalarPainter = true;
 						// (88 S5) Keep the WHOLE param map: which form a
 						// scalar_painter carries is what decides whether a slot
 						// bound to it is a constant, and re-walking the document
@@ -3535,7 +3743,15 @@ namespace RISE
 						// bytes.
 						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
 						const std::map<std::string, std::string>::const_iterator nm = pm.find( "name" );
-						if( nm != pm.end() && !nm->second.empty() ) scalarPainterForms[nm->second] = pm;
+						if( nm != pm.end() && !nm->second.empty() ) {
+							scalarPainterForms[nm->second] = pm;
+							// (Adoption polish item 1) Only the "expression"
+							// form has a def/expr body to erode -- value /
+							// function2d / texture / base / multiply carry no
+							// literals at all in this sense.
+							if( pm.count( "expression" ) && ParamErosionFires_( item, "expression" ) )
+								c.paramErodedChunkNames.push_back( nm->second );
+						}
 						continue;
 					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
@@ -3569,11 +3785,20 @@ namespace RISE
 					// without editing this function.
 					if( d->category == ChunkCategory::Painter ) {
 						const std::string pname = ChunkParamString_( item, "name" );
-						if( !pname.empty() ) painterKinds[pname] = role;
+						if( !pname.empty() ) {
+							painterKinds[pname] = role;
+							// (Adoption polish item 1) expression_painter's
+							// erosion check -- scalar_painter's own twin lives
+							// in the early branch above (it never reaches
+							// here; it `continue`s before this point).
+							if( role == "expression_painter" && ParamErosionFires_( item, "expr" ) )
+								c.paramErodedChunkNames.push_back( pname );
+						}
 						continue;
 					}
 					if( d->category == ChunkCategory::Material &&
-					    MicrosurfaceSlotsForKind_( role ) != nullptr ) {
+					    ( MicrosurfaceSlotsForKind_( role ) != nullptr ||
+					      ScalarMaterialSlotsByKind_().count( role ) != 0 ) ) {
 						PendingMaterial_ pmEntry;
 						pmEntry.itemIndex = i;
 						pmEntry.kind      = role;
@@ -3584,8 +3809,76 @@ namespace RISE
 					}
 				}
 
-				c.conditionA = c.standardObjectCount >= 3 && !hasScalarPainter;
+				// (Adoption polish item 3) Condition A's binding-aware
+				// resolution: does ANY physically-scalar material slot
+				// anywhere in the document bind to something that varies
+				// spatially?  Reuses the SAME `pendingMaterials` /
+				// `scalarPainterForms` / `painterKinds` state and the SAME
+				// `ClassifyMicrosurfaceBinding_` classifier condition D's
+				// resolution pass below uses -- but a DIFFERENT, broader slot
+				// set (`ScalarMaterialSlotsByKind_`, not the narrower
+				// microsurface-only `kMicrosurfaceKinds`), so it needs its
+				// own loop rather than folding into D's (D's `qualifies`
+				// bookkeeping answers a different question -- "is this ONE
+				// material a flat constant" -- not "does the document have
+				// ANY spatial scalar variation at all").
+				bool anyScalarMaterialSlotVaries = false;
+				for( const PendingMaterial_& pm : pendingMaterials ) {
+					const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+						ScalarMaterialSlotsByKind_().find( pm.kind );
+					if( slotsIt == ScalarMaterialSlotsByKind_().end() ) continue;
+					for( const std::string& slotName : slotsIt->second ) {
+						const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
+						if( v == pm.params.end() ) continue;
+						double ignored = 0.0;
+						if( ClassifyMicrosurfaceBinding_( v->second, scalarPainterForms, painterKinds, ignored ) ==
+						    MicrosurfaceBinding_::Varying ) {
+							anyScalarMaterialSlotVaries = true;
+							break;
+						}
+					}
+					if( anyScalarMaterialSlotVaries ) break;
+				}
+				c.conditionA = c.standardObjectCount >= 3 && !anyScalarMaterialSlotVaries;
 				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
+
+				// (Adoption polish item 2) Condition F: Painter/Function-
+				// category chunks with ZERO document-wide referrers.
+				// Deliberately its OWN `SceneReferenceGraph` pass rather than
+				// a private reference walk (the brief's own "do NOT invent a
+				// second reference resolver") -- and deliberately the FULL,
+				// unfiltered edge list (every referrer category), not the
+				// canvas's `PainterMaterialGraph` (whose edge-seeding only
+				// attributes a referrer in Painter/Material/promoted-Function
+				// scope): a painter bound only as a rasterizer's
+				// `radiance_map` (the environment dome) or another non-
+				// Painter/Material referrer is still genuinely referenced,
+				// and the canvas's narrower graph would silently miss that.
+				// Materials are excluded from candidacy for the SAME reason
+				// NodeGraphCanvas.swift's `isOrphaned` excludes them: a
+				// Material is this graph's natural ROOT, so zero referrers
+				// there is normal, not an orphan.
+				{
+					const std::vector<SceneReferenceGraph::DocumentChunk> refChunks = SceneReferenceGraph::AllChunks( doc );
+					const SceneReferenceGraph::Snapshot refSnap = SceneReferenceGraph::EdgesAndDangling( doc, &refChunks );
+					std::set<RISE::Cst::NodeId> referredIds;
+					for( const ReferenceEdge& e : refSnap.edges ) referredIds.insert( e.targetId );
+					for( const SceneReferenceGraph::DocumentChunk& dc : refChunks ) {
+						if( !dc.hasCategory ) continue;
+						if( dc.category != ChunkCategory::Painter && dc.category != ChunkCategory::Function ) continue;
+						if( dc.name.size() <= 1 ) continue;   // unnamed: unaddressable, can never be a reference target (String's <=1-is-empty convention)
+						if( referredIds.count( dc.id ) ) continue;
+						c.orphanedPainterNames.push_back( std::string( dc.name.c_str() ) );
+					}
+				}
+				c.conditionF = !c.orphanedPainterNames.empty();
+
+				// (Adoption polish item 1) Condition E: populated inline
+				// during the main walk above (both the scalar_painter early
+				// branch and the Painter-category fallthrough push into
+				// `c.paramErodedChunkNames` as each qualifying chunk is
+				// visited) -- fires whenever at least one chunk eroded.
+				c.conditionE = !c.paramErodedChunkNames.empty();
 
 				// (88 S5) Condition D's resolution pass -- ONE predicate, read by
 				// the note AND by AgentSession::VaryMaterial.
@@ -3803,6 +4096,66 @@ namespace RISE
 					"stylised look is the point, this is fine -- ignore and do not churn.";
 			}
 
+			//! Condition A's whole clause, factored out (adoption-polish item
+			//! 3) the same way conditions C/D already are -- SHARED by the
+			//! note builder and the diagnostic builder so the two copies this
+			//! file's own comments warn about cannot drift, which is exactly
+			//! how the OLD wording ("no scalar_painter chunk exists") went
+			//! stale: it was true when condition A was a keyword grep, and
+			//! stayed in both copies, unchanged, after the check itself
+			//! became binding-aware below.  The corrected claim asserts only
+			//! what the new condition actually tested: no physical-scalar
+			//! material slot varies spatially ANYWHERE, regardless of
+			//! whether a `scalar_painter` chunk happens to exist for some
+			//! other purpose. The rest of the teaching text (which materials
+			//! carry a roughness slot, the read_skill pointer) is unchanged.
+			std::string FormatScalarPipeUnusedClause_()
+			{
+				return "no physical-scalar material parameter (roughness, IOR, scattering, ...) varies "
+					"spatially anywhere in this scene -- every one that exists is a constant. Where a "
+					"ggx_material (or ward_anisotropic_material) suits a surface, spatially-varying "
+					"roughness via expression_function2d -> scalar_painter -> alphax/alphay adds realism "
+					"(read_skill {\"name\":\"procedural-textures\"}).";
+			}
+
+			//! Adoption polish item 1's whole clause, SHARED by the note
+			//! builder and the diagnostic builder (the FormatRepeatedCopiesClause_
+			//! / FormatConstantMicrosurfaceClause_ pattern).  Teaches, does
+			//! not scold: names the chunk(s), states the ONE mechanism
+			//! (promote a literal to a named `param`), and does not spell out
+			//! a body-specific rewrite -- the author already knows their own
+			//! expression, this note just flags that nothing in it is
+			//! retunable.
+			std::string FormatParamErosionClause_( const std::vector<std::string>& chunkNames )
+			{
+				return std::to_string( chunkNames.size() ) + " expression chunk" +
+					( chunkNames.size() == 1 ? std::string() : std::string( "s" ) ) + " (" +
+					FormatBoundedNameList_( chunkNames ) + ") declare no (or almost no) `param` lines "
+					"despite a body full of bare numbers -- art-directability was traded away somewhere "
+					"along the way. Promote the literals that matter to named params: `param <name> "
+					"<value> min <a> max <b> step <s> label \"<text>\"` (visible to every `def` and the "
+					"final `expr`/`expression` by name), then reference the name instead of the number. "
+					"The render does not change -- this is purely about leaving retunable knobs behind "
+					"for the next revision pass.";
+			}
+
+			//! Adoption polish item 2's whole clause, SHARED by the note
+			//! builder and the diagnostic builder.  Names the orphaned
+			//! chunk(s) and the cheapest fix; does not insist -- an orphan
+			//! left in place costs nothing at render time, so this is
+			//! housekeeping, not a correctness complaint.
+			std::string FormatOrphanedPaintersClause_( const std::vector<std::string>& chunkNames )
+			{
+				const bool plural = chunkNames.size() != 1;
+				return std::to_string( chunkNames.size() ) + " Painter/Function chunk" +
+					( plural ? std::string( "s" ) : std::string() ) + " (" + FormatBoundedNameList_( chunkNames ) +
+					") " + ( plural ? std::string( "are" ) : std::string( "is" ) ) +
+					" referenced by nothing else in this document -- a superseded revision, most likely. "
+					"`remove_chunk` cleans each one up (it refuses if anything still references it, so "
+					"this is safe to try). Harmless to leave in place if you would rather keep it as a "
+					"scratch draft.";
+			}
+
 			//! RETURNS empty iff NO condition fires (the "omit the note
 			//! entirely when clean" convention -- see AgentSkillResult::note
 			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
@@ -3816,7 +4169,8 @@ namespace RISE
 			std::string ComputeDesignNoteFromDoc_( const Document& doc )
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
-				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD ) return std::string();
+				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
+				    !c.conditionE && !c.conditionF ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -3839,19 +4193,16 @@ namespace RISE
 					// sec 4.3 correction note): that claim is FALSE -- both
 					// are Reference-kind painter slots (since 64ca16bc,
 					// 2026-04-30) and the parser accepts a painter binding.
-					// The note text below therefore steers to the
-					// HIGHER-friction path and omits the cheapest true one
-					// (bind a painter to pbr `roughness` directly).  The text
-					// is deliberately left as shipped: it is measured-inert
-					// (0/24) and any wording change is a behavioural variable
-					// that belongs to a measured arc-75 phase, not a comment
-					// fix.
-					note += " the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
-						"so any physical-scalar material parameter (roughness, displacement) is a "
-						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "
-						"surface, spatially-varying roughness via expression_function2d -> "
-						"scalar_painter -> alphax/alphay adds realism "
-						"(read_skill {\"name\":\"procedural-textures\"}).";
+					// Adoption-polish item 3 (2026-08-21): the wording ITSELF
+					// went stale the same way -- "no scalar_painter chunk
+					// exists" stopped being what condition A tests the moment
+					// the check became binding-aware (see
+					// ScalarMaterialSlotsByKind_'s doc), so the clause is now
+					// FACTORED OUT (FormatScalarPipeUnusedClause_) instead of
+					// hand-copied here and in AppendDesignDiagnostics_, the
+					// same C/D precedent this exact staleness should have
+					// followed from day one.
+					note += " " + FormatScalarPipeUnusedClause_();
 				}
 				if( c.conditionB ) {
 					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
@@ -3868,6 +4219,12 @@ namespace RISE
 					note += " " + FormatConstantMicrosurfaceClause_( c.constantMicrosurfaceCount,
 					                                                 c.varyMaterialName, c.varyMaterialKind,
 					                                                 c.varyMaterialRoughness );
+				}
+				if( c.conditionE ) {
+					note += " " + FormatParamErosionClause_( c.paramErodedChunkNames );
+				}
+				if( c.conditionF ) {
+					note += " " + FormatOrphanedPaintersClause_( c.orphanedPainterNames );
 				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
@@ -3903,7 +4260,8 @@ namespace RISE
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out )
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
-				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD ) return;
+				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
+				    !c.conditionE && !c.conditionF ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -3912,12 +4270,10 @@ namespace RISE
 					AgentDiagnostic d;
 					d.severity = AgentDiagnostic::Severity::Info;
 					d.code     = AgentDiagnosticCode::DESIGN_SCALAR_PIPE_UNUSED;
-					d.message  = "the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
-						"so any physical-scalar material parameter (roughness, displacement) is a "
-						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "
-						"surface, spatially-varying roughness via expression_function2d -> "
-						"scalar_painter -> alphax/alphay adds realism "
-						"(read_skill {\"name\":\"procedural-textures\"}).";
+					// SHARED formatter (adoption-polish item 3) -- see
+					// ComputeDesignNoteFromDoc_'s condition A comment for why
+					// this stopped being hand-copied.
+					d.message  = FormatScalarPipeUnusedClause_();
 					d.message += kSelfDisarm;
 					out.push_back( d );
 				}
@@ -3961,6 +4317,28 @@ namespace RISE
 					d.message  = FormatConstantMicrosurfaceClause_( c.constantMicrosurfaceCount,
 					                                                c.varyMaterialName, c.varyMaterialKind,
 					                                                c.varyMaterialRoughness );
+					out.push_back( d );
+				}
+				if( c.conditionE ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_PARAM_METADATA_EROSION;
+					// SHARED formatter -- cannot drift from the note's E clause.
+					// kSelfDisarm applies (a deliberately quick, throwaway
+					// expression is a legitimate reason to skip params).
+					d.message  = FormatParamErosionClause_( c.paramErodedChunkNames );
+					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
+				if( c.conditionF ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_ORPHANED_PAINTERS;
+					// SHARED formatter -- cannot drift from the note's F
+					// clause.  No kSelfDisarm: the clause already states its
+					// own "harmless to leave in place" escape, matching
+					// condition C/D's "don't carry two" rule.
+					d.message  = FormatOrphanedPaintersClause_( c.orphanedPainterNames );
 					out.push_back( d );
 				}
 			}
