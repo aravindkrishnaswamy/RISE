@@ -256,7 +256,23 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			production.projection.executedVCycleCount!=16u||
 			production.projection.executedJacobiSweepCount!=1088u)
 			return 120;
-		if(!production.projection.validationPassed)return 244;
+		if(!production.projection.validationPassed){
+			const bool exactRefusal=slice==0u&&
+				production.physicalProjection.executedVCycleCount==17u&&
+				production.projection.executedVCycleCount==16u&&
+				production.physicalProjection.maximumPreProjectionResidualPerS==
+					0x1.2efac6p+5f&&
+				production.physicalProjection.maximumPostProjectionResidualPerS==
+					0x1.eb58p-9f&&
+				production.projection.maximumPreProjectionResidualPerS==
+					0x1.c02f92p-13f&&
+				production.projection.maximumPostProjectionResidualPerS==
+					0x1.4e97dcp-17f&&
+				std::fabs(maximumRestorationTarget)==0x1.c02f92p-13f&&
+				0.005f*std::fabs(maximumRestorationTarget)==0x1.1ed6c4p-20f&&
+				DigestFile(checkpointPath)==checkpointDigest;
+			return exactRefusal?244:245;
+		}
 		::FireProductionCalibration::ResidentStep64Result production64;
 		if(!::FireProductionCalibration::AdvanceResidentStep64(request,
 			static_cast<double>(production.forceDiagnostics.outwardLambdaPerS),production64,&error)){

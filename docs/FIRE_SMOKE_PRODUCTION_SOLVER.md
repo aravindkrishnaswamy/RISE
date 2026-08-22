@@ -2764,8 +2764,8 @@ The maximum measured filtered-velocity difference is
 `1.1165273069908068e-9 m/s`, inside the derived
 `7.363073950686612e-4 m/s` subdominance bound by a factor of
 `659462.05745125038`.  It is also inside the old preliminary `3e-5 m/s`
-guard by `26869.024888297707`; the derived r137 rule now supersedes that
-preliminary guard.  Across the nine filtered scalar channels, the smallest
+guard by `26869.024888297707`, but the wrong-state pilot cannot supersede that
+guard; supersession remains pending the golden-slice measurement.  Across the nine filtered scalar channels, the smallest
 bound/measurement margin is `1542.2120195226826`; across the nine inventory
 channels it is `2361.071848300599`.  All `8*(9+1+9)=152` precision gates are
 green.  These margins are calibrating observations only: none selects or
@@ -2783,12 +2783,11 @@ hashes.  The corrected campaign then fails closed on slice zero before its
 precision result may publish.  The physical projection validates
 (`37.872448 -> 0.00374865532 s^-1`), but the restoration projection plateaus
 at `9.97165444e-6 s^-1` against its own unchanged
-`1.06855828e-6 s^-1` band, a `9.331877` miss.  Raising only the restoration
-work from 16 to 24 V-cycles produces the identical fp32 residual, identifying
-a numerical floor rather than incomplete iteration.  The provisional slice-0
-velocity precision delta (`2.8825998671e-9 m/s`) is far inside the r137 bound,
-but it is diagnostic because the projection is invalid.  Exact exit `244`
-and r140 evidence preserve fail-closed behavior.  No full-step `B_fp32`,
+`1.06855828e-6 s^-1` band, a `9.331877` miss.  No fp64/Metal precision result
+is admitted or recorded after that failed prerequisite.  Exact exit `244`
+is emitted only after the slice index, projection topology, all six diagnostic
+float values, and the post-run golden hash match; the ordinary macOS suite
+executes this exact refusal.  No full-step `B_fp32`,
 temporal term, or additive contract is admitted; changing the independently
 derived restoration criterion is an owner-level contract ruling.  The golden
 checkpoint is unchanged.

@@ -293,7 +293,7 @@ int main()
 	Check(!subdominanceMeasurement.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(subdominanceMeasurement.begin(),
 			subdominanceMeasurement.end()))==
-		"fe922535c6f621c624f537c1fca7aec533520dc183aee5bf7f0e2d823277bf67"&&
+		"423e62e74b83e34c7667f508f07117d2d4962c72e029e5c0494285d480c918e8"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 		"b32cd74d7eab2ab0872bf04d25c54ac5279315380837be222bb36079f3f15674"&&
@@ -325,7 +325,7 @@ int main()
 		subdominanceMeasurement.find("full_step_B_fp32_closed false")!=
 			std::string::npos&&
 		subdominanceMeasurement.find("preliminary_velocity_guard_status "
-			"superseded_by_derived_subdominance_rule")!=std::string::npos&&
+			"pending_golden_slice_measurement")!=std::string::npos&&
 		subdominanceMeasurement.find("measurement_exit 243")!=std::string::npos,
 		"r138 byte-binds the tier-6 pilot without claiming golden-slice certification");
 	const std::string goldenSubdominanceInputs=ReadText(
@@ -342,16 +342,17 @@ int main()
 		"e7b37ed66ad02b942fe3db966d90d0d141438cb91dd0dc420c885ea1da6abc66"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenRestorationRefusal.begin(),goldenRestorationRefusal.end()))==
-		"d3da5d8e925111b7e7037aa79a9a7a64ae8ce044182b5709d43f4729d51de181"&&
+		"ff15255af16cd650606bda2cae1c8cf3f422b1b24211b6c9b55f621ec5aba99a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"ac723bc5ff22c73f58b2444c268137bd46773b1a4352f83501a71785bc2c6989"&&
+		"b812c0960e62ac0ddbd6bf6533be343804f7e9497dda5ac9dc081eec7acace5c"&&
 		goldenSubdominanceInputs.find("measurement_performed false")!=std::string::npos&&
 		goldenSubdominanceInputs.find("slice_restart_policy shared_golden_beginning_per_slice")!=
 			std::string::npos&&
 		goldenRestorationRefusal.find("restoration_post_over_band 9.3318769992623096")!=
 			std::string::npos&&
-		goldenRestorationRefusal.find("restoration_cycle_probe_result identical_fp32_plateau")!=
+		goldenRestorationRefusal.find("restoration_cycle_count 16")!=std::string::npos&&
+		goldenRestorationRefusal.find("precision_measurement_started false")!=
 			std::string::npos&&
 		goldenRestorationRefusal.find("canonical_exit 244")!=std::string::npos&&
 		goldenRestorationRefusal.find("full_step_B_fp32_closed false")!=std::string::npos,
@@ -406,6 +407,13 @@ int main()
 		unixTestDriver.find("PASS (exact exit=243)")!=std::string::npos&&
 		unixTestDriver.find("expected 243")!=std::string::npos,
 		"ordinary macOS suite executes and exact-binds the retained r138 precision pilot");
+	Check(unixTestDriver.find("FireSequenceTest.r140_golden_restoration_refusal")!=
+			std::string::npos&&
+		unixTestDriver.find("--fire-production-golden-composition")!=std::string::npos&&
+		unixTestDriver.find("golden_refusal_rc\" -eq 244")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=244)")!=std::string::npos&&
+		unixTestDriver.find("expected 244")!=std::string::npos,
+		"ordinary macOS suite exact-binds the r140 golden restoration refusal");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");

@@ -3233,10 +3233,9 @@ it was already tried and refuted here.
   precision result.  The 17-cycle physical pass validates
   (`37.872448 -> 0.00374865532 s^-1`); the 16-cycle restoration pass does not:
   `9.97165444e-6` exceeds its independent `1.06855828e-6 s^-1` band by
-  `9.3318769993`.  A diagnostic 24-cycle pass returns the identical fp32
-  residual, proving a fast numerical plateau rather than missing work.  The
-  provisional velocity P32/P64 delta is `2.8825998671e-9 m/s`, comfortably
-  subdominant but inadmissible because its producer projection is invalid.
-  Exact exit `244`; no criterion, solver, `B_fp32`, temporal evidence, or
-  golden bytes changed.  This is an owner-level validation-contract decision,
-  not grounds to widen the precision bound.
+  `9.3318769993`.  No precision result is admitted after that failed
+  prerequisite.  Exact exit `244` is restricted to slice zero and bit-pins
+  the physical/restoration diagnostics, cycle topology, and post-run golden
+  hash; the ordinary macOS suite replays it.  No criterion, solver, `B_fp32`,
+  temporal evidence, or golden bytes changed.  This is an owner-level
+  validation-contract decision, not grounds to widen the precision bound.

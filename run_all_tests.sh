@@ -443,6 +443,38 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r140 is the exact golden slice-0 prerequisite refusal.  It intentionally
+# stops before reading any continuation snapshot, so the immutable root is the
+# only payload needed by the ordinary Metal gate.
+if [ "$(uname -s)" = "Darwin" ]; then
+	golden_refusal_name="FireSequenceTest.r140_golden_restoration_refusal"
+	golden_refusal_path="$BIN_DIR/FireSequenceTest"
+	golden_refusal_log="$LOG_DIR/$golden_refusal_name.log"
+	printf '[ evidence ] %-46s ... ' "$golden_refusal_name"
+	golden_refusal_rc=0
+	if [ ! -x "$golden_refusal_path" ]; then
+		golden_refusal_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		"$timeout_bin" "$RISE_TEST_TIMEOUT" "$golden_refusal_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$golden_refusal_log" 2>&1 || golden_refusal_rc=$?
+	else
+		"$golden_refusal_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$golden_refusal_log" 2>&1 || golden_refusal_rc=$?
+	fi
+	if [ "$golden_refusal_rc" -eq 244 ]; then
+		echo 'PASS (exact exit=244)'
+		rm -f "$golden_refusal_log"
+	else
+		echo "FAIL (exit=$golden_refusal_rc; expected 244)"
+		printf '%s\t%d\t%s\n' "$golden_refusal_name" "$golden_refusal_rc" \
+			"$golden_refusal_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \
