@@ -154,6 +154,74 @@ namespace RISE
 		{
 		}
 	};
+
+	//! SKIN (doc 89 slice B): the ruled / billowed OPEN SHEET spanning two
+	//! boundary polylines.  Wings, fins, webbing, sails, leaves, awnings,
+	//! lampshade panels, tarps -- "a thin surface bounded by curves", the
+	//! one shape class neither a sweep (a closed section along a path) nor
+	//! a lathe (a silhouette about an axis) can state at all.
+	//!
+	//! Both rails are resampled onto the UNION of their own normalized
+	//! arc-length parameter sets, so EVERY authored vertex of BOTH rails
+	//! is reproduced VERBATIM in the mesh (a kink authored on one rail is
+	//! a kink in the surface, not a chamfer).  nLen only ever ADDS
+	//! stations to that union; it never replaces it.  The one exception
+	//! is a station where the two rails come within 1e-9 of the sheet's
+	//! own extent of each other: there rail B's point is snapped onto
+	//! rail A's so the tip collapses to a single shared vertex (the
+	//! lathe's pole, and its axis snap, applied to a sheet) instead of a
+	//! skirt of sub-degenerate slivers.
+	//!
+	//! The base surface is RULED: station i spans the straight segment
+	//! from railA(i) to railB(i), so v = 0 is rail A and v = 1 is rail B.
+	//! `billow` then inflates the interior along the RULED sheet's own
+	//! per-vertex normal, with a sin^2(pi*v) falloff that is exactly zero
+	//! AND tangent at both rails -- so the rails themselves are never
+	//! moved, whatever the billow.  A billow large enough to fold the
+	//! sheet through itself at an authored crease is built as authored
+	//! and WARNED about (count of folded faces, first offending station,
+	//! and the remedy); it is neither refused nor clamped, because the
+	//! fold bound depends on the rails' own crease angle and a clamp
+	//! would silently change authored shapes.
+	//!
+	//! WHERE THE TWO RAILS MEET, the station collapses to a pole rather
+	//! than emitting nAcross coincident copies, so the tip is a connected
+	//! fan.  An END meeting (a leaf tip, a pinched sail corner) is ONE
+	//! vertex carrying the mean of its single fan's normals.  An INTERIOR
+	//! meeting -- rails that touch or CROSS mid-span -- is TWO coincident
+	//! poles, one per side, each carrying its own fan's normals: the two
+	//! sides of a pinch are different surfaces (opposed normals outright,
+	//! in the crossing case), so no single normal represents both.  The
+	//! sheet is then two lobes touching at a point, its boundary is still
+	//! exactly its perimeter, and the author is WARNED, since a mid-span
+	//! meeting is as often a mistake as an intent.  Two ADJACENT pinched
+	//! stations leave a GAP (every quad between them is degenerate) and
+	//! are warned about separately.
+	//!
+	//! The bake is ONE double-sided sheet, not a closed slab: RISE's
+	//! double-sided meshes re-orient both the shading and the geometric
+	//! normal toward the incoming ray, so each face shades correctly from
+	//! ITS OWN side and the rail order never creates a black side.  An
+	//! opaque membrane lit only from the far side is dark either way -- a
+	//! slab would not change that -- so thickness buys nothing a
+	//! transmitting material does not buy better.
+	struct SkinDescriptor
+	{
+		const double* railAPoints;		//!< x0 y0 z0 x1 y1 z1 ... (triples; OPEN polyline, >= 2 points).  v = 0 boundary
+		unsigned int  numRailAPoints;	//!< number of rail-A (x, y, z) TRIPLES
+		const double* railBPoints;		//!< x0 y0 z0 ... (triples; OPEN polyline, >= 2 points).  v = 1 boundary.  The count NEED NOT match rail A
+		unsigned int  numRailBPoints;	//!< number of rail-B (x, y, z) TRIPLES
+		int    nLen;					//!< REQUESTED stations ALONG the rails (clamped 2..4096).  A MINIMUM, not an exact count: the station set is the union of both rails' authored arc-length parameters plus however many of the nLen uniform parameters do not coincide with one, so the actual count is >= max(nLen, |union|)
+		int    nAcross;					//!< vertex ROWS ACROSS the sheet, rail A to rail B (clamped 2..1024).  2 = the two rails alone (no interior, so `billow` has nothing to displace)
+		double billow;					//!< inflation of the sheet's INTERIOR, as a fraction of each station's own rail-to-rail span, along the ruled sheet's per-vertex normal (normalize(dP/du x dP/dv), with u along the rails and v from rail A to rail B).  Falloff sin^2(pi*v): exactly 0 and tangent at BOTH rails.  POSITIVE billows toward +normal, NEGATIVE toward -normal.  0 = the flat ruled surface.  A LARGE billow across a SHARP authored crease pinches at the crease -- inflating a folded sheet folds it further; that is the surface, not an artifact, so it is built as authored, but the fold INVERTS the geometric normal every side test reads on the affected faces and is reported as a warning naming the count and the first station.  The fold test is PER CORNER (the shading normal opposes the face's geometric normal at some vertex, which is exactly what a ray hitting near that vertex is handed), not against the three-normal sum -- a collapsed pole ships one normal for a whole fan, so a summed test cannot see a fan with only SOME lobes folded.  The same test runs at billow 0, where a fold can only be the RAILS' own (they cross or double back) and the warning says so instead of blaming billow
+
+		SkinDescriptor() :
+			railAPoints( 0 ), numRailAPoints( 0 ),
+			railBPoints( 0 ), numRailBPoints( 0 ),
+			nLen( 32 ), nAcross( 8 ), billow( 0.0 )
+		{
+		}
+	};
 }
 
 #endif

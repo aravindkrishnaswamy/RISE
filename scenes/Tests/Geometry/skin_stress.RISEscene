@@ -1,0 +1,437 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           skin_stress.RISEscene                                                                   #
+#   Description:    The `skin_geometry` ruled/billowed sheet (doc 89 slice B), on the cases it exists for:   #
+#                     - a RULED QUAD: two straight rails, billow 0 -- a flat awning/tarp, and the exactly    #
+#                       planar bake a planar rail pair must produce                                         #
+#                     - a BILLOWED SAIL: the same span with billow 0.28, inflated along the sheet's own      #
+#                       normal with a falloff that is exactly zero at both rails (so the rails do not move)  #
+#                     - a WING: a `skeleton_geometry` arm/finger frame with a `skin_geometry` membrane       #
+#                       stretched between a leading-edge and a trailing-edge rail -- the marquee pairing,    #
+#                       and the shape the dragon trajectory could author BONES for and then stopped          #
+#                     - UNEQUAL-COUNT RAILS with sharp authored kinks (5 points vs 3): every authored        #
+#                       vertex of BOTH rails is in the mesh verbatim, so the creases are where they were     #
+#                       authored rather than chamfered onto a uniform grid                                   #
+#                     - THE TWO-SIDED PAIR: the SAME sheet authored twice, once rail_a-first and once        #
+#                       rail_b-first, so the two carry EXACTLY opposite surface normals.  BOTH are LIT --    #
+#                       neither has a black side: the bake is one DOUBLE-SIDED sheet, which re-orients       #
+#                       both the shading and the geometric normal toward the incoming ray, so the half of a  #
+#                       membrane whose normal points AWAY from the eye is lit from behind rather than black. #
+#                       (They are NOT pixel-identical -- they stand at different distances from three point  #
+#                        lights.  TestSkinTwoSided is the quantitative form: one ray, both meshes.)          #
+#                       (An OPAQUE membrane lit ONLY from its far side is dark -- correctly, and exactly as  #
+#                       a thin solid slab would be; that is a material question, not a geometry one.)        #
+#                                                                                                           #
+#                   Rails are authored as inline `rail_a`/`rail_b` point lists; skin_geometry has NO         #
+#                   cross-chunk reference at all.                                                            #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				8
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/skin_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			960
+	height			500
+}
+
+pinhole_camera
+{
+	location			-0.5 4.4 20.0
+	lookat				-0.5 1.35 0
+	up					0 1 0
+	fov					30.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_canvas
+	color				0.82 0.78 0.66
+}
+
+uniformcolor_painter
+{
+	name				pnt_sail
+	color				0.86 0.34 0.26
+}
+
+uniformcolor_painter
+{
+	name				pnt_membrane
+	color				0.72 0.44 0.40
+}
+
+uniformcolor_painter
+{
+	name				pnt_bone
+	color				0.36 0.33 0.30
+}
+
+uniformcolor_painter
+{
+	name				pnt_kink
+	color				0.34 0.55 0.72
+}
+
+lambertian_material
+{
+	name				mat_canvas
+	reflectance			pnt_canvas
+}
+
+lambertian_material
+{
+	name				mat_sail
+	reflectance			pnt_sail
+}
+
+lambertian_material
+{
+	name				mat_membrane
+	reflectance			pnt_membrane
+}
+
+lambertian_material
+{
+	name				mat_bone
+	reflectance			pnt_bone
+}
+
+lambertian_material
+{
+	name				mat_kink
+	reflectance			pnt_kink
+}
+
+# The TWO-SIDED pair share one material, so the ONLY difference between
+# them is the order their rails were authored.
+uniformcolor_painter
+{
+	name				pnt_twosided
+	color				0.78 0.62 0.30
+}
+
+lambertian_material
+{
+	name				mat_twosided
+	reflectance			pnt_twosided
+}
+
+##################################################
+# 1. RULED QUAD.  Two straight rails, billow 0: an exactly planar sheet
+# (a stretched tarp / awning).  n_across 2 would be enough for the shape;
+# it is 4 so the interior rows are visible in the mesh.
+##################################################
+skin_geometry
+{
+	name				tarpgeom
+	rail_a				-1.6 0.0 0.0
+	rail_a				1.6 0.0 0.0
+	rail_b				-1.6 2.2 -1.5
+	rail_b				1.6 2.2 -1.5
+	n_len				12
+	n_across			4
+	billow				0.0
+}
+
+standard_object
+{
+	name				tarp
+	geometry			tarpgeom
+	material			mat_canvas
+	position			-7.6 0 0
+}
+
+##################################################
+# 2. BILLOWED SAIL.  The same span, inflated.  The falloff is sin^2(pi*v),
+# exactly zero AND tangent at both rails, so the two authored rails stay
+# bit-exactly where they were authored however hard the sheet is filled --
+# only the interior moves.  Rails are SMOOTH here on purpose: a heavy
+# billow across a sharp crease pinches at the crease (that is what
+# inflating a folded sheet does), which specimen 4 below shows at a
+# deliberately modest billow instead.
+##################################################
+skin_geometry
+{
+	name				sailgeom
+	rail_a				-1.6 0.0 0.0
+	rail_a				-0.5 0.45 0.0
+	rail_a				0.6 1.1 0.0
+	rail_a				1.6 2.0 0.0
+	rail_b				-1.6 0.4 -1.9
+	rail_b				0.0 1.5 -1.9
+	rail_b				1.6 2.6 -1.9
+	n_len				40
+	n_across			16
+	billow				0.28
+}
+
+standard_object
+{
+	name				sail
+	geometry			sailgeom
+	material			mat_sail
+	position			-4.5 0 0
+}
+
+##################################################
+# 3. THE WING -- the marquee pairing.  `skeleton_geometry` builds the arm
+# and three finger bones; `skin_geometry` stretches the membrane between a
+# LEADING-edge rail (which follows the finger tips) and a TRAILING-edge
+# rail (which runs from the shoulder back to the wrist).  The two rails
+# MEET at the shoulder and at the outermost fingertip, which is how a wing
+# closes -- the degenerate quads at the two meeting points are dropped
+# rather than emitted as slivers.
+##################################################
+skeleton_geometry
+{
+	name				wingbonesgeom
+	joint				shoulder none 0.0 0.35 0.0 0.14
+	joint				elbow shoulder 0.9 1.15 0.05 0.10
+	joint				wrist elbow 1.9 1.85 0.05 0.075
+	joint				f1 wrist 2.6 2.75 0.05 0.05
+	joint				f2 wrist 3.15 2.05 0.05 0.05
+	joint				f3 wrist 3.35 1.25 0.05 0.05
+	blend				0.09
+}
+
+standard_object
+{
+	name				wingbones
+	geometry			wingbonesgeom
+	material			mat_bone
+	position			-1.4 0 0
+}
+
+skin_geometry
+{
+	name				wingskingeom
+	rail_a				0.0 0.35 0.0
+	rail_a				0.9 1.15 0.05
+	rail_a				1.9 1.85 0.05
+	rail_a				2.6 2.75 0.05
+	rail_b				0.0 0.35 0.0
+	rail_b				1.2 0.75 0.02
+	rail_b				2.4 0.95 0.02
+	rail_b				3.35 1.25 0.05
+	rail_b				3.15 2.05 0.05
+	rail_b				2.6 2.75 0.05
+	n_len				48
+	n_across			14
+	billow				0.06
+}
+
+standard_object
+{
+	name				wingskin
+	geometry			wingskingeom
+	material			mat_membrane
+	# SAME position as `wingbones` above, and that is load-bearing: the
+	# membrane's two rails are authored in the SAME local frame as the
+	# skeleton's joints (rail_a IS shoulder-elbow-wrist-f1; rail_b closes
+	# back through f3 and f2), so any offset between the two objects
+	# slides the bones off the edges they are supposed to frame -- which
+	# is what an earlier -1.7 0 -0.16 did, laying them diagonally across
+	# the sheet instead of along its leading and trailing edges.
+	position			-1.4 0 0
+}
+
+##################################################
+# 4. UNEQUAL-COUNT RAILS WITH SHARP AUTHORED KINKS.  rail_a carries five
+# points with two hard direction changes; rail_b carries three, kinked
+# somewhere else entirely.  Both rails are resampled onto the UNION of
+# their arc-length parameters, so all eight authored vertices survive
+# VERBATIM and the creases land exactly where they were authored.  A
+# uniform max-N resample would chamfer every one of them while leaving the
+# bounding box untouched.
+##################################################
+skin_geometry
+{
+	name				kinkgeom
+	rail_a				-1.7 0.0 0.0
+	rail_a				-0.6 1.35 0.0
+	rail_a				0.15 0.55 0.0
+	rail_a				1.05 1.75 0.0
+	rail_a				1.7 0.25 0.0
+	rail_b				-1.7 0.15 -1.7
+	rail_b				0.35 1.95 -1.7
+	rail_b				1.7 0.35 -1.7
+	n_len				30
+	n_across			8
+	billow				0.05
+}
+
+standard_object
+{
+	name				kinksheet
+	geometry			kinkgeom
+	material			mat_kink
+	position			2.2 0 0
+}
+
+##################################################
+# 5. THE TWO-SIDED PAIR -- the sidedness decision, stated as a render.
+# Both sheets span the SAME two rails; the second one names them in the
+# OPPOSITE order, which is what flips the surface normal (the normal is
+# d/du x d/dv, and v runs rail_a -> rail_b).  So the left sheet's normal
+# points toward the camera-side lights and the right sheet's points away
+# from them -- and NEITHER has a black side, because the bake is ONE
+# DOUBLE-SIDED sheet and TriangleMeshGeometryIndexed re-orients both the
+# shading and the geometric normal toward the incoming ray.
+#
+# The two are NOT expected to render pixel-identically: they stand at
+# different places under three point lights at different distances, so
+# their irradiance differs.  What this pair shows is the thing that is
+# visible by eye at a glance -- that both sheets are LIT, from a rail
+# order that puts one surface normal toward the lights and the other
+# away.  The decisive, quantitative evidence is at the intersection
+# level, in ProceduralMeshTest's TestSkinTwoSided: same ray, both
+# meshes, front-face hit on both, and the double-sided flip firing on
+# exactly one of them.
+#
+# That is the whole argument for a single sheet over a thin closed slab:
+# a membrane already lights correctly from whichever side the eye and the
+# light are on, so the slab's second layer of triangles would buy nothing
+# but two surface events per transmitted ray.  What a slab would NOT buy
+# either is a backlit glow: an OPAQUE membrane lit only from its far side
+# is dark whether it is a sheet or a slab.
+##################################################
+skin_geometry
+{
+	name				twosidedgeom
+	rail_a				-1.1 0.2 0.3
+	rail_a				-0.35 1.85 0.5
+	rail_a				0.75 2.35 0.4
+	rail_a				1.1 0.85 0.1
+	rail_b				-1.1 0.2 -1.2
+	rail_b				0.15 1.55 -1.4
+	rail_b				1.1 0.85 -1.1
+	n_len				32
+	n_across			12
+	billow				0.14
+}
+
+# The SAME rails, named the other way round: identical surface, opposite
+# normal.
+skin_geometry
+{
+	name				twosidedflipgeom
+	rail_a				-1.1 0.2 -1.2
+	rail_a				0.15 1.55 -1.4
+	rail_a				1.1 0.85 -1.1
+	rail_b				-1.1 0.2 0.3
+	rail_b				-0.35 1.85 0.5
+	rail_b				0.75 2.35 0.4
+	rail_b				1.1 0.85 0.1
+	n_len				32
+	n_across			12
+	billow				-0.14
+}
+
+standard_object
+{
+	name				twosided_a
+	geometry			twosidedgeom
+	material			mat_twosided
+	position			4.9 0 0
+}
+
+standard_object
+{
+	name				twosided_b
+	geometry			twosidedflipgeom
+	material			mat_twosided
+	position			7.1 0 0
+}
+
+##################################################
+# Ground + lights.  All three lamps are on the CAMERA side (+Z):
+# `keylight` and `filllight` carry specimens 1-4, and `rimlight` sits over
+# the two-sided pair so that both of its members are WELL LIT.  It does
+# not (and cannot) light them equally: all three lamps are POINT lamps at
+# finite distance and the pair stands at two different places, so their
+# irradiance necessarily differs.
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.24 0.24 0.27
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				900
+	color				1.0 0.98 0.94
+	position			-8 11 12
+}
+
+omni_light
+{
+	name				filllight
+	power				260
+	color				0.9 0.94 1.0
+	position			2 8 14
+}
+
+# A third lamp on the CAMERA side, aimed across the two-sided pair.  Its
+# job is to put enough light on BOTH members that neither can be mistaken
+# for black -- which is the whole visible claim here.  Equal irradiance is
+# NOT claimed and is not achievable from a point lamp at finite distance;
+# the equal-treatment claim is pinned quantitatively, one ray at a time,
+# in ProceduralMeshTest's TestSkinTwoSided.
+omni_light
+{
+	name				rimlight
+	power				420
+	color				1.0 0.95 0.82
+	position			8.0 3.6 6.5
+}

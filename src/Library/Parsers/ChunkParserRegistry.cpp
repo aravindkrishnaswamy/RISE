@@ -7189,6 +7189,109 @@ namespace RISE
 				}
 			};
 
+			struct SkinGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Same one-place-both-diagnostics pattern as
+				//! LatheGeometryAsciiChunkParser::Reject -- the specific
+				//! reason reaches the CST diag sink AND the log, so an author
+				//! (or the agent surface) is told WHICH rail point is at fault
+				//! rather than "the chunk failed".
+				static bool Reject( const std::string& why )
+				{
+					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					GlobalLog()->PrintEx( eLog_Error, "skin_geometry:: %s", why.c_str() );
+					return false;
+				}
+
+				//! One rail's repeatable `<x> <y> <z>` lines -> a flat triple
+				//! list.  TEXT-validates first: an exact 3-token all-finite
+				//! numeric check catches wrong arity, non-numeric fields,
+				//! glued trailing garbage (`0.35abc`, which a bare sscanf
+				//! silently truncates) and every nan/inf spelling in one shot.
+				//! That gate is the C2-round lesson applied from the start
+				//! here rather than retrofitted: sweep_geometry's `point`
+				//! lines still reach the factory through a bare sscanf, which
+				//! is exactly the hole this avoids.
+				static bool ReadRail( const ParseStateBag& bag, const std::string& name,
+				                      const char* key, std::vector<double>& out )
+				{
+					const std::vector<std::string>& lines = bag.GetRepeatable( key );
+					if( lines.size() < 2 ) {
+						char buf[32];
+						std::snprintf( buf, sizeof(buf), "%u", (unsigned int)lines.size() );
+						return Reject( "`" + name + "`: need at least 2 repeatable `" + key +
+							" <x> <y> <z>` entries (one of the sheet's two boundary curves) -- got " + buf );
+					}
+					out.reserve( lines.size() * 3 );
+					for( std::size_t i = 0; i < lines.size(); ++i ) {
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( lines[i].c_str(), &nTok ) || nTok != 3 ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							return Reject( std::string( "`" ) + name + "`: " + key + " " + buf + " (`" + lines[i] +
+								"`) must be exactly three finite numbers `<x> <y> <z>` (no trailing garbage, no nan/inf)" );
+						}
+						double x = 0, y = 0, z = 0;
+						std::sscanf( lines[i].c_str(), "%lf %lf %lf", &x, &y, &z );
+						out.push_back( x ); out.push_back( y ); out.push_back( z );
+					}
+					return true;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", "noname" );
+
+					std::vector<double> railA, railB;
+					if( !ReadRail( bag, name, "rail_a", railA ) ) { return false; }
+					if( !ReadRail( bag, name, "rail_b", railB ) ) { return false; }
+
+					SkinDescriptor d;
+					d.railAPoints    = &railA[0];
+					d.numRailAPoints = (unsigned int)( railA.size() / 3 );
+					d.railBPoints    = &railB[0];
+					d.numRailBPoints = (unsigned int)( railB.size() / 3 );
+					d.nLen           = (int)bag.GetUInt( "n_len",    (unsigned int)d.nLen );
+					d.nAcross        = (int)bag.GetUInt( "n_across", (unsigned int)d.nAcross );
+					d.billow         = bag.GetDouble( "billow", d.billow );
+					// Defense in depth -- the dispatcher's numeric ValueKind
+					// gate already rejects a `nan` token before Finalize runs,
+					// and the factory re-checks for the direct-API caller.
+					// The negated idiom is deliberate: a NaN fails the compare
+					// where `== HUGE_VAL` would let it through.
+					if( !( fabs( d.billow ) < 1e300 ) ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%g", d.billow );
+						return Reject( std::string( "`" ) + name + "`: billow (" + buf +
+							") must be a finite number (no nan, no inf)" );
+					}
+
+					return pJob.AddSkinGeometry( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "skin_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A SKIN: the open sheet stretched between TWO boundary curves (`rail_a` and `rail_b`, each a repeatable `<x> <y> <z>` polyline).  WINGS and wing membranes, FINS, WEBBING between fingers or toes, SAILS, LEAVES and petals, AWNINGS and tarps, LAMPSHADE PANELS, kites, capes -- the whole \"thin surface bounded by curves\" family, which is the one shape class neither sweep_geometry (a closed section along a path) nor lathe_geometry (a silhouette about an axis) can state at all.  Pair it with skeleton_geometry to finish a limb: the bones are the skeleton, the membrane between them is the skin.  The two rails need NOT have the same number of points -- they are resampled onto the UNION of their arc-length parameters, so every authored vertex of BOTH rails appears in the mesh verbatim and an authored kink stays a kink instead of being chamfered away.  The base surface is RULED (each station is a straight span from rail_a to rail_b); `billow` then inflates the INTERIOR along the sheet's own normal with a falloff that is exactly zero at both rails, so the rails themselves never move -- that is the difference between a flat tarp and a wind-filled sail.  UV = (arc length ALONG the rails, 0 at rail_a to 1 at rail_b ACROSS), so a feather or vein texture lines up with the rails without a mapping chunk.  The bake is ONE double-sided sheet with no thickness: each face shades correctly from ITS OWN side, so the order the two rails are named -- which is what decides which way the surface normal points -- never creates a black side (verified per-ray: the same sheet authored rail_a-first and rail_b-first takes the SAME ray to a front-face hit, with the double-sided flip firing on exactly one of the two).  An opaque membrane lit only from the FAR side is dark, which is correct and is exactly what a thin solid slab would also do; thickness is not what makes a backlit wing glow, a transmitting MATERIAL is.  Rails that MEET at one or both ends are supported and are how a leaf or a pinched sail is authored: the meeting point collapses to ONE shared vertex and the tip becomes a connected fan, so there are no slivers, no duplicate vertices and no torn perimeter there.  Rails that merely come CLOSE (within 1e-9 of the sheet's own extent, the tolerance a generated rail needs) are snapped to that exact meeting first.  Rails that describe the SAME curve are refused: a skin needs two distinct boundaries to span.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rail_a";   p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One point `<x> <y> <z>` of the FIRST boundary curve (repeatable, in order along the curve; at least 2 required).  This rail is v = 0 in the UVs.  For a wing this is typically the LEADING edge, traced root to tip.  Duplicate a point to HARDEN that crease (the zero-length segment splits the two normals), exactly as in sweep_geometry and lathe_geometry"; }
+						{ auto& p = P(); p.name = "rail_b";   p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One point `<x> <y> <z>` of the SECOND boundary curve (repeatable, at least 2; the count need NOT match rail_a).  This rail is v = 1.  For a wing this is the TRAILING edge, traced in the SAME direction as rail_a -- tracing it backwards spans the sheet as an hourglass"; }
+						{ auto& p = P(); p.name = "n_len";    p.kind = ValueKind::UInt;
+						  p.description = "Requested stations ALONG the rails (clamped 2..4096, with a warning when clamped).  A MINIMUM, not an exact count: every authored rail vertex is a station whether or not n_len asked for one, so the real count is at least the number of DISTINCT arc-length parameters across the two rails (a parameter both rails share is one station carrying both their points), and never fewer than n_len.  Raise it only to smooth a billowed or strongly curved sheet"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "n_across"; p.kind = ValueKind::UInt;
+						  p.description = "Vertex rows ACROSS the sheet, rail_a to rail_b (clamped 2..1024, with a warning when clamped).  2 is the two rails alone -- a flat ruled sheet with no interior, so `billow` has nothing to displace and is reported inert.  8 is plenty for a gently billowed membrane; raise it for a deep sail"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "billow";   p.kind = ValueKind::Double;
+						  p.description = "Inflation of the sheet's INTERIOR, as a FRACTION of each station's own rail-to-rail span (so a tapering wing billows proportionally and a pinched corner stays pinched), along the ruled sheet's normal, with a sin^2 falloff that is exactly zero and tangent at BOTH rails.  0 = a flat ruled surface (a tarp pulled tight).  0.1-0.25 = a filled sail or a wind-caught membrane.  POSITIVE inflates toward the sheet's own normal -- the direction of `d/du x d/dv`, i.e. rail-direction crossed into the rail_a-to-rail_b direction; NEGATIVE inflates the other way, which is the one-character fix when the bulge comes out on the wrong side.  A LARGE billow across a SHARP authored crease pinches at the crease (inflating a folded sheet folds it further -- that is the surface, not an artifact), and if it folds the sheet THROUGH itself the bake still happens but a warning names how many faces folded and where the first one is: keep billow modest on a kinked rail, round the kink, or raise n_len near it"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct PathInstancesGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -12210,6 +12313,7 @@ namespace RISE
 		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
 		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
 		add( "lathe_geometry",                        new LatheGeometryAsciiChunkParser() );
+		add( "skin_geometry",                         new SkinGeometryAsciiChunkParser() );
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
 

@@ -73,7 +73,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   hard-edge idiom at its two flat ends; and a 140-degree CUTAWAY, which opens
   the surface along two radial half-planes and gets a flat ear-clipped cap on
   each)
-- **Expressive-geometry STRESS scenes** (`Geometry/*_stress.RISEscene`): six
+- **Expressive-geometry STRESS scenes** (`Geometry/*_stress.RISEscene`):
   inspection instruments, not demos.  Every specimen in them exercises a case
   that has actually produced a bug or that the implementation's own comments
   flag as delicate, and each file's header comment says, per specimen, what it
@@ -98,6 +98,22 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
     nothing, which is why an earlier closed-loop test was vacuous); a
     `point_scale` round taper beside a `point_width` x-only taper on identical
     paths; a 0.09-radius tube on a three-turn helix; and caps on vs off.
+  - `Geometry/skin_stress.RISEscene` -- six `skin_geometry` specimens: a flat
+    ruled quad (the exactly-planar bake a planar rail pair must produce); a
+    billowed sail; a WING, where a `skeleton_geometry` bone frame and a
+    `skin_geometry` membrane sit in one object pair AT THE SAME POSITION (the
+    rails are authored in the joints' own frame, so any offset slides the bones
+    off the edges they frame) and the two rails MEET at both the shoulder and
+    the outermost fingertip (each meeting point collapses to ONE shared vertex,
+    lathe-pole style, so the tip fan stays connected); UNEQUAL-COUNT rails (5 points vs
+    3) with sharp authored kinks, which is the union-resample proof -- every
+    authored vertex of BOTH rails is in the mesh verbatim, so the creases land
+    where they were authored rather than chamfered onto a uniform grid; and
+    the TWO-SIDED PAIR, the same sheet authored rail_a-first and rail_b-first
+    so the two carry exactly opposite normals and must BOTH BE LIT (the bake is
+    one double-sided sheet, so rail order never makes a black side).  They are
+    not pixel-identical -- they stand at different distances from point lamps;
+    the equal-treatment claim is pinned per-ray in `TestSkinTwoSided`.
   - `Geometry/skeleton_stress.RISEscene` -- a three-child hub, a DEGENERATE
     bone (`|r_parent - r_child| > bone length`, aimed straight at the camera:
     the case that exposed both an AABB under-bound and an on-axis field error),

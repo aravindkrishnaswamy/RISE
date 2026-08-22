@@ -3470,34 +3470,45 @@ namespace RISE
 			//! gated-schema mechanism exists to protect (18.0 SDF parts at
 			//! short context, 7.7 with 60k of skills prepended).
 			//!
-			//! The MEASURED sizes (2026-08-19).  The schema halves come from
-			//! the descriptor registry itself (SchemaGenForChunk, the exact
-			//! text ComposeBuilderPrompt_ sends); the example halves are the
-			//! literal blocks in that function:
+			//! The MEASURED sizes.  The schema halves come from the
+			//! descriptor registry itself (SchemaGenForChunk, the exact text
+			//! ComposeBuilderPrompt_ sends); the example halves are the
+			//! literal blocks in that function.  RE-MEASURED 2026-08-22
+			//! after doc 89 slices A and B -- A widened sweep_geometry's
+			//! descriptor (the loft parameters) and B appended a SECOND
+			//! schema + example, skin_geometry's, inside the `chain` block:
 			//!
 			//!   GATED schema + worked example, per method
-			//!     sweep   3577 +  484 =  4061 B
-			//!     chain   3094 +  438 =  3532 B
-			//!     lathe   4595 +  494 =  5089 B
+			//!     sweep   5570 +  507             =  6077 B  (was 4061)
+			//!     chain   3094 +  438 + 4827 + 424 = 8783 B  (was 3532)
+			//!     lathe   4595 +  494             =  5089 B  (unchanged)
 			//!   UNCONDITIONAL grammar (kBuilderGrammarKeywords, six kinds)
 			//!                            14589 B
 			//!
 			//! Only THREE of the seven values carry a gated block at all
 			//! (primitive / csg / displaced / mesh add nothing), so an
-			//! UNCAPPED list delivers at most all three -- 12682 B, i.e. 87 %
+			//! UNCAPPED list delivers at most all three -- 19949 B, i.e. 137 %
 			//! of the entire unconditional grammar added on top of it.  That
 			//! is the grammar dump this mechanism exists to prevent,
 			//! reachable by writing three words.  It also means a cap of 3
 			//! would today be indistinguishable from NO cap: it would bound
 			//! nothing that is not already bounded by the gated-kind count.
 			//!
-			//! TWO bounds the worst case at lathe+sweep = 9150 B (63 % of the
-			//! unconditional grammar) and admits the case that motivated the
-			//! change -- a copper still is a lathe pot and a sweep coil, and
-			//! two is what it needs.  An element that genuinely needs three
-			//! construction methods is two elements; the plan's unit of work
-			//! IS the element, so splitting it is free and each half then
-			//! gets a focused prompt rather than one diluted one.
+			//! TWO bounds the worst case at chain+sweep = 14860 B (102 % of
+			//! the unconditional grammar) and admits the case that motivated
+			//! the change -- a copper still is a lathe pot and a sweep coil,
+			//! and two is what it needs.  An element that genuinely needs
+			//! three construction methods is two elements; the plan's unit of
+			//! work IS the element, so splitting it is free and each half
+			//! then gets a focused prompt rather than one diluted one.
+			//!
+			//! NOTE the direction of travel: the worst pair was 63 % of the
+			//! unconditional grammar in 2026-08 and is 102 % now, entirely
+			//! from descriptor GROWTH rather than from the cap.  The cap is
+			//! still doing its job (it is what keeps the third block out),
+			//! but the next slice that widens one of these three descriptors
+			//! should re-measure here and ask whether the gloss, not the
+			//! cap, is the number to argue about.
 			//!
 			//! Raising this is a MEASUREMENT decision, not a schema tweak: it
 			//! must be argued against the same volume law, with the block

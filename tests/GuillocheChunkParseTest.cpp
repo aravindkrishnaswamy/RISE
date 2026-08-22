@@ -880,6 +880,216 @@ static void TestLatheChunk()
 	}
 }
 
+
+// doc 89 slice B (2026-08-22): `skin_geometry` -- the ruled/billowed sheet
+// between two rails.  The MESH is proven from first principles in
+// ProceduralMeshTest (exact planar quad, exact billow amplitude, exact
+// perimeter edge count, corner presence under the union resample); this
+// owns the PARSE contract: every documented refusal, the clamp that is a
+// warning rather than a refusal, and money assertions pinning the emitted
+// vertex count and the FACTORY-level diagnostic through the REAL parser.
+static void TestSkinChunk()
+{
+	std::cout << "Test 6b: skin_geometry -- parse-level plumbing, validation, and the union-station vertex count" << std::endl;
+
+	// (a) happy path: a flat sheet, a billowed sail, a wing membrane whose
+	// rails MEET at both ends, and unequal rail point counts all register.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "skin_happy",
+			"skin_geometry\n{\nname flatg\n"
+			"rail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 2\nrail_b 4 0 2\n"
+			"n_len 8\nn_across 4\n}\n"
+			"skin_geometry\n{\nname sailg\n"
+			"rail_a 0 0 0\nrail_a 3 2 0\nrail_b 0 0 2\nrail_b 3 2 2\n"
+			"billow 0.2\nn_across 12\n}\n"
+			"skin_geometry\n{\nname wingg\n"
+			"rail_a -1 0.5 0\nrail_a 0 1.2 0.3\nrail_a 1 0.5 0\n"
+			"rail_b -1 0.5 0\nrail_b 0 0 -0.3\nrail_b 1 0.5 0\n"
+			"billow 0.1\n}\n"
+			"skin_geometry\n{\nname unevng\n"
+			"rail_a 0 0 0\nrail_a 1 0.4 0\nrail_a 2 0.1 0\nrail_a 3 0.6 0\nrail_a 4 0 0\n"
+			"rail_b 0 0 2\nrail_b 4 0 2\n}\n",
+			*job );
+		Check( ok, "skin_geometry happy-path scene parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		Check( priv != 0, "IJobPriv available" );
+		if( priv ) {
+			Check( priv->GetGeometries()->GetItem( "flatg" )  != 0, "skin flat ruled sheet registered" );
+			Check( priv->GetGeometries()->GetItem( "sailg" )  != 0, "skin billowed sail registered" );
+			Check( priv->GetGeometries()->GetItem( "wingg" )  != 0, "skin wing membrane (rails meeting at both ends) registered" );
+			Check( priv->GetGeometries()->GetItem( "unevng" ) != 0, "skin with unequal rail point counts registered" );
+		}
+		job->release();
+	}
+
+	// (b) MONEY ASSERTION through the REAL parser: a 2-point pair of rails
+	// contributes only the parameters {0, 1}, which the uniform n_len grid
+	// already carries, so the station count is EXACTLY n_len -- not
+	// n_len + 2 (authored endpoints double-counted) and not 2 (the
+	// refinement grid dropped).
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "skin_counts",
+			"skin_geometry\n{\nname sc\n"
+			"rail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 2\nrail_b 4 0 2\n"
+			"n_len 6\nn_across 3\n}\n", *job );
+		Check( ok, "skin vertex-count fixture parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "sc" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh != 0, "skin count fixture: concrete mesh type available" );
+			if( mesh ) {
+				Check( mesh->numPoints() == 6 * 3,
+					"skin: MONEY ASSERTION -- n_len stations x n_across rows through the REAL parser "
+					"(not 8*3 with the rails' own endpoints double-counted, not 2*3 with the refinement grid dropped)" );
+				Check( mesh->getFaces().size() == (size_t)( 2 * 5 * 2 ),
+					"skin: two triangles per grid cell, none dropped on a well-formed sheet" );
+			}
+		} else {
+			Check( false, "IJobPriv available" );
+		}
+		job->release();
+	}
+
+	// (b2) THE UNION, through the real parser: five authored rail_a
+	// parameters against a 2-point rail_b, at an n_len whose uniform grid
+	// cannot serve them -- the station count must EXCEED n_len.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "skin_union",
+			"skin_geometry\n{\nname su\n"
+			"rail_a 0 0 0\nrail_a 0.7 0.9 0\nrail_a 1.9 0.3 0\nrail_a 3.1 1.1 0\nrail_a 4 0 0\n"
+			"rail_b 0 0 2\nrail_b 4 0 2\n"
+			"n_len 4\nn_across 2\n}\n", *job );
+		Check( ok, "skin union fixture parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "su" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh && mesh->numPoints() > 4 * 2,
+				"skin: MONEY ASSERTION -- n_len is a MINIMUM: the authored rail vertices ADD stations rather than being resampled away" );
+			Check( mesh && ( mesh->numPoints() % 2 ) == 0, "skin union: the grid stays rectangular" );
+		}
+		job->release();
+	}
+
+	// (c) n_len / n_across CLAMP (a warning, not a refusal) -- observable in
+	// the emitted vertex count.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "skin_clamp",
+			"skin_geometry\n{\nname scl\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 2\nrail_b 4 0 2\n"
+			"n_len 0\nn_across 1\n}\n", *job );
+		Check( ok, "skin n_len 0 / n_across 1 CLAMP (parse) rather than rejecting" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "scl" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh && mesh->numPoints() == 4, "skin: clamped to the 2x2 minimum sheet" );
+		}
+		job->release();
+	}
+
+	// (d) every documented refusal.
+	struct SkinRow { const char* tag; const char* body; const char* what; };
+	const SkinRow rows[] = {
+		{ "skin_one_a",   "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a single rail_a point rejects (need at least 2)" },
+		{ "skin_one_b",   "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 1\n}\n",
+		  "skin: a single rail_b point rejects" },
+		{ "skin_no_a",    "skin_geometry\n{\nname s\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: no rail_a at all rejects" },
+		{ "skin_no_b",    "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\n}\n",
+		  "skin: no rail_b at all rejects" },
+		{ "skin_arity2",  "skin_geometry\n{\nname s\nrail_a 0 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a 2-number rail_a point rejects (wrong arity)" },
+		{ "skin_arity4",  "skin_geometry\n{\nname s\nrail_a 0 0 0 9\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a 4-number rail_a point rejects (wrong arity)" },
+		{ "skin_nonnum",  "skin_geometry\n{\nname s\nrail_a 0 abc 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a non-numeric rail coordinate rejects" },
+		{ "skin_trail",   "skin_geometry\n{\nname s\nrail_a 0 0.35abc 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a rail coordinate with glued trailing garbage rejects (sscanf would silently truncate it)" },
+		{ "skin_nan_a",   "skin_geometry\n{\nname s\nrail_a 0 nan 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a nan on rail_a rejects at the TOKEN layer" },
+		{ "skin_inf_a",   "skin_geometry\n{\nname s\nrail_a 0 inf 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: an inf on rail_a rejects at the TOKEN layer" },
+		{ "skin_nan_b",   "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b nan 0 1\n}\n",
+		  "skin: MONEY ASSERTION -- a nan on rail_b rejects too (BOTH rails go through the token gate, not just the first)" },
+		{ "skin_inf_b",   "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 inf 1\n}\n",
+		  "skin: an inf on rail_b rejects at the TOKEN layer" },
+		{ "skin_nan_bil", "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\nbillow nan\n}\n",
+		  "skin: a nan billow rejects" },
+		{ "skin_inf_bil", "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\nbillow inf\n}\n",
+		  "skin: an inf billow rejects" },
+		{ "skin_zero_a",  "skin_geometry\n{\nname s\nrail_a 1 1 1\nrail_a 1 1 1\nrail_a 1 1 1\nrail_b 0 0 1\nrail_b 4 0 1\n}\n",
+		  "skin: a ZERO-LENGTH rail_a (every point coincident) rejects" },
+		{ "skin_zero_b",  "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 2 2 2\nrail_b 2 2 2\n}\n",
+		  "skin: a ZERO-LENGTH rail_b rejects" },
+		{ "skin_same",    "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 0\nrail_b 1 0 0\nrail_b 4 0 0\n}\n",
+		  "skin: two rails describing the SAME curve (at different point counts) reject as a zero-area sheet" },
+		{ "skin_unknown", "skin_geometry\n{\nname s\nrail_a 0 0 0\nrail_a 4 0 0\nrail_b 0 0 1\nrail_b 4 0 1\nrail_c 1 1 1\n}\n",
+		  "skin: an undeclared parameter name rejects (descriptor is the accepted set)" },
+	};
+	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+		Check( !ParseBody( rows[i].tag, rows[i].body ), rows[i].what );
+	}
+
+	// (d2) FACTORY-LEVEL refusals must reach the CST DIAGNOSTIC naming the
+	// chunk, not fold into the generic "apply failed (e.g. unresolved
+	// reference); see log" -- actively misleading here, since no reference
+	// is involved.  Two representatives of that whole class: the zero-area
+	// sheet and the zero-length rail.
+	{
+		const std::string diag = DeriveDiagnostics(
+			"skin_geometry\n{\nname sameg\nrail_a 0 0 0\nrail_a 4 0 0\n"
+			"rail_b 0 0 0\nrail_b 1 0 0\nrail_b 4 0 0\n}\n" );
+		Check( diag.find( "SAME curve" ) != std::string::npos,
+			"skin: MONEY ASSERTION -- a FACTORY-level refusal's own reason reaches the CST diagnostic" );
+		Check( diag.find( "sameg" ) != std::string::npos,
+			"skin: the factory-level diagnostic names the geometry it refused" );
+		Check( diag.find( "unresolved reference" ) == std::string::npos,
+			"skin: the factory-level refusal does NOT fold into the generic unresolved-reference message" );
+	}
+	{
+		const std::string diag = DeriveDiagnostics(
+			"skin_geometry\n{\nname deadrail\nrail_a 1 1 1\nrail_a 1 1 1\n"
+			"rail_b 0 0 0\nrail_b 4 0 0\n}\n" );
+		Check( diag.find( "ZERO length" ) != std::string::npos,
+			"skin: the zero-length-rail refusal's own reason reaches the CST diagnostic" );
+		Check( diag.find( "deadrail" ) != std::string::npos,
+			"skin: the zero-length-rail diagnostic names the geometry it refused" );
+	}
+
+	// (e) a zero-length rail segment (the documented duplicate-a-point
+	// hard-edge idiom) is ACCEPTED -- and must not emit a zero-area quad.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "skin_dup",
+			"skin_geometry\n{\nname sdup\n"
+			"rail_a 0 0 0\nrail_a 2 0 0\nrail_a 2 0 0\nrail_a 2 2 0\n"
+			"rail_b 0 0 1\nrail_b 2 0 1\nrail_b 2 0 1\nrail_b 2 2 1\n"
+			"n_len 2\nn_across 2\n}\n", *job );
+		Check( ok, "skin: a duplicated rail point (hard-edge idiom) is ACCEPTED" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "sdup" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh && mesh->numPoints() == 4 * 2, "skin hard edge: all four stations still emitted" );
+			// the zero-length station gap contributes NO quad, so 2 cells x 2
+			Check( mesh && mesh->getFaces().size() == (size_t)( 2 * 2 ),
+				"skin hard edge: MONEY ASSERTION -- the zero-length station gap emits NO quad (no zero-area triangles)" );
+		}
+		job->release();
+	}
+}
+
 //! arc-85 C6: the `superellipsoid` SDF part token, through the REAL chunk
 //! parser.  `sdf_geometry` forwards `part` lines verbatim to
 //! SDFGeometry::ParsePartLines, so a new primitive needs no chunk change --
@@ -1047,6 +1257,7 @@ int main( int, char** )
 	TestFunction2DColorPainter();
 	TestExpressionAndDisplacement();
 	TestLatheChunk();
+	TestSkinChunk();
 	TestSDFSuperellipsoidPartLines();
 	TestUnifiedEngineEquivalence();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;

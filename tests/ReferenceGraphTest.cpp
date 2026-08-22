@@ -2504,6 +2504,71 @@ int main()
 		}
 	}
 
+	// ---- PART14k (doc 89 slice B): a document containing a skin_geometry
+	// produces a well-formed Geometry node with EXACTLY the right edge
+	// counts.  Same shape and same reasoning as PART14j above: the rails
+	// are INLINE points, so slice B adds no cross-chunk reference at all,
+	// and pinning the counts is what makes a silently-added Reference (a
+	// painter slot, a rail-source chunk) or a silently-dropped geometry
+	// edge move a number here.  Rule 1's bare-string case is caught by the
+	// descriptor's own ValueKind, not by this graph. ----
+	{
+		const char* path = "test_referencegraph_objgraph_skin.RISEscene";
+		Job* j = LoadFixture( path,
+			"RISE ASCII SCENE 7\n"
+			"film\n{\nwidth 32\nheight 24\n}\n"
+			"pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"
+			"skin_geometry\n{\nname wingg\n"
+			"rail_a -1 0.5 0\nrail_a 0 1.2 0.3\nrail_a 1 0.5 0\n"
+			"rail_b -1 0.5 0\nrail_b 0 0 -0.3\nrail_b 1 0.5 0\n"
+			"n_len 12\nn_across 6\nbillow 0.12\n}\n"
+			"standard_object\n{\nname wingobj\ngeometry wingg\nposition 0 0 0\n}\n" );
+		Check( j != nullptr, "PART14k: skin fixture loads" );
+		if( j ) {
+			SceneEditController c( *j, 0 );
+			ObjGraph g;
+			c.ReadObjectGraph( g );
+			const GNode* geo = FindNode( g, ChunkCategory::Geometry, "wingg" );
+			const GNode* obj = FindNode( g, ChunkCategory::Object,   "wingobj" );
+			Check( geo != 0, "PART14k: the skin_geometry becomes a Geometry node" );
+			Check( obj != 0, "PART14k: its consumer becomes an Object node" );
+			if( obj ) {
+				const GPort* p = FindPort( obj->inEdges, "geometry", 0 );
+				Check( p && std::string( p->otherName.c_str() ) == "wingg" &&
+				       p->otherNode != SceneEditController::kInvalidNodeIndex,
+				       "PART14k: wingobj.geometry -> wingg resolves (no dangling port)" );
+			}
+			if( geo ) {
+				bool anyDangling = false;
+				for( const GPort& p : geo->outEdges ) {
+					if( p.otherNode == SceneEditController::kInvalidNodeIndex ) anyDangling = true;
+				}
+				for( const GPort& p : geo->inEdges ) {
+					if( p.otherNode == SceneEditController::kInvalidNodeIndex ) anyDangling = true;
+				}
+				Check( !anyDangling, "PART14k: the skin chunk publishes no dangling port" );
+				// The MONEY assertions: EXACT counts.  ReadObjectGraph FLIPS
+				// the geometry family at seeding (geometry chunk -> consumer),
+				// so the skin geometry owns exactly ONE out-edge -- to
+				// wingobj -- and NO in-edge.
+				if( geo->outEdges.size() == 1 ) {
+					Check( std::string( geo->outEdges[0].otherName.c_str() ) == "wingobj" &&
+					       std::string( geo->outEdges[0].paramName.c_str() ) == "geometry",
+					       "PART14k: the skin geometry's single out-edge is the flipped `geometry` edge to its consumer" );
+				} else {
+					Check( false, "PART14k: the skin geometry's single out-edge is the flipped `geometry` edge to its consumer" );
+				}
+				Check( geo->outEdges.size() == 1,
+				       "PART14k: MONEY ASSERTION -- the skin chunk publishes EXACTLY ONE out-edge "
+				       "(slice B added no cross-chunk reference; rail_a / rail_b / billow are inline numbers)" );
+				Check( geo->inEdges.size() == 0,
+				       "PART14k: MONEY ASSERTION -- the skin chunk publishes NO in-edge "
+				       "(nothing in the scene refers INTO a geometry chunk in this graph's direction)" );
+			}
+			j->release();
+		}
+	}
+
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

@@ -333,3 +333,4 @@ virtual bool AddVoronoi3DPainterWithSpace(const char*name,const double pt_x[],co
 virtual bool AddBlendPainterWithMode(const char*name,const char*pa,const char*pb,const char*mask,const unsigned int mode)=0;
 virtual bool AddStochasticTilePainter(const char*name,const char*source,const double tileScale,const unsigned int seed,const double mean[3],const double blendGamma,const char*colorSpace)=0;
 virtual bool AddScatterPainter(const char*name,const char*source,const char*background,const double cellScale,const double stampScale,const double jitterPosition,const double jitterRotationDeg,const double jitterScale,const double probability,const unsigned int seed)=0;
+virtual bool AddSkinGeometry(const char*name,const SkinDescriptor&desc)=0;

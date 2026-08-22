@@ -2799,6 +2799,968 @@ namespace RISE
 		return true;
 	}
 
+	namespace
+	{
+		// EVERY skin refusal goes through this ONE helper so the author's
+		// specific reason reaches BOTH the log and the CST Finalize
+		// diagnostic sink -- the same "however deep the call stack" channel
+		// RISE_API_CreateLatheGeometry's `fail` lambda and SweepFail above
+		// already use, and for the same reason: a factory-only gate (a
+		// coincident rail, a zero-area sheet, the vertex budget) otherwise
+		// surfaced to a scene author as the generic "apply failed (e.g.
+		// unresolved reference); see log", which is actively misleading
+		// since no reference is involved.
+		//
+		// The SINK gets the RAW reason; only the LOG line carries this
+		// factory's own name.  Job::AddSkinGeometry prepends the geometry's
+		// name and DeriveToJob prepends `skin_geometry: `, so baking
+		// "RISE_API_CreateSkinGeometry: " into the sink too would stutter
+		// three qualifiers deep in front of the author's actual reason.
+		bool SkinFail( const char* fmt, ... )
+		{
+			char buf[1024];
+			va_list ap;
+			va_start( ap, fmt );
+			vsnprintf( buf, sizeof(buf), fmt, ap );
+			va_end( ap );
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateSkinGeometry: %s", buf );
+			if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = buf;
+			return false;
+		}
+
+		// The WARNING sibling of SkinFail, for a sheet that BUILDS but whose
+		// author needs to be told something about it.
+		//
+		// Deliberately NOT written to g_cstFinalizeDiagSink.  That sink's
+		// contract (GenericManager.h, and DeriveToJob's `if( ok ) continue;`)
+		// is FAILURE-ONLY: it is read exactly when a Finalize returns false,
+		// so a string left there by a SUCCEEDING build is either dropped on
+		// the floor or -- worse, if a later chunk in the same derive fails
+		// without setting its own reason -- misattributed to that chunk.
+		// The log is the channel that carries a warning, and it is the same
+		// one the n_len / n_across / billow-inert warnings in this factory
+		// already use.
+		void SkinWarn( const char* fmt, ... )
+		{
+			char buf[1024];
+			va_list ap;
+			va_start( ap, fmt );
+			vsnprintf( buf, sizeof(buf), fmt, ap );
+			va_end( ap );
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSkinGeometry: %s", buf );
+		}
+
+		// Normalized cumulative arc-length parameter of every vertex of an
+		// OPEN polyline: par[0] == 0, par[n-1] == 1, non-decreasing.  Two
+		// consecutive entries are EQUAL exactly when the segment between
+		// them has zero length (the duplicate-a-point hard-edge idiom), and
+		// the union merge below keeps BOTH of them.
+		//
+		// This is the OPEN-polyline sibling of ProfileArcParams (the closed
+		// one the loft uses); it is separate rather than a flag on that one
+		// because the two differ in the segment set (no wrap segment here)
+		// AND in the endpoint convention (par[n-1] == 1 here, where a closed
+		// polygon's parameters live in [0, 1)).
+		//
+		// Returns FALSE when the polyline has ZERO total length -- every
+		// point coincident.  The lathe's closed-profile sibling falls back
+		// to index parameterization there; a skin rail cannot, because a
+		// zero-length rail is a refusal case (a sheet spanning a POINT and a
+		// curve is a fan whose "arc length along the rails" is meaningless
+		// on one side), so the caller is told rather than silently handed a
+		// substitute parameterization.
+		bool RailArcParams( const std::vector<Point3>& pts, std::vector<Scalar>& par )
+		{
+			const size_t n = pts.size();
+			par.assign( n, Scalar(0) );
+			std::vector<Scalar> cum( n, Scalar(0) );
+			for( size_t k = 0; k + 1 < n; k++ ) {
+				cum[ k + 1 ] = cum[k] + Vector3Ops::Magnitude( Vector3Ops::mkVector3( pts[k+1], pts[k] ) );
+			}
+			const Scalar total = cum[ n - 1 ];
+			if( !( total > 0 ) ) {
+				return false;
+			}
+			for( size_t k = 0; k < n; k++ ) {
+				par[k] = cum[k] / total;
+			}
+			par[ n - 1 ] = 1;
+			return true;
+		}
+
+		// The point ON an open polyline at normalized arc-length parameter p.
+		// Used ONLY for parameters this rail did not itself contribute -- a
+		// parameter that IS this rail's own is emitted as the authored vertex
+		// VERBATIM, never through this function, so no authored kink is ever
+		// rounded off by a floating-point round trip.
+		Point3 RailPointAt( const std::vector<Point3>& pts, const std::vector<Scalar>& par, const Scalar p )
+		{
+			const size_t n = pts.size();
+			size_t seg = 0;
+			while( seg + 2 < n && par[ seg + 1 ] <= p ) {
+				seg++;
+			}
+			const Scalar p0 = par[ seg ], p1 = par[ seg + 1 ];
+			const Scalar span = p1 - p0;
+			const Scalar f = ( span > 0 ) ? ( ( p - p0 ) / span ) : Scalar(0);
+			return Point3(
+				pts[seg].x + ( pts[seg+1].x - pts[seg].x ) * f,
+				pts[seg].y + ( pts[seg+1].y - pts[seg].y ) * f,
+				pts[seg].z + ( pts[seg+1].z - pts[seg].z ) * f );
+		}
+	}
+
+	// SKIN: the open ruled / billowed sheet spanning two boundary polylines.
+	//
+	// PARAMETERIZATION.  u runs ALONG the rails (normalized arc length,
+	// = the U texture coordinate); v runs ACROSS, 0 at rail A and 1 at rail
+	// B (= the V texture coordinate).  The base surface is RULED:
+	// P0(u, v) = A(u) + v * (B(u) - A(u)).
+	//
+	// STATIONS.  The u samples are the UNION of both rails' own normalized
+	// arc-length parameters, plus whichever of the nLen uniform parameters
+	// do not already coincide with one.  The union half is the load-bearing
+	// half: the obvious alternative -- resample both rails onto one uniform
+	// grid -- silently CHAMFERS every authored kink that does not happen to
+	// land on the grid, which on a sheet is a silhouette error (a wing's
+	// authored elbow simply is not in the mesh).  So an authored vertex is
+	// always emitted verbatim, and nLen only ever ADDS stations between
+	// them.
+	//
+	// NORMALS + BILLOW, in that order.  The ruled sheet's per-vertex normal
+	// is normalize(dP/du x dP/dv) by central differences on the grid;
+	// `billow` then displaces each vertex along THAT normal by
+	// billow * |B(u) - A(u)| * sin^2(pi*v) -- a falloff that is exactly
+	// zero AND tangent at v = 0 and v = 1, so the authored rails are never
+	// moved however hard the sheet is inflated.  The emitted normals are
+	// then RECOMPUTED from the displaced positions, so a billowed sheet
+	// shades as the curved surface it actually is.  A billow big enough to
+	// fold the sheet through itself at an authored crease is built as
+	// authored and WARNED about, not clamped -- see the fold check at the
+	// bottom of this function for why a clamp would be the wrong call.
+	//
+	// PINCHES.  A station where the two rails MEET -- a leaf tip, a sail
+	// corner, a wing's shoulder and outermost fingertip -- collapses to ONE
+	// shared vertex, exactly as the lathe collapses an on-axis profile row
+	// to a pole, so the tip is a connected FAN rather than nAcross unshared
+	// coincident copies with a torn perimeter.  Near-coincident rails are
+	// snapped to an exact pinch first (the lathe's axis snap, at the lathe's
+	// 1e-9-of-own-extent threshold), because the collapse is an exact test.
+	//
+	// SIDEDNESS -- decided against RENDERER REALITY, not assumed.  One
+	// sheet, baked DOUBLE-SIDED (as lathe and sweep are).
+	// TriangleMeshGeometryIndexed::IntersectRay re-orients BOTH the shading
+	// normal and the geometric normal toward the incoming ray on a
+	// double-sided mesh, so each face shades correctly from ITS OWN side.
+	// The measurement: two skins over the SAME two rails, one authored
+	// rail_a-first and one rail_b-first -- geometrically identical, opposite
+	// surface normal -- take the SAME ray to a FRONT-face hit, with the
+	// double-sided flip firing on exactly one of the two.  So the half of
+	// the membrane whose normal points AWAY from the eye is lit, not black,
+	// which is what "a membrane must light correctly from both sides" means
+	// for an opaque material.
+	// scenes/Tests/Geometry/skin_stress.RISEscene carries that pair as a
+	// specimen, and TestSkinTwoSided pins it as a ray probe.
+	//
+	// A THIN CLOSED SLAB was the alternative and buys nothing here: an
+	// opaque slab lit only from the far side is exactly as dark as this
+	// sheet is (also measured), so it does not make a backlit wing glow --
+	// a transmitting MATERIAL does -- while it doubles the triangle count
+	// and puts two surface events in the path of every transmitted ray.
+	bool RISE_API_CreateSkinGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const SkinDescriptor&          desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.railAPoints || desc.numRailAPoints < 2 ) {
+			return SkinFail( "need at least 2 `rail_a <x> <y> <z>` entries (the first boundary polyline)" );
+		}
+		if( !desc.railBPoints || desc.numRailBPoints < 2 ) {
+			return SkinFail( "need at least 2 `rail_b <x> <y> <z>` entries (the second boundary polyline)" );
+		}
+		if( desc.numRailAPoints > 4096 || desc.numRailBPoints > 4096 ) {
+			return SkinFail( "rail point counts (%u, %u) exceed the 4096 maximum per rail",
+				desc.numRailAPoints, desc.numRailBPoints );
+		}
+		// Defense in depth for the DIRECT RISE_API.h caller: the chunk
+		// parser's AllTokensAreFiniteNumbers gate already covers the scene /
+		// GUI / agent paths, but an inf coordinate reaching here makes every
+		// segment length inf, so the arc-length parameters come out NaN, the
+		// normals come out NaN, and the factory happily hands the BVH a box
+		// it cannot split.  Same belt-and-braces the lathe's profile loop and
+		// the sweep's profile loop already carry.
+		std::vector<Point3> railA( desc.numRailAPoints ), railB( desc.numRailBPoints );
+		for( int side = 0; side < 2; side++ ) {
+			const double* src = ( side == 0 ) ? desc.railAPoints : desc.railBPoints;
+			std::vector<Point3>& dst = ( side == 0 ) ? railA : railB;
+			for( size_t k = 0; k < dst.size(); k++ ) {
+				const double x = src[ 3*k ], y = src[ 3*k + 1 ], z = src[ 3*k + 2 ];
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) || !IsFiniteDouble( z ) ) {
+					return SkinFail( "rail_%c point %u (%g, %g, %g) must be three FINITE numbers (no nan, no inf)",
+						( side == 0 ) ? 'a' : 'b', (unsigned int)k, x, y, z );
+				}
+				dst[k] = Point3( (Scalar)x, (Scalar)y, (Scalar)z );
+			}
+		}
+		if( !IsFiniteDouble( desc.billow ) ) {
+			return SkinFail( "billow (%g) must be a FINITE number (no nan, no inf)", desc.billow );
+		}
+
+		// Clamp rather than refuse, matching lathe's n_radial: a tessellation
+		// count is a QUALITY dial, and an author who typed 100000 wants a
+		// dense sheet, not a hard failure.  The warning is what keeps the
+		// clamp from being silent.
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSkinGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const int nAcross = desc.nAcross < 2 ? 2 : ( desc.nAcross > 1024 ? 1024 : desc.nAcross );
+		if( nAcross != desc.nAcross ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSkinGeometry: n_across %d clamped to %d", desc.nAcross, nAcross );
+		}
+		if( desc.billow != 0.0 && nAcross < 3 ) {
+			// Not a refusal: the sheet is still exactly the surface the rails
+			// describe, and `billow` is simply inert on a two-row grid that
+			// has no interior row to displace.  Silence here would read as a
+			// billow that did nothing for no stated reason.
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateSkinGeometry: billow %g is INERT at n_across %d -- the falloff is zero at both rails, so a sheet with no interior row has nothing to inflate (raise n_across)",
+				desc.billow, nAcross );
+		}
+
+		std::vector<Scalar> parA, parB;
+		if( !RailArcParams( railA, parA ) ) {
+			return SkinFail( "rail_a has ZERO length -- every one of its %u points is coincident, so the sheet has no rail to span from",
+				desc.numRailAPoints );
+		}
+		if( !RailArcParams( railB, parB ) ) {
+			return SkinFail( "rail_b has ZERO length -- every one of its %u points is coincident, so the sheet has no rail to span from",
+				desc.numRailBPoints );
+		}
+
+		// UNION RESAMPLE, PHASE 1 (see the STATIONS note above): a two-pointer
+		// merge over rail A's authored parameters and rail B's.  Rules:
+		//   * A and B pair (within authoredEps) -> ONE station carrying both
+		//     authored points;
+		//   * only one rail's parameter -> that rail's authored point
+		//     VERBATIM, the other rail evaluated on its polyline.
+		// The eps only ever decides whether two parameters PAIR UP, never
+		// whether an authored vertex is KEPT, so no authored vertex can be
+		// dropped whatever it is set to.  A zero-length rail segment (the
+		// duplicate-a-point hard-edge idiom) produces two stations at the
+		// same parameter, because the walk advances the POINTER, not the
+		// parameter -- which is exactly what splits the two normals there.
+		struct SkinStation { Scalar u; Point3 a, b; };
+		std::vector<SkinStation> stations;
+		{
+			// An ABSOLUTE tolerance on a normalized quantity: 1e-9 of the
+			// rail's own arc length.  Deliberately tight -- two AUTHORED
+			// parameters that are genuinely distinct must stay distinct.
+			const Scalar authoredEps = Scalar(1e-9);
+			const size_t nA = parA.size(), nB = parB.size();
+			stations.reserve( nA + nB + (size_t)nLen );
+			size_t ia = 0, ib = 0;
+			while( ia < nA || ib < nB ) {
+				const bool haveA = ( ia < nA ), haveB = ( ib < nB );
+				bool takeA = false, takeB = false;
+				Scalar p = 0;
+				if( haveA && haveB && fabs( parA[ia] - parB[ib] ) <= authoredEps ) {
+					takeA = true; takeB = true; p = parA[ia];
+				} else if( haveA && ( !haveB || parA[ia] < parB[ib] ) ) {
+					takeA = true; p = parA[ia];
+				} else {
+					takeB = true; p = parB[ib];
+				}
+				// MONOTONICITY, enforced rather than assumed.  parA and parB
+				// are each individually non-decreasing, but the PAIRING is
+				// tolerant to authoredEps, and that tolerance is what can
+				// emit a parameter that runs BACKWARDS: rail B carrying a
+				// duplicated point (the crease idiom) a hair BELOW a rail-A
+				// vertex pairs its FIRST copy with rail A at rail A's larger
+				// parameter, and then the second copy -- still at rail B's
+				// own smaller parameter -- is taken next.  Un-clamped that is
+				// a station whose u is below its predecessor's: a backwards
+				// U texture coordinate, and a band 1e-10 wide (not zero, so
+				// not dropped) of near-degenerate slivers exactly where the
+				// author asked for a clean crease.
+				//
+				// Clamping to the previous station's u -- rather than
+				// skipping rail B's second copy -- is what KEEPS the crease:
+				// the two stations then share one u, their positions are
+				// bit-identical (both copies of a duplicated rail point), the
+				// band between them is exactly zero-area and is dropped, and
+				// the two normal columns still split.  The clamp can only
+				// ever move p by at most authoredEps, since that is the only
+				// thing that could have put it out of order.
+				if( !stations.empty() && p < stations.back().u ) {
+					p = stations.back().u;
+				}
+				SkinStation s;
+				s.u = p;
+				s.a = takeA ? railA[ia] : RailPointAt( railA, parA, p );
+				s.b = takeB ? railB[ib] : RailPointAt( railB, parB, p );
+				stations.push_back( s );
+				if( takeA ) ia++;
+				if( takeB ) ib++;
+			}
+		}
+
+		// PHASE 2: the nLen uniform REFINEMENT parameters, inserted into that
+		// union wherever they are not already served.
+		//
+		// "Not already served" is a MUCH looser test than phase 1's pairing
+		// eps, and the looseness is load-bearing rather than cosmetic.  A
+		// uniform sample landing a hair away from an authored station leaves
+		// a hair-thin strip between two stations whose surface normals differ
+		// by the FULL crease angle of the kink that authored parameter
+		// encodes -- and `billow`, which displaces along those normals by a
+		// distance set by the rail-to-rail SPAN rather than by the strip
+		// width, then folds that strip through itself.  Rendered, that is a
+		// pinched crevice in the membrane at every authored kink (observed on
+		// a 4-point rail at n_len 24 during this slice's bring-up).  Snapping
+		// at HALF the uniform spacing bounds every station gap from below by
+		// that same half-spacing, so the displacement difference across any
+		// strip stays bounded next to the strip itself.  Nothing authored is
+		// at stake either way: only a UNIFORM sample is ever dropped here.
+		//
+		// EXACTLY ONE uniform sample per station, and the half-open interval
+		// is what makes that true.  A station SERVES the uniform samples in
+		// ( su - uniformEps, su + uniformEps ]: an interval of width exactly
+		// one uniform spacing (2 * uniformEps), open below and closed above,
+		// so it contains exactly ONE point of the uniform grid whatever su
+		// is.  Closing it at BOTH ends -- which is what a non-strict break
+		// test does -- makes it a CLOSED interval of a full spacing, which
+		// contains TWO grid points when su lands on one, and the station then
+		// eats both.  Measured before the strictness was added: rails
+		// authored at arc fractions {0, 0.375, 0.625, 1} with n_len 5 built
+		// FOUR stations, not five, with a widest gap of 1.5x the requested
+		// spacing -- refuting the descriptor's ">= max(nLen, |union|)"
+		// contract on the count the author asked for by name.  The lower
+		// bound the paragraph above is about is unaffected: a uniform sample
+		// is emitted only at pu <= su - uniformEps and consumed up to
+		// su + uniformEps, so every uniform-to-authored gap is still at least
+		// half the uniform spacing.
+		//
+		// What this does NOT (and cannot) remove is the pinch a LARGE billow
+		// makes at a SHARP authored crease, where the normal turns by tens of
+		// degrees across two strips whatever their width: inflating a folded
+		// sheet folds it further, and that is the surface, not an artifact.
+		// Keep billow modest on a creased rail, or round the crease.
+		{
+			const size_t nU = (size_t)nLen;
+			const Scalar uniformEps = Scalar(0.5) / Scalar( nU - 1 );
+			std::vector<SkinStation> refined;
+			refined.reserve( stations.size() + nU );
+			size_t iu = 0;
+			for( size_t is = 0; is < stations.size(); is++ ) {
+				const Scalar su = stations[is].u;
+				while( iu < nU ) {
+					const Scalar pu = Scalar(iu) / Scalar( nU - 1 );
+					if( pu > su - uniformEps ) {
+						break;			// inside this station's half-open service interval
+					}
+					if( refined.empty() || pu > refined.back().u + uniformEps ) {
+						SkinStation s;
+						s.u = pu;
+						s.a = RailPointAt( railA, parA, pu );
+						s.b = RailPointAt( railB, parB, pu );
+						refined.push_back( s );
+					}
+					iu++;
+				}
+				refined.push_back( stations[is] );
+				while( iu < nU && Scalar(iu) / Scalar( nU - 1 ) <= su + uniformEps ) {
+					iu++;			// consumed by this station
+				}
+			}
+			stations.swap( refined );
+		}
+		const size_t nStations = stations.size();
+		if( nStations < 2 ) {
+			return SkinFail( "the two rails resample to fewer than 2 stations -- there is no sheet to build" );
+		}
+
+		// SCALE for every tolerance below: the SPAN of the two rails' shared
+		// bounding box, not a max coordinate -- a small sheet far from the
+		// origin has a genuine extent of its own size, and scaling by
+		// |coordinate| instead would hand it a tolerance bigger than the part
+		// (the same reasoning as the lathe's profileExtent).
+		Scalar bLo[3] = { railA[0].x, railA[0].y, railA[0].z };
+		Scalar bHi[3] = { railA[0].x, railA[0].y, railA[0].z };
+		for( size_t s = 0; s < nStations; s++ ) {
+			const Scalar c[6] = { stations[s].a.x, stations[s].a.y, stations[s].a.z,
+			                      stations[s].b.x, stations[s].b.y, stations[s].b.z };
+			for( int k = 0; k < 6; k++ ) {
+				const int axis = k % 3;
+				if( c[k] < bLo[axis] ) bLo[axis] = c[k];
+				if( c[k] > bHi[axis] ) bHi[axis] = c[k];
+			}
+		}
+		Scalar sheetExtent = bHi[0] - bLo[0];
+		if( bHi[1] - bLo[1] > sheetExtent ) sheetExtent = bHi[1] - bLo[1];
+		if( bHi[2] - bLo[2] > sheetExtent ) sheetExtent = bHi[2] - bLo[2];
+		const Scalar sheetEps = Scalar(1e-9) * sheetExtent;
+
+		// SNAP A NEAR-PINCHED STATION TO AN EXACT PINCH, ONCE, BEFORE any
+		// grid, normal, billow or quad-drop decision reads a span.  This is
+		// the skin's copy of the lathe's SNAP TO THE AXIS (see
+		// RISE_API_CreateLatheGeometry above) and it exists for the same
+		// reason: everything downstream that cares about a pinch -- the quad
+		// collapse below -- is an EXACT test, and an exact test cannot
+		// survive a GENERATED rail.  A leaf whose two rails are traced from
+		// the same analytic curve lands its tips 1e-13 apart rather than
+		// bit-identical, and un-snapped the factory then emits a skirt of
+		// ~1e-13-area sliver triangles where the author meant a single tip --
+		// violating the same "no zero-area triangles" contract the collapse
+		// exists to uphold (measured: a leaf authored with a 1e-12 tip gap
+		// baked a min triangle area of 7.1e-14, below the suite's own
+		// 1e-12 floor).
+		//
+		// RAIL A WINS THE TIE: rail B's station point is moved onto rail A's,
+		// never the reverse and never to a midpoint.  A midpoint would break
+		// BOTH rails' bit-exactness (a pinned property -- an authored rail
+		// vertex is in the mesh VERBATIM), where this breaks only rail B's,
+		// and only by less than 1e-9 of the sheet's own extent.  Rail A is
+		// the v = 0 boundary and the first-named rail, which is the only
+		// asymmetry available to break the tie with.
+		//
+		// The threshold is the SAME 1e-9-of-own-extent the lathe uses, NOT a
+		// looser "authoring precision" tolerance: above FP-evaluation noise
+		// there is no principled scale to snap at (a genuinely thin ribbon is
+		// a legitimate sheet at any width), so a wider threshold would eat
+		// geometry an author meant to keep.
+		{
+			size_t snapped = 0;
+			for( size_t s = 0; s < nStations; s++ ) {
+				const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( stations[s].b, stations[s].a ) );
+				if( d > 0 && d <= sheetEps ) {
+					stations[s].b = stations[s].a;
+					snapped++;
+				}
+			}
+			// EACH STATION SNAPS INDEPENDENTLY, and two ADJACENT ones can
+			// both snap -- the duplicated-rail-point crease idiom applied
+			// where the rails already very nearly meet.  Every quad between
+			// two pinched stations is degenerate, so that strip emits
+			// nothing and the sheet has a GAP; the pinch classification
+			// below detects exactly that condition (on snapped and authored
+			// pinches alike) and names it, rather than this loop trying to
+			// guess which of the two the author meant to keep.  Reaching it
+			// needs two coincidences within 1e-9 of the sheet's extent at
+			// CONSECUTIVE stations, which is why it is reported rather than
+			// repaired.  A snap MID-SPAN is likewise not a special case
+			// here: it becomes an ordinary interior pinch, and the per-side
+			// pole collapse below gives each lobe its own normals.
+			if( snapped > 0 ) {
+				SkinWarn( "%u station(s) had rail_a and rail_b within 1e-9 of the sheet's own extent -- snapped to an EXACT pinch (rail_b onto rail_a) so the tip collapses to one vertex instead of a skirt of sliver triangles",
+					(unsigned int)snapped );
+			}
+		}
+
+		// THE ZERO-AREA SHEET.  Two rails that describe the SAME curve span
+		// nothing at all -- every station's segment has zero length, so the
+		// bake would be a ribbon of degenerate triangles.  Measured on the
+		// resampled stations rather than on the authored point lists, so the
+		// same curve authored with DIFFERENT point counts (the case an
+		// element-wise comparison misses entirely) is still caught.  Rails
+		// that merely TOUCH at one or both ends -- a leaf, a sail pinched at
+		// a corner -- are not this case and are fully supported.
+		{
+			Scalar maxSpan = 0;
+			for( size_t s = 0; s < nStations; s++ ) {
+				const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( stations[s].b, stations[s].a ) );
+				if( d > maxSpan ) maxSpan = d;
+			}
+			if( !( maxSpan > sheetEps ) ) {
+				return SkinFail( "rail_a and rail_b describe the SAME curve (their widest separation is %g, within 1e-9 of the sheet's own extent) -- a skin needs two DISTINCT boundaries to span",
+					(double)maxSpan );
+			}
+		}
+
+		const double plannedVerts = (double)nStations * (double)nAcross;
+		if( plannedVerts > 2000000.0 ) {
+			return SkinFail( "%g sheet vertices requested (%u stations x %d rows across) exceeds the 2M budget -- reduce n_len / n_across or the rail point counts",
+				plannedVerts, (unsigned int)nStations, nAcross );
+		}
+
+		// ---- base (ruled) grid -------------------------------------------
+		const size_t nAcrossSz = (size_t)nAcross;
+		std::vector<Point3> pos( nStations * nAcrossSz );
+		std::vector<Scalar> vFrac( nAcrossSz );
+		for( size_t j = 0; j < nAcrossSz; j++ ) {
+			vFrac[j] = Scalar(j) / Scalar( nAcross - 1 );
+		}
+		vFrac[ nAcrossSz - 1 ] = 1;
+		for( size_t i = 0; i < nStations; i++ ) {
+			const Point3& a = stations[i].a;
+			const Point3& b = stations[i].b;
+			for( size_t j = 0; j < nAcrossSz; j++ ) {
+				const Scalar v = vFrac[j];
+				// Written as the two EXACT endpoints at v == 0 and v == 1 (not
+				// as a lerp that rounds), so an authored rail vertex is in the
+				// mesh BIT-EXACTLY -- which is what the corner-presence tests
+				// assert, and what makes "a planar pair of rails bakes an
+				// exactly planar sheet" true rather than nearly true.
+				pos[ i * nAcrossSz + j ] = ( j == 0 ) ? a
+					: ( ( j == nAcrossSz - 1 ) ? b
+						: Point3( a.x + ( b.x - a.x ) * v, a.y + ( b.y - a.y ) * v, a.z + ( b.z - a.z ) * v ) );
+			}
+		}
+
+		// ---- per-vertex normals by central differences on the grid --------
+		// Shared by the base sheet (which billow displaces along) and by the
+		// displaced sheet (whose normals are what actually ship), so the two
+		// can never drift apart.
+		//
+		// A station where the two rails MEET (a leaf tip, a pinched sail
+		// corner) has a zero dP/dv at every row, so its cross product is
+		// zero and carries no orientation of its own.  Those are filled from
+		// the nearest well-defined normal along the same row rather than left
+		// as a zero vector -- a zero shading normal would put the whole pinch
+		// column in the wrong half-space at the first shading query.
+		std::vector<Normal> nrm( nStations * nAcrossSz );
+		auto computeNormals = [&]( const std::vector<Point3>& P, std::vector<Normal>& N ) -> bool {
+			bool anyValid = false;
+			std::vector<unsigned char> valid( P.size(), 0 );
+			for( size_t i = 0; i < nStations; i++ ) {
+				const size_t i0 = ( i > 0 ) ? i - 1 : i;
+				const size_t i1 = ( i + 1 < nStations ) ? i + 1 : i;
+				for( size_t j = 0; j < nAcrossSz; j++ ) {
+					const size_t j0 = ( j > 0 ) ? j - 1 : j;
+					const size_t j1 = ( j + 1 < nAcrossSz ) ? j + 1 : j;
+					const Vector3 du = Vector3Ops::mkVector3( P[ i1 * nAcrossSz + j ], P[ i0 * nAcrossSz + j ] );
+					const Vector3 dv = Vector3Ops::mkVector3( P[ i * nAcrossSz + j1 ], P[ i * nAcrossSz + j0 ] );
+					const Vector3 c = Vector3Ops::Cross( du, dv );
+					const Scalar l = Vector3Ops::Magnitude( c );
+					if( l > 0 ) {
+						N[ i * nAcrossSz + j ] = Normal( c.x / l, c.y / l, c.z / l );
+						valid[ i * nAcrossSz + j ] = 1;
+						anyValid = true;
+					} else {
+						N[ i * nAcrossSz + j ] = Normal( 0, 0, 0 );
+					}
+				}
+			}
+			if( !anyValid ) {
+				return false;
+			}
+			// Fill every degenerate site from the nearest valid normal ALONG
+			// its own row (the pinch runs across the sheet, so its neighbours
+			// in u are the ones that carry the surface's orientation there).
+			for( size_t j = 0; j < nAcrossSz; j++ ) {
+				for( size_t i = 0; i < nStations; i++ ) {
+					if( valid[ i * nAcrossSz + j ] ) continue;
+					// SYMMETRIC search: BOTH sides are examined at every
+					// distance, and when both are live at the SAME distance
+					// the two are AVERAGED.  Testing `i - d` first and
+					// breaking on it -- which is what a chained pair of ifs
+					// does -- is a silent LEFT BIAS, and it is wrong wherever
+					// the degenerate site has a live neighbour on each side
+					// carrying a DIFFERENT orientation (an interior pinch, a
+					// crease): one side's answer would be imposed on both.
+					// Nothing about the geometry privileges the -u side, so
+					// nothing here does either.
+					size_t srcLo = nStations, srcHi = nStations;
+					for( size_t d = 1; d < nStations; d++ ) {
+						const bool lo = ( i >= d ) && ( valid[ ( i - d ) * nAcrossSz + j ] != 0 );
+						const bool hi = ( i + d < nStations ) && ( valid[ ( i + d ) * nAcrossSz + j ] != 0 );
+						if( lo ) srcLo = i - d;
+						if( hi ) srcHi = i + d;
+						if( lo || hi ) break;
+					}
+					if( srcLo < nStations || srcHi < nStations ) {
+						if( srcLo < nStations && srcHi < nStations ) {
+							const Normal& nl = N[ srcLo * nAcrossSz + j ];
+							const Normal& nh = N[ srcHi * nAcrossSz + j ];
+							const Scalar sx = nl.x + nh.x, sy = nl.y + nh.y, sz = nl.z + nh.z;
+							const Scalar l = sqrt( sx*sx + sy*sy + sz*sz );
+							// Exactly OPPOSED neighbours cancel, and there is
+							// no mean to take: keep the -u side rather than
+							// ship a zero normal.  Where that actually happens
+							// -- an interior pinch the two rails cross through
+							// -- the per-side pole collapse below overwrites
+							// this with the right answer for each side anyway.
+							N[ i * nAcrossSz + j ] = ( l > 0 ) ? Normal( sx / l, sy / l, sz / l ) : nl;
+						} else {
+							const size_t src = ( srcLo < nStations ) ? srcLo : srcHi;
+							N[ i * nAcrossSz + j ] = N[ src * nAcrossSz + j ];
+						}
+						continue;
+					}
+					// The whole row is degenerate (a rail collapsed onto the
+					// other for its entire length is already refused above, so
+					// this is a row of an otherwise-live sheet): borrow across.
+					for( size_t jj = 0; jj < nAcrossSz; jj++ ) {
+						if( valid[ i * nAcrossSz + jj ] ) { N[ i * nAcrossSz + j ] = N[ i * nAcrossSz + jj ]; break; }
+					}
+				}
+			}
+			return true;
+		};
+
+		if( !computeNormals( pos, nrm ) ) {
+			return SkinFail( "the sheet has zero area everywhere (no station spans a non-degenerate quad)" );
+		}
+
+		// ---- billow --------------------------------------------------------
+		if( desc.billow != 0.0 && nAcross >= 3 ) {
+			std::vector<Point3> billowed( pos );
+			for( size_t i = 0; i < nStations; i++ ) {
+				const Scalar span = Vector3Ops::Magnitude( Vector3Ops::mkVector3( stations[i].b, stations[i].a ) );
+				const Scalar amp = (Scalar)desc.billow * span;
+				// j = 0 and j = nAcross-1 are deliberately NOT touched at all
+				// (not "displaced by a weight that evaluates to zero"): the
+				// authored rail vertices stay BIT-EXACT whatever sin(pi*v)
+				// rounds to at the endpoints.
+				for( size_t j = 1; j + 1 < nAcrossSz; j++ ) {
+					const Scalar sv = sin( (Scalar)M_PI * vFrac[j] );
+					const Scalar w = sv * sv;			// sin^2(pi v) = (1 - cos(2 pi v))/2: zero AND tangent at both rails
+					const Normal& n = nrm[ i * nAcrossSz + j ];
+					const Point3& p = pos[ i * nAcrossSz + j ];
+					billowed[ i * nAcrossSz + j ] = Point3( p.x + n.x * amp * w, p.y + n.y * amp * w, p.z + n.z * amp * w );
+				}
+			}
+			pos.swap( billowed );
+			// The shipped normals belong to the DISPLACED surface, not to the
+			// flat sheet the displacement was measured against.
+			if( !computeNormals( pos, nrm ) ) {
+				return SkinFail( "the billowed sheet has zero area everywhere" );
+			}
+		}
+
+		// ---- pinched stations collapse to ONE vertex (the lathe's pole) ----
+		//
+		// A station where the two rails MEET -- a leaf tip, a pinched sail
+		// corner, the shoulder and outer fingertip of a wing -- has EVERY row
+		// at the same point.  Emitting it as nAcross coincident vertices and
+		// then dropping the degenerate half of each quad is what the first
+		// cut did, and it TEARS the mesh: consecutive fan triangles around
+		// the tip then reference DIFFERENT coincident vertices, so they share
+		// no edge, every one of those edges reads as a boundary edge, and the
+		// rows nothing references at all are left in the buffer as orphans.
+		// Measured on the shipped wing: 142 boundary edges against a
+		// perimeter of 120, 26 duplicate-position vertices, 2 orphans.
+		//
+		// The lathe solved exactly this and its answer is copied here: a
+		// coincident row becomes a SINGLE pole-style vertex, so the tip is a
+		// connected FAN.  Pinched-ness is an EXACT test, which is what the
+		// near-pinch snap above exists to make survivable.
+		//
+		// Billow cannot un-pinch a station: its amplitude is billow * the
+		// station's own rail-to-rail SPAN, which is zero exactly here.
+		std::vector<unsigned char> pinched( nStations, 0 );
+		for( size_t i = 0; i < nStations; i++ ) {
+			pinched[i] = ( stations[i].a.x == stations[i].b.x &&
+			               stations[i].a.y == stations[i].b.y &&
+			               stations[i].a.z == stations[i].b.z ) ? 1 : 0;
+		}
+		// AN INTERIOR PINCH IS NOT AN END PINCH, and collapsing the two the
+		// same way ships a silently WRONG normal.
+		//
+		// At an END pinch the station has exactly ONE fan -- every face
+		// touching it lies on the same side -- so a single vertex carrying
+		// the mean of that fan's normals is meaningful and is what the lathe
+		// does at a pole.  At an INTERIOR pinch (rails that touch mid-span,
+		// or CROSS -- an hourglass) the station has TWO fans, one on each
+		// side, and they are two different surfaces that happen to meet at a
+		// point.  No single normal represents both: on a touch whose lobes
+		// lie in different planes the two fans' normals differ by the angle
+		// between those planes, and on a CROSSING they are exactly OPPOSED
+		// (the a->b direction reverses through the crossing, so d/dv and with
+		// it the whole normal field flips sign).  A mean is not a compromise
+		// there, it is wrong for both sides -- and a mean of exactly opposed
+		// normals is not even defined.
+		//
+		// So an interior pinch collapses PER SIDE: row 0 is the pole the +u
+		// fan shares, row 1 the pole the -u fan shares, both at the SAME
+		// point, each carrying its own side's normals.  That is the same
+		// idiom a duplicated rail point already uses for a CREASE -- two
+		// coincident stations whose normals are allowed to differ -- and an
+		// interior pinch is exactly a crease that has closed to a point.
+		//
+		// TOPOLOGY.  The two lobes then share no vertex: the sheet is two
+		// components touching at a line of coincident poles.  That IS the
+		// honest topology of a surface pinched to a point, and it keeps the
+		// boundary-edge closed form clean: each lobe is a grid pinched at
+		// ONE end, so an S-station R-row sheet with one interior pinch has
+		//     2*(S1-1) + (R-1)  +  2*(S2-1) + (R-1)  =  2*(S-1) + 2*(R-1)
+		// boundary edges (S1 + S2 = S + 1) -- the same perimeter as the
+		// un-pinched grid, with the pinch contributing no boundary of its
+		// own.  Both fans stay connected fans, so nothing tears.
+		//
+		// The author is TOLD, because a mid-span meeting is as often a
+		// mistake (two rails authored to cross) as an intent (a bowtie).
+		size_t nInteriorPinch = 0, firstInteriorPinch = 0;
+		for( size_t i = 1; i + 1 < nStations; i++ ) {
+			if( pinched[i] ) {
+				if( nInteriorPinch == 0 ) firstInteriorPinch = i;
+				nInteriorPinch++;
+			}
+		}
+		auto interiorPinch = [&]( const size_t i ) -> bool {
+			return pinched[i] != 0 && i > 0 && i + 1 < nStations;
+		};
+		if( nInteriorPinch > 0 ) {
+			SkinWarn( "rail_a and rail_b MEET at %u INTERIOR station(s) (first at station %u, u %g): the sheet pinches to a POINT there, so it bakes as separate lobes that share no vertex -- each lobe keeps its OWN normals on its own coincident pole vertex, because no single normal can represent both sides of a pinch.  If the rails were not meant to touch mid-span, move one of them apart there",
+				(unsigned int)nInteriorPinch, (unsigned int)firstInteriorPinch, (double)stations[firstInteriorPinch].u );
+		}
+
+		// TWO ADJACENT PINCHES leave a GAP.  Every quad between two pinched
+		// stations has both of its station-pairs collapsed to one site, so
+		// both of its triangles fall out and the strip between them emits
+		// NOTHING.  Reachable two ways: a duplicated rail point AT a pinch
+		// (the crease idiom applied where the rails already meet), and two
+		// near-pinches that the snap above resolves independently.  The
+		// mesh is still well-formed -- no tear, no orphan ships -- but it
+		// has a hole the author did not ask for, so it is named rather than
+		// left to be discovered in a render.
+		{
+			size_t nAdjacentPinch = 0, firstAdjacentPinch = 0;
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				if( pinched[i] && pinched[i+1] ) {
+					if( nAdjacentPinch == 0 ) firstAdjacentPinch = i;
+					nAdjacentPinch++;
+				}
+			}
+			if( nAdjacentPinch > 0 ) {
+				SkinWarn( "%u ADJACENT pair(s) of stations are BOTH pinched (first at stations %u and %u, u %g and %g): every quad between two pinched stations is degenerate, so the sheet has a GAP there.  Drop the duplicated rail point at the pinch, or move the two meeting points apart",
+					(unsigned int)nAdjacentPinch, (unsigned int)firstAdjacentPinch, (unsigned int)( firstAdjacentPinch + 1 ),
+					(double)stations[firstAdjacentPinch].u, (double)stations[firstAdjacentPinch+1].u );
+			}
+		}
+
+		// The grid SITE a (station, row) pair reads from: every row of a
+		// pinched station reads a POLE row, so the four corners of a quad
+		// touching it collapse in pairs and the degenerate triangle falls
+		// out by INDEX identity rather than by an area threshold.
+		//
+		// `quadAbove` says which side of station `i` the quad asking lies
+		// on: true when `i` is the quad's LOWER station (the quad is at
+		// larger u).  An end pinch has only one side and always answers row
+		// 0; an interior pinch answers row 0 for its +u fan and row 1 for
+		// its -u fan, which is what keeps the two fans' normals apart.
+		auto site = [&]( const size_t i, const size_t j, const bool quadAbove ) -> size_t {
+			if( !pinched[i] ) {
+				return i * nAcrossSz + j;
+			}
+			return i * nAcrossSz + ( ( !quadAbove && interiorPinch( i ) ) ? 1 : 0 );
+		};
+
+		// Quad (i,j)-(i+1,j)-(i+1,j+1)-(i,j+1) split into (a,b,d) + (b,c,d),
+		// a winding chosen so each face's geometric normal cross(du, dv)
+		// agrees with the vertex normals emitted below.
+		//
+		// A triangle is SKIPPED when two of its corners are the SAME site
+		// (the pinch fan) or when it has zero area (two consecutive stations
+		// at the same parameter -- the duplicated-rail-point crease idiom).
+		// The area threshold is deliberately at the FLOATING-POINT-ZERO level
+		// (1e-18 of the sheet's extent squared), not at a "thin enough to not
+		// matter" level: this predicate DELETES geometry, so it must fire
+		// only where the triangle is mathematically degenerate, and never
+		// quietly eat a sliver an author meant to keep.
+		const Scalar areaEps = sheetEps * sheetEps;
+		auto triArea2 = [&]( const size_t x, const size_t y, const size_t z ) -> Scalar {
+			const Vector3 e0 = Vector3Ops::mkVector3( pos[y], pos[x] );
+			const Vector3 e1 = Vector3Ops::mkVector3( pos[z], pos[x] );
+			return Vector3Ops::Magnitude( Vector3Ops::Cross( e0, e1 ) );
+		};
+		// ONE definition of the surviving triangle set, walked twice: once to
+		// learn which sites any triangle references, once to emit.  Walking
+		// rather than storing keeps the pass free of a second index buffer at
+		// the 2M-vertex budget.
+		auto walkTriangles = [&]( auto&& tri ) {
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				for( size_t j = 0; j + 1 < nAcrossSz; j++ ) {
+					const size_t a = site( i,     j,     true  );
+					const size_t b = site( i + 1, j,     false );
+					const size_t c = site( i + 1, j + 1, false );
+					const size_t d = site( i,     j + 1, true  );
+					if( a != b && a != d && b != d && triArea2( a, b, d ) > areaEps ) {
+						tri( i, a, b, d );
+					}
+					if( b != c && b != d && c != d && triArea2( b, c, d ) > areaEps ) {
+						tri( i, b, c, d );
+					}
+				}
+			}
+		};
+
+		// Sites no triangle references are SKIPPED, not emitted dead -- the
+		// same discipline the lathe applies to its unreferenced rows.  Those
+		// are the rows 1..nAcross-1 of every pinched station, plus (in a
+		// fully degenerate corner of the sheet) anything the area test ate.
+		std::vector<unsigned char> siteUsed( nStations * nAcrossSz, 0 );
+		size_t emitted = 0;
+		walkTriangles( [&]( size_t, const size_t x, const size_t y, const size_t z ) {
+			siteUsed[x] = 1; siteUsed[y] = 1; siteUsed[z] = 1;
+			emitted++;
+		} );
+		if( emitted == 0 ) {
+			return SkinFail( "every quad of the sheet is degenerate -- the two rails span no area anywhere" );
+		}
+
+		std::vector<int> siteVertex( nStations * nAcrossSz, -1 );
+		{
+			int next = 0;
+			for( size_t s = 0; s < siteUsed.size(); s++ ) {
+				if( siteUsed[s] ) siteVertex[s] = next++;
+			}
+		}
+
+		// THE NORMAL A COLLAPSED TIP SHIPS is the MEAN of the normals its
+		// nAcross coincident rows carried, renormalized: the tip is a FAN,
+		// and the fan's smooth normal is the average of the surface around
+		// it, not whichever row happened to be index 0.
+		//
+		// Written back into `nrm` IN PLACE rather than into a copy.  Row 0
+		// is the only site of a pinched station that ships, nothing else
+		// reads `nrm` from here on (the normals are computed and the billow
+		// is applied), and a parallel array would cost another 24 bytes per
+		// grid site at a 2M-site budget for no gain.  After this loop `nrm`
+		// IS what the mesh ships, which is what lets the fold check below
+		// read the shipped field rather than a stand-in for it.
+		//
+		// AN INTERIOR PINCH TAKES TWO MEANS, ONE PER FAN.  Its two poles are
+		// the +u fan's (row 0) and the -u fan's (row 1), and each takes the
+		// mean of the station its OWN fan's faces reach -- i + 1 and i - 1
+		// respectively, which are precisely the stations holding the other
+		// two corners of every face in that fan.  Reading the pinched
+		// station's own rows instead (as an end pinch does) would read
+		// BORROWED normals, and a borrow at an interior pinch has live
+		// neighbours on both sides: whatever it returns is a blend of two
+		// surfaces, so both fans would ship it and at least one of them
+		// would be wrong.  That is the silent-wrongness this split exists to
+		// remove.
+		auto meanStationNormal = [&]( const size_t s, Normal& out ) -> bool {
+			Scalar sx = 0, sy = 0, sz = 0;
+			for( size_t k = 0; k < nAcrossSz; k++ ) {
+				const Normal& n = nrm[ s * nAcrossSz + k ];
+				sx += n.x; sy += n.y; sz += n.z;
+			}
+			const Scalar l = sqrt( sx*sx + sy*sy + sz*sz );
+			if( !( l > 0 ) ) {
+				return false;
+			}
+			out = Normal( sx / l, sy / l, sz / l );
+			return true;
+		};
+		for( size_t i = 0; i < nStations; i++ ) {
+			if( !pinched[i] ) continue;
+			Normal n;
+			if( interiorPinch( i ) ) {
+				// Written to rows 0 and 1 only; rows 2.. of an interior
+				// pinch are referenced by nothing and never ship.  A source
+				// station that is ITSELF pinched can only be the adjacent
+				// case above, whose strip emits no face at all, so the pole
+				// it would have fed is unreferenced too.
+				if( meanStationNormal( i + 1, n ) ) nrm[ i * nAcrossSz     ] = n;
+				if( meanStationNormal( i - 1, n ) ) nrm[ i * nAcrossSz + 1 ] = n;
+			} else if( meanStationNormal( i, n ) ) {
+				nrm[ i * nAcrossSz ] = n;
+			}
+		}
+
+		// A BILLOW CAN INVERT THE NORMAL FIELD AGAINST THE WINDING, and the
+		// author has to be told when it does.  The shipped normals are
+		// central differences on the DISPLACED grid; across a fold the smooth
+		// normal and the triangle's own winding disagree, and
+		// TriangleMeshGeometryIndexed::IntersectRay then flips the TRUE face
+		// normal to agree with the (wrong) shading normal -- so vGeomNormal,
+		// which every side test reads (dielectric inside/outside, SMS chain
+		// physics), comes out inverted on those faces.
+		//
+		// A WARNING, not a refusal, and not a clamp on `billow`: the shape is
+		// authorable and the bound at which it folds depends on the crease
+		// angle of the rails, so clamping would silently change authored
+		// geometry.  What the author cannot do is NOTICE it -- a fold at one
+		// station of a fifty-station membrane is a few dark faces -- so the
+		// count, the first offending station, and the remedy are stated.
+		size_t foldedFaces = 0;
+		size_t firstFoldStation = 0;
+		Scalar firstFoldU = 0;
+		// PER CORNER, not against the mean of the three.  The shading normal
+		// inside a face is the BARYCENTRIC blend of its three vertex
+		// normals, so it opposes the face's geometric normal somewhere in
+		// the face exactly when it opposes it at some CORNER (a linear
+		// function on a simplex takes its minimum at a vertex).  Testing the
+		// mean tests the CENTROID only, and that is not merely weaker, it is
+		// specifically blind where this factory is most likely to be wrong:
+		// a collapsed pole ships ONE normal for a whole fan, so a fan with a
+		// single folded lobe hands every face a corner normal that is right
+		// for the fan on average and wrong for that lobe -- two sound
+		// summands outvote the one bad one and the fold passes unreported.
+		// The per-corner test is the criterion IntersectRay actually acts on
+		// (it flips vGeomNormal to agree with the interpolated shading
+		// normal), so it is sharper without being a heuristic: every face it
+		// names really does hand some ray an inverted geometric normal.
+		walkTriangles( [&]( const size_t i, const size_t x, const size_t y, const size_t z ) {
+			const Vector3 e0 = Vector3Ops::mkVector3( pos[y], pos[x] );
+			const Vector3 e1 = Vector3Ops::mkVector3( pos[z], pos[x] );
+			const Vector3 g  = Vector3Ops::Cross( e0, e1 );
+			const size_t corner[3] = { x, y, z };
+			for( int k = 0; k < 3; k++ ) {
+				const Normal& n = nrm[ corner[k] ];
+				if( g.x*n.x + g.y*n.y + g.z*n.z <= 0 ) {
+					if( foldedFaces == 0 ) { firstFoldStation = i; firstFoldU = stations[i].u; }
+					foldedFaces++;
+					break;
+				}
+			}
+		} );
+		if( foldedFaces > 0 ) {
+			// THE REMEDY HAS TO NAME THE ACTUAL CAUSE.  At billow 0 nothing
+			// displaced the sheet, so "reduce billow" is not advice, it is a
+			// misdirection: the fold is the RAILS' own -- they cross, or one
+			// doubles back -- and that is what the author has to change.
+			// (Reachable without any billow: two rails that nearly meet and
+			// swap sides bake a genuine crossing wherever the near-pinch is
+			// too wide to snap.)
+			if( desc.billow != 0.0 ) {
+				SkinWarn( "billow %g FOLDS the sheet through itself on %u face(s) (first at station %u, u %g): the surface normal there opposes the face winding, so the geometric normal every side test reads is inverted.  Reduce billow, or raise n_len near the crease",
+					desc.billow, (unsigned int)foldedFaces, (unsigned int)firstFoldStation, (double)firstFoldU );
+			} else {
+				SkinWarn( "the RAILS FOLD the sheet through itself on %u face(s) (first at station %u, u %g): the surface normal there opposes the face winding, so the geometric normal every side test reads is inverted.  billow is 0, so this is the rails' own doing -- they cross or double back there.  Separate them at that station, or raise n_len across the crossing",
+					(unsigned int)foldedFaces, (unsigned int)firstFoldStation, (double)firstFoldU );
+			}
+		}
+
+		// ---- emit ----------------------------------------------------------
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "skin geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		for( size_t i = 0; i < nStations; i++ ) {
+			for( size_t j = 0; j < nAcrossSz; j++ ) {
+				const size_t s = i * nAcrossSz + j;
+				if( !siteUsed[s] ) continue;
+				const Point3& p = pos[s];
+				pGeom->AddVertex( Vertex( p.x, p.y, p.z ) );
+				pGeom->AddNormal( nrm[s] );
+				// U = arc length along the rails, V = 0 at rail A, 1 at rail
+				// B -- except at a pinch, where V is genuinely undefined
+				// (every v maps to this one point) and 0.5 puts it at the
+				// texture's middle, the same convention the lathe uses for a
+				// pole's u.
+				pGeom->AddTexCoord( TexCoord( stations[i].u,
+					pinched[i] ? Scalar(0.5) : vFrac[j] ) );
+			}
+		}
+
+		walkTriangles( [&]( size_t, const size_t x, const size_t y, const size_t z ) {
+			pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx(
+				siteVertex[x], siteVertex[y], siteVertex[z] ) );
+		} );
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
 	// General along-path instancing: tessellate the named template ONCE via
 	// the universal TessellateToMesh contract, then stamp transformed copies
 	// along the Catmull-Rom path at arc-length pitch.  Template local axes:

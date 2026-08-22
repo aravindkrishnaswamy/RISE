@@ -177,7 +177,7 @@
    "metricLabel": "advanced_geometry"
   },
   {
-   "//": "Adoption census for the 85-arc geometry verbs (C1 skeleton_geometry, C3 lathe_geometry), added 2026-08-18. PURE metric, never gates: weight 0 and distinctMin 0 so it passes vacuously and only its distinct-kind COUNT is recorded. Deliberately a SECOND checkpoint rather than a widening of advanced_geometry above, because that label anchors a banked baseline series -- widening its `kinds` would make every future run incomparable with runs scored under the 3-kind list, and since distinctMin is 1 the widening could only ever move scores upward, which is exactly the direction that would masquerade as a model improvement. Read the two together: advanced_geometry stays the comparable series, this one measures whether the verbs that shipped after those baselines are actually being reached for. A scene built entirely on lathes or skeletons scored advanced_geometry = 0 before this existed.",
+   "//": "Adoption census for the 85-arc geometry verbs (C1 skeleton_geometry, C3 lathe_geometry), added 2026-08-18; extended 2026-08-22 with doc-89 slice B skin_geometry (the ruled/billowed membrane between two rails). PURE metric, never gates: weight 0 and distinctMin 0 so it passes vacuously and only its distinct-kind COUNT is recorded. Deliberately a SECOND checkpoint rather than a widening of advanced_geometry above, because that label anchors a banked baseline series -- widening its `kinds` would make every future run incomparable with runs scored under the 3-kind list, and since distinctMin is 1 the widening could only ever move scores upward, which is exactly the direction that would masquerade as a model improvement. Read the two together: advanced_geometry stays the comparable series, this one measures whether the verbs that shipped after those baselines are actually being reached for. A scene built entirely on lathes or skeletons scored advanced_geometry = 0 before this existed.",
    "kind": "document",
    "op": "distinct_chunk_kinds",
    "kinds": [
@@ -185,7 +185,8 @@
     "sweep_geometry",
     "displaced_geometry",
     "lathe_geometry",
-    "skeleton_geometry"
+    "skeleton_geometry",
+    "skin_geometry"
    ],
    "distinctMin": 0,
    "weight": 0,

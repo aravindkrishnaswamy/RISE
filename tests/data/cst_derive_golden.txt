@@ -150,6 +150,7 @@ scenes/Tests/Geometry/scenegraph_stress.RISEscene  68ffd128197275782fa75224113eb
 scenes/Tests/Geometry/shapes.RISEscene  6940e3ff651e44619a1773f0f4fd68cd830de811094c4d7a6c6cca7410460548  5735  57
 scenes/Tests/Geometry/skeleton_basic.RISEscene  2edbda6da3bfd3794ff59c5a5a7d6ce9806aa64d6d8b10ad7913e607f484496d  1377  30
 scenes/Tests/Geometry/skeleton_stress.RISEscene  b71e03db8b92c338f6070389365e627a7f2d781f47858f20eeee7dfd1d774931  2607  47
+scenes/Tests/Geometry/skin_stress.RISEscene  366a6926e4e9e79148bbe0b7c0c265521157519fc990366774d16ac57045be90  2743  49
 scenes/Tests/Geometry/superellipsoid_stress.RISEscene  1c7bb3429b39c69054c59e8e6f4c78d86028b0427db68e5ed6dfdea4d88c34e6  4206  69
 scenes/Tests/Geometry/sweep_instances.RISEscene  376274d8c54fbc241f8bc662831f5b8d67fb3231765cef45012101b5d6795b86  1618  35
 scenes/Tests/Geometry/sweep_loop.RISEscene  3067bfc3219cc307918651729451a76dc78888645206f18973660d47b702a527  1083  26

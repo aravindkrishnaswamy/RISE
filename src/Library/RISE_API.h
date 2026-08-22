@@ -549,6 +549,19 @@ namespace RISE
 						const LatheDescriptor&         desc	///< [in] Profile + axis + sweep + resolution parameters
 						);
 
+	//! Creates a SKIN: the open ruled / billowed sheet spanning two
+	//! boundary polylines (rails).  Wings, fins, webbing, sails, leaves,
+	//! awnings, lampshade panels.  Both rails are resampled onto the
+	//! UNION of their arc-length parameters, so every authored vertex of
+	//! both survives verbatim; `billow` inflates the interior along the
+	//! ruled sheet's own normal with a falloff that is zero at both
+	//! rails.  The bake is one DOUBLE-SIDED sheet.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSkinGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const SkinDescriptor&          desc	///< [in] Rails + tessellation + billow parameters
+						);
+
 	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
 	//! through the universal TessellateToMesh contract) stamped along a 3D
 	//! Catmull-Rom path at arc-length pitch with optional slant and scale.

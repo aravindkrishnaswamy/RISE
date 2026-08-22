@@ -31,6 +31,12 @@
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/Math3D/VectorsOps.h"
+// round-2: the billow-fold diagnostic is a WARNING on a build that SUCCEEDS, so
+// no return code separates "detected it" from "never looked" -- the log is the
+// only place the feature is observable.
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
+#include <mutex>
 #include <cmath>
 #include <limits>
 
@@ -3451,6 +3457,1626 @@ static void TestLatheValidation()
 	}
 }
 
+
+//////////////////////////////////////////////////////////////////////
+//
+//  skin_geometry (doc 89 slice B) vs FIRST PRINCIPLES.  Every assertion
+//  below is CLOSED FORM -- an exact planar quad and its exact area, an
+//  exact plane the whole mesh must lie in, an exact billow amplitude at
+//  the mid-line, an exact perimeter edge count -- never "whatever the
+//  factory produced last time".
+//
+//  Parameterization recap (see RISE_API_CreateSkinGeometry's header):
+//  u runs ALONG the rails (normalized arc length = the U texcoord), v
+//  runs ACROSS (0 at rail A, 1 at rail B = the V texcoord), stations are
+//  the UNION of both rails' authored arc-length parameters plus the
+//  n_len uniform refinements that are not already served, and the mesh
+//  is emitted station-major: vertex index = station*n_across + row.
+//
+//////////////////////////////////////////////////////////////////////
+
+// Build a skin from two rail point lists.  Returns the concrete mesh (or
+// 0), and leaves ownership with the caller through `pi`.
+static const TriangleMeshGeometryIndexed* MakeSkin(
+		ITriangleMeshGeometryIndexed*& pi,
+		const std::vector<double>& railA, const std::vector<double>& railB,
+		const int nLen, const int nAcross, const double billow )
+{
+	SkinDescriptor d;
+	d.railAPoints    = &railA[0];
+	d.numRailAPoints = (unsigned int)( railA.size() / 3 );
+	d.railBPoints    = &railB[0];
+	d.numRailBPoints = (unsigned int)( railB.size() / 3 );
+	d.nLen    = nLen;
+	d.nAcross = nAcross;
+	d.billow  = billow;
+	pi = 0;
+	if( !RISE_API_CreateSkinGeometry( &pi, d ) ) {
+		return 0;
+	}
+	return dynamic_cast<const TriangleMeshGeometryIndexed*>( pi );
+}
+
+// Is `p` present in the mesh's vertex buffer within `tol`?  This is the
+// CORNER-PRESENCE instrument, and it is deliberately a presence test
+// rather than an extents test: slice A's round-1 P1 was a resampler that
+// CHAMFERED authored corners while leaving the bounding box (and so an
+// extents assertion) untouched.
+static bool SkinHasVertex( const TriangleMeshGeometryIndexed* m,
+		const double x, const double y, const double z, const Scalar tol )
+{
+	for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+		const Vertex& p = m->getVertices()[i];
+		if( std::fabs( p.x - x ) <= tol && std::fabs( p.y - y ) <= tol && std::fabs( p.z - z ) <= tol ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// BOUNDARY EDGES: undirected edges used by exactly ONE triangle.  An open
+// sheet has no watertightness invariant to check, so this is its
+// structural analogue -- the perimeter must be exactly the perimeter, and
+// nothing inside the sheet may be torn.
+static unsigned int SkinBoundaryEdgeCount( const TriangleMeshGeometryIndexed* m )
+{
+	const Vertex* base = m->getVertices().empty() ? 0 : &m->getVertices()[0];
+	std::vector< std::pair<unsigned int,unsigned int> > edges;
+	edges.reserve( m->getFaces().size() * 3 );
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		unsigned int idx[3];
+		for( int k = 0; k < 3; ++k ) { idx[k] = (unsigned int)( face.pVertices[k] - base ); }
+		for( int k = 0; k < 3; ++k ) {
+			unsigned int a = idx[k], b = idx[ ( k + 1 ) % 3 ];
+			if( a > b ) { const unsigned int t = a; a = b; b = t; }
+			edges.push_back( std::make_pair( a, b ) );
+		}
+	}
+	std::sort( edges.begin(), edges.end() );
+	unsigned int boundary = 0;
+	for( std::size_t i = 0; i < edges.size(); ) {
+		std::size_t j = i;
+		while( j < edges.size() && edges[j] == edges[i] ) { ++j; }
+		if( j - i == 1 ) { ++boundary; }
+		i = j;
+	}
+	return boundary;
+}
+
+// (1) RULED QUAD IDENTITY.  Two parallel straight rails, billow 0: an
+// exact planar rectangle, with every count, every UV, every normal and
+// the total area pinned in closed form.
+static void TestSkinRuledQuadIdentity()
+{
+	std::cout << "Test 6: skin_geometry -- ruled quad identity (counts, UVs, normals, area, perimeter)" << std::endl;
+	// rail A along +X at z = 0, rail B the same line at z = W.  Both are
+	// 2-point rails, so the union contributes parameters {0, 1} only and
+	// the station set is exactly the n_len uniform grid.
+	const double L = 4.0, W = 3.0;
+	std::vector<double> railA, railB;
+	railA.push_back( 0 ); railA.push_back( 0 ); railA.push_back( 0 );
+	railA.push_back( L ); railA.push_back( 0 ); railA.push_back( 0 );
+	railB.push_back( 0 ); railB.push_back( 0 ); railB.push_back( W );
+	railB.push_back( L ); railB.push_back( 0 ); railB.push_back( W );
+
+	const int NL = 5, NA = 4;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, NL, NA, 0.0 );
+	Check( m != 0, "skin quad: factory succeeds" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	Check( m->numPoints() == (unsigned int)( NL * NA ),
+		"skin quad: MONEY ASSERTION -- n_len stations x n_across rows vertices (the 2-point rails add no station the uniform grid does not already carry)" );
+	Check( m->getFaces().size() == (std::size_t)( 2 * ( NL - 1 ) * ( NA - 1 ) ),
+		"skin quad: two triangles per grid cell, none dropped" );
+
+	// EXACT planarity: every vertex on y = 0.
+	bool planar = true, uvOK = true, normalOK = true, gridOK = true;
+	for( int i = 0; i < NL; ++i ) {
+		for( int j = 0; j < NA; ++j ) {
+			const unsigned int k = (unsigned int)( i * NA + j );
+			const Vertex& p = m->getVertices()[k];
+			const Normal& n = m->getNormals()[k];
+			const TexCoord& c = m->getCoords()[k];
+			if( std::fabs( p.y ) > 1e-12 ) planar = false;
+			// station-major layout, exact ruled positions
+			if( std::fabs( p.x - L * i / ( NL - 1 ) ) > 1e-12 ) gridOK = false;
+			if( std::fabs( p.z - W * j / ( NA - 1 ) ) > 1e-12 ) gridOK = false;
+			// U = arc length along the rails, V = 0 at rail A, 1 at rail B
+			if( std::fabs( c.x - Scalar(i) / Scalar( NL - 1 ) ) > 1e-12 ) uvOK = false;
+			if( std::fabs( c.y - Scalar(j) / Scalar( NA - 1 ) ) > 1e-12 ) uvOK = false;
+			// dP/du = +X, dP/dv = +Z, so the normal is X x Z = -Y everywhere
+			if( std::fabs( n.x ) > 1e-12 || std::fabs( n.z ) > 1e-12 || std::fabs( n.y + 1 ) > 1e-12 ) normalOK = false;
+		}
+	}
+	Check( planar,   "skin quad: MONEY ASSERTION -- a planar pair of rails at billow 0 bakes an EXACTLY planar mesh" );
+	Check( gridOK,   "skin quad: every vertex sits at its exact ruled position (station-major layout)" );
+	Check( uvOK,     "skin quad: U == arc length along the rails, V == 0 at rail_a and 1 at rail_b" );
+	Check( normalOK, "skin quad: every normal is exactly the plane normal d/du x d/dv, consistently oriented" );
+
+	Scalar total = 0, minTri = 0;
+	MeshAreaStats( m, total, minTri );
+	Check( std::fabs( (double)total - L * W ) < 1e-9,
+		"skin quad: total area EXACTLY the rectangle L*W" );
+	Check( minTri > 1e-12, "skin quad: no zero-area triangles" );
+	Check( MeshWindingAgreesWithNormals( m ),
+		"skin quad: every face's winding agrees with the (independently pinned) normal field" );
+
+	// PERIMETER.  An open sheet's structural invariant: the boundary is
+	// exactly the four sides of the grid, so a tear anywhere inside (or a
+	// dropped quad) moves this number.
+	Check( SkinBoundaryEdgeCount( m ) == (unsigned int)( 2 * ( NL - 1 ) + 2 * ( NA - 1 ) ),
+		"skin quad: MONEY ASSERTION -- boundary edge count is EXACTLY the sheet's perimeter, 2*(stations-1) + 2*(rows-1)" );
+
+	// No duplicated vertices anywhere in the grid.
+	bool anyDup = false;
+	for( unsigned int a = 0; a < m->numPoints() && !anyDup; ++a ) {
+		for( unsigned int b = a + 1; b < m->numPoints(); ++b ) {
+			const Vertex& p = m->getVertices()[a];
+			const Vertex& q = m->getVertices()[b];
+			if( std::fabs( p.x - q.x ) < 1e-12 && std::fabs( p.y - q.y ) < 1e-12 && std::fabs( p.z - q.z ) < 1e-12 ) {
+				anyDup = true; break;
+			}
+		}
+	}
+	Check( !anyDup, "skin quad: no duplicated interior vertices" );
+	pi->release();
+}
+
+// (2) THE UNION RESAMPLE.  Two rails of DIFFERENT point counts, each with
+// sharp authored kinks at parameters that do NOT land on the other rail's
+// or on the uniform grid.  Every authored vertex of BOTH rails must be in
+// the mesh VERBATIM.
+//
+// RED PROOF (slice A's round-1 P1, repeated here by construction): swap
+// the union resampler for "pick N = max(nA, nB) and uniformly resample
+// both" and this test fails -- the kinks survive only where they happen
+// to land on the j/N grid, which for these deliberately irrational-ish
+// arc-length fractions is nowhere.  An EXTENTS assertion survives that
+// substitution untouched, which is exactly why this is a PRESENCE test.
+static void TestSkinUnionKeepsAuthoredVertices()
+{
+	std::cout << "Test 6b: skin_geometry -- union resample keeps EVERY authored rail vertex (corner PRESENCE)" << std::endl;
+	// rail A: 5 points with two hard kinks.  rail B: 3 points, kinked
+	// elsewhere.  Counts differ; no kink of one is a kink of the other.
+	const double A[] = {
+		0.0, 0.0, 0.0,
+		1.3, 0.9, 0.0,
+		2.1, 0.4, 0.0,
+		3.4, 1.7, 0.0,
+		4.0, 0.2, 0.0 };
+	const double B[] = {
+		0.0, 0.0, 2.5,
+		1.9, 1.4, 2.5,
+		4.0, 0.0, 2.5 };
+	std::vector<double> railA( A, A + 15 ), railB( B, B + 9 );
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 16, 5, 0.0 );
+	Check( m != 0, "skin union: factory succeeds on unequal-count kinked rails" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	int missA = 0, missB = 0;
+	for( int k = 0; k < 5; ++k ) {
+		if( !SkinHasVertex( m, A[3*k], A[3*k+1], A[3*k+2], Scalar(1e-12) ) ) ++missA;
+	}
+	for( int k = 0; k < 3; ++k ) {
+		if( !SkinHasVertex( m, B[3*k], B[3*k+1], B[3*k+2], Scalar(1e-12) ) ) ++missB;
+	}
+	Check( missA == 0,
+		"skin union: MONEY ASSERTION -- every authored rail_a vertex is in the mesh VERBATIM (a uniform max-N resample loses the interior kinks)" );
+	Check( missB == 0,
+		"skin union: MONEY ASSERTION -- every authored rail_b vertex is in the mesh VERBATIM, at a DIFFERENT point count from rail_a" );
+
+	// The union bound: max(nA, nB) <= stations <= nA + nB + n_len.
+	const unsigned int rows = 5;
+	const unsigned int stations = m->numPoints() / rows;
+	Check( m->numPoints() % rows == 0, "skin union: the grid is rectangular (vertex count divides by n_across)" );
+	Check( stations >= 5 && stations <= 5 + 3 + 16,
+		"skin union: station count is bounded by the union rule (>= the larger rail, <= both rails plus the refinement grid)" );
+	Check( SkinBoundaryEdgeCount( m ) == 2 * ( stations - 1 ) + 2 * ( rows - 1 ),
+		"skin union: the perimeter is still exactly the perimeter at unequal rail counts" );
+	pi->release();
+}
+
+// (3) THE HARD-EDGE IDIOM.  A rail point DUPLICATED produces a zero-length
+// segment, hence two stations at the same parameter, hence two vertex
+// columns carrying the two sides' own normals -- the same crease idiom
+// sweep_geometry and lathe_geometry document for their profiles.
+static void TestSkinDuplicatedRailPointCrease()
+{
+	std::cout << "Test 6c: skin_geometry -- a duplicated rail point splits the normals (crease idiom)" << std::endl;
+	// A rail that turns 90 degrees, with the corner point DUPLICATED.
+	const double A[] = {
+		0.0, 0.0, 0.0,
+		2.0, 0.0, 0.0,
+		2.0, 0.0, 0.0,
+		2.0, 2.0, 0.0 };
+	const double B[] = {
+		0.0, 0.0, 1.0,
+		2.0, 0.0, 1.0,
+		2.0, 0.0, 1.0,
+		2.0, 2.0, 1.0 };
+	std::vector<double> railA( A, A + 12 ), railB( B, B + 12 );
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 2, 2, 0.0 );
+	Check( m != 0, "skin crease: factory succeeds" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	// 4 authored parameters per rail, pairing exactly (identical arc-length
+	// fractions), and n_len 2 contributes only the two endpoints -> 4
+	// stations, 2 rows.
+	Check( m->numPoints() == 8,
+		"skin crease: the duplicated point is KEPT as its own station (4 stations x 2 rows), not collapsed" );
+	if( m->numPoints() == 8 ) {
+		// stations 1 and 2 are the two copies of the corner: coincident
+		// positions, DIFFERENT normals (one per side of the crease).
+		const Vertex& p1 = m->getVertices()[ 1 * 2 ];
+		const Vertex& p2 = m->getVertices()[ 2 * 2 ];
+		const Normal& n1 = m->getNormals()[ 1 * 2 ];
+		const Normal& n2 = m->getNormals()[ 2 * 2 ];
+		Check( std::fabs( p1.x - p2.x ) < 1e-12 && std::fabs( p1.y - p2.y ) < 1e-12 && std::fabs( p1.z - p2.z ) < 1e-12,
+			"skin crease: the two corner stations are coincident in POSITION" );
+		const Scalar dot = n1.x*n2.x + n1.y*n2.y + n1.z*n2.z;
+		Check( dot < 0.99,
+			"skin crease: MONEY ASSERTION -- the two corner stations carry DIFFERENT normals, so the crease stays hard" );
+	}
+	pi->release();
+}
+
+// (4) BILLOW.  Closed form on a flat sheet whose normal is constant: the
+// mid-line moves EXACTLY billow * span along it, the rails do not move at
+// ALL, and a negated billow mirrors the displacement exactly.
+static void TestSkinBillow()
+{
+	std::cout << "Test 6d: skin_geometry -- billow amplitude, rail invariance, sign convention" << std::endl;
+	const double L = 4.0, W = 2.0;
+	std::vector<double> railA, railB;
+	railA.push_back( 0 ); railA.push_back( 0 ); railA.push_back( 0 );
+	railA.push_back( L ); railA.push_back( 0 ); railA.push_back( 0 );
+	railB.push_back( 0 ); railB.push_back( 0 ); railB.push_back( W );
+	railB.push_back( L ); railB.push_back( 0 ); railB.push_back( W );
+
+	const int NL = 4, NA = 5;			// NA odd -> a row lands exactly on v = 0.5
+	const double amt = 0.3;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, NL, NA, amt );
+	Check( m != 0, "skin billow: factory succeeds" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	bool railsFixed = true, midOK = true, falloffOK = true;
+	for( int i = 0; i < NL; ++i ) {
+		const Vertex& a = m->getVertices()[ (unsigned int)( i * NA + 0 ) ];
+		const Vertex& b = m->getVertices()[ (unsigned int)( i * NA + NA - 1 ) ];
+		// BIT-EXACT: the rails are written as their own endpoints, never
+		// through a weight that merely evaluates to zero.
+		if( a.y != 0 || b.y != 0 || a.z != 0 || std::fabs( b.z - W ) > 1e-15 ) railsFixed = false;
+		const Vertex& mid = m->getVertices()[ (unsigned int)( i * NA + ( NA - 1 ) / 2 ) ];
+		// The flat sheet's normal is X x Z = -Y, so a POSITIVE billow moves
+		// the interior to -Y by exactly billow * span * sin^2(pi/2).
+		if( std::fabs( mid.y + amt * W ) > 1e-12 ) midOK = false;
+		// v = 0.25 and v = 0.75 rows: sin^2(pi/4) = sin^2(3pi/4) = 0.5
+		const Vertex& q1 = m->getVertices()[ (unsigned int)( i * NA + 1 ) ];
+		const Vertex& q3 = m->getVertices()[ (unsigned int)( i * NA + 3 ) ];
+		if( std::fabs( q1.y + amt * W * 0.5 ) > 1e-12 ) falloffOK = false;
+		if( std::fabs( q3.y + amt * W * 0.5 ) > 1e-12 ) falloffOK = false;
+	}
+	Check( railsFixed, "skin billow: MONEY ASSERTION -- both authored rails are BIT-EXACTLY unmoved at any billow" );
+	Check( midOK,      "skin billow: the mid-line moves EXACTLY billow * span along the ruled sheet's normal" );
+	Check( falloffOK,  "skin billow: the falloff is exactly sin^2(pi*v) (0.5 of full amplitude at v = 0.25 and v = 0.75)" );
+	pi->release();
+
+	// NEGATIVE billow: the exact mirror.
+	ITriangleMeshGeometryIndexed* pi2 = 0;
+	const TriangleMeshGeometryIndexed* m2 = MakeSkin( pi2, railA, railB, NL, NA, -amt );
+	Check( m2 != 0, "skin billow: negative billow builds" );
+	if( m2 ) {
+		bool mirrored = true;
+		for( int i = 0; i < NL; ++i ) {
+			const Vertex& mid = m2->getVertices()[ (unsigned int)( i * NA + ( NA - 1 ) / 2 ) ];
+			if( std::fabs( mid.y - amt * W ) > 1e-12 ) mirrored = false;
+		}
+		Check( mirrored, "skin billow: a NEGATIVE billow inflates to the OTHER side by the same amount" );
+		pi2->release();
+	}
+
+	// n_across 2 has no interior row, so billow is inert (and warns).
+	ITriangleMeshGeometryIndexed* pi3 = 0;
+	const TriangleMeshGeometryIndexed* m3 = MakeSkin( pi3, railA, railB, NL, 2, amt );
+	Check( m3 != 0, "skin billow: n_across 2 still builds" );
+	if( m3 ) {
+		bool flat = true;
+		for( unsigned int k = 0; k < m3->numPoints(); ++k ) {
+			if( std::fabs( m3->getVertices()[k].y ) > 1e-15 ) flat = false;
+		}
+		Check( flat, "skin billow: at n_across 2 the sheet is the two rails alone, so billow is inert (warned, not refused)" );
+		pi3->release();
+	}
+}
+
+// (5) THE BILLOWED SHEET'S NORMALS come from the DISPLACED positions, not
+// from the flat sheet the displacement was measured against -- otherwise a
+// billowed membrane shades as though it were still flat.
+static void TestSkinBillowRecomputesNormals()
+{
+	std::cout << "Test 6e: skin_geometry -- a billowed sheet's normals follow the DISPLACED surface" << std::endl;
+	std::vector<double> railA, railB;
+	railA.push_back( 0 ); railA.push_back( 0 ); railA.push_back( 0 );
+	railA.push_back( 4 ); railA.push_back( 0 ); railA.push_back( 0 );
+	railB.push_back( 0 ); railB.push_back( 0 ); railB.push_back( 2 );
+	railB.push_back( 4 ); railB.push_back( 0 ); railB.push_back( 2 );
+
+	const int NL = 4, NA = 9;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, NL, NA, 0.3 );
+	Check( m != 0, "skin billow normals: factory succeeds" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	// The base sheet lies in the XZ plane with du = +X and dv = +Z, so its
+	// normal is X x Z = -Y and a positive billow pushes the interior to -Y.
+	// On the displaced surface dP/dv tips DOWN near rail A and UP near rail
+	// B, and N = du x dv carries that as a Z component of opposite sign on
+	// the two flanks (closed form: -0.514 and +0.514 at these rows).  A
+	// normal field left over from the FLAT sheet would be -Y everywhere, so
+	// both of these would read exactly 0.
+	const Normal& nearA = m->getNormals()[ (unsigned int)( 1 * NA + 1 ) ];
+	const Normal& nearB = m->getNormals()[ (unsigned int)( 1 * NA + NA - 2 ) ];
+	Check( nearA.z < -0.05 && nearB.z > 0.05,
+		"skin billow normals: MONEY ASSERTION -- the emitted normals tilt with the DISPLACED surface (a flat-sheet normal field would read exactly 0 here)" );
+	Check( std::fabs( nearA.z + nearB.z ) < 1e-9,
+		"skin billow normals: the sin^2 falloff is symmetric, so the two flank tilts are exact mirrors" );
+	Check( MeshWindingAgreesWithNormals( m ),
+		"skin billow normals: the winding still agrees with the recomputed normal field" );
+	pi->release();
+}
+
+// (6) A LEAF: rails that MEET at both ends.  The degenerate quads at the
+// two tips must be DROPPED, not emitted as slivers -- and the rest of the
+// sheet must be intact.
+static void TestSkinPinchedLeaf()
+{
+	std::cout << "Test 6f: skin_geometry -- rails meeting at both ends (a leaf) drop the degenerate quads" << std::endl;
+	const double A[] = {  0.0, 0.0, 0.0,   2.0, 0.0, 1.0,   4.0, 0.0, 0.0 };
+	const double B[] = {  0.0, 0.0, 0.0,   2.0, 0.0, -1.0,  4.0, 0.0, 0.0 };
+	std::vector<double> railA( A, A + 9 ), railB( B, B + 9 );
+
+	const int NA = 5;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, NA, 0.0 );
+	Check( m != 0, "skin leaf: factory succeeds on rails that touch at both ends" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	Scalar total = 0, minTri = 0;
+	MeshAreaStats( m, total, minTri );
+	Check( minTri > 1e-12,
+		"skin leaf: MONEY ASSERTION -- NO zero-area triangles, even though the two rails are coincident at both tips" );
+	// The leaf is two triangles' worth of area on each side of the midline:
+	// rail A rises to z = +1 at x = 2, rail B falls to z = -1, so the sheet
+	// is the quadrilateral (0,0)-(2,1)-(4,0)-(2,-1) in the XZ plane: two
+	// triangles of base 4 and height 1 -> area 4.
+	Check( std::fabs( (double)total - 4.0 ) < 1e-9,
+		"skin leaf: total area is EXACTLY the spanned quadrilateral (nothing lost with the dropped tip quads)" );
+	pi->release();
+}
+
+// (7) VALIDATION.  Every refusal path, plus the two CLAMP paths.
+static void TestSkinValidation()
+{
+	std::cout << "Test 6g: skin_geometry -- factory validation" << std::endl;
+	const double inf = std::numeric_limits<double>::infinity();
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	ITriangleMeshGeometryIndexed* pi = 0;
+
+	const double okA[] = { 0.0, 0.0, 0.0,  4.0, 0.0, 0.0 };
+	const double okB[] = { 0.0, 0.0, 2.0,  4.0, 0.0, 2.0 };
+
+	{
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 1; d.railBPoints = okB; d.numRailBPoints = 2;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: a single rail_a point rejects" );
+	}
+	{
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 1;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: a single rail_b point rejects" );
+	}
+	{
+		SkinDescriptor d; d.railAPoints = 0; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 2;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: a null rail_a pointer rejects" );
+	}
+	// ZERO-LENGTH rail: every point coincident.
+	{
+		const double deg[] = { 1.0, 1.0, 1.0,  1.0, 1.0, 1.0,  1.0, 1.0, 1.0 };
+		SkinDescriptor d; d.railAPoints = deg; d.numRailAPoints = 3; d.railBPoints = okB; d.numRailBPoints = 2;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0,
+			"validation: MONEY ASSERTION -- a ZERO-LENGTH rail_a (every point coincident) rejects" );
+		SkinDescriptor e; e.railAPoints = okA; e.numRailAPoints = 2; e.railBPoints = deg; e.numRailBPoints = 3;
+		Check( !RISE_API_CreateSkinGeometry( &pi, e ) && pi == 0, "validation: a ZERO-LENGTH rail_b rejects" );
+	}
+	// THE SAME CURVE on both rails -- a zero-area sheet.  Authored at
+	// DIFFERENT point counts, so an element-wise comparison would miss it.
+	{
+		const double a[] = { 0.0, 0.0, 0.0,  4.0, 0.0, 0.0 };
+		const double b[] = { 0.0, 0.0, 0.0,  1.0, 0.0, 0.0,  4.0, 0.0, 0.0 };
+		SkinDescriptor d; d.railAPoints = a; d.numRailAPoints = 2; d.railBPoints = b; d.numRailBPoints = 3;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0,
+			"validation: MONEY ASSERTION -- two rails describing the SAME curve (at different point counts) reject as a zero-area sheet" );
+	}
+	// NON-FINITE coordinates, on BOTH rails and on billow.
+	{
+		const double bad[] = { 0.0, 0.0, 2.0,  4.0, inf, 2.0 };
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 2; d.railBPoints = bad; d.numRailBPoints = 2;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: an INFINITE rail_b coordinate rejects" );
+	}
+	{
+		const double bad[] = { 0.0, nan, 0.0,  4.0, 0.0, 0.0 };
+		SkinDescriptor d; d.railAPoints = bad; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 2;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: a NaN rail_a coordinate rejects" );
+	}
+	{
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 2;
+		d.billow = nan;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: a NaN billow rejects" );
+		d.billow = inf;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: an INFINITE billow rejects" );
+	}
+	// Rail point cap.
+	{
+		std::vector<double> big( 3 * 5000 );
+		for( int k = 0; k < 5000; ++k ) { big[ 3*k ] = 0.001 * k; big[ 3*k + 1 ] = 0; big[ 3*k + 2 ] = 0; }
+		SkinDescriptor d; d.railAPoints = &big[0]; d.numRailAPoints = 5000; d.railBPoints = okB; d.numRailBPoints = 2;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0, "validation: more than 4096 points on a rail rejects" );
+	}
+	// Vertex budget: 4096 stations x 1024 rows = 4.19M, over the 2M ceiling.
+	{
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 2;
+		d.nLen = 4096; d.nAcross = 1024;
+		Check( !RISE_API_CreateSkinGeometry( &pi, d ) && pi == 0,
+			"validation: MONEY ASSERTION -- the sheet-vertex budget REJECTS a REACHABLE request (4096 stations x 1024 rows)" );
+	}
+	// n_len / n_across CLAMP (with a warning) rather than rejecting.
+	{
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 2;
+		d.nLen = 0; d.nAcross = 1;
+		Check( RISE_API_CreateSkinGeometry( &pi, d ), "validation: n_len 0 / n_across 1 CLAMP rather than rejecting" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			Check( m && m->numPoints() == 4, "validation: n_len 0 -> 2 stations and n_across 1 -> 2 rows (the 2x2 minimum sheet)" );
+			pi->release();
+			pi = 0;
+		}
+	}
+	{
+		SkinDescriptor d; d.railAPoints = okA; d.numRailAPoints = 2; d.railBPoints = okB; d.numRailBPoints = 2;
+		d.nLen = 100000; d.nAcross = 2;
+		Check( RISE_API_CreateSkinGeometry( &pi, d ), "validation: an absurd n_len clamps rather than rejecting" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			Check( m && m->numPoints() == 4096 * 2, "validation: n_len 100000 clamped to the 4096 maximum" );
+			pi->release();
+			pi = 0;
+		}
+	}
+}
+
+
+// (8) THE TWO-SIDED DECISION, pinned.  The skin bakes ONE sheet with the
+// mesh flagged DOUBLE-SIDED, which is only the right call if a face
+// shades correctly from EITHER side -- i.e. if the rail ORDER (which is
+// what decides which way the surface normal points) never creates a side
+// that is black.
+//
+// WHAT EACH ASSERTION BELOW ACTUALLY PINS, stated precisely because two
+// of the three are weaker than they look:
+//   * `n1 == -n2` pins that rail ORDER is what sets the normal -- the
+//     PREMISE.  Without it the rest could be a tautology on two meshes
+//     that turned out identical.
+//   * `ok1 && ok2` -- both meshes hand the shader a shading AND geometric
+//     normal opposing the ray -- is a property of ANY double-sided mesh,
+//     since IntersectRay re-orients both toward the incoming ray
+//     unconditionally.  It pins that the skin IS flagged double-sided and
+//     that its normals are non-degenerate; it does NOT by itself pin
+//     anything skin-specific.
+//   * `flip1 != flip2` is the skin-specific one: the flip fires on
+//     exactly ONE of the two, i.e. the two meshes really are opposite
+//     faces of the same surface and it is the double-sided flag -- not
+//     some accident of rail order -- that makes both shade.
+//
+// All three are on what a SHADER ACTUALLY RECEIVES (the post-flip
+// ri.vNormal / ri.vGeomNormal), never on the raw triangle orientation: a
+// test that undid the flip would assert the opposite of the property
+// under test.  The render companion is
+// scenes/Tests/Geometry/skin_stress.RISEscene's two-sided pair.
+static bool SkinShadingFrontFacing( const IGeometry* g, const Point3& o, const Vector3& d, bool& outFlipped )
+{
+	RayIntersectionGeometric ri( Ray( o, d ), nullRasterizerState );
+	g->IntersectRay( ri, true, true, false );
+	outFlipped = false;
+	if( !ri.bHit ) {
+		return false;
+	}
+	outFlipped = ri.bGeomNormalOrientedToRay;
+	// Both the shading normal a BSDF integrates against and the geometric
+	// normal every side test reads must oppose the incoming ray.
+	return Vector3Ops::Dot( ri.vNormal, ri.ray.Dir() ) < 0
+	    && Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) < 0;
+}
+
+static void TestSkinTwoSided()
+{
+	std::cout << "Test 6h: skin_geometry -- the two-sided decision (rail order never makes a black side)" << std::endl;
+	// A flat sheet in the XZ plane, spanned along +X and across +Z.
+	const double A[] = { -1.0, 0.0, 0.0,   1.0, 0.0, 0.0 };
+	const double B[] = { -1.0, 0.0, 2.0,   1.0, 0.0, 2.0 };
+	std::vector<double> railA( A, A + 6 ), railB( B, B + 6 );
+	std::vector<double> swapA( B, B + 6 ), swapB( A, A + 6 );
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	ITriangleMeshGeometryIndexed* pj = 0;
+	const TriangleMeshGeometryIndexed* m  = MakeSkin( pi, railA, railB, 4, 4, 0.0 );
+	const TriangleMeshGeometryIndexed* m2 = MakeSkin( pj, swapA, swapB, 4, 4, 0.0 );
+	Check( m != 0 && m2 != 0, "skin two-sided: both rail orders build" );
+	if( !m || !m2 ) { if( pi ) pi->release(); if( pj ) pj->release(); return; }
+
+	// The two normal fields are exact opposites -- that is the PREMISE of
+	// the test, not its conclusion, and it is asserted so a future change
+	// that quietly made rail order irrelevant could not turn the assertion
+	// below into a tautology.
+	const Normal& n1 = m->getNormals()[0];
+	const Normal& n2 = m2->getNormals()[0];
+	Check( std::fabs( n1.y + n2.y ) < 1e-12 && std::fabs( n1.y ) > 0.99,
+		"skin two-sided: swapping rail_a and rail_b gives EXACTLY the opposite surface normal" );
+
+	// One ray, fired at the sheet's middle from +Y, at BOTH meshes.  The
+	// rails put rail_a-first's own normal at -Y, i.e. ALONG this ray, so
+	// this ray hits one sheet's "front" and the other's "back".
+	const Point3  o( 0.0, 3.0, 1.0 );
+	const Vector3 d( 0.0, -1.0, 0.0 );
+	bool flip1 = false, flip2 = false;
+	const bool ok1 = SkinShadingFrontFacing( pi, o, d, flip1 );
+	const bool ok2 = SkinShadingFrontFacing( pj, o, d, flip2 );
+	Check( ok1 && ok2,
+		"skin two-sided: MONEY ASSERTION -- BOTH rail orders hand the shader a shading normal AND a geometric normal that oppose the ray, so an opaque membrane has no black side" );
+	Check( flip1 != flip2,
+		"skin two-sided: MONEY ASSERTION -- and it is the double-sided FLIP that does it: the flag fires on exactly ONE of the two (the one whose authored normal points away), which is what makes their shading identical" );
+	pi->release();
+	pj->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//
+//  skin_geometry, ROUND-2 REVIEW FIXES.  Every test below pins a defect
+//  that the round-1 suite could not see because it only ever exercised
+//  the FLAT quad and the STRAIGHT-rail specimens -- nowhere near the
+//  creased, pinched and unevenly-parameterized skins the scene actually
+//  ships.
+//
+//////////////////////////////////////////////////////////////////////
+
+// Vertices no triangle references.  A procedural bake has no business
+// leaving any: they inflate the buffer, they can inflate the BVH, and
+// (as the pinched skins did) they are the visible symptom of a mesh
+// whose fan was torn apart into unshared coincident copies.
+static unsigned int MeshOrphanVertexCount( const TriangleMeshGeometryIndexed* m )
+{
+	const unsigned int nv = m->numPoints();
+	if( nv == 0 ) return 0;
+	const Vertex* base = &m->getVertices()[0];
+	std::vector<unsigned char> used( nv, 0 );
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		for( int k = 0; k < 3; ++k ) { used[ (unsigned int)( face.pVertices[k] - base ) ] = 1; }
+	}
+	unsigned int orphans = 0;
+	for( unsigned int i = 0; i < nv; ++i ) { if( !used[i] ) ++orphans; }
+	return orphans;
+}
+
+// Vertices sharing a position with an earlier vertex.  On a skin this is
+// never legitimate EXCEPT at the duplicated-rail-point crease idiom
+// (where two stations deliberately coincide so their normals can split),
+// so the tests below use it only on specimens that carry no crease.
+static unsigned int MeshDuplicatePositionCount( const TriangleMeshGeometryIndexed* m )
+{
+	const unsigned int nv = m->numPoints();
+	unsigned int dups = 0;
+	for( unsigned int i = 0; i < nv; ++i ) {
+		for( unsigned int j = 0; j < i; ++j ) {
+			const Vertex& p = m->getVertices()[i];
+			const Vertex& q = m->getVertices()[j];
+			if( std::fabs( p.x - q.x ) < 1e-12 && std::fabs( p.y - q.y ) < 1e-12 && std::fabs( p.z - q.z ) < 1e-12 ) {
+				++dups;
+				break;
+			}
+		}
+	}
+	return dups;
+}
+
+// How many faces have their winding INVERTED against the shipped normal
+// field?  MeshWindingAgreesWithNormals answers yes/no; a fold count is
+// what the billow diagnostic reports, so the tests want the number.
+static unsigned int MeshFoldedFaceCount( const TriangleMeshGeometryIndexed* m, double& worstCos )
+{
+	unsigned int folded = 0;
+	worstCos = 1.0;
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		const double ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+		const double vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+		const double gx = uy*vz - uz*vy, gy = uz*vx - ux*vz, gz = ux*vy - uy*vx;
+		const Normal& n0 = *face.pNormals[0];
+		const Normal& n1 = *face.pNormals[1];
+		const Normal& n2 = *face.pNormals[2];
+		const double rx = n0.x+n1.x+n2.x, ry = n0.y+n1.y+n2.y, rz = n0.z+n1.z+n2.z;
+		const double gl = std::sqrt( gx*gx + gy*gy + gz*gz );
+		const double rl = std::sqrt( rx*rx + ry*ry + rz*rz );
+		const double d  = ( gl > 0 && rl > 0 ) ? ( ( gx*rx + gy*ry + gz*rz ) / ( gl * rl ) ) : 1.0;
+		if( d <= 0 ) { ++folded; if( d < worstCos ) worstCos = d; }
+	}
+	return folded;
+}
+
+// The SHARPER fold measure, and the one the factory itself now uses: a
+// face is folded if the shading normal opposes its geometric normal at
+// ANY CORNER, not merely when the three-normal SUM does.  The shading
+// normal inside a face is the barycentric blend of its corners, and a
+// linear function on a simplex takes its minimum at a vertex, so this is
+// exactly "some ray hitting this face is handed an inverted geometric
+// normal" -- where the sum tests the centroid alone.
+//
+// The difference is not academic and it is not symmetric: a COLLAPSED
+// POLE ships ONE normal for a whole fan, so a fan with a single folded
+// lobe hands each of its faces two sound corner normals and one bad one,
+// and the sum outvotes the bad one.  MeshFoldedFaceCount reads 0 on
+// exactly the specimen TestSkinFoldAtCollapsedApex builds.
+//
+// `outAtPosition` (when non-null) additionally counts the folded faces
+// whose OFFENDING corner sits at `atPosition` -- the instrument for
+// "the masked fold is the collapsed apex's".
+static unsigned int MeshFoldedFaceCountPerCorner( const TriangleMeshGeometryIndexed* m, double& worstCos,
+		const Point3* atPosition = 0, unsigned int* outAtPosition = 0 )
+{
+	unsigned int folded = 0;
+	if( outAtPosition ) { *outAtPosition = 0; }
+	worstCos = 1.0;
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		const double ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+		const double vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+		double gx = uy*vz - uz*vy, gy = uz*vx - ux*vz, gz = ux*vy - uy*vx;
+		const double gl = std::sqrt( gx*gx + gy*gy + gz*gz );
+		if( gl > 0 ) { gx /= gl; gy /= gl; gz /= gl; }
+		bool bad = false, badHere = false;
+		for( int k = 0; k < 3; ++k ) {
+			const Normal& n = *face.pNormals[k];
+			const double d = gx*n.x + gy*n.y + gz*n.z;
+			if( d < worstCos ) { worstCos = d; }
+			if( d <= 0 ) {
+				bad = true;
+				const Point3& p = *face.pVertices[k];
+				if( atPosition && std::fabs( p.x - atPosition->x ) < 1e-9
+				               && std::fabs( p.y - atPosition->y ) < 1e-9
+				               && std::fabs( p.z - atPosition->z ) < 1e-9 ) { badHere = true; }
+			}
+		}
+		if( bad ) { ++folded; if( badHere && outAtPosition ) { ++(*outAtPosition); } }
+	}
+	return folded;
+}
+
+// The weakest |cos| between any vertex normal and the plane normal of a
+// face it belongs to.  On a mesh built from PLANAR lobes this is exactly
+// 1 when every vertex carries its own lobe's normal, and collapses toward
+// 0 the moment one lobe is handed the other lobe's answer -- which is what
+// a single shared normal at an interior pinch does.
+static double MeshWorstNormalPlaneAlignment( const TriangleMeshGeometryIndexed* m )
+{
+	double worst = 1.0;
+	for( std::size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		const double ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+		const double vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+		double gx = uy*vz - uz*vy, gy = uz*vx - ux*vz, gz = ux*vy - uy*vx;
+		const double gl = std::sqrt( gx*gx + gy*gy + gz*gz );
+		if( gl > 0 ) { gx /= gl; gy /= gl; gz /= gl; }
+		for( int k = 0; k < 3; ++k ) {
+			const Normal& n = *face.pNormals[k];
+			const double d = std::fabs( gx*n.x + gy*n.y + gz*n.z );
+			if( d < worst ) { worst = d; }
+		}
+	}
+	return worst;
+}
+
+// The SHIPPED specimens, verbatim from scenes/Tests/Geometry/skin_stress.RISEscene.
+// Kept here as data so the tests below assert on the geometry the scene
+// actually bakes, not on a simplified stand-in.
+static void SkinKinkRails( std::vector<double>& A, std::vector<double>& B )
+{
+	const double a[] = { -1.7, 0.0,  0.0,   -0.6, 1.35, 0.0,   0.15, 0.55, 0.0,
+	                      1.05, 1.75, 0.0,   1.7,  0.25, 0.0 };
+	const double b[] = { -1.7, 0.15, -1.7,   0.35, 1.95, -1.7,  1.7,  0.35, -1.7 };
+	A.assign( a, a + 15 );
+	B.assign( b, b + 9 );
+}
+static void SkinWingRails( std::vector<double>& A, std::vector<double>& B )
+{
+	const double a[] = { 0.0, 0.35, 0.0,   0.9, 1.15, 0.05,  1.9, 1.85, 0.05,  2.6, 2.75, 0.05 };
+	const double b[] = { 0.0, 0.35, 0.0,   1.2, 0.75, 0.02,  2.4, 0.95, 0.02,
+	                     3.35, 1.25, 0.05, 3.15, 2.05, 0.05,  2.6, 2.75, 0.05 };
+	A.assign( a, a + 12 );
+	B.assign( b, b + 18 );
+}
+
+// A minimal ILogPrinter that records messages containing `needle`.  Same
+// device (and the same never-removed installation) as
+// tests/CstSourceInstanceTest.cpp's: RemoveAllPrinters would also kill the
+// default stdout printer for everything that runs afterwards.
+//
+// WHY A TEST NEEDS THE LOG.  A folded skin BUILDS -- the factory returns
+// the mesh and a true return code, exactly as an unfolded one does -- so
+// no return value separates "detected and reported the fold" from "never
+// looked".  The diagnostic IS the feature; the log is where it lands.
+class SkinLogCapture : public virtual RISE::ILogPrinter, public virtual RISE::Implementation::Reference
+{
+public:
+	explicit SkinLogCapture( std::string needle ) : mNeedle( std::move( needle ) ) {}
+	void Print( const RISE::LogEvent& event ) override
+	{
+		const std::string msg( event.szMessage );
+		if( msg.find( mNeedle ) != std::string::npos ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			mMatches.push_back( msg );
+		}
+	}
+	void Flush() override {}
+	int MatchCount() const { std::lock_guard<std::mutex> lk( mMutex ); return (int)mMatches.size(); }
+	std::string LastMatch() const { std::lock_guard<std::mutex> lk( mMutex ); return mMatches.empty() ? std::string() : mMatches.back(); }
+protected:
+	~SkinLogCapture() override {}
+private:
+	std::string                mNeedle;
+	mutable std::mutex         mMutex;
+	std::vector<std::string>   mMatches;
+};
+
+// (9) THE BILLOW FOLD.  `billow` displaces along the RULED sheet's normal
+// by a distance set by the rail-to-rail SPAN, so across a sharp authored
+// crease it can push the two sides of the crease through each other.  The
+// recomputed normal field then disagrees with the triangle winding, and
+// TriangleMeshGeometryIndexed::IntersectRay flips the TRUE face normal to
+// agree with the (wrong) shading normal -- so vGeomNormal, which every
+// side test reads (dielectric inside/outside, SMS chain physics), is
+// INVERTED on those faces.
+//
+// Two halves, and both are load-bearing:
+//   * the SHIPPED specimens (the scene's creased kink sheet at its
+//     authored billow, its leaf-class and wing-class skins) must fold
+//     NOWHERE.  Round 1 asserted MeshWindingAgreesWithNormals only on the
+//     flat quad and the straight-rail billow sheet -- neither of which can
+//     fold -- so it was green on a factory that folded the scene's own
+//     marquee geometry.
+//   * a DELIBERATELY over-billowed skin must SAY SO.  It is not refused
+//     and `billow` is not clamped (the fold bound depends on the rails'
+//     crease angle, so a clamp would silently change authored shapes);
+//     the author is told instead.
+static void TestSkinBillowFoldDiagnostic()
+{
+	std::cout << "Test 6i: skin_geometry -- a billow that FOLDS the sheet is detected and reported" << std::endl;
+
+	SkinLogCapture* pFoldLogOwned = new SkinLogCapture( "FOLDS the sheet through itself" );
+	RISE::GlobalLogPriv()->AddPrinter( pFoldLogOwned );
+	SkinLogCapture* pFoldLog = pFoldLogOwned;		// AddPrinter addref'd; keep a raw read handle
+
+	std::vector<double> kA, kB;
+	SkinKinkRails( kA, kB );
+
+	// --- the SHIPPED creased sheet, at the scene's own billow ---
+	const int before = pFoldLog->MatchCount();
+	{
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, kA, kB, 30, 8, 0.05 );
+		Check( m != 0, "skin fold: the shipped creased sheet builds" );
+		if( m ) {
+			double worst = 1.0;
+			const unsigned int folded = MeshFoldedFaceCount( m, worst );
+			Check( folded == 0,
+				"skin fold: MONEY ASSERTION -- the SHIPPED creased sheet (kink rails, billow 0.05) folds NOWHERE" );
+			Check( MeshWindingAgreesWithNormals( m ),
+				"skin fold: every face of the shipped creased sheet winds with its normals" );
+		}
+		if( pi ) pi->release();
+	}
+	Check( pFoldLog->MatchCount() == before,
+		"skin fold: and it is SILENT about folds it does not have" );
+
+	// --- the same rails, deliberately over-billowed ---
+	{
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, kA, kB, 30, 8, 0.15 );
+		Check( m != 0, "skin fold: an over-billowed sheet still BUILDS (a warning, not a refusal)" );
+		if( m ) {
+			double worst = 1.0;
+			const unsigned int folded = MeshFoldedFaceCount( m, worst );
+			Check( folded > 0 && worst < 0,
+				"skin fold: the over-billowed sheet really does invert its normal field (the premise of the assertion below)" );
+		}
+		if( pi ) pi->release();
+	}
+	Check( pFoldLog->MatchCount() == before + 1,
+		"skin fold: MONEY ASSERTION -- exactly ONE warning names the fold (RED PROOF: delete the detection in RISE_API_CreateSkinGeometry and this reads 0)" );
+	{
+		const std::string msg = pFoldLog->LastMatch();
+		Check( msg.find( "face(s)" ) != std::string::npos && msg.find( "station" ) != std::string::npos,
+			"skin fold: the warning states HOW MANY faces folded and WHERE the first one is" );
+		Check( msg.find( "Reduce billow" ) != std::string::npos && msg.find( "n_len" ) != std::string::npos,
+			"skin fold: the warning states the REMEDY (reduce billow, or raise n_len near the crease)" );
+	}
+
+	// --- the other two shipped classes, at their shipped billows ---
+	{
+		std::vector<double> wA, wB;
+		SkinWingRails( wA, wB );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, wA, wB, 48, 14, 0.06 );
+		Check( m != 0, "skin fold: the shipped wing membrane builds" );
+		if( m ) {
+			double worst = 1.0;
+			// PER CORNER, not the three-normal SUM: a pinched-tip fan (both
+			// ends of this wing are pinched) ships one normal for the whole
+			// fan, and TestSkinFoldAtCollapsedApex proves the summed check
+			// (what MeshWindingAgreesWithNormals uses) reads 0 on a mesh with
+			// a genuinely folded lobe there.  This is the same criterion the
+			// factory's own diagnostic at RISE_API.cpp:3701-3714 acts on.
+			Check( MeshFoldedFaceCountPerCorner( m, worst ) == 0,
+				"skin fold: MONEY ASSERTION -- the SHIPPED wing membrane (pinched at both ends, billow 0.06) folds nowhere either" );
+		}
+		if( pi ) pi->release();
+	}
+	{
+		const double A[] = {  0.0, 0.0, 0.0,   2.0, 0.0, 1.0,   4.0, 0.0, 0.0 };
+		const double B[] = {  0.0, 0.0, 0.0,   2.0, 0.0, -1.0,  4.0, 0.0, 0.0 };
+		std::vector<double> railA( A, A + 9 ), railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, 5, 0.2 );
+		Check( m != 0, "skin fold: the leaf-class skin builds" );
+		if( m ) {
+			double worst = 1.0;
+			// Same reasoning as the wing above: both tips of a leaf are
+			// pinched poles, so the per-corner check is the one that can
+			// actually see a folded lobe there.
+			Check( MeshFoldedFaceCountPerCorner( m, worst ) == 0,
+				"skin fold: MONEY ASSERTION -- a leaf-class skin (rails meeting at both tips) folds nowhere at billow 0.2" );
+		}
+		if( pi ) pi->release();
+	}
+}
+
+// (10) PINCHED TOPOLOGY.  Where the two rails MEET, the station's whole
+// column of rows is ONE point.  Emitting it as n_across coincident copies
+// and dropping the degenerate half of each quad TEARS the fan: successive
+// tip triangles reference different coincident vertices, share no edge,
+// and every one of those edges reads as a boundary edge -- while the rows
+// nothing references at all stay in the buffer as orphans.  Measured
+// before the fix: the shipped wing had 142 boundary edges against a
+// perimeter of 120, 26 duplicate-position vertices, and 2 orphans; the
+// leaf 26 against 22.
+//
+// The fix is the lathe's: a coincident row collapses to a SINGLE
+// pole-style vertex, so the tip is a connected fan.
+//
+// THE CLOSED FORM.  An un-pinched sheet of S stations and R rows is a
+// rectangular grid whose boundary is its perimeter, 2*(S-1) + 2*(R-1).
+// Collapsing an END station to a point deletes that end's whole (R-1)-edge
+// side (its edges are all zero-length and gone), leaving the two
+// rail-length sides intact.  So:
+//
+//     boundary = 2*(S-1) + (R-1) * (number of UN-pinched end stations)
+//
+// -- 2*(S-1) + 2*(R-1) with no pinch, 2*(S-1) + (R-1) for a sail pinched
+// at one corner, and 2*(S-1) for a leaf or wing pinched at both.  The
+// vertex count drops by (R-1) per pinched station for the same reason.
+static void TestSkinPinchedTopologyIsConnected()
+{
+	std::cout << "Test 6j: skin_geometry -- a pinched tip is ONE vertex, so the fan stays connected" << std::endl;
+
+	// --- the leaf: rails meeting at BOTH tips ---
+	{
+		const double A[] = {  0.0, 0.0, 0.0,   2.0, 0.0, 1.0,   4.0, 0.0, 0.0 };
+		const double B[] = {  0.0, 0.0, 0.0,   2.0, 0.0, -1.0,  4.0, 0.0, 0.0 };
+		std::vector<double> railA( A, A + 9 ), railB( B, B + 9 );
+		const int R = 5;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, R, 0.0 );
+		Check( m != 0, "skin pinch: the leaf builds" );
+		if( m ) {
+			// 8 stations (both rails' {0, 0.5, 1} plus the n_len 8 grid,
+			// which already serves all three), both END stations pinched.
+			const unsigned int S = 8;
+			Check( m->numPoints() == S * (unsigned int)R - 2 * ( (unsigned int)R - 1 ),
+				"skin pinch: each pinched tip costs ONE vertex, not n_across of them" );
+			Check( SkinBoundaryEdgeCount( m ) == 2 * ( S - 1 ),
+				"skin pinch: MONEY ASSERTION -- the leaf's boundary is EXACTLY its two rails, 2*(S-1) (was 26 against the un-pinched 22 when the fan was torn)" );
+			Check( MeshOrphanVertexCount( m ) == 0,
+				"skin pinch: MONEY ASSERTION -- no vertex is left in the buffer that no triangle references" );
+			Check( MeshDuplicatePositionCount( m ) == 0,
+				"skin pinch: MONEY ASSERTION -- no two vertices share a position (the tips are ONE vertex each, not n_across copies)" );
+			Scalar total = 0, minTri = 0;
+			MeshAreaStats( m, total, minTri );
+			Check( std::fabs( (double)total - 4.0 ) < 1e-9,
+				"skin pinch: the collapse is exactly a collapse -- the leaf's area is still the spanned quadrilateral" );
+			Check( minTri > 1e-12, "skin pinch: still no zero-area triangles" );
+		}
+		if( pi ) pi->release();
+	}
+
+	// --- the shipped wing: rails meeting at the shoulder and at the
+	//     outermost fingertip, with UNEQUAL point counts between them ---
+	{
+		std::vector<double> wA, wB;
+		SkinWingRails( wA, wB );
+		const int R = 14;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, wA, wB, 48, R, 0.06 );
+		Check( m != 0, "skin pinch: the shipped wing builds" );
+		if( m ) {
+			// S is not pinned by hand here: it is the union resample's own
+			// answer, recovered from the vertex count and the two known
+			// pinches.  The INVARIANT is what is under test, not the count.
+			const unsigned int nv = m->numPoints();
+			Check( ( nv + 2 * ( (unsigned int)R - 1 ) ) % (unsigned int)R == 0,
+				"skin pinch: the wing is a rectangular grid MINUS exactly two collapsed columns" );
+			const unsigned int S = ( nv + 2 * ( (unsigned int)R - 1 ) ) / (unsigned int)R;
+			Check( SkinBoundaryEdgeCount( m ) == 2 * ( S - 1 ),
+				"skin pinch: MONEY ASSERTION -- the wing's boundary is EXACTLY its two rails, 2*(S-1) (was 142 against the un-pinched 120)" );
+			Check( MeshOrphanVertexCount( m ) == 0,
+				"skin pinch: MONEY ASSERTION -- the wing leaves no orphan vertices (was 2)" );
+			Check( MeshDuplicatePositionCount( m ) == 0,
+				"skin pinch: MONEY ASSERTION -- the wing has no duplicate-position vertices (was 26)" );
+		}
+		if( pi ) pi->release();
+	}
+}
+
+// (11) NEAR-PINCH SNAP.  The collapse above is an EXACT test, and an exact
+// test cannot survive a GENERATED rail: two rails traced from the same
+// analytic curve land their tips a few ULPs apart rather than
+// bit-identical.  Un-snapped, the factory then emits a skirt of
+// sub-degenerate slivers where the author meant a single tip -- measured
+// at a 1e-12 tip gap: a minimum triangle area of 7.1e-14, BELOW this
+// suite's own 1e-12 no-zero-area floor.
+//
+// The snap is the lathe's SNAP TO THE AXIS, at the lathe's own threshold:
+// 1e-9 of the part's own extent.  Deliberately NOT looser: above
+// FP-evaluation noise there is no principled scale to snap at, because a
+// genuinely thin ribbon is a legitimate sheet at any width.
+static void TestSkinNearPinchSnap()
+{
+	std::cout << "Test 6k: skin_geometry -- a near-coincident tip snaps to an exact pinch" << std::endl;
+	const double A[] = {  0.0, 0.0, 0.0,   2.0, 0.0, 1.0,   4.0, 0.0, 0.0 };
+	std::vector<double> railA( A, A + 9 );
+	const int R = 5;
+
+	// the exact leaf -- the topology the near-pinch one must reproduce
+	unsigned int exactVerts = 0, exactBoundary = 0, exactTris = 0;
+	{
+		const double B[] = {  0.0, 0.0, 0.0,   2.0, 0.0, -1.0,  4.0, 0.0, 0.0 };
+		std::vector<double> railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, R, 0.0 );
+		Check( m != 0, "skin snap: the exact leaf builds" );
+		if( m ) { exactVerts = m->numPoints(); exactBoundary = SkinBoundaryEdgeCount( m ); exactTris = (unsigned int)m->getFaces().size(); }
+		if( pi ) pi->release();
+	}
+
+	// the same leaf with its two tips 1e-12 apart (2.5e-13 of the sheet's
+	// own 4-unit extent -- squarely FP-evaluation noise)
+	{
+		const double B[] = {  0.0, 0.0, 1e-12,   2.0, 0.0, -1.0,  4.0, 0.0, 1e-12 };
+		std::vector<double> railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, R, 0.0 );
+		Check( m != 0, "skin snap: the near-pinched leaf builds" );
+		if( m ) {
+			Check( m->numPoints() == exactVerts && SkinBoundaryEdgeCount( m ) == exactBoundary
+			       && (unsigned int)m->getFaces().size() == exactTris,
+				"skin snap: MONEY ASSERTION -- a 1e-12 tip gap bakes the SAME topology as an exactly-coincident one (counts, perimeter, triangles)" );
+			Scalar total = 0, minTri = 0;
+			MeshAreaStats( m, total, minTri );
+			Check( minTri > 1e-12,
+				"skin snap: MONEY ASSERTION -- and no sub-degenerate sliver skirt (RED PROOF: remove the snap and this reads 7.1e-14)" );
+			Check( MeshOrphanVertexCount( m ) == 0 && MeshDuplicatePositionCount( m ) == 0,
+				"skin snap: the snapped tip is one connected vertex, like the exact one" );
+		}
+		if( pi ) pi->release();
+	}
+
+	// AND THE OTHER SIDE OF THE LINE.  A tip gap of 1e-6 on the same
+	// 4-unit sheet is 2.5e-7 of its extent -- 250x the snap threshold, and
+	// a real (if tiny) separation the author may have meant.  It is NOT
+	// snapped, and it does NOT have to be: the sheet it bakes is a healthy
+	// mesh by this suite's own no-zero-area standard.  Asserted so a
+	// future "let's just widen the tolerance" cannot pass unnoticed.
+	{
+		const double B[] = {  0.0, 0.0, 1e-6,   2.0, 0.0, -1.0,  4.0, 0.0, 1e-6 };
+		std::vector<double> railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, R, 0.0 );
+		Check( m != 0, "skin snap: a 1e-6 tip gap builds" );
+		if( m ) {
+			Check( m->numPoints() > exactVerts,
+				"skin snap: a 1e-6 tip gap is NOT snapped -- it is 250x the threshold, and a thin ribbon is a legitimate sheet" );
+			Scalar total = 0, minTri = 0;
+			MeshAreaStats( m, total, minTri );
+			Check( minTri > 1e-12,
+				"skin snap: and the un-snapped near-pinch is still a healthy mesh (no zero-area triangles)" );
+			Check( MeshOrphanVertexCount( m ) == 0,
+				"skin snap: no orphans on the un-snapped near-pinch either" );
+		}
+		if( pi ) pi->release();
+	}
+}
+
+// (11b) THE INTERIOR PINCH.  Rails that MEET mid-span -- a bowtie that
+// touches, or an hourglass whose rails CROSS -- pinch the sheet to a
+// point at an INTERIOR station, and that is a different object from the
+// end pinch above.  An end pinch has ONE fan, so a single vertex carrying
+// that fan's mean normal is meaningful.  An interior pinch has TWO fans,
+// one per side, and they are different surfaces: on a TOUCH whose lobes
+// lie in different planes their normals differ by the angle between the
+// planes, and on a CROSSING they are exactly OPPOSED (the rail-A-to-rail-B
+// direction reverses through the crossing, so dP/dv and the whole normal
+// field flip sign).
+//
+// Collapsing it like an end pinch ships ONE normal to both fans, and the
+// borrowed value it collapses is whatever the degenerate-normal fill
+// found -- which, when that fill tested `i - d` before `i + d`, was always
+// the -u side.  The +u lobe then shipped the -u lobe's normal, silently:
+// no warning, and the fold check could not see it either (the face's two
+// genuine corners outvote the one wrong one).
+//
+// The fix gives the station TWO coincident poles, one per fan, each with
+// its own normals.  The two specimens below are chosen so that each of
+// them FAILS a different way if that is undone:
+//
+//   * TOUCH, with the two lobes in PERPENDICULAR planes.  Every vertex
+//     normal must be parallel to the plane of every face it belongs to
+//     (MeshWorstNormalPlaneAlignment == 1).  A shared normal makes the
+//     +u lobe's apex normal perpendicular to its own faces -> 0.
+//   * CROSSING, with both lobes coplanar but OPPOSITELY oriented.  Plane
+//     alignment cannot see that (|cos| is 1 either way), so this one is
+//     read by the per-corner fold count: a shared normal is antiparallel
+//     to one lobe's faces.
+//
+// THE TOPOLOGY IT PREDICTS, derived rather than observed.  The two lobes
+// share no vertex, so the sheet is two grids each pinched at ONE end.  A
+// grid of S stations and R rows has perimeter 2*(S-1) + 2*(R-1), and
+// collapsing an end station deletes that end's (R-1)-edge side.  With
+// S1 + S2 = S + 1 stations split across the two lobes:
+//
+//     [2*(S1-1) + (R-1)] + [2*(S2-1) + (R-1)] = 2*(S-1) + 2*(R-1)
+//
+// -- the SAME perimeter as the un-pinched grid: the pinch contributes no
+// boundary of its own, and neither fan is torn.  The vertex count drops
+// by (R-2) (a column of R becomes two poles), and there is EXACTLY ONE
+// duplicate position in the whole mesh, the pinch's two poles -- the same
+// coincident-with-different-normals idiom a duplicated rail point uses
+// for a crease, which is what an interior pinch is once the crease has
+// closed to a point.
+static void TestSkinInteriorPinch()
+{
+	std::cout << "Test 6n: skin_geometry -- rails MEETING mid-span split into per-side poles" << std::endl;
+
+	SkinLogCapture* pMeetLog = new SkinLogCapture( "MEET at" );
+	RISE::GlobalLogPriv()->AddPrinter( pMeetLog );
+	const int meetBefore = pMeetLog->MatchCount();
+
+	const int R = 5;
+
+	// --- TOUCH: lobe 1 in the y = 0 plane, lobe 2 in the z = 0 plane ---
+	{
+		const double A[] = { 0.0, 0.0, 0.0,   2.0, 0.0, 0.0,   4.0, 0.0, 0.0 };
+		const double B[] = { 0.0, 0.0, 1.0,   2.0, 0.0, 0.0,   4.0, 1.0, 0.0 };
+		std::vector<double> railA( A, A + 9 ), railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 7, R, 0.0 );
+		Check( m != 0, "skin interior pinch: rails that TOUCH mid-span build" );
+		if( m ) {
+			const unsigned int nv = m->numPoints();
+			Check( ( nv + (unsigned int)R - 2 ) % (unsigned int)R == 0,
+				"skin interior pinch: the sheet is a rectangular grid MINUS one column collapsed to TWO poles" );
+			const unsigned int S = ( nv + (unsigned int)R - 2 ) / (unsigned int)R;
+			Check( SkinBoundaryEdgeCount( m ) == 2 * ( S - 1 ) + 2 * ( (unsigned int)R - 1 ),
+				"skin interior pinch: MONEY ASSERTION -- boundary is EXACTLY the derived 2*(S-1) + 2*(R-1): two lobes, each pinched at one end, and neither torn" );
+			Check( MeshOrphanVertexCount( m ) == 0,
+				"skin interior pinch: no vertex ships that no triangle references" );
+			Check( MeshDuplicatePositionCount( m ) == 1,
+				"skin interior pinch: EXACTLY ONE duplicate position -- the pinch's two poles, and nothing else" );
+			Check( std::fabs( MeshWorstNormalPlaneAlignment( m ) - 1.0 ) < 1e-9,
+				"skin interior pinch: MONEY ASSERTION -- every vertex normal is parallel to the plane of every face it belongs to, on BOTH perpendicular lobes (RED PROOF: share one pole between the two fans and this reads ~0)" );
+			double worst = 1.0;
+			Check( MeshFoldedFaceCountPerCorner( m, worst ) == 0,
+				"skin interior pinch: and no face is handed a corner normal opposing its own winding" );
+			Scalar total = 0, minTri = 0;
+			MeshAreaStats( m, total, minTri );
+			Check( minTri > 1e-12, "skin interior pinch: no zero-area triangles at the pinch" );
+			// Two right triangles: (0,0,0)-(2,0,0)-(0,0,1) has legs 2 and 1
+			// in the y = 0 plane; (2,0,0)-(4,0,0)-(4,1,0) has legs 2 and 1
+			// in the z = 0 plane.  Area 1 each.
+			Check( std::fabs( (double)total - 2.0 ) < 1e-9,
+				"skin interior pinch: total area is EXACTLY the two spanned triangles" );
+		}
+		if( pi ) pi->release();
+	}
+	Check( pMeetLog->MatchCount() == meetBefore + 1,
+		"skin interior pinch: MONEY ASSERTION -- exactly ONE warning names the mid-span meeting (it is as often a mistake as an intent, and it is never silent)" );
+	{
+		const std::string msg = pMeetLog->LastMatch();
+		Check( msg.find( "INTERIOR station" ) != std::string::npos && msg.find( "u 0.5" ) != std::string::npos,
+			"skin interior pinch: the warning NAMES the station and its u" );
+		Check( msg.find( "OWN normals" ) != std::string::npos,
+			"skin interior pinch: and states what was done about it" );
+	}
+
+	// --- CROSSING (an hourglass): both lobes in the y = 0 plane, opposite
+	//     orientations.  Plane alignment is blind here; the per-corner fold
+	//     count is not. ---
+	{
+		const double A[] = { 0.0, 0.0,  0.0,   2.0, 0.0, 0.0,   4.0, 0.0, 0.0 };
+		const double B[] = { 0.0, 0.0, -1.0,   2.0, 0.0, 0.0,   4.0, 0.0, 1.0 };
+		std::vector<double> railA( A, A + 9 ), railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 7, R, 0.0 );
+		Check( m != 0, "skin crossing: rails that CROSS mid-span build" );
+		if( m ) {
+			double worst = 1.0;
+			Check( MeshFoldedFaceCountPerCorner( m, worst ) == 0 && std::fabs( worst - 1.0 ) < 1e-9,
+				"skin crossing: MONEY ASSERTION -- both lobes wind with their OWN normals (RED PROOF: share one pole and one lobe's apex normal is antiparallel to its faces, worst cos -1)" );
+			Check( MeshWindingAgreesWithNormals( m ),
+				"skin crossing: the mesh-wide winding check agrees too" );
+			const unsigned int nv = m->numPoints();
+			const unsigned int S = ( nv + (unsigned int)R - 2 ) / (unsigned int)R;
+			Check( ( nv + (unsigned int)R - 2 ) % (unsigned int)R == 0
+			       && SkinBoundaryEdgeCount( m ) == 2 * ( S - 1 ) + 2 * ( (unsigned int)R - 1 ),
+				"skin crossing: the same derived perimeter as the touch case -- a crossing is a pinch, not a tear" );
+			Check( MeshOrphanVertexCount( m ) == 0 && MeshDuplicatePositionCount( m ) == 1,
+				"skin crossing: no orphans, and exactly the two coincident poles" );
+		}
+		if( pi ) pi->release();
+	}
+
+	// --- A CROSSING THAT NEVER PINCHES.  The same hourglass with the two
+	//     rails passing 1e-6 apart instead of meeting: too wide to snap
+	//     (250x the 1e-9-of-extent threshold), so no station is pinched and
+	//     the sheet really does fold through itself.  billow is 0, so the
+	//     warning must not blame billow -- the rails are the cause and the
+	//     remedy. ---
+	{
+		SkinLogCapture* pRailFold = new SkinLogCapture( "RAILS FOLD the sheet" );
+		RISE::GlobalLogPriv()->AddPrinter( pRailFold );
+		const int before = pRailFold->MatchCount();
+		const double A[] = {  0.0, 0.0, 0.0,   2.0, 0.0, 1.0,   4.0, 0.0, 0.0 };
+		const double B[] = {  0.0, 0.0, 1e-6,  2.0, 0.0, -1.0,  4.0, 0.0, 1e-6 };
+		std::vector<double> railA( A, A + 9 ), railB( B, B + 9 );
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 8, R, 0.0 );
+		Check( m != 0, "skin crossing: an un-snapped 1e-6 crossing still builds" );
+		if( m ) {
+			double worst = 1.0;
+			Check( MeshFoldedFaceCountPerCorner( m, worst ) > 0 && worst < 0,
+				"skin crossing: the un-snapped crossing really does invert its normal field (the premise of the assertion below)" );
+			double sumWorst = 1.0;
+			Check( MeshFoldedFaceCount( m, sumWorst ) == 0,
+				"skin crossing: PREMISE -- and the three-normal SUM cannot see any of it, so the report below is not a restatement of the old check" );
+		}
+		if( pi ) pi->release();
+		Check( pRailFold->MatchCount() == before + 1,
+			"skin crossing: MONEY ASSERTION -- exactly ONE warning, and at billow 0 it blames the RAILS (RED PROOF: restore the sum-based check and this reads 0)" );
+		const std::string msg = pRailFold->LastMatch();
+		Check( msg.find( "billow is 0" ) != std::string::npos && msg.find( "cross or double back" ) != std::string::npos,
+			"skin crossing: the remedy names the actual cause, not `reduce billow`" );
+	}
+}
+
+// (11c) THE FOLD THE OLD DETECTOR COULD NOT SEE.  A collapsed pole ships
+// ONE normal for its whole fan, so when a subset of the fan's lobes folds
+// the mean is still right for the fan on average -- and a per-face check
+// that sums the three corner normals then finds two sound summands
+// outvoting the one bad one.  The detector reads ZERO on a sheet that
+// really does hand rays an inverted geometric normal at the tip.
+//
+// The fixture: an asymmetric leaf whose rails diverge sharply just past
+// the u = 0 tip (their first interior point is at x = 0.05 of a 4-unit
+// span) and then swing the sheet around, at a strong NEGATIVE billow.
+// The tip fan then wraps far enough that the pole's mean normal opposes
+// one of its own faces, while that face's two ring corners still agree
+// with it.
+//
+// Both halves are asserted, and the first is the load-bearing one: the
+// OLD measure must read 0 on this mesh, or the test proves nothing about
+// masking.
+static void TestSkinFoldAtCollapsedApex()
+{
+	std::cout << "Test 6o: skin_geometry -- a fold at a COLLAPSED TIP that the summed check masks" << std::endl;
+
+	SkinLogCapture* pFold = new SkinLogCapture( "FOLDS the sheet through itself" );
+	RISE::GlobalLogPriv()->AddPrinter( pFold );
+	const int before = pFold->MatchCount();
+
+	const double A[] = { 0.0, 0.0, 0.0,   0.05, 0.25, 0.35,   2.7, -1.15, 0.25,   4.0, 0.0, 0.0 };
+	const double B[] = { 0.0, 0.0, 0.0,   0.05, 0.40, -0.85,  2.7,  0.10, -1.35,  4.0, 0.0, 0.0 };
+	std::vector<double> railA( A, A + 12 ), railB( B, B + 12 );
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 6, 13, -0.40 );
+	Check( m != 0, "skin apex fold: the asymmetric billowed leaf builds" );
+	if( m ) {
+		double sumWorst = 1.0;
+		Check( MeshFoldedFaceCount( m, sumWorst ) == 0,
+			"skin apex fold: PREMISE -- the SUMMED per-face check reads ZERO on this mesh (this is the masking, not a restatement of it)" );
+		double worst = 1.0;
+		unsigned int atTip = 0;
+		const Point3 tip( 0, 0, 0 );
+		const unsigned int folded = MeshFoldedFaceCountPerCorner( m, worst, &tip, &atTip );
+		Check( folded > 0 && worst < 0,
+			"skin apex fold: MONEY ASSERTION -- but faces really are handed a corner normal opposing their winding" );
+		Check( atTip > 0,
+			"skin apex fold: MONEY ASSERTION -- and at least one of them is the COLLAPSED TIP's own fan, which is what the mean masked" );
+	}
+	if( pi ) pi->release();
+
+	Check( pFold->MatchCount() == before + 1,
+		"skin apex fold: MONEY ASSERTION -- the factory REPORTS it (RED PROOF: restore the summed check in RISE_API_CreateSkinGeometry and this reads 0)" );
+}
+
+// (11d) TWO ADJACENT PINCHES LEAVE A GAP.  Every quad between two pinched
+// stations has both of its station pairs collapsed to a single site, so
+// both its triangles fall out and the strip emits NOTHING.  Two ways in:
+// a duplicated rail point AT a meeting (the crease idiom where the rails
+// already touch), and two near-pinches that the snap resolves
+// independently -- the snap is per-station and has no idea its neighbour
+// also snapped.
+//
+// The mesh stays well-formed either way (no tear, no orphan), and the
+// coincidence required for the snap route is ~1e-9 of the sheet's own
+// extent at CONSECUTIVE stations, so this is REPORTED rather than
+// repaired: guessing which of the two meetings the author meant to keep
+// would silently change an authored shape.  What is pinned here is that
+// it is never silent.
+static void TestSkinAdjacentPinchGap()
+{
+	std::cout << "Test 6p: skin_geometry -- two ADJACENT pinched stations are reported, not silently dropped" << std::endl;
+
+	SkinLogCapture* pGap = new SkinLogCapture( "ADJACENT pair(s)" );
+	RISE::GlobalLogPriv()->AddPrinter( pGap );
+	const int before = pGap->MatchCount();
+
+	// The SNAP route: rail_b carries a duplicated crease point that lands
+	// 1e-12 from rail_a's own mid vertex, so BOTH copies snap to an exact
+	// pinch and land at consecutive stations.
+	const double A[] = { 0.0, 0.0, 0.0,   2.0, 0.0, 0.0,   2.0, 0.0, 0.0,   4.0, 0.0, 0.0 };
+	const double B[] = { 0.0, 0.0, 1.0,   2.0, 0.0, 1e-12, 2.0, 0.0, 1e-12, 4.0, 1.0, 0.0 };
+	std::vector<double> railA( A, A + 12 ), railB( B, B + 12 );
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 7, 5, 0.0 );
+	Check( m != 0, "skin adjacent pinch: the doubly-pinched sheet still builds" );
+	if( m ) {
+		Check( MeshOrphanVertexCount( m ) == 0,
+			"skin adjacent pinch: the dropped strip leaves NO orphan vertices behind" );
+		Scalar total = 0, minTri = 0;
+		MeshAreaStats( m, total, minTri );
+		Check( minTri > 1e-12,
+			"skin adjacent pinch: and no zero-area triangle ships from the collapsed strip" );
+	}
+	if( pi ) pi->release();
+
+	Check( pGap->MatchCount() == before + 1,
+		"skin adjacent pinch: MONEY ASSERTION -- exactly ONE warning names the GAP (RED PROOF: delete the adjacent-pinch check and this reads 0)" );
+	{
+		const std::string msg = pGap->LastMatch();
+		Check( msg.find( "GAP" ) != std::string::npos && msg.find( "stations" ) != std::string::npos,
+			"skin adjacent pinch: the warning says WHAT happened and WHICH stations" );
+	}
+}
+
+// (12) n_len IS A MINIMUM.  The descriptor promises the station count is
+// ">= max(nLen, |union|)".  The uniform/authored merge broke that promise:
+// its "already served" test was inclusive at BOTH ends of a full-spacing
+// interval, so a single authored station could eat TWO uniform samples.
+//
+// The fixture is the smallest one that shows it: rails whose authored
+// arc-length fractions are {0, 0.375, 0.625, 1} with n_len 5.  0.375 sits
+// exactly half a spacing above 0.25 and exactly half a spacing below 0.5,
+// so under the old test it consumed both -- four stations, not five, with
+// a widest gap of 1.5x the requested spacing.
+static void TestSkinUniformStationCountIsAMinimum()
+{
+	std::cout << "Test 6l: skin_geometry -- n_len is a MINIMUM, and an authored station eats at most one uniform sample" << std::endl;
+	const double fr[4] = { 0.0, 0.375, 0.625, 1.0 };
+	std::vector<double> railA, railB;
+	for( int i = 0; i < 4; ++i ) {
+		railA.push_back( fr[i] * 4.0 ); railA.push_back( 0.0 ); railA.push_back( 0.0 );
+		railB.push_back( fr[i] * 4.0 ); railB.push_back( 0.0 ); railB.push_back( 2.0 );
+	}
+	const int NL = 5, R = 3;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, NL, R, 0.0 );
+	Check( m != 0, "skin n_len: the fixture builds" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	Check( m->numPoints() % (unsigned int)R == 0, "skin n_len: the grid is rectangular (no pinch here)" );
+	const unsigned int S = m->numPoints() / (unsigned int)R;
+	Check( S >= (unsigned int)NL,
+		"skin n_len: MONEY ASSERTION -- at least n_len stations, as the descriptor promises (RED PROOF: make the `pu > su - uniformEps` break test inclusive again and this reads 4)" );
+	Check( S >= 4, "skin n_len: and never fewer than the authored union" );
+
+	// Every authored fraction is still present, verbatim -- the fix adds
+	// uniform stations, it does not move authored ones.
+	int missing = 0;
+	for( int i = 0; i < 4; ++i ) {
+		if( !SkinHasVertex( m, fr[i] * 4.0, 0.0, 0.0, Scalar(1e-12) ) ) ++missing;
+	}
+	Check( missing == 0, "skin n_len: every authored station survives the extra uniform ones" );
+	pi->release();
+}
+
+// (13) STATIONS RUN FORWARDS.  Phase 1's pairing tolerance is what can
+// emit a parameter BELOW its predecessor's: rail B carrying a duplicated
+// point (the crease idiom) a hair below a rail-A vertex pairs its FIRST
+// copy at rail A's LARGER parameter, and the second copy is then taken at
+// rail B's own smaller one.
+//
+// The fixture is exactly that: rail A at fractions {0, 0.5, 1}, rail B at
+// {0, 0.4999999999, 0.4999999999, 1} -- a 1e-10 skew, inside the 1e-9
+// pairing eps.  Before the clamp this produced a BACKWARDS U texture
+// coordinate and a 1e-10-wide band of non-degenerate slivers (measured
+// min triangle area 1e-10, three faces wound against their normals)
+// exactly where a clean crease was authored.
+static void TestSkinStationsAreMonotone()
+{
+	std::cout << "Test 6m: skin_geometry -- the station parameter never runs backwards" << std::endl;
+	std::vector<double> railA, railB;
+	const double ap[3] = { 0.0, 0.5, 1.0 };
+	for( int i = 0; i < 3; ++i ) { railA.push_back( ap[i] * 4.0 ); railA.push_back( 0.0 ); railA.push_back( 0.0 ); }
+	const double bp[4] = { 0.0, 0.4999999999, 0.4999999999, 1.0 };
+	for( int i = 0; i < 4; ++i ) { railB.push_back( bp[i] * 4.0 ); railB.push_back( 0.0 ); railB.push_back( 2.0 ); }
+
+	const int R = 3;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 2, R, 0.0 );
+	Check( m != 0, "skin monotone: the near-crease fixture builds" );
+	if( !m ) { if( pi ) pi->release(); return; }
+
+	const unsigned int S = m->numPoints() / (unsigned int)R;
+	Check( m->numPoints() % (unsigned int)R == 0, "skin monotone: the grid is rectangular" );
+	int backwards = 0;
+	for( unsigned int s = 1; s < S; ++s ) {
+		if( m->getCoords()[ s * R ].x < m->getCoords()[ ( s - 1 ) * R ].x ) ++backwards;
+	}
+	Check( backwards == 0,
+		"skin monotone: MONEY ASSERTION -- U is non-decreasing along the sheet (RED PROOF: drop the clamp in the union merge and this reads 1)" );
+
+	Scalar total = 0, minTri = 0;
+	MeshAreaStats( m, total, minTri );
+	// A RELATIVE floor, not the suite's absolute 1e-12 one: the sliver the
+	// clamp removes had an area of 1e-10, which clears 1e-12 comfortably
+	// while being ten ORDERS below its neighbours.  "No triangle is under a
+	// tenth of the mesh's average" is the scale-free way to say that.
+	const Scalar meanTri = total / Scalar( m->getFaces().size() );
+	Check( minTri > meanTri * Scalar(0.1),
+		"skin monotone: MONEY ASSERTION -- the crease is a CLEAN zero-width band, not a sliver strip (min triangle was 1e-10 against a 1.0 mean before the clamp)" );
+	Check( MeshWindingAgreesWithNormals( m ),
+		"skin monotone: no face is wound against its normals (three were, before the clamp)" );
+	Check( std::fabs( (double)total - 8.0 ) < 1e-9,
+		"skin monotone: the sheet is still the exact 4 x 2 rectangle" );
+
+	// The crease itself survives: rail B's duplicated point is still two
+	// stations, so the two sides still carry their own normals.
+	Check( S == 4, "skin monotone: the clamp KEEPS rail_b's duplicated point as its own station (the crease idiom is intact)" );
+	pi->release();
+}
+
+// (14) HIGH CURVATURE IS NOT A FOLD.  The per-corner detector (the same
+// criterion RISE_API_CreateSkinGeometry itself acts on at
+// RISE_API.cpp:3701-3714, and the one item 1 above switched the wing/leaf
+// MONEY ASSERTIONS onto) must not cry wolf on a sheet that is strongly
+// curved AND strongly billowed but never actually folds.
+//
+// WHAT WAS TRIED FIRST, AND WHY IT IS NOT THE FIXTURE SHIPPED HERE.  A
+// pinched RADIAL CONE -- rail_b = k * rail_a about the tip, rail_a sweeping
+// a strictly increasing angle -- has a clean closed-form non-self-
+// intersection argument (both rails carry Y == 0, so cross(du, dv) is
+// EXACTLY +-Y everywhere and billow can only ever move a vertex's Y
+// coordinate; the flat cone is injective in (X, Z) off the tip because a
+// straight polyline segment's angle from the origin is monotonic along its
+// own length, so distinct u land on distinct rays).  That argument is
+// correct -- billow genuinely cannot make two different (u, v) collide --
+// but it proves the wrong thing: the per-corner fold check is a
+// DIFFERENTIAL (normal-vs-winding) criterion, not a positional-collision
+// one, and a sharply pinched, wide (n_across >= 3) fan turned out to be
+// GENUINELY fold-prone at the tip for ANY nonzero billow, however small
+// (measured: worst-corner cosine went negative, first at station 0, at
+// billow as low as 0.02, and stayed marginal -- a few percent past zero --
+// across billow, n_across, and taper-rate variations).  The mechanism: an
+// END pinch's pole normal is the MEAN of its one live neighbour's whole
+// row (see meanStationNormal / RISE_API.cpp:3639-3651), and that
+// neighbour's row normals fan out over the full swept angle once billowed
+// -- so the mean is a genuine, if small, misfit against the row's own
+// EXTREMAL corners.  That is a REAL fold (the same masking mechanism
+// TestSkinFoldAtCollapsedApex exists to catch, here triggered by curvature
+// instead of asymmetric divergence), not a false positive, so it is not
+// shipped as a "folds nowhere" specimen.
+//
+// THE FIXTURE ACTUALLY SHIPPED sidesteps that failure mode by construction
+// rather than by tuning around it: it reuses the SHIPPED WING rails
+// (SkinWingRails, already proven fold-free at billow 0.06 by
+// TestSkinBillowFoldDiagnostic) -- a real, already-curved 4-point-per-rail
+// specimen whose two tips CONVERGE GRADUALLY over several segments rather
+// than fanning out from a single point over a wide angle -- at billow 0.5,
+// more than 8x its shipped value and above the 0.15 that already folds the
+// SHARP-creased kink sheet in item 1's own fixture.  This is verified
+// EMPIRICALLY below, with a genuine safety margin rather than a marginal
+// one: the worst per-corner cosine measured is +0.207 (comfortably
+// positive, not a few percent from the zero crossing the way the rejected
+// cone construction was), and raising billow further (measured up to 0.6)
+// shrinks that margin toward zero before a real curvature-induced fold
+// appears near mid-sheet at billow 0.7 -- so 0.5 sits with headroom on
+// both sides, not pinned against a threshold.
+static void TestSkinCurledTipHighCurvatureNoFold()
+{
+	std::cout << "Test 6q: skin_geometry -- a strongly curved, strongly billowed sheet folds nowhere" << std::endl;
+
+	std::vector<double> railA, railB;
+	SkinWingRails( railA, railB );
+
+	SkinLogCapture* pFoldLog = new SkinLogCapture( "the sheet through itself" );
+	RISE::GlobalLogPriv()->AddPrinter( pFoldLog );
+	const int before = pFoldLog->MatchCount();
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 48, 14, 0.5 );
+	Check( m != 0, "skin curl: the strongly curved, strongly billowed wing membrane builds" );
+	if( m ) {
+		double worst = 1.0;
+		Check( MeshFoldedFaceCountPerCorner( m, worst ) == 0,
+			"skin curl: MONEY ASSERTION -- the shipped wing curve at billow 0.5 (8x its shipped value) folds NOWHERE (RED PROOF: this is the fixture item 1's stronger per-corner check must not false-positive on)" );
+		Check( worst > 0.1,
+			"skin curl: and it does so with a genuine safety margin, not a marginal near-zero one (worst corner cosine measured +0.207)" );
+	}
+	if( pi ) pi->release();
+
+	Check( pFoldLog->MatchCount() == before,
+		"skin curl: MONEY ASSERTION -- and the factory agrees, emitting no fold warning at all" );
+}
+
+// (15) THREE MICRO-FIXTURES at the edges of the interior-pinch machinery.
+// All three use `n_len 2` -- the minimum -- which (per the phase-2 uniform
+// refinement above) inserts uniform samples only at u = 0 and u = 1, and
+// both are always already served by the first and last AUTHORED stations,
+// so no uniform station is ever inserted: the station count is EXACTLY the
+// authored point count, letting each fixture assert exact indices rather
+// than deriving S from the output the way the general InteriorPinch test
+// above has to.
+//
+// All three also use the same MIRROR idiom: rail_b's point i is rail_a's
+// point i with one coordinate negated.  Negation is an isometry, so
+// corresponding segments on the two rails are the SAME LENGTH at every
+// index, not just the pinched one -- their arc-length fractions match
+// EXACTLY (bit-identically) at every station, which is what lets each
+// authored index pair into its own station with no interpolation drift.
+static void TestSkinInteriorPinchMicroFixtures()
+{
+	std::cout << "Test 6r: skin_geometry -- interior pinch micro-fixtures: single-strip fan, triple pinch, asymmetric closed form" << std::endl;
+
+	// --- (a) PINCH AT STATION 1: a single-strip fan (S1 = 2) on the short
+	//     side, a three-strip fan (S2 = 3) on the long side. ---
+	{
+		const double z[4] = { 1.0, 0.0, 1.0, 2.0 };		// station 1 pinches
+		std::vector<double> railA, railB;
+		for( int i = 0; i < 4; ++i ) {
+			railA.push_back( (double)i ); railA.push_back( 0.0 ); railA.push_back(  z[i] );
+			railB.push_back( (double)i ); railB.push_back( 0.0 ); railB.push_back( -z[i] );
+		}
+		const int R = 5;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 2, R, 0.0 );
+		Check( m != 0, "skin micro (a): the station-1 pinch fixture builds" );
+		if( m ) {
+			Check( MeshOrphanVertexCount( m ) == 0, "skin micro (a): no orphans" );
+			double worst = 1.0;
+			Check( MeshFoldedFaceCountPerCorner( m, worst ) == 0,
+				"skin micro (a): the single-strip fan on the short side is not folded" );
+			Check( std::fabs( MeshWorstNormalPlaneAlignment( m ) - 1.0 ) < 1e-9,
+				"skin micro (a): every vertex normal is parallel to the plane of every face it belongs to -- each side keeps its OWN normals" );
+			// S1 = 2 (stations 0-1), S2 = 3 (stations 1-2-3), S = 4: the
+			// closed form collapses to the same 2*(S-1) + 2*(R-1) as the
+			// un-pinched grid.
+			Check( SkinBoundaryEdgeCount( m ) == 2 * ( 4 - 1 ) + 2 * ( R - 1 ),
+				"skin micro (a): MONEY ASSERTION -- boundary is the two-lobe closed form with S1 = 2, S2 = 3" );
+		}
+		if( pi ) pi->release();
+	}
+
+	// --- (b) THREE CONSECUTIVE PINCHES: the middle one's poles are
+	//     referenced by NEITHER of its two neighbouring strips (both are
+	//     dead, pinch-to-pinch), so siteUsed discipline must SKIP them, not
+	//     orphan them; the two adjacent PAIRS (1,2) and (2,3) must collapse
+	//     into one aggregated warning, not a storm of one per pair. ---
+	{
+		SkinLogCapture* pGapLog = new SkinLogCapture( "ADJACENT pair(s)" );
+		RISE::GlobalLogPriv()->AddPrinter( pGapLog );
+		const int before = pGapLog->MatchCount();
+
+		const double z[5] = { 1.0, 0.0, 0.0, 0.0, 1.0 };	// stations 1,2,3 pinch
+		std::vector<double> railA, railB;
+		for( int i = 0; i < 5; ++i ) {
+			railA.push_back( (double)i ); railA.push_back( 0.0 ); railA.push_back(  z[i] );
+			railB.push_back( (double)i ); railB.push_back( 0.0 ); railB.push_back( -z[i] );
+		}
+		const int R = 4;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 2, R, 0.0 );
+		Check( m != 0, "skin micro (b): the triple-pinch fixture builds" );
+		if( m ) {
+			Check( MeshOrphanVertexCount( m ) == 0, "skin micro (b): no orphans" );
+			Check( !SkinHasVertex( m, 2.0, 0.0, 0.0, Scalar(1e-9) ),
+				"skin micro (b): MONEY ASSERTION -- the MIDDLE pinch (station 2) has no live neighbouring strip on either side, so its pole is SKIPPED, not emitted (RED PROOF: emit every site unconditionally and this reads true)" );
+			Check( SkinHasVertex( m, 1.0, 0.0, 0.0, Scalar(1e-9) ) && SkinHasVertex( m, 3.0, 0.0, 0.0, Scalar(1e-9) ),
+				"skin micro (b): the OUTER two pinches (stations 1 and 3) each keep one live strip, so their poles DO ship" );
+		}
+		if( pi ) pi->release();
+		Check( pGapLog->MatchCount() == before + 1,
+			"skin micro (b): MONEY ASSERTION -- exactly ONE aggregated warning, not a storm of one per pair (RED PROOF: fire it inside the pair loop instead of once after and this reads 2)" );
+		if( pGapLog->MatchCount() > before ) {
+			Check( pGapLog->LastMatch().find( "2 ADJACENT" ) != std::string::npos,
+				"skin micro (b): and it states the correct count of adjacent pairs (2)" );
+		}
+	}
+
+	// --- (c) ASYMMETRIC INTERIOR PINCH, station 2 of 12 (S1 = 3, S2 = 10):
+	//     the closed form at unequal lobe sizes.  RISE_API.cpp:3486-3494's
+	//     own reasoning: each lobe bakes as an END-pinch grid on its own
+	//     (verts = S_k*R - (R-1)), and "the two lobes then share no
+	//     vertex", so
+	//         verts = [S1*R-(R-1)] + [S2*R-(R-1)]
+	//               = (S1+S2)*R - 2*(R-1)
+	//               = (S+1)*R - 2*(R-1)              [S1+S2 = S+1]
+	//               = S*R - (R-2)
+	//     -- the INTERIOR-pinch reduction is (R-2) per pinch, not the
+	//     (R-1) an END pinch costs, because the column becomes TWO poles
+	//     sharing the point, not one. ---
+	{
+		const int S = 12, R = 6;
+		const double z[12] = { 1.5, 0.7, 0.0, 0.5, 1.0, 1.5, 2.0, 2.3, 2.5, 2.6, 2.7, 2.8 };	// station 2 pinches
+		std::vector<double> railA, railB;
+		for( int i = 0; i < S; ++i ) {
+			railA.push_back( (double)i ); railA.push_back( 0.0 ); railA.push_back(  z[i] );
+			railB.push_back( (double)i ); railB.push_back( 0.0 ); railB.push_back( -z[i] );
+		}
+		ITriangleMeshGeometryIndexed* pi = 0;
+		const TriangleMeshGeometryIndexed* m = MakeSkin( pi, railA, railB, 2, R, 0.0 );
+		Check( m != 0, "skin micro (c): the asymmetric 12-station pinch fixture builds" );
+		if( m ) {
+			Check( MeshOrphanVertexCount( m ) == 0, "skin micro (c): no orphans" );
+			const unsigned int expected = (unsigned int)( S * R - ( R - 2 ) );
+			Check( m->numPoints() == expected,
+				"skin micro (c): MONEY ASSERTION -- verts = S*R - (R-2) holds at unequal lobe sizes (S1=3, S2=10) (RED PROOF: use the end-pinch R-1 reduction here and this is off by one)" );
+		}
+		if( pi ) pi->release();
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "ProceduralMeshTest -- procedural mesh factories vs Python baker goldens" << std::endl << std::endl;
@@ -3492,6 +5118,24 @@ int main( int, char** )
 	TestLatheDeadRowBoundingBox();
 	TestLatheNearLoopIsNotALoop();
 	TestLatheValidation();
+	TestSkinRuledQuadIdentity();
+	TestSkinUnionKeepsAuthoredVertices();
+	TestSkinDuplicatedRailPointCrease();
+	TestSkinBillow();
+	TestSkinBillowRecomputesNormals();
+	TestSkinPinchedLeaf();
+	TestSkinTwoSided();
+	TestSkinBillowFoldDiagnostic();
+	TestSkinPinchedTopologyIsConnected();
+	TestSkinNearPinchSnap();
+	TestSkinInteriorPinch();
+	TestSkinFoldAtCollapsedApex();
+	TestSkinAdjacentPinchGap();
+	TestSkinUniformStationCountIsAMinimum();
+	TestSkinStationsAreMonotone();
+	TestSkinCurledTipHighCurvatureNoFold();
+	TestSkinInteriorPinchMicroFixtures();
+	TestSkinValidation();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

@@ -1671,6 +1671,12 @@ namespace RISE
 					const LatheDescriptor& desc				///< [in] Profile + axis + sweep + resolution parameters
 					);
 
+		//! Creates a ruled / billowed skin between two rails (see IJob)
+		bool AddSkinGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const SkinDescriptor& desc				///< [in] Rails + tessellation + billow parameters
+					);
+
 		//! Creates along-path instances of a named template geometry (see IJob)
 		bool AddPathInstancesGeometry(
 					const char* name,						///< [in] Name of the geometry

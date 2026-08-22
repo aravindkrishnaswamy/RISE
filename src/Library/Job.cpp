@@ -5157,6 +5157,27 @@ bool Job::AddLatheGeometry( const char* name, const LatheDescriptor& desc )
 	return ok;
 }
 
+bool Job::AddSkinGeometry( const char* name, const SkinDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateSkinGeometry( &pGeometry, desc ) ) {
+		// The factory logged the reason AND (per GenericManager.h's
+		// "however deep the call stack" contract) left it in the CST
+		// Finalize diag sink.  It cannot know the geometry's name, so
+		// qualify it here to match the chunk parser's own Reject() form --
+		// DeriveToJob prepends `skin_geometry: ` to whatever lands here.
+		// Identical to AddLatheGeometry immediately above.
+		if( RISE::g_cstFinalizeDiagSink && !RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"`" + std::string( name ? name : "" ) + "`: " + *RISE::g_cstFinalizeDiagSink;
+		}
+		return false;
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
 bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
 {
 	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );

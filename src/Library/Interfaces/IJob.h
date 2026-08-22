@@ -4040,6 +4040,19 @@ namespace RISE
 									const unsigned int seed			///< [in] Hash seed
 									) = 0;
 
+		//! Creates a SKIN (doc 89 slice B): the open ruled / billowed sheet
+		//! spanning two boundary polylines.  Wings, fins, webbing, sails,
+		//! leaves, awnings, lampshade panels -- the "thin surface bounded by
+		//! curves" class that neither a sweep nor a lathe can state.  Both
+		//! rails are inline points, so this adds NO cross-chunk reference.
+		//! Appended after AddScatterPainter per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSkinGeometry(
+									const char* name,				///< [in] Name of the geometry
+									const SkinDescriptor& desc		///< [in] Rails + tessellation + billow parameters
+									) = 0;
+
 	};
 
 

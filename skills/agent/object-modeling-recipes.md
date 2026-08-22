@@ -92,6 +92,12 @@ flat-bottom cuts still applies to how each individual bone is shaped --
 `skeleton_geometry` only automates the graph assembly, not the
 primitive vocabulary.  See the geometry vocabulary table above.
 
+**A WING, FIN or web is a `skin_geometry` between two rails -- the bones
+are the skeleton, the membrane stretched over them is the skin** (`rail_a`
+the leading edge, `rail_b` the trailing edge, both traced root to tip, and
+a small `billow` to fill it); the same chunk is a sail, a leaf, an awning
+or a lampshade panel.
+
 Reading a profile off a reference is mechanical.  Write down (radius,
 height) pairs from the bottom up -- base, belly, shoulder, neck, lip --
 and emit one `profile_point` per pair, in that order.  Recipe 4 below

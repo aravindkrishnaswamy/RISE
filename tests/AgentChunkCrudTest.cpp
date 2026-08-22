@@ -10927,7 +10927,14 @@ static void TestCleanRoomChainWorkedExample()
 	Check( introEnd != std::string::npos, "S2k found the end of the intro line" );
 	if( introEnd == std::string::npos ) return;
 	const std::size_t chunkStart = introEnd + 1;
-	const std::size_t chunkEnd = p.find( "\n\nOUTLINE SKETCH", chunkStart );
+	// The example ends at its own trailing BLANK LINE.  It used to anchor on
+	// "\n\nOUTLINE SKETCH" instead, which silently assumed the chain gate
+	// emitted exactly ONE worked example -- doc 89 slice B appended a second
+	// (skin_geometry) inside the same gate, and the OUTLINE anchor then swept
+	// that block's JSON schema into the "example" and the parse below failed.
+	// A blank line is what actually terminates every one of these blocks
+	// (they all end "}\n\n") and it stays correct however many follow.
+	const std::size_t chunkEnd = p.find( "\n\n", chunkStart );
 	Check( chunkEnd != std::string::npos, "S2k found the end of the worked-example block" );
 	if( chunkEnd == std::string::npos ) return;
 	const std::string example = p.substr( chunkStart, chunkEnd - chunkStart );
@@ -10998,6 +11005,101 @@ static void TestCleanRoomChainWorkedExample()
 		       std::to_string( r2.landed.size() ) + ")" );
 		Check( r2.rejected.empty(), "S2k/real with nothing rejected" );
 	}
+}
+
+
+//! Doc 89 slice B (2026-08-22): the SKIN worked example -- the exact
+//! analogue of S2j/S2k/S2l above, for the second example the
+//! construction=="chain" gate now emits.  Slice B rides the chain gate
+//! rather than adding an eighth construction value (creature membranes are
+//! what a chain declaration is for), so this asserts on the SAME
+//! construction=="chain" plan S2k uses, and lifts the SECOND example out
+//! of the composed prompt.
+//!
+//! The block has to parse STANDALONE -- that is why the skin example keeps
+//! its own material instead of binding the skeleton example's, and this
+//! test is what makes that a requirement rather than a preference.
+static void TestCleanRoomSkinWorkedExample()
+{
+	std::printf( "S2m: the skin worked example rides the chain gate and parses...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2m.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2m fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	static const char* const kCritterAnswer =
+		"uniformcolor_painter\n{\n\tname critter_hide_pnt\n\tcolor 0.5 0.35 0.25\n}\n"
+		"lambertian_material\n{\n\tname critter_hide_mat\n\treflectance critter_hide_pnt\n}\n"
+		"box_geometry\n{\n\tname critter_body_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n"
+		"standard_object\n{\n\tname critter_obj\n\tgeometry critter_body_box\n"
+		"\tmaterial critter_hide_mat\n\tposition 0 0 0\n}\n";
+
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+	Agent::AgentSession::AgentBuildPlanEntry e;
+	e.element = "critter";
+	e.pieces.push_back( "wing" );
+	e.construction.push_back( "chain" );
+	e.outline = "0 0; 1 0; 1 3; 0 3";
+	plan.push_back( e );
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kCritterAnswer }, nullptr, &prompts ) );
+	Check( sess->FileBuildPlan( plan ).ok, "S2m the chain plan files" );
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "critter", 2.0 );
+	Check( r.ok, "S2m build_element still completes normally with the second example present" );
+	Check( prompts.size() == 1, "S2m one prompt was composed" );
+	if( prompts.empty() ) return;
+	const std::string& p = prompts[0];
+
+	Check( p.find( "\"keyword\":\"skin_geometry\"" ) != std::string::npos,
+	       "S2m MONEY ASSERTION: the skin_geometry SCHEMA IS sent when construction==\"chain\"" );
+	const std::size_t markerPos = p.find( "WORKED EXAMPLE -- a wing/fin/sail membrane" );
+	Check( markerPos != std::string::npos,
+	       "S2m MONEY ASSERTION: the skin worked example IS spliced in when construction==\"chain\"" );
+	if( markerPos == std::string::npos ) return;
+
+	const std::size_t introEnd = p.find( '\n', markerPos );
+	if( introEnd == std::string::npos ) { Check( false, "S2m found the end of the intro line" ); return; }
+	const std::size_t chunkStart = introEnd + 1;
+	const std::size_t chunkEnd = p.find( "\n\n", chunkStart );
+	Check( chunkEnd != std::string::npos, "S2m found the end of the worked-example block" );
+	if( chunkEnd == std::string::npos ) return;
+	const std::string example = p.substr( chunkStart, chunkEnd - chunkStart );
+
+	Check( example.find( "skin_geometry" ) != std::string::npos &&
+	       example.find( "lambertian_material" ) != std::string::npos &&
+	       example.find( "standard_object" ) != std::string::npos,
+	       "S2m the lifted example carries all three chunks of the trio" );
+	Check( example.find( "critter_wing_skin" ) != std::string::npos &&
+	       example.find( "critter_wing_mat" ) != std::string::npos &&
+	       example.find( "critter_wing_obj" ) != std::string::npos,
+	       "S2m MONEY ASSERTION: every name in the example is built from the element's REAL "
+	       "chunk-name prefix, not a placeholder" );
+
+	// THE PARSE, not a syntax guess -- same law S2j/S2k/S2l hold the other
+	// three examples to.
+	Job* freshJob = new Job();
+	std::vector<std::string> diags;
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( "RISE ASCII SCENE 7\n" + example + "\n" );
+	const int applied = RISE::Cst::DeriveToJob( doc, *freshJob, &diags );
+	for( std::size_t d = 0; d < diags.size(); ++d )
+		std::printf( "    S2m DIAGNOSTIC: %s\n", diags[d].c_str() );
+	Check( diags.empty(), "S2m MONEY ASSERTION: the skin worked example parses with ZERO diagnostics" );
+	Check( applied == 3, "S2m all three chunks of the trio applied (got " +
+	       std::to_string( applied ) + ")" );
+	IGeometryManager* geoms = freshJob->GetGeometries();
+	Check( geoms && geoms->GetItem( "critter_wing_skin" ) != nullptr,
+	       "S2m the skin_geometry actually registered (so the rails, n_across and billow all parse)" );
+	IObjectManager* objs = freshJob->GetObjects();
+	Check( objs && objs->GetItem( "critter_wing_obj" ) != nullptr,
+	       "S2m the standard_object actually registered" );
+	freshJob->release();
+
+	// LocalFrameContract rule 1, checked against the example's own numbers
+	// rather than trusted: the lowest authored rail point must sit at y = 0.
+	Check( example.find( "rail_b 0 0 -0.35" ) != std::string::npos,
+	       "S2m MONEY ASSERTION: the example's lowest point is at y = 0, satisfying the base-at-origin contract it is sent alongside" );
 }
 
 //! C3 (2026-08-18): the lathe-method worked example -- the exact analogue
@@ -18195,6 +18297,7 @@ int main()
 	TestCleanRoomSweepWorkedExample();
 	TestCleanRoomChainWorkedExample();
 	TestCleanRoomLatheWorkedExample();
+	TestCleanRoomSkinWorkedExample();
 	// C4 (2026-08-19): the multi-method gate -- both schemas, both examples.
 	TestCleanRoomMultiMethodWorkedExamples();
 	TestCleanRoomValidatedInsertion();

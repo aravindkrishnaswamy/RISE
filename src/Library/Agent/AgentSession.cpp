@@ -3784,9 +3784,13 @@ namespace RISE
 					// one that hand-wrote the equivalent part chain -- but the
 					// role recorded on the Document item is the skeleton
 					// keyword, so without this it read as "no advanced forms".
+					// Doc 89 slice B joins the list on the identical
+					// argument: a wing, fin or sail is a skin_geometry, and a
+					// scene that already built its membranes with one must
+					// not be told it has none of the rich forms.
 					if( role == "sdf_geometry" || role == "sweep_geometry" ||
 					    role == "lathe_geometry" || role == "skeleton_geometry" ||
-					    role == "displaced_geometry" ) {
+					    role == "skin_geometry" || role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
 						++c.geometryCensus[role];
 						continue;
@@ -4236,10 +4240,11 @@ namespace RISE
 				if( c.conditionB ) {
 					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/displaced_geometry "
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/skin_geometry/displaced_geometry "
 						"forms (a profile of revolution -- vase, bottle, goblet, turned leg -- is one "
-						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; read_skill "
-						"{\"name\":\"object-modeling-recipes\"}).";
+						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; a surface "
+						"stretched between two curves -- wing, fin, sail, leaf, awning -- is one skin_geometry; "
+						"read_skill {\"name\":\"object-modeling-recipes\"}).";
 				}
 				if( c.conditionC ) {
 					note += " " + FormatRepeatedCopiesClause_( c.repeatedCopyCount, c.repeatedCopyGeometry );
@@ -4312,10 +4317,11 @@ namespace RISE
 					d.code     = AgentDiagnosticCode::DESIGN_NO_ADVANCED_GEOMETRY;
 					d.message  = "geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/displaced_geometry "
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/skin_geometry/displaced_geometry "
 						"forms (a profile of revolution -- vase, bottle, goblet, turned leg -- is one "
-						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; read_skill "
-						"{\"name\":\"object-modeling-recipes\"}).";
+						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; a surface "
+						"stretched between two curves -- wing, fin, sail, leaf, awning -- is one skin_geometry; "
+						"read_skill {\"name\":\"object-modeling-recipes\"}).";
 					d.message += kSelfDisarm;
 					out.push_back( d );
 				}
@@ -15451,6 +15457,95 @@ namespace RISE
 						     "\tmaterial " + prefix + "tail_mat\n"
 						     "\tposition 0 0 0\n"
 						     "}\n\n";
+						// Doc 89 slice B rides the SAME gate rather than adding
+						// an eighth construction value.  The evidence is the
+						// dragon trajectory: the model authored
+						// `dragon_left_wing_bones_skel` and
+						// `dragon_right_wing_bones_skel` and then STOPPED,
+						// because nothing could stretch a membrane across the
+						// bones it had just built.  Wings, fins and webbing are
+						// what a creature's chain declaration is FOR, so a
+						// single `chain` element now gets bones AND membrane in
+						// one prompt -- no second gate, no new enum value, and
+						// no cost at all to the six other constructions.
+						//
+						// The subject is a WING MEMBRANE because the part
+						// models get wrong is that the two rails are BOUNDARY
+						// CURVES traced in the SAME direction, not a closed
+						// outline: rail_a is the leading edge root-to-tip and
+						// rail_b the trailing edge root-to-tip, and the two
+						// MEET at both ends, which is how a wing (or a leaf)
+						// closes.  The counts deliberately DIFFER (4 vs 3) so
+						// the example itself states that they may.
+						// LocalFrameContract rule 1: the lowest point is
+						// rail_b's middle vertex at exactly y = 0, and the
+						// sheet is symmetric about x = 0 (span -0.85 .. 0.85),
+						// so it is authored base-at-origin and horizontally
+						// centred.  n_len / n_across are spelled because the
+						// defaults are tuned for a plain sheet and a billowed
+						// membrane wants a little more across; n_len is left
+						// at its default.
+						p += "\n";
+						p += ReadSchema( "skin_geometry" );
+						p += "\n";
+						// TRIMMED where trimming is free: no second painter,
+						// n_len left at its default, and a one-line intro
+						// rather than the longer form the sweep/chain/lathe
+						// examples carry.  It does keep its OWN material and
+						// standard_object, because the block has to parse
+						// STANDALONE -- AgentChunkCrudTest S2m lifts exactly
+						// this text out of the composed prompt and derives it
+						// on a fresh Job, which binding the skeleton
+						// example's material would break.  See the
+						// measurement note below for why trimming the example
+						// cannot get this gate to 2x whatever it costs.  424 B.
+						p += "WORKED EXAMPLE -- a wing/fin/sail membrane spanning two rails:\n"
+						     "skin_geometry\n"
+						     "{\n"
+						     "\tname " + prefix + "wing_skin\n"
+						     "\trail_a -0.85 0.55 0.3\n"
+						     "\trail_a -0.3 1.15 0.42\n"
+						     "\trail_a 0.3 1.15 0.42\n"
+						     "\trail_a 0.85 0.55 0.3\n"
+						     "\trail_b -0.85 0.55 0.3\n"
+						     "\trail_b 0 0 -0.35\n"
+						     "\trail_b 0.85 0.55 0.3\n"
+						     "\tn_across 10\n"
+						     "\tbillow 0.12\n"
+						     "}\n"
+						     "lambertian_material\n"
+						     "{\n"
+						     "\tname " + prefix + "wing_mat\n"
+						     "\treflectance none\n"
+						     "}\n"
+						     "standard_object\n"
+						     "{\n"
+						     "\tname " + prefix + "wing_obj\n"
+						     "\tgeometry " + prefix + "wing_skin\n"
+						     "\tmaterial " + prefix + "wing_mat\n"
+						     "\tposition 0 0 0\n"
+						     "}\n\n";
+						// MEASURED (2026-08-22, same instrument as the
+						// kBuildPlanMaxConstructionMethods table -- that
+						// table's skeleton 3094 and lathe 4595 reproduce
+						// exactly, so the numbers are comparable):
+						//   chain gate BEFORE  3094 + 438 = 3532 B
+						//   chain gate AFTER   3532 + 4827 + 424 = 8783 B (2.49x)
+						// Doc 89 sect. 3 asks for <= ~2x, trimming the
+						// EXAMPLE rather than the schema.  That is
+						// arithmetically out of reach here and the trim above
+						// is not why: skin_geometry's schema ALONE is 4827 B,
+						// i.e. 1.37x the entire pre-existing block, so even a
+						// ZERO-byte example leaves the gate at 2.37x.  The
+						// only lever that would reach 2x is cutting the
+						// descriptor gloss -- which is the summoning channel
+						// this arc has direct evidence for, and which the
+						// same section calls the free reach.  Recorded rather
+						// than silently missed: the number to re-argue if the
+						// chain gate is ever the measured cause of a
+						// construction-richness drop is the GLOSS, and the
+						// comparison to make is against lathe's 4595 B, which
+						// this is in family with.
 					}
 					// C3 (2026-08-18): the exact analogue for "lathe", now that
 					// lathe_geometry exists -- same gate, same reasoning as the
