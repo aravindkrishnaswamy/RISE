@@ -2745,6 +2745,38 @@ blocked by nonlinear shared-alpha gains, coefficient/resolvent interactions,
 and the six evidence-surface gaps.  The rejected `2.1145e-2 m/s` candidate is
 diagnostic only; no empirical value selects any bound in this amendment.
 
+### 7.55 Same-scheme subdominance measurement (r138)
+
+The pre-registered r137 precision gate is green on all eight tier-6 slices.
+Each slice restarts from the same SHA-bound smooth beginning, receives one of
+the eight frozen divergence-target payloads, and executes two copies of the
+same production step: resident Metal binary32 and the strict CPU binary64
+mirror.  Both copies use the Metal-selected force schedule and the identical
+force, five cell-remap, fifteen dual-remap, exact-`+0` source, physical-P2,
+and restoration-P2 topology.  The oracle does not participate.  Both
+projections validate on all eight slices, and the resident path reports zero
+interstage full-grid transfers.
+
+The maximum measured filtered-velocity difference is
+`1.1165273069908068e-9 m/s`, inside the derived
+`7.363073950686612e-4 m/s` subdominance bound by a factor of
+`659462.05745125038`.  It is also inside the old preliminary `3e-5 m/s`
+guard by `26869.024888297707`; the derived r137 rule now supersedes that
+preliminary guard.  Across the nine filtered scalar channels, the smallest
+bound/measurement margin is `1542.2120195226826`; across the nine inventory
+channels it is `2361.071848300599`.  All `8*(9+1+9)=152` precision gates are
+green.  These margins are calibrating observations only: none selects or
+widens a bound.
+
+The exact metric trace is `f90a2508...551cebf`, canonical success is `243`,
+and durable evidence is
+`rendered/fire_production_calibration/r138_subdominance_measurement/subdominance_measurement.v1`
+(SHA-256 `ffeeaa6e...1e50e0e`).  This closes the full-step `B_fp32` precision
+term and confirms the Metal implementation for the frozen zero-source slice
+class.  It does not by itself form the complete additive contract: the
+separately gated temporal distance terms and the `P64`-to-oracle scheme test
+remain next.  The golden checkpoint is unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

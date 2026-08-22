@@ -276,6 +276,39 @@ int main()
 			std::string::npos&&
 		subdominanceProtocol.find("r136_proof_gap_bitmap 0xff")!=std::string::npos,
 		"r137 pre-registers the subdominance amendment before any Metal measurement");
+	const std::string subdominanceMeasurement=ReadText(
+		"rendered/fire_production_calibration/r138_subdominance_measurement/"
+		"subdominance_measurement.v1");
+	const std::string dyadicFixture=ReadText("tests/FireProductionDyadicCalibrationFixture.h");
+	const std::string subdominanceFixture=ReadText(
+		"tests/FireProductionSubdominanceFixture.h");
+	const std::string mirrorAdapter=ReadText("tests/FireProductionCalibrationMirror.h");
+	const std::string fp64Manifest=ReadText("tests/fire_production_fp64/SourceManifest.h");
+	Check(!subdominanceMeasurement.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(subdominanceMeasurement.begin(),
+			subdominanceMeasurement.end()))==
+		"ffeeaa6e1d809f4855ebf171023d088048619512d55165be8c344027e1e50e0e"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			dyadicFixture.begin(),dyadicFixture.end()))==
+		"b32cd74d7eab2ab0872bf04d25c54ac5279315380837be222bb36079f3f15674"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			subdominanceFixture.begin(),subdominanceFixture.end()))==
+		"f727861af3b0e70bddca2a97b81c2e854bdf09d45c63c6c800e1846f994dd582"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			mirrorAdapter.begin(),mirrorAdapter.end()))==
+		"bb541a79454136422ec19c8d2c091d85a09d9051756105b23746ddae6a731128"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fp64Manifest.begin(),fp64Manifest.end()))==
+		"22a352d220eaf035e2b94537d976545208dda1912a10ae21da9eac15c6fd0922"&&
+		subdominanceMeasurement.find("measurement_trace_sha256 "
+			"f90a2508803f769665e68fc2c10e7672ea5f7ee5bf647fa2b8ff8b227551cebf")!=
+			std::string::npos&&
+		subdominanceMeasurement.find("verdict precision_subdominant_all_152_slice_quantity_gates")!=
+			std::string::npos&&
+		subdominanceMeasurement.find("preliminary_velocity_guard_status "
+			"superseded_by_derived_subdominance_rule")!=std::string::npos&&
+		subdominanceMeasurement.find("measurement_exit 243")!=std::string::npos,
+		"r138 byte-binds same-scheme Metal/fp64 subdominance on all slice quantities");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -298,6 +331,13 @@ int main()
 		windowsTestDriver.find("PASS (exact exit=237)")!=std::string::npos&&
 		windowsTestDriver.find("expected 237")!=std::string::npos,
 		"ordinary Unix and Windows suites execute r136 and accept only the full-step refusal");
+	Check(unixTestDriver.find("FireSequenceTest.r138_subdominance")!=std::string::npos&&
+		unixTestDriver.find("--fire-production-calibration-measure-subdominance")!=
+			std::string::npos&&
+		unixTestDriver.find("subdominance_rc\" -eq 243")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=243)")!=std::string::npos&&
+		unixTestDriver.find("expected 243")!=std::string::npos,
+		"ordinary macOS suite executes r138 and accepts only exact subdominance evidence");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");

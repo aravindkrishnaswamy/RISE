@@ -27,6 +27,8 @@ FIRE_GAS_PLANCK_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_planck_record.py"
 FIRE_PRODUCTION_CALIBRATION_DIR="$REPO_ROOT/rendered/fire_production_calibration/r112_dyadic_smooth_open"
 FIRE_PRODUCTION_PROTOCOL_SHA="42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed"
 FIRE_PRODUCTION_TARGETS_SHA="d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b"
+FIRE_PRODUCTION_SUBDOMINANCE_PROTOCOL="$REPO_ROOT/rendered/fire_production_calibration/r137_subdominance_protocol/subdominance_protocol.v1"
+FIRE_PRODUCTION_SUBDOMINANCE_PROTOCOL_SHA="833137b54fbd507fc3b6bdcc960a23b89be60ee835f7b1ca177f93cc57d63922"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -403,6 +405,43 @@ else
 	echo "FAIL (exit=$roundoff_rc; expected 237)"
 	printf '%s\t%d\t%s\n' "$roundoff_name" "$roundoff_rc" "$roundoff_log" >> "$RUN_FAIL_TSV"
 	failed=$((failed + 1))
+fi
+
+# r138 is an on-device precision measurement and therefore runs only on the
+# Metal platform.  It is the ordinary resident executable, not the no-Metal
+# derivation owner, and exact 243 means every pre-registered slice/channel
+# subdominance gate and evidence pin passed.
+if [ "$(uname -s)" = "Darwin" ]; then
+	subdominance_name="FireSequenceTest.r138_subdominance"
+	subdominance_path="$BIN_DIR/FireSequenceTest"
+	subdominance_log="$LOG_DIR/$subdominance_name.log"
+	printf '[ evidence ] %-46s ... ' "$subdominance_name"
+	subdominance_rc=0
+	if [ ! -x "$subdominance_path" ]; then
+		subdominance_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		"$timeout_bin" "$RISE_TEST_TIMEOUT" "$subdominance_path" \
+			--fire-production-calibration-measure-subdominance \
+			"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
+			"$FIRE_PRODUCTION_TARGETS_SHA" "$FIRE_PRODUCTION_SUBDOMINANCE_PROTOCOL" \
+			"$FIRE_PRODUCTION_SUBDOMINANCE_PROTOCOL_SHA" >"$subdominance_log" 2>&1 ||
+			subdominance_rc=$?
+	else
+		"$subdominance_path" --fire-production-calibration-measure-subdominance \
+			"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
+			"$FIRE_PRODUCTION_TARGETS_SHA" "$FIRE_PRODUCTION_SUBDOMINANCE_PROTOCOL" \
+			"$FIRE_PRODUCTION_SUBDOMINANCE_PROTOCOL_SHA" >"$subdominance_log" 2>&1 ||
+			subdominance_rc=$?
+	fi
+	if [ "$subdominance_rc" -eq 243 ]; then
+		echo 'PASS (exact exit=243)'
+		rm -f "$subdominance_log"
+	else
+		echo "FAIL (exit=$subdominance_rc; expected 243)"
+		printf '%s\t%d\t%s\n' "$subdominance_name" "$subdominance_rc" \
+			"$subdominance_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
 fi
 
 print_summary

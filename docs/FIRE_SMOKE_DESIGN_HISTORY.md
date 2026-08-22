@@ -3189,3 +3189,19 @@ it was already tried and refuted here.
   `preview_primary`, `sequence_backed`, uncertified tier-6 animation is
   authorized in parallel with validation.  No measurement ran in this entry;
   golden SHA remains `1b944176...4947`.
+- **r138 same-scheme subdominance measurement (2026-08-22):** the strict
+  binary64 production mirror and resident Metal binary32 path execute the
+  identical two-projection tier-6 step on eight independently restarted,
+  SHA-bound slices.  All 152 scalar/velocity/inventory precision gates satisfy
+  the pre-registered `|P32-P64| <= 2^-3 E_P` rule.  Maximum velocity delta is
+  `1.1165273069908068e-9 m/s` against `7.363073950686612e-4`, a
+  `659462.05745125038` margin; minimum scalar and inventory margins are
+  `1542.2120195226826` and `2361.071848300599`.  Both projections validate
+  `8/8`, the resident seam reports zero interstage transfers, and the oracle
+  is absent.  The old `3e-5 m/s` preliminary guard is explicitly superseded;
+  the measurement also fits it by `26869.024888297707`.  Exact exit `243`,
+  trace `f90a2508...551cebf`, and durable evidence
+  `ffeeaa6e...1e50e0e` bind the result.  This closes `B_fp32` and the frozen
+  zero-source Metal confirmation, while temporal distance, scheme distance,
+  and eight-slice contract readmission remain gated.  Golden SHA stays
+  `1b944176...4947`.

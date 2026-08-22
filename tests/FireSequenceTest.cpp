@@ -15,6 +15,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
+#include "FireProductionCalibrationMirror.h"
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "FireProductionRoundoffWalker.h"
 #include "fire_production_trace/SourceManifest.h"
@@ -2867,6 +2868,7 @@ namespace
 #include "FireProductionGoldenCompositionFixture.h"
 #include "FireProductionCalibrationFixture.h"
 #include "FireProductionDyadicCalibrationFixture.h"
+#include "FireProductionSubdominanceFixture.h"
 
 	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
@@ -3068,6 +3070,9 @@ int main(int argc,char** argv)
 		return FireProductionDyadicCalibration::CheckProduction(argv[2],argv[3],argv[4]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-diagnose-roundoff")==0)
 		return FireProductionDyadicCalibration::DiagnoseRoundoff(argv[2],argv[3],argv[4]);
+	if(argc==7&&std::strcmp(argv[1],"--fire-production-calibration-measure-subdominance")==0)
+		return FireProductionDyadicCalibration::MeasureProductionSubdominance(
+			argv[2],argv[3],argv[4],argv[5],argv[6]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;
@@ -3132,6 +3137,11 @@ int main(int argc,char** argv)
 		"42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed",
 		"d4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b")==241,
 		"r134 projection a-posteriori derivation remains an exact normal-suite gate");
+#endif
+#if !defined(RISE_ENABLE_OPENVDB)
+	if(argc==7&&std::strcmp(argv[1],"--fire-production-calibration-measure-subdominance")==0)
+		return FireProductionDyadicCalibration::MeasureProductionSubdominance(
+			argv[2],argv[3],argv[4],argv[5],argv[6]);
 #endif
 	std::string identityFailure;
 	Check(!DiscontinuousThreadIdentityAccepted(false,true,identityFailure)&&
