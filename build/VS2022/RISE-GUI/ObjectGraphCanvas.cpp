@@ -42,6 +42,7 @@
 #include <QTimer>
 
 #include <cmath>
+#include <utility>            // std::as_const (qAsConst is deprecated in Qt 6.6+)
 
 // ======================================================================
 // Layout constants -- mirrors ObjectGraphCanvas.swift's private
@@ -120,11 +121,13 @@ void objectGraphDrawWire(QPainter* painter, const QPointF& from, const QPointF& 
     painter->drawPath(path);
 }
 
-void objectGraphDrawLabel(QPainter* painter, const QString& text, const QPointF& near, const QColor& color)
+/// (`nearPt`, not `near`: <windef.h> #defines `near`/`far` away, so either
+/// word as an identifier breaks any TU that transitively includes windows.h.)
+void objectGraphDrawLabel(QPainter* painter, const QString& text, const QPointF& nearPt, const QColor& color)
 {
     painter->setPen(color);
     painter->setFont(Theme::mono(8));
-    const QRectF box(near.x() - 4.0 - 130.0, near.y() - 14.0, 130.0, 12.0);
+    const QRectF box(nearPt.x() - 4.0 - 130.0, nearPt.y() - 14.0, 130.0, 12.0);
     painter->drawText(box, Qt::AlignRight | Qt::AlignVCenter, text);
 }
 
@@ -225,7 +228,7 @@ void ObjectGraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsIte
     // equivalent of.
     if (m_isSpotlit) {
         QColor glow = Theme::gold;
-        glow.setAlphaF(0.35);
+        glow.setAlphaF(0.35f);
         QPainterPath glowPath;
         glowPath.addRoundedRect(rect.adjusted(-3.0, -3.0, 3.0, 3.0),
                                  Theme::radiusMedium + 3.0, Theme::radiusMedium + 3.0);
@@ -252,7 +255,7 @@ void ObjectGraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsIte
     painter->setClipPath(cardPath);
     const QRectF headerRect(0.0, 0.0, ObjectGraphMetrics::nodeWidth, ObjectGraphMetrics::headerHeight);
     QColor headerFill = objectGraphCategoryTint(m_data.category);
-    headerFill.setAlphaF(0.85);
+    headerFill.setAlphaF(0.85f);
     painter->fillRect(headerRect, headerFill);
     painter->restore();
 
@@ -270,7 +273,7 @@ void ObjectGraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsIte
                        nameFm.elidedText(m_data.name, Qt::ElideRight, int(nameRect.width())));
 
     QColor kwColor = Theme::textOnAccent;
-    kwColor.setAlphaF(0.75);
+    kwColor.setAlphaF(0.75f);
     painter->setPen(kwColor);
     const QFont kwFont = Theme::mono(8);
     painter->setFont(kwFont);
@@ -358,12 +361,12 @@ void ObjectGraphWiresLayerItem::paint(QPainter* painter, const QStyleOptionGraph
                 const QPointF srcPos = srcItem->pos();
                 const QPointF srcPoint(srcPos.x() + ObjectGraphMetrics::nodeWidth, srcPos.y() + ObjectGraphMetrics::nodeHeight / 2.0);
                 QColor c = objectGraphCategoryTint(srcItem->data().category);
-                c.setAlphaF(0.75);
+                c.setAlphaF(0.75f);
                 objectGraphDrawWire(painter, srcPoint, destPoint, c, false);
                 if (showLabels) objectGraphDrawLabel(painter, port.paramName, destPoint, Theme::textFaint);
             } else {
                 const QPointF stubStart(destPoint.x() - 22.0, destPoint.y());
-                QColor c = Theme::warn; c.setAlphaF(0.85);
+                QColor c = Theme::warn; c.setAlphaF(0.85f);
                 objectGraphDrawWire(painter, stubStart, destPoint, c, true);
                 if (showLabels) objectGraphDrawLabel(painter, port.paramName, destPoint, Theme::warn);
             }
@@ -668,7 +671,7 @@ void ObjectGraphCanvas::onViewScopeToggled(bool checked)
 
 void ObjectGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 {
-    for (ObjectGraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (ObjectGraphNodeItem* item : std::as_const(m_nodeItems)) {
         m_scene->removeItem(item);
         delete item;
     }
@@ -699,7 +702,7 @@ void ObjectGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 
     if (m_selectedHandleValid) {
         bool stillPresent = false;
-        for (const ObjectGraphNodeData& d : qAsConst(m_nodes)) {
+        for (const ObjectGraphNodeData& d : std::as_const(m_nodes)) {
             if (d.handle == m_selectedHandle) { stillPresent = true; break; }
         }
         if (!stillPresent) m_selectedHandleValid = false;
@@ -707,7 +710,7 @@ void ObjectGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 
     qreal maxX = 320.0, maxY = 220.0;
     m_nodeItems.reserve(m_nodes.size());
-    for (const ObjectGraphNodeData& d : qAsConst(m_nodes)) {
+    for (const ObjectGraphNodeData& d : std::as_const(m_nodes)) {
         auto* item = new ObjectGraphNodeItem(d, this);
         item->setPos(d.position);
         item->setNodeSelected(m_selectedHandleValid && d.handle == m_selectedHandle);
@@ -735,7 +738,7 @@ void ObjectGraphCanvas::updateHeaderCounts()
 {
     if (!m_countLabel) return;
     int edgeCount = 0;
-    for (const ObjectGraphNodeData& d : qAsConst(m_nodes)) {
+    for (const ObjectGraphNodeData& d : std::as_const(m_nodes)) {
         for (const ObjectGraphPortData& p : d.outEdges) {
             if (p.otherNodeIndex >= 0) ++edgeCount;
         }
@@ -777,7 +780,7 @@ void ObjectGraphCanvas::refreshSpotlight(bool forceReapply)
         // identical comment documents.
         const QString rowName = m_bridge->selectionRowName();
         if (!rowName.isEmpty()) {
-            for (const ObjectGraphNodeData& d : qAsConst(m_nodes)) {
+            for (const ObjectGraphNodeData& d : std::as_const(m_nodes)) {
                 // Object category only (8) -- a Geometry node is never a
                 // valid spotlight target (the external selection this
                 // spotlight follows is always an Object row).
@@ -794,7 +797,7 @@ void ObjectGraphCanvas::refreshSpotlight(bool forceReapply)
 
 void ObjectGraphCanvas::applySpotlightToItems()
 {
-    for (ObjectGraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (ObjectGraphNodeItem* item : std::as_const(m_nodeItems)) {
         item->setNodeSpotlit(m_spotlightHandleValid && item->data().handle == m_spotlightHandle);
     }
 }
@@ -856,7 +859,7 @@ void ObjectGraphCanvas::setSelectedHandle(quint64 handle, bool valid)
 {
     m_selectedHandle = handle;
     m_selectedHandleValid = valid;
-    for (ObjectGraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (ObjectGraphNodeItem* item : std::as_const(m_nodeItems)) {
         item->setNodeSelected(valid && item->data().handle == handle);
     }
 }
