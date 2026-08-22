@@ -272,9 +272,13 @@ int main()
 	Check(unixTestDriver.find("FireProductionCalibrationOracle.r136")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=237)")!=std::string::npos&&
+		unixTestDriver.find("expected 237")!=std::string::npos&&
 		windowsTestDriver.find("FireProductionCalibrationOracle.r136")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
+		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos&&
+		windowsTestDriver.find("PASS (exact exit=237)")!=std::string::npos&&
+		windowsTestDriver.find("expected 237")!=std::string::npos,
 		"ordinary Unix and Windows suites execute r136 and accept only the full-step refusal");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");

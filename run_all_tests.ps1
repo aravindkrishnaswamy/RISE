@@ -557,10 +557,10 @@ if (-not $Filter) {
         $roundoffRC = $LASTEXITCODE
     }
     if ($roundoffRC -eq 237) {
-		Write-Host 'PASS (exact exit=242)'
+		Write-Host 'PASS (exact exit=237)'
         Remove-Item -LiteralPath $roundoffLog -ErrorAction SilentlyContinue
     } else {
-        Write-Host ("FAIL (exit={0}; expected 242)" -f $roundoffRC)
+        Write-Host ("FAIL (exit={0}; expected 237)" -f $roundoffRC)
         $runFailures += [pscustomobject]@{ Name = $roundoffName; Code = $roundoffRC;
             Log = $roundoffLog; Reason = 'fail' }
         $failed++

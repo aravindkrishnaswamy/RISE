@@ -397,10 +397,10 @@ else
 		"$FIRE_PRODUCTION_TARGETS_SHA" >"$roundoff_log" 2>&1 || roundoff_rc=$?
 fi
 if [ "$roundoff_rc" -eq 237 ]; then
-	echo 'PASS (exact exit=242)'
+	echo 'PASS (exact exit=237)'
 	rm -f "$roundoff_log"
 else
-	echo "FAIL (exit=$roundoff_rc; expected 242)"
+	echo "FAIL (exit=$roundoff_rc; expected 237)"
 	printf '%s\t%d\t%s\n' "$roundoff_name" "$roundoff_rc" "$roundoff_log" >> "$RUN_FAIL_TSV"
 	failed=$((failed + 1))
 fi
