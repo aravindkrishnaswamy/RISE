@@ -165,11 +165,14 @@ triangle bound
 `E_h` and `E_dt` are Richardson distances from the compared baseline to the
 solver's own apparent continuum limit. They are evaluated separately for the
 production scheme and the certified scheme; a production-versus-oracle
-difference is never used to estimate either term. `B_fp32` is an analytic
-roundoff bound for the production operation graph, instantiated from sealed
-input bytes. The fp32-Metal versus fp64-same-scheme difference only confirms
-that bound and never selects it. A short-horizon metric passes only when its
-observed difference is at most `min(T_m,C_m)`.
+difference is never used to estimate either term.  Under the r137 amendment,
+the composed full-step `B_fp32` is the pre-registered subdominance allowance
+`2^-3 E_prod`, confirmed independently on every sealed slice by the resident
+fp32 Metal path against the strict fp64 same-scheme mirror.  Streaming-stage
+rounding envelopes remain analytic diagnostics, but their nonlinear
+composition is not a contract term.  The measured fp32/fp64 difference never
+selects or widens `B_fp32`. A short-horizon metric passes only when its observed
+difference is at most `min(T_m,C_m)`.
 
 Three temporal levels (`dt`, `dt/2`, `dt/4`) reach the same physical end time.
 For a factor-two refinement, let `D_coarse=|U_dt-U_dt/2|` and
