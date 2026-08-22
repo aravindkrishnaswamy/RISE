@@ -222,11 +222,11 @@ int main()
 		"projection_aposteriori.v1");
 	Check(!aposterioriEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(aposterioriEvidence.begin(),aposterioriEvidence.end()))==
-		"60e7d427281af50c90d8b25948bc59a3b8458243c7e4737e21a3e7ea18f7fc3c"&&
+		"18f0115216fb4654eb4b7a37466ded1788158d9e4b55eacf15811e986b651ec2"&&
 		aposterioriEvidence.find("physical_projection_velocity_rms_upper "
-			"0.00016499365420693667")!=std::string::npos&&
+			"0.00016499365420669603")!=std::string::npos&&
 		aposterioriEvidence.find("restoration_projection_velocity_rms_upper "
-			"0.00023357153961227675")!=std::string::npos&&
+			"0.00023357153961206769")!=std::string::npos&&
 		aposterioriEvidence.find("executed_obligation_instances_pending 0")!=
 			std::string::npos&&
 		aposterioriEvidence.find("canonical_exit 241")!=std::string::npos,
@@ -311,8 +311,12 @@ int main()
 		CountText(tracedProjectionSource,"ProjectionSolveDependencyScope solveScope")==1u&&
 		CountText(traceAdapterSource,"ProjectionSolveDependencyScope solveScope")==0u&&
 		traceAdapterSource.find("maximumCrossPrecisionResidualUpper")!=std::string::npos&&
+		traceAdapterSource.find("boundaryPressure64[side][index]")!=std::string::npos&&
+		traceAdapterSource.find("dt64*gradient64")!=std::string::npos&&
+		traceAdapterSource.find("for(const double radius:faceRadius64[axis])")!=
+			std::string::npos&&
 		traceAdapterSource.find("openActiveSetMatches")!=std::string::npos,
-		"trace adapter identity and scalar/velocity metric channel wiring are source-bound");
+		"trace adapter identity and full binary64 terminal metric wiring are source-bound");
 
 	{
 		double derivedFactor=0.0,derivedWidth=0.0,mutantFactor=0.0,mutantWidth=0.0;
@@ -346,6 +350,19 @@ int main()
 			"projection spectral density envelope uses outward exact center-radius bounds");
 	}
 	{
+		using B64=FireProductionRoundoffWalker::Binary64Interval;
+		const auto normal=B64::Exact(0.125)/B64::Exact(1.1);
+		const auto tangent=B64::Exact(0.5)*(B64::Exact(-0.25)+B64::Exact(0.75));
+		const auto totalHead=B64::Exact(-0.5)*B64::Exact(1.2)*
+			(normal*normal+tangent*tangent+tangent*tangent);
+		const auto gradient=B64::Exact(2.0)*(B64::Exact(0.03125)-totalHead)/
+			B64::Exact(0.04);
+		const auto terminal=(B64::Exact(0.2)-B64::Exact(0.002)*gradient)/B64::Exact(1.1);
+		Check(totalHead.Radius()>0.0&&gradient.Radius()>totalHead.Radius()&&
+			terminal.Radius()>0.0,
+			"independent binary64 interval walks total-head, gradient, and terminal division");
+	}
+	{
 		const double radius=1.0;
 		const double faceL2PerCell=std::sqrt((radius*radius+radius*radius)/2.0);
 		const double cellCenteredRMS=std::sqrt(
@@ -365,7 +382,7 @@ int main()
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			certified)&&certified.dimensionlessEigenvalueLower==0.016975308641975297&&
 			certified.operatorEigenvalueLower==8.9899277588426756&&
 			certified.inverseOperatorNormUpper==0.11123559908658663&&
@@ -378,61 +395,61 @@ int main()
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			doublePoincare,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				DoublePoincare)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			missingCross,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingCrossPrecisionResidual)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			missingGate,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFP64ResidualGate)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			missingFeedback,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFP64Feedback)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			missingFace,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFaceStreaming)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			missingTerminal,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFP64Terminal)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			missingBeginning,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingBeginningVelocity)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.0,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,zeroTarget)&&
+			1.0e-12,0.000262468064,1.0e-10,zeroTarget)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
 			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
-			0.000262468064,1.0e-10,
+			1.0e-12,0.000262468064,1.0e-10,
 			swappedDensity,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				SwappedDensityEnvelope)&&
 			doublePoincare.velocityRMSUpper<certified.velocityRMSUpper&&

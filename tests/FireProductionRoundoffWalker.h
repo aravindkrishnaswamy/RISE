@@ -11,6 +11,71 @@
 
 namespace FireProductionRoundoffWalker
 {
+	// Independent binary64 interval arithmetic for the projection terminal DAG.
+	// Inputs are exact promotions of stored binary32 bytes.  Each operation rounds
+	// both interval endpoints outward by one representable binary64 value, so the
+	// resulting radius covers the actual CPU64 operation without borrowing any
+	// production arithmetic implementation.
+	struct Binary64Interval
+	{
+		double center=0.0,lower=0.0,upper=0.0;
+		static Binary64Interval Exact(const double value)
+		{
+			Binary64Interval result;result.center=result.lower=result.upper=value;
+			return result;
+		}
+		double Radius() const
+		{
+			return std::nextafter(std::max(center-lower,upper-center),
+				std::numeric_limits<double>::infinity());
+		}
+	};
+
+	inline Binary64Interval Binary64FromBounds(const double center,const double lower,
+		const double upper)
+	{
+		Binary64Interval result;result.center=center;
+		result.lower=std::nextafter(lower,-std::numeric_limits<double>::infinity());
+		result.upper=std::nextafter(upper,std::numeric_limits<double>::infinity());
+		return result;
+	}
+	inline Binary64Interval operator+(const Binary64Interval& first,
+		const Binary64Interval& second)
+	{
+		return Binary64FromBounds(first.center+second.center,
+			first.lower+second.lower,first.upper+second.upper);
+	}
+	inline Binary64Interval operator-(const Binary64Interval& first,
+		const Binary64Interval& second)
+	{
+		return Binary64FromBounds(first.center-second.center,
+			first.lower-second.upper,first.upper-second.lower);
+	}
+	inline Binary64Interval operator-(const Binary64Interval& value)
+	{
+		return Binary64FromBounds(-value.center,-value.upper,-value.lower);
+	}
+	inline Binary64Interval operator*(const Binary64Interval& first,
+		const Binary64Interval& second)
+	{
+		const double products[4]={first.lower*second.lower,first.lower*second.upper,
+			first.upper*second.lower,first.upper*second.upper};
+		return Binary64FromBounds(first.center*second.center,
+			*std::min_element(products,products+4),*std::max_element(products,products+4));
+	}
+	inline Binary64Interval operator/(const Binary64Interval& first,
+		const Binary64Interval& second)
+	{
+		if(second.lower<=0.0&&second.upper>=0.0){Binary64Interval invalid;
+			invalid.lower=-std::numeric_limits<double>::infinity();
+			invalid.upper=std::numeric_limits<double>::infinity();return invalid;}
+		const double quotients[4]={first.lower/second.lower,first.lower/second.upper,
+			first.upper/second.lower,first.upper/second.upper};
+		return Binary64FromBounds(first.center/second.center,
+			*std::min_element(quotients,quotients+4),
+			*std::max_element(quotients,quotients+4));
+	}
+
 	enum OperationKind : unsigned int
 	{
 		Convert,Add,Subtract,Multiply,Divide,SquareRoot,Absolute,Minimum,Maximum,
@@ -385,6 +450,7 @@ namespace FireProductionRoundoffWalker
 		const double maximumRoundedTarget,const double beginningVelocityRoundingUpper,
 		const bool restoration,
 		const double streamingFaceVelocityL2PerCellUpper,
+		const double fp64TerminalFaceL2PerCellUpper,
 		const double validationToleranceRounded,
 		const double validationToleranceRoundingUpper,
 		ProjectionAposterioriCertificate& certificate,
@@ -397,6 +463,7 @@ namespace FireProductionRoundoffWalker
 			crossPrecisionResidualUpper>=0.0&&maximumRoundedVelocity>=0.0&&
 			maximumRoundedTarget>=0.0&&beginningVelocityRoundingUpper>=0.0&&
 			streamingFaceVelocityL2PerCellUpper>=0.0&&validationToleranceRounded>=0.0&&
+			fp64TerminalFaceL2PerCellUpper>=0.0&&
 			validationToleranceRoundingUpper>=0.0)||!std::isfinite(spacing)||
 			!std::isfinite(densityLower)||!std::isfinite(densityUpper)||
 			!std::isfinite(acceptedRoundedResidual)||
@@ -406,6 +473,7 @@ namespace FireProductionRoundoffWalker
 			!std::isfinite(maximumRoundedTarget)||
 			!std::isfinite(beginningVelocityRoundingUpper)||
 			!std::isfinite(streamingFaceVelocityL2PerCellUpper)||
+			!std::isfinite(fp64TerminalFaceL2PerCellUpper)||
 			!std::isfinite(validationToleranceRounded)||
 			!std::isfinite(validationToleranceRoundingUpper))return false;
 		double dimensionlessLower=0.0;bool hasOpen=false;
@@ -457,13 +525,12 @@ namespace FireProductionRoundoffWalker
 			divergenceVelocityFactor*velocityBase+maximumRoundedTarget));
 		const double residualFeedback=Detail::NextUp(gammaResidual*Detail::NextUp(
 			(6.0/spacing)*faceToMaximum));
-		const double gammaTerminal=Detail::NextUp(4.0*unit64/(1.0-4.0*unit64));
+		const double gammaTerminal=Detail::NextUp(8.0*unit64/(1.0-8.0*unit64));
 		const double uniqueFaces=static_cast<double>((extent[0]+1u)*extent[1]*extent[2]+
 			extent[0]*(extent[1]+1u)*extent[2]+extent[0]*extent[1]*(extent[2]+1u));
 		const double faceMetricGain=Detail::NextUp(std::sqrt(uniqueFaces/cells));
-		const double terminal64Factor=Detail::NextUp(Detail::NextUp(3.0*gammaTerminal)*
-			faceMetricGain);
-		const double terminal64Base=Detail::NextUp(terminal64Factor*velocityBase);
+		const double terminal64Factor=Detail::NextUp(gammaTerminal*faceMetricGain);
+		const double terminal64Base=fp64TerminalFaceL2PerCellUpper;
 		const double terminal64Feedback=Detail::NextUp(terminal64Factor*faceToMaximum);
 		double toleranceBase=0.0,toleranceFeedback=0.0;
 		if(restoration)toleranceBase=Detail::NextUp(Detail::NextUp(

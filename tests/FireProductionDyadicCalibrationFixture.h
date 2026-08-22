@@ -1041,6 +1041,7 @@ namespace FireProductionDyadicCalibration
 				trace.physicalStreaming.maximumRoundedTarget,
 				trace.physicalStreaming.maximumBeginningVelocityRoundingUpper,false,
 				trace.physicalStreaming.streamingFaceVelocityL2PerCellUpper,
+				trace.physicalStreaming.fp64TerminalFaceL2PerCellUpper,
 				trace.physicalStreaming.validationToleranceRounded,
 				trace.physicalStreaming.validationToleranceRadius,physicalCertificate);
 		const bool restorationAposteriori=FireProductionRoundoffWalker::
@@ -1054,6 +1055,7 @@ namespace FireProductionDyadicCalibration
 				trace.restorationStreaming.maximumRoundedTarget,
 				trace.restorationStreaming.maximumBeginningVelocityRoundingUpper,true,
 				trace.restorationStreaming.streamingFaceVelocityL2PerCellUpper,
+				trace.restorationStreaming.fp64TerminalFaceL2PerCellUpper,
 				trace.restorationStreaming.validationToleranceRounded,
 				trace.restorationStreaming.validationToleranceRadius,restorationCertificate);
 		const bool projectionCertificatesApplied=trace.stages.size()==24u&&
@@ -1407,7 +1409,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="ecc21d2b199a29208ca2a808b29bd743184f808417ff2dd0f6e42cf7a0e9026e"||
+			traceDigest!="9918edd91d21b0cafc315f1c54183be787bb418b72e33c9e473012dfa2b2e553"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1458,29 +1460,29 @@ namespace FireProductionDyadicCalibration
 			physicalCertificate.inverseOperatorNormUpper!=0.11123561234690459||
 			physicalCertificate.residualEvaluationRoundingUpper!=1.3748435749320591e-7||
 			physicalCertificate.crossPrecisionResidualUpper!=1.9319781954175433e-6||
-			physicalCertificate.fp64ResidualGateUpper!=0.00034336556400256795||
-			physicalCertificate.fp64ResidualEvaluationUpper!=1.1549387238448002e-14||
-			physicalCertificate.fp64TerminalFaceL2PerCellUpper!=2.3697412695449892e-16||
+			physicalCertificate.fp64ResidualGateUpper!=0.00034336556400244998||
+			physicalCertificate.fp64ResidualEvaluationUpper!=1.154938723844404e-14||
+			physicalCertificate.fp64TerminalFaceL2PerCellUpper!=5.2704410353592405e-17||
 			physicalCertificate.beginningVelocityRoundingUpper!=1.3680506069591611e-08||
-			physicalCertificate.fp64FeedbackFactor!=0.23426947265997755||
+			physicalCertificate.fp64FeedbackFactor!=0.23426947265986475||
 			physicalCertificate.validationToleranceRoundingUpper!=4.6932956987791455e-11||
 			physicalCertificate.validationPredicateMarginLower!=0.00026143109675737545||
 			physicalCertificate.streamingFaceVelocityL2PerCellUpper!=9.7212486067771285e-9||
 			physicalCertificate.velocityGainUpper!=0.47780222212961759||
-			physicalCertificate.velocityRMSUpper!=0.00016499365420693667||
+			physicalCertificate.velocityRMSUpper!=0.00016499365420669603||
 			trace.physicalStreaming.maximumRoundedVelocity!=0.077085278928279877||
 			trace.physicalStreaming.maximumRoundedTarget!=0.027697939425706863||
 			restorationCertificate.residualEvaluationRoundingUpper!=1.1240225418597112e-6||
 			restorationCertificate.crossPrecisionResidualUpper!=2.3628878941959103e-5||
 			restorationCertificate.fp64ResidualGateUpper!=0.00046519335364055106||
-			restorationCertificate.fp64ResidualEvaluationUpper!=4.7201289803486e-14||
-			restorationCertificate.fp64TerminalFaceL2PerCellUpper!=2.8135043662661043e-16||
+			restorationCertificate.fp64ResidualEvaluationUpper!=4.7201289803479115e-14||
+			restorationCertificate.fp64TerminalFaceL2PerCellUpper!=7.2284267210388352e-17||
 			restorationCertificate.beginningVelocityRoundingUpper!=1.3783925480929936e-08||
-			restorationCertificate.fp64FeedbackFactor!=1.6068711091736739e-11||
+			restorationCertificate.fp64FeedbackFactor!=1.5955915929254457e-11||
 			restorationCertificate.validationToleranceRoundingUpper!=2.7727685625741094e-11||
 			restorationCertificate.validationPredicateMarginLower!=0.00044094270347925889||
 			restorationCertificate.streamingFaceVelocityL2PerCellUpper!=1.1190657711221316e-8||
-			restorationCertificate.velocityRMSUpper!=0.00023357153961227675||
+			restorationCertificate.velocityRMSUpper!=0.00023357153961206769||
 			trace.restorationStreaming.maximumRoundedVelocity!=0.086094409227371216||
 			trace.restorationStreaming.maximumRoundedTarget!=0.093038670718669891)return 238;
 		std::fprintf(stderr,"r134 projection a-posteriori bounds certified; obligations=%llu/%llu "

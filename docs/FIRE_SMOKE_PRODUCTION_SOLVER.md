@@ -2586,12 +2586,16 @@ residual, 14 for restoration), the binary64 tolerance DAG, and the same
 structural velocity gain.  For the physical output-dependent tolerance it
 solves the outward self-consistent inequality using
 `U_64 <= U_32 + sqrt(N_cell) B_projection`; its feedback factor is
-`0.23426947265997755 < 1`.  Restoration's target-scaled tolerance has feedback
-`1.6068711091736739e-11`.  This is a structural fixed point, not a measured
+`0.23426947265986475 < 1`.  Restoration's target-scaled tolerance has feedback
+`1.5955915929254457e-11`.  This is a structural fixed point, not a measured
 binary64 residual.  A separate beginning-velocity division envelope enters
-the velocity scale, and a binary64 terminal-map unique-face envelope is added
-outside `A^-1`; neither a beginning error nor a divergence-free endpoint mode
-can be hidden in the residual anchor.
+the velocity scale.  The binary64 terminal term is not a gamma-count
+surrogate: an independent outward-binary64 interval evaluator walks every
+stored-density division, normal/tangential total-head operation, doubled open
+gradient, momentum update, and terminal division for every unique face.  Its
+L2 envelope is added outside `A^-1`; neither a beginning error,
+boundary-pressure rounding, nor a divergence-free endpoint mode can be hidden
+in the residual anchor.
 
 No fitted or measured constant enters this expression.  On the frozen tier-6
 state, the outward exact-promoted face-density interval is
@@ -2602,12 +2606,12 @@ state, the outward exact-promoted face-density interval is
 `8.9943569037131965e-7`, residual-evaluation envelope
 `1.3748435749320591e-7`, cross-precision residual upper
 `1.9319781954175433e-6`, binary64 residual-gate upper
-`0.00034336556400256795`, terminal face term
+`0.00034336556400244998`, terminal face term
 `9.7212486067771285e-9`, and derived velocity RMS bound
-`0.00016499365420693667`.  The restoration cross residual, binary64 gate,
+`0.00016499365420669603`.  The restoration cross residual, binary64 gate,
 face term, and final bound are `2.3628878941959103e-5`,
 `0.00046519335364055106`, `1.1190657711221316e-8`, and
-`0.00023357153961227675`.
+`0.00023357153961206769`.
 
 Both validation predicates now carry their own two-path certificates.  The
 residual upper envelope is strictly below the tolerance lower envelope by
@@ -2624,7 +2628,7 @@ Exact exit `241` denotes projection-local certification.  It does not yet
 define the composed `B_fp32`: upstream force/transport/source contributions
 must still be folded before any Metal/fp64 measurement.  Durable evidence is
 `rendered/fire_production_calibration/r134_projection_aposteriori/projection_aposteriori.v1`,
-SHA-256 `60e7d427281af50c90d8b25948bc59a3b8458243c7e4737e21a3e7ea18f7fc3c`.
+SHA-256 `18f0115216fb4654eb4b7a37466ded1788158d9e4b55eacf15811e986b651ec2`.
 The golden checkpoint is unchanged.
 
 ## 8. Rejected directions and future work

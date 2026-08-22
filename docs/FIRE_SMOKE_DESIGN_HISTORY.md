@@ -3128,14 +3128,18 @@ it was already tried and refuted here.
   tolerance as the binary64 residual bound and inward rounded density extrema.
   The final walker uses outward `center+-radius` density bounds and solves the
   physical binary64 validation inequality self-consistently; its feedback is
-  `0.23426947265997755`, while the restoration feedback is
-  `1.6068711091736739e-11`.  The resulting projection-local velocity RMS terms are
-  `1.6499365420693667e-4` (physical) and `2.335715396119954e-4`
+  `0.23426947265986475`, while the restoration feedback is
+  `1.5955915929254457e-11`.  A third fresh review rejected the provisional
+  gamma-only terminal term because it did not enumerate total-head/open-face
+  arithmetic.  The final proof instead walks the complete terminal binary64
+  DAG with independent outward intervals on every unique face and retains its
+  L2 envelope outside `A^-1`.  The resulting projection-local velocity RMS terms are
+  `1.6499365420669603e-4` (physical) and `2.3357153961206769e-4`
   (restoration).  Separate predicate envelopes prove
   residual/tolerance margins `2.6143109675737545e-4` and
   `4.4094270347925889e-4`; the prior unknown velocity guard is discharged by
   nonnegative-reduction provenance.  The census is
   `3,972,326 / 3,972,326`, both bitmaps zero, exact exit `241`.  This is a
   projection-local term, not the composed `B_fp32`, and no Metal/fp64
-  measurement has run.  Durable evidence is `60e7d427...18f7fc3c`; production
+  measurement has run.  Durable evidence is `18f01152...b651ec2`; production
   and golden-checkpoint bytes are unchanged.
