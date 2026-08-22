@@ -56,6 +56,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>            // std::as_const (qAsConst is deprecated in Qt 6.6+)
 
 // ======================================================================
 // Layout constants -- mirrors NodeGraphCanvas.swift's private
@@ -149,11 +150,13 @@ void drawWire(QPainter* painter, const QPointF& from, const QPointF& to, const Q
 /// -- matches "param label drawn at the target end" (NodeGraphCanvas.swift
 /// GraphWiresLayer.drawLabel). Uses a fixed-width box rather than
 /// FontMetrics-measured text (simpler, no measurement-vs-paint drift).
-void drawLabel(QPainter* painter, const QString& text, const QPointF& near, const QColor& color)
+/// (`nearPt`, not `near`: <windef.h> #defines `near`/`far` away, so either
+/// word as an identifier breaks any TU that transitively includes windows.h.)
+void drawLabel(QPainter* painter, const QString& text, const QPointF& nearPt, const QColor& color)
 {
     painter->setPen(color);
     painter->setFont(Theme::mono(8));
-    const QRectF box(near.x() - 4.0 - 130.0, near.y() - 14.0, 130.0, 12.0);
+    const QRectF box(nearPt.x() - 4.0 - 130.0, nearPt.y() - 14.0, 130.0, 12.0);
     painter->drawText(box, Qt::AlignRight | Qt::AlignVCenter, text);
 }
 
@@ -310,7 +313,7 @@ void GraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
     // around the card" read the Mac source achieves with `.shadow`.
     if (m_isSpotlit) {
         QColor glow = Theme::gold;
-        glow.setAlphaF(0.35);
+        glow.setAlphaF(0.35f);
         QPainterPath glowPath;
         glowPath.addRoundedRect(rect.adjusted(-3.0, -3.0, 3.0, 3.0),
                                  Theme::radiusMedium + 3.0, Theme::radiusMedium + 3.0);
@@ -337,7 +340,7 @@ void GraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
     painter->setClipPath(cardPath);
     const QRectF headerRect(0.0, 0.0, GraphMetrics::nodeWidth, GraphMetrics::headerHeight);
     QColor headerFill = graphCategoryTint(m_data.category);
-    headerFill.setAlphaF(0.85);
+    headerFill.setAlphaF(0.85f);
     painter->fillRect(headerRect, headerFill);
     painter->restore();
 
@@ -355,7 +358,7 @@ void GraphNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
                        nameFm.elidedText(m_data.name, Qt::ElideRight, int(nameRect.width())));
 
     QColor kwColor = Theme::textOnAccent;
-    kwColor.setAlphaF(0.75);
+    kwColor.setAlphaF(0.75f);
     painter->setPen(kwColor);
     const QFont kwFont = Theme::mono(8);
     painter->setFont(kwFont);
@@ -414,7 +417,7 @@ void GraphNodeItem::paintThumbnail(QPainter* painter, const QRectF& rect) const
     // tile, matching GraphNodeBoxView.thumbnail's own category==2 branch.
     if (m_data.category == 2) {
         QPainterPath p; p.addRoundedRect(rect, 4.0, 4.0);
-        QColor fill = tint; fill.setAlphaF(0.12);
+        QColor fill = tint; fill.setAlphaF(0.12f);
         painter->fillPath(p, fill);
         painter->setPen(tint);
         painter->setFont(Theme::sans(14));
@@ -426,7 +429,7 @@ void GraphNodeItem::paintThumbnail(QPainter* painter, const QRectF& rect) const
     const QImage& img = m_canvas->thumbnailFor(m_data.name);
     if (img.isNull()) {
         QPainterPath p; p.addRoundedRect(rect, 4.0, 4.0);
-        QColor fill = tint; fill.setAlphaF(0.10);
+        QColor fill = tint; fill.setAlphaF(0.10f);
         painter->fillPath(p, fill);
         return;
     }
@@ -567,14 +570,14 @@ void GraphWiresLayerItem::paint(QPainter* painter, const QStyleOptionGraphicsIte
                 const QPointF srcPos = srcItem->pos();
                 const QPointF srcPoint(srcPos.x() + GraphMetrics::nodeWidth, srcPos.y() + GraphMetrics::nodeHeight / 2.0);
                 QColor c = graphCategoryTint(srcItem->data().category);
-                c.setAlphaF(0.75);
+                c.setAlphaF(0.75f);
                 drawWire(painter, srcPoint, destPoint, c, false);
                 if (showLabels) drawLabel(painter, port.paramName, destPoint, Theme::textFaint);
             } else {
                 // Dangling / out-of-modeled-category reference: a short
                 // warning-tinted stub, no destination box.
                 const QPointF stubStart(destPoint.x() - 22.0, destPoint.y());
-                QColor c = Theme::warn; c.setAlphaF(0.85);
+                QColor c = Theme::warn; c.setAlphaF(0.85f);
                 drawWire(painter, stubStart, destPoint, c, true);
                 if (showLabels) drawLabel(painter, port.paramName, destPoint, Theme::warn);
             }
@@ -784,7 +787,7 @@ private:
     {
         m_keywordList->clear();
         const QString needle = m_searchEdit->text().trimmed().toLower();
-        for (const QString& kw : qAsConst(m_keywords)) {
+        for (const QString& kw : std::as_const(m_keywords)) {
             if (needle.isEmpty() || kw.toLower().contains(needle)) m_keywordList->addItem(kw);
         }
     }
@@ -850,7 +853,7 @@ private:
         if (req.isReference) {
             auto* combo = new QComboBox(box);
             combo->addItem(tr("Choose…"), QString());
-            for (const PaletteCandidateNode& cand : qAsConst(m_existing)) {
+            for (const PaletteCandidateNode& cand : std::as_const(m_existing)) {
                 QString diag;
                 if (ViewportBridge::checkConnectionByKeyword(keyword, req.param, cand.keyword, cand.category, &diag)) {
                     combo->addItem(cand.name, cand.name);
@@ -902,7 +905,7 @@ private:
     void updateCreateEnabled()
     {
         bool allFilled = true;
-        for (const RequirementRow& row : qAsConst(m_requirementRows)) {
+        for (const RequirementRow& row : std::as_const(m_requirementRows)) {
             if (rowValue(row).isEmpty()) { allFilled = false; break; }
         }
         if (m_createBtn) m_createBtn->setEnabled(allFilled);
@@ -911,7 +914,7 @@ private:
     void create()
     {
         if (!m_bridge || m_selectedKeyword.isEmpty()) return;
-        for (const RequirementRow& row : qAsConst(m_requirementRows)) {
+        for (const RequirementRow& row : std::as_const(m_requirementRows)) {
             if (rowValue(row).isEmpty()) {
                 m_errorLabel->setText(tr("Fill every required field first."));
                 m_errorLabel->show();
@@ -922,7 +925,7 @@ private:
         QStringList argParams, argValues;
         argParams.reserve(m_requirementRows.size());
         argValues.reserve(m_requirementRows.size());
-        for (const RequirementRow& row : qAsConst(m_requirementRows)) {
+        for (const RequirementRow& row : std::as_const(m_requirementRows)) {
             argParams.append(row.param);
             argValues.append(rowValue(row));
         }
@@ -1116,20 +1119,20 @@ NodeGraphCanvas::NodeGraphCanvas(QWidget* parent)
     // subtree so they never contend with a global menu shortcut (mirrors
     // NodeGraphCanvas.swift's hidden-button keyboardShortcut idiom, whose
     // effective scope is "while this view has focus" -- the Qt mirror of
-    // that scope is WidgetWithChildrenShortcutContext). Delete AND
+    // that scope is WidgetWithChildrenShortcut). Delete AND
     // Backspace both fire delete, matching the Mac file's
     // `.keyboardShortcut(.delete...)` / `.keyboardShortcut(.deleteForward...)`
     // pair.
     auto* delShortcut = new QShortcut(QKeySequence(QStringLiteral("Delete")), this);
-    delShortcut->setContext(Qt::WidgetWithChildrenShortcutContext);
+    delShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(delShortcut, &QShortcut::activated, this, &NodeGraphCanvas::deleteSelected);
 
     auto* backspaceShortcut = new QShortcut(QKeySequence(QStringLiteral("Backspace")), this);
-    backspaceShortcut->setContext(Qt::WidgetWithChildrenShortcutContext);
+    backspaceShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(backspaceShortcut, &QShortcut::activated, this, &NodeGraphCanvas::deleteSelected);
 
     auto* dupShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+D")), this);
-    dupShortcut->setContext(Qt::WidgetWithChildrenShortcutContext);
+    dupShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(dupShortcut, &QShortcut::activated, this, &NodeGraphCanvas::duplicateSelected);
 
     updateHeaderCounts();
@@ -1422,7 +1425,7 @@ void NodeGraphCanvas::onViewScopeToggled(bool checked)
 
 void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 {
-    for (GraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (GraphNodeItem* item : std::as_const(m_nodeItems)) {
         m_scene->removeItem(item);
         delete item;   // also deletes its GraphOutputHandleItem child
     }
@@ -1459,7 +1462,7 @@ void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
     // vanished selection).
     if (m_selectedHandleValid) {
         bool stillPresent = false;
-        for (const GraphNodeData& d : qAsConst(m_nodes)) {
+        for (const GraphNodeData& d : std::as_const(m_nodes)) {
             if (d.handle == m_selectedHandle) { stillPresent = true; break; }
         }
         if (!stillPresent) m_selectedHandleValid = false;
@@ -1469,7 +1472,7 @@ void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 
     qreal maxX = 320.0, maxY = 220.0;
     m_nodeItems.reserve(m_nodes.size());
-    for (const GraphNodeData& d : qAsConst(m_nodes)) {
+    for (const GraphNodeData& d : std::as_const(m_nodes)) {
         auto* item = new GraphNodeItem(d, this);
         item->setPos(d.position);
         item->setNodeSelected(m_selectedHandleValid && d.handle == m_selectedHandle);
@@ -1505,7 +1508,7 @@ void NodeGraphCanvas::applySnapshot(const ViewportBridge::PainterGraph& g)
 void NodeGraphCanvas::prefetchThumbnails()
 {
     if (!m_bridge) return;
-    for (const GraphNodeData& d : qAsConst(m_nodes)) {
+    for (const GraphNodeData& d : std::as_const(m_nodes)) {
         if (d.category == 2) continue;   // Material: no PainterPreview
         m_thumbnailCache.insert(d.name, fetchThumbnail(d));
     }
@@ -1515,7 +1518,7 @@ void NodeGraphCanvas::updateHeaderCounts()
 {
     if (!m_countLabel) return;
     int edgeCount = 0;
-    for (const GraphNodeData& d : qAsConst(m_nodes)) {
+    for (const GraphNodeData& d : std::as_const(m_nodes)) {
         for (const GraphPortData& p : d.outEdges) {
             if (p.otherNodeIndex >= 0) ++edgeCount;
         }
@@ -1674,7 +1677,7 @@ void NodeGraphCanvas::refreshSpotlight(bool forceReapply)
 
 void NodeGraphCanvas::applySpotlightToItems()
 {
-    for (GraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (GraphNodeItem* item : std::as_const(m_nodeItems)) {
         item->setNodeSpotlit(m_spotlightHandles.contains(item->data().handle));
     }
 }
@@ -1720,7 +1723,7 @@ void NodeGraphCanvas::setSelectedHandle(quint64 handle, bool valid)
 {
     m_selectedHandle = handle;
     m_selectedHandleValid = valid;
-    for (GraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (GraphNodeItem* item : std::as_const(m_nodeItems)) {
         item->setNodeSelected(valid && item->data().handle == handle);
     }
 }
@@ -1875,7 +1878,7 @@ bool NodeGraphCanvas::findPortTarget(const QPointF& scenePt, WirePortTarget& out
     // wheelEvent), so this never divides by zero.
     const qreal hitRadius = GraphMetrics::portHitRadius / qMax(currentScale(), 0.0001);
 
-    for (GraphNodeItem* item : qAsConst(m_nodeItems)) {
+    for (GraphNodeItem* item : std::as_const(m_nodeItems)) {
         const GraphNodeData& data = item->data();
         const QPointF nodePos = item->pos();
         const QVector<qreal> anchors = graphInputPortAnchors(nodePos, data.outEdges.size());
@@ -2078,7 +2081,7 @@ void NodeGraphCanvas::openAddNodeDialog()
 
     QVector<PaletteCandidateNode> candidates;
     candidates.reserve(m_nodes.size());
-    for (const GraphNodeData& d : qAsConst(m_nodes)) {
+    for (const GraphNodeData& d : std::as_const(m_nodes)) {
         if (d.category == 2) continue;   // a Material can never fill a painter reference slot
         candidates.append(PaletteCandidateNode{ d.name, d.chunkKeyword, d.category });
     }
@@ -2176,7 +2179,7 @@ qreal NodeGraphCanvas::currentScale() const
 // | 18 | Refusal panel: inline SwiftUI `.overlay`, Cancel + conditional "Duplicate & Retry" | `WireRefusalDialog`, a modal `QDialog` | **Refusal presentation deviation.** A refusal only ever appears AFTER a drag already ended (not mid-drag), so there is no overlay-during-gesture requirement to preserve; a modal `QDialog` is the standard Qt idiom for a blocking decision here and needs no per-resize repositioning logic the floating panel would. Content (message, shared-chunks list, out-of-closure-referrers list, closure-gated Duplicate-and-Retry button) is a direct 1:1 port. |
 // | 19 | Duplicate-then-retry escape hatch | `WireRefusalDialog::DuplicateAndRetry` result → `NodeGraphCanvas::showWireRefusal` → `duplicateGraphNode` → `commitRewire` | Direct port of `retryWithDuplicate`. |
 // | 20 | Delete confirm: Delete / Delete+Cascade / Cancel, re-check gate after modal returns | `QMessageBox` with `AcceptRole`/`DestructiveRole` buttons, re-check `m_sceneEditable` after `exec()` | Direct port; button ROLES differ (Qt's `DestructiveRole` vs a plain second NSAlert button) but the three-way choice and the post-modal re-check race guard are identical, and also match this codebase's OWN established `MainWindow::removeEntity` convention. |
-// | 21 | Keyboard Delete/⌦/⌘D, scoped to the canvas's own view hierarchy | `QShortcut` × 3 (`Delete`, `Backspace`, `Ctrl+D`), `Qt::WidgetWithChildrenShortcutContext` | Direct port; Windows convention substitutes `Ctrl+D` for `⌘D` (no other shortcut in this app claims either combination — verified by grep before adding). |
+// | 21 | Keyboard Delete/⌦/⌘D, scoped to the canvas's own view hierarchy | `QShortcut` × 3 (`Delete`, `Backspace`, `Ctrl+D`), `Qt::WidgetWithChildrenShortcut` | Direct port; Windows convention substitutes `Ctrl+D` for `⌘D` (no other shortcut in this app claims either combination — verified by grep before adding). |
 // | 22 | Add-node palette: category segmented control, search, keyword list, then a required-arg form (reference picker via `checkConnectionByKeyword`, file picker, literal field), zero-requirement keyword creates immediately | `NodeGraphAddNodeDialog`, a two-page `QStackedWidget` inside a `QDialog` | Direct port, including the "advisory, not authoritative" candidate-filter caveat and the immediate-create-on-zero-requirements shortcut. Qt's `QComboBox` segmented-style category picker replaces SwiftUI's `.pickerStyle(.segmented)` — cosmetic only. |
 // | 23 | "+" button opens the palette at the current viewport center (inverse pan/zoom transform) | `NodeGraphCanvas::openAddNodeDialog`, `QGraphicsView::mapToScene` | Same effect via Qt's BUILT-IN inverse transform instead of Mac's by-hand `(screenCenter - offset) / scale` math — Qt already tracks the view↔scene transform, so there is nothing to invert manually. |
 // | 24 | Refresh cadence: epoch-gated (`sceneEpoch()` compare) PLUS a 250ms GCD debounce (`DispatchWorkItem` cancel-and-reschedule) for `refreshTrigger` bursts | `NodeGraphCanvas::refresh()`/`refreshForce()`/`performReload`, epoch-gated, NO debounce timer | **Deliberate simplification, backed by direct sibling precedent.** This app's OWN established pattern for an identically-shaped problem (`OutlinerWidget::refresh()`, `ViewportProperties::refresh()`) is a bare epoch compare tied to `imageUpdated`, with no debounce layer at all — because every self-driven mutation in THIS codebase (create/rewire/delete/duplicate/reposition) already calls `refreshForce()` immediately after committing (mirroring Mac's own explicit `force: true` calls at the same call sites), and an externally-driven burst (agent edits with no render frame in between) still collapses to exactly one `painterMaterialGraph()` fetch on the NEXT `refresh()` call, because only the FINAL epoch value is ever visible to the gate — a stronger coalescing guarantee than a fixed 250ms window provides. Mac's debounce solves a SwiftUI-specific problem (a shared `refreshTrigger` counter with no per-caller cheapness guarantee) that does not exist in the Qt shell's concrete-signal wiring. Inventing a timer-based debounce nobody else in this codebase uses, to solve a problem this codebase's own idiom already solves more simply, would have been the LESS faithful port. |
@@ -2266,7 +2269,7 @@ qreal NodeGraphCanvas::currentScale() const
 //      dialog, and separately press Ctrl+D to duplicate.
 //  [ ] Confirm the keyboard shortcuts do NOT fire when focus is in an
 //      unrelated widget (e.g. the Scene-file text editor) — the
-//      `WidgetWithChildrenShortcutContext` scoping is the thing under
+//      `WidgetWithChildrenShortcut` scoping is the thing under
 //      test here.
 //  [ ] Toggle File > Theme Dark/Light while the Graph tab is visible;
 //      confirm the header chrome AND every node/wire repaint with the
