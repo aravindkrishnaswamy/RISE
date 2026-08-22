@@ -2748,9 +2748,9 @@ blocked by nonlinear shared-alpha gains, coefficient/resolvent interactions,
 and the six evidence-surface gaps.  The rejected `2.1145e-2 m/s` candidate is
 diagnostic only; no empirical value selects any bound in this amendment.
 
-### 7.55 Same-scheme subdominance measurement (r138)
+### 7.55 Same-scheme subdominance pilot and golden repair (r138/r140)
 
-The pre-registered r137 precision gate is green on all eight tier-6 slices.
+The tier-6 analytic pilot is green on all eight frozen target payloads.
 Each slice restarts from the same SHA-bound smooth beginning, receives one of
 the eight frozen divergence-target payloads, and executes two copies of the
 same production step: resident Metal binary32 and the strict CPU binary64
@@ -2771,14 +2771,27 @@ channels it is `2361.071848300599`.  All `8*(9+1+9)=152` precision gates are
 green.  These margins are calibrating observations only: none selects or
 widens a bound.
 
-The exact metric trace is `f90a2508...551cebf`, canonical success is `243`,
+The exact pilot trace is `f90a2508...551cebf`, canonical success is `243`,
 and durable evidence is
 `rendered/fire_production_calibration/r138_subdominance_measurement/subdominance_measurement.v1`
-(SHA-256 `ffeeaa6e...1e50e0e`).  This closes the full-step `B_fp32` precision
-term and confirms the Metal implementation for the frozen zero-source slice
-class.  It does not by itself form the complete additive contract: the
-separately gated temporal distance terms and the `P64`-to-oracle scheme test
-remain next.  The golden checkpoint is unchanged.
+(original SHA-256 `ffeeaa6e...1e50e0e`).  Fresh review correctly rejected
+this as certification of r137's `shared_golden_beginning_per_slice` class:
+the pilot reused one smooth tier-6 beginning and therefore remains diagnostic.
+
+Before golden evidence, r138a seals the root plus all seven r95 continuation
+hashes.  The corrected campaign then fails closed on slice zero before its
+precision result may publish.  The physical projection validates
+(`37.872448 -> 0.00374865532 s^-1`), but the restoration projection plateaus
+at `9.97165444e-6 s^-1` against its own unchanged
+`1.06855828e-6 s^-1` band, a `9.331877` miss.  Raising only the restoration
+work from 16 to 24 V-cycles produces the identical fp32 residual, identifying
+a numerical floor rather than incomplete iteration.  The provisional slice-0
+velocity precision delta (`2.8825998671e-9 m/s`) is far inside the r137 bound,
+but it is diagnostic because the projection is invalid.  Exact exit `244`
+and r140 evidence preserve fail-closed behavior.  No full-step `B_fp32`,
+temporal term, or additive contract is admitted; changing the independently
+derived restoration criterion is an owner-level contract ruling.  The golden
+checkpoint is unchanged.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
@@ -2791,7 +2804,7 @@ land at the exact represented horizon `0x1.e54eeep-7 s`
 (`0.01481043454259634 s`).
 
 Production temporal distance is measured with the strict binary64 same-scheme
-mirror at formal order one; `B_fp32` remains the separate r138 term.  Oracle
+mirror at formal order one; `B_fp32` remains blocked by r140.  Oracle
 temporal distance uses the certified Heun advance at formal order two.  A
 capability-isolated no-Metal process writes the three divergence-target
 schedules before either solver-output comparison; the read-only evaluator

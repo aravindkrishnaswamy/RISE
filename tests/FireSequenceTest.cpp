@@ -2864,11 +2864,11 @@ namespace
 
 // Kept as a compact test-only include because the checkpoint schema and
 // certified periodic oracle are private to this translation unit.
-#include "FireProductionGoldenProjectionFixture.h"
-#include "FireProductionGoldenCompositionFixture.h"
 #include "FireProductionCalibrationFixture.h"
 #include "FireProductionDyadicCalibrationFixture.h"
 #include "FireProductionSubdominanceFixture.h"
+#include "FireProductionGoldenProjectionFixture.h"
+#include "FireProductionGoldenCompositionFixture.h"
 
 	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
@@ -3139,6 +3139,10 @@ int main(int argc,char** argv)
 		"r134 projection a-posteriori derivation remains an exact normal-suite gate");
 #endif
 #if !defined(RISE_ENABLE_OPENVDB)
+	if(argc==5&&std::strcmp(argv[1],"--fire-r80-golden-continuation")==0)
+		return RunR80GoldenContinuationFixture(argv[2],argv[3],argv[4]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-golden-composition")==0)
+		return RunProductionGoldenCompositionFixture(argv[2],argv[3]);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-calibration-measure-subdominance")==0)
 		return FireProductionDyadicCalibration::MeasureProductionSubdominance(
 			argv[2],argv[3],argv[4],argv[5],argv[6]);

@@ -284,31 +284,78 @@ int main()
 		"tests/FireProductionSubdominanceFixture.h");
 	const std::string mirrorAdapter=ReadText("tests/FireProductionCalibrationMirror.h");
 	const std::string fp64Manifest=ReadText("tests/fire_production_fp64/SourceManifest.h");
+	const std::string advectionMetal=ReadText(
+		"src/Library/Utilities/FireProductionAdvectionMac.mm");
+	const std::string forceMetal=ReadText(
+		"src/Library/Utilities/FireProductionForceMac.mm");
+	const std::string projectionMetal=ReadText(
+		"src/Library/Utilities/FireProductionProjectionMac.mm");
 	Check(!subdominanceMeasurement.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(subdominanceMeasurement.begin(),
 			subdominanceMeasurement.end()))==
-		"ffeeaa6e1d809f4855ebf171023d088048619512d55165be8c344027e1e50e0e"&&
+		"fe922535c6f621c624f537c1fca7aec533520dc183aee5bf7f0e2d823277bf67"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 		"b32cd74d7eab2ab0872bf04d25c54ac5279315380837be222bb36079f3f15674"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
-		"f727861af3b0e70bddca2a97b81c2e854bdf09d45c63c6c800e1846f994dd582"&&
+		"e525421c29ddfba53c8985fd91ef25b5b5200f69478a6148d294ab0e9672948f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			mirrorAdapter.begin(),mirrorAdapter.end()))==
 		"bb541a79454136422ec19c8d2c091d85a09d9051756105b23746ddae6a731128"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Manifest.begin(),fp64Manifest.end()))==
 		"22a352d220eaf035e2b94537d976545208dda1912a10ae21da9eac15c6fd0922"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+		"1512ee6476728b723abef0f05e10567156a2eae603905d18c198d7b2292c55ad"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			forceMetal.begin(),forceMetal.end()))==
+		"165602c9a142c999ee38a2a4a7321e91204e0ba7ef7a0e6cfd5662dcf3229996"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMetal.begin(),projectionMetal.end()))==
+		"a4f10b2f21ac905f0e105dfb966d72c606927662336d7c9f4cc9dde44b43fb2b"&&
 		subdominanceMeasurement.find("measurement_trace_sha256 "
 			"f90a2508803f769665e68fc2c10e7672ea5f7ee5bf647fa2b8ff8b227551cebf")!=
 			std::string::npos&&
-		subdominanceMeasurement.find("verdict precision_subdominant_all_152_slice_quantity_gates")!=
+		subdominanceMeasurement.find("verdict diagnostic_tier6_precision_subdominant_all_152_pilot_gates")!=
+			std::string::npos&&
+		subdominanceMeasurement.find("golden_slice_class_certified false")!=
+			std::string::npos&&
+		subdominanceMeasurement.find("full_step_B_fp32_closed false")!=
 			std::string::npos&&
 		subdominanceMeasurement.find("preliminary_velocity_guard_status "
 			"superseded_by_derived_subdominance_rule")!=std::string::npos&&
 		subdominanceMeasurement.find("measurement_exit 243")!=std::string::npos,
-		"r138 byte-binds same-scheme Metal/fp64 subdominance on all slice quantities");
+		"r138 byte-binds the tier-6 pilot without claiming golden-slice certification");
+	const std::string goldenSubdominanceInputs=ReadText(
+		"rendered/fire_production_calibration/r138_golden_subdominance_inputs/"
+		"golden_subdominance_inputs.v1");
+	const std::string goldenRestorationRefusal=ReadText(
+		"rendered/fire_production_calibration/r140_golden_restoration_refusal/"
+		"golden_restoration_refusal.v1");
+	const std::string goldenCompositionFixture=ReadText(
+		"tests/FireProductionGoldenCompositionFixture.h");
+	Check(!goldenSubdominanceInputs.empty()&&!goldenRestorationRefusal.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenSubdominanceInputs.begin(),goldenSubdominanceInputs.end()))==
+		"e7b37ed66ad02b942fe3db966d90d0d141438cb91dd0dc420c885ea1da6abc66"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenRestorationRefusal.begin(),goldenRestorationRefusal.end()))==
+		"d3da5d8e925111b7e7037aa79a9a7a64ae8ce044182b5709d43f4729d51de181"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+		"ac723bc5ff22c73f58b2444c268137bd46773b1a4352f83501a71785bc2c6989"&&
+		goldenSubdominanceInputs.find("measurement_performed false")!=std::string::npos&&
+		goldenSubdominanceInputs.find("slice_restart_policy shared_golden_beginning_per_slice")!=
+			std::string::npos&&
+		goldenRestorationRefusal.find("restoration_post_over_band 9.3318769992623096")!=
+			std::string::npos&&
+		goldenRestorationRefusal.find("restoration_cycle_probe_result identical_fp32_plateau")!=
+			std::string::npos&&
+		goldenRestorationRefusal.find("canonical_exit 244")!=std::string::npos&&
+		goldenRestorationRefusal.find("full_step_B_fp32_closed false")!=std::string::npos,
+		"r140 binds the sealed golden inputs and fails closed on restoration validation");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
@@ -358,7 +405,7 @@ int main()
 		unixTestDriver.find("subdominance_rc\" -eq 243")!=std::string::npos&&
 		unixTestDriver.find("PASS (exact exit=243)")!=std::string::npos&&
 		unixTestDriver.find("expected 243")!=std::string::npos,
-		"ordinary macOS suite executes r138 and accepts only exact subdominance evidence");
+		"ordinary macOS suite executes and exact-binds the retained r138 precision pilot");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");

@@ -3201,10 +3201,10 @@ it was already tried and refuted here.
   is absent.  The old `3e-5 m/s` preliminary guard is explicitly superseded;
   the measurement also fits it by `26869.024888297707`.  Exact exit `243`,
   trace `f90a2508...551cebf`, and durable evidence
-  `ffeeaa6e...1e50e0e` bind the result.  This closes `B_fp32` and the frozen
-  zero-source Metal confirmation, while temporal distance, scheme distance,
-  and eight-slice contract readmission remain gated.  Golden SHA stays
-  `1b944176...4947`.
+  `ffeeaa6e...1e50e0e` bind the tier-6 pilot.  Fresh review later established
+  that the repeated analytic beginning does not certify the promised golden
+  slice class, so it closes neither `B_fp32` nor Metal confirmation.  Golden
+  SHA stays `1b944176...4947`.
 - **r139 temporal instrument pre-registration (2026-08-22):** before temporal
   evidence, the tier-6 smooth beginning, pressure-open topology, exact `+0`
   sources, r112 filters, and scalar/velocity/inventory metrics are frozen.
@@ -3228,3 +3228,15 @@ it was already tried and refuted here.
   pairing.  The input manifest is the sole durable artifact in
   `r138_golden_subdominance_inputs`; measurement is explicitly false.  Golden
   SHA remains `1b944176...4947`.
+- **r140 golden restoration-validation refusal (2026-08-22):** the corrected
+  eight-beginning measurement stops on sealed slice zero before admitting a
+  precision result.  The 17-cycle physical pass validates
+  (`37.872448 -> 0.00374865532 s^-1`); the 16-cycle restoration pass does not:
+  `9.97165444e-6` exceeds its independent `1.06855828e-6 s^-1` band by
+  `9.3318769993`.  A diagnostic 24-cycle pass returns the identical fp32
+  residual, proving a fast numerical plateau rather than missing work.  The
+  provisional velocity P32/P64 delta is `2.8825998671e-9 m/s`, comfortably
+  subdominant but inadmissible because its producer projection is invalid.
+  Exact exit `244`; no criterion, solver, `B_fp32`, temporal evidence, or
+  golden bytes changed.  This is an owner-level validation-contract decision,
+  not grounds to widen the precision bound.

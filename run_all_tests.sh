@@ -407,10 +407,9 @@ else
 	failed=$((failed + 1))
 fi
 
-# r138 is an on-device precision measurement and therefore runs only on the
-# Metal platform.  It is the ordinary resident executable, not the no-Metal
-# derivation owner, and exact 243 means every pre-registered slice/channel
-# subdominance gate and evidence pin passed.
+# r138 is the retained tier-6 on-device precision pilot and therefore runs only
+# on Metal.  Exact 243 binds all pilot channels; r140 separately records that
+# the promised golden-slice class remains fail-closed.
 if [ "$(uname -s)" = "Darwin" ]; then
 	subdominance_name="FireSequenceTest.r138_subdominance"
 	subdominance_path="$BIN_DIR/FireSequenceTest"

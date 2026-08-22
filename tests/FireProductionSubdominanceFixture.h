@@ -43,9 +43,12 @@ namespace FireProductionDyadicCalibration
 			DigestFile("rendered/fire_methane_capstone/tier10.run.checkpoint")!=GoldenDigest)
 			return 244;
 		std::array<std::string,4> targetDigests;
-		if(!ReadTargetDigests(directory/"dyadic_targets.v1",targetDigests))return 245;
+		std::array<std::string,4> stateDigests;
+		if(!ReadTargetDigests(directory/"dyadic_targets.v1",targetDigests)||
+			!ReadProtocolStateDigests(directory/"dyadic_protocol.v1",stateDigests))return 245;
 		const std::size_t tierIndex=2u;MethaneRunCheckpoint geometry;std::string error;
-		if(Tiers[tierIndex]!=6u||!BuildAnalyticState(6u,geometry,error))return 246;
+		if(Tiers[tierIndex]!=6u||!BuildAnalyticState(6u,geometry,error)||
+			AnalyticStateDigest(geometry)!=stateDigests[tierIndex])return 246;
 		std::vector<std::vector<double> > sealed;
 		const std::filesystem::path target=directory/"oracle_tier6_sdiv_x8.f64";
 		if(DigestFile(target)!=targetDigests[tierIndex]||!ReadCalibrationDoublePayload(
@@ -79,7 +82,7 @@ namespace FireProductionDyadicCalibration
 		std::vector<unsigned char> trace;
 		for(std::size_t step=0u;step<sealed.size();++step){
 			MethaneRunCheckpoint beginning;if(!BuildAnalyticState(6u,beginning,error)||
-				AnalyticStateDigest(beginning)!=AnalyticStateDigest(geometry))return 249;
+				AnalyticStateDigest(beginning)!=stateDigests[tierIndex])return 249;
 			const double flowThrough=6.0*std::sqrt(
 				beginning.values.characteristicDiameterM/Gravity);
 			RISE::FireProductionResidentStepRequest request;

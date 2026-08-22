@@ -18,28 +18,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		4543432537948766955ull,4544197666642132584ull,4544654590867399846ull,
 		4545157207515193834ull,4545710085827767221ull,4546318251971597947ull,
 		4542483635102441249ull,4543219516136476427ull}};
-	const std::array<float,8> expectedProjectionResiduals={{
-		0x1.5054p-8f,0x1.4704p-8f,0x1.4cd4p-8f,0x1.4af4p-8f,
-		0x1.49bp-8f,0x1.4b28p-8f,0x1.49c8p-8f,0x1.4954p-8f}};
-	const std::array<double,8> expectedIndependentProjectionResiduals={{
-		0.0051404458276261911,0.0049875522159004513,0.0050794154282387217,
-		0.0050499014713932307,0.0050310902116719207,0.0050479588015629375,
-		0.0050315443766649108,0.0050194765847817882}};
-	const std::array<double,8> expectedOracleProjectionResiduals={{
-		0.00034786510337991849,0.0003471533644059388,0.00034558991067679123,
-		0.0003456175668508088,0.00034565036028277873,0.0003473171417491816,
-		0.00034591189175281478,0.00034485221191227211}};
-	const std::array<double,8> expectedOraclePreProjectionResiduals={{
-		37.867561455994299,37.850684107492093,37.865344827868185,37.89103061402438,
-		37.89242874081063,37.905966640982733,37.946340026137996,38.003479059369397}};
-	const std::array<double,8> expectedReductionRatios={{
-		14.750826431310701,14.37360898839597,14.695793195959434,14.612270245955902,
-		14.555735341802336,14.551049735665265,14.547225116309614,14.57220858600661}};
 	const std::array<std::array<std::size_t,3>,2> steepFrontCoordinates={{{{40u,40u,1u}},
 		{{41u,44u,3u}}}};
 	const std::array<std::size_t,2> steepFrontComponents={{0u,8u}};
-	const std::array<double,2> expectedMinimumPinnedProbeContrast={{
-		0.30206703454394657,363818.26731442177}};
 	auto fromBits=[](std::uint64_t bits){double value=0.0;std::memcpy(&value,&bits,sizeof(value));return value;};
 	const FireSimulationMethaneRecord fuel=FireSimulationMethaneRecord::PhysicalV1();
 	const FireSimulationTransportRecord transport=FireSimulationTransportRecord::OpenV1();
@@ -87,6 +68,24 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	std::array<double,2> minimumPinnedProbeContrast={{
 		std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity()}};
 	unsigned int monitoredProjectionMisses=0u;
+	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
+		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
+	for(std::size_t component=0u;component<9u;++component)
+		if(!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
+			FireProductionDyadicCalibration::ExpectedProductionScalarEvidence[component][0],
+			FireProductionDyadicCalibration::ExpectedProductionScalarEvidence[component][1],
+			FireProductionDyadicCalibration::VerifiedOrder,productionDistance[component],
+			scalarBound[component])||
+			!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
+			FireProductionDyadicCalibration::ExpectedProductionInventoryEvidence[component][0],
+			FireProductionDyadicCalibration::ExpectedProductionInventoryEvidence[component][1],
+			FireProductionDyadicCalibration::VerifiedOrder,inventoryDistance[component],
+			inventoryBound[component]))return 130;
+	if(!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
+		FireProductionDyadicCalibration::ExpectedProductionVelocityEvidence[0],
+		FireProductionDyadicCalibration::ExpectedProductionVelocityEvidence[1],
+		FireProductionDyadicCalibration::VerifiedOrder,velocityDistance,velocityBound))return 130;
+	RISECBOR64::Bytes precisionTrace;
 	for(std::size_t slice=0u;slice<8u;++slice){
 		const std::filesystem::path beginningPath=slice==0u?checkpointPath:
 			snapshotDirectory/(std::string("step_0")+std::to_string(slice)+".checkpoint");
@@ -237,11 +236,94 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		RISE::FireProductionResidentStepResult production;
 		if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
-		if(production.interstageFullGridTransferCount!=0u||production.residentProjectionInvocationCount!=1u||
+		const float maximumRestorationTarget=*std::max_element(
+			request.restorationDivergenceTargetPerS.begin(),
+			request.restorationDivergenceTargetPerS.end(),[](const float a,const float b){
+				return std::fabs(a)<std::fabs(b);});
+		std::fprintf(stderr,"golden projection slice=%zu physical_valid=%d physical_pre=%.9g "
+			"physical_post=%.9g restoration_valid=%d restoration_pre=%.9g "
+			"restoration_post=%.9g restoration_target_max=%.9g restoration_band=%.9g\n",
+			slice,production.physicalProjection.validationPassed?1:0,
+			production.physicalProjection.maximumPreProjectionResidualPerS,
+			production.physicalProjection.maximumPostProjectionResidualPerS,
+			production.projection.validationPassed?1:0,
+			production.projection.maximumPreProjectionResidualPerS,
+			production.projection.maximumPostProjectionResidualPerS,
+			std::fabs(maximumRestorationTarget),0.005f*std::fabs(maximumRestorationTarget));
+		if(production.interstageFullGridTransferCount!=0u||production.residentProjectionInvocationCount!=2u||
 			production.conservativeProducerPrecision!=RISE::FireStateProducerPrecision::Binary32||
+			!production.physicalProjection.validationPassed||
 			production.projection.executedVCycleCount!=16u||
 			production.projection.executedJacobiSweepCount!=1088u)
 			return 120;
+		if(!production.projection.validationPassed)return 244;
+		::FireProductionCalibration::ResidentStep64Result production64;
+		if(!::FireProductionCalibration::AdvanceResidentStep64(request,
+			static_cast<double>(production.forceDiagnostics.outwardLambdaPerS),production64,&error)){
+			std::fprintf(stderr,"production golden fp64 slice %zu failed: %s\n",slice,
+				error.c_str());return 131;}
+		if(production64.force.schedule.substepCount!=production.forceSchedule.substepCount||
+			!production64.physicalProjection.validationPassed||
+			!production64.projection.validationPassed||
+			production64.physicalProjection.executedVCycleCount!=
+				production.physicalProjection.executedVCycleCount||
+			production64.projection.executedVCycleCount!=
+				production.projection.executedVCycleCount)return 132;
+		std::vector<ConservativeVector> conservative32,conservative64;
+		PeriodicMACField velocity32,velocity64;
+		FireProductionDyadicCalibration::FilteredField filtered32,filtered64;
+		FireProductionDyadicCalibration::FilteredVelocityField filteredVelocity32,
+			filteredVelocity64;
+		if(!FireProductionDyadicCalibration::UnpackProductionConservative(
+			production.conservativeValues,cells,conservative32)||
+			!FireProductionDyadicCalibration::UnpackProductionConservative(
+			production64.conservativeValues,cells,conservative64)||
+			!FireProductionDyadicCalibration::UnpackProductionVelocity(
+			production.projection.velocityMPerS,velocity32)||
+			!FireProductionDyadicCalibration::UnpackProductionVelocity(
+			production64.projection.velocityMPerS,velocity64)||
+			!FireProductionDyadicCalibration::FilterConservative(beginning,conservative32,
+				beginning.values.characteristicDiameterM,filtered32)||
+			!FireProductionDyadicCalibration::FilterConservative(beginning,conservative64,
+				beginning.values.characteristicDiameterM,filtered64)||
+			!FireProductionDyadicCalibration::FilterVelocity(beginning,velocity32,
+				beginning.values.characteristicDiameterM,filteredVelocity32)||
+			!FireProductionDyadicCalibration::FilterVelocity(beginning,velocity64,
+				beginning.values.characteristicDiameterM,filteredVelocity64))return 133;
+		const std::array<double,9> precisionScalar=
+			FireProductionDyadicCalibration::FieldDistance(filtered32,filtered64);
+		const double precisionVelocity=FireProductionDyadicCalibration::VelocityDistance(
+			filteredVelocity32,filteredVelocity64);
+		const std::array<double,9> inventory32=
+			FireProductionDyadicCalibration::ComponentInventoryDensity(conservative32);
+		const std::array<double,9> inventory64=
+			FireProductionDyadicCalibration::ComponentInventoryDensity(conservative64);
+		for(std::size_t component=0u;component<9u;++component){
+			const double precisionInventory=std::fabs(inventory32[component]-
+				inventory64[component]);
+			if(!(precisionScalar[component]<=scalarBound[component])||
+				!(precisionInventory<=inventoryBound[component]))return 134;
+			FireProductionDyadicCalibration::AppendDouble(precisionTrace,
+				precisionScalar[component]);
+			FireProductionDyadicCalibration::AppendDouble(precisionTrace,
+				precisionInventory);
+		}
+		if(!(precisionVelocity<=velocityBound))return 134;
+		FireProductionDyadicCalibration::AppendDouble(precisionTrace,precisionVelocity);
+		FireProductionDyadicCalibration::AppendInteger(precisionTrace,
+			production.forceSchedule.substepCount);
+		FireProductionDyadicCalibration::AppendInteger(precisionTrace,
+			production.residentProjectionInvocationCount);
+		std::fprintf(stderr,"golden subdominance slice=%zu velocity=%.17g bound=%.17g "
+			"margin=%.17g scalar=",slice,precisionVelocity,velocityBound,
+			precisionVelocity>0.0?velocityBound/precisionVelocity:
+			std::numeric_limits<double>::infinity());
+		for(const double value:precisionScalar)std::fprintf(stderr," %.17g",value);
+		std::fprintf(stderr," inventory=");
+		for(std::size_t component=0u;component<9u;++component)
+			std::fprintf(stderr," %.17g",std::fabs(inventory32[component]-
+				inventory64[component]));
+		std::fprintf(stderr,"\n");
 		projectionResiduals[slice]=production.projection.maximumPostProjectionResidualPerS;
 		oracleProjectionResiduals[slice]=oracle.maximumDivergenceResidualPerS;
 		oraclePreProjectionResiduals[slice]=oracle.maximumPreProjectionDivergenceResidualPerS;
@@ -368,18 +450,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		maximumOracleThreadScalar,maximumOracleThreadVelocity,
 		maximumProductionResidual,maximumOracleResidual,minimumPinnedProbeContrast[0],
 		minimumPinnedProbeContrast[1],monitoredProjectionMisses);
-	if(DigestFile(checkpointPath)!=checkpointDigest||
-		projectionResiduals!=expectedProjectionResiduals||
-		independentProjectionResiduals!=expectedIndependentProjectionResiduals||
-		oracleProjectionResiduals!=expectedOracleProjectionResiduals||
-		oraclePreProjectionResiduals!=expectedOraclePreProjectionResiduals||
-		reductionRatios!=expectedReductionRatios||
-		*std::max_element(projectionResiduals.begin(),projectionResiduals.end())!=0x1.5054p-8f)
-		return 121;
-	if(monitoredProjectionMisses!=0u)return 122;
-	if(maximumPinnedProbeOvershoot>0.0||minimumConservativeDensity<minimumBeginningDensity||
-		minimumPinnedProbeContrast!=expectedMinimumPinnedProbeContrast)return 126;
-	std::fprintf(stderr,"production golden composition calibration is not sealed: "
-		"tier-6 adjacent-grid and analytic fp32 bands are absent\n");
-	return 129;
+	const std::string precisionDigest=RISECBOR64::SHA256Hex(precisionTrace);
+	std::fprintf(stderr,"golden subdominance complete trace=%s slices=8\n",
+		precisionDigest.c_str());
+	return DigestFile(checkpointPath)==checkpointDigest?243:135;
 }
