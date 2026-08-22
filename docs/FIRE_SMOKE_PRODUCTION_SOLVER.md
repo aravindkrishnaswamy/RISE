@@ -2780,6 +2780,32 @@ class.  It does not by itself form the complete additive contract: the
 separately gated temporal distance terms and the `P64`-to-oracle scheme test
 remain next.  The golden checkpoint is unchanged.
 
+### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
+
+Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
+physical filter/metrics.  To eliminate horizon drift between fp32-authored
+requests, the baseline step is the exactly promoted binary32 value
+`0x1.e54eeep-10 s`; the next levels are exact binary halves
+`0x1.e54eeep-11` and `0x1.e54eeep-12`.  Step counts `8,16,32` therefore all
+land at the exact represented horizon `0x1.e54eeep-7 s`
+(`0.01481043454259634 s`).
+
+Production temporal distance is measured with the strict binary64 same-scheme
+mirror at formal order one; `B_fp32` remains the separate r138 term.  Oracle
+temporal distance uses the certified Heun advance at formal order two.  A
+capability-isolated no-Metal process writes the three divergence-target
+schedules before either solver-output comparison; the read-only evaluator
+hash-checks and replays them.  For every scalar, velocity, and inventory
+quantity, `D_coarse>D_fine>0` is mandatory,
+`p=min(p_formal,log2(D_coarse/D_fine))`, and
+`E_dt=D_coarse/(1-2^-p)`.  Exact zero requires a separately proved algebraic
+identity.  No post-observation fallback constant exists.
+
+The complete pre-evidence manifest is
+`rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1`.
+It records no temporal result and dispatches no Metal.  Golden SHA remains
+`1b944176...4947`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

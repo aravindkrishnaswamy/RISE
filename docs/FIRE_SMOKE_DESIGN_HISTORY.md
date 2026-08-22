@@ -3205,3 +3205,15 @@ it was already tried and refuted here.
   zero-source Metal confirmation, while temporal distance, scheme distance,
   and eight-slice contract readmission remain gated.  Golden SHA stays
   `1b944176...4947`.
+- **r139 temporal instrument pre-registration (2026-08-22):** before temporal
+  evidence, the tier-6 smooth beginning, pressure-open topology, exact `+0`
+  sources, r112 filters, and scalar/velocity/inventory metrics are frozen.
+  The baseline request step is the represented binary32
+  `0x1.e54eeep-10 s`; exact dyadic halves with `8/16/32` steps share horizon
+  `0x1.e54eeep-7 s`, eliminating endpoint drift.  Production uses the strict
+  binary64 same-scheme mirror at formal temporal order one; oracle uses the
+  certified Heun solver at formal order two.  Each level consumes a separately
+  sealed, capability-isolated divergence-target schedule.  Positive decreasing
+  differences and the unmodified Richardson formula are mandatory.  No
+  temporal evidence or Metal run occurs in this entry; golden SHA remains
+  `1b944176...4947`.

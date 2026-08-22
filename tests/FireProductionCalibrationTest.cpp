@@ -309,6 +309,27 @@ int main()
 			"superseded_by_derived_subdominance_rule")!=std::string::npos&&
 		subdominanceMeasurement.find("measurement_exit 243")!=std::string::npos,
 		"r138 byte-binds same-scheme Metal/fp64 subdominance on all slice quantities");
+	const std::string temporalProtocol=ReadText(
+		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
+	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(temporalProtocol.begin(),temporalProtocol.end()))==
+		"e58ee48de0c79dc35aa6e6bf344729c12cc74bf7d89cfa3e78cfeaf28cc9630c"&&
+		temporalProtocol.find("protocol_before_temporal_evidence true")!=std::string::npos&&
+		temporalProtocol.find("dt_baseline_hex 0x1.e54eeep-10")!=std::string::npos&&
+		temporalProtocol.find("dt_half_hex 0x1.e54eeep-11")!=std::string::npos&&
+		temporalProtocol.find("dt_quarter_hex 0x1.e54eeep-12")!=std::string::npos&&
+		temporalProtocol.find("step_counts 8 16 32")!=std::string::npos&&
+		temporalProtocol.find("production_formal_temporal_order 1")!=std::string::npos&&
+		temporalProtocol.find("oracle_formal_temporal_order 2")!=std::string::npos&&
+		temporalProtocol.find("temporal_measurement_performed false")!=std::string::npos&&
+		temporalProtocol.find("metal_dispatched false")!=std::string::npos,
+		"r139 freezes the exact dyadic temporal instrument before evidence");
+	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
+	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
+		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&
+		8.0*baselineStep==16.0*(0.5*baselineStep)&&
+		8.0*baselineStep==32.0*(0.25*baselineStep),
+		"r139 dyadic request steps land at one exactly represented horizon");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
