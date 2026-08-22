@@ -20,7 +20,7 @@ namespace FireProductionRoundoffTrace
 		RemainingPositive,CourantNonnegative,FractionPositive,LimiterPositive,
 		LimiterNegative,InflowSign,PeriodicSeamEquality,AdmissibilityGuard,
 		ProjectionValidationBand,OpenBoundaryActiveSet,NonnegativeReductionGuard,Count };
-	enum class BranchCertificate : unsigned int { None,Equivalence,Reformulation };
+	enum class BranchCertificate : unsigned int { None,Equivalence,Reformulation,Aposteriori };
 
 	struct BranchObligation
 	{
@@ -64,6 +64,8 @@ namespace FireProductionRoundoffTrace
 		std::uint64_t firstNonfiniteMetricOutputIndex[MetricChannelCount]={};
 		double firstNonfiniteMetricOutputCenter[MetricChannelCount]={};
 		float firstNonfiniteMetricOutputRounded[MetricChannelCount]={};
+		double aposterioriMetricBound[MetricChannelCount]={};
+		bool aposterioriProjectionCertified=false;
 		double transportBranchDivergenceBound=0.0;
 		double maximumBranchDivergence[static_cast<unsigned int>(BranchSite::Count)]={};
 		std::vector<BranchObligation> branchObligations;
@@ -993,6 +995,43 @@ namespace FireProductionRoundoffTrace
 			depth);
 	}
 	inline bool isfinite(const TraceFloat& value){return std::isfinite(value.Rounded());}
+
+	inline bool ApplyProjectionAposterioriCertificate(Observation& observation,
+		const float maximumRoundedResidual,const float roundedTolerance,
+		const double residualEvaluationRoundingUpper,
+		const double toleranceEvaluationRoundingUpper,
+		const double velocityMetricBound)
+	{
+		const double residualUpper=NextUp(static_cast<double>(maximumRoundedResidual)+
+			residualEvaluationRoundingUpper);
+		const double toleranceLower=std::nextafter(static_cast<double>(roundedTolerance)-
+			toleranceEvaluationRoundingUpper,-std::numeric_limits<double>::infinity());
+		if(!(maximumRoundedResidual>=0.0f&&residualEvaluationRoundingUpper>=0.0&&
+			toleranceEvaluationRoundingUpper>=0.0&&toleranceLower>residualUpper&&
+			velocityMetricBound>=0.0&&std::isfinite(velocityMetricBound)))return false;
+		std::uint64_t applied=0u;
+		for(BranchObligation& obligation:observation.branchObligations)
+			if(obligation.site==BranchSite::ProjectionValidationBand&&
+				obligation.certificate==BranchCertificate::None){
+				if(!obligation.roundedResult)return false;
+				obligation.certificate=BranchCertificate::Aposteriori;
+				obligation.divergenceBound=0.0;
+				obligation.proofLower=toleranceLower;
+				obligation.proofRequired=residualUpper;
+				++observation.dischargedBranchObligationCount;++applied;
+			}
+		if(applied!=1u)return false;
+		for(unsigned int channel=9u;channel<12u;++channel)
+			observation.aposterioriMetricBound[channel]=velocityMetricBound;
+		observation.aposterioriProjectionCertified=true;
+		observation.unresolvedBranch=observation.dischargedBranchObligationCount<
+			observation.branchObligations.size();
+		// The nonfinite dependency intervals are retained as diagnostics, but the
+		// accepted residual and structural inverse bound replace them for the gated
+		// velocity metric.
+		if(!observation.unresolvedBranch)observation.invalidDomain=false;
+		return !observation.unresolvedBranch;
+	}
 
 	inline void ObserveAndReset(std::vector<TraceFloat>& values)
 	{

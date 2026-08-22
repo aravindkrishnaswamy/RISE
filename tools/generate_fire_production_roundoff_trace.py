@@ -217,6 +217,12 @@ def transform(text: str, name: str, suffix: str) -> str:
         text = text.replace(negative_maximum,
             "FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard("
             "maximumResidualPerS)")
+        negative_velocity_maximum = "maximumVelocityMPerS<0.0f"
+        if text.count(negative_velocity_maximum) != 1:
+            raise RuntimeError("projection velocity nonnegative-reduction guard changed")
+        text = text.replace(negative_velocity_maximum,
+            "FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard("
+            "maximumVelocityMPerS)")
         band = "maximumResidualPerS<=tolerance"
         if text.count(band) != 2:
             raise RuntimeError("projection validation predicates changed")

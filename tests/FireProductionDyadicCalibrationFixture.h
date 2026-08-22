@@ -1022,6 +1022,84 @@ namespace FireProductionDyadicCalibration
 			independentBranch.endpointRadius);
 		if(!FireProductionRoundoffAdapter::AdvanceResidentStepTrace(request,0.0f,trace,&error)){
 			std::fprintf(stderr,"r120 trace failed: %s\n",error.c_str());return 235;}
+		std::array<unsigned int,6> projectionBoundary={};
+		for(unsigned int side=0u;side<6u;++side)projectionBoundary[side]=
+			request.force.boundary[side]==RISE::FireProductionProjectionPressureOpen?2u:
+			(request.force.boundary[side]==RISE::FireProductionProjectionWall?1u:0u);
+		const std::array<std::size_t,3> projectionExtent={{request.force.shape.nx,
+			request.force.shape.ny,request.force.shape.nz}};
+		FireProductionRoundoffWalker::ProjectionAposterioriCertificate physicalCertificate,
+			restorationCertificate;
+		const bool physicalAposteriori=FireProductionRoundoffWalker::
+			DeriveProjectionAposterioriBound(projectionExtent,projectionBoundary,
+				request.force.shape.cellWidthM,trace.physicalStreaming.densityLower,
+				trace.physicalStreaming.densityUpper,
+				trace.physicalStreaming.maximumRoundedResidual,
+				trace.physicalStreaming.maximumResidualEvaluationRadius,
+				trace.physicalStreaming.streamingVelocityRMSUpper,
+				trace.physicalStreaming.validationToleranceRounded,
+				trace.physicalStreaming.validationToleranceRadius,physicalCertificate);
+		const bool restorationAposteriori=FireProductionRoundoffWalker::
+			DeriveProjectionAposterioriBound(projectionExtent,projectionBoundary,
+				request.force.shape.cellWidthM,trace.restorationStreaming.densityLower,
+				trace.restorationStreaming.densityUpper,
+				trace.restorationStreaming.maximumRoundedResidual,
+				trace.restorationStreaming.maximumResidualEvaluationRadius,
+				trace.restorationStreaming.streamingVelocityRMSUpper,
+				trace.restorationStreaming.validationToleranceRounded,
+				trace.restorationStreaming.validationToleranceRadius,restorationCertificate);
+		const bool projectionCertificatesApplied=trace.stages.size()==24u&&
+			physicalAposteriori&&restorationAposteriori&&
+			FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
+				trace.stages[22],trace.physicalStreaming.maximumRoundedResidual,
+				trace.physicalStreaming.validationToleranceRounded,
+				trace.physicalStreaming.maximumResidualEvaluationRadius,
+				trace.physicalStreaming.validationToleranceRadius,
+				physicalCertificate.velocityRMSUpper)&&
+			FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
+				trace.stages[23],trace.restorationStreaming.maximumRoundedResidual,
+				trace.restorationStreaming.validationToleranceRounded,
+				trace.restorationStreaming.maximumResidualEvaluationRadius,
+				trace.restorationStreaming.validationToleranceRadius,
+				restorationCertificate.velocityRMSUpper);
+		std::fprintf(stderr,"r134 physical_aposteriori valid=%d applied=%d rho=[%.17g,%.17g] "
+			"lambda0=%.17g lambda=%.17g inverse=%.17g residual=%.17g eval=%.17g "
+			"stream=%.17g gain=%.17g velocity=%.17g rounded_residual=%.9g tolerance=%.9g "
+			"tolerance_rounding=%.17g predicate_margin=%.17g matches=%d/%d\n",
+			physicalAposteriori?1:0,
+			projectionCertificatesApplied?1:0,physicalCertificate.densityLower,
+			physicalCertificate.densityUpper,physicalCertificate.dimensionlessEigenvalueLower,
+			physicalCertificate.operatorEigenvalueLower,
+			physicalCertificate.inverseOperatorNormUpper,
+			physicalCertificate.validatedResidualUpper,
+			physicalCertificate.residualEvaluationRoundingUpper,
+			physicalCertificate.streamingVelocityRMSUpper,physicalCertificate.velocityGainUpper,
+			physicalCertificate.velocityRMSUpper,trace.physicalStreaming.maximumRoundedResidual,
+			trace.physicalStreaming.validationToleranceRounded,
+			physicalCertificate.validationToleranceRoundingUpper,
+			physicalCertificate.validationPredicateMarginLower,
+			trace.physicalStreaming.roundedResidualMatches?1:0,
+			trace.physicalStreaming.roundedVelocityMatches?1:0);
+		std::fprintf(stderr,"r134 restoration_aposteriori valid=%d applied=%d rho=[%.17g,%.17g] "
+			"lambda0=%.17g lambda=%.17g inverse=%.17g residual=%.17g eval=%.17g "
+			"stream=%.17g gain=%.17g velocity=%.17g rounded_residual=%.9g tolerance=%.9g "
+			"tolerance_rounding=%.17g predicate_margin=%.17g matches=%d/%d\n",
+			restorationAposteriori?1:0,
+			projectionCertificatesApplied?1:0,
+			restorationCertificate.densityLower,restorationCertificate.densityUpper,
+			restorationCertificate.dimensionlessEigenvalueLower,
+			restorationCertificate.operatorEigenvalueLower,
+			restorationCertificate.inverseOperatorNormUpper,
+			restorationCertificate.validatedResidualUpper,
+			restorationCertificate.residualEvaluationRoundingUpper,
+			restorationCertificate.streamingVelocityRMSUpper,
+			restorationCertificate.velocityGainUpper,restorationCertificate.velocityRMSUpper,
+			trace.restorationStreaming.maximumRoundedResidual,
+			trace.restorationStreaming.validationToleranceRounded,
+			restorationCertificate.validationToleranceRoundingUpper,
+			restorationCertificate.validationPredicateMarginLower,
+			trace.restorationStreaming.roundedResidualMatches?1:0,
+			trace.restorationStreaming.roundedVelocityMatches?1:0);
 		RISECBOR64::Bytes encoded;std::uint32_t unresolvedBitmap=0u,invalidBitmap=0u;
 		const char* traceSources[]={RISEFireProductionTrace::SourceManifest::Generator,
 			RISEFireProductionTrace::SourceManifest::FireProductionAdvectionHeader,
@@ -1036,6 +1114,22 @@ namespace FireProductionDyadicCalibration
 			RISEFireProductionTrace::SourceManifest::TraceCore,
 			RISEFireProductionTrace::SourceManifest::IndependentWalker};
 		for(const char* source:traceSources)AppendText(encoded,source);
+		for(const auto* certificate:{&physicalCertificate,&restorationCertificate}){
+			AppendDouble(encoded,certificate->densityLower);
+			AppendDouble(encoded,certificate->densityUpper);
+			AppendDouble(encoded,certificate->dimensionlessEigenvalueLower);
+			AppendDouble(encoded,certificate->operatorEigenvalueLower);
+			AppendDouble(encoded,certificate->inverseOperatorNormUpper);
+			AppendDouble(encoded,certificate->velocityGainUpper);
+			AppendDouble(encoded,certificate->validatedResidualUpper);
+			AppendDouble(encoded,certificate->residualEvaluationRoundingUpper);
+			AppendDouble(encoded,certificate->validationToleranceRounded);
+			AppendDouble(encoded,certificate->validationToleranceRoundingUpper);
+			AppendDouble(encoded,certificate->validationPredicateMarginLower);
+			AppendInteger(encoded,certificate->validationPredicateSeparated?1u:0u);
+			AppendDouble(encoded,certificate->streamingVelocityRMSUpper);
+			AppendDouble(encoded,certificate->velocityRMSUpper);
+		}
 		std::fprintf(stderr,"r120 diagnostic tier=6 stages=%zu schedule=%u\n",trace.stages.size(),
 			trace.force.schedule.substepCount);
 		std::uint64_t totalBranchObligationCount=0u;
@@ -1067,6 +1161,8 @@ namespace FireProductionDyadicCalibration
 			for(const double value:stage.firstNonfiniteMetricOutputCenter)AppendDouble(encoded,value);
 			for(const float value:stage.firstNonfiniteMetricOutputRounded){std::uint32_t bits=0u;
 				std::memcpy(&bits,&value,sizeof(bits));AppendInteger(encoded,bits);}
+			for(const double value:stage.aposterioriMetricBound)AppendDouble(encoded,value);
+			AppendInteger(encoded,stage.aposterioriProjectionCertified?1u:0u);
 			AppendDouble(encoded,stage.transportBranchDivergenceBound);
 			for(const double divergence:stage.maximumBranchDivergence)
 				AppendDouble(encoded,divergence);
@@ -1244,10 +1340,14 @@ namespace FireProductionDyadicCalibration
 			traceDigest.c_str(),unresolvedBitmap,invalidBitmap,
 			RISEFireProductionTrace::SourceManifest::Generator,
 			RISEFireProductionTrace::SourceManifest::FireProductionTransportSource);
-		bool finiteOutputs=true;
-		for(const FireProductionRoundoffTrace::Observation& stage:trace.stages)
-			finiteOutputs=finiteOutputs&&std::isfinite(stage.maximumAbsoluteOutput)&&
-				std::isfinite(stage.maximumOutputRadius);
+		bool finiteGatedOutputs=true;
+		for(std::size_t index=0u;index<trace.stages.size();++index){
+			const auto& stage=trace.stages[index];
+			finiteGatedOutputs=finiteGatedOutputs&&((index>=22u&&
+				stage.aposterioriProjectionCertified&&std::isfinite(
+					stage.aposterioriMetricBound[9]))||(index<22u&&
+					std::isfinite(stage.maximumAbsoluteOutput)&&
+					std::isfinite(stage.maximumOutputRadius)));}
 		if(trace.stages.size()!=24u)return 238;
 		const FireProductionRoundoffTrace::Observation& source=trace.stages[21];
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
@@ -1268,15 +1368,11 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="4e2e9c925504c72a4a859b72c37812b1478d15649f8a215c59ff2462fe5a9a9a"||
-			unresolvedBitmap!=0xc00000u||invalidBitmap!=0xc00000u||finiteOutputs||
+			traceDigest!="e79eddd56b51c03c7eb3352d41a89b31999e8aa5da8b3a5c23ec0af19f657183"||
+			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
-			totalDischargedBranchObligationCount!=3972323u||
-			totalBranchObligationCount-totalDischargedBranchObligationCount!=3u||
-			totalPendingSiteCount[static_cast<unsigned int>(
-				FireProductionRoundoffTrace::BranchSite::Unknown)]!=1u||
-			totalPendingSiteCount[static_cast<unsigned int>(
-				FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand)]!=2u||
+			totalDischargedBranchObligationCount!=3972326u||
+			totalBranchObligationCount-totalDischargedBranchObligationCount!=0u||
 			frozenInflowAmbiguity!=1.7632415612658968e-38||
 			frozenInflowScale!=22.033558699237727||
 			frozenInflowPowerOfTwoFactor!=1.0||
@@ -1313,15 +1409,31 @@ namespace FireProductionDyadicCalibration
 			restoration.nonfiniteMetricOutputRadiusCount[11]!=21312u||
 			physical.firstNonfiniteMetricOutputCenter[9]!=0.020628967447918926||
 			restoration.firstNonfiniteMetricOutputCenter[9]!=0.019031353974387526||
-			source.unresolvedBranch||source.invalidDomain||!physical.unresolvedBranch||
-			!physical.invalidDomain||!restoration.unresolvedBranch||
-			!restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r133 B_fp32 derivation refused; %llu of %llu obligations "
-			"remain pending after projection interval amplification; Metal measurement forbidden\n",
-			static_cast<unsigned long long>(totalBranchObligationCount-
-				totalDischargedBranchObligationCount),
-			static_cast<unsigned long long>(totalBranchObligationCount));
-		return 237;
+			source.unresolvedBranch||source.invalidDomain||physical.unresolvedBranch||
+			physical.invalidDomain||restoration.unresolvedBranch||
+			restoration.invalidDomain||!projectionCertificatesApplied||
+			physicalCertificate.densityLower!=0.97449040412902832||
+			physicalCertificate.densityUpper!=1.1348450183868408||
+			physicalCertificate.dimensionlessEigenvalueLower!=0.016975308641975297||
+			physicalCertificate.operatorEigenvalueLower!=8.9899277588426756||
+			physicalCertificate.inverseOperatorNormUpper!=0.11123559908658663||
+			physicalCertificate.residualEvaluationRoundingUpper!=1.3748435749320591e-7||
+			physicalCertificate.validationToleranceRoundingUpper!=4.6932956987791455e-11||
+			physicalCertificate.validationPredicateMarginLower!=0.00026143109675737545||
+			physicalCertificate.streamingVelocityRMSUpper!=5.0652099990520917e-9||
+			physicalCertificate.velocityGainUpper!=0.47780216517115232||
+			physicalCertificate.velocityRMSUpper!=5.0050785397809755e-7||
+			restorationCertificate.residualEvaluationRoundingUpper!=5.693743933523084e-7||
+			restorationCertificate.validationToleranceRoundingUpper!=2.7727685625741094e-11||
+			restorationCertificate.validationPredicateMarginLower!=0.0004414973516277663||
+			restorationCertificate.streamingVelocityRMSUpper!=6.197309116104171e-9||
+			restorationCertificate.velocityRMSUpper!=1.1328186218293204e-5)return 238;
+		std::fprintf(stderr,"r134 projection a-posteriori bounds certified; obligations=%llu/%llu "
+			"physical_velocity=%.17g restoration_velocity=%.17g; composed B_fp32 remains next\n",
+			static_cast<unsigned long long>(totalDischargedBranchObligationCount),
+			static_cast<unsigned long long>(totalBranchObligationCount),
+			physicalCertificate.velocityRMSUpper,restorationCertificate.velocityRMSUpper);
+		return 241;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

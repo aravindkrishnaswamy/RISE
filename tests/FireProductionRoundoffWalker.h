@@ -84,6 +84,20 @@ namespace FireProductionRoundoffWalker
 		float roundedPosition=0.0f;
 		bool exactAndRoundedSameSide=false;
 	};
+	struct ProjectionAposterioriCertificate
+	{
+		double densityLower=0.0,densityUpper=0.0;
+		double dimensionlessEigenvalueLower=0.0,operatorEigenvalueLower=0.0;
+		double inverseOperatorNormUpper=0.0,velocityGainUpper=0.0;
+		double validatedResidualUpper=0.0,residualEvaluationRoundingUpper=0.0;
+		double validationToleranceRounded=0.0,validationToleranceRoundingUpper=0.0;
+		double validationPredicateMarginLower=0.0;
+		double streamingVelocityRMSUpper=0.0,velocityRMSUpper=0.0;
+		bool validationPredicateSeparated=false;
+		bool pressureOpenAnchor=false,allConstantsStructural=false;
+	};
+	enum class ProjectionAposterioriGraphVariant { Certified,DoublePoincare,
+		MissingResidualEvaluation,SwappedDensityEnvelope };
 	enum class ProjectionInterpolationGraphVariant { Certified,ShiftedFine,
 		ReassociatedDivision };
 
@@ -347,6 +361,87 @@ namespace FireProductionRoundoffWalker
 			witness.leftRounded=left.rounded;witness.rightRounded=right.rounded;
 			witness.roundedResult=roundedResult;return true;
 		}
+	}
+
+	// The cell-centred pressure operator is G^T rho_f^-1 G.  Replacing every
+	// face coefficient by 1/rho_max gives a Loewner lower bound.  For the
+	// one-dimensional cell-centred Laplacian, sin(x)>=2x/pi yields the rational
+	// Poincare bounds 4/n^2 for two pressure-open ends and 1/n^2 for one.
+	// Tensor-product summation supplies the three-dimensional eigenvalue bound.
+	// The factor two in the velocity gain covers the doubled pressure-open face
+	// gradient; no fitted or measured constant enters this certificate.
+	inline bool DeriveProjectionAposterioriBound(const std::array<std::size_t,3>& extent,
+		const std::array<unsigned int,6>& boundary,const double spacing,
+		const double densityLower,const double densityUpper,
+		const double validatedResidualUpper,const double residualEvaluationRoundingUpper,
+		const double streamingVelocityRMSUpper,const double validationToleranceRounded,
+		const double validationToleranceRoundingUpper,
+		ProjectionAposterioriCertificate& certificate,
+		const ProjectionAposterioriGraphVariant variant=
+			ProjectionAposterioriGraphVariant::Certified)
+	{
+		certificate=ProjectionAposterioriCertificate();
+		if(!(spacing>0.0&&densityLower>0.0&&densityUpper>=densityLower&&
+			validatedResidualUpper>=0.0&&residualEvaluationRoundingUpper>=0.0&&
+			streamingVelocityRMSUpper>=0.0&&validationToleranceRounded>=0.0&&
+			validationToleranceRoundingUpper>=0.0)||!std::isfinite(spacing)||
+			!std::isfinite(densityLower)||!std::isfinite(densityUpper)||
+			!std::isfinite(validatedResidualUpper)||
+			!std::isfinite(residualEvaluationRoundingUpper)||
+			!std::isfinite(streamingVelocityRMSUpper)||
+			!std::isfinite(validationToleranceRounded)||
+			!std::isfinite(validationToleranceRoundingUpper))return false;
+		double dimensionlessLower=0.0;bool hasOpen=false;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			if(!extent[axis])return false;
+			const unsigned int openCount=(boundary[2u*axis]==2u?1u:0u)+
+				(boundary[2u*axis+1u]==2u?1u:0u);
+			hasOpen=hasOpen||openCount!=0u;
+			if(openCount){const double n=static_cast<double>(extent[axis]);
+				double term=static_cast<double>(openCount==2u?4u:1u)/(n*n);
+				if(variant==ProjectionAposterioriGraphVariant::DoublePoincare)term*=2.0;
+				term=std::nextafter(term,-std::numeric_limits<double>::infinity());
+				dimensionlessLower=std::nextafter(dimensionlessLower+term,
+					-std::numeric_limits<double>::infinity());}
+		}
+		if(!hasOpen||!(dimensionlessLower>0.0))return false;
+		const bool swap=variant==ProjectionAposterioriGraphVariant::SwappedDensityEnvelope;
+		const double coefficientDensity=swap?densityLower:densityUpper;
+		const double gainDensity=swap?densityUpper:densityLower;
+		const double denominator=coefficientDensity*spacing*spacing;
+		const double eigenLower=std::nextafter(dimensionlessLower/denominator,
+			-std::numeric_limits<double>::infinity());
+		if(!(eigenLower>0.0))return false;
+		const double inverseUpper=Detail::NextUp(1.0/eigenLower);
+		const double gainSquared=Detail::NextUp(2.0/(gainDensity*eigenLower));
+		const double gainUpper=Detail::NextUp(std::sqrt(gainSquared));
+		const double evaluation=variant==
+			ProjectionAposterioriGraphVariant::MissingResidualEvaluation?0.0:
+			residualEvaluationRoundingUpper;
+		const double residualUpper=Detail::NextUp(validatedResidualUpper+evaluation);
+		const double toleranceLower=std::nextafter(validationToleranceRounded-
+			validationToleranceRoundingUpper,-std::numeric_limits<double>::infinity());
+		const double predicateMargin=std::nextafter(toleranceLower-residualUpper,
+			-std::numeric_limits<double>::infinity());
+		if(!(predicateMargin>0.0))return false;
+		const double velocityUpper=Detail::NextUp(gainUpper*residualUpper+
+			streamingVelocityRMSUpper);
+		if(!std::isfinite(velocityUpper))return false;
+		certificate.densityLower=densityLower;certificate.densityUpper=densityUpper;
+		certificate.dimensionlessEigenvalueLower=dimensionlessLower;
+		certificate.operatorEigenvalueLower=eigenLower;
+		certificate.inverseOperatorNormUpper=inverseUpper;
+		certificate.velocityGainUpper=gainUpper;
+		certificate.validatedResidualUpper=validatedResidualUpper;
+		certificate.residualEvaluationRoundingUpper=evaluation;
+		certificate.validationToleranceRounded=validationToleranceRounded;
+		certificate.validationToleranceRoundingUpper=validationToleranceRoundingUpper;
+		certificate.validationPredicateMarginLower=predicateMargin;
+		certificate.streamingVelocityRMSUpper=streamingVelocityRMSUpper;
+		certificate.velocityRMSUpper=velocityUpper;
+		certificate.validationPredicateSeparated=true;
+		certificate.pressureOpenAnchor=true;certificate.allConstantsStructural=true;
+		return true;
 	}
 
 	// The periodic/open swept integral is continuous when its integer partition

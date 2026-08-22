@@ -488,7 +488,7 @@ namespace RISEFireProductionTrace
 	{
 		withinBand=false;
 		if( !std::isfinite(maximumResidualPerS)||FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard(maximumResidualPerS)||
-			!std::isfinite(maximumVelocityMPerS)||maximumVelocityMPerS<0.0f||
+			!std::isfinite(maximumVelocityMPerS)||FireProductionRoundoffTrace::EvaluateNonnegativeReductionGuard(maximumVelocityMPerS)||
 			!std::isfinite(domainLengthM)||!(domainLengthM>0.0f) ) return false;
 		const FireProductionRoundoffTrace::TraceFloat tolerance=0.005f*maximumVelocityMPerS/domainLengthM;
 		if( !std::isfinite(tolerance) ) return false;

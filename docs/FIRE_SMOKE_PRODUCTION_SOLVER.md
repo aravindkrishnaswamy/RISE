@@ -2551,6 +2551,54 @@ Durable evidence is
 SHA-256 `1512191c5966ad3eb981b2a2e6e205f79d9666f26d3cbfb58a3094c47b5c853e`.
 The golden checkpoint is unchanged.
 
+### 7.51 Projection a-posteriori rounding certificate (r134)
+
+The r133 dependency-interval refusal is closed without folding the iterative
+pressure history.  For the accepted pressure-open solve, let
+`A=G^T rho_f^-1 G` and let `r` be the published divergence residual.  The
+independent walker uses the discrete Poincare lower bound
+`4/N^2` for an axis with two pressure-open ends and `1/N^2` for an axis with
+one open end (from `sin(x)>=2x/pi`).  Loewner ordering with the certified face
+density range then gives
+
+`lambda_min(A) >= lambda_0/(rho_max h^2)`.
+
+The velocity-error gain is conservatively
+`sqrt(2/(rho_min lambda_min(A)))`; the factor two encloses the doubled
+one-sided open-face gradient.  The terminal bound is
+
+`B_projection = gain * (r_rounded + B_residual-eval) + B_terminal-stream`.
+
+No fitted or measured constant enters this expression.  On the frozen tier-6
+state, `rho_f` is in `[0.97449040412902832,1.1348450183868408]`,
+`lambda_0=0.016975308641975297`, `lambda_min(A)>=8.9899277588426756`,
+`||A^-1||<=0.11123559908658663`, and the velocity gain is
+`0.47780216517115232`.  The physical projection has residual
+`8.9943569037131965e-7`, residual-evaluation envelope
+`1.3748435749320591e-7`, terminal streaming RMS
+`5.0652099990520917e-9`, and derived velocity RMS bound
+`5.0050785397809755e-7`.  The restoration projection values are respectively
+`2.3126602172851562e-5`, `5.693743933523084e-7`,
+`6.197309116104171e-9`, and `1.1328186218293204e-5`.
+
+Both validation predicates now carry their own two-path certificates.  The
+residual upper envelope is strictly below the tolerance lower envelope by
+`0.00026143109675737545` (physical) and `0.0004414973516277663`
+(restoration), so binary32 predicate rounding cannot invalidate the
+a-posteriori anchor.  The formerly unknown comparison is the
+positive-zero-seeded `max(abs(velocity)) < 0` guard and is discharged by the
+r131 nonnegative-reduction provenance proof.  The census is again
+`3,972,326 / 3,972,326`, pending zero, with both bitmaps zero.  Raw pressure
+dependency radii remain infinite and recorded; they are not used by the
+certificate.
+
+Exact exit `241` denotes projection-local certification.  It does not yet
+define the composed `B_fp32`: upstream force/transport/source contributions
+must still be folded before any Metal/fp64 measurement.  Durable evidence is
+`rendered/fire_production_calibration/r134_projection_aposteriori/projection_aposteriori.v1`,
+SHA-256 `5dd3fd76e41127b1af8e2256b5d22a90750b0ce10a5867b0cee6e2c2eb92cd37`.
+The golden checkpoint is unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

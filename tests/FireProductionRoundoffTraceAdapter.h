@@ -84,14 +84,206 @@ namespace FireProductionRoundoffAdapter
 
 	struct ResidentStepTraceResult
 	{
+		struct ProjectionStreamingEvidence
+		{
+			double densityLower=std::numeric_limits<double>::infinity(),densityUpper=0.0;
+			double maximumResidualEvaluationRadius=0.0,streamingVelocityRMSUpper=0.0;
+			float maximumRoundedResidual=0.0f,validationToleranceRounded=0.0f;
+			double validationToleranceRadius=0.0;
+			std::uint64_t residualCellCount=0u,velocityFaceCount=0u;
+			bool roundedResidualMatches=false,roundedVelocityMatches=false,
+				validationAccepted=false;
+		};
 		Trace::FireProductionFrozenForceAdvanceResult force;
 		Trace::FireProductionCellPalindromeResult cell;
 		Trace::FireProductionDualMomentumResult dual;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> conservativeValues;
 		Trace::FireProductionProjectionResult physicalProjection;
 		Trace::FireProductionProjectionResult projection;
+		ProjectionStreamingEvidence physicalStreaming,restorationStreaming;
 		std::vector<FireProductionRoundoffTrace::Observation> stages;
 	};
+
+	inline bool EvaluateProjectionStreamingEvidence(
+		const Trace::FireProductionProjectionRequest& request,
+		const Trace::FireProductionProjectionResult& projection,const bool restoration,
+		ResidentStepTraceResult::ProjectionStreamingEvidence& evidence)
+	{
+		evidence=ResidentStepTraceResult::ProjectionStreamingEvidence();
+		const std::size_t nx=request.shape.nx,ny=request.shape.ny,nz=request.shape.nz;
+		if(!nx||!ny||!nz)return false;const std::size_t cells=nx*ny*nz;
+		auto faceIndex=[&](const unsigned int axis,const std::size_t x,
+			const std::size_t y,const std::size_t z){return axis==0u?(z*ny+y)*(nx+1u)+x:
+			(axis==1u?(z*(ny+1u)+y)*nx+x:(z*ny+y)*nx+x);};
+		auto cellIndex=[&](const std::size_t x,const std::size_t y,const std::size_t z){
+			return (z*ny+y)*nx+x;};
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> beginning,published;
+		float maximumVelocity=0.0f;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const std::size_t count=projection.velocityMPerS[axis].size();
+			if(count!=projection.faceDensityKGPerM3[axis].size()||
+				count!=request.provisionalMomentumKGPerM2S[axis].size())return false;
+			beginning[axis].resize(count);published[axis].resize(count);
+			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
+				ez=axis==2u?nz+1u:nz;
+			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+				for(std::size_t x=0u;x<ex;++x){const std::size_t face=faceIndex(axis,x,y,z);
+					const float density=projection.faceDensityKGPerM3[axis][face].Rounded();
+					evidence.densityLower=std::min(evidence.densityLower,
+						static_cast<double>(density));evidence.densityUpper=std::max(
+						evidence.densityUpper,static_cast<double>(density));
+					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
+					const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
+					const bool wall=(coordinate==0u||coordinate==extent)&&
+						request.boundary[side]==Trace::FireProductionProjectionWall;
+					beginning[axis][face]=wall?FireProductionRoundoffTrace::TraceFloat(0.0f):
+						FireProductionRoundoffTrace::TraceFloat(
+							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/
+						FireProductionRoundoffTrace::TraceFloat(density);
+					published[axis][face]=FireProductionRoundoffTrace::TraceFloat(
+						projection.velocityMPerS[axis][face].Rounded());
+					maximumVelocity=std::max(maximumVelocity,std::fabs(
+						beginning[axis][face].Rounded()));maximumVelocity=std::max(
+						maximumVelocity,std::fabs(published[axis][face].Rounded()));
+				}
+			evidence.velocityFaceCount+=count;
+		}
+		auto divergence=[&](const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>&
+			velocity,const std::size_t x,const std::size_t y,const std::size_t z){
+			return (velocity[0][faceIndex(0u,x+1u,y,z)]-velocity[0][faceIndex(0u,x,y,z)]+
+				velocity[1][faceIndex(1u,x,y+1u,z)]-velocity[1][faceIndex(1u,x,y,z)]+
+				velocity[2][faceIndex(2u,x,y,z+1u)]-velocity[2][faceIndex(2u,x,y,z)])/
+				FireProductionRoundoffTrace::TraceFloat(request.shape.cellWidthM.Rounded());};
+		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
+			for(std::size_t x=0u;x<nx;++x){const std::size_t cell=cellIndex(x,y,z);
+				FireProductionRoundoffTrace::TraceFloat residual=divergence(published,x,y,z);
+				if(restoration)residual-=divergence(beginning,x,y,z);
+				residual-=FireProductionRoundoffTrace::TraceFloat(
+					request.divergenceTargetPerS[cell].Rounded());
+				evidence.maximumResidualEvaluationRadius=std::max(
+					evidence.maximumResidualEvaluationRadius,residual.Radius());
+				evidence.maximumRoundedResidual=std::max(evidence.maximumRoundedResidual,
+					std::fabs(residual.Rounded()));++evidence.residualCellCount;
+			}
+		evidence.roundedResidualMatches=evidence.maximumRoundedResidual==
+			projection.maximumPostProjectionResidualPerS.Rounded();
+		FireProductionRoundoffTrace::TraceFloat tolerance;
+		if(restoration){
+			float maximumTarget=0.0f;
+			for(const auto& value:request.divergenceTargetPerS)
+				maximumTarget=std::max(maximumTarget,std::fabs(value.Rounded()));
+			tolerance=
+				FireProductionRoundoffTrace::TraceFloat(0.005f)*
+				FireProductionRoundoffTrace::TraceFloat(maximumTarget);
+		}else{const float longest=static_cast<float>(std::max(nx,std::max(ny,nz)));
+			const FireProductionRoundoffTrace::TraceFloat length=
+				FireProductionRoundoffTrace::TraceFloat(request.shape.cellWidthM.Rounded())*
+				FireProductionRoundoffTrace::TraceFloat(longest);
+			tolerance=FireProductionRoundoffTrace::TraceFloat(0.005f)*
+				FireProductionRoundoffTrace::TraceFloat(maximumVelocity)/length;}
+		evidence.validationToleranceRounded=tolerance.Rounded();
+		evidence.validationToleranceRadius=tolerance.Radius();
+		evidence.validationAccepted=projection.validationPassed&&
+			evidence.maximumRoundedResidual<=evidence.validationToleranceRounded;
+		// Re-evaluate the terminal velocity arithmetic from exact published pressure
+		// and beginning bytes.  This streaming check covers every settled boundary
+		// formula; the structural inverse bound remains separately scoped to the
+		// frozen all-pressure-open calibration protocol.
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,6> boundaryPressure;
+		for(unsigned int side=0u;side<6u;++side){const unsigned int axis=side/2u;
+			const std::size_t count=projection.pressureOpenInflow[side].size();
+			boundaryPressure[side].assign(count,FireProductionRoundoffTrace::TraceFloat(0.0f));
+			const bool positive=(side&1u)!=0u;const std::size_t firstCount=axis==0u?ny:nx;
+			const std::size_t secondCount=axis==2u?ny:nz;
+			for(std::size_t second=0u;second<secondCount;++second)
+				for(std::size_t first=0u;first<firstCount;++first){std::size_t x=0u,y=0u,z=0u;
+					if(axis==0u){x=positive?nx:0u;y=first;z=second;}
+					if(axis==1u){x=first;y=positive?ny:0u;z=second;}
+					if(axis==2u){x=first;y=second;z=positive?nz:0u;}
+					const std::size_t index=second*firstCount+first;
+					if(restoration||!projection.pressureOpenInflow[side][index])continue;
+					FireProductionRoundoffTrace::TraceFloat speed2=
+						beginning[axis][faceIndex(axis,x,y,z)]*
+						beginning[axis][faceIndex(axis,x,y,z)];
+					const std::size_t cx=axis==0u?(positive?nx-1u:0u):x;
+					const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
+					const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
+					for(unsigned int tangent=0u;tangent<3u;++tangent)if(tangent!=axis){
+						std::size_t hx=cx,hy=cy,hz=cz;if(tangent==0u)++hx;
+						if(tangent==1u)++hy;if(tangent==2u)++hz;
+						const auto centered=FireProductionRoundoffTrace::TraceFloat(0.5f)*(
+							beginning[tangent][faceIndex(tangent,cx,cy,cz)]+
+							beginning[tangent][faceIndex(tangent,hx,hy,hz)]);
+						speed2+=centered*centered;}
+					boundaryPressure[side][index]=FireProductionRoundoffTrace::TraceFloat(-0.5f)*
+						FireProductionRoundoffTrace::TraceFloat(
+							request.ambientDensityKGPerM3.Rounded())*speed2;
+				}
+		}
+		std::array<std::vector<double>,3> faceRadius;
+		const auto dt=FireProductionRoundoffTrace::TraceFloat(request.timeStepS.Rounded());
+		const auto h=FireProductionRoundoffTrace::TraceFloat(request.shape.cellWidthM.Rounded());
+		bool velocityMatches=true;
+		for(unsigned int axis=0u;axis<3u;++axis){faceRadius[axis].resize(published[axis].size());
+			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
+				ez=axis==2u?nz+1u:nz;
+			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+				for(std::size_t x=0u;x<ex;++x){const std::size_t face=faceIndex(axis,x,y,z);
+					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
+					const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
+					FireProductionRoundoffTrace::TraceFloat gradient;
+					if(coordinate>0u&&coordinate<extent){std::size_t lx=x,ly=y,lz=z;
+						if(axis==0u)--lx;if(axis==1u)--ly;if(axis==2u)--lz;
+						gradient=(FireProductionRoundoffTrace::TraceFloat(projection.pressurePa[
+							cellIndex(x,y,z)].Rounded())-FireProductionRoundoffTrace::TraceFloat(
+							projection.pressurePa[cellIndex(lx,ly,lz)].Rounded()))/h;
+					}else{const std::size_t cx=axis==0u?(coordinate?nx-1u:0u):x;
+						const std::size_t cy=axis==1u?(coordinate?ny-1u:0u):y;
+						const std::size_t cz=axis==2u?(coordinate?nz-1u:0u):z;
+						if(request.boundary[side]==Trace::FireProductionProjectionWall){
+							velocityMatches=velocityMatches&&published[axis][face].Rounded()==0.0f;
+							faceRadius[axis][face]=0.0;continue;}
+						if(request.boundary[side]==Trace::FireProductionProjectionPeriodic){
+							std::size_t ox=cx,oy=cy,oz=cz,wx=cx,wy=cy,wz=cz;
+							if(axis==0u){wx=nx-1u;ox=0u;}if(axis==1u){wy=ny-1u;oy=0u;}
+							if(axis==2u){wz=nz-1u;oz=0u;}
+							gradient=(FireProductionRoundoffTrace::TraceFloat(projection.pressurePa[
+								cellIndex(ox,oy,oz)].Rounded())-FireProductionRoundoffTrace::TraceFloat(
+								projection.pressurePa[cellIndex(wx,wy,wz)].Rounded()))/h;
+						}else{
+						const std::size_t firstCount=axis==0u?ny:nx;
+						const std::size_t first=axis==0u?cy:cx;
+						const std::size_t second=axis==2u?cy:cz;
+						const auto pb=boundaryPressure[side][second*firstCount+first];
+						const auto p=FireProductionRoundoffTrace::TraceFloat(
+							projection.pressurePa[cellIndex(cx,cy,cz)].Rounded());
+						gradient=coordinate?FireProductionRoundoffTrace::TraceFloat(2.0f)*(pb-p)/h:
+							FireProductionRoundoffTrace::TraceFloat(2.0f)*(p-pb)/h;}}
+					const auto momentum=FireProductionRoundoffTrace::TraceFloat(
+						request.provisionalMomentumKGPerM2S[axis][face].Rounded())-dt*gradient;
+					const auto velocity=momentum/FireProductionRoundoffTrace::TraceFloat(
+						projection.faceDensityKGPerM3[axis][face].Rounded());
+					velocityMatches=velocityMatches&&velocity.Rounded()==published[axis][face].Rounded();
+					faceRadius[axis][face]=velocity.Radius();
+				}
+		}
+		double squareSum=0.0;
+		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
+			for(std::size_t x=0u;x<nx;++x)for(unsigned int axis=0u;axis<3u;++axis){
+				std::size_t hx=x,hy=y,hz=z;if(axis==0u)++hx;if(axis==1u)++hy;if(axis==2u)++hz;
+				const double radius=0.5*(faceRadius[axis][faceIndex(axis,x,y,z)]+
+					faceRadius[axis][faceIndex(axis,hx,hy,hz)]);
+				squareSum=std::nextafter(squareSum+radius*radius,
+					std::numeric_limits<double>::infinity());}
+		evidence.streamingVelocityRMSUpper=std::nextafter(std::sqrt(squareSum/
+			static_cast<double>(cells)),std::numeric_limits<double>::infinity());
+		evidence.roundedVelocityMatches=velocityMatches;
+		return evidence.densityLower>0.0&&evidence.densityUpper>=evidence.densityLower&&
+			evidence.roundedResidualMatches&&evidence.roundedVelocityMatches&&
+			evidence.validationAccepted;
+	}
 
 	inline void AppendStages(ResidentStepTraceResult& result,
 		const FireProductionRoundoffTrace::Counters& counters)
@@ -185,6 +377,8 @@ namespace FireProductionRoundoffAdapter
 			FireProductionRoundoffTrace::Scope scope(counters);
 			if(!Trace::ProjectFireProductionResidentPhysicalCPU(projection,
 				computed.physicalProjection,error))return false;
+			if(!EvaluateProjectionStreamingEvidence(projection,computed.physicalProjection,
+				false,computed.physicalStreaming))return false;
 			SealProjectionOutputs(computed.physicalProjection);
 		}
 		AppendStages(computed,counters);
@@ -194,6 +388,8 @@ namespace FireProductionRoundoffAdapter
 			FireProductionRoundoffTrace::Scope scope(counters);
 			if(!Trace::ProjectFireProductionRestorationCPU(projection,computed.projection,error))
 				return false;
+			if(!EvaluateProjectionStreamingEvidence(projection,computed.projection,true,
+				computed.restorationStreaming))return false;
 			SealProjectionOutputs(computed.projection);
 		}
 		AppendStages(computed,counters);

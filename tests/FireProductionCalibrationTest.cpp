@@ -87,7 +87,9 @@ int main()
 		CountText(projectionSource,"std::fabs(residual)")==2u&&
 		CountText(projectionHeader,"maximumPostProjectionResidualPerS(0.0f)")==1u&&
 		CountText(tracedProjectionSource,
-			"EvaluateNonnegativeReductionGuard(maximumResidualPerS)")==2u,
+			"EvaluateNonnegativeReductionGuard(maximumResidualPerS)")==2u&&
+		CountText(tracedProjectionSource,
+			"EvaluateNonnegativeReductionGuard(maximumVelocityMPerS)")==1u,
 		"projection guard proof is source-bound to +0 seed, abs/max reduction, and both consumers");
 	Check(CountText(advectionSource,
 		"const float q6=6.0f*center-3.0f*(left+right);")==2u&&
@@ -215,6 +217,20 @@ int main()
 			std::string::npos&&
 		bfp32RefusalEvidence.find("canonical_exit 237")!=std::string::npos,
 		"r133 nonfinite projection amplification refuses B_fp32 before measurement");
+	const std::string aposterioriEvidence=ReadText(
+		"rendered/fire_production_calibration/r134_projection_aposteriori/"
+		"projection_aposteriori.v1");
+	Check(!aposterioriEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(aposterioriEvidence.begin(),aposterioriEvidence.end()))==
+		"5dd3fd76e41127b1af8e2256b5d22a90750b0ce10a5867b0cee6e2c2eb92cd37"&&
+		aposterioriEvidence.find("physical_projection_velocity_rms_upper "
+			"5.0050785397809755e-7")!=std::string::npos&&
+		aposterioriEvidence.find("restoration_projection_velocity_rms_upper "
+			"1.1328186218293204e-5")!=std::string::npos&&
+		aposterioriEvidence.find("executed_obligation_instances_pending 0")!=
+			std::string::npos&&
+		aposterioriEvidence.find("canonical_exit 241")!=std::string::npos,
+		"r134 structural inverse and streaming envelopes close both projection terms");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -226,13 +242,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r133")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r134")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r133")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 241")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r134")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
-		"ordinary Unix and Windows suites execute r133 and accept only exact derivation refusal");
+		windowsTestDriver.find("roundoffRC -eq 241")!=std::string::npos,
+		"ordinary Unix and Windows suites execute r134 and accept only the exact projection proof");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -312,6 +328,70 @@ int main()
 			FireProductionRoundoffTrace::Operation::Add)]==1u&&
 			std::fabs(static_cast<double>(sum.Rounded())-sum.Center())<=sum.Radius(),
 			"roundoff trace outward radius contains a binary32 tie-to-even addition");
+	}
+	{
+		const std::array<std::size_t,3> extent={{24u,24u,36u}};
+		const std::array<unsigned int,6> allOpen={{2u,2u,2u,2u,2u,2u}};
+		FireProductionRoundoffWalker::ProjectionAposterioriCertificate certified,
+			doublePoincare,missingResidual,swappedDensity;
+		const double h=0x1.4e288ep-5;
+		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			certified)&&certified.dimensionlessEigenvalueLower==0.016975308641975297&&
+			certified.operatorEigenvalueLower==8.9899277588426756&&
+			certified.inverseOperatorNormUpper==0.11123559908658663&&
+			certified.velocityGainUpper==0.47780216517115232&&
+			certified.velocityRMSUpper==5.0050785397809755e-7&&
+			certified.validationPredicateSeparated&&certified.validationPredicateMarginLower>0.0&&
+			certified.pressureOpenAnchor&&certified.allConstantsStructural,
+			"independent Poincare/density/residual derivation pins the physical projection bound");
+		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			doublePoincare,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				DoublePoincare)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			missingResidual,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingResidualEvaluation)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			swappedDensity,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				SwappedDensityEnvelope)&&
+			doublePoincare.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingResidual.velocityRMSUpper<certified.velocityRMSUpper&&
+			swappedDensity.velocityRMSUpper<certified.velocityRMSUpper,
+			"projection derivation rejects doubled-spectrum, missing-residual, and density-swap underbounds");
+		FireProductionRoundoffTrace::Observation accepted;
+		FireProductionRoundoffTrace::BranchObligation obligation;
+		obligation.site=FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand;
+		obligation.roundedResult=true;accepted.branchObligations.push_back(obligation);
+		accepted.unresolvedBranch=true;accepted.invalidDomain=true;
+		Check(FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
+			accepted,0.001f,0.002f,0.0001,0.0001,certified.velocityRMSUpper)&&
+			accepted.branchObligations.front().certificate==
+				FireProductionRoundoffTrace::BranchCertificate::Aposteriori&&
+			accepted.aposterioriProjectionCertified&&!accepted.unresolvedBranch&&
+			!accepted.invalidDomain&&accepted.aposterioriMetricBound[9]==
+				certified.velocityRMSUpper,
+			"accepted validation path consumes the structural residual certificate");
+		FireProductionRoundoffTrace::Observation rejected=accepted;
+		rejected.branchObligations.front().certificate=
+			FireProductionRoundoffTrace::BranchCertificate::None;
+		rejected.branchObligations.front().roundedResult=false;
+		rejected.dischargedBranchObligationCount=0u;
+		Check(!FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
+			rejected,0.001f,0.002f,0.0001,0.0001,certified.velocityRMSUpper)&&
+			!FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
+				rejected,0.001f,0.0011f,0.0002,0.0,certified.velocityRMSUpper),
+			"rejected and over-band validation paths cannot borrow the accepted-solution anchor");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;

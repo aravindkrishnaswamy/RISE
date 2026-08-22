@@ -3109,3 +3109,22 @@ it was already tried and refuted here.
   per-sweep multigrid amplification derivation is required next.  Durable
   evidence is `1512191c...853e`; production and golden-checkpoint bytes are
   unchanged.
+
+- **r134 projection a-posteriori certificate (2026-08-21):** the r133
+  iterative-solve obstruction is resolved by bounding the accepted solution
+  from its validated residual rather than by dependency-folding every
+  multigrid sweep.  The independent operator proof uses
+  `A=G^T rho_f^-1 G`, the rational pressure-open Poincare bound, and the
+  certified density interval to obtain `lambda_min>=8.9899277588426756`,
+  `||A^-1||<=0.11123559908658663`, and velocity gain
+  `0.47780216517115232`.  Streaming residual evaluation and terminal adapter
+  arithmetic remain interval-walked.  The resulting projection-local velocity
+  RMS terms are `5.0050785397809755e-7` (physical) and
+  `1.1328186218293204e-5` (restoration).  Separate predicate envelopes prove
+  residual/tolerance margins `2.6143109675737545e-4` and
+  `4.414973516277663e-4`; the prior unknown velocity guard is discharged by
+  nonnegative-reduction provenance.  The census is
+  `3,972,326 / 3,972,326`, both bitmaps zero, exact exit `241`.  This is a
+  projection-local term, not the composed `B_fp32`, and no Metal/fp64
+  measurement has run.  Durable evidence is `5dd3fd76...2cd37`; production
+  and golden-checkpoint bytes are unchanged.
