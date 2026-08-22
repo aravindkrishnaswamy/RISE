@@ -246,6 +246,18 @@ def transform(text: str, name: str, suffix: str) -> str:
         text = text.replace(interpolation,interpolation+
             "\n\t\t\tFireProductionRoundoffTrace::ProjectionInterpolationScope "
             "topologyScope(fine,fineExtent,coarseExtent);")
+        cycle_loop = ("\t\tfor( unsigned int cycle=0;cycle<cycleCount;++cycle ) {\n"
+                      "\t\t\tVCycle(hierarchy,0u,request.boundary,nullspace,\n"
+                      "\t\t\t\tresult.executedJacobiSweepCount);\n"
+                      "\t\t\t++result.executedVCycleCount;\n"
+                      "\t\t\tif( nullspace ) RemoveMean(hierarchy[0].pressure);\n"
+                      "\t\t}")
+        if text.count(cycle_loop) != 1:
+            raise RuntimeError("projection multigrid-cycle proof scope changed")
+        indented_cycle = "\t" + cycle_loop.replace("\n", "\n\t")
+        text = text.replace(cycle_loop,
+            "\t\t{\n\t\t\tFireProductionRoundoffTrace::ProjectionSolveDependencyScope "
+            "solveScope;\n" + indented_cycle + "\n\t\t}")
     if suffix == ".h":
         guards = {"FireProductionAdvection": "FIREPRODUCTIONADVECTION_",
                   "FireProductionProjection": "FIREPRODUCTIONPROJECTION_",

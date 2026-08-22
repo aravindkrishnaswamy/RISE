@@ -222,11 +222,11 @@ int main()
 		"projection_aposteriori.v1");
 	Check(!aposterioriEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(aposterioriEvidence.begin(),aposterioriEvidence.end()))==
-		"7018aab1db44467f4c8ca1c9443ae6f8c00102cd21577068cd3d1f590263af59"&&
+		"cc8fcc32f637bc8f9cc5224f29b64e2981628962257d73b9b6b103d1439538e1"&&
 		aposterioriEvidence.find("physical_projection_velocity_rms_upper "
-			"0.00012634065618049987")!=std::string::npos&&
+			"0.00016499362514100588")!=std::string::npos&&
 		aposterioriEvidence.find("restoration_projection_velocity_rms_upper "
-			"0.00023357152610769635")!=std::string::npos&&
+			"0.0002335715396119954")!=std::string::npos&&
 		aposterioriEvidence.find("executed_obligation_instances_pending 0")!=
 			std::string::npos&&
 		aposterioriEvidence.find("canonical_exit 241")!=std::string::npos,
@@ -308,7 +308,8 @@ int main()
 		traceAdapterSource.find("for(const double radius:faceRadius[axis])")!=
 			std::string::npos&&
 		traceAdapterSource.find("0.5*(faceRadius")==std::string::npos&&
-		CountText(traceAdapterSource,"ProjectionSolveDependencyScope solveScope")==2u&&
+		CountText(tracedProjectionSource,"ProjectionSolveDependencyScope solveScope")==1u&&
+		CountText(traceAdapterSource,"ProjectionSolveDependencyScope solveScope")==0u&&
 		traceAdapterSource.find("maximumCrossPrecisionResidualUpper")!=std::string::npos&&
 		traceAdapterSource.find("openActiveSetMatches")!=std::string::npos,
 		"trace adapter identity and scalar/velocity metric channel wiring are source-bound");
@@ -336,6 +337,15 @@ int main()
 			"roundoff trace outward radius contains a binary32 tie-to-even addition");
 	}
 	{
+		FireProductionRoundoffAdapter::ResidentStepTraceResult::ProjectionStreamingEvidence
+			densityEvidence;
+		FireProductionRoundoffAdapter::IncludeProjectionDensityEnvelope(
+			FireProductionRoundoffTrace::TraceFloat::Raw(1.0,0.25,1.125f,0u),
+			densityEvidence);
+		Check(densityEvidence.densityLower<0.75&&densityEvidence.densityUpper>1.25,
+			"projection spectral density envelope uses outward exact center-radius bounds");
+	}
+	{
 		const double radius=1.0;
 		const double faceL2PerCell=std::sqrt((radius*radius+radius*radius)/2.0);
 		const double cellCenteredRMS=std::sqrt(
@@ -348,12 +358,13 @@ int main()
 		const std::array<std::size_t,3> extent={{24u,24u,36u}};
 		const std::array<unsigned int,6> allOpen={{2u,2u,2u,2u,2u,2u}};
 		FireProductionRoundoffWalker::ProjectionAposterioriCertificate certified,
-			doublePoincare,missingCross,missingGate,missingFace,swappedDensity;
+			doublePoincare,missingCross,missingGate,missingFeedback,missingFace,
+			swappedDensity;
 		const double h=0x1.4e288ep-5;
 		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			certified)&&certified.dimensionlessEigenvalueLower==0.016975308641975297&&
 			certified.operatorEigenvalueLower==8.9899277588426756&&
@@ -366,41 +377,49 @@ int main()
 		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			doublePoincare,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				DoublePoincare)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingCross,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingCrossPrecisionResidual)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingGate,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFP64ResidualGate)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			missingFeedback,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingFP64Feedback)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingFace,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFaceStreaming)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			swappedDensity,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				SwappedDensityEnvelope)&&
 			doublePoincare.velocityRMSUpper<certified.velocityRMSUpper&&
 			missingCross.velocityRMSUpper<certified.velocityRMSUpper&&
 			missingGate.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingFeedback.velocityRMSUpper<certified.velocityRMSUpper&&
 			missingFace.velocityRMSUpper<certified.velocityRMSUpper&&
 			swappedDensity.velocityRMSUpper<certified.velocityRMSUpper,
 			"projection derivation rejects spectrum, cross-residual, fp64-gate, face-norm, and density underbounds");

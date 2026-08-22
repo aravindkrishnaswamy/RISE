@@ -90,6 +90,7 @@ namespace FireProductionRoundoffAdapter
 			double maximumResidualEvaluationRadius=0.0;
 			double maximumCrossPrecisionResidualUpper=0.0;
 			double streamingFaceVelocityL2PerCellUpper=0.0;
+			double maximumRoundedVelocity=0.0,maximumRoundedTarget=0.0;
 			float maximumRoundedResidual=0.0f,validationToleranceRounded=0.0f;
 			double validationToleranceRadius=0.0;
 			std::uint64_t residualCellCount=0u,velocityFaceCount=0u;
@@ -105,6 +106,18 @@ namespace FireProductionRoundoffAdapter
 		ProjectionStreamingEvidence physicalStreaming,restorationStreaming;
 		std::vector<FireProductionRoundoffTrace::Observation> stages;
 	};
+
+	inline void IncludeProjectionDensityEnvelope(
+		const FireProductionRoundoffTrace::TraceFloat& density,
+		ResidentStepTraceResult::ProjectionStreamingEvidence& evidence)
+	{
+		evidence.densityLower=std::min(evidence.densityLower,std::nextafter(
+			density.Center()-density.Radius(),-
+			std::numeric_limits<double>::infinity()));
+		evidence.densityUpper=std::max(evidence.densityUpper,std::nextafter(
+			density.Center()+density.Radius(),
+			std::numeric_limits<double>::infinity()));
+	}
 
 	inline bool EvaluateProjectionStreamingEvidence(
 		const Trace::FireProductionProjectionRequest& request,
@@ -131,10 +144,7 @@ namespace FireProductionRoundoffAdapter
 			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
 				for(std::size_t x=0u;x<ex;++x){const std::size_t face=faceIndex(axis,x,y,z);
 					const auto densityValue=projection.faceDensityKGPerM3[axis][face];
-					const float density=densityValue.Rounded();
-					evidence.densityLower=std::min(evidence.densityLower,
-						static_cast<double>(density));evidence.densityUpper=std::max(
-						evidence.densityUpper,static_cast<double>(density));
+					IncludeProjectionDensityEnvelope(densityValue,evidence);
 					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
 					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
 					const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
@@ -170,11 +180,13 @@ namespace FireProductionRoundoffAdapter
 			}
 		evidence.roundedResidualMatches=evidence.maximumRoundedResidual==
 			projection.maximumPostProjectionResidualPerS.Rounded();
+		evidence.maximumRoundedVelocity=maximumVelocity;
 		FireProductionRoundoffTrace::TraceFloat tolerance;
 		if(restoration){
 			float maximumTarget=0.0f;
 			for(const auto& value:request.divergenceTargetPerS)
 				maximumTarget=std::max(maximumTarget,std::fabs(value.Rounded()));
+			evidence.maximumRoundedTarget=maximumTarget;
 			tolerance=
 				FireProductionRoundoffTrace::TraceFloat(0.005f)*
 				FireProductionRoundoffTrace::TraceFloat(maximumTarget);
@@ -391,11 +403,8 @@ namespace FireProductionRoundoffAdapter
 		for(unsigned int side=0u;side<6u;++side)projection.boundary[side]=force.boundary[side];
 		{
 			FireProductionRoundoffTrace::Scope scope(counters);
-			{
-				FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
-				if(!Trace::ProjectFireProductionResidentPhysicalCPU(projection,
-					computed.physicalProjection,error))return false;
-			}
+			if(!Trace::ProjectFireProductionResidentPhysicalCPU(projection,
+				computed.physicalProjection,error))return false;
 			if(!EvaluateProjectionStreamingEvidence(projection,computed.physicalProjection,
 				false,computed.physicalStreaming))return false;
 			SealProjectionOutputs(computed.physicalProjection);
@@ -405,11 +414,8 @@ namespace FireProductionRoundoffAdapter
 		projection.divergenceTargetPerS=Promote(request.restorationDivergenceTargetPerS);
 		{
 			FireProductionRoundoffTrace::Scope scope(counters);
-			{
-				FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
-				if(!Trace::ProjectFireProductionRestorationCPU(projection,computed.projection,error))
-					return false;
-			}
+			if(!Trace::ProjectFireProductionRestorationCPU(projection,computed.projection,error))
+				return false;
 			if(!EvaluateProjectionStreamingEvidence(projection,computed.projection,true,
 				computed.restorationStreaming))return false;
 			SealProjectionOutputs(computed.projection);

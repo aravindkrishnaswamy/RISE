@@ -712,11 +712,14 @@ namespace RISEFireProductionTrace
 		}
 		const unsigned int cycleCount=HasOpenBoundary(request.boundary)?
 			(execution==CPUProjectionResidentPhysical?17u:16u):12u;
-		for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
-			VCycle(hierarchy,0u,request.boundary,nullspace,
-				result.executedJacobiSweepCount);
-			++result.executedVCycleCount;
-			if( nullspace ) RemoveMean(hierarchy[0].pressure);
+		{
+			FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
+			for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
+				VCycle(hierarchy,0u,request.boundary,nullspace,
+					result.executedJacobiSweepCount);
+				++result.executedVCycleCount;
+				if( nullspace ) RemoveMean(hierarchy[0].pressure);
+			}
 		}
 		result.pressurePa=hierarchy[0].pressure;
 

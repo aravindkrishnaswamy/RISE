@@ -11,10 +11,10 @@ inline constexpr const char* FireProductionTransportHeader="99fd2c6f4ab583c522c4
 inline constexpr const char* FireProductionTransportSource="89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056";
 inline constexpr const char* FireProductionForceHeader="2412a848b8d258f982998ecebe3bd225980bbecd4812cd48a00cfd33bd5eafd1";
 inline constexpr const char* FireProductionForceSource="4a176f85721f4c9d13242fede2f0fa6b1aaf8441a275dde9ed8c38d6ef2c3027";
-inline constexpr const char* TraceAdapter="5ecdb565874a6f7281f6fc87afd855a75b5a70c004e6d9937a14175349292cd8";
+inline constexpr const char* TraceAdapter="9abe444a752bf9eb038c0ca1ff4493fe68094b0aca8c4b539fb1e08f977ec5a5";
 inline constexpr const char* TraceCore="4ea399ae68e89d38c0a0b0d156cba6e25acf4318c72c2b86396df0712b40ebb7";
-inline constexpr const char* IndependentWalker="7f50292112fc6532415f44f85682a6d86b8d36e81ef5a94946991bffe3f47b3d";
-inline constexpr const char* Generator="09483811b1ebe60a42c49446c0f9387e6c50939df691478ff21382482602d44c";
+inline constexpr const char* IndependentWalker="2a03847328fc55fe2b53579433ae5fa6a4470679551c6a9047e9bec58144edd4";
+inline constexpr const char* Generator="b6b1069c3f54c864c89b8e73311d8a5053dadb16561434501a800b654d0e042e";
 } }
 
 #endif
