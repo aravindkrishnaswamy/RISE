@@ -1072,6 +1072,49 @@ namespace FireProductionDyadicCalibration
 				trace.restorationStreaming.maximumResidualEvaluationRadius,
 				trace.restorationStreaming.validationToleranceRadius,
 				restorationCertificate.velocityRMSUpper);
+		std::array<FireProductionRoundoffWalker::FullStepMetricStage,24> metricStages={};
+		if(trace.stages.size()==metricStages.size())for(std::size_t stage=0u;
+			stage<metricStages.size();++stage)for(unsigned int channel=0u;channel<12u;
+			++channel){metricStages[stage].radiusSum[channel]=
+				trace.stages[stage].metricOutputRadiusSum[channel];
+			metricStages[stage].radiusSquareSum[channel]=
+				trace.stages[stage].metricOutputRadiusSquareSum[channel];
+			metricStages[stage].maximumRadius[channel]=
+				trace.stages[stage].metricOutputMaximumRadius[channel];
+			metricStages[stage].count[channel]=trace.stages[stage].metricOutputCount[channel];}
+		FireProductionRoundoffWalker::FullStepRoundoffCertificate fullStepCertificate;
+		const bool fullStepDerived=projectionCertificatesApplied&&
+			FireProductionRoundoffWalker::DeriveFullStepRoundoffBound(metricStages,
+				request.force.shape.CellCount(),physicalCertificate.densityLower,
+				physicalCertificate.densityUpper,request.force.shape.cellWidthM,
+				request.force.timeStepS,request.force.ambientDensityKGPerM3,
+				trace.physicalStreaming.maximumRoundedVelocity,
+				trace.physicalStreaming.maximumBeginningVelocityRoundingUpper,
+				trace.physicalStreaming.projectionCorrectionL2PerCell,
+				trace.restorationStreaming.projectionCorrectionL2PerCell,
+				physicalCertificate.velocityRMSUpper,restorationCertificate.velocityRMSUpper,
+				fullStepCertificate);
+		std::fprintf(stderr,"r135 full_step derived=%d gas_rms=%.17g density_relative=%.17g "
+			"provisional_velocity=%.17g physical=%.17g final_velocity=%.17g open=%.17g "
+			"correction=%.17g/%.17g\n",
+			fullStepDerived?1:0,fullStepCertificate.gasDensityRMSUpper,
+			fullStepCertificate.densityRelativeUpper,
+			fullStepCertificate.provisionalVelocityL2PerCellUpper,
+			fullStepCertificate.physicalProjectionVelocityUpper,
+			fullStepCertificate.finalVelocityRMSUpper,
+			fullStepCertificate.openBoundaryInteractionUpper,
+			trace.physicalStreaming.projectionCorrectionL2PerCell,
+			trace.restorationStreaming.projectionCorrectionL2PerCell);
+		std::fprintf(stderr,"r135 scalar_l1");for(const double value:
+			fullStepCertificate.scalarFilteredL1Upper)std::fprintf(stderr," %.17g",value);
+		std::fprintf(stderr,"\nr135 scalar_rms");for(const double value:
+			fullStepCertificate.scalarRMSUpper)std::fprintf(stderr," %.17g",value);
+		std::fprintf(stderr,"\nr135 inventory");for(const double value:
+			fullStepCertificate.inventoryPerVolumeUpper)std::fprintf(stderr," %.17g",value);
+		std::fprintf(stderr,"\nr135 momentum_l2 %.17g %.17g %.17g\n",
+			fullStepCertificate.momentumL2PerCellUpper[0],
+			fullStepCertificate.momentumL2PerCellUpper[1],
+			fullStepCertificate.momentumL2PerCellUpper[2]);
 		std::fprintf(stderr,"r134 physical_aposteriori valid=%d applied=%d rho=[%.17g,%.17g] "
 			"lambda0=%.17g lambda=%.17g inverse=%.17g residual=%.17g eval=%.17g "
 			"cross=%.17g fp64_gate=%.17g fp64_eval=%.17g fp64_terminal=%.17g "
@@ -1192,6 +1235,7 @@ namespace FireProductionDyadicCalibration
 			AppendDouble(encoded,stage.maximumOutputRadius);
 			for(const double value:stage.metricOutputRadiusSum)AppendDouble(encoded,value);
 			for(const double value:stage.metricOutputRadiusSquareSum)AppendDouble(encoded,value);
+			for(const double value:stage.metricOutputMaximumRadius)AppendDouble(encoded,value);
 			for(const std::uint64_t value:stage.metricOutputCount)AppendInteger(encoded,value);
 			for(const std::uint64_t value:stage.nonfiniteMetricOutputRadiusCount)
 				AppendInteger(encoded,value);
@@ -1317,11 +1361,12 @@ namespace FireProductionDyadicCalibration
 			for(unsigned int channel=0u;channel<
 				FireProductionRoundoffTrace::Observation::MetricChannelCount;++channel)
 				if(stage.metricOutputCount[channel])std::fprintf(stderr,
-					" %u=%.17g/%.17g/%llu/nonfinite=%llu",
+					" %u=%.17g/%.17g/%.17g/%llu/nonfinite=%llu",
 					channel,stage.metricOutputRadiusSum[channel]/static_cast<double>(
 						stage.metricOutputCount[channel]),std::sqrt(
 						stage.metricOutputRadiusSquareSum[channel]/static_cast<double>(
-							stage.metricOutputCount[channel])),static_cast<unsigned long long>(
+						stage.metricOutputCount[channel])),stage.metricOutputMaximumRadius[channel],
+						static_cast<unsigned long long>(
 							stage.metricOutputCount[channel]),static_cast<unsigned long long>(
 							stage.nonfiniteMetricOutputRadiusCount[channel]));
 			std::fprintf(stderr," (mean/rms/count)\n");
@@ -1409,7 +1454,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="9918edd91d21b0cafc315f1c54183be787bb418b72e33c9e473012dfa2b2e553"||
+			traceDigest!="086c6b06d0e2d9e5087c294eb95b750bf8225f553fc99f085273ac023786c284"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1485,12 +1530,38 @@ namespace FireProductionDyadicCalibration
 			restorationCertificate.velocityRMSUpper!=0.00023357153961206769||
 			trace.restorationStreaming.maximumRoundedVelocity!=0.086094409227371216||
 			trace.restorationStreaming.maximumRoundedTarget!=0.093038670718669891)return 238;
-		std::fprintf(stderr,"r134 projection a-posteriori bounds certified; obligations=%llu/%llu "
-			"physical_velocity=%.17g restoration_velocity=%.17g; composed B_fp32 remains next\n",
+		static const std::array<double,9> ExpectedScalar={{
+			0.00032719950722423746,0.00026175964690034235,0.0013965273494462376,
+			0.0046634001371138678,0.00017417247803291333,0.00014697468215851725,
+			2.28515847259952e-06,4.8013754918650386e-07,521.81563701838843}};
+		static const std::array<double,9> ExpectedScalarRMS={{
+			0.0016507572621071557,0.0013206089346941951,0.0078814363904888378,
+			0.024610816574923065,0.00087872041765648388,0.00074150164355245502,
+			1.152885058045011e-05,2.4223343929965511e-06,8454.3253079109272}};
+		static const std::array<double,3> ExpectedMomentum={{0.013505921107054692,
+			0.0012696844714689289,0.00011935802483893404}};
+		if(!fullStepDerived||fullStepCertificate.scalarFilteredL1Upper!=ExpectedScalar||
+			fullStepCertificate.scalarRMSUpper!=ExpectedScalarRMS||
+			fullStepCertificate.inventoryPerVolumeUpper!=ExpectedScalar||
+			fullStepCertificate.momentumL2PerCellUpper!=ExpectedMomentum||
+			fullStepCertificate.gasDensityRMSUpper!=0.035444612811895516||
+			fullStepCertificate.densityRelativeUpper!=0.036372463891938378||
+			fullStepCertificate.provisionalVelocityL2PerCellUpper!=0.016724925504348544||
+			fullStepCertificate.openBoundaryInteractionUpper!=0.00055034168358969525||
+			fullStepCertificate.physicalProjectionVelocityUpper!=0.018948201018992382||
+			fullStepCertificate.finalVelocityRMSUpper!=0.021145425678289562||
+			trace.physicalStreaming.projectionCorrectionL2PerCell!=0.0050658272508546124||
+			trace.restorationStreaming.projectionCorrectionL2PerCell!=0.012757173692842795||
+			!fullStepCertificate.scalarTransportNonexpansive||
+			!fullStepCertificate.dualTransportNonexpansive||
+			!fullStepCertificate.projectionInteractionsIncluded)return 238;
+		std::fprintf(stderr,"r135 full-step B_fp32 derived; obligations=%llu/%llu "
+			"physical_local=%.17g restoration_local=%.17g final_velocity=%.17g\n",
 			static_cast<unsigned long long>(totalDischargedBranchObligationCount),
 			static_cast<unsigned long long>(totalBranchObligationCount),
-			physicalCertificate.velocityRMSUpper,restorationCertificate.velocityRMSUpper);
-		return 241;
+			physicalCertificate.velocityRMSUpper,restorationCertificate.velocityRMSUpper,
+			fullStepCertificate.finalVelocityRMSUpper);
+		return 242;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

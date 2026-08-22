@@ -94,6 +94,7 @@ namespace FireProductionRoundoffAdapter
 			double fp64TerminalFaceL2PerCellUpper=0.0;
 			double maximumRoundedVelocity=0.0,maximumRoundedTarget=0.0;
 			double maximumBeginningVelocityRoundingUpper=0.0;
+			double projectionCorrectionL2PerCell=0.0;
 			float maximumRoundedResidual=0.0f,validationToleranceRounded=0.0f;
 			double validationToleranceRadius=0.0;
 			std::uint64_t residualCellCount=0u,velocityFaceCount=0u;
@@ -358,6 +359,16 @@ namespace FireProductionRoundoffAdapter
 			static_cast<double>(cells)),std::numeric_limits<double>::infinity());
 		evidence.fp64TerminalFaceL2PerCellUpper=std::nextafter(std::sqrt(squareSum64/
 			static_cast<double>(cells)),std::numeric_limits<double>::infinity());
+		double correctionSquareSum=0.0;
+		for(unsigned int axis=0u;axis<3u;++axis)
+			for(std::size_t face=0u;face<published[axis].size();++face){const double difference=
+				static_cast<double>(published[axis][face].Rounded())-
+				static_cast<double>(beginning[axis][face].Rounded());
+				correctionSquareSum=std::nextafter(correctionSquareSum+difference*difference,
+					std::numeric_limits<double>::infinity());}
+		evidence.projectionCorrectionL2PerCell=std::nextafter(std::sqrt(
+			correctionSquareSum/static_cast<double>(cells)),
+			std::numeric_limits<double>::infinity());
 		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
 			for(std::size_t x=0u;x<nx;++x){const std::size_t cell=cellIndex(x,y,z);
 				FireProductionRoundoffTrace::TraceFloat residual=divergence(
@@ -405,7 +416,11 @@ namespace FireProductionRoundoffAdapter
 			FireProductionRoundoffTrace::Scope scope(counters);
 			if(!Trace::AdvanceFireProductionFrozenForceCPU(force,outwardLambdaPerS,
 				computed.force,error))return false;
-			FireProductionRoundoffTrace::SealStageAndReset(computed.force.momentumKGPerM2S);
+			for(unsigned int axis=0u;axis<3u;++axis)
+				FireProductionRoundoffTrace::ObserveMetricRangeAndReset(
+					computed.force.momentumKGPerM2S[axis],0u,
+					computed.force.momentumKGPerM2S[axis].size(),9u+axis);
+			FireProductionRoundoffTrace::SealCurrentStage();
 		}
 		AppendStages(computed,counters);
 		{

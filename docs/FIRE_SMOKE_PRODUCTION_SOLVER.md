@@ -2631,6 +2631,49 @@ must still be folded before any Metal/fp64 measurement.  Durable evidence is
 SHA-256 `18f0115216fb4654eb4b7a37466ded1788158d9e4b55eacf15811e986b651ec2`.
 The golden checkpoint is unchanged.
 
+### 7.52 Full-step analytic B_fp32 derivation (r135)
+
+The frozen r120 trace is now composed across the complete resident step before
+any Metal comparison.  Each shared-alpha monotone conservative FCT submap is
+substochastic in both the one- and infinity-norm; therefore it is
+nonexpansive in L1 and, by `||A||2 <= sqrt(||A||1 ||A||inf)`, in L2.  The
+independent walker outward-sums the five cell submap envelopes plus the source
+publication for each conservative channel.  The fixed physical mollifier is a
+positive unit-sum operator, so it cannot enlarge component L1; the same raw
+mean bound controls each inventory per physical volume.
+
+For momentum the walker accumulates the force publication and the five dual
+submaps of each transported component in unique-face L2 per cell.  Conversion
+to provisional velocity includes density division rounding and the composed
+gas-density RMS interaction.  The physical projection then includes the
+structural `sqrt(rho_max/rho_min)` feedthrough, coefficient perturbation of the
+measured correction norm, the derived pressure-open total-head interaction,
+and the r134 local certificate.  Restoration repeats the structural
+feedthrough from the physical output, adds its coefficient interaction, and
+finally adds its distinct r134 local certificate.  Thus the second projection
+is not treated as an independent addend.
+
+The derived filtered-scalar and inventory bounds are
+`[3.2719950722423746e-4,2.6175964690034235e-4,1.3965273494462376e-3,`
+`4.6634001371138678e-3,1.7417247803291333e-4,1.4697468215851725e-4,`
+`2.28515847259952e-6,4.8013754918650386e-7,5.2181563701838843e2]`.
+The momentum component bounds are
+`[1.3505921107054692e-2,1.2696844714689289e-3,1.1935802483893404e-4]`.
+The gas-density RMS and relative coefficient terms are
+`3.5444612811895516e-2` and `3.6372463891938378e-2`; provisional velocity is
+`1.6724925504348544e-2`, the pressure-open interaction is
+`5.5034168358969525e-4`, the composed physical output is
+`1.8948201018992382e-2`, and the final two-projection velocity B_fp32 is
+`2.1145425678289562e-2 m/s`.
+
+This entry is derivation-only.  The fp64/Metal comparison did not run and did
+not select any term.  Exact exit `242`, trace digest
+`086c6b06d0e2d9e5087c294eb95b750bf8225f553fc99f085273ac023786c284`,
+and durable evidence
+`rendered/fire_production_calibration/r135_full_step_bfp32/full_step_bfp32_derivation.v1`
+bind the result.  Measurement, temporal refinement, and eight-slice
+readmission remain downstream gates.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

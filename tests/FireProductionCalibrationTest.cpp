@@ -231,6 +231,17 @@ int main()
 			std::string::npos&&
 		aposterioriEvidence.find("canonical_exit 241")!=std::string::npos,
 		"r134 structural inverse and streaming envelopes close both projection terms");
+	const std::string fullStepEvidence=ReadText(
+		"rendered/fire_production_calibration/r135_full_step_bfp32/"
+		"full_step_bfp32_derivation.v1");
+	Check(!fullStepEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(fullStepEvidence.begin(),fullStepEvidence.end()))==
+		"843e1f02bfbd7e1a7f5712b987aac128c7cf3ca52e0bdec0cccda371839f32c1"&&
+		fullStepEvidence.find("final_velocity_rms_upper 0.021145425678289562")!=
+			std::string::npos&&fullStepEvidence.find("derivation_before_metal true")!=
+			std::string::npos&&fullStepEvidence.find("metal_measurement_performed false")!=
+			std::string::npos&&fullStepEvidence.find("canonical_exit 242")!=std::string::npos,
+		"r135 seals the complete analytic B_fp32 before Metal measurement");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -242,13 +253,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r134")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r135")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		unixTestDriver.find("roundoff_rc\" -eq 241")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r134")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 242")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r135")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 241")!=std::string::npos,
-		"ordinary Unix and Windows suites execute r134 and accept only the exact projection proof");
+		windowsTestDriver.find("roundoffRC -eq 242")!=std::string::npos,
+		"ordinary Unix and Windows suites execute r135 and accept only the full-step proof");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -278,10 +289,9 @@ int main()
 		walkerSource.find("Counters")==std::string::npos&&
 		walkerSource.find("fire_production_trace")==std::string::npos,
 		"independent topology walker shares neither trace counts nor generated arithmetic code");
-	const std::size_t firstStageSeam=tracedTransportSource.find("SealStageAndReset");
-	Check(firstStageSeam!=std::string::npos&&tracedTransportSource.find(
-		"SealStageAndReset",firstStageSeam+1u)==std::string::npos&&
-		CountText(tracedTransportSource,"SealCellStageAndReset")==1u,
+	Check(CountText(tracedTransportSource,"SealCellStageAndReset")==1u&&
+		CountText(tracedTransportSource,"SealDualStageAndReset")==1u&&
+		CountText(tracedTransportSource,"SealStageAndReset")==0u,
 		"generated transport trace owns exactly the cell and dual stage-reset seams");
 	Check(CountText(tracedProjectionSource,"ProjectionInterpolationScope")==1u&&
 		tracedProjectionSource.find("topologyScope(fine,fineExtent,coarseExtent)")!=
@@ -300,7 +310,9 @@ int main()
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		traceAdapterSource.begin(),traceAdapterSource.end()))==
 		RISEFireProductionTrace::SourceManifest::TraceAdapter&&
-		CountText(traceAdapterSource,"ObserveMetricRangeAndReset(")==2u&&
+		CountText(traceAdapterSource,"ObserveMetricRangeAndReset(")==3u&&
+		traceAdapterSource.find("computed.force.momentumKGPerM2S[axis],0u,")!=
+			std::string::npos&&
 		traceAdapterSource.find("projection.velocityMPerS[axis],0u,"
 			"projection.velocityMPerS[axis].size(),9u+axis")!=std::string::npos&&
 		traceAdapterSource.find("computed.conservativeValues,component*cells,cells,")!=
@@ -501,6 +513,35 @@ int main()
 			!FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
 				rejected,0.001f,0.0011f,0.0002,0.0,certified.velocityRMSUpper),
 			"rejected and over-band validation paths cannot borrow the accepted-solution anchor");
+	}
+	{
+		std::array<FireProductionRoundoffWalker::FullStepMetricStage,24> stages={};
+		for(const unsigned int stage:{1u,2u,3u,4u,5u,21u})for(unsigned int component=0u;
+			component<9u;++component){stages[stage].count[component]=8u;
+			stages[stage].radiusSum[component]=0.008;stages[stage].radiusSquareSum[component]=
+				8.0e-6;stages[stage].maximumRadius[component]=0.001;}
+		for(unsigned int axis=0u;axis<3u;++axis){const unsigned int channel=9u+axis;
+			stages[0].count[channel]=8u;stages[0].radiusSquareSum[channel]=8.0e-8;
+			for(unsigned int offset=0u;offset<5u;++offset){const unsigned int stage=6u+5u*axis+offset;
+				stages[stage].count[channel]=8u;stages[stage].radiusSquareSum[channel]=8.0e-8;}}
+		FireProductionRoundoffWalker::FullStepRoundoffCertificate certified,missingCell,
+			missingDensity,missingPhysical,missingRestoration;
+		const auto derive=[&](FireProductionRoundoffWalker::FullStepRoundoffCertificate& output,
+			const FireProductionRoundoffWalker::FullStepGraphVariant variant){return
+			FireProductionRoundoffWalker::DeriveFullStepRoundoffBound(stages,8u,0.9,1.2,0.04,
+				0.002,1.1,0.2,1.0e-7,0.01,0.02,0.001,0.002,output,variant);};
+		Check(derive(certified,FireProductionRoundoffWalker::FullStepGraphVariant::Certified)&&
+			derive(missingCell,FireProductionRoundoffWalker::FullStepGraphVariant::MissingCellStage)&&
+			derive(missingDensity,FireProductionRoundoffWalker::FullStepGraphVariant::
+				MissingDensityInteraction)&&derive(missingPhysical,
+				FireProductionRoundoffWalker::FullStepGraphVariant::MissingPhysicalFeedthrough)&&
+			derive(missingRestoration,FireProductionRoundoffWalker::FullStepGraphVariant::
+				MissingRestorationFeedthrough)&&missingCell.scalarFilteredL1Upper[0]<
+				certified.scalarFilteredL1Upper[0]&&missingDensity.finalVelocityRMSUpper<
+				certified.finalVelocityRMSUpper&&missingPhysical.finalVelocityRMSUpper<
+				certified.finalVelocityRMSUpper&&missingRestoration.finalVelocityRMSUpper<
+				certified.finalVelocityRMSUpper,
+			"full-step bound requires every cell stage, density interaction, and projection feedthrough");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;

@@ -61,6 +61,7 @@ namespace FireProductionRoundoffTrace
 		double maximumOutputRadius=0.0;
 		double metricOutputRadiusSum[MetricChannelCount]={};
 		double metricOutputRadiusSquareSum[MetricChannelCount]={};
+		double metricOutputMaximumRadius[MetricChannelCount]={};
 		std::uint64_t metricOutputCount[MetricChannelCount]={};
 		std::uint64_t nonfiniteMetricOutputRadiusCount[MetricChannelCount]={};
 		std::uint64_t firstNonfiniteMetricOutputIndex[MetricChannelCount]={};
@@ -1097,6 +1098,8 @@ namespace FireProductionRoundoffTrace
 					ActiveCounters->metricOutputRadiusSum[channel]+radius);
 				ActiveCounters->metricOutputRadiusSquareSum[channel]=NextUp(
 					ActiveCounters->metricOutputRadiusSquareSum[channel]+radius*radius);
+				ActiveCounters->metricOutputMaximumRadius[channel]=std::max(
+					ActiveCounters->metricOutputMaximumRadius[channel],radius);
 				}
 				++ActiveCounters->metricOutputCount[channel];}
 			value=TraceFloat(value.Rounded());
@@ -1104,6 +1107,14 @@ namespace FireProductionRoundoffTrace
 	}
 
 	inline void SealCurrentStage();
+	inline void SealDualStageAndReset(std::vector<TraceFloat>& density,
+		std::vector<TraceFloat>& momentum,const unsigned int component)
+	{
+		ObserveAndReset(density);
+		ObserveMetricRangeAndReset(momentum,0u,momentum.size(),9u+component);
+		SealCurrentStage();
+	}
+
 	inline void SealCellStageAndReset(std::vector<TraceFloat>& values,
 		const std::size_t componentCount,const std::size_t cellCount)
 	{

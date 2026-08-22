@@ -165,6 +165,25 @@ namespace FireProductionRoundoffWalker
 		bool validationPredicateSeparated=false;
 		bool pressureOpenAnchor=false,allConstantsStructural=false;
 	};
+	struct FullStepMetricStage
+	{
+		std::array<double,12> radiusSum={},radiusSquareSum={},maximumRadius={};
+		std::array<std::uint64_t,12> count={};
+	};
+	struct FullStepRoundoffCertificate
+	{
+		std::array<double,9> scalarFilteredL1Upper={},scalarRMSUpper={},
+			inventoryPerVolumeUpper={};
+		std::array<double,3> momentumL2PerCellUpper={};
+		double gasDensityRMSUpper=0.0,densityRelativeUpper=0.0;
+		double provisionalVelocityL2PerCellUpper=0.0;
+		double physicalProjectionVelocityUpper=0.0,finalVelocityRMSUpper=0.0;
+		double openBoundaryInteractionUpper=0.0;
+		bool scalarTransportNonexpansive=false,dualTransportNonexpansive=false,
+			projectionInteractionsIncluded=false;
+	};
+	enum class FullStepGraphVariant { Certified,MissingCellStage,
+		MissingDensityInteraction,MissingPhysicalFeedthrough,MissingRestorationFeedthrough };
 	enum class ProjectionAposterioriGraphVariant { Certified,DoublePoincare,
 		MissingCrossPrecisionResidual,MissingFP64ResidualGate,MissingFP64Feedback,
 		MissingFP64Terminal,MissingBeginningVelocity,
@@ -591,6 +610,103 @@ namespace FireProductionRoundoffWalker
 		certificate.validationPredicateSeparated=true;
 		certificate.pressureOpenAnchor=true;certificate.allConstantsStructural=true;
 		return true;
+	}
+
+	// Each accepted FCT submap is a conservative shared-alpha monotone map.  Its
+	// perturbation matrix is substochastic in both one- and infinity-norm, hence
+	// nonexpansive in L1 and (by sqrt(||A||1||A||inf)) in L2.  Local arithmetic
+	// envelopes therefore compose by outward Minkowski sums.  The two variable-
+	// density projections are bounded in the unweighted face norm by sqrt(kappa);
+	// coefficient and pressure-open total-head interactions are explicit below.
+	inline bool DeriveFullStepRoundoffBound(const std::array<FullStepMetricStage,24>& stages,
+		const std::size_t cellCount,const double densityLower,const double densityUpper,
+		const double spacing,const double timeStep,const double ambientDensity,
+		const double maximumBeginningVelocity,const double beginningDivisionMaximumRadius,
+		const double physicalCorrectionL2,const double restorationCorrectionL2,
+		const double physicalLocalProjectionBound,const double restorationLocalProjectionBound,
+		FullStepRoundoffCertificate& certificate,
+		const FullStepGraphVariant variant=FullStepGraphVariant::Certified)
+	{
+		certificate=FullStepRoundoffCertificate();
+		if(!cellCount||!(densityLower>0.0&&densityUpper>=densityLower&&spacing>0.0&&
+			timeStep>0.0&&ambientDensity>0.0&&maximumBeginningVelocity>=0.0&&
+			beginningDivisionMaximumRadius>=0.0&&physicalCorrectionL2>=0.0&&
+			restorationCorrectionL2>=0.0&&physicalLocalProjectionBound>=0.0&&
+			restorationLocalProjectionBound>=0.0))return false;
+		const unsigned int scalarStages[]={1u,2u,3u,4u,5u,21u};
+		for(unsigned int component=0u;component<9u;++component){
+			for(const unsigned int stage:scalarStages){
+				if(!stages[stage].count[component])return false;
+				if(variant==FullStepGraphVariant::MissingCellStage&&stage==3u)continue;
+				const double count=static_cast<double>(stages[stage].count[component]);
+				certificate.scalarFilteredL1Upper[component]=Detail::NextUp(
+					certificate.scalarFilteredL1Upper[component]+
+					stages[stage].radiusSum[component]/count);
+				certificate.scalarRMSUpper[component]=Detail::NextUp(
+					certificate.scalarRMSUpper[component]+std::sqrt(
+						stages[stage].radiusSquareSum[component]/count));
+			}
+			certificate.inventoryPerVolumeUpper[component]=
+				certificate.scalarFilteredL1Upper[component];
+		}
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const unsigned int channel=9u+axis;
+			const unsigned int first=axis?6u+5u*axis:0u;
+			if(!stages[0].count[channel])return false;
+			certificate.momentumL2PerCellUpper[axis]=Detail::NextUp(std::sqrt(
+				stages[0].radiusSquareSum[channel]/static_cast<double>(cellCount)));
+			for(unsigned int offset=0u;offset<5u;++offset){const unsigned int stage=
+				axis==0u?6u+offset:first+offset;
+				if(!stages[stage].count[channel])return false;
+				certificate.momentumL2PerCellUpper[axis]=Detail::NextUp(
+					certificate.momentumL2PerCellUpper[axis]+std::sqrt(
+						stages[stage].radiusSquareSum[channel]/static_cast<double>(cellCount)));
+			}
+		}
+		for(unsigned int component=1u;component<=6u;++component)
+			certificate.gasDensityRMSUpper=Detail::NextUp(
+				certificate.gasDensityRMSUpper+certificate.scalarRMSUpper[component]);
+		certificate.densityRelativeUpper=variant==FullStepGraphVariant::MissingDensityInteraction?
+			0.0:Detail::NextUp(certificate.gasDensityRMSUpper/densityLower);
+		double momentumVector=0.0;
+		for(const double value:certificate.momentumL2PerCellUpper)
+			momentumVector=Detail::NextUp(momentumVector+value*value);
+		momentumVector=Detail::NextUp(std::sqrt(momentumVector));
+		const double uniqueFaces=static_cast<double>(stages[0].count[9]+stages[0].count[10]+
+			stages[0].count[11]);
+		const double faceMetricGain=Detail::NextUp(std::sqrt(uniqueFaces/
+			static_cast<double>(cellCount)));
+		const double divisionRounding=Detail::NextUp(beginningDivisionMaximumRadius*
+			faceMetricGain);
+		certificate.provisionalVelocityL2PerCellUpper=Detail::NextUp(
+			momentumVector/densityLower+divisionRounding+
+			certificate.densityRelativeUpper*maximumBeginningVelocity);
+		const double conditionGain=Detail::NextUp(std::sqrt(densityUpper/densityLower));
+		const double coefficientPhysical=Detail::NextUp(
+			certificate.densityRelativeUpper*physicalCorrectionL2);
+		// All unique faces is a structural upper bound on the pressure-open subset.
+		const double boundaryMetric=faceMetricGain;
+		certificate.openBoundaryInteractionUpper=Detail::NextUp(
+			(2.0*timeStep/spacing)*(ambientDensity/densityLower)*boundaryMetric*
+			Detail::NextUp(2.0*maximumBeginningVelocity*
+				certificate.provisionalVelocityL2PerCellUpper+
+				certificate.provisionalVelocityL2PerCellUpper*
+				certificate.provisionalVelocityL2PerCellUpper));
+		const double physicalInput=variant==FullStepGraphVariant::MissingPhysicalFeedthrough?
+			0.0:conditionGain*certificate.provisionalVelocityL2PerCellUpper;
+		certificate.physicalProjectionVelocityUpper=Detail::NextUp(physicalInput+
+			coefficientPhysical+certificate.openBoundaryInteractionUpper+
+			physicalLocalProjectionBound);
+		const double restorationInput=variant==FullStepGraphVariant::
+			MissingRestorationFeedthrough?0.0:
+			conditionGain*certificate.physicalProjectionVelocityUpper;
+		certificate.finalVelocityRMSUpper=Detail::NextUp(restorationInput+
+			certificate.densityRelativeUpper*restorationCorrectionL2+
+			restorationLocalProjectionBound);
+		certificate.scalarTransportNonexpansive=true;
+		certificate.dualTransportNonexpansive=true;
+		certificate.projectionInteractionsIncluded=true;
+		return std::isfinite(certificate.finalVelocityRMSUpper);
 	}
 
 	// The periodic/open swept integral is continuous when its integer partition

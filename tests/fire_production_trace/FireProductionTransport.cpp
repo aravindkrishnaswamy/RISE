@@ -1118,8 +1118,8 @@ namespace RISEFireProductionTrace
 					if( !ApplyDualAxis(request,component,sweepAxis,axisTimeStep[sweepAxis],
 						computed.auxiliaryFaceDensity[component],computed.momentum[component],
 						error) ) return false;
-					FireProductionRoundoffTrace::SealStageAndReset(
-						computed.auxiliaryFaceDensity[component],computed.momentum[component]);
+					FireProductionRoundoffTrace::SealDualStageAndReset(
+						computed.auxiliaryFaceDensity[component],computed.momentum[component],component);
 				}
 				if( AxisIsPeriodic(request,component) ) PublishPeriodicDualSeam(shape,component,
 					computed.auxiliaryFaceDensity[component],computed.momentum[component],

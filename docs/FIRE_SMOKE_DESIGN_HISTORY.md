@@ -3143,3 +3143,18 @@ it was already tried and refuted here.
   projection-local term, not the composed `B_fp32`, and no Metal/fp64
   measurement has run.  Durable evidence is `18f01152...b651ec2`; production
   and golden-checkpoint bytes are unchanged.
+
+- **r135 full-step analytic B_fp32 derivation (2026-08-22):** before any Metal
+  measurement, the independent walker composes the five cell remaps, source
+  publication, force output, fifteen dual submaps, physical projection, and
+  restoration projection.  Shared-alpha monotone conservative maps supply the
+  structural L1/L2 nonexpansive gains.  Projection composition includes gas-
+  density coefficient error, pressure-open total-head forcing, the physical
+  output feeding restoration, and both distinct r134 local terms.  The nine
+  scalar/inventory bounds are `3.2719950722423746e-4` through
+  `5.2181563701838843e2`; final velocity RMS is
+  `2.1145425678289562e-2 m/s`.  Missing-cell, missing-density, and missing-
+  projection-feedthrough mutants all underbound and RED.  Exact exit `242`
+  binds trace `086c6b06...86c284`; durable derivation evidence is
+  `843e1f02...9f32c1`.  Metal measurement and all later acceptance decisions
+  remain unrun; the golden checkpoint is unchanged.

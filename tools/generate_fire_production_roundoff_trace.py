@@ -286,8 +286,8 @@ def transform(text: str, name: str, suffix: str) -> str:
                             "\t\t\t\t\tif( !ApplyDualAxis(request,component,sweepAxis,axisTimeStep[sweepAxis],\n"
                             "\t\t\t\t\t\tcomputed.auxiliaryFaceDensity[component],computed.momentum[component],\n"
                             "\t\t\t\t\t\terror) ) return false;\n"
-                            "\t\t\t\t\tFireProductionRoundoffTrace::SealStageAndReset(\n"
-                            "\t\t\t\t\t\tcomputed.auxiliaryFaceDensity[component],computed.momentum[component]);\n"
+                            "\t\t\t\t\tFireProductionRoundoffTrace::SealDualStageAndReset(\n"
+                            "\t\t\t\t\t\tcomputed.auxiliaryFaceDensity[component],computed.momentum[component],component);\n"
                             "\t\t\t\t}")
         if text.count(dual_loop) != 1:
             raise RuntimeError("dual palindrome stage seam changed")
