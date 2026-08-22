@@ -1,6 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  NodeGraphCanvas.cpp - RISE UI redesign, left-panel "Graph" tab.
+//  NodeGraphCanvas.cpp - RISE UI redesign, left-panel "Material Graph"
+//  tab (review-round P2 fix: renamed from the generic "Graph" once the
+//  Object Graph tab shipped as a sibling, S3 -- display string only).
 //
 //  See NodeGraphCanvas.h for the slice scope (doc-88 Phase 3 S16+S22).
 //  The PARITY TABLE mapping every macOS behavior to its Qt mirror, and
@@ -1054,7 +1056,11 @@ NodeGraphCanvas::NodeGraphCanvas(QWidget* parent)
     headerLayout->setContentsMargins(14, 0, 10, 0);
     headerLayout->setSpacing(8);
 
-    m_titleLabel = new QLabel(tr("Graph"), m_header);
+    // review-round P2 fix: RENAMED to "Material Graph" (was the generic
+    // "Graph") once the Object Graph tab shipped as a sibling, S3 -- Mac
+    // did the identical rename at NodeGraphCanvas.swift's own header Text.
+    // Display string only, no code symbols renamed.
+    m_titleLabel = new QLabel(tr("Material Graph"), m_header);
     m_titleLabel->setFont(Theme::sans(12, QFont::DemiBold));
     headerLayout->addWidget(m_titleLabel);
 
@@ -2217,6 +2223,8 @@ qreal NodeGraphCanvas::currentScale() const
 // does not build RISE-GUI on this platform) is unaffected and is only
 // a REGRESSION check that the library side stayed byte-identical.
 //
+// | 30 | Object Graph canvas (S3, sibling of the Painter/Material canvas above): read-only object hierarchy down to geometry, All/Focused toggle with the SAME sticky-object policy as row 29, single-node spotlight, click-to-select (Object/Geometry categories), no dragging/editing | `ObjectGraphCanvas` (ObjectGraphCanvas.h/.cpp) -- `performReload`/`updateStickyFocusObject`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`/`setBridge`/`refreshSpotlight`/`selectNode`, `ViewportBridge::objectGraph`/`objectGraphFocused`, `SceneEditController::ReadObjectGraph{,LaidOut,LaidOutFocused}` | Direct port of `ObjectGraphCanvas.swift` (S2, itself reviewed to ZERO findings), which itself ported the Material canvas's FINAL (post-review) sticky-object shape rather than re-deriving it -- this row is therefore a port of a port, and inherits every fix row 29's own text documents (the P1 lockstep-commit fix, the P2 cheap-gate fix) rather than re-earning them. A canvas-node click updates the sticky memo when (and only when) the clicked node is Object-category -- `updateStickyFocusObject` guards on `selectionCategory() == Object` exactly like row 29's does, and since THIS canvas's own nodes can themselves be Object-category, clicking one legitimately re-focuses (the same gesture as picking it in the outliner), while clicking a Geometry node leaves the memo untouched (sticky). **Review-round P1 fix, corrected from this row's ORIGINAL text**: unlike row 29 (where a canvas click is NEVER Object-category, so the sticky memo's own guard is the whole story), a click here CAN be Object-category, and `updateStickyFocusObject`'s per-frame poll alone is NOT enough to re-center an already-Focused subgraph with no render in flight (the common static-scene browsing case) -- the memo would update on the NEXT `performReload()` call, but nothing else was triggering one. `selectNode` now explicitly forces one for an Object-node click while Focused (a Geometry-node click still does not, matching the sticky policy), deferred via `QTimer::singleShot(0, this, ...)` for the SAME use-after-free reason row 29's own `selectNode` history documents (`performReload` -> `applySnapshot` deletes every `ObjectGraphNodeItem`, including the one whose `mousePressEvent` is still on the call stack). Two DELIBERATE ASYMMETRIES with row 29, both already true of row 29 itself and simply inherited here: (a) **Qt's retry is frame-tick, Mac's is a bounded `DispatchWorkItem`** -- a DEGRADED focused resolve leaves the gate fields uncommitted and does nothing further; the NEXT `imageUpdated` frame (this canvas's `refresh()` rides it, wired in MainWindow.cpp) retries the deep resolve for real, because this canvas re-derives every preview frame already -- Mac's `ObjectGraphCanvas.swift` needs an explicit ~0.5s `DispatchWorkItem` timer for the identical case because its `performReload` runs only on discrete triggers, never a bare per-frame poll. (b) **the cheap gate is Qt-only** -- `updateStickyFocusObject`'s `(selectionCategory(), selectionName())` pre-check exists ONLY on this platform, for the SAME reason row 29's own text gives: an object sitting selected through a long render must not re-pay `selectionRowName()`'s O(rows) walk on every single preview frame, a cost that does not exist on Mac's discrete-trigger cadence. The SPOTLIGHT here is a SINGLE node, not a closure (unlike row 28's appearance-closure spotlight) -- this canvas's "All" view already shows every object, so the spotlight only needs to say "you are looking at THIS one"; it carries its OWN separate cheap gate (`m_lastSpotlightCategory`/`m_lastSpotlightSelectionName`, distinct from the sticky-focus gate) for the identical per-frame reason. No thumbnail (an Object/Geometry node has no `PainterPreview`-style preview to show), no fan-out/orphan badge (this graph's shared-node and unreferenced-node concepts don't map the same way onto an object hierarchy) -- the card shows name/keyword/category label plus a `repeatCount` "×N" badge (shown for `repeatCount >= 1`, including "×1" for a bare `count_u 1` -- presence alone selects the repeated form). NO drag-to-reposition and NO drag-to-wire exist on this canvas at all (unlike row 29's own S22 additions) -- `ObjectGraphNodeItem` sets neither `ItemIsMovable` nor `ItemSendsGeometryChanges`, so panning on a node press falls through to the view's own `ScrollHandDrag` exactly as it would on empty canvas space; this graph's layout is ALWAYS transient (no `.risegraph.json` partition exists to persist a drag into -- see `SceneEditController::ReadObjectGraphLaidOut`'s own header comment), so there is nothing a drag gesture could usefully commit. `setSceneEditable` is wired at the same MainWindow call site as row 29's for lifecycle-wiring consistency, but stores the flag unread -- this phase has no "+", no rewire commit, no delete/duplicate to gate. |
+//
 // ---- MSVC-verification checklist (for the owed Windows build session) ----
 //
 //  [ ] HIGHEST-RISK ITEM, CHECK FIRST: the nested-struct fix in
@@ -2341,5 +2349,38 @@ qreal NodeGraphCanvas::currentScale() const
 //      because this canvas is a persistent widget that survives a scene
 //      switch while `m_bridge` itself is swapped for a brand-new
 //      `ViewportBridge`.
+//  [ ] Object Graph canvas (row 30, S3, NEW FILES -- ObjectGraphCanvas.h/
+//      .cpp, plus the RISE-GUI.vcxproj entries for both, the MOC
+//      CustomBuild for the header, and the MainWindow.h/.cpp tab-wiring
+//      edits: m_objectGraphTabBtn/m_objectGraphCanvas members, the fourth
+//      tab button + QButtonGroup membership + QStackedWidget index 3,
+//      setLeftTab's index==3 branches (checked-state + refresh-on-switch),
+//      updateTabButtonStyles' extended null-guard + button list, the
+//      outliner selectionActivated connect in buildRightPanel, the
+//      imageUpdated connect, setSceneEditable, and setBridge attach/
+//      detach in rebuildViewportForLoadedScene/teardownViewport). Click
+//      "Object Graph"; confirm the tab activates, the canvas populates
+//      with the scene's objects/geometry laid out left-to-right, and
+//      switching tabs away and back does NOT lose pan/zoom state (this
+//      canvas is persistent, unlike a per-tab-rebuild widget). Click a
+//      standard_object node; confirm the properties panel follows
+//      (Object category) and clicking a geometry node does the same
+//      (Geometry category) -- verify `RISEViewportCategoryGeometry`
+//      resolves a real, non-empty properties panel, not a blank one.
+//      Confirm the "×N" badge appears on a `count_u`/`count_v` chunk and
+//      NOT on an ordinary object, and that a bare `count_u 1` chunk shows
+//      "×1" specifically (not blank). Toggle Focused with an object
+//      selected; confirm the subgraph narrows to parents/children/
+//      geometry only. THEN (mirrors row 29's own dedicated contention
+//      case, adapted for this canvas's frame-tick retry instead of a
+//      timer): with a render running, select a different object and
+//      toggle to Focused; confirm the canvas keeps showing its last-good
+//      content (not a flash to All) and resolves to the correct focused
+//      subgraph on its own within a frame or two of the render ending --
+//      no further click needed, proving the frame-tick retry (row 30's
+//      own "(a)" asymmetry note) actually self-heals the way Mac's timer
+//      does. Confirm double-clicking a node does nothing (no def-focus,
+//      no dialog) and that no node can be dragged (a press-drag on a
+//      node pans the canvas exactly like empty space would).
 //
 // ======================================================================

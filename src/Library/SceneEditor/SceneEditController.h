@@ -2598,6 +2598,12 @@ namespace RISE
 			unsigned long long order  = 0;   //!< sibling/display order key, same role as TreeNodeSeed::order
 			unsigned long long serial = 0;   //!< registration identity, same role as TreeNodeSeed::serial
 			int           defCount   = 0;
+			//! Object Graph slice: a `standard_object`'s `count_u * count_v`
+			//! repeat-sugar (87 step 3c) -- see `GraphNode::repeatCount`'s own
+			//! comment for the full contract. Every Painter/Material seed
+			//! leaves this at the default 0; `BuildPainterMaterialGraph`
+			//! copies it straight through, same as `defCount`.
+			int           repeatCount = 0;
 		};
 
 		//! The input to the pure DAG assembler: one record per RESOLVED
@@ -2716,6 +2722,20 @@ namespace RISE
 			//! for every other chunk kind. The §1.1 two-level model's hook:
 			//! `def` stages are a COUNT here, never nodes of their own.
 			int defCount = 0;
+			//! Object Graph slice: `standard_object`'s `count_u * count_v`
+			//! repeat-sugar (87 step 3c) when this chunk CARRIES counts (i.e.
+			//! declares `count_u` at all -- `count_v` alone defaults to 1 per
+			//! that param's own descriptor comment), 0 otherwise. 0 is
+			//! therefore NOT "a repeat of one" -- it is "not a repeat chunk at
+			//! all"; a genuine `count_u 1` (no `count_v`) publishes 1, not 0,
+			//! per that param's own "PRESENCE selects the repeated form"
+			//! contract. Deliberately NOT `defCount` repurposed (a shell
+			//! badges an object's repeat count and a painter's expression-def
+			//! count with different affordances; conflating the two fields
+			//! would make one graph type's reader guess which meaning it is
+			//! looking at). Every Painter/Material node leaves this 0 -- the
+			//! object seeder is the only writer.
+			int repeatCount = 0;
 			std::vector<GraphPort> outEdges;              //!< this node's OWN reference params -> other nodes (or dangling)
 			std::vector<GraphPort> inEdges;                //!< other nodes' reference params -> this node (its "parents")
 		};
@@ -2740,6 +2760,24 @@ namespace RISE
 			//! why a serial alone cannot detect a ClearAll + re-derive.
 			unsigned long long rebuildCount = 0;
 		};
+
+		//! Object Graph slice (below): a NEUTRAL alias for the SAME shared
+		//! model -- GraphNodeSeed/GraphEdgeSeed/GraphPort/GraphNode/
+		//! PainterMaterialGraph/BuildPainterMaterialGraph/GraphLayout/
+		//! BFSGraphClosure/FilterPainterMaterialGraph are all painter-
+		//! agnostic already (nothing in any of them mentions a Painter or
+		//! Material concept by name -- they are node/edge/rank machinery
+		//! over an opaque (category,name,ports) shape), so the object
+		//! hierarchy graph reuses every one of them VERBATIM rather than
+		//! duplicating a structurally-identical twin. Deliberately a
+		//! TYPEDEF, not a rename of `PainterMaterialGraph` itself -- this
+		//! class's S11-era Painter/Material call sites (`ReadPainterMaterial
+		//! Graph` and everything downstream of it, both platform bridges,
+		//! the C ABI) already spell the concrete name throughout; renaming
+		//! it would touch every one of those for a purely cosmetic gain.
+		//! This alias exists so the NEW object-graph code below can spell
+		//! its own intent without the word "Painter" in it, nothing more.
+		using SceneGraphModel = PainterMaterialGraph;
 
 		//! The pure assembly step, seeds+edge-seeds -> PainterMaterialGraph.
 		//! PURE and static, like BuildAuthoredTree: touches no controller
@@ -3353,6 +3391,173 @@ namespace RISE
 		void ReadPainterMaterialGraphLaidOutFocused( ChunkCategory cat, const String& name,
 		                                              PainterMaterialGraphLaidOut& out,
 		                                              bool* outDegraded = nullptr ) const;
+
+		// =====================================================================
+		// Object Graph slice (S1 core, "GUI redesign" Object Graph canvas tab --
+		// a sibling of the S11/S14 Painter/Material canvas, shown in the shells
+		// as "Material Graph"/"Object Graph"). Same three-layer split S11
+		// established, over the SAME shared model (`SceneGraphModel`, above):
+		//   1. `BuildPainterMaterialGraph` (S11, reused VERBATIM) -- PURE.
+		//   2. `BuildObjectGraphSeedsLocked_` -- seeds nodes/edges from the
+		//      retained CST Document's OWN Object/Geometry-category chunks
+		//      (`SceneReferenceGraph::AllChunks`/`EdgesAndDangling`), the SAME
+		//      document-seeded discipline S11's own seeder uses and for the
+		//      SAME reason (a live-manager union cannot tell two same-name
+		//      same-category chunks apart, and this graph's node identity is
+		//      `GraphNodeSeed::id`, not (category,name), exactly like S11's).
+		//      REQUIRES mMutex held.
+		//   3. `RefreshObjectGraphSnapshot_` -- the SAME compare-then-publish
+		//      discipline `RefreshPainterMaterialGraphSnapshot_` uses (serve
+		//      stale on contention/render-owns-scene, republish -- and bump
+		//      generation, and re-stamp every node's handle -- only on an
+		//      actual structural change).
+		//
+		// NODE SET: `ChunkCategory::Object` (`standard_object`/`csg_object`,
+		// generically -- excluding `override_object`, the legacy pre-CST
+		// round-trip chunk nothing emits today, which would otherwise show up
+		// as a node with no useful edges since its target is a STRING param,
+		// not a Reference) + `ChunkCategory::Geometry` (every `*_geometry`
+		// chunk, including `gltf_import` -- its own descriptor category IS
+		// Geometry) + the two "light sugar" chunks `rect_light`/`shape_light`
+		// BY KEYWORD -- their OWN descriptor category is `ChunkCategory::Light`
+		// (they desugar into a painter+material+geometry+`standard_object`
+		// QUARTET at scene-DERIVE time, per their own descriptor comment, but
+		// the RETAINED CST document -- what this document-seeded graph reads --
+		// still holds exactly the ONE authored `rect_light`/`shape_light`
+		// chunk, not the desugared quartet), so they are RE-CATEGORIZED as
+		// `ChunkCategory::Object` in THIS graph -- the object graph models
+		// what a chunk PRODUCES, not its authoring category. A `gltf_import`
+		// chunk's PER-PRIMITIVE live objects (registered only at derive time,
+		// one live IObject per glTF mesh primitive) are invisible to this
+		// document-only seed -- an ACCEPTED fold, the same "document, not
+		// managers" posture S11 already lives with; the import chunk itself
+		// still appears as ONE Geometry node.
+		//
+		// EDGE TAXONOMY (every Reference-kind param on an in-scope node,
+		// classified by paramName -- every OTHER param, e.g. `material`/
+		// `modifier`/`shader`/`radiance_map`/`interior_medium`, is simply
+		// never matched by either bucket below and therefore never seeded as
+		// an edge at all -- "dropped", but for free: no exclusion list to
+		// maintain, just an allowlist that does not mention them):
+		//   - HIERARCHY family -- `parent` (standard_object/csg_object/
+		//     rect_light/shape_light), `source` (standard_object instancing),
+		//     `obja`/`objb` (csg_object operands). Seeded with the SAME
+		//     direction `SceneReferenceGraph::Edges` already reports
+		//     (referrer -> target, i.e. child -> parent / instance -> source
+		//     / composite -> operand) -- see the RANK/LAYOUT DIRECTION note
+		//     below for why this direction, not a flip, is what makes the
+		//     layout read left-to-right root-to-leaf.
+		//   - GEOMETRY family -- `geometry` (standard_object's own geometry,
+		//     AND `path_instances_geometry`'s template reference -- same
+		//     param name, same bucket), `base_geometry`
+		//     (`displaced_geometry`'s base). Seeded FLIPPED (geometry-chunk ->
+		//     consumer) -- see the RANK/LAYOUT DIRECTION note. `paramName`/
+		//     `occurrence`/`portCategories` stay faithful to the DOCUMENT's
+		//     actual param even though the edge direction is synthetic, so a
+		//     shell drawing a wire still labels the port correctly.
+		//
+		// RANK/LAYOUT DIRECTION (GraphLayout's outEdges-mean-"my inputs"
+		// convention -- rank 0 = no valid outEdges, else 1+max(rank(outEdges
+		// targets)), column x = rank * spacing, so INCREASING rank sits
+		// FURTHER RIGHT): the user's mental model is "an object tree flowing
+		// left-to-right, ending in the geometry" -- roots at rank 0 (leftmost,
+		// since a root's own outEdges are empty), each generation of children
+		// one rank to the right of its parent (a child's outEdges points AT
+		// its parent, so child.rank = 1+parent.rank), and a geometry chunk
+		// sitting to the RIGHT of every object (or geometry, for a chained
+		// `displaced_geometry`) that consumes it (geometry.rank =
+		// 1+max(rank(consumers)) because the FLIP above makes the geometry
+		// chunk the "referrer" whose outEdges point AT its consumer(s)). A
+		// geometry shared by several consumers therefore ranks to the right
+		// of the DEEPEST one, and gets one outEdges row per consumer -- the
+		// exact "shared painter fan-out" shape S11 already established for
+		// `inEdges`, mirrored here on `outEdges` because the flip put the
+		// many-to-one relationship on that side instead.
+		void ReadObjectGraph( SceneGraphModel& out ) const;
+
+		//! Object Graph twin of `PainterMaterialGraphLaidOut` -- deliberately
+		//! a DISTINCT struct (not a reuse of that one), same reasoning as
+		//! `SceneGraphModel` itself: the shape is identical (`{graph,
+		//! positions}`, both fields already painter-agnostic types) but the
+		//! NAME should not carry "Painter" for an API describing the object
+		//! hierarchy graph.
+		struct ObjectGraphLaidOut
+		{
+			SceneGraphModel graph;
+			//! Parallel to graph.nodes; see GraphNodePosition's own comment.
+			std::vector<GraphNodePosition> positions;
+		};
+
+		//! `ReadObjectGraph` (above) + a fresh `GraphLayout::LayoutGraph` pass
+		//! over the result -- deliberately WITHOUT S13's `.risegraph.json`
+		//! sidecar (unlike `ReadPainterMaterialGraphLaidOut`): that sidecar is
+		//! keyed by bare node NAME with no category/graph-kind partition
+		//! (`GraphLayoutSidecar.h`'s own format comment: `{"nodes":
+		//! {"<name>":...}}`), so an Object named "Foo" and a Painter named
+		//! "Foo" would silently fight over ONE saved position if this graph
+		//! shared that file. The object graph's layout is therefore ALWAYS
+		//! auto (transient), on every call, the same design decision
+		//! `ReadPainterMaterialGraphLaidOutFocused` already documents for the
+		//! FOCUSED painter view and for the identical reason (no
+		//! per-graph-kind sidecar partition exists to write into safely). A
+		//! future slice that wants persisted Object Graph layout needs a
+		//! sidecar format revision (a `"kind"` top-level key, or a second
+		//! file) FIRST -- not a shared write into the existing one.
+		void ReadObjectGraphLaidOut( ObjectGraphLaidOut& out ) const;
+
+		//! Focused Object Graph read: "all parents and children of the
+		//! clicked object" (the user's own framing), resolved by `name`
+		//! against `ChunkCategory::Object` (which, per `ReadObjectGraph`'s own
+		//! header comment, already includes `rect_light`/`shape_light`
+		//! nodes) -- unknown or ambiguous `name` refuses to an empty,
+		//! non-degraded `out.graph`, the SAME "refuse rather than guess"
+		//! convention `ResolveUniqueGraphNodeIndex` documents.
+		//!
+		//! The subgraph (`ObjectGraphFocusedClosure`, below) is FOUR
+		//! components, unioned:
+		//!   - UP: transitive ancestors -- the `parent` chain, PLUS (a
+		//!     composite is an "ancestor-like owner") any `csg_object` that
+		//!     references an already-included node via `obja`/`objb`, climbed
+		//!     transitively (that composite's own parent, its own owning
+		//!     composite if it is itself nested as an operand, and so on).
+		//!   - DOWN: transitive descendants -- the reverse `parent` chain
+		//!     (every node whose parent chain reaches back to the target),
+		//!     PLUS the operands (`obja`/`objb`) of any `csg_object` that is
+		//!     ITSELF a descendant (or the target), climbed transitively the
+		//!     same way.
+		//!   - GEO: every node in UP ∪ DOWN ∪ {target}'s full geometry chain
+		//!     -- one hop via a `geometry`/`base_geometry` inEdge, then
+		//!     continued from THAT node (so a `displaced_geometry` chain
+		//!     surfaces its own base too), however many hops deep.
+		//!   - SOURCE: ONE hop only -- the direct `source` target of any node
+		//!     in UP ∪ DOWN ∪ {target}, so the user sees WHAT an instance
+		//!     copies without pulling in that source's own whole subtree (its
+		//!     ancestors/descendants/geometry are NOT further expanded).
+		//! UP and DOWN are DELIBERATELY SEPARATE walks, not one combined
+		//! worklist applying all four hierarchy rules to every discovered
+		//! node -- see `ObjectGraphFocusedClosure`'s own comment for the
+		//! sibling-subtree leak that combining them produces (a mid-tree
+		//! focus pulling in an unrelated sibling branch through a shared
+		//! ancestor). An UNRELATED SIBLING SUBTREE of the target is therefore
+		//! EXCLUDED, even though it shares an ancestor UP discovers.
+		//!
+		//! `outDegraded`: set true ONLY when `mRenderOwnsScene` is observed
+		//! true at the very top of this call (mirrors
+		//! `ResolveObjectMaterialNameLocked_`'s FIRST guard) -- unlike the
+		//! Painter focused read's Object-category case, this method touches
+		//! no live manager and needs no `mMutex` try_to_lock of its own
+		//! (`ReadObjectGraph`'s own refresh already degrades to serving a
+		//! stale published snapshot under `mMutex` contention, silently, the
+		//! same way `ReadPainterMaterialGraph` does) -- the explicit
+		//! `mRenderOwnsScene` check exists so a caller polling during a
+		//! parked render (`RunPreviewRenderParked`) gets an honest signal
+		//! rather than a stale-but-unflagged graph.
+		//!
+		//! LAYOUT IS TRANSIENT -- same reasoning as `ReadObjectGraphLaidOut`'s
+		//! own header comment (this graph has no sidecar to read OR write at
+		//! all, focused or not).
+		void ReadObjectGraphLaidOutFocused( const String& name, ObjectGraphLaidOut& out,
+		                                     bool* outDegraded = nullptr ) const;
 
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
@@ -6861,6 +7066,49 @@ namespace RISE
 		void BuildPainterMaterialGraphSeedsLocked_(
 			std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const;
 
+		//! Object Graph slice: the SAME compare-then-publish refresh cadence
+		//! as `RefreshPainterMaterialGraphSnapshot_`, targeting `mUi.
+		//! objectGraph` instead. See that method's own comment for the full
+		//! discipline (serve-stale on `mRenderOwnsScene`/contended `mMutex`,
+		//! republish -- and re-stamp every node's `GraphNodeHandle` from a
+		//! FRESH `NextTreeGeneration()` draw -- only on an actual structural
+		//! change).
+		void RefreshObjectGraphSnapshot_() const;
+
+		//! Object Graph slice: gather both halves of the DAG assembler's
+		//! input under mMutex, from ONE `SceneReferenceGraph::AllChunks`
+		//! document scan -- the SAME single-scan discipline
+		//! `BuildPainterMaterialGraphSeedsLocked_` uses and for the SAME
+		//! reason (one O(N log N) document walk, not one per node). See
+		//! `ReadObjectGraph`'s own header comment for the full node-set/
+		//! edge-taxonomy/rank-direction design. REQUIRES mMutex held.
+		void BuildObjectGraphSeedsLocked_(
+			std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const;
+
+		//! Object Graph slice: the FOUR-component (UP/DOWN/GEO/SOURCE)
+		//! bidirectional, edge-kind-aware closure `ReadObjectGraphLaidOutFocused`
+		//! filters down to -- see that method's own header comment for the
+		//! full contract of each component, and why UP and DOWN are TWO
+		//! separate worklists rather than one combined walk (a combined walk
+		//! leaks an unrelated sibling subtree into the result the instant an
+		//! ancestor is discovered -- popping that ancestor would then also
+		//! apply the "find my children" rule to it, rediscovering every OTHER
+		//! child it has, not just the path back to the original target).
+		//! Deliberately NOT a reuse of `BFSGraphClosure` (single-direction,
+		//! outEdges-only, no notion of "which paramName this port is") --
+		//! this graph's four relationship kinds (parent/source/obja-objb/
+		//! geometry) need to be told apart by `GraphPort::paramName`, and two
+		//! of the four components (UP's composite-ownership rule, DOWN's
+		//! children rule) walk `inEdges`, which `BFSGraphClosure` never
+		//! touches at all.
+		//!
+		//! PURE and static, same testability posture as `BFSGraphClosure`/
+		//! `FilterPainterMaterialGraph`: a test can hand this a synthetic
+		//! `SceneGraphModel` (hand-built via `BuildPainterMaterialGraph` from
+		//! hand-authored seeds) with no controller, no lock, no live document.
+		static std::vector<unsigned int> ObjectGraphFocusedClosure(
+			const SceneGraphModel& g, unsigned int startIdx );
+
 		//! doc-88 Phase 3 S14: "the current scene's file path", read from
 		//! `mJob.GetCstLoadFileIdentity().filePath` -- see the block comment
 		//! by `ReadPainterMaterialGraphLaidOut`'s declaration for why the
@@ -6920,6 +7168,12 @@ namespace RISE
 			//! per-category slot would be either empty or a duplicate of this
 			//! one for every other category.
 			PainterMaterialGraph        painterMaterialGraph;
+			//! Object Graph slice: same "ONE graph, not per-category" shape
+			//! as `painterMaterialGraph` above, spanning
+			//! `ChunkCategory::Object` + `ChunkCategory::Geometry` (plus the
+			//! `rect_light`/`shape_light` keyword special-case) -- see
+			//! `ReadObjectGraph`'s own header comment.
+			SceneGraphModel             objectGraph;
 		};
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;

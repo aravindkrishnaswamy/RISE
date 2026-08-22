@@ -4981,6 +4981,7 @@ namespace
 		if( a.category != b.category ) return false;
 		if( a.serial   != b.serial   ) return false;
 		if( a.defCount != b.defCount ) return false;
+		if( a.repeatCount != b.repeatCount ) return false;   // Object Graph slice: painter nodes always 0 == 0, a no-op there
 		if( !GraphPortListsEqual( a.outEdges, b.outEdges ) ) return false;
 		if( !GraphPortListsEqual( a.inEdges,  b.inEdges  ) ) return false;
 		return true;
@@ -5078,6 +5079,7 @@ SceneEditController::PainterMaterialGraph SceneEditController::BuildPainterMater
 		node.order        = s.order;
 		node.serial       = s.serial;
 		node.defCount     = s.defCount;
+		node.repeatCount  = s.repeatCount;   // Object Graph slice: painter/material seeders never set this, stays 0
 		byId.insert( std::make_pair( s.id, static_cast<unsigned int>( out.nodes.size() ) ) );
 		out.nodes.push_back( node );
 	}
@@ -6305,6 +6307,384 @@ void SceneEditController::ReadPainterMaterialGraphLaidOutFocused(
 	// method -- there is no shared mutable state between the two paths at
 	// all, so the all-view is byte-for-byte exactly as it was before a
 	// focused excursion.
+	const GraphLayout::Positions empty;
+	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( filtered, empty );
+	out.graph = filtered;
+	out.positions.assign( filtered.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < filtered.nodes.size(); ++i ) {
+		const std::string key( filtered.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = laidOut.find( key );
+		if( it == laidOut.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
+}
+
+// =====================================================================
+// Object Graph slice (S1 core) -- see ReadObjectGraph's own header
+// comment in SceneEditController.h for the full node-set/edge-taxonomy/
+// rank-direction design; this block is the implementation.
+// =====================================================================
+
+void SceneEditController::BuildObjectGraphSeedsLocked_(
+	std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const
+{
+	outNodes.clear();
+	outEdges.clear();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return;   // no retained CST head: empty graph, not a crash -- same posture BuildPainterMaterialGraphSeedsLocked_ takes
+
+	// ONE document scan, reused for both nodes and edges below -- see
+	// BuildPainterMaterialGraphSeedsLocked_'s own comment for why (avoids
+	// turning an O(N log N) refresh into O(nodes * N log N)).
+	const std::vector<SceneReferenceGraph::DocumentChunk> chunks = SceneReferenceGraph::AllChunks( *doc );
+
+	unsigned long long order = 0;
+	// Every node this seeder emits, by Cst::NodeId -- used below to scope
+	// the edge scan to "referrer is one of OUR nodes" without a second
+	// document walk (a plain std::set lookup over data this same loop
+	// already produces).
+	std::set<RISE::Cst::NodeId> inScopeIds;
+	// review-round fix: the RE-CATEGORIZED category (Object for a
+	// rect_light/shape_light node, matching `GraphNodeSeed::category`
+	// above) by id -- so GraphEdgeSeed::fromCategory/toCategory below can
+	// agree with the NODE they address rather than repeating the raw
+	// document category (Light for a light-sugar chunk). Unused by
+	// BuildPainterMaterialGraph itself (it matches edges to nodes by id
+	// only, never by these fields), but a future reader of a
+	// GraphEdgeSeed in isolation should not be able to observe a node
+	// addressed as Object over here and as Light over there.
+	std::map<RISE::Cst::NodeId, ChunkCategory> nodeCategoryById;
+
+	for( const SceneReferenceGraph::DocumentChunk& c : chunks ) {
+		if( !c.hasCategory ) continue;
+		// `override_object`: ChunkCategory::Object by descriptor, but a
+		// legacy pre-CST round-trip chunk nothing emits today (see its own
+		// Describe() comment) whose target is a STRING param, not a
+		// Reference -- it produces no edges and is excluded as a NODE too
+		// (a node with no useful edges is just clutter here).
+		const bool isObject = ( c.category == ChunkCategory::Object
+		                      && std::string( c.keyword.c_str() ) != "override_object" );
+		const bool isGeometry = ( c.category == ChunkCategory::Geometry );
+		// rect_light/shape_light: ChunkCategory::Light by descriptor, but
+		// object-PRODUCING sugar (their own descriptor comment: they
+		// desugar into a painter+material+geometry+standard_object quartet
+		// at scene-DERIVE time) -- the RETAINED document this seeder reads
+		// still holds exactly the one authored chunk, so it is included by
+		// KEYWORD and re-categorized as Object below (see this method's
+		// declaration comment in the .h for the full rationale).
+		const bool isLightSugar = ( std::string( c.keyword.c_str() ) == "rect_light"
+		                          || std::string( c.keyword.c_str() ) == "shape_light" );
+		if( !isObject && !isGeometry && !isLightSugar ) continue;
+		if( c.name.size() <= 1 ) continue;   // unnamed: unaddressable, never a reference target -- skip (String's <=1-is-empty convention)
+
+		GraphNodeSeed s;
+		s.id           = c.id;
+		s.name         = c.name;
+		s.chunkKeyword = c.keyword;
+		s.category     = isLightSugar ? ChunkCategory::Object : c.category;
+		s.order        = order++;
+		s.serial       = CategoryEntitySerialLocked_( isGeometry ? Category::Geometry : Category::Object, c.name );
+
+		// repeatCount: standard_object's count_u/count_v repeat sugar (87
+		// step 3c) -- see GraphNode::repeatCount's own header comment.
+		// review-round fix: counts are documented to accept `expr(...)`
+		// over a document `let` (Cst.cpp's ExpandSourceInstance, SCENE_
+		// CONVENTIONS.md's instancing section), so this MUST go through
+		// the real derive-time evaluator (`RISE::Cst::EvaluateObjectRepeatCounts`,
+		// itself a thin public seam onto Cst.cpp's private EvalInstanceCount/
+		// EvalInstanceValue) rather than a bare strtoull on the raw param
+		// text -- a first draft of this seeder did the latter, and
+		// `strtoull("expr(3+2)", ...)` silently reads 0, publishing
+		// repeatCount 0 ("not a repeat chunk") for a genuine 5-way repeat.
+		// EvaluateObjectRepeatCounts itself returns false (leaving
+		// cu/cv at their pre-set 1/1, never consulted below) when `c.item`
+		// carries no `count_u` at all -- exactly the "not a repeat chunk"
+		// case this seeder already needs to leave at 0.
+		//
+		// AMBIGUITY, ACCEPTED: `count_u 0` (with or without `count_v`) is a
+		// LEGAL authoring that synthesizes ZERO entries (Cst.cpp's own
+		// comment: "A count of ZERO is legal and produces NO entries").
+		// Its product is therefore ALSO 0 -- indistinguishable here from
+		// "not a repeat chunk at all". This is a deliberate, accepted fold,
+		// not a bug: a chunk that synthesizes nothing has nothing for a
+		// shell's "xN" badge to usefully report either way, so publishing
+		// the same 0 a plain non-repeat chunk gets is the honest answer,
+		// not a distortion of one into the other.
+		if( c.item && std::string( c.keyword.c_str() ) == "standard_object" ) {
+			int cu = 1, cv = 1;
+			if( doc && RISE::Cst::EvaluateObjectRepeatCounts( *doc, c.item, cu, cv ) )
+				s.repeatCount = cu * cv;
+		}
+
+		inScopeIds.insert( c.id );
+		nodeCategoryById[ c.id ] = s.category;
+		outNodes.push_back( s );
+	}
+
+	// ---- Edges: ONE Cst::BuildReferenceGraph pass, reusing the SAME
+	// `chunks` scan above -- see BuildPainterMaterialGraphSeedsLocked_'s
+	// own comment for why this is one pass, not Edges()+DanglingReferences()
+	// as two. Dangling references are NOT surfaced here (unlike the
+	// Painter/Material graph): a dangling hierarchy/geometry reference on
+	// an object simply shows that object with no edge for that slot --
+	// documented limitation, not a silent drop of a NODE (the referrer
+	// itself is always seeded regardless). ----
+	const SceneReferenceGraph::Snapshot snapshot = SceneReferenceGraph::EdgesAndDangling( *doc, &chunks );
+
+	for( const ReferenceEdge& e : snapshot.edges ) {
+		if( inScopeIds.find( e.referrerId ) == inScopeIds.end() ) continue;   // referrer not one of our nodes (also excludes override_object, unnamed chunks, out-of-scope categories)
+
+		// review-round fix: prefer the RE-CATEGORIZED category (falls back
+		// to the raw document category for a target outside this graph's
+		// node set, e.g. a dangling/out-of-scope toId -- there is no
+		// re-categorized value to look up for a node we never seeded) --
+		// see nodeCategoryById's own comment above.
+		const std::map<RISE::Cst::NodeId, ChunkCategory>::const_iterator fromCatIt = nodeCategoryById.find( e.referrerId );
+		const ChunkCategory referrerCat = ( fromCatIt != nodeCategoryById.end() ) ? fromCatIt->second : e.referrerCategory;
+		const std::map<RISE::Cst::NodeId, ChunkCategory>::const_iterator toCatIt = nodeCategoryById.find( e.targetId );
+		const ChunkCategory targetCat = ( toCatIt != nodeCategoryById.end() ) ? toCatIt->second : e.targetCategory;
+
+		const std::string pn( e.paramName.c_str() );
+		if( pn == "parent" || pn == "source" || pn == "obja" || pn == "objb" ) {
+			// HIERARCHY family: seeded AS-IS (referrer -> target) -- the
+			// document's own direction already IS child->parent /
+			// instance->source / composite->operand, exactly the direction
+			// this graph's RANK/LAYOUT DIRECTION design wants (see
+			// ReadObjectGraph's own header comment).
+			GraphEdgeSeed s;
+			s.fromId         = e.referrerId;
+			s.fromCategory    = referrerCat;
+			s.fromName        = e.referrerName;
+			s.paramName       = e.paramName;
+			s.occurrence      = e.occurrence;
+			s.portCategories  = e.portCategories;
+			s.toId            = e.targetId;
+			s.toCategory      = targetCat;
+			s.toName          = e.targetName;
+			outEdges.push_back( s );
+		} else if( pn == "geometry" || pn == "base_geometry" ) {
+			// GEOMETRY family: FLIPPED at seeding (geometry-chunk ->
+			// consumer) -- see ReadObjectGraph's own RANK/LAYOUT DIRECTION
+			// header comment. paramName/occurrence/portCategories stay
+			// faithful to the DOCUMENT's actual param even though fromId/
+			// toId are swapped, so a shell drawing a wire still labels the
+			// port correctly.
+			GraphEdgeSeed s;
+			s.fromId         = e.targetId;      // FLIPPED: the geometry chunk becomes the "referrer" here
+			s.fromCategory    = targetCat;
+			s.fromName        = e.targetName;
+			s.paramName       = e.paramName;
+			s.occurrence      = e.occurrence;
+			s.portCategories  = e.portCategories;
+			s.toId            = e.referrerId;   // FLIPPED: the consumer (an object, or another geometry chunk) becomes the "target"
+			s.toCategory      = referrerCat;
+			s.toName          = e.referrerName;
+			outEdges.push_back( s );
+		}
+		// Every other paramName on an in-scope referrer (material,
+		// modifier, shader, radiance_map, interior_medium, ...) is simply
+		// never matched above -- DROPPED, not seeded as an edge at all, by
+		// omission from this allowlist (see this method's own .h comment).
+	}
+}
+
+void SceneEditController::RefreshObjectGraphSnapshot_() const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	std::vector<GraphNodeSeed> nodeSeeds;
+	std::vector<GraphEdgeSeed> edgeSeeds;
+	BuildObjectGraphSeedsLocked_( nodeSeeds, edgeSeeds );
+	SceneGraphModel built = BuildPainterMaterialGraph( nodeSeeds, edgeSeeds );
+	built.rebuildCount = mJob.GetContainerRebuildCount();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );   // leaf lock: acquired WHILE mMutex is still held, never the reverse
+	if( PainterMaterialGraphsEquivalent( built, mUi.objectGraph ) ) return;
+	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
+	// Same handle space as the Painter/Material graph (GraphNodeHandle /
+	// EncodeTreeHandle / kInvalidGraphNode) -- see SceneGraphModel's own
+	// header comment for why reusing it (rather than minting a THIRD
+	// sentinel/typedef pair) is deliberate: both graphs draw generations
+	// from the SAME process-global NextTreeGeneration() counter, so no two
+	// publishes across EITHER graph (or AuthoredTree) ever share a
+	// generation, and ResolveGraphNodeHandle already refuses a handle
+	// whose generation does not match the graph it is resolved against --
+	// a handle minted here can never be silently mistaken for one minted
+	// by RefreshPainterMaterialGraphSnapshot_, or vice versa.
+	for( std::size_t i = 0; i < built.nodes.size(); ++i )
+		built.nodes[i].handle = EncodeTreeHandle( built.generation, static_cast<unsigned int>( i ) );
+	mUi.objectGraph = std::move( built );
+}
+
+void SceneEditController::ReadObjectGraph( SceneGraphModel& out ) const
+{
+	out = SceneGraphModel();
+	RefreshObjectGraphSnapshot_();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	out = mUi.objectGraph;
+}
+
+void SceneEditController::ReadObjectGraphLaidOut( ObjectGraphLaidOut& out ) const
+{
+	out = ObjectGraphLaidOut();
+	ReadObjectGraph( out.graph );
+
+	// TRANSIENT layout, ALWAYS (design decision, not a degrade path) --
+	// see ReadObjectGraphLaidOut's own .h header comment for why this
+	// graph has no sidecar to read at all (the sidecar is keyed by bare
+	// node name with no per-graph-kind partition).
+	const GraphLayout::Positions empty;
+	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( out.graph, empty );
+	out.positions.assign( out.graph.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < out.graph.nodes.size(); ++i ) {
+		const std::string key( out.graph.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = laidOut.find( key );
+		if( it == laidOut.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
+}
+
+std::vector<unsigned int> SceneEditController::ObjectGraphFocusedClosure(
+	const SceneGraphModel& g, unsigned int startIdx )
+{
+	std::vector<unsigned int> keep;
+	if( startIdx >= g.nodes.size() ) return keep;
+
+	std::vector<bool> visited( g.nodes.size(), false );
+	auto include = [&]( unsigned int idx ) -> bool {
+		if( idx >= g.nodes.size() || visited[idx] ) return false;
+		visited[idx] = true;
+		keep.push_back( idx );
+		return true;
+	};
+	include( startIdx );
+
+	// ---- UP: transitive ancestors. A SEPARATE worklist from DOWN below,
+	// applying ONLY the two "climb" rules -- an ancestor this phase
+	// discovers gets ITS OWN parent/owning-composite explored further (so
+	// a deep chain still climbs to the root), but NEVER the "find my
+	// children" or "find my own operands" rules DOWN uses. This separation
+	// is load-bearing, not a style choice: a combined worklist applying
+	// all four rules to every popped node would, the instant an ancestor
+	// (say a container two levels up) entered it via UP's rule, ALSO run
+	// DOWN's "children" rule against that ancestor when popped -- pulling
+	// in every OTHER child it has, i.e. an entire UNRELATED SIBLING
+	// SUBTREE of the original target, not just the path back down to it.
+	// Two independent worklists, each applying only its own direction's
+	// rules, is what keeps this to true ancestors and true descendants. ----
+	{
+		std::vector<unsigned int> frontier( 1, startIdx );
+		std::size_t head = 0;
+		while( head < frontier.size() ) {
+			const unsigned int cur = frontier[head++];
+			for( const GraphPort& p : g.nodes[cur].outEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( pn == "parent" && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+			for( const GraphPort& p : g.nodes[cur].inEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( ( pn == "obja" || pn == "objb" ) && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+		}
+	}
+
+	// ---- DOWN: transitive descendants (reverse parent chain), plus
+	// operand expansion for any csg_object that is ITSELF a descendant (or
+	// `start`) -- see the UP block's own comment for why this is a
+	// SEPARATE worklist rather than sharing UP's. ----
+	{
+		std::vector<unsigned int> frontier( 1, startIdx );
+		std::size_t head = 0;
+		while( head < frontier.size() ) {
+			const unsigned int cur = frontier[head++];
+			for( const GraphPort& p : g.nodes[cur].inEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( pn == "parent" && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+			for( const GraphPort& p : g.nodes[cur].outEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( ( pn == "obja" || pn == "objb" ) && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+		}
+	}
+
+	// UP + DOWN + start, before GEO/SOURCE add anything -- both of the
+	// loops below iterate over exactly this snapshot (by INDEX, not by a
+	// re-read `keep.size()`), so a geometry node GEO adds is never itself
+	// treated as a candidate SOURCE/GEO root, and a SOURCE one-hop target
+	// is never itself walked for ITS OWN geometry -- both intentional (see
+	// ReadObjectGraphLaidOutFocused's own header comment on SOURCE being
+	// "one hop only").
+	const std::size_t objectSetCount = keep.size();
+
+	// ---- GEO: every node in the object set's full geometry chain -- one
+	// hop via a geometry/base_geometry inEdge, then continued from THAT
+	// node (so a displaced_geometry's own base surfaces too), however deep
+	// the chain runs. ----
+	for( std::size_t k = 0; k < objectSetCount; ++k ) {
+		unsigned int cur = keep[k];
+		for( ;; ) {
+			unsigned int nextGeo = kInvalidNodeIndex;
+			for( const GraphPort& p : g.nodes[cur].inEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( ( pn == "geometry" || pn == "base_geometry" ) && p.otherNode != kInvalidNodeIndex ) {
+					nextGeo = p.otherNode;
+					break;   // at most one geometry-kind inEdge per node
+				}
+			}
+			if( nextGeo == kInvalidNodeIndex || !include( nextGeo ) ) break;
+			cur = nextGeo;
+		}
+	}
+
+	// ---- SOURCE: one hop only -- the direct `source` target of any node
+	// in the object set, NOT further expanded. ----
+	for( std::size_t k = 0; k < objectSetCount; ++k ) {
+		for( const GraphPort& p : g.nodes[ keep[k] ].outEdges ) {
+			const std::string pn( p.paramName.c_str() );
+			if( pn == "source" && p.otherNode != kInvalidNodeIndex ) { include( p.otherNode ); break; }
+		}
+	}
+
+	return keep;
+}
+
+void SceneEditController::ReadObjectGraphLaidOutFocused(
+	const String& name, ObjectGraphLaidOut& out, bool* outDegraded ) const
+{
+	out = ObjectGraphLaidOut();
+	if( outDegraded ) *outDegraded = false;
+	if( name.size() <= 1 ) return;
+
+	// This method touches no live manager and needs no mMutex try_to_lock
+	// of its own (ReadObjectGraph's own refresh already degrades to
+	// serving a stale published snapshot under contention, silently) --
+	// the explicit mRenderOwnsScene check here mirrors
+	// ResolveObjectMaterialNameLocked_'s FIRST guard so a caller polling
+	// during a parked render gets an honest degraded signal rather than a
+	// stale-but-unflagged graph.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+		if( outDegraded ) *outDegraded = true;
+		return;
+	}
+
+	SceneGraphModel g;
+	ReadObjectGraph( g );
+
+	const int startIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Object, name );
+	if( startIdx < 0 ) return;   // unknown or ambiguous -- refuse rather than guess
+
+	const std::vector<unsigned int> keep = ObjectGraphFocusedClosure( g, static_cast<unsigned int>( startIdx ) );
+	const SceneGraphModel filtered = FilterPainterMaterialGraph( g, keep );
+
+	// TRANSIENT layout -- this graph has no sidecar at all, focused or not
+	// (ReadObjectGraphLaidOut's own header comment).
 	const GraphLayout::Positions empty;
 	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( filtered, empty );
 	out.graph = filtered;

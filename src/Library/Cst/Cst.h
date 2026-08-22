@@ -504,6 +504,39 @@ namespace RISE
 		std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role,
 		                                bool* outPresent = nullptr );
 
+		//! Object Graph slice (SceneEditController.cpp): evaluate a
+		//! `standard_object`'s `count_u`/`count_v` EXACTLY the way the
+		//! derive-time source-instancing expander does (Cst.cpp's own
+		//! `EvalInstanceCount`/`EvalInstanceValue` -- private to that
+		//! translation unit; this is the sanctioned public seam onto them,
+		//! not a re-implementation of their arithmetic). Both are evaluated
+		//! with `i`/`j`/`u`/`v` fixed at 0 (a count cannot itself vary
+		//! per-repetition -- it DEFINES the repetition), against `doc`'s OWN
+		//! `let` bindings (re-collected here -- cheap, one document-wide
+		//! `let` scan, the SAME one `DeriveToJob` itself pays once per
+		//! derive).
+		//!
+		//! Returns FALSE -- leaving `outCountU`/`outCountV` at 1 -- when
+		//! `chunk` carries no `count_u` at all (not a repeat chunk: PRESENCE
+		//! selects the repeated form, per that param's own descriptor
+		//! comment), OR when evaluation fails (a malformed `expr(...)`, an
+		//! out-of-range/fractional count). Both of THOSE failures are
+		//! already refused at scene-LOAD time by `DeriveToJob`'s own
+		//! validation pass, so a caller querying an already-loaded document
+		//! should never observe the second reason in practice -- the FALSE
+		//! return exists mainly for a hostile/synthetic document handed to
+		//! this directly, the same posture every other PURE Cst query in
+		//! this header takes. A caller that needs to tell the two refusal
+		//! reasons apart should read `count_u`'s own presence via
+		//! `ParamValueAsParsed` first.
+		//!
+		//! `count_v`'s ABSENCE (with `count_u` present) is NOT a failure --
+		//! `count_v` defaults to 1 (that param's own descriptor comment), so
+		//! `outCountV` is 1 whenever `count_v` is not authored, exactly
+		//! matching what the real expansion derives.
+		bool EvaluateObjectRepeatCounts( const Document& doc, const NodeRef& chunk,
+		                                  int& outCountU, int& outCountV );
+
 		//! Value of the `occ`-th Param named `role` on `chunk`, counted from the
 		//! FRONT (0 = first) -- the SAME counting convention every occurrence-
 		//! addressed WRITE uses (WithParamValue / WithParamRemovedOcc, hence

@@ -1645,13 +1645,22 @@ namespace {
     }
 }
 
-// Shared by painterMaterialGraph() and painterMaterialGraphFocused()
-// (user-requested focused-view slice) -- ONE
-// SceneEditController::PainterMaterialGraphLaidOut -> ViewportBridge::PainterGraph
-// conversion, not two independently maintained copies. A free function,
-// same qualification requirement ConvertGraphPorts documents just above
+// Shared by painterMaterialGraph()/painterMaterialGraphFocused() AND (S3)
+// objectGraph()/objectGraphFocused() -- ONE conversion, not two (or four)
+// independently maintained copies. TEMPLATE, not a single overload for
+// `SceneEditController::PainterMaterialGraphLaidOut`: `ObjectGraphLaidOut`
+// (S1 core, the Object Graph slice) is a DIFFERENT C++ struct type with
+// the IDENTICAL `{graph, positions}` shape (see `SceneEditController::
+// SceneGraphModel`'s own comment on why the two graphs share every
+// building block but this ONE composed wrapper stayed deliberately
+// distinct on the C++ side) -- template argument deduction lets this one
+// function serve both without a second near-identical copy to keep in
+// sync (mirrors the Mac bridge's identical templated
+// `ConvertLaidOutGraphToRISE`, RISEViewportBridge.mm). Free function, same
+// qualification requirement ConvertGraphPorts documents just above
 // (outside the class, so every nested-type reference needs ViewportBridge::).
-static ViewportBridge::PainterGraph ConvertLaidOutGraph(const SceneEditController::PainterMaterialGraphLaidOut& g)
+template <typename LaidOutGraphT>
+static ViewportBridge::PainterGraph ConvertLaidOutGraph(const LaidOutGraphT& g)
 {
     ViewportBridge::PainterGraph out;
     const std::size_t n = g.graph.nodes.size();
@@ -1665,6 +1674,7 @@ static ViewportBridge::PainterGraph ConvertLaidOutGraph(const SceneEditControlle
         node.chunkKeyword = QString::fromUtf8(gn.chunkKeyword.c_str());
         node.category     = static_cast<int>(gn.category);
         node.defCount     = gn.defCount;
+        node.repeatCount  = gn.repeatCount;
         node.x = pos.x;
         node.y = pos.y;
         node.outEdges = ConvertGraphPorts(gn.outEdges);
@@ -1712,6 +1722,35 @@ ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraphFocused(int cat
     SceneEditController::PainterMaterialGraphLaidOut g;
     m_controller->ReadPainterMaterialGraphLaidOutFocused(
         static_cast<RISE::ChunkCategory>(category), RISE::String(utf8.constData()), g, &coreDegraded);
+    if (degraded) *degraded = coreDegraded;
+    if (coreDegraded) return PainterGraph();   // empty on degrade too -- callers distinguish via `degraded`, not graph emptiness
+    return ConvertLaidOutGraph(g);
+}
+
+// S3 Qt carry. Same return-type qualification requirement as
+// painterMaterialGraph() above (review-round P1 fix).
+ViewportBridge::PainterGraph ViewportBridge::objectGraph() const
+{
+    if (!m_controller) return PainterGraph();
+    // ONE TRANSACTIONAL READ -- same discipline painterMaterialGraph()
+    // documents above; ReadObjectGraphLaidOut composes the object graph +
+    // a fresh (never sidecar-backed) auto-layout under one snapshot lock
+    // hold.
+    SceneEditController::ObjectGraphLaidOut g;
+    m_controller->ReadObjectGraphLaidOut(g);
+    return ConvertLaidOutGraph(g);
+}
+
+// Same return-type qualification requirement as painterMaterialGraph()
+// above (review-round P1 fix).
+ViewportBridge::PainterGraph ViewportBridge::objectGraphFocused(const QString& name, bool* degraded) const
+{
+    if (degraded) *degraded = false;
+    if (!m_controller || name.isEmpty()) return PainterGraph();
+    const QByteArray utf8 = name.toUtf8();
+    bool coreDegraded = false;
+    SceneEditController::ObjectGraphLaidOut g;
+    m_controller->ReadObjectGraphLaidOutFocused(RISE::String(utf8.constData()), g, &coreDegraded);
     if (degraded) *degraded = coreDegraded;
     if (coreDegraded) return PainterGraph();   // empty on degrade too -- callers distinguish via `degraded`, not graph emptiness
     return ConvertLaidOutGraph(g);

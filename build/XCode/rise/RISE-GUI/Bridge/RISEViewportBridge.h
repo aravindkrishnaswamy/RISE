@@ -254,6 +254,12 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 /// almost always the more useful discriminator for a UI label/icon.
 @property (nonatomic, readonly) NSInteger category;
 @property (nonatomic, readonly) NSInteger defCount;   ///< expression-family def-stage count; 0 otherwise
+/// Object Graph slice: a `standard_object`'s `count_u * count_v` repeat
+/// sugar (87 step 3c) when this chunk carries counts, 0 otherwise -- see
+/// `SceneEditController::GraphNode::repeatCount`'s own header comment for
+/// the full contract, including the accepted `count_u 0` fold. Always 0
+/// for a Painter/Material/Function node (`-painterMaterialGraph`).
+@property (nonatomic, readonly) NSInteger repeatCount;
 @property (nonatomic, readonly) double x;
 @property (nonatomic, readonly) double y;
 @property (nonatomic, readonly, copy) NSArray<RISEGraphPort *> *outEdges;
@@ -1124,6 +1130,44 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (nullable RISEPainterMaterialGraph *)painterMaterialGraphFocusedForCategory:(NSInteger)category
                                                                             name:(NSString *)name
     NS_SWIFT_NAME(painterMaterialGraphFocused(category:name:));
+
+/// S2 Mac shell (Object Graph canvas, sibling of the Painter/Material
+/// canvas above): the object hierarchy graph, positioned -- `{nodes,
+/// edges, positions}`. Reuses `RISEPainterMaterialGraph`/`RISEGraphNode`
+/// verbatim (same shape: a node table + generation, nodes carrying
+/// category/keyword/ports/position) rather than a second wrapper type,
+/// the SAME "reuse the shared model, don't duplicate a structurally
+/// identical twin" call `SceneEditController::SceneGraphModel`'s own
+/// comment makes on the C++ side. ONE TRANSACTIONAL READ, built from
+/// `SceneEditController::ReadObjectGraphLaidOut` -- see that method's own
+/// header comment for the node set (`ChunkCategory::Object` +
+/// `ChunkCategory::Geometry`, plus `rect_light`/`shape_light` by
+/// keyword), the edge taxonomy, and why this NEVER reads or writes the
+/// `.risegraph.json` sidecar (layout is always transient here, even for
+/// the all-view -- unlike `-painterMaterialGraph`). Empty (but non-nil)
+/// on a temporarily unavailable controller.
+- (RISEPainterMaterialGraph *)objectGraph;
+
+/// Object Graph twin of `-painterMaterialGraphFocusedForCategory:name:`
+/// -- "all parents and children of the clicked object" (the user's own
+/// framing). See `SceneEditController::ReadObjectGraphLaidOutFocused`'s
+/// own header comment for the exact four-component subgraph definition
+/// (UP/DOWN/GEO/SOURCE). Unlike the Painter/Material focused read, there
+/// is no `category` parameter -- the object graph only ever focuses on
+/// an Object-category name (which already includes `rect_light`/
+/// `shape_light` nodes, per `-objectGraph`'s own comment).
+///
+/// NIL VS EMPTY IS LOAD-BEARING, the SAME contract
+/// `-painterMaterialGraphFocusedForCategory:name:` documents: nil means
+/// `mRenderOwnsScene` was observed true at the top of the C++ call (a
+/// render owns the scene right now) -- retry your next pass, not
+/// "nothing to show". Every other outcome (unknown/ambiguous name, or a
+/// genuinely resolved -- possibly empty -- subgraph) is a real answer.
+///
+/// LAYOUT IS TRANSIENT -- same as `-objectGraph` itself (this graph has
+/// no sidecar to read OR write at all, focused or not).
+- (nullable RISEPainterMaterialGraph *)objectGraphFocusedForObject:(NSString *)name
+    NS_SWIFT_NAME(objectGraphFocused(forObject:));
 
 /// Phase 4b: per-category panel selection.  Returns the entity
 /// name picked in `category`'s section, or empty when nothing is

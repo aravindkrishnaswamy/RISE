@@ -1331,6 +1331,30 @@ static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::v
 	return out;
 }
 
+bool EvaluateObjectRepeatCounts( const Document& doc, const NodeRef& chunk, int& outCountU, int& outCountV )
+{
+	outCountU = 1;
+	outCountV = 1;
+	if( !chunk ) return false;
+	std::string countU_raw, countV_raw;
+	const bool hasCountU = ParamValue( chunk.get(), "count_u", countU_raw ) && !countU_raw.empty();
+	if( !hasCountU ) return false;   // not a repeat chunk -- see this function's own .h header comment
+	const bool hasCountV = ParamValue( chunk.get(), "count_v", countV_raw ) && !countV_raw.empty();
+
+	std::vector<NodeRef> items;
+	SeqToVec( doc.items, items );
+	std::vector<std::string> diags;   // discarded -- see this function's own .h header comment
+	const LetBindings lets = CollectLetBindings( items, diags );
+
+	int cu = 1, cv = 1;
+	bool ok = EvalInstanceCount( countU_raw, lets, "count_u", "count_u", diags, cu );
+	if( hasCountV ) ok = EvalInstanceCount( countV_raw, lets, "count_v", "count_v", diags, cv ) && ok;
+	if( !ok ) return false;
+	outCountU = cu;
+	outCountV = cv;
+	return true;
+}
+
 static bool TryEvalExprValue( const std::string& value, std::string& outLit,
                               std::vector<std::string>& diags, const std::string& kw, const std::string& pname,
                               const LetBindings& lets )

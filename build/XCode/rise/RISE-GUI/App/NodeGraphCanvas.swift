@@ -28,9 +28,12 @@
 //  through these same S18-S20 bridge verbs -- no direct document write
 //  from this file, ever.
 //
-//  ENTRY POINT: a third left-panel tab ("Graph"), alongside the existing
-//  Agent/Scene file tabs — see ContentView.leftPanelTabStrip/leftPanel
-//  and RenderViewModel.LeftPanelTab. Chosen over a center-column mode
+//  ENTRY POINT: a third left-panel tab ("Material Graph" -- renamed from
+//  the original generic "Graph" once the Object Graph tab shipped as a
+//  sibling, S2; display string only, `LeftPanelTab.graph`'s case name is
+//  unchanged), alongside the existing Agent/Scene file tabs — see
+//  ContentView.leftPanelTabStrip/leftPanel and RenderViewModel.LeftPanelTab.
+//  Chosen over a center-column mode
 //  because the center column is a fixed viewport/N-up surface with no
 //  existing "swap the whole pane" concept, whereas the left panel
 //  already has exactly that idiom (two tabs, about to become three) at
@@ -603,7 +606,10 @@ struct NodeGraphCanvas: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Graph").font(Theme.sans(12.5, .semibold)).foregroundColor(Theme.textPrimary)
+            // RENAMED to "Material Graph" (was the generic "Graph") once
+            // the Object Graph tab shipped as a sibling -- display string
+            // only.
+            Text("Material Graph").font(Theme.sans(12.5, .semibold)).foregroundColor(Theme.textPrimary)
             Text("\(snapshot.nodes.count) node\(snapshot.nodes.count == 1 ? "" : "s"), \(edgeCount) edge\(edgeCount == 1 ? "" : "s")")
                 .font(Theme.mono(10))
                 .foregroundColor(Theme.textDim)
