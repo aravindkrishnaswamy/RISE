@@ -52,6 +52,7 @@ class OutlinerWidget;
 class EnvironmentPanel;
 class StartWidget;
 class NodeGraphCanvas;
+class ObjectGraphCanvas;
 
 class MainWindow : public QMainWindow
 {
@@ -474,6 +475,13 @@ private:
     // m_sceneEditor), shows nothing until setBridge() gives it a scene.
     QToolButton*  m_graphTabBtn = nullptr;
     NodeGraphCanvas* m_nodeGraphCanvas = nullptr;
+    // S3 (Qt carry): a fourth left-panel tab, "Object Graph" -- sibling of
+    // m_graphTabBtn/m_nodeGraphCanvas above (now labeled "Material Graph"
+    // in the tab strip -- display strings only, no code symbols renamed).
+    // Same persistent-widget discipline: built once, shows nothing until
+    // setBridge() gives it a scene.
+    QToolButton*  m_objectGraphTabBtn = nullptr;
+    ObjectGraphCanvas* m_objectGraphCanvas = nullptr;
     // Agent/Scene-file/Graph tab strip container -- stored (rather than
     // kept as a buildLeftPanel()-local) so restyleTheme() can re-apply
     // its border-bottom stylesheet on a live theme switch.

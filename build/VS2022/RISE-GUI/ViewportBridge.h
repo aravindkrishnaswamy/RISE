@@ -1182,6 +1182,13 @@ public:
         /// almost always the more useful discriminator for a UI label/icon.
         int     category = -1;
         int     defCount = 0;   ///< expression-family def-stage count; 0 otherwise
+        /// Object Graph slice (S3): a `standard_object`'s `count_u *
+        /// count_v` repeat sugar when this chunk carries counts, 0
+        /// otherwise -- see `SceneEditController::GraphNode::repeatCount`'s
+        /// own header comment for the full contract, including the
+        /// accepted `count_u 0` fold. Always 0 for a Painter/Material/
+        /// Function node (`painterMaterialGraph()`).
+        int     repeatCount = 0;
         double  x = 0.0;
         double  y = 0.0;
         QVector<PainterGraphPort> outEdges;
@@ -1299,6 +1306,46 @@ public:
     /// Toggling back to the all-view (painterMaterialGraph()) is
     /// completely unaffected by any number of prior focused reads.
     PainterGraph painterMaterialGraphFocused(int category, const QString& name, bool* degraded = nullptr) const;
+
+    /// S3 Qt carry (Object Graph canvas, sibling of the Painter/Material
+    /// canvas above): the object hierarchy graph, positioned -- {nodes,
+    /// edges, positions}. Reuses `PainterGraph`/`PainterGraphNode`
+    /// verbatim (same shape: a node table + generation, nodes carrying
+    /// category/keyword/ports/position/repeatCount) rather than a second
+    /// wrapper type -- the SAME "reuse the shared model, don't duplicate a
+    /// structurally identical twin" call `SceneEditController::
+    /// SceneGraphModel`'s own comment makes on the C++ side, ported
+    /// verbatim from the Mac bridge's identical choice
+    /// (`-[RISEViewportBridge objectGraph]` reuses `RISEPainterMaterialGraph`
+    /// the same way). ONE TRANSACTIONAL READ, built from
+    /// `SceneEditController::ReadObjectGraphLaidOut` -- see that method's
+    /// own header comment for the node set (`ChunkCategory::Object` +
+    /// `ChunkCategory::Geometry`, plus `rect_light`/`shape_light` by
+    /// keyword), the edge taxonomy, and why this NEVER reads or writes the
+    /// `.risegraph.json` sidecar (layout is always transient here, even
+    /// for the all-view -- unlike `painterMaterialGraph()`). Empty (no
+    /// nodes) on a null controller.
+    PainterGraph objectGraph() const;
+
+    /// Object Graph twin of `painterMaterialGraphFocused()` -- "all
+    /// parents and children of the clicked object" (the user's own
+    /// framing). See `SceneEditController::ReadObjectGraphLaidOutFocused`'s
+    /// own header comment for the exact four-component subgraph
+    /// definition (UP/DOWN/GEO/SOURCE). Unlike the Painter/Material
+    /// focused read, there is no `category` parameter -- the object graph
+    /// only ever focuses on an Object-category name (which already
+    /// includes `rect_light`/`shape_light` nodes, per `objectGraph()`'s
+    /// own comment).
+    ///
+    /// `degraded` -- the SAME contract `painterMaterialGraphFocused()`
+    /// documents: set true ONLY when `mRenderOwnsScene` was observed true
+    /// at the top of the C++ call (a render owns the scene right now);
+    /// false on every other outcome, including a genuinely empty result.
+    /// Defaults to nullptr.
+    ///
+    /// LAYOUT IS TRANSIENT -- same as `objectGraph()` itself (this graph
+    /// has no sidecar to read OR write at all, focused or not).
+    PainterGraph objectGraphFocused(const QString& name, bool* degraded = nullptr) const;
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →
