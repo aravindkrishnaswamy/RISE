@@ -3217,3 +3217,14 @@ it was already tried and refuted here.
   differences and the unmodified Richardson formula are mandatory.  No
   temporal evidence or Metal run occurs in this entry; golden SHA remains
   `1b944176...4947`.
+- **r138a golden-slice precision input repair (2026-08-22):** fresh review
+  rejected r138's tier-6 analytic eight-target pilot as certification of the
+  r137 `shared_golden_beginning_per_slice` class.  The pilot remains useful
+  diagnostic evidence, but it does not close `B_fp32` and therefore does not
+  unlock r139 evidence.  Before inspecting any golden-slice precision result,
+  this entry seals the immutable tier-10 root plus all seven r95 continuation
+  hashes, the eight represented time steps, mixed open/wall topology, exact
+  positive-zero sources, r112 filter/lattice, and the same-scheme P32/P64
+  pairing.  The input manifest is the sole durable artifact in
+  `r138_golden_subdominance_inputs`; measurement is explicitly false.  Golden
+  SHA remains `1b944176...4947`.
