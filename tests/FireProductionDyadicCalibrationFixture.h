@@ -1036,7 +1036,12 @@ namespace FireProductionDyadicCalibration
 				trace.physicalStreaming.densityUpper,
 				trace.physicalStreaming.maximumRoundedResidual,
 				trace.physicalStreaming.maximumResidualEvaluationRadius,
-				trace.physicalStreaming.streamingVelocityRMSUpper,
+				trace.physicalStreaming.maximumCrossPrecisionResidualUpper,
+				std::nextafter(static_cast<double>(
+					trace.physicalStreaming.validationToleranceRounded)+
+					trace.physicalStreaming.validationToleranceRadius,
+					std::numeric_limits<double>::infinity()),
+				trace.physicalStreaming.streamingFaceVelocityL2PerCellUpper,
 				trace.physicalStreaming.validationToleranceRounded,
 				trace.physicalStreaming.validationToleranceRadius,physicalCertificate);
 		const bool restorationAposteriori=FireProductionRoundoffWalker::
@@ -1045,7 +1050,12 @@ namespace FireProductionDyadicCalibration
 				trace.restorationStreaming.densityUpper,
 				trace.restorationStreaming.maximumRoundedResidual,
 				trace.restorationStreaming.maximumResidualEvaluationRadius,
-				trace.restorationStreaming.streamingVelocityRMSUpper,
+				trace.restorationStreaming.maximumCrossPrecisionResidualUpper,
+				std::nextafter(static_cast<double>(
+					trace.restorationStreaming.validationToleranceRounded)+
+					trace.restorationStreaming.validationToleranceRadius,
+					std::numeric_limits<double>::infinity()),
+				trace.restorationStreaming.streamingFaceVelocityL2PerCellUpper,
 				trace.restorationStreaming.validationToleranceRounded,
 				trace.restorationStreaming.validationToleranceRadius,restorationCertificate);
 		const bool projectionCertificatesApplied=trace.stages.size()==24u&&
@@ -1064,16 +1074,20 @@ namespace FireProductionDyadicCalibration
 				restorationCertificate.velocityRMSUpper);
 		std::fprintf(stderr,"r134 physical_aposteriori valid=%d applied=%d rho=[%.17g,%.17g] "
 			"lambda0=%.17g lambda=%.17g inverse=%.17g residual=%.17g eval=%.17g "
-			"stream=%.17g gain=%.17g velocity=%.17g rounded_residual=%.9g tolerance=%.9g "
+			"cross=%.17g fp64_gate=%.17g face_stream=%.17g gain=%.17g velocity=%.17g "
+			"rounded_residual=%.9g tolerance=%.9g "
 			"tolerance_rounding=%.17g predicate_margin=%.17g matches=%d/%d\n",
 			physicalAposteriori?1:0,
 			projectionCertificatesApplied?1:0,physicalCertificate.densityLower,
 			physicalCertificate.densityUpper,physicalCertificate.dimensionlessEigenvalueLower,
 			physicalCertificate.operatorEigenvalueLower,
 			physicalCertificate.inverseOperatorNormUpper,
-			physicalCertificate.validatedResidualUpper,
+			physicalCertificate.acceptedRoundedResidual,
 			physicalCertificate.residualEvaluationRoundingUpper,
-			physicalCertificate.streamingVelocityRMSUpper,physicalCertificate.velocityGainUpper,
+			physicalCertificate.crossPrecisionResidualUpper,
+			physicalCertificate.fp64ResidualGateUpper,
+			physicalCertificate.streamingFaceVelocityL2PerCellUpper,
+			physicalCertificate.velocityGainUpper,
 			physicalCertificate.velocityRMSUpper,trace.physicalStreaming.maximumRoundedResidual,
 			trace.physicalStreaming.validationToleranceRounded,
 			physicalCertificate.validationToleranceRoundingUpper,
@@ -1082,7 +1096,8 @@ namespace FireProductionDyadicCalibration
 			trace.physicalStreaming.roundedVelocityMatches?1:0);
 		std::fprintf(stderr,"r134 restoration_aposteriori valid=%d applied=%d rho=[%.17g,%.17g] "
 			"lambda0=%.17g lambda=%.17g inverse=%.17g residual=%.17g eval=%.17g "
-			"stream=%.17g gain=%.17g velocity=%.17g rounded_residual=%.9g tolerance=%.9g "
+			"cross=%.17g fp64_gate=%.17g face_stream=%.17g gain=%.17g velocity=%.17g "
+			"rounded_residual=%.9g tolerance=%.9g "
 			"tolerance_rounding=%.17g predicate_margin=%.17g matches=%d/%d\n",
 			restorationAposteriori?1:0,
 			projectionCertificatesApplied?1:0,
@@ -1090,9 +1105,11 @@ namespace FireProductionDyadicCalibration
 			restorationCertificate.dimensionlessEigenvalueLower,
 			restorationCertificate.operatorEigenvalueLower,
 			restorationCertificate.inverseOperatorNormUpper,
-			restorationCertificate.validatedResidualUpper,
+			restorationCertificate.acceptedRoundedResidual,
 			restorationCertificate.residualEvaluationRoundingUpper,
-			restorationCertificate.streamingVelocityRMSUpper,
+			restorationCertificate.crossPrecisionResidualUpper,
+			restorationCertificate.fp64ResidualGateUpper,
+			restorationCertificate.streamingFaceVelocityL2PerCellUpper,
 			restorationCertificate.velocityGainUpper,restorationCertificate.velocityRMSUpper,
 			trace.restorationStreaming.maximumRoundedResidual,
 			trace.restorationStreaming.validationToleranceRounded,
@@ -1121,13 +1138,15 @@ namespace FireProductionDyadicCalibration
 			AppendDouble(encoded,certificate->operatorEigenvalueLower);
 			AppendDouble(encoded,certificate->inverseOperatorNormUpper);
 			AppendDouble(encoded,certificate->velocityGainUpper);
-			AppendDouble(encoded,certificate->validatedResidualUpper);
+			AppendDouble(encoded,certificate->acceptedRoundedResidual);
 			AppendDouble(encoded,certificate->residualEvaluationRoundingUpper);
+			AppendDouble(encoded,certificate->crossPrecisionResidualUpper);
+			AppendDouble(encoded,certificate->fp64ResidualGateUpper);
 			AppendDouble(encoded,certificate->validationToleranceRounded);
 			AppendDouble(encoded,certificate->validationToleranceRoundingUpper);
 			AppendDouble(encoded,certificate->validationPredicateMarginLower);
 			AppendInteger(encoded,certificate->validationPredicateSeparated?1u:0u);
-			AppendDouble(encoded,certificate->streamingVelocityRMSUpper);
+			AppendDouble(encoded,certificate->streamingFaceVelocityL2PerCellUpper);
 			AppendDouble(encoded,certificate->velocityRMSUpper);
 		}
 		std::fprintf(stderr,"r120 diagnostic tier=6 stages=%zu schedule=%u\n",trace.stages.size(),
@@ -1168,6 +1187,8 @@ namespace FireProductionDyadicCalibration
 				AppendDouble(encoded,divergence);
 			AppendInteger(encoded,stage.unresolvedBranch?1u:0u);
 			AppendInteger(encoded,stage.invalidDomain?1u:0u);
+			AppendInteger(encoded,stage.arithmeticInvalidDomainCount);
+			AppendInteger(encoded,stage.projectionSolveArithmeticInvalidDomainCount);
 			AppendInteger(encoded,stage.unresolvedWitnessRecorded?1u:0u);
 			AppendDouble(encoded,stage.unresolvedLeftCenter);
 			AppendDouble(encoded,stage.unresolvedLeftRadius);
@@ -1368,7 +1389,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="e79eddd56b51c03c7eb3352d41a89b31999e8aa5da8b3a5c23ec0af19f657183"||
+			traceDigest!="8dc0b8e75c214c5a1abf87fca339d568a56a9706e0a80ba8b867c09a9120c405"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1418,16 +1439,20 @@ namespace FireProductionDyadicCalibration
 			physicalCertificate.operatorEigenvalueLower!=8.9899277588426756||
 			physicalCertificate.inverseOperatorNormUpper!=0.11123559908658663||
 			physicalCertificate.residualEvaluationRoundingUpper!=1.3748435749320591e-7||
+			physicalCertificate.crossPrecisionResidualUpper!=1.9319781954175433e-6||
+			physicalCertificate.fp64ResidualGateUpper!=0.00026246811067115412||
 			physicalCertificate.validationToleranceRoundingUpper!=4.6932956987791455e-11||
 			physicalCertificate.validationPredicateMarginLower!=0.00026143109675737545||
-			physicalCertificate.streamingVelocityRMSUpper!=5.0652099990520917e-9||
+			physicalCertificate.streamingFaceVelocityL2PerCellUpper!=9.7212486067771285e-9||
 			physicalCertificate.velocityGainUpper!=0.47780216517115232||
-			physicalCertificate.velocityRMSUpper!=5.0050785397809755e-7||
-			restorationCertificate.residualEvaluationRoundingUpper!=5.693743933523084e-7||
+			physicalCertificate.velocityRMSUpper!=0.00012634065618049987||
+			restorationCertificate.residualEvaluationRoundingUpper!=1.1240225418597112e-6||
+			restorationCertificate.crossPrecisionResidualUpper!=2.3628878941959103e-5||
+			restorationCertificate.fp64ResidualGateUpper!=0.00046519338364934155||
 			restorationCertificate.validationToleranceRoundingUpper!=2.7727685625741094e-11||
-			restorationCertificate.validationPredicateMarginLower!=0.0004414973516277663||
-			restorationCertificate.streamingVelocityRMSUpper!=6.197309116104171e-9||
-			restorationCertificate.velocityRMSUpper!=1.1328186218293204e-5)return 238;
+			restorationCertificate.validationPredicateMarginLower!=0.00044094270347925889||
+			restorationCertificate.streamingFaceVelocityL2PerCellUpper!=1.1190657711221316e-8||
+			restorationCertificate.velocityRMSUpper!=0.00023357152610769635)return 238;
 		std::fprintf(stderr,"r134 projection a-posteriori bounds certified; obligations=%llu/%llu "
 			"physical_velocity=%.17g restoration_velocity=%.17g; composed B_fp32 remains next\n",
 			static_cast<unsigned long long>(totalDischargedBranchObligationCount),

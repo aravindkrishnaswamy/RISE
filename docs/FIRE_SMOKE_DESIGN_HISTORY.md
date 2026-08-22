@@ -3117,14 +3117,20 @@ it was already tried and refuted here.
   `A=G^T rho_f^-1 G`, the rational pressure-open Poincare bound, and the
   certified density interval to obtain `lambda_min>=8.9899277588426756`,
   `||A^-1||<=0.11123559908658663`, and velocity gain
-  `0.47780216517115232`.  Streaming residual evaluation and terminal adapter
-  arithmetic remain interval-walked.  The resulting projection-local velocity
-  RMS terms are `5.0050785397809755e-7` (physical) and
-  `1.1328186218293204e-5` (restoration).  Separate predicate envelopes prove
+  `0.47780216517115232`.  Fresh review rejected cell-centered terminal
+  accumulation and unqualified clearing of the shared invalid-domain bit.
+  The repaired proof provenance-counts only projection-solve interval events,
+  carries unique-face L2 through the Hodge bound, and independently evaluates
+  the rounded pressure in the exact-promoted operator.  That cross defect
+  includes coefficient/open-RHS perturbations, while the direct face term
+  covers density and boundary-pressure arithmetic; the open active set is
+  exact-matched.  The resulting projection-local velocity RMS terms are
+  `1.2634065618049987e-4` (physical) and `2.3357152610769635e-4`
+  (restoration).  Separate predicate envelopes prove
   residual/tolerance margins `2.6143109675737545e-4` and
-  `4.414973516277663e-4`; the prior unknown velocity guard is discharged by
+  `4.4094270347925889e-4`; the prior unknown velocity guard is discharged by
   nonnegative-reduction provenance.  The census is
   `3,972,326 / 3,972,326`, both bitmaps zero, exact exit `241`.  This is a
   projection-local term, not the composed `B_fp32`, and no Metal/fp64
-  measurement has run.  Durable evidence is `5dd3fd76...2cd37`; production
+  measurement has run.  Durable evidence is `7018aab1...263af59`; production
   and golden-checkpoint bytes are unchanged.

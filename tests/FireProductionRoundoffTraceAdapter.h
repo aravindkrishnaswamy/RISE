@@ -87,12 +87,14 @@ namespace FireProductionRoundoffAdapter
 		struct ProjectionStreamingEvidence
 		{
 			double densityLower=std::numeric_limits<double>::infinity(),densityUpper=0.0;
-			double maximumResidualEvaluationRadius=0.0,streamingVelocityRMSUpper=0.0;
+			double maximumResidualEvaluationRadius=0.0;
+			double maximumCrossPrecisionResidualUpper=0.0;
+			double streamingFaceVelocityL2PerCellUpper=0.0;
 			float maximumRoundedResidual=0.0f,validationToleranceRounded=0.0f;
 			double validationToleranceRadius=0.0;
 			std::uint64_t residualCellCount=0u,velocityFaceCount=0u;
 			bool roundedResidualMatches=false,roundedVelocityMatches=false,
-				validationAccepted=false;
+				openActiveSetMatches=false,validationAccepted=false;
 		};
 		Trace::FireProductionFrozenForceAdvanceResult force;
 		Trace::FireProductionCellPalindromeResult cell;
@@ -128,7 +130,8 @@ namespace FireProductionRoundoffAdapter
 				ez=axis==2u?nz+1u:nz;
 			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
 				for(std::size_t x=0u;x<ex;++x){const std::size_t face=faceIndex(axis,x,y,z);
-					const float density=projection.faceDensityKGPerM3[axis][face].Rounded();
+					const auto densityValue=projection.faceDensityKGPerM3[axis][face];
+					const float density=densityValue.Rounded();
 					evidence.densityLower=std::min(evidence.densityLower,
 						static_cast<double>(density));evidence.densityUpper=std::max(
 						evidence.densityUpper,static_cast<double>(density));
@@ -139,8 +142,7 @@ namespace FireProductionRoundoffAdapter
 						request.boundary[side]==Trace::FireProductionProjectionWall;
 					beginning[axis][face]=wall?FireProductionRoundoffTrace::TraceFloat(0.0f):
 						FireProductionRoundoffTrace::TraceFloat(
-							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/
-						FireProductionRoundoffTrace::TraceFloat(density);
+							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/densityValue;
 					published[axis][face]=FireProductionRoundoffTrace::TraceFloat(
 						projection.velocityMPerS[axis][face].Rounded());
 					maximumVelocity=std::max(maximumVelocity,std::fabs(
@@ -191,6 +193,7 @@ namespace FireProductionRoundoffAdapter
 		// formula; the structural inverse bound remains separately scoped to the
 		// frozen all-pressure-open calibration protocol.
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,6> boundaryPressure;
+		bool activeSetMatches=true;
 		for(unsigned int side=0u;side<6u;++side){const unsigned int axis=side/2u;
 			const std::size_t count=projection.pressureOpenInflow[side].size();
 			boundaryPressure[side].assign(count,FireProductionRoundoffTrace::TraceFloat(0.0f));
@@ -202,7 +205,11 @@ namespace FireProductionRoundoffAdapter
 					if(axis==1u){x=first;y=positive?ny:0u;z=second;}
 					if(axis==2u){x=first;y=second;z=positive?nz:0u;}
 					const std::size_t index=second*firstCount+first;
-					if(restoration||!projection.pressureOpenInflow[side][index])continue;
+					const bool exactInflow=((positive?1.0:-1.0)*
+						beginning[axis][faceIndex(axis,x,y,z)].Center())<0.0;
+					const bool roundedInflow=projection.pressureOpenInflow[side][index]!=0u;
+					activeSetMatches=activeSetMatches&&exactInflow==roundedInflow;
+					if(restoration||!roundedInflow)continue;
 					FireProductionRoundoffTrace::TraceFloat speed2=
 						beginning[axis][faceIndex(axis,x,y,z)]*
 						beginning[axis][faceIndex(axis,x,y,z)];
@@ -222,10 +229,12 @@ namespace FireProductionRoundoffAdapter
 				}
 		}
 		std::array<std::vector<double>,3> faceRadius;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> exactTerminal;
 		const auto dt=FireProductionRoundoffTrace::TraceFloat(request.timeStepS.Rounded());
 		const auto h=FireProductionRoundoffTrace::TraceFloat(request.shape.cellWidthM.Rounded());
 		bool velocityMatches=true;
 		for(unsigned int axis=0u;axis<3u;++axis){faceRadius[axis].resize(published[axis].size());
+			exactTerminal[axis].resize(published[axis].size());
 			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
 				ez=axis==2u?nz+1u:nz;
 			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
@@ -244,6 +253,7 @@ namespace FireProductionRoundoffAdapter
 						const std::size_t cz=axis==2u?(coordinate?nz-1u:0u):z;
 						if(request.boundary[side]==Trace::FireProductionProjectionWall){
 							velocityMatches=velocityMatches&&published[axis][face].Rounded()==0.0f;
+							exactTerminal[axis][face]=FireProductionRoundoffTrace::TraceFloat(0.0f);
 							faceRadius[axis][face]=0.0;continue;}
 						if(request.boundary[side]==Trace::FireProductionProjectionPeriodic){
 							std::size_t ox=cx,oy=cy,oz=cz,wx=cx,wy=cy,wz=cz;
@@ -263,26 +273,32 @@ namespace FireProductionRoundoffAdapter
 							FireProductionRoundoffTrace::TraceFloat(2.0f)*(p-pb)/h;}}
 					const auto momentum=FireProductionRoundoffTrace::TraceFloat(
 						request.provisionalMomentumKGPerM2S[axis][face].Rounded())-dt*gradient;
-					const auto velocity=momentum/FireProductionRoundoffTrace::TraceFloat(
-						projection.faceDensityKGPerM3[axis][face].Rounded());
+					const auto velocity=momentum/projection.faceDensityKGPerM3[axis][face];
 					velocityMatches=velocityMatches&&velocity.Rounded()==published[axis][face].Rounded();
+					exactTerminal[axis][face]=velocity;
 					faceRadius[axis][face]=velocity.Radius();
 				}
 		}
 		double squareSum=0.0;
-		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
-			for(std::size_t x=0u;x<nx;++x)for(unsigned int axis=0u;axis<3u;++axis){
-				std::size_t hx=x,hy=y,hz=z;if(axis==0u)++hx;if(axis==1u)++hy;if(axis==2u)++hz;
-				const double radius=0.5*(faceRadius[axis][faceIndex(axis,x,y,z)]+
-					faceRadius[axis][faceIndex(axis,hx,hy,hz)]);
-				squareSum=std::nextafter(squareSum+radius*radius,
-					std::numeric_limits<double>::infinity());}
-		evidence.streamingVelocityRMSUpper=std::nextafter(std::sqrt(squareSum/
+		for(unsigned int axis=0u;axis<3u;++axis)for(const double radius:faceRadius[axis])
+			squareSum=std::nextafter(squareSum+radius*radius,
+				std::numeric_limits<double>::infinity());
+		evidence.streamingFaceVelocityL2PerCellUpper=std::nextafter(std::sqrt(squareSum/
 			static_cast<double>(cells)),std::numeric_limits<double>::infinity());
+		for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
+			for(std::size_t x=0u;x<nx;++x){const std::size_t cell=cellIndex(x,y,z);
+				FireProductionRoundoffTrace::TraceFloat residual=divergence(
+					exactTerminal,x,y,z);
+				if(restoration)residual-=divergence(beginning,x,y,z);
+				residual-=request.divergenceTargetPerS[cell];
+				evidence.maximumCrossPrecisionResidualUpper=std::max(
+					evidence.maximumCrossPrecisionResidualUpper,
+					std::fabs(residual.Center())+residual.Radius());}
 		evidence.roundedVelocityMatches=velocityMatches;
+		evidence.openActiveSetMatches=activeSetMatches;
 		return evidence.densityLower>0.0&&evidence.densityUpper>=evidence.densityLower&&
 			evidence.roundedResidualMatches&&evidence.roundedVelocityMatches&&
-			evidence.validationAccepted;
+			evidence.openActiveSetMatches&&evidence.validationAccepted;
 	}
 
 	inline void AppendStages(ResidentStepTraceResult& result,
@@ -375,8 +391,11 @@ namespace FireProductionRoundoffAdapter
 		for(unsigned int side=0u;side<6u;++side)projection.boundary[side]=force.boundary[side];
 		{
 			FireProductionRoundoffTrace::Scope scope(counters);
-			if(!Trace::ProjectFireProductionResidentPhysicalCPU(projection,
-				computed.physicalProjection,error))return false;
+			{
+				FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
+				if(!Trace::ProjectFireProductionResidentPhysicalCPU(projection,
+					computed.physicalProjection,error))return false;
+			}
 			if(!EvaluateProjectionStreamingEvidence(projection,computed.physicalProjection,
 				false,computed.physicalStreaming))return false;
 			SealProjectionOutputs(computed.physicalProjection);
@@ -386,8 +405,11 @@ namespace FireProductionRoundoffAdapter
 		projection.divergenceTargetPerS=Promote(request.restorationDivergenceTargetPerS);
 		{
 			FireProductionRoundoffTrace::Scope scope(counters);
-			if(!Trace::ProjectFireProductionRestorationCPU(projection,computed.projection,error))
-				return false;
+			{
+				FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
+				if(!Trace::ProjectFireProductionRestorationCPU(projection,computed.projection,error))
+					return false;
+			}
 			if(!EvaluateProjectionStreamingEvidence(projection,computed.projection,true,
 				computed.restorationStreaming))return false;
 			SealProjectionOutputs(computed.projection);

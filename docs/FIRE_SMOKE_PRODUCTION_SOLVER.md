@@ -2565,9 +2565,20 @@ density range then gives
 
 The velocity-error gain is conservatively
 `sqrt(2/(rho_min lambda_min(A)))`; the factor two encloses the doubled
-one-sided open-face gradient.  The terminal bound is
+one-sided open-face gradient.  The terminal bound compares the rounded
+pressure against the exact-promoted binary64 operator on the same stored
+inputs.  The cross-precision divergence defect therefore contains coefficient
+and pressure-open RHS perturbations, and the active-set bitmap must agree
+exactly.  With `R_64` the binary64 residual gate, the bound is
 
-`B_projection = gain * (r_rounded + B_residual-eval) + B_terminal-stream`.
+`B_projection = gain * (R_cross(p32) + R_64) + B_terminal-face`.
+
+`B_terminal-face` is accumulated in unique-face L2 and normalized per cell
+before the Hodge estimate is mapped to the published cell-centered RMS.  This
+ordering is load-bearing: cell-centering first can hide a divergence-free
+endpoint mode.  The direct face term contains density-division and open
+boundary-pressure rounding, while `R_cross` contains the induced pressure
+response through `A^-1`.
 
 No fitted or measured constant enters this expression.  On the frozen tier-6
 state, `rho_f` is in `[0.97449040412902832,1.1348450183868408]`,
@@ -2575,15 +2586,18 @@ state, `rho_f` is in `[0.97449040412902832,1.1348450183868408]`,
 `||A^-1||<=0.11123559908658663`, and the velocity gain is
 `0.47780216517115232`.  The physical projection has residual
 `8.9943569037131965e-7`, residual-evaluation envelope
-`1.3748435749320591e-7`, terminal streaming RMS
-`5.0652099990520917e-9`, and derived velocity RMS bound
-`5.0050785397809755e-7`.  The restoration projection values are respectively
-`2.3126602172851562e-5`, `5.693743933523084e-7`,
-`6.197309116104171e-9`, and `1.1328186218293204e-5`.
+`1.3748435749320591e-7`, cross-precision residual upper
+`1.9319781954175433e-6`, binary64 residual-gate upper
+`0.00026246811067115412`, terminal face term
+`9.7212486067771285e-9`, and derived velocity RMS bound
+`0.00012634065618049987`.  The restoration cross residual, binary64 gate,
+face term, and final bound are `2.3628878941959103e-5`,
+`0.00046519338364934155`, `1.1190657711221316e-8`, and
+`0.00023357152610769635`.
 
 Both validation predicates now carry their own two-path certificates.  The
 residual upper envelope is strictly below the tolerance lower envelope by
-`0.00026143109675737545` (physical) and `0.0004414973516277663`
+`0.00026143109675737545` (physical) and `0.00044094270347925889`
 (restoration), so binary32 predicate rounding cannot invalidate the
 a-posteriori anchor.  The formerly unknown comparison is the
 positive-zero-seeded `max(abs(velocity)) < 0` guard and is discharged by the
@@ -2596,7 +2610,7 @@ Exact exit `241` denotes projection-local certification.  It does not yet
 define the composed `B_fp32`: upstream force/transport/source contributions
 must still be folded before any Metal/fp64 measurement.  Durable evidence is
 `rendered/fire_production_calibration/r134_projection_aposteriori/projection_aposteriori.v1`,
-SHA-256 `5dd3fd76e41127b1af8e2256b5d22a90750b0ce10a5867b0cee6e2c2eb92cd37`.
+SHA-256 `7018aab1db44467f4c8ca1c9443ae6f8c00102cd21577068cd3d1f590263af59`.
 The golden checkpoint is unchanged.
 
 ## 8. Rejected directions and future work

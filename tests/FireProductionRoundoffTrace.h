@@ -47,6 +47,8 @@ namespace FireProductionRoundoffTrace
 		double minimumSqrtDomainLowerBound=std::numeric_limits<double>::infinity();
 		bool unresolvedBranch=false;
 		bool invalidDomain=false;
+		std::uint64_t arithmeticInvalidDomainCount=0u;
+		std::uint64_t projectionSolveArithmeticInvalidDomainCount=0u;
 		bool unresolvedWitnessRecorded=false;
 		double unresolvedLeftCenter=0.0,unresolvedLeftRadius=0.0;
 		double unresolvedRightCenter=0.0,unresolvedRightRadius=0.0;
@@ -88,6 +90,26 @@ namespace FireProductionRoundoffTrace
 	inline thread_local double ActiveTransportProfileUpper=0.0;
 	inline thread_local std::size_t ActiveTransportLineLength=0u;
 	inline thread_local bool ActiveProjectionInterpolation=false;
+	inline thread_local bool ActiveProjectionSolveDependency=false;
+
+	inline void RecordArithmeticInvalidDomain()
+	{
+		if(ActiveCounters){ActiveCounters->invalidDomain=true;
+			++ActiveCounters->arithmeticInvalidDomainCount;
+			if(ActiveProjectionSolveDependency)
+				++ActiveCounters->projectionSolveArithmeticInvalidDomainCount;}
+	}
+
+	class ProjectionSolveDependencyScope
+	{
+		bool previous_;
+	public:
+		ProjectionSolveDependencyScope():previous_(ActiveProjectionSolveDependency)
+			{ActiveProjectionSolveDependency=true;}
+		~ProjectionSolveDependencyScope(){ActiveProjectionSolveDependency=previous_;}
+		ProjectionSolveDependencyScope(const ProjectionSolveDependencyScope&)=delete;
+		ProjectionSolveDependencyScope& operator=(const ProjectionSolveDependencyScope&)=delete;
+	};
 	inline thread_local std::size_t ActiveProjectionFine=0u;
 	inline thread_local std::size_t ActiveProjectionFineExtent=0u;
 	inline thread_local std::size_t ActiveProjectionCoarseExtent=0u;
@@ -206,7 +228,7 @@ namespace FireProductionRoundoffTrace
 			const std::uint32_t depth=1u+std::max(a.depth_,b.depth_);
 			if(ActiveCounters)ActiveCounters->minimumDenominatorLowerBound=std::min(
 				ActiveCounters->minimumDenominatorLowerBound,lower);
-			if(!(lower>0.0)){if(ActiveCounters&&CoveredBranchDepth==0u){ActiveCounters->invalidDomain=true;
+			if(!(lower>0.0)){if(ActiveCounters&&CoveredBranchDepth==0u){RecordArithmeticInvalidDomain();
 				if(!ActiveCounters->invalidDenominatorWitnessRecorded){
 					ActiveCounters->invalidDenominatorWitnessRecorded=true;
 					ActiveCounters->invalidDenominatorCenter=b.center_;
@@ -483,7 +505,7 @@ namespace FireProductionRoundoffTrace
 		const double maximumRadius=NextUp(endpointMaximum.Radius()+divergence);
 		if(std::fabs(static_cast<double>(minimum.Rounded())-endpointMinimum.Center())>
 			minimumRadius||std::fabs(static_cast<double>(maximum.Rounded())-
-			endpointMaximum.Center())>maximumRadius){ActiveCounters->invalidDomain=true;
+			endpointMaximum.Center())>maximumRadius){RecordArithmeticInvalidDomain();
 			PPMObligationStart=std::numeric_limits<std::size_t>::max();
 			PPMQuadraticAmbiguous=false;return;}
 		minimum=TraceFloat::Raw(endpointMinimum.Center(),minimumRadius,minimum.Rounded(),
@@ -597,7 +619,7 @@ namespace FireProductionRoundoffTrace
 		const double ftzTerm=NextUp(static_cast<double>(operations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
-		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		if(!std::isfinite(total)){RecordArithmeticInvalidDomain();return;}
 		obligation.certificate=BranchCertificate::Equivalence;
 		obligation.divergenceBound=total;
 		obligation.proofLower=exactTerm;
@@ -624,7 +646,7 @@ namespace FireProductionRoundoffTrace
 		const double ftzTerm=NextUp(static_cast<double>(operations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
-		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		if(!std::isfinite(total)){RecordArithmeticInvalidDomain();return;}
 		obligation.certificate=BranchCertificate::Equivalence;
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
@@ -650,7 +672,7 @@ namespace FireProductionRoundoffTrace
 		const double ftzTerm=NextUp(static_cast<double>(operations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
-		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		if(!std::isfinite(total)){RecordArithmeticInvalidDomain();return;}
 		obligation.certificate=BranchCertificate::Equivalence;
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
@@ -676,7 +698,7 @@ namespace FireProductionRoundoffTrace
 		const double ftzTerm=NextUp(static_cast<double>(operations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
-		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		if(!std::isfinite(total)){RecordArithmeticInvalidDomain();return;}
 		obligation.certificate=BranchCertificate::Equivalence;
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
@@ -706,7 +728,7 @@ namespace FireProductionRoundoffTrace
 		const double ftzTerm=NextUp(static_cast<double>(operations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
-		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return;}
+		if(!std::isfinite(total)){RecordArithmeticInvalidDomain();return;}
 		obligation.certificate=BranchCertificate::Equivalence;
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
@@ -794,7 +816,7 @@ namespace FireProductionRoundoffTrace
 			LastScopedObligation>=ActiveCounters->branchObligations.size())return result;
 		BranchObligation& obligation=ActiveCounters->branchObligations[LastScopedObligation];
 		const double widthLower=width.Center()-width.Radius();
-		if(!(widthLower>0.0)){ActiveCounters->invalidDomain=true;return result;}
+		if(!(widthLower>0.0)){RecordArithmeticInvalidDomain();return result;}
 		const double ambiguity=NextUp(std::fabs(obligation.predicateCenter)+
 			obligation.predicateRadius);
 		const double contrast=NextUp(std::fabs(ambient.Center()-nearest.Center())+
@@ -808,7 +830,7 @@ namespace FireProductionRoundoffTrace
 		const double ftzTerm=NextUp(static_cast<double>(operations)*
 			static_cast<double>(std::numeric_limits<float>::min()));
 		const double total=NextUp(exactTerm+roundedTerm+ftzTerm);
-		if(!std::isfinite(total)){ActiveCounters->invalidDomain=true;return result;}
+		if(!std::isfinite(total)){RecordArithmeticInvalidDomain();return result;}
 		obligation.certificate=BranchCertificate::Reformulation;
 		obligation.divergenceBound=total;obligation.proofLower=exactTerm;
 		obligation.proofRequired=NextUp(roundedTerm+ftzTerm);
@@ -936,7 +958,7 @@ namespace FireProductionRoundoffTrace
 		const double lower=value.Center()-value.Radius();
 		if(ActiveCounters)ActiveCounters->minimumSqrtDomainLowerBound=std::min(
 			ActiveCounters->minimumSqrtDomainLowerBound,lower);
-		if(!(lower>=0.0)){if(ActiveCounters)ActiveCounters->invalidDomain=true;}
+		if(!(lower>=0.0))RecordArithmeticInvalidDomain();
 		const double center=std::sqrt(std::max(0.0,value.Center()));
 		const double upper=std::sqrt(std::max(0.0,value.Center()+value.Radius()));
 		const double low=std::sqrt(std::max(0.0,lower));
@@ -971,7 +993,7 @@ namespace FireProductionRoundoffTrace
 		const double denominatorLower=std::fabs(b.Center())-b.Radius();
 		if(ActiveCounters)ActiveCounters->minimumDenominatorLowerBound=std::min(
 			ActiveCounters->minimumDenominatorLowerBound,denominatorLower);
-		if(!(denominatorLower>0.0)&&ActiveCounters){ActiveCounters->invalidDomain=true;
+		if(!(denominatorLower>0.0)&&ActiveCounters){RecordArithmeticInvalidDomain();
 			if(!ActiveCounters->invalidDenominatorWitnessRecorded){
 				ActiveCounters->invalidDenominatorWitnessRecorded=true;
 				ActiveCounters->invalidDenominatorCenter=b.Center();
@@ -1009,6 +1031,14 @@ namespace FireProductionRoundoffTrace
 		if(!(maximumRoundedResidual>=0.0f&&residualEvaluationRoundingUpper>=0.0&&
 			toleranceEvaluationRoundingUpper>=0.0&&toleranceLower>residualUpper&&
 			velocityMetricBound>=0.0&&std::isfinite(velocityMetricBound)))return false;
+		if(observation.arithmeticInvalidDomainCount!=
+			observation.projectionSolveArithmeticInvalidDomainCount)return false;
+		for(unsigned int channel=0u;channel<Observation::MetricChannelCount;++channel){
+			const bool projectionVelocity=channel>=9u;
+			if((!projectionVelocity&&observation.nonfiniteMetricOutputRadiusCount[channel])||
+				(projectionVelocity&&observation.nonfiniteMetricOutputRadiusCount[channel]!=
+				observation.metricOutputCount[channel]))return false;
+		}
 		std::uint64_t applied=0u;
 		for(BranchObligation& obligation:observation.branchObligations)
 			if(obligation.site==BranchSite::ProjectionValidationBand&&
@@ -1078,7 +1108,7 @@ namespace FireProductionRoundoffTrace
 		const std::size_t componentCount,const std::size_t cellCount)
 	{
 		if(componentCount>9u||!cellCount||values.size()!=componentCount*cellCount){
-			if(ActiveCounters)ActiveCounters->invalidDomain=true;return;}
+			RecordArithmeticInvalidDomain();return;}
 		for(std::size_t component=0u;component<componentCount;++component)
 			ObserveMetricRangeAndReset(values,component*cellCount,cellCount,
 				static_cast<unsigned int>(component));

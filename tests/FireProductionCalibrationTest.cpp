@@ -222,11 +222,11 @@ int main()
 		"projection_aposteriori.v1");
 	Check(!aposterioriEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(aposterioriEvidence.begin(),aposterioriEvidence.end()))==
-		"5dd3fd76e41127b1af8e2256b5d22a90750b0ce10a5867b0cee6e2c2eb92cd37"&&
+		"7018aab1db44467f4c8ca1c9443ae6f8c00102cd21577068cd3d1f590263af59"&&
 		aposterioriEvidence.find("physical_projection_velocity_rms_upper "
-			"5.0050785397809755e-7")!=std::string::npos&&
+			"0.00012634065618049987")!=std::string::npos&&
 		aposterioriEvidence.find("restoration_projection_velocity_rms_upper "
-			"1.1328186218293204e-5")!=std::string::npos&&
+			"0.00023357152610769635")!=std::string::npos&&
 		aposterioriEvidence.find("executed_obligation_instances_pending 0")!=
 			std::string::npos&&
 		aposterioriEvidence.find("canonical_exit 241")!=std::string::npos,
@@ -304,7 +304,13 @@ int main()
 		traceAdapterSource.find("projection.velocityMPerS[axis],0u,"
 			"projection.velocityMPerS[axis].size(),9u+axis")!=std::string::npos&&
 		traceAdapterSource.find("computed.conservativeValues,component*cells,cells,")!=
-			std::string::npos,
+			std::string::npos&&
+		traceAdapterSource.find("for(const double radius:faceRadius[axis])")!=
+			std::string::npos&&
+		traceAdapterSource.find("0.5*(faceRadius")==std::string::npos&&
+		CountText(traceAdapterSource,"ProjectionSolveDependencyScope solveScope")==2u&&
+		traceAdapterSource.find("maximumCrossPrecisionResidualUpper")!=std::string::npos&&
+		traceAdapterSource.find("openActiveSetMatches")!=std::string::npos,
 		"trace adapter identity and scalar/velocity metric channel wiring are source-bound");
 
 	{
@@ -330,50 +336,87 @@ int main()
 			"roundoff trace outward radius contains a binary32 tie-to-even addition");
 	}
 	{
+		const double radius=1.0;
+		const double faceL2PerCell=std::sqrt((radius*radius+radius*radius)/2.0);
+		const double cellCenteredRMS=std::sqrt(
+			(0.25*radius*radius+0.25*radius*radius)/2.0);
+		Check(faceL2PerCell==1.0&&cellCenteredRMS==0.5&&
+			faceL2PerCell>cellCenteredRMS,
+			"unique-face norm retains an endpoint-only divergence-free error hidden by cell centering");
+	}
+	{
 		const std::array<std::size_t,3> extent={{24u,24u,36u}};
 		const std::array<unsigned int,6> allOpen={{2u,2u,2u,2u,2u,2u}};
 		FireProductionRoundoffWalker::ProjectionAposterioriCertificate certified,
-			doublePoincare,missingResidual,swappedDensity;
+			doublePoincare,missingCross,missingGate,missingFace,swappedDensity;
 		const double h=0x1.4e288ep-5;
 		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
-			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.000262468164,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			certified)&&certified.dimensionlessEigenvalueLower==0.016975308641975297&&
 			certified.operatorEigenvalueLower==8.9899277588426756&&
 			certified.inverseOperatorNormUpper==0.11123559908658663&&
 			certified.velocityGainUpper==0.47780216517115232&&
-			certified.velocityRMSUpper==5.0050785397809755e-7&&
+			certified.velocityRMSUpper>0.000125&&
 			certified.validationPredicateSeparated&&certified.validationPredicateMarginLower>0.0&&
 			certified.pressureOpenAnchor&&certified.allConstantsStructural,
 			"independent Poincare/density/residual derivation pins the physical projection bound");
 		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
-			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.000262468164,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			doublePoincare,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				DoublePoincare)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
-			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.000262468164,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
-			missingResidual,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
-				MissingResidualEvaluation)&&
+			missingCross,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingCrossPrecisionResidual)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
-			8.9943569037131965e-7,1.3748435749320591e-7,5.0652099990520917e-9,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			missingGate,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingFP64ResidualGate)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.000262468164,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			missingFace,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingFaceStreaming)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.000262468164,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			swappedDensity,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				SwappedDensityEnvelope)&&
 			doublePoincare.velocityRMSUpper<certified.velocityRMSUpper&&
-			missingResidual.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingCross.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingGate.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingFace.velocityRMSUpper<certified.velocityRMSUpper&&
 			swappedDensity.velocityRMSUpper<certified.velocityRMSUpper,
-			"projection derivation rejects doubled-spectrum, missing-residual, and density-swap underbounds");
-		FireProductionRoundoffTrace::Observation accepted;
+			"projection derivation rejects spectrum, cross-residual, fp64-gate, face-norm, and density underbounds");
+		FireProductionRoundoffTrace::Counters accepted;
+		{
+			FireProductionRoundoffTrace::Scope scope(accepted);
+			FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
+			FireProductionRoundoffTrace::RecordArithmeticInvalidDomain();
+		}
 		FireProductionRoundoffTrace::BranchObligation obligation;
 		obligation.site=FireProductionRoundoffTrace::BranchSite::ProjectionValidationBand;
 		obligation.roundedResult=true;accepted.branchObligations.push_back(obligation);
-		accepted.unresolvedBranch=true;accepted.invalidDomain=true;
+		accepted.unresolvedBranch=true;
+		for(unsigned int channel=9u;channel<12u;++channel){
+			accepted.metricOutputCount[channel]=1u;
+			accepted.nonfiniteMetricOutputRadiusCount[channel]=1u;}
 		Check(FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
 			accepted,0.001f,0.002f,0.0001,0.0001,certified.velocityRMSUpper)&&
 			accepted.branchObligations.front().certificate==
@@ -382,6 +425,14 @@ int main()
 			!accepted.invalidDomain&&accepted.aposterioriMetricBound[9]==
 				certified.velocityRMSUpper,
 			"accepted validation path consumes the structural residual certificate");
+		FireProductionRoundoffTrace::Observation unrelatedInvalid=accepted;
+		unrelatedInvalid.branchObligations.front().certificate=
+			FireProductionRoundoffTrace::BranchCertificate::None;
+		unrelatedInvalid.dischargedBranchObligationCount=0u;
+		unrelatedInvalid.arithmeticInvalidDomainCount=2u;
+		Check(!FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
+			unrelatedInvalid,0.001f,0.002f,0.0001,0.0001,certified.velocityRMSUpper),
+			"projection certificate cannot erase an unrelated arithmetic-domain failure");
 		FireProductionRoundoffTrace::Observation rejected=accepted;
 		rejected.branchObligations.front().certificate=
 			FireProductionRoundoffTrace::BranchCertificate::None;
