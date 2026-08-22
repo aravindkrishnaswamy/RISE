@@ -281,6 +281,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				if(!removedEnvironmentCleared||!removedSucceeded||
 					removed.residentProjectionInvocationCount!=1u||
 					removed.interstageFullGridTransferCount!=0u||
+					!removed.projection.validationPassed||
 					removed.projection.executedVCycleCount!=17u){std::fprintf(stderr,
 					"RESTORATION_PLATEAU regime=%s removed failed success=%d invocations=%u "
 					"transfers=%u cycles=%u error=%s\n",label,removedSucceeded?1:0,
@@ -316,6 +317,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						result.residentProjectionInvocationCount!=2u||
 						result.interstageFullGridTransferCount!=0u||
 						result.projection.executedVCycleCount!=cycles||
+						!result.physicalProjection.validationPassed||
 						result.physicalProjection.executedVCycleCount!=17u||
 						result.physicalProjection.executedJacobiSweepCount!=
 							removed.projection.executedJacobiSweepCount||

@@ -345,7 +345,7 @@ int main()
 		"ff15255af16cd650606bda2cae1c8cf3f422b1b24211b6c9b55f621ec5aba99a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"70ba604ea75f529127eed10f248cd9a02328b1c831365d7ffe4cc7db3ea92e8c"&&
+		"cef39b56205f61fc9b589fc69551234000ad487b5c963a7361714dccd5d0b2f8"&&
 		goldenSubdominanceInputs.find("measurement_performed false")!=std::string::npos&&
 		goldenSubdominanceInputs.find("slice_restart_policy shared_golden_beginning_per_slice")!=
 			std::string::npos&&
@@ -385,7 +385,7 @@ int main()
 	Check(!restorationCapacityEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(restorationCapacityEvidence.begin(),
 			restorationCapacityEvidence.end()))==
-		"fb03d79e83ba2f934d1929be722c4de7942ea6421755b4b0873d103b0956f0cf"&&
+		"76fbabda66b63c2a3d732b2a17936d402e5206f4f6b7d357de205e949517fce7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
 		"0f04feacb11066bb6fcc168f26fe3881fd715e87235f757e6f96691a1703633c"&&
@@ -394,7 +394,7 @@ int main()
 		"2b3e518e7b69a2d3b0f2014fa42099f650d304212987d7d27e2941173494c331"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"70ba604ea75f529127eed10f248cd9a02328b1c831365d7ffe4cc7db3ea92e8c"&&
+		"cef39b56205f61fc9b589fc69551234000ad487b5c963a7361714dccd5d0b2f8"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverTestSource.begin(),solverTestSource.end()))==
 		"5953171b9ea96481a23b852f4a79db4dd9e91944f9851c48abe494248ecc575a"&&
@@ -409,6 +409,10 @@ int main()
 		restorationCapacityEvidence.find("burning_physical_cycles 17")!=
 			std::string::npos&&
 		restorationCapacityEvidence.find("cold_physical_cycles 17")!=
+			std::string::npos&&
+		restorationCapacityEvidence.find("burning_physical_validation_passed true")!=
+			std::string::npos&&
+		restorationCapacityEvidence.find("cold_physical_validation_passed true")!=
 			std::string::npos&&
 		restorationCapacityEvidence.find(
 			"retained_r138_replay_after_instrumentation exact_exit_243")!=
