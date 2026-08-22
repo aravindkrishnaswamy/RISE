@@ -165,6 +165,19 @@ static std::string SkillRequest( int id, const char* name )
 	return JsonSerialize( req );
 }
 
+// Skill markdown is served byte-faithfully (AgentSession's ReadFileText opens
+// binary), so on a Windows checkout -- where git's `text=auto` writes CRLF --
+// every phrase assertion below that spans a line break would miss against its
+// bare-\n literal (S3d's param-metadata contract did exactly that).  Normalize
+// once at the fetch boundary so the content checks assert on CONTENT, not on
+// line-ending encoding.
+static std::string NormalizeEol( std::string s )
+{
+	std::string::size_type r = 0;
+	while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+	return s;
+}
+
 // Extract EVERY fenced block from a markdown text as (tag, content)
 // pairs -- tag is whatever follows the opening ``` ("" for untagged).
 // The snippet contract consumes the "rise"-tagged blocks; the escape
@@ -438,7 +451,7 @@ static void TestVerbIndexAndFetch( AgentRpcDispatcher& rpc )
 		       std::string( "named fetch of " ) + kSeedSkills[i] + " succeeds" );
 		const JsonValue& res = fenv.get( "result" );
 		Check( res.get( "name" ).asString() == kSeedSkills[i], "result echoes the name" );
-		const std::string md = res.get( "markdown" ).asString();
+		const std::string md = NormalizeEol( res.get( "markdown" ).asString() );
 		Check( !md.empty() && md.find( title ) != std::string::npos,
 		       std::string( kSeedSkills[i] ) + " markdown contains its indexed title" );
 	}
@@ -508,7 +521,7 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	std::size_t totalSnippets = 0;
 	for( std::size_t s = 0; s < kSeedSkillCount; ++s ) {
 		const JsonValue fenv = ParseLine( rpc.HandleLine( SkillRequest( 5, kSeedSkills[s] ) ) );
-		const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+		const std::string md = NormalizeEol( fenv.get( "result" ).get( "markdown" ).asString() );
 		Check( !md.empty(), std::string( kSeedSkills[s] ) + ": markdown fetched" );
 
 		const std::vector<std::string> blocks = ExtractRiseBlocks( md );
@@ -645,7 +658,7 @@ static void TestFenceEscapes( AgentRpcDispatcher& rpc )
 
 	for( std::size_t s = 0; s < kSeedSkillCount; ++s ) {
 		const JsonValue fenv = ParseLine( rpc.HandleLine( SkillRequest( 6, kSeedSkills[s] ) ) );
-		const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+		const std::string md = NormalizeEol( fenv.get( "result" ).get( "markdown" ).asString() );
 		const std::vector< std::pair<std::string, std::string> > all = ExtractFencedBlocks( md );
 		for( std::size_t b = 0; b < all.size(); ++b ) {
 			if( all[b].first == "rise" ) continue;
@@ -675,7 +688,7 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 	// the constant itself is private/unexported, so this is a literal
 	// cross-reference rather than a shared-symbol comparison.
 	const JsonValue fenv = ParseLine( statelessRpc.HandleLine( SkillRequest( 7, "observe-modes" ) ) );
-	const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+	const std::string md = NormalizeEol( fenv.get( "result" ).get( "markdown" ).asString() );
 	Check( !md.empty(), "observe-modes: markdown fetched" );
 	Check( md.find( "capped at 4" ) != std::string::npos,
 	       "observe-modes states the draft samples cap as 4 (matches AgentSession.cpp's kDraftMaxSamples)" );
@@ -933,7 +946,7 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 
 	auto fetch = []( AgentRpcDispatcher& r, int id, const char* name ) {
 		const JsonValue env = ParseLine( r.HandleLine( SkillRequest( id, name ) ) );
-		return env.get( "result" ).get( "markdown" ).asString();
+		return NormalizeEol( env.get( "result" ).get( "markdown" ).asString() );
 	};
 
 	const std::string omr = fetch( rpc, 300, "object-modeling-recipes" );
@@ -1103,7 +1116,7 @@ static void TestProceduralTextureTeaching( AgentRpcDispatcher& rpc )
 
 	auto fetch = []( AgentRpcDispatcher& r, int id, const char* name ) {
 		const JsonValue env = ParseLine( r.HandleLine( SkillRequest( id, name ) ) );
-		return env.get( "result" ).get( "markdown" ).asString();
+		return NormalizeEol( env.get( "result" ).get( "markdown" ).asString() );
 	};
 
 	const std::string pt  = fetch( rpc, 400, "procedural-textures" );
@@ -1478,7 +1491,7 @@ static void TestToolRound( AgentRpcDispatcher& rpc )
 	// matching against the raw body).
 	const std::string text = tr.get( "content" ).at( 0 ).get( "text" ).asString();
 	const JsonValue payload = ParseLine( text );
-	const std::string md = payload.get( "markdown" ).asString();
+	const std::string md = NormalizeEol( payload.get( "markdown" ).asString() );
 	Check( md.find( "FROM-surface-TO-light" ) != std::string::npos,
 	       "the next body carries the skill markdown (direction convention present)" );
 }
