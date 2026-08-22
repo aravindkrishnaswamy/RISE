@@ -56,13 +56,34 @@ namespace RISE
 		//! author's own `param` lines run (so an explicit `param seed <v>`
 		//! line -- if present -- wins via ExpressionEval's same-type
 		//! last-wins duplicate rule; see ExpressionProgram::Builder::
-		//! RejectIfDuplicate), then compiles `finalExpr` with context vars
-		//! enabled.  On success returns true, fills `outProg`, and fills
-		//! `outSpecs` with the full parsed ParamSpec list (metadata
-		//! included) in `param` line order -- retrievable later via
-		//! GetParamSpecs() for the S4 introspection slice.  On failure logs
-		//! a diagnostic prefixed with `context` (e.g. "expression_painter
-		//! `marble`") via GlobalLog() and returns false.
+		//! RejectIfDuplicate) IF `autoRegisterSeed` is true, then compiles
+		//! `finalExpr` with context vars set per `enableContextVars`.  On
+		//! success returns true, fills `outProg`, and fills `outSpecs`
+		//! with the full parsed ParamSpec list (metadata included) in
+		//! `param` line order -- retrievable later via GetParamSpecs()
+		//! for the S4 introspection slice.  On failure logs a diagnostic
+		//! prefixed with `context` (e.g. "expression_painter `marble`")
+		//! via GlobalLog() and returns false.
+		//!
+		//! `enableContextVars`/`autoRegisterSeed` (review-round unification,
+		//! doc 88 sect. 7 decision 5): the ONE thing that differs between
+		//! the full-3D-context surfaces (expression_painter, scalar_painter
+		//! {expression}, both pass true/true, preserving this function's
+		//! ORIGINAL behavior exactly) and the UV-only expression_function2d
+		//! surface (passes false/false -- see
+		//! ExpressionFunction2DPainterAsciiChunkParser::Finalize,
+		//! ChunkParserRegistry.cpp).  expression_function2d's UV-only
+		//! contract is DELIBERATE and part of its FROZEN surface
+		//! (ExpressionEval.h's own EnableContextVars doc comment: enabling
+		//! context vars there would let e.g. `fbm(P*4,...)` compile and
+		//! silently evaluate to a constant, since IFunction2D::Evaluate(u,v)
+		//! never supplies P/Po/N/fw/time) -- `seed` is likewise withheld
+		//! because expression_function2d never had one and adding it now
+		//! would be a NEW capability on a surface doc 88 explicitly froze
+		//! ("a later refactor may fold it into/behind the new VM surface"
+		//! -- folding the PARSING glue, not growing the authoring surface).
+		//! `seed` is unused (never read) when `autoRegisterSeed` is false;
+		//! a caller with no seed of its own passes 0.
 		inline bool BuildExpressionProgramFromChunkFields(
 			const std::string& context,
 			const std::vector<std::string>& paramLines,
@@ -70,7 +91,9 @@ namespace RISE
 			const Scalar seed,
 			const std::string& finalExpr,
 			ExpressionProgram& outProg,
-			std::vector<ParamSpec>& outSpecs )
+			std::vector<ParamSpec>& outSpecs,
+			bool enableContextVars,
+			bool autoRegisterSeed )
 		{
 			outSpecs.clear();
 
@@ -80,11 +103,13 @@ namespace RISE
 			}
 
 			ExpressionProgram::Builder builder;
-			builder.EnableContextVars( true );
+			builder.EnableContextVars( enableContextVars );
 
-			if( !builder.AddParam( "seed", seed ) ) {
-				GlobalLog()->PrintEx( eLog_Error, "%s: internal error registering `seed`: %s", context.c_str(), builder.Error().c_str() );
-				return false;
+			if( autoRegisterSeed ) {
+				if( !builder.AddParam( "seed", seed ) ) {
+					GlobalLog()->PrintEx( eLog_Error, "%s: internal error registering `seed`: %s", context.c_str(), builder.Error().c_str() );
+					return false;
+				}
 			}
 
 			for( std::size_t i = 0; i < paramLines.size(); ++i ) {

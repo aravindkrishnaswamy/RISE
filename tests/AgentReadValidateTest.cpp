@@ -446,7 +446,19 @@ static void RunDesignNoteScanTest()
 		"standard_object\n{\n\tname a\n}\n\n"
 		"standard_object\n{\n\tname b\n}\n\n"
 		"standard_object\n{\n\tname c\n}\n\n"
-		"scalar_painter\n{\n\tname r\n\tfile none\n}\n";
+		// Adoption polish item 3: condition A is now BINDING-aware, so a
+		// scalar_painter chunk with nothing referencing it no longer
+		// silences the note (that WAS the bug -- a decoy chunk used to be
+		// enough).  This fixture now genuinely varies a physical-scalar
+		// material slot: ggx_material's `alphax` bound to a scalar_painter
+		// carrying the "expression" (spatially-varying) form.  DECLARE
+		// scalar_painter `r` BEFORE ggx_material `rm` -- DeriveToJob is
+		// strict declare-before-use, and a forward reference here left the
+		// material's `alphax` unresolved at derive time (review-round P2-1:
+		// the CST-level design scan is order-independent so the assertions
+		// still passed, but every run spammed an eLog_Error).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n";
 	{
 		const std::string note = AgentSession::ComputeDesignNote( docA3WithScalar );
 		Check( note.empty(),
@@ -456,7 +468,11 @@ static void RunDesignNoteScanTest()
 
 	const std::string docB4AllBoxWithScalar =
 		"RISE ASCII SCENE 7\n"
-		"scalar_painter\n{\n\tname r\n\tfile none\n}\n\n"
+		// Same fix as docA3WithScalar above -- a genuinely-varying binding,
+		// not a decoy chunk (adoption polish item 3), declared BEFORE the
+		// ggx_material that references it (declare-before-use, P2-1).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
 		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
 		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
@@ -469,8 +485,8 @@ static void RunDesignNoteScanTest()
 		       note.find( "box_geometry" ) != std::string::npos,
 		       "RED-PROVE B: 4 standard_object all bound to box_geometry, no advanced-geometry "
 		       "chunk anywhere, fires condition B" );
-		Check( note.find( "the scalar pipe is unused" ) == std::string::npos,
-		       "...and condition A stays silent (a scalar_painter IS bound)" );
+		Check( note.find( "no physical-scalar material parameter" ) == std::string::npos,
+		       "...and condition A stays silent (a scalar_painter IS bound AND actually varies)" );
 	}
 
 	const std::string docB4WithSdf = docB4AllBoxWithScalar +
@@ -502,8 +518,12 @@ static void RunDesignNoteScanTest()
 		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
 	{
 		const std::string note = AgentSession::ComputeDesignNote( docCombined );
+		// Adoption polish item 3: the literal phrase "the scalar pipe is
+		// unused" was retired with the stale wording it named -- condition
+		// A's clause now asserts only what the binding-aware check tests
+		// (FormatScalarPipeUnusedClause_).
 		Check( note.find( "DESIGN NOTE" ) != std::string::npos &&
-		       note.find( "the scalar pipe is unused" ) != std::string::npos &&
+		       note.find( "no physical-scalar material parameter" ) != std::string::npos &&
 		       note.find( "geometry census" ) != std::string::npos,
 		       "COMBINED: 4 standard_object, no scalar_painter, no advanced geometry -- fires "
 		       "BOTH conditions into one note" );
@@ -706,7 +726,19 @@ static void RunValidateDesignDiagnosticsScanTest()
 		"standard_object\n{\n\tname a\n}\n\n"
 		"standard_object\n{\n\tname b\n}\n\n"
 		"standard_object\n{\n\tname c\n}\n\n"
-		"scalar_painter\n{\n\tname r\n\tfile none\n}\n";
+		// Adoption polish item 3: condition A is now BINDING-aware, so a
+		// scalar_painter chunk with nothing referencing it no longer
+		// silences the note (that WAS the bug -- a decoy chunk used to be
+		// enough).  This fixture now genuinely varies a physical-scalar
+		// material slot: ggx_material's `alphax` bound to a scalar_painter
+		// carrying the "expression" (spatially-varying) form.  DECLARE
+		// scalar_painter `r` BEFORE ggx_material `rm` -- DeriveToJob is
+		// strict declare-before-use, and a forward reference here left the
+		// material's `alphax` unresolved at derive time (review-round P2-1:
+		// the CST-level design scan is order-independent so the assertions
+		// still passed, but every run spammed an eLog_Error).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n";
 	{
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docA3WithScalar );
 		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
@@ -715,7 +747,11 @@ static void RunValidateDesignDiagnosticsScanTest()
 
 	const std::string docB4AllBoxWithScalar =
 		"RISE ASCII SCENE 7\n"
-		"scalar_painter\n{\n\tname r\n\tfile none\n}\n\n"
+		// Same fix as docA3WithScalar above -- a genuinely-varying binding,
+		// not a decoy chunk (adoption polish item 3), declared BEFORE the
+		// ggx_material that references it (declare-before-use, P2-1).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
 		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
 		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
@@ -815,7 +851,15 @@ static void RunDesignRepeatedCopiesScanTest()
 	// non-empty can ONLY be condition C.
 	const std::string preamble =
 		"RISE ASCII SCENE 7\n"
-		"scalar_painter\n{\n\tname r\n\tfile none\n}\n\n"
+		// Adoption polish item 3: condition A is now BINDING-aware, so an
+		// unreferenced decoy scalar_painter no longer silences it -- this
+		// preamble now genuinely varies a physical-scalar slot (a
+		// ggx_material, unused by any object, whose `alphax` binds to the
+		// scalar_painter's spatially-varying "expression" form), declared
+		// BEFORE the ggx_material that references it (declare-before-use,
+		// review-round P2-1).
+		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
+		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"sdf_geometry\n{\n\tname sdf_geo\n\tpart\t\tsphere union 0 0 0 0 0 0 0 0 0 1 0\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
@@ -859,7 +903,7 @@ static void RunDesignRepeatedCopiesScanTest()
 		// A and B are silenced by the preamble, so a non-empty note here is
 		// condition C and nothing else.
 		const std::string note = AgentSession::ComputeDesignNote( docSix );
-		Check( note.find( "the scalar pipe is unused" ) == std::string::npos &&
+		Check( note.find( "no physical-scalar material parameter" ) == std::string::npos &&
 		       note.find( "geometry census" ) == std::string::npos,
 		       "...with conditions A and B provably silent (the fixture binds both a scalar_painter "
 		       "and an sdf_geometry), so the note below is condition C in isolation" );
@@ -1018,6 +1062,218 @@ static void RunDesignRepeatedCopiesScanTest()
 		       hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
 		       "COMBINED: a 6-box fan-out with no scalar_painter and no advanced geometry fires ALL "
 		       "THREE design codes as three separate diagnostics" );
+	}
+}
+
+//----------------------------------------------------------------------
+// "Adoption polish" (2026-08-21), motivated by a Gemini trajectory
+// analysis: three diagnostic-surface changes on the SAME shared
+// ComputeDesignNoteConditionsFromDoc_ scan.
+//
+//   Item 1 -- DESIGN_PARAM_METADATA_EROSION: an expression_painter /
+//     scalar_painter{expression} chunk whose body carries many distinct
+//     numeric literals but declares (almost) no `param` lines.
+//   Item 2 -- DESIGN_ORPHANED_PAINTERS: a Painter/Function chunk nothing
+//     in the document references, computed from SceneReferenceGraph's
+//     FULL edge list (so an environment/`radiance_map` referrer counts).
+//   Item 3 -- DESIGN_SCALAR_PIPE_UNUSED fixed to be BINDING-aware: it
+//     used to fire on every scene whose roughness varies via
+//     pbr_metallic_roughness_material's COLOUR-pipe `roughness` slot
+//     (no `scalar_painter` keyword in sight, so the old grep always
+//     missed it) -- 11/11 live-census false fires.
+//----------------------------------------------------------------------
+static void RunAdoptionPolishScanTest()
+{
+	std::printf( "[design-note] adoption polish: DESIGN_PARAM_METADATA_EROSION / "
+	             "DESIGN_ORPHANED_PAINTERS / binding-aware DESIGN_SCALAR_PIPE_UNUSED\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	//--------------------------------------------------------------
+	// Item 3: condition A must NOT fire on a scene whose only spatial
+	// roughness variation is pbr's COLOUR-pipe `roughness` slot bound to
+	// an expression_painter -- no `scalar_painter` chunk anywhere.  THE
+	// bug this fixes: the OLD keyword-grep fired here on 11/11 live
+	// census renders.
+	//--------------------------------------------------------------
+	{
+		const std::string docPbrColourPipeVaries =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname rough_field\n\tparam base 0.4 min 0 max 1 step 0.01 label \"Base roughness\"\n"
+			"\tdef n fbm(P*4.0,4,0.5,2.0)\n\texpr clamp(base+n*0.2,0.05,0.95)\n}\n\n"
+			"pbr_metallic_roughness_material\n{\n\tname m\n\tbase_color rough_field\n\troughness rough_field\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+			"standard_object\n{\n\tname a\n\tgeometry geo\n\tmaterial m\n}\n\n"
+			"standard_object\n{\n\tname b\n\tgeometry geo\n\tmaterial m\n}\n\n"
+			"standard_object\n{\n\tname c\n\tgeometry geo\n\tmaterial m\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docPbrColourPipeVaries );
+		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ),
+		       "ITEM 3 GREEN-PROVE: pbr roughness varying via expression_painter (Color-pipe-by-"
+		       "construction, no scalar_painter chunk anywhere) silences DESIGN_SCALAR_PIPE_UNUSED -- "
+		       "this is the exact false-fire the old keyword-grep hit 11/11 times" );
+	}
+	{
+		const std::string docPbrAllConstant =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname c\n\tcolor 0.7 0.6 0.5\n}\n\n"
+			"pbr_metallic_roughness_material\n{\n\tname m\n\tbase_color c\n\troughness 0.4\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+			"standard_object\n{\n\tname a\n\tgeometry geo\n\tmaterial m\n}\n\n"
+			"standard_object\n{\n\tname b\n\tgeometry geo\n\tmaterial m\n}\n\n"
+			"standard_object\n{\n\tname c2\n\tgeometry geo\n\tmaterial m\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docPbrAllConstant );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" );
+		Check( d != nullptr,
+		       "ITEM 3 RED-PROVE: the SAME pbr material with `roughness 0.4` (a bare constant, no "
+		       "expression_painter anywhere) DOES fire DESIGN_SCALAR_PIPE_UNUSED -- the fix silences "
+		       "the false POSITIVE, it does not silence the check itself" );
+		if( d ) Check( d->message.find( "no physical-scalar material parameter" ) != std::string::npos,
+		               "...carrying the corrected (non-stale) clause text" );
+	}
+
+	//--------------------------------------------------------------
+	// Item 1: DESIGN_PARAM_METADATA_EROSION.
+	//--------------------------------------------------------------
+	{
+		// Shaped like the live-census floor run's pnt_shelf_wear_mask_v3:
+		// 0 `param` lines, 3 `def`s, one `expr`, ~14 distinct numeric
+		// literals scattered across smoothstep/fbm calls.
+		const std::string docEroded =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname pnt_shelf_wear_mask_v3\n"
+			"\tdef edge_dist smoothstep(0.02, 0.12, P.z)\n"
+			"\tdef chipping fbm(P * vec3(120.0, 50.0, 120.0) + vec3(11.0, 0, 7.0), 4, 0.55, 2.0)\n"
+			"\tdef wear edge_dist * 0.82 + chipping * 0.38\n"
+			"\texpr smoothstep(0.40, 0.58, wear)\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docEroded );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_PARAM_METADATA_EROSION" );
+		Check( d != nullptr,
+		       "ITEM 1 RED-PROVE: 0-param expression_painter with ~14 distinct literals across its "
+		       "defs+expr fires DESIGN_PARAM_METADATA_EROSION" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "`pnt_shelf_wear_mask_v3`" ) != std::string::npos,
+			       "...NAMING the eroded chunk" );
+			Check( d->message.find( "param <name> <value>" ) != std::string::npos,
+			       "...teaching the promotion mechanism" );
+		}
+	}
+	{
+		// The calibration exemplar: a fully-annotated body (matching the
+		// scenes/Tests/GUI/panel_stress_params.RISEscene / FeatureBased/
+		// Textures authoring convention) must NOT fire even with a
+		// comparable literal count.
+		const std::string docNotEroded =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname pnt_shelf_wear_mask_v3\n"
+			"\tparam edge_lo 0.02 min 0 max 1 step 0.01 label \"Edge low\"\n"
+			"\tparam edge_hi 0.12 min 0 max 1 step 0.01 label \"Edge high\"\n"
+			"\tdef edge_dist smoothstep(edge_lo, edge_hi, P.z)\n"
+			"\tdef chipping fbm(P * vec3(120.0, 50.0, 120.0) + vec3(11.0, 0, 7.0), 4, 0.55, 2.0)\n"
+			"\tdef wear edge_dist * 0.82 + chipping * 0.38\n"
+			"\texpr smoothstep(0.40, 0.58, wear)\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docNotEroded ), "DESIGN_PARAM_METADATA_EROSION" ),
+		       "ITEM 1 GREEN-PROVE: the SAME body-shaped chunk with 2 real `param` lines (already "
+		       "above kParamErosionMaxParams) stays silent -- real params disarm the note" );
+	}
+	{
+		// Review-round P2-2's boundary pin: kParamErosionMaxParams == 1
+		// means EXACTLY one `param` line still QUALIFIES as a candidate
+		// (the gate that disarms is `occurrences > kParamErosionMaxParams`,
+		// i.e. TWO or more) -- one named param is a start, not proof the
+		// author is done.  Same body-shape as docNotEroded above but with
+		// only ONE `param` line, so it must still fire.
+		const std::string docOneParamStillFires =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname pnt_shelf_wear_mask_v3\n"
+			"\tparam edge_lo 0.02 min 0 max 1 step 0.01 label \"Edge low\"\n"
+			"\tdef edge_dist smoothstep(edge_lo, 0.12, P.z)\n"
+			"\tdef chipping fbm(P * vec3(120.0, 50.0, 120.0) + vec3(11.0, 0, 7.0), 4, 0.55, 2.0)\n"
+			"\tdef wear edge_dist * 0.82 + chipping * 0.38\n"
+			"\texpr smoothstep(0.40, 0.58, wear)\n}\n";
+		Check( hasCode( AgentSession::ValidateText( docOneParamStillFires ), "DESIGN_PARAM_METADATA_EROSION" ),
+		       "ITEM 1 BOUNDARY: exactly ONE `param` line (== kParamErosionMaxParams) still fires -- "
+		       "only TWO OR MORE param lines disarm the note (review-round P2-2)" );
+	}
+	{
+		// Bounded-list formatting: more than 3 eroded chunks lists 3 +
+		// "and N more".
+		std::string docManyEroded = "RISE ASCII SCENE 7\n";
+		for( int i = 0; i < 5; ++i )
+			docManyEroded += "expression_painter\n{\n\tname erode" + std::to_string( i ) +
+				"\n\tdef n fbm(P*4.0,4,0.5,2.0)\n"
+				"\texpr clamp(0.1+n*0.83, 0.02, 0.97)+1.5+2.5+3.5+4.5\n}\n\n";
+		// NOTE: `diags` MUST be a named local, not a temporary bound
+		// directly into findCode's argument -- ValidateText returns
+		// std::vector<AgentDiagnostic> BY VALUE, and `d` below outlives
+		// the single full-expression a temporary would have been alive
+		// for.
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docManyEroded );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_PARAM_METADATA_EROSION" );
+		Check( d != nullptr, "bounded-list fixture: 5 eroded chunks fires the code at all" );
+		if( d ) {
+			Check( d->message.find( "5 expression chunks" ) != std::string::npos,
+			       "...reports the TRUE total count (5), not the truncated display count" );
+			Check( d->message.find( "and 2 more" ) != std::string::npos,
+			       "...bounded list shows 3 named chunks + \"and 2 more\"" );
+		}
+	}
+
+	//--------------------------------------------------------------
+	// Item 2: DESIGN_ORPHANED_PAINTERS.
+	//--------------------------------------------------------------
+	{
+		const std::string docOrphan =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname orphaned_v2\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"uniformcolor_painter\n{\n\tname used\n\tcolor 0.4 0.4 0.4\n}\n\n"
+			"lambertian_material\n{\n\tname m\n\treflectance used\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docOrphan );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_ORPHANED_PAINTERS" );
+		Check( d != nullptr,
+		       "ITEM 2 RED-PROVE: a painter chunk nothing references fires DESIGN_ORPHANED_PAINTERS" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "`orphaned_v2`" ) != std::string::npos, "...NAMING the orphan" );
+			Check( d->message.find( "used" ) == std::string::npos ||
+			       d->message.find( "`used`" ) == std::string::npos,
+			       "...NOT naming the referenced painter (`used`)" );
+			Check( d->message.find( "remove_chunk" ) != std::string::npos,
+			       "...naming the cleanup call" );
+		}
+	}
+	{
+		const std::string docNoOrphan =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname used\n\tcolor 0.4 0.4 0.4\n}\n\n"
+			"lambertian_material\n{\n\tname m\n\treflectance used\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docNoOrphan ), "DESIGN_ORPHANED_PAINTERS" ),
+		       "ITEM 2 GREEN-PROVE: a painter referenced by a material stays silent" );
+	}
+	{
+		// THE environment case the brief calls out by name: a painter
+		// referenced ONLY by a rasterizer's `radiance_map` (never by any
+		// Painter/Material chunk) must NOT be flagged -- proves condition
+		// F reads SceneReferenceGraph's FULL, unfiltered edge list (every
+		// referrer category), not the node-graph canvas's own narrower
+		// PainterMaterialGraph (whose edge-seeding only attributes a
+		// Painter/Material/promoted-Function referrer, and would miss
+		// this exact binding).
+		const std::string docEnvReferenced =
+			"RISE ASCII SCENE 7\n"
+			"hdr_painter\n{\n\tname env_dome\n\tfile none\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n"
+			"\tradiance_map env_dome\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docEnvReferenced ), "DESIGN_ORPHANED_PAINTERS" ),
+		       "ITEM 2 GREEN-PROVE (environment): a painter bound only as the rasterizer's "
+		       "`radiance_map` is NOT flagged as orphaned" );
 	}
 }
 
@@ -1588,12 +1844,26 @@ int main()
 				// `.size()` alone would pass vacuously on an ERROR envelope
 				// (JsonValue::size() is 0 for the static Null get() yields),
 				// so assert the call SUCCEEDED and returned a real array too.
+				// "Clean" here means no Error/Warning diagnostic, not a
+				// literal empty array: adoption-polish item 2's
+				// DESIGN_ORPHANED_PAINTERS correctly (Info-severity) flags
+				// kGoodScene's `p` -- a `uniformcolor_painter` nothing in
+				// that minimal fixture ever references -- which is a real,
+				// harmless finding, not the wedge's kind of error.
+				bool anyErrorOrWarning = false;
+				{
+					const JsonValue& cd = cleanEnv.get( "result" ).get( "diagnostics" );
+					for( std::size_t i = 0; i < cd.size(); ++i ) {
+						const std::string sev = cd.at( i ).get( "severity" ).asString();
+						if( sev == "error" || sev == "warning" ) anyErrorOrWarning = true;
+					}
+				}
 				Check( !cleanEnv.has( "error" ) &&
 				       cleanEnv.get( "result" ).get( "diagnostics" ).isArray() &&
-				       cleanEnv.get( "result" ).get( "diagnostics" ).size() == 0 &&
+				       !anyErrorOrWarning &&
 				       cleanEnv.get( "result" ).get( "validated" ).asString() == "text",
-				       "the text form on a CLEAN candidate stays clean even while the head "
-				       "is wedged (the two forms are genuinely independent)" );
+				       "the text form on a CLEAN candidate stays clean (no Error/Warning) even "
+				       "while the head is wedged (the two forms are genuinely independent)" );
 			}
 		}
 		pJob->release();
@@ -1654,6 +1924,7 @@ int main()
 	RunDesignRepeatedCopiesScanTest();
 	RunValidateDesignDiagnosticsScanTest();
 	RunValidateDesignDiagnosticsCarrierTest();
+	RunAdoptionPolishScanTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

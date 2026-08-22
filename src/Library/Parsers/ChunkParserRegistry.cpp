@@ -1526,8 +1526,13 @@ namespace RISE
 						const std::string context = "scalar_painter `" + name + "` (expression)";
 						Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
 						std::vector<Implementation::ParamSpec> specs;
+						// true/true: full context vars + auto-registered `seed`,
+						// this call's ORIGINAL (pre-unification) behavior -- see
+						// BuildExpressionProgramFromChunkFields's own doc comment
+						// (ExpressionPainter.h).
 						if( !Implementation::BuildExpressionProgramFromChunkFields(
-								context, params, defs, Scalar( seed ), finalExpr, prog, specs ) ) {
+								context, params, defs, Scalar( seed ), finalExpr, prog, specs,
+								/*enableContextVars=*/true, /*autoRegisterSeed=*/true ) ) {
 							return false;
 						}
 						RISE_API_CreateExpressionScalarPainter( &painter, prog, specs );
@@ -6044,63 +6049,44 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name", "noname" );
 					std::string finalExpr = bag.GetString( "expr", "" );
-					if( finalExpr.empty() ) {
-						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: missing `expr` (the final value expression)", name.c_str() );
-						return false;
-					}
 
-					Implementation::ExpressionProgram::Builder builder;
-					// Context vars stay OFF here (doc 88 decision 5:
-					// expression_function2d stays as-is).  This chunk is a pure
-					// (u,v) surface -- it is consumed through
-					// IFunction2D::Evaluate(u,v) (displacement, bumpmap,
-					// scalar_painter{function2d}), where P/Po/N/fw/time have no
-					// values; enabling them here would make e.g. `fbm(P*4,...)`
-					// compile and silently evaluate to a constant.  The 3D
-					// context surface is the S2 `expression_painter` chunk,
-					// whose painter evaluation supplies a real context.  See
-					// EnableContextVars' doc comment in ExpressionEval.h.
-					// named numeric constants (all params precede all defs)
-					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
-					for( std::size_t i = 0; i < params.size(); ++i ) {
-						char pn[128] = {0}; double pv = 0;
-						if( sscanf( params[i].c_str(), "%127s %lf", pn, &pv ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param %u (`%s`) must be `<name> <number>`", name.c_str(), (unsigned)i, params[i].c_str() );
-							return false;
-						}
-						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pv ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s` must be finite (nan/inf rejected)", name.c_str(), pn );
-							return false;
-						}
-						// P1-A: AddParam now rejects a duplicate name (e.g. a second
-						// `param a ...` or a `param a ...` that collides with an
-						// earlier `def a ...`) instead of silently reusing --
-						// type-blind -- the earlier slot.
-						if( !builder.AddParam( pn, (Scalar)pv ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s`: %s", name.c_str(), pn, builder.Error().c_str() );
-							return false;
-						}
-					}
-					// named sub-expressions (let-bindings), in input order
-					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
-					for( std::size_t i = 0; i < defs.size(); ++i ) {
-						const std::string& line = defs[i];
-						std::size_t sp = line.find_first_of( " \t" );
-						if( sp == std::string::npos ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def %u (`%s`) must be `<name> <expression>`", name.c_str(), (unsigned)i, line.c_str() );
-							return false;
-						}
-						const std::string dname = line.substr( 0, sp );
-						const std::string dexpr = line.substr( sp + 1 );
-						if( !builder.AddDef( dname, dexpr ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def `%s`: %s", name.c_str(), dname.c_str(), builder.Error().c_str() );
-							return false;
-						}
-					}
-
+					// review-round unification (doc 88 sect. 7 decision 5): the
+					// param/def parsing + ExpressionProgram::Builder orchestration
+					// used to be reimplemented inline here (a plain `sscanf`
+					// `<name> <number>` scanner, no ExpressionParamSpec metadata
+					// grammar, its own copy of the def-splitting loop) instead of
+					// calling the SAME BuildExpressionProgramFromChunkFields
+					// (ExpressionPainter.h) helper `expression_painter` and
+					// `scalar_painter{expression}` already share -- two
+					// independently-maintained copies of the identical parsing
+					// logic, exactly the duplication doc 88 flagged for a later
+					// fold. Now calls the shared helper with
+					// enableContextVars=false, autoRegisterSeed=false -- see
+					// that function's own doc comment for why those two flags
+					// (not the evaluation engine, which was ALREADY shared via
+					// ExpressionProgram) are the one place this surface must
+					// differ from expression_painter's.
+					//
+					// BIT-IDENTICAL FOR EVERY EXISTING BODY: ParseParamSpecLine
+					// (ExpressionParamSpec.h) parses a plain `<name> <number>`
+					// line (the only form any in-tree scene's expression_function2d
+					// param line uses -- verified) to the SAME name/value the old
+					// sscanf scanner produced; the ONLY behavior difference is
+					// that trailing content past `<name> <number>` now has to be
+					// a well-formed `min`/`max`/`step`/`label` clause (the old
+					// scanner silently ignored trailing garbage) -- a stricter,
+					// not looser, validation, and the richer grammar this brings
+					// along is inert here (min/max/step/label are parsed but
+					// never read by ExpressionFunction2DPainter, exactly as
+					// undeclared-but-parsed metadata already sits inert on
+					// expression_painter -- no NEW evaluation capability, no new
+					// keyword, context vars still off).
 					Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
-					if( !builder.Finalize( finalExpr, prog ) ) {
-						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: expr: %s", name.c_str(), builder.Error().c_str() );
+					std::vector<Implementation::ParamSpec> specs;   // discarded -- this surface doesn't carry S4 introspection metadata (frozen, not extended)
+					const std::string context = std::string( "expression_function2d `" ) + name + "`";
+					if( !Implementation::BuildExpressionProgramFromChunkFields(
+							context, bag.GetRepeatable( "param" ), bag.GetRepeatable( "def" ), Scalar( 0 ), finalExpr, prog, specs,
+							/*enableContextVars=*/false, /*autoRegisterSeed=*/false ) ) {
 						return false;
 					}
 
