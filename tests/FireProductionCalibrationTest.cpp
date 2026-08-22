@@ -357,6 +357,27 @@ int main()
 		goldenRestorationRefusal.find("canonical_exit 244")!=std::string::npos&&
 		goldenRestorationRefusal.find("full_step_B_fp32_closed false")!=std::string::npos,
 		"r140 binds the sealed golden inputs and fails closed on restoration validation");
+	const std::string restorationPlateauProtocol=ReadText(
+		"rendered/fire_production_calibration/r141_restoration_plateau_protocol/"
+		"restoration_plateau_protocol.v1");
+	Check(!restorationPlateauProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(restorationPlateauProtocol.begin(),
+			restorationPlateauProtocol.end()))==
+		"24efa0dfcdbf52cdef5561fec87af2aae3266383f609ede39f18729c8e70a599"&&
+		restorationPlateauProtocol.find("protocol_before_measurement true")!=
+			std::string::npos&&
+		restorationPlateauProtocol.find("measurement_performed false")!=
+			std::string::npos&&
+		restorationPlateauProtocol.find("headroom_power_of_two 0.25")!=
+			std::string::npos&&
+		restorationPlateauProtocol.find(
+			"required_drain_rule r_req=G_field/(eos_ceiling*(1-headroom))")!=
+			std::string::npos&&
+		restorationPlateauProtocol.find("field_plateau_gate <=0.00075")!=
+			std::string::npos&&
+		restorationPlateauProtocol.find("production_validation_changed false")!=
+			std::string::npos,
+		"r141 freezes plateau-derived restoration validation before measurement");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

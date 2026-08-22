@@ -3240,3 +3240,18 @@ it was already tried and refuted here.
   hash; the ordinary macOS suite replays it.  No criterion, solver, `B_fp32`,
   temporal evidence, or golden bytes changed.  This is an owner-level
   validation-contract decision, not grounds to widen the precision bound.
+- **r141 restoration plateau-control protocol (2026-08-22; pre-evidence):**
+  owner ruling identifies r118's `0.005*target` restoration band as a design
+  derivation error: “derived the same way” was read too literally from the
+  physical solve's fractional residual instead of the restoration mechanism's
+  plateau function.  Before new Metal evidence, the replacement protocol pins
+  EOS ceiling `1e-3`, stability headroom `h=2^-2`, and therefore plateau limit
+  `7.5e-4`.  In each separately classified cold/burning regime,
+  `G_field=max_cell |d_removed^(n+1)-d_beginning^n|`,
+  `r_req=G_field/(1e-3*(1-h))`, and the mechanism band is
+  `residual <= (1-r_req)*max|R_n|`.  Identical-input restoration runs for
+  cycles 1 through 16 define the per-cycle contraction and the minimum derived
+  count if 16 is insufficient; no count or tolerance may be tuned after the
+  curve.  The 104-step final-32 field gate `<=7.5e-4` is the load-bearing
+  physics oracle.  The protocol artifact records `measurement_performed=false`;
+  no production criterion, solver, or golden byte changed in this entry.

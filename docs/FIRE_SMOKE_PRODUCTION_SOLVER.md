@@ -2792,6 +2792,31 @@ temporal term, or additive contract is admitted; changing the independently
 derived restoration criterion is an owner-level contract ruling.  The golden
 checkpoint is unchanged.
 
+### 7.55a Plateau-derived restoration validation (r141, pre-evidence)
+
+The owner ruling records r118's `0.005 max|R_n|` band as a derivation error at
+the design level.  The restoration pass exists to keep the manifold deviation
+plateau below its EOS ceiling; borrowing the physical projection's fractional
+residual rule was an over-literal interpretation of “derived the same way.”
+The replacement is frozen before measurement.  With EOS ceiling `C=1e-3` and
+power-of-two headroom `h=2^-2`, the allowed field plateau is
+`C(1-h)=7.5e-4`.  Separately for cold calibration and burning golden regimes,
+the removed-restoration counterfactual measures
+
+`G_field=max_cell |d_removed^(n+1)-d_beginning^n|`, where `d=V(Q)-1`.
+
+The required drain is `r_req=G_field/(C(1-h))`; the corresponding mechanism
+criterion is `residual <= (1-r_req) max|R_n|`.  Runs at restoration cycle
+counts 1 through 16 reuse identical beginning, target, physical pass, and
+source bytes.  Their residual curve determines the minimum cycle count if 16
+does not meet the derived fraction.  No empirical tolerance or chosen cycle
+count is permitted after inspecting the curve.  The function-level RED is the
+104-step golden long shadow: the maximum field deviation over its final 32
+steps must remain `<=7.5e-4`; removed restoration must reproduce secular
+blowthrough, and substituting the physical target must still fail the resident
+ownership seam.  The pre-evidence artifact records no measurement and changes
+no production behavior.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
