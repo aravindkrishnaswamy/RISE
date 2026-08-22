@@ -544,7 +544,7 @@ foreach ($src in $testSources) {
 }
 
 if (-not $Filter) {
-    $roundoffName = 'FireProductionCalibrationOracle.r135'
+    $roundoffName = 'FireProductionCalibrationOracle.r136'
     $roundoffExe = Join-Path $BinDir 'FireSequenceTest.exe'
     $roundoffLog = Join-Path $LogDir "$roundoffName.log"
     Write-Host -NoNewline ('[ evidence ] {0,-46} ... ' -f $roundoffName)
@@ -556,7 +556,7 @@ if (-not $Filter) {
             $FireProductionTargetsSHA *>&1 | Out-File -FilePath $roundoffLog -Encoding utf8
         $roundoffRC = $LASTEXITCODE
     }
-    if ($roundoffRC -eq 242) {
+    if ($roundoffRC -eq 237) {
 		Write-Host 'PASS (exact exit=242)'
         Remove-Item -LiteralPath $roundoffLog -ErrorAction SilentlyContinue
     } else {

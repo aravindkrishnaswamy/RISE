@@ -241,7 +241,23 @@ int main()
 			std::string::npos&&fullStepEvidence.find("derivation_before_metal true")!=
 			std::string::npos&&fullStepEvidence.find("metal_measurement_performed false")!=
 			std::string::npos&&fullStepEvidence.find("canonical_exit 242")!=std::string::npos,
-		"r135 seals the complete analytic B_fp32 before Metal measurement");
+		"r135 candidate is retained as the pre-review derivation proposal");
+	const std::string fullStepRefusal=ReadText(
+		"rendered/fire_production_calibration/r136_full_step_refusal/"
+		"full_step_bfp32_refusal.v1");
+	const std::string fullStepFixture=ReadText(
+		"tests/FireProductionDyadicCalibrationFixture.h");
+	Check(!fullStepRefusal.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(fullStepRefusal.begin(),fullStepRefusal.end()))==
+		"19732a3864fbcbe43a4fa872d4c4311732820248934bfc9bc1627b0ae0ff33ad"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fullStepFixture.begin(),fullStepFixture.end()))==
+		"b32cd74d7eab2ab0872bf04d25c54ac5279315380837be222bb36079f3f15674"&&
+		fullStepRefusal.find("full_step_proof_gap_bitmap 0xff")!=std::string::npos&&
+		fullStepRefusal.find("candidate_is_certified false")!=std::string::npos&&
+		fullStepRefusal.find("metal_measurement_performed false")!=std::string::npos&&
+		fullStepRefusal.find("canonical_exit 237")!=std::string::npos,
+		"r136 source-binds the rejected candidate and refuses B_fp32 before Metal");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -253,13 +269,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r135")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r136")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		unixTestDriver.find("roundoff_rc\" -eq 242")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r135")!=std::string::npos&&
+		unixTestDriver.find("roundoff_rc\" -eq 237")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r136")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
-		windowsTestDriver.find("roundoffRC -eq 242")!=std::string::npos,
-		"ordinary Unix and Windows suites execute r135 and accept only the full-step proof");
+		windowsTestDriver.find("roundoffRC -eq 237")!=std::string::npos,
+		"ordinary Unix and Windows suites execute r136 and accept only the full-step refusal");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -515,6 +531,12 @@ int main()
 			"rejected and over-band validation paths cannot borrow the accepted-solution anchor");
 	}
 	{
+		FireProductionRoundoffWalker::FullStepAssumptionRefusal refusal;
+		Check(FireProductionRoundoffWalker::RefuteFullStepCandidateAssumptions(refusal)&&
+			refusal.conservativeCompressionL2Gain>1.0&&
+			refusal.localizedProductRMS>refusal.productOfRMS&&
+			refusal.sharedAlphaCrossComponentResponse>0.0,
+			"r136 independently rejects r135's unit FCT gain, RMS product, and diagonal-component assumptions");
 		std::array<FireProductionRoundoffWalker::FullStepMetricStage,24> stages={};
 		for(const unsigned int stage:{1u,2u,3u,4u,5u,21u})for(unsigned int component=0u;
 			component<9u;++component){stages[stage].count[component]=8u;
@@ -530,18 +552,19 @@ int main()
 			const FireProductionRoundoffWalker::FullStepGraphVariant variant){return
 			FireProductionRoundoffWalker::DeriveFullStepRoundoffBound(stages,8u,0.9,1.2,0.04,
 				0.002,1.1,0.2,1.0e-7,0.01,0.02,0.001,0.002,output,variant);};
-		Check(derive(certified,FireProductionRoundoffWalker::FullStepGraphVariant::Certified)&&
-			derive(missingCell,FireProductionRoundoffWalker::FullStepGraphVariant::MissingCellStage)&&
-			derive(missingDensity,FireProductionRoundoffWalker::FullStepGraphVariant::
-				MissingDensityInteraction)&&derive(missingPhysical,
+		Check(!derive(certified,FireProductionRoundoffWalker::FullStepGraphVariant::Certified)&&
+			!derive(missingCell,FireProductionRoundoffWalker::FullStepGraphVariant::MissingCellStage)&&
+			!derive(missingDensity,FireProductionRoundoffWalker::FullStepGraphVariant::
+				MissingDensityInteraction)&&!derive(missingPhysical,
 				FireProductionRoundoffWalker::FullStepGraphVariant::MissingPhysicalFeedthrough)&&
-			derive(missingRestoration,FireProductionRoundoffWalker::FullStepGraphVariant::
-				MissingRestorationFeedthrough)&&missingCell.scalarFilteredL1Upper[0]<
+			!derive(missingRestoration,FireProductionRoundoffWalker::FullStepGraphVariant::
+				MissingRestorationFeedthrough)&&certified.proofGapBitmap==0xffu&&
+			!certified.proofComplete&&missingCell.scalarFilteredL1Upper[0]<
 				certified.scalarFilteredL1Upper[0]&&missingDensity.finalVelocityRMSUpper<
 				certified.finalVelocityRMSUpper&&missingPhysical.finalVelocityRMSUpper<
 				certified.finalVelocityRMSUpper&&missingRestoration.finalVelocityRMSUpper<
 				certified.finalVelocityRMSUpper,
-			"full-step bound requires every cell stage, density interaction, and projection feedthrough");
+			"r135 candidate remains reproducible but fail-closes all eight proof gaps");
 	}
 	{
 		FireProductionRoundoffTrace::Counters counters;

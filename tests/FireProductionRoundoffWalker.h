@@ -179,8 +179,28 @@ namespace FireProductionRoundoffWalker
 		double provisionalVelocityL2PerCellUpper=0.0;
 		double physicalProjectionVelocityUpper=0.0,finalVelocityRMSUpper=0.0;
 		double openBoundaryInteractionUpper=0.0;
+		std::uint32_t proofGapBitmap=0u;
 		bool scalarTransportNonexpansive=false,dualTransportNonexpansive=false,
-			projectionInteractionsIncluded=false;
+			projectionInteractionsIncluded=false,proofComplete=false;
+	};
+	enum FullStepProofGap : std::uint32_t
+	{
+		FullStepNonlinearFCTGain=1u<<0u,
+		FullStepDensityLInfinity=1u<<1u,
+		FullStepProjectionResolvent=1u<<2u,
+		FullStepOpenQuadraticLInfinity=1u<<3u,
+		FullStepMomentumSourceMetric=1u<<4u,
+		FullStepGasReductionMetric=1u<<5u,
+		FullStepAllSlices=1u<<6u,
+		FullStepIndependentCardinality=1u<<7u
+	};
+	struct FullStepAssumptionRefusal
+	{
+		double conservativeCompressionL2Gain=0.0;
+		double localizedProductRMS=0.0,productOfRMS=0.0;
+		double sharedAlphaCrossComponentResponse=0.0;
+		bool fctUnitGainRejected=false,rmsProductRejected=false,
+			componentDiagonalRejected=false;
 	};
 	enum class FullStepGraphVariant { Certified,MissingCellStage,
 		MissingDensityInteraction,MissingPhysicalFeedthrough,MissingRestorationFeedthrough };
@@ -612,12 +632,30 @@ namespace FireProductionRoundoffWalker
 		return true;
 	}
 
-	// Each accepted FCT submap is a conservative shared-alpha monotone map.  Its
-	// perturbation matrix is substochastic in both one- and infinity-norm, hence
-	// nonexpansive in L1 and (by sqrt(||A||1||A||inf)) in L2.  Local arithmetic
-	// envelopes therefore compose by outward Minkowski sums.  The two variable-
-	// density projections are bounded in the unweighted face norm by sqrt(kappa);
-	// coefficient and pressure-open total-head interactions are explicit below.
+	inline bool RefuteFullStepCandidateAssumptions(FullStepAssumptionRefusal& refusal)
+	{
+		refusal=FullStepAssumptionRefusal();
+		// A positive conservative compression matrix can have unit column sum and
+		// L2 gain sqrt(2); conservation alone never proves the discarded row bound.
+		refusal.conservativeCompressionL2Gain=Detail::NextUp(std::sqrt(2.0));
+		// On four equal-volume cells, a=b=(2,0,0,0) has RMS(a)=RMS(b)=1
+		// but RMS(a*b)=2.  RMS products therefore do not control coefficient terms.
+		refusal.localizedProductRMS=2.0;refusal.productOfRMS=1.0;
+		// y=c+min(alpha_a,alpha_b)d: moving alpha_b from .5 to .6 changes
+		// component a by .1d.  Shared alpha makes the stage Jacobian non-diagonal.
+		refusal.sharedAlphaCrossComponentResponse=0.1;
+		refusal.fctUnitGainRejected=refusal.conservativeCompressionL2Gain>1.0;
+		refusal.rmsProductRejected=refusal.localizedProductRMS>
+			refusal.productOfRMS;
+		refusal.componentDiagonalRejected=
+			refusal.sharedAlphaCrossComponentResponse>0.0;
+		return refusal.fctUnitGainRejected&&refusal.rmsProductRejected&&
+			refusal.componentDiagonalRejected;
+	}
+
+	// This function retains the rejected r135 candidate arithmetic so the exact
+	// refusal is reproducible.  It must not publish a certificate until all eight
+	// proof gaps below are replaced by independent, state-local bounds.
 	inline bool DeriveFullStepRoundoffBound(const std::array<FullStepMetricStage,24>& stages,
 		const std::size_t cellCount,const double densityLower,const double densityUpper,
 		const double spacing,const double timeStep,const double ambientDensity,
@@ -703,10 +741,16 @@ namespace FireProductionRoundoffWalker
 		certificate.finalVelocityRMSUpper=Detail::NextUp(restorationInput+
 			certificate.densityRelativeUpper*restorationCorrectionL2+
 			restorationLocalProjectionBound);
-		certificate.scalarTransportNonexpansive=true;
-		certificate.dualTransportNonexpansive=true;
-		certificate.projectionInteractionsIncluded=true;
-		return std::isfinite(certificate.finalVelocityRMSUpper);
+		certificate.proofGapBitmap=FullStepNonlinearFCTGain|
+			FullStepDensityLInfinity|FullStepProjectionResolvent|
+			FullStepOpenQuadraticLInfinity|FullStepMomentumSourceMetric|
+			FullStepGasReductionMetric|FullStepAllSlices|
+			FullStepIndependentCardinality;
+		certificate.scalarTransportNonexpansive=false;
+		certificate.dualTransportNonexpansive=false;
+		certificate.projectionInteractionsIncluded=false;
+		certificate.proofComplete=false;
+		return false;
 	}
 
 	// The periodic/open swept integral is continuous when its integer partition

@@ -1094,10 +1094,11 @@ namespace FireProductionDyadicCalibration
 				trace.restorationStreaming.projectionCorrectionL2PerCell,
 				physicalCertificate.velocityRMSUpper,restorationCertificate.velocityRMSUpper,
 				fullStepCertificate);
-		std::fprintf(stderr,"r135 full_step derived=%d gas_rms=%.17g density_relative=%.17g "
+		std::fprintf(stderr,"r136 full_step derived=%d proof_gaps=0x%02x gas_rms=%.17g density_relative=%.17g "
 			"provisional_velocity=%.17g physical=%.17g final_velocity=%.17g open=%.17g "
 			"correction=%.17g/%.17g\n",
-			fullStepDerived?1:0,fullStepCertificate.gasDensityRMSUpper,
+			fullStepDerived?1:0,fullStepCertificate.proofGapBitmap,
+			fullStepCertificate.gasDensityRMSUpper,
 			fullStepCertificate.densityRelativeUpper,
 			fullStepCertificate.provisionalVelocityL2PerCellUpper,
 			fullStepCertificate.physicalProjectionVelocityUpper,
@@ -1454,7 +1455,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="086c6b06d0e2d9e5087c294eb95b750bf8225f553fc99f085273ac023786c284"||
+			traceDigest!="bb1dfccf73b54eeff0e57d8ae4cc6e1421cd7121e78d381e5ca1aa54f4d22923"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1540,7 +1541,11 @@ namespace FireProductionDyadicCalibration
 			1.152885058045011e-05,2.4223343929965511e-06,8454.3253079109272}};
 		static const std::array<double,3> ExpectedMomentum={{0.013505921107054692,
 			0.0012696844714689289,0.00011935802483893404}};
-		if(!fullStepDerived||fullStepCertificate.scalarFilteredL1Upper!=ExpectedScalar||
+		FireProductionRoundoffWalker::FullStepAssumptionRefusal proofRefusal;
+		if(fullStepDerived||fullStepCertificate.proofGapBitmap!=0xffu||
+			fullStepCertificate.proofComplete||
+			!FireProductionRoundoffWalker::RefuteFullStepCandidateAssumptions(proofRefusal)||
+			fullStepCertificate.scalarFilteredL1Upper!=ExpectedScalar||
 			fullStepCertificate.scalarRMSUpper!=ExpectedScalarRMS||
 			fullStepCertificate.inventoryPerVolumeUpper!=ExpectedScalar||
 			fullStepCertificate.momentumL2PerCellUpper!=ExpectedMomentum||
@@ -1552,16 +1557,20 @@ namespace FireProductionDyadicCalibration
 			fullStepCertificate.finalVelocityRMSUpper!=0.021145425678289562||
 			trace.physicalStreaming.projectionCorrectionL2PerCell!=0.0050658272508546124||
 			trace.restorationStreaming.projectionCorrectionL2PerCell!=0.012757173692842795||
-			!fullStepCertificate.scalarTransportNonexpansive||
-			!fullStepCertificate.dualTransportNonexpansive||
-			!fullStepCertificate.projectionInteractionsIncluded)return 238;
-		std::fprintf(stderr,"r135 full-step B_fp32 derived; obligations=%llu/%llu "
-			"physical_local=%.17g restoration_local=%.17g final_velocity=%.17g\n",
+			fullStepCertificate.scalarTransportNonexpansive||
+			fullStepCertificate.dualTransportNonexpansive||
+			fullStepCertificate.projectionInteractionsIncluded)return 238;
+		std::fprintf(stderr,"r136 full-step B_fp32 refused; obligations=%llu/%llu "
+			"proof_gaps=0x%02x compression_gain=%.17g product=%.17g/%.17g "
+			"cross_component=%.17g candidate_velocity=%.17g metal_measurement=0\n",
 			static_cast<unsigned long long>(totalDischargedBranchObligationCount),
 			static_cast<unsigned long long>(totalBranchObligationCount),
-			physicalCertificate.velocityRMSUpper,restorationCertificate.velocityRMSUpper,
+			fullStepCertificate.proofGapBitmap,
+			proofRefusal.conservativeCompressionL2Gain,
+			proofRefusal.localizedProductRMS,proofRefusal.productOfRMS,
+			proofRefusal.sharedAlphaCrossComponentResponse,
 			fullStepCertificate.finalVelocityRMSUpper);
-		return 242;
+		return 237;
 	}
 
 	int CheckRestorationLong(const std::filesystem::path& directory,

@@ -376,10 +376,10 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	fi
 done
 
-# The r135 full-step analytic proof is a capability-isolated evidence gate, not a test
+# The r136 full-step proof refusal is a capability-isolated evidence gate, not a test
 # source with its own executable name. Run the capability-isolated binary
 # explicitly and accept only the exact structural projection-certificate result.
-roundoff_name="FireProductionCalibrationOracle.r135"
+roundoff_name="FireProductionCalibrationOracle.r136"
 roundoff_path="$BIN_DIR/FireProductionCalibrationOracle"
 roundoff_log="$LOG_DIR/$roundoff_name.log"
 printf '[ evidence ] %-46s ... ' "$roundoff_name"
@@ -396,7 +396,7 @@ else
 		"$FIRE_PRODUCTION_CALIBRATION_DIR" "$FIRE_PRODUCTION_PROTOCOL_SHA" \
 		"$FIRE_PRODUCTION_TARGETS_SHA" >"$roundoff_log" 2>&1 || roundoff_rc=$?
 fi
-if [ "$roundoff_rc" -eq 242 ]; then
+if [ "$roundoff_rc" -eq 237 ]; then
 	echo 'PASS (exact exit=242)'
 	rm -f "$roundoff_log"
 else

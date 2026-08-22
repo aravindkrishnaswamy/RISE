@@ -3144,7 +3144,7 @@ it was already tried and refuted here.
   measurement has run.  Durable evidence is `18f01152...b651ec2`; production
   and golden-checkpoint bytes are unchanged.
 
-- **r135 full-step analytic B_fp32 derivation (2026-08-22):** before any Metal
+- **r135 full-step analytic B_fp32 candidate (2026-08-22; rejected by r136):** before any Metal
   measurement, the independent walker composes the five cell remaps, source
   publication, force output, fifteen dual submaps, physical projection, and
   restoration projection.  Shared-alpha monotone conservative maps supply the
@@ -3157,4 +3157,19 @@ it was already tried and refuted here.
   projection-feedthrough mutants all underbound and RED.  Exact exit `242`
   binds trace `086c6b06...86c284`; durable derivation evidence is
   `843e1f02...9f32c1`.  Metal measurement and all later acceptance decisions
-  remain unrun; the golden checkpoint is unchanged.
+  remain unrun; the golden checkpoint is unchanged.  Fresh r136 review later
+  proved that the candidate's propagation assumptions were insufficient, so
+  none of these values is admitted to the contract.
+- **r136 full-step composition proof refusal (2026-08-22):** the derive-first
+  boundary worked: review rejected r135 before Metal.  The exact proof-gap
+  bitmap is `0xff`: nonlinear shared-alpha cross-component/compressive gains;
+  missing density Linf and variable-coefficient projection resolvent; missing
+  localized pressure-open quadratic control; missing source momentum and gas-
+  reduction metrics; only slice zero instantiated; and trace-trusted rather
+  than shape-derived cardinalities.  Independent counterexamples pin
+  compression L2 gain `sqrt(2)`, localized product RMS `2>1`, and nonzero
+  shared-alpha cross-component response.  The historical `2.1145425678e-2`
+  velocity candidate is explicitly non-certified.  Exact exit `237` and
+  durable evidence `19732a38...ff33ad` keep measurement, additive tolerance,
+  temporal refinement, and readmission blocked.  No Metal evidence ran; the
+  golden checkpoint remains unchanged.

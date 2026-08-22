@@ -2631,9 +2631,9 @@ must still be folded before any Metal/fp64 measurement.  Durable evidence is
 SHA-256 `18f0115216fb4654eb4b7a37466ded1788158d9e4b55eacf15811e986b651ec2`.
 The golden checkpoint is unchanged.
 
-### 7.52 Full-step analytic B_fp32 derivation (r135)
+### 7.52 Full-step analytic B_fp32 candidate (r135; rejected by r136)
 
-The frozen r120 trace is now composed across the complete resident step before
+The frozen r120 trace was provisionally composed across the complete resident step before
 any Metal comparison.  Each shared-alpha monotone conservative FCT submap is
 substochastic in both the one- and infinity-norm; therefore it is
 nonexpansive in L1 and, by `||A||2 <= sqrt(||A||1 ||A||inf)`, in L2.  The
@@ -2666,13 +2666,41 @@ The gas-density RMS and relative coefficient terms are
 `1.8948201018992382e-2`, and the final two-projection velocity B_fp32 is
 `2.1145425678289562e-2 m/s`.
 
-This entry is derivation-only.  The fp64/Metal comparison did not run and did
-not select any term.  Exact exit `242`, trace digest
+This entry records the pre-review candidate, not an accepted bound.  The fresh
+r136 boundary review disproved its propagation assumptions, so none of these
+numbers enters `B_fp32` or the additive contract.  The fp64/Metal comparison
+did not run and did not select any term.  Historical exact exit `242`, trace digest
 `086c6b06d0e2d9e5087c294eb95b750bf8225f553fc99f085273ac023786c284`,
 and durable evidence
 `rendered/fire_production_calibration/r135_full_step_bfp32/full_step_bfp32_derivation.v1`
 bind the result.  Measurement, temporal refinement, and eight-slice
 readmission remain downstream gates.
+
+### 7.53 Full-step composition proof refusal (r136)
+
+Fresh review rejected r135 before Metal measurement.  A nonlinear shared-alpha
+FCT submap is not a fixed substochastic matrix: alpha is the minimum across the
+whole tuple, so an error in one component changes every other component, and a
+positive conservative compressive map can have L2 gain `sqrt(2)>1`.  Therefore
+the stage resets cannot discard propagated and cross-component radii.  The
+projection composition also used density RMS where a pointwise coefficient
+envelope and a variable-density resolvent bound are required.  Its product
+rule was invalid: on four equal-volume cells, `a=b=(2,0,0,0)` has
+`RMS(a)=RMS(b)=1` but `RMS(a*b)=2`.  The same defect appears in the
+pressure-open quadratic term for localized velocity error.
+
+The executable refusal additionally binds four evidence-surface omissions:
+source-stage momentum and gas-reduction rounding were not metric-observed; only
+the first of eight frozen divergence targets was instantiated; metric
+cardinalities were trusted from the trace instead of independently derived
+from shape; and the durable artifact did not bind the fixture assembling the
+24-stage DAG.  These eight gaps are the exact `0xff` proof bitmap.  The rejected
+`2.1145425678289562e-2 m/s` candidate is retained only to make the failure
+reproducible.  `B_fp32` remains undefined, no additive contract is formed, and
+no Metal measurement, temporal refinement, or eight-slice readmission is
+permitted.  Canonical exit is again `237`; evidence is
+`rendered/fire_production_calibration/r136_full_step_refusal/full_step_bfp32_refusal.v1`
+(SHA-256 `19732a3864fbcbe43a4fa872d4c4311732820248934bfc9bc1627b0ae0ff33ad`).
 
 ## 8. Rejected directions and future work
 
