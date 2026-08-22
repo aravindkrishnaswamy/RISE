@@ -183,20 +183,32 @@ private:
     void updateHeaderCounts();
 
     // ---- view-scope toggle (user-requested slice: "All" vs "Focused") -
-    /// Re-derive the (category, name) the Focused view should root its
-    /// subgraph at. Returns false when there is nothing to focus on (no
-    /// selection). See NodeGraphCanvas.cpp's own comment for the
-    /// deliberate TWO-SOURCE split (shared bridge selection for Object,
-    /// THIS canvas's own m_selectedHandle for a Painter/Function/Material
-    /// node) and why an outliner-driven Material/Painter pick does NOT
-    /// count.
+    /// Refreshes the STICKY focus memo (m_stickyFocusHasObject/
+    /// m_stickyFocusObjectName) from the CURRENT shared selection --
+    /// updates it ONLY when the selection is actually an Object (a
+    /// canvas-node click leaves it untouched, which is what makes it
+    /// "sticky" -- user-feedback review round: clicking a painter node
+    /// must show its details in the panel WITHOUT retargeting the focused
+    /// subgraph). Called at the top of performReload() on every call,
+    /// regardless of m_viewScope, so the memo is already current the
+    /// moment the user toggles INTO Focused mode. See NodeGraphCanvas.cpp's
+    /// own comment for the full rationale.
+    void updateStickyFocusObject();
+    /// The (category, name) the Focused view should root its subgraph at
+    /// -- ALWAYS the sticky object memo (RISE::ChunkCategory::Object).
+    /// Returns false when there is no sticky object. User-feedback review
+    /// round: the PRIOR "or the canvas's own selected node" branch is
+    /// removed entirely, not merely bypassed -- see NodeGraphCanvas.cpp's
+    /// own comment.
     bool currentFocusTarget(int& outCategory, QString& outName) const;
     /// The Focused-view fetch path, called from performReload() when
     /// m_viewScope == Focused and a target was resolved. `force` bypasses
     /// the cheap target-identity gate (mirrors performReload's own
     /// `force`). See NodeGraphCanvas.cpp's own comment for the degrade
     /// handling (leave the cheap gate uncommitted, no timer needed --
-    /// this canvas re-derives every preview frame already).
+    /// this canvas re-derives every preview frame already) and the
+    /// genuinely-empty handling (falls back to All + clears the sticky
+    /// memo).
     void performFocusedReload(int category, const QString& name, bool force);
     void onViewScopeToggled(bool checked);
 
@@ -368,6 +380,16 @@ private:
     bool    m_lastFocusedHasTarget = false;
     int     m_lastFocusedCategory  = -1;
     QString m_lastFocusedName;
+    /// User-feedback review round: the STICKY focus memo -- Focused
+    /// mode's subgraph target is ONLY EVER the last externally-selected
+    /// Object (viewport/outliner), never a canvas-node click. Written
+    /// ONLY by updateStickyFocusObject(); currentFocusTarget() reads it
+    /// and nothing else. Explicitly cleared in setBridge() on every scene
+    /// (re)load -- this canvas is a PERSISTENT widget (built once, lives
+    /// across scene switches unlike a recreated SwiftUI view), so nothing
+    /// else would ever reset a stale name from a previous scene.
+    bool    m_stickyFocusHasObject   = false;
+    QString m_stickyFocusObjectName;
 
     // ---- object-pick spotlight state ------------------------------------
     QSet<quint64> m_spotlightHandles;

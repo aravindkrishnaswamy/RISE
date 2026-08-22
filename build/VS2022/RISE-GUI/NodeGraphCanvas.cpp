@@ -53,7 +53,6 @@
 #include <QSize>
 #include <QFrame>
 #include <QSet>
-#include <QTimer>
 
 #include <algorithm>
 #include <cmath>
@@ -1091,7 +1090,7 @@ NodeGraphCanvas::NodeGraphCanvas(QWidget* parent)
     m_viewScopeBtn->setCursor(Qt::PointingHandCursor);
     m_viewScopeBtn->setText(tr("Focused"));
     m_viewScopeBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    m_viewScopeBtn->setToolTip(tr("All: every Painter/Material/Function chunk. Focused: only the current selection's own subgraph."));
+    m_viewScopeBtn->setToolTip(tr("All: every Painter/Material/Function chunk. Focused: only the selected object's own appearance subgraph -- clicking a node in the graph shows its details without changing what's focused."));
     connect(m_viewScopeBtn, &QToolButton::toggled, this, &NodeGraphCanvas::onViewScopeToggled);
     headerLayout->insertWidget(headerLayout->indexOf(m_addBtn), m_viewScopeBtn);   // before m_addBtn, after the stretch
 
@@ -1147,6 +1146,17 @@ void NodeGraphCanvas::setBridge(ViewportBridge* bridge)
     m_hasCentered = false;
     m_selectedHandleValid = false;
     m_wireDragActive = false;
+    // User-feedback review round: the sticky focus memo is EXPLICITLY
+    // cleared here, unlike every other per-scene reset above which was
+    // already present -- this canvas is a PERSISTENT widget (built once
+    // by MainWindow, never recreated per tab-switch), and
+    // rebuildViewportForLoadedScene() calls setBridge() with a BRAND NEW
+    // ViewportBridge on every scene load, so this is the one reliable
+    // "a scene just (re)loaded" signal available here. Without this, a
+    // sticky object name from the PREVIOUS scene would silently survive
+    // into the new one and try to re-resolve against it.
+    m_stickyFocusHasObject = false;
+    m_stickyFocusObjectName.clear();
     hideStatusLabel();
     performReload(true);
 }
@@ -1206,6 +1216,10 @@ void NodeGraphCanvas::performReload(bool force)
 {
     if (!m_bridge) { applySnapshot(ViewportBridge::PainterGraph()); refreshSpotlight(true); return; }
 
+    // MUST run before anything below consults the sticky focus memo
+    // (currentFocusTarget/performFocusedReload) -- see its own comment.
+    updateStickyFocusObject();
+
     if (m_viewScope == GraphViewScope::Focused) {
         int category = -1;
         QString name;
@@ -1258,38 +1272,37 @@ void NodeGraphCanvas::performReload(bool force)
     refreshSpotlight(rebuilt);
 }
 
+void NodeGraphCanvas::updateStickyFocusObject()
+{
+    if (!m_bridge) return;
+    // User-feedback review round: updates the sticky memo ONLY when the
+    // CURRENT shared selection is actually an Object -- a canvas-node
+    // click sets the shared selection to Painter/Function/Material
+    // (selectNode), which this deliberately ignores, leaving the memo
+    // untouched. That asymmetry IS what makes it "sticky": the panel
+    // still follows a canvas-node click (unaffected, reads the shared
+    // selection directly), but the Focused subgraph does not.
+    if (m_bridge->selectionCategory() != ViewportBridge::Category::Object) return;
+    const QString n = m_bridge->selectionRowName();
+    // An Object-category selection with an empty resolved name (should
+    // not normally happen, but mirrors NodeGraphCanvas.swift's identical
+    // guard) counts as "no object" -- clears the memo rather than leaving
+    // a stale one in place.
+    m_stickyFocusHasObject = !n.isEmpty();
+    m_stickyFocusObjectName = n;
+}
+
 bool NodeGraphCanvas::currentFocusTarget(int& outCategory, QString& outName) const
 {
-    if (!m_bridge) return false;
-    // TWO DELIBERATELY DIFFERENT sources, matching the design's own
-    // "object via shared selection, or the canvas's own selected node"
-    // split (NodeGraphCanvas.swift's identical reasoning and identical
-    // scoping choice -- see that file's currentFocusTarget comment for
-    // the full rationale):
-    if (m_bridge->selectionCategory() == ViewportBridge::Category::Object) {
-        const QString n = m_bridge->selectionRowName();
-        if (n.isEmpty()) return false;
-        outCategory = 8;   // RISE::ChunkCategory::Object -- see the .h's own PainterGraphNode::category comment for this numbering
-        outName = n;
-        return true;
-    }
-    // THIS CANVAS's OWN selected node (precise category 0/1/2) -- NOT
-    // m_bridge->selectionCategory()/selectionName(), which collapses
-    // ChunkCategory::Function(1) into the Painter UI category (selectNode's
-    // own comment) and would resolve a Function node's focused subgraph
-    // against the WRONG category. A Material/Painter selected via the
-    // OUTLINER (never clicked on THIS canvas) therefore does NOT define a
-    // focus target -- falls back to "no selection" (show All).
-    if (m_selectedHandleValid) {
-        for (const GraphNodeData& d : m_nodes) {
-            if (d.handle == m_selectedHandle) {
-                outCategory = d.category;
-                outName = d.name;
-                return true;
-            }
-        }
-    }
-    return false;
+    // User-feedback review round: ALWAYS the sticky object memo -- the
+    // PRIOR "or the canvas's own selected node" branch is removed
+    // entirely, not merely bypassed, per the explicit design change
+    // ("clicking a painter in focused mode narrows the view, I don't
+    // want that").
+    if (!m_stickyFocusHasObject) return false;
+    outCategory = 8;   // RISE::ChunkCategory::Object -- see the .h's own PainterGraphNode::category comment for this numbering
+    outName = m_stickyFocusObjectName;
+    return true;
 }
 
 void NodeGraphCanvas::performFocusedReload(int category, const QString& name, bool force)
@@ -1336,10 +1349,25 @@ void NodeGraphCanvas::performFocusedReload(int category, const QString& name, bo
     m_lastFocusedHasTarget = true;
     m_lastFocusedCategory = category;
     m_lastFocusedName = name;
-    // A genuinely empty focused subgraph (e.g. an object with no material
-    // bound) IS a real, final answer -- shown as-is (an empty canvas),
-    // never retried; this branch is reached only for a non-degraded
-    // (possibly empty) result.
+    // User-feedback review round: a genuinely empty result (reached here,
+    // so NOT degraded) means the sticky object no longer resolves --
+    // deleted, renamed, or (rarer) has no material bound.
+    // ReadPainterMaterialGraphLaidOutFocused's Object-category case
+    // cannot distinguish those cases from here, and doesn't need to:
+    // either way, staying pinned to a dead name would strand the user on
+    // a permanently blank canvas, so fall back to All and CLEAR the
+    // sticky memo (a SEPARATE field from the three just committed above)
+    // so the same dead name can't keep silently re-resolving to nothing
+    // on every later frame -- the NEXT performReload call sees
+    // m_stickyFocusHasObject == false, which naturally clears the three
+    // gate fields too via the no-target branch.
+    if (g.nodes.isEmpty()) {
+        m_stickyFocusHasObject = false;
+        m_stickyFocusObjectName.clear();
+        applySnapshot(m_bridge->painterMaterialGraph());
+        refreshSpotlight(true);
+        return;
+    }
     applySnapshot(g);
     refreshSpotlight(true);
 }
@@ -1635,26 +1663,19 @@ void NodeGraphCanvas::selectNode(const GraphNodeData& node)
     // same click already causes; this platform's poll has no such
     // synchronous companion, so it needs an explicit call here).
     refreshSpotlight(false);
-    // User-requested view-scope slice: in Focused mode, the ENTIRE canvas
-    // content (not just the spotlight overlay) depends on m_selectedHandle
-    // (currentFocusTarget's own "canvas's own selected node" source) --
-    // without this, clicking a different node while focused would show the
-    // OLD subgraph until the next imageUpdated frame happens to arrive
-    // (which may be never, on an already-converged/static preview).
-    //
-    // DEFERRED via QTimer::singleShot(0, ...), NOT a direct call: this
-    // method runs ON THE STACK of GraphNodeItem::mousePressEvent (this
-    // very node's own event handler), which touches `this` again AFTER
-    // calling selectNode() (arms the move-drag via
-    // QGraphicsItem::mousePressEvent). performFocusedReload's
-    // applySnapshot() DELETES every current GraphNodeItem, including the
-    // one whose event handler is still executing -- calling it
-    // synchronously here would delete `this` out from under the caller's
-    // own still-running mousePressEvent, a use-after-free. Posting to the
-    // next event-loop turn lets mousePressEvent finish first.
-    if (m_viewScope == GraphViewScope::Focused) {
-        QTimer::singleShot(0, this, [this]() { performReload(true); });
-    }
+    // User-feedback review round: NO forced Focused-mode refetch here
+    // anymore -- this used to force one (via a deferred QTimer::singleShot,
+    // to dodge a use-after-free: applySnapshot() deletes every
+    // GraphNodeItem, including the one whose mousePressEvent is still on
+    // the call stack) because the canvas's own node selection USED TO BE
+    // a focus-target source, so a node click could retarget the subgraph.
+    // It no longer is (currentFocusTarget() is the STICKY object memo
+    // only, updateStickyFocusObject()'s own comment) -- clicking a canvas
+    // node now changes only the shared selection (panel follows it,
+    // handled above/below) and never the focused subgraph, so there is
+    // nothing here left to refetch. This is precisely the behavior the
+    // user asked for: "clicking a painter should still bring up the
+    // painter details in the panel" without narrowing the graph.
     emit selectionActivated();
 }
 
@@ -2126,7 +2147,7 @@ qreal NodeGraphCanvas::currentScale() const
 // | 26 | Category/edge count header ("N nodes, M edges") | `updateHeaderCounts` | Direct port. |
 // | 27 | Node-graph model types (`GraphCanvasNode`/`GraphCanvasPort`) | `GraphNodeData`/`GraphPortData` | Structurally identical MINUS the `position` field's role — see #12; Qt's `GraphNodeData::position` is a "last-known-good" seed/revert value, not the live render position. |
 // | 28 | Object-pick spotlight: viewport/outliner Object selection → gold glow/border on the object's bound material + its full Painter/Function/Material closure, auto-scroll to the material ONLY on an actual selection change, NEVER calls `setSelection` from the spotlight path | `NodeGraphCanvas::refreshSpotlight`/`applySpotlightToItems`, `GraphNodeItem::setNodeSpotlit`, `ViewportBridge::appearanceClosureForObject` | **NOT a direct port on first landing — an external review round caught a real gap, now closed; this row describes the FIXED state.** (a) Mac's `.shadow` glow has no Qt equivalent without a whole-item `QGraphicsEffect`, so `GraphNodeItem::paint` approximates it with two concentric rounded-rect strokes drawn behind the card — same warm-gold (`Theme::gold`) read, different primitive; a genuine cosmetic-only deviation. (b) Mac observes `refreshTrigger`/`sceneEpoch` via SwiftUI `.onChange`, and Mac's own `selectNode` bumps `refreshTrigger` SYNCHRONOUSLY on a canvas click, clearing a live spotlight immediately. Qt has no such push signal for a plain selection change (confirmed: `SceneEditController::SetSelectionInner_`'s UI-only Object/Material path never bumps `mSceneEpoch`), and `NodeGraphCanvas::refresh()` is NOT a true per-frame timer poll — it rides `ViewportBridge::imageUpdated` (MainWindow.cpp), which fires on a RENDERED FRAME, not on a bare selection change. The FIRST landing wired ONLY that connection, so a viewport/outliner Object pick with no render in flight (the common case: browsing the scene graph on an already-converged or static preview) never lit the spotlight at all, and a canvas-node click never cleared one immediately either. Fixed two ways: `MainWindow.cpp`'s `OutlinerWidget::selectionActivated` connect now ALSO calls `NodeGraphCanvas::refresh()` (the same explicit-follow pattern that connection already uses for `ViewportProperties::refresh`), and `NodeGraphCanvas::selectNode` now calls `refreshSpotlight(false)` directly, matching Mac's synchronous clear. `refreshSpotlight` itself runs on every `refresh()`/`performReload()` call (whichever of the two paths triggered it) with a two-tier early-exit: a CHEAP `(selectionCategory(), selectionName())` pre-check before ever paying the O(rows) `selectionRowName()` walk, plus a `forceReapply` flag so a just-rebuilt node set (whose items are all new) always gets the spotlight re-applied even when the selection identity itself did not change — but `forceReapply` does NOT by itself trigger a re-scroll; auto-scroll is gated on the RESOLVED row name actually differing from the last one computed, so a structural edit/rewire while the same object stays selected never yanks the view. Auto-scroll uses `QGraphicsView::ensureVisible` (built-in, already a no-op when the target is fully visible) rather than porting Mac's by-hand screen↔content inversion. |
-// | 29 | View-scope toggle: "All" vs "Focused" (selection's subgraph only) — Object selection focuses the appearance closure, a canvas Painter/Function/Material node focuses itself + its transitive upstream (inputs) only, downstream referrers excluded; layout is TRANSIENT (never reads/writes the `.risegraph.json` sidecar); no target or a degraded resolve falls back to showing All (never a blank canvas); node drags are disabled (snap back) while Focused | `NodeGraphCanvas::performReload`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`, `m_viewScopeBtn`, `ViewportBridge::painterMaterialGraphFocused`, `SceneEditController::ReadPainterMaterialGraphLaidOutFocused` | Direct port of the Mac `GraphViewScope` segmented Picker, same shared-core C++ call (`ReadPainterMaterialGraphLaidOutFocused`) so the subgraph selection + transient layout logic is identical bit-for-bit on both platforms — only the toggle widget and the refetch plumbing differ. Toggle is a checkable `QToolButton` ("Focused") inserted into the header row immediately before the "+" palette button, mirroring the Mac segmented control's position. `currentFocusTarget` mirrors Mac's `currentFocusTarget(bridge:)` exactly: Object-category selection comes from `ViewportBridge::selectionCategory()`/`selectionRowName()` (the shared external selection); a canvas-node target comes from THIS canvas's own `m_selectedHandleValid`/`m_selectedHandle` against `m_nodes`, using the canvas's own precise 0/1/2 category rather than the UI-collapsed Painter/Function grouping the shared bridge exposes elsewhere — an outliner-driven Material/Painter pick that never touched the canvas does not define a focus target on either platform. `performFocusedReload` carries a cheap `(category, name)` identity gate (the established two-tier pre-check pattern from row 15/P2-1), gated on THREE fields — `m_lastFocusedHasTarget`, `m_lastFocusedCategory`, `m_lastFocusedName` — that commit and clear TOGETHER as one policy (review-round P1 fix on `0562b9c4`, this row's original text was wrong about this): `performReload`'s no-target branch clears all three when the selection disappears, and `performFocusedReload` sets all three ONLY on a non-degraded resolve. A bare identity-equality gate that ignored `hasTarget` (the FIRST landing's shape) would wrongly skip a refetch forever after this sequence: focus A resolves (all three commit to A) → deselect (all three clear) → reselect A while a render owns the scene (the fetch degrades, so nothing commits — but the FIRST landing stamped `hasTarget=true` unconditionally BEFORE the fetch, so the stale `category`/`name` memo from before the deselect could still coincidentally equal A and the gate would keep matching on every later frame even after the render ended, since only the identity fields — never `hasTarget` — were being compared). The fix folds `hasTarget` into the gate's own equality check and moves its commit inside the same non-degraded branch as the identity fields, so a degraded attempt can never leave the three fields out of lockstep. Degraded resolves leave all three fields exactly as they were and simply keep showing the last-good focused content — no separate retry timer needed (unlike Mac's bounded `DispatchWorkItem` retry), because this canvas already re-derives on every `imageUpdated` frame via the ordinary `refresh()`/`performReload()` path, so contention now genuinely self-heals once the render ends (this claim was FALSE for the reselect-during-contention sequence before the P1 fix — the MSVC checklist below has a dedicated case for it). `selectNode`'s focused-mode refetch is deferred via `QTimer::singleShot(0, ...)` rather than called synchronously — a direct call would delete every `GraphNodeItem` (including the one whose `mousePressEvent` is still on the call stack, which touches `this` again via the trailing `QGraphicsItem::mousePressEvent(event)` base-class call) before that base call runs, a genuine use-after-free; deferring past the current event-handler's call stack avoids it, matching the established "defer past the handler" idiom this file already uses elsewhere. `commitNodeMove` gains an early-return in Focused mode that calls the existing `revertToKnownGoodPosition()` snap-back instead of committing to the sidecar — the least-code option that cannot corrupt persisted layout, matching Mac's drag-disable choice (dragging is visually inert rather than refused outright, since suppressing the drag gesture itself would need deeper `GraphNodeItem::itemChange` plumbing for no behavioral benefit). `setBridge()` needs NO explicit reset of the new `m_viewScope`/`m_lastFocusedHasTarget`/`m_lastFocusedCategory`/`m_lastFocusedName` state on a scene (re)load: its existing `m_hasFetchedOnce = false` already forces `performReload`'s Focused branch down the `!m_hasFetchedOnce → force = true` path regardless of the stale memo's value, so a fresh scene correctly re-evaluates (and, since the fresh scene starts with no selection, falls back to All) without any new code — this mirrors Mac, which likewise has no explicit `viewScope` reset on scene load and can retain the user's All/Focused preference across a scene switch, a deliberate cross-platform consistency rather than an oversight. |
+// | 29 | View-scope toggle: "All" vs "Focused" (STICKY object-only subgraph) — Focused mode's target is ALWAYS the last externally-selected Object (viewport/outliner), never a canvas-node click; clicking a canvas node still moves the shared selection (properties panel follows it, spotlight clears) but does NOT retarget the focused subgraph; layout is TRANSIENT (never reads/writes the `.risegraph.json` sidecar); no sticky object, a degraded resolve, or the sticky object no longer resolving all have distinct handling (see below); node drags are disabled (snap back) while Focused; create-while-focused never writes the drop-point into the sidecar | `NodeGraphCanvas::performReload`/`updateStickyFocusObject`/`performFocusedReload`/`currentFocusTarget`/`onViewScopeToggled`/`setBridge`, `m_viewScopeBtn`, `m_stickyFocusHasObject`/`m_stickyFocusObjectName`, `ViewportBridge::painterMaterialGraphFocused`, `SceneEditController::ReadPainterMaterialGraphLaidOutFocused` | **Revised by a user-feedback review round after the first two landings (`0562b9c4`, `80032065`) shipped a DIFFERENT design** -- the original shape let a canvas Painter/Function/Material click retarget the focused subgraph to that node's own upstream closure; a real user tried it and reported the surprise directly: "I click a painter and it narrows the view, I don't want that... clicking a painter should still bring up the painter details in the panel." This row now describes the CORRECTED design, not the original one -- the core API `ReadPainterMaterialGraphLaidOutFocused` is UNCHANGED and still accepts a Painter/Function/Material category (kept general for a future explicit "focus on this node" affordance); only this SHELL's policy for what counts as a focus target changed. Direct port of the Mac `GraphViewScope` segmented Picker, same shared-core C++ call so the subgraph selection + transient layout logic is identical bit-for-bit on both platforms -- only the toggle widget and the refetch plumbing differ. Toggle is a checkable `QToolButton` ("Focused") inserted into the header row immediately before the "+" palette button, mirroring the Mac segmented control's position. `updateStickyFocusObject` is the SOLE writer of the sticky memo (`m_stickyFocusHasObject`/`m_stickyFocusObjectName`), called at the top of EVERY `performReload` regardless of `m_viewScope` (so the memo is already current the instant the user toggles INTO Focused mode): it updates the memo ONLY when `m_bridge->selectionCategory() == Object`, and leaves it completely untouched otherwise -- a canvas-node click sets the shared selection to Painter/Material (`selectNode`), which this deliberately ignores, and THAT asymmetry is the entire mechanism that makes the memo "sticky." `currentFocusTarget` was reduced to a single read of that memo -- the PRIOR "or the canvas's own selected node" branch (and the Function-vs-Painter UI-category-collapse workaround it needed) is GONE, not merely dead code, since a canvas-node selection is no longer a focus-target source at all. `performFocusedReload` still carries the cheap `(category, name)` identity gate from the P1 fix (`0562b9c4`/`80032065`, all THREE of `m_lastFocusedHasTarget`/`m_lastFocusedCategory`/`m_lastFocusedName` commit and clear together, unchanged by this round) but `category` is now ALWAYS 8 (Object) in practice. NEW this round: a genuinely empty (non-degraded) focused result -- the sticky object was deleted, renamed, or has no material bound, all indistinguishable from this call site and treated identically -- falls back to showing All AND clears the sticky memo (`m_stickyFocusHasObject = false`), so a dead name can't keep silently re-resolving to nothing on every later frame; a DEGRADED resolve is unaffected by this and still just keeps last-good content, retried on the next `imageUpdated` frame as before. NEW this round: `setBridge()` now EXPLICITLY clears the sticky memo -- this row's ORIGINAL text argued no reset was needed because `m_hasFetchedOnce = false` alone forced a correct re-evaluation; that reasoning covered the (then-general) focus-target gate fields but never actually protected the sticky memo introduced this round (which has no relationship to `m_hasFetchedOnce`), so an explicit clear was added in `setBridge()` -- verified necessary because this canvas is a PERSISTENT widget (built once by `MainWindow`, never recreated per tab-switch) and `rebuildViewportForLoadedScene()` mints a BRAND NEW `ViewportBridge` on every scene load, calling `setBridge()` with it -- the one reliable "a scene just (re)loaded" signal available here. `commitNodeMove`'s Focused-mode drag-disable and `openAddNodeDialog`'s Focused-mode sidecar-write skip (both from the earlier P3-2 fix) are UNCHANGED by this round -- neither depended on how the focus target was chosen. |
 //
 // ---- Bridge gaps closed in this slice (build/VS2022/RISE-GUI/ViewportBridge.{h,cpp}) ----
 //
@@ -2238,39 +2259,47 @@ qreal NodeGraphCanvas::currentScale() const
 //      actual binding) and confirm the spotlight lights up the MATERIAL,
 //      not a same-named Painter -- the (category, name) matching this
 //      review round added.
-//  [ ] View-scope toggle (row 29) -- click the "Focused" button with a
-//      canvas node selected; confirm the graph narrows to that node plus
-//      its upstream inputs only, with any downstream referrer (e.g. a
-//      second material sharing the same painter) EXCLUDED. Now select an
-//      OBJECT in the outliner while still in Focused mode; confirm the
-//      graph re-narrows to that object's full appearance closure (not the
-//      previously-focused painter's subgraph). Click "All"; confirm the
-//      full graph returns and every node sits at its PERSISTED sidecar
-//      position (not a re-laid-out position) -- Focused layout must never
-//      have written the sidecar. While Focused, drag a node; confirm it
-//      snaps back to its known-good position on release (no sidecar
-//      write), then confirm a subsequent scene reload shows the node at
-//      its original (pre-drag) position. While Focused with a target
-//      selected, deselect (click empty canvas); confirm the view falls
-//      back to All (never a blank canvas), then reselect the SAME node;
-//      confirm the graph correctly re-narrows to Focused (this is the
-//      no-target-interlude "force on transition" fix -- a stale cheap-gate
-//      match here would wrongly keep showing All). Create a new node while
-//      Focused with a reachable selection active; confirm the new node
-//      appears in the focused subgraph (selection-follow on create makes
-//      it the new focus target). Trigger render contention (kick off a
-//      render, immediately toggle to Focused) and confirm the canvas
-//      keeps showing its last-good content rather than flashing to All
-//      and back. THEN (review-round P1 regression case on `0562b9c4` --
-//      the step above alone never exercises this): with the render still
-//      running, deselect the focused node (falls back to All), reselect
-//      the SAME node WHILE THE RENDER IS STILL RUNNING, and confirm the
-//      resolve keeps retrying every frame (still showing All, not a
-//      stale/wrong focused subgraph) until the render ends, at which
-//      point it must resolve to the correct focused subgraph on its own
-//      -- no further click needed. This is the sequence the P1 fix
-//      closed: a bare identity-equality gate that ignored
-//      `m_lastFocusedHasTarget` would wedge on exactly this reselect and
-//      never recover even after the render ended.
+//  [ ] View-scope toggle (row 29, STICKY OBJECT-ONLY design -- rewritten
+//      after a user-feedback review round; the steps below replace the
+//      PRIOR version, which tested a canvas-node-narrows-the-view
+//      behavior that no longer exists): select an OBJECT in the outliner,
+//      then click "Focused"; confirm the graph narrows to that object's
+//      full appearance closure. Click a PAINTER node ON THE CANVAS; confirm
+//      (a) the subgraph is COMPLETELY UNCHANGED (still the same object's
+//      closure, NOT narrowed to the clicked painter's own upstream inputs
+//      -- this is the exact behavior the user reported and this fix
+//      removes), (b) the properties panel switches to show the painter's
+//      details, and (c) the spotlight glow clears (selection moved off
+//      the Object). Now select a DIFFERENT object in the outliner; confirm
+//      the graph re-narrows to the NEW object's closure. Click "All";
+//      confirm the full graph returns and every node sits at its
+//      PERSISTED sidecar position (not a re-laid-out position) -- Focused
+//      layout must never have written the sidecar. While Focused, drag a
+//      node; confirm it snaps back to its known-good position on release
+//      (no sidecar write), then confirm a subsequent scene reload shows
+//      the node at its original (pre-drag) position. Create a new node
+//      while Focused with an object selected; confirm (a) the new node's
+//      sidecar position is NOT written from the focused-view drop point
+//      (P3-2, unchanged by this round), and (b) the new node appears in
+//      the focused subgraph ONLY if it happens to already be reachable
+//      from the sticky object's material (an unwired freestanding create
+//      typically will NOT appear until rewired in -- this is the natural,
+//      correct consequence of the sticky-object design, not a bug).
+//      DELETE the sticky object (or rename it) while Focused with it
+//      selected; confirm the view falls back to All AND the sticky memo
+//      is cleared -- reselecting nothing further must not silently
+//      re-resolve to the dead name (distinguish this from a DEGRADED
+//      resolve: trigger render contention (kick off a render, then select
+//      an object and toggle to Focused) and confirm the canvas instead
+//      keeps showing its last-good content, retrying until the render
+//      ends, WITHOUT clearing the sticky memo or flashing to All and
+//      back). Finally, with the Graph tab open and an object's Focused
+//      view showing, load a DIFFERENT scene (File > Open); confirm the
+//      sticky memo does NOT carry over from the old scene (no attempt to
+//      resolve the old scene's object name against the new scene) --
+//      this exercises the new `setBridge()` clear, verified necessary
+//      because this canvas is a persistent widget that survives a scene
+//      switch while `m_bridge` itself is swapped for a brand-new
+//      `ViewportBridge`.
 //
 // ======================================================================

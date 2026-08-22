@@ -621,7 +621,7 @@ struct NodeGraphCanvas: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 140)
-            .help("All: every Painter/Material/Function chunk. Focused: only the current selection's own subgraph.")
+            .help("All: every Painter/Material/Function chunk. Focused: only the selected object's own appearance subgraph -- clicking a node in the graph shows its details without changing what's focused.")
             Button {
                 openPalette(atViewportCenterOf: lastViewportSize)
             } label: {
@@ -1023,6 +1023,9 @@ struct NodeGraphCanvas: View {
 
     private func performReload(force: Bool) {
         guard let bridge else { return }
+        // MUST run before anything below consults `stickyFocusObjectName`
+        // (currentFocusTarget/performFocusedReload) -- see its own comment.
+        updateStickyFocusObject(bridge: bridge)
         let epoch = Int(bridge.sceneEpoch)
 
         if viewScope == .focused {
@@ -1050,40 +1053,66 @@ struct NodeGraphCanvas: View {
     /// for the one call (the focused-view Object case) that needs it.
     private static let kChunkCategoryObject = 8
 
+    /// User-feedback review round (post `0562b9c4`/`80032065`): identifies
+    /// which SCENE the sticky memo below belongs to, so a scene (re)load
+    /// while the user stays on the Graph tab can't leak a stale object
+    /// name from the PREVIOUS scene into the new one. `NodeGraphCanvas`'s
+    /// `@State` is torn down and recreated whenever the user LEAVES the
+    /// Graph tab (`ContentView.leftPanel`'s `switch viewModel.leftTab`
+    /// resets state on a case change) -- but while the user stays ON the
+    /// Graph tab across a scene switch, THIS SAME view instance survives
+    /// with only its `bridge` parameter's VALUE changing, which does not
+    /// by itself reset `@State`. `ChatViewModel.sceneOpened`'s own doc
+    /// comment confirms a brand-new `RISEViewportBridge` is minted on
+    /// every scene open, so its `ObjectIdentifier` is a reliable "did the
+    /// scene change" signal -- verified by reading that call site, not
+    /// assumed.
+    @State private var stickyFocusBridgeID: ObjectIdentifier? = nil
+    /// User-feedback review round: Focused mode's subgraph target is ONLY
+    /// EVER an externally-selected Object (viewport/outliner) -- and it is
+    /// STICKY. Clicking a canvas node (Painter/Function/Material) still
+    /// changes the shared bridge selection (properties panel follows it,
+    /// spotlight clears -- both unaffected by this change) but must NOT
+    /// retarget the focused subgraph; this is exactly the surprise the
+    /// user reported ("I click a painter and it narrows the view, I don't
+    /// want that"). `updateStickyFocusObject` is the ONLY writer;
+    /// `currentFocusTarget` reads it and nothing else -- the canvas-node
+    /// branch that used to live there is GONE, not just unreachable.
+    @State private var stickyFocusObjectName: String? = nil
+
+    /// Refreshes `stickyFocusObjectName` from the CURRENT shared
+    /// selection. Updates it ONLY when the selection is actually an
+    /// Object (a canvas-node click leaves it untouched -- that is what
+    /// makes it "sticky"), and resets it on a scene switch (see
+    /// `stickyFocusBridgeID`'s own comment). Safe -- and necessary -- to
+    /// call on every `performReload`, regardless of `viewScope`, so the
+    /// memo is already current the moment the user toggles INTO Focused
+    /// mode rather than lagging a frame behind.
+    private func updateStickyFocusObject(bridge: RISEViewportBridge) {
+        let bridgeID = ObjectIdentifier(bridge)
+        if stickyFocusBridgeID != bridgeID {
+            stickyFocusBridgeID = bridgeID
+            stickyFocusObjectName = nil
+        }
+        guard bridge.selectionCategory == .object else { return }   // canvas-node pick -- STICKY, leave untouched
+        let n = bridge.selectionRowName
+        stickyFocusObjectName = n.isEmpty ? nil : n
+    }
+
     /// The (category, name) the Focused view should root its subgraph at,
-    /// or `nil` when there is nothing to focus on. TWO DELIBERATELY
-    /// DIFFERENT sources, matching the design's own "object via shared
-    /// selection, or the canvas's own selected node" split:
-    ///   - an OBJECT selection reads the SHARED bridge selection
-    ///     (`selectionRowName`, the same instancing-correct resolution
-    ///     the spotlight itself uses).
-    ///   - anything else reads THIS CANVAS's own `selectedHandle` against
-    ///     the CURRENT `snapshot.nodes` -- NOT `bridge.selectionCategory`/
-    ///     `selectionName` -- because the shared bridge selection collapses
-    ///     ChunkCategory::Function(1) into the Painter UI category
-    ///     (`selectNode`'s own comment), which would resolve a Function
-    ///     node's focused subgraph against the WRONG category and fail to
-    ///     find it. The canvas's own node data still carries the node's
-    ///     REAL category (0/1/2), so reading it from there is exact. This
-    ///     also means a Material/Painter selected via the OUTLINER (never
-    ///     clicked on this canvas) does NOT define a focus target -- an
-    ///     explicit scoping choice, not an oversight: falls back to "no
-    ///     selection" (show All) in that case.
-    private func currentFocusTarget(bridge: RISEViewportBridge) -> (category: Int, name: String)? {
-        if bridge.selectionCategory == .object {
-            let n = bridge.selectionRowName
-            return n.isEmpty ? nil : (Self.kChunkCategoryObject, n)
-        }
-        if let h = selectedHandle, let node = snapshot.nodes.first(where: { $0.handle == h }) {
-            return (node.category, node.name)
-        }
-        return nil
+    /// or `nil` when there is nothing to focus on. User-feedback review
+    /// round: ALWAYS `stickyFocusObjectName` (Object category) -- the
+    /// PRIOR "or the canvas's own selected node" branch is removed
+    /// entirely, not merely bypassed, per the explicit design change.
+    private func currentFocusTarget() -> (category: Int, name: String)? {
+        guard let name = stickyFocusObjectName else { return nil }
+        return (Self.kChunkCategoryObject, name)
     }
 
     private func performFocusedReload(bridge: RISEViewportBridge) {
-        guard let target = currentFocusTarget(bridge: bridge) else {
-            // No selection -- a STABLE state, not a hiccup: fall back to
-            // showing ALL nodes rather than an empty canvas (design
+        guard let target = currentFocusTarget() else {
+            // No sticky object -- a STABLE state, not a hiccup: fall back
+            // to showing ALL nodes rather than an empty canvas (design
             // decision, distinct from the degraded case below, which must
             // NOT fall back -- see that branch's own comment).
             focusedRetryWorkItem?.cancel()
@@ -1102,6 +1131,9 @@ struct NodeGraphCanvas: View {
             // SEPARATE work-item slot, not the shared spotlight one --
             // the two can legitimately be in flight at once and serve
             // different purposes, so they must not cancel each other).
+            // Does NOT touch `stickyFocusObjectName` -- a degraded
+            // resolve says nothing about whether the object still
+            // resolves, only that the answer couldn't be obtained yet.
             focusedRetryWorkItem?.cancel()
             let retry = DispatchWorkItem { performReload(force: true) }
             focusedRetryWorkItem = retry
@@ -1110,10 +1142,21 @@ struct NodeGraphCanvas: View {
         }
         focusedRetryWorkItem?.cancel()
         focusedRetryWorkItem = nil
-        // A genuinely empty focused subgraph (e.g. an object with no
-        // material bound) IS a real, final answer -- shown as-is (an
-        // empty canvas), never retried; this branch is reached only for a
-        // non-degraded (possibly empty) result.
+        // User-feedback review round: a genuinely empty result (reached
+        // here, so NOT degraded) means the sticky object no longer
+        // resolves -- deleted, renamed, or (rarer) has no material bound.
+        // `ReadPainterMaterialGraphLaidOutFocused`'s Object-category case
+        // cannot distinguish those from here, and doesn't need to: either
+        // way, staying pinned to a dead name would strand the user on a
+        // permanently blank canvas, so fall back to All and CLEAR the
+        // memo so the same dead name can't keep silently re-resolving to
+        // nothing on every later frame.
+        if g.nodes.isEmpty {
+            stickyFocusObjectName = nil
+            let all = bridge.painterMaterialGraph()
+            applyFetchedNodes(nodesFrom(all), generation: all.generation)
+            return
+        }
         applyFetchedNodes(nodesFrom(g), generation: g.generation)
     }
 
