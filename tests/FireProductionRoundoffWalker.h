@@ -92,6 +92,8 @@ namespace FireProductionRoundoffWalker
 		double acceptedRoundedResidual=0.0,residualEvaluationRoundingUpper=0.0;
 		double crossPrecisionResidualUpper=0.0,fp64ResidualGateUpper=0.0;
 		double fp64ResidualEvaluationUpper=0.0,fp64FeedbackFactor=0.0;
+		double fp64TerminalFaceL2PerCellUpper=0.0;
+		double beginningVelocityRoundingUpper=0.0;
 		double validationToleranceRounded=0.0,validationToleranceRoundingUpper=0.0;
 		double validationPredicateMarginLower=0.0;
 		double streamingFaceVelocityL2PerCellUpper=0.0,velocityRMSUpper=0.0;
@@ -100,6 +102,7 @@ namespace FireProductionRoundoffWalker
 	};
 	enum class ProjectionAposterioriGraphVariant { Certified,DoublePoincare,
 		MissingCrossPrecisionResidual,MissingFP64ResidualGate,MissingFP64Feedback,
+		MissingFP64Terminal,MissingBeginningVelocity,
 		MissingFaceStreaming,
 		SwappedDensityEnvelope };
 	enum class ProjectionInterpolationGraphVariant { Certified,ShiftedFine,
@@ -379,7 +382,8 @@ namespace FireProductionRoundoffWalker
 		const double densityLower,const double densityUpper,
 		const double acceptedRoundedResidual,const double residualEvaluationRoundingUpper,
 		const double crossPrecisionResidualUpper,const double maximumRoundedVelocity,
-		const double maximumRoundedTarget,const bool restoration,
+		const double maximumRoundedTarget,const double beginningVelocityRoundingUpper,
+		const bool restoration,
 		const double streamingFaceVelocityL2PerCellUpper,
 		const double validationToleranceRounded,
 		const double validationToleranceRoundingUpper,
@@ -391,7 +395,7 @@ namespace FireProductionRoundoffWalker
 		if(!(spacing>0.0&&densityLower>0.0&&densityUpper>=densityLower&&
 			acceptedRoundedResidual>=0.0&&residualEvaluationRoundingUpper>=0.0&&
 			crossPrecisionResidualUpper>=0.0&&maximumRoundedVelocity>=0.0&&
-			maximumRoundedTarget>=0.0&&
+			maximumRoundedTarget>=0.0&&beginningVelocityRoundingUpper>=0.0&&
 			streamingFaceVelocityL2PerCellUpper>=0.0&&validationToleranceRounded>=0.0&&
 			validationToleranceRoundingUpper>=0.0)||!std::isfinite(spacing)||
 			!std::isfinite(densityLower)||!std::isfinite(densityUpper)||
@@ -400,6 +404,7 @@ namespace FireProductionRoundoffWalker
 			!std::isfinite(crossPrecisionResidualUpper)||
 			!std::isfinite(maximumRoundedVelocity)||
 			!std::isfinite(maximumRoundedTarget)||
+			!std::isfinite(beginningVelocityRoundingUpper)||
 			!std::isfinite(streamingFaceVelocityL2PerCellUpper)||
 			!std::isfinite(validationToleranceRounded)||
 			!std::isfinite(validationToleranceRoundingUpper))return false;
@@ -445,10 +450,21 @@ namespace FireProductionRoundoffWalker
 		const double cells=static_cast<double>(extent[0]*extent[1]*extent[2]);
 		const double faceToMaximum=Detail::NextUp(std::sqrt(cells));
 		const double divergenceVelocityFactor=(restoration?12.0:6.0)/spacing;
+		const double selectedBeginning=variant==ProjectionAposterioriGraphVariant::
+			MissingBeginningVelocity?0.0:beginningVelocityRoundingUpper;
+		const double velocityBase=Detail::NextUp(maximumRoundedVelocity+selectedBeginning);
 		const double residualBase=Detail::NextUp(gammaResidual*Detail::NextUp(
-			divergenceVelocityFactor*maximumRoundedVelocity+maximumRoundedTarget));
+			divergenceVelocityFactor*velocityBase+maximumRoundedTarget));
 		const double residualFeedback=Detail::NextUp(gammaResidual*Detail::NextUp(
 			(6.0/spacing)*faceToMaximum));
+		const double gammaTerminal=Detail::NextUp(4.0*unit64/(1.0-4.0*unit64));
+		const double uniqueFaces=static_cast<double>((extent[0]+1u)*extent[1]*extent[2]+
+			extent[0]*(extent[1]+1u)*extent[2]+extent[0]*extent[1]*(extent[2]+1u));
+		const double faceMetricGain=Detail::NextUp(std::sqrt(uniqueFaces/cells));
+		const double terminal64Factor=Detail::NextUp(Detail::NextUp(3.0*gammaTerminal)*
+			faceMetricGain);
+		const double terminal64Base=Detail::NextUp(terminal64Factor*velocityBase);
+		const double terminal64Feedback=Detail::NextUp(terminal64Factor*faceToMaximum);
 		double toleranceBase=0.0,toleranceFeedback=0.0;
 		if(restoration)toleranceBase=Detail::NextUp(Detail::NextUp(
 			0.005*maximumRoundedTarget)*(1.0+gammaTolerance));
@@ -460,12 +476,17 @@ namespace FireProductionRoundoffWalker
 			if(!(lengthLower>0.0))return false;
 			const double toleranceFactor=Detail::NextUp(Detail::NextUp(0.005/
 				lengthLower)*(1.0+gammaTolerance));
-			toleranceBase=Detail::NextUp(toleranceFactor*maximumRoundedVelocity);
+			toleranceBase=Detail::NextUp(toleranceFactor*velocityBase);
 			toleranceFeedback=Detail::NextUp(toleranceFactor*faceToMaximum);
 		}
 		const double fp64Base=Detail::NextUp(toleranceBase+residualBase);
 		const double fp64Feedback=Detail::NextUp(toleranceFeedback+residualFeedback);
-		const double feedbackFactor=Detail::NextUp(gainUpper*fp64Feedback);
+		const double selectedTerminalBase=variant==ProjectionAposterioriGraphVariant::
+			MissingFP64Terminal?0.0:terminal64Base;
+		const double selectedTerminalFeedback=variant==ProjectionAposterioriGraphVariant::
+			MissingFP64Terminal?0.0:terminal64Feedback;
+		const double feedbackFactor=Detail::NextUp(gainUpper*fp64Feedback+
+			selectedTerminalFeedback);
 		const double streaming=variant==ProjectionAposterioriGraphVariant::
 			MissingFaceStreaming?0.0:streamingFaceVelocityL2PerCellUpper;
 		const double selectedFP64Base=variant==ProjectionAposterioriGraphVariant::
@@ -475,7 +496,7 @@ namespace FireProductionRoundoffWalker
 			MissingFP64Feedback)?0.0:feedbackFactor;
 		if(!(selectedFeedback<1.0))return false;
 		const double numerator=Detail::NextUp(gainUpper*Detail::NextUp(
-			cross+selectedFP64Base)+streaming);
+			cross+selectedFP64Base)+streaming+selectedTerminalBase);
 		const double velocityUpper=Detail::NextUp(numerator/(1.0-selectedFeedback));
 		const double fp64Gate=Detail::NextUp(fp64Base+fp64Feedback*velocityUpper);
 		if(!std::isfinite(velocityUpper))return false;
@@ -491,6 +512,9 @@ namespace FireProductionRoundoffWalker
 		certificate.fp64ResidualEvaluationUpper=Detail::NextUp(residualBase+
 			residualFeedback*velocityUpper);
 		certificate.fp64FeedbackFactor=feedbackFactor;
+		certificate.fp64TerminalFaceL2PerCellUpper=Detail::NextUp(terminal64Base+
+			terminal64Feedback*velocityUpper);
+		certificate.beginningVelocityRoundingUpper=beginningVelocityRoundingUpper;
 		certificate.validationToleranceRounded=validationToleranceRounded;
 		certificate.validationToleranceRoundingUpper=validationToleranceRoundingUpper;
 		certificate.validationPredicateMarginLower=predicateMargin;

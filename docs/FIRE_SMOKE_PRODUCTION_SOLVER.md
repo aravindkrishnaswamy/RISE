@@ -2586,9 +2586,12 @@ residual, 14 for restoration), the binary64 tolerance DAG, and the same
 structural velocity gain.  For the physical output-dependent tolerance it
 solves the outward self-consistent inequality using
 `U_64 <= U_32 + sqrt(N_cell) B_projection`; its feedback factor is
-`0.23426947265963916 < 1`.  Restoration's target-scaled tolerance has feedback
-`1.5730325604289892e-11`.  This is a structural fixed point, not a measured
-binary64 residual.
+`0.23426947265997755 < 1`.  Restoration's target-scaled tolerance has feedback
+`1.6068711091736739e-11`.  This is a structural fixed point, not a measured
+binary64 residual.  A separate beginning-velocity division envelope enters
+the velocity scale, and a binary64 terminal-map unique-face envelope is added
+outside `A^-1`; neither a beginning error nor a divergence-free endpoint mode
+can be hidden in the residual anchor.
 
 No fitted or measured constant enters this expression.  On the frozen tier-6
 state, the outward exact-promoted face-density interval is
@@ -2599,12 +2602,12 @@ state, the outward exact-promoted face-density interval is
 `8.9943569037131965e-7`, residual-evaluation envelope
 `1.3748435749320591e-7`, cross-precision residual upper
 `1.9319781954175433e-6`, binary64 residual-gate upper
-`0.00034336550317050715`, terminal face term
+`0.00034336556400256795`, terminal face term
 `9.7212486067771285e-9`, and derived velocity RMS bound
-`0.00016499362514100588`.  The restoration cross residual, binary64 gate,
+`0.00016499365420693667`.  The restoration cross residual, binary64 gate,
 face term, and final bound are `2.3628878941959103e-5`,
 `0.00046519335364055106`, `1.1190657711221316e-8`, and
-`0.0002335715396119954`.
+`0.00023357153961227675`.
 
 Both validation predicates now carry their own two-path certificates.  The
 residual upper envelope is strictly below the tolerance lower envelope by
@@ -2621,7 +2624,7 @@ Exact exit `241` denotes projection-local certification.  It does not yet
 define the composed `B_fp32`: upstream force/transport/source contributions
 must still be folded before any Metal/fp64 measurement.  Durable evidence is
 `rendered/fire_production_calibration/r134_projection_aposteriori/projection_aposteriori.v1`,
-SHA-256 `cc8fcc32f637bc8f9cc5224f29b64e2981628962257d73b9b6b103d1439538e1`.
+SHA-256 `60e7d427281af50c90d8b25948bc59a3b8458243c7e4737e21a3e7ea18f7fc3c`.
 The golden checkpoint is unchanged.
 
 ## 8. Rejected directions and future work

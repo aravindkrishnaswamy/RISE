@@ -91,6 +91,7 @@ namespace FireProductionRoundoffAdapter
 			double maximumCrossPrecisionResidualUpper=0.0;
 			double streamingFaceVelocityL2PerCellUpper=0.0;
 			double maximumRoundedVelocity=0.0,maximumRoundedTarget=0.0;
+			double maximumBeginningVelocityRoundingUpper=0.0;
 			float maximumRoundedResidual=0.0f,validationToleranceRounded=0.0f;
 			double validationToleranceRadius=0.0;
 			std::uint64_t residualCellCount=0u,velocityFaceCount=0u;
@@ -153,6 +154,9 @@ namespace FireProductionRoundoffAdapter
 					beginning[axis][face]=wall?FireProductionRoundoffTrace::TraceFloat(0.0f):
 						FireProductionRoundoffTrace::TraceFloat(
 							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/densityValue;
+					evidence.maximumBeginningVelocityRoundingUpper=std::max(
+						evidence.maximumBeginningVelocityRoundingUpper,
+						beginning[axis][face].Radius());
 					published[axis][face]=FireProductionRoundoffTrace::TraceFloat(
 						projection.velocityMPerS[axis][face].Rounded());
 					maximumVelocity=std::max(maximumVelocity,std::fabs(
@@ -181,12 +185,12 @@ namespace FireProductionRoundoffAdapter
 		evidence.roundedResidualMatches=evidence.maximumRoundedResidual==
 			projection.maximumPostProjectionResidualPerS.Rounded();
 		evidence.maximumRoundedVelocity=maximumVelocity;
+		float maximumTarget=0.0f;
+		for(const auto& value:request.divergenceTargetPerS)
+			maximumTarget=std::max(maximumTarget,std::fabs(value.Rounded()));
+		evidence.maximumRoundedTarget=maximumTarget;
 		FireProductionRoundoffTrace::TraceFloat tolerance;
 		if(restoration){
-			float maximumTarget=0.0f;
-			for(const auto& value:request.divergenceTargetPerS)
-				maximumTarget=std::max(maximumTarget,std::fabs(value.Rounded()));
-			evidence.maximumRoundedTarget=maximumTarget;
 			tolerance=
 				FireProductionRoundoffTrace::TraceFloat(0.005f)*
 				FireProductionRoundoffTrace::TraceFloat(maximumTarget);

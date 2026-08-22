@@ -222,11 +222,11 @@ int main()
 		"projection_aposteriori.v1");
 	Check(!aposterioriEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(aposterioriEvidence.begin(),aposterioriEvidence.end()))==
-		"cc8fcc32f637bc8f9cc5224f29b64e2981628962257d73b9b6b103d1439538e1"&&
+		"60e7d427281af50c90d8b25948bc59a3b8458243c7e4737e21a3e7ea18f7fc3c"&&
 		aposterioriEvidence.find("physical_projection_velocity_rms_upper "
-			"0.00016499362514100588")!=std::string::npos&&
+			"0.00016499365420693667")!=std::string::npos&&
 		aposterioriEvidence.find("restoration_projection_velocity_rms_upper "
-			"0.0002335715396119954")!=std::string::npos&&
+			"0.00023357153961227675")!=std::string::npos&&
 		aposterioriEvidence.find("executed_obligation_instances_pending 0")!=
 			std::string::npos&&
 		aposterioriEvidence.find("canonical_exit 241")!=std::string::npos,
@@ -359,12 +359,12 @@ int main()
 		const std::array<unsigned int,6> allOpen={{2u,2u,2u,2u,2u,2u}};
 		FireProductionRoundoffWalker::ProjectionAposterioriCertificate certified,
 			doublePoincare,missingCross,missingGate,missingFeedback,missingFace,
-			swappedDensity;
+			missingTerminal,missingBeginning,zeroTarget,swappedDensity;
 		const double h=0x1.4e288ep-5;
 		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			certified)&&certified.dimensionlessEigenvalueLower==0.016975308641975297&&
 			certified.operatorEigenvalueLower==8.9899277588426756&&
@@ -377,42 +377,61 @@ int main()
 		Check(FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			doublePoincare,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				DoublePoincare)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingCross,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingCrossPrecisionResidual)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingGate,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFP64ResidualGate)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingFeedback,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFP64Feedback)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			missingFace,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				MissingFaceStreaming)&&
 			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
 			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
 			8.9943569037131965e-7,1.3748435749320591e-7,
-			1.1e-6,0.08,0.0,false,5.0652099990520917e-9,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			missingTerminal,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingFP64Terminal)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,
+			missingBeginning,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
+				MissingBeginningVelocity)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.08,0.0,1.0e-7,false,5.0652099990520917e-9,
+			0.000262468064,1.0e-10,zeroTarget)&&
+			FireProductionRoundoffWalker::DeriveProjectionAposterioriBound(
+			extent,allOpen,h,0.97449040412902832,1.1348450183868408,
+			8.9943569037131965e-7,1.3748435749320591e-7,
+			1.1e-6,0.08,0.03,1.0e-7,false,5.0652099990520917e-9,
 			0.000262468064,1.0e-10,
 			swappedDensity,FireProductionRoundoffWalker::ProjectionAposterioriGraphVariant::
 				SwappedDensityEnvelope)&&
@@ -421,6 +440,9 @@ int main()
 			missingGate.velocityRMSUpper<certified.velocityRMSUpper&&
 			missingFeedback.velocityRMSUpper<certified.velocityRMSUpper&&
 			missingFace.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingTerminal.velocityRMSUpper<certified.velocityRMSUpper&&
+			missingBeginning.velocityRMSUpper<certified.velocityRMSUpper&&
+			zeroTarget.velocityRMSUpper<certified.velocityRMSUpper&&
 			swappedDensity.velocityRMSUpper<certified.velocityRMSUpper,
 			"projection derivation rejects spectrum, cross-residual, fp64-gate, face-norm, and density underbounds");
 		FireProductionRoundoffTrace::Counters accepted;
