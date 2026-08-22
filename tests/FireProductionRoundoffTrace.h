@@ -77,6 +77,10 @@ namespace FireProductionRoundoffTrace
 	inline thread_local std::uint64_t NextTraceIdentity=1u;
 	inline thread_local double ActiveTransportProfileUpper=0.0;
 	inline thread_local std::size_t ActiveTransportLineLength=0u;
+	inline thread_local bool ActiveProjectionInterpolation=false;
+	inline thread_local std::size_t ActiveProjectionFine=0u;
+	inline thread_local std::size_t ActiveProjectionFineExtent=0u;
+	inline thread_local std::size_t ActiveProjectionCoarseExtent=0u;
 
 	class BranchSiteScope
 	{
@@ -344,6 +348,29 @@ namespace FireProductionRoundoffTrace
 	private:double previousUpper_;std::size_t previousLength_;
 	};
 
+	class ProjectionInterpolationScope
+	{
+	public:
+		ProjectionInterpolationScope(const std::size_t fine,const std::size_t fineExtent,
+			const std::size_t coarseExtent):previousActive_(ActiveProjectionInterpolation),
+			previousFine_(ActiveProjectionFine),previousFineExtent_(ActiveProjectionFineExtent),
+			previousCoarseExtent_(ActiveProjectionCoarseExtent)
+		{
+			ActiveProjectionInterpolation=true;ActiveProjectionFine=fine;
+			ActiveProjectionFineExtent=fineExtent;
+			ActiveProjectionCoarseExtent=coarseExtent;
+		}
+		~ProjectionInterpolationScope()
+		{
+			ActiveProjectionInterpolation=previousActive_;ActiveProjectionFine=previousFine_;
+			ActiveProjectionFineExtent=previousFineExtent_;
+			ActiveProjectionCoarseExtent=previousCoarseExtent_;
+		}
+	private:
+		bool previousActive_;std::size_t previousFine_,previousFineExtent_,
+			previousCoarseExtent_;
+	};
+
 	inline bool PPMQuadraticZeroObligationPending()
 	{
 		return ActiveCounters&&LastScopedObligation!=std::numeric_limits<std::size_t>::max()&&
@@ -467,6 +494,41 @@ namespace FireProductionRoundoffTrace
 
 	inline void ApplyFloorBoundaryCertificate(const std::size_t obligationIndex)
 	{
+		if(ActiveProjectionInterpolation&&ActiveCounters&&
+			obligationIndex<ActiveCounters->branchObligations.size()){
+			BranchObligation& obligation=ActiveCounters->branchObligations[obligationIndex];
+			const std::uint64_t fine=ActiveProjectionFine,
+				fineExtent=ActiveProjectionFineExtent,coarseExtent=ActiveProjectionCoarseExtent;
+			if(obligation.site==BranchSite::FloorBoundary&&fineExtent&&coarseExtent&&
+				fine<fineExtent&&fineExtent<=std::uint64_t(std::numeric_limits<std::int64_t>::max()/2u)&&
+				coarseExtent<=std::uint64_t(std::numeric_limits<std::int64_t>::max()/
+					(2u*fine+1u))){
+				const std::int64_t numerator=static_cast<std::int64_t>((2u*fine+1u)*
+					coarseExtent)-static_cast<std::int64_t>(fineExtent);
+				const std::int64_t denominator=static_cast<std::int64_t>(2u*fineExtent);
+				const double exactPosition=static_cast<double>(numerator)/
+					static_cast<double>(denominator);
+				const std::int64_t boundary=static_cast<std::int64_t>(std::llround(
+					exactPosition-obligation.predicateCenter));
+				const float roundedPosition=(static_cast<float>(fine)+0.5f)*
+					static_cast<float>(coarseExtent)/static_cast<float>(fineExtent)-0.5f;
+				const bool exactAbove=numerator>=boundary*denominator;
+				const bool roundedAbove=roundedPosition>=static_cast<float>(boundary);
+				if(std::fabs((exactPosition-obligation.predicateCenter)-
+					static_cast<double>(boundary))<=std::numeric_limits<double>::epsilon()&&
+					exactAbove==roundedAbove&&roundedAbove==obligation.roundedResult){
+					obligation.certificate=BranchCertificate::Equivalence;
+					obligation.divergenceBound=0.0;
+					obligation.proofLower=std::fabs(static_cast<double>(
+						numerator-boundary*denominator));obligation.proofRequired=0.0;
+					++ActiveCounters->dischargedBranchObligationCount;
+					ActiveCounters->unresolvedBranch=
+						ActiveCounters->dischargedBranchObligationCount<
+						ActiveCounters->branchObligations.size();
+					return;
+				}
+			}
+		}
 		if(!ActiveCounters||obligationIndex>=ActiveCounters->branchObligations.size()||
 			!(ActiveTransportProfileUpper>=0.0)||!ActiveTransportLineLength)return;
 		BranchObligation& obligation=ActiveCounters->branchObligations[obligationIndex];

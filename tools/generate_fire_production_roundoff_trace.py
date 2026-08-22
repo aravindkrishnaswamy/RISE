@@ -194,13 +194,15 @@ def transform(text: str, name: str, suffix: str) -> str:
             "FireProductionRoundoffTrace::EvaluateBranch("
             "FireProductionRoundoffTrace::BranchSite::OpenBoundaryActiveSet,"
             "[&](){return outward<0.0f;})")
-        prolongate = ("\t\tvoid ProlongateAndAdd( const Level& coarse, Level& fine, "
-                      "FireProductionRoundoffTrace::TraceFloat damping )\n\t\t{")
-        if text.count(prolongate) != 1:
-            raise RuntimeError("projection prolongation floor context changed")
-        text = text.replace(prolongate,prolongate+
-            "\n\t\t\tFireProductionRoundoffTrace::ScalarProfileScope "
-            "profileScope(coarse.pressure,8u);")
+        interpolation = ("\t\tvoid InterpolationCoordinate( std::size_t fine, "
+                         "std::size_t fineExtent,\n\t\t\tstd::size_t coarseExtent, "
+                         "std::size_t& first, std::size_t& second, "
+                         "FireProductionRoundoffTrace::TraceFloat& weight )\n\t\t{")
+        if text.count(interpolation) != 1:
+            raise RuntimeError("projection interpolation topology context changed")
+        text = text.replace(interpolation,interpolation+
+            "\n\t\t\tFireProductionRoundoffTrace::ProjectionInterpolationScope "
+            "topologyScope(fine,fineExtent,coarseExtent);")
     if suffix == ".h":
         guards = {"FireProductionAdvection": "FIREPRODUCTIONADVECTION_",
                   "FireProductionProjection": "FIREPRODUCTIONPROJECTION_",

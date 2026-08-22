@@ -376,10 +376,10 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	fi
 done
 
-# The r131 derivation is a completed branch-certificate evidence gate, not a test
+# The r132 derivation is a completed branch/topology evidence gate, not a test
 # source with its own executable name. Run the capability-isolated binary
-# explicitly and accept only the exact incomplete post-inflow class census.
-roundoff_name="FireProductionCalibrationOracle.r131"
+# explicitly and accept only the exact zero-pending topology result.
+roundoff_name="FireProductionCalibrationOracle.r132"
 roundoff_path="$BIN_DIR/FireProductionCalibrationOracle"
 roundoff_log="$LOG_DIR/$roundoff_name.log"
 printf '[ evidence ] %-46s ... ' "$roundoff_name"

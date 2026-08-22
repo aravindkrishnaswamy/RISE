@@ -2488,6 +2488,36 @@ exit `240` denotes branch-campaign completion. This unlocks derivation of
 `rendered/fire_production_calibration/r131_projection_reduction/projection_reduction.v1`,
 SHA-256 `d6cdacdbbcd02f9a1d6262553c3098a9abc1cb90001b012840581908bdf7c8a4`.
 
+### 7.49 Fixed-grid projection interpolation proof (r132)
+
+The first post-obligation composition exposed a proof-instrument defect before
+any Metal measurement: the generic transport floor certificate had been
+applied to the projection prolongation index floor.  It multiplied a fixed
+grid-topology decision by the pressure-profile enclosure and contributed
+`4.486687686924483e302` to the physical projection.  That number was neither a
+kernel excursion nor an admissible `B_fp32` term.
+
+Projection interpolation coordinates are now certified from the exact integer
+rational
+
+`((2*i+1)*Nc-Nf)/(2*Nf)`.
+
+The independent walker compares its side of every integer boundary with the
+sequential binary32 expression used by production; a certificate is admitted
+only when both choose the same side.  The tier-6 `24x24x36` hierarchy has 45
+such exact boundaries per V-cycle, hence 765 physical and 720 restoration
+instances.  All are stable with zero branch divergence.  Coordinate-shift and
+division-reassociation mutants RED, and the generated trace is source-bound to
+the interpolation scope.  The physical and restoration output radii collapse
+to `1.352840804874779e-7` without changing any production arithmetic.
+
+The complete census remains `3,972,323 / 3,972,323`, pending zero, and exact
+exit `240` remains the no-Metal topology-completion result.  This correction
+does not define `B_fp32`; it removes a false pressure-dependent branch term so
+the full-stage recurrence can be attempted.  Durable evidence is
+`rendered/fire_production_calibration/r132_projection_interpolation/projection_interpolation.v1`,
+SHA-256 `d8df1a96842b52ff053017014f177096a08e0591307a0d196b0bf14b31549198`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

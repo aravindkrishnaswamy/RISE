@@ -544,7 +544,7 @@ foreach ($src in $testSources) {
 }
 
 if (-not $Filter) {
-    $roundoffName = 'FireProductionCalibrationOracle.r131'
+    $roundoffName = 'FireProductionCalibrationOracle.r132'
     $roundoffExe = Join-Path $BinDir 'FireSequenceTest.exe'
     $roundoffLog = Join-Path $LogDir "$roundoffName.log"
     Write-Host -NoNewline ('[ evidence ] {0,-46} ... ' -f $roundoffName)

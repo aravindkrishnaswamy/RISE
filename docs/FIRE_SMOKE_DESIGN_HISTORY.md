@@ -3078,3 +3078,18 @@ it was already tried and refuted here.
   unresolved/invalid bitmaps `0x000000`. Exit `240` replaces incomplete-proof
   exit `237`; `B_fp32` is unlocked but remains undefined. Durable evidence is
   `d6cdacdb...f7c8a4`. No production or golden-checkpoint bytes changed.
+
+- **r132 fixed-grid projection interpolation proof (2026-08-21):** the first
+  composed-bound attempt caught a proof-instrument error before measurement.
+  Projection prolongation floors depend only on exact integer grid geometry,
+  but the generic transport certificate had multiplied them by the pressure
+  enclosure, creating a false `4.486687686924483e302` branch term.  The
+  independent walker now evaluates `((2*i+1)*Nc-Nf)/(2*Nf)` exactly and checks
+  its boundary side against the sequential binary32 expression.  The tier-6
+  hierarchy contains 45 exact boundaries per cycle: 765 for the 17-cycle
+  physical solve and 720 for the 16-cycle restoration solve.  All certify with
+  zero branch divergence; coordinate and reassociation mutants RED.  Both
+  projection output radii become `1.352840804874779e-7`; the zero-pending
+  `3,972,323 / 3,972,323` census and exit `240` remain.  This is a topology
+  correction, not a `B_fp32` bound.  Durable evidence is `d8df1a96...9198`;
+  production and golden-checkpoint bytes are unchanged.

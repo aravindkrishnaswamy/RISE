@@ -1220,8 +1220,23 @@ namespace FireProductionDyadicCalibration
 		const FireProductionRoundoffTrace::Observation& source=trace.stages[21];
 		const FireProductionRoundoffTrace::Observation& physical=trace.stages[22];
 		const FireProductionRoundoffTrace::Observation& restoration=trace.stages[23];
+		std::uint64_t physicalInterpolationObligations=0u,
+			restorationInterpolationObligations=0u;
+		const bool interpolationTopology=FireProductionRoundoffWalker::
+			CountProjectionInterpolationObligations(request.force.shape.nx,
+				request.force.shape.ny,request.force.shape.nz,17u,
+				physicalInterpolationObligations)&&FireProductionRoundoffWalker::
+			CountProjectionInterpolationObligations(request.force.shape.nx,
+				request.force.shape.ny,request.force.shape.nz,16u,
+				restorationInterpolationObligations);
+		std::fprintf(stderr,"r132 projection_interpolation topology=%d physical=%llu "
+			"restoration=%llu physical_radius=%.17g restoration_radius=%.17g\n",
+			interpolationTopology?1:0,static_cast<unsigned long long>(
+				physicalInterpolationObligations),static_cast<unsigned long long>(
+				restorationInterpolationObligations),physical.maximumOutputRadius,
+			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="b194b7edb39cc16438e24682b1f1bfdd4415b78506e2f94c63dd68ddd1d1e19d"||
+			traceDigest!="4da9028bc00b6185b9d3c37defc3b9eb6b33bce6ea78e08d99d4e59b56cae630"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteOutputs||
 			totalBranchObligationCount!=3972323u||
 			totalDischargedBranchObligationCount!=3972323u||
@@ -1246,11 +1261,19 @@ namespace FireProductionDyadicCalibration
 			ppmCertificate.ambiguityWidth!=2.008640214894198e-6||
 			ppmCertificate.arithmeticResidualBound!=2.6783670818887366e-6||
 			ppmCertificate.divergenceBound!=3.1805271356122864e-6||
+			!interpolationTopology||physicalInterpolationObligations!=765u||
+			restorationInterpolationObligations!=720u||
+			physical.maximumBranchDivergence[static_cast<unsigned int>(
+				FireProductionRoundoffTrace::BranchSite::FloorBoundary)]!=0.0||
+			restoration.maximumBranchDivergence[static_cast<unsigned int>(
+				FireProductionRoundoffTrace::BranchSite::FloorBoundary)]!=0.0||
+			physical.maximumOutputRadius!=1.352840804874779e-7||
+			restoration.maximumOutputRadius!=1.352840804874779e-7||
 			source.unresolvedBranch||source.invalidDomain||physical.unresolvedBranch||
 			physical.invalidDomain||restoration.unresolvedBranch||
 			restoration.invalidDomain)return 238;
-		std::fprintf(stderr,"r131 branch campaign complete; %llu of %llu site-class "
-			"obligations remain pending; B_fp32 is now unblocked but not yet defined\n",
+		std::fprintf(stderr,"r132 projection interpolation topology certified; %llu of %llu "
+			"site-class obligations remain pending; B_fp32 derivation remains next\n",
 			static_cast<unsigned long long>(totalBranchObligationCount-
 				totalDischargedBranchObligationCount),
 			static_cast<unsigned long long>(totalBranchObligationCount));

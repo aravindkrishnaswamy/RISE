@@ -183,6 +183,21 @@ int main()
 		reductionEvidence.find("executed_obligation_instances_pending 0")!=
 			std::string::npos&&reductionEvidence.find("canonical_exit 240")!=std::string::npos,
 		"r131 projection-reduction proof and zero-pending census are durable");
+	const std::string interpolationEvidence=ReadText(
+		"rendered/fire_production_calibration/r132_projection_interpolation/"
+		"projection_interpolation.v1");
+	Check(!interpolationEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(interpolationEvidence.begin(),
+			interpolationEvidence.end()))==
+		"d8df1a96842b52ff053017014f177096a08e0591307a0d196b0bf14b31549198"&&
+		interpolationEvidence.find("physical_interpolation_obligations 765")!=
+			std::string::npos&&
+		interpolationEvidence.find("restoration_interpolation_obligations 720")!=
+			std::string::npos&&
+		interpolationEvidence.find("physical_floor_branch_envelope 0")!=
+			std::string::npos&&
+		interpolationEvidence.find("canonical_exit 240")!=std::string::npos,
+		"r132 fixed-grid interpolation proof removes the misapplied pressure envelope");
 	const std::string restorationEvidence=ReadText(
 		"rendered/fire_production_calibration/r118_restoration/restoration_evidence.v1");
 	const std::string spatialEvidence=ReadText(
@@ -194,13 +209,13 @@ int main()
 			spatialEvidence.end()))==
 		"0c481de835c8dbf51044b7246000668fe39e4cde9832f36a95797f3b717eb8de",
 		"r124 byte-binds the rerun r118 and r119 evidence artifacts");
-	Check(unixTestDriver.find("FireProductionCalibrationOracle.r131")!=std::string::npos&&
+	Check(unixTestDriver.find("FireProductionCalibrationOracle.r132")!=std::string::npos&&
 		unixTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		unixTestDriver.find("roundoff_rc\" -eq 240")!=std::string::npos&&
-		windowsTestDriver.find("FireProductionCalibrationOracle.r131")!=std::string::npos&&
+		windowsTestDriver.find("FireProductionCalibrationOracle.r132")!=std::string::npos&&
 		windowsTestDriver.find("--fire-production-calibration-diagnose-roundoff")!=std::string::npos&&
 		windowsTestDriver.find("roundoffRC -eq 240")!=std::string::npos,
-		"ordinary Unix and Windows suites execute r131 and accept only exact branch-proof completion");
+		"ordinary Unix and Windows suites execute r132 and accept only exact topology completion");
 	const std::size_t noMetalTarget=makeRules.find(
 		"$(PATHTESTDEST)FireProductionCalibrationOracle :");
 	const std::size_t genericTestTarget=makeRules.find("$(PATHTESTDEST)% :");
@@ -236,6 +251,13 @@ int main()
 		tracedTransportSource.find("SealStageAndReset",tracedTransportSource.find(
 			"SealStageAndReset",firstStageSeam+1u)+1u)==std::string::npos,
 		"generated transport trace owns exactly the cell and dual stage-reset seams");
+	Check(CountText(tracedProjectionSource,"ProjectionInterpolationScope")==1u&&
+		tracedProjectionSource.find("topologyScope(fine,fineExtent,coarseExtent)")!=
+			std::string::npos&&
+		tracedProjectionSource.find("ScalarProfileScope profileScope(coarse.pressure,8u)")==
+			std::string::npos&&
+		walkerSource.find("CountProjectionInterpolationObligations")!=std::string::npos,
+		"projection floor obligations use fixed-grid topology rather than a pressure envelope");
 
 	{
 		double derivedFactor=0.0,derivedWidth=0.0,mutantFactor=0.0,mutantWidth=0.0;
@@ -943,6 +965,30 @@ int main()
 				3.0,0.0,binary,
 				FireProductionRoundoffWalker::InflowGraphVariant::DiscontinuousBinary),
 			"inflow certificate rejects width, donor, rounding, and binary-branch mutants");
+	}
+	{
+		FireProductionRoundoffWalker::ProjectionInterpolationCertificate certificate,
+			shifted,reassociated;
+		const float exactBoundary=(4.0f+0.5f)*5.0f/9.0f-0.5f;
+		std::uint64_t physical=0u,restoration=0u;
+		Check(exactBoundary==2.0f&&
+			FireProductionRoundoffWalker::CertifyProjectionInterpolationFloor(
+				4u,9u,5u,2,exactBoundary,certificate)&&
+			certificate.exactNumerator==36&&certificate.exactDenominator==18&&
+			certificate.exactAndRoundedSameSide&&
+			FireProductionRoundoffWalker::CountProjectionInterpolationObligations(
+				24u,24u,36u,17u,physical)&&physical==765u&&
+			FireProductionRoundoffWalker::CountProjectionInterpolationObligations(
+				24u,24u,36u,16u,restoration)&&restoration==720u,
+			"independent projection interpolation walker proves fixed-grid floor topology");
+		Check(!FireProductionRoundoffWalker::CertifyProjectionInterpolationFloor(
+				4u,9u,5u,2,exactBoundary,shifted,
+				FireProductionRoundoffWalker::ProjectionInterpolationGraphVariant::ShiftedFine)&&
+			!FireProductionRoundoffWalker::CertifyProjectionInterpolationFloor(
+				2u,3u,2u,1,(2.0f+0.5f)*2.0f/3.0f-0.5f,reassociated,
+				FireProductionRoundoffWalker::ProjectionInterpolationGraphVariant::
+					ReassociatedDivision),
+			"projection interpolation certificate rejects coordinate and association mutants");
 	}
 	using namespace FireProductionCalibration;
 	double radius=0.0;

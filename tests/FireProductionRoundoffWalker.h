@@ -2,6 +2,7 @@
 #define FIRE_PRODUCTION_ROUNDOFF_WALKER_H
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -77,6 +78,80 @@ namespace FireProductionRoundoffWalker
 		double arithmeticResidualBound=0.0;
 		double divergenceBound=0.0;
 	};
+	struct ProjectionInterpolationCertificate
+	{
+		std::int64_t exactNumerator=0,exactDenominator=0,boundary=0;
+		float roundedPosition=0.0f;
+		bool exactAndRoundedSameSide=false;
+	};
+	enum class ProjectionInterpolationGraphVariant { Certified,ShiftedFine,
+		ReassociatedDivision };
+
+	inline bool CertifyProjectionInterpolationFloor(const std::size_t fine,
+		const std::size_t fineExtent,const std::size_t coarseExtent,
+		const std::int64_t boundary,const float tracedRoundedPosition,
+		ProjectionInterpolationCertificate& certificate,
+		const ProjectionInterpolationGraphVariant variant=
+			ProjectionInterpolationGraphVariant::Certified)
+	{
+		certificate=ProjectionInterpolationCertificate();
+		if(!fineExtent||!coarseExtent||fine>=fineExtent||
+			fineExtent>std::size_t(std::numeric_limits<std::int64_t>::max()/2u)||
+			coarseExtent>std::size_t(std::numeric_limits<std::int64_t>::max()/
+				(2u*fine+1u)))return false;
+		const std::size_t evaluatedFine=variant==ProjectionInterpolationGraphVariant::ShiftedFine?
+			(fine+1u)%fineExtent:fine;
+		certificate.exactNumerator=static_cast<std::int64_t>((2u*evaluatedFine+1u)*
+			coarseExtent)-static_cast<std::int64_t>(fineExtent);
+		certificate.exactDenominator=static_cast<std::int64_t>(2u*fineExtent);
+		certificate.boundary=boundary;
+		if(variant==ProjectionInterpolationGraphVariant::ReassociatedDivision)
+			certificate.roundedPosition=(static_cast<float>(evaluatedFine)+0.5f)*
+				(static_cast<float>(coarseExtent)/static_cast<float>(fineExtent))-0.5f;
+		else certificate.roundedPosition=(static_cast<float>(evaluatedFine)+0.5f)*
+			static_cast<float>(coarseExtent)/static_cast<float>(fineExtent)-0.5f;
+		const bool exactAbove=certificate.exactNumerator>=
+			boundary*certificate.exactDenominator;
+		const bool roundedAbove=certificate.roundedPosition>=static_cast<float>(boundary);
+		certificate.exactAndRoundedSameSide=exactAbove==roundedAbove&&
+			certificate.roundedPosition==tracedRoundedPosition;
+		return certificate.exactAndRoundedSameSide;
+	}
+
+	inline bool CountProjectionInterpolationObligations(std::size_t nx,std::size_t ny,
+		std::size_t nz,const std::uint32_t cycles,std::uint64_t& result)
+	{
+		result=0u;if(!nx||!ny||!nz||!cycles)return false;
+		std::vector<std::array<std::size_t,3> > hierarchy;
+		hierarchy.push_back({{nx,ny,nz}});
+		while(nx>4u||ny>4u||nz>4u){if(nx>4u)nx=(nx+1u)/2u;
+			if(ny>4u)ny=(ny+1u)/2u;if(nz>4u)nz=(nz+1u)/2u;
+			hierarchy.push_back({{nx,ny,nz}});}
+		std::uint64_t perCycle=0u;
+		for(std::size_t level=0u;level+1u<hierarchy.size();++level){
+			const std::array<std::size_t,3>& fine=hierarchy[level];
+			const std::array<std::size_t,3>& coarse=hierarchy[level+1u];
+			for(unsigned int axis=0u;axis<3u;++axis){
+				if(fine[axis]==coarse[axis])continue;
+				std::uint64_t boundaryCoordinates=0u;
+				for(std::size_t coordinate=0u;coordinate<fine[axis];++coordinate){
+					const std::int64_t numerator=static_cast<std::int64_t>(
+						(2u*coordinate+1u)*coarse[axis])-static_cast<std::int64_t>(fine[axis]);
+					const std::int64_t denominator=static_cast<std::int64_t>(2u*fine[axis]);
+					if(numerator>0&&numerator<static_cast<std::int64_t>(coarse[axis]-1u)*
+						denominator&&numerator%denominator==0)++boundaryCoordinates;
+				}
+				std::uint64_t repetitions=1u;
+				for(unsigned int other=0u;other<3u;++other)if(other!=axis){
+					std::uint64_t product=0u;
+					if(!CheckedProduct(repetitions,fine[other],product))return false;
+					repetitions=product;
+				}
+				if(!CheckedAddProduct(perCycle,boundaryCoordinates,repetitions))return false;
+			}
+		}
+		return CheckedProduct(perCycle,cycles,result);
+	}
 
 	struct ContinuousLimiterCertificate
 	{
