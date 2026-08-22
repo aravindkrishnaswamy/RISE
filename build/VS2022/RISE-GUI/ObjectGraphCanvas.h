@@ -156,7 +156,14 @@ protected:
 private:
     friend class ObjectGraphNodeItem;
     friend class ObjectGraphWiresLayerItem;
-    friend class ObjectGraphView;
+    // review-round P3 fix: NO `friend class ObjectGraphView` -- unlike
+    // NodeGraphView (which reaches back into NodeGraphCanvas to reposition
+    // the wire-drag status label on resize), ObjectGraphView never touches
+    // a private member of this class at all (this canvas has no status
+    // label, no wire-drag). Confirmed the P1 fix above does not change
+    // that -- the deferred forced reload lives entirely in selectNode/
+    // ObjectGraphNodeItem::mousePressEvent, neither of which is
+    // ObjectGraphView.
 
     // ---- reload -------------------------------------------------------
     void performReload(bool force);

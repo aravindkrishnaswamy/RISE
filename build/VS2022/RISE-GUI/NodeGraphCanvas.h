@@ -1,6 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  NodeGraphCanvas.h - RISE UI redesign, left-panel "Graph" tab.
+//  NodeGraphCanvas.h - RISE UI redesign, left-panel "Material Graph" tab
+//  (review-round P2 fix: renamed from the generic "Graph" once the
+//  Object Graph tab shipped as a sibling, S3 -- display string only).
 //
 //  doc-88 Phase 3 S16 + S22 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6):
 //  the Windows/Qt mirror of the shipped macOS Painter/Material node

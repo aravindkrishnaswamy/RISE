@@ -39,6 +39,7 @@
 #include <QWheelEvent>
 #include <QSize>
 #include <QFrame>
+#include <QTimer>
 
 #include <cmath>
 
@@ -805,8 +806,9 @@ void ObjectGraphCanvas::selectNode(const ObjectGraphNodeData& node)
     if (!m_bridge) return;
     // RISE::ChunkCategory ordinals: Geometry=5, Object=8 -- see
     // ObjectGraphNodeData::category's own comment.
+    const bool isObjectNode = (node.category != 5);
     const ViewportBridge::Category cat =
-        (node.category == 5) ? ViewportBridge::Category::Geometry : ViewportBridge::Category::Object;
+        isObjectNode ? ViewportBridge::Category::Object : ViewportBridge::Category::Geometry;
     m_bridge->setSelection(cat, node.name);
     setSelectedHandle(node.handle, true);
     // Clicking a canvas node moves the shared selection -- clear/re-derive
@@ -814,6 +816,39 @@ void ObjectGraphCanvas::selectNode(const ObjectGraphNodeData& node)
     // frame, same reasoning NodeGraphCanvas::selectNode's identical call
     // documents.
     refreshSpotlight(false);
+
+    // review-round P1 fix: UNLIKE the Material canvas, a click on THIS
+    // canvas's own node CAN be an Object-category pick (this graph's
+    // nodes are Object/Geometry, not Painter/Material/Function) -- the
+    // Material canvas's selectNode tail comment ("a node click moves
+    // selection to a NON-Object category, so the sticky memo is
+    // unaffected") does NOT hold here. An Object-node click updates
+    // updateStickyFocusObject()'s memo on the NEXT performReload() poll
+    // regardless, but while Focused, nothing else re-runs performReload()
+    // for a plain selection change with no render in flight (the common
+    // static-scene browsing case) -- the spotlight above updates, but the
+    // shown subgraph would keep showing the PREVIOUSLY focused object
+    // until the next imageUpdated frame happens to arrive, which may be
+    // never. Mac's twin forces this via a refreshTrigger bump ->
+    // synchronous performReload(force:true) when focused
+    // (ObjectGraphCanvas.swift's identical selectNode tail); this is the
+    // Qt mirror of that forced re-center. A Geometry-node click is
+    // deliberately EXCLUDED (isObjectNode guards it) -- matching the
+    // sticky policy's own "a Geometry pick never retargets Focused mode"
+    // rule (updateStickyFocusObject's own comment).
+    //
+    // DEFERRED via QTimer::singleShot(0, this, ...), NOT a direct call --
+    // same use-after-free hazard NodeGraphCanvas.cpp's own history
+    // documents for the identical shape: this method runs ON THE STACK of
+    // ObjectGraphNodeItem::mousePressEvent, and performReload() ->
+    // applySnapshot() DELETES every current ObjectGraphNodeItem, including
+    // the one whose mousePressEvent is still executing (it calls
+    // QGraphicsItem::mousePressEvent(event) AFTER this returns). Posting
+    // to the next event-loop turn lets mousePressEvent finish first.
+    if (isObjectNode && m_viewScope == ObjectGraphViewScope::Focused) {
+        QTimer::singleShot(0, this, [this]() { performReload(true); });
+    }
+
     emit selectionActivated();
 }
 
