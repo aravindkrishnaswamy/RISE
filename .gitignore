@@ -136,3 +136,7 @@ evals/runs/
 .env
 *.secrets.env
 evals/.secrets.env
+
+# Per-user node-graph canvas layout sidecars (GUI-authored positions; a
+# curated layout can still be force-added deliberately)
+*.risegraph.json
