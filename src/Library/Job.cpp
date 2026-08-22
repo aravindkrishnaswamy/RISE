@@ -1321,8 +1321,14 @@ bool Job::AddExpressionPainter(
 	const std::string context = std::string( "expression_painter `" ) + ( name ? name : "noname" ) + "`";
 	Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
 	std::vector<Implementation::ParamSpec> specs;
+	// true/true: full context vars + auto-registered `seed`, this
+	// function's ORIGINAL (pre-unification) behavior -- see
+	// BuildExpressionProgramFromChunkFields's own doc comment
+	// (ExpressionPainter.h) for the false/false expression_function2d
+	// case this parameter pair also now serves.
 	if( !Implementation::BuildExpressionProgramFromChunkFields(
-			context, paramLines, defLines, Scalar( seed ), expr ? expr : "", prog, specs ) ) {
+			context, paramLines, defLines, Scalar( seed ), expr ? expr : "", prog, specs,
+			/*enableContextVars=*/true, /*autoRegisterSeed=*/true ) ) {
 		return false;
 	}
 

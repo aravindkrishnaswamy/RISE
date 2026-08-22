@@ -54,6 +54,14 @@
 // getVertices()/getFaces() accessors -- ITriangleMeshGeometryIndexed alone
 // only exposes numPoints().
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+// expression_function2d/expression_painter unification (doc 88 sect. 7
+// decision 5): both now route through the SAME shared helper
+// (BuildExpressionProgramFromChunkFields, ExpressionPainter.h) with
+// enableContextVars=false/autoRegisterSeed=false for the legacy UV-only
+// surface -- TestUnifiedEngineEquivalence below proves the chunk-parsed
+// painter's output equals a direct ExpressionProgram::Builder compile of
+// the identical body, param-for-param, def-for-def.
+#include "../src/Library/Painters/ExpressionEval.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -65,6 +73,15 @@ static void Check( bool cond, const char* name )
 {
 	if( cond ) { ++passCount; }
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
+}
+static void CheckClose( Scalar got, Scalar want, Scalar tol, const char* name )
+{
+	if( std::fabs( got - want ) <= tol ) { ++passCount; }
+	else {
+		++failCount;
+		std::cout.precision( 12 );
+		std::cout << "  FAIL: " << name << "  got " << got << "  want " << want << "  |d| " << std::fabs(got-want) << std::endl;
+	}
 }
 
 namespace {
@@ -763,6 +780,88 @@ static void TestSDFSuperellipsoidPartLines()
 		"a leading `subtract` still rejects for the new primitive too" );
 }
 
+//! expression_function2d / expression_painter unification (doc 88 sect. 7
+//! decision 5): ExpressionFunction2DPainterAsciiChunkParser::Finalize was
+//! rewritten to call the SAME shared helper
+//! (Implementation::BuildExpressionProgramFromChunkFields, also used by
+//! Job::AddExpressionPainter and the scalar_painter{expression} chunk)
+//! instead of hand-rolling its own param/def parsing.  Two pins:
+//!
+//!   1. Equivalence: a legacy body with param + def + expr, loaded through
+//!      the REAL chunk parser (exercising the rewritten Finalize), must
+//!      evaluate identically to the SAME body compiled directly through
+//!      ExpressionProgram::Builder with EnableContextVars(false) and no
+//!      auto-registered `seed` -- i.e. exactly the enableContextVars=false,
+//!      autoRegisterSeed=false arguments the chunk parser now passes.
+//!   2. Legacy-chunk-still-parses: the scene load itself must succeed and
+//!      register the function2d under its name -- a regression in the
+//!      shared helper's plumbing (wrong flag, wrong param grammar) would
+//!      show up here as either a parse failure or a value mismatch.
+static void TestUnifiedEngineEquivalence()
+{
+	std::cout << "Test 10: expression_function2d/expression_painter unification -- chunk-parsed == direct Builder compile" << std::endl;
+
+	// A body deliberately shaped like the in-tree scenes' usage: a param,
+	// a def referencing that param, and a u/v-only final expression.  Every
+	// `param` line here is the plain `<name> <number>` form used by all 13
+	// in-tree scenes that reference expression_function2d.
+	const char* kName = "unif_eq";
+	const char* kBody =
+		"expression_function2d\n{\n"
+		"name unif_eq\n"
+		"param R 20.6\n"
+		"param k 6.0\n"
+		"def rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)\n"
+		"expr 0.5+0.5*sin(k*rho)+rho*rho\n"
+		"}\n";
+
+	// The frozen UV-only contract (doc 88 sect. 7 decision 5): a body
+	// referencing a full-context variable must still hard-reject through
+	// the REAL chunk parser, end to end -- pins enableContextVars=false at
+	// the parser boundary, not just at the Builder level (already covered
+	// by ExpressionFunction2DTest.cpp's Test 1).
+	Check( !ParseBody( "unif_ctxvar", "expression_function2d\n{\nname e\nexpr time*2+1\n}\n" ),
+		"context var `time` still rejects through the chunk parser (frozen UV-only contract)" );
+
+	Job* job = new Job();
+	job->addref();
+	const bool ok = ParseBody( "unif_eq", kBody, *job );
+	Check( ok, "legacy expression_function2d chunk (param+def+expr) still parses through the unified helper" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	Check( priv != 0, "IJobPriv available" );
+	if( !ok || !priv ) { job->release(); return; }
+	IFunction2D* chunkParsed = priv->GetFunction2Ds()->GetItem( kName );
+	Check( chunkParsed != 0, "expression function2d registered under its name" );
+
+	// The identical body compiled directly, matching exactly what the
+	// rewritten Finalize now does: EnableContextVars(false), no
+	// AddParam("seed", ...) auto-registration.
+	ExpressionProgram direct = ExpressionProgram::Invalid();
+	{
+		ExpressionProgram::Builder b;
+		b.EnableContextVars( false );
+		Check( b.AddParam( "R", 20.6 ), "direct compile: AddParam R" );
+		Check( b.AddParam( "k", 6.0 ), "direct compile: AddParam k" );
+		Check( b.AddDef( "rho", "clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)" ), "direct compile: AddDef rho" );
+		Check( b.Finalize( "0.5+0.5*sin(k*rho)+rho*rho", direct ), "direct compile: Finalize" );
+	}
+	Check( direct.IsValid(), "direct-compiled program is valid" );
+
+	if( chunkParsed && direct.IsValid() ) {
+		static const Scalar kGrid[][2] = {
+			{ 0.0, 0.0 }, { 1.0, 1.0 }, { 0.5, 0.5 }, { 0.31, 0.17 },
+			{ 0.05, 0.93 }, { 0.72, 0.24 }, { 1.0, 0.0 }, { 0.0, 1.0 }
+		};
+		for( size_t i = 0; i < sizeof(kGrid)/sizeof(kGrid[0]); ++i ) {
+			const Scalar u = kGrid[i][0], v = kGrid[i][1];
+			char label[96];
+			snprintf( label, sizeof(label), "chunk-parsed == direct compile at (u=%.2f,v=%.2f)", (double)u, (double)v );
+			CheckClose( chunkParsed->Evaluate( u, v ), direct.Eval( u, v ), Scalar(1e-12), label );
+		}
+	}
+	job->release();
+}
+
 int main( int, char** )
 {
 	std::cout << "GuillocheChunkParseTest -- parse-level plumbing for the procedural chunks" << std::endl << std::endl;
@@ -775,6 +874,7 @@ int main( int, char** )
 	TestExpressionAndDisplacement();
 	TestLatheChunk();
 	TestSDFSuperellipsoidPartLines();
+	TestUnifiedEngineEquivalence();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
