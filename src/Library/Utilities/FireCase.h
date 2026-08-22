@@ -93,6 +93,13 @@ namespace RISE
 			double cellWidthM,double maximumAxisSpeedMPerS,
 			double maximumPositiveReducedGravityMPerS2,
 			double maximumActiveDiffusivityM2PerS,double previousStepS );
+		double SelectTimeStepS(
+			double cellWidthM,double maximumAxisSpeedMPerS,
+			double maximumPositiveReducedGravityMPerS2,
+			double maximumActiveDiffusivityM2PerS,double previousStepS,
+			double previousMaximumManifoldGeneration,
+			double previousRestorationDrainFraction,
+			bool hasPreviousManifoldObservation );
 	}
 }
 

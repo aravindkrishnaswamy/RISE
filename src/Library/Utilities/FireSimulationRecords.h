@@ -242,6 +242,13 @@ namespace RISE
 		bool InvertMixtureTemperatureBySpeciesOrderK(
 			const double* massDensitiesKGPerM3, std::size_t count,
 			double sensibleEnergyJPerM3, double& result, std::string* error = 0 ) const;
+		//! Accepted-state EOS volume ratio used by the resident manifold gate.
+		//! Signed stored densities participate in energy inversion; positive-part
+		//! gas availability participates in the ideal-gas volume, matching r60.
+		bool AcceptedVolumeRatioBySpeciesOrder(
+			const double* massDensitiesKGPerM3, std::size_t count,
+			double sensibleEnergyJPerM3, FireStateProducerPrecision producerPrecision,
+			double& result, std::string* error = 0 ) const;
 		const std::vector<std::string>& ElementOrder() const { return m_elementOrder; }
 		const std::vector<double>& ElementMassFractionMatrix() const
 		{

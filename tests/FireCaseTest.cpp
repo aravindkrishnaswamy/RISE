@@ -124,6 +124,10 @@ int main()
 		"advective r54 timestep limit wins exactly");
 	Check(std::fabs(FireCase::SelectTimeStepS(0.1,0.0,8.0,0.01,0.01)-0.011)<1e-17,
 		"r54 timestep growth is capped at x1.1");
+	Check(FireCase::SelectTimeStepS(0.1,2.0,8.0,0.01,
+		5.629525428363875e-5,0.0025328069638265172,0.9533406144549903,true)==
+		1.589201814710624e-5,
+		"r143 fire case selection delegates to the manifold limiter");
 	FireCase::AuthoredV1 overrideCase=authored; overrideCase.hasRadiativeFractionOverride=true;
 	overrideCase.radiativeFractionOverride=0.14; FireCase::RecordV1 overridden;
 	Check(FireCase::BuildMethaneV1(overrideCase,fuel,{fuel.RecordId()},overridden,error) &&

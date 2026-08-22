@@ -874,6 +874,43 @@ int main()
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	std::string error;
 	{
+		FireProductionAcceptedManifoldObservation none;
+		FireProductionStableTimeStep first;
+		Check(SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,0.0,none,
+			first,&error)&&first.seconds==0.025&&
+			std::string(first.activeLimit)=="advective_CFL",
+			"r143 first-step selection uses only the frozen CFL-family limits");
+		FireProductionAcceptedManifoldObservation burning;
+		burning.available=true;burning.timeStepS=5.629525428363875e-5;
+		burning.maximumGeneration=0.0025328069638265172;
+		burning.restorationDrainFraction=0.9533406144549903;
+		FireProductionStableTimeStep limited;
+		Check(SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
+			burning.timeStepS,burning,limited,&error)&&
+			limited.seconds==1.589201814710624e-5&&
+			std::string(limited.activeLimit)=="manifold_plateau",
+			"r143 manifold limit reproduces the pre-registered burning prediction");
+		FireProductionAcceptedManifoldObservation zero=burning;
+		zero.maximumGeneration=0.0;
+		FireProductionStableTimeStep zeroResult;
+		Check(SelectFireProductionStableTimeStep(0.1,0.0,0.0,0.0,
+			zero.timeStepS,zero,zeroResult,&error)&&
+			zeroResult.seconds==1.1*zero.timeStepS&&
+			std::string(zeroResult.activeLimit)=="growth_limit",
+			"r143 exact-positive-zero generation contributes no manifold limit");
+		FireProductionAcceptedManifoldObservation partial;
+		partial.timeStepS=burning.timeStepS;
+		FireProductionStableTimeStep rejected;
+		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
+			burning.timeStepS,partial,rejected,&error)&&rejected.seconds==0.0,
+			"r143 partial accepted-step metadata fails closed");
+		burning.maximumGeneration=0.01;
+		burning.restorationDrainFraction=0.0;
+		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
+			burning.timeStepS,burning,rejected,&error),
+			"r143 a nonzero generation with zero drain cannot manufacture a step");
+	}
+	{
 		const float width=0x1p-10f;
 		const float farPositive=FireProductionContinuousSharedLimiterAlpha(
 			0.75f,0.25f,1.0f,0.0f,0.25f);
@@ -3848,6 +3885,7 @@ int main()
 		"one-command resident mixed dual transport matches all wall/open CPU bytes within the "
 		"production Metal comparator band with zero interstage transfer");
 	FireProductionResidentStepResult composedGPU,composedGPURepeat;
+	composedStep.enforceManifoldPlateau=false;
 	const bool composedMetal=AdvanceFireProductionResidentStepMetal(
 		composedStep,composedGPU,&error);
 	const bool composedMetalRepeat=composedMetal&&AdvanceFireProductionResidentStepMetal(
@@ -3887,6 +3925,10 @@ int main()
 		seeded.residentProjectionInvocationCount=2u;seeded.interstageFullGridTransferCount=1u;
 		seeded.terminalStagingCount=1u;seeded.combinedCertifiedWorkingSetBytes=1u;
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
+		seeded.maximumManifoldGeneration=1.0;seeded.maximumAcceptedManifoldDeviation=1.0;
+		seeded.requiredRestorationDrainFraction=1.0;
+		seeded.deliveredRestorationDrainFraction=1.0;
+		seeded.restorationResidualBandPerS=1.0;seeded.manifoldPlateauPassed=true;
 		seeded.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 	};
 		auto fullStepResultIsDefault=[&](const FireProductionResidentStepResult& rejected) {
@@ -3903,11 +3945,27 @@ int main()
 			rejected.interstageFullGridTransferCount==0u&&rejected.terminalStagingCount==0u&&
 			rejected.combinedCertifiedWorkingSetBytes==0u&&
 			rejected.combinedActualMetalAllocationBytes==0u&&rejected.deviceElapsedMS==0.0&&
+			rejected.maximumManifoldGeneration==0.0&&
+			rejected.maximumAcceptedManifoldDeviation==0.0&&
+			rejected.requiredRestorationDrainFraction==0.0&&
+			rejected.deliveredRestorationDrainFraction==0.0&&
+			rejected.restorationResidualBandPerS==0.0&&!rejected.manifoldPlateauPassed&&
 			rejected.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 	};
+	FireProductionResidentStepResult rejectedFullStep;
+	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedManifoldProbe=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_MANIFOLD_TIMESTEP_PROBE","malformed",1);
+	const bool malformedManifoldProbeRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_MANIFOLD_TIMESTEP_PROBE");
+	Check(malformedManifoldProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeMalformedManifoldProbe,
+		"r143 malformed diagnostic activation fails before Metal work and publishes no result");
 	FireProductionResidentStepRequest malformedFullStep=composedStep;
 	malformedFullStep.force.cellGasDensityKGPerM3.clear();
-	FireProductionResidentStepResult rejectedFullStep;seedFullStepResult(rejectedFullStep);error.clear();
+	seedFullStepResult(rejectedFullStep);error.clear();
 	Check(!AdvanceFireProductionResidentStepMetal(malformedFullStep,rejectedFullStep,&error)&&
 		fullStepResultIsDefault(rejectedFullStep),
 		"full resident step rejects a short authoritative gas-density field before indexing or Metal work");
@@ -4119,6 +4177,7 @@ int main()
 		tier10ResidentForce.shape.CellCount(),0.0f);
 	tier10FullStep.restorationDivergenceTargetPerS.assign(
 		tier10ResidentForce.shape.CellCount(),0.0f);
+	tier10FullStep.enforceManifoldPlateau=false;
 	std::vector<double> residentStepDeviceMS,residentStepWallMS;
 	FireProductionResidentStepResult tier10ResidentStepResult;
 	for( unsigned int trial=0u;trial<3u;++trial ) {

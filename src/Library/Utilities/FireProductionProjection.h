@@ -108,6 +108,26 @@ namespace RISE
 		float maximumRestorationTargetPerS,
 		bool& withinBand );
 
+	struct FireProductionRestorationPlateauValidation
+	{
+		double requiredDrainFraction;
+		double deliveredDrainFraction;
+		double maximumPostResidualPerS;
+		bool mechanismPassed;
+
+		FireProductionRestorationPlateauValidation() : requiredDrainFraction(0.0),
+			deliveredDrainFraction(0.0),maximumPostResidualPerS(0.0),
+			mechanismPassed(false) {}
+	};
+
+	//! r143 plateau-derived mechanism validation.  The function-level accepted
+	//! state gate remains separate and must also hold before publication.
+	bool FireProductionRestorationPlateauWithinBand(
+		double maximumManifoldGeneration,
+		double maximumPreProjectionResidualPerS,
+		double maximumPostProjectionResidualPerS,
+		FireProductionRestorationPlateauValidation& result );
+
 	bool ValidateFireProductionProjectionRequest(
 		const FireProductionProjectionRequest& request,
 		std::string* error=0 );

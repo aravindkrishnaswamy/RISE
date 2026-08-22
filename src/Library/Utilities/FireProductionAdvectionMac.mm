@@ -11,6 +11,7 @@
 
 #include "FireProductionAdvection.h"
 #include "FireProductionForce.h"
+#include "FireSimulationRecords.h"
 #include "FireProductionTransport.h"
 
 #include <algorithm>
@@ -29,6 +30,38 @@ namespace RISE
 
 	namespace
 	{
+		bool MeasureMethaneManifold(
+			const std::vector<double>& beginningDeviation,
+			const float* terminal,
+			const std::size_t cells,
+			double& maximumGeneration,
+			double& maximumTerminalDeviation,
+			std::string* error )
+		{
+			maximumGeneration=0.0;maximumTerminalDeviation=0.0;
+			if(!terminal||beginningDeviation.size()!=cells)return false;
+			const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+			if(!fuel.IsValid()||fuel.SpeciesOrder().size()!=7u)return false;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				double terminalSpecies[7];
+				for(std::size_t species=0u;species<7u;++species){
+					terminalSpecies[species]=terminal[(1u+species)*cells+cell];
+				}
+				double terminalRatio=0.0;
+				if(!std::isfinite(beginningDeviation[cell])||
+					!fuel.AcceptedVolumeRatioBySpeciesOrder(terminalSpecies,7u,
+						terminal[8u*cells+cell],FireStateProducerPrecision::Binary32,
+						terminalRatio,error))return false;
+				const double terminalDeviation=terminalRatio-1.0;
+				maximumGeneration=std::max(maximumGeneration,
+					std::fabs(terminalDeviation-beginningDeviation[cell]));
+				maximumTerminalDeviation=std::max(maximumTerminalDeviation,
+					std::fabs(terminalDeviation));
+			}
+			return std::isfinite(maximumGeneration)&&
+				std::isfinite(maximumTerminalDeviation);
+		}
+
 		struct MetalParameters
 		{
 			std::uint32_t lineLength;
@@ -2032,6 +2065,13 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 	{
 		result=FireProductionResidentStepResult();
 		try {
+			const char* manifoldProbeActivation=std::getenv(
+				"RISE_FIRE_MANIFOLD_TIMESTEP_PROBE");
+			if( manifoldProbeActivation&&std::strcmp(manifoldProbeActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production manifold timestep probe activation is invalid";
+				return false;
+			}
 			unsigned int restorationProbeCycles=0u;bool restorationProbeEnabled=false;
 			if( !ValidateFireProductionRestorationCycleProbe(restorationProbeCycles,
 				restorationProbeEnabled,structuredError) ) return false;
@@ -2073,6 +2113,21 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.restorationDivergenceTargetPerS.size()!=cells||
 				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError)||
 				!ValidateFireProductionDualMomentumRequest(request.dualTransport,structuredError) ) return false;
+			const char* plateauEvidenceActivation=std::getenv(
+				"RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+			if( request.enforceManifoldPlateau&&!plateauEvidenceActivation&&
+				request.beginningManifoldDeviationPerCell.size()!=cells ) {
+				if( structuredError ) *structuredError=
+					"production resident step lacks beginning manifold metadata";
+				return false;
+			}
+			if( request.enforceManifoldPlateau&&!plateauEvidenceActivation )
+				for( const double value:request.beginningManifoldDeviationPerCell )
+					if( !std::isfinite(value) ) {
+						if( structuredError ) *structuredError=
+							"production resident step beginning manifold metadata is nonfinite";
+						return false;
+					}
 			for( const float value:request.divergenceTargetPerS ) if( !std::isfinite(value) ) {
 				if( structuredError ) *structuredError=
 					"production resident step physical divergence target is nonfinite";
@@ -2306,6 +2361,29 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 						values[9u*cells+face]>0.0f&&
 						std::isfinite(values[9u*cells+allFaces+face]);
 				if( !terminalValid ) return false;
+				const char* plateauProbe=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
+				const bool enforcePlateau=request.enforceManifoldPlateau&&
+					!restorationRemoved&&!plateauProbe;
+				double maximumManifoldGeneration=0.0,maximumTerminalDeviation=0.0;
+				FireProductionRestorationPlateauValidation plateauValidation;
+				if( enforcePlateau&&(!MeasureMethaneManifold(
+					request.beginningManifoldDeviationPerCell,values,cells,
+					maximumManifoldGeneration,maximumTerminalDeviation,structuredError)||
+					!FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
+						projection.maximumPreProjectionResidualPerS,
+						projection.maximumPostProjectionResidualPerS,plateauValidation)) ) return false;
+				const bool plateauPassed=!enforcePlateau||
+					(plateauValidation.requiredDrainFraction<=1.0&&
+					plateauValidation.mechanismPassed&&maximumTerminalDeviation<=0.00075);
+				if( !plateauPassed&&!manifoldProbeActivation ) {
+					if( structuredError ) *structuredError=
+						plateauValidation.requiredDrainFraction>1.0?
+						"production manifold generation exceeds the accepted-step allowance":
+						(maximumTerminalDeviation>0.00075?
+							"production realized manifold plateau exceeds the accepted-state allowance":
+							"production restoration drain misses its plateau-derived band");
+					return false;
+				}
 				FireProductionResidentStepResult computed;
 				computed.conservativeValues.assign(values,values+9u*cells);
 				for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -2345,6 +2423,17 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
 					(restorationRemoved?computed.projection.deviceElapsedMS:
 						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS);
+				computed.maximumManifoldGeneration=maximumManifoldGeneration;
+				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
+				computed.requiredRestorationDrainFraction=
+					plateauValidation.requiredDrainFraction;
+				computed.deliveredRestorationDrainFraction=
+					plateauValidation.deliveredDrainFraction;
+				computed.restorationResidualBandPerS=
+					plateauValidation.maximumPostResidualPerS;
+				computed.manifoldPlateauPassed=enforcePlateau&&plateauPassed;
+				if( enforcePlateau )
+					computed.projection.validationPassed=plateauValidation.mechanismPassed;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=1u||

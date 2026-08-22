@@ -2897,6 +2897,41 @@ mutates conservation ledgers and masks producer defects.  Production's omitted
 r70 Picard advective-anomaly closure remains a follow-up only if the two-pass
 cost threatens the certified budget; it is not the current remedy.
 
+### 7.55d Manifold predictor result (r144)
+
+The selector and fail-closed plateau mechanism are implemented, but the frozen
+burning measurement rejects the previous-step proportional predictor.  The
+r142 tuple selects `1.589201814710624e-5 s`, represented as
+`0x1.0a9fb2p-16` (`1.5892017472651787e-5 s`), versus the golden CFL step
+`5.6295254283638751e-5 s`: a `3.5423604574130363x` tightening.
+
+The actual resident step generates `G_field=2.5081625752932935e-3`, or
+`0.9902699302058174` of r142's generation.  It therefore does not exhibit the
+assumed linear-in-dt reduction at this burning front.  Its terminal field
+maximum is `2.5081625764804549e-3`, `3.3442167686406066` times the ruled
+`7.5e-4` allowance.  The restoration solve itself drains
+`0.97489008508207653` (`7.5704371556639671e-4 ->
+1.9009303287020884e-5 s^-1`), but the realized generation requires drain
+`3.3442167670577247`; consequently no nonnegative per-application residual
+band exists.
+
+The terminal EOS calculation is performed only at the existing step-boundary
+staging seam and is independently recomputed by the fixture.  No full-grid
+interstage transfer is added.  With the diagnostic disabled, the owner refuses
+the step before publication and resets every public result field.  Exact exit
+`254` is reserved for the pinned miss.  Five observed trials give
+`74.077416793443263 ms` device p95 and `711.14358400000003 ms` wall p95;
+at the represented step, tier-10 times 25 s projects to `32.37011955186228`
+device-hours and `310.75331496518044` completed-call hours.  These timing values
+are observations, not acceptance constants.
+
+This is the ruling's explicit fast-regime-change detector firing, not grounds
+to alter the ceiling, gain, or band.  The 100-step shadow, golden `B_fp32`,
+guard supersession, temporal refinement, eight-slice readmission, source maps,
+and first light remain blocked.  Evidence is
+`rendered/fire_production_calibration/r144_manifold_predictor_stop/manifold_predictor_evidence.v1`;
+the golden checkpoint remains byte-identical.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

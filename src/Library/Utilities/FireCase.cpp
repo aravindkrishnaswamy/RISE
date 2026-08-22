@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "FireCase.h"
+#include "FireProductionForce.h"
 #include "FireSimulationRecords.h"
 #include <algorithm>
 #include <cmath>
@@ -171,14 +172,22 @@ double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
 double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
 	const double reducedGravity,const double diffusivity,const double previous)
 {
-	if(!FinitePositive(dx) || speed<0.0 || reducedGravity<0.0 || diffusivity<0.0 ||
-		!std::isfinite(speed) || !std::isfinite(reducedGravity) || !std::isfinite(diffusivity)) return 0.0;
-	double step=std::numeric_limits<double>::infinity();
-	if(speed>0.0) step=std::min(step,0.5*dx/speed);
-	if(reducedGravity>0.0) step=std::min(step,0.5*std::sqrt(2.0*dx/reducedGravity));
-	if(diffusivity>0.0) step=std::min(step,dx*dx/(8.0*diffusivity));
-	if(FinitePositive(previous)) step=std::min(step,1.1*previous);
-	return std::isfinite(step) && step>0.0 ? step : 0.0;
+	return SelectTimeStepS(dx,speed,reducedGravity,diffusivity,previous,0.0,0.0,false);
+}
+
+double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
+	const double reducedGravity,const double diffusivity,const double previous,
+	const double previousGeneration,const double previousDrain,
+	const bool hasPreviousManifoldObservation)
+{
+	FireProductionAcceptedManifoldObservation observation;
+	observation.available=hasPreviousManifoldObservation;
+	if(hasPreviousManifoldObservation){observation.timeStepS=previous;
+		observation.maximumGeneration=previousGeneration;
+		observation.restorationDrainFraction=previousDrain;}
+	FireProductionStableTimeStep selected;
+	return SelectFireProductionStableTimeStep(dx,speed,reducedGravity,diffusivity,previous,
+		observation,selected,0)?selected.seconds:0.0;
 }
 
 bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,

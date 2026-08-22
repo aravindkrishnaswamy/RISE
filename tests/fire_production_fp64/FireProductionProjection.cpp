@@ -508,6 +508,40 @@ namespace RISEFireProductionFP64
 		withinBand=maximumResidualPerS<=tolerance;return true;
 	}
 
+	bool FireProductionRestorationPlateauWithinBand(
+		const double maximumManifoldGeneration,
+		const double maximumPreProjectionResidualPerS,
+		const double maximumPostProjectionResidualPerS,
+		FireProductionRestorationPlateauValidation& result )
+	{
+		result=FireProductionRestorationPlateauValidation();
+		constexpr double ceiling=0.001;
+		constexpr double headroom=0.25;
+		const double allowance=(1.0-headroom)*ceiling;
+		if( !std::isfinite(maximumManifoldGeneration)||maximumManifoldGeneration<0.0||
+			!std::isfinite(maximumPreProjectionResidualPerS)||
+			maximumPreProjectionResidualPerS<0.0||
+			!std::isfinite(maximumPostProjectionResidualPerS)||
+			maximumPostProjectionResidualPerS<0.0 ) return false;
+		result.requiredDrainFraction=maximumManifoldGeneration/allowance;
+		if( maximumPreProjectionResidualPerS==0.0 ) {
+			if( maximumPostProjectionResidualPerS!=0.0 ) return false;
+			result.deliveredDrainFraction=1.0;
+		} else {
+			result.deliveredDrainFraction=1.0-maximumPostProjectionResidualPerS/
+				maximumPreProjectionResidualPerS;
+		}
+		if( !std::isfinite(result.requiredDrainFraction)||
+			!std::isfinite(result.deliveredDrainFraction) ) return false;
+		if( result.requiredDrainFraction>1.0 ) return true;
+		result.maximumPostResidualPerS=(1.0-result.requiredDrainFraction)*
+			maximumPreProjectionResidualPerS;
+		if( !std::isfinite(result.maximumPostResidualPerS) ) return false;
+		result.mechanismPassed=maximumPostProjectionResidualPerS<=
+			result.maximumPostResidualPerS;
+		return true;
+	}
+
 	bool ValidateFireProductionProjectionRequest( const FireProductionProjectionRequest& request,
 		std::string* error )
 	{

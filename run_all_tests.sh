@@ -477,6 +477,41 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r144 replays the r143 previous-step predictor at the frozen burning slice.
+# Exact 254 means the represented limited step reached Metal, independently
+# reproduced G, and then failed both the derived mechanism and function gates
+# without publishing an accepted result.
+if [ "$(uname -s)" = "Darwin" ]; then
+	manifold_stop_name="FireSequenceTest.r144_manifold_predictor_stop"
+	manifold_stop_path="$BIN_DIR/FireSequenceTest"
+	manifold_stop_log="$LOG_DIR/$manifold_stop_name.log"
+	printf '[ evidence ] %-46s ... ' "$manifold_stop_name"
+	manifold_stop_rc=0
+	if [ ! -x "$manifold_stop_path" ]; then
+		manifold_stop_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_MANIFOLD_TIMESTEP_PROBE=1 \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$manifold_stop_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$manifold_stop_log" 2>&1 || manifold_stop_rc=$?
+	else
+		RISE_FIRE_MANIFOLD_TIMESTEP_PROBE=1 \
+			"$manifold_stop_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$manifold_stop_log" 2>&1 || manifold_stop_rc=$?
+	fi
+	if [ "$manifold_stop_rc" -eq 254 ]; then
+		echo 'PASS (exact exit=254)'
+		rm -f "$manifold_stop_log"
+	else
+		echo "FAIL (exit=$manifold_stop_rc; expected 254)"
+		printf '%s\t%d\t%s\n' "$manifold_stop_name" "$manifold_stop_rc" \
+			"$manifold_stop_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

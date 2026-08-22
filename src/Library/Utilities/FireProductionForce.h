@@ -268,7 +268,43 @@ namespace RISE
 		std::array<std::vector<float>,3> momentumSourceIncrement;
 		std::vector<float> divergenceTargetPerS;
 		std::vector<float> restorationDivergenceTargetPerS;
+		std::vector<double> beginningManifoldDeviationPerCell;
+		bool enforceManifoldPlateau;
+
+		FireProductionResidentStepRequest() : enforceManifoldPlateau(true) {}
 	};
+
+	struct FireProductionAcceptedManifoldObservation
+	{
+		bool available;
+		double timeStepS;
+		double maximumGeneration;
+		double restorationDrainFraction;
+
+		FireProductionAcceptedManifoldObservation() : available(false),timeStepS(0.0),
+			maximumGeneration(0.0),restorationDrainFraction(0.0) {}
+	};
+
+	struct FireProductionStableTimeStep
+	{
+		double seconds;
+		const char* activeLimit;
+
+		FireProductionStableTimeStep() : seconds(0.0),activeLimit(0) {}
+	};
+
+	//! Selects the production step from the CFL family, the 1.1 growth cap, and
+	//! the r143 accepted-step manifold observation.  An unavailable observation
+	//! is valid only for the first step of a run.
+	bool SelectFireProductionStableTimeStep(
+		double cellWidthM,
+		double maximumVelocityMPerS,
+		double maximumPositiveReducedGravityMPerS2,
+		double maximumKinematicTransportM2PerS,
+		double previousStepS,
+		const FireProductionAcceptedManifoldObservation& previousManifold,
+		FireProductionStableTimeStep& result,
+		std::string* error=0 );
 
 	struct FireProductionResidentStepResult
 	{
@@ -287,13 +323,22 @@ namespace RISE
 		std::uint64_t combinedCertifiedWorkingSetBytes;
 		std::uint64_t combinedActualMetalAllocationBytes;
 		double deviceElapsedMS;
+		double maximumManifoldGeneration;
+		double maximumAcceptedManifoldDeviation;
+		double requiredRestorationDrainFraction;
+		double deliveredRestorationDrainFraction;
+		double restorationResidualBandPerS;
+		bool manifoldPlateauPassed;
 		FireStateProducerPrecision conservativeProducerPrecision;
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0),
+			deviceElapsedMS(0.0),maximumManifoldGeneration(0.0),
+			maximumAcceptedManifoldDeviation(0.0),requiredRestorationDrainFraction(0.0),
+			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
+			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(FireStateProducerPrecision::Unknown) {}
 	};
 

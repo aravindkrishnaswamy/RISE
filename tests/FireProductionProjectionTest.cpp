@@ -558,6 +558,34 @@ int main()
 {
 	using namespace RISE;
 	std::string error;
+	{
+		FireProductionRestorationPlateauValidation burning;
+		Check(FireProductionRestorationPlateauWithinBand(
+			0.0025328069638265172,0.00021371165348682553,
+			9.9716544355032966e-6,burning)&&
+			burning.requiredDrainFraction==3.3770759517686897&&
+			!burning.mechanismPassed,
+			"r143 rejects the pre-limiter burning generation before any band is formed");
+		FireProductionRestorationPlateauValidation limited;
+		const double generation=0.0007;
+		const double pre=0.01;
+		const double required=generation/0.00075;
+		const double exactBand=(1.0-required)*pre;
+		Check(FireProductionRestorationPlateauWithinBand(generation,pre,
+			std::nextafter(exactBand,0.0),limited)&&limited.mechanismPassed&&
+			limited.maximumPostResidualPerS==exactBand&&
+			FireProductionRestorationPlateauWithinBand(generation,pre,
+				std::nextafter(exactBand,std::numeric_limits<double>::infinity()),limited)&&
+			!limited.mechanismPassed,
+			"r143 restoration band straddles the plateau-derived drain requirement");
+		FireProductionRestorationPlateauValidation zero;
+		Check(FireProductionRestorationPlateauWithinBand(0.0,0.0,0.0,zero)&&
+			zero.requiredDrainFraction==0.0&&zero.deliveredDrainFraction==1.0&&
+			zero.mechanismPassed&&
+			!FireProductionRestorationPlateauWithinBand(0.0,0.0,
+				std::numeric_limits<double>::denorm_min(),zero),
+			"r143 exact-rest mechanism is total and rejects a generated residual");
+	}
 	for( const FireProductionProjectionBoundary boundary : {
 		FireProductionProjectionPeriodic,FireProductionProjectionWall,
 		FireProductionProjectionPressureOpen} ) {
@@ -1412,7 +1440,7 @@ int main()
 		source.find("const float mean=BlellochSum(values)")!=std::string::npos,
 		"P2 source guard binds 12 periodic, 17 physical-open, or 16 restoration-open cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
 	Check(Count(metalSource,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
-		Count(metalSource,"cycleCount=execution==ProjectionResidentStateOnly?17u:16u")==1u&&
+		Count(metalSource,"execution==ProjectionResidentStateOnly?17u:16u")==1u&&
 		metalSource.find("p.restoration!=0u?-target[gid]:divergence-target[gid]")!=
 			std::string::npos&&
 		metalSource.find("abs((divergence-beginning)-target[gid])")!=std::string::npos&&

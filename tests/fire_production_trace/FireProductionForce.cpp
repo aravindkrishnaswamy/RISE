@@ -22,6 +22,8 @@ namespace RISEFireProductionTrace
 {
 	namespace
 	{
+		constexpr double ManifoldEOSCeiling=0.001;
+		constexpr double ManifoldHeadroom=0.25;
 		bool Fail( std::string* error, const char* message ) noexcept
 		{
 			if( error ) try { *error=message; } catch( const std::bad_alloc& ) {}
@@ -69,6 +71,64 @@ namespace RISEFireProductionTrace
 			}
 			return digest;
 		}
+	}
+
+	bool SelectFireProductionStableTimeStep(
+		const double cellWidthM,
+		const double maximumVelocityMPerS,
+		const double maximumPositiveReducedGravityMPerS2,
+		const double maximumKinematicTransportM2PerS,
+		const double previousStepS,
+		const FireProductionAcceptedManifoldObservation& previousManifold,
+		FireProductionStableTimeStep& result,
+		std::string* error )
+	{
+		result=FireProductionStableTimeStep();
+		if( !std::isfinite(cellWidthM)||cellWidthM<=0.0||
+			!std::isfinite(maximumVelocityMPerS)||maximumVelocityMPerS<0.0||
+			!std::isfinite(maximumPositiveReducedGravityMPerS2)||
+			maximumPositiveReducedGravityMPerS2<0.0||
+			!std::isfinite(maximumKinematicTransportM2PerS)||
+			maximumKinematicTransportM2PerS<0.0||!std::isfinite(previousStepS)||
+			previousStepS<0.0 ) return Fail(error,"production timestep inputs are invalid");
+		if( previousManifold.available ) {
+			if( previousStepS<=0.0||!std::isfinite(previousManifold.timeStepS)||
+				previousManifold.timeStepS<=0.0||previousManifold.timeStepS!=previousStepS||
+				!std::isfinite(previousManifold.maximumGeneration)||
+				previousManifold.maximumGeneration<0.0||
+				!std::isfinite(previousManifold.restorationDrainFraction)||
+				previousManifold.restorationDrainFraction<0.0||
+				previousManifold.restorationDrainFraction>1.0 )
+				return Fail(error,"production accepted manifold metadata is invalid");
+		} else if( previousManifold.timeStepS!=0.0||
+			previousManifold.maximumGeneration!=0.0||
+			previousManifold.restorationDrainFraction!=0.0 ) {
+			return Fail(error,"production manifold metadata is partial");
+		}
+		result.seconds=std::numeric_limits<double>::infinity();
+		result.activeLimit="unbounded_static_state";
+		auto accept=[&]( const double candidate, const char* label ) {
+			if( candidate<result.seconds ) { result.seconds=candidate;result.activeLimit=label; }
+		};
+		if( maximumVelocityMPerS>0.0 )
+			accept(0.5*cellWidthM/maximumVelocityMPerS,"advective_CFL");
+		if( maximumPositiveReducedGravityMPerS2>0.0 ) accept(
+			0.5*std::sqrt(2.0*cellWidthM/maximumPositiveReducedGravityMPerS2),
+			"buoyant_acceleration");
+		if( maximumKinematicTransportM2PerS>0.0 ) accept(
+			cellWidthM*cellWidthM/(8.0*maximumKinematicTransportM2PerS),
+			"explicit_diffusion");
+		if( previousStepS>0.0 ) accept(1.1*previousStepS,"growth_limit");
+		if( previousManifold.available&&previousManifold.maximumGeneration>0.0 ) {
+			const double candidate=previousManifold.timeStepS*
+				((1.0-ManifoldHeadroom)*ManifoldEOSCeiling*
+				previousManifold.restorationDrainFraction)/previousManifold.maximumGeneration;
+			if( !std::isfinite(candidate)||candidate<=0.0 )
+				return Fail(error,"production manifold timestep is invalid");
+			accept(candidate,"manifold_plateau");
+		}
+		return (result.seconds>0.0&&!std::isnan(result.seconds))||
+			Fail(error,"production timestep selection failed");
 	}
 
 	bool EvaluateFireProductionVremanEddyViscosity(

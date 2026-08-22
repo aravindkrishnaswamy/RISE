@@ -2802,6 +2802,77 @@ namespace RISE
 		result=0.5*(lower+upper);return true;
 	}
 
+	bool FireSimulationMethaneRecord::AcceptedVolumeRatioBySpeciesOrder(
+		const double* massDensities,const std::size_t count,const double sensibleEnergy,
+		const FireStateProducerPrecision producerPrecision,double& result,
+		std::string* error ) const
+	{
+		result=0.0;
+		if(!m_valid||!massDensities||count!=m_thermochemistrySpecies.size()||
+			!std::isfinite(sensibleEnergy)||
+			(producerPrecision!=FireStateProducerPrecision::Binary32&&
+				producerPrecision!=FireStateProducerPrecision::Binary64))
+			return Fail(error,"methane accepted volume-ratio input is invalid");
+		std::vector<double> lowerEnthalpy(count),upperEnthalpy(count);
+		if(!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMinK,
+			lowerEnthalpy.data(),count,error)||
+			!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMaxK,
+				upperEnthalpy.data(),count,error))return false;
+		auto signedEnergy=[&](const double temperature,double& energy){
+			std::vector<double> enthalpy(count);
+			if(!SensibleEnthalpiesBySpeciesOrderJPerKG(temperature,enthalpy.data(),count,
+				error))return false;
+			energy=0.0;
+			for(std::size_t species=0u;species<count;++species){
+				if(!std::isfinite(massDensities[species]))return false;
+				energy+=massDensities[species]*enthalpy[species];
+			}
+			return std::isfinite(energy);
+		};
+		double lowerEnergy=0.0,upperEnergy=0.0;
+		if(!signedEnergy(m_temperatureMinK,lowerEnergy)||
+			!signedEnergy(m_temperatureMaxK,upperEnergy))
+			return Fail(error,"methane accepted volume-ratio energy overflowed");
+		double scale=std::fabs(sensibleEnergy);
+		for(std::size_t species=0u;species<count;++species){
+			scale+=std::fabs(lowerEnthalpy[species]*massDensities[species]);
+			scale+=std::fabs(upperEnthalpy[species]*massDensities[species]);
+		}
+		scale=std::max(1.0,scale);
+		const double epsilon=producerPrecision==FireStateProducerPrecision::Binary32?
+			static_cast<double>(std::numeric_limits<float>::epsilon()):
+			std::numeric_limits<double>::epsilon();
+		const double kappa=producerPrecision==FireStateProducerPrecision::Binary32?
+			m_acceptedStateFeasibilityEnvelope.kappaEpsilon32:
+			m_acceptedStateFeasibilityEnvelope.kappaEpsilon64;
+		const double tolerance=kappa*epsilon*scale;
+		if(!std::isfinite(tolerance)||tolerance<=0.0)
+			return Fail(error,"methane accepted volume-ratio envelope is invalid");
+		double temperature=0.0;
+		if(sensibleEnergy<=lowerEnergy+tolerance)temperature=m_temperatureMinK;
+		else if(sensibleEnergy>=upperEnergy-tolerance)temperature=m_temperatureMaxK;
+		else {
+			double lower=m_temperatureMinK,upper=m_temperatureMaxK;
+			for(unsigned int iteration=0u;iteration<96u;++iteration){
+				const double midpoint=0.5*(lower+upper);double energy=0.0;
+				if(midpoint==lower||midpoint==upper){temperature=midpoint;break;}
+				if(!signedEnergy(midpoint,energy))return Fail(error,
+					"methane accepted volume-ratio inversion overflowed");
+				if(energy<sensibleEnergy)lower=midpoint;else upper=midpoint;
+				temperature=0.5*(lower+upper);
+			}
+		}
+		if(!std::isfinite(temperature)||temperature<=0.0)
+			return Fail(error,"methane accepted volume-ratio temperature is invalid");
+		double molarDensity=0.0;
+		for(std::size_t species=0u;species+1u<count;++species)
+			molarDensity+=std::max(0.0,massDensities[species])/
+				m_thermochemistrySpecies[species].molecularWeightKGPerKMol;
+		result=molarDensity*8314.46261815324*temperature/m_pressurePa;
+		return (std::isfinite(result)&&result>0.0)||
+			Fail(error,"methane accepted volume ratio is invalid");
+	}
+
 	bool FireSimulationMethaneRecord::ResolveRadiativeFraction(
 		const char* caseRecordId,
 		const bool hasCaseOverride,

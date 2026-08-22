@@ -3300,3 +3300,20 @@ it was already tried and refuted here.
   capacity with r60 admissibility; per-step repair mutates ledgers; and an r70
   Picard anomaly pass remains only a budget-triggered follow-up.  Artifact
   `ba03dbda...e5b5f0` is pre-measurement and changes no production behavior.
+- **r144 manifold-predictor stop (2026-08-22):** the r143 selector is
+  implemented and its terminal step-boundary EOS reduction independently
+  reproduces the accepted-state volume ratio without a resident full-grid
+  interstage transfer.  The frozen r142 observation selects represented
+  `dt=1.5892017472651787e-5 s`, `3.5423604574130363x` below the golden CFL
+  step.  The preregistered proportional predictor is falsified at the burning
+  front: realized `G=2.5081625752932935e-3`, `99.02699302058174%` of the old
+  value rather than about `28%`.  The terminal field reaches
+  `2.5081625764804549e-3`, `3.3442167686406066x` the `7.5e-4` allowance.
+  Restoration drains `0.97489008508207653`, but the required fraction remains
+  impossible at `3.3442167670577247`; the derived band is empty.  The normal
+  owner path returns a fully default result, while the exact diagnostic returns
+  `254`.  Five-trial observations are `74.0774 ms` device and `711.1436 ms`
+  wall p95, projecting to `32.37/310.75 h` respectively for tier-10 times 25 s.
+  No long shadow or later calibration stage runs because the first limited
+  step already fails the function-level detector.  Durable evidence is
+  `93409b4d...8ace2b8`; golden bytes remain unchanged.
