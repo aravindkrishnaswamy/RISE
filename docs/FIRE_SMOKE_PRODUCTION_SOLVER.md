@@ -3331,13 +3331,10 @@ residual is `1.4020231210267571e-10`.  Nevertheless its field-max G is exactly
 `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
 `2.5068855498342479e-3`: no reduction, with CFL still `3.3770759518x` the
 `7.5e-4` allowance.  This endpoint projection is not admitted as production
-arithmetic; it is the favorable counterfactual showing that the legal
-fixed-pressure route both meets the certified-domain boundary and cannot drain
-the observed anomaly.  Projection-stage scalar G remains exactly zero, so the
-restoration-anomaly remedy is inapplicable.  The pre-registered decision rule
-therefore stops for an explicit production-ceiling ruling.  Long shadow,
-`B_fp32`, guard supersession, temporal refinement, readmission, source maps,
-and first light remain blocked.
+arithmetic.  Fresh review correctly observes that an out-of-domain high-order
+face alone is a limiter obligation: optimality must yield before declaring the
+shared-alpha interval empty.  r153's capacity conclusion is therefore retired
+by r154, while its field/trace/ledger observations remain historical evidence.
 
 The corrected residency timing remains separately pinned at `66.4652500 ms`
 device and `194.687208 ms` completed wall, for a tier-10 x 25 s projection of
@@ -3346,6 +3343,51 @@ not the requested approximately-70-ms wall target.  Exact r153 evidence is in
 `rendered/fire_production_calibration/r153_fixed_pressure_reconstruction_stop/`
 `fixed_pressure_reconstruction_evidence.v1`; the golden checkpoint is
 unchanged.
+
+### 7.55n Composed low-order manifold capacity (r154)
+
+r154 applies the r59/r123 invariant triage to every temperature-domain face
+obligation.  For sub-cell Courant transport, each component face flux is
+affine in the owning donor's already-derived common alpha.  The diagnostic
+derives the largest binary32 alpha fraction not exceeding the exact
+temperature-domain crossing, rounds it outward toward zero, takes the minimum
+across both faces owned by a cell, and rebuilds all nine flux components with
+that same fraction.  Optimality yields; shared alpha, monotonicity, and the
+conservative energy ledger do not.
+
+That repair discharges high-order obligations only until composition reaches
+the next directional sweep.  At alpha=0, the low-order donor is already the
+composition produced by the preceding conservative sweep.  Compression has
+raised its molar density enough that fixed pressure requires a temperature
+below the r60 fp32 endpoint envelope.  The hard lower-domain census is
+`30,381`, `4,732`, and `130` cell/pass instances at CFL/CFL/2/CFL/4; the
+maximum excursions below `300 K` are `0.3536001376`, `0.1761537076`, and
+`0.08734036903 K`.  All upper-domain counts and excursions are exactly zero.
+Thus the nonempty-alpha argument holds for the first accepted donor, but not
+for the composed low-order state: no alpha in `[0,alpha_max]` can restore the
+certified domain without changing the low-order conservative update, shared
+coupling, or monotonicity.
+
+For comparison only, the diagnostic endpoint-projects those infeasible faces
+and continues the conservative energy ledger.  Lower projections number
+`2,307,844`, `2,326,957`, and `2,356,525`; upper projections are exactly zero.
+The reconstructed field and limiter/energy trace are SHA-bound and distinct
+from production, and the worst relative energy-ledger residual remains
+`1.4020231210267571e-10`.  Yet G remains exactly
+`2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+`2.5068855498342479e-3`, or `3.3770759518x` the CFL allowance.  Projection-
+stage scalar G is still zero, so the restoration-anomaly branch is
+inapplicable.  This exhausts the pre-registered remedies under the preserved
+invariants and reaches the explicit production-ceiling ruling boundary.  No
+endpoint projection is admitted to production; long shadow, `B_fp32`, guard
+supersession, temporal refinement, readmission, source maps, and first light
+remain blocked.
+
+The separate residency timing evidence remains `66.4652500 ms` device and
+`194.687208 ms` completed wall, projecting `29.0438/85.0738 h` device/wall for
+tier-10 x 25 s.  Exact evidence is in
+`rendered/fire_production_calibration/r154_low_order_manifold_capacity_stop/`
+`low_order_manifold_capacity_evidence.v1`; the golden checkpoint is unchanged.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 

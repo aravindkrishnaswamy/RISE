@@ -257,11 +257,17 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionProductionMaximumDifference={{0.0,0.0,0.0}},
 				reconstructionMaximumEnergyLedgerResidual={{0.0,0.0,0.0}},
 				reconstructionMaximumEnergyLedgerRelative={{0.0,0.0,0.0}},
-				reconstructionMaximumEndpointProjection={{0.0,0.0,0.0}},
+				reconstructionMaximumLowerEndpointProjection={{0.0,0.0,0.0}},
+				reconstructionMaximumUpperEndpointProjection={{0.0,0.0,0.0}},
+				reconstructionMaximumLowOrderLowerExcursion={{0.0,0.0,0.0}},
+				reconstructionMaximumLowOrderUpperExcursion={{0.0,0.0,0.0}},
 				deviceMS={{0.0,0.0,0.0}},wallMS={{0.0,0.0,0.0}};
 			std::array<std::string,3> reconstructionFieldDigest,reconstructionTraceDigest,
 				productionFieldDigest;
-			std::array<std::size_t,3> reconstructionEndpointProjectionCount={{0u,0u,0u}};
+			std::array<std::size_t,3> reconstructionLowerEndpointProjectionCount={{0u,0u,0u}},
+				reconstructionUpperEndpointProjectionCount={{0u,0u,0u}},
+				reconstructionLowOrderLowerInfeasibleCount={{0u,0u,0u}},
+				reconstructionLowOrderUpperInfeasibleCount={{0u,0u,0u}};
 			std::array<std::size_t,3> reconstructionCell={{0u,0u,0u}};
 			for(std::size_t level=0u;level<3u;++level){
 				const float representedStep=static_cast<float>(dt/std::pow(2.0,level));
@@ -386,6 +392,123 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 									transported[component*cells+cell];}}
 					RISE::FireProductionRemapResult lineResult;
 					if(!RISE::RemapFireProductionCPU(lineRequest,lineResult,&error))return 225;
+					// The thermochemistry domain is a limiter obligation.  For a fixed
+					// sub-cell donor, every face flux is affine in the already-computed
+					// common alpha, while alpha=0 is the accepted donor/ambient state.
+					// Derive the largest binary32 alpha fraction that keeps the implied
+					// fixed-pressure temperature in [Tmin,Tmax], take the minimum across
+					// both faces owned by a cell, and rebuild every component flux with
+					// that same fraction.
+					std::vector<float> alphaFraction(lines*length,1.0f),
+						boundaryFaceFraction(lines*(length+1u),1.0f);
+					std::vector<unsigned char> lowOrderLowerInfeasible(lines*length,0u),
+						lowOrderUpperInfeasible(lines*length,0u);
+					const bool periodic=lineRequest.lowerBoundary==RISE::FireProductionRemapPeriodic&&
+						lineRequest.upperBoundary==RISE::FireProductionRemapPeriodic;
+					auto donorCoordinate=[&](const std::size_t face,const float velocity,
+						std::size_t& donor,bool& ambientDonor){ambientDonor=false;
+						if(velocity>=0.0f){if(face>0u){donor=face-1u;return true;}
+							if(periodic){donor=length-1u;return true;}
+							ambientDonor=lineRequest.lowerBoundary==
+								RISE::FireProductionRemapPressureOpen;return ambientDonor;}
+						if(face<length){donor=face;return true;}
+						if(periodic){donor=0u;return true;}
+						ambientDonor=lineRequest.upperBoundary==
+							RISE::FireProductionRemapPressureOpen;return ambientDonor;};
+					auto donorValue=[&](const std::size_t component,const std::size_t line,
+						const std::size_t donor,const bool ambientDonor){return ambientDonor?
+						lineRequest.ambientValues[component]:lineRequest.values[
+							(component*lines+line)*length+donor];};
+					const double molarDensityMinimum=fuel.ThermodynamicPressurePa()/
+						(8314.46261815324*fuel.TemperatureMaxK());
+					const double molarDensityMaximum=fuel.ThermodynamicPressurePa()/
+						(8314.46261815324*fuel.TemperatureMinK());
+					const double endpointFactor=fuel.AcceptedStateFeasibilityEnvelope().
+						kappaEpsilon32*std::numeric_limits<float>::epsilon();
+					const double lowerEndpointExterior=fuel.TemperatureMinK()-endpointFactor*
+						std::max(1.0,std::fabs(fuel.TemperatureMinK()));
+					const double upperEndpointExterior=fuel.TemperatureMaxK()+endpointFactor*
+						std::max(1.0,std::fabs(fuel.TemperatureMaxK()));
+					for(std::size_t line=0u;line<lines;++line)for(std::size_t face=0u;
+						face<(periodic?length:length+1u);++face){
+						const std::size_t fluxBase=line*(length+1u)+face;
+						const float velocity=lineRequest.faceVelocityMPerS[fluxBase];
+						if(velocity==0.0f)continue;
+						std::size_t donor=0u;bool ambientDonor=false;
+						if(!donorCoordinate(face,velocity,donor,ambientDonor))continue;
+						const double sweptLength=static_cast<double>(lineRequest.timeStepS)*
+							static_cast<double>(velocity);
+						double donorMolarDensity=0.0,faceMolarFlux=0.0;
+						for(std::size_t species=0u;species<MethaneCarbon;++species){
+							const FireThermochemistrySpecies* record=fuel.FindSpecies(
+								fuel.SpeciesOrder()[species].c_str());if(!record)return 225;
+							donorMolarDensity+=donorValue(species+1u,line,donor,ambientDonor)/
+								record->molecularWeightKGPerKMol;
+							faceMolarFlux+=lineResult.faceFluxes[((species+1u)*lines+line)*
+								(length+1u)+face]/record->molecularWeightKGPerKMol;}
+						const double faceMolarDensity=faceMolarFlux/sweptLength;
+						double fraction=1.0;
+						const double donorTemperature=(fuel.ThermodynamicPressurePa()/
+							8314.46261815324)/donorMolarDensity;
+						if(!ambientDonor&&donorTemperature<lowerEndpointExterior){
+							lowOrderLowerInfeasible[line*length+donor]=1u;
+							reconstructionMaximumLowOrderLowerExcursion[level]=std::max(
+								reconstructionMaximumLowOrderLowerExcursion[level],
+								fuel.TemperatureMinK()-donorTemperature);fraction=0.0;}
+						else if(!ambientDonor&&donorTemperature>upperEndpointExterior){
+							lowOrderUpperInfeasible[line*length+donor]=1u;
+							reconstructionMaximumLowOrderUpperExcursion[level]=std::max(
+								reconstructionMaximumLowOrderUpperExcursion[level],
+								donorTemperature-fuel.TemperatureMaxK());fraction=0.0;}
+						else if(faceMolarDensity>molarDensityMaximum)
+							fraction=(molarDensityMaximum-donorMolarDensity)/
+								(faceMolarDensity-donorMolarDensity);
+						else if(faceMolarDensity<molarDensityMinimum)
+							fraction=(molarDensityMinimum-donorMolarDensity)/
+								(faceMolarDensity-donorMolarDensity);
+						fraction=std::max(0.0,std::min(1.0,fraction));
+						float representedFraction=static_cast<float>(fraction);
+						if(static_cast<double>(representedFraction)>fraction)
+							representedFraction=std::nextafter(representedFraction,0.0f);
+						if(ambientDonor)boundaryFaceFraction[fluxBase]=representedFraction;
+						else alphaFraction[line*length+donor]=std::min(
+							alphaFraction[line*length+donor],representedFraction);
+					}
+					for(const unsigned char value:lowOrderLowerInfeasible)
+						reconstructionLowOrderLowerInfeasibleCount[level]+=value!=0u?1u:0u;
+					for(const unsigned char value:lowOrderUpperInfeasible)
+						reconstructionLowOrderUpperInfeasibleCount[level]+=value!=0u?1u:0u;
+					for(std::size_t line=0u;line<lines;++line)for(std::size_t face=0u;
+						face<(periodic?length:length+1u);++face){
+						const std::size_t fluxBase=line*(length+1u)+face;
+						const float velocity=lineRequest.faceVelocityMPerS[fluxBase];
+						std::size_t donor=0u;bool ambientDonor=false;
+						if(velocity==0.0f||!donorCoordinate(face,velocity,donor,ambientDonor))continue;
+						const float fraction=ambientDonor?boundaryFaceFraction[fluxBase]:
+							alphaFraction[line*length+donor];
+						const float courant=lineRequest.timeStepS*velocity/
+							lineRequest.cellWidthM;
+						for(std::size_t component=0u;component<9u;++component){
+							const std::size_t flux=(component*lines+line)*(length+1u)+face;
+							const float lowOrderFlux=lineRequest.cellWidthM*(courant*
+								donorValue(component,line,donor,ambientDonor));
+							lineResult.faceFluxes[flux]=lowOrderFlux+fraction*
+								(lineResult.faceFluxes[flux]-lowOrderFlux);}
+					}
+					if(periodic)for(std::size_t component=0u;component<9u;++component)
+						for(std::size_t line=0u;line<lines;++line)
+							lineResult.faceFluxes[(component*lines+line)*(length+1u)+length]=
+								lineResult.faceFluxes[(component*lines+line)*(length+1u)];
+					for(std::size_t line=0u;line<lines;++line)for(std::size_t coordinate=0u;
+						coordinate<length;++coordinate){
+						lineResult.sharedLimiterAlpha[line*length+coordinate]*=
+							alphaFraction[line*length+coordinate];
+						for(std::size_t component=0u;component<9u;++component){
+							const std::size_t value=(component*lines+line)*length+coordinate;
+							lineResult.updatedValues[value]=lineRequest.values[value]-
+								(lineResult.faceFluxes[(component*lines+line)*(length+1u)+coordinate+1u]-
+									lineResult.faceFluxes[(component*lines+line)*(length+1u)+coordinate])/
+										lineRequest.cellWidthM;}}
 					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,pass);
 					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,
 						lineResult.sharedLimiterAlpha.size());
@@ -416,17 +539,17 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 								"face=%zu molar_flux=%.17g nt_flux=%.17g temperature=%.17g\n",
 								level,pass,line,face,molarFlux,qFlux,temperature);return 225;}
 						if(temperature<fuel.TemperatureMinK()){
-							reconstructionMaximumEndpointProjection[level]=std::max(
-								reconstructionMaximumEndpointProjection[level],
+							reconstructionMaximumLowerEndpointProjection[level]=std::max(
+								reconstructionMaximumLowerEndpointProjection[level],
 								fuel.TemperatureMinK()-temperature);
 							temperature=fuel.TemperatureMinK();
-							++reconstructionEndpointProjectionCount[level];}
+							++reconstructionLowerEndpointProjectionCount[level];}
 						else if(temperature>fuel.TemperatureMaxK()){
-							reconstructionMaximumEndpointProjection[level]=std::max(
-								reconstructionMaximumEndpointProjection[level],
+							reconstructionMaximumUpperEndpointProjection[level]=std::max(
+								reconstructionMaximumUpperEndpointProjection[level],
 								temperature-fuel.TemperatureMaxK());
 							temperature=fuel.TemperatureMaxK();
-							++reconstructionEndpointProjectionCount[level];}
+							++reconstructionUpperEndpointProjectionCount[level];}
 						std::array<double,MethaneSpeciesCount> enthalpy;
 						if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(temperature,
 							enthalpy.data(),enthalpy.size(),&error))return 225;
@@ -521,8 +644,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"reconstruction_cell=%zu reconstruction_beginning=%.17g "
 				"reconstruction_terminal=%.17g reconstruction_production_max=%.17g "
 				"energy_ledger_residual=%.17g energy_ledger_relative=%.17g "
-				"endpoint_projections=%zu "
-				"maximum_endpoint_projection=%.17g "
+				"lower_endpoint_projections=%zu upper_endpoint_projections=%zu "
+				"maximum_lower_endpoint_projection=%.17g "
+				"maximum_upper_endpoint_projection=%.17g "
+				"low_order_lower_infeasible=%zu low_order_upper_infeasible=%zu "
+				"maximum_low_order_lower_excursion=%.17g "
+				"maximum_low_order_upper_excursion=%.17g "
 				"field_digest=%s production_digest=%s trace_digest=%s "
 				"device_ms=%.17g wall_ms=%.17g\n",level,
 				dt/std::pow(2.0,level),stageGeneration[level][0],stageGeneration[level][1],
@@ -532,8 +659,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionProductionMaximumDifference[level],
 				reconstructionMaximumEnergyLedgerResidual[level],
 				reconstructionMaximumEnergyLedgerRelative[level],
-				reconstructionEndpointProjectionCount[level],
-				reconstructionMaximumEndpointProjection[level],reconstructionFieldDigest[level].c_str(),
+				reconstructionLowerEndpointProjectionCount[level],
+				reconstructionUpperEndpointProjectionCount[level],
+				reconstructionMaximumLowerEndpointProjection[level],
+				reconstructionMaximumUpperEndpointProjection[level],
+				reconstructionLowOrderLowerInfeasibleCount[level],
+				reconstructionLowOrderUpperInfeasibleCount[level],
+				reconstructionMaximumLowOrderLowerExcursion[level],
+				reconstructionMaximumLowOrderUpperExcursion[level],
+				reconstructionFieldDigest[level].c_str(),
 				productionFieldDigest[level].c_str(),
 				reconstructionTraceDigest[level].c_str(),
 				deviceMS[level],wallMS[level]);
@@ -564,18 +698,36 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionMaximumEnergyLedgerRelative[0]==9.1267265857582786e-11&&
 				reconstructionMaximumEnergyLedgerRelative[1]==5.6067095289423908e-11&&
 				reconstructionMaximumEnergyLedgerRelative[2]==1.4020231210267571e-10&&
-				reconstructionEndpointProjectionCount[0]==2307844u&&
-				reconstructionEndpointProjectionCount[1]==2326957u&&
-				reconstructionEndpointProjectionCount[2]==2356525u&&
-				reconstructionMaximumEndpointProjection[0]==0.35360660028368329&&
-				reconstructionMaximumEndpointProjection[1]==0.17614886943493957&&
-				reconstructionMaximumEndpointProjection[2]==0.087340680831175632&&
+				reconstructionLowerEndpointProjectionCount[0]==2307844u&&
+				reconstructionLowerEndpointProjectionCount[1]==2326957u&&
+				reconstructionLowerEndpointProjectionCount[2]==2356525u&&
+				reconstructionUpperEndpointProjectionCount[0]==0u&&
+				reconstructionUpperEndpointProjectionCount[1]==0u&&
+				reconstructionUpperEndpointProjectionCount[2]==0u&&
+				reconstructionMaximumLowerEndpointProjection[0]==0.35360660028368329&&
+				reconstructionMaximumLowerEndpointProjection[1]==0.17614886943493957&&
+				reconstructionMaximumLowerEndpointProjection[2]==0.087340680831175632&&
+				reconstructionMaximumUpperEndpointProjection[0]==0.0&&
+				reconstructionMaximumUpperEndpointProjection[1]==0.0&&
+				reconstructionMaximumUpperEndpointProjection[2]==0.0&&
+				reconstructionLowOrderLowerInfeasibleCount[0]==30381u&&
+				reconstructionLowOrderLowerInfeasibleCount[1]==4732u&&
+				reconstructionLowOrderLowerInfeasibleCount[2]==130u&&
+				reconstructionLowOrderUpperInfeasibleCount[0]==0u&&
+				reconstructionLowOrderUpperInfeasibleCount[1]==0u&&
+				reconstructionLowOrderUpperInfeasibleCount[2]==0u&&
+				reconstructionMaximumLowOrderLowerExcursion[0]==0.3536001375753699&&
+				reconstructionMaximumLowOrderLowerExcursion[1]==0.17615370759477855&&
+				reconstructionMaximumLowOrderLowerExcursion[2]==0.087340369030073362&&
+				reconstructionMaximumLowOrderUpperExcursion[0]==0.0&&
+				reconstructionMaximumLowOrderUpperExcursion[1]==0.0&&
+				reconstructionMaximumLowOrderUpperExcursion[2]==0.0&&
 				reconstructionFieldDigest[0]==
-					"f750477c4aea40fa2e29fc37b636d3b8d9c2e87468d5db34930a611da6ae6991"&&
+					"77ea23b2d9b390dc50ce0f873edc7bea9af62db9def7ae127fd40e7a6169ac04"&&
 				reconstructionFieldDigest[1]==
-					"e3864e286f4c36b64485f6c63afe7eb86cccf759d5d28680f58d38e8010159c4"&&
+					"5ebbbeb2283d1342a4bf957e80f95410d36dd558092b74768a4686446b4cd8d1"&&
 				reconstructionFieldDigest[2]==
-					"991589ceef69145772959651b0eb100d6ce5998a010f346323a22d2d9ed31465"&&
+					"114d116e156abbb1a45d5a96e257f3a8cc0055f4239df09bdc849e6be9c4e553"&&
 				productionFieldDigest[0]==
 					"0d00decc071ff85108435d59f8118a1ab2daba9e2b9f5c8c7cc6a77344383b8c"&&
 				productionFieldDigest[1]==

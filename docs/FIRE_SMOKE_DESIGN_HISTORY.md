@@ -3602,10 +3602,38 @@ it was already tried and refuted here.
   `2.5068855498342479e-3`.  The CFL value is still `3.3770759518x` the
   allowance.  Because physical- and restoration-projection scalar G remain
   exactly zero, the anomaly-aware restoration branch is inapplicable.  The
-  r149 rule therefore reaches the explicit production-ceiling ruling boundary;
-  no endpoint projection is admitted into production and later contract work
-  stays blocked.  The corrected 75/200-ms residency gate observes
+  high-order endpoint is a limiter obligation, so r153's capacity inference is
+  retired by r154.  No endpoint projection was admitted into production.  The
+  corrected 75/200-ms residency gate observes
   `66.4652500/194.687208 ms`; the corresponding `29.0438/85.0738 h` tier-10
   device/wall projections remain binding.  Durable
   evidence is `r153_fixed_pressure_reconstruction_stop/`
   `fixed_pressure_reconstruction_evidence.v1`; golden remains byte-identical.
+- **r154 composed low-order manifold capacity stop (2026-08-23):** the r59/r123
+  invariant triage is now executed rather than assumed.  Each high-order face
+  obligation receives the maximal binary32 common-alpha fraction below its
+  exact temperature-domain crossing, outward-rounded toward zero and shared by
+  all nine flux components; both faces owned by a cell take the minimum.
+  Optimality yields while shared-alpha coupling, monotonicity, and conservative
+  energy accounting remain fixed.
+
+  The composed sweep exposes the actual obstruction: after the first
+  conservative directional update, even alpha=0 uses a donor composition whose
+  molar density requires fixed-pressure temperature outside the r60 endpoint
+  envelope.  Lower-domain low-order counts are `30,381`, `4,732`, and `130` at
+  CFL/CFL/2/CFL/4, with maximum excursions `0.3536001376`, `0.1761537076`, and
+  `0.08734036903 K`; every upper-domain count is exactly zero.  Therefore no
+  common alpha exists without changing the low-order update or a preserved
+  invariant.
+
+  A diagnostic-only favorable endpoint projection produces SHA-bound fields
+  distinct from production and retains the energy ledger to
+  `1.4020231210267571e-10` relative, but G remains exactly
+  `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+  `2.5068855498342479e-3` (`3.3770759518x` the CFL allowance).  Both projection
+  scalar stages remain exactly zero, leaving the anomaly-aware restoration
+  branch inapplicable.  The pre-registered remedies are therefore exhausted
+  under the preserved invariants and the explicit production-ceiling ruling is
+  now required.  No counterfactual arithmetic lands; later contract work stays
+  blocked.  Exact evidence is `r154_low_order_manifold_capacity_stop/`
+  `low_order_manifold_capacity_evidence.v1`; golden remains byte-identical.

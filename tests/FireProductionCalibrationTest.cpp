@@ -831,21 +831,51 @@ int main()
 			std::string::npos&&
 		fixedPressureReconstructionEvidence.find(
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"favorable_endpoint_projected_reduces_G false")!=std::string::npos,
+		"r153 historical endpoint-obligation evidence remains byte-bound");
+	const std::string lowOrderCapacityEvidence=ReadText(
+		"rendered/fire_production_calibration/r154_low_order_manifold_capacity_stop/"
+		"low_order_manifold_capacity_evidence.v1");
+	Check(!lowOrderCapacityEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(lowOrderCapacityEvidence.begin(),
+			lowOrderCapacityEvidence.end()))==
+		"4de73bbd55b406bcc050f3be949f7ca6eabfa522cc393243e09e988be540e02f"&&
+		lowOrderCapacityEvidence.find(
+			"parent_r153_evidence_sha256 dd62f9224853e5756e8d74b64a996a2b6762edccd6bf05af7e46010fd33098ba")!=
+			std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"shared_alpha_domain_cap maximal_binary32_fraction_not_exceeding_exact_temperature_domain_crossing")!=
+			std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"low_order_lower_infeasible_count_level_0 30381")!=std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"low_order_lower_infeasible_count_level_2 130")!=std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"low_order_upper_infeasible_count_all_levels 0")!=std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"maximum_low_order_lower_excursion_K_level_0 0.3536001375753699")!=
+			std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"reconstruction_field_sha256_level_0 77ea23b2d9b390dc50ce0f873edc7bea9af62db9def7ae127fd40e7a6169ac04")!=
+			std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"alpha_zero_nonempty_interval_after_first_pass false")!=std::string::npos&&
+		lowOrderCapacityEvidence.find(
+			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"27ed3004c8b152ae365a14d3300ca41bf21389e04589a7d761ed1678778260e8"&&
+			"8e46164ef0c817ba50860767b94888905299a67cdc5a352b42483f9a1b825d58"&&
 		goldenCompositionFixture.find(
-			"transported[8u*cells+cell]=manifoldNT")!=std::string::npos&&
+			"alphaFraction[line*length+donor]")!=std::string::npos&&
 		goldenCompositionFixture.find(
-			"for(std::size_t component=0u;component<8u;++component)")!=std::string::npos&&
-		goldenCompositionFixture.find(
-			"productionFieldDigest[level]=RISECBOR64::SHA256Hex(productionFieldBytes)")!=
+			"representedFraction=std::nextafter(representedFraction,0.0f)")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
-			"reconstructionMaximumEnergyLedgerRelative[level]=std::max")!=
-			std::string::npos&&
+			"donorTemperature<lowerEndpointExterior")!=std::string::npos&&
 		goldenCompositionFixture.find(
-			"reconstructionEndpointProjectionCount[0]==2307844u")!=std::string::npos&&
+			"reconstructionLowOrderLowerInfeasibleCount[0]==30381u")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
 			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
@@ -855,7 +885,7 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionTransportSource.begin(),productionTransportSource.end()))==
 			"89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056",
-		"r153 binds the corrected fixed-pressure reconstruction and domain stop");
+		"r154 binds the maximal shared-alpha campaign and composed low-order stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
