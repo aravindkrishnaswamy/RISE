@@ -391,15 +391,97 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					if(!RISE::AdvanceFireProductionResidentStepMetal(request,auditedResident,&error)){
 						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
 							"trial=%zu failed: %s\n",mode,trial,error.c_str());return false;}
+					if(auditedResident.representedTimeStepS!=representedAuditedStep||
+						auditedResident.forceSchedule.substepCount!=1u||
+						auditedResident.forceSchedule.substepTimeS!=representedAuditedStep){
+						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
+							"trial=%zu did not execute the represented selected step\n",mode,trial);
+						return false;}
 					if(trial>0u){wall[trial-1u]=std::chrono::duration<double,std::milli>(
 						std::chrono::steady_clock::now()-trialStart).count();
 						device[trial-1u]=auditedResident.deviceElapsedMS;}
 				}
 				return true;
 			};
-			if(!timeSelectedStep("serial",serialWall,serialDevice)||
-				!timeSelectedStep("parallel",auditedWall,auditedDevice)||
+			if(!timeSelectedStep("serial",serialWall,serialDevice))return 225;
+			const RISE::FireProductionResidentStepResult serialResident=auditedResident;
+			if(!timeSelectedStep("parallel",auditedWall,auditedDevice)||
 				!clearAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE"))return 225;
+			auto sameProjectionArithmetic=[](const RISE::FireProductionProjectionResult& left,
+				const RISE::FireProductionProjectionResult& right){return
+				left.maximumPreProjectionResidualPerS==right.maximumPreProjectionResidualPerS&&
+				left.maximumPostProjectionResidualPerS==right.maximumPostProjectionResidualPerS&&
+				left.maximumOpenComplementarityDiscrepancyMPerS==
+					right.maximumOpenComplementarityDiscrepancyMPerS&&
+				left.removedFineRightHandSideMean==right.removedFineRightHandSideMean&&
+				left.executedVCycleCount==right.executedVCycleCount&&
+				left.executedJacobiSweepCount==right.executedJacobiSweepCount&&
+				left.residentUploadStagingCount==right.residentUploadStagingCount&&
+				left.residentInterstageDeviceToHostTransferCount==
+					right.residentInterstageDeviceToHostTransferCount&&
+				left.residentTerminalStagingCount==right.residentTerminalStagingCount&&
+				left.residentCommandCommitCount==right.residentCommandCommitCount&&
+				left.residentProjectionInvocationCount==right.residentProjectionInvocationCount&&
+				left.residentCertifiedWorkingSetBytes==right.residentCertifiedWorkingSetBytes&&
+				left.residentActualMetalAllocationBytes==right.residentActualMetalAllocationBytes&&
+				left.validationPassed==right.validationPassed;};
+			auto sameResidentArithmetic=[&](const RISE::FireProductionResidentStepResult& left,
+				const RISE::FireProductionResidentStepResult& right){return
+				RISE::FireProductionAcceptedManifoldPayloadDigest(left)==
+					RISE::FireProductionAcceptedManifoldPayloadDigest(right)&&
+				left.forceSchedule.substepCount==right.forceSchedule.substepCount&&
+				left.forceSchedule.substepTimeS==right.forceSchedule.substepTimeS&&
+				left.forceSchedule.outwardWork==right.forceSchedule.outwardWork&&
+				left.forceSchedule.representedProductUpper==
+					right.forceSchedule.representedProductUpper&&
+				left.forceDiagnostics.outwardLambdaPerS==right.forceDiagnostics.outwardLambdaPerS&&
+				left.forceDiagnostics.scalarDiagnosticTransferCount==
+					right.forceDiagnostics.scalarDiagnosticTransferCount&&
+				left.forceDiagnostics.substepLoopDeviceToHostTransferCount==
+					right.forceDiagnostics.substepLoopDeviceToHostTransferCount&&
+				left.forceDiagnostics.terminalStagingCount==right.forceDiagnostics.terminalStagingCount&&
+				left.forceDiagnostics.commandCommitCount==right.forceDiagnostics.commandCommitCount&&
+				left.forceDiagnostics.certifiedWorkingSetBytes==
+					right.forceDiagnostics.certifiedWorkingSetBytes&&
+				left.forceDiagnostics.actualMetalAllocationBytes==
+					right.forceDiagnostics.actualMetalAllocationBytes&&
+				left.transportedDual.executedSubmapCount==right.transportedDual.executedSubmapCount&&
+				left.transportedDual.canonicalSeamCopyCount==
+					right.transportedDual.canonicalSeamCopyCount&&
+				left.transportedDual.commandCommitCount==right.transportedDual.commandCommitCount&&
+				left.transportedDual.interstageFullGridTransferCount==
+					right.transportedDual.interstageFullGridTransferCount&&
+				left.transportedDual.actualMetalAllocationBytes==
+					right.transportedDual.actualMetalAllocationBytes&&
+				left.cellSubmapCount==right.cellSubmapCount&&left.dualSubmapCount==right.dualSubmapCount&&
+				left.sourceCommandCommitCount==right.sourceCommandCommitCount&&
+				left.residentProjectionInvocationCount==right.residentProjectionInvocationCount&&
+				left.interstageFullGridTransferCount==right.interstageFullGridTransferCount&&
+				left.terminalStagingCount==right.terminalStagingCount&&
+				left.combinedCertifiedWorkingSetBytes==right.combinedCertifiedWorkingSetBytes&&
+				left.combinedActualMetalAllocationBytes==right.combinedActualMetalAllocationBytes&&
+				left.representedTimeStepS==right.representedTimeStepS&&
+				left.maximumManifoldGeneration==right.maximumManifoldGeneration&&
+				left.maximumAcceptedManifoldDeviation==right.maximumAcceptedManifoldDeviation&&
+				left.manifoldMapCellCount==right.manifoldMapCellCount&&
+				left.manifoldScalarDeviceToHostTransferCount==
+					right.manifoldScalarDeviceToHostTransferCount&&
+				left.manifoldFullGridDeviceToHostTransferCount==
+					right.manifoldFullGridDeviceToHostTransferCount&&
+				left.manifoldStageGeneration==right.manifoldStageGeneration&&
+				left.requiredRestorationDrainFraction==right.requiredRestorationDrainFraction&&
+				left.deliveredRestorationDrainFraction==right.deliveredRestorationDrainFraction&&
+				left.restorationResidualBandPerS==right.restorationResidualBandPerS&&
+				left.manifoldPlateauPassed==right.manifoldPlateauPassed&&
+				left.HasAcceptedManifoldToken()==right.HasAcceptedManifoldToken()&&
+				left.conservativeProducerPrecision==right.conservativeProducerPrecision&&
+				left.acceptedShape.nx==right.acceptedShape.nx&&left.acceptedShape.ny==right.acceptedShape.ny&&
+				left.acceptedShape.nz==right.acceptedShape.nz&&
+				left.acceptedShape.cellWidthM==right.acceptedShape.cellWidthM&&
+				sameProjectionArithmetic(left.physicalProjection,right.physicalProjection)&&
+				sameProjectionArithmetic(left.projection,right.projection);};
+			const bool serialParallelArithmeticIdentical=
+				sameResidentArithmetic(serialResident,auditedResident);
 			std::sort(serialWall.begin(),serialWall.end());
 			std::sort(serialDevice.begin(),serialDevice.end());
 			std::sort(auditedWall.begin(),auditedWall.end());
@@ -472,6 +554,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				std::strcmp(auditedSelection.activeLimit,"advective_CFL")==0&&
 				representedAuditedStep==0.0016462659696117043f&&
 				auditedResident.forceSchedule.substepCount==1u&&
+				auditedResident.representedTimeStepS==representedAuditedStep&&
+				auditedResident.forceSchedule.substepTimeS==representedAuditedStep&&
+				serialParallelArithmeticIdentical&&
 				std::isfinite(serialDevice.back())&&std::isfinite(serialWall.back())&&
 				auditedWall.back()<serialWall.back()&&
 				std::isfinite(auditedDevice.back())&&auditedDevice.back()<=75.0&&

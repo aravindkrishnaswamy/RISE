@@ -3537,16 +3537,24 @@ layouts.  Dispatching those packs through the topology-aware global thread
 pool leaves arithmetic unchanged.  Under the required benchmark policy
 `render_thread_reserve_count 0`, and at the actual selected step with its one
 force substep, the controlled serial-pack p95 is
-`67.077958141453564/198.925375 ms` device/wall and the parallel-pack p95 is
-`66.286208340898156/145.907625 ms`.  This is a `26.652079957119601%` wall
+`66.893458249978721/190.612583 ms` device/wall and the parallel-pack p95 is
+`66.401999909430742/143.78762499999999 ms`.  This is a `24.565512550658841%` wall
 reduction.  At the physical CFL the 25.0324805-s tier-10 stepping work projects
-to `0.27997841669516038 h` device and `0.61628183077182297 h` completed wall.
-The remaining wall/device ratio is `2.2011762122464913`, with
-`79.62141665910184 ms` of host orchestration still attributable to
+to `0.28046749490367212 h` device and `0.60732741539266599 h` completed wall.
+The remaining wall/device ratio is `2.1654110598493972`, with
+`77.385625090569249 ms` of host orchestration still attributable to
 preflight/layout, uploads, command submission/waits, and postprocessing.  The
 `200 ms` gate is a ceiling, not a performance target; no claim that production
 is faster than the oracle in validated practice is made while the thermo stop
 is active.
+
+The timed resident result must report the represented `1.6462659696117043e-3 s`
+step and the one force substep must carry that same represented duration.
+Serial and parallel pack campaigns are accepted only when the complete resident
+payload digest and every non-timing schedule/diagnostic field are identical.
+The legacy `force_all_threads_low_priority` mode routes these nine packs
+serially, because that pool mode deliberately forbids nested `ParallelFor`
+waiting under worker saturation.
 
 The exact audit exits `247` only after binding all velocity values, owning
 faces, projection counts/cycles, transfer counts, and golden SHA.  Malformed

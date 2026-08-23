@@ -22,6 +22,13 @@
 #include <string>
 #include <type_traits>
 
+#if defined(__APPLE__)
+namespace RISE
+{
+	bool FireProductionDualLayoutPackRequiresSerialOwner(bool,bool);
+}
+#endif
+
 namespace
 {
 	int failures=0;
@@ -50,6 +57,13 @@ namespace
 
 int main()
 {
+#if defined(__APPLE__)
+	Check(!RISE::FireProductionDualLayoutPackRequiresSerialOwner(false,false)&&
+		RISE::FireProductionDualLayoutPackRequiresSerialOwner(true,false)&&
+		RISE::FireProductionDualLayoutPackRequiresSerialOwner(false,true)&&
+		RISE::FireProductionDualLayoutPackRequiresSerialOwner(true,true),
+		"dual-layout packing routes around recursive low-priority pool waits");
+#endif
 	Check(std::strlen(RISEFireProductionFP64::SourceManifest::FireProductionAdvectionSource)==64u&&
 		std::strlen(RISEFireProductionFP64::SourceManifest::FireProductionProjectionSource)==64u&&
 		std::strlen(RISEFireProductionFP64::SourceManifest::FireProductionTransportSource)==64u&&
@@ -520,7 +534,7 @@ int main()
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
+		"d503fe4bd8c59f8995c65ec50eddff8788aff5f9d5c9b52072b2cef1d0d4845b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
 		"06ee59fc4cbc0980c1f4349b4bb0acc453ffa4619ec9063bff56886e6a992520"&&
@@ -765,7 +779,7 @@ int main()
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
+			"d503fe4bd8c59f8995c65ec50eddff8788aff5f9d5c9b52072b2cef1d0d4845b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
@@ -881,7 +895,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
+			"d503fe4bd8c59f8995c65ec50eddff8788aff5f9d5c9b52072b2cef1d0d4845b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionSource.begin(),advectionSource.end()))==
 			"389eb83c649375ec8649b372bb1db33bb62785d1b6324c6cc29943d21c2bfa58"&&
@@ -1006,7 +1020,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"c7a7d29c6cf2b27671c3a395cedb46e42b92ad0e67462b8ed0858cf9bdbaa0d4"&&
+			"6bd7380d0da39c46e4842c70ae704005b159b2acddca61de3a15baed46d3668f"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1028,7 +1042,7 @@ int main()
 	Check(!timestepVelocityCeilingEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(timestepVelocityCeilingEvidence.begin(),
 			timestepVelocityCeilingEvidence.end()))==
-		"f43e7684ff529ce5d0d35e785506e77eec1044073011bd119f578b086982b8b9"&&
+		"77b4b3fdcb47768cbdc712a6b1942769e68412382f56b7b4e2efe7a8f0e88e40"&&
 		timestepVelocityCeilingEvidence.find(
 			"accepted_step_implied_velocity_m_per_s 217.37616398903009")!=
 			std::string::npos&&
@@ -1055,6 +1069,12 @@ int main()
 		timestepVelocityCeilingEvidence.find(
 			"audited_selected_force_substep_count 1")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
+			"timed_result_reports_audited_represented_step true")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"serial_parallel_payload_digest_bit_identical true")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"legacy_low_priority_nested_pack_routes_serial true")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
 			"oracle_two_class_zeno_fix_already_landed true")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"normal_restoration_projection_validation false")!=std::string::npos&&
@@ -1064,9 +1084,9 @@ int main()
 			"calibrating_observed_plateau_over_derived_ceiling 3.3770759517686897")!=
 			std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
-			"controlled_serial_wall_p95_ms 198.925375")!=std::string::npos&&
+			"controlled_serial_wall_p95_ms 190.612583")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
-			"corrected_warm_wall_p95_ms 145.907625")!=std::string::npos&&
+			"corrected_warm_wall_p95_ms 143.78762499999999")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"ceiling_verdict thermo_temperature_inversion_domain_finding_stop")!=
 			std::string::npos&&
@@ -1076,10 +1096,10 @@ int main()
 			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
+			"d503fe4bd8c59f8995c65ec50eddff8788aff5f9d5c9b52072b2cef1d0d4845b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"c7a7d29c6cf2b27671c3a395cedb46e42b92ad0e67462b8ed0858cf9bdbaa0d4"&&
+			"6bd7380d0da39c46e4842c70ae704005b159b2acddca61de3a15baed46d3668f"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1098,6 +1118,15 @@ int main()
 			"timeSelectedStep(\"parallel\",auditedWall,auditedDevice)")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
+			"auditedResident.representedTimeStepS!=representedAuditedStep")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"serialParallelArithmeticIdentical")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"FireProductionAcceptedManifoldPayloadDigest(left)")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"FireProductionAcceptedManifoldPayloadDigest(right)")!=std::string::npos&&
+		goldenCompositionFixture.find(
 			"production timestep velocity audit activation is invalid")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1107,6 +1136,10 @@ int main()
 			"measured.residentProjectionInvocationCount==2u")!=std::string::npos&&
 		advectionMetal.find("GlobalThreadPool().ParallelFor(9u")!=std::string::npos&&
 		advectionMetal.find("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE")!=
+			std::string::npos&&
+		advectionMetal.find(
+			"legacyLowPriority=GlobalOptions().ReadBool(")!=std::string::npos&&
+		advectionMetal.find("FireProductionDualLayoutPackRequiresSerialOwner(")!=
 			std::string::npos&&
 		advectionMetal.find(
 			"production timestep velocity audit activation is invalid")!=std::string::npos&&

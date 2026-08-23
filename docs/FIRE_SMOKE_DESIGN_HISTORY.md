@@ -3747,14 +3747,20 @@ it was already tried and refuted here.
   reduction with one scalar and zero full-grid device-to-host transfers.
   Parallelizing the nine independent dual-layout packs on the topology-aware
   global thread pool, under `render_thread_reserve_count 0`, reduces the
-  controlled same-step completed-wall p95 from `198.925375` to
-  `145.907625 ms`; device p95 moves from `67.077958141453564` to
-  `66.286208340898156 ms`.  That is a `26.652079957119601%` wall reduction and
+  controlled same-step completed-wall p95 from `190.612583` to
+  `143.78762499999999 ms`; device p95 moves from `66.893458249978721` to
+  `66.401999909430742 ms`.  That is a `24.565512550658841%` wall reduction and
   projects the audited 25.03248-s tier-10 stepping work to
-  `0.61628183077182297 h` wall (`0.27997841669516038 h` device).  The remaining
-  `79.62141665910184 ms` host residual—preflight/layout, uploads, command
+  `0.60732741539266599 h` wall (`0.28046749490367212 h` device).  The remaining
+  `77.385625090569249 ms` host residual—preflight/layout, uploads, command
   submission/waits, and postprocessing—is named work; the `200 ms` gate is a
   ceiling, not the target.
+  The timed result itself binds the represented selected step and one-substep
+  duration; serial and parallel runs byte-match the complete payload and match
+  every non-timing semantic diagnostic.  Legacy
+  `force_all_threads_low_priority` execution retains a serial packing route so
+  a saturated render pool cannot enter the documented non-stealing nested-pool
+  deadlock.
   The production solver is therefore not claimed faster than the oracle in
   validated practice while the thermo stop remains.  Long shadow, `B_fp32`,
   guard supersession, temporal refinement, readmission, source maps, and first

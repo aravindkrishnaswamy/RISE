@@ -14,6 +14,7 @@
 #include "FireSimulationRecords.h"
 #include "FireProductionTransport.h"
 #include "ThreadPool.h"
+#include "../Interfaces/IOptions.h"
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +27,14 @@
 
 namespace RISE
 {
+	// Internal behavioral seam: production and the calibration RED consume the
+	// same recursion-safety decision without exposing it in the public API.
+	bool FireProductionDualLayoutPackRequiresSerialOwner(
+		const bool auditSerial,const bool legacyLowPriority )
+	{
+		return auditSerial||legacyLowPriority;
+	}
+
 	// Internal test-evidence preflight shared with FireProductionProjectionMac.mm.
 	bool ValidateFireProductionRestorationCycleProbe(
 		unsigned int& cycleCount,bool& enabled,std::string* error );
@@ -1900,7 +1909,13 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				const char* packMode=std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
 				const bool serialPack=audit&&std::strcmp(audit,"1")==0&&packMode&&
 					std::strcmp(packMode,"serial")==0;
-				if( serialPack ) for(unsigned int task=0u;task<9u;++task)packTask(task);
+				// Legacy low-priority workers do not steal while waiting, so nested
+				// ParallelFor is not recursion-safe when a render pool is saturated.
+				const bool legacyLowPriority=GlobalOptions().ReadBool(
+					"force_all_threads_low_priority",false);
+				if( FireProductionDualLayoutPackRequiresSerialOwner(
+					serialPack,legacyLowPriority) )
+					for(unsigned int task=0u;task<9u;++task)packTask(task);
 				else Implementation::GlobalThreadPool().ParallelFor(9u,packTask);
 				for(unsigned int task=0u;task<packSucceeded.size();++task)if(!packSucceeded[task]){
 					if(structuredError)*structuredError=packErrors[task];return false;}
