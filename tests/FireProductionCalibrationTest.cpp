@@ -969,21 +969,41 @@ int main()
 		r60ReconstructionEvidence.find(
 			"reconstruction_validated_pass_cells_level_0 4881360")!=std::string::npos&&
 		r60ReconstructionEvidence.find(
-			"prior_pass_certified_molar_minimum_KMol_per_m3 0.040621989116021835")!=
-			std::string::npos&&
-		r60ReconstructionEvidence.find(
-			"prior_pass_molar_roundoff_error_KMol_per_m3 2.8421709430404815e-14")!=
-			std::string::npos&&
-		r60ReconstructionEvidence.find(
 			"reconstruction_G_over_allowance 3.3770759517686897")!=std::string::npos&&
 		r60ReconstructionEvidence.find(
 			"verdict r60_admissible_reconstruction_remedy_fails_plateau_contract_level_ceiling_or_thermochemistry_ruling_required")!=
+			std::string::npos,
+		"r157 historical pre-round/global-alpha evidence remains byte-bound");
+	const std::string producerRoundedReconstructionEvidence=ReadText(
+		"rendered/fire_production_calibration/r158_producer_rounded_reconstruction_stop/"
+		"producer_rounded_reconstruction_evidence.v1");
+	Check(!producerRoundedReconstructionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(producerRoundedReconstructionEvidence.begin(),
+			producerRoundedReconstructionEvidence.end()))==
+		"67d5660b9b3457a981aea7099cddcdd28a3dc144401b07ce16b6894e86ae8c1b"&&
+		producerRoundedReconstructionEvidence.find(
+			"r157_global_alpha_thermochemistry_inference_retired true")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"r157_pre_round_face_validation_rejected true")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"producer_rounded_face_energy_validated true")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"below_domain_api_diagnostic_load_bearing_for_capacity false")!=
+			std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"global_alpha_thermochemistry_exclusion_claimed false")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"reconstruction_validated_faces_level_0 4926768")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"reconstruction_validated_pass_cells_level_0 4881360")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"reconstruction_G_over_allowance 3.3770759517686897")!=std::string::npos&&
+		producerRoundedReconstructionEvidence.find(
+			"verdict producer_rounded_r60_admissible_reconstruction_fails_plateau_contract_level_ruling_required")!=
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"f6323200cd287b6419baa715aafba38e5bf2b9527ee73eb2d6e42cb220979872"&&
-		goldenCompositionFixture.find("const double gamma128=128.0*epsilon/")!=
-			std::string::npos&&
+			"3ecb485ac2d265b8a665dce17578445ebea0514e6a77c5de6db6f9362b7b08e4"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -992,10 +1012,13 @@ int main()
 		goldenCompositionFixture.find("MANIFOLD_RECONSTRUCTION_PASS_REJECTED")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
+			"faceState[MethaneMassStateDimension]=energyFlux[fluxBase]/sweptLength")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
 			"reconstructionValidatedFaceCount[0]==4926768u")!=std::string::npos&&
 		goldenCompositionFixture.find(
 			"reconstructionValidatedPassCellCount[0]==4881360u")!=std::string::npos,
-		"r157 binds the r60-admissible reconstruction capacity stop");
+		"r158 binds the producer-rounded r60 reconstruction stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

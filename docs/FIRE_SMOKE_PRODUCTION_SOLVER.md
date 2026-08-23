@@ -3416,7 +3416,7 @@ arithmetic is unchanged.  Fresh residency confirmation remains
 
 ### 7.55q r60-admissible reconstruction capacity stop (r157)
 
-Fresh review found that r156 used a valid sufficient-inclusion width in the
+Retired by r158.  Fresh review found that r156 used a valid sufficient-inclusion width in the
 wrong direction: `deltaT > tolerance/Cp_upper` is inconclusive, not exclusion.
 r157 makes no endpoint-exclusion claim and no Cp quotient is load-bearing.
 
@@ -3433,16 +3433,10 @@ of the five pass boundaries is checked with the single Binary32 r60 predicate:
 CFL, CFL/2, and CFL/4.  The conservative ledger, field hashes, and limiter-plus-
 energy trace hashes remain exact-bound.
 
-The exact-manifold branch remains separately fail-closed.  Pass-0 face fluxes
-are affine between the already-rounded low and production-high fluxes.  The
-diagnostic releases the left and right alpha independently over `[0,1]^2`, a
-superset of every shared-alpha/backtracked choice, and subtracts a `gamma_128`
-rounding allowance.  At the bound witness the certified lower molar density is
-`0.040621989116021835 kmol/m3`, still above
-`P/(R*Tmin)=0.040621987915680717 kmol/m3`; the implied
-`299.99999426911722 K` enthalpy lookup must return the exact authoritative
-out-of-domain error.  This proves only the constitutive-domain boundary; it is
-not presented as r60 exclusion.
+The all-low-order shadow retains one local API RED: an executed pass-1 donor at
+`299.99999426911722 K` must return the authoritative out-of-domain error.  It
+documents why the endpoint completion is needed, but is neither a global-alpha
+exclusion nor part of the capacity proof.
 
 The implemented r60-admissible reconstruction yields field-max G of
 `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
@@ -3461,6 +3455,33 @@ The fresh resident timing observation is `66.0780417 ms` device and
 `28.8746/86.2105 h` for tier-10 x 25 s.  Exact evidence is
 `rendered/fire_production_calibration/r157_r60_reconstruction_capacity_stop/`
 `r60_reconstruction_capacity_evidence.v1`; the golden checkpoint is unchanged.
+
+### 7.55r Producer-rounded reconstruction stop (r158)
+
+Fresh review found that r157 still overclaimed a global-alpha obstruction and
+validated pre-round double energy rather than the published Binary32 face
+flux.  The alpha inference is retired completely.  The local below-domain API
+RED remains diagnostic only and contributes nothing to the capacity verdict.
+
+r158 moves the face predicate after `energyFlux=float(fluxEnergy)` and validates
+`energyFlux/sweptLength`, the actual producer-rounded payload.  The exact-`245`
+rerun admits all `4,926,768` nonzero faces and `4,881,360` pass-boundary cells
+per timestep level under r60.  The same shared-alpha, monotone, conservative
+reconstruction then measures G of `2.5328069638265172e-3`,
+`2.5155729299433105e-3`, and `2.5068855498342479e-3` at CFL/CFL/2/CFL/4.
+The CFL value remains `3.3770759518x` the `7.5e-4` allowance.  Field/trace
+hashes and the `1.4020231210e-10` worst relative ledger residual are unchanged.
+
+Physical- and restoration-projection G remain exactly zero, so the anomaly-
+aware branch is not selected.  Under the pre-registered decision rule the
+actual producer-rounded reconstruction remedy has failed the function-level
+plateau gate.  This reaches the contract-level ruling boundary; it does not
+derive or widen a production ceiling.  Production arithmetic remains
+unchanged and the later sequence stays blocked.  Fresh exact-`254` timing is
+`66.0780417 ms` device and `197.288084 ms` wall, projecting
+`28.8746/86.2105 h` for tier-10 x 25 s.  Exact evidence is
+`rendered/fire_production_calibration/r158_producer_rounded_reconstruction_stop/`
+`producer_rounded_reconstruction_evidence.v1`; golden remains unchanged.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 

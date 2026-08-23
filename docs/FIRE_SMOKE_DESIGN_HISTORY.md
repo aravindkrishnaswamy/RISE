@@ -3646,7 +3646,8 @@ it was already tried and refuted here.
   stays blocked.  Exact evidence is
   `r156_coupled_alpha_thermochemistry_stop/coupled_alpha_thermochemistry_evidence.v1`;
   golden remains byte-identical.
-- **r157 r60 reconstruction/capacity stop (2026-08-23):** fresh review rejects
+- **r157 r60 reconstruction/capacity stop (2026-08-23):** retired by r158.
+  Fresh review rejects
   r156's final implication: `tolerance/Cp_upper` is a sufficient inclusion
   width, but exceeding it is inconclusive and cannot prove exclusion.  No Cp
   quotient is load-bearing in r157.
@@ -3660,14 +3661,11 @@ it was already tried and refuted here.
   predicate, independently at each of CFL/CFL/2/CFL/4.  Field and trace hashes
   plus the energy ledger prevent bypass.
 
-  The exact-manifold alternative is separately fail-closed.  An independently
-  released two-face alpha rectangle is a superset of the shared-alpha history;
-  with a `gamma_128` outward arithmetic allowance its certified molar minimum
-  is `0.040621989116021835 kmol/m3`, above
-  `P/(R*Tmin)=0.040621987915680717 kmol/m3`.  The resulting
-  `299.99999426911722 K` lookup is required to fail with the authoritative
-  out-of-domain diagnostic.  This is a thermochemistry-domain observation,
-  not an r60 exclusion claim.
+  The all-low-order shadow also retains a local API RED: its first pass-1
+  `299.99999426911722 K` exact-temperature lookup must fail with the
+  authoritative out-of-domain diagnostic.  This records why the endpoint
+  completion exists, but is explicitly not a global-alpha exclusion and does
+  not support the capacity verdict.
 
   The fully r60-admissible endpoint completion nevertheless leaves field-max G
   at `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
@@ -3681,3 +3679,28 @@ it was already tried and refuted here.
   device/wall, projecting `28.8746/86.2105 h` at tier-10 x 25 s.  Durable
   evidence is `r157_r60_reconstruction_capacity_stop/`
   `r60_reconstruction_capacity_evidence.v1`; golden remains byte-identical.
+- **r158 producer-rounded reconstruction stop (2026-08-23):** fresh review
+  catches two producer-authority defects in r157: its global alpha rectangle
+  omitted Binary32 update rounding and the current face alpha, while its face
+  predicate checked double energy before the float flux was published.  Both
+  claims are retired.  r158 makes no global-alpha exclusion and validates the
+  actual `float` energy-flux payload divided by swept volume.
+
+  The exact-`245` rerun validates `4,926,768` producer-rounded faces and
+  `4,881,360` intermediate pass cells per timestep level under the single
+  Binary32 r60 predicate.  The reconstruction fields, traces, conservative
+  energy ledger, endpoint counts, and G values remain exact: CFL/CFL/2/CFL/4
+  G is `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+  `2.5068855498342479e-3`.  CFL remains `3.3770759518x` the `7.5e-4`
+  allowance.  The local below-domain lookup is retained only as a diagnostic
+  explaining the endpoint completion; it is explicitly not load-bearing.
+
+  Projection-owned G remains exactly zero, so the anomaly-aware branch is
+  inapplicable.  The pre-registered reconstruction remedy has now been
+  executed with producer-rounded admissibility and fails its function-level
+  plateau gate.  The sequence therefore stops at the requested contract-level
+  ruling boundary without deriving or widening a ceiling.  Production remains
+  unchanged; fresh timing is `66.0780417/197.288084 ms`, projecting
+  `28.8746/86.2105 h`.  Durable evidence is
+  `r158_producer_rounded_reconstruction_stop/`
+  `producer_rounded_reconstruction_evidence.v1`; golden remains byte-identical.

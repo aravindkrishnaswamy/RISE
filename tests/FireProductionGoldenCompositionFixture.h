@@ -289,9 +289,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::array<std::string,3> allLowOrderFirstDonorDigest,
 				greedyAtAllLowOrderFirstDonorDigest;
 			std::array<double,3> greedyAtAllLowOrderFirstTemperature={{0.0,0.0,0.0}};
-			std::array<double,3> firstWitnessPriorPassMolarMinimum={{0.0,0.0,0.0}},
-				firstWitnessPriorPassMolarError={{0.0,0.0,0.0}},
-				firstWitnessThermochemistryMolarMaximum={{0.0,0.0,0.0}};
 			std::array<std::size_t,3> allLowOrderMaximumExcursionPass={{5u,5u,5u}},
 				allLowOrderMaximumExcursionLine={{0u,0u,0u}},
 				allLowOrderMaximumExcursionDonor={{0u,0u,0u}},
@@ -356,8 +353,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				}
 				std::vector<float> allLowOrderTransported=transported,
 					allLowOrderEnergy=energy;
-				std::vector<double> firstPassMolarMinimum(cells,
-					std::numeric_limits<double>::infinity()),firstPassMolarError(cells,0.0);
 				std::array<double,MethaneSpeciesCount> lowerEndpointEnthalpy,
 					upperEndpointEnthalpy;
 				if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
@@ -514,13 +509,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						std::size_t donorX=0u,donorY=0u,donorZ=0u;
 						coordinates(axis,line,donor,donorX,donorY,donorZ);
 						const std::size_t donorCell=cellIndex(donorX,donorY,donorZ);
-						const double thermochemistryMolarMaximum=(fuel.ThermodynamicPressurePa()/
-							8314.46261815324)/fuel.TemperatureMinK();
-						const double priorPassCertifiedMolarMinimum=pass==1u?
-							firstPassMolarMinimum[donorCell]-firstPassMolarError[donorCell]:0.0;
-						const bool coupledThermochemistryUnavailable=!ambientDonor&&pass==1u&&
-							donorTemperature<fuel.TemperatureMinK()&&
-							priorPassCertifiedMolarMinimum>thermochemistryMolarMaximum;
+						const bool alphaZeroThermochemistryUnavailable=!ambientDonor&&pass==1u&&
+							donorTemperature<fuel.TemperatureMinK();
 						if(!ambientDonor&&(donorTemperature<fuel.TemperatureMinK()||
 							donorTemperature>fuel.TemperatureMaxK())){
 							++allLowOrderEndpointProjectionCount[level];
@@ -539,15 +529,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 									FireProductionDyadicCalibration::AppendInteger(donorBytes,bits);}
 								allLowOrderMaximumExcursionDigest[level]=
 									RISECBOR64::SHA256Hex(donorBytes);}}
-						if(coupledThermochemistryUnavailable&&
+						if(alphaZeroThermochemistryUnavailable&&
 							allLowOrderFirstPass[level]==5u){
 							allLowOrderFirstPass[level]=pass;allLowOrderFirstLine[level]=line;
 							allLowOrderFirstDonor[level]=donor;
 							allLowOrderFirstCell[level]=donorCell;
-							firstWitnessPriorPassMolarMinimum[level]=priorPassCertifiedMolarMinimum;
-							firstWitnessPriorPassMolarError[level]=firstPassMolarError[donorCell];
-							firstWitnessThermochemistryMolarMaximum[level]=
-								thermochemistryMolarMaximum;
 							std::array<double,MethaneSpeciesCount> unavailableEnthalpy;
 							std::string domainError;
 							if(fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(donorTemperature,
@@ -565,13 +551,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 							allLowOrderFirstDonorDigest[level]=RISECBOR64::SHA256Hex(firstDonorBytes);
 							std::fprintf(stderr,"MANIFOLD_ALL_LOW_ORDER_WITNESS level=%zu pass=%u "
 								"line=%zu donor=%zu cell=%zu temperature=%.17g energy=%.17g "
-								"lower_energy=%.17g tolerance=%.17g certified_molar_min=%.17g "
-								"molar_error=%.17g thermo_molar_max=%.17g domain_rejected=1\n",
+								"lower_energy=%.17g tolerance=%.17g domain_rejected=1\n",
 								level,pass,line,
 								donor,allLowOrderFirstCell[level],donorTemperature,
 								donorState[MethaneMassStateDimension],
-								lowerEnergy,endpointTolerance,priorPassCertifiedMolarMinimum,
-								firstPassMolarError[donorCell],thermochemistryMolarMaximum);}
+								lowerEnergy,endpointTolerance);}
 						std::array<double,MethaneSpeciesCount> donorEnthalpy;
 						if(donorTemperature<=fuel.TemperatureMinK())
 							donorEnthalpy=lowerEndpointEnthalpy;
@@ -651,55 +635,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						const std::size_t donor,const bool ambientDonor){return ambientDonor?
 						lineRequest.ambientValues[component]:lineRequest.values[
 							(component*lines+line)*length+donor];};
-					if(pass==0u)for(std::size_t line=0u;line<lines;++line)
-						for(std::size_t coordinate=0u;coordinate<length;++coordinate){
-							double beginningMolar=0.0,leftLowMolar=0.0,rightLowMolar=0.0,
-								leftHighMolar=0.0,rightHighMolar=0.0;
-							for(std::size_t species=0u;species<MethaneCarbon;++species){
-								const FireThermochemistrySpecies* record=fuel.FindSpecies(
-									fuel.SpeciesOrder()[species].c_str());if(!record)return 225;
-								const double inverseWeight=1.0/record->molecularWeightKGPerKMol;
-								beginningMolar+=lineRequest.values[((species+1u)*lines+line)*
-									length+coordinate]*inverseWeight;
-								for(unsigned int side=0u;side<2u;++side){
-									const std::size_t face=coordinate+side,fluxBase=line*(length+1u)+face;
-									const float velocity=lineRequest.faceVelocityMPerS[fluxBase];
-									std::size_t donor=0u;bool ambientDonor=false;
-									double lowFlux=0.0;
-									if(velocity!=0.0f&&donorCoordinate(face,velocity,donor,ambientDonor)){
-										const float courant=lineRequest.timeStepS*velocity/
-											lineRequest.cellWidthM;
-										lowFlux=lineRequest.cellWidthM*(courant*donorValue(
-											species+1u,line,donor,ambientDonor));}
-									const double highFlux=lineResult.faceFluxes[((species+1u)*lines+line)*
-										(length+1u)+face];
-									if(side==0u){leftLowMolar+=lowFlux*inverseWeight;
-										leftHighMolar+=highFlux*inverseWeight;}
-									else{rightLowMolar+=lowFlux*inverseWeight;
-										rightHighMolar+=highFlux*inverseWeight;}}}
-							const double lowUpdated=beginningMolar-(rightLowMolar-leftLowMolar)/
-								lineRequest.cellWidthM;
-							const double leftCoefficient=(leftHighMolar-leftLowMolar)/
-								lineRequest.cellWidthM,rightCoefficient=-(rightHighMolar-rightLowMolar)/
-								lineRequest.cellWidthM;
-							std::size_t x=0u,y=0u,z=0u;coordinates(axis,line,coordinate,x,y,z);
-							const std::size_t cell=cellIndex(x,y,z);
-							firstPassMolarMinimum[cell]=lowUpdated+
-								std::min(0.0,leftCoefficient)+std::min(0.0,rightCoefficient);
-							// Each face flux is affine between its already-rounded low and
-							// production-high values.  Releasing the two adjacent face alphas
-							// independently over [0,1]^2 is therefore a superset of every
-							// shared-alpha or backtracked choice.  gamma_128 bounds more than
-							// the executed products, sums, differences, and divisions; max(1)
-							// makes the absolute rounding allowance conservative in KMol/m^3.
-							const double epsilon=std::numeric_limits<double>::epsilon();
-							const double gamma128=128.0*epsilon/(1.0-128.0*epsilon);
-							const double arithmeticScale=std::max(1.0,
-								std::fabs(beginningMolar)+std::fabs(leftLowMolar)+
-								std::fabs(rightLowMolar)+std::fabs(leftHighMolar)+
-								std::fabs(rightHighMolar)+std::fabs(lowUpdated)+
-								std::fabs(leftCoefficient)+std::fabs(rightCoefficient));
-							firstPassMolarError[cell]=gamma128*arithmeticScale;}
 					const double molarDensityMinimum=fuel.ThermodynamicPressurePa()/
 						(8314.46261815324*fuel.TemperatureMaxK());
 					const double molarDensityMaximum=fuel.ThermodynamicPressurePa()/
@@ -857,19 +792,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						double fluxEnergy=0.0;for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
 							fluxEnergy+=lineResult.faceFluxes[((species+1u)*lines+line)*
 								(length+1u)+face]*enthalpy[species];
+						energyFlux[fluxBase]=static_cast<float>(fluxEnergy);
 						ConservativeVector faceState{};
 						for(std::size_t component=0u;component<8u;++component)
 							faceState[component]=lineResult.faceFluxes[(component*lines+line)*
 								(length+1u)+face]/sweptLength;
-						faceState[MethaneMassStateDimension]=fluxEnergy/sweptLength;
+						faceState[MethaneMassStateDimension]=energyFlux[fluxBase]/sweptLength;
 						std::string faceError;
 						if(!AcceptedStateAdmissible(faceState,lowerEndpointEnthalpy,
 							upperEndpointEnthalpy,fuel,FireStateProducerPrecision::Binary32,
 							&faceError)){std::fprintf(stderr,"MANIFOLD_RECONSTRUCTION_FACE_REJECTED "
 								"level=%zu pass=%u line=%zu face=%zu temperature=%.17g: %s\n",
 								level,pass,line,face,temperature,faceError.c_str());return 225;}
-						++reconstructionValidatedFaceCount[level];
-						energyFlux[fluxBase]=static_cast<float>(fluxEnergy);}
+						++reconstructionValidatedFaceCount[level];}
 					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,
 						energyFlux.size());
 					for(const float flux:energyFlux){std::uint32_t bits=0u;
@@ -1026,8 +961,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"energy_ledger_relative=%.17g first_outside_pass=%zu "
 				"first_line=%zu first_donor=%zu first_temperature=%.17g first_digest=%s "
 				"greedy_first_temperature=%.17g greedy_first_digest=%s "
-				"prior_pass_certified_molar_minimum=%.17g prior_pass_molar_error=%.17g "
-				"thermo_molar_maximum=%.17g "
 				"max_pass=%zu max_line=%zu max_donor=%zu max_donor_digest=%s greedy_max_pass=%zu "
 				"greedy_max_line=%zu greedy_max_donor=%zu greedy_max_donor_digest=%s "
 				"field_digest=%s\n",
@@ -1041,9 +974,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				allLowOrderFirstTemperature[level],allLowOrderFirstDonorDigest[level].c_str(),
 				greedyAtAllLowOrderFirstTemperature[level],
 				greedyAtAllLowOrderFirstDonorDigest[level].c_str(),
-				firstWitnessPriorPassMolarMinimum[level],
-				firstWitnessPriorPassMolarError[level],
-				firstWitnessThermochemistryMolarMaximum[level],
 				allLowOrderMaximumExcursionPass[level],allLowOrderMaximumExcursionLine[level],
 				allLowOrderMaximumExcursionDonor[level],
 				allLowOrderMaximumExcursionDigest[level].c_str(),
@@ -1090,9 +1020,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					"5a48fa156dedcef3aea0d60c0fdfd0144e6354cdd3ea342cd12200378266659a"&&
 				greedyAtAllLowOrderFirstTemperature[0]==299.99999426911722&&
 				greedyAtAllLowOrderFirstDonorDigest[0]==allLowOrderFirstDonorDigest[0]&&
-				firstWitnessPriorPassMolarMinimum[0]==0.040621989116021835&&
-				firstWitnessPriorPassMolarError[0]==2.8421709430404815e-14&&
-				firstWitnessThermochemistryMolarMaximum[0]==0.040621987915680717&&
 				allLowOrderMaximumExcursionPass[0]==4u&&
 				allLowOrderMaximumExcursionLine[0]==9337u&&
 				allLowOrderMaximumExcursionDonor[0]==28u&&
