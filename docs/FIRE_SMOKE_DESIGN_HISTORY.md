@@ -3614,30 +3614,35 @@ it was already tried and refuted here.
   and its endpoint width used a temperature scale rather than r60's
   composition-dependent energy scale.  Its SHA-bound fields and ledgers remain
   historical diagnostics, not capacity evidence.
-- **r155 globally low-order reconstruction stop (2026-08-23):** an independent
-  shadow now forces every shared face alpha to exactly zero through all five
-  palindrome passes.  Each endpoint ambiguity is derived as
-  `kappa32*epsilon32*AcceptedStateEnergyScale/Cp_lower`; therefore neither a
-  greedy predecessor nor a temperature-unit surrogate enters the proof.
+- **r155 globally low-order reconstruction stop (2026-08-23):** retired by
+  r156.  It removed r154's greedy predecessor but reversed the heat-capacity
+  proof direction: `tolerance/Cp_lower` is a necessary outside bound, not a
+  sufficient inside bound.  Its SHA-bound fields and ledgers remain historical
+  diagnostics only.
+- **r156 coupled-alpha thermochemistry stop (2026-08-23):** the endpoint width
+  is now sufficient, using an independent absolute-polynomial `Cp_upper` over
+  every certified segment.  Maximum widths are
+  `0.06678539755/0.06678528278/0.06678524324 K`; the all-alpha-zero shadow first
+  exceeds them in passes `1/1/3` at CFL/CFL/2/CFL/4.
 
-  The corrected result reverses r154's local obstruction.  Every donor is
-  inside the authoritative r60-derived endpoint width.  Maximum widths are
-  `0.7192921010/0.7172086203/0.7159818945 K`, versus maximum excursions
-  `0.3536001376/0.1761537076/0.08734036903 K`; the outside-envelope census is
-  zero at CFL/CFL/2/CFL/4.  The all-low-order fields and energy ledgers are
-  independently SHA-bound, with worst relative ledger residual
-  `1.4158011510e-10`.
+  The CFL witness is pass 1, line 29, donor 42, cell 3641 at
+  `299.92254298172884 K`.  Greedy and all-zero histories give identical donor
+  bytes (`2ac03ae9...346d3`).  An independent affine interval then releases
+  both adjacent pass-0 face alphas separately across their entire low/high
+  ranges—a superset of the required shared-alpha topology.  Even that superset
+  has minimum molar density `0.040632479709723168 kmol/m3`, above
+  `P/(R*Tmin)=0.040621987915680717 kmol/m3`.  No coupled/backtracked monotone
+  alpha can form the next face state inside the certified thermochemistry
+  domain.
 
-  The legal remedy nevertheless falsifies the function requirement:
-  `G = 2.5328069638265172e-3 / 2.5155729299433105e-3 /
-  2.5068855498342479e-3`, exactly the independent baseline at all three step
-  sizes and `3.3770759518x` the CFL allowance.  Optimality has yielded as far
-  as possible; shared alpha, monotonicity, and conservation remain intact.
-  Projection-owned G is still exactly zero, so the anomaly-aware restoration
-  branch does not apply.  The automatic decision rule therefore reaches the
-  explicit production-ceiling ruling boundary.  No counterfactual code lands
-  and all later contract milestones remain blocked.  Fresh residency
-  confirmation is `65.8577918/195.833166 ms` device/wall, or
-  `28.7784/85.5747 h` for tier-10 x 25 s.  Exact evidence is
-  `r155_all_low_order_reconstruction_stop/all_low_order_reconstruction_evidence.v1`;
+  A favorable endpoint-projected diagnostic continues the all-low-order
+  ledger, but is not admitted.  It leaves G exactly
+  `2.5328069638265172e-3/2.5155729299433105e-3/2.5068855498342479e-3`, still
+  `3.3770759518x` the CFL allowance.  Both projection-owned G terms are zero,
+  so the anomaly-aware branch is inapplicable.  The invariant-preserving
+  reconstruction resists the coupled route and its favorable relaxation still
+  fails the plateau; the pre-registered production ceiling/thermochemistry
+  contract boundary is reached.  Production remains unchanged and later work
+  stays blocked.  Exact evidence is
+  `r156_coupled_alpha_thermochemistry_stop/coupled_alpha_thermochemistry_evidence.v1`;
   golden remains byte-identical.

@@ -917,18 +917,53 @@ int main()
 			"all_low_order_G_over_allowance 3.3770759517686897")!=std::string::npos&&
 		allLowOrderEvidence.find(
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
+		allLowOrderEvidence.find(
+			"golden_fixture_sha256 00fe09d2d1687e83aa34f263f7e5449ca00fbe5de27d98ecec650a46613a27d2")!=
+			std::string::npos,
+		"r155 historical Cp-lower campaign remains byte-bound");
+	const std::string coupledAlphaEvidence=ReadText(
+		"rendered/fire_production_calibration/r156_coupled_alpha_thermochemistry_stop/"
+		"coupled_alpha_thermochemistry_evidence.v1");
+	Check(!coupledAlphaEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(coupledAlphaEvidence.begin(),
+			coupledAlphaEvidence.end()))==
+		"f894abb9ed0f350b65c86bdfeb1a90762d6b1c89e4d7f56bdf09f8dbec3a8999"&&
+		coupledAlphaEvidence.find(
+			"parent_r155_evidence_sha256 e5a2aa56970e1c94137649ade05dcf3f33eff682c442edb12e9c3f8a9d471ea7")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find("endpoint_inside_proof sufficient_Cp_upper")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find("first_outside_pass_level_0 1")!=std::string::npos&&
+		coupledAlphaEvidence.find("first_witness_level_0_line 29")!=std::string::npos&&
+		coupledAlphaEvidence.find(
+			"first_witness_level_0_all_zero_donor_sha256 2ac03ae9d4937f86861cc0a5e8c5620c6a166dd189c7a3f35d6d266fcc0346d3")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find(
+			"first_witness_level_0_prior_pass_molar_minimum_KMol_per_m3 0.040632479709723168")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find(
+			"first_witness_level_0_thermochemistry_molar_maximum_KMol_per_m3 0.040621987915680717")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find("first_witness_level_0_coupled_alpha_feasible false")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find(
+			"endpoint_projected_counterfactual_G_over_allowance 3.3770759517686897")!=
+			std::string::npos&&
+		coupledAlphaEvidence.find("endpoint_projected_counterfactual_admitted false")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"00fe09d2d1687e83aa34f263f7e5449ca00fbe5de27d98ecec650a46613a27d2"&&
-		goldenCompositionFixture.find("allLowOrderTransported=transported")!=
-			std::string::npos&&
-		goldenCompositionFixture.find("AcceptedStateEnergyScale(")!=std::string::npos&&
-		goldenCompositionFixture.find("MixtureCertifiedCpLowerJPerM3K(")!=
+			"b2dd402258f1814bd165fcddfd8f4e811fa8b7d75325af7c6d768c0ff3bab1ff"&&
+		goldenCompositionFixture.find("absolutePolynomial=std::fabs(")!=std::string::npos&&
+		goldenCompositionFixture.find("firstPassMolarMinimum[cellIndex(x,y,z)]")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
-			"allLowOrderMaximumEnergyLedgerRelative[2]==1.4158011510440571e-10")!=
+			"firstWitnessPriorPassMolarMinimum[0]==0.040632479709723168")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"greedyAtAllLowOrderFirstDonorDigest[0]==allLowOrderFirstDonorDigest[0]")!=
 			std::string::npos,
-		"r155 binds the globally feasible all-low-order reconstruction stop");
+		"r156 binds the coupled-alpha thermochemistry obstruction");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
