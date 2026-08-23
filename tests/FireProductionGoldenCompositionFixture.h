@@ -1878,16 +1878,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			constexpr double LowMachValidityCeiling=0x1p-5;
 			const double fieldMaximum=production.maximumAcceptedManifoldDeviation;
 			if(!production.manifoldPlateauPassed){
+				const bool acceptedTokenMinted=production.HasAcceptedManifoldToken();
 				std::fprintf(stderr,"GOLDEN_LONG_SHADOW_REFUSAL step=%zu dt=%.17g G=%.17g "
 					"field_max=%.17g low_mach_ceiling=%.17g delivered_drain=%.17g "
-					"pre_residual=%.17g post_residual=%.17g golden=%s\n",slice,
+					"pre_residual=%.17g post_residual=%.17g accepted_token=%d golden=%s\n",slice,
 					static_cast<double>(production.representedTimeStepS),
 					production.maximumManifoldGeneration,fieldMaximum,
 					LowMachValidityCeiling,production.deliveredRestorationDrainFraction,
 					static_cast<double>(production.projection.maximumPreProjectionResidualPerS),
 					static_cast<double>(production.projection.maximumPostProjectionResidualPerS),
+					acceptedTokenMinted?1:0,
 					DigestFile(checkpointPath).c_str());
-				return fieldMaximum>LowMachValidityCeiling&&
+				return fieldMaximum>LowMachValidityCeiling&&!acceptedTokenMinted&&
 					DigestFile(checkpointPath)==checkpointDigest?252:250;
 			}
 			if(!production.manifoldPlateauPassed||!production.HasAcceptedManifoldToken()||
@@ -2108,19 +2110,31 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				values.begin()+first+LongShadowWindow);
 			const double terminal=*std::max_element(values.begin()+first+LongShadowWindow,
 				values.end());
+			double terminalTrend=0.0;
+			for(std::size_t offset=0u;offset<LongShadowWindow/2u;++offset){
+				const double weight=static_cast<double>(LongShadowWindow-1u-2u*offset);
+				terminalTrend+=weight*(values[values.size()-1u-offset]-
+					values[values.size()-LongShadowWindow+offset]);
+			}
 			return std::isfinite(prior)&&std::isfinite(terminal)&&terminal<=prior&&
-				terminal<=0x1p-5;
+				std::isfinite(terminalTrend)&&terminalTrend<=0.0&&terminal<=0x1p-5;
 		};
-		std::vector<double> secularRED(LongShadowSteps,0.0),flatGREEN(LongShadowSteps,0.0025);
+		std::vector<double> secularRED(LongShadowSteps,0.0),
+			maskedSecularRED(LongShadowSteps,0.01),flatGREEN(LongShadowSteps,0.0025);
 		for(std::size_t step=0u;step<LongShadowSteps;++step)
 			secularRED[step]=0.001+1.0e-6*static_cast<double>(step);
+		const std::size_t redFirst=LongShadowSteps-2u*LongShadowWindow;
+		maskedSecularRED[redFirst]=0.03;
+		for(std::size_t step=0u;step<LongShadowWindow;++step)
+			maskedSecularRED[LongShadowSteps-LongShadowWindow+step]=
+				0.01+0.0003*static_cast<double>(step);
 		const std::size_t first=longShadowFieldMaximum.size()-2u*LongShadowWindow;
 		const double priorMaximum=*std::max_element(longShadowFieldMaximum.begin()+first,
 			longShadowFieldMaximum.begin()+first+LongShadowWindow);
 		const double terminalMaximum=*std::max_element(
 			longShadowFieldMaximum.begin()+first+LongShadowWindow,longShadowFieldMaximum.end());
 		const bool passed=nonsecular(longShadowFieldMaximum)&&nonsecular(flatGREEN)&&
-			!nonsecular(secularRED);
+			!nonsecular(secularRED)&&!nonsecular(maskedSecularRED);
 		std::fprintf(stderr,"GOLDEN_LONG_SHADOW steps=%zu dt=%.17g prior32_max=%.17g "
 			"terminal32_max=%.17g final=%.17g low_mach_ceiling=%.17g nonsecular=%d "
 			"trace=%s final_state=%s\n",longShadowFieldMaximum.size(),

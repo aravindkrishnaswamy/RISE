@@ -687,6 +687,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	if [ "$long_shadow_malformed_rc" -eq 249 ] && [ "$long_shadow_rc" -eq 252 ] &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.085895776748657227' "$long_shadow_log" &&
 		grep -Fq 'field_max=0.085895776748657227 low_mach_ceiling=0.03125' "$long_shadow_log" &&
+		grep -Fq 'accepted_token=0' "$long_shadow_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$long_shadow_log"; then
 		echo 'PASS (exact exit=252, low-Mach refusal)'
 		rm -f "$long_shadow_log" "$long_shadow_malformed_log"

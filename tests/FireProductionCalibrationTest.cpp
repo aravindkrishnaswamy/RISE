@@ -528,6 +528,10 @@ int main()
 	tokenEligibility.physicalProjection.validationPassed=false;
 	const bool physicalValidationMissCannotMint=
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
+	tokenEligibility.physicalProjection.validationPassed=true;
+	tokenEligibility.manifoldPlateauPassed=false;
+	const bool plateauMissCannotMint=
+		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
 		"f4ae4d1416dd9d478c6b2eb1170de211b9e09f48a17ad842baae9c89a10eefc4"&&
@@ -596,7 +600,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"ff5436ed984e25838e74d46585a03a951ad5fe464fa7ac4e0ab28a06c6883719"&&
+		"86e5d63b884cf3964f99a043e6fcbd637866857e6ee1266ef1b31bfadc889469"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -682,7 +686,7 @@ int main()
 			std::string::npos&&
 		traceForceHeader.find("PublishFireProductionAcceptedManifoldObservation")==
 			std::string::npos&&
-		eligibleTokenState&&physicalValidationMissCannotMint&&
+		eligibleTokenState&&physicalValidationMissCannotMint&&plateauMissCannotMint&&
 		!std::is_aggregate<RISE::FireProductionAcceptedManifoldObservation>::value&&
 		std::is_final<RISE::FireProductionCheckpointManifoldAccess>::value&&
 		!std::is_default_constructible<RISE::FireProductionCheckpointManifoldAccess>::value&&
@@ -1022,7 +1026,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"acabc599e949aa462227911ccc6aa340b48d9763051f0a329c0ff8f93813f7f5"&&
+			"4de203bf35e81de20999d9141881c2ed4e6690b5d7207fe241ef49c7bc614316"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1104,7 +1108,7 @@ int main()
 			"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"acabc599e949aa462227911ccc6aa340b48d9763051f0a329c0ff8f93813f7f5"&&
+			"4de203bf35e81de20999d9141881c2ed4e6690b5d7207fe241ef49c7bc614316"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1170,7 +1174,7 @@ int main()
 	Check(!lowMachRefusalEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(lowMachRefusalEvidence.begin(),
 			lowMachRefusalEvidence.end()))==
-		"536f105a1ef883568666b7f233df12aad960cbde2516324d0b7eb07dd1553fb0"&&
+		"48f02d7e982e557a43363eb96d939db2e68edaea980f21565675c6b0d12ade5d"&&
 		lowMachRefusalEvidence.find(
 			"production_pressure_deviation_domain_limit absent")!=std::string::npos&&
 		lowMachRefusalEvidence.find(
@@ -1183,6 +1187,8 @@ int main()
 		lowMachRefusalEvidence.find("accepted_state_token_minted false")!=
 			std::string::npos&&
 		lowMachRefusalEvidence.find("long_shadow_started false")!=std::string::npos&&
+		lowMachRefusalEvidence.find(
+			"outlier_masked_secular_trend_RED true")!=std::string::npos&&
 		lowMachRefusalEvidence.find(
 			"subdominance_floor_readmission_risk pre_registered")!=std::string::npos&&
 		lowMachRefusalEvidence.find(
@@ -1201,13 +1207,13 @@ int main()
 			"2b37a97ff8490507dcd86cf60219c5fa2db272107c40349c948aa1a49cd433c5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"acabc599e949aa462227911ccc6aa340b48d9763051f0a329c0ff8f93813f7f5"&&
+			"4de203bf35e81de20999d9141881c2ed4e6690b5d7207fe241ef49c7bc614316"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionTestSource.begin(),projectionTestSource.end()))==
 			"352691d51ba6486cb846b4f9154079f43d47e7e61f6b17893788f8182c95bed2"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"ff5436ed984e25838e74d46585a03a951ad5fe464fa7ac4e0ab28a06c6883719"&&
+			"86e5d63b884cf3964f99a043e6fcbd637866857e6ee1266ef1b31bfadc889469"&&
 		fireSimulatorCore.find("equationOfStateResidual > 1.0e-3")!=
 			std::string::npos&&
 		CountText(forceSource,"1e-3")==1u&&
