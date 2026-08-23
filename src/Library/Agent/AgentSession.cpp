@@ -4453,6 +4453,150 @@ namespace RISE
 					field += notice;
 				}
 			};
+
+			//! Forward declaration: ScaffoldChunkLabel_ is DEFINED further
+			//! down this file (ReplaceGeometryScaffold's own bare display-
+			//! label helper -- "keyword/name", falling back to the bare
+			//! keyword when the chunk has no name), but the orphan-pressure
+			//! detection just below needs it too and is the earlier of the
+			//! two in this file.  Same reopened-anonymous-namespace rule as
+			//! AttachParamEditRejectionIssues's forward declaration above.
+			std::string ScaffoldChunkLabel_( const RISE::Cst::Document& doc, RISE::Cst::NodeId id );
+
+			//! Doc 90 R3 (2026-08-23): orphan-pressure detection for a
+			//! Reference-kind propose_patch/propose_patches rebind -- the
+			//! mechanism doc 90 §1 measured firing SEVENTEEN times unreported
+			//! in one session (every "fix" was a bare `geometry` rebind
+			//! through propose_patch, never through replace_geometry_scaffold,
+			//! so ITS orphan report never fired).  Shares
+			//! ReplaceGeometryScaffold's message SHAPE (AppendOrphanSentence_,
+			//! just below) but NOT its removal mechanic: propose_patch never
+			//! deletes anything, so the only question here is whether the
+			//! param's OLD target is left with ZERO referrers by this ONE
+			//! edit.
+			//!
+			//! Detection walks the SAME BuildReferenceGraph machinery every
+			//! other reference-aware diagnostic in this file uses
+			//! (AnalyzeRejectedParamEdit, ReplaceGeometryScaffold's own
+			//! orphan policy) -- never a hand-rolled name resolution that
+			//! could disagree with the engine's own resolver:
+			//!   1. Resolve (target,kind)'s chunk and the PARAM's own NodeId
+			//!      in `preDoc` (the document immediately BEFORE this edit).
+			//!   2. Look up that param NodeId's resolved edge in preDoc's
+			//!      reference graph -- its `targetNodeId` IS the old target,
+			//!      exactly as the engine derived it (no re-resolution of the
+			//!      value string ourselves).
+			//!   3. In `postDoc` (the document AFTER the successful commit),
+			//!      ask the SAME graph machinery who still points at that
+			//!      NodeId.  A value edit preserves NodeIds (ReferenceGraph's
+			//!      own doc), so the old target's id is still valid to look
+			//!      up post-edit.  Empty/missing dependents -> this edit left
+			//!      it with no referrers.
+			//!
+			//! This is ALSO exactly "caused BY this rebind, not already
+			//! orphaned" for free: `oldTargetId` only exists because THIS
+			//! (chunkId,param) edge resolved to it pre-edit, so if it had a
+			//! SECOND referrer, that referrer's own edge is untouched by this
+			//! patch (which can only move the one edge it targets) and still
+			//! shows up in postDoc's dependents -- silence, correctly.
+			//!
+			//! Silent (empty return) whenever: the target doesn't resolve,
+			//! `param` is not declared or not Reference-kind (derived from
+			//! the DESCRIPTOR via ValueKind::Reference, never a hand list of
+			//! `geometry`/`material`/... names), the param was unset pre-edit
+			//! (nothing to orphan), the old target still has a referrer post-
+			//! edit, or the old target is unnamed (not addressable by
+			//! remove_chunks -- same exclusion ReplaceGeometryScaffold's
+			//! reportedOrphans applies).
+			std::string DetectRebindOrphanLabel_( const RISE::Cst::Document& preDoc,
+			                                      const RISE::Cst::Document& postDoc,
+			                                      const std::string& target, const std::string& kind,
+			                                      const std::string& param )
+			{
+				const bool uniqueFallback = ( kind == "camera" );
+				const RISE::Cst::NodeId chunkId =
+					RISE::Cst::DocFindByNameAnyRole( preDoc, target, nullptr, kind, uniqueFallback );
+				if( chunkId == 0 ) return std::string();
+
+				const RISE::Cst::NodeRef chunkItem = RISE::Cst::DocResolveNodeId( preDoc, chunkId );
+				if( !chunkItem ) return std::string();
+				const ChunkDescriptor* desc = DescriptorForKeyword( String( chunkItem->role.c_str() ) );
+				if( !desc ) return std::string();
+				const ParameterDescriptor* pd = FindParam( *desc, param );
+				if( !pd || pd->kind != ValueKind::Reference ) return std::string();
+
+				const RISE::Cst::NodeId paramId = RISE::Cst::DocParamId( preDoc, chunkId, param, /*occ*/0 );
+				if( paramId == 0 ) return std::string();   // unset pre-edit (this patch ADDS it) -- nothing to orphan
+
+				const RISE::Cst::ReferenceGraph preGraph = RISE::Cst::BuildReferenceGraph( preDoc, nullptr, nullptr );
+				RISE::Cst::NodeId oldTargetId = 0;
+				for( const RISE::Cst::ReferenceUse& e : preGraph.edges ) {
+					if( e.sourceValueNodeId == paramId ) { oldTargetId = e.targetNodeId; break; }
+				}
+				if( oldTargetId == 0 ) return std::string();   // pre-edit value was "none"/unresolved/numeric
+
+				const RISE::Cst::ReferenceGraph postGraph = RISE::Cst::BuildReferenceGraph( postDoc, nullptr, nullptr );
+				const std::map<RISE::Cst::NodeId, std::set<RISE::Cst::NodeId> >::const_iterator dep =
+					postGraph.dependents.find( oldTargetId );
+				if( dep != postGraph.dependents.end() && !dep->second.empty() ) return std::string();   // still referenced
+
+				const RISE::Cst::NodeRef oldItem = RISE::Cst::DocResolveNodeId( postDoc, oldTargetId );
+				if( !oldItem ) return std::string();   // defensive only -- propose_patch never erases chunks
+				const std::string lbl = ScaffoldChunkLabel_( postDoc, oldTargetId );
+				if( lbl.empty() || lbl == oldItem->role ) return std::string();   // unnamed -> not addressable by remove_chunks
+				return oldItem->role + "/" + lbl;
+			}
+
+			//! Shared formatter for the "Now unreferenced and NOT removed"
+			//! sentence -- ReplaceGeometryScaffold (its ORIGINAL site, further
+			//! down this file) and propose_patch/propose_patches (this doc's
+			//! new site) both append the IDENTICAL shape, differing only in
+			//! the parenthetical explaining why THIS verb didn't also remove
+			//! the newly-orphaned chunk(s).  Pulled out to ONE formatter so
+			//! the two sites cannot drift in wording.
+			std::string ComposeOrphanSentence_( const std::vector<std::string>& orphans,
+			                                    const std::string& verbClause )
+			{
+				if( orphans.empty() ) return std::string();
+				std::string m = " Now unreferenced and NOT removed (" + verbClause + "): ";
+				for( std::size_t i = 0; i < orphans.size(); ++i ) {
+					if( i ) m += ", ";
+					m += "`" + orphans[i] + "`";
+				}
+				m += " -- pass them to remove_chunks if you want them gone.";
+				return m;
+			}
+			void AppendOrphanSentence_( std::string& m, const std::vector<std::string>& orphans,
+			                            const std::string& verbClause )
+			{
+				m += ComposeOrphanSentence_( orphans, verbClause );
+			}
+
+			//! Doc 90 R3: the ONE parenthetical propose_patch/propose_patches
+			//! use with ComposeOrphanSentence_/AppendOrphanSentence_ -- named
+			//! once so the wording literally cannot drift between ProposePatch's
+			//! two commit paths (LIVE/controller and headless) and
+			//! ProposePatches's batch aggregation.
+			const char* const kProposePatchOrphanVerbClause =
+				"propose_patch changes bindings only, never removes chunks";
+
+			//! Doc 90 R3: run DetectRebindOrphanLabel_ for a clean propose_
+			//! patch apply and, if it fired, record + report it -- the ONE
+			//! call site both of ProposePatch's commit paths (LIVE/controller
+			//! and headless) use, so the detection and the message wording
+			//! cannot drift between them.  No-op (silent) unless `r.applied`
+			//! -- orphan pressure is only meaningful on a clean apply, never
+			//! on a reject/conflict/diagnosed/staged outcome.
+			void ApplyOrphanPressureCheck_( AgentPatchResult& r, const RISE::Cst::Document& preDoc,
+			                                const RISE::Cst::Document& postDoc, const std::string& target,
+			                                const std::string& kind, const std::string& param )
+			{
+				if( !r.applied ) return;
+				const std::string orphan = DetectRebindOrphanLabel_( preDoc, postDoc, target, kind, param );
+				if( orphan.empty() ) return;
+				r.reportedOrphans.push_back( orphan );
+				AppendOrphanSentence_( r.message, r.reportedOrphans, kProposePatchOrphanVerbClause );
+			}
 		}
 
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
@@ -4877,6 +5021,24 @@ namespace RISE
 			// direct-Job behaviour.
 			if( mController )
 			{
+				// Doc 90 R3: snapshot the PRE-EDIT document, parsed, so a
+				// successful Reference-kind rebind below can run the orphan-
+				// pressure check against the state immediately BEFORE this
+				// commit (DetectRebindOrphanLabel_'s doc).  Same cost class
+				// as the ReadDocumentSnapshot() calls the E1/R1c gates above
+				// already pay per patch; failing to capture it (no document,
+				// or a read that races a concurrent commit) just SKIPS the
+				// check below -- a silent false negative, never a false
+				// orphan report.
+				bool                 haveOrphanPreDoc = false;
+				RISE::Cst::Document  orphanPreDoc;
+				{
+					const AgentDocumentSnapshot preSnap = ReadDocumentSnapshot();
+					if( preSnap.hasDocument ) {
+						orphanPreDoc     = RISE::Cst::ParseToCst( preSnap.document );
+						haveOrphanPreDoc = true;
+					}
+				}
 				const RISE::Cst::CstHeadVersion* basePtr =
 					patch.hasBaseVersion ? &patch.baseVersion : nullptr;
 				const SceneEditController::AgentCommitResult cr =
@@ -4911,6 +5073,15 @@ namespace RISE
 				if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
 					AttachParamEditRejectionIssues( r, headDoc,
 					                                patch.target, patch.kind, patch.param, patch.value );
+				// Doc 90 R3: orphan-pressure check, LIVE path -- ONLY on a
+				// clean apply, and only when the pre-edit snapshot above
+				// actually landed.  `headDoc` here is the POST-COMMIT
+				// document (re-read fresh under the controller's lock at
+				// `r.headVersion`, the SAME pattern InsertChunk's LIVE branch
+				// uses for its own post-commit warning scan).
+				else if( r.applied && haveOrphanPreDoc && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					ApplyOrphanPressureCheck_( r, orphanPreDoc, headDoc,
+					                          patch.target, patch.kind, patch.param );
 				return r;
 			}
 
@@ -4990,6 +5161,15 @@ namespace RISE
 			// re-derive: the Job owns that (see Job.cpp
 			// DeriveEditedCstDocument_).  `occ = 0` = the first (typically
 			// only) occurrence of the param on that entity.
+			//
+			// Doc 90 R3: snapshot the PRE-EDIT document (a cheap pointer copy
+			// of the retained, COW Document -- no serialize/reparse the way
+			// the LIVE/controller path needs) so a successful Reference-kind
+			// rebind below can run the orphan-pressure check against the
+			// state immediately BEFORE this call.  `mJob->GetCstDocument()`
+			// is guaranteed non-null here (the guard just above this block
+			// refused already if HasRetainedCstDocument() were false).
+			const RISE::Cst::Document orphanPreDoc = *mJob->GetCstDocument();
 			const int code = mJob->ApplyCstParamEditChecked(
 				patch.target.c_str(),
 				patch.kind.empty() ? nullptr : patch.kind.c_str(),
@@ -5051,6 +5231,15 @@ namespace RISE
 			if( code == 0 && mJob->GetCstDocument() )
 				AttachParamEditRejectionIssues( r, *mJob->GetCstDocument(),
 				                                patch.target, patch.kind, patch.param, patch.value );
+			// Doc 90 R3: orphan-pressure check, headless path -- ONLY on a
+			// clean apply (ApplyOrphanPressureCheck_ itself no-ops otherwise).
+			// `postDoc` is the JUST-MUTATED retained Document; NodeIds a value
+			// edit didn't touch (everything but this one param) are preserved
+			// across the mutation, so `orphanPreDoc`'s resolved old-target id
+			// is still valid to look up in it (DetectRebindOrphanLabel_'s doc).
+			else if( r.applied && mJob->GetCstDocument() )
+				ApplyOrphanPressureCheck_( r, orphanPreDoc, *mJob->GetCstDocument(),
+				                          patch.target, patch.kind, patch.param );
 			return r;
 		}
 
@@ -6223,6 +6412,17 @@ namespace RISE
 
 			out.reserve( patches.size() );
 
+			// Doc 90 R3: the WHOLE-CALL orphan aggregate -- see ProposePatches's
+			// header doc.  Every element's own ProposePatch call already
+			// appends its OWN per-element sentence to its own `.message`
+			// (single-call behaviour); this loop folds each element's
+			// `reportedOrphans` into ONE ordered, de-duplicated list and, once
+			// the whole batch is done, STRIPS every per-element sentence and
+			// re-appends it ONCE, combined, to the last result -- so a caller
+			// reading N results back from one propose_patches call sees the
+			// notice exactly once, not once per rebind that caused it.
+			std::vector<std::string> batchOrphans;
+
 			for( std::size_t i = 0; i < patches.size(); ++i )
 			{
 				AgentSetPatch item = patches[i];
@@ -6236,6 +6436,25 @@ namespace RISE
 					item.hasBaseVersion = false;
 				}
 				out.push_back( ProposePatch( item ) );
+
+				if( !out.back().reportedOrphans.empty() )
+				{
+					AgentPatchResult& last = out.back();
+					// Strip THIS element's own per-call sentence -- it is
+					// exactly what ComposeOrphanSentence_ would produce from
+					// `last.reportedOrphans` alone (the SAME formatter
+					// ProposePatch itself just called with the SAME verb
+					// clause), so a plain suffix match is safe and cannot
+					// mistake unrelated message text for it.
+					const std::string suffix =
+						ComposeOrphanSentence_( last.reportedOrphans, kProposePatchOrphanVerbClause );
+					if( last.message.size() >= suffix.size() &&
+					    last.message.compare( last.message.size() - suffix.size(), suffix.size(), suffix ) == 0 )
+						last.message.erase( last.message.size() - suffix.size() );
+					for( const std::string& o : last.reportedOrphans )
+						if( std::find( batchOrphans.begin(), batchOrphans.end(), o ) == batchOrphans.end() )
+							batchOrphans.push_back( o );
+				}
 
 				// STALE-BASE CONFLICT IS BATCH-FATAL (see the header doc).
 				// Only the FIRST element carries the caller's precondition, so
@@ -6264,6 +6483,15 @@ namespace RISE
 					break;
 				}
 			}
+
+			// Doc 90 R3: the ONE combined sentence for the whole call, on the
+			// LAST result -- see the loop's own comment above for why every
+			// per-element sentence was stripped rather than left in place.
+			// `batchOrphans` is empty on the conflict-fatal early break too
+			// (element 0 never applies on that path, so nothing could have
+			// orphaned anything yet), so this is a silent no-op there.
+			if( !batchOrphans.empty() && !out.empty() )
+				AppendOrphanSentence_( out.back().message, batchOrphans, kProposePatchOrphanVerbClause );
 
 			return out;
 		}
@@ -9695,15 +9923,13 @@ namespace RISE
 			else {
 				m += " The previous geometry `" + oldGeomName + "` was left in place.";
 			}
-			if( !out.reportedOrphans.empty() ) {
-				m += " Now unreferenced and NOT removed (this verb removes only the geometry chunk it "
-					"unbound, never deeper): ";
-				for( std::size_t i = 0; i < out.reportedOrphans.size(); ++i ) {
-					if( i ) m += ", ";
-					m += "`" + out.reportedOrphans[i] + "`";
-				}
-				m += " -- pass them to remove_chunks if you want them gone.";
-			}
+			// Doc 90 R3: this sentence's formatter/mechanic is now SHARED with
+			// propose_patch/propose_patches's own orphan-pressure report
+			// (ComposeOrphanSentence_/AppendOrphanSentence_, defined above
+			// ProposePatch) -- same message, same shape, differing only in
+			// the parenthetical naming what THIS verb does and doesn't remove.
+			AppendOrphanSentence_( m, out.reportedOrphans,
+				"this verb removes only the geometry chunk it unbound, never deeper" );
 			out.message = m;
 			return out;
 		}

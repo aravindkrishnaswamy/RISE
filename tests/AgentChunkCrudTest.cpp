@@ -7243,6 +7243,167 @@ static void TestReplaceGeometryScaffoldReportsDeeperOrphans()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// Doc 90 R3 (2026-08-23): orphan pressure on a Reference rebind through
+// propose_patch/propose_patches -- the mechanism doc 90 SS1 measured firing
+// SEVENTEEN times unreported in one session (every "fix" was a bare
+// `geometry` rebind through propose_patch, never through
+// replace_geometry_scaffold, so ITS orphan report never fired).
+//----------------------------------------------------------------------
+
+//! OP1: a single propose_patch Reference rebind that orphans the old
+//! geometry -> the result's `reportedOrphans` NAMES it and `message` carries
+//! the same "Now unreferenced and NOT removed ... pass them to remove_chunks"
+//! sentence replace_geometry_scaffold's own orphan report uses.
+static void TestProposePatchOrphanPressureSingleRebind()
+{
+	std::printf( "OP1: propose_patch -- a Reference rebind orphans the old geometry -> sentence names it...\n" );
+	const std::string tmp = TempPath( "agentcrud_op1.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "OP1 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Check( sess->InsertChunk( "sphere_geometry\n{\nname sph2\nradius 0.5\n}" ).applied,
+	       "OP1 the replacement geometry `sph2` inserted" );
+
+	const Agent::AgentPatchResult r = sess->ProposePatch( Patch( "obj_sph", "geometry", "sph2" ) );
+	Check( r.applied, std::string( "OP1 the rebind applied: " ) + r.message );
+
+	Check( !r.reportedOrphans.empty(), "OP1 the orphaned old geometry is REPORTED" );
+	bool sawSph = false;
+	for( const std::string& o : r.reportedOrphans ) {
+		Check( o.find( '/' ) != std::string::npos, "OP1 the reported orphan carries its keyword/name form" );
+		const std::string bare = o.substr( o.find( '/' ) + 1 );
+		if( bare == "sph" ) sawSph = true;
+	}
+	Check( sawSph, "OP1 `sph` is named among the reported orphans" );
+	Check( r.message.find( "Now unreferenced and NOT removed" ) != std::string::npos,
+	       "OP1 the message carries the shared orphan sentence" );
+	Check( r.message.find( "`sphere_geometry/sph`" ) != std::string::npos,
+	       "OP1 the message names `sph` in keyword/name form" );
+	Check( r.message.find( "remove_chunks" ) != std::string::npos,
+	       "OP1 the message points the model at remove_chunks" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docAfter.find( "name sph\n" ) != std::string::npos,
+	       "OP1 the old geometry `sph` is STILL in the document (reported, not removed)" );
+	Check( ExtractObjectParam( docAfter, "obj_sph", "geometry" ) == "sph2",
+	       "OP1 `obj_sph` now points at the new geometry" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! OP2: the same rebind, but a SECOND object still references the old
+//! geometry -> SILENCE (empty `reportedOrphans`, no sentence in `message`).
+static void TestProposePatchOrphanPressureSharedGeometrySilent()
+{
+	std::printf( "OP2: propose_patch -- old geometry still referenced by another object -> silence...\n" );
+	const std::string tmp = TempPath( "agentcrud_op2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "OP2 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Check( sess->InsertChunk(
+		"standard_object\n{\nname obj_sph2\ngeometry sph\nmaterial mat_diffuse\nposition 2 0 0\n}" ).applied,
+	       "OP2 a second object referencing `sph` applied" );
+	Check( sess->InsertChunk( "sphere_geometry\n{\nname sph2\nradius 0.5\n}" ).applied,
+	       "OP2 the replacement geometry `sph2` inserted" );
+
+	const Agent::AgentPatchResult r = sess->ProposePatch( Patch( "obj_sph", "geometry", "sph2" ) );
+	Check( r.applied, std::string( "OP2 the rebind applied: " ) + r.message );
+	Check( r.reportedOrphans.empty(), "OP2 SILENCE: `sph` is still referenced by `obj_sph2`" );
+	Check( r.message.find( "Now unreferenced and NOT removed" ) == std::string::npos,
+	       "OP2 the message carries NO orphan sentence" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( ExtractObjectParam( docAfter, "obj_sph2", "geometry" ) == "sph",
+	       "OP2 the other object still points at `sph`" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! OP3: propose_patches -- a BATCH of two independent rebinds, each orphaning
+//! its own old geometry -> exactly ONE combined sentence across the whole
+//! call (not one per element), naming BOTH orphans; each element's own
+//! `reportedOrphans` (structured data) still names its own orphan.
+static void TestProposePatchesOrphanPressureBatchCombinedSentence()
+{
+	std::printf( "OP3: propose_patches -- batch of two rebinds -> ONE combined sentence, both names...\n" );
+	const std::string tmp = TempPath( "agentcrud_op3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "OP3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Check( sess->InsertChunk( "sphere_geometry\n{\nname sph2\nradius 0.5\n}" ).applied,
+	       "OP3 `sph2` inserted" );
+	Check( sess->InsertChunk(
+		"clippedplane_geometry\n{\nname quad2\npta -0.6 0.6 3.5\nptb 0.6 0.6 3.5\nptc 0.6 -0.6 3.5\nptd -0.6 -0.6 3.5\n}" ).applied,
+	       "OP3 `quad2` inserted" );
+
+	std::vector<Agent::AgentSetPatch> patches;
+	patches.push_back( Patch( "obj_sph",  "geometry", "sph2" ) );
+	patches.push_back( Patch( "obj_emit", "geometry", "quad2" ) );
+
+	const std::vector<Agent::AgentPatchResult> results = sess->ProposePatches( patches );
+	Check( results.size() == 2, "OP3 one result per patch" );
+	if( results.size() != 2 ) { pJob->release(); std::remove( tmp.c_str() ); return; }
+	Check( results[0].applied, std::string( "OP3 element 0 applied: " ) + results[0].message );
+	Check( results[1].applied, std::string( "OP3 element 1 applied: " ) + results[1].message );
+
+	// Structured data: EACH element still reports its OWN orphan.
+	bool sawSphData = false, sawQuadData = false;
+	for( const std::string& o : results[0].reportedOrphans ) if( o == "sphere_geometry/sph" ) sawSphData = true;
+	for( const std::string& o : results[1].reportedOrphans ) if( o == "clippedplane_geometry/quad_emit" ) sawQuadData = true;
+	Check( sawSphData, "OP3 results[0].reportedOrphans names `sph`" );
+	Check( sawQuadData, "OP3 results[1].reportedOrphans names `quad_emit`" );
+
+	// PROSE: exactly ONE sentence for the whole call, not one per element.
+	int sentenceCount = 0;
+	for( const Agent::AgentPatchResult& r : results )
+		if( r.message.find( "Now unreferenced and NOT removed" ) != std::string::npos ) ++sentenceCount;
+	Check( sentenceCount == 1, "OP3 exactly ONE combined sentence across the whole batch (got " +
+	       std::to_string( sentenceCount ) + ")" );
+
+	std::string combined = results[0].message + " " + results[1].message;
+	Check( combined.find( "`sphere_geometry/sph`" ) != std::string::npos,
+	       "OP3 the ONE sentence names `sph`" );
+	Check( combined.find( "`clippedplane_geometry/quad_emit`" ) != std::string::npos,
+	       "OP3 the ONE sentence ALSO names `quad_emit`" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! OP4: a NON-reference param patch (position) never triggers orphan
+//! pressure -- silence, even though the target chunk (obj_sph) still points
+//! at `sph` through its untouched `geometry` param.
+static void TestProposePatchOrphanPressureNonReferenceParamSilent()
+{
+	std::printf( "OP4: propose_patch -- a NON-reference param patch (position) -> silence...\n" );
+	const std::string tmp = TempPath( "agentcrud_op4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "OP4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentPatchResult r = sess->ProposePatch( Patch( "obj_sph", "position", "1 0 0" ) );
+	Check( r.applied, std::string( "OP4 the position edit applied: " ) + r.message );
+	Check( r.reportedOrphans.empty(), "OP4 SILENCE: no orphan pressure on a non-reference param" );
+	Check( r.message.find( "Now unreferenced and NOT removed" ) == std::string::npos,
+	       "OP4 the message carries NO orphan sentence" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docAfter.find( "name sph\n" ) != std::string::npos, "OP4 `sph` is still in the document, untouched" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 //! RG4: volume_bank is refused with the actionable message, document
 //! byte-identical and head unbumped.
 static void TestReplaceGeometryScaffoldVolumeBankRefused()
@@ -18344,6 +18505,14 @@ int main()
 	TestReplaceGeometryScaffoldFamilies();
 	TestReplaceGeometryScaffoldRetainsSharedGeometry();
 	TestReplaceGeometryScaffoldReportsDeeperOrphans();
+
+	// Doc 90 R3 (2026-08-23): orphan pressure on propose_patch/propose_patches
+	// Reference rebinds.
+	TestProposePatchOrphanPressureSingleRebind();
+	TestProposePatchOrphanPressureSharedGeometrySilent();
+	TestProposePatchesOrphanPressureBatchCombinedSentence();
+	TestProposePatchOrphanPressureNonReferenceParamSilent();
+
 	TestReplaceGeometryScaffoldVolumeBankRefused();
 	TestReplaceGeometryScaffoldGeometryTargetDiagnosis();
 	TestReplaceGeometryScaffoldUnknownAndAmbiguousTarget();

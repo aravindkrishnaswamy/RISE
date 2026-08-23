@@ -251,6 +251,27 @@ namespace RISE
 			//! by AgentRpc.cpp as `issues`, OMITTED entirely when empty (same
 			//! back-compat posture as AgentChunkResult::issues).
 			std::vector<AgentChunkIssue> issues;
+			//! Doc 90 R3 (2026-08-23): orphan pressure on a Reference rebind
+			//! -- populated ONLY on a CLEAN apply (`applied` true) of a patch
+			//! whose `param` is a descriptor `ValueKind::Reference` slot AND
+			//! whose OLD target chunk became unreferenced by the whole
+			//! document AS A RESULT of this one edit (something else still
+			//! referencing it, or the param not being Reference-kind at all,
+			//! is SILENCE -- empty). "keyword/name" form, same shape as
+			//! ReplaceGeometryScaffold::reportedOrphans (see that field's
+			//! doc) -- this is propose_patch's sibling of the identical
+			//! mechanism, sharing its message formatter (AppendOrphanSentence_
+			//! in AgentSession.cpp) but NOT its removal behaviour: propose_
+			//! patch never deletes anything, so the old target is always
+			//! LEFT IN PLACE, reported here so a model can hand it to
+			//! remove_chunks. `message` carries the same "Now unreferenced
+			//! and NOT removed ... pass them to remove_chunks" sentence
+			//! ProposePatch's own scaffold sibling appends -- EXCEPT via
+			//! ProposePatches (the batch form), which folds every element's
+			//! report into ONE combined sentence on the batch's last result
+			//! instead of one per element (see ProposePatches's doc); this
+			//! field itself stays populated per element either way.
+			std::vector<std::string> reportedOrphans;
 		};
 
 		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics), extended by
@@ -2712,6 +2733,18 @@ namespace RISE
 			//! corresponds to patches[i]); the unattempted tail carries
 			//! applied=false, status="conflict" and a message saying so.
 			//! Re-read the head and resubmit the batch.
+			//!
+			//! Doc 90 R3 (2026-08-23): orphan-pressure reporting is BATCH-
+			//! AWARE.  Each element's own AgentPatchResult::reportedOrphans
+			//! is still populated per element (structured data, unchanged),
+			//! but the human-readable "Now unreferenced and NOT removed ..."
+			//! sentence ProposePatch appends to a single-call `message` is
+			//! NOT repeated once per orphaning element here -- every
+			//! element's report is folded into ONE combined sentence naming
+			//! every newly-orphaned chunk across the WHOLE call, appended to
+			//! the LAST result's `message` only.  A model reading N results
+			//! back from one propose_patches call therefore sees the orphan
+			//! notice exactly once, not once per rebind that caused it.
 			std::vector<AgentPatchResult> ProposePatches( const std::vector<AgentSetPatch>& patches,
 			                                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 

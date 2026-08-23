@@ -589,6 +589,17 @@ namespace RISE
 				itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
 				itemRes.set( "message",   JsonValue::MakeString( pr.message ) );
 				if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
+				// Doc 90 R3: orphan-pressure report -- CONDITIONAL key, same
+				// back-compat posture as `issues` above and the SAME wire
+				// shape ("orphans", an array of "keyword/name" strings)
+				// replace_geometry_scaffold's own `reportedOrphans` already
+				// uses (see this file's ReplaceGeometryScaffold handler).
+				if( !pr.reportedOrphans.empty() ) {
+					JsonValue orphans = JsonValue::MakeArray();
+					for( const std::string& o : pr.reportedOrphans )
+						orphans.push_back( JsonValue::MakeString( o ) );
+					itemRes.set( "orphans", orphans );
+				}
 				return itemRes;
 			}
 
@@ -1880,6 +1891,15 @@ namespace RISE
 					// doc). CONDITIONAL key, OMITTED entirely when empty -- same
 					// back-compat posture as ChunkResultJson's `issues`.
 					if( !pr.issues.empty() ) result.set( "issues", IssuesJson( pr.issues ) );
+					// Doc 90 R3: orphan-pressure report -- CONDITIONAL key, same
+					// shape PatchResultJson's own copy uses (the propose_patches
+					// batch path) and replace_geometry_scaffold's `orphans`.
+					if( !pr.reportedOrphans.empty() ) {
+						JsonValue orphans = JsonValue::MakeArray();
+						for( const std::string& o : pr.reportedOrphans )
+							orphans.push_back( JsonValue::MakeString( o ) );
+						result.set( "orphans", orphans );
+					}
 					return MakeSuccess( idValue, result );
 				}
 
