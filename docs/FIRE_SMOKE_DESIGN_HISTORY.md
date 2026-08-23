@@ -3465,3 +3465,15 @@ it was already tried and refuted here.
   r144 still exits `254` at field `2.5081625764804549e-3`, required drain
   `3.3442167670577247`, and delivered drain `0.97489008508207653`, so no later
   contract stage runs.  Golden remains `1b944176...4947`.
+- **r149 manifold stage-budget protocol (2026-08-22, pre-evidence):** r145's
+  Δt falsification is accepted rather than tuned around.  The manifold limit
+  remains in the selector, while the wall-cost repair moves the per-cell EOS
+  deviation map and exact nonnegative maximum reduction onto Metal with no new
+  full-grid transfer.  The golden state is then swept at CFL, CFL/2, and CFL/4
+  and decomposed across remap/advection, physical projection, and restoration
+  projection using `max |V_after-V_before|`; adjacent log2 ratios report each
+  stage's Δt exponent.  The response is frozen before values: a dominant
+  timestep-invariant remap term triggers manifold-consistent temperature/
+  composition reconstruction with rebuilt energy; dominant restoration
+  self-generation triggers the two-pass anomaly-aware target; failure of both
+  to hold `7.5e-4` requires a contract-level production-ceiling ruling.

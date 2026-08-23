@@ -678,6 +678,30 @@ int main()
 		unixTestDriver.find("PASS (exact exit=255)")!=std::string::npos&&
 		unixTestDriver.find("expected 255")!=std::string::npos,
 		"r147 makes accepted-observation authority producer-owned and executes checkpoint resume");
+	const std::string manifoldStageBudgetProtocol=ReadText(
+		"rendered/fire_production_calibration/r149_manifold_stage_budget_protocol/"
+		"manifold_stage_budget_protocol.v1");
+	Check(!manifoldStageBudgetProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(manifoldStageBudgetProtocol.begin(),
+			manifoldStageBudgetProtocol.end()))==
+		"7b460fd1c09a2a81cd87c4fc850f4a998c303dd91fb8244bd0c84662f7d90d61"&&
+		manifoldStageBudgetProtocol.find("protocol_before_measurement true")!=
+			std::string::npos&&
+		manifoldStageBudgetProtocol.find("measurement_performed false")!=
+			std::string::npos&&
+		manifoldStageBudgetProtocol.find(
+			"time_step_sweep CFL CFL_over_2 CFL_over_4")!=std::string::npos&&
+		manifoldStageBudgetProtocol.find(
+			"stage_order remap_advection physical_projection restoration_projection")!=
+			std::string::npos&&
+		manifoldStageBudgetProtocol.find(
+			"decision_rule_remap remap_dominant_and_exponent_near_zero_implies_manifold_consistent_reconstruction")!=
+			std::string::npos&&
+		manifoldStageBudgetProtocol.find(
+			"decision_rule_restoration restoration_self_generation_dominant_implies_anomaly_aware_predictor_corrector_target")!=
+			std::string::npos&&
+		manifoldStageBudgetProtocol.find("production_changed false")!=std::string::npos,
+		"r149 freezes the on-device stage-budget campaign and automatic remedy before evidence");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

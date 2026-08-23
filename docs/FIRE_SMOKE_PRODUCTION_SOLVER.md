@@ -3138,6 +3138,37 @@ exact exit `254`, field deviation `2.5081625764804549e-3`, required drain
 checkpoint remains `1b944176...4947`; long shadow, golden `B_fp32`, temporal
 refinement, readmission, source maps, and first light remain blocked.
 
+### 7.55i Manifold stage-budget protocol (r149, pre-evidence)
+
+r145 falsified the timestep-proportional generation premise at the burning
+checkpoint: the represented step became `3.5423604574` times smaller while
+the realized field generation retained `0.9902699302` of its prior value.
+The manifold timestep limit remains part of the production selector, but is
+not treated as the capacity remedy for this regime.
+
+Before another architectural ruling, r149 freezes two measurements.  First,
+the accepted-step field-generation map and its nonnegative maximum reduction
+move onto Metal.  Only the scalar reduction may return before the existing
+terminal publication, and the predictor path must retain zero interstage
+full-grid transfers.  An independent Binary64 host reconstruction remains a
+pinned diagnostic oracle, not the production implementation.  Second, the
+golden slice is replayed at CFL, CFL/2, and CFL/4.  For each request the exact
+stage order is remap/advection, physical projection, restoration projection;
+stage generation is `max_cell |V_after - V_before|`, and adjacent scaling is
+reported as `log2(G(dt)/G(dt/2))`.
+
+The response is pre-decided.  A dominant, timestep-invariant remap term
+requires manifold-consistent reconstruction: reconstruct temperature and
+composition and rebuild sensible energy, or equivalently project reconstructed
+face states onto the EOS manifold, without relaxing shared alpha or
+monotonicity.  Dominant restoration self-generation requires the already-noted
+two-pass anomaly-aware target.  If both remedies still leave the realized field
+above `7.5e-4`, the campaign stops for a contract-level production-ceiling
+ruling derived from thermodynamic validity and oracle comparison.  No observed
+value may alter this decision tree.  The sealed protocol is
+`rendered/fire_production_calibration/r149_manifold_stage_budget_protocol/`
+`manifold_stage_budget_protocol.v1`.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
