@@ -42,26 +42,39 @@ instrument.
 The engine itself held: zero derive failures, zero fold/mirror warnings
 across 179 revisions.  The failure is the iteration loop's epistemics.
 
-## 2. Slice R1 — the ratchet: auto-score every render against the target
+## 2. Slice R1 — the ratchet: the anchor composite (REVISED; the scored
+form is FALSIFIED — see the history note at the end of this section)
 
-When a scene target exists (`imagine_scene` was called), every `render`
-result carries, WITHOUT any pull:
+Every `render` result composites the session's ANCHOR RENDER beside the
+current render, both labelled with their head revisions.  No number.
 
-- `targetScore` — this render scored against the session's composite
-  target, via the SAME scoring path `compare_to_reference` uses (one
-  scoring implementation; R1 adds a caller, never a second scorer).
-- `bestScore` / `bestRevision` — the best score seen this session and
-  the head revision that produced it.
-- One sentence of note text when the current score is materially below
-  best: "this render scores X; revision N scored Y — `revert_to_revision`
-  can take the document back."  (Names the R2 verb; adoption law: the
-  note prices the alternative and names ONE call.)
+- Default anchor: the FIRST completed post-compose render (in the failed
+  dragon run, exactly the render that was best).
+- `set_render_anchor` — the model re-pins the anchor when it judges a
+  newer render better.  Pairwise visual judgment is the instrument;
+  vision models compare two images far more reliably than they score
+  one, and a side-by-side cannot be gamed by deleting geometry.
+- The anchor carries its revision, so R2's verb has a target: once R2
+  lands, the render note may say "the anchor (rev N) is beside this
+  render -- revert_to_revision N if this is worse."  Until R2 lands the
+  verb is NOT named (a stale promise burns the repair budget).
+- Advisory, self-disarming.  Anchor state is per-session bookkeeping
+  (G2-gate discipline).  The Phase 2b guard (below) stays armed.
 
-Rules: advisory, never gating; self-disarming phrasing per the design-note
-conventions; score attached only when a target exists; the note names the
-verb only when R2 has landed (compile-time constant, not a stale promise).
-Best-so-far state is per-session bookkeeping (the G2-gate discipline: no
-document reads, no locks beyond what render already holds).
+**History note (2026-08-23): the original R1 spec'd a `targetScore` +
+`bestScore` scalar against the imagine_scene target.  The implementation
+worker refused it, with evidence.**  (a) Phase 2b (2026-08-11,
+AgentSession.h ~1327 + doc 77 §15) had already shipped, measured, and
+DELETED exactly that score from exactly that surface -- 16 score
+consultations drove 23 emissive/power-cranking edits into a blown-out
+frame -- and left a money assertion (AgentRenderAsyncTest ~7035) pinning
+its absence.  The doc's author missed it.  (b) A fresh harness over the
+real CompareToReference scorer showed the metric is INVERTED in the
+operative regime: against a divergent (i.e. normal) generated target,
+deleting the hero object improves the score (measured -0.148, monotone
+crossover as target similarity drops).  A ratchet on that scalar would
+anchor bestRevision at the most-mangled document.  Phase 2b's law --
+"the composite IS the comparison" -- is the design that survives.
 
 ## 3. Slice R2 — `revert_to_revision`
 
