@@ -3815,7 +3815,11 @@ it was already tried and refuted here.
   At `dt=0.0016462659696117043 s`, closure lowers G to
   `0.066569089889526367` (`0.7749984039880868` of the disabled result), an
   effective dose coefficient `38.91887613503045 s^-1`, but still exceeds the
-  exact `2^-5` hard ceiling.  The amended 25%-headroom predictor derives
+  exact `2^-5` hard ceiling.  One warmup plus five byte-stable samples measure
+  `92.4832500750199/179.9965 ms` device/wall p95, projecting tier-10 x 25 s to
+  `0.39012213338718343/0.75927931301360085 h`; the two-hour wall criterion is
+  met at this audited-CFL control, but its field is inadmissible.  The amended
+  25%-headroom predictor derives
   `0.00057953997747972608 s`.  The first candidate evidence incorrectly kept
   the audited-CFL Heun divergence target while changing the represented step;
   fresh boundary review rejected that measurement because the external target

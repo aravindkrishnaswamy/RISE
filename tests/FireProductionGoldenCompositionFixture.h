@@ -133,6 +133,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		const char* closureMode=std::getenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
 		const bool limitedClosure=longShadow&&closureMode&&
 			std::strcmp(closureMode,"limited")==0;
+		const bool disabledClosure=longShadow&&closureMode&&
+			std::strcmp(closureMode,"disabled")==0;
 		double limitedStep=0.0;
 		if(limitedClosure&&!RISE::DeriveFireProductionManifoldTimeStep(
 			0.0016462659696117043,0.066569089889526367,
@@ -1865,6 +1867,32 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::chrono::steady_clock::now()-productionWallStart).count();
 		if(!productionSucceeded){std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
+		double closureDeviceP95MS=0.0,closureWallP95MS=0.0;
+		if(longShadow&&!disabledClosure&&!limitedClosure){
+			const std::uint64_t baselinePayload=
+				RISE::FireProductionAcceptedManifoldPayloadDigest(production);
+			for(std::size_t sample=0u;sample<5u;++sample){
+				RISE::FireProductionResidentStepResult trial;
+				const auto trialStart=std::chrono::steady_clock::now();
+				if(!RISE::AdvanceFireProductionResidentStepMetal(request,trial,&error))return 250;
+				const double trialWall=std::chrono::duration<double,std::milli>(
+					std::chrono::steady_clock::now()-trialStart).count();
+				if(RISE::FireProductionAcceptedManifoldPayloadDigest(trial)!=baselinePayload||
+					trial.maximumPredictedAdvectiveManifoldAnomaly!=
+						production.maximumPredictedAdvectiveManifoldAnomaly||
+					trial.maximumManifoldGeneration!=production.maximumManifoldGeneration||
+					trial.maximumAcceptedManifoldDeviation!=
+						production.maximumAcceptedManifoldDeviation||
+					trial.deliveredRestorationDrainFraction!=
+						production.deliveredRestorationDrainFraction||
+					trial.advectiveAnomalyClosurePassCount!=2u||trial.cellSubmapCount!=10u||
+					trial.dualSubmapCount!=15u||trial.sourceCommandCommitCount!=2u||
+					trial.manifoldScalarDeviceToHostTransferCount!=2u||
+					trial.interstageFullGridTransferCount!=0u)return 250;
+				closureDeviceP95MS=std::max(closureDeviceP95MS,trial.deviceElapsedMS);
+				closureWallP95MS=std::max(closureWallP95MS,trialWall);
+			}
+		}
 		const float maximumRestorationTarget=*std::max_element(
 			request.restorationDivergenceTargetPerS.begin(),
 			request.restorationDivergenceTargetPerS.end(),[](const float a,const float b){
@@ -1908,11 +1936,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			if(!production.manifoldPlateauPassed){
 				const bool acceptedTokenMinted=production.HasAcceptedManifoldToken();
 				if(limitedClosure)return 250;
+				const double projectedSteps=25.0/static_cast<double>(
+					production.representedTimeStepS);
+				const double closureDeviceProjectionHours=
+					projectedSteps*closureDeviceP95MS/3600000.0;
+				const double closureWallProjectionHours=
+					projectedSteps*closureWallP95MS/3600000.0;
 				std::fprintf(stderr,"GOLDEN_LONG_SHADOW_REFUSAL step=%zu dt=%.17g G=%.17g "
 					"field_max=%.17g low_mach_ceiling=%.17g delivered_drain=%.17g "
 					"pre_residual=%.17g post_residual=%.17g passes=%u cell_submaps=%u "
 					"dual_submaps=%u source_commits=%u scalar_reads=%u certified_bytes=%llu "
-					"actual_bytes=%llu accepted_token=%d golden=%s\n",slice,
+					"actual_bytes=%llu device_p95_ms=%.17g wall_p95_ms=%.17g "
+					"tier10_device_hours=%.17g tier10_wall_hours=%.17g "
+					"accepted_token=%d golden=%s\n",slice,
 					static_cast<double>(production.representedTimeStepS),
 					production.maximumManifoldGeneration,fieldMaximum,
 					LowMachValidityCeiling,production.deliveredRestorationDrainFraction,
@@ -1923,16 +1959,24 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					production.manifoldScalarDeviceToHostTransferCount,
 					static_cast<unsigned long long>(production.combinedCertifiedWorkingSetBytes),
 					static_cast<unsigned long long>(production.combinedActualMetalAllocationBytes),
+					closureDeviceP95MS,closureWallP95MS,closureDeviceProjectionHours,
+					closureWallProjectionHours,
 					acceptedTokenMinted?1:0,
 					DigestFile(checkpointPath).c_str());
-				return fieldMaximum>LowMachValidityCeiling&&
-					production.advectiveAnomalyClosurePassCount==2u&&
-					production.cellSubmapCount==10u&&production.dualSubmapCount==15u&&
-					production.sourceCommandCommitCount==2u&&
-					production.manifoldScalarDeviceToHostTransferCount==2u&&
-					production.interstageFullGridTransferCount==0u&&
-					production.combinedCertifiedWorkingSetBytes==1919317208u&&
-					production.combinedActualMetalAllocationBytes==1630052936u&&
+				const bool closureEvidenceExact=disabledClosure?
+					(production.maximumManifoldGeneration==0.085895776748657227&&
+						fieldMaximum==0.085895776748657227):
+					(production.advectiveAnomalyClosurePassCount==2u&&
+						production.cellSubmapCount==10u&&production.dualSubmapCount==15u&&
+						production.sourceCommandCommitCount==2u&&
+						production.manifoldScalarDeviceToHostTransferCount==2u&&
+						production.interstageFullGridTransferCount==0u&&
+						production.combinedCertifiedWorkingSetBytes==1919317208u&&
+						production.combinedActualMetalAllocationBytes==1630052936u&&
+						std::isfinite(closureDeviceP95MS)&&closureDeviceP95MS>0.0&&
+						std::isfinite(closureWallP95MS)&&closureWallP95MS>0.0&&
+						closureWallProjectionHours<=2.0);
+				return fieldMaximum>LowMachValidityCeiling&&closureEvidenceExact&&
 					!acceptedTokenMinted&&
 					DigestFile(checkpointPath)==checkpointDigest?252:250;
 			}

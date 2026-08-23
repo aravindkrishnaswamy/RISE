@@ -632,7 +632,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"ae629be5bf39d2433d37558e723f34e5e8d7d00f36585ea746de906fcc7d1457"&&
+		"46a9a0d8ec761346c3603e54908588cddae938828158df49915dceb1e5ad048a"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -1058,7 +1058,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
+			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1140,7 +1140,7 @@ int main()
 			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
+			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1241,7 +1241,7 @@ int main()
 			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
+			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"d941893a0b1e028400988014499584e9099bfbff66fca73061674f89536cbf0b"&&
@@ -1250,7 +1250,7 @@ int main()
 			"8d97d9f5112f4b6dcefedd4781d7b857e160cfbb47737d875c102540e10a4177"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"ae629be5bf39d2433d37558e723f34e5e8d7d00f36585ea746de906fcc7d1457"&&
+			"46a9a0d8ec761346c3603e54908588cddae938828158df49915dceb1e5ad048a"&&
 		fireSimulatorCore.find("equationOfStateResidual > 1.0e-3")!=
 			std::string::npos&&
 		CountText(forceSource,"1e-3")==1u&&
@@ -1287,7 +1287,7 @@ int main()
 	Check(!anomalyClosureEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(anomalyClosureEvidence.begin(),
 			anomalyClosureEvidence.end()))==
-		"a3b9469a016605f3917a1001c0b70fd952c7373d904ce59ef1365eeec71fdce7"&&
+		"2d27aab1d6439b78d73fa4f5a1ff12d4e450e73d7f34f072d5d957f007326076"&&
 		anomalyClosureEvidence.find("G_model floor_plus_dose_times_dt")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("r158_floor_fit 0.0024982685328926446")!=
@@ -1295,6 +1295,11 @@ int main()
 		anomalyClosureEvidence.find("r160_unclosed_dose_branch_per_s 50.65858722417441")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("r161_active_CFL_corrected_G 0.066569089889526367")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("r161_active_CFL_wall_p95_ms 179.9965")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find(
+			"r161_active_CFL_tier10_wall_projection_hours 0.75927931301360085")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("limited_binary64_target_schedule_available false")!=
 			std::string::npos&&
@@ -1342,13 +1347,13 @@ int main()
 			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
+			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"b237cc38edf4987293217acf10d9967441323b505f6d3bd19db10c8b763048aa"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"ae629be5bf39d2433d37558e723f34e5e8d7d00f36585ea746de906fcc7d1457"&&
+			"46a9a0d8ec761346c3603e54908588cddae938828158df49915dceb1e5ad048a"&&
 		advectionMetal.find("fold_methane_advective_anomaly_target")!=
 			std::string::npos&&
 		advectionMetal.find(
@@ -1379,6 +1384,10 @@ int main()
 		goldenCompositionFixture.find(
 			"production.combinedActualMetalAllocationBytes==1630052936u")!=
 			std::string::npos&&
+		goldenCompositionFixture.find("for(std::size_t sample=0u;sample<5u;++sample)")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("closureWallProjectionHours<=2.0")!=
+			std::string::npos&&
 		productionSolverTest.find(
 			"r161 malformed closure activation fails before Metal work")!=
 			std::string::npos&&
@@ -1388,6 +1397,7 @@ int main()
 		unixTestDriver.find("FireSequenceTest.r161_advective_anomaly_closure")!=
 			std::string::npos&&
 		unixTestDriver.find("closure_limited_rc\" -eq 219")!=std::string::npos&&
+		unixTestDriver.find("tier10_device_hours=")!=std::string::npos&&
 		unixTestDriver.find("PASS (exact exit=219, target-schedule stop)")!=
 			std::string::npos,
 		"r161 binds the resident two-pass closure and target-schedule stop");

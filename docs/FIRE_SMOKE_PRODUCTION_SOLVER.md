@@ -3641,8 +3641,11 @@ the complete accepted payload digests are byte-identical, while the active
 diagnostics record one predictor pass and five—not ten—cell submaps.
 
 The audited-CFL correction reduces G from `0.085895776748657227` to
-`0.066569089889526367`, but this is still above `2^-5`.  With headroom
-`h=2^-2`, the retained predictor uses the allowance
+`0.066569089889526367`, but this is still above `2^-5`.  One warmup plus five
+byte-stable samples measure `92.4832500750199/179.9965 ms` device/wall p95,
+or `0.39012213338718343/0.75927931301360085 h` for tier-10 x 25 s.  The
+audited-CFL control is therefore within the two-hour wall rule even though its
+field is inadmissible.  With headroom `h=2^-2`, the retained predictor uses the allowance
 `(1-h)*2^-5=0.0234375` and derives the represented step
 `0.00057953997747972608 s`.  The external physical Heun target must be
 re-derived at that represented step.  The binary64 oracle target generator's

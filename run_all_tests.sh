@@ -749,7 +749,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
-		grep -Fq 'certified_bytes=1919317208 actual_bytes=1630052936 accepted_token=0' "$closure_cfl_log" &&
+		grep -Fq 'certified_bytes=1919317208 actual_bytes=1630052936' "$closure_cfl_log" &&
+		grep -Fq 'tier10_device_hours=' "$closure_cfl_log" &&
+		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_cfl_log" &&
 		grep -Fq 'ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=0.00057953997747972608 binary64_target_schedule=unavailable' "$closure_limited_log" &&
 		grep -Fq 'first=7.41824 last=1.44776 minimum=1.44776 target=0.561256 mass=1.44776 coefficient=0.017278 active_set=1 tolerance=0.000479545' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
