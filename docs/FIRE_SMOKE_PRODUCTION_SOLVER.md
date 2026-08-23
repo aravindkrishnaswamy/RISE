@@ -3346,48 +3346,55 @@ unchanged.
 
 ### 7.55n Composed low-order manifold capacity (r154)
 
-r154 applies the r59/r123 invariant triage to every temperature-domain face
-obligation.  For sub-cell Courant transport, each component face flux is
-affine in the owning donor's already-derived common alpha.  The diagnostic
-derives the largest binary32 alpha fraction not exceeding the exact
-temperature-domain crossing, rounds it outward toward zero, takes the minimum
-across both faces owned by a cell, and rebuilds all nine flux components with
-that same fraction.  Optimality yields; shared alpha, monotonicity, and the
-conservative energy ledger do not.
-
-That repair discharges high-order obligations only until composition reaches
-the next directional sweep.  At alpha=0, the low-order donor is already the
-composition produced by the preceding conservative sweep.  Compression has
-raised its molar density enough that fixed pressure requires a temperature
-below the r60 fp32 endpoint envelope.  The hard lower-domain census is
-`30,381`, `4,732`, and `130` cell/pass instances at CFL/CFL/2/CFL/4; the
-maximum excursions below `300 K` are `0.3536001376`, `0.1761537076`, and
-`0.08734036903 K`.  All upper-domain counts and excursions are exactly zero.
-Thus the nonempty-alpha argument holds for the first accepted donor, but not
-for the composed low-order state: no alpha in `[0,alpha_max]` can restore the
-certified domain without changing the low-order conservative update, shared
-coupling, or monotonicity.
-
-For comparison only, the diagnostic endpoint-projects those infeasible faces
-and continues the conservative energy ledger.  Lower projections number
-`2,307,844`, `2,326,957`, and `2,356,525`; upper projections are exactly zero.
-The reconstructed field and limiter/energy trace are SHA-bound and distinct
-from production, and the worst relative energy-ledger residual remains
-`1.4020231210267571e-10`.  Yet G remains exactly
-`2.5328069638265172e-3`, `2.5155729299433105e-3`, and
-`2.5068855498342479e-3`, or `3.3770759518x` the CFL allowance.  Projection-
-stage scalar G is still zero, so the restoration-anomaly branch is
-inapplicable.  This exhausts the pre-registered remedies under the preserved
-invariants and reaches the explicit production-ceiling ruling boundary.  No
-endpoint projection is admitted to production; long shadow, `B_fp32`, guard
-supersession, temporal refinement, readmission, source maps, and first light
-remain blocked.
-
-The separate residency timing evidence remains `66.4652500 ms` device and
-`194.687208 ms` completed wall, projecting `29.0438/85.0738 h` device/wall for
-tier-10 x 25 s.  Exact evidence is in
+r154 was a useful but incomplete attempt to apply the r59/r123 invariant
+triage.  Its high-order face cap retained one common alpha, monotonicity, and
+the conservative energy ledger, but its capacity inference is retired by
+r155 for two independent reasons: the alleged alpha-zero donor inherited
+earlier greedy high-order passes, and its endpoint width used
+`kappa32*epsilon32*T` rather than r60's composition-dependent
+`kappa32*epsilon32*AcceptedStateEnergyScale/Cp_lower`.  The recorded high-order
+field, trace, ledger, and G values remain historical diagnostics only.  Exact
+historical evidence is in
 `rendered/fire_production_calibration/r154_low_order_manifold_capacity_stop/`
 `low_order_manifold_capacity_evidence.v1`; the golden checkpoint is unchanged.
+
+### 7.55o Globally low-order manifold reconstruction (r155)
+
+r155 closes both r154 proof gaps with an independent shadow that sets the
+shared limiter alpha to exactly zero for every face in all five palindrome
+passes.  Consequently no later donor depends on a greedy earlier alpha and no
+backtracking argument remains.  At every non-ambient donor the shadow forms
+the r60 endpoint state, applies the authoritative binary32 energy scale, and
+converts that energy allowance to a temperature width with the certified
+mixture heat-capacity lower bound.  The maximum admissible widths are
+`0.7192921010`, `0.7172086203`, and `0.7159818945 K`; the maximum observed
+endpoint excursions are only `0.3536001376`, `0.1761537076`, and
+`0.08734036903 K`.  There are therefore zero donors outside the r60-derived
+endpoint envelope at all three step sizes.  This corrects, rather than widens,
+the frozen predicate: r154's purported empty low-order interval was false.
+
+The executable reconstruction takes the permitted r123 invariant triage to
+its extreme: optimality is surrendered completely, while shared-alpha
+coupling, component monotonicity, and conservative face-ledger updates remain
+untouched.  Endpoint-clamped energy is used only where r60 admits it.  The
+three resulting fields are independently SHA-bound; their maximum relative
+energy-ledger residual is `1.4158011510e-10`.  Despite this globally feasible,
+maximally inactive reconstruction, field G is byte-for-byte unchanged at
+`2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+`2.5068855498342479e-3`.  The CFL result is `3.3770759518x` the `7.5e-4`
+allowance.  Physical- and restoration-projection scalar G remain exactly zero,
+so the anomaly-aware restoration branch is inapplicable.
+
+This is the pre-registered contract boundary: the legal reconstruction remedy
+has executed and failed the function-level plateau requirement, and the other
+decision branch has zero owned generation.  A production-ceiling ruling is
+required before long shadow, `B_fp32`, guard supersession, temporal refinement,
+readmission, source maps, or first light.  No counterfactual arithmetic lands
+in production.  The fresh residency confirmation is `65.8577918 ms` device
+and `195.833166 ms` completed wall, projecting `28.7784/85.5747 h` for tier-10
+x 25 s.  Exact evidence is in
+`rendered/fire_production_calibration/r155_all_low_order_reconstruction_stop/`
+`all_low_order_reconstruction_evidence.v1`; the golden checkpoint is unchanged.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 

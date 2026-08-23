@@ -3609,31 +3609,35 @@ it was already tried and refuted here.
   device/wall projections remain binding.  Durable
   evidence is `r153_fixed_pressure_reconstruction_stop/`
   `fixed_pressure_reconstruction_evidence.v1`; golden remains byte-identical.
-- **r154 composed low-order manifold capacity stop (2026-08-23):** the r59/r123
-  invariant triage is now executed rather than assumed.  Each high-order face
-  obligation receives the maximal binary32 common-alpha fraction below its
-  exact temperature-domain crossing, outward-rounded toward zero and shared by
-  all nine flux components; both faces owned by a cell take the minimum.
-  Optimality yields while shared-alpha coupling, monotonicity, and conservative
-  energy accounting remain fixed.
+- **r154 composed low-order manifold capacity stop (2026-08-23):** retired by
+  r155.  Its current-pass alpha-zero donor inherited greedy earlier passes,
+  and its endpoint width used a temperature scale rather than r60's
+  composition-dependent energy scale.  Its SHA-bound fields and ledgers remain
+  historical diagnostics, not capacity evidence.
+- **r155 globally low-order reconstruction stop (2026-08-23):** an independent
+  shadow now forces every shared face alpha to exactly zero through all five
+  palindrome passes.  Each endpoint ambiguity is derived as
+  `kappa32*epsilon32*AcceptedStateEnergyScale/Cp_lower`; therefore neither a
+  greedy predecessor nor a temperature-unit surrogate enters the proof.
 
-  The composed sweep exposes the actual obstruction: after the first
-  conservative directional update, even alpha=0 uses a donor composition whose
-  molar density requires fixed-pressure temperature outside the r60 endpoint
-  envelope.  Lower-domain low-order counts are `30,381`, `4,732`, and `130` at
-  CFL/CFL/2/CFL/4, with maximum excursions `0.3536001376`, `0.1761537076`, and
-  `0.08734036903 K`; every upper-domain count is exactly zero.  Therefore no
-  common alpha exists without changing the low-order update or a preserved
-  invariant.
+  The corrected result reverses r154's local obstruction.  Every donor is
+  inside the authoritative r60-derived endpoint width.  Maximum widths are
+  `0.7192921010/0.7172086203/0.7159818945 K`, versus maximum excursions
+  `0.3536001376/0.1761537076/0.08734036903 K`; the outside-envelope census is
+  zero at CFL/CFL/2/CFL/4.  The all-low-order fields and energy ledgers are
+  independently SHA-bound, with worst relative ledger residual
+  `1.4158011510e-10`.
 
-  A diagnostic-only favorable endpoint projection produces SHA-bound fields
-  distinct from production and retains the energy ledger to
-  `1.4020231210267571e-10` relative, but G remains exactly
-  `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
-  `2.5068855498342479e-3` (`3.3770759518x` the CFL allowance).  Both projection
-  scalar stages remain exactly zero, leaving the anomaly-aware restoration
-  branch inapplicable.  The pre-registered remedies are therefore exhausted
-  under the preserved invariants and the explicit production-ceiling ruling is
-  now required.  No counterfactual arithmetic lands; later contract work stays
-  blocked.  Exact evidence is `r154_low_order_manifold_capacity_stop/`
-  `low_order_manifold_capacity_evidence.v1`; golden remains byte-identical.
+  The legal remedy nevertheless falsifies the function requirement:
+  `G = 2.5328069638265172e-3 / 2.5155729299433105e-3 /
+  2.5068855498342479e-3`, exactly the independent baseline at all three step
+  sizes and `3.3770759518x` the CFL allowance.  Optimality has yielded as far
+  as possible; shared alpha, monotonicity, and conservation remain intact.
+  Projection-owned G is still exactly zero, so the anomaly-aware restoration
+  branch does not apply.  The automatic decision rule therefore reaches the
+  explicit production-ceiling ruling boundary.  No counterfactual code lands
+  and all later contract milestones remain blocked.  Fresh residency
+  confirmation is `65.8577918/195.833166 ms` device/wall, or
+  `28.7784/85.5747 h` for tier-10 x 25 s.  Exact evidence is
+  `r155_all_low_order_reconstruction_stop/all_low_order_reconstruction_evidence.v1`;
+  golden remains byte-identical.

@@ -863,9 +863,9 @@ int main()
 			"alpha_zero_nonempty_interval_after_first_pass false")!=std::string::npos&&
 		lowOrderCapacityEvidence.find(
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"8e46164ef0c817ba50860767b94888905299a67cdc5a352b42483f9a1b825d58"&&
+		lowOrderCapacityEvidence.find(
+			"golden_fixture_sha256 8e46164ef0c817ba50860767b94888905299a67cdc5a352b42483f9a1b825d58")!=
+			std::string::npos&&
 		goldenCompositionFixture.find(
 			"alphaFraction[line*length+donor]")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -886,6 +886,49 @@ int main()
 			productionTransportSource.begin(),productionTransportSource.end()))==
 			"89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056",
 		"r154 binds the maximal shared-alpha campaign and composed low-order stop");
+	const std::string allLowOrderEvidence=ReadText(
+		"rendered/fire_production_calibration/r155_all_low_order_reconstruction_stop/"
+		"all_low_order_reconstruction_evidence.v1");
+	Check(!allLowOrderEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(allLowOrderEvidence.begin(),allLowOrderEvidence.end()))==
+		"e5a2aa56970e1c94137649ade05dcf3f33eff682c442edb12e9c3f8a9d471ea7"&&
+		allLowOrderEvidence.find(
+			"parent_r154_evidence_sha256 4de73bbd55b406bcc050f3be949f7ca6eabfa522cc393243e09e988be540e02f")!=
+			std::string::npos&&
+		allLowOrderEvidence.find(
+			"r60_endpoint_width_formula kappa32_times_epsilon32_times_AcceptedStateEnergyScale_divided_by_MixtureCertifiedCpLower")!=
+			std::string::npos&&
+		allLowOrderEvidence.find(
+			"all_five_passes_shared_alpha_exact_zero true")!=std::string::npos&&
+		allLowOrderEvidence.find(
+			"all_low_order_G_level_0 0.0025328069638265172")!=std::string::npos&&
+		allLowOrderEvidence.find(
+			"outside_r60_endpoint_envelope_count_all_levels 0")!=std::string::npos&&
+		allLowOrderEvidence.find(
+			"maximum_r60_endpoint_width_K_level_0 0.71929210099316709")!=
+			std::string::npos&&
+		allLowOrderEvidence.find(
+			"maximum_endpoint_excursion_K_level_0 0.3536001375753699")!=
+			std::string::npos&&
+		allLowOrderEvidence.find(
+			"all_low_order_field_sha256_level_0 d4df6114047f27a79bc807ac68ed69d946dfe20a755ae934a91bc5dd013e470b")!=
+			std::string::npos&&
+		allLowOrderEvidence.find(
+			"all_low_order_G_over_allowance 3.3770759517686897")!=std::string::npos&&
+		allLowOrderEvidence.find(
+			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"00fe09d2d1687e83aa34f263f7e5449ca00fbe5de27d98ecec650a46613a27d2"&&
+		goldenCompositionFixture.find("allLowOrderTransported=transported")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("AcceptedStateEnergyScale(")!=std::string::npos&&
+		goldenCompositionFixture.find("MixtureCertifiedCpLowerJPerM3K(")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"allLowOrderMaximumEnergyLedgerRelative[2]==1.4158011510440571e-10")!=
+			std::string::npos,
+		"r155 binds the globally feasible all-low-order reconstruction stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
