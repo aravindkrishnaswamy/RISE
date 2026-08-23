@@ -645,7 +645,21 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// where ONE expression field feeds both a ramp (colour) and the
 	// any-painter -> scalar bridge (roughness), so the rust and the roughness
 	// cannot drift apart.  Per-skill split is now 4/7/3 for those three.
-	Check( totalSnippets == 23, "the seed skills carry the expected 23 ```rise snippets in total (got " +
+	//
+	// Doc 89 slice D (2026-08-22) took the count 23 -> 24: the audit found
+	// `displaced_geometry.base_geometry` genuinely composes over the newer
+	// builder meshes (lathe/sweep/skin) AND `sdf_geometry` (including a
+	// `skeleton_geometry`-expanded body and a `superellipsoid` part) --
+	// verified render-clean for the SDF case, visibly faceted for the mesh-
+	// builder cases (a real, now-documented limitation, not a render
+	// failure).  object-modeling-recipes gains Recipe 6, the clean SDF-plus-
+	// dimples case (a `superellipsoid` cushion displaced by `perlin2d_painter`),
+	// with the faceting/pinch-tear/SDF-UV caveats written as prose rather
+	// than a second snippet -- one more render-validated example is the
+	// deliberate addition; a second fence for the caveats is not.  Per-skill
+	// split is now 4/8/3 for materials-and-media-basics/object-modeling-
+	// recipes/procedural-textures.
+	Check( totalSnippets == 24, "the seed skills carry the expected 24 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 

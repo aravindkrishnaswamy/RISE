@@ -129,6 +129,7 @@ scenes/Tests/Geometry/bilinear_patch.RISEscene  d6d2a06a07905648e9a63a854da90622
 scenes/Tests/Geometry/csg.RISEscene  c885504f746ecfe3b71eb3153ad29796424b8e929c826543cadec16cc6db8faa  2507  40
 scenes/Tests/Geometry/csg_comprehensive.RISEscene  52769e63c5bcc9c7a86f2dd785286f458a3d3a8adce47d553f77818276c12701  8845  96
 scenes/Tests/Geometry/displaced_box.RISEscene  e395d8bae437dd25ba0e1466ae250667970b10cee4ae63ea38f531584b692e2d  654  23
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene  4a8f0bdbd63996817cb2b70fa0ec554cd16b4fc0ad1953563e7bb9a0e11db22d  2652  59
 scenes/Tests/Geometry/displaced_procedural.RISEscene  84f828f95479c19d567a34597a1943e989acc7d5cd4fbfcd9427b6a843f70e53  1251  37
 scenes/Tests/Geometry/displaced_self_shadow.RISEscene  ef0ec94cb57088d68bd82c11714abd23e1cd3bf7183dd82607491c41940c80b5  649  23
 scenes/Tests/Geometry/displaced_shapes.RISEscene  ad56f1c468079ca8ca0f61b85e49afe5df7ae9073be9cf43237acf0d8584a128  4740  63

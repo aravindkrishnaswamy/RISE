@@ -1,0 +1,464 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           displaced_builders_stress.RISEscene                                                     #
+#   Description:    doc 89 slice D -- `displaced_geometry.base_geometry` composed over every BUILDER a      #
+#                   later arc shipped, not just the analytic primitives it was originally proven against.    #
+#                   Six specimens, one `perlin2d_painter` displacement shared by all of them so the ONLY     #
+#                   variable is the base:                                                                    #
+#                                                                                                           #
+#                     - BOX CONTROL: a plain box_geometry, the pre-existing composition (displaced_shapes.   #
+#                       RISEscene's case), included here only as the "nothing regressed" witness.             #
+#                     - LATHE: a lathe_geometry vase (unpinched profile -- see DisplacedGeometryTest's        #
+#                       TestDisplacedOverPinchedLatheTears for the documented pinched-profile limitation,      #
+#                       deliberately NOT reproduced here since this scene is the verified-clean showcase).    #
+#                     - SWEEP / LOFT: a sweep_geometry leg morphing profile_circle -> profile2_rect along     #
+#                       its length (doc 89 slice A) -- proves the loft's two-profile morph composes with      #
+#                       displacement too, not just a fixed-section sweep.                                     #
+#                     - SKIN: a skin_geometry billowed sail.                                                  #
+#                     - SDF / SKELETON: a skeleton_geometry-expanded tentacle (one sdf_geometry under the     #
+#                       hood, per-bone roundcones smin-blended).                                              #
+#                     - SDF / SUPERELLIPSOID: a plain sdf_geometry with one superellipsoid part.               #
+#                                                                                                           #
+#                   All seven DERIVE, BAKE and RENDER with zero diagnostics (verified: an empty RISE_Log.txt #
+#                   `Error`/`Warning` grep on this scene is the pass condition, same convention as             #
+#                   loft_stress.RISEscene).  Specimen 7 chains the compositions: a displaced_geometry as the  #
+#                   TEMPLATE of a path_instances_geometry (the audit-verified pairing nothing else pins).     #
+#                   The LATHE, SWEEP/LOFT and SKIN specimens render VISIBLY FACETED                           #
+#                   compared to the SDF specimens' smooth relief -- that is not a bug in this scene, it is    #
+#                   the doc 89 slice D audit's headline finding: a lathe_geometry/sweep_geometry/             #
+#                   skin_geometry base loses its smooth per-vertex shading the instant any non-zero           #
+#                   displacement is applied (their bake re-emits unshared per-triangle-corner topology, so    #
+#                   the post-displacement normal recompute has nothing to average across), while an           #
+#                   sdf_geometry base's own dual-contoured topology keeps real shared vertices and stays      #
+#                   smooth.  See the `displaced_geometry` chunk descriptor and object-modeling-recipes        #
+#                   Recipe 6 for the full writeup.                                                            #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	samples				8
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/displaced_builders_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1400
+	height			620
+}
+
+pinhole_camera
+{
+	location			0 6 24
+	lookat				0 1.4 0
+	up					0 1 0
+	fov					30.0
+}
+
+##################################################
+# ONE shared displacement painter -- the only variable across specimens
+# is the base geometry underneath it.
+##################################################
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0 0 0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1 1 1
+}
+
+perlin2d_painter
+{
+	name				pnt_relief
+	colora				pnt_black
+	colorb				pnt_white
+	persistence			0.5
+	octaves				4
+	scale				10.0 10.0
+	shift				0 0
+}
+
+##################################################
+# Painters + materials, one per specimen
+##################################################
+uniformcolor_painter
+{
+	name				pnt_box
+	color				0.66 0.30 0.14
+}
+lambertian_material
+{
+	name				mat_box
+	reflectance			pnt_box
+}
+
+uniformcolor_painter
+{
+	name				pnt_lathe
+	color				0.20 0.58 0.40
+}
+lambertian_material
+{
+	name				mat_lathe
+	reflectance			pnt_lathe
+}
+
+uniformcolor_painter
+{
+	name				pnt_sweep
+	color				0.30 0.36 0.46
+}
+lambertian_material
+{
+	name				mat_sweep
+	reflectance			pnt_sweep
+}
+
+uniformcolor_painter
+{
+	name				pnt_skin
+	color				0.72 0.44 0.40
+}
+lambertian_material
+{
+	name				mat_skin
+	reflectance			pnt_skin
+}
+
+uniformcolor_painter
+{
+	name				pnt_skeleton
+	color				0.78 0.62 0.18
+}
+lambertian_material
+{
+	name				mat_skeleton
+	reflectance			pnt_skeleton
+}
+
+uniformcolor_painter
+{
+	name				pnt_superellipsoid
+	color				0.72 0.18 0.55
+}
+lambertian_material
+{
+	name				mat_superellipsoid
+	reflectance			pnt_superellipsoid
+}
+
+##################################################
+# 1. BOX CONTROL -- the pre-existing composition, unmoved.
+##################################################
+box_geometry
+{
+	name				base_box
+	width				1.4
+	height				1.4
+	depth				1.4
+}
+
+displaced_geometry
+{
+	name				disp_box
+	base_geometry		base_box
+	detail				32
+	displacement		pnt_relief
+	disp_scale			0.10
+}
+
+standard_object
+{
+	name				obj_box
+	geometry			disp_box
+	material			mat_box
+	position			-10 1 0
+}
+
+##################################################
+# 2. LATHE -- an unpinched vase profile.  FACETED after displacement (the
+# audit's headline finding); compare against specimens 5/6 below.
+##################################################
+lathe_geometry
+{
+	name				base_vase
+	profile_point		0.00 0.00
+	profile_point		1.05 0.15
+	profile_point		1.26 0.90
+	profile_point		0.54 2.16
+	profile_point		0.66 2.70
+	profile_point		0.00 2.82
+	axis				y
+	sweep_degrees		360
+	n_radial			48
+	smooth				TRUE
+}
+
+displaced_geometry
+{
+	name				disp_vase
+	base_geometry		base_vase
+	detail				48
+	displacement		pnt_relief
+	disp_scale			0.06
+}
+
+standard_object
+{
+	name				obj_vase
+	geometry			disp_vase
+	material			mat_lathe
+	position			-6 0 0
+}
+
+##################################################
+# 3. SWEEP / LOFT -- a two-profile morph (profile_circle -> profile2_rect,
+# doc 89 slice A) displaced on top, proving the loft composes with
+# displaced_geometry and not just a fixed-section sweep.  Also FACETED --
+# same mechanism as the lathe above.
+##################################################
+sweep_geometry
+{
+	name				base_leg
+	profile_circle		0.52 28
+	profile2_rect		1.30 1.30 0.06
+	point				0 4.2 0
+	point				0 2.8 0
+	point				0 1.4 0
+	point				0 0.0 0
+	point_morph			0
+	point_morph			0.10
+	point_morph			0.55
+	point_morph			1.0
+	n_len				64
+	frame_hint			1 0 0
+}
+
+displaced_geometry
+{
+	name				disp_leg
+	base_geometry		base_leg
+	detail				48
+	displacement		pnt_relief
+	disp_scale			0.05
+}
+
+standard_object
+{
+	name				obj_leg
+	geometry			disp_leg
+	material			mat_sweep
+	position			-2 0 0
+}
+
+##################################################
+# 4. SKIN -- a billowed sail.  Double-sided, since a skin sheet has no
+# "back" of its own to hide a bad normal behind.  Same faceting mechanism
+# as specimens 2/3 (skin_geometry bakes into the same kind of plain mesh).
+##################################################
+skin_geometry
+{
+	name				base_sail
+	rail_a				-1.6 0.0 0.0
+	rail_a				-0.5 0.45 0.0
+	rail_a				0.6 1.1 0.0
+	rail_a				1.6 2.0 0.0
+	rail_b				-1.6 0.4 -1.9
+	rail_b				0.0 1.5 -1.9
+	rail_b				1.6 2.6 -1.9
+	n_len				40
+	n_across			16
+	billow				0.28
+}
+
+displaced_geometry
+{
+	name				disp_sail
+	base_geometry		base_sail
+	detail				32
+	displacement		pnt_relief
+	disp_scale			0.05
+	double_sided		TRUE
+}
+
+standard_object
+{
+	name				obj_sail
+	geometry			disp_sail
+	material			mat_skin
+	position			2 0 0
+}
+
+##################################################
+# 5. SDF / SKELETON -- a skeleton_geometry-expanded tentacle (one
+# sdf_geometry under the hood: roundcones per bone, smin-blended).  Stays
+# SMOOTH under displacement: sdf_geometry's own dual-contoured
+# TessellateToMesh keeps real shared-vertex topology.
+##################################################
+skeleton_geometry
+{
+	name				base_tentacle
+	joint				t0 none 0.0 0.0 0.0 0.35
+	joint				t1 t0   0.6 0.9 0.2 0.28
+	joint				t2 t1   1.0 1.9 0.1 0.20
+	joint				t3 t2   0.7 2.8 0.4 0.12
+	joint				t4 t3   0.2 3.5 0.3 0.05
+	blend				0.5
+}
+
+displaced_geometry
+{
+	name				disp_tentacle
+	base_geometry		base_tentacle
+	detail				48
+	displacement		pnt_relief
+	disp_scale			0.04
+}
+
+standard_object
+{
+	name				obj_tentacle
+	geometry			disp_tentacle
+	material			mat_skeleton
+	position			6 0 -1
+}
+
+##################################################
+# 6. SDF / SUPERELLIPSOID -- a plain sdf_geometry with one superellipsoid
+# part (the cushion range).  Also stays SMOOTH under displacement, for the
+# same reason as specimen 5.
+##################################################
+sdf_geometry
+{
+	name				base_cushion
+	part				superellipsoid union 0  0 0 0  0 0 0  1.35 0.85 1.35  1.0 0.45 0.45  0
+}
+
+displaced_geometry
+{
+	name				disp_cushion
+	base_geometry		base_cushion
+	detail				48
+	displacement		pnt_relief
+	disp_scale			0.05
+}
+
+standard_object
+{
+	name				obj_cushion
+	geometry			disp_cushion
+	material			mat_superellipsoid
+	position			10 1.1 0
+}
+
+# 7. CHAINED COMPOSITION -- a displaced_geometry used as the TEMPLATE of a
+# path_instances_geometry: a lumpy sphere bead stamped along a shallow arc
+# in front of the other specimens.  This is the one pairing the slice-D
+# audit verified live but nothing golden-tracked pinned: the instancer
+# calls Realize() on its template before tessellating, so the bumps must
+# appear on every stamped bead.  A future change to Realize() semantics or
+# the path-instances factory that loses the displacement breaks this
+# specimen's digest and render.
+sphere_geometry
+{
+	name				base_bead
+	radius				0.55
+}
+
+displaced_geometry
+{
+	name				disp_bead
+	base_geometry		base_bead
+	detail				24
+	displacement		pnt_relief
+	disp_scale			0.16
+}
+
+path_instances_geometry
+{
+	name				beadchain
+	geometry			disp_bead
+	point				-6.0 0 6.5
+	point				-2.0 0 7.6
+	point				2.0 0 7.6
+	point				6.0 0 6.5
+	pitch				1.7
+	detail				16
+}
+
+standard_object
+{
+	name				obj_beadchain
+	geometry			beadchain
+	material			mat_box
+	position			0 0.55 0
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.46 0.46 0.48
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				1600
+	color				1.0 0.98 0.94
+	position			-10 16 14
+}
+
+omni_light
+{
+	name				filllight
+	power				700
+	color				0.90 0.94 1.0
+	position			12 10 12
+}

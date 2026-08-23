@@ -11,6 +11,12 @@
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Interfaces/IFunction2D.h"
+// Doc 89 slice D (displaced-detail composition audit): builds a lathe_geometry
+// base mesh via the same RISE_API factory the scene parser uses, so the
+// composition tests below exercise the REAL builder output, not a hand-rolled
+// stand-in.
+#include "../src/Library/RISE_API.h"
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -459,6 +465,154 @@ static void TestFaceNormalMeshDisplacesAlongFaceNormal()
 }
 
 //-----------------------------------------------------------------------------
+// Doc 89 slice D audit: displaced_geometry composed over a BUILDER mesh
+// (lathe_geometry), not just an analytic primitive.  This is the audit's
+// headline PASS case -- derive, bake, and confirm the displacement actually
+// moved vertices, bounded by the painter's own amplitude.  A ConstFunction2D
+// of value 1.0 displaces every non-degenerate vertex by disp_scale along its
+// OWN per-vertex normal (the smooth lathe bake's normal, copied verbatim by
+// TessellateToMesh's pass-through BEFORE any post-displacement normal
+// recompute -- see TestDisplacedOverPinchedLatheTears below and the audit
+// report for what that recompute does to SHADING, which this test does not
+// exercise), so the max (and min) position deviation across the whole mesh
+// should land close to disp_scale.
+//-----------------------------------------------------------------------------
+static void TestDisplacedOverLatheAppliesDisplacement()
+{
+	std::cout << "Test 9: displaced_geometry composes over a lathe_geometry builder mesh...\n";
+
+	// Simple UNPINCHED vase profile (the only r=0 points are the two ends,
+	// which are ordinary poles, not an INTERIOR pinch -- see the pinch test
+	// below for that case).
+	const double prof[] = { 0.0, 0.0,  0.7, 0.2,  0.9, 1.0,  0.5, 1.8,  0.0, 2.0 };
+	LatheDescriptor ld;
+	ld.profilePoints = prof; ld.numProfilePoints = 5;
+	ld.nRadial = 32;
+	ld.smooth = true;
+
+	ITriangleMeshGeometryIndexed* pLatheI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pLatheI, ld ) );
+	TriangleMeshGeometryIndexed* pLathe = dynamic_cast<TriangleMeshGeometryIndexed*>( pLatheI );
+	assert( pLathe );
+
+	// Snapshot the BASE mesh's own vertex positions (pre-displacement) via
+	// TessellateToMesh -- the exact call DisplacedGeometry::BuildMesh makes.
+	IndexTriangleListType baseTris; VerticesListType baseVerts; NormalsListType baseNorms; TexCoordsListType baseCoords;
+	assert( pLathe->TessellateToMesh( baseTris, baseVerts, baseNorms, baseCoords, 0 ) );
+	assert( !baseVerts.empty() );
+
+	const Scalar k = 0.15;	// constant displacement amplitude
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry(
+		pLathe, 32, pConst, k,
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	assert( pDisp->IsValid() );
+	pDisp->Realize();
+
+	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
+	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
+	assert( dVerts.size() == baseVerts.size() );
+
+	Scalar maxDev = 0.0, minDev = 1e30;
+	for( size_t i = 0; i < dVerts.size(); ++i ) {
+		const Scalar dx = dVerts[i].x - baseVerts[i].x;
+		const Scalar dy = dVerts[i].y - baseVerts[i].y;
+		const Scalar dz = dVerts[i].z - baseVerts[i].z;
+		const Scalar dev = std::sqrt( dx*dx + dy*dy + dz*dz );
+		maxDev = std::max( maxDev, dev );
+		minDev = std::min( minDev, dev );
+	}
+	std::cout << "  [info] lathe displacement deviation: min=" << minDev << " max=" << maxDev << " (amplitude k=" << k << ")\n";
+	// Displacement actually applied (not a no-op)...
+	assert( maxDev > 0.0 );
+	// ...and bounded by the painter's own amplitude (every vertex moves by
+	// disp_scale along a UNIT normal; 5% slack for FP/normal-magnitude noise).
+	assert( maxDev <= k * 1.05 );
+	assert( minDev >= k * 0.95 );
+
+	pDisp->release();
+	pConst->release();
+	pLathe->release();
+}
+
+//-----------------------------------------------------------------------------
+// Doc 89 slice D audit: displaced_geometry over an INTERIOR-PINCH lathe TEARS
+// at the waist.  This is documented -- and deliberately NOT "fixed" -- at
+// ProceduralDescriptors.h's LatheDescriptor comment: the pinch's two poles
+// are coincident POSITIONS with EXACTLY OPPOSITE normals (one vertex per
+// adjacent band; see TestLatheInteriorPolePinch in ProceduralMeshTest.cpp),
+// so displacing each pole along its OWN normal pushes the pair apart by
+// 2*disp_scale and opens a visible crack.  Welding the two poles to close
+// the crack would instead put one of the two bands' SHADING normal in the
+// wrong half-space -- the defect the split exists to prevent -- so the
+// documented guidance is "displace an unpinched profile, or keep disp_scale
+// small ... rather than fixing it".
+//
+// This is the STRONGEST FAIL cell the doc 89 slice D audit found (matrix
+// criterion 3, "renders sanely / no holes").  Pinned here quantitatively so
+// the limitation stays load-bearing: a future change that welds the pinch
+// (intentionally or as a side effect of some other normal-recompute fix)
+// will fail this assertion and must consciously revisit both this test and
+// the LatheDescriptor comment, instead of the crack being silently
+// reintroduced or silently "fixed" without anyone noticing the tradeoff.
+//-----------------------------------------------------------------------------
+static void TestDisplacedOverPinchedLatheTears()
+{
+	std::cout << "Test 10: displaced_geometry over an interior-pinch lathe TEARS at the waist (documented limitation)...\n";
+
+	const double R = 1.0;
+	const double prof[] = { R, 0.0,   0.0, 1.0,   R, 2.0 };	// hourglass, pinched at h=1 (TestLatheInteriorPolePinch's profile)
+	LatheDescriptor ld;
+	ld.profilePoints = prof; ld.numProfilePoints = 3;
+	ld.nRadial = 24;
+
+	ITriangleMeshGeometryIndexed* pLatheI = 0;
+	assert( RISE_API_CreateLatheGeometry( &pLatheI, ld ) );
+	TriangleMeshGeometryIndexed* pLathe = dynamic_cast<TriangleMeshGeometryIndexed*>( pLatheI );
+	assert( pLathe );
+
+	const Scalar k = 0.2;
+	ConstFunction2D* pConst = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp = new DisplacedGeometry(
+		pLathe, 24, pConst, k,
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	assert( pDisp->IsValid() );
+	pDisp->Realize();	// must NOT crash on the pinch -- the render-sanity half of the audit
+
+	IndexTriangleListType dTris; VerticesListType dVerts; NormalsListType dNorms; TexCoordsListType dCoords;
+	assert( pDisp->TessellateToMesh( dTris, dVerts, dNorms, dCoords, 0 ) );
+	assert( !dVerts.empty() );
+
+	// Find the ex-pinch vertices: pre-displacement they sat exactly on the
+	// axis (x=z=0, y=1); a pure +/-Y pole normal keeps them on the axis after
+	// displacement too, landing near y = 1 +/- k.
+	std::vector<Scalar> nearAxisY;
+	for( size_t i = 0; i < dVerts.size(); ++i ) {
+		const Scalar rxz = std::sqrt( dVerts[i].x * dVerts[i].x + dVerts[i].z * dVerts[i].z );
+		if( rxz < Scalar(1e-6) && std::fabs( dVerts[i].y - Scalar(1.0) ) < Scalar(0.5) ) {
+			nearAxisY.push_back( dVerts[i].y );
+		}
+	}
+	std::cout << "  [info] " << nearAxisY.size() << " near-axis vertices near the waist after displacement\n";
+	assert( nearAxisY.size() >= 2 && "pinch: both ex-coincident pole vertices must survive the bake" );
+
+	Scalar loY = 1e30, hiY = -1e30;
+	for( size_t i = 0; i < nearAxisY.size(); ++i ) {
+		loY = std::min( loY, nearAxisY[i] );
+		hiY = std::max( hiY, nearAxisY[i] );
+	}
+	const Scalar gap = hiY - loY;
+	std::cout << "  [info] pinch gap after displacement: " << gap << " (expect ~2*k = " << 2.0*k << ")\n";
+
+	// MONEY ASSERTION -- the documented crack, pinned quantitatively.
+	assert( gap > Scalar(1.5) * k && gap < Scalar(2.5) * k );
+
+	pDisp->release();
+	pConst->release();
+	pLathe->release();
+}
+
+//-----------------------------------------------------------------------------
 // Concurrency guard (review Finding 1): many threads calling Realize() at once
 // must BuildMesh() the instance EXACTLY once.  Models a GUI viewport render's
 // AttachScene racing a UI-thread PrepareForRendering/picking on the same, not-
@@ -513,6 +667,8 @@ int main()
 	TestUniformRandomPointOnSurface();
 	TestNestedComposition();
 	TestFaceNormalMeshDisplacesAlongFaceNormal();
+	TestDisplacedOverLatheAppliesDisplacement();
+	TestDisplacedOverPinchedLatheTears();
 	TestConcurrentRealize();
 
 	std::cout << "All DisplacedGeometry tests passed.\n";

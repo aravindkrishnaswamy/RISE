@@ -27,8 +27,8 @@ not listed here.
 | `lathe_geometry` | **SURFACES OF REVOLUTION -- the turned/lathe verb** (bottles, jars, vases, mortars, goblets, urns, turned legs, finials, lamp bases -- see "Turned forms" below) | mesh cost (tessellated once), no sphere-tracing | repeated `profile_point <r> <h>` lines ARE the silhouette (`r` = radius from the axis, `h` = height along it), spun about `axis` (default `y`); a point at `r 0` sits ON the axis and collapses to a single pole, so a profile that starts and ends there is closed and watertight with no caps; `sweep_degrees` under 360 cuts a capped section; the baked mesh is DOUBLE-SIDED, so a luminaire material on it radiates inward too |
 | `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius>` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; still just roundcones, so every bone is a capsule -- a body MASS that is really a cushion (a torso, an abdomen) is one `superellipsoid` part in a plain `sdf_geometry`, and a limb that FOLLOWS A CURVE is `sweep_geometry`; the manual `part` grammar stays the fallback for anything the joint graph can't express |
 | `sweep_geometry` | tubes, rails, mouldings, cable runs, any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail), and -- via the per-station controls -- BODIES WITH A NON-CIRCULAR, CHANGING SECTION (a torso, a fin, a snout, a strap, a hull, a round-to-square leg) | mesh cost (tessellated once) | the cross-section is NOT fixed: `point_scale <sx> <sy>` scales the two profile axes independently per station, and a second profile (`profile2_*`) plus `point_morph <t>` changes the section's OUTLINE along the path -- but it still interpolates at most TWO sections, so it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
-| `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
-| `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson) |
+| `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing; the template can be ANY first-class geometry INCLUDING a `displaced_geometry` (it is realized + tessellated through the same universal contract before stamping) |
+| `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson); `base_geometry` composes over ANY geometry INCLUDING `sdf_geometry`, `lathe_geometry`, `sweep_geometry` and `skin_geometry` (Recipe 6 below), but a `lathe_geometry`/`sweep_geometry`/`skin_geometry` base goes visibly FACETED under any non-zero displacement (their bake re-emits unshared per-triangle-corner topology, so post-displacement shading has nothing to average across) -- `sdf_geometry` bases stay smooth |
 | `circulardisk_geometry`, `cartesian_disk_geometry` | flat disks (dials, coins, disk-shaped bases) | cheap | `cartesian_disk_geometry` has uniform Cartesian UV density; the polar disk does not -- pick by what you're displacing/texturing onto it |
 | `bezierpatch_geometry`, `bilinearpatch_geometry` | authored curved/patch surfaces | analytic (bezier) / cheap (bilinear) | `bezierpatch_geometry`'s old tessellation params (`detail`, `cache_size`, ...) are retired -- wrap it in `displaced_geometry` if you need that control |
 | Mesh imports (`3dsmesh_geometry`, `rawmesh_geometry`/`rawmesh2_geometry`, `risemesh_geometry`, `plymesh_geometry`, `gltfmesh_geometry`) | authored/imported assets that are not primitive-shaped | mesh cost | `file` path resolved via the media-path search (see the reference-image skill for the exact resolution order); declare before the `standard_object` that references it |
@@ -1543,6 +1543,187 @@ directional_light
 	direction	0.3 0.6 0.7
 }
 ```
+
+## Recipe 6: surface detail via `displaced_geometry` over a BUILDER's mesh
+
+`displaced_geometry.base_geometry` is a plain `Reference` to any already-
+declared geometry, so it composes over `sdf_geometry` (including a
+`superellipsoid` part), `lathe_geometry`, `sweep_geometry` and
+`skin_geometry`, not just the analytic primitives -- a fillip-free way to
+get scales, bark or hammered-metal dimples onto a shape you already built
+some other way, instead of hand-authoring the relief into the base.  Below:
+a `superellipsoid` cushion (Recipe 3's SDF vocabulary) with `perlin2d_painter`
+dimples -- the clean case, verified end to end (derives, bakes, renders).
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	0 -5 2.4
+	lookat		0 0 0
+	up			0 0 1
+	fov			38.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.5 0.5 0.5
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 0 -1.1
+}
+
+uniformcolor_painter
+{
+	name	pnt_dark
+	color	0 0 0
+}
+
+uniformcolor_painter
+{
+	name	pnt_light
+	color	1 1 1
+}
+
+perlin2d_painter
+{
+	name		pnt_dimples
+	colora		pnt_dark
+	colorb		pnt_light
+	persistence	0.5
+	octaves		4
+	scale		9.0 9.0
+	shift		0 0
+}
+
+uniformcolor_painter
+{
+	name	pnt_pebble
+	color	0.62 0.42 0.28
+}
+
+lambertian_material
+{
+	name		mat_pebble
+	reflectance	pnt_pebble
+}
+
+sdf_geometry
+{
+	name	pebblebase
+	part	superellipsoid union 0  0 0 0  0 0 0  1.15 0.85 1.0  1.0 0.45 0.45  0
+}
+
+displaced_geometry
+{
+	name			pebblegeom
+	base_geometry	pebblebase
+	detail			48
+	displacement	pnt_dimples
+	disp_scale		0.05
+}
+
+standard_object
+{
+	name		pebble
+	geometry	pebblegeom
+	material	mat_pebble
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 -0.7 0.7
+}
+```
+
+Three things worth knowing before reaching for this on a different base,
+verified by direct measurement rather than assumed from the `Reference`
+plumbing:
+
+- **`sdf_geometry` (including a `skeleton_geometry`-expanded body) stays
+  SMOOTH under displacement** -- its own `TessellateToMesh` emits real
+  shared-vertex topology (a dual-contoured surface mesh), so the
+  post-displacement normal recompute genuinely averages across neighbouring
+  faces.  This is the recipe above, and it is the safe default when the
+  relief needs to read as smooth (scales, dimples, skin pores).
+- **`lathe_geometry`/`sweep_geometry`/`skin_geometry` bases lose smooth
+  shading the moment ANY non-zero displacement is applied.**  Their bake is
+  already a plain triangle mesh, and the generic mesh-to-mesh tessellation
+  path used to feed the displacer re-emits every triangle corner as its OWN
+  vertex (no shared indices), so the post-displacement normal recompute has
+  nothing to average across -- every triangle reads its own flat face
+  normal.  The base looks fine un-displaced (its own construction-time
+  normals are smooth); it goes visibly faceted -- NOT a subtle effect, hard
+  per-triangle facets -- the instant `disp_scale` is non-zero.  If you need
+  bark/wrinkle relief on a turned or swept body, raise that base's own
+  tessellation (`n_radial`, `n_len`) until the facets are smaller than the
+  desired texture wavelength, or accept the faceted look as part of the
+  texture (works for something already angular; not for skin).
+- **An INTERIOR-pinch `lathe_geometry` profile (an hourglass waisted to
+  `r 0` partway along, not just at the two ends) TEARS at the pinch under
+  displacement** -- the pinch bakes as two coincident vertices with opposite
+  normals (`ProceduralDescriptors.h`'s `LatheDescriptor` documents this
+  as deliberate, not a bug: welding them back into one vertex would put one
+  band's shading normal in the wrong half-space instead).  Displacing one
+  pushes the pair apart by `2 * disp_scale`, opening a visible crack.
+  Displace an UNPINCHED profile, or keep `disp_scale` small relative to the
+  waist.
+
+A `skeleton_geometry`-expanded creature has no per-limb UV: every part
+shares ONE cylindrical wrap around the whole body's own bounding box (`u` =
+angle about local Y, `v` = normalized height), so a displacement pattern
+sized for one limb will read at a different scale on another and can repeat
+oddly across the seam -- scale the painter for the WHOLE silhouette, not one
+limb, or keep the pattern small and high-frequency (like the dimples above)
+so the per-limb scale difference does not read.
+
+`path_instances_geometry` composes the other way: its template is realized
+and tessellated through the same universal contract, so a `displaced_geometry`
+can BE the template -- a row of dimpled pebbles along a path is one
+`displaced_geometry` chunk plus the `path_instances_geometry` that stamps it,
+not N hand-placed copies.
 
 ## Traps specific to object modeling
 
