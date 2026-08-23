@@ -856,11 +856,32 @@ static void RunValidateDesignDiagnosticsScanTest()
 // apothecary-workbench prompt ("each shelf lined with rows of the same
 // glass bottle") reused the GEOMETRY -- six standard_objects on one
 // `shelf_wares_tall_bottle_geo` -- but hand-authored six chunks instead
-// of one `source` + `count_u` chunk.  Every fixture below is built to
-// DISCRIMINATE rather than merely pass: each non-firing case differs
-// from the firing one in exactly ONE respect, so a condition that
-// over-fires (or that silently stops firing) fails a named assertion
-// rather than sliding through.
+// of one `source` + `count_u` chunk.  The gate shipped at FIVE, tuned to
+// agree with the skill prose's old "more than about four times" line and
+// to catch that six-copy miss with one to spare.
+//
+// 2026-08-23 RETUNING.  Four live firings of this exact note, across two
+// providers, at 5-7 copies -- the apothecary regime this scan was BUILT
+// to catch -- were all declined, and the user has ruled every one of
+// those declines CORRECT: at a handful of copies, hand-authored VARIETY
+// is good authoring (twelve varied apothecary bottles beat twelve
+// stamped ones), so a gate that fires there was nagging about the wrong
+// problem.  Instancing's genuine regime is LARGE-SCALE REGULAR
+// replication -- fence posts, colonnades, rivet rows -- where uniformity
+// IS the point.  The gate moved 5 -> 10 (kRepeatedCopyGate, above this
+// file's DesignNoteConditions_ scan); `collapse_to_instances`' own floor
+// (kCollapseMinGroup == 3, the verb a caller can still invoke by name on
+// a small run they HAVE decided to collapse) is untouched -- the two
+// constants are independent by construction.
+//
+// Every fixture below is built to DISCRIMINATE rather than merely pass:
+// each non-firing case differs from the firing one in exactly ONE
+// respect, so a condition that over-fires (or that silently stops
+// firing) fails a named assertion rather than sliding through.  The
+// fixtures now carry TWO money assertions instead of one: the classic
+// "fires at the gate" shape, AND the new "stays silent below it" shape
+// at the exact 5-7 count that used to fire and was ruled a correct
+// decline.
 //----------------------------------------------------------------------
 static void RunDesignRepeatedCopiesScanTest()
 {
@@ -902,65 +923,110 @@ static void RunDesignRepeatedCopiesScanTest()
 		       "\tposition " + x + " 0 0\n}\n\n";
 	};
 
-	// -- (1) RED-PROVE: the measured pattern.  SIX copies of one geometry,
-	//    identical bindings, transform-only differences, no instancing.
-	//    Doc 91: three throwaway anchors so neither of the two NEW design
-	//    conditions ALSO fires on this fixture -- several downstream checks
-	//    (GREEN-PROVE C at (2) below) require the note to go FULLY empty
-	//    once the repetition is instanced away.  Two bind `rm` and `mat2`
-	//    (both otherwise unreferenced by anything below), silencing
-	//    condition G (DESIGN_UNBOUND_MATERIAL); the third binds a
-	//    PROCEDURAL colour painter, silencing condition H
-	//    (DESIGN_FLAT_ALBEDO) -- without it every colour slot in this
-	//    fixture (`mat`/`mat2`'s `reflectance`, both bound to the constant
-	//    `pnt`) would be a flat constant.  Each anchor's OWN binding
-	//    signature is unique (different `material`), so none joins the
-	//    six-`bottle_geo`/`mat` group condition C measures.
-	const std::string docSix = preamble +
+	// The anchor chunks that keep conditions G (DESIGN_UNBOUND_MATERIAL)
+	// and H (DESIGN_FLAT_ALBEDO) silent -- doc 91's isolation trio, now
+	// factored out since more fixtures below need full note-emptiness
+	// (not just "condition C absent") than the original 5-gate version
+	// did.  Two bind `rm` and `mat2` (both otherwise unreferenced),
+	// silencing G; the third binds a PROCEDURAL colour painter, silencing
+	// H -- without it every colour slot in these fixtures (`mat`/`mat2`'s
+	// `reflectance`, both bound to the constant `pnt`) would be a flat
+	// constant.  Each anchor's OWN binding signature is unique (different
+	// `material`), so none joins the `bottle_geo`/`mat` group condition C
+	// measures.
+	const std::string anchors =
 		"standard_object\n{\n\tname rm_anchor\n\tgeometry bottle_geo\n\tmaterial rm\n}\n\n"
 		"standard_object\n{\n\tname mat2_anchor\n\tgeometry bottle_geo\n\tmaterial mat2\n}\n\n"
 		// Deliberately only 4 distinct numeric literals in the body (below
-		// kParamErosionLiteralGate == 6) so this fixture does not ALSO trip
+		// kParamErosionLiteralGate == 6) so this does not ALSO trip
 		// DESIGN_PARAM_METADATA_EROSION -- that condition is orthogonal to
-		// what this fixture is testing.
+		// what these fixtures are testing.
 		"expression_painter\n{\n\tname doc91_field\n\texpr fbm(P*4.0,4,0.5,2.0)\n}\n\n"
 		"lambertian_material\n{\n\tname doc91_procedural_mat\n\treflectance doc91_field\n}\n\n"
 		"standard_object\n{\n\tname procedural_anchor\n\tgeometry bottle_geo\n"
-		"\tmaterial doc91_procedural_mat\n}\n\n" +
-		bottle( "b0", "0" ) + bottle( "b1", "0.5" ) + bottle( "b2", "1.0" ) +
-		bottle( "b3", "1.5" ) + bottle( "b4", "2.0" ) + bottle( "b5", "2.5" );
+		"\tmaterial doc91_procedural_mat\n}\n\n";
+
+	// -- (1) THE NEW MONEY ASSERTION: SILENT at 6 and 7 copies -- the
+	//    apothecary regime.  This is exactly the shape that used to fire
+	//    (the measured miss this scan was built from was six copies) and
+	//    was declined four times, correctly, per the user's ruling above.
+	//    Manually red-proved during this retuning by reverting
+	//    kRepeatedCopyGate to 5 and re-running: the 7-copy case below
+	//    FAILS (fires) at gate 5 and PASSES (silent) at gate 10 -- see the
+	//    session report for the exact counts both ways.
 	{
+		std::string docSix = preamble + anchors;
+		for( int i = 0; i < 6; ++i ) docSix += bottle( "b" + std::to_string( i ), std::to_string( i ) );
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docSix );
+		Check( !hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
+		       "SILENT-PROVE C (apothecary, 6): six standard_objects on ONE geometry, transform-only "
+		       "differences, no source/count_u -- stays SILENT now (gate 10) where it used to fire at "
+		       "gate 5; this is the declined-firing shape the user ruled a correct decline" );
+		Check( AgentSession::ComputeDesignNote( docSix ).empty(),
+		       "...and the render-result note goes FULLY empty (A/B/G/H are silenced by the preamble "
+		       "and the anchors, so this proves C alone, not an accidental empty note)" );
+	}
+	{
+		std::string docSeven = preamble + anchors;
+		for( int i = 0; i < 7; ++i ) docSeven += bottle( "b" + std::to_string( i ), std::to_string( i ) );
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docSeven );
+		Check( !hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
+		       "SILENT-PROVE C (apothecary, 7): SEVEN copies -- one more than the old gate of 5 -- also "
+		       "stay silent under gate 10, the same declined-and-ruled-correct regime" );
+		Check( AgentSession::ComputeDesignNote( docSeven ).empty(),
+		       "...note fully empty here too" );
+	}
+
+	// -- (2) BOUNDARY, exact, from both sides on one fixture: NINE stays
+	//    silent, the TENTH copy fires.  This replaces the old 4/5
+	//    boundary pair (Recipe 2's four-legged table sat one below the
+	//    old gate of 5; a nine-copy run now sits one below the new gate
+	//    of 10 for the identical reason).
+	std::string docNine = preamble + anchors;
+	for( int i = 0; i < 9; ++i ) docNine += bottle( "b" + std::to_string( i ), std::to_string( i ) );
+	{
+		Check( !hasCode( AgentSession::ValidateText( docNine ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "BOUNDARY C: NINE copies stay silent (gate is 10) -- one below the line, same as Recipe "
+		       "2's four legs sat one below the old gate of 5" );
+	}
+	const std::string docTen = docNine + bottle( "b9", "9" );
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docTen );
 		const AgentDiagnostic* d = findCode( diags, "DESIGN_HAND_REPEATED_COPIES" );
 		Check( d != nullptr,
-		       "RED-PROVE C: 6 standard_objects on ONE geometry, transform-only differences, no "
-		       "source/count_u -- fires DESIGN_HAND_REPEATED_COPIES" );
+		       "BOUNDARY C: the SAME document plus a TENTH copy fires -- the gate is 10, proven from "
+		       "both sides on one fixture" );
 		if( d ) {
 			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity (advisory, like A and B)" );
-			Check( d->message.find( "6 standard_objects" ) != std::string::npos,
-			       "...reporting the actual group SIZE (6), not a generic count" );
+			Check( d->message.find( "10 standard_objects" ) != std::string::npos,
+			       "...reporting the actual group SIZE (10), not a generic count" );
 			Check( d->message.find( "`bottle_geo`" ) != std::string::npos,
 			       "...NAMING the shared geometry, so the author knows which run is meant" );
 			Check( d->message.find( "`source <that one>`" ) != std::string::npos &&
-			       d->message.find( "count_u 5" ) != std::string::npos,
-			       "...pricing the alternative BY NAME (`source` + `count_u 5` -- one fewer than 6, "
+			       d->message.find( "count_u 9" ) != std::string::npos,
+			       "...pricing the alternative BY NAME (`source` + `count_u 9` -- one fewer than 10, "
 			       "because the source still renders)" );
 			Check( d->message.find( "COPIES rather than moves or hides" ) != std::string::npos &&
-			       d->message.find( "are 6, not 5" ) != std::string::npos,
-			       "...teaching the off-by-one trap the section teaches (`source` copies, so count_u 5 "
-			       "off a visible source yields SIX)" );
+			       d->message.find( "are 10, not 9" ) != std::string::npos,
+			       "...teaching the off-by-one trap the section teaches (`source` copies, so count_u 9 "
+			       "off a visible source yields TEN)" );
+			Check( d->message.find( "This is what `source` + `count_u` is FOR" ) != std::string::npos &&
+			       d->message.find( "a handful of deliberately varied siblings is good authoring, not a smell" )
+			           != std::string::npos,
+			       "...MONEY (the 2026-08-23 scoping sentence): the clause itself now says a large "
+			       "regular run is what the verb is for, and a handful of varied siblings is not a smell" );
 			Check( d->message.find( "this is fine -- ignore and do not churn" ) != std::string::npos,
 			       "...self-disarming, the same advisory discipline conditions A and B follow" );
 		}
 		// A and B are silenced by the preamble, so a non-empty note here is
 		// condition C and nothing else.
-		const std::string note = AgentSession::ComputeDesignNote( docSix );
+		const std::string note = AgentSession::ComputeDesignNote( docTen );
 		Check( note.find( "no physical-scalar material parameter" ) == std::string::npos &&
 		       note.find( "geometry census" ) == std::string::npos,
 		       "...with conditions A and B provably silent (the fixture binds both a scalar_painter "
 		       "and an sdf_geometry), so the note below is condition C in isolation" );
 		Check( note.find( "DESIGN NOTE" ) != std::string::npos &&
-		       note.find( "6 standard_objects" ) != std::string::npos,
+		       note.find( "10 standard_objects" ) != std::string::npos,
 		       "...and the RENDER-RESULT note carrier fires on the same document" );
 
 		// THE VERBATIM-COPY INVARIANT (the note clause and the diagnostic
@@ -976,71 +1042,59 @@ static void RunDesignRepeatedCopiesScanTest()
 		}
 	}
 
-	// -- (2) GREEN-PROVE: the SAME six objects, but the repetition is
-	//    ALREADY expressed with source/count_u.  Firing here would be
-	//    actively wrong -- the author did the right thing.
+	// -- (3) GREEN-PROVE (already-instanced disarm, UNCHANGED SHAPE): the
+	//    SAME ten objects, but the repetition is already expressed with
+	//    source/count_u.  Firing here would be actively wrong -- the
+	//    author did the right thing.  Built on docTen (the fires-fixture)
+	//    now that docSix/docSeven no longer fire on their own.
 	{
-		const std::string docInstanced = docSix +
-			"standard_object\n{\n\tname shelf_row\n\tsource b0\n\tcount_u 3\n\tposition expr(3+i) 1 0\n}\n";
+		const std::string docInstanced = docTen +
+			"standard_object\n{\n\tname shelf_row\n\tsource b0\n\tcount_u 3\n\tposition expr(10+i) 1 0\n}\n";
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docInstanced );
 		Check( !hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
-		       "GREEN-PROVE C (already instanced): the SAME 6-copy run plus ONE source/count_u chunk "
+		       "GREEN-PROVE C (already instanced): the SAME 10-copy run plus ONE source/count_u chunk "
 		       "silences condition C -- a note there would price an idiom the author already used" );
 		Check( AgentSession::ComputeDesignNote( docInstanced ).empty(),
 		       "...and the note goes fully empty (A and B were already silent)" );
 	}
 
-	// -- (2b) ...and `source` ALONE (no counts) disarms it too: a single
+	// -- (3b) ...and `source` ALONE (no counts) disarms it too: a single
 	//    instance is still proof the author has the idiom in hand.
 	{
-		const std::string docSourceOnly = docSix +
+		const std::string docSourceOnly = docTen +
 			"standard_object\n{\n\tname shelf_copy\n\tsource b0\n\tposition 0 1 0\n}\n";
 		Check( !hasCode( AgentSession::ValidateText( docSourceOnly ), "DESIGN_HAND_REPEATED_COPIES" ),
 		       "GREEN-PROVE C: a bare `source` (no count_u) disarms condition C as well" );
 	}
 
-	// -- (3) GREEN-PROVE: BELOW the gate.  Four legs sharing one geometry
-	//    is the honest authoring shape (object-modeling-recipes Recipe 2),
-	//    and the gate of 5 exists precisely so this does not get nagged.
-	const std::string docFour = preamble +
-		bottle( "leg0", "0" ) + bottle( "leg1", "0.5" ) + bottle( "leg2", "1.0" ) + bottle( "leg3", "1.5" );
-	{
-		Check( !hasCode( AgentSession::ValidateText( docFour ), "DESIGN_HAND_REPEATED_COPIES" ),
-		       "GREEN-PROVE C (threshold): FOUR copies -- a table's legs -- stay silent (gate is 5, "
-		       "matching the skill's own \"more than about four times\" rule)" );
-	}
-	// ...and the boundary is exactly where it is claimed to be: adding the
-	// FIFTH identical-binding copy to that same document fires it.
-	{
-		const std::string docFive = docFour + bottle( "leg4", "2.0" );
-		Check( hasCode( AgentSession::ValidateText( docFive ), "DESIGN_HAND_REPEATED_COPIES" ),
-		       "BOUNDARY C: the same document plus a FIFTH copy fires -- the gate is 5, proven from "
-		       "both sides on one fixture" );
-	}
-
-	// -- (4) GREEN-PROVE: six objects on one geometry that differ in more
-	//    than placement (two materials) are NOT one array -- an instancing
-	//    chunk copies bindings wholesale, so it could not have written them.
+	// -- (4) GREEN-PROVE (non-reference-param silence, UNCHANGED SHAPE):
+	//    eighteen objects on one geometry that differ in more than
+	//    placement (two materials, nine each) are NOT one array -- an
+	//    instancing chunk copies bindings wholesale, so it could not have
+	//    written them.  Nine-and-nine is deliberate: EACH side sits one
+	//    below the new gate of 10 (the same boundary fact as (2) above),
+	//    while the MERGED total (18) would clear it -- so this proves the
+	//    split is by binding, not merely both sides being small.
 	{
 		std::string docMixedBindings = preamble;
-		for( int i = 0; i < 6; ++i ) {
+		for( int i = 0; i < 18; ++i ) {
 			docMixedBindings += "standard_object\n{\n\tname m" + std::to_string( i ) +
 				"\n\tgeometry bottle_geo\n\tmaterial " + ( ( i % 2 ) ? "mat2" : "mat" ) +
 				"\n\tposition " + std::to_string( i ) + " 0 0\n}\n\n";
 		}
 		Check( !hasCode( AgentSession::ValidateText( docMixedBindings ), "DESIGN_HAND_REPEATED_COPIES" ),
-		       "GREEN-PROVE C (bindings): 6 objects on one geometry split 3/3 across TWO materials "
-		       "stay silent -- neither group reaches 5, and one `source` chunk could not have "
-		       "produced both" );
+		       "GREEN-PROVE C (bindings): 18 objects on one geometry split 9/9 across TWO materials "
+		       "stay silent -- neither group reaches 10 even though the merged total (18) would, and "
+		       "one `source` chunk could not have produced both" );
 	}
 
-	// -- (5) GREEN-PROVE: geometry-less CONTAINERS never enter a group.
-	//    This is the harness's own machine-minted `<prefix>element_root`
-	//    shape (AgentSession::ElementRootName mints exactly
-	//    `standard_object { name <prefix>element_root }`), and the trajectory
-	//    that motivated this slice carried 93 such links -- so a condition
-	//    that counted them would fire on every staged build.  CONFIRMED
-	//    here, not assumed.
+	// -- (5) GREEN-PROVE (containers, UNCHANGED SHAPE): geometry-less
+	//    CONTAINERS never enter a group.  This is the harness's own
+	//    machine-minted `<prefix>element_root` shape (AgentSession::
+	//    ElementRootName mints exactly `standard_object { name
+	//    <prefix>element_root }`), and the trajectory that motivated this
+	//    slice carried 93 such links -- so a condition that counted them
+	//    would fire on every staged build.  CONFIRMED here, not assumed.
 	//
 	//    The containers below each carry a DISTINCT `position`, which is
 	//    not decoration: `place_element` writes exactly one transform onto
@@ -1060,34 +1114,38 @@ static void RunDesignRepeatedCopiesScanTest()
 		       "GREEN-PROVE C (element roots): SIX geometry-less `<prefix>element_root` containers, "
 		       "each posed by its own `place_element` transform, stay silent -- a container carries "
 		       "no `geometry`, so it never enters a group" );
-		// ...and the SAME document with six real, geometry-bearing copies
-		// added DOES fire, proving the silence above is the container rule
-		// and not the fixture failing to reach the scan at all.
-		const std::string docRootsPlusCopies = docRoots +
-			bottle( "b0", "0" ) + bottle( "b1", "0.5" ) + bottle( "b2", "1.0" ) +
-			bottle( "b3", "1.5" ) + bottle( "b4", "2.0" ) + bottle( "b5", "2.5" );
+		// ...and the SAME document with TEN real, geometry-bearing copies
+		// added DOES fire (ten, not six, now that the gate is 10), proving
+		// the silence above is the container rule and not the fixture
+		// failing to reach the scan at all.
+		std::string docRootsPlusCopies = docRoots;
+		for( int i = 0; i < 10; ++i ) docRootsPlusCopies += bottle( "b" + std::to_string( i ), std::to_string( i ) );
 		Check( hasCode( AgentSession::ValidateText( docRootsPlusCopies ), "DESIGN_HAND_REPEATED_COPIES" ),
-		       "...while the SAME six containers plus six geometry-bearing copies DO fire -- the "
+		       "...while the SAME six containers plus ten geometry-bearing copies DO fire -- the "
 		       "silence above is the container rule, not a dead scan" );
 	}
 
-	// -- (6) GREEN-PROVE: six co-located, byte-identical copies are a
-	//    duplication BUG, not an array.  The clause claims they "differ
-	//    only in their transform"; with no distinct transform at all that
-	//    claim would be false, so the condition must not make it.
+	// -- (6) GREEN-PROVE (co-located, UNCHANGED SHAPE but bumped past the
+	//    gate): TEN co-located, byte-identical copies are a duplication
+	//    BUG, not an array.  The clause claims they "differ only in their
+	//    transform"; with no distinct transform at all that claim would be
+	//    false, so the condition must not make it.  Bumped from 6 to 10 (at
+	//    or past the new gate) so this proves the co-located rule itself
+	//    stays silent even where the count alone would otherwise fire --
+	//    not merely that ten happens to be under some other threshold.
 	{
 		std::string docStacked = preamble;
-		for( int i = 0; i < 6; ++i )
+		for( int i = 0; i < 10; ++i )
 			docStacked += "standard_object\n{\n\tname s" + std::to_string( i ) +
 				"\n\tgeometry bottle_geo\n\tmaterial mat\n}\n\n";
 		Check( !hasCode( AgentSession::ValidateText( docStacked ), "DESIGN_HAND_REPEATED_COPIES" ),
-		       "GREEN-PROVE C (co-located): 6 copies with NO transform between them stay silent -- "
+		       "GREEN-PROVE C (co-located): 10 copies with NO transform between them stay silent -- "
 		       "that is a duplication bug, and `count_u` is advice about a different problem" );
 	}
 
 	// -- (7) Whitespace/indentation must not split a group: the signature
-	//    compares BINDINGS, not bytes.  Same six copies, wildly different
-	//    formatting, still one group.
+	//    compares BINDINGS, not bytes.  Ten copies (bumped from 6 to clear
+	//    the new gate), wildly different formatting, still one group.
 	{
 		const std::string docFormatting = preamble +
 			"standard_object{\nname w0\ngeometry bottle_geo\nmaterial mat\nposition 0 0 0\n}\n\n"
@@ -1095,24 +1153,29 @@ static void RunDesignRepeatedCopiesScanTest()
 			"standard_object\n{\n name w2\n geometry bottle_geo\n material mat\n position 2 0 0\n}\n\n"
 			"standard_object\n{\n\tname w3\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 3 0 0\n}\n\n"
 			"standard_object\n{\n\tname w4\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 4 0 0\n}\n\n"
-			"standard_object\n{\n\tname w5\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 5 0 0\n}\n";
+			"standard_object\n{\n\tname w5\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 5 0 0\n}\n\n"
+			"standard_object{\nname w6\ngeometry bottle_geo\nmaterial mat\nposition 6 0 0\n}\n\n"
+			"standard_object\n{\n\t\tname w7\n\t\tgeometry   bottle_geo\n\t\tmaterial\tmat\n\t\tposition 7 0 0\n}\n\n"
+			"standard_object\n{\n name w8\n geometry bottle_geo\n material mat\n position 8 0 0\n}\n\n"
+			"standard_object\n{\n\tname w9\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 9 0 0\n}\n";
 		Check( hasCode( AgentSession::ValidateText( docFormatting ), "DESIGN_HAND_REPEATED_COPIES" ),
-		       "C (signature): six copies formatted six different ways are still ONE group -- the "
+		       "C (signature): ten copies formatted many different ways are still ONE group -- the "
 		       "signature reads pvalue tokens, never raw bytes" );
 	}
 
 	// -- (8) The three conditions are INDEPENDENT diagnostics, not a merged
-	//    one: a document that trips all three carries three entries.
+	//    one: a document that trips all three carries three entries.  Ten
+	//    boxes (bumped from 6 to clear the new gate).
 	{
 		std::string docAll = "RISE ASCII SCENE 7\n"
 			"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
-		for( int i = 0; i < 6; ++i )
+		for( int i = 0; i < 10; ++i )
 			docAll += "standard_object\n{\n\tname a" + std::to_string( i ) +
 				"\n\tgeometry geo\n\tposition " + std::to_string( i ) + " 0 0\n}\n\n";
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docAll );
 		Check( hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ) &&
 		       hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
-		       "COMBINED: a 6-box fan-out with no scalar_painter and no advanced geometry fires ALL "
+		       "COMBINED: a 10-box fan-out with no scalar_painter and no advanced geometry fires ALL "
 		       "THREE design codes as three separate diagnostics" );
 	}
 }

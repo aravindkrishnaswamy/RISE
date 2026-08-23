@@ -3344,20 +3344,37 @@ namespace RISE
 			//! Condition C's gate: how many hand-authored copies of ONE
 			//! geometry it takes before the note names `source` / `count_u`.
 			//!
-			//! FIVE, and the number is not arbitrary.  The skill corpus
-			//! already states this exact boundary in prose --
-			//! object-modeling-recipes, "an instance array is right the moment
-			//! you would otherwise paste the same chunk more than about four
-			//! times" -- so the engine-side gate is set to agree with the text
-			//! a model may have just read, rather than to a second, private
-			//! threshold that could contradict it.  It also clears the honest
-			//! counter-example in the same skill: a table's FOUR legs share one
-			//! geometry across four `standard_object`s and that is the right
-			//! authoring shape (Recipe 2), so a gate of 4 would nag a correct
-			//! scene.  The measured miss that motivated condition C was SIX
-			//! (six `standard_object`s on `shelf_wares_tall_bottle_geo`), which
-			//! this catches with one to spare.
-			static const int kRepeatedCopyGate = 5;
+			//! TEN, retuned from the original FIVE (2026-08-23) on measured
+			//! evidence rather than skill prose.  Five was set to agree with
+			//! object-modeling-recipes' old "more than about four times" line,
+			//! but the four live firings it actually produced across two
+			//! providers -- all at 5-7 copies -- were ALL declined, and the
+			//! user has ruled every one of those declines CORRECT: at a
+			//! handful of copies, hand-authored VARIETY is good authoring
+			//! (twelve varied apothecary bottles beat twelve stamped ones), so
+			//! a gate that fires there is nagging about the wrong problem, not
+			//! catching a missed one.  Instancing's genuine regime is
+			//! LARGE-SCALE REGULAR replication -- fence posts, colonnades,
+			//! rivet rows -- where uniformity IS the point and hand-authoring
+			//! N near-identical chunks is a real, measurable burden.  Ten
+			//! draws the line there: comfortably past any hand-varied small
+			//! group (the four-legged table, a shelf of half a dozen
+			//! deliberately-different bottles), squarely inside "nobody is
+			//! choosing to vary these on purpose."  See object-modeling-
+			//! recipes' instancing section for the matching skill-prose
+			//! retuning, and AgentReadValidateTest's RunDesignRepeatedCopiesScanTest
+			//! for the fixtures that pin both the silent-at-6/7 regime and the
+			//! exact 9/10 boundary.
+			//!
+			//! This gate is INDEPENDENT of `collapse_to_instances`' own floor
+			//! (kCollapseMinGroup, below the verb definition further down this
+			//! file) -- the verb answers a caller who has already decided to
+			//! collapse a NAMED run and keeps its floor of THREE (below that,
+			//! collapsing trades two chunks for two), while this gate decides
+			//! when the note volunteers the advice UNPROMPTED.  Retuning one
+			//! does not move the other; see kCollapseMinGroup's own comment
+			//! for the cross-reference back to this constant.
+			static const int kRepeatedCopyGate = 10;
 
 			//! Condition C's transform-parameter set: the params that say WHERE
 			//! a `standard_object` sits, as opposed to WHAT it is.  A `source` +
@@ -4218,8 +4235,11 @@ namespace RISE
 					"costing one call -- if the copies do not sit on a regular line or grid. The rendered image "
 					"is the same either way: `source` COPIES rather than moves or hides, so those " + nLess +
 					" plus the still-visible source are " + n + ", not " + nLess + ". Two chunks and one outliner "
-					"row to edit instead of " + n + " (read_skill {\"name\":\"object-modeling-recipes\"}). If "
-					"these are meant to stay separate objects, this is fine -- ignore and do not churn.";
+					"row to edit instead of " + n + " (read_skill {\"name\":\"object-modeling-recipes\"}). This is "
+					"what `source` + `count_u` is FOR -- a long, regular run where uniformity is the point; a "
+					"handful of deliberately varied siblings is good authoring, not a smell, which this note "
+					"never questions. If these are meant to stay separate objects, this is fine -- ignore and "
+					"do not churn.";
 			}
 
 			//! 88 S5: deterministic short decimal for every number this feature
@@ -28759,14 +28779,19 @@ namespace RISE
 		namespace
 		{
 			//! The smallest run this verb will collapse.  THREE, which is
-			//! lower than design-note condition C's gate of five, and the
-			//! split is deliberate: the NOTE decides when repetition is worth
-			//! remarking on unprompted (five, matching the skill prose and
-			//! clearing the honest four-legged-table counter-example), while
-			//! the VERB answers a caller who has already decided.  Below
-			//! three there is nothing to win -- one source plus one instancing
-			//! chunk is two chunks, so collapsing two objects trades two
-			//! chunks for two.
+			//! lower than design-note condition C's gate (kRepeatedCopyGate,
+			//! this file's DesignNoteConditions_ scan -- 2026-08-23 retuned
+			//! to TEN), and the split is deliberate: the NOTE decides when
+			//! repetition is worth remarking on unprompted (ten, scoped to
+			//! large-scale REGULAR replication so a handful of
+			//! deliberately-varied objects is not nagged), while the VERB
+			//! answers a caller who has already decided -- naming a 3-copy
+			//! run via `target` is a judgment call the note is not in the
+			//! business of making for them.  Below three there is nothing to
+			//! win -- one source plus one instancing chunk is two chunks, so
+			//! collapsing two objects trades two chunks for two.  The two
+			//! constants are independent by construction (different scopes,
+			//! different call sites); retuning one does not move the other.
 			const int kCollapseMinGroup = 3;
 
 			//! How far a fitted position may sit from the position it replaces

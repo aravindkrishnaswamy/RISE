@@ -438,17 +438,25 @@ Read `read_schema` for `standard_object` for the full parameter text;
 what follows is the part the schema cannot tell you -- when to reach
 for them, and what bites.
 
-**When to reach for them.**  Copy-paste is right for two or three
-objects that differ in more than their placement.  A subtree is right
-the moment you would otherwise repeat a placement edit; an instance
-array is right the moment you would otherwise paste the same chunk
-more than about four times.  The array is also ONE row in the
-outliner and ONE chunk to edit -- change `count_u` and the whole
+**When to reach for them.**  Copy-paste is right for a handful of
+objects that differ in more than their placement -- and "a handful"
+stretches further than it sounds: a dozen deliberately varied
+apothecary bottles are twelve better-authored objects than one array
+of twelve stamped ones, because the variety is the point.  A subtree
+is right the moment you would otherwise repeat a placement edit; an
+instance array is right once the repeats are LONG and REGULAR --
+think ten-or-more identical units on a line or grid where uniformity
+IS the point and hand-authoring each one is a real, measurable burden:
+fence posts, a colonnade, a rivet row.  The array is also ONE row in
+the outliner and ONE chunk to edit -- change `count_u` and the whole
 arrangement changes -- where thirty pasted chunks are thirty edits.
-Recipe 2 below sits right on that line: a table's four legs share ONE
-geometry across four `standard_object`s, and four is the right shape.
-A shelf lined with six identical bottles, or a fence of thirty
-pickets, is past it -- author ONE and let `count_u` write the rest.
+Recipe 2 below sits comfortably on the copy-paste side of that line: a
+table's four legs share ONE geometry across four `standard_object`s,
+and four is the right shape -- and so is a shelf lined with a half
+dozen bottles that vary from one another, which is authoring, not a
+smell. A fence of thirty pickets, or a colonnade of a dozen matched
+columns, is past the line -- author ONE and let `count_u` write the
+rest.
 
 **Already pasted them?  `collapse_to_instances` fixes it in one
 call.**  It keeps the first copy, replaces the rest with the `source`
