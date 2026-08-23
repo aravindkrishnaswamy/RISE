@@ -648,6 +648,57 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r160 corrects the inherited pressure-detector derivation.  The audited CFL
+# step is allowed to execute only as a diagnostic and must fail closed before
+# a long-shadow token is minted when its realized field exceeds 2^-5.
+if [ "$(uname -s)" = "Darwin" ]; then
+	long_shadow_name="FireSequenceTest.r160_golden_long_shadow_admission"
+	long_shadow_path="$BIN_DIR/FireSequenceTest"
+	long_shadow_log="$LOG_DIR/$long_shadow_name.log"
+	long_shadow_malformed_log="$LOG_DIR/$long_shadow_name.malformed.log"
+	long_shadow_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	printf '[ evidence ] %-46s ... ' "$long_shadow_name"
+	long_shadow_rc=0
+	long_shadow_malformed_rc=0
+	if [ ! -x "$long_shadow_path" ]; then
+		long_shadow_rc=127
+		long_shadow_malformed_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_GOLDEN_LONG_SHADOW=malformed RISE_OPTIONS_FILE="$long_shadow_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$long_shadow_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$long_shadow_malformed_log" 2>&1 || long_shadow_malformed_rc=$?
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$long_shadow_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$long_shadow_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$long_shadow_log" 2>&1 || long_shadow_rc=$?
+	else
+		RISE_FIRE_GOLDEN_LONG_SHADOW=malformed RISE_OPTIONS_FILE="$long_shadow_options" \
+			"$long_shadow_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$long_shadow_malformed_log" 2>&1 || long_shadow_malformed_rc=$?
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$long_shadow_options" \
+			"$long_shadow_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$long_shadow_log" 2>&1 || long_shadow_rc=$?
+	fi
+	if [ "$long_shadow_malformed_rc" -eq 249 ] && [ "$long_shadow_rc" -eq 252 ] &&
+		grep -Fq 'dt=0.0016462659696117043 G=0.085895776748657227' "$long_shadow_log" &&
+		grep -Fq 'field_max=0.085895776748657227 low_mach_ceiling=0.03125' "$long_shadow_log" &&
+		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$long_shadow_log"; then
+		echo 'PASS (exact exit=252, low-Mach refusal)'
+		rm -f "$long_shadow_log" "$long_shadow_malformed_log"
+	else
+		echo "FAIL (malformed_exit=$long_shadow_malformed_rc expected 249; "\
+"evidence_exit=$long_shadow_rc expected 252)"
+		printf '%s\t%d\t%s\n' "$long_shadow_name" "$long_shadow_rc" \
+			"$long_shadow_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

@@ -3982,6 +3982,18 @@ int main()
 		error.find("stage-budget probe activation is invalid")!=std::string::npos,
 		"r149 malformed stage-budget activation fails before Metal work");
 	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedLongShadow=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_GOLDEN_LONG_SHADOW","malformed",1);
+	const bool malformedLongShadowRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
+	Check(malformedLongShadowRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			commitsBeforeMalformedLongShadow&&
+		error=="production golden long-shadow activation is invalid",
+		"r160 malformed long-shadow activation fails before Metal work");
+	seedFullStepResult(rejectedFullStep);error.clear();
 	const std::uint64_t commitsBeforeMalformedPlateauProbe=
 		FireProductionResidentStepMetalCommandCommitCount();
 	setenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE","bogus",1);

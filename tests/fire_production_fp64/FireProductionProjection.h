@@ -122,8 +122,9 @@ namespace RISEFireProductionFP64
 			mechanismPassed(false) {}
 	};
 
-	//! r143 plateau-derived mechanism validation.  The function-level accepted
-	//! state gate remains separate and must also hold before publication.
+	//! Certifies that the restoration mechanism does not amplify its residual.
+	//! The delivered drain remains a timestep-predictor diagnostic; a regime
+	//! campaign separately proves non-secular long-shadow boundedness.
 	bool FireProductionRestorationPlateauWithinBand(
 		double maximumManifoldGeneration,
 		double maximumPreProjectionResidualPerS,

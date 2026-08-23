@@ -3563,6 +3563,55 @@ activation exits `222` before Metal.  Exact evidence is
 `rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/`
 `timestep_velocity_ceiling_evidence.v1`.
 
+### 7.55t Production low-Mach gate and audited-step refusal (r160)
+
+Fresh source tracing corrects r159's last inherited number.  The `1e-3`
+comparison in `tools/fire_simulator_core.h` is the binary64 oracle's
+accepted-state EOS validity detector; it is not a thermochemistry-table or
+temperature-inversion domain boundary.  Production consumers were enumerated
+at the code boundary: the Binary32 accepted-state predicate checks conservative
+component and energy envelopes, temperature inversion brackets the certified
+table range, molecular transport consumes the accepted temperature and
+composition, conservative remap/source kernels consume the accepted ledger,
+projection consumes density and divergence targets, the resident manifold map
+reports `|V(Q)-1|`, and checkpoint publication persists that report.  None
+consumes a pressure-deviation domain limit.  The r159 derivation
+`(1-2^-2)*1e-3` is therefore retired as an r72 ownership error, not widened.
+
+The production gates now follow their actual functions.  Restoration's
+per-application mechanism must be residual-nonamplifying and records its
+delivered drain for the retained manifold-timestep predictor.  Structural
+plateau acceptance is regime evidence: an evolving long shadow must be
+non-secular, and any secular window fails closed.  Independently, the
+low-Mach formulation owns the exact dimensionless ceiling `2^-5=0.03125`:
+`|V(Q)-1|` must remain much less than one, in the `O(M^2)` class.  The ceiling
+is fixed before the rerun and is never adjusted to observed data.  Fidelity
+remains the oracle/additive-contract decision; the existing manifold floor is
+pre-registered as a readmission risk (about four times the physical dynamic-
+pressure scale), with the two-pass anomaly closure retained only as a
+candidate if the slice evidence attributes a failure to that floor.
+
+At the old retry-limited step, the calibrating field maximum
+`2.5328069638265172e-3` is `12.3380898925x` below `2^-5`.  The required next
+gate, however, is the audited physical CFL step
+`1.6462659696117043e-3 s`.  Its first evolving Metal application measures
+`G=0.085895776748657227` and the same realized field maximum, with delivered
+restoration drain `0.66657990322152694`.  This is
+`2.7486648559570312x` above the pre-registered low-Mach ceiling and
+`33.9132740771x` the old-step observation.  The result is diagnostically
+published only long enough to bind those numbers: no accepted-state token is
+minted, no next state is applied, and exact exit `252` records the refusal.
+Consequently the 104-step non-secular window cannot begin.
+
+This is the formulation-validity finding the ruling required us to stop on,
+not grounds to widen the ceiling.  Golden `B_fp32`, guard supersession,
+temporal refinement, eight-slice readmission, source maps, and first light
+remain blocked.  r159's measured `81.36204174876212 ms` host residual remains
+named device-bound performance work, outside this correctness boundary.  The
+golden checkpoint stays byte-identical.  Durable evidence is in
+`rendered/fire_production_calibration/r160_low_mach_audited_step_refusal/`
+`low_mach_audited_step_refusal.v1`.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

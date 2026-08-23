@@ -563,21 +563,19 @@ int main()
 		Check(FireProductionRestorationPlateauWithinBand(
 			0.0025328069638265172,0.00021371165348682553,
 			9.9716544355032966e-6,burning)&&
-			burning.requiredDrainFraction==3.3770759517686897&&
-			!burning.mechanismPassed,
-			"r143 rejects the pre-limiter burning generation before any band is formed");
-		FireProductionRestorationPlateauValidation limited;
-		const double generation=0.0007;
-		const double pre=0.01;
-		const double required=generation/0.00075;
-		const double exactBand=(1.0-required)*pre;
-		Check(FireProductionRestorationPlateauWithinBand(generation,pre,
-			std::nextafter(exactBand,0.0),limited)&&limited.mechanismPassed&&
-			limited.maximumPostResidualPerS==exactBand&&
+			burning.requiredDrainFraction==0.0&&burning.mechanismPassed&&
+			burning.maximumPostResidualPerS==0.00021371165348682553,
+			"r160 restoration mechanism records drain without inheriting an EOS ceiling");
+		FireProductionRestorationPlateauValidation nonamplifying;
+		const double generation=0.085895776748657227,pre=0.01;
+		Check(FireProductionRestorationPlateauWithinBand(generation,pre,pre,
+			nonamplifying)&&nonamplifying.mechanismPassed&&
+			nonamplifying.requiredDrainFraction==0.0&&
+			nonamplifying.maximumPostResidualPerS==pre&&
 			FireProductionRestorationPlateauWithinBand(generation,pre,
-				std::nextafter(exactBand,std::numeric_limits<double>::infinity()),limited)&&
-			!limited.mechanismPassed,
-			"r143 restoration band straddles the plateau-derived drain requirement");
+				std::nextafter(pre,std::numeric_limits<double>::infinity()),nonamplifying)&&
+			!nonamplifying.mechanismPassed,
+			"r160 restoration mechanism straddles the exact non-amplification boundary");
 		FireProductionRestorationPlateauValidation zero;
 		Check(FireProductionRestorationPlateauWithinBand(0.0,0.0,0.0,zero)&&
 			zero.requiredDrainFraction==0.0&&zero.deliveredDrainFraction==1.0&&

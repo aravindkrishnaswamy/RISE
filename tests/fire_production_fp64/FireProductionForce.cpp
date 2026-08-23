@@ -22,8 +22,10 @@ namespace RISEFireProductionFP64
 {
 	namespace
 	{
-		constexpr double ManifoldEOSCeiling=0.001;
-		constexpr double ManifoldHeadroom=0.25;
+		// Production owns a low-Mach formulation gate, not the binary64 oracle's
+		// 1e-3 acceptance detector.  |V(Q)-1| must remain O(M^2) and well below
+		// unity; pin 2^-5 exactly.  Fidelity remains a separate oracle contract.
+		constexpr double ManifoldLowMachValidityCeiling=0x1p-5;
 		constexpr std::uint64_t CheckpointAuthorityDomain=UINT64_C(0x63b96d44f1a72ec8);
 		bool Fail( std::string* error, const char* message ) noexcept
 		{
@@ -290,7 +292,7 @@ namespace RISEFireProductionFP64
 			!std::isfinite(maximumGeneration)||maximumGeneration<=0.0||
 			!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
 			restorationDrainFraction>1.0)return Fail(error,"production manifold predictor inputs are invalid");
-		timeStepS=previousStepS*((1.0-ManifoldHeadroom)*ManifoldEOSCeiling*
+		timeStepS=previousStepS*(ManifoldLowMachValidityCeiling*
 			restorationDrainFraction)/maximumGeneration;
 		return (std::isfinite(timeStepS)&&timeStepS>0.0)||
 			Fail(error,"production manifold timestep is invalid");

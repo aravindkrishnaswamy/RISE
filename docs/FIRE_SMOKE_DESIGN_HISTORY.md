@@ -3767,3 +3767,26 @@ it was already tried and refuted here.
   light remain blocked.  Durable evidence is
   `r159_timestep_velocity_ceiling_stop/timestep_velocity_ceiling_evidence.v1`;
   golden remains byte-identical.
+- **r160 corrected low-Mach ownership and audited-step refusal (2026-08-23):**
+  r159's final derivation is retired.  The `1e-3` EOS residual comparison is an
+  oracle validity detector, not a production thermochemistry/T-inversion
+  domain property.  Enumeration of every production consumer finds no
+  pressure-deviation domain limit, so r72 requires a production-owned gate.
+  The replacement is exact `2^-5` from low-Mach asymptotic validity, plus a
+  separately measured non-secular long-shadow detector.  Restoration's local
+  mechanism is nonamplifying; measured drain remains predictor data rather
+  than an invented one-step removal requirement.
+
+  The old-step `2.5328069638265172e-3` observation is 12.3381x below the new
+  ceiling, but the audited `1.6462659696117043e-3 s` physical CFL application
+  produces `G=field_max=0.085895776748657227`, delivered drain
+  `0.66657990322152694`, and a valid restoration residual reduction from
+  `7.3080245783785358e-6` to `2.4366422621824313e-6`.  The field is
+  `2.7486648559570312x` above `2^-5`; exact exit 252 therefore withholds the
+  accepted token before the 104-step shadow can start.  No ceiling is widened.
+  The manifold floor remains a pre-registered additive-contract/readmission
+  risk, but that verdict cannot run past this formulation stop.  B_fp32,
+  temporal refinement, readmission, source maps, and first light remain
+  blocked; r159's 81.36 ms host residual stays on the device-bound backlog.
+  Golden remains byte-identical.  Durable evidence is
+  `r160_low_mach_audited_step_refusal/low_mach_audited_step_refusal.v1`.

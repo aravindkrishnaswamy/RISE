@@ -517,15 +517,19 @@ namespace RISEFireProductionTrace
 		FireProductionRestorationPlateauValidation& result )
 	{
 		result=FireProductionRestorationPlateauValidation();
-		constexpr double ceiling=0.001;
-		constexpr double headroom=0.25;
-		const double allowance=(1.0-headroom)*ceiling;
+		// The restoration solve is a mechanism gate, not the plateau proof.  The
+		// inherited G/allowance drain requirement assumed a per-step defect had to
+		// be removed in one application.  The regime long shadow now owns the
+		// actual non-secularity proof, while the exact 2^-5 low-Mach ceiling is
+		// applied to the realized field by the resident-step owner.  Here the
+		// mechanism must at least be non-amplifying; its measured drain remains the
+		// predictor input for the retained manifold timestep limiter.
 		if( !std::isfinite(maximumManifoldGeneration)||maximumManifoldGeneration<0.0||
 			!std::isfinite(maximumPreProjectionResidualPerS)||
 			maximumPreProjectionResidualPerS<0.0||
 			!std::isfinite(maximumPostProjectionResidualPerS)||
 			maximumPostProjectionResidualPerS<0.0 ) return false;
-		result.requiredDrainFraction=maximumManifoldGeneration/allowance;
+		result.requiredDrainFraction=0.0;
 		if( maximumPreProjectionResidualPerS==0.0 ) {
 			if( maximumPostProjectionResidualPerS!=0.0 ) return false;
 			result.deliveredDrainFraction=1.0;
@@ -535,9 +539,7 @@ namespace RISEFireProductionTrace
 		}
 		if( !std::isfinite(result.requiredDrainFraction)||
 			!std::isfinite(result.deliveredDrainFraction) ) return false;
-		if( result.requiredDrainFraction>1.0 ) return true;
-		result.maximumPostResidualPerS=(1.0-result.requiredDrainFraction)*
-			maximumPreProjectionResidualPerS;
+		result.maximumPostResidualPerS=maximumPreProjectionResidualPerS;
 		if( !std::isfinite(result.maximumPostResidualPerS) ) return false;
 		result.mechanismPassed=maximumPostProjectionResidualPerS<=
 			result.maximumPostResidualPerS;

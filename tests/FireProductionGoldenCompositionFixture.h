@@ -83,10 +83,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	const bool timestepVelocityAudit=timestepVelocityAuditValue&&
 		std::strcmp(timestepVelocityAuditValue,"1")==0;
 	const bool timestepVelocityAuditPresent=timestepVelocityAuditValue!=nullptr;
+	const char* longShadowValue=std::getenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
+	if(longShadowValue&&std::strcmp(longShadowValue,"1")!=0)return 249;
+	const bool longShadow=longShadowValue!=nullptr;
 	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
 		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAuditPresent&&plateauProbe)||
 		(timestepVelocityAuditPresent&&manifoldProbe)||
-		(timestepVelocityAuditPresent&&stageBudgetProbe))return 224;
+		(timestepVelocityAuditPresent&&stageBudgetProbe)||
+		(longShadow&&(plateauProbe||manifoldProbe||stageBudgetProbe||
+			timestepVelocityAuditPresent)))return 224;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -105,17 +110,27 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		FireProductionDyadicCalibration::ExpectedProductionVelocityEvidence[1],
 		FireProductionDyadicCalibration::VerifiedOrder,velocityDistance,velocityBound))return 130;
 	RISECBOR64::Bytes precisionTrace;
-	for(std::size_t slice=0u;slice<8u;++slice){
+	static const std::size_t LongShadowSteps=104u,LongShadowWindow=32u;
+	std::vector<double> longShadowFieldMaximum;
+	RISECBOR64::Bytes longShadowTrace;
+	MethaneRunCheckpoint longShadowState;
+	for(std::size_t slice=0u;slice<(longShadow?LongShadowSteps:8u);++slice){
 		const std::filesystem::path beginningPath=slice==0u?checkpointPath:
 			snapshotDirectory/(std::string("step_0")+std::to_string(slice)+".checkpoint");
 		MethaneRunCheckpoint beginning;
-		if(DigestFile(beginningPath)!=beginningDigests[slice]||
-			!LoadMethaneRunCheckpoint(beginningPath,beginning,error)||
+		if(longShadow&&slice>0u)beginning=std::move(longShadowState);
+		else if((longShadow?slice==0u&&DigestFile(beginningPath)!=checkpointDigest:
+			DigestFile(beginningPath)!=beginningDigests[slice])||
+			!LoadMethaneRunCheckpoint(beginningPath,beginning,error)){
+			std::fprintf(stderr,"production golden composition beginning %zu failed: %s\n",
+				slice,error.c_str());return 113;}
+		if(
 			beginning.acceptedSteps!=3479u+slice){std::fprintf(stderr,
 			"production golden composition beginning %zu failed: %s\n",slice,error.c_str());return 113;}
 		PeriodicMACShape shape;shape.nx=beginning.dimensions[0];shape.ny=beginning.dimensions[1];
 		shape.nz=beginning.dimensions[2];shape.cellWidthM=beginning.cellWidthM;
-		const std::size_t cells=shape.CellCount();const double dt=fromBits(stepBits[slice]);
+		const std::size_t cells=shape.CellCount();const double dt=longShadow?
+			0.0016462659696117043:fromBits(stepBits[slice]);
 		if(beginning.states.size()!=cells)return 114;
 		std::vector<ConservativeVector> conservative(cells);
 		for(std::size_t cell=0u;cell<cells;++cell)conservative[cell]=ToConservativeVector(beginning.states[cell]);
@@ -535,7 +550,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					measured.physicalProjection.maximumPostProjectionResidualPerS&&
 				physicalOnly.projection.maximumOpenComplementarityDiscrepancyMPerS==
 					measured.physicalProjection.maximumOpenComplementarityDiscrepancyMPerS&&
-				!measured.projection.validationPassed&&
+				measured.projection.validationPassed&&
 				measured.projection.executedVCycleCount==16u&&
 				measured.manifoldScalarDeviceToHostTransferCount==1u&&
 				measured.manifoldFullGridDeviceToHostTransferCount==0u;
@@ -1818,7 +1833,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			return exact?253:254;
 		}
 		RISE::FireProductionResidentStepResult production;
-		if(!RISE::AdvanceFireProductionResidentStepMetal(request,production,&error)){std::fprintf(stderr,
+		const bool productionSucceeded=RISE::AdvanceFireProductionResidentStepMetal(
+			request,production,&error);
+		if(!productionSucceeded){std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
 		const float maximumRestorationTarget=*std::max_element(
 			request.restorationDivergenceTargetPerS.begin(),
@@ -1856,6 +1873,50 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				0.005f*std::fabs(maximumRestorationTarget)==0x1.1ed6c4p-20f&&
 				DigestFile(checkpointPath)==checkpointDigest;
 			return exactRefusal?244:245;
+		}
+		if(longShadow){
+			constexpr double LowMachValidityCeiling=0x1p-5;
+			const double fieldMaximum=production.maximumAcceptedManifoldDeviation;
+			if(!production.manifoldPlateauPassed){
+				std::fprintf(stderr,"GOLDEN_LONG_SHADOW_REFUSAL step=%zu dt=%.17g G=%.17g "
+					"field_max=%.17g low_mach_ceiling=%.17g delivered_drain=%.17g "
+					"pre_residual=%.17g post_residual=%.17g golden=%s\n",slice,
+					static_cast<double>(production.representedTimeStepS),
+					production.maximumManifoldGeneration,fieldMaximum,
+					LowMachValidityCeiling,production.deliveredRestorationDrainFraction,
+					static_cast<double>(production.projection.maximumPreProjectionResidualPerS),
+					static_cast<double>(production.projection.maximumPostProjectionResidualPerS),
+					DigestFile(checkpointPath).c_str());
+				return fieldMaximum>LowMachValidityCeiling&&
+					DigestFile(checkpointPath)==checkpointDigest?252:250;
+			}
+			if(!production.manifoldPlateauPassed||!production.HasAcceptedManifoldToken()||
+				!std::isfinite(fieldMaximum)||fieldMaximum<0.0||
+				fieldMaximum>LowMachValidityCeiling)return 250;
+			longShadowFieldMaximum.push_back(fieldMaximum);
+			FireProductionDyadicCalibration::AppendInteger(longShadowTrace,slice);
+			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
+				production.maximumManifoldGeneration);
+			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,fieldMaximum);
+			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
+				production.deliveredRestorationDrainFraction);
+			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
+				production.projection.maximumPostProjectionResidualPerS);
+			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
+			if(!RISE::PublishFireProductionAcceptedManifoldObservation(
+				static_cast<double>(production.representedTimeStepS),production,
+				acceptedObservation,&error)||
+				!FireProductionDyadicCalibration::ApplyAcceptedProductionResult(
+					production,acceptedObservation,beginning,error))return 251;
+			const double representedStep=static_cast<double>(production.representedTimeStepS);
+			beginning.simulationTimeS+=representedStep;
+			beginning.previousStepS=representedStep;
+			beginning.lastAcceptedStepS=representedStep;
+			++beginning.acceptedSteps;
+			beginning.values.acceptedTimeStepHistoryS.push_back(representedStep);
+			beginning.productionManifoldObservation=acceptedObservation;
+			longShadowState=std::move(beginning);
+			continue;
 		}
 		::FireProductionCalibration::ResidentStep64Result production64;
 		if(!::FireProductionCalibration::AdvanceResidentStep64(request,
@@ -2038,6 +2099,36 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			reductionRatios[slice],
 			maximumOracleThreadScalar,maximumOracleThreadVelocity,
 			production.projection.validationPassed?1:0);
+	}
+	if(longShadow){
+		auto nonsecular=[](const std::vector<double>& values){
+			if(values.size()!=LongShadowSteps)return false;
+			const std::size_t first=values.size()-2u*LongShadowWindow;
+			const double prior=*std::max_element(values.begin()+first,
+				values.begin()+first+LongShadowWindow);
+			const double terminal=*std::max_element(values.begin()+first+LongShadowWindow,
+				values.end());
+			return std::isfinite(prior)&&std::isfinite(terminal)&&terminal<=prior&&
+				terminal<=0x1p-5;
+		};
+		std::vector<double> secularRED(LongShadowSteps,0.0),flatGREEN(LongShadowSteps,0.0025);
+		for(std::size_t step=0u;step<LongShadowSteps;++step)
+			secularRED[step]=0.001+1.0e-6*static_cast<double>(step);
+		const std::size_t first=longShadowFieldMaximum.size()-2u*LongShadowWindow;
+		const double priorMaximum=*std::max_element(longShadowFieldMaximum.begin()+first,
+			longShadowFieldMaximum.begin()+first+LongShadowWindow);
+		const double terminalMaximum=*std::max_element(
+			longShadowFieldMaximum.begin()+first+LongShadowWindow,longShadowFieldMaximum.end());
+		const bool passed=nonsecular(longShadowFieldMaximum)&&nonsecular(flatGREEN)&&
+			!nonsecular(secularRED);
+		std::fprintf(stderr,"GOLDEN_LONG_SHADOW steps=%zu dt=%.17g prior32_max=%.17g "
+			"terminal32_max=%.17g final=%.17g low_mach_ceiling=%.17g nonsecular=%d "
+			"trace=%s final_state=%s\n",longShadowFieldMaximum.size(),
+			0.0016462659696117043,priorMaximum,terminalMaximum,
+			longShadowFieldMaximum.back(),0x1p-5,passed?1:0,
+			RISECBOR64::SHA256Hex(longShadowTrace).c_str(),
+			FireProductionDyadicCalibration::AnalyticStateDigest(longShadowState).c_str());
+		return passed&&DigestFile(checkpointPath)==checkpointDigest?248:252;
 	}
 	std::fprintf(stderr,"golden resident aggregate scalar_abs=%.17g scalar_rel=%.17g "
 		"velocity_abs=%.17g ledger_rel=%.17g envelope=%.17g probe_overshoot=%.17g "

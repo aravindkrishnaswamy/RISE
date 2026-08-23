@@ -2313,6 +2313,14 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				return false;
 			}
 			const bool timestepVelocityAuditEnabled=timestepVelocityAuditActivation!=0;
+			const char* goldenLongShadowActivation=std::getenv(
+				"RISE_FIRE_GOLDEN_LONG_SHADOW");
+			if( goldenLongShadowActivation&&
+				std::strcmp(goldenLongShadowActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production golden long-shadow activation is invalid";
+				return false;
+			}
 			const char* timestepVelocityPackMode=std::getenv(
 				"RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
 			if( timestepVelocityPackMode&&(!timestepVelocityAuditEnabled||
@@ -2727,17 +2735,16 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					!FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
 						projection.maximumPreProjectionResidualPerS,
 						projection.maximumPostProjectionResidualPerS,plateauValidation)) ) return false;
+				constexpr double lowMachValidityCeiling=0x1p-5;
 				const bool plateauPassed=!enforcePlateau||
-					(plateauValidation.requiredDrainFraction<=1.0&&
-					plateauValidation.mechanismPassed&&maximumTerminalDeviation<=0.00075);
+					(plateauValidation.mechanismPassed&&
+					maximumTerminalDeviation<=lowMachValidityCeiling);
 				if( !plateauPassed&&!manifoldProbeActivation&&!manifoldStageBudgetActivation&&
-					!timestepVelocityAuditActivation ) {
+					!timestepVelocityAuditActivation&&!goldenLongShadowActivation ) {
 					if( structuredError ) *structuredError=
-						plateauValidation.requiredDrainFraction>1.0?
-						"production manifold generation exceeds the accepted-step allowance":
-						(maximumTerminalDeviation>0.00075?
-							"production realized manifold plateau exceeds the accepted-state allowance":
-							"production restoration drain misses its plateau-derived band");
+						maximumTerminalDeviation>lowMachValidityCeiling?
+							"production realized manifold deviation exceeds the low-Mach validity ceiling":
+							"production restoration residual is amplified";
 					return false;
 				}
 				FireProductionResidentStepResult computed;
