@@ -1847,9 +1847,25 @@ namespace FireProductionDyadicCalibration
 				RISE::FireProductionStableTimeStep lostObservationSelection;
 				const bool lostObservationRejected=!SelectProductionTimeStepForState(
 					lostObservation,baseStep,lostObservationSelection,error);
-				authorityMutationREDsPassed=authorityMutationREDsPassed&&lostObservationRejected;
+				MethaneRunCheckpoint coordinatedClear=state;
+				coordinatedClear.productionManifoldObservation=
+					RISE::FireProductionAcceptedManifoldObservation();
+				coordinatedClear.acceptedSteps=0u;coordinatedClear.simulationTimeS=0.0;
+				coordinatedClear.previousStepS=0.0;coordinatedClear.lastAcceptedStepS=0.0;
+				coordinatedClear.values.acceptedTimeStepHistoryS.clear();
+				const std::filesystem::path coordinatedClearCheckpoint=
+					std::filesystem::temp_directory_path()/"rise_r148_coordinated_clear.checkpoint";
+				{std::error_code ignored;
+					std::filesystem::remove(coordinatedClearCheckpoint,ignored);}
+				const bool coordinatedClearRejected=!SaveMethaneRunCheckpoint(
+					coordinatedClearCheckpoint,coordinatedClear,error)&&
+					!std::filesystem::exists(coordinatedClearCheckpoint);
+				authorityMutationREDsPassed=authorityMutationREDsPassed&&
+					lostObservationRejected&&coordinatedClearRejected;
 				if(!lostObservationRejected)std::fprintf(stderr,
 					"r148 lost accepted observation aliased to a first step\n");
+				if(!coordinatedClearRejected)std::fprintf(stderr,
+					"r148 coordinated accepted metadata clear aliased to a first step\n");
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
 				MethaneRunCheckpoint transplanted=state;
 				MethaneRunCheckpoint temperatureTransplanted=state;

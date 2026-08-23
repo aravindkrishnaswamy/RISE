@@ -3420,12 +3420,14 @@ it was already tried and refuted here.
   and the reconstructed state digest before restoring the observation.  The selector
   also consumes the current state view and derives its digest internally; no caller-
   supplied digest scalar can preserve stale authority.  Accepted history exactly
-  reconstructs simulation time, including the zero-time first-step case.  The
+  reconstructs simulation time.  The first step is owned by the Binary64 analytic
+  beginning; an unaccepted Binary32 state is not persistable, so coordinated clearing
+  of observation/count/time/history cannot relabel accepted bytes as a first step.  The
   prefix checksum is deliberately described only as integrity evidence, not a
   keyed authenticator.  A transplanted observation, accepted-history/zero-dt
   alias, temperature/velocity transplant, cleared-observation owner alias,
-  selector-side state transplant, non-tail history/time transplant, and v9/v10/v11
-  accepted Binary32 resume all RED.
+  selector-side state transplant, coordinated metadata clear, non-tail history/time
+  transplant, and every v9/v10/v11 Binary32 resume all RED.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real

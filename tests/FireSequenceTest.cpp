@@ -697,6 +697,9 @@ namespace
 		if(version>=8u&&!writer.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
 		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
 		if(version>=9u&&!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
+		if(version>=9u&&precision==FireStateProducerPrecision::Binary32&&
+			checkpoint.acceptedSteps==0u&&!forceMalformedManifoldLifecycleWriteForTest)
+			return false;
 		if(version<10u){
 			if(version==9u&&precision==FireStateProducerPrecision::Binary32&&
 				(checkpoint.acceptedSteps!=0u||checkpoint.simulationTimeS!=0.0||
@@ -932,6 +935,8 @@ namespace
 		if(!HomogeneousStateProducerPrecision(decoded.states,precision)){
 			error="run checkpoint producer precision is invalid";return false;}
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
+		if(productionState&&decoded.acceptedSteps==0u){
+			error="unaccepted binary32 checkpoint state is not resumable";return false;}
 		if(version<12u&&productionState&&(decoded.acceptedSteps>0u||
 			decoded.simulationTimeS!=0.0||decoded.previousStepS!=0.0||
 			decoded.lastAcceptedStepS!=0.0||
@@ -3576,43 +3581,23 @@ int main(int argc,char** argv)
 			"r115 legacy v5-v8 publication rejects binary32 and mixed producer classes");
 	}
 	const std::filesystem::path precisionCheckpoint=checkpointFixture/"precision_class.checkpoint";
-	const std::filesystem::path precisionFrame=checkpointFixture/"precision_class.vdb";
-	MethaneRunCheckpoint loadedPrecisionRoundTrip;
-	const bool precisionSave=!precisionRoundTrip.states.empty()&&
+	const bool unacceptedBinary32Rejected=!precisionRoundTrip.states.empty()&&
 		AcceptedMethaneCellStateAdmissible(precisionRoundTrip.states.front(),checkpointFuel,
 			&checkpointFixtureError)&&
 		!AcceptedMethaneCellStateAdmissible(binary64View,checkpointFuel,&checkpointFixtureError)&&
-		SaveMethaneRunCheckpoint(precisionCheckpoint,
-		precisionRoundTrip,checkpointFixtureError)&&LoadMethaneRunCheckpoint(precisionCheckpoint,
-		loadedPrecisionRoundTrip,checkpointFixtureError);
-	FireStateProducerPrecision loadedPrecision=FireStateProducerPrecision::Unknown;
-	const int precisionResumeExit=precisionSave?RunCheckpointSubprocess(self,
-		"resume-one-fp64-reject",
-		precisionCheckpoint,precisionFrame,4u):-1;
-	MethaneRunCheckpoint resumedPrecisionRoundTrip;
-	if(!(precisionSave&&precisionResumeExit==0&&
-		LoadMethaneRunCheckpoint(precisionCheckpoint,resumedPrecisionRoundTrip,
-			checkpointFixtureError))){
-		std::fprintf(stderr,"precision checkpoint diagnostic: save=%d resume=%d error=%s\n",
-			precisionSave?1:0,precisionResumeExit,checkpointFixtureError.c_str());
-	}
-	Check(precisionSave&&
-		loadedPrecisionRoundTrip.checkpointFormatVersion==12u&&
-		HomogeneousStateProducerPrecision(loadedPrecisionRoundTrip.states,loadedPrecision)&&
-		loadedPrecision==FireStateProducerPrecision::Binary32&&
-		!loadedPrecisionRoundTrip.productionManifoldObservation.Available()&&
-		precisionResumeExit==0&&
-		LoadMethaneRunCheckpoint(precisionCheckpoint,resumedPrecisionRoundTrip,
-			checkpointFixtureError)&&
-		HomogeneousStateProducerPrecision(resumedPrecisionRoundTrip.states,loadedPrecision)&&
-		loadedPrecision==FireStateProducerPrecision::Binary32&&
-		resumedPrecisionRoundTrip.acceptedSteps==precisionRoundTrip.acceptedSteps,
-		"r115 binary32 checkpoint metadata survives serialization and a binary64 CPU resume cannot relabel the inherited excursion");
+		!SaveMethaneRunCheckpoint(precisionCheckpoint,precisionRoundTrip,
+			checkpointFixtureError)&&!std::filesystem::exists(precisionCheckpoint);
+	Check(unacceptedBinary32Rejected,
+		"r148 unaccepted binary32 state cannot be persisted and relabelled as a first-step checkpoint");
 	const std::filesystem::path version9Checkpoint=checkpointFixture/"precision_class_v9.checkpoint";
 	const std::filesystem::path version9ZeroCountCheckpoint=
 		checkpointFixture/"precision_class_v9_zero_count.checkpoint";
 	const std::filesystem::path version10Checkpoint=checkpointFixture/"precision_class_v10.checkpoint";
 	const std::filesystem::path version11Checkpoint=checkpointFixture/"precision_class_v11.checkpoint";
+	const std::filesystem::path version10ZeroCountCheckpoint=
+		checkpointFixture/"precision_class_v10_zero_count.checkpoint";
+	const std::filesystem::path version11ZeroCountCheckpoint=
+		checkpointFixture/"precision_class_v11_zero_count.checkpoint";
 	MethaneRunCheckpoint legacyAccepted=precisionRoundTrip;
 	legacyAccepted.acceptedSteps=1u;legacyAccepted.simulationTimeS=0.001;
 	legacyAccepted.previousStepS=0.0;legacyAccepted.lastAcceptedStepS=0.0;
@@ -3631,10 +3616,18 @@ int main(int argc,char** argv)
 	legacyZeroCount.values.acceptedTimeStepHistoryS.push_back(0.001);
 	const bool malformedVersion9ZeroCountWritten=SaveMethaneRunCheckpoint(
 		version9ZeroCountCheckpoint,legacyZeroCount,checkpointFixtureError,9u);
+	const bool malformedVersion10ZeroCountWritten=SaveMethaneRunCheckpoint(
+		version10ZeroCountCheckpoint,legacyZeroCount,checkpointFixtureError,10u);
+	const bool malformedVersion11ZeroCountWritten=SaveMethaneRunCheckpoint(
+		version11ZeroCountCheckpoint,legacyZeroCount,checkpointFixtureError,11u);
 	forceMalformedManifoldLifecycleWriteForTest=false;
 	Check(malformedVersion9Written&&!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion9ZeroCountWritten&&
 		!LoadMethaneRunCheckpoint(version9ZeroCountCheckpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion10ZeroCountWritten&&
+		!LoadMethaneRunCheckpoint(version10ZeroCountCheckpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion11ZeroCountWritten&&
+		!LoadMethaneRunCheckpoint(version11ZeroCountCheckpoint,rejectedLegacy,
 		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version10Checkpoint,legacyAccepted,
 		checkpointFixtureError,10u)&&!LoadMethaneRunCheckpoint(version10Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version11Checkpoint,legacyAccepted,

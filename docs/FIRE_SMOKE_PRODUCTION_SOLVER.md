@@ -3085,16 +3085,19 @@ view and recomputes its digest; it never accepts a caller-supplied digest scalar
 The lifecycle invariants are now explicit.  A Binary32 checkpoint with accepted
 history must carry an available observation whose timestep equals both stored
 accepted-step fields and the history tail; count equals history length and the
-history duration exactly reconstructs simulation time.  A Binary32 initial state has zero
-accepted steps, zero prior timing, empty accepted-step history, and no
-observation.  Formats 9--11 cannot resume an accepted Binary32 production run;
-they may still decode initial Binary32 states and ordinary Binary64/oracle runs.
+history duration exactly reconstructs simulation time.  An unaccepted Binary32
+state is not a legal checkpoint class: production begins from its Binary64 analytic
+owner and only an accepted, state-bound Binary32 result may persist.  Formats
+9--11 cannot resume any Binary32 production state; they remain available to
+ordinary Binary64/oracle runs.
 REDs reject an accepted-history/zero-timestep first-step alias on both writer and
 checksum-valid loader paths; formats 9, 10, and 11 are exercised independently.
 They also reject temperature and terminal-velocity transplants, plus passing a
 genuine observation to the selector with a different current-state view.  Clearing
 only an accepted state's observation, changing a non-tail history term, or changing
 simulation time all fail at the owning selector/writer and checksum-valid loader.
+Coordinated clearing of observation, count, time, and history also rejects because
+it cannot reclassify accepted Binary32 bytes as an initial checkpoint.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all
