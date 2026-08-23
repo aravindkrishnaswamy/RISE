@@ -1889,13 +1889,19 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				std::array<std::array<FireProductionRemapRequest,3>,3> packed;
 				std::array<std::string,9> packErrors;
 				std::array<bool,9> packSucceeded={{false,false,false,false,false,false,false,false,false}};
-				Implementation::GlobalThreadPool().ParallelFor(9u,[&](const unsigned int task){
+				auto packTask=[&](const unsigned int task){
 					const unsigned int component=task/3u,sweep=task%3u;
 					packSucceeded[task]=BuildFireProductionDualAxisRequest(request,component,sweep,
 						steps[sweep],request.beginningFaceDensity[component],
 						request.beginningMomentum[component],packed[component][sweep],
 						&packErrors[task]);
-				});
+				};
+				const char* audit=std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT");
+				const char* packMode=std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
+				const bool serialPack=audit&&std::strcmp(audit,"1")==0&&packMode&&
+					std::strcmp(packMode,"serial")==0;
+				if( serialPack ) for(unsigned int task=0u;task<9u;++task)packTask(task);
+				else Implementation::GlobalThreadPool().ParallelFor(9u,packTask);
 				for(unsigned int task=0u;task<packSucceeded.size();++task)if(!packSucceeded[task]){
 					if(structuredError)*structuredError=packErrors[task];return false;}
 				std::array<std::array<id<MTLBuffer>,3>,3> velocityStage,lowerStage,upperStage;
@@ -2292,6 +2298,15 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				return false;
 			}
 			const bool timestepVelocityAuditEnabled=timestepVelocityAuditActivation!=0;
+			const char* timestepVelocityPackMode=std::getenv(
+				"RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
+			if( timestepVelocityPackMode&&(!timestepVelocityAuditEnabled||
+				(std::strcmp(timestepVelocityPackMode,"serial")!=0&&
+				std::strcmp(timestepVelocityPackMode,"parallel")!=0)) ) {
+				if( structuredError ) *structuredError=
+					"production timestep velocity pack mode is invalid";
+				return false;
+			}
 			const auto timestepVelocityAuditStart=std::chrono::steady_clock::now();
 			auto timestepVelocityAuditMS=[&](){return std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-timestepVelocityAuditStart).count();};

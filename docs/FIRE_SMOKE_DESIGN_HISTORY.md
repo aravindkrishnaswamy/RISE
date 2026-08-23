@@ -3710,9 +3710,10 @@ it was already tried and refuted here.
   `217.37616398903009 m/s`.  The exact on-device audit instead finds the
   golden transport field at `7.4333348274230957 m/s`, the 17-cycle physical
   projection at `7.371121883392334 m/s`, and the terminal field at
-  `7.3644394874572754 m/s`.  The largest restoration correction is only
-  `0.40413093566894531 m/s` (`2.275065378736813e-5 m/s*s` impulse), so neither
-  the physical field nor the finite-per-step correction explains 217 m/s.
+  `7.371121883392334 m/s`.  The largest restoration correction is only
+  `1.7818529158830643e-6 m/s` (`1.0030986299568027e-10 m/s*s` impulse), or
+  `2.4173429012179363e-7` of the physical maximum, so neither the physical
+  field nor the finite-per-step correction explains 217 m/s.
 
   The preserved oracle console log supplies the actual lineage: the immutable
   checkpoint predates r80/r81 and was accepted after repeated R0/R1 augmented
@@ -3722,8 +3723,13 @@ it was already tried and refuted here.
   transport field alone—per-step-finite projection/restoration corrections are
   excluded under the r70 death-spiral rule—and selects the advective CFL at
   `1.6462660045688639e-3 s` (`1.6601606404766957e-3 s` from the physical-
-  projection maximum).  The old step was a retry-history surrogate, not a CFL
-  measurement.
+  projection maximum).  The complete selector's measured reduced-gravity and
+  active-diffusivity candidates are looser at `0.015812081290725255 s` and
+  `0.024674291069445888 s`; the selected step is represented as
+  `1.6462659696117043e-3 s` with one force substep.  Because every frozen slice
+  restarts from the shared golden beginning, no prior production observation
+  or growth cap applies.  The old step was a retry-history surrogate, not a
+  CFL measurement.
 
   Only after that physical-reference audit is the ceiling ruling applied.
   Following r72, the gate derives from its function: r60's accepted thermo/
@@ -3740,12 +3746,15 @@ it was already tried and refuted here.
   The field-G/drain path remains an exact Binary32 per-cell Metal map plus max
   reduction with one scalar and zero full-grid device-to-host transfers.
   Parallelizing the nine independent dual-layout packs on the topology-aware
-  global thread pool reduces warm completed-wall p95 from `197.288084` to
-  `146.323667 ms` while device p95 is `66.3970417 ms`.  That is a
-  `25.8325%` wall reduction and projects the audited 25.03248-s tier-10 stepping
-  work to `0.6180 h` wall (`0.2804 h` device).  The remaining `79.9266 ms`
-  host residual—preflight/layout, uploads, command submission/waits, and
-  postprocessing—is named work; the `200 ms` gate is a ceiling, not the target.
+  global thread pool, under `render_thread_reserve_count 0`, reduces the
+  controlled same-step completed-wall p95 from `198.925375` to
+  `145.907625 ms`; device p95 moves from `67.077958141453564` to
+  `66.286208340898156 ms`.  That is a `26.652079957119601%` wall reduction and
+  projects the audited 25.03248-s tier-10 stepping work to
+  `0.61628183077182297 h` wall (`0.27997841669516038 h` device).  The remaining
+  `79.62141665910184 ms` host residual—preflight/layout, uploads, command
+  submission/waits, and postprocessing—is named work; the `200 ms` gate is a
+  ceiling, not the target.
   The production solver is therefore not claimed faster than the oracle in
   validated practice while the thermo stop remains.  Long shadow, `B_fp32`,
   guard supersession, temporal refinement, readmission, source maps, and first

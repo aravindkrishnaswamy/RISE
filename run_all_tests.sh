@@ -604,6 +604,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	velocity_audit_path="$BIN_DIR/FireSequenceTest"
 	velocity_audit_log="$LOG_DIR/$velocity_audit_name.log"
 	velocity_audit_malformed_log="$LOG_DIR/$velocity_audit_name.malformed.log"
+	velocity_audit_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
 	printf '[ evidence ] %-46s ... ' "$velocity_audit_name"
 	velocity_audit_rc=0
 	velocity_audit_malformed_rc=0
@@ -612,21 +613,25 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		velocity_audit_malformed_rc=127
 	elif [ -n "$timeout_bin" ]; then
 		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=malformed \
+			RISE_OPTIONS_FILE="$velocity_audit_options" \
 			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$velocity_audit_path" \
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$velocity_audit_malformed_log" 2>&1 || velocity_audit_malformed_rc=$?
 		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=1 \
+			RISE_OPTIONS_FILE="$velocity_audit_options" \
 			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$velocity_audit_path" \
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$velocity_audit_log" 2>&1 || velocity_audit_rc=$?
 	else
 		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=malformed \
+			RISE_OPTIONS_FILE="$velocity_audit_options" \
 			"$velocity_audit_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$velocity_audit_malformed_log" 2>&1 || velocity_audit_malformed_rc=$?
 		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=1 \
+			RISE_OPTIONS_FILE="$velocity_audit_options" \
 			"$velocity_audit_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$velocity_audit_log" 2>&1 || velocity_audit_rc=$?

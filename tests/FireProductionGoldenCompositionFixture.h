@@ -78,11 +78,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	if(stageBudgetProbeValue&&std::strcmp(stageBudgetProbeValue,"1")!=0)return 223;
 	const bool stageBudgetProbe=stageBudgetProbeValue!=nullptr;
 	const char* timestepVelocityAuditValue=std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT");
-	if(timestepVelocityAuditValue&&std::strcmp(timestepVelocityAuditValue,"1")!=0)return 222;
-	const bool timestepVelocityAudit=timestepVelocityAuditValue!=nullptr;
+	const bool timestepVelocityAuditMalformed=timestepVelocityAuditValue&&
+		std::strcmp(timestepVelocityAuditValue,"1")!=0;
+	const bool timestepVelocityAudit=timestepVelocityAuditValue&&
+		std::strcmp(timestepVelocityAuditValue,"1")==0;
+	const bool timestepVelocityAuditPresent=timestepVelocityAuditValue!=nullptr;
 	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
-		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAudit&&plateauProbe)||
-		(timestepVelocityAudit&&manifoldProbe)||(timestepVelocityAudit&&stageBudgetProbe))return 224;
+		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAuditPresent&&plateauProbe)||
+		(timestepVelocityAuditPresent&&manifoldProbe)||
+		(timestepVelocityAuditPresent&&stageBudgetProbe))return 224;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -250,6 +254,24 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
 			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
 		}
+		if(timestepVelocityAuditMalformed){
+			const std::uint64_t beginningCommandCount=
+				RISE::FireProductionResidentStepMetalCommandCommitCount();
+			RISE::FireProductionResidentStepResult rejected;
+			rejected.conservativeValues.push_back(1.0f);
+			rejected.projection.velocityMPerS[0].push_back(1.0f);
+			rejected.cellSubmapCount=1u;rejected.residentProjectionInvocationCount=1u;
+			rejected.deviceElapsedMS=1.0;rejected.manifoldPlateauPassed=true;
+			const bool succeeded=RISE::AdvanceFireProductionResidentStepMetal(
+				request,rejected,&error);
+			const bool defaultResult=rejected.conservativeValues.empty()&&
+				rejected.projection.velocityMPerS[0].empty()&&rejected.cellSubmapCount==0u&&
+				rejected.residentProjectionInvocationCount==0u&&rejected.deviceElapsedMS==0.0&&
+				!rejected.manifoldPlateauPassed&&!rejected.HasAcceptedManifoldToken();
+			return !succeeded&&defaultResult&&error==
+				"production timestep velocity audit activation is invalid"&&
+				RISE::FireProductionResidentStepMetalCommandCommitCount()==beginningCommandCount?222:225;
+		}
 		if(timestepVelocityAudit){
 			if(slice!=0u)return 222;
 			request.enforceManifoldPlateau=true;
@@ -305,8 +327,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				for(std::size_t face=0u;face<physicalOnly.projection.velocityMPerS[axis].size();
 					++face){
 					const double physical=physicalOnly.projection.velocityMPerS[axis][face];
-					const double final=measured.transportedDual.momentum[axis][face]/
-						measured.transportedDual.auxiliaryFaceDensity[axis][face];
+					const double final=measured.projection.velocityMPerS[axis][face];
 					if(std::fabs(physical)>physicalMaximum){physicalMaximum=std::fabs(physical);
 						physicalAxis=axis;physicalFace=face;}
 					if(std::fabs(final)>finalMaximum){finalMaximum=std::fabs(final);
@@ -321,11 +342,77 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				std::numeric_limits<double>::infinity();
 			const double physicalCFL=physicalMaximum>0.0?0.5*shape.cellWidthM/physicalMaximum:
 				std::numeric_limits<double>::infinity();
+			std::vector<double> temperatureK(cells);
+			for(std::size_t cell=0u;cell<cells;++cell)
+				temperatureK[cell]=beginning.states[cell].temperatureK;
+			OpenMACField3D transportVelocity;transportVelocity.component=beginning.velocity.component;
+			std::vector<CellTransportEvaluation> transportEvaluation;
+			if(!BuildOpenStageTransportEvaluations3D(shape,conservative,temperatureK,
+				transportVelocity,shadowConfig.openBoundary,shadowConfig.dns,fuel,transport,
+				FireStateProducerPrecision::Binary64,transportEvaluation,&error,16u))return 225;
+			double maximumReducedGravity=0.0,maximumActiveDiffusivity=0.0;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				const double gas=beginning.states[cell].GasDensity();
+				const CellTransportEvaluation& evaluation=transportEvaluation[cell];
+				maximumReducedGravity=std::max(maximumReducedGravity,
+					std::max(0.0,9.80665*(ambient.GasDensity()-gas)/gas));
+				maximumActiveDiffusivity=std::max({maximumActiveDiffusivity,
+					evaluation.totalDiffusivityM2PerS,evaluation.effectiveViscosityPaS/gas,
+					evaluation.effectiveConductivityWPerMK/(gas*evaluation.gasCpJPerKGK)});
+			}
 			RISE::FireProductionStableTimeStep auditedSelection;
 			const RISE::FireProductionAcceptedCheckpointStateView initialState;
 			const RISE::FireProductionAcceptedManifoldObservation initialObservation;
 			if(!RISE::SelectFireProductionStableTimeStep(shape.cellWidthM,transportMaximum,
-				0.0,0.0,0.0,initialState,initialObservation,auditedSelection,&error))return 225;
+				maximumReducedGravity,maximumActiveDiffusivity,0.0,initialState,
+				initialObservation,auditedSelection,&error))return 225;
+			const float representedAuditedStep=static_cast<float>(auditedSelection.seconds);
+			request.force.timeStepS=representedAuditedStep;
+			request.cellTransport.timeStepS=representedAuditedStep;
+			request.dualTransport.timeStepS=representedAuditedStep;
+			shadowConfig.transport.deltaTimeS=representedAuditedStep;shadowConfig.workerCount=16u;
+			ConservativeAdvance3DResult auditedOracle;
+			if(!AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
+				shadowConfig,fuel,fuel,transport,auditedOracle,&error))return 225;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				request.divergenceTargetPerS[cell]=static_cast<float>(
+					auditedOracle.divergenceHeunPerS[cell]);
+				request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
+					request.beginningManifoldDeviationPerCell[cell]/
+					static_cast<double>(representedAuditedStep));
+			}
+			std::array<double,5> serialWall={{}},serialDevice={{}},auditedWall={{}},auditedDevice={{}};
+			RISE::FireProductionResidentStepResult auditedResident;
+			auto timeSelectedStep=[&](const char* mode,std::array<double,5>& wall,
+				std::array<double,5>& device){
+				if(!setAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE",mode))return false;
+				for(std::size_t trial=0u;trial<=wall.size();++trial){
+					const auto trialStart=std::chrono::steady_clock::now();
+					if(!RISE::AdvanceFireProductionResidentStepMetal(request,auditedResident,&error)){
+						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
+							"trial=%zu failed: %s\n",mode,trial,error.c_str());return false;}
+					if(trial>0u){wall[trial-1u]=std::chrono::duration<double,std::milli>(
+						std::chrono::steady_clock::now()-trialStart).count();
+						device[trial-1u]=auditedResident.deviceElapsedMS;}
+				}
+				return true;
+			};
+			if(!timeSelectedStep("serial",serialWall,serialDevice)||
+				!timeSelectedStep("parallel",auditedWall,auditedDevice)||
+				!clearAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE"))return 225;
+			std::sort(serialWall.begin(),serialWall.end());
+			std::sort(serialDevice.begin(),serialDevice.end());
+			std::sort(auditedWall.begin(),auditedWall.end());
+			std::sort(auditedDevice.begin(),auditedDevice.end());
+			std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selector_gprime=%.17g "
+				"selector_diffusivity=%.17g selected_dt=%.17g represented_dt=%.17g "
+				"active_limit=%s selected_substeps=%u serial_device_p95_ms=%.17g "
+				"serial_wall_p95_ms=%.17g device_p95_ms=%.17g wall_p95_ms=%.17g\n",
+				maximumReducedGravity,maximumActiveDiffusivity,auditedSelection.seconds,
+				static_cast<double>(representedAuditedStep),
+				auditedSelection.activeLimit?auditedSelection.activeLimit:"null",
+				auditedResident.forceSchedule.substepCount,serialDevice.back(),serialWall.back(),
+				auditedDevice.back(),auditedWall.back());
 			std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT dt=%.17g dx=%.17g selector_max=%.17g "
 				"transport_max=%.17g transport_axis=%u transport_face=%zu "
 				"beginning_momentum_velocity_max=%.17g beginning_correction_max=%.17g "
@@ -351,6 +438,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				measured.interstageFullGridTransferCount==0u&&
 				measured.physicalProjection.validationPassed&&
 				measured.physicalProjection.executedVCycleCount==17u&&
+				physicalOnly.projection.executedJacobiSweepCount==
+					measured.physicalProjection.executedJacobiSweepCount&&
+				physicalOnly.projection.maximumPreProjectionResidualPerS==
+					measured.physicalProjection.maximumPreProjectionResidualPerS&&
+				physicalOnly.projection.maximumPostProjectionResidualPerS==
+					measured.physicalProjection.maximumPostProjectionResidualPerS&&
+				physicalOnly.projection.maximumOpenComplementarityDiscrepancyMPerS==
+					measured.physicalProjection.maximumOpenComplementarityDiscrepancyMPerS&&
 				!measured.projection.validationPassed&&
 				measured.projection.executedVCycleCount==16u&&
 				measured.manifoldScalarDeviceToHostTransferCount==1u&&
@@ -364,15 +459,23 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				beginningCorrectionMaximum==0.03793315589427948&&
 				beginningCorrectionAxis==2u&&beginningCorrectionFace==3657u&&
 				physicalMaximum==7.371121883392334&&physicalAxis==2u&&
-				physicalFace==714534u&&finalMaximum==7.3644394874572754&&
+				physicalFace==714534u&&finalMaximum==7.371121883392334&&
 				finalAxis==2u&&finalFace==714534u&&
-				restorationCorrectionMaximum==0.40413093566894531&&
-				restorationCorrectionAxis==1u&&restorationCorrectionFace==40805u&&
-				restorationCorrectionMaximum*dt==2.275065378736813e-05&&
+				restorationCorrectionMaximum==1.7818529158830643e-06&&
+				restorationCorrectionAxis==2u&&restorationCorrectionFace==978626u&&
+				restorationCorrectionMaximum*dt==1.0030986299568027e-10&&
 				transportCFL==0.0016462660045688639&&
 				physicalCFL==0.0016601606404766957&&
+				maximumReducedGravity==48.944695265891369&&
+				maximumActiveDiffusivity==0.0030345390611787094&&
 				auditedSelection.seconds==transportCFL&&auditedSelection.activeLimit&&
-				std::strcmp(auditedSelection.activeLimit,"advective_CFL")==0;
+				std::strcmp(auditedSelection.activeLimit,"advective_CFL")==0&&
+				representedAuditedStep==0.0016462659696117043f&&
+				auditedResident.forceSchedule.substepCount==1u&&
+				std::isfinite(serialDevice.back())&&std::isfinite(serialWall.back())&&
+				auditedWall.back()<serialWall.back()&&
+				std::isfinite(auditedDevice.back())&&auditedDevice.back()<=75.0&&
+				std::isfinite(auditedWall.back())&&auditedWall.back()<=200.0;
 			std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT topology=%d values=%d "
 				"physical_only_invocations=%u cycles=%u validation=%d scalar_reads=%u full_reads=%u "
 				"normal_invocations=%u physical_cycles=%u physical_validation=%d "

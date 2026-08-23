@@ -3489,9 +3489,11 @@ The immutable golden checkpoint's accepted `5.6295254283638751e-5 s` step is
 not a production CFL measurement.  Back-solving `0.5*dx/dt` gives
 `217.37616398903009 m/s`, but the exact resident audit measures only
 `7.4333348274230957 m/s` in the transport field, `7.371121883392334 m/s`
-after the physical projection, and `7.3644394874572754 m/s` after restoration.
-The largest restoration correction is `0.40413093566894531 m/s`, only 5.48%
-of the physical maximum.  The old step instead belongs to the preserved
+after the physical projection, and `7.371121883392334 m/s` after restoration.
+The largest restoration correction is only `1.7818529158830643e-6 m/s`
+(`1.0030986299568027e-10 m/s*s` at the preserved step), or
+`2.4173429012179363e-7` of the physical maximum.  The old step instead belongs
+to the preserved
 binary64 oracle's retry history: its console log records repeated R0/R1
 augmented-active-set cycles before r80/r81 applied r59's two-class acceptance
 to that Zeno topology.  The checkpoint remains the immutable pre-fix root, but
@@ -3502,9 +3504,15 @@ the retry-limited oracle step and not a finite-per-step projection correction.
 This is the r70 death-spiral boundary: a `1/dt`-mode correction impulse may be
 validated as part of the accepted step, but its velocity quotient does not
 become the next step's advective speed.  The selector consumes
-`7.4333348274230957 m/s`, reports `advective_CFL`, and returns
-`1.6462660045688639e-3 s`; the physical-projection maximum independently gives
-`1.6601606404766957e-3 s`.
+`7.4333348274230957 m/s`.  The complete selector also consumes the measured
+golden-state reduced-gravity maximum `48.944695265891369 m/s^2` and active
+diffusivity maximum `0.0030345390611787094 m^2/s`; their respective candidates
+are `0.015812081290725255 s` and `0.024674291069445888 s`, so the selected
+limit is `advective_CFL` at `1.6462660045688639e-3 s` (represented as
+`1.6462659696117043e-3 s`).  The physical-projection maximum independently
+gives `1.6601606404766957e-3 s`.  Each frozen slice restarts from the common
+golden beginning, so no previous accepted production observation or growth
+cap participates in this single-step selector audit.
 
 The ceiling is then derived under the r72 function-owner rule.  The production
 plateau gate protects the r60 thermo/temperature-inversion domain, whose
@@ -3526,15 +3534,19 @@ The predictor path remains resident: one exact per-cell Binary32 manifold map,
 one max reduction, one scalar readback, and no full-grid transfer.  The largest
 host cost was instead serial construction of nine independent dual-remap
 layouts.  Dispatching those packs through the topology-aware global thread
-pool leaves arithmetic unchanged and moves warm p95 from
-`66.0780417/197.288084 ms` device/wall to
-`66.3970417/146.323667 ms`.  At the physical CFL this projects the
-25.0324805-s tier-10 stepping work to `0.2804 h` device and `0.6180 h`
-completed wall.  The remaining wall/device ratio is `2.2038`, with
-`79.9266 ms` of host orchestration still attributable to preflight/layout,
-uploads, command submission/waits, and postprocessing.  The `200 ms` gate is a
-ceiling, not a performance target; no claim that production is faster than the
-oracle in validated practice is made while the thermo stop is active.
+pool leaves arithmetic unchanged.  Under the required benchmark policy
+`render_thread_reserve_count 0`, and at the actual selected step with its one
+force substep, the controlled serial-pack p95 is
+`67.077958141453564/198.925375 ms` device/wall and the parallel-pack p95 is
+`66.286208340898156/145.907625 ms`.  This is a `26.652079957119601%` wall
+reduction.  At the physical CFL the 25.0324805-s tier-10 stepping work projects
+to `0.27997841669516038 h` device and `0.61628183077182297 h` completed wall.
+The remaining wall/device ratio is `2.2011762122464913`, with
+`79.62141665910184 ms` of host orchestration still attributable to
+preflight/layout, uploads, command submission/waits, and postprocessing.  The
+`200 ms` gate is a ceiling, not a performance target; no claim that production
+is faster than the oracle in validated practice is made while the thermo stop
+is active.
 
 The exact audit exits `247` only after binding all velocity values, owning
 faces, projection counts/cycles, transfer counts, and golden SHA.  Malformed

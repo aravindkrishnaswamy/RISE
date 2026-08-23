@@ -329,6 +329,9 @@ int main()
 		"golden_restoration_refusal.v1");
 	const std::string goldenCompositionFixture=ReadText(
 		"tests/FireProductionGoldenCompositionFixture.h");
+	const std::string timestepVelocityBenchmarkOptions=ReadText(
+		"rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/"
+		"benchmark.options");
 	Check(!goldenSubdominanceInputs.empty()&&!goldenRestorationRefusal.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenSubdominanceInputs.begin(),goldenSubdominanceInputs.end()))==
@@ -517,7 +520,7 @@ int main()
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
+		"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
 		"06ee59fc4cbc0980c1f4349b4bb0acc453ffa4619ec9063bff56886e6a992520"&&
@@ -577,7 +580,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"e36a76942cdc852cb4cdc9cc1fa4f9b679fbc996e16eed7ed254ee8e03b327f5"&&
+		"23ce6bd62ef779f8e7f7b550bee0b8dbfac860cfbf9f638796340971bd409f43"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -762,7 +765,7 @@ int main()
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
+			"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
@@ -878,7 +881,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
+			"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionSource.begin(),advectionSource.end()))==
 			"389eb83c649375ec8649b372bb1db33bb62785d1b6324c6cc29943d21c2bfa58"&&
@@ -1003,7 +1006,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"3f610e026e0d0d0094b282acbf25b9452448264641f4ffe140824b9a474d342e"&&
+			"c7a7d29c6cf2b27671c3a395cedb46e42b92ad0e67462b8ed0858cf9bdbaa0d4"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1025,7 +1028,7 @@ int main()
 	Check(!timestepVelocityCeilingEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(timestepVelocityCeilingEvidence.begin(),
 			timestepVelocityCeilingEvidence.end()))==
-		"8374c52a1d09277f5caf419bf45524ee9b81eaa8a533314c984391c3662d1151"&&
+		"f43e7684ff529ce5d0d35e785506e77eec1044073011bd119f578b086982b8b9"&&
 		timestepVelocityCeilingEvidence.find(
 			"accepted_step_implied_velocity_m_per_s 217.37616398903009")!=
 			std::string::npos&&
@@ -1035,10 +1038,22 @@ int main()
 			"physical_projection_velocity_max_m_per_s 7.371121883392334")!=
 			std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
-			"restoration_correction_velocity_max_m_per_s 0.40413093566894531")!=
+			"final_velocity_max_m_per_s 7.371121883392334")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"restoration_correction_velocity_max_m_per_s 1.7818529158830643e-06")!=
 			std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"audited_transport_CFL_step_s 0.0016462660045688639")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"audited_selector_maximum_positive_reduced_gravity_m_per_s2 "
+			"48.944695265891369")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"audited_selector_maximum_active_diffusivity_m2_per_s "
+			"0.0030345390611787094")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"audited_represented_step_s 0.0016462659696117043")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"audited_selected_force_substep_count 1")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"oracle_two_class_zeno_fix_already_landed true")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
@@ -1049,28 +1064,58 @@ int main()
 			"calibrating_observed_plateau_over_derived_ceiling 3.3770759517686897")!=
 			std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
-			"corrected_warm_wall_p95_ms 146.323667")!=std::string::npos&&
+			"controlled_serial_wall_p95_ms 198.925375")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"corrected_warm_wall_p95_ms 145.907625")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"ceiling_verdict thermo_temperature_inversion_domain_finding_stop")!=
 			std::string::npos&&
+		timestepVelocityBenchmarkOptions=="render_thread_reserve_count 0\n"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			timestepVelocityBenchmarkOptions.begin(),timestepVelocityBenchmarkOptions.end()))==
+			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
+			"6b8aa7cfac26565b7d329e44149bb2ea3aa522f0f820179ef62b09350ad907d9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"3f610e026e0d0d0094b282acbf25b9452448264641f4ffe140824b9a474d342e"&&
+			"c7a7d29c6cf2b27671c3a395cedb46e42b92ad0e67462b8ed0858cf9bdbaa0d4"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
+			"const double final=measured.projection.velocityMPerS[axis][face]")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"measured.physicalProjection.maximumPostProjectionResidualPerS")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("BuildOpenStageTransportEvaluations3D")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
 			"auditedSelection.seconds==transportCFL")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"timeSelectedStep(\"serial\",serialWall,serialDevice)")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"timeSelectedStep(\"parallel\",auditedWall,auditedDevice)")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"production timestep velocity audit activation is invalid")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"FireProductionResidentStepMetalCommandCommitCount()==beginningCommandCount")!=
+			std::string::npos&&
 		goldenCompositionFixture.find(
 			"measured.residentProjectionInvocationCount==2u")!=std::string::npos&&
 		advectionMetal.find("GlobalThreadPool().ParallelFor(9u")!=std::string::npos&&
+		advectionMetal.find("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE")!=
+			std::string::npos&&
 		advectionMetal.find(
 			"production timestep velocity audit activation is invalid")!=std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r159_timestep_velocity_audit")!=
 			std::string::npos&&
 		unixTestDriver.find("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=malformed")!=
+			std::string::npos&&
+		unixTestDriver.find("velocity_audit_options")!=std::string::npos&&
+		unixTestDriver.find("RISE_OPTIONS_FILE=\"$velocity_audit_options\"")!=
 			std::string::npos&&
 		unixTestDriver.find("velocity_audit_malformed_rc\" -eq 222")!=
 			std::string::npos&&
