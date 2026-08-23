@@ -3790,3 +3790,56 @@ it was already tried and refuted here.
   blocked; r159's 81.36 ms host residual stays on the device-bound backlog.
   Golden remains byte-identical.  Durable evidence is
   `r160_low_mach_audited_step_refusal/low_mach_audited_step_refusal.v1`.
+- **r161 two-pass advective-anomaly closure and remap-scheme stop
+  (2026-08-23):** r160's refusal is retained as the closure-disabled RED, not
+  the final design conclusion.  The measurement history is reconciled by a
+  two-regime model `G=G_floor+k*dt`.  A least-squares fit to r158's
+  CFL/CFL/2/CFL/4 observations gives `G_floor=0.0024982685328926446` and the
+  floor-regime dose coefficient `k=0.6137015145338649 s^-1` (maximum fit
+  residual `3.015564319693714e-8`).  At r160's audited physical CFL, the
+  unclosed dose branch has `k=50.65858722417441 s^-1`; this accounts for
+  `G=0.085895776748657227` without changing either dataset.
+
+  The pre-registered two-pass remedy is now resident.  The predictor remaps
+  the nine-component scalar ledger, evaluates the exact Binary32 manifold map
+  on-device, and folds `(V_predictor-V_beginning)/dt` into the restoration
+  divergence target.  The restoration pressure solve retains its Private
+  velocity; a corrector reruns the same five scalar submaps from the original
+  beginning state and applies the same source operand before the sole terminal
+  publication.  The dual ledger is unchanged.  The complete path is ten cell
+  submaps, fifteen dual submaps, two source commands, two projections, two
+  scalar reductions, and zero interstage full-grid transfers.  Its working-set
+  certificate includes both simultaneously live cell-palindrome allocations
+  and the retained restoration state.
+
+  At `dt=0.0016462659696117043 s`, closure lowers G to
+  `0.066569089889526367` (`0.7749984039880868` of the disabled result), an
+  effective dose coefficient `38.91887613503045 s^-1`, but still exceeds the
+  exact `2^-5` hard ceiling.  The amended 25%-headroom predictor derives
+  `0.00057953997747972608 s`.  There the predictor G is
+  `0.020501971244812012`; the corrected field is
+  `0.024326920509338379`, or `1.0379486083984375x` the headroom allowance
+  `0.0234375`, while the hard ceiling remains `0.03125` and restoration drains
+  `0.99965526094762158`.  The next predictor would require
+  `0.0005581588363136789 s`.
+
+  The limited diagnostic changes only the represented production step.  Its
+  divergence target remains the already audited golden per-second physical
+  target; no binary64-oracle solve is reused as a production operand.  The
+  zero-anomaly RED is a complete on-device A/B: after device reconstruction of
+  the beginning manifold value, closure-active and single-pass runs publish
+  byte-identical accepted payloads and the active route records one predictor
+  pass with no corrector palindrome.
+
+  The serialized one-warmup/five-sample observation is
+  `89.76820833049715/175.376917 ms` device/wall at the first limited step,
+  projecting `1.0756640781528488/2.1014861860622025 h` for tier-10 x 25 s.
+  Applying the still-tighter next predictor projects
+  `1.1183201200267554/2.184821759472852 h` at the same measured cost.  Thus
+  closure plus the automatic backstop cannot hold the 25%-headroom plateau
+  within the pre-registered approximately two-hour wall envelope.  Exact exit
+  218 records a genuine remap-scheme finding; no accepted token is minted and
+  the 104-step shadow does not start.  Reconstruction-class change is now the
+  required owner ruling.  B_fp32, guard supersession, temporal refinement,
+  readmission, source maps, and first light remain blocked.  Golden remains
+  byte-identical.

@@ -689,6 +689,12 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
  atomic_fetch_max_explicit(reduction,as_type<uint>(generation),memory_order_relaxed);
  atomic_fetch_max_explicit(reduction+1u,as_type<uint>(field),memory_order_relaxed);
 }
+kernel void fold_methane_advective_anomaly_target(device const float2* deviationMap [[buffer(0)]],
+ device float* restorationTarget [[buffer(1)]],constant float& inverseTimeStep [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
+ float2 deviation=deviationMap[gid];
+ restorationTarget[gid]+=(deviation.y-deviation.x)*inverseTimeStep;
+}
 )METAL";
 		}
 
@@ -714,6 +720,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 			id<MTLComputePipelineState> extractGasDensity;
 			id<MTLComputePipelineState> addFaceSources;
 			id<MTLComputePipelineState> measureMethaneManifold;
+			id<MTLComputePipelineState> foldMethaneAdvectiveAnomalyTarget;
 			std::string error;
 
 			MetalRemapContext() : device(nil), queue(nil), reconstruct(nil), scan(nil),
@@ -722,7 +729,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil),
 				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil),
 				addCellSources(nil),extractGasDensity(nil),addFaceSources(nil),
-				measureMethaneManifold(nil)
+				measureMethaneManifold(nil),foldMethaneAdvectiveAnomalyTarget(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -758,13 +765,15 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					extractGasDensity=makePipeline("extract_gas_density");
 					addFaceSources=makePipeline("add_face_sources");
 					measureMethaneManifold=makePipeline("measure_methane_manifold");
+					foldMethaneAdvectiveAnomalyTarget=
+						makePipeline("fold_methane_advective_anomaly_target");
 					if( !reconstruct||!scan||!flux||!update||!gatherValues||
 						!scatterValues||!gatherVelocity||!gatherPeriodicDualValues||
 						!gatherPeriodicDualCarrier||!scatterPeriodicDualValues||
 						!publishPeriodicDualSeam||!gatherDualLineValues||
 						!scatterDualLineValues||!prescribeDualComponentWalls||
 						!addCellSources||!extractGasDensity||!addFaceSources||
-						!measureMethaneManifold ) {
+						!measureMethaneManifold||!foldMethaneAdvectiveAnomalyTarget ) {
 						error=MetalError("production fire remap pipeline creation failed",metalError);
 						return;
 					}
@@ -780,7 +789,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
 					publishPeriodicDualSeam&&gatherDualLineValues&&scatterDualLineValues&&
 				prescribeDualComponentWalls&&addCellSources&&extractGasDensity&&addFaceSources&&
-				measureMethaneManifold&&
+				measureMethaneManifold&&foldMethaneAdvectiveAnomalyTarget&&
 					error.empty();
 			}
 		};
@@ -2321,6 +2330,17 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					"production golden long-shadow activation is invalid";
 				return false;
 			}
+			const char* anomalyClosureTestActivation=std::getenv(
+				"RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
+			if( anomalyClosureTestActivation&&(!goldenLongShadowActivation||
+				(std::strcmp(anomalyClosureTestActivation,"disabled")!=0&&
+				 std::strcmp(anomalyClosureTestActivation,"limited")!=0)) ) {
+				if( structuredError ) *structuredError=
+					"production advective anomaly closure test activation is invalid";
+				return false;
+			}
+			const bool anomalyClosureTestDisabled=anomalyClosureTestActivation&&
+				std::strcmp(anomalyClosureTestActivation,"disabled")==0;
 			const char* timestepVelocityPackMode=std::getenv(
 				"RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
 			if( timestepVelocityPackMode&&(!timestepVelocityAuditEnabled||
@@ -2383,6 +2403,9 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 			}
 			const std::size_t cells=shape.CellCount();
 			const bool measureManifold=request.enforceManifoldPlateau&&!plateauEvidenceEnabled;
+			const bool closeAdvectiveAnomaly=measureManifold&&!anomalyClosureTestDisabled&&
+				!manifoldProbeActivation&&!manifoldStageBudgetActivation&&
+				!timestepVelocityAuditActivation;
 			if( measureManifold&&request.beginningManifoldDeviationPerCell.size()!=cells ) {
 				if( structuredError ) *structuredError=
 					"production resident step lacks beginning manifold metadata";
@@ -2513,11 +2536,15 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					[context.device newBufferWithBytes:&manifoldParameters
 						length:sizeof(manifoldParameters) options:MTLResourceStorageModeShared]:nil;
 				id<MTLBuffer> manifoldMap=measureManifold?privateBuffer(2u*cells*sizeof(float)):nil;
+				id<MTLBuffer> manifoldPredictorReduction=closeAdvectiveAnomaly?
+					[context.device newBufferWithLength:3u*sizeof(std::uint32_t)
+						options:MTLResourceStorageModeShared]:nil;
 				if( !cellStage||!cellPrivate||!ambientStage||!ambientPrivate||!cellSourceStage||
 					!cellSourcePrivate||!faceSourceStage||!faceSourcePrivate||!targetStage||!targetPrivate||
 					!restorationTargetStage||!restorationTargetPrivate||
 					(measureManifold&&(!manifoldThermochemistry||!manifoldBeginningDeviation||
-						!manifoldParametersBuffer||!manifoldMap)) )
+						!manifoldParametersBuffer||!manifoldMap))||
+					(closeAdvectiveAnomaly&&!manifoldPredictorReduction) )
 					return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
@@ -2537,6 +2564,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				if( measureManifold&&(!recordOwner(manifoldThermochemistry)||
 					!recordOwner(manifoldBeginningDeviation)||
 					!recordOwner(manifoldParametersBuffer)||!recordOwner(manifoldMap)) ) return false;
+				if( closeAdvectiveAnomaly&&!recordOwner(manifoldPredictorReduction) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) if(
 					!recordOwner(velocityStage[axis])||!recordOwner(velocityPrivate[axis]) ) return false;
 				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
@@ -2565,6 +2593,8 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				FireProductionMetalCellPalindromeResidentResult cell;
 				if( !RemapFireProductionCellPalindromeMetalResident(request.cellTransport,cellInput,
 					cell,structuredError) ) return false;
+				const double predictorCellDeviceMS=cell.deviceElapsedMS;
+				const std::uint64_t predictorCellActualMetalBytes=cell.actualMetalAllocationBytes;
 				timestepVelocityAuditCellMS=timestepVelocityAuditMS();
 				FireProductionMetalDualMomentumResidentInput dualInput;
 				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
@@ -2604,10 +2634,44 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				[encoder setBuffer:sourceFaceParameter offset:0 atIndex:2];
 				Dispatch(encoder,context.addFaceSources,allFaces);[encoder endEncoding];
 				CommitTrackedMetalCommand(sourceCommand);[sourceCommand waitUntilCompleted];
-				const std::uint64_t sourceCommits=MetalCommandCommitCount-beginningCommits;
+				std::uint64_t sourceCommits=MetalCommandCommitCount-beginningCommits;
 				if( [sourceCommand status]!=MTLCommandBufferStatusCompleted||sourceCommits!=1u||
 					MetalHostBufferReadCount-beginningReads!=0u ) return false;
 				timestepVelocityAuditSourceMS=timestepVelocityAuditMS();
+				float maximumPredictedAdvectiveAnomalyFloat=0.0f;
+				double anomalyPredictorDeviceMS=0.0,anomalyCorrectorSourceDeviceMS=0.0;
+				if( closeAdvectiveAnomaly ) {
+					std::memset([manifoldPredictorReduction contents],0,3u*sizeof(std::uint32_t));
+					id<MTLCommandBuffer> predictorCommand=TrackedMetalCommandBuffer(context.queue);
+					id<MTLComputeCommandEncoder> predictorEncoder=
+						predictorCommand?[predictorCommand computeCommandEncoder]:nil;
+					if( !predictorEncoder ) return false;
+					[predictorEncoder setBuffer:manifoldBeginningDeviation offset:0 atIndex:0];
+					[predictorEncoder setBuffer:cell.conservativeValues offset:0 atIndex:1];
+					[predictorEncoder setBuffer:manifoldThermochemistry offset:0 atIndex:2];
+					[predictorEncoder setBuffer:manifoldMap offset:0 atIndex:3];
+					[predictorEncoder setBuffer:manifoldPredictorReduction offset:0 atIndex:4];
+					[predictorEncoder setBuffer:manifoldParametersBuffer offset:0 atIndex:5];
+					Dispatch(predictorEncoder,context.measureMethaneManifold,cells);
+					[predictorEncoder endEncoding];
+					predictorEncoder=[predictorCommand computeCommandEncoder];
+					if( !predictorEncoder ) return false;
+					const float inverseTimeStep=1.0f/request.force.timeStepS;
+					[predictorEncoder setBuffer:manifoldMap offset:0 atIndex:0];
+					[predictorEncoder setBuffer:restorationTargetPrivate offset:0 atIndex:1];
+					[predictorEncoder setBytes:&inverseTimeStep length:sizeof(inverseTimeStep) atIndex:2];
+					Dispatch(predictorEncoder,context.foldMethaneAdvectiveAnomalyTarget,cells);
+					[predictorEncoder endEncoding];
+					CommitTrackedMetalCommand(predictorCommand);[predictorCommand waitUntilCompleted];
+					if( [predictorCommand status]!=MTLCommandBufferStatusCompleted ) return false;
+					anomalyPredictorDeviceMS=
+						([predictorCommand GPUEndTime]-[predictorCommand GPUStartTime])*1000.0;
+					const std::uint32_t* predictorReduction=static_cast<const std::uint32_t*>(
+						ReadTrackedMetalBuffer(manifoldPredictorReduction));
+					if( !predictorReduction||predictorReduction[2u]!=0u ) return false;
+					std::memcpy(&maximumPredictedAdvectiveAnomalyFloat,predictorReduction,sizeof(float));
+					if( !std::isfinite(maximumPredictedAdvectiveAnomalyFloat) ) return false;
+				}
 				FireProductionProjectionRequest projectionRequest;
 				projectionRequest.shape=shape;projectionRequest.timeStepS=request.force.timeStepS;
 				projectionRequest.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
@@ -2626,6 +2690,9 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				const bool restorationFullTarget=restorationTest&&
 					std::strcmp(restorationTest,"full-target")==0;
 				FireProductionProjectionResult physicalProjection,projection;
+				FireProductionMetalProjectionResidentState restorationState;
+				bool anomalyCorrectorExecuted=false;
+				double anomalyCorrectorCellDeviceMS=0.0;
 				if( restorationRemoved ) {
 					if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,
 						projection,structuredError) ) return false;
@@ -2645,7 +2712,35 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					restorationInput.provisionalMomentumByteOffset=physicalState.momentumByteOffset;
 					restorationInput.divergenceTargetPerS=restorationFullTarget?
 						targetPrivate:restorationTargetPrivate;
-					if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
+					if( closeAdvectiveAnomaly&&maximumPredictedAdvectiveAnomalyFloat>0.0f ) {
+						if( !ProjectFireProductionMetalRestorationResidentState(restorationRequest,
+							restorationInput,restorationTargetPrivate,restorationState,projection,
+							structuredError) ) return false;
+						FireProductionMetalCellPalindromeResidentInput correctorInput;
+						correctorInput.conservativeValues=cellPrivate;
+						correctorInput.frozenVelocityMPerS=restorationState.velocityMPerS;
+						correctorInput.ambientValues=ambientPrivate;
+						FireProductionMetalCellPalindromeResidentResult corrector;
+						if( !RemapFireProductionCellPalindromeMetalResident(request.cellTransport,
+							correctorInput,corrector,structuredError) ) return false;
+						anomalyCorrectorCellDeviceMS=corrector.deviceElapsedMS;
+						id<MTLCommandBuffer> correctorSource=TrackedMetalCommandBuffer(context.queue);
+						id<MTLComputeCommandEncoder> correctorEncoder=
+							correctorSource?[correctorSource computeCommandEncoder]:nil;
+						if( !correctorEncoder ) return false;
+						[correctorEncoder setBuffer:corrector.conservativeValues offset:0 atIndex:0];
+						[correctorEncoder setBuffer:cellSourcePrivate offset:0 atIndex:1];
+						[correctorEncoder setBuffer:sourceGridParameter offset:0 atIndex:2];
+						Dispatch(correctorEncoder,context.addCellSources,9u*cells);
+						[correctorEncoder endEncoding];CommitTrackedMetalCommand(correctorSource);
+						[correctorSource waitUntilCompleted];
+						if( [correctorSource status]!=MTLCommandBufferStatusCompleted ) return false;
+						anomalyCorrectorSourceDeviceMS=
+							([correctorSource GPUEndTime]-[correctorSource GPUStartTime])*1000.0;
+						++sourceCommits;cell=std::move(corrector);anomalyCorrectorExecuted=true;
+						if( !PublishFireProductionMetalRestorationResidentState(restorationRequest,
+							restorationState,projection,structuredError) ) return false;
+					} else if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
 						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
 					timestepVelocityAuditRestorationMS=timestepVelocityAuditMS();
 				}
@@ -2736,14 +2831,16 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 						projection.maximumPreProjectionResidualPerS,
 						projection.maximumPostProjectionResidualPerS,plateauValidation)) ) return false;
 				constexpr double lowMachValidityCeiling=0x1p-5;
+				constexpr double lowMachPlateauAllowance=(1.0-0x1p-2)*
+					lowMachValidityCeiling;
 				const bool plateauPassed=!enforcePlateau||
 					(plateauValidation.mechanismPassed&&
-					maximumTerminalDeviation<=lowMachValidityCeiling);
+					maximumTerminalDeviation<=lowMachPlateauAllowance);
 				if( !plateauPassed&&!manifoldProbeActivation&&!manifoldStageBudgetActivation&&
 					!timestepVelocityAuditActivation&&!goldenLongShadowActivation ) {
 					if( structuredError ) *structuredError=
-						maximumTerminalDeviation>lowMachValidityCeiling?
-							"production realized manifold deviation exceeds the low-Mach validity ceiling":
+						maximumTerminalDeviation>lowMachPlateauAllowance?
+							"production realized manifold deviation exceeds the low-Mach headroom allowance":
 							"production restoration residual is amplified";
 					return false;
 				}
@@ -2758,7 +2855,8 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				}
 				computed.physicalProjection=std::move(physicalProjection);
 				computed.projection=std::move(projection);computed.forceSchedule=force.schedule;
-				computed.forceDiagnostics=force.diagnostics;computed.cellSubmapCount=cell.executedSubmapCount;
+				computed.forceDiagnostics=force.diagnostics;computed.cellSubmapCount=
+					cell.executedSubmapCount+(anomalyCorrectorExecuted?5u:0u);
 				computed.dualSubmapCount=dual.executedSubmapCount;computed.sourceCommandCommitCount=
 					static_cast<std::uint32_t>(sourceCommits);
 				computed.residentProjectionInvocationCount=
@@ -2778,22 +2876,31 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				computed.combinedCertifiedWorkingSetBytes=certified;
 				computed.combinedActualMetalAllocationBytes=ownerActualMetalBytes+
 					force.diagnostics.actualMetalAllocationBytes+
-					cell.actualMetalAllocationBytes+dual.actualMetalAllocationBytes+
+					cell.actualMetalAllocationBytes+
+					(anomalyCorrectorExecuted?predictorCellActualMetalBytes:0u)+
+					dual.actualMetalAllocationBytes+
 					(restorationRemoved?computed.projection.residentActualMetalAllocationBytes:
 						computed.physicalProjection.residentActualMetalAllocationBytes+
 							computed.projection.residentActualMetalAllocationBytes);
-				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+cell.deviceElapsedMS+
+				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+
+					predictorCellDeviceMS+(anomalyCorrectorExecuted?anomalyCorrectorCellDeviceMS:0.0)+
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
+					anomalyPredictorDeviceMS+anomalyCorrectorSourceDeviceMS+
 					(restorationRemoved?computed.projection.deviceElapsedMS:
 						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS)+
 					([terminalCommand GPUEndTime]-[terminalCommand GPUStartTime])*1000.0;
 				computed.representedTimeStepS=request.force.timeStepS;
 				computed.maximumManifoldGeneration=maximumManifoldGeneration;
 				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
+				computed.maximumPredictedAdvectiveManifoldAnomaly=
+					maximumPredictedAdvectiveAnomalyFloat;
 				computed.manifoldMapCellCount=measureManifold?
 					static_cast<std::uint32_t>(cells):0u;
-				computed.manifoldScalarDeviceToHostTransferCount=measureManifold?1u:0u;
+				computed.manifoldScalarDeviceToHostTransferCount=measureManifold?
+					(closeAdvectiveAnomaly?2u:1u):0u;
 				computed.manifoldFullGridDeviceToHostTransferCount=0u;
+				computed.advectiveAnomalyClosurePassCount=closeAdvectiveAnomaly?
+					(anomalyCorrectorExecuted?2u:1u):0u;
 				computed.manifoldStageGeneration[0]=maximumManifoldGeneration;
 				computed.manifoldStageGeneration[1]=0.0;
 				computed.manifoldStageGeneration[2]=0.0;
@@ -2834,13 +2941,15 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 							computed.conservativeValues,computed.projection.momentumKGPerM2S,
 							computed.projection.velocityMPerS);
 				}
-				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
-					computed.sourceCommandCommitCount!=1u||
+				if( computed.cellSubmapCount!=(anomalyCorrectorExecuted?10u:5u)||
+					computed.dualSubmapCount!=15u||
+					computed.sourceCommandCommitCount!=(anomalyCorrectorExecuted?2u:1u)||
 					computed.residentProjectionInvocationCount!=(restorationRemoved?1u:2u)||
 					computed.interstageFullGridTransferCount!=0u||
-					MetalHostBufferReadCount-beginningReads!=1u||
+					MetalHostBufferReadCount-beginningReads!=(closeAdvectiveAnomaly?2u:1u)||
 					(measureManifold&&(computed.manifoldMapCellCount!=cells||
-						computed.manifoldScalarDeviceToHostTransferCount!=1u||
+						computed.manifoldScalarDeviceToHostTransferCount!=
+							(closeAdvectiveAnomaly?2u:1u)||
 						computed.manifoldFullGridDeviceToHostTransferCount!=0u||
 						computed.manifoldStageGeneration[0]!=computed.maximumManifoldGeneration||
 						computed.manifoldStageGeneration[1]!=0.0||

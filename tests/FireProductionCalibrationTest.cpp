@@ -3,6 +3,7 @@
 #include "FireProductionRoundoffWalker.h"
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "Utilities/FireProductionAdvection.h"
+#include "Utilities/FireProductionForce.h"
 #include "Utilities/FireProductionProjection.h"
 #include "Utilities/FireProductionTransport.h"
 #include "fire_production_fp64/FireProductionAdvection.h"
@@ -57,6 +58,18 @@ namespace
 
 int main()
 {
+	double zeroAnomalyTarget=0.0,activeAnomalyTarget=0.0;
+	const bool zeroAnomalyDerived=RISE::DeriveFireProductionAdvectiveAnomalyTarget(
+		0.125,0.125,0.5,0.25,zeroAnomalyTarget);
+	const bool activeAnomalyDerived=RISE::DeriveFireProductionAdvectiveAnomalyTarget(
+		0.125,0.375,0.5,0.25,activeAnomalyTarget);
+	const double missingRampTarget=0.25;
+	const double halfRampTarget=0.25+0.5*(0.375-0.125)/0.5;
+	const double reversedRampTarget=0.25-(0.375-0.125)/0.5;
+	Check(zeroAnomalyDerived&&zeroAnomalyTarget==0.25&&activeAnomalyDerived&&
+		activeAnomalyTarget==0.75&&missingRampTarget!=activeAnomalyTarget&&
+		halfRampTarget!=activeAnomalyTarget&&reversedRampTarget!=activeAnomalyTarget,
+		"advective-anomaly target is an exact zero-anomaly no-op and rejects missing, half, and reversed ramps");
 	std::vector<double> longShadowFlat(FireProductionCalibration::LongShadowSteps,0.0025);
 	std::vector<double> longShadowSecular(FireProductionCalibration::LongShadowSteps,0.0);
 	std::vector<double> longShadowMaskedSecular(
@@ -539,7 +552,9 @@ int main()
 	tokenEligibility.acceptedShape.nx=4u;tokenEligibility.acceptedShape.ny=4u;
 	tokenEligibility.acceptedShape.nz=4u;tokenEligibility.acceptedShape.cellWidthM=1.0f;
 	tokenEligibility.manifoldMapCellCount=64u;
-	tokenEligibility.manifoldScalarDeviceToHostTransferCount=1u;
+	tokenEligibility.manifoldScalarDeviceToHostTransferCount=2u;
+	tokenEligibility.maximumPredictedAdvectiveManifoldAnomaly=0.0;
+	tokenEligibility.advectiveAnomalyClosurePassCount=1u;
 	const bool eligibleTokenState=
 		RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	tokenEligibility.physicalProjection.validationPassed=false;
@@ -557,22 +572,22 @@ int main()
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
+		"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"cf4d73897127c4972f9e81a9a750a598d2e0ee903a4fa8f8710234cab63a9967"&&
+		"ac7a5813704b00efee73ab9a73feeb94a25e8c3f53ca61bbcb081fcdea5327db"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-		"7962d4d8b7fc67acd23b8dc3d57e952dd4268230d188ed83a14a34c41b720575"&&
+		"4bf1d9b305a18010639615639b5dd2508929e6a71a0bc27a4b2a2325da1a2f92"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionSource.begin(),projectionSource.end()))==
-		"4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4"&&
+			"4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
-		"2b37a97ff8490507dcd86cf60219c5fa2db272107c40349c948aa1a49cd433c5"&&
+		"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
-		"2b3e518e7b69a2d3b0f2014fa42099f650d304212987d7d27e2941173494c331"&&
+		"dae35a0a4084fd615d8008bc3d14ab7082f542aca97300c3aff061bdc53ec163"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireCaseSource.begin(),fireCaseSource.end()))==
 		"ccec8ac875bd2922217a90dad0c114cb2ef1e3ccab47c05bdc65208459adb003"&&
@@ -587,13 +602,13 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"8ce3ab7e2a545cadc2b7c3f97183fe9560e39305fa0712bd5feb7113941c3cb9"&&
+			"ef7962f16a12e83e065d1891737703ec3502f960de7b4e66f02be6fbc1b00121"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-		"07d6ce4b925875f12cee534e5c22a205bcd5c987a90aa6d051b39f24a8f1cfd4"&&
+			"b237cc38edf4987293217acf10d9967441323b505f6d3bd19db10c8b763048aa"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 		"0f8f4d5a150ca6b35f2a1181ce9fbde933eb78eaa2f59f44b4cd469ea954ed08"&&
@@ -605,10 +620,10 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"e652ca63625876cf544c4d671597e5778506576ce8d0b77c1d5b3468681a9f1a"&&
+		"40e904c4fe3800ef635d7176466c11e2f968402b41458de1aececd27d5a62db2"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"49b37859ac9b338c11931f5732e0619c07d28c7eb5376b68acf3f9de739a5c86"&&
+		"5f08c116ac0e64eaeda764375a9e7d90fb5be3b925c2afcdb55c0a7ea3528326"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
 		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
@@ -617,7 +632,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"86e5d63b884cf3964f99a043e6fcbd637866857e6ee1266ef1b31bfadc889469"&&
+		"7eb883fa7212a74cef915332542bbd9d972d758276e313539bea11088c205731"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -802,7 +817,7 @@ int main()
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
+			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
@@ -918,7 +933,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
+			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionSource.begin(),advectionSource.end()))==
 			"389eb83c649375ec8649b372bb1db33bb62785d1b6324c6cc29943d21c2bfa58"&&
@@ -1043,7 +1058,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"9a11dd1add8bd6a4037593fa3c6164d34f95f52f015aa0131bda2af71d5c651d"&&
+			"8a5e0b0bb3a6dba677c347a814e82d8ad0a5f92bff2d54917e62469133160871"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1122,10 +1137,10 @@ int main()
 			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
+			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"9a11dd1add8bd6a4037593fa3c6164d34f95f52f015aa0131bda2af71d5c651d"&&
+			"8a5e0b0bb3a6dba677c347a814e82d8ad0a5f92bff2d54917e62469133160871"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1214,28 +1229,28 @@ int main()
 			"golden_checkpoint_unchanged true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
+			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-			"cf4d73897127c4972f9e81a9a750a598d2e0ee903a4fa8f8710234cab63a9967"&&
+			"ac7a5813704b00efee73ab9a73feeb94a25e8c3f53ca61bbcb081fcdea5327db"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionSource.begin(),projectionSource.end()))==
 			"4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
-			"2b37a97ff8490507dcd86cf60219c5fa2db272107c40349c948aa1a49cd433c5"&&
+			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"9a11dd1add8bd6a4037593fa3c6164d34f95f52f015aa0131bda2af71d5c651d"&&
+			"8a5e0b0bb3a6dba677c347a814e82d8ad0a5f92bff2d54917e62469133160871"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"d941893a0b1e028400988014499584e9099bfbff66fca73061674f89536cbf0b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionTestSource.begin(),projectionTestSource.end()))==
-			"352691d51ba6486cb846b4f9154079f43d47e7e61f6b17893788f8182c95bed2"&&
+			"8d97d9f5112f4b6dcefedd4781d7b857e160cfbb47737d875c102540e10a4177"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"86e5d63b884cf3964f99a043e6fcbd637866857e6ee1266ef1b31bfadc889469"&&
+			"7eb883fa7212a74cef915332542bbd9d972d758276e313539bea11088c205731"&&
 		fireSimulatorCore.find("equationOfStateResidual > 1.0e-3")!=
 			std::string::npos&&
 		CountText(forceSource,"1e-3")==1u&&
@@ -1266,6 +1281,106 @@ int main()
 		unixTestDriver.find("PASS (exact exit=252, low-Mach refusal)")!=
 			std::string::npos,
 		"r160 derives the production low-Mach gate and fails the audited step closed");
+	const std::string anomalyClosureEvidence=ReadText(
+		"rendered/fire_production_calibration/r161_advective_anomaly_closure_stop/"
+		"advective_anomaly_closure_evidence.v1");
+	Check(!anomalyClosureEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(anomalyClosureEvidence.begin(),
+			anomalyClosureEvidence.end()))==
+		"222da1cc4d38278e3cb7bee330a745ebd851c810b5680b4e4ead28a437c6676f"&&
+		anomalyClosureEvidence.find("G_model floor_plus_dose_times_dt")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("r158_floor_fit 0.0024982685328926446")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("r160_unclosed_dose_branch_per_s 50.65858722417441")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("r161_active_CFL_corrected_G 0.066569089889526367")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("limited_corrected_G 0.024326920509338379")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("plateau_allowance 0.0234375")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("limited_tier10_wall_projection_hours "
+			"2.1014861860622025")!=std::string::npos&&
+		anomalyClosureEvidence.find("next_candidate_tier10_wall_projection_hours "
+			"2.1848217594728521")!=std::string::npos&&
+		anomalyClosureEvidence.find("certified_working_set_bytes 1919317208")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("actual_metal_allocation_bytes 1630052936")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("zero_anomaly_target_fold_bit_identity true")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("zero_anomaly_on_device_payload_bit_identity true")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("limited_physical_target_per_s "
+			"frozen_audited_golden_target")!=std::string::npos&&
+		anomalyClosureEvidence.find("closure_disabled_reproduces_r160_exact_252 true")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("r161_limited_stop_exact_exit 218")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("r136_retained_trace_digest "
+			"aae5a86a249bc72b82b2aefe6219e3193a61a5a900528de17442541d830b2fab")!=
+			std::string::npos&&
+		anomalyClosureEvidence.find("long_shadow_started false")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			forceSource.begin(),forceSource.end()))==
+			"ac7a5813704b00efee73ab9a73feeb94a25e8c3f53ca61bbcb081fcdea5327db"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			forceHeader.begin(),forceHeader.end()))==
+			"4bf1d9b305a18010639615639b5dd2508929e6a71a0bc27a4b2a2325da1a2f92"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMetal.begin(),projectionMetal.end()))==
+			"dae35a0a4084fd615d8008bc3d14ab7082f542aca97300c3aff061bdc53ec163"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionHeader.begin(),projectionHeader.end()))==
+			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"8a5e0b0bb3a6dba677c347a814e82d8ad0a5f92bff2d54917e62469133160871"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			productionSolverTest.begin(),productionSolverTest.end()))==
+			"b237cc38edf4987293217acf10d9967441323b505f6d3bd19db10c8b763048aa"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"7eb883fa7212a74cef915332542bbd9d972d758276e313539bea11088c205731"&&
+		advectionMetal.find("fold_methane_advective_anomaly_target")!=
+			std::string::npos&&
+		advectionMetal.find(
+			"restorationTarget[gid]+=(deviation.y-deviation.x)*inverseTimeStep")!=
+			std::string::npos&&
+		advectionMetal.find("maximumPredictedAdvectiveAnomalyFloat>0.0f")!=
+			std::string::npos&&
+		advectionMetal.find("ProjectFireProductionMetalRestorationResidentState")!=
+			std::string::npos&&
+		advectionMetal.find("correctorInput.conservativeValues=cellPrivate")!=
+			std::string::npos&&
+		advectionMetal.find(
+			"correctorInput.frozenVelocityMPerS=restorationState.velocityMPerS")!=
+			std::string::npos&&
+		forceSource.find("ManifoldPlateauAllowance")!=std::string::npos&&
+		forceSource.find("DeriveFireProductionAdvectiveAnomalyTarget")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("ADVECTIVE_ANOMALY_CLOSURE_STOP")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("for(std::size_t sample=0u;sample<5u;++sample)")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("FireProductionAcceptedManifoldPayloadDigest(trial)")!=
+			std::string::npos&&
+		productionSolverTest.find(
+			"r161 malformed closure activation fails before Metal work")!=
+			std::string::npos&&
+		productionSolverTest.find(
+			"zero-anomaly closure skips the corrector and is byte-identical")!=
+			std::string::npos&&
+		unixTestDriver.find("FireSequenceTest.r161_advective_anomaly_closure")!=
+			std::string::npos&&
+		unixTestDriver.find("closure_limited_rc\" -eq 218")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=218, remap-scheme stop)")!=
+			std::string::npos,
+		"r161 binds the resident two-pass closure and measured remap-scheme stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

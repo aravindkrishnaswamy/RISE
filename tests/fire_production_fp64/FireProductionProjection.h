@@ -174,12 +174,22 @@ namespace RISEFireProductionFP64
 
 	struct FireProductionMetalProjectionResidentState
 	{
+		id<MTLBuffer> pressurePa;
+		id<MTLBuffer> pressureOpenInflow;
+		std::array<id<MTLBuffer>,3> faceDensityKGPerM3;
 		std::array<id<MTLBuffer>,3> momentumKGPerM2S;
+		std::array<id<MTLBuffer>,3> velocityMPerS;
+		std::array<id<MTLBuffer>,3> provisionalMomentumKGPerM2S;
+		std::array<std::size_t,3> provisionalMomentumByteOffset;
 		std::array<std::size_t,3> momentumByteOffset;
+		bool restoration;
 
-		FireProductionMetalProjectionResidentState()
+		FireProductionMetalProjectionResidentState() : pressurePa(nil),
+			pressureOpenInflow(nil),restoration(false)
 		{
-			momentumKGPerM2S.fill(nil);momentumByteOffset.fill(0u);
+			faceDensityKGPerM3.fill(nil);momentumKGPerM2S.fill(nil);
+			velocityMPerS.fill(nil);provisionalMomentumKGPerM2S.fill(nil);
+			provisionalMomentumByteOffset.fill(0u);momentumByteOffset.fill(0u);
 		}
 	};
 
@@ -206,6 +216,24 @@ namespace RISEFireProductionFP64
 		const FireProductionProjectionRequest& request,
 		const FireProductionMetalProjectionResidentInput& input,
 		id<MTLBuffer> expectedRestorationTargetPerS,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
+	//! Correction-only restoration solve that retains its complete Private
+	//! result for an in-step scalar corrector. No full grid is staged here.
+	bool ProjectFireProductionMetalRestorationResidentState(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		id<MTLBuffer> expectedRestorationTargetPerS,
+		FireProductionMetalProjectionResidentState& state,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
+	//! Performs the sole terminal staging of a retained restoration state after
+	//! every resident corrector has consumed it.
+	bool PublishFireProductionMetalRestorationResidentState(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentState& state,
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
 #endif

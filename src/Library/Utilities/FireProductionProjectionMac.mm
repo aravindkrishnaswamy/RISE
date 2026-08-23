@@ -505,7 +505,8 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			ProjectionStandaloneTerminal,
 			ProjectionResidentTerminal,
 			ProjectionResidentStateOnly,
-			ProjectionResidentRestorationTerminal
+			ProjectionResidentRestorationTerminal,
+			ProjectionResidentRestorationStateOnly
 		};
 
 		bool ProjectionCycleCount( ProjectionExecutionKind execution,bool hasOpenBoundary,
@@ -521,7 +522,8 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			unsigned int probeCycles=0u;bool probeEnabled=false;
 			if( !ValidateFireProductionRestorationCycleProbe(
 				probeCycles,probeEnabled,error) ) return false;
-			if( probeEnabled&&execution==ProjectionResidentRestorationTerminal )
+			if( probeEnabled&&(execution==ProjectionResidentRestorationTerminal||
+				execution==ProjectionResidentRestorationStateOnly) )
 				cycleCount=probeCycles;
 			return true;
 		}
@@ -783,11 +785,13 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
 			@autoreleasepool {
 				const bool resident=residentInput!=0;
-				const bool terminal=execution!=ProjectionResidentStateOnly;
-				const bool restoration=execution==ProjectionResidentRestorationTerminal;
+				const bool stateOnly=execution==ProjectionResidentStateOnly||
+					execution==ProjectionResidentRestorationStateOnly;
+				const bool terminal=!stateOnly;
+				const bool restoration=execution==ProjectionResidentRestorationTerminal||
+					execution==ProjectionResidentRestorationStateOnly;
 				if( resident!=(execution!=ProjectionStandaloneTerminal)||
-					(execution==ProjectionResidentStateOnly&&!residentState)||
-					(execution!=ProjectionResidentStateOnly&&residentState) ) return false;
+					(stateOnly&&!residentState)||(!stateOnly&&residentState) ) return false;
 				const FireProductionProjectionShape& shape=request.shape;
 				const std::size_t cells=shape.CellCount(),finePadded=NextPowerOfTwo(cells);
 				std::vector<MetalLevel> hierarchy;MetalLevel fine={};fine.nx=shape.nx;fine.ny=shape.ny;fine.nz=shape.nz;
@@ -1190,8 +1194,15 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					result.pressureOpenInflow[side].assign(values,values+count);
 				}
 				} else {
+					residentState->pressurePa=fineLevel.pressure;
+					residentState->pressureOpenInflow=inflow;
+					residentState->restoration=restoration;
 					for( unsigned int axis=0u;axis<3u;++axis ) {
+						residentState->faceDensityKGPerM3[axis]=stored[axis];
 						residentState->momentumKGPerM2S[axis]=momentum[axis];
+						residentState->velocityMPerS[axis]=velocity[axis];
+						residentState->provisionalMomentumKGPerM2S[axis]=provisional[axis];
+						residentState->provisionalMomentumByteOffset[axis]=provisionalOffset[axis];
 						residentState->momentumByteOffset[axis]=0u;
 					}
 				}
@@ -1264,6 +1275,8 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 						std::to_string(stagingBytes);
 					return false;
 				}
+				observedActualMetalBytes=std::max(observedActualMetalBytes,
+					residentBytes+uploadBytes);
 				result.residentCertifiedWorkingSetBytes=certifiedWorkingSetBytes;
 				result.residentActualMetalAllocationBytes=observedActualMetalBytes;
 				const float length=shape.cellWidthM*static_cast<float>(std::max(shape.nx,std::max(shape.ny,shape.nz)));
@@ -1338,5 +1351,147 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 		}
 		return ProjectFireProductionMetalImpl(request,&input,
 			ProjectionResidentRestorationTerminal,0,result,error);
+	}
+
+	bool ProjectFireProductionMetalRestorationResidentState(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		id<MTLBuffer> expectedRestorationTargetPerS,
+		FireProductionMetalProjectionResidentState& state,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		if( !expectedRestorationTargetPerS||
+			input.divergenceTargetPerS!=expectedRestorationTargetPerS ) {
+			state=FireProductionMetalProjectionResidentState();
+			result=FireProductionProjectionResult();
+			if( error ) *error="production restoration projection target ownership is invalid";
+			return false;
+		}
+		return ProjectFireProductionMetalImpl(request,&input,
+			ProjectionResidentRestorationStateOnly,&state,result,error);
+	}
+
+	bool PublishFireProductionMetalRestorationResidentState(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentState& state,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		try {
+			if( !state.restoration||!state.pressurePa||!state.pressureOpenInflow||
+				[state.pressurePa storageMode]!=MTLStorageModePrivate||
+				[state.pressureOpenInflow storageMode]!=MTLStorageModeShared ) {
+				if( error ) *error="production restoration publication state is invalid";
+				return false;
+			}
+			MetalProjectionContext& context=Context();
+			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
+			const FireProductionProjectionShape& shape=request.shape;
+			const std::size_t cells=shape.CellCount();
+			if( [state.pressurePa length]<cells*sizeof(float) ) return false;
+			id<MTLBuffer> pressureStage=NewSharedBuffer(context.device,cells*sizeof(float));
+			std::array<id<MTLBuffer>,3> densityStage,momentumStage,velocityStage,
+				provisionalStage;
+			std::uint64_t stagingBytes=pressureStage?[pressureStage allocatedSize]:0u;
+			bool staged=pressureStage!=nil;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t bytes=FireProductionProjectionFaceCount(shape,axis)*sizeof(float);
+				const id<MTLBuffer> required[]={state.faceDensityKGPerM3[axis],
+					state.momentumKGPerM2S[axis],state.velocityMPerS[axis],
+					state.provisionalMomentumKGPerM2S[axis]};
+				for( id<MTLBuffer> buffer:required ) staged=staged&&buffer&&
+					[buffer storageMode]==MTLStorageModePrivate;
+				staged=staged&&state.provisionalMomentumByteOffset[axis]<=
+					[state.provisionalMomentumKGPerM2S[axis] length]&&bytes<=
+					[state.provisionalMomentumKGPerM2S[axis] length]-
+					state.provisionalMomentumByteOffset[axis];
+				densityStage[axis]=NewSharedBuffer(context.device,bytes);
+				momentumStage[axis]=NewSharedBuffer(context.device,bytes);
+				velocityStage[axis]=NewSharedBuffer(context.device,bytes);
+				provisionalStage[axis]=NewSharedBuffer(context.device,bytes);
+				const id<MTLBuffer> outputs[]={densityStage[axis],momentumStage[axis],
+					velocityStage[axis],provisionalStage[axis]};
+				for( id<MTLBuffer> buffer:outputs ) {
+					staged=staged&&buffer!=nil;
+					if( buffer ) {
+						const std::uint64_t allocation=[buffer allocatedSize];
+						if( stagingBytes>std::numeric_limits<std::uint64_t>::max()-allocation )
+							return false;
+						stagingBytes+=allocation;
+					}
+				}
+			}
+			if( !staged||result.residentActualMetalAllocationBytes>
+				std::numeric_limits<std::uint64_t>::max()-stagingBytes||
+				result.residentActualMetalAllocationBytes+stagingBytes>
+				result.residentCertifiedWorkingSetBytes ) {
+				if( error ) *error="production restoration publication allocation exceeds certificate";
+				return false;
+			}
+			const std::uint64_t beginningInterstageReads=projectionInterstageFullGridReadCount;
+			id<MTLCommandBuffer> command=[context.queue commandBuffer];
+			id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+			if( !blit ) {if( error ) *error="production restoration publication encoder failed";
+				return false;}
+			{
+				ProjectionTransferScope transferScope(ProjectionTerminalTransfer);
+				CopyProjectionBuffer(blit,state.pressurePa,0u,pressureStage,0u,cells*sizeof(float));
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t bytes=FireProductionProjectionFaceCount(shape,axis)*sizeof(float);
+					CopyProjectionBuffer(blit,state.faceDensityKGPerM3[axis],0u,
+						densityStage[axis],0u,bytes);
+					CopyProjectionBuffer(blit,state.momentumKGPerM2S[axis],0u,
+						momentumStage[axis],0u,bytes);
+					CopyProjectionBuffer(blit,state.velocityMPerS[axis],0u,
+						velocityStage[axis],0u,bytes);
+					CopyProjectionBuffer(blit,state.provisionalMomentumKGPerM2S[axis],
+						state.provisionalMomentumByteOffset[axis],provisionalStage[axis],0u,bytes);
+				}
+			}
+			[blit endEncoding];CommitProjectionCommand(command);[command waitUntilCompleted];
+			if( [command status]!=MTLCommandBufferStatusCompleted||
+				projectionInterstageFullGridReadCount!=beginningInterstageReads ) {
+				if( error ) *error="production restoration publication transfer topology changed";
+				return false;
+			}
+			const float* pressure=static_cast<const float*>(ProjectionBufferContents(
+				pressureStage,ProjectionTerminalAccess));
+			result.pressurePa.assign(pressure,pressure+cells);
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t count=FireProductionProjectionFaceCount(shape,axis);
+				const float* density=static_cast<const float*>(ProjectionBufferContents(
+					densityStage[axis],ProjectionTerminalAccess));
+				const float* momentum=static_cast<const float*>(ProjectionBufferContents(
+					momentumStage[axis],ProjectionTerminalAccess));
+				const float* velocity=static_cast<const float*>(ProjectionBufferContents(
+					velocityStage[axis],ProjectionTerminalAccess));
+				result.faceDensityKGPerM3[axis].assign(density,density+count);
+				result.momentumKGPerM2S[axis].assign(momentum,momentum+count);
+				result.velocityMPerS[axis].assign(velocity,velocity+count);
+			}
+			std::size_t offset=0u;
+			const unsigned char* inflow=static_cast<const unsigned char*>(
+				ProjectionBufferContents(state.pressureOpenInflow,ProjectionTerminalAccess));
+			for( unsigned int side=0u;side<6u;++side ) {
+				const std::size_t count=side<2u?shape.ny*shape.nz:
+					(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+				result.pressureOpenInflow[side].assign(inflow+offset,inflow+offset+count);
+				offset+=count;
+			}
+			result.residentTerminalStagingCount+=1u;
+			result.residentCommandCommitCount+=1u;
+			result.residentActualMetalAllocationBytes+=stagingBytes;
+			if( !AllFinite(result.pressurePa) ) return false;
+			for( unsigned int axis=0u;axis<3u;++axis ) if(
+				!AllFinite(result.faceDensityKGPerM3[axis])||
+				!AllFinite(result.momentumKGPerM2S[axis])||
+				!AllFinite(result.velocityMPerS[axis]) ) return false;
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			if( error ) {
+				try {*error="production restoration publication allocation failed";}
+				catch( const std::bad_alloc& ) {error->clear();}
+			}
+			return false;
+		}
 	}
 }

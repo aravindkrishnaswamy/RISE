@@ -361,6 +361,13 @@ namespace RISEFireProductionTrace
 		double previousStepS,double maximumGeneration,double restorationDrainFraction,
 		double& timeStepS,std::string* error=0 );
 
+	//! Exact scalar topology consumed by the resident predictor/fold kernels.
+	//! It replaces the beginning-state target with the predictor-state target.
+	bool DeriveFireProductionAdvectiveAnomalyTarget(
+		double beginningDeviation,double predictedDeviation,
+		double representedTimeStepS,double inheritedTargetPerS,
+		double& correctedTargetPerS,std::string* error=0 );
+
 	//! Selects the production step from the CFL family, the 1.1 growth cap, and
 	//! the r143 accepted-step manifold observation.  An unavailable observation
 	//! is valid only for the first step of a run.
@@ -395,9 +402,11 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
+		double maximumPredictedAdvectiveManifoldAnomaly;
 		std::uint32_t manifoldMapCellCount;
 		std::uint32_t manifoldScalarDeviceToHostTransferCount;
 		std::uint32_t manifoldFullGridDeviceToHostTransferCount;
+		std::uint32_t advectiveAnomalyClosurePassCount;
 		std::array<double,3> manifoldStageGeneration;
 		double requiredRestorationDrainFraction;
 		double deliveredRestorationDrainFraction;
@@ -411,8 +420,10 @@ namespace RISEFireProductionTrace
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
 			deviceElapsedMS(0.0),representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
-			maximumAcceptedManifoldDeviation(0.0),manifoldMapCellCount(0u),
+			maximumAcceptedManifoldDeviation(0.0),maximumPredictedAdvectiveManifoldAnomaly(0.0),
+			manifoldMapCellCount(0u),
 			manifoldScalarDeviceToHostTransferCount(0u),manifoldFullGridDeviceToHostTransferCount(0u),
+			advectiveAnomalyClosurePassCount(0u),
 			manifoldStageGeneration{{0.0,0.0,0.0}},requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			manifoldPlateauPassed(false),

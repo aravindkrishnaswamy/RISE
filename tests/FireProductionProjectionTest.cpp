@@ -1482,9 +1482,9 @@ int main()
 		Count(metalSource," newBufferWithBytes:")==1u&&
 		residentProjectionBody.find(" newBufferWithLength:")==std::string::npos&&
 		residentProjectionBody.find(" newBufferWithBytes:")==std::string::npos&&
-		Count(metalSource,"CommitProjectionCommand(")==4u&&
-		Count(metalSource,"CopyProjectionBuffer(")==11u&&
-		Count(metalSource,"ProjectionTransferScope transferScope(")==2u&&
+		Count(metalSource,"CommitProjectionCommand(")==5u&&
+		Count(metalSource,"CopyProjectionBuffer(")==16u&&
+		Count(metalSource,"ProjectionTransferScope transferScope(")==3u&&
 		Count(residentProjectionBody,"ObserveProjectionInvocation();")==2u&&
 		residentProjectionBody.find(" copyFromBuffer:")==std::string::npos&&
 		residentProjectionBody.find("projectionInterstageFullGridReadCount-"
@@ -1497,11 +1497,15 @@ int main()
 			std::string::npos&&
 		residentProjectionBody.find("[stored[axis] storageMode]==MTLStorageModePrivate")!=
 			std::string::npos&&
+		residentProjectionBody.find("ProjectFireProductionMetalRestorationResidentState")!=
+			std::string::npos&&residentProjectionBody.find(
+			"PublishFireProductionMetalRestorationResidentState")!=std::string::npos&&
 		residentProjectionBody.find("[level.parameters storageMode]==MTLStorageModeShared")!=
 			std::string::npos&&
 		residentProjectionBody.find("trackedBytes+borrowedBytes!=residentBytes+uploadBytes+"
 			"stagingBytes")!=std::string::npos,
-		"P2 resident wrapper releases upload staging before one Private solve and stages only after completion");
+		"P2 resident wrapper releases upload staging, can retain a Private restoration state, "
+		"and stages only at its explicit publication seam");
 	const std::size_t makeRule=makefile.find("FireProductionProjection.o :");
 	const std::size_t makeRuleEnd=makeRule==std::string::npos?std::string::npos:
 		makefile.find("\n\n",makeRule);

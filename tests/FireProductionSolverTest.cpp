@@ -3893,6 +3893,87 @@ int main()
 	Check(composedMatches,
 		"full resident force, transport, explicit zero-source, and two-projection step matches "
 		"the independent CPU composition with no interstage transfer");
+	// A uniform accepted ambient state has exactly zero advective anomaly.  Exercise the
+	// complete owner twice so the r161 no-op claim is about published payload bytes, not
+	// merely the scalar target formula.
+	FireProductionResidentStepRequest zeroAnomalyStep=composedStep;
+	std::array<double,7> zeroAnomalyDensity={};double inverseMeanWeight=0.0;
+	for( std::size_t species=0u;species<7u;++species ) {
+		const FireThermochemistrySpecies* property=
+			methane.FindSpecies(methane.SpeciesOrder()[species].c_str());
+		if( species<6u&&property ) inverseMeanWeight+=
+			methane.AmbientMassFractions()[species]/property->molecularWeightKGPerKMol;
+	}
+	const double ambientScale=methane.ThermodynamicPressurePa()/
+		(8314.46261815324*300.0*inverseMeanWeight);
+	for( std::size_t species=0u;species<7u;++species ) zeroAnomalyDensity[species]=
+		ambientScale*methane.AmbientMassFractions()[species];
+	double zeroAnomalyEnergy=0.0;
+	const bool zeroAnomalyEnergyBuilt=methane.MixtureSensibleEnergyBySpeciesOrderJPerM3(
+		zeroAnomalyDensity.data(),zeroAnomalyDensity.size(),300.0,zeroAnomalyEnergy,&error);
+	std::array<float,9> zeroAnomalyTuple={};
+	for( std::size_t species=0u;species<7u;++species )
+		zeroAnomalyTuple[1u+species]=static_cast<float>(zeroAnomalyDensity[species]);
+	zeroAnomalyTuple[8u]=static_cast<float>(zeroAnomalyEnergy);
+	std::array<double,9> zeroAnomalyRepresented={};
+	for( std::size_t component=0u;component<9u;++component )
+		zeroAnomalyRepresented[component]=zeroAnomalyTuple[component];
+	double zeroAnomalyVolume=0.0;
+	const bool zeroAnomalyVolumeBuilt=zeroAnomalyEnergyBuilt&&
+		methane.AcceptedConservativeVolumeRatioByComponentOrder(
+			zeroAnomalyRepresented.data(),zeroAnomalyRepresented.size(),
+			FireStateProducerPrecision::Binary32,zeroAnomalyVolume,&error);
+	const std::size_t zeroAnomalyCells=zeroAnomalyStep.force.shape.CellCount();
+	zeroAnomalyStep.cellTransport.ambientValues.assign(
+		zeroAnomalyTuple.begin(),zeroAnomalyTuple.end());
+	for( std::size_t component=0u;component<9u;++component ) std::fill(
+		zeroAnomalyStep.cellTransport.conservativeValues.begin()+component*zeroAnomalyCells,
+		zeroAnomalyStep.cellTransport.conservativeValues.begin()+(component+1u)*zeroAnomalyCells,
+		zeroAnomalyTuple[component]);
+	double zeroAnomalyGas=0.0;
+	for( std::size_t species=0u;species<6u;++species )
+		zeroAnomalyGas+=zeroAnomalyTuple[1u+species];
+	std::fill(zeroAnomalyStep.force.cellGasDensityKGPerM3.begin(),
+		zeroAnomalyStep.force.cellGasDensityKGPerM3.end(),static_cast<float>(zeroAnomalyGas));
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		std::fill(zeroAnomalyStep.force.faceDensityKGPerM3[axis].begin(),
+			zeroAnomalyStep.force.faceDensityKGPerM3[axis].end(),
+			static_cast<float>(zeroAnomalyGas));
+		std::fill(zeroAnomalyStep.force.beginningMomentumKGPerM2S[axis].begin(),
+			zeroAnomalyStep.force.beginningMomentumKGPerM2S[axis].end(),0.0f);
+		std::fill(zeroAnomalyStep.cellTransport.frozenVelocityMPerS[axis].begin(),
+			zeroAnomalyStep.cellTransport.frozenVelocityMPerS[axis].end(),0.0f);
+		std::fill(zeroAnomalyStep.dualTransport.frozenVelocityMPerS[axis].begin(),
+			zeroAnomalyStep.dualTransport.frozenVelocityMPerS[axis].end(),0.0f);
+		std::fill(zeroAnomalyStep.dualTransport.beginningFaceDensity[axis].begin(),
+			zeroAnomalyStep.dualTransport.beginningFaceDensity[axis].end(),
+			static_cast<float>(zeroAnomalyGas));
+		std::fill(zeroAnomalyStep.dualTransport.beginningMomentum[axis].begin(),
+			zeroAnomalyStep.dualTransport.beginningMomentum[axis].end(),0.0f);
+	}
+	zeroAnomalyStep.beginningManifoldDeviationPerCell.assign(zeroAnomalyCells,
+		std::fabs(zeroAnomalyVolume-1.0));
+	zeroAnomalyStep.enforceManifoldPlateau=true;
+	FireProductionResidentStepResult zeroAnomalyProbe,zeroAnomalySinglePass,zeroAnomalyClosure;
+	setenv("RISE_FIRE_GOLDEN_LONG_SHADOW","1",1);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST","disabled",1);
+	const bool zeroAnomalyProbePassed=zeroAnomalyVolumeBuilt&&
+		AdvanceFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyProbe,&error);
+	if( zeroAnomalyProbePassed ) zeroAnomalyStep.beginningManifoldDeviationPerCell.assign(
+		zeroAnomalyCells,zeroAnomalyProbe.maximumAcceptedManifoldDeviation);
+	const bool zeroAnomalySinglePassed=zeroAnomalyProbePassed&&
+		AdvanceFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalySinglePass,&error);
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
+	const bool zeroAnomalyClosurePassed=zeroAnomalySinglePassed&&
+		AdvanceFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyClosure,&error);
+	unsetenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
+	Check(zeroAnomalyClosurePassed&&
+		zeroAnomalyClosure.maximumPredictedAdvectiveManifoldAnomaly==0.0&&
+		zeroAnomalyClosure.advectiveAnomalyClosurePassCount==1u&&
+		zeroAnomalyClosure.cellSubmapCount==5u&&
+		FireProductionAcceptedManifoldPayloadDigest(zeroAnomalySinglePass)==
+			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure),
+		"zero-anomaly closure skips the corrector and is byte-identical to the single-pass payload");
 	FireProductionResidentStepResult callerAuthoredObservationStep=composedGPU;
 	callerAuthoredObservationStep.maximumManifoldGeneration=1.0e-9;
 	callerAuthoredObservationStep.maximumAcceptedManifoldDeviation=0.0;
@@ -3921,7 +4002,9 @@ int main()
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
 		seeded.representedTimeStepS=1.0f;
 		seeded.maximumManifoldGeneration=1.0;seeded.maximumAcceptedManifoldDeviation=1.0;
-		seeded.manifoldMapCellCount=1u;seeded.manifoldScalarDeviceToHostTransferCount=1u;
+		seeded.manifoldMapCellCount=1u;seeded.manifoldScalarDeviceToHostTransferCount=2u;
+		seeded.maximumPredictedAdvectiveManifoldAnomaly=1.0;
+		seeded.advectiveAnomalyClosurePassCount=2u;
 		seeded.manifoldFullGridDeviceToHostTransferCount=1u;
 		seeded.manifoldStageGeneration={{1.0,1.0,1.0}};
 		seeded.requiredRestorationDrainFraction=1.0;
@@ -3946,9 +4029,11 @@ int main()
 			rejected.representedTimeStepS==0.0f&&
 			rejected.maximumManifoldGeneration==0.0&&
 			rejected.maximumAcceptedManifoldDeviation==0.0&&
+			rejected.maximumPredictedAdvectiveManifoldAnomaly==0.0&&
 			rejected.manifoldMapCellCount==0u&&
 			rejected.manifoldScalarDeviceToHostTransferCount==0u&&
 			rejected.manifoldFullGridDeviceToHostTransferCount==0u&&
+			rejected.advectiveAnomalyClosurePassCount==0u&&
 			rejected.manifoldStageGeneration[0]==0.0&&
 			rejected.manifoldStageGeneration[1]==0.0&&
 			rejected.manifoldStageGeneration[2]==0.0&&
@@ -3993,6 +4078,20 @@ int main()
 			commitsBeforeMalformedLongShadow&&
 		error=="production golden long-shadow activation is invalid",
 		"r160 malformed long-shadow activation fails before Metal work");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedAnomalyClosure=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_GOLDEN_LONG_SHADOW","1",1);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST","bogus",1);
+	const bool malformedAnomalyClosureRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
+	unsetenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
+	Check(malformedAnomalyClosureRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			commitsBeforeMalformedAnomalyClosure&&
+		error=="production advective anomaly closure test activation is invalid",
+		"r161 malformed closure activation fails before Metal work");
 	seedFullStepResult(rejectedFullStep);error.clear();
 	const std::uint64_t commitsBeforeMalformedPlateauProbe=
 		FireProductionResidentStepMetalCommandCommitCount();
@@ -4072,9 +4171,9 @@ int main()
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;
-	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=265u;
+	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=202u;
 	fullStepUnderShape.cellWidthM=0.01f;
-	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=266u;
+	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=203u;
 	fullStepOverShape.cellWidthM=0.01f;
 	std::uint64_t fullStepUnderBytes=0u,fullStepOverBytes=0u;
 	const bool fullStepBoundaryQuery=
@@ -4082,8 +4181,8 @@ int main()
 			fullStepAdmissionBoundary,fullStepUnderBytes)&&
 		FireProductionResidentStepWorkingSetBytes(fullStepOverShape,
 			fullStepAdmissionBoundary,fullStepOverBytes)&&
-		fullStepUnderBytes==UINT64_C(2141662308)&&
-		fullStepOverBytes==UINT64_C(2149873316);
+		fullStepUnderBytes==UINT64_C(2139633128)&&
+		fullStepOverBytes==UINT64_C(2149131896);
 	auto makeEmptyFullStepAdmission=[&](const FireProductionProjectionShape& admissionShape) {
 		FireProductionResidentStepRequest admission;
 		admission.force.shape=admissionShape;admission.force.timeStepS=0.01f;
@@ -4250,7 +4349,7 @@ int main()
 			tier10ResidentStepResult.projection.validationPassed&&
 			tier10ResidentStepResult.physicalProjection.executedVCycleCount==12u&&
 			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
-			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1451100964)&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1917482200)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1338301072)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
@@ -4655,9 +4754,9 @@ int main()
 		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
 		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
 		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
-		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==17u&&
-		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==17u&&
-		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==10u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==19u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==19u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==11u&&
 		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
 		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
@@ -4714,15 +4813,18 @@ int main()
 		"mixed dual transport uploads frozen line ownership only before the resident interval and "
 		"executes all fifteen submaps with one command and zero host access");
 	Check(!residentFullStepBody.empty()&&
-		CountSubstring(residentFullStepBody,"TrackedMetalCommandBuffer(")==3u&&
-		CountSubstring(residentFullStepBody,"CommitTrackedMetalCommand(")==3u&&
-		CountSubstring(residentFullStepBody,"ReadTrackedMetalBuffer(")==1u&&
+		CountSubstring(residentFullStepBody,"TrackedMetalCommandBuffer(")==5u&&
+		CountSubstring(residentFullStepBody,"CommitTrackedMetalCommand(")==5u&&
+		CountSubstring(residentFullStepBody,"ReadTrackedMetalBuffer(")==2u&&
 		residentFullStepBody.find("AdvanceFireProductionFrozenForceMetalResidentState(")!=
 			std::string::npos&&residentFullStepBody.find(
 			"RemapFireProductionCellPalindromeMetalResident(")!=std::string::npos&&
 		residentFullStepBody.find("RemapFireProductionDualMomentumMetalResident(")!=
 			std::string::npos&&residentFullStepBody.find(
 			"ProjectFireProductionMetalResident(")!=std::string::npos&&
+		residentFullStepBody.find("ProjectFireProductionMetalResidentState(")!=
+			std::string::npos&&residentFullStepBody.find(
+			"ProjectFireProductionMetalRestorationResidentState(")!=std::string::npos&&
 		residentFullStepBody.find("context.addCellSources")!=std::string::npos&&
 		residentFullStepBody.find("context.extractGasDensity")!=std::string::npos&&
 		residentFullStepBody.find("context.addFaceSources")!=std::string::npos&&
@@ -4732,8 +4834,8 @@ int main()
 		residentFullStepBody.find("computed.projection.residentProjectionInvocationCount")!=
 			std::string::npos&&residentFullStepBody.find(
 			"computed.interstageFullGridTransferCount!=0u")!=std::string::npos,
-		"full resident step binds the force, both transport owners, explicit sources, one actual "
-		"projection invocation, and observed zero-transfer diagnostics");
+		"full resident step binds force, predictor/corrector transport, explicit sources, both "
+		"projections, and observed zero-transfer diagnostics");
 	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
 		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==2u&&
 		CountSubstring(transportSource,

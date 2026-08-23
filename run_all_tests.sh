@@ -669,7 +669,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$long_shadow_malformed_log" 2>&1 || long_shadow_malformed_rc=$?
-		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$long_shadow_options" \
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=disabled \
+			RISE_OPTIONS_FILE="$long_shadow_options" \
 			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$long_shadow_path" \
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
@@ -679,7 +681,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$long_shadow_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$long_shadow_malformed_log" 2>&1 || long_shadow_malformed_rc=$?
-		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$long_shadow_options" \
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=disabled \
+			RISE_OPTIONS_FILE="$long_shadow_options" \
 			"$long_shadow_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$long_shadow_log" 2>&1 || long_shadow_rc=$?
@@ -696,6 +700,64 @@ if [ "$(uname -s)" = "Darwin" ]; then
 "evidence_exit=$long_shadow_rc expected 252)"
 		printf '%s\t%d\t%s\n' "$long_shadow_name" "$long_shadow_rc" \
 			"$long_shadow_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
+# r161 executes the pre-registered anomaly closure, then applies the amended
+# 25%-headroom manifold predictor.  Exact 218 is a measured remap-scheme stop:
+# the limited candidate remains above the headroom allowance and its serialized
+# max-of-five wall projection exceeds the approximately two-hour decision cap.
+if [ "$(uname -s)" = "Darwin" ]; then
+	closure_name="FireSequenceTest.r161_advective_anomaly_closure"
+	closure_path="$BIN_DIR/FireSequenceTest"
+	closure_cfl_log="$LOG_DIR/$closure_name.cfl.log"
+	closure_limited_log="$LOG_DIR/$closure_name.limited.log"
+	closure_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	printf '[ evidence ] %-46s ... ' "$closure_name"
+	closure_cfl_rc=0
+	closure_limited_rc=0
+	if [ ! -x "$closure_path" ]; then
+		closure_cfl_rc=127
+		closure_limited_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$closure_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_cfl_log" 2>&1 || closure_cfl_rc=$?
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
+			RISE_OPTIONS_FILE="$closure_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
+	else
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$closure_options" \
+			"$closure_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_cfl_log" 2>&1 || closure_cfl_rc=$?
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
+			RISE_OPTIONS_FILE="$closure_options" \
+			"$closure_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
+	fi
+	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_limited_rc" -eq 218 ] &&
+		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
+		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
+		grep -Fq 'dt=0.00057953997747972608 predictor_G=0.020501971244812012 corrected_G=0.024326920509338379' "$closure_limited_log" &&
+		grep -Fq 'allowance=0.0234375 ceiling=0.03125' "$closure_limited_log" &&
+		grep -Fq 'passes=2 cell_submaps=10 source_commits=2 scalar_reads=2' "$closure_limited_log" &&
+		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
+		echo 'PASS (exact exit=218, remap-scheme stop)'
+		rm -f "$closure_cfl_log" "$closure_limited_log"
+	else
+		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; limited_exit=$closure_limited_rc expected 218)"
+		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
+			"$closure_limited_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
 fi

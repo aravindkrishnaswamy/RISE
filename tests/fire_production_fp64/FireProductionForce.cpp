@@ -26,6 +26,9 @@ namespace RISEFireProductionFP64
 		// 1e-3 acceptance detector.  |V(Q)-1| must remain O(M^2) and well below
 		// unity; pin 2^-5 exactly.  Fidelity remains a separate oracle contract.
 		constexpr double ManifoldLowMachValidityCeiling=0x1p-5;
+		constexpr double ManifoldPlateauHeadroom=0x1p-2;
+		constexpr double ManifoldPlateauAllowance=
+			(1.0-ManifoldPlateauHeadroom)*ManifoldLowMachValidityCeiling;
 		constexpr std::uint64_t CheckpointAuthorityDomain=UINT64_C(0x63b96d44f1a72ec8);
 		bool Fail( std::string* error, const char* message ) noexcept
 		{
@@ -292,10 +295,26 @@ namespace RISEFireProductionFP64
 			!std::isfinite(maximumGeneration)||maximumGeneration<=0.0||
 			!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
 			restorationDrainFraction>1.0)return Fail(error,"production manifold predictor inputs are invalid");
-		timeStepS=previousStepS*(ManifoldLowMachValidityCeiling*
+		timeStepS=previousStepS*(ManifoldPlateauAllowance*
 			restorationDrainFraction)/maximumGeneration;
 		return (std::isfinite(timeStepS)&&timeStepS>0.0)||
 			Fail(error,"production manifold timestep is invalid");
+	}
+
+	bool DeriveFireProductionAdvectiveAnomalyTarget(
+		const double beginningDeviation,const double predictedDeviation,
+		const double representedTimeStepS,const double inheritedTargetPerS,
+		double& correctedTargetPerS,std::string* error )
+	{
+		correctedTargetPerS=0.0;
+		if(!std::isfinite(beginningDeviation)||!std::isfinite(predictedDeviation)||
+			!std::isfinite(representedTimeStepS)||representedTimeStepS<=0.0||
+			!std::isfinite(inheritedTargetPerS))return Fail(error,
+				"production advective anomaly target inputs are invalid");
+		correctedTargetPerS=inheritedTargetPerS+
+			(predictedDeviation-beginningDeviation)/representedTimeStepS;
+		return std::isfinite(correctedTargetPerS)||Fail(error,
+			"production advective anomaly target is invalid");
 	}
 
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
@@ -307,8 +326,12 @@ namespace RISEFireProductionFP64
 			value.residentProjectionInvocationCount==2u&&
 			value.interstageFullGridTransferCount==0u&&
 			value.manifoldMapCellCount==value.acceptedShape.CellCount()&&
-			value.manifoldScalarDeviceToHostTransferCount==1u&&
+			value.manifoldScalarDeviceToHostTransferCount==2u&&
 			value.manifoldFullGridDeviceToHostTransferCount==0u&&
+			std::isfinite(value.maximumPredictedAdvectiveManifoldAnomaly)&&
+			value.maximumPredictedAdvectiveManifoldAnomaly>=0.0&&
+			(value.advectiveAnomalyClosurePassCount==1u||
+				value.advectiveAnomalyClosurePassCount==2u)&&
 			value.manifoldStageGeneration[0]==value.maximumManifoldGeneration&&
 			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
 	}
@@ -540,23 +563,24 @@ namespace RISEFireProductionFP64
 		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/22u ) return false;
 		const std::uint64_t extraValues=22u*cells+3u*allFaces;
 		const std::uint64_t rawTarget=cells*sizeof(double),alignment=UINT64_C(16384);
-		const std::uint64_t manifoldAllocationAllowance=5u*alignment;
+		const std::uint64_t manifoldAllocationAllowance=6u*alignment;
 		if( rawTarget>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
 		const std::uint64_t targetAllocation=(rawTarget+alignment-1u)&~(alignment-1u);
 		if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(double)||
 			forceProjectionBytes>std::numeric_limits<std::uint64_t>::max()-cellBytes||
-			forceProjectionBytes+cellBytes>std::numeric_limits<std::uint64_t>::max()-dualBytes||
-			forceProjectionBytes+cellBytes+dualBytes>
+			forceProjectionBytes+cellBytes>std::numeric_limits<std::uint64_t>::max()-cellBytes||
+			forceProjectionBytes+2u*cellBytes>std::numeric_limits<std::uint64_t>::max()-dualBytes||
+			forceProjectionBytes+2u*cellBytes+dualBytes>
 				std::numeric_limits<std::uint64_t>::max()-extraValues*sizeof(double)||
-			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)>
+			forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)>
 				std::numeric_limits<std::uint64_t>::max()-restorationProjectionBytes||
-			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)+
+			forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)+
 				restorationProjectionBytes>std::numeric_limits<std::uint64_t>::max()-
 					2u*targetAllocation||
-			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)+
+			forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)+
 				restorationProjectionBytes+2u*targetAllocation>
 					std::numeric_limits<std::uint64_t>::max()-manifoldAllocationAllowance ) return false;
-		bytes=forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(double)+
+		bytes=forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)+
 			restorationProjectionBytes+2u*targetAllocation+manifoldAllocationAllowance;return true;
 	}
 

@@ -3612,6 +3612,60 @@ golden checkpoint stays byte-identical.  Durable evidence is in
 `rendered/fire_production_calibration/r160_low_mach_audited_step_refusal/`
 `low_mach_audited_step_refusal.v1`.
 
+### 7.55u Resident advective-anomaly corrector (r161)
+
+The r160 refusal is the disabled-control branch for the final pre-registered
+remedy.  Burning-state generation follows two observable regimes of
+`G=G_floor+k*dt`: r158's short-step sweep gives
+`G_floor=0.0024982685328926446` and `k=0.6137015145338649 s^-1`, while the
+audited physical-CFL branch gives `k=50.65858722417441 s^-1`.  The apparent
+timestep-invariant floor and the large-step dose are therefore compatible;
+neither measurement is discarded.
+
+The production step now measures the predictor remap's per-cell volume-ratio
+anomaly on-device and adds
+
+`(V_predictor - V_beginning) / dt`
+
+to the existing restoration target.  The restoration projection retains its
+Private pressure, density, momentum, and velocity buffers.  A second five-pass
+cell palindrome then remaps the original beginning scalar ledger with that
+corrected velocity, reapplies the same explicit source operand, and only then
+allows terminal staging.  No full grid crosses the device boundary between
+the predictor, either projection, and the corrector.  A zero anomaly makes the
+target fold exactly zero and skips the second palindrome; missing, half, and
+sign-reversed ramp mutants are rejected by the independent scalar derivation.
+The zero case is also run end-to-end on Metal: a device-reconstructed uniform
+beginning is evaluated once with closure disabled and once with closure active;
+the complete accepted payload digests are byte-identical, while the active
+diagnostics record one predictor pass and five—not ten—cell submaps.
+
+The audited-CFL correction reduces G from `0.085895776748657227` to
+`0.066569089889526367`, but this is still above `2^-5`.  With headroom
+`h=2^-2`, the retained predictor uses the allowance
+`(1-h)*2^-5=0.0234375` and derives the represented step
+`0.00057953997747972608 s`.  At that step the predictor G is
+`0.020501971244812012` and corrected G/field is
+`0.024326920509338379`; restoration drain is `0.99965526094762158`.
+Because the field remains `1.0379486083984375x` above the headroom allowance,
+the next candidate is `0.0005581588363136789 s`.
+
+This limited run retains the audited golden divergence target as a per-second
+physical request and changes only the represented production timestep.  It
+does not import a binary64-oracle result or retune the target at the observed
+plateau.
+
+One warmup plus five byte-stable resident samples at the first limited step
+measure `89.76820833049715 ms` device and `175.376917 ms` completed wall p95.
+That projects tier-10 x 25 s to `1.0756640781528488/2.1014861860622025 h`;
+the next candidate projects `1.1183201200267554/2.184821759472852 h` at the
+same cost.  This crosses the pre-registered approximately two-hour wall rule
+before the headroom plateau is held.  Exact exit 218 therefore withholds the
+accepted token and classifies a remap-scheme finding.  The long shadow and all
+later arithmetic/readmission/source-map/preview milestones remain blocked
+pending a reconstruction-class ruling; neither ceiling nor timing budget is
+widened.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
