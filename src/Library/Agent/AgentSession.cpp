@@ -15627,21 +15627,50 @@ namespace RISE
 						// initial tangent (the first two points differ far more
 						// in y than in x/z) so the base ring lies ~in the ground
 						// plane, then rises and curves forward.
+						//
+						// DOC 90 SLICE A (2026-08-23): the same five point_scale
+						// lines STAY -- the dragon re-run proved a model uses
+						// 2-arg point_scale correctly, so removing it would cost
+						// the one loft feature already landing -- but the SUBJECT
+						// becomes a TAIL THAT ENDS IN A PADDLE, because
+						// point_morph was the token that went entirely unused in
+						// both dragon runs, and a tail that never flattens into
+						// its fluke is exactly what that costs.  `profile2_rect`
+						// supplies the flat outline to morph TOWARD; the morph
+						// track is deliberately SHORT (3 entries for 5 stations)
+						// so the example also demonstrates the padding rule the
+						// schema states -- missing entries pad with 1.0, i.e.
+						// fully profile2, so the last two stations FINISH the
+						// morph rather than freezing at 0.45.  point_scale then
+						// SIZES what the morph shaped (documented order: morph,
+						// then point_scale, multiplicative), and its own track
+						// now narrows through the tail and flares back out in x
+						// at the tip (1.1) while collapsing in y (0.25) -- a
+						// paddle, not a taper to a point.  The base station is
+						// still t = 0, a plain circle, so the base ring and
+						// LocalFrameContract rule 1 are exactly as described
+						// above.  This is a SWAP, not growth: +4 lines against
+						// an 8.8 KB gate, and it buys the second of the two
+						// loft verbs.
 						p += "WORKED EXAMPLE for the sweep method (adapt values; delete nothing you need):\n"
 						     "sweep_geometry\n"
 						     "{\n"
 						     "\tname " + prefix + "body_sweep\n"
 						     "\tprofile_circle 0.18 10\n"
+						     "\tprofile2_rect 0.62 0.09 0.04\n"
 						     "\tpoint 0 0 0\n"
 						     "\tpoint 0.02 0.55 0.08\n"
 						     "\tpoint 0.1 1.0 0.3\n"
 						     "\tpoint 0.18 1.3 0.65\n"
 						     "\tpoint 0.15 1.45 1.0\n"
+						     "\tpoint_morph 0\n"
+						     "\tpoint_morph 0\n"
+						     "\tpoint_morph 0.45\n"
 						     "\tpoint_scale 1.0 0.7\n"
-						     "\tpoint_scale 0.8 0.55\n"
-						     "\tpoint_scale 0.6 0.4\n"
-						     "\tpoint_scale 0.45 0.28\n"
-						     "\tpoint_scale 0.3 0.18\n"
+						     "\tpoint_scale 0.85 0.5\n"
+						     "\tpoint_scale 0.7 0.4\n"
+						     "\tpoint_scale 0.8 0.3\n"
+						     "\tpoint_scale 1.1 0.25\n"
 						     "\tn_len 32\n"
 						     "}\n"
 						     "lambertian_material\n"
@@ -15661,46 +15690,94 @@ namespace RISE
 					// for "chain", now that skeleton_geometry exists -- same
 					// gate, same reasoning as the sweep block above (schema +
 					// ONE worked example ride the declared-construction gate,
-					// and every name in the example resolves via `prefix`).  A
-					// short tapering tail (5 joints, root -> tip) gives a
-					// visibly curved creature limb from a handful of `joint`
-					// lines -- exactly the shape sdf_geometry's raw part-line
-					// grammar made tedious enough that this chunk exists.
+					// and every name in the example resolves via `prefix`).
+					//
+					// DOC 90 SLICE A (2026-08-23) REWORKED THE EXAMPLE FROM A
+					// LONE TAIL SKELETON INTO THE COMPOSITION RULE.  The
+					// evidence is the dragon re-run (trajectory
+					// 20260823T140447Z): it used the slice-A loft anisotropy
+					// CORRECTLY and still read tubular, because the body itself
+					// was a sweep and the limbs were bone chains -- the
+					// overlapping-MASS idiom (superellipsoid + smin) that the
+					// wizard and mermaid runs used 21-35 times appeared ZERO
+					// times in either dragon run.  Nothing was steering a body
+					// toward masses, because every construction channel steered
+					// it toward a sweep or a chain.  So the gate now leads with
+					// the rule in one paragraph, and the example DEMONSTRATES
+					// all three halves of it: a three-part superellipsoid torso
+					// (masses), a leg (chain), and -- the reason a chain limb no
+					// longer has to be plumbing -- doc 90 slice B's `aspect` on
+					// the two bones that want flattening.  The old example's
+					// subject was a TAIL, which the rule itself now says should
+					// be a sweep; keeping it would have made the gate contradict
+					// its own opening sentence.
+					//
+					// The gloss paragraph sits BEFORE the marker line, not after
+					// it, and is separated from it by a blank line: AgentChunkCrudTest
+					// S2k lifts everything from the marker's newline to the next
+					// BLANK line and derives it on a fresh Job, so a prose line
+					// inside that span would be handed to the parser as if it
+					// were a chunk.
+					//
 					// LocalFrameContract rule 1 counts the RADIUS, not just the
-					// centre: root's CENTRE sits at y=0.28 (its own radius) so
-					// its bottom cap touches y=0 (verified: min over all 5
-					// joints of joint.y-joint.r is exactly 0.0, at root).  x
-					// stays within +-0.05 of 0 (horizontally centred) while y
-					// rises 1.57 units and z sweeps 1.3 units end to end --
-					// genuine curvature in y AND z with no dominant x motion
-					// (the prior example's comment claimed this but its actual
-					// deltas were Dx=1.8, Dy=1.0, Dz=0.05 -- dominant X, not
-					// y/z).
+					// centre: `toe`'s CENTRE sits at y=0.07 with radius 0.07, so
+					// its cap touches y=0 exactly, and the torso's first part
+					// (centre y=0.5, a=0.5, sy=1.0) reaches exactly y=0 too --
+					// two independent pieces agreeing on the base plane.  Every
+					// x stays within +-0.06 of 0 (horizontally centred), the
+					// torso is symmetric about x=0 by construction, and the
+					// whole element occupies ~1.22 in y.
+					//
+					// The two objects share ONE material deliberately: the
+					// example has to parse STANDALONE (S2k derives it on a fresh
+					// Job), and a second painter/material pair would be pure
+					// context volume -- the law this file's other comments cite
+					// is that prompt growth collapses construction richness, so
+					// the added bytes go to the IDIOM, not to boilerplate.
 					if( entry->HasConstruction( "chain" ) ) {
 						p += "\n";
 						p += ReadSchema( "skeleton_geometry" );
 						p += "\n";
+						p += "A BODY IS MASSES, A LIMB IS A CHAIN, A NECK OR TAIL IS A SWEEP. Overlapping "
+						     "superellipsoid parts smin-blended in ONE sdf_geometry make a torso (0.4-0.7 is the "
+						     "cushion/torso exponent range); skeleton_geometry makes the limbs, with `aspect` "
+						     "flattening a bone that should not be a pipe; sweep_geometry makes what tapers along "
+						     "a curve. Steering a whole creature into a single chain or a single sweep is what "
+						     "makes it silhouette as a bent tube.\n\n";
 						p += "WORKED EXAMPLE for the chain method (adapt values; delete nothing you need):\n"
+						     "sdf_geometry\n"
+						     "{\n"
+						     "\tname " + prefix + "body_sdf\n"
+						     "\tpart superellipsoid union 0     0 0.5 -0.3    0 0 0   1.3 1.0 1.15   0.5 0.55 0.6   0\n"
+						     "\tpart superellipsoid smin 0.25   0 0.72 0.45   0 0 0   1.15 0.85 1.0  0.5 0.45 0.55  0\n"
+						     "\tpart superellipsoid smin 0.22   0 0.95 0.05   0 0 0   0.9 0.55 0.95  0.5 0.5 0.5    0\n"
+						     "}\n"
 						     "skeleton_geometry\n"
 						     "{\n"
-						     "\tname " + prefix + "tail_skel\n"
-						     "\tjoint root none 0 0.28 0 0.28\n"
-						     "\tjoint j1 root 0.02 0.7 0.15 0.22\n"
-						     "\tjoint j2 j1 0.05 1.15 0.45 0.16\n"
-						     "\tjoint j3 j2 0.02 1.55 0.85 0.10\n"
-						     "\tjoint j4 j3 -0.05 1.85 1.3 0.05\n"
+						     "\tname " + prefix + "leg_skel\n"
+						     "\tjoint hip none 0 1.02 -0.12 0.20\n"
+						     "\tjoint knee hip 0.06 0.60 0.16 0.15 0.55\n"
+						     "\tjoint ankle knee 0.02 0.26 -0.06 0.10 0.7\n"
+						     "\tjoint toe ankle 0.02 0.07 0.22 0.07\n"
 						     "\tblend 0.4\n"
 						     "}\n"
 						     "lambertian_material\n"
 						     "{\n"
-						     "\tname " + prefix + "tail_mat\n"
+						     "\tname " + prefix + "body_mat\n"
 						     "\treflectance none\n"
 						     "}\n"
 						     "standard_object\n"
 						     "{\n"
-						     "\tname " + prefix + "tail_obj\n"
-						     "\tgeometry " + prefix + "tail_skel\n"
-						     "\tmaterial " + prefix + "tail_mat\n"
+						     "\tname " + prefix + "body_obj\n"
+						     "\tgeometry " + prefix + "body_sdf\n"
+						     "\tmaterial " + prefix + "body_mat\n"
+						     "\tposition 0 0 0\n"
+						     "}\n"
+						     "standard_object\n"
+						     "{\n"
+						     "\tname " + prefix + "leg_obj\n"
+						     "\tgeometry " + prefix + "leg_skel\n"
+						     "\tmaterial " + prefix + "body_mat\n"
 						     "\tposition 0 0 0\n"
 						     "}\n\n";
 						// Doc 89 slice B rides the SAME gate rather than adding
@@ -15771,27 +15848,50 @@ namespace RISE
 						     "\tmaterial " + prefix + "wing_mat\n"
 						     "\tposition 0 0 0\n"
 						     "}\n\n";
-						// MEASURED (2026-08-22, same instrument as the
-						// kBuildPlanMaxConstructionMethods table -- that
-						// table's skeleton 3094 and lathe 4595 reproduce
-						// exactly, so the numbers are comparable):
-						//   chain gate BEFORE  3094 + 438 = 3532 B
-						//   chain gate AFTER   3532 + 4827 + 424 = 8783 B (2.49x)
-						// Doc 89 sect. 3 asks for <= ~2x, trimming the
-						// EXAMPLE rather than the schema.  That is
-						// arithmetically out of reach here and the trim above
-						// is not why: skin_geometry's schema ALONE is 4827 B,
-						// i.e. 1.37x the entire pre-existing block, so even a
-						// ZERO-byte example leaves the gate at 2.37x.  The
-						// only lever that would reach 2x is cutting the
-						// descriptor gloss -- which is the summoning channel
-						// this arc has direct evidence for, and which the
-						// same section calls the free reach.  Recorded rather
-						// than silently missed: the number to re-argue if the
-						// chain gate is ever the measured cause of a
-						// construction-richness drop is the GLOSS, and the
-						// comparison to make is against lathe's 4595 B, which
-						// this is in family with.
+						// RE-MEASURED (2026-08-23, this de-tubing slice: doc 90 R4
+						// widened skeleton_geometry's descriptor gloss by the
+						// near-vertical-stability and isolated-joint-aspect
+						// sentences, and slice A rewrote the chain gate's worked
+						// example from a lone tail into the torso+leg composition
+						// -- both change the numbers below, which is why the
+						// 2026-08-22 figures (3094/438/4827/424, 8783 B, 2.49x)
+						// went stale).  METHOD, so the NEXT re-measurement is
+						// comparable without re-deriving it: schema sizes are
+						// RISE::Agent::SchemaGenForChunk(keyword).size() (the exact
+						// JSON text ReadSchema sends); example sizes are the
+						// literal example block AgentChunkCrudTest's S2k/S2m lift
+						// out of a REAL composed prompt (element "critter",
+						// construction ["chain"], prefix "critter_") the same way
+						// the model would read it -- from the end of the intro
+						// line to the block's own trailing blank line.  A
+						// different element name changes the example bytes (the
+						// prefix is interpolated into every chunk name inside
+						// it), so S2k/S2m's fixture names ARE the comparison
+						// baseline, not an arbitrary choice.
+						//   skeleton_geometry schema 4503 B, example  801 B
+						//   skin_geometry     schema 5399 B, example  399 B
+						//   chain gate BEFORE  4503 +  801        =  5304 B
+						//   chain gate AFTER   5304 + 5399 + 399  = 11102 B (2.09x)
+						// Doc 89 sect. 3 asks for <= ~2x: 2.09x is CLOSE, not the
+						// 2.49x the stale figures claimed, and the "arithmetically
+						// out of reach" conclusion that used to follow is ALSO
+						// stale -- skin_geometry's schema alone (5399 B) is only
+						// 1.02x the pre-existing block now (was 1.37x), so a
+						// zero-byte example would already land at ~2.02x, right at
+						// the line.  The whole-prompt denominator argument still
+						// governs regardless: this fixture's FULL composed prompt
+						// is 32739 B, so the chain gate's entire footprint (both
+						// schemas plus both examples) is ~34% of what the model
+						// actually reads, not the whole of it -- the 2x guidance
+						// bounds ONE gated block's growth relative to itself, not
+						// the prompt's total context-volume cost, which is the
+						// quantity 18.0-vs-7.7-SDF-parts richness collapse
+						// actually tracks.  The lever, if this gate is ever the
+						// measured cause of a richness drop, is still the
+						// descriptor GLOSS (the summoning channel this arc has
+						// direct evidence for) -- compare against lathe_geometry's
+						// 4595 B schema, unchanged this slice and still the
+						// same-family reference point.
 					}
 					// C3 (2026-08-18): the exact analogue for "lathe", now that
 					// lathe_geometry exists -- same gate, same reasoning as the

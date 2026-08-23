@@ -3584,42 +3584,58 @@ namespace RISE
 			//! The MEASURED sizes.  The schema halves come from the
 			//! descriptor registry itself (SchemaGenForChunk, the exact text
 			//! ComposeBuilderPrompt_ sends); the example halves are the
-			//! literal blocks in that function.  RE-MEASURED 2026-08-22
-			//! after doc 89 slices A and B -- A widened sweep_geometry's
-			//! descriptor (the loft parameters) and B appended a SECOND
-			//! schema + example, skin_geometry's, inside the `chain` block:
+			//! literal blocks in that function -- specifically, the ones
+			//! AgentChunkCrudTest's S2j/S2k/S2m/S2l lift out of a REAL composed
+			//! prompt the same way the model reads them (element
+			//! "tentacle"/"critter"/"critter"/"vase", each test's own fixture --
+			//! the prefix is interpolated into every chunk name inside the
+			//! example, so a different element name changes these bytes; the
+			//! fixture names above ARE the comparison baseline, not an
+			//! arbitrary choice).  RE-MEASURED 2026-08-23 (doc 90 R4's
+			//! de-tubing slice -- skeleton_geometry's descriptor gloss grew by
+			//! the near-vertical-stability and isolated-joint-aspect sentences,
+			//! and slice A rewrote both the sweep and chain worked examples),
+			//! superseding the 2026-08-22 figures below:
 			//!
 			//!   GATED schema + worked example, per method
-			//!     sweep   5570 +  507             =  6077 B  (was 4061)
-			//!     chain   3094 +  438 + 4827 + 424 = 8783 B  (was 3532)
-			//!     lathe   4595 +  494             =  5089 B  (unchanged)
-			//!   UNCONDITIONAL grammar (kBuilderGrammarKeywords, six kinds)
-			//!                            14589 B
+			//!     sweep   5570 +  549             =  6119 B  (was 6077)
+			//!     chain   4503 +  801 + 5399 + 399 = 11102 B  (was 8783)
+			//!     lathe   4595 +  440             =  5035 B  (was 5089)
+			//!   UNCONDITIONAL grammar (kBuilderGrammarKeywords, six kinds,
+			//!   unchanged this slice)   14589 B
 			//!
 			//! Only THREE of the seven values carry a gated block at all
 			//! (primitive / csg / displaced / mesh add nothing), so an
-			//! UNCAPPED list delivers at most all three -- 19949 B, i.e. 137 %
-			//! of the entire unconditional grammar added on top of it.  That
-			//! is the grammar dump this mechanism exists to prevent,
-			//! reachable by writing three words.  It also means a cap of 3
-			//! would today be indistinguishable from NO cap: it would bound
-			//! nothing that is not already bounded by the gated-kind count.
+			//! UNCAPPED list delivers at most all three -- 22256 B, i.e. 153 %
+			//! of the entire unconditional grammar added on top of it (was
+			//! 137 %).  That is the grammar dump this mechanism exists to
+			//! prevent, reachable by writing three words.  It also means a cap
+			//! of 3 would today be indistinguishable from NO cap: it would
+			//! bound nothing that is not already bounded by the gated-kind
+			//! count.
 			//!
-			//! TWO bounds the worst case at chain+sweep = 14860 B (102 % of
-			//! the unconditional grammar) and admits the case that motivated
-			//! the change -- a copper still is a lathe pot and a sweep coil,
-			//! and two is what it needs.  An element that genuinely needs
-			//! three construction methods is two elements; the plan's unit of
-			//! work IS the element, so splitting it is free and each half
-			//! then gets a focused prompt rather than one diluted one.
+			//! TWO bounds the worst case at chain+sweep = 17221 B (118 % of the
+			//! unconditional grammar, was 102 %) and admits the case that
+			//! motivated the change -- a copper still is a lathe pot and a
+			//! sweep coil, and two is what it needs.  An element that genuinely
+			//! needs three construction methods is two elements; the plan's
+			//! unit of work IS the element, so splitting it is free and each
+			//! half then gets a focused prompt rather than one diluted one.
 			//!
 			//! NOTE the direction of travel: the worst pair was 63 % of the
-			//! unconditional grammar in 2026-08 and is 102 % now, entirely
-			//! from descriptor GROWTH rather than from the cap.  The cap is
-			//! still doing its job (it is what keeps the third block out),
-			//! but the next slice that widens one of these three descriptors
-			//! should re-measure here and ask whether the gloss, not the
-			//! cap, is the number to argue about.
+			//! unconditional grammar in 2026-08, 102 % on 2026-08-22, and is
+			//! 118 % now -- still entirely from descriptor/example GROWTH
+			//! rather than from the cap, and still climbing.  The cap is still
+			//! doing its job (it is what keeps the third block out), but the
+			//! next slice that widens one of these three descriptors should
+			//! re-measure here and ask whether the gloss, not the cap, is the
+			//! number to argue about -- the same one-line answer
+			//! AgentSession.cpp's chain-gate comment (~line 15851) restates for
+			//! that specific gate: the relevant denominator for the
+			//! context-volume law is the WHOLE composed prompt (~32.7 KB for
+			//! the chain-gate fixture), not this ratio in isolation, so a gate
+			//! running past 2x is a signal to re-argue the gloss, not yet the
+			//! richness-collapse failure itself.
 			//!
 			//! Raising this is a MEASUREMENT decision, not a schema tweak: it
 			//! must be argued against the same volume law, with the block

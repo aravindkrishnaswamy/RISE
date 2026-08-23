@@ -11100,15 +11100,39 @@ static void TestCleanRoomChainWorkedExample()
 	if( chunkEnd == std::string::npos ) return;
 	const std::string example = p.substr( chunkStart, chunkEnd - chunkStart );
 
-	Check( example.find( "skeleton_geometry" ) != std::string::npos &&
+	// ANCHORS UPDATED DELIBERATELY, doc 90 slice A (2026-08-23).  The chain
+	// gate's worked example stopped being a lone tail skeleton and became a
+	// demonstration of the COMPOSITION RULE -- a superellipsoid-mass torso
+	// (sdf_geometry) PLUS a leg (skeleton_geometry, carrying the new
+	// per-joint `aspect` token) -- because the dragon re-run showed that a
+	// creature steered entirely into chains and sweeps silhouettes as a bent
+	// tube.  The example's own subject moved from a TAIL to a LEG, since the
+	// rule the same gate now states says a tail should be a SWEEP; keeping
+	// the tail names would have left the example contradicting its own
+	// opening sentence.  Hence: five chunks, not three, and `body_*`/`leg_*`
+	// names in place of `tail_*`.
+	Check( example.find( "sdf_geometry" ) != std::string::npos &&
+	       example.find( "superellipsoid" ) != std::string::npos &&
+	       example.find( "skeleton_geometry" ) != std::string::npos &&
 	       example.find( "lambertian_material" ) != std::string::npos &&
 	       example.find( "standard_object" ) != std::string::npos,
-	       "S2k the lifted example carries all three chunks of the trio" );
-	Check( example.find( "critter_tail_skel" ) != std::string::npos &&
-	       example.find( "critter_tail_mat" ) != std::string::npos &&
-	       example.find( "critter_tail_obj" ) != std::string::npos,
+	       "S2k the lifted example carries the composition rule's chunks -- a superellipsoid MASS "
+	       "and a joint CHAIN, not a chain alone" );
+	Check( example.find( "critter_body_sdf" ) != std::string::npos &&
+	       example.find( "critter_leg_skel" ) != std::string::npos &&
+	       example.find( "critter_body_mat" ) != std::string::npos &&
+	       example.find( "critter_body_obj" ) != std::string::npos &&
+	       example.find( "critter_leg_obj" ) != std::string::npos,
 	       "S2k MONEY ASSERTION: every name in the example is built from the element's REAL "
 	       "chunk-name prefix, not a placeholder" );
+	// The whole point of slice B riding this gate: the limb is not a pipe.
+	// A joint line carrying the optional 7th token is what an author has to
+	// SEE to use it, and a gate that only ever showed 6-token lines is why
+	// two dragon runs never flattened a bone.
+	Check( example.find( "\tjoint knee hip " ) != std::string::npos &&
+	       example.find( " 0.15 0.55\n" ) != std::string::npos,
+	       "S2k MONEY ASSERTION: at least one joint line carries the doc-90 `aspect` token (a "
+	       "thigh-like 0.55), so the builder sees the grammar that stops a limb being a tube" );
 
 	// THE PARSE, not a syntax guess: the lifted text goes through the same
 	// CST parse + derive a hand-authored scene uses, on a fresh Job, with
@@ -11121,17 +11145,23 @@ static void TestCleanRoomChainWorkedExample()
 	for( std::size_t d = 0; d < diags.size(); ++d )
 		std::printf( "    S2k DIAGNOSTIC: %s\n", diags[d].c_str() );
 	Check( diags.empty(), "S2k MONEY ASSERTION: the worked example parses with ZERO diagnostics" );
-	Check( applied == 3, "S2k all three chunks of the trio applied (got " +
+	// FIVE, bumped from three by the composition-rule rework above: the mass
+	// geometry, the chain geometry, one shared material, and one object per
+	// geometry.
+	Check( applied == 5, "S2k all five chunks of the composed example applied (got " +
 	       std::to_string( applied ) + ")" );
 	IGeometryManager* geoms = freshJob->GetGeometries();
-	Check( geoms && geoms->GetItem( "critter_tail_skel" ) != nullptr,
+	Check( geoms && geoms->GetItem( "critter_body_sdf" ) != nullptr,
+	       "S2k the sdf_geometry body MASS actually registered" );
+	Check( geoms && geoms->GetItem( "critter_leg_skel" ) != nullptr,
 	       "S2k the skeleton_geometry actually registered" );
 	IMaterialManager* mats = freshJob->GetMaterials();
-	Check( mats && mats->GetItem( "critter_tail_mat" ) != nullptr,
+	Check( mats && mats->GetItem( "critter_body_mat" ) != nullptr,
 	       "S2k the lambertian_material actually registered" );
 	IObjectManager* objs = freshJob->GetObjects();
-	Check( objs && objs->GetItem( "critter_tail_obj" ) != nullptr,
-	       "S2k the standard_object actually registered" );
+	Check( objs && objs->GetItem( "critter_body_obj" ) != nullptr &&
+	       objs->GetItem( "critter_leg_obj" ) != nullptr,
+	       "S2k both standard_objects actually registered" );
 	freshJob->release();
 
 	// C1: the CST-level parse above proves the TEXT is well-formed, but not
@@ -11162,7 +11192,7 @@ static void TestCleanRoomChainWorkedExample()
 		const Agent::AgentSession::AgentBuildElementResult r2 = sess2->BuildElement( "critter", 4.0 );
 		Check( r2.ok, "S2k/real MONEY ASSERTION: the lifted example, fed back through the REAL "
 		       "BuildElement/InsertChunks path (not just a raw CST parse), completes cleanly" );
-		Check( r2.landed.size() == 3, "S2k/real all three chunks of the trio landed (got " +
+		Check( r2.landed.size() == 5, "S2k/real all five chunks of the composed example landed (got " +
 		       std::to_string( r2.landed.size() ) + ")" );
 		Check( r2.rejected.empty(), "S2k/real with nothing rejected" );
 	}

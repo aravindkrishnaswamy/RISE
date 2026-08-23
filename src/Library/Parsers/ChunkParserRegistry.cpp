@@ -5718,6 +5718,79 @@ namespace RISE
 			//! that would double-cover every bone-adjacent joint with a
 			//! redundant, blend-interacting primitive nobody asked for.
 			//!
+			//! A BONE NEED NOT BE A PIPE: the optional 7th `joint` token,
+			//! `aspect`, is the bone's cross-section WIDTH-to-DEPTH ratio (1 =
+			//! the historical circular bone, and the ONLY value that existed
+			//! before doc 90 slice B; a 6-token line still expands
+			//! byte-for-byte identically).  Without it a skeleton could only
+			//! ever be a chain of tubes -- one radius per joint is a CIRCLE by
+			//! grammar -- which is exactly why creature limbs built this way
+			//! read as plumbing.  A thigh is aspect ~0.6, a wing-arm 1.0.
+			//!
+			//! WHICH AXIS FLATTENS, stated so an author can predict it.
+			//! `aspect` becomes the part's LOCAL X scale, `<aspect> 1 1`.  For
+			//! any CLEARLY LEANING bone (more than ~0.6 degrees off vertical)
+			//! the expansion solves for roll ez = 0, and the rotation's FIRST
+			//! column (the world direction local +X maps to) is then
+			//! (cos ey, 0, -sin ey) -- identically ZERO in world Y.  So the
+			//! flattening axis is ALWAYS HORIZONTAL and always perpendicular to
+			//! the bone: aspect narrows a bone SIDE-TO-SIDE in the ground
+			//! plane, and the perpendicular it leaves at full `radius` is the
+			//! one lying in the VERTICAL plane that contains the bone.  A bone
+			//! leaning less than ~0.6 degrees off vertical (the kNearVerticalHoriz
+			//! threshold in DirectionToEulerDeg) is TREATED AS VERTICAL and
+			//! flattens along world X too, but via a different, endpoint-exact
+			//! construction (that function's own comment has the derivation)
+			//! rather than ey = 0 -- a bone right at the boundary therefore
+			//! measures half as wide along world X as along world Z at aspect
+			//! 0.5, same as a truly vertical one, and the tip cap still lands
+			//! exactly on the declared child joint either side of the threshold.
+			//! An ISOLATED joint's `sphere` part flattens along world X
+			//! unconditionally too (no bone direction exists to derive an axis
+			//! from, so world X is the only sensible canonical choice).  Pinned
+			//! by SkeletonGeometryChunkTest's closed-form ellipse probe
+			//! (clearly-leaning and exactly-vertical), its near-vertical
+			//! endpoint/flatten-axis-stability probes, and its isolated-joint
+			//! aspect probe -- not by this paragraph.
+			//!
+			//! PURE SQUASH, NOT AREA-PRESERVING.  `<aspect> 1 1` and not
+			//! `<sqrt(aspect)> 1 <1/sqrt(aspect)>`, so that `radius` keeps
+			//! meaning what it always meant: the bone's cross-section is
+			//! `aspect * radius` across the flattened axis and EXACTLY `radius`
+			//! across the other.  Aspect only ever REMOVES material -- an
+			//! author who flattens a thigh never gets a thigh that bulges
+			//! DEEPER than the radius typed on the line, which is what
+			//! area-preserving would hand them (aspect 0.5 would swell the
+			//! other axis by 1.41x).  Local Y is left at 1 for a harder reason
+			//! than taste: the roundcone's `c` IS the bone length, so any Y
+			//! scale would move the tip cap off the child joint's declared
+			//! position.
+			//!
+			//! A JOINT'S ASPECT SHAPES THE BONE THAT ARRIVES AT IT (and, for an
+			//! isolated joint, its own sphere).  There is no inheritance: a
+			//! child does NOT pick up its parent's aspect, so a chain's
+			//! cross-section varies per joint.  One `roundcone` part carries
+			//! ONE scale, so a bone cannot taper from one aspect to another;
+			//! the arriving-bone rule is the one that leaves the FEWEST tokens
+			//! unused, since a tree has few roots and many leaves (the mirror
+			//! rule, "shapes the bones LEAVING it", would silently ignore the
+			//! aspect on every leaf).  A root WITH children has no arriving
+			//! bone and emits no part of its own, so a non-1 aspect there is
+			//! inert -- warned about, in the same non-rejecting style as the
+			//! degenerate-bone diagnostic below, rather than dropped in
+			//! silence.
+			//!
+			//! CONSERVATIVE UNDER SPHERE-TRACING, for free: SDFGeometry's
+			//! partEval divides into local space by the per-axis scale and
+			//! multiplies the primitive's distance back by `minScale` (the
+			//! smallest |scale| component), which caps the composed field at
+			//! 1-Lipschitz for ANY positive per-axis scale -- see the comment
+			//! above smaxP in SDFGeometry.cpp.  So a squashed bone smin-blended
+			//! against a round one still cannot overstep its own surface.  The
+			//! price is STEPS, not correctness: minScale = min(aspect, 1)
+			//! shrinks every step by that factor, so a very small aspect wants
+			//! a larger `maxsteps`.
+			//!
 			//! DECLARE-BEFORE-USE, STRUCTURALLY CYCLE-FREE: `parent` must name
 			//! `none` or a joint already declared on an EARLIER `joint` line.
 			//! A joint can therefore never (directly or transitively) become
@@ -5736,14 +5809,15 @@ namespace RISE
 					return false;
 				}
 
-				//! One declared `joint <name> <parent|none> <x> <y> <z> <radius>` line.
+				//! One declared `joint <name> <parent|none> <x> <y> <z> <radius> [aspect]` line.
 				struct JointDecl
 				{
 					std::string name;
 					std::string parent;
 					double x, y, z, r;
+					double aspect;        // 7th, OPTIONAL token; 1 = today's circular bone
 					int    parentIndex;   // resolved index into the joints vector; -1 = root (parent "none")
-					JointDecl() : x(0), y(0), z(0), r(0), parentIndex(-1) {}
+					JointDecl() : x(0), y(0), z(0), r(0), aspect(1.0), parentIndex(-1) {}
 				};
 
 				//! Formats a double with full IEEE-double round-trip precision.
@@ -5781,18 +5855,22 @@ namespace RISE
 				//
 				// One `part` line in SDFGeometry::ParsePartLines' 16-token
 				// grammar: `<prim> <op> <k> <px py pz> <exDeg eyDeg ezDeg>
-				// <sx sy sz> <a b c> <round>`.  Every bone/sphere this chunk
-				// emits uses identity scale, so `sx sy sz` is hardcoded to
-				// `1 1 1` rather than threading three more parameters nobody
-				// would ever vary here.
+				// <sx sy sz> <a b c> <round>`.  Only the FIRST scale component
+				// is ever non-1: it carries the joint's `aspect` (see the
+				// struct-level "WHICH AXIS FLATTENS" block), while y stays 1
+				// because the roundcone's `c` is the bone LENGTH and z stays 1
+				// because the squash is a pure one.  aspect == 1 formats as
+				// "1" under %.17g, so a 6-token joint line still produces the
+				// byte-identical `1 1 1` this function used to hardcode --
+				// which SkeletonGeometryChunkTest's back-compat digest pins.
 				static std::string PartLine( const char* prim, double k,
 					double px, double py, double pz, double exDeg, double eyDeg, double ezDeg,
-					double a, double b, double c )
+					double sx, double a, double b, double c )
 				{
 					return std::string( prim ) + " smin " + Num(k) + " " +
 						Num(px) + " " + Num(py) + " " + Num(pz) + " " +
 						Num(exDeg) + " " + Num(eyDeg) + " " + Num(ezDeg) + " " +
-						"1 1 1 " +
+						Num(sx) + " 1 1 " +
 						Num(a) + " " + Num(b) + " " + Num(c) + " 0";
 				}
 
@@ -5814,29 +5892,100 @@ namespace RISE
 					return true;
 				}
 
-				//! Euler DEGREES (ex, ey; ez is always 0) that rotate local +Y
-				//! onto the given UNIT direction (dx,dy,dz) under RISE's SDF
-				//! part convention R = Rz(0)*Ry(ey)*Rx(ex) (SDFGeometry::
-				//! RecomputePartDerived: the rotation's SECOND COLUMN, the
-				//! world direction local +Y maps to, is (sin(ey)sin(ex),
-				//! cos(ex), cos(ey)sin(ex)) once ez=0).  So dy = cos(ex) and
-				//! sqrt(dx^2+dz^2) = sin(ex) (ex chosen in [0,180], where
-				//! sin(ex) >= 0), giving ex = atan2(sqrt(dx^2+dz^2), dy); then
+				//! Euler DEGREES (ex, ey, ez) that rotate local +Y onto the
+				//! given UNIT direction (dx,dy,dz) under RISE's SDF part
+				//! convention R = Rz(ez)*Ry(ey)*Rx(ex) (SDFGeometry::
+				//! RecomputePartDerived).  ez is 0 for every CLEARLY LEANING
+				//! bone (horiz = sqrt(dx^2+dz^2) >= kNearVerticalHoriz,
+				//! unchanged since before the near-vertical fix below): the
+				//! rotation's SECOND column, the world direction local +Y
+				//! maps to, is then (sin(ey)sin(ex), cos(ex), cos(ey)sin(ex)),
+				//! so dy = cos(ex) and horiz = sin(ex) (ex chosen in [0,180],
+				//! sin(ex) >= 0), giving ex = atan2(horiz, dy); then
 				//! dx = sin(ey)sin(ex), dz = cos(ey)sin(ex), giving
-				//! ey = atan2(dx, dz).  DEGENERATE at dx == dz == 0 (bone
-				//! parallel to +-Y, tested with a tolerance rather than exact
-				//! equality): ey is then free of any constraint (set 0) and
-				//! ex is 0 for d=+Y, 180 for d=-Y.
-				static void DirectionToEulerDeg( double dx, double dy, double dz, double& exDeg, double& eyDeg )
+				//! ey = atan2(dx, dz).  With ez = 0 the FIRST column (world
+				//! direction local +X -- the `aspect` flatten axis) is
+				//! (cos(ey), 0, -sin(ey)): ALWAYS exactly horizontal.  Pinned
+				//! by SkeletonGeometryChunkTest's closed-form ellipse probe.
+				//!
+				//! NEAR-VERTICAL (horiz < kNearVerticalHoriz, ~0.6 degrees of
+				//! lean): that ey = atan2(dx, dz) is the hairy-ball problem
+				//! made concrete.  atan2 of a horizontal projection that is
+				//! shrinking to a point is maximally sensitive to WHICH
+				//! direction it is approached from, so a bone at
+				//! (0.001, 0.999999, 0) and one at (0, 0.999999, 0.001) --
+				//! indistinguishable to an author typing a third decimal --
+				//! flatten along perpendicular world axes.  Simply snapping
+				//! ex/ey to the canonical vertical values (0 or 180, ey = 0),
+				//! which is what this function did for horiz < 1e-9 before
+				//! this fix, throws away the POSITION claim: ex = 0 forces
+				//! local +Y onto world +Y exactly, which is only where the
+				//! bone actually points when horiz is EXACTLY 0.  For any
+				//! nonzero horiz inside a widened threshold that would move
+				//! the tip cap off the declared child joint by O(horiz) --
+				//! up to ~1% of the bone length right at the boundary -- not
+				//! the "identical to before" this chunk's whole design
+				//! promises (struct comment, "A BONE'S END CAPS ARE ITS TWO
+				//! JOINTS").
+				//!
+				//! So this band spends the THIRD Euler angle instead of
+				//! zeroing anything.  A rotation has exactly 3 degrees of
+				//! freedom; fixing local +Y's world direction uses 2 of them,
+				//! leaving exactly ONE free -- the ROLL around that
+				//! direction, i.e. ez, which the clearly-leaning formula
+				//! above always burns on 0.  Spend it here: solve for the
+				//! (ex,ey,ez) triple whose SECOND column is still EXACTLY
+				//! (dx,dy,dz) (endpoint exactness, UNCONDITIONAL) and whose
+				//! FIRST column is world +X Gram-Schmidt-projected
+				//! perpendicular to (dx,dy,dz) -- the closest horizontal-ish
+				//! axis to world X that is still orthogonal to the bone
+				//! direction.  That projection, normalize((1,0,0) -
+				//! dx*(dx,dy,dz)), has magnitude sqrt(1-dx^2) = sqrt(dy^2+dz^2)
+				//! -- BOUNDED AWAY FROM ZERO throughout the near-vertical band
+				//! (dy is close to +-1 there), so it is well-conditioned
+				//! exactly where atan2(dx,dz) alone is not, and it varies
+				//! CONTINUOUSLY as (dx,dz) -> (0,0) from any direction,
+				//! landing on exactly world +X at horiz = 0.  The price: for
+				//! a genuinely (tiny) leaning bone in this band the flatten
+				//! axis is no longer bit-exactly horizontal -- it tilts out
+				//! of the ground plane by an angle bounded by the lean
+				//! itself (at most ~kNearVerticalHoriz radians), invisible
+				//! next to the ~0.6 degree threshold that put it there.
+				//! Endpoint exactness is unconditional; horizontality is
+				//! exact for clearly-leaning bones and near-exact (bounded by
+				//! the lean) for near-vertical ones.  Verified analytically
+				//! (Cy reproduces the target direction to double-precision
+				//! roundoff for every direction tried, including right at the
+				//! threshold boundary) and pinned by
+				//! SkeletonGeometryChunkTest's near-vertical endpoint probe
+				//! and flatten-axis-stability probe.
+				static constexpr double kNearVerticalHoriz = 0.01;   // ~0.57 degrees of lean
+
+				static void DirectionToEulerDeg( double dx, double dy, double dz,
+					double& exDeg, double& eyDeg, double& ezDeg )
 				{
 					const double horiz = std::sqrt( dx*dx + dz*dz );
-					if( horiz < 1e-9 ) {
-						eyDeg = 0.0;
-						exDeg = ( dy >= 0.0 ) ? 0.0 : 180.0;
+					if( horiz < kNearVerticalHoriz ) {
+						// Gram-Schmidt: world +X projected perpendicular to the
+						// TRUE bone direction (dx,dy,dz) -- see the struct-level
+						// comment above for the derivation.  |v| bounded away
+						// from 0 throughout this band (dy ~= +-1 here).
+						const double vx = 1.0 - dx*dx, vy = -dx*dy, vz = -dx*dz;
+						const double vlen = std::sqrt( vx*vx + vy*vy + vz*vz );
+						const double xhx = vx / vlen, xhy = vy / vlen, xhz = vz / vlen;
+						// z-component of local +Z = cross(local +X, target) --
+						// the only component ex's solve needs.
+						const double zhz = xhx*dy - xhy*dx;
+						const double c2 = std::sqrt( xhx*xhx + xhy*xhy );   // cos(ey), > 0 here
+						eyDeg = std::atan2( -xhz, c2 ) * RAD_TO_DEG;
+						ezDeg = std::atan2( xhy, xhx ) * RAD_TO_DEG;
+						// atan2(dz/c2, zhz/c2) == atan2(dz, zhz) for c2 > 0.
+						exDeg = std::atan2( dz, zhz ) * RAD_TO_DEG;
 						return;
 					}
 					exDeg = std::atan2( horiz, dy ) * RAD_TO_DEG;
 					eyDeg = std::atan2( dx, dz ) * RAD_TO_DEG;
+					ezDeg = 0.0;
 				}
 
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5866,35 +6015,44 @@ namespace RISE
 
 						// Tokenize on whitespace -- a mixed identifier/number
 						// line, so the strict all-numeric AllTokensAreFiniteNumbers
-						// helper is applied only to the trailing 4-token numeric
-						// run (same mixed-line idiom sweep_geometry's
+						// helper is applied only to the trailing numeric run
+						// (same mixed-line idiom sweep_geometry's
 						// `profile_circle` uses elsewhere in this file), and an
-						// exact-6-token count catches both too few and too many
-						// (trailing garbage glued as its own token).
+						// exact 6-or-7-token count catches both too few and too
+						// many (trailing garbage glued as its own token).  The
+						// 7th token is the OPTIONAL `aspect`; 6 tokens is the
+						// pre-doc-90 grammar and still means aspect 1.
 						std::vector<std::string> toks;
 						{
 							std::istringstream iss( line );
 							std::string t;
 							while( iss >> t ) toks.push_back( t );
 						}
-						if( toks.size() != 6 ) {
+						if( toks.size() != 6 && toks.size() != 7 ) {
 							char buf[32];
 							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)toks.size() );
-							return Reject( "joint `" + line + "` must be exactly 6 tokens "
-								"`<name> <parent|none> <x> <y> <z> <radius>` -- got " + buf );
+							return Reject( "joint `" + line + "` must be 6 or 7 tokens "
+								"`<name> <parent|none> <x> <y> <z> <radius> [aspect]` -- got " + buf );
 						}
+						const bool haveAspect = ( toks.size() == 7 );
+						const int  nNumeric   = haveAspect ? 5 : 4;
 
-						const std::string last4 = toks[2] + " " + toks[3] + " " + toks[4] + " " + toks[5];
+						std::string tail = toks[2] + " " + toks[3] + " " + toks[4] + " " + toks[5];
+						if( haveAspect ) tail += " " + toks[6];
 						int nTok = 0;
-						if( !AllTokensAreFiniteNumbers( last4.c_str(), &nTok ) || nTok != 4 ) {
-							return Reject( "joint `" + line + "`: the last four fields "
-								"(x y z radius) must be finite numbers, with no trailing garbage" );
+						if( !AllTokensAreFiniteNumbers( tail.c_str(), &nTok ) || nTok != nNumeric ) {
+							return Reject( "joint `" + line + "`: the last " +
+								( haveAspect ? "five fields (x y z radius aspect)" : "four fields (x y z radius)" ) +
+								" must be finite numbers, with no trailing garbage" );
 						}
 
+						// NB: `jd.aspect` is left at its constructed 1.0 when
+						// the line has only 4 numeric fields -- sscanf simply
+						// stops, it does not zero the unmatched argument.
 						JointDecl jd;
 						jd.name = toks[0];
 						jd.parent = toks[1];
-						std::sscanf( last4.c_str(), "%lf %lf %lf %lf", &jd.x, &jd.y, &jd.z, &jd.r );
+						std::sscanf( tail.c_str(), "%lf %lf %lf %lf %lf", &jd.x, &jd.y, &jd.z, &jd.r, &jd.aspect );
 
 						if( nameToIndex.find( jd.name ) != nameToIndex.end() ) {
 							return Reject( "joint `" + jd.name + "` is declared more than once" );
@@ -5917,6 +6075,22 @@ namespace RISE
 							char buf[64];
 							std::snprintf( buf, sizeof(buf), "%g", jd.r );
 							return Reject( "joint `" + jd.name + "`: radius (" + buf + ") must be > 0" );
+						}
+						// `aspect` is a RATIO, so 0 (a zero-thickness bone with
+						// no surface) and a negative (a mirrored bone) are both
+						// meaningless rather than merely extreme -- refused,
+						// naming the joint, the same shape as the radius check
+						// directly above.  Non-finite is already impossible
+						// here (AllTokensAreFiniteNumbers rejects nan/inf
+						// spellings upstream), but the `> 0` test is written in
+						// the negated idiom so a NaN that ever reached it would
+						// fail rather than pass.
+						if( !( jd.aspect > 0.0 ) ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%g", jd.aspect );
+							return Reject( "joint `" + jd.name + "`: aspect (" + buf + ") must be > 0 "
+								"-- it is the bone cross-section's width-to-depth RATIO (1 = a round "
+								"bone, 0.6 = a thigh), not a thickness" );
 						}
 						if( jd.parentIndex >= 0 ) {
 							const JointDecl& par = joints[jd.parentIndex];
@@ -5949,6 +6123,12 @@ namespace RISE
 					// log.
 					unsigned int degenerateBoneCount = 0;
 					static const unsigned int kMaxNamedDegenerateBones = 3;
+					// Same first-N-then-summary discipline for the one OTHER
+					// non-rejecting diagnostic this chunk owns: an `aspect`
+					// declared where nothing can consume it (see the emission
+					// loop's `else if` below).
+					unsigned int inertAspectCount = 0;
+					static const unsigned int kMaxNamedInertAspects = 3;
 
 					std::string parts;
 					for( std::size_t i = 0; i < joints.size(); ++i ) {
@@ -5988,17 +6168,24 @@ namespace RISE
 								}
 								degenerateBoneCount++;
 							}
-							double exDeg = 0.0, eyDeg = 0.0;
-							DirectionToEulerDeg( dx/len, dy/len, dz/len, exDeg, eyDeg );
+							double exDeg = 0.0, eyDeg = 0.0, ezDeg = 0.0;
+							DirectionToEulerDeg( dx/len, dy/len, dz/len, exDeg, eyDeg, ezDeg );
 							const double k = blend * std::min( par.r, j.r );
-							if( !AllFiniteD( { exDeg, eyDeg, k } ) ) {
+							if( !AllFiniteD( { exDeg, eyDeg, ezDeg, k } ) ) {
 								return Reject( "joint `" + par.name + "` -> `" + j.name +
 									"`: a synthesized bone value is not finite (blend * radius "
 									"or the direction-to-Euler conversion overflowed) -- reduce "
 									"`blend` or the joint radii" );
 							}
+							// `j.aspect`, not the parent's: a joint's aspect
+							// shapes the bone that ARRIVES at it (struct
+							// comment, "A JOINT'S ASPECT SHAPES THE BONE THAT
+							// ARRIVES AT IT").  ezDeg is nonzero only in the
+							// near-vertical band (DirectionToEulerDeg's
+							// comment) -- everywhere else this is the same
+							// literal 0.0 it always was.
 							parts += PartLine( "roundcone", k, par.x, par.y, par.z,
-								exDeg, eyDeg, 0.0, par.r, j.r, len );
+								exDeg, eyDeg, ezDeg, j.aspect, par.r, j.r, len );
 							parts += "\n";
 						} else if( childCount[i] == 0 ) {
 							const double k = blend * j.r;
@@ -6007,11 +6194,35 @@ namespace RISE
 									"`: the synthesized sphere blend width (blend * radius) is "
 									"not finite -- reduce `blend` or the joint radius" );
 							}
-							parts += PartLine( "sphere", k, j.x, j.y, j.z, 0.0, 0.0, 0.0, j.r, 0.0, 0.0 );
+							parts += PartLine( "sphere", k, j.x, j.y, j.z, 0.0, 0.0, 0.0, j.aspect, j.r, 0.0, 0.0 );
 							parts += "\n";
 						}
 						// else: root with children -- no part of its own (the
 						// struct-level comment explains why none is needed).
+						// Which is exactly why its `aspect` has nothing to
+						// shape: no bone ARRIVES at a root, and it emits no
+						// sphere either.  Say so rather than dropping the token
+						// in silence -- warn-not-reject, matching the
+						// degenerate-bone diagnostic above, because the
+						// geometry the author asked for is still perfectly
+						// well-defined.
+						else if( j.aspect != 1.0 ) {
+							if( inertAspectCount < kMaxNamedInertAspects ) {
+								GlobalLog()->PrintEx( eLog_Warning,
+									"skeleton_geometry `%s`: joint `%s` declares aspect %g, which shapes "
+									"NOTHING -- `%s` is a root WITH children, so no bone arrives at it and "
+									"it emits no part of its own. A joint's aspect shapes the bone that "
+									"arrives at it FROM its parent, so move this aspect onto the child "
+									"joint(s) the bone(s) run TO",
+									name.c_str(), j.name.c_str(), j.aspect, j.name.c_str() );
+							}
+							inertAspectCount++;
+						}
+					}
+					if( inertAspectCount > kMaxNamedInertAspects ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"skeleton_geometry `%s`: ...and %u more joints whose `aspect` shapes nothing",
+							name.c_str(), inertAspectCount - kMaxNamedInertAspects );
 					}
 					if( degenerateBoneCount > kMaxNamedDegenerateBones ) {
 						GlobalLog()->PrintEx( eLog_Warning,
@@ -6026,11 +6237,11 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "skeleton_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "A JOINT GRAPH that expands into ONE sdf_geometry: a roundcone per bone (parent -> child), smin-blended -- creature flesh authored the way an animator thinks (joints and bones), not sdf_geometry's raw part-line grammar. Each `joint` line is `<name> <parent|none> <x> <y> <z> <radius>`; every joint but a root must name an ALREADY-DECLARED joint as `parent` (declare-before-use), which is exactly what makes a parent cycle structurally impossible. A bone's end caps ARE its two joints -- the roundcone's spherical caps sit exactly at the parent's and child's positions with exactly their radii -- so joints need NO separate sphere of their own; the one exception is a joint with neither parent nor children (otherwise invisible), which gets a `sphere` part instead. `blend` multiplies min(parent radius, child radius) to give each bone's smin blend width (0 = hard union, visible creases at every joint). Registers under this chunk's OWN `name`, exactly like a hand-authored sdf_geometry. COST: parts = bones + isolated joints, NOT one part per joint -- each bone (parent -> child edge) expands to one roundcone part, each parentless childless joint expands to one sphere part, and a joint with children contributes no part of its own (its caps are supplied by its outgoing bone(s)), and Map() is O(parts) per sphere-trace step with no acceleration structure over parts -- a skeleton is a render-time budget, not a free abstraction; a hand-authored sdf_geometry typically has a handful of parts, a skeleton invites 30-70.";
+						cd.description = "A JOINT GRAPH that expands into ONE sdf_geometry: a roundcone per bone (parent -> child), smin-blended -- creature flesh authored the way an animator thinks (joints and bones), not sdf_geometry's raw part-line grammar. Each `joint` line is `<name> <parent|none> <x> <y> <z> <radius> [aspect]`; every joint but a root must name an ALREADY-DECLARED joint as `parent` (declare-before-use), which is exactly what makes a parent cycle structurally impossible. A BONE NEED NOT BE A PIPE: the optional `aspect` is the bone cross-section's width-to-depth ratio, so a limb can be a FLATTENED strap rather than the tube one-radius-per-joint would otherwise force -- a thigh is aspect 0.6, a fin-arm 0.35, a wing-arm 1.0. A bone's end caps ARE its two joints -- the roundcone's spherical caps sit exactly at the parent's and child's positions with exactly their radii -- so joints need NO separate sphere of their own; the one exception is a joint with neither parent nor children (otherwise invisible), which gets a `sphere` part instead. `blend` multiplies min(parent radius, child radius) to give each bone's smin blend width (0 = hard union, visible creases at every joint). Registers under this chunk's OWN `name`, exactly like a hand-authored sdf_geometry. COST: parts = bones + isolated joints, NOT one part per joint -- each bone (parent -> child edge) expands to one roundcone part, each parentless childless joint expands to one sphere part, and a joint with children contributes no part of its own (its caps are supplied by its outgoing bone(s)), and Map() is O(parts) per sphere-trace step with no acceleration structure over parts -- a skeleton is a render-time budget, not a free abstraction; a hand-authored sdf_geometry typically has a handful of parts, a skeleton invites 30-70.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "joint"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
-						  p.description = "One joint (repeatable; at least one required): `<name> <parent|none> <x> <y> <z> <radius>`. `parent` is `none` for a root, or the name of a joint declared on an EARLIER `joint` line -- forward references and unknown names are both rejected, and this ordering is what makes a cycle impossible. `radius` must be > 0, and a non-root joint may not sit exactly on top of its parent (a zero-length bone has no direction)"; }
+						  p.description = "One joint (repeatable; at least one required): `<name> <parent|none> <x> <y> <z> <radius> [aspect]`. `parent` is `none` for a root, or the name of a joint declared on an EARLIER `joint` line -- forward references and unknown names are both rejected, and this ordering is what makes a cycle impossible. `radius` must be > 0, and a non-root joint may not sit exactly on top of its parent (a zero-length bone has no direction). OPTIONAL `aspect` (> 0, default 1 = a round bone) is the cross-section's WIDTH-to-DEPTH ratio: it NARROWS the bone SIDE-TO-SIDE in the horizontal plane, leaving `radius` exact across the perpendicular that lies in the vertical plane containing the bone (a vertical bone with aspect 0.5 is half as wide along X as along Z), and it never makes a bone THICKER than its radius. A joint's aspect shapes the bone that ARRIVES at it from its parent -- there is no inheritance, so set it per joint along a chain, and on a root WITH children it shapes nothing and is warned about. A bone leaning less than ~0.6 degrees off vertical flattens along world X, same as one that is exactly vertical (near that threshold the flatten axis stays endpoint-exact via a different construction than the exactly-vertical case, but the effect an author sees is identical). An isolated joint (no parent, no children) flattens its `sphere` part along world X unconditionally, the same canonical choice, since no bone direction exists to derive an axis from. Flatten a thigh to ~0.6, a fin or paddle-limb to ~0.35; a very small aspect wants a larger `maxsteps`"; }
 						{ auto& p = P(); p.name = "blend"; p.kind = ValueKind::Double;
 						  p.description = "Multiplier (unit-free) on min(parent radius, child radius) giving each bone's smin blend width in world units. 0 = hard union (visible creases at every joint); must be >= 0"; p.defaultValueHint = "0.35"; }
 						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt; p.description = "Sphere-trace step cap, passed through to the expanded sdf_geometry"; p.defaultValueHint = "256"; }
