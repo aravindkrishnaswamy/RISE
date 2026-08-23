@@ -267,7 +267,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::array<std::size_t,3> reconstructionLowerEndpointProjectionCount={{0u,0u,0u}},
 				reconstructionUpperEndpointProjectionCount={{0u,0u,0u}},
 				reconstructionLowOrderLowerInfeasibleCount={{0u,0u,0u}},
-				reconstructionLowOrderUpperInfeasibleCount={{0u,0u,0u}};
+				reconstructionLowOrderUpperInfeasibleCount={{0u,0u,0u}},
+				reconstructionValidatedFaceCount={{0u,0u,0u}},
+				reconstructionValidatedPassCellCount={{0u,0u,0u}};
 			std::array<std::size_t,3> allLowOrderFirstPass={{5u,5u,5u}},
 				allLowOrderFirstLine={{0u,0u,0u}},allLowOrderFirstDonor={{0u,0u,0u}},
 				allLowOrderFirstCell={{0u,0u,0u}};
@@ -278,7 +280,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				allLowOrderGeneration={{0.0,0.0,0.0}},
 				allLowOrderBeginningDeviation={{0.0,0.0,0.0}},
 				allLowOrderTerminalDeviation={{0.0,0.0,0.0}},
-				allLowOrderMaximumEndpointWidth={{0.0,0.0,0.0}},
 				allLowOrderMaximumEndpointExcursion={{0.0,0.0,0.0}},
 				allLowOrderMaximumEnergyLedgerResidual={{0.0,0.0,0.0}},
 				allLowOrderMaximumEnergyLedgerRelative={{0.0,0.0,0.0}};
@@ -289,6 +290,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				greedyAtAllLowOrderFirstDonorDigest;
 			std::array<double,3> greedyAtAllLowOrderFirstTemperature={{0.0,0.0,0.0}};
 			std::array<double,3> firstWitnessPriorPassMolarMinimum={{0.0,0.0,0.0}},
+				firstWitnessPriorPassMolarError={{0.0,0.0,0.0}},
 				firstWitnessThermochemistryMolarMaximum={{0.0,0.0,0.0}};
 			std::array<std::size_t,3> allLowOrderMaximumExcursionPass={{5u,5u,5u}},
 				allLowOrderMaximumExcursionLine={{0u,0u,0u}},
@@ -355,7 +357,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				std::vector<float> allLowOrderTransported=transported,
 					allLowOrderEnergy=energy;
 				std::vector<double> firstPassMolarMinimum(cells,
-					std::numeric_limits<double>::infinity());
+					std::numeric_limits<double>::infinity()),firstPassMolarError(cells,0.0);
 				std::array<double,MethaneSpeciesCount> lowerEndpointEnthalpy,
 					upperEndpointEnthalpy;
 				if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
@@ -509,43 +511,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 							fuel.AcceptedStateFeasibilityEnvelope(),
 							FireStateProducerPrecision::Binary32)*AcceptedStateEnergyScale(
 								donorState,lowerEndpointEnthalpy,upperEndpointEnthalpy);
-						// Independent sufficient inside bound.  For every certified segment,
-						// bound |Cp| by the absolute coefficient polynomial over the accepted
-						// interval, then sum with absolute constituent densities.  Unlike the
-						// retired Cp-lower quotient, tolerance/Cp_upper proves that the entire
-						// endpoint ambiguity is contained by r60.
-						double donorCpUpper=0.0;
-						for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
-							const FireThermochemistrySpecies* record=fuel.FindSpecies(
-								fuel.SpeciesOrder()[species].c_str());if(!record)return 225;
-							double speciesUpper=0.0;
-							for(const FireThermochemistrySegment& segment:record->segments){
-								if(segment.temperatureMaxK<fuel.TemperatureMinK()||
-									segment.temperatureMinK>fuel.TemperatureMaxK())continue;
-								const double boundedLower=std::max(fuel.TemperatureMinK(),
-									segment.temperatureMinK),boundedUpper=std::min(
-										fuel.TemperatureMaxK(),segment.temperatureMaxK);
-								double absolutePolynomial=std::fabs(segment.coefficients[0])/
-									(boundedLower*boundedLower)+std::fabs(segment.coefficients[1])/
-										boundedLower+std::fabs(segment.coefficients[2]);
-								double power=boundedUpper;
-								for(std::size_t coefficient=3u;coefficient<7u;++coefficient){
-									absolutePolynomial+=std::fabs(segment.coefficients[coefficient])*power;
-									power*=boundedUpper;}
-								speciesUpper=std::max(speciesUpper,absolutePolynomial*
-									8314.46261815324/record->molecularWeightKGPerKMol);}
-							if(!(speciesUpper>0.0)||!std::isfinite(speciesUpper))return 225;
-							donorCpUpper+=std::fabs(donorState[species+1u])*speciesUpper;}
-						if(!(donorCpUpper>0.0)||!std::isfinite(donorCpUpper))return 225;
-						const double endpointTemperatureWidth=endpointTolerance/donorCpUpper;
-						const bool outsideEndpointEnvelope=
-							donorTemperature<fuel.TemperatureMinK()-endpointTemperatureWidth||
-							donorTemperature>fuel.TemperatureMaxK()+endpointTemperatureWidth;
+						std::size_t donorX=0u,donorY=0u,donorZ=0u;
+						coordinates(axis,line,donor,donorX,donorY,donorZ);
+						const std::size_t donorCell=cellIndex(donorX,donorY,donorZ);
+						const double thermochemistryMolarMaximum=(fuel.ThermodynamicPressurePa()/
+							8314.46261815324)/fuel.TemperatureMinK();
+						const double priorPassCertifiedMolarMinimum=pass==1u?
+							firstPassMolarMinimum[donorCell]-firstPassMolarError[donorCell]:0.0;
+						const bool coupledThermochemistryUnavailable=!ambientDonor&&pass==1u&&
+							donorTemperature<fuel.TemperatureMinK()&&
+							priorPassCertifiedMolarMinimum>thermochemistryMolarMaximum;
 						if(!ambientDonor&&(donorTemperature<fuel.TemperatureMinK()||
 							donorTemperature>fuel.TemperatureMaxK())){
 							++allLowOrderEndpointProjectionCount[level];
-							allLowOrderMaximumEndpointWidth[level]=std::max(
-								allLowOrderMaximumEndpointWidth[level],endpointTemperatureWidth);
 							const double endpointExcursion=donorTemperature<fuel.TemperatureMinK()?
 								fuel.TemperatureMinK()-donorTemperature:
 									donorTemperature-fuel.TemperatureMaxK();
@@ -561,17 +539,20 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 									FireProductionDyadicCalibration::AppendInteger(donorBytes,bits);}
 								allLowOrderMaximumExcursionDigest[level]=
 									RISECBOR64::SHA256Hex(donorBytes);}}
-						if(!ambientDonor&&outsideEndpointEnvelope&&
+						if(coupledThermochemistryUnavailable&&
 							allLowOrderFirstPass[level]==5u){
 							allLowOrderFirstPass[level]=pass;allLowOrderFirstLine[level]=line;
 							allLowOrderFirstDonor[level]=donor;
-							std::size_t x=0u,y=0u,z=0u;coordinates(axis,line,donor,x,y,z);
-							allLowOrderFirstCell[level]=cellIndex(x,y,z);
-							if(pass==1u){firstWitnessPriorPassMolarMinimum[level]=
-								firstPassMolarMinimum[allLowOrderFirstCell[level]];
-								firstWitnessThermochemistryMolarMaximum[level]=
-									(fuel.ThermodynamicPressurePa()/8314.46261815324)/
-										fuel.TemperatureMinK();}
+							allLowOrderFirstCell[level]=donorCell;
+							firstWitnessPriorPassMolarMinimum[level]=priorPassCertifiedMolarMinimum;
+							firstWitnessPriorPassMolarError[level]=firstPassMolarError[donorCell];
+							firstWitnessThermochemistryMolarMaximum[level]=
+								thermochemistryMolarMaximum;
+							std::array<double,MethaneSpeciesCount> unavailableEnthalpy;
+							std::string domainError;
+							if(fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(donorTemperature,
+								unavailableEnthalpy.data(),unavailableEnthalpy.size(),&domainError)||
+								domainError!="methane thermochemistry lookup is out of domain")return 225;
 							allLowOrderFirstTemperature[level]=donorTemperature;
 							allLowOrderFirstEnergy[level]=donorState[MethaneMassStateDimension];
 							allLowOrderFirstLowerEnergy[level]=lowerEnergy;
@@ -584,11 +565,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 							allLowOrderFirstDonorDigest[level]=RISECBOR64::SHA256Hex(firstDonorBytes);
 							std::fprintf(stderr,"MANIFOLD_ALL_LOW_ORDER_WITNESS level=%zu pass=%u "
 								"line=%zu donor=%zu cell=%zu temperature=%.17g energy=%.17g "
-								"lower_energy=%.17g tolerance=%.17g cp_upper=%.17g width_K=%.17g\n",
+								"lower_energy=%.17g tolerance=%.17g certified_molar_min=%.17g "
+								"molar_error=%.17g thermo_molar_max=%.17g domain_rejected=1\n",
 								level,pass,line,
 								donor,allLowOrderFirstCell[level],donorTemperature,
 								donorState[MethaneMassStateDimension],
-								lowerEnergy,endpointTolerance,donorCpUpper,endpointTemperatureWidth);}
+								lowerEnergy,endpointTolerance,priorPassCertifiedMolarMinimum,
+								firstPassMolarError[donorCell],thermochemistryMolarMaximum);}
 						std::array<double,MethaneSpeciesCount> donorEnthalpy;
 						if(donorTemperature<=fuel.TemperatureMinK())
 							donorEnthalpy=lowerEndpointEnthalpy;
@@ -698,10 +681,25 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 								lineRequest.cellWidthM;
 							const double leftCoefficient=(leftHighMolar-leftLowMolar)/
 								lineRequest.cellWidthM,rightCoefficient=-(rightHighMolar-rightLowMolar)/
-									lineRequest.cellWidthM;
+								lineRequest.cellWidthM;
 							std::size_t x=0u,y=0u,z=0u;coordinates(axis,line,coordinate,x,y,z);
-							firstPassMolarMinimum[cellIndex(x,y,z)]=lowUpdated+
-								std::min(0.0,leftCoefficient)+std::min(0.0,rightCoefficient);}
+							const std::size_t cell=cellIndex(x,y,z);
+							firstPassMolarMinimum[cell]=lowUpdated+
+								std::min(0.0,leftCoefficient)+std::min(0.0,rightCoefficient);
+							// Each face flux is affine between its already-rounded low and
+							// production-high values.  Releasing the two adjacent face alphas
+							// independently over [0,1]^2 is therefore a superset of every
+							// shared-alpha or backtracked choice.  gamma_128 bounds more than
+							// the executed products, sums, differences, and divisions; max(1)
+							// makes the absolute rounding allowance conservative in KMol/m^3.
+							const double epsilon=std::numeric_limits<double>::epsilon();
+							const double gamma128=128.0*epsilon/(1.0-128.0*epsilon);
+							const double arithmeticScale=std::max(1.0,
+								std::fabs(beginningMolar)+std::fabs(leftLowMolar)+
+								std::fabs(rightLowMolar)+std::fabs(leftHighMolar)+
+								std::fabs(rightHighMolar)+std::fabs(lowUpdated)+
+								std::fabs(leftCoefficient)+std::fabs(rightCoefficient));
+							firstPassMolarError[cell]=gamma128*arithmeticScale;}
 					const double molarDensityMinimum=fuel.ThermodynamicPressurePa()/
 						(8314.46261815324*fuel.TemperatureMaxK());
 					const double molarDensityMaximum=fuel.ThermodynamicPressurePa()/
@@ -859,6 +857,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						double fluxEnergy=0.0;for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
 							fluxEnergy+=lineResult.faceFluxes[((species+1u)*lines+line)*
 								(length+1u)+face]*enthalpy[species];
+						ConservativeVector faceState{};
+						for(std::size_t component=0u;component<8u;++component)
+							faceState[component]=lineResult.faceFluxes[(component*lines+line)*
+								(length+1u)+face]/sweptLength;
+						faceState[MethaneMassStateDimension]=fluxEnergy/sweptLength;
+						std::string faceError;
+						if(!AcceptedStateAdmissible(faceState,lowerEndpointEnthalpy,
+							upperEndpointEnthalpy,fuel,FireStateProducerPrecision::Binary32,
+							&faceError)){std::fprintf(stderr,"MANIFOLD_RECONSTRUCTION_FACE_REJECTED "
+								"level=%zu pass=%u line=%zu face=%zu temperature=%.17g: %s\n",
+								level,pass,line,face,temperature,faceError.c_str());return 225;}
+						++reconstructionValidatedFaceCount[level];
 						energyFlux[fluxBase]=static_cast<float>(fluxEnergy);}
 					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,
 						energyFlux.size());
@@ -880,6 +890,17 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						for(std::size_t component=0u;component<8u;++component)
 							transported[component*cells+cell]=lineResult.updatedValues[
 								(component*lines+line)*length+coordinate];}
+					for(std::size_t cell=0u;cell<cells;++cell){ConservativeVector passState{};
+						for(std::size_t component=0u;component<8u;++component)
+							passState[component]=transported[component*cells+cell];
+						passState[MethaneMassStateDimension]=nextEnergy[cell];
+						std::string passError;
+						if(!AcceptedStateAdmissible(passState,lowerEndpointEnthalpy,
+							upperEndpointEnthalpy,fuel,FireStateProducerPrecision::Binary32,
+							&passError)){std::fprintf(stderr,"MANIFOLD_RECONSTRUCTION_PASS_REJECTED "
+								"level=%zu pass=%u cell=%zu: %s\n",level,pass,cell,
+								passError.c_str());return 225;}
+						++reconstructionValidatedPassCellCount[level];}
 					double energyAfter=0.0;for(const float value:nextEnergy)energyAfter+=value;
 					const double ledgerResidual=std::fabs(energyAfter-(energyBefore-
 						boundaryFluxDifference/sweepRequest.cellTransport.shape.cellWidthM));
@@ -972,6 +993,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"maximum_lower_endpoint_projection=%.17g "
 				"maximum_upper_endpoint_projection=%.17g "
 				"low_order_lower_infeasible=%zu low_order_upper_infeasible=%zu "
+				"validated_faces=%zu validated_pass_cells=%zu "
 				"maximum_low_order_lower_excursion=%.17g "
 				"maximum_low_order_upper_excursion=%.17g "
 				"field_digest=%s production_digest=%s trace_digest=%s "
@@ -989,6 +1011,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionMaximumUpperEndpointProjection[level],
 				reconstructionLowOrderLowerInfeasibleCount[level],
 				reconstructionLowOrderUpperInfeasibleCount[level],
+				reconstructionValidatedFaceCount[level],
+				reconstructionValidatedPassCellCount[level],
 				reconstructionMaximumLowOrderLowerExcursion[level],
 				reconstructionMaximumLowOrderUpperExcursion[level],
 				reconstructionFieldDigest[level].c_str(),
@@ -997,19 +1021,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				deviceMS[level],wallMS[level]);
 			for(std::size_t level=0u;level<3u;++level)std::fprintf(stderr,
 				"MANIFOLD_ALL_LOW_ORDER level=%zu G=%.17g cell=%zu beginning=%.17g "
-				"terminal=%.17g endpoint_projections=%zu max_endpoint_width_K=%.17g "
+				"terminal=%.17g endpoint_projections=%zu "
 				"max_endpoint_excursion_K=%.17g energy_ledger_residual=%.17g "
 				"energy_ledger_relative=%.17g first_outside_pass=%zu "
 				"first_line=%zu first_donor=%zu first_temperature=%.17g first_digest=%s "
 				"greedy_first_temperature=%.17g greedy_first_digest=%s "
-				"prior_pass_molar_minimum=%.17g thermo_molar_maximum=%.17g "
+				"prior_pass_certified_molar_minimum=%.17g prior_pass_molar_error=%.17g "
+				"thermo_molar_maximum=%.17g "
 				"max_pass=%zu max_line=%zu max_donor=%zu max_donor_digest=%s greedy_max_pass=%zu "
 				"greedy_max_line=%zu greedy_max_donor=%zu greedy_max_donor_digest=%s "
 				"field_digest=%s\n",
 				level,allLowOrderGeneration[level],allLowOrderCell[level],
 				allLowOrderBeginningDeviation[level],allLowOrderTerminalDeviation[level],
 				allLowOrderEndpointProjectionCount[level],
-				allLowOrderMaximumEndpointWidth[level],
 				allLowOrderMaximumEndpointExcursion[level],
 				allLowOrderMaximumEnergyLedgerResidual[level],
 				allLowOrderMaximumEnergyLedgerRelative[level],allLowOrderFirstPass[level],
@@ -1018,6 +1042,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				greedyAtAllLowOrderFirstTemperature[level],
 				greedyAtAllLowOrderFirstDonorDigest[level].c_str(),
 				firstWitnessPriorPassMolarMinimum[level],
+				firstWitnessPriorPassMolarError[level],
 				firstWitnessThermochemistryMolarMaximum[level],
 				allLowOrderMaximumExcursionPass[level],allLowOrderMaximumExcursionLine[level],
 				allLowOrderMaximumExcursionDonor[level],
@@ -1046,9 +1071,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				allLowOrderEndpointProjectionCount[0]==2532883u&&
 				allLowOrderEndpointProjectionCount[1]==2585162u&&
 				allLowOrderEndpointProjectionCount[2]==2665212u&&
-				allLowOrderMaximumEndpointWidth[0]==0.066785397545347666&&
-				allLowOrderMaximumEndpointWidth[1]==0.066785282778669144&&
-				allLowOrderMaximumEndpointWidth[2]==0.066785243235899308&&
 				allLowOrderMaximumEndpointExcursion[0]==0.3536001375753699&&
 				allLowOrderMaximumEndpointExcursion[1]==0.17615370759477855&&
 				allLowOrderMaximumEndpointExcursion[2]==0.087340369030073362&&
@@ -1059,16 +1081,17 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				allLowOrderMaximumEnergyLedgerRelative[1]==6.7554416725572504e-11&&
 				allLowOrderMaximumEnergyLedgerRelative[2]==1.4158011510440571e-10&&
 				allLowOrderFirstPass[0]==1u&&allLowOrderFirstPass[1]==1u&&
-				allLowOrderFirstPass[2]==3u&&
-				allLowOrderFirstLine[0]==29u&&allLowOrderFirstDonor[0]==42u&&
-				allLowOrderFirstCell[0]==3641u&&
-				allLowOrderFirstTemperature[0]==299.92254298172884&&
-				allLowOrderFirstTolerance[0]==846.02990852642051&&
+				allLowOrderFirstPass[2]==1u&&
+				allLowOrderFirstLine[0]==0u&&allLowOrderFirstDonor[0]==0u&&
+				allLowOrderFirstCell[0]==0u&&
+				allLowOrderFirstTemperature[0]==299.99999426911722&&
+				allLowOrderFirstTolerance[0]==845.8114886122496&&
 				allLowOrderFirstDonorDigest[0]==
-					"2ac03ae9d4937f86861cc0a5e8c5620c6a166dd189c7a3f35d6d266fcc0346d3"&&
-				greedyAtAllLowOrderFirstTemperature[0]==299.92254298172884&&
+					"5a48fa156dedcef3aea0d60c0fdfd0144e6354cdd3ea342cd12200378266659a"&&
+				greedyAtAllLowOrderFirstTemperature[0]==299.99999426911722&&
 				greedyAtAllLowOrderFirstDonorDigest[0]==allLowOrderFirstDonorDigest[0]&&
-				firstWitnessPriorPassMolarMinimum[0]==0.040632479709723168&&
+				firstWitnessPriorPassMolarMinimum[0]==0.040621989116021835&&
+				firstWitnessPriorPassMolarError[0]==2.8421709430404815e-14&&
 				firstWitnessThermochemistryMolarMaximum[0]==0.040621987915680717&&
 				allLowOrderMaximumExcursionPass[0]==4u&&
 				allLowOrderMaximumExcursionLine[0]==9337u&&
@@ -1118,6 +1141,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionLowOrderUpperInfeasibleCount[0]==0u&&
 				reconstructionLowOrderUpperInfeasibleCount[1]==0u&&
 				reconstructionLowOrderUpperInfeasibleCount[2]==0u&&
+				reconstructionValidatedFaceCount[0]==4926768u&&
+				reconstructionValidatedFaceCount[1]==4926768u&&
+				reconstructionValidatedFaceCount[2]==4926768u&&
+				reconstructionValidatedPassCellCount[0]==4881360u&&
+				reconstructionValidatedPassCellCount[1]==4881360u&&
+				reconstructionValidatedPassCellCount[2]==4881360u&&
 				reconstructionMaximumLowOrderLowerExcursion[0]==0.3536001375753699&&
 				reconstructionMaximumLowOrderLowerExcursion[1]==0.17615370759477855&&
 				reconstructionMaximumLowOrderLowerExcursion[2]==0.087340369030073362&&

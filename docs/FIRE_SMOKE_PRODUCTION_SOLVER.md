@@ -3371,7 +3371,7 @@ historical evidence is in
 
 ### 7.55p Coupled-alpha thermochemistry obstruction (r156)
 
-r156 derives a sufficient endpoint width with an independent `Cp_upper`: for
+r156 is retired by r157.  It derived a sufficient endpoint width with an independent `Cp_upper`: for
 each certified thermochemistry segment it sums the absolute coefficient
 polynomial over `[Tmin,Tmax]`, converts by `R/M`, and then sums with absolute
 constituent densities.  The maximum sufficient widths are only
@@ -3413,6 +3413,54 @@ arithmetic is unchanged.  Fresh residency confirmation remains
 25 s.  Exact evidence is in
 `rendered/fire_production_calibration/r156_coupled_alpha_thermochemistry_stop/`
 `coupled_alpha_thermochemistry_evidence.v1`; the golden checkpoint is unchanged.
+
+### 7.55q r60-admissible reconstruction capacity stop (r157)
+
+Fresh review found that r156 used a valid sufficient-inclusion width in the
+wrong direction: `deltaT > tolerance/Cp_upper` is inconclusive, not exclusion.
+r157 makes no endpoint-exclusion claim and no Cp quotient is load-bearing.
+
+The retained exact-`245` topology is the ruled conservative reconstruction:
+`n*T=P/R` is reset before each directional pass, one alpha is shared across
+the transported tuple, and energy changes only through face-flux divergence.
+Where exact fixed-pressure temperature is outside the authoritative
+thermochemistry domain, the precision-boundary completion uses the certified
+endpoint enthalpy; no thermochemistry extrapolation occurs.  This is the r59
+admissible-interval principle applied at the r60 precision boundary, not a
+post-step repair.  Every nonzero reconstructed face and every cell after each
+of the five pass boundaries is checked with the single Binary32 r60 predicate:
+`4,926,768` face validations and `4,881,360` pass-cell validations at each of
+CFL, CFL/2, and CFL/4.  The conservative ledger, field hashes, and limiter-plus-
+energy trace hashes remain exact-bound.
+
+The exact-manifold branch remains separately fail-closed.  Pass-0 face fluxes
+are affine between the already-rounded low and production-high fluxes.  The
+diagnostic releases the left and right alpha independently over `[0,1]^2`, a
+superset of every shared-alpha/backtracked choice, and subtracts a `gamma_128`
+rounding allowance.  At the bound witness the certified lower molar density is
+`0.040621989116021835 kmol/m3`, still above
+`P/(R*Tmin)=0.040621987915680717 kmol/m3`; the implied
+`299.99999426911722 K` enthalpy lookup must return the exact authoritative
+out-of-domain error.  This proves only the constitutive-domain boundary; it is
+not presented as r60 exclusion.
+
+The implemented r60-admissible reconstruction yields field-max G of
+`2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+`2.5068855498342479e-3`, unchanged within the exact pins and still
+`3.3770759518x` the `7.5e-4` CFL allowance.  Physical- and restoration-
+projection G remain exactly zero, so the anomaly-aware target branch does not
+apply.  The pre-registered automatic rule therefore reaches a contract-level
+choice among a certified thermochemistry extension, a different reconstruction
+scheme, an explicitly ruled non-exact policy, or a separately derived
+production ceiling.  No ceiling is widened here.  Production arithmetic is
+unchanged; long shadow, golden `B_fp32`, guard supersession, temporal
+refinement, readmission, source maps, and first light remain blocked.
+
+The fresh resident timing observation is `66.0780417 ms` device and
+`197.288084 ms` completed wall, satisfying the `75/200 ms` gates and projecting
+`28.8746/86.2105 h` for tier-10 x 25 s.  Exact evidence is
+`rendered/fire_production_calibration/r157_r60_reconstruction_capacity_stop/`
+`r60_reconstruction_capacity_evidence.v1`; the golden checkpoint is unchanged.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 

@@ -950,20 +950,52 @@ int main()
 			"endpoint_projected_counterfactual_G_over_allowance 3.3770759517686897")!=
 			std::string::npos&&
 		coupledAlphaEvidence.find("endpoint_projected_counterfactual_admitted false")!=
+			std::string::npos,
+		"r156 historical Cp-upper inference remains byte-bound");
+	const std::string r60ReconstructionEvidence=ReadText(
+		"rendered/fire_production_calibration/r157_r60_reconstruction_capacity_stop/"
+		"r60_reconstruction_capacity_evidence.v1");
+	Check(!r60ReconstructionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(r60ReconstructionEvidence.begin(),
+			r60ReconstructionEvidence.end()))==
+		"41911ceb0e5a6f899fcf1e3e48d9a3ca04fb6adf1876ae3595b3c1516eb841ad"&&
+		r60ReconstructionEvidence.find("r156_Cp_upper_converse_rejected true")!=
+			std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"r60_endpoint_policy precision_envelope_completion_not_exact_out_of_domain_thermochemistry")!=
+			std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"reconstruction_validated_faces_level_0 4926768")!=std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"reconstruction_validated_pass_cells_level_0 4881360")!=std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"prior_pass_certified_molar_minimum_KMol_per_m3 0.040621989116021835")!=
+			std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"prior_pass_molar_roundoff_error_KMol_per_m3 2.8421709430404815e-14")!=
+			std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"reconstruction_G_over_allowance 3.3770759517686897")!=std::string::npos&&
+		r60ReconstructionEvidence.find(
+			"verdict r60_admissible_reconstruction_remedy_fails_plateau_contract_level_ceiling_or_thermochemistry_ruling_required")!=
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"b2dd402258f1814bd165fcddfd8f4e811fa8b7d75325af7c6d768c0ff3bab1ff"&&
-		goldenCompositionFixture.find("absolutePolynomial=std::fabs(")!=std::string::npos&&
-		goldenCompositionFixture.find("firstPassMolarMinimum[cellIndex(x,y,z)]")!=
+			"f6323200cd287b6419baa715aafba38e5bf2b9527ee73eb2d6e42cb220979872"&&
+		goldenCompositionFixture.find("const double gamma128=128.0*epsilon/")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
-			"firstWitnessPriorPassMolarMinimum[0]==0.040632479709723168")!=
+			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("MANIFOLD_RECONSTRUCTION_FACE_REJECTED")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("MANIFOLD_RECONSTRUCTION_PASS_REJECTED")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
-			"greedyAtAllLowOrderFirstDonorDigest[0]==allLowOrderFirstDonorDigest[0]")!=
-			std::string::npos,
-		"r156 binds the coupled-alpha thermochemistry obstruction");
+			"reconstructionValidatedFaceCount[0]==4926768u")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"reconstructionValidatedPassCellCount[0]==4881360u")!=std::string::npos,
+		"r157 binds the r60-admissible reconstruction capacity stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

@@ -3619,8 +3619,8 @@ it was already tried and refuted here.
   proof direction: `tolerance/Cp_lower` is a necessary outside bound, not a
   sufficient inside bound.  Its SHA-bound fields and ledgers remain historical
   diagnostics only.
-- **r156 coupled-alpha thermochemistry stop (2026-08-23):** the endpoint width
-  is now sufficient, using an independent absolute-polynomial `Cp_upper` over
+- **r156 coupled-alpha thermochemistry stop (2026-08-23):** retired by r157.
+  The endpoint width used an independent absolute-polynomial `Cp_upper` over
   every certified segment.  Maximum widths are
   `0.06678539755/0.06678528278/0.06678524324 K`; the all-alpha-zero shadow first
   exceeds them in passes `1/1/3` at CFL/CFL/2/CFL/4.
@@ -3646,3 +3646,38 @@ it was already tried and refuted here.
   stays blocked.  Exact evidence is
   `r156_coupled_alpha_thermochemistry_stop/coupled_alpha_thermochemistry_evidence.v1`;
   golden remains byte-identical.
+- **r157 r60 reconstruction/capacity stop (2026-08-23):** fresh review rejects
+  r156's final implication: `tolerance/Cp_upper` is a sufficient inclusion
+  width, but exceeding it is inconclusive and cannot prove exclusion.  No Cp
+  quotient is load-bearing in r157.
+
+  The corrected exact-`245` trial implements the ruled reconstruction with
+  fixed `n*T=P/R`, one shared alpha, conservative face-energy fluxes, and the
+  r60 precision-boundary completion: an out-of-domain face uses the certified
+  endpoint enthalpy rather than extrapolated thermochemistry.  Every one of
+  `4,926,768` nonzero swept faces and all `4,881,360` intermediate cells after
+  the five pass boundaries validate under the authoritative Binary32 r60
+  predicate, independently at each of CFL/CFL/2/CFL/4.  Field and trace hashes
+  plus the energy ledger prevent bypass.
+
+  The exact-manifold alternative is separately fail-closed.  An independently
+  released two-face alpha rectangle is a superset of the shared-alpha history;
+  with a `gamma_128` outward arithmetic allowance its certified molar minimum
+  is `0.040621989116021835 kmol/m3`, above
+  `P/(R*Tmin)=0.040621987915680717 kmol/m3`.  The resulting
+  `299.99999426911722 K` lookup is required to fail with the authoritative
+  out-of-domain diagnostic.  This is a thermochemistry-domain observation,
+  not an r60 exclusion claim.
+
+  The fully r60-admissible endpoint completion nevertheless leaves field-max G
+  at `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+  `2.5068855498342479e-3`; CFL is `3.3770759518x` the `7.5e-4` allowance.
+  Physical- and restoration-projection G remain exactly zero, so the
+  anomaly-aware branch is inapplicable.  Under the pre-registered automatic
+  rule the reconstruction remedy has now been executed and fails, reaching
+  the production-ceiling/thermochemistry contract boundary.  This is a stop,
+  not a ceiling derivation or widening: production stays unchanged and later
+  milestones remain blocked.  Fresh timing is `66.0780417/197.288084 ms`
+  device/wall, projecting `28.8746/86.2105 h` at tier-10 x 25 s.  Durable
+  evidence is `r157_r60_reconstruction_capacity_stop/`
+  `r60_reconstruction_capacity_evidence.v1`; golden remains byte-identical.
