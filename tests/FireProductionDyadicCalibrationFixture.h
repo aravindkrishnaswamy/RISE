@@ -1611,6 +1611,16 @@ namespace FireProductionDyadicCalibration
 			state.lastAcceptedStepS!=0.0||
 			!state.values.acceptedTimeStepHistoryS.empty()||
 			state.productionManifoldObservation.Available())return false;
+		else {
+			if(state.dimensions[0u]%BaseDimensions[0u]!=0u)return false;
+			const std::size_t tier=state.dimensions[0u]/BaseDimensions[0u];
+			if(tier==0u||tier>std::numeric_limits<unsigned int>::max()||
+				state.dimensions[1u]!=BaseDimensions[1u]*tier||
+				state.dimensions[2u]!=BaseDimensions[2u]*tier)return false;
+			MethaneRunCheckpoint canonicalBeginning;
+			if(!BuildAnalyticState(static_cast<unsigned int>(tier),canonicalBeginning,error)||
+				AnalyticStateDigest(state)!=AnalyticStateDigest(canonicalBeginning))return false;
+		}
 		const double representedCellWidth=static_cast<double>(static_cast<float>(state.cellWidthM));
 		return RISE::SelectFireProductionStableTimeStep(representedCellWidth,
 			0.5*representedCellWidth/baseStep,0.0,0.0,previousStep,
@@ -1881,13 +1891,35 @@ namespace FireProductionDyadicCalibration
 						loadedCoordinatedClear,error);
 				{std::error_code ignored;
 					std::filesystem::remove(coordinatedClearCheckpoint,ignored);}
+				MethaneRunCheckpoint retaggedClear=coordinatedClear;
+				for(MethaneCellState& cell:retaggedClear.states)
+					cell.producerPrecision=RISE::FireStateProducerPrecision::Binary64;
+				RISE::FireProductionStableTimeStep retaggedClearSelection;
+				const bool retaggedClearOwnerRejected=!SelectProductionTimeStepForState(
+					retaggedClear,baseStep,retaggedClearSelection,error);
+				const bool retaggedClearWriterRejected=!SaveMethaneRunCheckpoint(
+					coordinatedClearCheckpoint,retaggedClear,error)&&
+					!std::filesystem::exists(coordinatedClearCheckpoint);
+				forceMalformedManifoldLifecycleWriteForTest=true;
+				const bool retaggedClearWritten=SaveMethaneRunCheckpoint(
+					coordinatedClearCheckpoint,retaggedClear,error);
+				forceMalformedManifoldLifecycleWriteForTest=false;
+				MethaneRunCheckpoint loadedRetaggedClear;
+				const bool retaggedClearLoaderRejected=retaggedClearWritten&&
+					!LoadMethaneRunCheckpoint(coordinatedClearCheckpoint,
+						loadedRetaggedClear,error);
+				{std::error_code ignored;
+					std::filesystem::remove(coordinatedClearCheckpoint,ignored);}
 				authorityMutationREDsPassed=authorityMutationREDsPassed&&
 					lostObservationRejected&&coordinatedClearRejected&&
-					coordinatedClearOwnerRejected&&coordinatedClearLoaderRejected;
+					coordinatedClearOwnerRejected&&coordinatedClearLoaderRejected&&
+					retaggedClearOwnerRejected&&retaggedClearWriterRejected&&
+					retaggedClearLoaderRejected;
 				if(!lostObservationRejected)std::fprintf(stderr,
 					"r148 lost accepted observation aliased to a first step\n");
 				if(!(coordinatedClearRejected&&coordinatedClearOwnerRejected&&
-					coordinatedClearLoaderRejected))std::fprintf(stderr,
+					coordinatedClearLoaderRejected&&retaggedClearOwnerRejected&&
+					retaggedClearWriterRejected&&retaggedClearLoaderRejected))std::fprintf(stderr,
 					"r148 coordinated accepted metadata clear aliased to a first step\n");
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
 				MethaneRunCheckpoint transplanted=state;

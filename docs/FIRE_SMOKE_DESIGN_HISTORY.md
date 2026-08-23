@@ -3421,8 +3421,8 @@ it was already tried and refuted here.
   also consumes the current state view and derives its digest internally; no caller-
   supplied digest scalar can preserve stale authority.  Accepted history exactly
   reconstructs simulation time.  The first step is owned by the Binary64 analytic
-  beginning; an unaccepted Binary32 state is not persistable, so coordinated clearing
-  of observation/count/time/history cannot relabel accepted bytes as a first step.  The
+  beginning; no zero-step state is persistable, so coordinated clearing of
+  observation/count/time/history cannot relabel accepted bytes as a first step.  The
   prefix checksum is deliberately described only as integrity evidence, not a
   keyed authenticator.  A transplanted observation, accepted-history/zero-dt
   alias, temperature/velocity transplant, cleared-observation owner alias,
@@ -3431,7 +3431,10 @@ it was already tried and refuted here.
   The live owner itself requires homogeneous Binary64 when accepted count is zero;
   the coordinated-clear RED reaches that exact selector helper as well as v12 writer
   and checksum-valid loader paths.  Legacy Binary32 formats 9--11 reject symmetrically
-  at writer and loader, with accepted and all-zero writer cases bound separately.
+  at writer and loader, with accepted and all-zero cases bound separately on both sides.
+  Retagging the cleared accepted state Binary64 also REDs: the live owner rebuilds
+  the inferred tier's analytic beginning and byte-identifies it, while writer and
+  checksum-valid loader reject every zero-step checkpoint independent of precision.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real

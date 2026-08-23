@@ -3085,9 +3085,9 @@ view and recomputes its digest; it never accepts a caller-supplied digest scalar
 The lifecycle invariants are now explicit.  A Binary32 checkpoint with accepted
 history must carry an available observation whose timestep equals both stored
 accepted-step fields and the history tail; count equals history length and the
-history duration exactly reconstructs simulation time.  An unaccepted Binary32
-state is not a legal checkpoint class: production begins from its Binary64 analytic
-owner and only an accepted, state-bound Binary32 result may persist.  Formats
+history duration exactly reconstructs simulation time.  A zero-step state in any
+precision is not a legal checkpoint class: production begins in memory from the
+byte-identified Binary64 analytic owner, and only an accepted result may persist.  Formats
 9--11 cannot resume any Binary32 production state; they remain available to
 ordinary Binary64/oracle runs.
 REDs reject an accepted-history/zero-timestep first-step alias on both writer and
@@ -3098,8 +3098,10 @@ only an accepted state's observation, changing a non-tail history term, or chang
 simulation time all fail at the owning selector/writer and checksum-valid loader.
 Coordinated clearing of observation, count, time, and history also rejects because
 it cannot reclassify accepted Binary32 bytes as an initial checkpoint: the live
-owner requires homogeneous Binary64 at step zero, and both the v12 writer and a
-checksum-valid v12 loader mutation reject the cleared Binary32 state.  Both sides
+owner rebuilds the inferred tier's canonical analytic state and requires an exact
+state digest match at step zero.  Retagging the cleared accepted bytes Binary64
+therefore also rejects.  Both the v12 writer and checksum-valid v12 loader reject
+every zero-step state regardless precision.  Both sides
 also reject Binary32 formats 9--11, rather than publishing an unloadable legacy file.
 
 The other missing behavioral boundary is also executable rather than inferred.

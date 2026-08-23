@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"348b375ccd45b4f21a3c0793dd64c313cdeb9a4fff0b5893ce9083d3a99fceb6"&&
+		"6e28cbba2e9d1334f256d00b7413914f6b0a6d13c77f7b1a341b358e589418f0"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -543,7 +543,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"c5d710bcdc2dab167cedb863f9e7e9ddc943309e490534b47f6fda84c1e0058e"&&
+		"76e2f3f6bd4f1a7cf52fa55241b92575b65398366472508a7ac6f6eedce2c75e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -555,7 +555,7 @@ int main()
 		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"023b535922fd046694266bc02f58288be04b183ad92d273826c8207e9069f2e7"&&
+		"ab0918c0e7293c68ebbcd5f20ede02e96b79bee098e9353e21ba22faf934d80a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -606,6 +606,14 @@ int main()
 		manifoldClosure.find("legacy_binary32_v9_v10_v11_writer_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("legacy_binary32_zero_count_v9_v10_v11_writer_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("legacy_binary32_all_zero_v9_v10_v11_loader_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("zero_step_checkpoint_forbidden_all_precisions true")!=
+			std::string::npos&&
+		manifoldClosure.find("first_step_owner_requires_canonical_analytic_state true")!=
+			std::string::npos&&
+		manifoldClosure.find("retagged_coordinated_clear_owner_writer_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_temperature_transplant_writer_rejected true")!=
 			std::string::npos&&
