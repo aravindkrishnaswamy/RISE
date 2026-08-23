@@ -3265,6 +3265,44 @@ down from `262.3922081 h`.  Exact evidence is
 `rendered/fire_production_calibration/r151_accepted_map_reconstruction_stop/`
 `accepted_map_reconstruction_evidence.v1`; the golden checkpoint is unchanged.
 
+### 7.55l Conservative face reconstruction (r152)
+
+The r151 fixed-composition energy replacement is not an admissible production
+remedy: it changes a cell-average primary ledger after remap.  It also cannot
+exclude an EOS-projected face reconstruction whose shared alpha and output
+composition differ.  r152 retains that observation only as a diagnostic and
+executes the legal topology instead.
+
+The reconstruction tuple contains `rhoZ`, all seven constituent densities, and
+`n*T=P/R`.  The existing strict-binary32 remap applies one continuous shared
+alpha to all nine quantities.  For every swept face slug, the trial computes
+`n_flux=sum_(CH4..CO) F_i/M_i`, `T_face=F_(nT)/n_flux`, and
+`F_E=sum_i F_i*h_i(T_face)`.  The cell-average sensible-energy ledger is then
+updated only as `E_new=E_old-(F_E,right-F_E,left)/dx`.  This is a conservative
+face-flux reconstruction through the existing x/2,y/2,z,y/2,x/2 palindrome:
+there is no post-remap state repair, while the common limiter and monotonicity
+discipline remain intact.  Because energy is replaced by `n*T` in the limited
+tuple, both alpha and composition may change relative to production; the trial
+does not assume the old off-manifold topology.
+
+The resulting G maxima are `2.5328069638265172e-3`,
+`2.5155729299433105e-3`, and `2.5068855498342479e-3` at CFL, CFL/2, and CFL/4.
+Thus the admissible reconstruction provides no reduction and remains
+`3.3770759518x` above the `7.5e-4` allowance at CFL.  Cell 3227 moves from
+`-1.1871614802316799e-12` to `-2.5328069650136786e-3`.  Since both projection
+scalar contributions are still zero, the restoration-anomaly branch does not
+apply.  The pre-registered decision rule now reaches the contract-level
+production-ceiling stop on a legal conservative topology.  Production is not
+changed and long shadow, `B_fp32`, guard supersession, temporal refinement,
+readmission, source maps, and first light remain blocked.
+
+r151's completed-call timing correction remains binding: device `<=75 ms`,
+wall `<=200 ms`, with observed `66.366791725158691/199.188458 ms` and an
+`87.0407538 h` tier-10 x 25 s wall projection.  Exact evidence is
+`rendered/fire_production_calibration/r152_conservative_face_reconstruction_stop/`
+`conservative_face_reconstruction_evidence.v1`; the golden checkpoint is
+unchanged.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

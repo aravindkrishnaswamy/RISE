@@ -255,7 +255,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionBeginningDeviation={{0.0,0.0,0.0}},
 				reconstructionTerminalDeviation={{0.0,0.0,0.0}},
 				deviceMS={{0.0,0.0,0.0}},wallMS={{0.0,0.0,0.0}};
-			std::array<std::array<double,4>,3> reconstructionWitnessCandidateRatio{};
 			std::array<std::size_t,3> reconstructionCell={{0u,0u,0u}};
 			for(std::size_t level=0u;level<3u;++level){
 				const float representedStep=static_cast<float>(dt/std::pow(2.0,level));
@@ -294,62 +293,129 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						(terminalRatio-1.0)-sweepRequest.beginningManifoldDeviationPerCell[cell]));
 				}
 
-				// Retained diagnostic-only execution of the ruled remap remedy.  The
-				// real strict-binary32 remap transports the production shared-alpha
-				// tuple; sensible energy is selected from the adjacent binary32 values
-				// bracketing V=1 under the actual r60 accepted-volume map.  No alternate
-				// reconstruction is reachable from the production Metal owner until this
-				// trial is admitted.
-				RISE::FireProductionCellPalindromeRequest reconstruction=
-					sweepRequest.cellTransport;
-				RISE::FireProductionCellPalindromeResult reconstructionResult;
-				if(!RISE::RemapFireProductionCellPalindromeCPU(reconstruction,
-					reconstructionResult,&error)||reconstructionResult.executedSubmapCount!=5u||
-					reconstructionResult.conservativeValues.size()!=9u*cells){std::fprintf(stderr,
-					"MANIFOLD_RECONSTRUCTION level=%zu remap failed: %s\n",level,error.c_str());
-					return 225;}
+				// Retained diagnostic-only execution of the ruled conservative remedy.
+				// The transported tuple replaces energy with n*T.  One shared alpha
+				// limits rhoZ, all seven constituents, and n*T; the energy ledger is
+				// updated only by face fluxes rebuilt from each swept slug's composition
+				// and temperature.  No cell-average repair occurs.
+				std::vector<float> reconstructed=sweepRequest.cellTransport.conservativeValues;
+				std::vector<float> transported(9u*cells),energy(cells);
+				const float manifoldNT=static_cast<float>(fuel.ThermodynamicPressurePa()/
+					8314.46261815324);
+				for(std::size_t cell=0u;cell<cells;++cell){
+					for(std::size_t component=0u;component<8u;++component)
+						transported[component*cells+cell]=reconstructed[component*cells+cell];
+					transported[8u*cells+cell]=manifoldNT;
+					energy[cell]=reconstructed[8u*cells+cell];
+				}
+				std::array<float,9> transportedAmbient{};
+				for(std::size_t component=0u;component<8u;++component)
+					transportedAmbient[component]=sweepRequest.cellTransport.ambientValues[component];
+				transportedAmbient[8]=manifoldNT;
+				auto axisExtent=[&](unsigned int axis){return axis==0u?
+					sweepRequest.cellTransport.shape.nx:(axis==1u?
+						sweepRequest.cellTransport.shape.ny:sweepRequest.cellTransport.shape.nz);};
+				auto axisLines=[&](unsigned int axis){return axis==0u?
+					sweepRequest.cellTransport.shape.ny*sweepRequest.cellTransport.shape.nz:
+					(axis==1u?sweepRequest.cellTransport.shape.nx*
+						sweepRequest.cellTransport.shape.nz:sweepRequest.cellTransport.shape.nx*
+							sweepRequest.cellTransport.shape.ny);};
+				auto coordinates=[&](unsigned int axis,std::size_t line,std::size_t coordinate,
+					std::size_t& x,std::size_t& y,std::size_t& z){
+					if(axis==0u){x=coordinate;y=line%sweepRequest.cellTransport.shape.ny;
+						z=line/sweepRequest.cellTransport.shape.ny;return;}
+					if(axis==1u){x=line%sweepRequest.cellTransport.shape.nx;y=coordinate;
+						z=line/sweepRequest.cellTransport.shape.nx;return;}
+					x=line%sweepRequest.cellTransport.shape.nx;
+					y=line/sweepRequest.cellTransport.shape.nx;z=coordinate;};
+				auto cellIndex=[&](std::size_t x,std::size_t y,std::size_t z){return
+					(z*sweepRequest.cellTransport.shape.ny+y)*
+						sweepRequest.cellTransport.shape.nx+x;};
+				const unsigned int axes[]={0u,1u,2u,1u,0u};
+				const float steps[]={0.5f*representedStep,0.5f*representedStep,
+					representedStep,0.5f*representedStep,0.5f*representedStep};
+				for(unsigned int pass=0u;pass<5u;++pass){
+					const unsigned int axis=axes[pass];const std::size_t length=axisExtent(axis),
+						lines=axisLines(axis);
+					RISE::FireProductionRemapRequest lineRequest;lineRequest.lineLength=length;
+					lineRequest.lineCount=lines;lineRequest.componentCount=9u;
+					lineRequest.cellWidthM=sweepRequest.cellTransport.shape.cellWidthM;
+					lineRequest.timeStepS=steps[pass];lineRequest.asymmetricBoundaries=true;
+					auto remapBoundary=[](RISE::FireProductionProjectionBoundary value){return
+						value==RISE::FireProductionProjectionPeriodic?RISE::FireProductionRemapPeriodic:
+							(value==RISE::FireProductionProjectionPressureOpen?
+								RISE::FireProductionRemapPressureOpen:
+								RISE::FireProductionRemapWall);};
+					lineRequest.lowerBoundary=remapBoundary(
+						sweepRequest.cellTransport.boundary[2u*axis]);
+					lineRequest.upperBoundary=remapBoundary(
+						sweepRequest.cellTransport.boundary[2u*axis+1u]);
+					lineRequest.ambientValues.assign(transportedAmbient.begin(),transportedAmbient.end());
+					lineRequest.values.resize(9u*lines*length);
+					lineRequest.faceVelocityMPerS.resize(lines*(length+1u));
+					for(std::size_t line=0u;line<lines;++line){
+						for(std::size_t face=0u;face<=length;++face){std::size_t x=0u,y=0u,z=0u;
+							coordinates(axis,line,face,x,y,z);std::size_t faceIndex=0u;
+							if(axis==0u)faceIndex=(z*sweepRequest.cellTransport.shape.ny+y)*
+								(sweepRequest.cellTransport.shape.nx+1u)+x;
+							else if(axis==1u)faceIndex=(z*(sweepRequest.cellTransport.shape.ny+1u)+y)*
+								sweepRequest.cellTransport.shape.nx+x;
+							else faceIndex=(z*sweepRequest.cellTransport.shape.ny+y)*
+								sweepRequest.cellTransport.shape.nx+x;
+							lineRequest.faceVelocityMPerS[line*(length+1u)+face]=
+								sweepRequest.cellTransport.frozenVelocityMPerS[axis][faceIndex];}
+						for(std::size_t coordinate=0u;coordinate<length;++coordinate){
+							std::size_t x=0u,y=0u,z=0u;coordinates(axis,line,coordinate,x,y,z);
+							const std::size_t cell=cellIndex(x,y,z);
+							for(std::size_t component=0u;component<9u;++component)
+								lineRequest.values[(component*lines+line)*length+coordinate]=
+									transported[component*cells+cell];}}
+					RISE::FireProductionRemapResult lineResult;
+					if(!RISE::RemapFireProductionCPU(lineRequest,lineResult,&error))return 225;
+					std::vector<float> energyFlux(lines*(length+1u),0.0f),nextEnergy=energy;
+					for(std::size_t line=0u;line<lines;++line)for(std::size_t face=0u;face<=length;++face){
+						const std::size_t fluxBase=line*(length+1u)+face;
+						double molarFlux=0.0;
+						for(std::size_t species=0u;species<MethaneCarbon;++species){
+							const FireThermochemistrySpecies* record=fuel.FindSpecies(
+								fuel.SpeciesOrder()[species].c_str());if(!record)return 225;
+							molarFlux+=lineResult.faceFluxes[((species+1u)*lines+line)*
+								(length+1u)+face]/record->molecularWeightKGPerKMol;}
+						const double qFlux=lineResult.faceFluxes[(8u*lines+line)*(length+1u)+face];
+						if(molarFlux==0.0&&qFlux==0.0)continue;
+						if(molarFlux==0.0)return 225;
+						const double temperature=std::max(fuel.TemperatureMinK(),std::min(
+							fuel.TemperatureMaxK(),qFlux/molarFlux));
+						std::array<double,MethaneSpeciesCount> enthalpy;
+						if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(temperature,
+							enthalpy.data(),enthalpy.size(),&error))return 225;
+						double fluxEnergy=0.0;for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+							fluxEnergy+=lineResult.faceFluxes[((species+1u)*lines+line)*
+								(length+1u)+face]*enthalpy[species];
+						energyFlux[fluxBase]=static_cast<float>(fluxEnergy);}
+					for(std::size_t line=0u;line<lines;++line)for(std::size_t coordinate=0u;
+						coordinate<length;++coordinate){std::size_t x=0u,y=0u,z=0u;
+						coordinates(axis,line,coordinate,x,y,z);const std::size_t cell=cellIndex(x,y,z);
+						nextEnergy[cell]=energy[cell]-(energyFlux[line*(length+1u)+coordinate+1u]-
+							energyFlux[line*(length+1u)+coordinate])/
+								sweepRequest.cellTransport.shape.cellWidthM;
+						for(std::size_t component=0u;component<9u;++component)
+							transported[component*cells+cell]=lineResult.updatedValues[
+								(component*lines+line)*length+coordinate];}
+					energy.swap(nextEnergy);
+				}
+				for(std::size_t cell=0u;cell<cells;++cell){
+					for(std::size_t component=0u;component<8u;++component)
+						reconstructed[component*cells+cell]=transported[component*cells+cell];
+					reconstructed[8u*cells+cell]=energy[cell];
+				}
 				for(std::size_t cell=0u;cell<cells;++cell){
 					ConservativeVector rebuilt{};
-					for(std::size_t component=0u;component<8u;++component)
+					for(std::size_t component=0u;component<9u;++component)
 						rebuilt[component]=static_cast<double>(
-							reconstructionResult.conservativeValues[component*cells+cell]);
-					MethaneCellState rebuiltState=FromConservativeVector(
-						rebuilt,FireStateProducerPrecision::Binary32);
-					double lowerEnergy=0.0,upperEnergy=0.0;
-					if(!SignedMixtureSensibleEnergy(rebuiltState,fuel.TemperatureMinK(),fuel,
-						lowerEnergy,&error)||!SignedMixtureSensibleEnergy(rebuiltState,
-							fuel.TemperatureMaxK(),fuel,upperEnergy,&error))return 225;
-					float lowerCandidate=static_cast<float>(lowerEnergy),
-						upperCandidate=static_cast<float>(upperEnergy);
-					for(unsigned int iteration=0u;iteration<96u;++iteration){
-						const float midpoint=static_cast<float>(0.5*(static_cast<double>(
-							lowerCandidate)+static_cast<double>(upperCandidate)));
-						if(midpoint==lowerCandidate||midpoint==upperCandidate)break;
-						rebuilt[8]=static_cast<double>(midpoint);double midpointRatio=0.0;
-						if(!AcceptedConservativeVolumeRatio(rebuilt,fuel,
-							FireStateProducerPrecision::Binary32,midpointRatio,&error))return 225;
-						if(midpointRatio<1.0)lowerCandidate=midpoint;else upperCandidate=midpoint;
-					}
-					const std::array<float,4> candidateEnergy={{
-						std::nextafter(lowerCandidate,-std::numeric_limits<float>::infinity()),
-						lowerCandidate,upperCandidate,
-						std::nextafter(upperCandidate,std::numeric_limits<float>::infinity())}};
-					double rebuiltRatio=0.0,bestDeviation=std::numeric_limits<double>::infinity();
-					std::array<double,4> candidateRatios{};
-					for(std::size_t candidate=0u;candidate<candidateEnergy.size();++candidate){
-						const float energy=candidateEnergy[candidate];
-						rebuilt[8]=static_cast<double>(energy);double candidateRatio=0.0;
-						std::string candidateError;
-						if(!AcceptedConservativeVolumeRatio(rebuilt,fuel,
-							FireStateProducerPrecision::Binary32,candidateRatio,&candidateError))continue;
-						candidateRatios[candidate]=candidateRatio;
-						const double candidateDeviation=std::fabs(candidateRatio-1.0);
-						if(candidateDeviation<bestDeviation){bestDeviation=candidateDeviation;
-							rebuiltRatio=candidateRatio;}
-					}
-					if(!std::isfinite(bestDeviation)){std::fprintf(stderr,
-						"MANIFOLD_RECONSTRUCTION level=%zu cell=%zu ratio failed\n",level,cell);
-						return 225;}
+							reconstructed[component*cells+cell]);
+					double rebuiltRatio=0.0;if(!AcceptedConservativeVolumeRatio(rebuilt,fuel,
+						FireStateProducerPrecision::Binary32,rebuiltRatio,&error))return 225;
 					const double reconstructionDelta=std::fabs((rebuiltRatio-1.0)-
 						sweepRequest.beginningManifoldDeviationPerCell[cell]);
 					if(reconstructionDelta>reconstructionGeneration[level]){
@@ -358,7 +424,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						reconstructionBeginningDeviation[level]=
 							sweepRequest.beginningManifoldDeviationPerCell[cell];
 						reconstructionTerminalDeviation[level]=rebuiltRatio-1.0;
-						reconstructionWitnessCandidateRatio[level]=candidateRatios;
 					}
 				}
 			}
@@ -371,16 +436,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"MANIFOLD_STAGE_BUDGET level=%zu dt=%.17g remap=%.17g physical=%.17g "
 				"restoration=%.17g independent=%.17g reconstruction=%.17g "
 				"reconstruction_cell=%zu reconstruction_beginning=%.17g "
-				"reconstruction_terminal=%.17g candidates=(%.17g,%.17g,%.17g,%.17g) "
-				"device_ms=%.17g wall_ms=%.17g\n",level,
+				"reconstruction_terminal=%.17g device_ms=%.17g wall_ms=%.17g\n",level,
 				dt/std::pow(2.0,level),stageGeneration[level][0],stageGeneration[level][1],
 				stageGeneration[level][2],independentGeneration[level],
 				reconstructionGeneration[level],reconstructionCell[level],
 				reconstructionBeginningDeviation[level],reconstructionTerminalDeviation[level],
-				reconstructionWitnessCandidateRatio[level][0],
-				reconstructionWitnessCandidateRatio[level][1],
-				reconstructionWitnessCandidateRatio[level][2],
-				reconstructionWitnessCandidateRatio[level][3],
 				deviceMS[level],wallMS[level]);
 			std::fprintf(stderr,"MANIFOLD_STAGE_BUDGET exponent remap=(%.17g,%.17g) "
 				"physical=(%.17g,%.17g) restoration=(%.17g,%.17g) golden=%d\n",
@@ -393,17 +453,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				independentGeneration[0]==0.0025328069638265172&&
 				independentGeneration[1]==0.0025155729299433105&&
 				independentGeneration[2]==0.0025068855498342479&&
-				reconstructionGeneration[0]==0.001302156695613399&&
-				reconstructionGeneration[1]==0.0012866699325340125&&
-				reconstructionGeneration[2]==0.0012788512525973017&&
-				reconstructionCell[0]==3478u&&reconstructionCell[1]==3478u&&
-				reconstructionCell[2]==3478u&&
-				reconstructionBeginningDeviation[0]==3.0191404931656507e-12&&
-				reconstructionTerminalDeviation[0]==-0.0013021566925942585&&
-				reconstructionWitnessCandidateRatio[0][0]==0.99869784330740574&&
-				reconstructionWitnessCandidateRatio[0][1]==0.99869784330740574&&
-				reconstructionWitnessCandidateRatio[0][2]==1.0014969001088954&&
-				reconstructionWitnessCandidateRatio[0][3]==1.0014969002762644&&
+				reconstructionGeneration[0]==0.0025328069638265172&&
+				reconstructionGeneration[1]==0.0025155729299433105&&
+				reconstructionGeneration[2]==0.0025068855498342479&&
+				reconstructionCell[0]==3227u&&reconstructionCell[1]==3227u&&
+				reconstructionCell[2]==3227u&&
+				reconstructionBeginningDeviation[0]==-1.1871614802316799e-12&&
+				reconstructionTerminalDeviation[0]==-0.0025328069650136786&&
 				exponent[0][0]==0.0098454605227652776&&
 				exponent[1][0]==0.0050337970393511964;
 			return remapDecision&&DigestFile(checkpointPath)==checkpointDigest?245:226;

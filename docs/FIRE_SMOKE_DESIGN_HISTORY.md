@@ -3551,3 +3551,32 @@ it was already tried and refuted here.
   device-only), versus the prior `262.3922 h`.  Durable evidence is
   `r151_accepted_map_reconstruction_stop/accepted_map_reconstruction_evidence.v1`;
   the golden checkpoint remains byte-identical.
+- **r152 conservative face-reconstruction stop (2026-08-23):** fresh boundary
+  review correctly rejects r151's post-remap energy substitution as a primary-
+  ledger repair.  Its fixed-composition representability result is retained as
+  a diagnostic but cannot decide the ruled reconstruction branch.  The
+  replacement exact-`245` trial moves the intervention to the conservative
+  reconstruction/flux seam.  Its single shared-alpha tuple is `rhoZ`, the
+  seven constituents, and `n*T=P/R`; each swept slug obtains
+  `T_face=F_(nT)/sum_i(F_i/M_i)`, and the energy flux is
+  `sum_i F_i*h_i(T_face)`.  Cell energy changes only by the right-minus-left
+  face-flux divergence through all five palindrome passes.  Therefore shared-
+  alpha, transported-variable monotonicity, and the energy inventory ledger
+  are preserved; no cell-average repair exists in the trial.  Alpha and
+  composition are explicitly free to differ from the baseline.
+
+  The legal reconstruction produces CFL/CFL/2/CFL/4 maxima
+  `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+  `2.5068855498342479e-3`: no reduction.  Cell 3227 remains limiting, from
+  beginning deviation `-1.1871614802316799e-12` to terminal deviation
+  `-2.5328069650136786e-3`.  The CFL result is `3.3770759518x` the unchanged
+  `7.5e-4` allowance.  Projection-stage scalar generation remains exactly
+  zero, so the anomaly-aware restoration branch is still inapplicable.  This
+  is the first result that executes the complete r149 remap remedy without
+  crossing the prior no-repair boundary; it therefore supports the requested
+  contract-level production-ceiling stop.  Production remains unchanged and
+  all later contract stages remain blocked.  r151's timing correction remains
+  valid (`<=75 ms` device, `<=200 ms` completed wall; observed
+  `66.3667917/199.188458 ms`).  Durable evidence is
+  `r152_conservative_face_reconstruction_stop/conservative_face_reconstruction_evidence.v1`;
+  golden remains byte-identical.

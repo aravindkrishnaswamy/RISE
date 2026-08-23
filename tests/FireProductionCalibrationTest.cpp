@@ -731,38 +731,58 @@ int main()
 			"parent_r150_evidence_sha256 eade8e7ab31a71bfb51f75445b03ea5f25822c8b715ba82cb05521d78a7031de")!=
 			std::string::npos&&
 		acceptedMapReconstructionEvidence.find(
-			"reconstruction_G_level_0 0.001302156695613399")!=std::string::npos&&
-		acceptedMapReconstructionEvidence.find(
-			"limiting_candidate_ratio_below 0.99869784330740574")!=std::string::npos&&
-		acceptedMapReconstructionEvidence.find(
-			"limiting_candidate_ratio_above 1.0014969001088954")!=std::string::npos&&
-		acceptedMapReconstructionEvidence.find(
-			"best_reconstruction_G_over_allowance 1.736208927484532")!=std::string::npos&&
-		acceptedMapReconstructionEvidence.find(
-			"timing_completed_wall_budget_ms 200")!=std::string::npos&&
-		acceptedMapReconstructionEvidence.find("completed_wall_budget_met true")!=
+			"retired_r150_trial rho_total_times_temperature_is_not_manifold_consistent_when_composition_changes")!=
+			std::string::npos,
+		"r151 historical post-remap repair diagnostic remains byte-bound");
+	const std::string conservativeFaceReconstructionEvidence=ReadText(
+		"rendered/fire_production_calibration/r152_conservative_face_reconstruction_stop/"
+		"conservative_face_reconstruction_evidence.v1");
+	const std::string productionTransportSource=ReadText(
+		"src/Library/Utilities/FireProductionTransport.cpp");
+	Check(!conservativeFaceReconstructionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(conservativeFaceReconstructionEvidence.begin(),
+			conservativeFaceReconstructionEvidence.end()))==
+		"87c1578ba051c022c9b21f961413c28be76cd4ba8de5cf48c5b898ebec7bc1ad"&&
+		conservativeFaceReconstructionEvidence.find(
+			"parent_r151_evidence_sha256 ca28527b85a4da372fdce7776c0d6f1b0d7cfa29c945af94fb2146f2827cc0dc")!=
 			std::string::npos&&
-		acceptedMapReconstructionEvidence.find("requested_wall_target_met false")!=
+		conservativeFaceReconstructionEvidence.find(
+			"reconstruction_trial conservative_EOS_projected_face_flux")!=std::string::npos&&
+		conservativeFaceReconstructionEvidence.find(
+			"post_remap_cell_energy_repair false")!=std::string::npos&&
+		conservativeFaceReconstructionEvidence.find(
+			"energy_inventory_ledger face_flux_conservative")!=std::string::npos&&
+		conservativeFaceReconstructionEvidence.find(
+			"conservative_reconstruction_G_level_0 0.0025328069638265172")!=
 			std::string::npos&&
-		acceptedMapReconstructionEvidence.find(
+		conservativeFaceReconstructionEvidence.find(
+			"conservative_reconstruction_G_over_allowance 3.3770759517686897")!=
+			std::string::npos&&
+		conservativeFaceReconstructionEvidence.find(
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
 			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"11b813bcc513ef16023c4a7ba29420a6213fc6c372c7bfdde71be23a3d182ce6"&&
+			"1e1f1a8223e0b40dc275ad6e26c5f50a4df36348218956ecc9cbb10d7db6d11b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulationRecords.begin(),fireSimulationRecords.end()))==
 			"04d7f0b21ae1e078f125759a2a08d8b82da68c7a2bdc1a1c8b8aff8f4c8ddc96"&&
-		goldenCompositionFixture.find("RemapFireProductionCellPalindromeCPU(reconstruction")!=
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionSource.begin(),advectionSource.end()))==
+			"389eb83c649375ec8649b372bb1db33bb62785d1b6324c6cc29943d21c2bfa58"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			productionTransportSource.begin(),productionTransportSource.end()))==
+			"89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056"&&
+		goldenCompositionFixture.find("transportedAmbient[8]=manifoldNT")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("std::array<float,4> candidateEnergy")!=
+		goldenCompositionFixture.find("energyFlux[fluxBase]=static_cast<float>(fluxEnergy)")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("reconstructionGeneration[0]==0.001302156695613399")!=
+		goldenCompositionFixture.find("reconstructionGeneration[0]==0.0025328069638265172")!=
 			std::string::npos&&
 		goldenCompositionFixture.find("device.back()<=75.0")!=std::string::npos&&
 		goldenCompositionFixture.find("wall.back()<=200.0")!=std::string::npos&&
@@ -778,7 +798,7 @@ int main()
 		unixTestDriver.find("stage_budget_rc\" -eq 245")!=std::string::npos&&
 		unixTestDriver.find("PASS (exact exit=245)")!=std::string::npos&&
 		unixTestDriver.find("expected 245")!=std::string::npos,
-		"r151 binds the accepted-map reconstruction, completed-call budget, and capacity stop");
+		"r152 binds the legal conservative face reconstruction and capacity stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
