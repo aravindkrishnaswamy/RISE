@@ -1598,6 +1598,7 @@ namespace FireProductionDyadicCalibration
 		std::uint64_t currentAcceptedStateDigest=0u;
 		if(state.acceptedSteps>0u){
 			if(statePrecision!=RISE::FireStateProducerPrecision::Binary32||
+				!AcceptedCheckpointTimelineValid(state)||
 				!state.productionManifoldObservation.Available()||
 				!BuildCheckpointAcceptedStatePayload(state,acceptedShape,
 					acceptedConservative,acceptedMomentum,acceptedVelocity,
@@ -2038,9 +2039,13 @@ namespace FireProductionDyadicCalibration
 				std::filesystem::remove(timeAliasCheckpoint,ignored);}
 			MethaneRunCheckpoint historyAlias=state,timeAlias=state;
 			bool historyWriterRejected=false,historyLoaderRejected=false;
+			bool historyOwnerRejected=false,timeOwnerRejected=false;
 			bool timeWriterRejected=false,timeLoaderRejected=false;
 			if(historyAlias.values.acceptedTimeStepHistoryS.size()>=2u){
 				historyAlias.values.acceptedTimeStepHistoryS.front()*=0.5;
+				RISE::FireProductionStableTimeStep ignoredSelection;
+				historyOwnerRejected=!SelectProductionTimeStepForState(
+					historyAlias,baseStep,ignoredSelection,error);
 				historyWriterRejected=!SaveMethaneRunCheckpoint(
 					historyAliasCheckpoint,historyAlias,error);
 				forceMalformedManifoldLifecycleWriteForTest=true;
@@ -2053,6 +2058,9 @@ namespace FireProductionDyadicCalibration
 			}
 			timeAlias.simulationTimeS=std::nextafter(timeAlias.simulationTimeS,
 				std::numeric_limits<double>::infinity());
+			{RISE::FireProductionStableTimeStep ignoredSelection;
+				timeOwnerRejected=!SelectProductionTimeStepForState(
+					timeAlias,baseStep,ignoredSelection,error);}
 			timeWriterRejected=!SaveMethaneRunCheckpoint(timeAliasCheckpoint,timeAlias,error);
 			forceMalformedManifoldLifecycleWriteForTest=true;
 			const bool timeAliasWritten=SaveMethaneRunCheckpoint(
@@ -2064,20 +2072,22 @@ namespace FireProductionDyadicCalibration
 			{std::error_code ignored;std::filesystem::remove(historyAliasCheckpoint,ignored);
 				std::filesystem::remove(timeAliasCheckpoint,ignored);}
 			authorityMutationREDsPassed=authorityMutationREDsPassed&&
-				historyWriterRejected&&historyLoaderRejected&&
-				timeWriterRejected&&timeLoaderRejected;
-			if(!(historyWriterRejected&&historyLoaderRejected&&timeWriterRejected&&
-				timeLoaderRejected)){double historyAliasSum=0.0;
+				historyOwnerRejected&&historyWriterRejected&&historyLoaderRejected&&
+				timeOwnerRejected&&timeWriterRejected&&timeLoaderRejected;
+			if(!(historyOwnerRejected&&historyWriterRejected&&historyLoaderRejected&&
+				timeOwnerRejected&&timeWriterRejected&&timeLoaderRejected)){
+				double historyAliasSum=0.0;
 				for(const double dt:historyAlias.values.acceptedTimeStepHistoryS)historyAliasSum+=dt;
 				RISE::FireStateProducerPrecision aliasPrecision=
 					RISE::FireStateProducerPrecision::Unknown;
 				const bool homogeneous=HomogeneousStateProducerPrecision(
 					historyAlias.states,aliasPrecision);
 				std::fprintf(stderr,
-				"r148 lifecycle alias RED failed history=%d/%d time=%d/%d count=%zu/%llu "
+					"r148 lifecycle alias RED failed history=%d/%d/%d time=%d/%d/%d count=%zu/%llu "
 				"sum=%.17g time=%.17g homogeneous=%d precision=%u error=%s\n",
-				historyWriterRejected?1:0,historyLoaderRejected?1:0,
-				timeWriterRejected?1:0,timeLoaderRejected?1:0,
+					historyOwnerRejected?1:0,historyWriterRejected?1:0,
+					historyLoaderRejected?1:0,timeOwnerRejected?1:0,
+					timeWriterRejected?1:0,timeLoaderRejected?1:0,
 				historyAlias.values.acceptedTimeStepHistoryS.size(),
 				static_cast<unsigned long long>(historyAlias.acceptedSteps),historyAliasSum,
 				historyAlias.simulationTimeS,homogeneous?1:0,

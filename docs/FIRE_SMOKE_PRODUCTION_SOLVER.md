@@ -3105,6 +3105,10 @@ every zero-step state regardless precision.  The v9/v10/v11 all-zero matrix is
 instantiated separately for Binary32 and Binary64 at both writer and checksum-valid
 loader.  Both sides
 also reject Binary32 formats 9--11, rather than publishing an unloadable legacy file.
+The accepted timeline rule is shared by the live selector, writer, and loader.
+Binary64 checkpoint states are re-gated in the Binary64 r60 envelope and must carry
+the canonical reconstructed temperature, so retagging an accepted resident state
+cannot promote it through any v5--v12 checkpoint path.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all

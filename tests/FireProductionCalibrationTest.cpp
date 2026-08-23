@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"f3d83cb2f298df20b41163473b5e6c0a7bda7c147a045e8e13a9c5fdf413786d"&&
+		"c2cb4622e3069aec9f1013ed5e05e7f4eba75604cefa757466619ba8e08d3eff"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -543,7 +543,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"76e2f3f6bd4f1a7cf52fa55241b92575b65398366472508a7ac6f6eedce2c75e"&&
+		"0558fdda70d76e1dcd8ec9324b8ad41bbb0e33c5a00768beb98161598e3eb883"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -555,7 +555,7 @@ int main()
 		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"98541ac1bf569786bc749eab19d217abe88286ac70940ffa715da4184fe07aec"&&
+		"298d7a789dc79f40cd8c498febee55bd528572f553a32a6478a7f666972d0eb7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -632,6 +632,12 @@ int main()
 		manifoldClosure.find("accepted_simulation_time_transplant_writer_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_history_exactly_reconstructs_simulation_time true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_timeline_predicate_shared_owner_writer_loader true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_binary32_promotion_v5_through_v12_writer_loader_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("binary64_checkpoint_state_revalidated_in_binary64_envelope true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_history_count_mismatch_v12_loader_rejected true")!=
 			std::string::npos&&

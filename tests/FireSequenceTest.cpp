@@ -505,6 +505,39 @@ namespace
 		FireProductionAcceptedManifoldObservation productionManifoldObservation;
 	};
 
+	bool AcceptedCheckpointTimelineValid(const MethaneRunCheckpoint& checkpoint)
+	{
+		if(checkpoint.acceptedSteps==0u||
+			checkpoint.values.acceptedTimeStepHistoryS.size()!=checkpoint.acceptedSteps||
+			!std::isfinite(checkpoint.simulationTimeS)||checkpoint.simulationTimeS<=0.0||
+			!std::isfinite(checkpoint.previousStepS)||checkpoint.previousStepS<=0.0||
+			checkpoint.lastAcceptedStepS!=checkpoint.previousStepS||
+			checkpoint.values.acceptedTimeStepHistoryS.empty()||
+			checkpoint.values.acceptedTimeStepHistoryS.back()!=checkpoint.previousStepS)return false;
+		double acceptedDurationS=0.0;
+		for(const double timeStepS:checkpoint.values.acceptedTimeStepHistoryS){
+			if(!std::isfinite(timeStepS)||timeStepS<=0.0)return false;
+			acceptedDurationS+=timeStepS;
+			if(!std::isfinite(acceptedDurationS))return false;
+		}
+		return acceptedDurationS==checkpoint.simulationTimeS;
+	}
+
+	bool Binary64CheckpointStateAdmissible(const MethaneRunCheckpoint& checkpoint)
+	{
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		for(const MethaneCellState& state:checkpoint.states){
+			double reconstructedTemperatureK=0.0;
+			if(state.producerPrecision!=FireStateProducerPrecision::Binary64||
+				!AcceptedMethaneCellStateAdmissible(state,fuel,
+					FireStateProducerPrecision::Binary64)||
+				!InvertMethaneTemperatureWithinAcceptedEnvelope(state,300.0,2300.0,fuel,
+					FireStateProducerPrecision::Binary64,reconstructedTemperatureK)||
+				reconstructedTemperatureK!=state.temperatureK)return false;
+		}
+		return !checkpoint.states.empty();
+	}
+
 	bool suppressExpectedCheckpointStateDiagnostic=false;
 	bool BuildCheckpointAcceptedStatePayload(const MethaneRunCheckpoint& checkpoint,
 		FireProductionProjectionShape& shape,std::vector<float>& conservative,
@@ -662,6 +695,17 @@ namespace
 	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint,
 		const std::uint64_t version)
 	{
+		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+		if(!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
+		if(checkpoint.acceptedSteps==0u&&!forceMalformedManifoldLifecycleWriteForTest)
+			return false;
+		if(checkpoint.acceptedSteps>0u&&
+			(!AcceptedCheckpointTimelineValid(checkpoint)||
+				(precision==FireStateProducerPrecision::Binary64&&
+					!Binary64CheckpointStateAdmissible(checkpoint)))&&
+			!forceMalformedManifoldLifecycleWriteForTest)return false;
+		if(version<12u&&precision==FireStateProducerPrecision::Binary32&&
+			!forceMalformedManifoldLifecycleWriteForTest)return false;
 		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
 		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
 			if(!writer.Pod(encoded))return false;}
@@ -695,16 +739,6 @@ namespace
 			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
 		if(!activeSetWritten)return false;
 		if(version>=8u&&!writer.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
-		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
-		if(version>=9u&&!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
-		if(checkpoint.acceptedSteps==0u&&!forceMalformedManifoldLifecycleWriteForTest)
-			return false;
-		if(version>=9u&&version<12u&&
-			precision==FireStateProducerPrecision::Binary32&&
-			!forceMalformedManifoldLifecycleWriteForTest)return false;
-		if(version>=9u&&precision==FireStateProducerPrecision::Binary32&&
-			checkpoint.acceptedSteps==0u&&!forceMalformedManifoldLifecycleWriteForTest)
-			return false;
 		if(version<10u){
 			if(version==9u&&precision==FireStateProducerPrecision::Binary32&&
 				(checkpoint.acceptedSteps!=0u||checkpoint.simulationTimeS!=0.0||
@@ -717,13 +751,6 @@ namespace
 			checkpoint.productionManifoldObservation;
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
 		const bool acceptedProductionState=productionState&&checkpoint.acceptedSteps>0u;
-		double acceptedDurationS=0.0;
-		bool validAcceptedHistory=true;
-		for(const double timeStepS:checkpoint.values.acceptedTimeStepHistoryS){
-			if(!std::isfinite(timeStepS)||timeStepS<=0.0){validAcceptedHistory=false;break;}
-			acceptedDurationS+=timeStepS;
-			if(!std::isfinite(acceptedDurationS)){validAcceptedHistory=false;break;}
-		}
 		const bool invalidManifoldLifecycle=(observation.Available()&&(!std::isfinite(observation.TimeStepS())||
 			observation.TimeStepS()<=0.0||!std::isfinite(observation.MaximumGeneration())||
 			observation.MaximumGeneration()<0.0||
@@ -741,9 +768,8 @@ namespace
 			(productionState&&checkpoint.acceptedSteps==0u&&
 				(checkpoint.previousStepS!=0.0||checkpoint.lastAcceptedStepS!=0.0||
 				!checkpoint.values.acceptedTimeStepHistoryS.empty()))||
-			(productionState&&(!validAcceptedHistory||
-				checkpoint.values.acceptedTimeStepHistoryS.size()!=checkpoint.acceptedSteps||
-				acceptedDurationS!=checkpoint.simulationTimeS));
+			(productionState&&checkpoint.acceptedSteps>0u&&
+				!AcceptedCheckpointTimelineValid(checkpoint));
 		if(invalidManifoldLifecycle&&!forceMalformedManifoldLifecycleWriteForTest)return false;
 		const unsigned char manifoldAvailable=
 			observation.Available()?1u:0u;
@@ -942,6 +968,11 @@ namespace
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
 		if(decoded.acceptedSteps==0u){
 			error="zero-step checkpoint state is not resumable";return false;}
+		if(!AcceptedCheckpointTimelineValid(decoded)){
+			error="run checkpoint accepted timeline is invalid";return false;}
+		if(precision==FireStateProducerPrecision::Binary64&&
+			!Binary64CheckpointStateAdmissible(decoded)){
+			error="binary64 checkpoint state is not admissible in its producer class";return false;}
 		if(version<12u&&productionState&&(decoded.acceptedSteps>0u||
 			decoded.simulationTimeS!=0.0||decoded.previousStepS!=0.0||
 			decoded.lastAcceptedStepS!=0.0||
@@ -3636,6 +3667,39 @@ int main(int argc,char** argv)
 	legacyAccepted.previousStepS=0.0;legacyAccepted.lastAcceptedStepS=0.0;
 	legacyAccepted.values.acceptedTimeStepHistoryS.push_back(0.001);
 	MethaneRunCheckpoint rejectedLegacy;
+	MethaneRunCheckpoint retaggedAccepted=precisionRoundTrip;
+	for(MethaneCellState& cell:retaggedAccepted.states)
+		cell.producerPrecision=FireStateProducerPrecision::Binary64;
+	retaggedAccepted.acceptedSteps=1u;retaggedAccepted.simulationTimeS=0.001;
+	retaggedAccepted.previousStepS=0.001;retaggedAccepted.lastAcceptedStepS=0.001;
+	retaggedAccepted.values.acceptedTimeStepHistoryS.push_back(0.001);
+	bool acceptedBinary32PromotionRejected=true;
+	for(std::uint64_t version=5u;version<=12u;++version){
+		const std::filesystem::path retaggedAcceptedCheckpoint=checkpointFixture/
+			("retagged_accepted_v"+std::to_string(version)+".checkpoint");
+		{std::error_code ignored;
+			std::filesystem::remove(retaggedAcceptedCheckpoint,ignored);}
+		const bool writerRejected=!SaveMethaneRunCheckpoint(retaggedAcceptedCheckpoint,
+			retaggedAccepted,checkpointFixtureError,version)&&
+			!std::filesystem::exists(retaggedAcceptedCheckpoint);
+		forceMalformedManifoldLifecycleWriteForTest=true;
+		const bool malformedWritten=SaveMethaneRunCheckpoint(retaggedAcceptedCheckpoint,
+			retaggedAccepted,checkpointFixtureError,version);
+		forceMalformedManifoldLifecycleWriteForTest=false;
+		const bool loaderRejected=malformedWritten&&
+			!LoadMethaneRunCheckpoint(retaggedAcceptedCheckpoint,rejectedLegacy,
+				checkpointFixtureError);
+		if(!(writerRejected&&loaderRejected))std::fprintf(stderr,
+			"r148 accepted promotion RED version=%llu writer=%d forced=%d loader=%d error=%s\n",
+			static_cast<unsigned long long>(version),writerRejected?1:0,
+			malformedWritten?1:0,loaderRejected?1:0,checkpointFixtureError.c_str());
+		{std::error_code ignored;
+			std::filesystem::remove(retaggedAcceptedCheckpoint,ignored);}
+		acceptedBinary32PromotionRejected=acceptedBinary32PromotionRejected&&
+			writerRejected&&loaderRejected;
+	}
+	Check(acceptedBinary32PromotionRejected,
+		"r148 accepted binary32 bytes cannot be retagged and promoted through v5-v12 checkpoints");
 	const std::filesystem::path unavailableV12Checkpoint=
 		checkpointFixture/"precision_class_unavailable_v12.checkpoint";
 	const bool unavailableAcceptedV12Rejected=
