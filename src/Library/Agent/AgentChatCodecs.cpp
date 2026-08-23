@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the TWENTY provider-neutral tool definitions -- nineteen are
+//    (1) the THIRTY-THREE provider-neutral tool definitions -- thirty-two are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -1451,6 +1451,41 @@ namespace RISE
 					"ok:false means only that no full-frame production render has completed in "
 					"this session yet.",
 					"{\"type\":\"object\",\"properties\":{},\"required\":[]}"
+				},
+				{
+					// Doc 90 slice R2 (2026-08-23) -- THE WAY BACK, the other
+					// half of the ratchet.  Kept semantically identical to
+					// AgentMcpAdapter.cpp's tools/list entry for the same
+					// drift-class reason set_render_anchor above is.
+					"revert_to_revision",
+					"PUT THE WHOLE DOCUMENT BACK to what it was at an earlier head revision of this "
+					"session. Call it the moment you can see that the scene got worse -- most often "
+					"straight after a render whose anchor pane looks better than the render below "
+					"it, passing the anchor's revision. Every render and every edit result you have "
+					"received carries the head revision it belongs to; those are the numbers this "
+					"takes. WHAT IT DOES: the restore is ONE NEW EDIT producing a NEW head revision "
+					"whose contents equal the old one's. Nothing is rewound and no history is "
+					"rewritten -- the revision you are leaving stays available, so you can revert "
+					"the revert if the older scene turns out to be worse after all, and one undo in "
+					"the app undoes the restore like any other edit. It is a WHOLE-DOCUMENT "
+					"restore: everything goes back together, including chunks you added since. It "
+					"REFUSES, changing nothing, when the revision is the CURRENT head (there is "
+					"nothing to restore), is higher than the head (it does not exist yet), or is "
+					"one this session no longer holds -- it keeps the recent revisions its own "
+					"edits and renders passed through, and a refusal names the oldest one still "
+					"available. Returns {ok,applied,status,headVersion,requestedRevision,"
+					"previousRevision,oldestAvailableRevision,droppedAttributions?,"
+					"restoredAttributions?,message}; `previousRevision` is the "
+					"head you just left, which is the number to pass to undo this restore. Always "
+					"pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"revision\":{\"type\":\"number\",\"description\":"
+						"\"Required. The head revision to restore the document to -- a number this session has already reported to you (a render's anchorRevision, or the headVersion.revision of an earlier edit result). Not the CURRENT head: that one is refused, because there would be nothing to restore.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"revision\"]}"
 				},
 				{
 					"ask_user",

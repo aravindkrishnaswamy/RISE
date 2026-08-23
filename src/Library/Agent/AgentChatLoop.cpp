@@ -440,6 +440,16 @@ namespace RISE
 				       // mutation on the same argument -- one composite document
 				       // swap, one head bump, one undo step, made without looking.
 				       v == "vary_material" ||
+				       // Doc 90 R2 (2026-08-23): ONE revert_to_revision call is
+				       // ONE blind mutation on the same argument -- one composite
+				       // document swap, one head bump, one undo step.  It counts
+				       // even though the model necessarily DID look before making
+				       // it (a revert answers a render it just saw): the streak
+				       // measures edits made since the last look, and a revert is
+				       // an edit like any other -- exempting it would let a model
+				       // revert-and-edit-and-revert its way to an unbounded
+				       // unobserved streak.
+				       v == "revert_to_revision" ||
 				       // S2 (2026-08-11): ONE build_element call is ONE blind
 				       // mutation -- it inserts the whole element's chunks with
 				       // no visual observation in between, exactly like one
@@ -1421,6 +1431,7 @@ namespace RISE
 			//!   4c. name == "replace_geometry_scaffold"   -> "`<target>` -> <geometryKind> (old geometry removed|kept)" (R2: ONE atomic mutation, so an N/M count would misreport it as a best-effort batch)
 			//!   4d. name == "collapse_to_instances"      -> "<n> copies -> `<source>` + instancing[ (<u>x<v> grid)]", or "refused: <=80 chars of message" (88 step 2: a pre-commit refusal carries an EMPTY status, so it cannot reach rule 2)
 			//!   4e. name == "vary_material"              -> "`<material>` <slot(s)> -> `<painter>` (varying)", or "refused: <=80 chars of message" (88 S5: same empty-status-on-refusal shape as 4d)
+			//!   4f. name == "revert_to_revision"         -> "rev <requested> restored as rev <new> (was rev <previous>)", or "refused: <=80 chars of message" (doc 90 R2: same empty-status-on-refusal shape as 4d, and refusing is the COMMON outcome -- every "that is the current head" / "that one has aged out" answer arrives this way)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1567,6 +1578,27 @@ namespace RISE
 					if( slots.empty() ) slots = "roughness";
 					return "`" + result.get( "material" ).asString() + "` " + slots + " -> `" +
 						result.get( "painter" ).asString() + "` (varying)";
+				}
+
+				// 4b-4. Doc 90 R2 (2026-08-23) revert_to_revision: ONE atomic
+				// mutation whose whole meaning is WHICH revisions were involved --
+				// the one restored, the new head it landed as, and the one left
+				// behind (which is what a revert-of-the-revert would name).  Same
+				// empty-status-on-refusal shape as 4b-2, and here the refusals are
+				// the COMMON case, not the exception: "that is already the current
+				// head" and "that revision has aged out" both arrive this way, and
+				// a model reading its own transcript needs to see which.
+				if( call.name == "revert_to_revision" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long want = static_cast<long long>( result.get( "requestedRevision" ).asNumber() );
+					const long long prev = static_cast<long long>( result.get( "previousRevision" ).asNumber() );
+					const JsonValue& hv  = result.get( "headVersion" );
+					const long long now  = hv.isObject()
+						? static_cast<long long>( hv.get( "revision" ).asNumber() ) : 0;
+					return "rev " + std::to_string( want ) + " restored as rev " + std::to_string( now ) +
+						" (was rev " + std::to_string( prev ) + ")";
 				}
 
 				// 4b. R1a (2026-08-09) remove_chunks: an ALL-OR-NOTHING batch, so

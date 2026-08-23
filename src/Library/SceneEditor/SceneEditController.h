@@ -720,11 +720,30 @@ namespace RISE
 		//! does NOT change the result messages -- those stay this verb's, and
 		//! a caller with different wording overwrites them in its own result,
 		//! which is exactly what CollapseToInstances does.
+		//! `entityKind` is forwarded verbatim to
+		//! ApplyAgentReplaceGeometryCrud_'s own `entityKind`, which reaches
+		//! SceneEditor::MarkCstHeadDirty and decides WHICH dirty channel the
+		//! mark lands in.  Defaulted to "standard_object" so every existing
+		//! call site -- all of which pass a real object name for a real
+		//! geometry replacement -- keeps the per-entity Object channel it
+		//! already had.
+		//!
+		//! Doc 90 R2 fix round (2026-08-23): a caller whose `objectName` is
+		//! a VERB LABEL rather than a real entity must pass "" instead.
+		//! ClassifyCstEntityKind recognizes "standard_object", so the default
+		//! would route a name that matches no entity in the scene into the
+		//! PER-ENTITY dirty set, which by contract holds real entity names;
+		//! an unrecognized kind falls to MarkCstHeadDirty's generic CST-head
+		//! boolean channel, which is what a whole-document swap naming no
+		//! single entity actually means.  AgentSession::RevertToRevision is
+		//! that caller.  The HISTORY record is unaffected either way --
+		//! PushAgentReplaceGeometryEdit takes `objectName`, never the kind.
 		AgentCommitResult ApplyAgentReplaceGeometry(
 			const String& objectName,
 			const String& candidateDocText,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
-			const char* verbLabel = "replace_geometry_scaffold" );
+			const char* verbLabel = "replace_geometry_scaffold",
+			const char* entityKind = "standard_object" );
 
 		//! Secure-MCP slice 5a: which verb-kind a staged AgentProposal replays
 		//! on approval.  Mirrors the three existing agent commit entry points

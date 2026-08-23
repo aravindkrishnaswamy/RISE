@@ -8467,7 +8467,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 	const String& objectName,
 	const String& candidateDocText,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
-	const char* verbLabel )
+	const char* verbLabel,
+	const char* entityKind )
 {
 	AgentCommitResult r;
 	{
@@ -8489,7 +8490,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
-		r = ApplyAgentReplaceGeometryCrud_( objectName, candidateDocText, baseVersionOrNull, verbLabel );
+		r = ApplyAgentReplaceGeometryCrud_( objectName, candidateDocText, baseVersionOrNull, verbLabel,
+		                                    entityKind );
 	}
 	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
 	return r;

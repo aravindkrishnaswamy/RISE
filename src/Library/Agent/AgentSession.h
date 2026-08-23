@@ -5870,6 +5870,163 @@ namespace RISE
 			AgentVaryMaterialResult VaryMaterial( const std::string& material = std::string(),
 			                                      const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
+			//! reason it declined.
+			//!
+			//! `ok` follows the AgentCollapseResult / AgentVaryMaterialResult
+			//! convention EXACTLY (which follows ReplaceGeometryScaffold's):
+			//! true once the request was well-formed AND reached a commit-stage
+			//! disposition, so `status` carries the real outcome
+			//! ("applied"/"rejected"/"diagnosed"/"conflict").  Every PRE-COMMIT
+			//! refusal -- an unknown, future, evicted or unrecorded revision,
+			//! the current head, an External-authority session, no retained
+			//! head -- leaves `ok` false and `status` EMPTY, with the whole
+			//! reason in `message`, and leaves the document, the head version,
+			//! the history and the proposal queue byte-identical.
+			struct AgentRevertResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;   //!< the head AFTER the call
+				std::string message;
+
+				//! The revision that was asked for (echoed on every outcome,
+				//! refusals included -- a model that mis-typed a number should
+				//! see which number this session read).
+				std::uint64_t requestedRevision = 0;
+				//! The head this call started from (the revision the revert
+				//! moved AWAY from), so the model can revert the revert without
+				//! re-reading anything.  Set on every outcome.
+				std::uint64_t previousRevision = 0;
+				//! The OLDEST revision this session can still restore, for the
+				//! eviction refusal to name and for a caller to bound its own
+				//! choices by.  0 when nothing is recorded.
+				std::uint64_t oldestAvailableRevision = 0;
+				//! How many chunk attributions were dropped because the chunk
+				//! they name is not in the restored document (see the method's
+				//! LEDGER paragraph).  0 unless the commit landed.
+				int droppedAttributions = 0;
+				//! How many chunk attributions were RESTORED because the
+				//! restored document brings back a chunk that the target
+				//! revision's own ledger recorded against a build element
+				//! (see the method's LEDGER paragraph).  The counterpart to
+				//! `droppedAttributions`, and what keeps a revert-of-a-revert
+				//! from stranding a reappeared chunk unattributed.  0 unless
+				//! the commit landed.
+				int restoredAttributions = 0;
+			};
+
+			//! Doc 90 slice R2 (2026-08-23): RESTORE THE DOCUMENT to its text
+			//! as of an earlier head revision of THIS session.
+			//!
+			//! WHY THIS EXISTS.  docs/agentic-redesign/90-iteration-ratchet.md
+			//! sec 1: the dragon probe rendered its best picture FIRST and
+			//! spent twelve self-directed edit rounds making it worse, because
+			//! nothing anchored best-so-far and there was no way back.  R1 gave
+			//! the loop a MEMORY (the anchor composite, a picture beside the
+			//! current render).  This is the other half -- the way back -- and
+			//! the two are one mechanism: the anchor note names this verb and
+			//! the revision to pass it, so the model that judges "the anchor
+			//! was better" has exactly one call to make.
+			//!
+			//! REVERT-AS-NEW-COMMIT.  The restore is ONE new edit producing a
+			//! NEW head revision whose CONTENT equals revision `revision`'s.
+			//! History is append-only: nothing rewinds the undo stack, nothing
+			//! rewrites the past, the revision counter only ever goes up, and a
+			//! single Cmd-Z in the GUI undoes the revert exactly as it undoes
+			//! any other agent edit.  It is ONE whole-document swap, ONE head
+			//! bump, ONE undo step -- the same commit path
+			//! ReplaceGeometryScaffold / CollapseToInstances / VaryMaterial
+			//! use, and for the same reason it has no staged-proposal form
+			//! under External authority (there is no AgentProposalKind an Owner
+			//! could approve card-by-card for a composite swap).
+			//!
+			//! WHAT IS RESTORABLE.  The session RECORDS (revision -> document
+			//! text) as it goes: at the head every mutating verb starts from,
+			//! and at the head every render was made from (see
+			//! RecordRevisionSnapshot_ for the capture rule and why observation
+			//! -- not just the session's own mutations -- has to be one of the
+			//! capture points).  The record is a bounded ring
+			//! (kRevisionRingMaxEntries / kRevisionRingMaxBytes); once it
+			//! overflows, the oldest recorded revision is dropped and a revert
+			//! to it is REFUSED naming the oldest one still available.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: revision 0;
+			//! a revision ABOVE the current head (it does not exist yet); the
+			//! CURRENT head (there is nothing to restore -- a "success" that
+			//! moved nothing would read as a revert that happened); a revision
+			//! this session never recorded; a recorded-then-EVICTED revision
+			//! (the message names the oldest still available); an
+			//! External-authority session; no retained CST Document.  A head
+			//! that moved under a caller-supplied `baseOrNull`, or under the
+			//! call itself, is a CONFLICT (ok=true, status="conflict").
+			//!
+			//! LEDGER.  After a landed revert, the chunk-attribution ledger
+			//! (mChunkAttribution) is reconciled against the restored document
+			//! in BOTH directions, because a whole-document swap can make a
+			//! chunk vanish OR reappear and a one-way prune is only half of
+			//! that.
+			//!
+			//! DROP: every attribution naming a chunk that is NOT in the
+			//! restored document is dropped -- the same rule, for the same
+			//! reason, that
+			//! ReplaceGeometryScaffold applies to the geometry chunk it erases:
+			//! CheckElementWindowForEdit_ is a pure attribution lookup that
+			//! runs BEFORE any document read, so an attribution outliving its
+			//! chunk refuses a later edit naming a chunk that does not exist --
+			//! a refusal the recommended reopen_element cannot fix, spending
+			//! one of three shared phase-refusal slots.
+			//!
+			//! RESTORE: every attribution the TARGET revision's own recorded
+			//! ledger held (RevisionSnapshot_::attribution) whose chunk IS in
+			//! the restored document and which the live ledger does NOT
+			//! currently carry is added back.  Without it, reverting a revert
+			//! brings a chunk's TEXT back but not its attribution, leaving it
+			//! visibly in the document yet recorded against no element --
+			//! freely editable from another element's window and not
+			//! form-protected, when it is really that element's own content.
+			//! It is a UNION, and CURRENT STATE WINS: an attribution already
+			//! present is never overwritten, even if the snapshot disagrees,
+			//! because the live entry reflects the LATER creation window (the
+			//! same "last creation wins" rule AttributeChunkToActiveElement_
+			//! applies).  A restored attribution may name an element that is
+			//! now FINISHED, and that needs no special case: the ledger
+			//! readers (FindChunkAttribution_, CheckElementWindowForEdit_,
+			//! TargetIsFormBearing_) compare against the ACTIVE element by
+			//! name and never consult mElementFinished, and reopen_element is
+			//! the documented route back into a finished element's window.
+			//!
+			//! The two passes run BEFORE the new head is recorded into the
+			//! ring, so the ring entry for the revert's OWN head carries the
+			//! POST-reconcile ledger -- which is what keeps a chain of reverts
+			//! coherent instead of each one restoring the state before the
+			//! last.  The PHASES themselves
+			//! (mBuildPhase / mActiveElement / mElementFinished) are NOT
+			//! rewound: they record what the MODEL did, not what the document
+			//! contains, and FileBuildPlan remains the only thing that resets
+			//! them.  An active element whose chunks all vanished is left in
+			//! exactly the state a freshly opened window is in -- every ledger
+			//! READER already re-resolves against the live document and skips
+			//! what it cannot find (FinishElement's isolate pick,
+			//! ElementWorldBounds_, PlaceElement's root-carry walk), so nothing
+			//! is stranded.
+			AgentRevertResult RevertToRevision( std::uint64_t revision,
+			                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Doc 90 R2: how many (revision -> text) records the ring holds.
+			//! Observation only -- for tests and diagnostics.
+			std::size_t RecordedRevisionCount() const;
+
+			//! Doc 90 R2: the OLDEST revision still restorable, 0 when the ring
+			//! is empty.  Observation only.
+			std::uint64_t OldestRecordedRevision() const;
+
+			//! Doc 90 R2: is this revision's text still held?  Observation only.
+			bool HasRecordedRevision( std::uint64_t revision ) const;
+
 			//! Secure-MCP slice 5a: one entry of ListProposals -- a wire-
 			//! friendly flattening of SceneEditController::AgentProposal (see
 			//! that struct's doc for field meaning; `kind` here is the
@@ -7056,6 +7213,15 @@ namespace RISE
 			static bool IsAnalysableRejection_( const AgentPatchResult& r );
 			static bool IsAnalysableRejection_( const AgentChunkResult& r );
 
+			//! What RenderCore_ stamps from inside the park: the head a render
+			//! was made from AND the document that head is, captured in one
+			//! statement pair so the two can never describe different heads.
+			struct RenderHeadCapture_
+			{
+				RISE::Cst::CstHeadVersion version;
+				std::string               text;
+			};
+
 			//! The shared core of both Render overloads: legacy Render(int) is a
 			//! thin forwarder that builds an all-absent AgentRenderParams (so
 			//! it is BYTE-COMPATIBLE with the pre-preview-render behaviour).
@@ -7102,11 +7268,28 @@ namespace RISE
 			//! Left at 0 by every path that bails before the closure runs --
 			//! which is every path that also leaves `ok` false, so the one
 			//! consumer (ApplyRenderAnchorComparison_) never sees it.
+			//! Doc 90 slice R2 (2026-08-23): `outHeadCapture`, when non-null,
+			//! receives THE HEAD THIS RENDER WAS MADE FROM AND THE DOCUMENT
+			//! THAT HEAD IS, stamped in the same place and for the same three
+			//! reasons as `outHeadRevision` -- inside the park the render owns
+			//! the scene, so serializing the retained Document there is exact
+			//! rather than merely safe, while outside it the
+			//! controller-mediated read deadlocks against the render loop and
+			//! the raw read races the GUI thread's commits.  Version and text
+			//! are stamped in ONE statement pair because the ring's whole
+			//! correctness rests on the two describing the same head (see
+			//! RevisionSnapshot_).  It duplicates `outHeadRevision`'s number
+			//! rather than replacing that parameter: R1's out-param is a
+			//! shipped, separately tested contract, and widening it to serve a
+			//! second consumer would put the ratchet's label and the ring's
+			//! key on one wire for no gain.
+			//! Left EMPTY by every path that bails before the closure runs.
 			AgentRenderResult RenderCore_( const AgentRenderParams& params,
 			                                bool assumeParked = false,
 			                                std::uint64_t forcedJobId = 0,
 			                                const AgentElementSketch* resolvedTarget = nullptr,
-			                                std::uint64_t* outHeadRevision = nullptr );
+			                                std::uint64_t* outHeadRevision = nullptr,
+			                                RenderHeadCapture_* outHeadCapture = nullptr );
 
 			//! G3b (2026-08-10): measure the just-completed isolate render's
 			//! silhouette against `params.target`'s filed sketch and fill
@@ -7575,6 +7758,213 @@ namespace RISE
 			//! `set_render_anchor` promotes.  Same guard, same reasoning.
 			RenderAnchorFrame mRenderAnchorLatest;
 
+			//----------------------------------------------------------------
+			// Doc 90 slice R2 (2026-08-23): THE REVISION RING -- the memory
+			// `revert_to_revision` restores from.  See that method's doc for
+			// the verb; this is the storage and the capture rule.
+			//----------------------------------------------------------------
+
+			//! One created chunk and the element it was created under.
+			//!
+			//! HOISTED here (from the phase-machinery block below, where
+			//! `mChunkAttribution` still lives) purely for DECLARATION ORDER:
+			//! RevisionSnapshot_ holds a `std::vector<ChunkAttribution_>` and
+			//! a nested class must be complete where a member names it.  It
+			//! is phase-machinery state, not ring state -- see
+			//! mChunkAttribution for what it means and who writes it.
+			struct ChunkAttribution_
+			{
+				std::string chunk;    //!< the chunk's bare `name`
+				std::string element;  //!< the element active when it was created
+				std::string kind;     //!< the chunk keyword, for the category exemption
+			};
+
+			//! One recorded head: a head VERSION, the document text that WAS
+			//! that head, and the chunk-attribution ledger AS OF that head.
+			//! The trio is always captured together from one coherent read
+			//! (ReadDocumentSnapshot, or the park-stamped pair RenderCore_
+			//! hands back plus a dispatcher-thread ledger copy taken at
+			//! submission) -- a revision paired with another revision's bytes
+			//! would restore a document that never existed.
+			//!
+			//! WHY THE LEDGER RIDES ALONG.  A revert restores TEXT; without
+			//! the ledger it can only ever DROP attributions (the chunks that
+			//! vanished), never bring back the ones that REAPPEAR.  Reverting
+			//! a revert would then leave a chunk visibly in the document but
+			//! recorded against no build element -- freely editable across
+			//! element windows and not form-protected, when it is really that
+			//! element's own content.  The copy is cheap: a build's
+			//! attribution count is in the hundreds at the very most (see
+			//! mChunkAttribution), three small strings each.
+			//!
+			//! THE WHOLE HEAD VERSION IS RECORDED, not just the revision.
+			//! `revision` restarts at 1 on every fresh load and the uuid is
+			//! what distinguishes one head lineage from the next.  A session
+			//! cannot in fact outlive its lineage today (a Job refuses a
+			//! second load -- AgentRevertRevisionTest case I pins it), so
+			//! carrying the uuid is what makes RecordRevisionSnapshot_'s
+			//! lineage guard possible rather than something the lookup needs.
+			struct RevisionSnapshot_
+			{
+				RISE::Cst::CstHeadVersion      version;
+				std::string                    text;
+				std::vector<ChunkAttribution_> attribution;
+			};
+
+
+			//! The cap, in ENTRIES.  Real sessions measured 8-57 KB per
+			//! document (doc 90 sec 1: the dragon run's final document was
+			//! 57 KB) and the failed run made 179 revisions in 12 edit rounds,
+			//! so 256 covers a session of that shape whole.  Generous on
+			//! purpose: the ring's job is to still hold the good revision
+			//! after a long bad stretch, which is exactly the case where a
+			//! tight cap would have thrown it away.
+			static constexpr std::size_t kRevisionRingMaxEntries = 256;
+
+			//! The cap, in BYTES of held document text, whichever bites first.
+			//! At the 57 KB high-water mark the entry cap costs ~14.6 MB, so
+			//! this bound is the one that fires on a session whose documents
+			//! run bigger than any measured so far -- an entry count alone
+			//! would let an unbounded document size become unbounded memory.
+			static constexpr std::size_t kRevisionRingMaxBytes = 16u * 1024u * 1024u;
+
+			//! The ring, ASCENDING by revision (oldest first).  A vector, not
+			//! a map: it is walked whole on eviction and probed once per
+			//! revert, and it is bounded at kRevisionRingMaxEntries.
+			//! Guarded by mRevisionRingMutex.
+			std::vector<RevisionSnapshot_> mRevisionRing;
+
+			//! Sum of `text.size()` across the ring, maintained incrementally
+			//! so the byte cap costs no walk.  Guarded by mRevisionRingMutex.
+			std::size_t mRevisionRingBytes = 0;
+
+			//! EVERY revision this session ever actually RECORDED, ascending,
+			//! never evicted.  What separates "revision 4 aged out, the oldest
+			//! still here is 40" from "revision 4 was never recorded at all"
+			//! -- two refusals a model must be able to tell apart, because one
+			//! says pick a later revision and the other says this session
+			//! never saw that head at all (a run of hand edits in the GUI
+			//! between two agent turns).
+			//!
+			//! A SET, NOT A HIGH-WATER MARK, and that is the whole point.
+			//! This started life as `mRevisionRingEvictedThrough`, a single
+			//! "highest revision ever evicted" integer, and it LIED: a
+			//! revision that was never captured at all -- a genuine gap --
+			//! sits numerically below every later eviction, so the
+			//! high-water test called it "aged out" and told the model to
+			//! pick a later revision, when the truth is that this session
+			//! never held that head and never will.  A membership test
+			//! cannot make that mistake, because it asks the question the
+			//! refusal actually means ("did we ever have it?") rather than a
+			//! proxy for it.
+			//!
+			//! UNBOUNDED ON PURPOSE, unlike the ring beside it.  This holds 8
+			//! bytes per revision, not a document: the worst measured real
+			//! session made 179 revisions (doc 90 sec 1), so even a session an
+			//! order of magnitude longer costs a couple of kilobytes.  Capping
+			//! it would re-introduce exactly the forgetting that makes the
+			//! high-water mark wrong.
+			//!
+			//! CLEARED WITH THE RING on a lineage change, and it must be:
+			//! `revision` restarts at 1 per lineage, so a set carried over
+			//! from a previous document would answer "yes, captured" for the
+			//! NEW document's low revision numbers and hand back the aged-out
+			//! refusal for revisions the new lineage genuinely never had.
+			//! Guarded by mRevisionRingMutex.
+			std::vector<std::uint64_t> mRevisionRingCaptured;
+
+			//! Guards mRevisionRing / mRevisionRingBytes / mRevisionRingCaptured.
+			//! A dedicated LEAF mutex, and both halves matter.  DEDICATED: the
+			//! writers are the dispatcher thread (every mutating verb records
+			//! the head it starts from) and the async render worker (every
+			//! render records the head it was made from), which is a different
+			//! pairing from any existing lock's.  LEAF: nothing else is ever
+			//! locked while it is held, so it can be taken from either thread
+			//! in any order without a rank to reason about -- in particular
+			//! the record call sites sit OUTSIDE
+			//! ApplyRenderAnchorComparison_'s mAsyncCacheMutex hold, and
+			//! RenderAnchorRevision() (which takes that mutex) is called from
+			//! outside this one.  `mutable` because the three observation
+			//! accessors are const and taking a lock in a const method is
+			//! const-correctness's own first legitimate case -- the LOCK is
+			//! mutable, the ring is not, and no const method writes it.
+			mutable std::mutex mRevisionRingMutex;
+
+			//! Record (revision -> text), evicting oldest-first past either
+			//! cap.  Idempotent per revision: re-recording a revision already
+			//! held is a no-op (the bytes cannot differ -- a revision names
+			//! exactly one document), which is what lets every capture point
+			//! call it unconditionally.
+			//!
+			//! CAPTURE POINTS, and why these two:
+			//!   * the head every MUTATING verb starts from
+			//!     (CaptureHeadRevisionSnapshot_).  This is the doc's own rule
+			//!     ("at every mutation the agent performs") and it covers USER
+			//!     co-edits for free: the head a verb starts from is whatever
+			//!     it is, agent-made or hand-made in the GUI, and the session
+			//!     has no other way to learn a co-editor moved it (there is no
+			//!     observer or callback -- every agent read re-reads the live
+			//!     head).  It records the PRE-commit head rather than the
+			//!     post-commit one because the post-commit head is reachable
+			//!     only through a second read that would BLOCK on the
+			//!     re-render the commit just kicked; the ring therefore lags
+			//!     by exactly one revision, and the revision it lags on is the
+			//!     CURRENT HEAD, which is the one revert refuses anyway.
+			//!   * the head every RENDER was made from.  Not an optimization:
+			//!     the anchor is BY DEFINITION a rendered revision, and R1's
+			//!     note now tells the model to pass that revision to this
+			//!     verb.  A note that names a revision the ring cannot restore
+			//!     is the "stale promise burns the repair budget" failure doc
+			//!     90 sec 2 warns about, one level down -- so the revisions
+			//!     the model is told about and the revisions it can restore
+			//!     are made the same set at the source.
+			//!
+			//! THE ANCHOR IS PINNED against eviction while it lives: an entry
+			//! whose revision equals RenderAnchorRevision() is skipped by the
+			//! evictor and the next-oldest goes instead.  Capture makes the
+			//! anchor's revision PRESENT; the pin keeps it present.  Copying
+			//! the text into the anchor state instead was rejected -- the
+			//! anchor is pinned from inside the render park, where a
+			//! SerializeCst is affordable but the state it would write is
+			//! guarded by a different mutex, and it would put two copies of
+			//! the same document in two places that could then disagree.
+			//! `attribution` is the chunk-attribution ledger AS OF `version`,
+			//! passed IN rather than read from `mChunkAttribution` here --
+			//! and that is a THREAD-SAFETY requirement, not a style choice.
+			//! Two of the four call sites are on the RENDER WORKER (the
+			//! synchronous render path and the async render closure), where
+			//! `mChunkAttribution` is dispatcher-thread state that must not
+			//! be read at all -- exactly the hazard RenderInner_'s
+			//! `sceneTargetSnapshot` / `anchorArmedSnapshot` comments already
+			//! spell out for `mBuildPhase`, its sibling in the same block.
+			//! Those two sites therefore snapshot the ledger on the
+			//! DISPATCHER thread before the render starts and thread the copy
+			//! through, the same discipline and for the same reason; the two
+			//! dispatcher-thread sites pass `mChunkAttribution` live.  Making
+			//! it a REQUIRED parameter is what stops a future call site
+			//! quietly re-opening the race.
+			void RecordRevisionSnapshot_( const RISE::Cst::CstHeadVersion& version,
+			                               const std::string& text,
+			                               const std::vector<ChunkAttribution_>& attribution );
+
+			//! Read the live head coherently and record it.  The one-line form
+			//! every mutating verb calls on entry.  A no-op without a document.
+			void CaptureHeadRevisionSnapshot_();
+
+			//! Copy out the recorded text for `revision`, and (when
+			//! `outAttribution` is non-null) the attribution ledger recorded
+			//! alongside it.  Returns false when the ring does not hold it
+			//! (never recorded, or evicted -- RevertToRevision distinguishes
+			//! those two for the message, using RevisionWasCaptured_).
+			bool LookupRevisionText_( std::uint64_t revision, std::string& outText,
+			                           std::vector<ChunkAttribution_>* outAttribution = nullptr ) const;
+
+			//! Was `revision` EVER recorded by this session (whether or not
+			//! the ring still holds it)?  The authority behind the
+			//! aged-out-vs-never-seen split -- see mRevisionRingCaptured for
+			//! why a membership test and not a high-water mark.
+			bool RevisionWasCaptured_( std::uint64_t revision ) const;
+
 			//! Model-B F2 slice S1: SESSION-LOCAL render-id counter, used
 			//! whenever this call does NOT route through a
 			//! SceneEditController's coordinator-tracked RunPreviewRenderParked
@@ -7741,13 +8131,12 @@ namespace RISE
 			//! element?  Written together with mBuildPlan, so the two can never
 			//! disagree about which elements exist.
 			std::vector<bool> mElementFinished;
-			//! One created chunk and the element it was created under.
-			struct ChunkAttribution_
-			{
-				std::string chunk;    //!< the chunk's bare `name`
-				std::string element;  //!< the element active when it was created
-				std::string kind;     //!< the chunk keyword, for the category exemption
-			};
+			//! (`ChunkAttribution_` itself is declared ABOVE, next to the
+			//! revision ring -- see the hoist note there.  It stays a
+			//! phase-machinery type; only its DECLARATION moved, because
+			//! RevisionSnapshot_ holds a vector of it and a nested class must
+			//! be complete at the point a member names it.)
+			//!
 			//! Every chunk created while an element was active, in creation
 			//! order.  A LINEAR vector rather than a map because it is walked
 			//! whole (finish_element lists an element's chunks in order) far

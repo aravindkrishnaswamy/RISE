@@ -1354,6 +1354,22 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// Doc 90 slice R2 (2026-08-23): revert_to_revision is the
+					// FOURTH verb whose commit is one composite whole-document
+					// swap, so it is excluded from IsProposeSafeVerb for exactly
+					// the reason the three above are, with the same message
+					// shape.  There is no AgentProposalKind for "put the whole
+					// document back to what it was", and inventing one would
+					// replay the restore against a DIFFERENT head than the one
+					// it was checked against.
+					if( m == "revert_to_revision" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; revert_to_revision "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -3825,6 +3841,80 @@ namespace RISE
 						for( const std::string& nm : cir.removedObjects ) arr.push_back( JsonValue::MakeString( nm ) );
 						result.set( "removedObjects", arr );
 					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// revert_to_revision {revision, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       requestedRevision,previousRevision,
+				//       oldestAvailableRevision,droppedAttributions?,
+				//       restoredAttributions?}
+				//   Doc 90 slice R2 (2026-08-23): restore the DOCUMENT to its
+				//   text as of an earlier head revision of this session, as ONE
+				//   NEW commit -- append-only history, one undo step (see
+				//   AgentSession::RevertToRevision).  Every refusal leaves the
+				//   document byte-identical, and comes back as ok=false with the
+				//   reason in `message` -- a SUCCESSFUL response, not a JSON-RPC
+				//   error, for collapse_to_instances' reason: "that revision has
+				//   aged out, the oldest still here is 40" is an ANSWER rather
+				//   than a malformed call, and the model's next move is in it.
+				//   A missing/ill-typed `revision` IS malformed, so that one is
+				//   an error.
+				//--------------------------------------------------------------
+				if( m == "revert_to_revision" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* rv = params.find( "revision" );
+					if( !rv || !rv->isNumber() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'revision' (number, a head revision this session has already "
+							"reported) is required" );
+					}
+					const double rvNum = rv->asNumber();
+					// The SAME bound ParseBaseHeadVersionParam applies to a head
+					// version on this wire: 2^53, past which a JSON number
+					// cannot represent consecutive integers at all.
+					if( !( rvNum >= 0.0 && rvNum <= 9007199254740992.0 &&
+					       rvNum == std::floor( rvNum ) ) ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'revision' must be a non-negative whole number" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentRevertResult rr2 =
+						s->RevertToRevision( static_cast<std::uint64_t>( rvNum ),
+						                     ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( rr2.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( rr2.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( rr2.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( rr2.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( rr2.retriable ) );
+					result.set( "headVersion", HeadVersionJson( rr2.headVersion ) );
+					result.set( "requestedRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr2.requestedRevision ) ) );
+					result.set( "previousRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr2.previousRevision ) ) );
+					result.set( "oldestAvailableRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr2.oldestAvailableRevision ) ) );
+					if( rr2.droppedAttributions > 0 ) {
+						result.set( "droppedAttributions",
+							JsonValue::MakeNumber( static_cast<double>( rr2.droppedAttributions ) ) );
+					}
+					// The SYMMETRIC half (doc 90 R2 fix round): a restore can
+					// bring a chunk -- and its build-element attribution --
+					// BACK, which a client tracking the ledger needs to see
+					// for the same reason it needs the drops.  Same
+					// present-only-when-nonzero shape.
+					if( rr2.restoredAttributions > 0 ) {
+						result.set( "restoredAttributions",
+							JsonValue::MakeNumber( static_cast<double>( rr2.restoredAttributions ) ) );
+					}
+					if( !rr2.message.empty() ) result.set( "message", JsonValue::MakeString( rr2.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

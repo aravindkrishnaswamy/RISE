@@ -262,7 +262,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 37, "id:null tools/list result carries all 37 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 38, "id:null tools/list result carries all 38 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -336,7 +336,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 37, "tools/list returns EXACTLY the 37 agent verbs" );
+		Check( toolsList.size() == 38, "tools/list returns EXACTLY the 38 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			// S1 (2026-08-11): the two staged-build-protocol verbs.
@@ -361,6 +361,7 @@ int main()
 			"compare_to_reference",
 			"imagine_scene",   // Arc 77 Phase 2 (2026-08-11): the whole-scene imagined target
 			"set_render_anchor",   // Doc 90 slice R1 (2026-08-22): the iteration ratchet's verb
+			"revert_to_revision",  // Doc 90 slice R2 (2026-08-23): the ratchet's way back (MUTATING)
 			"list_proposals", "resolve_proposal"
 		};
 		for( const char* expected : kExpectedNames ) {
@@ -1193,7 +1194,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 37, "no-head tools/list still lists all 37 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 38, "no-head tools/list still lists all 38 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

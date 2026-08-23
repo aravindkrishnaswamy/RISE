@@ -353,6 +353,20 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! Doc 90 slice R2 (2026-08-23): revert_to_revision's own annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- same rationale as
+			//! kCollapseToInstancesProposeRefusedNote / kVaryMaterialProposeRefusedNote
+			//! above (it mutates through one composite whole-document swap;
+			//! deliberately excluded from AgentRpc.cpp's IsProposeSafeVerb
+			//! rather than pay the "N mutating verbs" prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under Propose
+			//! exactly like Read; deliberately contains neither magic substring
+			//! the per-note counters key on).
+			const std::string kRevertToRevisionProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: revert_to_revision is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -1432,6 +1446,52 @@ namespace RISE
 					tools.push_back( MakeTool( "set_render_anchor", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// revert_to_revision (doc 90 slice R2, 2026-08-23) -- the OTHER
+				// half of the ratchet, and MUTATING: commit-only, for the SAME
+				// reason collapse_to_instances is (one composite whole-document
+				// swap is no AgentProposalKind an Owner could approve
+				// card-by-card, so an External-authority session cannot stage
+				// it either).
+				//
+				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for the
+				// drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "revision", NumberProp(
+						"REQUIRED. The head revision to restore the document to -- a number this session has "
+						"already reported to you (a render's anchorRevision, or the headVersion.revision of an "
+						"earlier edit result). NOT the current head: that is refused, because there would be "
+						"nothing to restore." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;
+					required.push_back( "revision" );
+
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kRevertToRevisionProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"PUT THE WHOLE DOCUMENT BACK to what it was at an earlier head revision of this "
+						"session. Call it the moment you can see that the scene got worse -- most often "
+						"straight after a render whose anchor pane looks better than the render below it, "
+						"passing the anchor's revision. Every render and every edit result you have received "
+						"carries the head revision it belongs to; those are the numbers this takes. WHAT IT "
+						"DOES: the restore is ONE NEW EDIT producing a NEW head revision whose contents equal "
+						"the old one's. Nothing is rewound and no history is rewritten -- the revision you are "
+						"leaving stays available, so you can revert the revert if the older scene turns out to "
+						"be worse after all, and one undo in the app undoes the restore like any other edit. It "
+						"is a WHOLE-DOCUMENT restore: everything goes back together, including chunks you "
+						"added since. It REFUSES, changing nothing, when the revision is the CURRENT head "
+						"(there is nothing to restore), is higher than the head (it does not exist yet), or is "
+						"one this session no longer holds -- it keeps the recent revisions its own edits and "
+						"renders passed through, and a refusal names the oldest one still available. Returns "
+						"{ok,applied,rawCode,status,retriable,headVersion,requestedRevision,previousRevision,"
+						"oldestAvailableRevision,droppedAttributions?,restoredAttributions?,message}; "
+						"`previousRevision` is the head you just left, which "
+						"is the number to pass to undo this restore, and a PRE-COMMIT refusal is ok=false with "
+						"an EMPTY status, so branch on `applied`. Always pass the headVersion you last read as "
+						"baseHeadVersion." );
+					tools.push_back( MakeTool( "revert_to_revision", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// insert_geometry_scaffold (Arc-75 slice S3b; extended by slice E3
 				// with blended_chain, volume_bank)
 				{
@@ -2161,7 +2221,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 37 tool names this adapter recognizes --
+			//! The list of the 38 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -2191,6 +2251,7 @@ namespace RISE
 					"remove_chunks",
 					"collapse_to_instances",   // 88 step 2 (2026-08-19): MUTATING, the condition-C rewrite verb
 					"vary_material",           // 88 S5 (2026-08-20): MUTATING, the condition-D rewrite verb
+					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory

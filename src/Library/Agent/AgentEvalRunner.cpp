@@ -7046,6 +7046,14 @@ namespace RISE
 										// material before asking must not VACUOUSLY pass
 										// askUserBeforeMutation.
 										"vary_material",
+										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
+										// the document (one composite swap restoring an
+										// earlier revision's whole text), so a run that
+										// reverted before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.  That its text is one the
+										// document ALREADY had at some point does not make it
+										// less of a mutation of the document as it stands.
+										"revert_to_revision",
 										// G2 (2026-08-10): file_build_plan is DELIBERATELY
 										// absent.  It changes nothing in the document, so
 										// listing it here would fail askUserBeforeMutation

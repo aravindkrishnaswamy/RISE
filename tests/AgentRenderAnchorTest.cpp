@@ -527,9 +527,25 @@ int main()
 		       "the note names this render's revision (" + want2 + ")" );
 		Check( r2.message.find( "set_render_anchor" ) != std::string::npos,
 		       "and it names the ONE action that follows -- keeping this render if it is better" );
-		Check( r2.message.find( "revert_to_revision" ) == std::string::npos,
-		       "MONEY ASSERTION: and it does NOT name revert_to_revision -- slice R2 has not "
-		       "landed, and doc 90 sec 2 records that a stale promise burns the repair budget" );
+		// DELIBERATELY INVERTED, doc 90 slice R2 (2026-08-23).  This assertion
+		// pinned the ABSENCE of `revert_to_revision` from the note for exactly
+		// as long as the verb did not exist -- doc 90 sec 2's rule that a stale
+		// promise burns the repair budget.  R2 landed the verb, so the same
+		// rule now demands the opposite: the note must name it, AND must name
+		// the anchor's own revision as the argument, because a model told "you
+		// can go back" without the number spends a turn finding it.  The
+		// absence half of the rule did not disappear -- it moved to the guard
+		// this assertion's sibling in AgentRevertRevisionTest pins: the
+		// sentence appears only when the session can really restore that
+		// revision.
+		Check( r2.message.find( "revert_to_revision" ) != std::string::npos,
+		       "MONEY ASSERTION: the note NAMES revert_to_revision -- slice R2 landed the verb, so "
+		       "withholding it would now be the stale promise doc 90 sec 2 warns about, in reverse" );
+		Check( r2.message.find( "revert_to_revision " + std::to_string( (unsigned long long)rev1 ) ) !=
+		           std::string::npos,
+		       "MONEY ASSERTION: and it names the ANCHOR's revision as the argument (revert_to_revision " +
+		           std::to_string( (unsigned long long)rev1 ) + "), not this render's -- going back means "
+		           "going back to the anchor" );
 		// Phase 2b's law in the prose too: no verdict, no characterization.
 		Check( r2.message.find( "better" ) != std::string::npos,
 		       "the note hands the judgment to the model (\"if this render is the better one\")" );

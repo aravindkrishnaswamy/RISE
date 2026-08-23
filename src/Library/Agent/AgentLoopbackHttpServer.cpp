@@ -346,6 +346,15 @@ namespace
 		    // call, exactly like collapse_to_instances -- same per-call leverage,
 		    // same rate-limit membership.
 		    name == "vary_material" ||
+		    // Doc 90 slice R2 (2026-08-23): revert_to_revision replaces the
+		    // whole document in one call, exactly like the three swaps above --
+		    // same per-call leverage, same rate-limit membership.  Metering the
+		    // way back does not strand a client the way metering an unblock
+		    // verb would: a revert is never the only route out of a state (the
+		    // ordinary edit verbs, metered alongside it, reach the same
+		    // documents), and a client that has spent its mutation budget is by
+		    // definition not mid-edit-burst.
+		    name == "revert_to_revision" ||
 		    name == "remove_chunk"   ||
 		    // R1a (2026-08-09): remove_chunks removes N chunks per call --
 		    // strictly MORE per-call leverage than the singular verb, so it

@@ -465,7 +465,11 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 32, "body carries thirty-two OpenAI tools" );
+	// 32 -> 33, doc 90 slice R2 (2026-08-23): `revert_to_revision` joined the
+	// ONE shared kToolDefs table, so every provider rendering below carries
+	// one more.  Bumped deliberately -- this count is what would catch a tool
+	// silently added to one formatter and not the table.
+	Check( tools.isArray() && tools.size() == 33, "body carries thirty-three OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -566,8 +570,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 32,
-		       "xAI body carries the same thirty-two tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 33,
+		       "xAI body carries the same thirty-three tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -832,7 +836,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 32, "body carries thirty-two tools" );
+	Check( tools.isArray() && tools.size() == 33, "body carries thirty-three tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1796,7 +1800,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 32, "thirty-two functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 33, "thirty-three functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
