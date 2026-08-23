@@ -3101,7 +3101,9 @@ it cannot reclassify accepted Binary32 bytes as an initial checkpoint: the live
 owner rebuilds the inferred tier's canonical analytic state and requires an exact
 state digest match at step zero.  Retagging the cleared accepted bytes Binary64
 therefore also rejects.  Both the v12 writer and checksum-valid v12 loader reject
-every zero-step state regardless precision.  Both sides
+every zero-step state regardless precision.  The v9/v10/v11 all-zero matrix is
+instantiated separately for Binary32 and Binary64 at both writer and checksum-valid
+loader.  Both sides
 also reject Binary32 formats 9--11, rather than publishing an unloadable legacy file.
 
 The other missing behavioral boundary is also executable rather than inferred.

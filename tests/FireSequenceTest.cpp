@@ -3609,6 +3609,12 @@ int main(int argc,char** argv)
 		checkpointFixture/"precision_class_v10_all_zero.checkpoint";
 	const std::filesystem::path version11AllZeroCheckpoint=
 		checkpointFixture/"precision_class_v11_all_zero.checkpoint";
+	const std::filesystem::path version9Binary64AllZeroCheckpoint=
+		checkpointFixture/"precision_class_v9_binary64_all_zero.checkpoint";
+	const std::filesystem::path version10Binary64AllZeroCheckpoint=
+		checkpointFixture/"precision_class_v10_binary64_all_zero.checkpoint";
+	const std::filesystem::path version11Binary64AllZeroCheckpoint=
+		checkpointFixture/"precision_class_v11_binary64_all_zero.checkpoint";
 	{std::error_code ignored;
 		std::filesystem::remove(version9Checkpoint,ignored);
 		std::filesystem::remove(version9ZeroCountCheckpoint,ignored);
@@ -3618,7 +3624,13 @@ int main(int argc,char** argv)
 		std::filesystem::remove(version11ZeroCountCheckpoint,ignored);
 		std::filesystem::remove(version9AllZeroCheckpoint,ignored);
 		std::filesystem::remove(version10AllZeroCheckpoint,ignored);
-		std::filesystem::remove(version11AllZeroCheckpoint,ignored);}
+		std::filesystem::remove(version11AllZeroCheckpoint,ignored);
+		std::filesystem::remove(version9Binary64AllZeroCheckpoint,ignored);
+		std::filesystem::remove(version10Binary64AllZeroCheckpoint,ignored);
+		std::filesystem::remove(version11Binary64AllZeroCheckpoint,ignored);}
+	MethaneRunCheckpoint binary64AllZero=precisionRoundTrip;
+	for(MethaneCellState& cell:binary64AllZero.states)
+		cell.producerPrecision=FireStateProducerPrecision::Binary64;
 	MethaneRunCheckpoint legacyAccepted=precisionRoundTrip;
 	legacyAccepted.acceptedSteps=1u;legacyAccepted.simulationTimeS=0.001;
 	legacyAccepted.previousStepS=0.0;legacyAccepted.lastAcceptedStepS=0.0;
@@ -3643,6 +3655,13 @@ int main(int argc,char** argv)
 			checkpointFixtureError,10u)&&!std::filesystem::exists(version10ZeroCountCheckpoint)&&
 		!SaveMethaneRunCheckpoint(version11ZeroCountCheckpoint,precisionRoundTrip,
 			checkpointFixtureError,11u)&&!std::filesystem::exists(version11ZeroCountCheckpoint);
+	const bool legacyZeroCountBinary64WriterRejected=
+		!SaveMethaneRunCheckpoint(version9Binary64AllZeroCheckpoint,binary64AllZero,
+			checkpointFixtureError,9u)&&!std::filesystem::exists(version9Binary64AllZeroCheckpoint)&&
+		!SaveMethaneRunCheckpoint(version10Binary64AllZeroCheckpoint,binary64AllZero,
+			checkpointFixtureError,10u)&&!std::filesystem::exists(version10Binary64AllZeroCheckpoint)&&
+		!SaveMethaneRunCheckpoint(version11Binary64AllZeroCheckpoint,binary64AllZero,
+			checkpointFixtureError,11u)&&!std::filesystem::exists(version11Binary64AllZeroCheckpoint);
 	forceMalformedManifoldLifecycleWriteForTest=true;
 	const bool malformedVersion9Written=SaveMethaneRunCheckpoint(version9Checkpoint,
 		legacyAccepted,checkpointFixtureError,9u);
@@ -3665,8 +3684,15 @@ int main(int argc,char** argv)
 		version10AllZeroCheckpoint,precisionRoundTrip,checkpointFixtureError,10u);
 	const bool malformedVersion11AllZeroWritten=SaveMethaneRunCheckpoint(
 		version11AllZeroCheckpoint,precisionRoundTrip,checkpointFixtureError,11u);
+	const bool malformedVersion9Binary64AllZeroWritten=SaveMethaneRunCheckpoint(
+		version9Binary64AllZeroCheckpoint,binary64AllZero,checkpointFixtureError,9u);
+	const bool malformedVersion10Binary64AllZeroWritten=SaveMethaneRunCheckpoint(
+		version10Binary64AllZeroCheckpoint,binary64AllZero,checkpointFixtureError,10u);
+	const bool malformedVersion11Binary64AllZeroWritten=SaveMethaneRunCheckpoint(
+		version11Binary64AllZeroCheckpoint,binary64AllZero,checkpointFixtureError,11u);
 	forceMalformedManifoldLifecycleWriteForTest=false;
 	Check(legacyBinary32WriterRejected&&legacyZeroCountBinary32WriterRejected&&
+		legacyZeroCountBinary64WriterRejected&&
 		malformedVersion9Written&&
 		!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion9ZeroCountWritten&&
@@ -3685,6 +3711,12 @@ int main(int argc,char** argv)
 		!LoadMethaneRunCheckpoint(version10AllZeroCheckpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion11AllZeroWritten&&
 		!LoadMethaneRunCheckpoint(version11AllZeroCheckpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion9Binary64AllZeroWritten&&
+		!LoadMethaneRunCheckpoint(version9Binary64AllZeroCheckpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion10Binary64AllZeroWritten&&
+		!LoadMethaneRunCheckpoint(version10Binary64AllZeroCheckpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion11Binary64AllZeroWritten&&
+		!LoadMethaneRunCheckpoint(version11Binary64AllZeroCheckpoint,rejectedLegacy,
 		checkpointFixtureError)&&unavailableAcceptedV12Rejected,
 		"r148 checksum-valid v9-v11 production resumes cannot alias accepted history to a first step");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);

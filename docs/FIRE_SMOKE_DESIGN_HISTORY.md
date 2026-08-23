@@ -3435,6 +3435,9 @@ it was already tried and refuted here.
   Retagging the cleared accepted state Binary64 also REDs: the live owner rebuilds
   the inferred tier's analytic beginning and byte-identifies it, while writer and
   checksum-valid loader reject every zero-step checkpoint independent of precision.
+  The legacy v9/v10/v11 matrix instantiates those all-zero writer and checksum-valid
+  loader REDs separately for Binary32 and Binary64, so neither version nor precision
+  can scope the prohibition away.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real
