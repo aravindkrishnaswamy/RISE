@@ -3644,19 +3644,20 @@ The audited-CFL correction reduces G from `0.085895776748657227` to
 `0.066569089889526367`, but this is still above `2^-5`.  With headroom
 `h=2^-2`, the retained predictor uses the allowance
 `(1-h)*2^-5=0.0234375` and derives the represented step
-`0.00057953997747972608 s`.  The physical Heun target must be re-derived at
-that represented step because it is part of the same-scheme dt-dependent DAG.
-When that is done, the frozen R0 open conservative Picard solve fails to
+`0.00057953997747972608 s`.  The external physical Heun target must be
+re-derived at that represented step.  The binary64 oracle target generator's
+frozen R0 open conservative Picard solve then fails to
 converge: first residual `7.41824`, last/minimum `1.44776`, target `0.561256`,
 mass `1.44776`, coefficient `0.017278`, active set `1`, and tolerance
 `0.000479545`.  The earlier limited G/timing observation, which had reused the
 audited-CFL target, is rejected and carries no contract weight.
 
-Exact exit 219 therefore withholds the accepted token at the stronger
-same-scheme-target boundary.  No limited G, plateau, timing, or tier-10 wall
-projection is reported, so the approximately two-hour rule is not evaluated.
-The long shadow and all later arithmetic/readmission/source-map/preview
-milestones remain blocked pending a reconstruction-class or fixed-point
+Exact exit 219 therefore stops at target-schedule instantiation before a
+limited production request exists.  It is not evidence of a production remap
+or reconstruction-class failure.  No limited G, plateau, timing, or tier-10
+wall projection is reported, so the approximately two-hour rule is not
+evaluated.  The long shadow and all later arithmetic/readmission/source-map/
+preview milestones remain blocked pending a target-generation/fixed-point
 topology ruling; neither ceiling nor timing budget is widened.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)

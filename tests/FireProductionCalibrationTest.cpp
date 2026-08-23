@@ -632,7 +632,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"51595cff655129ea017a6df387129d9b14c6ebfedf958954761a0788fdddb73d"&&
+		"ae629be5bf39d2433d37558e723f34e5e8d7d00f36585ea746de906fcc7d1457"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -1058,7 +1058,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"024b8f08bcf6c29c5ec998ec51cf76b05283f8c5a4ad7b80fe0b0446e1f0d965"&&
+			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1140,7 +1140,7 @@ int main()
 			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"024b8f08bcf6c29c5ec998ec51cf76b05283f8c5a4ad7b80fe0b0446e1f0d965"&&
+			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1241,7 +1241,7 @@ int main()
 			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"024b8f08bcf6c29c5ec998ec51cf76b05283f8c5a4ad7b80fe0b0446e1f0d965"&&
+			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"d941893a0b1e028400988014499584e9099bfbff66fca73061674f89536cbf0b"&&
@@ -1250,7 +1250,7 @@ int main()
 			"8d97d9f5112f4b6dcefedd4781d7b857e160cfbb47737d875c102540e10a4177"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"51595cff655129ea017a6df387129d9b14c6ebfedf958954761a0788fdddb73d"&&
+			"ae629be5bf39d2433d37558e723f34e5e8d7d00f36585ea746de906fcc7d1457"&&
 		fireSimulatorCore.find("equationOfStateResidual > 1.0e-3")!=
 			std::string::npos&&
 		CountText(forceSource,"1e-3")==1u&&
@@ -1287,7 +1287,7 @@ int main()
 	Check(!anomalyClosureEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(anomalyClosureEvidence.begin(),
 			anomalyClosureEvidence.end()))==
-		"f659ad5304211a08eb2902e915827da1aef46dc370d270ce5982b09c61f1f4d7"&&
+		"a3b9469a016605f3917a1001c0b70fd952c7373d904ce59ef1365eeec71fdce7"&&
 		anomalyClosureEvidence.find("G_model floor_plus_dose_times_dt")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("r158_floor_fit 0.0024982685328926446")!=
@@ -1296,25 +1296,27 @@ int main()
 			std::string::npos&&
 		anomalyClosureEvidence.find("r161_active_CFL_corrected_G 0.066569089889526367")!=
 			std::string::npos&&
-		anomalyClosureEvidence.find("limited_same_scheme_target_available false")!=
+		anomalyClosureEvidence.find("limited_binary64_target_schedule_available false")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("plateau_allowance 0.0234375")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("limited_target_failure_last 1.44776")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find(
-			"limited_timing_not_run_same_scheme_target_unavailable true")!=
+			"limited_timing_not_run_binary64_target_schedule_unavailable true")!=
 			std::string::npos&&
-		anomalyClosureEvidence.find("certified_working_set_bytes 1919317208")!=
+		anomalyClosureEvidence.find("active_CFL_certified_working_set_bytes 1919317208")!=
 			std::string::npos&&
-		anomalyClosureEvidence.find("actual_metal_allocation_bytes 1630052936")!=
+		anomalyClosureEvidence.find("active_CFL_actual_metal_allocation_bytes 1630052936")!=
 			std::string::npos&&
+		anomalyClosureEvidence.find("active_CFL_cell_submaps 10")!=std::string::npos&&
+		anomalyClosureEvidence.find("active_CFL_dual_submaps 15")!=std::string::npos&&
 		anomalyClosureEvidence.find("zero_anomaly_target_fold_bit_identity true")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("zero_anomaly_on_device_payload_bit_identity true")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("limited_physical_target_per_s "
-			"same_scheme_Heun_rederived_at_represented_dt")!=std::string::npos&&
+			"binary64_oracle_Heun_rederived_at_represented_dt")!=std::string::npos&&
 		anomalyClosureEvidence.find("closure_disabled_reproduces_r160_exact_252 true")!=
 			std::string::npos&&
 		anomalyClosureEvidence.find("r161_limited_stop_exact_exit 219")!=
@@ -1340,13 +1342,13 @@ int main()
 			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"024b8f08bcf6c29c5ec998ec51cf76b05283f8c5a4ad7b80fe0b0446e1f0d965"&&
+			"7efdd5fca824dbab92cec9df6ae79e3a36931d05d80b5af53c1f2a429ee3c3e6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"b237cc38edf4987293217acf10d9967441323b505f6d3bd19db10c8b763048aa"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"51595cff655129ea017a6df387129d9b14c6ebfedf958954761a0788fdddb73d"&&
+			"ae629be5bf39d2433d37558e723f34e5e8d7d00f36585ea746de906fcc7d1457"&&
 		advectionMetal.find("fold_methane_advective_anomaly_target")!=
 			std::string::npos&&
 		advectionMetal.find(
@@ -1369,10 +1371,13 @@ int main()
 		goldenCompositionFixture.find("shadowConfig.transport.deltaTimeS=dt")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
-			"same_scheme_target=unavailable error=%s golden=%s")!=std::string::npos&&
-		goldenCompositionFixture.find("for(std::size_t sample=0u;sample<5u;++sample)")!=
+			"binary64_target_schedule=unavailable error=%s golden=%s")!=std::string::npos&&
+		goldenCompositionFixture.find("production.cellSubmapCount==10u")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("FireProductionAcceptedManifoldPayloadDigest(trial)")!=
+		goldenCompositionFixture.find("production.dualSubmapCount==15u")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"production.combinedActualMetalAllocationBytes==1630052936u")!=
 			std::string::npos&&
 		productionSolverTest.find(
 			"r161 malformed closure activation fails before Metal work")!=
@@ -1383,9 +1388,9 @@ int main()
 		unixTestDriver.find("FireSequenceTest.r161_advective_anomaly_closure")!=
 			std::string::npos&&
 		unixTestDriver.find("closure_limited_rc\" -eq 219")!=std::string::npos&&
-		unixTestDriver.find("PASS (exact exit=219, same-scheme target stop)")!=
+		unixTestDriver.find("PASS (exact exit=219, target-schedule stop)")!=
 			std::string::npos,
-		"r161 binds the resident two-pass closure and same-scheme target stop");
+		"r161 binds the resident two-pass closure and target-schedule stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

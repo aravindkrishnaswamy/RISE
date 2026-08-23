@@ -3790,7 +3790,7 @@ it was already tried and refuted here.
   blocked; r159's 81.36 ms host residual stays on the device-bound backlog.
   Golden remains byte-identical.  Durable evidence is
   `r160_low_mach_audited_step_refusal/low_mach_audited_step_refusal.v1`.
-- **r161 two-pass advective-anomaly closure and remap-scheme stop
+- **r161 two-pass advective-anomaly closure and target-schedule stop
   (2026-08-23):** r160's refusal is retained as the closure-disabled RED, not
   the final design conclusion.  The measurement history is reconciled by a
   two-regime model `G=G_floor+k*dt`.  A least-squares fit to r158's
@@ -3818,9 +3818,9 @@ it was already tried and refuted here.
   exact `2^-5` hard ceiling.  The amended 25%-headroom predictor derives
   `0.00057953997747972608 s`.  The first candidate evidence incorrectly kept
   the audited-CFL Heun divergence target while changing the represented step;
-  fresh boundary review rejected that measurement because the physical target
-  is part of the dt-dependent same-scheme DAG.  With the target correctly
-  re-derived at the limiter step, the frozen R0 open conservative Picard solve
+  fresh boundary review rejected that measurement because the external target
+  schedule is dt-dependent.  With the binary64 oracle target correctly
+  re-derived at the limiter step, its frozen R0 open conservative Picard solve
   does not converge: first residual `7.41824`, last/minimum `1.44776`, target
   `0.561256`, mass `1.44776`, coefficient `0.017278`, active set `1`, and
   tolerance `0.000479545`.  No limited G, plateau, timing, or wall projection
@@ -3831,10 +3831,12 @@ it was already tried and refuted here.
   byte-identical accepted payloads and the active route records one predictor
   pass with no corrector palindrome.
 
-  Exact exit 219 now records the earlier, stronger remap-scheme finding: the
-  automatic limiter cannot form its same-scheme physical target under the
-  frozen Picard topology.  The approximately two-hour rule is not evaluated;
+  Exact exit 219 records a target-schedule protocol blocker: the binary64
+  oracle cannot form the limiter step's external physical target under its
+  frozen Picard topology, before any limited production request exists.  This
+  is not a production remap or reconstruction-class finding.  The
+  approximately two-hour rule is not evaluated;
   no accepted token is minted and the 104-step shadow does not start.
-  Reconstruction-class change or an owner ruling on that fixed-point topology
-  is required.  B_fp32, guard supersession, temporal refinement, readmission,
-  source maps, and first light remain blocked.  Golden remains byte-identical.
+  Owner ruling on target generation/fixed-point topology is required.  B_fp32,
+  guard supersession, temporal refinement, readmission, source maps, and first
+  light remain blocked.  Golden remains byte-identical.

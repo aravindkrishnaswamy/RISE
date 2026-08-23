@@ -705,9 +705,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 # r161 executes the pre-registered anomaly closure, then applies the amended
-# 25%-headroom manifold predictor.  Exact 219 is the fail-closed same-scheme
-# stop: the limiter step cannot derive its dt-dependent Heun target within the
-# frozen Picard topology, so no limited G or wall projection is admissible.
+# 25%-headroom manifold predictor.  Exact 219 is the fail-closed target-schedule
+# stop: the binary64 oracle cannot derive the limiter step's dt-dependent Heun
+# target within its frozen Picard topology, so production is never invoked.
 if [ "$(uname -s)" = "Darwin" ]; then
 	closure_name="FireSequenceTest.r161_advective_anomaly_closure"
 	closure_path="$BIN_DIR/FireSequenceTest"
@@ -748,10 +748,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_limited_rc" -eq 219 ] &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
-		grep -Fq 'ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=0.00057953997747972608 same_scheme_target=unavailable' "$closure_limited_log" &&
+		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
+		grep -Fq 'certified_bytes=1919317208 actual_bytes=1630052936 accepted_token=0' "$closure_cfl_log" &&
+		grep -Fq 'ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=0.00057953997747972608 binary64_target_schedule=unavailable' "$closure_limited_log" &&
 		grep -Fq 'first=7.41824 last=1.44776 minimum=1.44776 target=0.561256 mass=1.44776 coefficient=0.017278 active_set=1 tolerance=0.000479545' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
-		echo 'PASS (exact exit=219, same-scheme target stop)'
+		echo 'PASS (exact exit=219, target-schedule stop)'
 		rm -f "$closure_cfl_log" "$closure_limited_log"
 	else
 		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; limited_exit=$closure_limited_rc expected 219)"

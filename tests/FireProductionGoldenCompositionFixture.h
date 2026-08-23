@@ -181,7 +181,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					"first=7.41824 last=1.44776 minimum=1.44776 target=0.561256 "
 					"mass=1.44776 coefficient=0.017278 active_set=1 tolerance=0.000479545";
 				std::fprintf(stderr,"ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=%.17g "
-					"same_scheme_target=unavailable error=%s golden=%s\n",dt,error.c_str(),
+					"binary64_target_schedule=unavailable error=%s golden=%s\n",dt,error.c_str(),
 					DigestFile(checkpointPath).c_str());
 				return error==expected&&DigestFile(checkpointPath)==checkpointDigest?219:250;
 			}
@@ -1865,33 +1865,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::chrono::steady_clock::now()-productionWallStart).count();
 		if(!productionSucceeded){std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
-		double productionDeviceP95MS=production.deviceElapsedMS;
-		double productionWallP95MS=productionWallMS;
-		if(limitedClosure){
-			productionDeviceP95MS=0.0;productionWallP95MS=0.0;
-			const std::uint64_t baselinePayload=
-				RISE::FireProductionAcceptedManifoldPayloadDigest(production);
-			for(std::size_t sample=0u;sample<5u;++sample){
-				RISE::FireProductionResidentStepResult trial;
-				const auto trialStart=std::chrono::steady_clock::now();
-				if(!RISE::AdvanceFireProductionResidentStepMetal(request,trial,&error))return 250;
-				const double trialWall=std::chrono::duration<double,std::milli>(
-					std::chrono::steady_clock::now()-trialStart).count();
-				if(RISE::FireProductionAcceptedManifoldPayloadDigest(trial)!=baselinePayload||
-					trial.maximumPredictedAdvectiveManifoldAnomaly!=
-						production.maximumPredictedAdvectiveManifoldAnomaly||
-					trial.maximumManifoldGeneration!=production.maximumManifoldGeneration||
-					trial.maximumAcceptedManifoldDeviation!=
-						production.maximumAcceptedManifoldDeviation||
-					trial.deliveredRestorationDrainFraction!=
-						production.deliveredRestorationDrainFraction||
-					trial.cellSubmapCount!=production.cellSubmapCount||
-					trial.sourceCommandCommitCount!=production.sourceCommandCommitCount||
-					trial.interstageFullGridTransferCount!=0u)return 250;
-				productionDeviceP95MS=std::max(productionDeviceP95MS,trial.deviceElapsedMS);
-				productionWallP95MS=std::max(productionWallP95MS,trialWall);
-			}
-		}
 		const float maximumRestorationTarget=*std::max_element(
 			request.restorationDivergenceTargetPerS.begin(),
 			request.restorationDivergenceTargetPerS.end(),[](const float a,const float b){
@@ -1931,70 +1904,36 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}
 		if(longShadow){
 			constexpr double LowMachValidityCeiling=0x1p-5;
-			constexpr double LowMachPlateauAllowance=(1.0-0x1p-2)*
-				LowMachValidityCeiling;
 			const double fieldMaximum=production.maximumAcceptedManifoldDeviation;
 			if(!production.manifoldPlateauPassed){
 				const bool acceptedTokenMinted=production.HasAcceptedManifoldToken();
-				const double projectedSteps=25.0/static_cast<double>(
-					production.representedTimeStepS);
-				const double deviceProjectionHours=
-					projectedSteps*productionDeviceP95MS/3600000.0;
-				const double wallProjectionHours=
-					projectedSteps*productionWallP95MS/3600000.0;
-				if(limitedClosure){
-					std::fprintf(stderr,"ADVECTIVE_ANOMALY_CLOSURE_STOP dt=%.17g "
-						"predictor_G=%.17g corrected_G=%.17g field_max=%.17g "
-						"allowance=%.17g ceiling=%.17g drain=%.17g passes=%u "
-						"cell_submaps=%u source_commits=%u scalar_reads=%u device_p95_ms=%.17g "
-						"wall_p95_ms=%.17g tier10_device_hours=%.17g tier10_wall_hours=%.17g "
-						"certified_bytes=%llu actual_bytes=%llu accepted_token=%d golden=%s\n",
-						static_cast<double>(production.representedTimeStepS),
-						production.maximumPredictedAdvectiveManifoldAnomaly,
-						production.maximumManifoldGeneration,fieldMaximum,
-						LowMachPlateauAllowance,LowMachValidityCeiling,
-						production.deliveredRestorationDrainFraction,
-						production.advectiveAnomalyClosurePassCount,
-						production.cellSubmapCount,production.sourceCommandCommitCount,
-						production.manifoldScalarDeviceToHostTransferCount,
-						productionDeviceP95MS,productionWallP95MS,deviceProjectionHours,
-						wallProjectionHours,
-						static_cast<unsigned long long>(
-							production.combinedCertifiedWorkingSetBytes),
-						static_cast<unsigned long long>(
-							production.combinedActualMetalAllocationBytes),
-						acceptedTokenMinted?1:0,
-						DigestFile(checkpointPath).c_str());
-					const bool exact=static_cast<double>(production.representedTimeStepS)==
-						0.00057953997747972608&&
-						production.maximumPredictedAdvectiveManifoldAnomaly==
-							0.020501971244812012&&
-						production.maximumManifoldGeneration==0.024326920509338379&&
-						fieldMaximum==0.024326920509338379&&
-						production.deliveredRestorationDrainFraction==
-							0.99965526094762158&&fieldMaximum>LowMachPlateauAllowance&&
-						fieldMaximum<LowMachValidityCeiling&&wallProjectionHours>2.0&&
-						production.advectiveAnomalyClosurePassCount==2u&&
-						production.cellSubmapCount==10u&&
-						production.sourceCommandCommitCount==2u&&
-						production.manifoldScalarDeviceToHostTransferCount==2u&&
-						production.interstageFullGridTransferCount==0u&&
-						production.combinedActualMetalAllocationBytes<=
-							production.combinedCertifiedWorkingSetBytes&&
-						!acceptedTokenMinted&&DigestFile(checkpointPath)==checkpointDigest;
-					return exact?218:250;
-				}
+				if(limitedClosure)return 250;
 				std::fprintf(stderr,"GOLDEN_LONG_SHADOW_REFUSAL step=%zu dt=%.17g G=%.17g "
 					"field_max=%.17g low_mach_ceiling=%.17g delivered_drain=%.17g "
-					"pre_residual=%.17g post_residual=%.17g accepted_token=%d golden=%s\n",slice,
+					"pre_residual=%.17g post_residual=%.17g passes=%u cell_submaps=%u "
+					"dual_submaps=%u source_commits=%u scalar_reads=%u certified_bytes=%llu "
+					"actual_bytes=%llu accepted_token=%d golden=%s\n",slice,
 					static_cast<double>(production.representedTimeStepS),
 					production.maximumManifoldGeneration,fieldMaximum,
 					LowMachValidityCeiling,production.deliveredRestorationDrainFraction,
 					static_cast<double>(production.projection.maximumPreProjectionResidualPerS),
 					static_cast<double>(production.projection.maximumPostProjectionResidualPerS),
+					production.advectiveAnomalyClosurePassCount,production.cellSubmapCount,
+					production.dualSubmapCount,production.sourceCommandCommitCount,
+					production.manifoldScalarDeviceToHostTransferCount,
+					static_cast<unsigned long long>(production.combinedCertifiedWorkingSetBytes),
+					static_cast<unsigned long long>(production.combinedActualMetalAllocationBytes),
 					acceptedTokenMinted?1:0,
 					DigestFile(checkpointPath).c_str());
-				return fieldMaximum>LowMachValidityCeiling&&!acceptedTokenMinted&&
+				return fieldMaximum>LowMachValidityCeiling&&
+					production.advectiveAnomalyClosurePassCount==2u&&
+					production.cellSubmapCount==10u&&production.dualSubmapCount==15u&&
+					production.sourceCommandCommitCount==2u&&
+					production.manifoldScalarDeviceToHostTransferCount==2u&&
+					production.interstageFullGridTransferCount==0u&&
+					production.combinedCertifiedWorkingSetBytes==1919317208u&&
+					production.combinedActualMetalAllocationBytes==1630052936u&&
+					!acceptedTokenMinted&&
 					DigestFile(checkpointPath)==checkpointDigest?252:250;
 			}
 			if(!production.manifoldPlateauPassed||!production.HasAcceptedManifoldToken()||
