@@ -3184,13 +3184,20 @@ The same device evaluator gives cold-state `G=1.2048172357026488e-4`, versus
 the earlier Binary64-host observation `1.2031080315688669e-4`; the device-domain
 burning/cold contrast is `21.0221110x`.
 
-The pre-registered remap branch was executed next.  A shared-alpha ten-tuple
-trial transported `rho*T` beside the original nine conservative components and
-rebuilt sensible energy from reconstructed temperature and composition.  It
-preserved the existing shared-alpha conservation coupling and monotonicity.
-All three post-trial generation maxima were bit-identical to the baseline, so
-the ineffective trial was removed rather than shipped.  The restoration-
-anomaly branch was not activated: its precondition is restoration-dominant
+The pre-registered remap branch was executed next through a retained,
+diagnostic-only exact-`245` comparator.  The real strict-binary32 remap
+transported a shared-alpha ten-tuple containing `rho*T` beside the original
+nine conservative components, then rebuilt sensible energy from reconstructed
+temperature and positive-part composition under the certified endpoint rules.
+The diagnostic deliberately used Binary64 thermochemistry before the final
+binary32 energy publication, a favorable reconstruction rather than an fp32
+rounding penalty.
+It preserved shared-alpha conservation coupling and monotonicity.  Its three
+generation maxima were `2.5328069638265172e-3`,
+`2.5155729299433105e-3`, and `2.5068855498342479e-3`: the independent host-audit
+values, slightly above rather than bit-identical to the baseline device values.
+The trial therefore provided no reduction and was kept out of production.  The
+restoration-anomaly branch was not activated: its precondition is restoration-dominant
 self-generation, whereas both projection-stage scalar contributions are exact
 zero.  The frozen rule therefore reaches its contract-level production-ceiling
 stop.  The current `7.5e-4` allowance is exceeded by `3.3770759518x` at the CFL
@@ -3202,12 +3209,15 @@ The production measurement itself is now resident.  A private two-float map per
 cell holds beginning/terminal deviation; an exact nonnegative binary32 atomic
 max publishes only the two scalars through the already-required terminal read.
 The independent Binary64 reconstruction remains a diagnostic audit.  There is
-one scalar read and zero new full-grid device-to-host transfers.  Warm device
-p95 is `67.1234167 ms`, meeting the requested approximately-70-ms device path,
-but warm wall p95 is still `198.997584 ms`; the earlier `600.471584 ms` wall
-observation is reduced by `66.8598%`, not restored to 70 ms.  At the represented
+one scalar read and zero new full-grid device-to-host transfers.  The exact-
+`254` timing path predeclares one warmup and five samples; its p95 is the
+maximum order statistic and fails unless device p95 is at most `75 ms` and wall
+p95 improves on the prior `600.471584 ms`.  The calibrating observation's warm
+device p95 is `65.7983333 ms`, meeting the requested approximately-70-ms device path,
+but warm wall p95 is still `196.349959 ms`; the earlier `600.471584 ms` wall
+observation is reduced by `67.3007%`, not restored to 70 ms.  At the represented
 limited step this changes the tier-10 x 25 s wall projection from `262.3922 h`
-to `86.9573 h` (device-only projection `29.3314 h`).  The remaining wall/device
+to `85.8004 h` (device-only projection `28.7524 h`).  The remaining wall/device
 gap is retained as an explicit performance finding, not hidden in the capacity
 verdict.  Exact evidence is
 `rendered/fire_production_calibration/r150_manifold_stage_budget/`

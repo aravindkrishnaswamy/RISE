@@ -3488,22 +3488,30 @@ it was already tried and refuted here.
   evaluator measures cold `G=1.2048172357026488e-4`, making the burning/cold
   contrast `21.0221110x`.
 
-  The frozen decision branch was executed.  A shared-alpha ten-tuple
-  reconstruction transported `rho*T` with the nine conservative components
-  and rebuilt energy while preserving shared-alpha and monotonicity.  Its three
-  generation maxima were bit-identical to baseline, so the ineffective change
-  was removed.  The anomaly-aware restoration branch is inapplicable under the
+  The frozen decision branch was executed by the retained diagnostic-only
+  exact-`245` comparator.  A shared-alpha ten-tuple reconstruction transported
+  `rho*T` with the nine conservative components and rebuilt energy while
+  preserving shared-alpha and monotonicity.  Binary64 thermochemistry before
+  final binary32 energy publication made this a favorable reconstruction
+  rather than an fp32-rounding penalty.  Its three maxima were
+  `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+  `2.5068855498342479e-3`: slightly above the device baseline, so the
+  reconstruction provided no reduction and was kept out of production.  The
+  anomaly-aware restoration branch is inapplicable under the
   pre-registered rule because restoration scalar generation is zero rather than
   dominant.  With the CFL term still `3.3770759518x` the `7.5e-4` allowance,
   r150 requires the contract-level production-ceiling ruling and stops before
   long shadow, golden `B_fp32`, guard supersession, temporal refinement,
   readmission, source maps, or first light.
 
-  Warm device p95 is `67.1234167 ms`, while wall p95 is `198.997584 ms`: the
+  The exact-`254` timing gate uses one warmup and five samples, taking the
+  maximum as p95; it requires device p95 <= `75 ms` and wall p95 below the
+  prior `600.471584 ms`.  The calibrating observation is `65.7983333 ms`
+  device and `196.349959 ms` wall: the
   former meets the requested approximately-70-ms resident target and the latter
-  is a truthful remaining regression, though it is `66.8598%` below the prior
+  is a truthful remaining regression, though it is `67.3007%` below the prior
   `600.471584 ms`.  The represented tier-10 x 25 s wall projection is therefore
-  corrected from `262.3922 h` to `86.9573 h` (device-only `29.3314 h`), not
+  corrected from `262.3922 h` to `85.8004 h` (device-only `28.7524 h`), not
   claimed as a 70-ms wall result.  Durable evidence is the r150 stage-budget
   artifact; the golden checkpoint remains unchanged.  Mirroring the resident
   result schema moves the source-bound r136 digest to

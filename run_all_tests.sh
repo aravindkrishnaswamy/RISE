@@ -548,22 +548,47 @@ fi
 
 # r150 is the frozen three-timestep burning-state stage budget. Exact 245
 # means the device map/reduction, independent host audit, stage ownership,
-# scaling exponents, and golden identity all matched before the ceiling stop.
+# scaling exponents, retained ten-tuple falsification, and golden identity all
+# matched before the ceiling stop. Malformed activation must exit 223 before
+# Metal rather than aliasing to process success.
 if [ "$(uname -s)" = "Darwin" ]; then
 	stage_budget_name="FireSequenceTest.r150_manifold_stage_budget"
 	stage_budget_path="$BIN_DIR/FireSequenceTest"
 	stage_budget_log="$LOG_DIR/$stage_budget_name.log"
+	stage_budget_malformed_log="$LOG_DIR/$stage_budget_name.malformed.log"
 	printf '[ evidence ] %-46s ... ' "$stage_budget_name"
 	stage_budget_rc=0
-	RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=1 \
-		"$stage_budget_path" --fire-production-golden-composition \
-		"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
-		"$REPO_ROOT" >"$stage_budget_log" 2>&1 || stage_budget_rc=$?
-	if [ "$stage_budget_rc" -eq 245 ]; then
-		echo 'PASS (exact exit=245)'
-		rm -f "$stage_budget_log"
+	stage_budget_malformed_rc=0
+	if [ ! -x "$stage_budget_path" ]; then
+		stage_budget_rc=127
+		stage_budget_malformed_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=malformed \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$stage_budget_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$stage_budget_malformed_log" 2>&1 || stage_budget_malformed_rc=$?
+		RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=1 \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$stage_budget_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$stage_budget_log" 2>&1 || stage_budget_rc=$?
 	else
-		echo "FAIL (exit=$stage_budget_rc; expected 245)"
+		RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=malformed \
+			"$stage_budget_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$stage_budget_malformed_log" 2>&1 || stage_budget_malformed_rc=$?
+		RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=1 \
+			"$stage_budget_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$stage_budget_log" 2>&1 || stage_budget_rc=$?
+	fi
+	if [ "$stage_budget_malformed_rc" -eq 223 ] && [ "$stage_budget_rc" -eq 245 ]; then
+		echo 'PASS (exact exit=245)'
+		rm -f "$stage_budget_log" "$stage_budget_malformed_log"
+	else
+		echo "FAIL (malformed_exit=$stage_budget_malformed_rc expected 223; "\
+"evidence_exit=$stage_budget_rc expected 245)"
 		printf '%s\t%d\t%s\n' "$stage_budget_name" "$stage_budget_rc" \
 			"$stage_budget_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))

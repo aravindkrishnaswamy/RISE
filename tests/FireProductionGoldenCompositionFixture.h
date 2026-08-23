@@ -75,10 +75,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	if(manifoldProbeValue&&std::strcmp(manifoldProbeValue,"1")!=0)return 255;
 	const bool manifoldProbe=manifoldProbeValue!=nullptr;
 	const char* stageBudgetProbeValue=std::getenv("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE");
-	if(stageBudgetProbeValue&&std::strcmp(stageBudgetProbeValue,"1")!=0)return 256;
+	if(stageBudgetProbeValue&&std::strcmp(stageBudgetProbeValue,"1")!=0)return 223;
 	const bool stageBudgetProbe=stageBudgetProbeValue!=nullptr;
 	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
-		(manifoldProbe&&stageBudgetProbe))return 256;
+		(manifoldProbe&&stageBudgetProbe))return 224;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -247,10 +247,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
 		}
 		if(stageBudgetProbe){
-			if(slice!=0u)return 256;
+			if(slice!=0u)return 225;
 			std::array<std::array<double,3>,3> stageGeneration={{{{0.0,0.0,0.0}},
 				{{0.0,0.0,0.0}},{{0.0,0.0,0.0}}}};
 			std::array<double,3> independentGeneration={{0.0,0.0,0.0}},
+				reconstructionGeneration={{0.0,0.0,0.0}},
 				deviceMS={{0.0,0.0,0.0}},wallMS={{0.0,0.0,0.0}};
 			for(std::size_t level=0u;level<3u;++level){
 				const float representedStep=static_cast<float>(dt/std::pow(2.0,level));
@@ -262,7 +263,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				sweepConfig.transport.deltaTimeS=representedStep;sweepConfig.workerCount=16u;
 				ConservativeAdvance3DResult sweepOracle;
 				if(!AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
-					sweepConfig,fuel,fuel,transport,sweepOracle,&error))return 256;
+					sweepConfig,fuel,fuel,transport,sweepOracle,&error))return 225;
 				for(std::size_t cell=0u;cell<cells;++cell){
 					sweepRequest.divergenceTargetPerS[cell]=static_cast<float>(
 						sweepOracle.divergenceHeunPerS[cell]);
@@ -274,19 +275,82 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				const auto wallBeginning=std::chrono::steady_clock::now();
 				if(!RISE::AdvanceFireProductionResidentStepMetal(sweepRequest,measured,&error)){
 					std::fprintf(stderr,"MANIFOLD_STAGE_BUDGET level=%zu failed: %s\n",
-						level,error.c_str());return 256;}
+						level,error.c_str());return 225;}
 				wallMS[level]=std::chrono::duration<double,std::milli>(
 					std::chrono::steady_clock::now()-wallBeginning).count();
 				deviceMS[level]=measured.deviceElapsedMS;
 				stageGeneration[level]=measured.manifoldStageGeneration;
 				std::vector<ConservativeVector> terminal;
 				if(!FireProductionDyadicCalibration::UnpackProductionConservative(
-					measured.conservativeValues,cells,terminal))return 256;
+					measured.conservativeValues,cells,terminal))return 225;
 				for(std::size_t cell=0u;cell<cells;++cell){double terminalRatio=0.0;
 					if(!AcceptedConservativeVolumeRatio(terminal[cell],fuel,
-						FireStateProducerPrecision::Binary32,terminalRatio,&error))return 256;
+						FireStateProducerPrecision::Binary32,terminalRatio,&error))return 225;
 					independentGeneration[level]=std::max(independentGeneration[level],std::fabs(
 						(terminalRatio-1.0)-sweepRequest.beginningManifoldDeviationPerCell[cell]));
+				}
+
+				// Retained diagnostic-only falsification of the ruled r150 remedy.  The
+				// real strict-binary32 remap transports one shared-alpha ten-tuple:
+				// the nine production components plus rho*T.  The trial then rebuilds
+				// sensible energy from transported composition and temperature.  No
+				// alternate tuple is reachable from the production Metal owner.
+				RISE::FireProductionCellPalindromeRequest reconstruction=
+					sweepRequest.cellTransport;
+				reconstruction.componentCount=10u;
+				reconstruction.conservativeValues.resize(10u*cells);
+				reconstruction.ambientValues.resize(10u);
+				for(std::size_t component=0u;component<9u;++component){
+					reconstruction.ambientValues[component]=
+						sweepRequest.cellTransport.ambientValues[component];
+					for(std::size_t cell=0u;cell<cells;++cell)
+						reconstruction.conservativeValues[component*cells+cell]=
+							sweepRequest.cellTransport.conservativeValues[component*cells+cell];
+				}
+				reconstruction.ambientValues[9]=static_cast<float>(
+					ambient.TotalDensity()*ambient.temperatureK);
+				for(std::size_t cell=0u;cell<cells;++cell)
+					reconstruction.conservativeValues[9u*cells+cell]=static_cast<float>(
+						beginning.states[cell].TotalDensity()*beginning.states[cell].temperatureK);
+				RISE::FireProductionCellPalindromeResult reconstructionResult;
+				if(!RISE::RemapFireProductionCellPalindromeCPU(reconstruction,
+					reconstructionResult,&error)||reconstructionResult.executedSubmapCount!=5u||
+					reconstructionResult.conservativeValues.size()!=10u*cells){std::fprintf(stderr,
+					"MANIFOLD_RECONSTRUCTION level=%zu remap failed: %s\n",level,error.c_str());
+					return 225;}
+				for(std::size_t cell=0u;cell<cells;++cell){
+					ConservativeVector rebuilt;
+					for(std::size_t component=0u;component<8u;++component)
+						rebuilt[component]=static_cast<double>(
+							reconstructionResult.conservativeValues[component*cells+cell]);
+					MethaneCellState rebuiltState=FromConservativeVector(
+						rebuilt,FireStateProducerPrecision::Binary32);
+					const double transportedDensity=rebuiltState.TotalDensity();
+					if(!(transportedDensity>0.0)){std::fprintf(stderr,
+						"MANIFOLD_RECONSTRUCTION level=%zu cell=%zu density failed\n",level,cell);
+						return 225;}
+					rebuiltState.temperatureK=static_cast<double>(
+						reconstructionResult.conservativeValues[9u*cells+cell])/
+						transportedDensity;
+					rebuiltState.temperatureK=std::max(shadowConfig.transport.ambientTemperatureK,
+						std::min(shadowConfig.transport.adiabaticTemperatureK,
+							rebuiltState.temperatureK));
+					MethaneCellState propertyState=rebuiltState;
+					for(double& density:propertyState.constituent)density=std::max(0.0,density);
+					if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(propertyState),
+						rebuiltState.temperatureK,rebuiltState.sensibleEnergyJPerM3,&error)){std::fprintf(stderr,
+						"MANIFOLD_RECONSTRUCTION level=%zu cell=%zu energy failed: %s T=%.17g\n",
+						level,cell,error.c_str(),rebuiltState.temperatureK);return 225;}
+					rebuilt[8]=static_cast<double>(static_cast<float>(
+						rebuiltState.sensibleEnergyJPerM3));
+					double rebuiltRatio=0.0;
+					if(!AcceptedConservativeVolumeRatio(rebuilt,fuel,
+						FireStateProducerPrecision::Binary32,rebuiltRatio,&error)){std::fprintf(stderr,
+						"MANIFOLD_RECONSTRUCTION level=%zu cell=%zu ratio failed: %s\n",
+						level,cell,error.c_str());return 225;}
+					reconstructionGeneration[level]=std::max(reconstructionGeneration[level],
+						std::fabs((rebuiltRatio-1.0)-
+							sweepRequest.beginningManifoldDeviationPerCell[cell]));
 				}
 			}
 			std::array<std::array<double,3>,2> exponent={{{{0.0,0.0,0.0}},{{0.0,0.0,0.0}}}};
@@ -296,9 +360,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						std::log2(stageGeneration[interval][stage]/stageGeneration[interval+1u][stage]):0.0;
 			for(std::size_t level=0u;level<3u;++level)std::fprintf(stderr,
 				"MANIFOLD_STAGE_BUDGET level=%zu dt=%.17g remap=%.17g physical=%.17g "
-				"restoration=%.17g independent=%.17g device_ms=%.17g wall_ms=%.17g\n",level,
+				"restoration=%.17g independent=%.17g reconstruction=%.17g "
+				"device_ms=%.17g wall_ms=%.17g\n",level,
 				dt/std::pow(2.0,level),stageGeneration[level][0],stageGeneration[level][1],
-				stageGeneration[level][2],independentGeneration[level],deviceMS[level],wallMS[level]);
+				stageGeneration[level][2],independentGeneration[level],
+				reconstructionGeneration[level],deviceMS[level],wallMS[level]);
 			std::fprintf(stderr,"MANIFOLD_STAGE_BUDGET exponent remap=(%.17g,%.17g) "
 				"physical=(%.17g,%.17g) restoration=(%.17g,%.17g) golden=%d\n",
 				exponent[0][0],exponent[1][0],exponent[0][1],exponent[1][1],
@@ -310,9 +376,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				independentGeneration[0]==0.0025328069638265172&&
 				independentGeneration[1]==0.0025155729299433105&&
 				independentGeneration[2]==0.0025068855498342479&&
+				reconstructionGeneration[0]==0.0025328069638265172&&
+				reconstructionGeneration[1]==0.0025155729299433105&&
+				reconstructionGeneration[2]==0.0025068855498342479&&
 				exponent[0][0]==0.0098454605227652776&&
 				exponent[1][0]==0.0050337970393511964;
-			return remapDecision&&DigestFile(checkpointPath)==checkpointDigest?245:257;
+			return remapDecision&&DigestFile(checkpointPath)==checkpointDigest?245:226;
 		}
 		if(manifoldProbe){
 			if(slice!=0u)return 255;
@@ -476,7 +545,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					5.8727789631340954e-08&&
 				independentField-limited.maximumAcceptedManifoldDeviation==
 					5.8728976792821186e-08&&
-				atomicRejection&&std::isfinite(device.back())&&std::isfinite(wall.back())&&
+				atomicRejection&&std::isfinite(device.back())&&device.back()>0.0&&
+				device.back()<=75.0&&std::isfinite(wall.back())&&wall.back()>0.0&&
+				wall.back()<600.471584&&
 				DigestFile(checkpointPath)==checkpointDigest;
 			return exact?254:252;
 		}

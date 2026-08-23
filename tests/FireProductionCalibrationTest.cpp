@@ -553,7 +553,7 @@ int main()
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"fcf36c20891dcf6d45db8b1af7095879c04d2c3924cc23eca46cea37ca89ab6f"&&
+		"811544a8e2dd9ffd700887810419080ec251ede359e459f7d7b3d3d4e0ad38cb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 		"4f4774cead433f065f71296c516758eb3c3fa680528c12b1d16ee1ecb50a50e6"&&
@@ -580,7 +580,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"cf5ba95bce91d3ac591e090637eeeb3aa7f4738209b4e89eaa2178048130730c"&&
+		"9e4577659acc8b16ca767d054362de2ddd77cbc5b13f01f07b5058aa64bd3c02"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -712,7 +712,7 @@ int main()
 	Check(!manifoldStageBudgetEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldStageBudgetEvidence.begin(),
 			manifoldStageBudgetEvidence.end()))==
-		"17ba6f6eefaa96f479daff1ba6935125463c08b742bd4b20bb19df6b36add61e"&&
+		"eade8e7ab31a71bfb51f75445b03ea5f25822c8b715ba82cb05521d78a7031de"&&
 		manifoldStageBudgetEvidence.find("canonical_exit 245")!=std::string::npos&&
 		manifoldStageBudgetEvidence.find("new_full_grid_device_to_host_transfers 0")!=
 			std::string::npos&&
@@ -725,7 +725,18 @@ int main()
 		manifoldStageBudgetEvidence.find(
 			"remap_scaling_exponent_0_to_1 0.0098454605227652776")!=std::string::npos&&
 		manifoldStageBudgetEvidence.find(
-			"reconstruction_bit_identical_all_three_levels true")!=std::string::npos&&
+			"reconstruction_trial_execution retained_diagnostic_only_exact_245")!=
+			std::string::npos&&
+		manifoldStageBudgetEvidence.find(
+			"reconstruction_post_remap_G_level_0 0.0025328069638265172")!=
+			std::string::npos&&
+		manifoldStageBudgetEvidence.find(
+			"reconstruction_bit_identical_all_three_levels false")!=std::string::npos&&
+		manifoldStageBudgetEvidence.find("reconstruction_reduces_G false")!=
+			std::string::npos&&
+		manifoldStageBudgetEvidence.find("timing_gate canonical_exit_254")!=
+			std::string::npos&&
+		manifoldStageBudgetEvidence.find("timing_sample_count 5")!=std::string::npos&&
 		manifoldStageBudgetEvidence.find("wall_target_met false")!=std::string::npos&&
 		manifoldStageBudgetEvidence.find(
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
@@ -740,14 +751,28 @@ int main()
 			"7962d4d8b7fc67acd23b8dc3d57e952dd4268230d188ed83a14a34c41b720575"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"fcf36c20891dcf6d45db8b1af7095879c04d2c3924cc23eca46cea37ca89ab6f"&&
+			"811544a8e2dd9ffd700887810419080ec251ede359e459f7d7b3d3d4e0ad38cb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"4f4774cead433f065f71296c516758eb3c3fa680528c12b1d16ee1ecb50a50e6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 			"babb37cae5b2563f793961292b282f3ccc90291bfd86f4cf0c87bc19f5e3871a"&&
+		goldenCompositionFixture.find("reconstruction.componentCount=10u")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("RemapFireProductionCellPalindromeCPU(reconstruction")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("reconstructionGeneration[0]==0.0025328069638265172")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("device.back()<=75.0")!=std::string::npos&&
+		goldenCompositionFixture.find("wall.back()<600.471584")!=std::string::npos&&
+		advectionMetal.find("componentCount=10u")==std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r150_manifold_stage_budget")!=
+			std::string::npos&&
+		unixTestDriver.find("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=malformed")!=
+			std::string::npos&&
+		unixTestDriver.find("stage_budget_malformed_rc\" -eq 223")!=std::string::npos&&
+		unixTestDriver.find("\"$timeout_bin\" \"$RISE_TEST_TIMEOUT\" \"$stage_budget_path\"")!=
 			std::string::npos&&
 		unixTestDriver.find("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=1")!=
 			std::string::npos&&
