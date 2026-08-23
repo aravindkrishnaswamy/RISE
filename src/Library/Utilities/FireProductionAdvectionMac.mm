@@ -2440,7 +2440,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				if( enforcePlateau )
 					computed.projection.validationPassed=plateauValidation.mechanismPassed;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
-				if( enforcePlateau&&plateauPassed ) {
+				if( enforcePlateau&&plateauPassed&&computed.physicalProjection.validationPassed&&
+					computed.projection.validationPassed ) {
 					computed.acceptedManifoldToken_.available_=true;
 					computed.acceptedManifoldToken_.representedTimeStepS_=
 						static_cast<double>(request.force.timeStepS);
@@ -2452,6 +2453,10 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 						plateauValidation.deliveredDrainFraction;
 					computed.acceptedManifoldToken_.maximumPostResidualPerS_=
 						plateauValidation.maximumPostResidualPerS;
+					computed.acceptedManifoldToken_.physicalMaximumPreResidualPerS_=
+						computed.physicalProjection.maximumPreProjectionResidualPerS;
+					computed.acceptedManifoldToken_.physicalMaximumPostResidualPerS_=
+						computed.physicalProjection.maximumPostProjectionResidualPerS;
 					computed.acceptedManifoldToken_.payloadDigest_=
 						FireProductionAcceptedManifoldPayloadDigest(computed);
 				}

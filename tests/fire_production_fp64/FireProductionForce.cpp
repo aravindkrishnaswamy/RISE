@@ -72,6 +72,26 @@ namespace RISEFireProductionFP64
 		}
 	}
 
+	bool FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointRecord(
+		const bool available,const double timeStepS,const double maximumGeneration,
+		const double restorationDrainFraction,const double previousStepS,
+		const double lastAcceptedStepS,FireProductionAcceptedManifoldObservation& result )
+	{
+		result.Clear();
+		if(available){
+			if(!std::isfinite(timeStepS)||timeStepS<=0.0||
+				!std::isfinite(maximumGeneration)||maximumGeneration<0.0||
+				!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
+				restorationDrainFraction>1.0||timeStepS!=previousStepS||
+				timeStepS!=lastAcceptedStepS)return false;
+			result.available_=true;result.timeStepS_=timeStepS;
+			result.maximumGeneration_=maximumGeneration;
+			result.restorationDrainFraction_=restorationDrainFraction;
+			return true;
+		}
+		return timeStepS==0.0&&maximumGeneration==0.0&&restorationDrainFraction==0.0;
+	}
+
 	bool SelectFireProductionStableTimeStep(
 		const double cellWidthM,
 		const double maximumVelocityMPerS,
@@ -121,15 +141,29 @@ namespace RISEFireProductionFP64
 			"explicit_diffusion");
 		if( previousStepS>0.0 ) accept(1.1*previousStepS,"growth_limit");
 		if( previousManifold.available_&&previousManifold.maximumGeneration_>0.0 ) {
-			const double candidate=previousManifold.timeStepS_*
-				((1.0-ManifoldHeadroom)*ManifoldEOSCeiling*
-				previousManifold.restorationDrainFraction_)/previousManifold.maximumGeneration_;
-			if( !std::isfinite(candidate)||candidate<=0.0 )
-				return Fail(error,"production manifold timestep is invalid");
+			double candidate=0.0;
+			if(!DeriveFireProductionManifoldTimeStep(previousManifold.timeStepS_,
+				previousManifold.maximumGeneration_,previousManifold.restorationDrainFraction_,
+				candidate,error))return false;
 			accept(candidate,"manifold_plateau");
 		}
 		return (result.seconds>0.0&&!std::isnan(result.seconds))||
 			Fail(error,"production timestep selection failed");
+	}
+
+	bool DeriveFireProductionManifoldTimeStep(
+		const double previousStepS,const double maximumGeneration,
+		const double restorationDrainFraction,double& timeStepS,std::string* error )
+	{
+		timeStepS=0.0;
+		if(!std::isfinite(previousStepS)||previousStepS<=0.0||
+			!std::isfinite(maximumGeneration)||maximumGeneration<=0.0||
+			!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
+			restorationDrainFraction>1.0)return Fail(error,"production manifold predictor inputs are invalid");
+		timeStepS=previousStepS*((1.0-ManifoldHeadroom)*ManifoldEOSCeiling*
+			restorationDrainFraction)/maximumGeneration;
+		return (std::isfinite(timeStepS)&&timeStepS>0.0)||
+			Fail(error,"production manifold timestep is invalid");
 	}
 
 	bool EvaluateFireProductionVremanEddyViscosity(

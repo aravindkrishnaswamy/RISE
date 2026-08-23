@@ -277,7 +277,18 @@ namespace RISEFireProductionFP64
 		FireProductionResidentStepRequest() : enforceManifoldPlateau(true) {}
 	};
 
-	class FireProductionCheckpointManifoldAccess;
+	class FireProductionAcceptedManifoldObservation;
+	class FireProductionCheckpointManifoldAccess final
+	{
+	public:
+		//! The library-owned checkpoint codec is the only persistence authority.
+		//! Defining a lookalike friend in a consumer translation unit is impossible.
+		static bool RestoreValidatedCheckpointRecord(
+			bool,double,double,double,double,double,
+			FireProductionAcceptedManifoldObservation& );
+	private:
+		FireProductionCheckpointManifoldAccess()=delete;
+	};
 	struct FireProductionStableTimeStep;
 	struct FireProductionResidentStepResult;
 
@@ -285,19 +296,24 @@ namespace RISEFireProductionFP64
 	{
 	public:
 		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
-			maximumGeneration_(0.0),restorationDrainFraction_(0.0) {}
+			maximumGeneration_(0.0),restorationDrainFraction_(0.0),
+			residentPayloadDigest_(0u),bindsResidentPayload_(false) {}
 		bool Available() const { return available_; }
 		double TimeStepS() const { return timeStepS_; }
 		double MaximumGeneration() const { return maximumGeneration_; }
 		double RestorationDrainFraction() const { return restorationDrainFraction_; }
+		bool MatchesAcceptedResidentPayload(const FireProductionResidentStepResult&) const;
 
 	private:
 		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
-			restorationDrainFraction_=0.0; }
+			restorationDrainFraction_=0.0;residentPayloadDigest_=0u;
+			bindsResidentPayload_=false; }
 		bool available_;
 		double timeStepS_;
 		double maximumGeneration_;
 		double restorationDrainFraction_;
+		std::uint64_t residentPayloadDigest_;
+		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
 			double,double,double,double,double,
@@ -312,6 +328,11 @@ namespace RISEFireProductionFP64
 
 		FireProductionStableTimeStep() : seconds(0.0),activeLimit(0) {}
 	};
+	//! Pure r143 predictor arithmetic for diagnostics and the authority-bearing
+	//! selector.  It does not confer accepted-observation authority.
+	bool DeriveFireProductionManifoldTimeStep(
+		double previousStepS,double maximumGeneration,double restorationDrainFraction,
+		double& timeStepS,std::string* error=0 );
 
 	//! Selects the production step from the CFL family, the 1.1 growth cap, and
 	//! the r143 accepted-step manifold observation.  An unavailable observation

@@ -3012,10 +3012,14 @@ an unavailable v5--v9 observation could bypass the production limiter after a
 resume.  A second review also found that a bearer token and mutable published
 tuple would merely move those authority gaps.  The resident owner now records
 the represented binary32 timestep and creates a private, copy-clearing token
-only after both the mechanism and function gates pass.  The token binds the
-complete resident payload and all load-bearing diagnostics.  Publication
-requires exact agreement, consumes the token, and returns an opaque observation
-whose fields are read-only outside the producer and validated checkpoint codec.
+only after both projections validate and both the mechanism and function gates
+pass.  The token binds the physical residual evidence and a field-tagged,
+length-delimited digest of the complete resident payload, as well as all
+plateau diagnostics.  Publication requires exact agreement, consumes the token,
+and returns an opaque observation whose fields are read-only outside the
+producer and complete, library-owned validated checkpoint codec.  The
+observation retains the payload digest, so the state-application seam rejects
+mutation after publication as well.
 Public diagnostics remain observable, but they no longer confer authority.  An
 unavailable observation is accepted only with `previousStepS=0`; legacy
 production resume therefore fails closed instead of silently reverting to CFL.
@@ -3024,9 +3028,11 @@ the missing-observation rule is production-only rather than a mixed lifecycle.
 
 The lifecycle gate is now executable rather than format-only.  It advances two
 real tier-12 resident steps.  Before the first publication it proves that token
-copy, wrong caller timestep, payload mutation, coherent diagnostic forgery, and
-field mutation all reject; successful publication consumes the token and an
-immediate replay also rejects.  It then updates the represented timing fields,
+copy, wrong caller timestep, scalar and vector-boundary payload mutation,
+physical-validation evidence mutation, coherent diagnostic forgery, and field
+mutation all reject; successful publication consumes the token, immediate
+replay rejects, and post-publication velocity mutation cannot be applied.  It
+then updates the represented timing fields,
 writes and reloads checkpoint v10, and passes the reloaded observation to the
 second selector.  Separate REDs reject both writer-side timing mismatches and a
 checksum-valid malformed-v10 reload.  Exact exit `255` binds first-step
@@ -3042,7 +3048,7 @@ Retained r118 physics is unchanged: probe plateau
 wall acceptance remains false.  r119 still accepts every spatial scalar,
 velocity, and inventory channel; r138 retains trace `f90a2508...551cebf`; and
 r142/r144 retain exact `253/254`.  r144's rejected burning result has no token.
-The source-bound r136 trace moves to `295b1f4f...7a9278b` solely because this
+The source-bound r136 trace moves to `404d5f27...3a153` solely because this
 owner API is in the generated source manifest; the arithmetic census, `0xff`
 proof gap, and exit `237` are unchanged.
 The function-level stop is therefore unchanged: field deviation is still

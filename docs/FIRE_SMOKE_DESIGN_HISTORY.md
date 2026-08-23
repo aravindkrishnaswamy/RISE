@@ -3371,13 +3371,16 @@ it was already tried and refuted here.
 - **r147 producer-owned observation authority (2026-08-22):** fresh review
   corrects r146's remaining public-authority gaps without changing the r144
   stop.  A successful resident step now records its represented binary32
-  timestep and receives a private, copy-clearing token only after its mechanism
-  and field plateau gates pass.  The token binds the complete resident payload
-  plus timestep, `G`, terminal field deviation, required/delivered drain, and
-  mechanism band.  Publication consumes it; payload mutation, a coordinated
-  diagnostic rewrite, copying, and replay therefore RED.  The published
-  observation is opaque outside the producer and the validated checkpoint
-  codec, so authority cannot be regained by rewriting `(dt,G,r)`.  The
+  timestep and receives a private, copy-clearing token only after both
+  projections validate and its mechanism and field plateau gates pass.  The
+  token binds physical residual evidence and a field-tagged, length-delimited
+  resident-payload digest plus timestep, `G`, terminal field deviation,
+  required/delivered drain, and mechanism band.  Publication consumes it;
+  scalar, vector-boundary, physical-validation, and coherent diagnostic
+  mutations, copying, and replay therefore RED.  The published observation is
+  opaque outside the producer and the complete library-owned checkpoint codec,
+  and retains the digest so post-publication mutation cannot reach state
+  application.  Authority cannot be regained by rewriting `(dt,G,r)`.  The
   production selector also rejects unavailable metadata whenever
   `previousStepS>0`, so v5--v9 production resume cannot silently bypass the
   manifold limit.  The binary64 oracle retains its separate five-argument CFL
@@ -3395,7 +3398,7 @@ it was already tried and refuted here.
   `325.3877 ms` observation against the historical `200 ms` budget.  r119
   accepts every channel; r138 retains `f90a2508...551cebf`; r142/r144 retain
   exact `253/254`.  The owner-only header change moves the source-bound r136
-  trace to `295b1f4f...7a9278b` without changing any arithmetic pin or the
+  trace to `404d5f27...3a153` without changing any arithmetic pin or the
   `0xff` refusal.  The burning result remains tokenless and rejected at field
   `2.5081625764804549e-3`, required drain `3.3442167670577247`, delivered
   `0.97489008508207653`.  Durable evidence is the SHA-bound r147 artifact; golden

@@ -57,36 +57,6 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-namespace RISE
-{
-	//! The checkpoint codec is the only non-producer authority allowed to
-	//! reconstruct an accepted observation.  It validates the persisted tuple
-	//! against the accepted-step timing before touching the opaque value.
-	class FireProductionCheckpointManifoldAccess
-	{
-	public:
-		static bool Restore(const bool available,const double timeStepS,
-			const double maximumGeneration,const double restorationDrainFraction,
-			const double previousStepS,const double lastAcceptedStepS,
-			FireProductionAcceptedManifoldObservation& result)
-		{
-			result.Clear();
-			if(available){
-				if(!std::isfinite(timeStepS)||timeStepS<=0.0||
-					!std::isfinite(maximumGeneration)||maximumGeneration<0.0||
-					!std::isfinite(restorationDrainFraction)||
-					restorationDrainFraction<0.0||restorationDrainFraction>1.0||
-					timeStepS!=previousStepS||timeStepS!=lastAcceptedStepS)return false;
-				result.available_=true;result.timeStepS_=timeStepS;
-				result.maximumGeneration_=maximumGeneration;
-				result.restorationDrainFraction_=restorationDrainFraction;
-				return true;
-			}
-			return timeStepS==0.0&&maximumGeneration==0.0&&restorationDrainFraction==0.0;
-		}
-	};
-}
-
 namespace
 {
 	constexpr double CapstonePoolDiameterM=0.30;
@@ -698,7 +668,7 @@ namespace
 			double maximumGeneration=0.0,restorationDrainFraction=0.0;
 			if(!reader.Pod(manifoldAvailable)||manifoldAvailable>1u||!reader.Pod(timeStepS)||
 				!reader.Pod(maximumGeneration)||!reader.Pod(restorationDrainFraction)||
-				!FireProductionCheckpointManifoldAccess::Restore(manifoldAvailable!=0u,
+				!FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointRecord(manifoldAvailable!=0u,
 					timeStepS,maximumGeneration,restorationDrainFraction,
 					checkpoint.previousStepS,checkpoint.lastAcceptedStepS,
 					checkpoint.productionManifoldObservation))return false;
@@ -3445,7 +3415,7 @@ int main(int argc,char** argv)
 	precisionRoundTrip.simulationTimeS=checkpointRepresentedStep;
 	precisionRoundTrip.previousStepS=checkpointRepresentedStep;
 	precisionRoundTrip.lastAcceptedStepS=checkpointRepresentedStep;
-	Check(FireProductionCheckpointManifoldAccess::Restore(true,checkpointRepresentedStep,
+	Check(FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointRecord(true,checkpointRepresentedStep,
 		checkpointAcceptedStep.maximumManifoldGeneration,
 		checkpointAcceptedStep.deliveredRestorationDrainFraction,checkpointRepresentedStep,
 		checkpointRepresentedStep,precisionRoundTrip.productionManifoldObservation),
@@ -3493,6 +3463,8 @@ int main(int argc,char** argv)
 		checkpointFixture/"manifold_mismatched_last.checkpoint";
 	const std::filesystem::path malformedV10Path=
 		checkpointFixture/"manifold_checksum_valid_malformed_v10.checkpoint";
+	const std::filesystem::path malformedLastV10Path=
+		checkpointFixture/"manifold_checksum_valid_malformed_last_v10.checkpoint";
 	const bool mismatchedWritesRejected=
 		!SaveMethaneRunCheckpoint(mismatchedPreviousPath,mismatchedPrevious,
 			checkpointFixtureError)&&!std::filesystem::exists(mismatchedPreviousPath)&&
@@ -3501,11 +3473,17 @@ int main(int argc,char** argv)
 	forceMalformedManifoldTimingWriteForTest=true;
 	const bool malformedWritten=SaveMethaneRunCheckpoint(malformedV10Path,
 		mismatchedPrevious,checkpointFixtureError);
+	const bool malformedLastWritten=SaveMethaneRunCheckpoint(malformedLastV10Path,
+		mismatchedLast,checkpointFixtureError);
 	forceMalformedManifoldTimingWriteForTest=false;
 	MethaneRunCheckpoint rejectedMalformedV10;
+	MethaneRunCheckpoint rejectedMalformedLastV10;
 	const bool malformedLoadRejected=malformedWritten&&
 		!LoadMethaneRunCheckpoint(malformedV10Path,rejectedMalformedV10,checkpointFixtureError);
-	Check(mismatchedWritesRejected&&malformedLoadRejected,
+	const bool malformedLastLoadRejected=malformedLastWritten&&
+		!LoadMethaneRunCheckpoint(malformedLastV10Path,rejectedMalformedLastV10,
+			checkpointFixtureError);
+	Check(mismatchedWritesRejected&&malformedLoadRejected&&malformedLastLoadRejected,
 		"r147 v10 writer and checksum-valid loader reject each accepted-observation timestep mismatch");
 	FireStateProducerPrecision loadedPrecision=FireStateProducerPrecision::Unknown;
 	const int precisionResumeExit=precisionSave?RunCheckpointSubprocess(self,

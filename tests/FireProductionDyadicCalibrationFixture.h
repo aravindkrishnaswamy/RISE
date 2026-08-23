@@ -809,8 +809,11 @@ namespace FireProductionDyadicCalibration
 	}
 
 	bool ApplyProductionResult(const RISE::FireProductionResidentStepResult& production,
-		MethaneRunCheckpoint& state,std::string& error)
+		MethaneRunCheckpoint& state,std::string& error,
+		const RISE::FireProductionAcceptedManifoldObservation* acceptedObservation=nullptr)
 	{
+		if(acceptedObservation&&!acceptedObservation->MatchesAcceptedResidentPayload(production))
+			return Fail(&error,"accepted manifold observation no longer matches resident payload");
 		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
 			return false;
 		if(production.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32)
@@ -1457,7 +1460,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="295b1f4f8da18db1cdaf7e54a4c4b14091f9d66ea55b584abd7b582787a9278b"||
+			traceDigest!="404d5f279cf9a95cd32324d516aeac01f3b235256dcfad3f2dd1545d3373a153"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1670,6 +1673,16 @@ namespace FireProductionDyadicCalibration
 					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
 						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
 				production.conservativeValues.front()=savedPayload;
+				const float movedBoundaryValue=production.conservativeValues.back();
+				production.conservativeValues.pop_back();
+				production.transportedDual.auxiliaryFaceDensity[0].insert(
+					production.transportedDual.auxiliaryFaceDensity[0].begin(),movedBoundaryValue);
+				const bool vectorBoundaryMutationRejected=
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
+						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				production.transportedDual.auxiliaryFaceDensity[0].erase(
+					production.transportedDual.auxiliaryFaceDensity[0].begin());
+				production.conservativeValues.push_back(movedBoundaryValue);
 				const double savedGeneration=production.maximumManifoldGeneration;
 				const double savedRequired=production.requiredRestorationDrainFraction;
 				const double savedDelivered=production.deliveredRestorationDrainFraction;
@@ -1696,9 +1709,25 @@ namespace FireProductionDyadicCalibration
 					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
 						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
 				production.maximumAcceptedManifoldDeviation=savedDeviation;
+				const bool savedPhysicalValidation=production.physicalProjection.validationPassed;
+				production.physicalProjection.validationPassed=false;
+				const bool physicalValidationMutationRejected=
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
+						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				production.physicalProjection.validationPassed=savedPhysicalValidation;
+				const float savedPhysicalResidual=
+					production.physicalProjection.maximumPostProjectionResidualPerS;
+				production.physicalProjection.maximumPostProjectionResidualPerS=
+					std::nextafter(savedPhysicalResidual,std::numeric_limits<float>::infinity());
+				const bool physicalResidualMutationRejected=
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
+						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
+				production.physicalProjection.maximumPostProjectionResidualPerS=savedPhysicalResidual;
 				authorityMutationREDsPassed=copyClearsToken&&wrongStepRejected&&
-					payloadMutationRejected&&coherentDiagnosticForgeryRejected&&
-					deviationMutationRejected;
+					payloadMutationRejected&&vectorBoundaryMutationRejected&&
+					coherentDiagnosticForgeryRejected&&
+					deviationMutationRejected&&physicalValidationMutationRejected&&
+					physicalResidualMutationRejected;
 				if(!authorityMutationREDsPassed)return 223;
 			}
 			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
@@ -1711,11 +1740,21 @@ namespace FireProductionDyadicCalibration
 					static_cast<double>(request.force.timeStepS),production,replayed,&error)&&
 					!replayed.Available()&&!production.HasAcceptedManifoldToken();
 				authorityMutationREDsPassed=authorityMutationREDsPassed&&replayRejected;
+				float& terminalVelocity=production.projection.velocityMPerS[0].front();
+				const float savedTerminalVelocity=terminalVelocity;
+				terminalVelocity=std::nextafter(terminalVelocity,
+					std::numeric_limits<float>::infinity());
+				const bool postPublicationMutationRejected=
+					!acceptedObservation.MatchesAcceptedResidentPayload(production);
+				terminalVelocity=savedTerminalVelocity;
+				authorityMutationREDsPassed=authorityMutationREDsPassed&&
+					postPublicationMutationRejected&&
+					acceptedObservation.MatchesAcceptedResidentPayload(production);
 				if(!authorityMutationREDsPassed)return 223;
 			}
 			if(step==0u){firstGeneration=acceptedObservation.MaximumGeneration();
 				firstDrain=acceptedObservation.RestorationDrainFraction();}
-			if(!ApplyProductionResult(production,state,error)){
+			if(!ApplyProductionResult(production,state,error,&acceptedObservation)){
 				std::fprintf(stderr,"r118 long consumer step=%zu failed: %s\n",step,error.c_str());
 				return 223;}
 			const double representedStep=static_cast<double>(production.representedTimeStepS);

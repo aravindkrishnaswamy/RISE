@@ -244,13 +244,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}
 		if(manifoldProbe){
 			if(slice!=0u)return 255;
-			RISE::FireProductionAcceptedManifoldObservation previous;
-			if(!RISE::FireProductionCheckpointManifoldAccess::Restore(true,dt,
-				0.0025328069638265172,0.9533406144549903,dt,dt,previous))return 255;
-			RISE::FireProductionStableTimeStep selected;
-			if(!RISE::SelectFireProductionStableTimeStep(shape.cellWidthM,0.0,0.0,0.0,
-				dt,previous,selected,&error))return 255;
-			const float representedStep=static_cast<float>(selected.seconds);
+			double selectedStep=0.0;
+			if(!RISE::DeriveFireProductionManifoldTimeStep(dt,0.0025328069638265172,
+				0.9533406144549903,selectedStep,&error))return 255;
+			const float representedStep=static_cast<float>(selectedStep);
 			request.force.timeStepS=representedStep;
 			request.cellTransport.timeStepS=representedStep;
 			request.dualTransport.timeStepS=representedStep;
@@ -375,7 +372,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"represented_dt=%.17g tightening=%.17g G=%.17g field=%.17g "
 				"required=%.17g delivered=%.17g band=%.17g pre=%.17g post=%.17g "
 				"mechanism=%d plateau=%d device_p95_ms=%.17g wall_p95_ms=%.17g\n",
-				dt,selected.seconds,static_cast<double>(representedStep),dt/representedStep,
+				dt,selectedStep,static_cast<double>(representedStep),dt/representedStep,
 				limited.maximumManifoldGeneration,limited.maximumAcceptedManifoldDeviation,
 				limited.requiredRestorationDrainFraction,
 				limited.deliveredRestorationDrainFraction,limited.restorationResidualBandPerS,
@@ -387,7 +384,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"independent_field=%.17g atomic=%d golden=%d\n",independentGeneration,
 				independentField,atomicRejection?1:0,
 				DigestFile(checkpointPath)==checkpointDigest?1:0);
-			const bool exact=selected.seconds==1.589201814710624e-5&&
+			const bool exact=selectedStep==1.589201814710624e-5&&
 				representedStep==0x1.0a9fb2p-16f&&dt/representedStep==3.5423604574130363&&
 				limited.maximumManifoldGeneration==0.0025081625752932935&&
 				limited.maximumAcceptedManifoldDeviation==0.0025081625764804549&&
