@@ -407,7 +407,7 @@ else
 	failed=$((failed + 1))
 fi
 
-# r147/r148 exercise the accepted resident observation through an actual v12
+# r147/r148 exercise the accepted resident observation through an actual v13
 # checkpoint/reload before the second production timestep selection.  Exact
 # 255 is success for this two-step lifecycle-only probe.
 if [ "$(uname -s)" = "Darwin" ]; then

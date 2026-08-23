@@ -3064,7 +3064,7 @@ refinement, readmission, source map, or preview runs.  Evidence is
 Fresh boundary review correctly rejected r147's persisted tuple seal.  It was
 an unkeyed digest of `(dt,G,r)`: useful corruption detection, but neither
 producer authority nor a binding to the state resumed by the solver.  Format
-12 removes the raw tuple-restoration API.  The resident owner now issues a
+13 removes the raw tuple-restoration API.  The resident owner now issues a
 second, domain-separated digest over the normalized producer-consumed Binary32
 state: represented shape and cell width, component-major conservative fields,
 and terminal restoration momentum and velocity, all with field tags and lengths.
@@ -3112,6 +3112,14 @@ Binary64 owner.  The r60 Binary64 envelope and canonical temperature reconstruct
 remain feasibility checks, not substitutes for origin.  Current writers and loaders
 require that authority; an intact accepted Binary32 state retagged Binary64 fails at
 the live owner, and a last-step-only mutation fails at owner, writer, and loader.
+The Binary64 authority digest is not a parallel, hand-maintained state summary: it
+runs the canonical format-13 checkpoint writer in digest-only mode over the complete
+serialized resume prefix.  It therefore binds case/build identity, dimensions and
+cell width, every state and MAC value, every `SolverFrameValues` field and vector,
+the accumulated centerline/plane fields, statistics duration, migration and active-
+set history, and the accepted timeline with the exact same field order and encodings
+used on disk.  Independent frame-statistics, accumulated-field, and duration mutants
+must fail at both ordinary publication and checksum-valid reload.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all

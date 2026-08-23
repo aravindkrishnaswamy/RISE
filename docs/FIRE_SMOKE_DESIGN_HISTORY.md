@@ -3407,7 +3407,7 @@ it was already tried and refuted here.
   function-level capacity finding.
 - **r148 checkpoint-state authority closure (2026-08-22):** fresh review
   rejected r147's unkeyed `(dt,G,r)` seal as integrity metadata masquerading as
-  authority.  Format 12 removes the raw tuple factory and binds the opaque
+  authority.  Format 13 removes the raw tuple factory and binds the opaque
   observation to the normalized producer-consumed Binary32 state: represented
   shape, component-major conservative values, and terminal restoration momentum
   and velocity, with field tags and lengths.  Persisted temperature must equal
@@ -3446,7 +3446,12 @@ it was already tried and refuted here.
   grandfathered by their pre-resident format lineage.  Current writers cannot emit
   any accepted Binary64 checkpoint without the origin authority, and an intact
   accepted-state retag RED reaches the live owner.  A last-step-only mutation RED
-  reaches owner, writer, and checksum-valid loader.
+  reaches owner, writer, and checksum-valid loader.  The Binary64 authority is
+  computed by the canonical format-13 writer in digest-only mode over the complete
+  serialized resume prefix, not by a second hand-maintained field list.  Frame-value,
+  accumulated-integral, and statistics-duration mutants independently RED at writer
+  and checksum-valid loader, binding every persisted resume input through the one
+  serialization topology.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real

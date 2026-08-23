@@ -276,15 +276,18 @@ namespace
 	{
 	public:
 		explicit CheckpointWriter(const std::filesystem::path& path) :
-			output_(path,std::ios::binary|std::ios::trunc) {}
-		bool Good() const { return static_cast<bool>(output_); }
+			output_(path,std::ios::binary|std::ios::trunc),digestOnly_(false) {}
+		CheckpointWriter() : digestOnly_(true) {}
+		bool Good() const { return digestOnly_||static_cast<bool>(output_); }
 		bool HeaderBytes(const void* data,const std::size_t size)
 		{
+			if(digestOnly_)return false;
 			output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
 			return static_cast<bool>(output_);
 		}
 		bool SeekHeader(const std::streamoff offset)
 		{
+			if(digestOnly_)return false;
 			output_.seekp(offset);return static_cast<bool>(output_);
 		}
 		template<typename T> bool Pod(const T& value)
@@ -294,11 +297,12 @@ namespace
 		}
 		bool Bytes(const void* data,const std::size_t size)
 		{
-			if(!output_)return false;
-			output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
+			if(!digestOnly_&&!output_)return false;
+			if(!digestOnly_)output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
 			const unsigned char* byte=static_cast<const unsigned char*>(data);
 			for(std::size_t i=0;i<size;++i){checksum_^=byte[i];checksum_*=1099511628211ull;}
-			payloadBytes_+=static_cast<std::uint64_t>(size);return static_cast<bool>(output_);
+			payloadBytes_+=static_cast<std::uint64_t>(size);
+			return digestOnly_||static_cast<bool>(output_);
 		}
 		bool String(const std::string& value)
 		{
@@ -307,12 +311,14 @@ namespace
 		}
 		bool Finish()
 		{
+			if(digestOnly_)return true;
 			output_.flush();output_.close();return !output_.fail();
 		}
 		std::uint64_t Checksum() const { return checksum_; }
 		std::uint64_t PayloadBytes() const { return payloadBytes_; }
 	private:
 		std::ofstream output_;
+		bool digestOnly_;
 		std::uint64_t checksum_=1469598103934665603ull,payloadBytes_=0u;
 	};
 
@@ -552,43 +558,7 @@ namespace
 		return !checkpoint.states.empty();
 	}
 
-	std::uint64_t Binary64CheckpointPayloadDigest(const MethaneRunCheckpoint& checkpoint)
-	{
-		std::uint64_t digest=UINT64_C(1469598103934665603);
-		auto bytes=[&digest](const void* data,const std::size_t size){
-			const unsigned char* value=static_cast<const unsigned char*>(data);
-			for(std::size_t index=0u;index<size;++index){digest^=value[index];
-				digest*=UINT64_C(1099511628211);}};
-		auto tag=[&bytes](const std::uint64_t value){bytes(&value,sizeof(value));};
-		auto vector=[&bytes,&tag](const std::uint64_t field,const std::vector<double>& value){
-			tag(field);const std::uint64_t size=value.size();tag(size);
-			if(!value.empty())bytes(value.data(),value.size()*sizeof(double));};
-		tag(UINT64_C(0x42363443484b5054));
-		const std::uint64_t caseSize=checkpoint.caseRecordId.size(),buildSize=checkpoint.producerBuildId.size();
-		tag(caseSize);if(caseSize)bytes(checkpoint.caseRecordId.data(),caseSize);
-		tag(buildSize);if(buildSize)bytes(checkpoint.producerBuildId.data(),buildSize);
-		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t value=dimension;tag(value);}
-		bytes(&checkpoint.cellWidthM,sizeof(checkpoint.cellWidthM));
-		const std::uint64_t cellCount=checkpoint.states.size();tag(cellCount);
-		for(const MethaneCellState& state:checkpoint.states){
-			bytes(&state.rhoTotalZ,sizeof(state.rhoTotalZ));
-			bytes(state.constituent.data(),state.constituent.size()*sizeof(double));
-			bytes(&state.sensibleEnergyJPerM3,sizeof(state.sensibleEnergyJPerM3));
-			bytes(&state.temperatureK,sizeof(state.temperatureK));
-			const unsigned char precision=static_cast<unsigned char>(state.producerPrecision);
-			bytes(&precision,sizeof(precision));
-		}
-		for(unsigned int axis=0u;axis<3u;++axis){
-			vector(UINT64_C(0x100)+axis,checkpoint.momentum.component[axis]);
-			vector(UINT64_C(0x200)+axis,checkpoint.velocity.component[axis]);
-		}
-		vector(UINT64_C(0x300),checkpoint.values.acceptedTimeStepHistoryS);
-		bytes(&checkpoint.simulationTimeS,sizeof(checkpoint.simulationTimeS));
-		bytes(&checkpoint.previousStepS,sizeof(checkpoint.previousStepS));
-		bytes(&checkpoint.lastAcceptedStepS,sizeof(checkpoint.lastAcceptedStepS));
-		bytes(&checkpoint.acceptedSteps,sizeof(checkpoint.acceptedSteps));
-		return digest==0u?UINT64_C(1):digest;
-	}
+	std::uint64_t Binary64CheckpointPayloadDigest(const MethaneRunCheckpoint& checkpoint);
 
 	bool IssueBinary64CheckpointAuthority(MethaneRunCheckpoint& checkpoint)
 	{
@@ -762,6 +732,49 @@ namespace
 		return true;
 	}
 	bool forceMalformedManifoldLifecycleWriteForTest=false;
+	bool WriteCheckpointSerializedPrefix(CheckpointWriter& writer,
+		const MethaneRunCheckpoint& checkpoint,const std::uint64_t version)
+	{
+		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
+		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
+			if(!writer.Pod(encoded))return false;}
+		const bool baseWritten=writer.Pod(checkpoint.cellWidthM)&&
+			WriteCellStates(writer,checkpoint.states,version)&&
+			WriteMACField(writer,checkpoint.momentum)&&WriteMACField(writer,checkpoint.velocity)&&
+			WriteSolverFrameValues(writer,checkpoint.values)&&
+			WriteArithmeticVector(writer,checkpoint.centerlineTemperatureIntegral)&&
+			WriteArithmeticVector(writer,checkpoint.centerlineVelocityIntegral)&&
+			WriteArithmeticVector(writer,checkpoint.planeHeatReleaseIntegral)&&
+			writer.Pod(checkpoint.centerlineStatisticsDurationS)&&
+			writer.Pod(checkpoint.simulationTimeS)&&writer.Pod(checkpoint.previousStepS)&&
+			writer.Pod(checkpoint.lastAcceptedStepS)&&writer.Pod(checkpoint.acceptedSteps);
+		if(!baseWritten||version<6u)return baseWritten;
+		const bool migrationWritten=
+			WriteArithmeticVector(writer,checkpoint.values.acceptedMaximumTemperatureHistoryK)&&
+			writer.String(checkpoint.values.migrationCertificateId)&&
+			writer.String(checkpoint.values.migrationOldBuildId)&&
+			writer.String(checkpoint.values.migrationNewBuildId)&&
+			writer.Pod(checkpoint.values.migrationAcceptedStepCount)&&
+			writer.Pod(checkpoint.values.migrationResumedFromStep);
+		if(!migrationWritten||version<7u)return migrationWritten;
+		const bool activeSetWritten=writer.String(checkpoint.values.activeSetAlgorithmVersion)&&
+			writer.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)&&
+			writer.Pod(checkpoint.values.discontinuousActiveSetEvents)&&
+			writer.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
+			writer.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
+			writer.Pod(checkpoint.values.activeSetThreadIdentity)&&
+			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
+		if(!activeSetWritten)return false;
+		return version<8u||writer.String(checkpoint.values.priorActiveSetAlgorithmVersion);
+	}
+
+	std::uint64_t Binary64CheckpointPayloadDigest(const MethaneRunCheckpoint& checkpoint)
+	{
+		CheckpointWriter writer;
+		if(!WriteCheckpointSerializedPrefix(writer,checkpoint,13u))return 0u;
+		const std::uint64_t digest=writer.Checksum();
+		return digest==0u?1u:digest;
+	}
 
 	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint,
 		const std::uint64_t version)
@@ -782,39 +795,7 @@ namespace
 			!forceMalformedManifoldLifecycleWriteForTest)return false;
 		if(version>=9u&&version<13u&&precision==FireStateProducerPrecision::Binary64&&
 			checkpoint.acceptedSteps>0u&&!forceMalformedManifoldLifecycleWriteForTest)return false;
-		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
-		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
-			if(!writer.Pod(encoded))return false;}
-		const bool baseWritten=writer.Pod(checkpoint.cellWidthM)&&
-			WriteCellStates(writer,checkpoint.states,version)&&
-			WriteMACField(writer,checkpoint.momentum)&&WriteMACField(writer,checkpoint.velocity)&&
-			WriteSolverFrameValues(writer,checkpoint.values)&&
-			WriteArithmeticVector(writer,checkpoint.centerlineTemperatureIntegral)&&
-			WriteArithmeticVector(writer,checkpoint.centerlineVelocityIntegral)&&
-			WriteArithmeticVector(writer,checkpoint.planeHeatReleaseIntegral)&&
-			writer.Pod(checkpoint.centerlineStatisticsDurationS)&&
-			writer.Pod(checkpoint.simulationTimeS)&&writer.Pod(checkpoint.previousStepS)&&
-			writer.Pod(checkpoint.lastAcceptedStepS)&&writer.Pod(checkpoint.acceptedSteps);
-		if(!baseWritten)return false;
-		if(version<6u)return true;
-		const bool migrationWritten=
-			WriteArithmeticVector(writer,checkpoint.values.acceptedMaximumTemperatureHistoryK)&&
-			writer.String(checkpoint.values.migrationCertificateId)&&
-			writer.String(checkpoint.values.migrationOldBuildId)&&
-			writer.String(checkpoint.values.migrationNewBuildId)&&
-			writer.Pod(checkpoint.values.migrationAcceptedStepCount)&&
-			writer.Pod(checkpoint.values.migrationResumedFromStep);
-		if(!migrationWritten)return false;
-		if(version<7u)return true;
-		const bool activeSetWritten=writer.String(checkpoint.values.activeSetAlgorithmVersion)&&
-			writer.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)&&
-			writer.Pod(checkpoint.values.discontinuousActiveSetEvents)&&
-			writer.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
-			writer.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
-			writer.Pod(checkpoint.values.activeSetThreadIdentity)&&
-			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
-		if(!activeSetWritten)return false;
-		if(version>=8u&&!writer.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
+		if(!WriteCheckpointSerializedPrefix(writer,checkpoint,version))return false;
 		if(version<10u){
 			if(version==9u&&precision==FireStateProducerPrecision::Binary32&&
 				(checkpoint.acceptedSteps!=0u||checkpoint.simulationTimeS!=0.0||
@@ -3953,6 +3934,40 @@ int main(int argc,char** argv)
 	bindingMutation.values.priorActiveSetAlgorithmVersion="fabricated_prior_algorithm";
 	Check(ValidMutatedCheckpointRejects("wrong_prior_active_set_algorithm",bindingMutation),
 		"r81 resume rejects a checksummed checkpoint with fabricated prior active-set history");
+	auto Binary64AuthorityMutationRejects=[&](const char* name,
+		const MethaneRunCheckpoint& mutated)->bool{
+		const std::filesystem::path path=checkpointFixture/(std::string(name)+".checkpoint");
+		{std::error_code ignored;std::filesystem::remove(path,ignored);}
+		const bool writerRejected=!SaveMethaneRunCheckpoint(path,mutated,
+			checkpointFixtureError)&&!std::filesystem::exists(path);
+		forceMalformedManifoldLifecycleWriteForTest=true;
+		const bool malformedWritten=SaveMethaneRunCheckpoint(path,mutated,
+			checkpointFixtureError);
+		forceMalformedManifoldLifecycleWriteForTest=false;
+		MethaneRunCheckpoint rejected;
+		const bool loaderRejected=malformedWritten&&!LoadMethaneRunCheckpoint(path,rejected,
+			checkpointFixtureError);
+		return writerRejected&&loaderRejected;
+	};
+	bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.values.statisticsStartS=std::nextafter(
+		bindingMutation.values.statisticsStartS,std::numeric_limits<double>::infinity());
+	Check(Binary64AuthorityMutationRejects("wrong_frame_statistics",bindingMutation),
+		"r148 binary64 authority binds every serialized solver-frame value at writer and loader");
+	bindingMutation=resumedCheckpointMetadata;
+	if(!bindingMutation.centerlineTemperatureIntegral.empty())
+		bindingMutation.centerlineTemperatureIntegral.front()=std::nextafter(
+			bindingMutation.centerlineTemperatureIntegral.front(),
+			std::numeric_limits<double>::infinity());
+	Check(!bindingMutation.centerlineTemperatureIntegral.empty()&&
+		Binary64AuthorityMutationRejects("wrong_centerline_integral",bindingMutation),
+		"r148 binary64 authority binds every serialized accumulated field at writer and loader");
+	bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.centerlineStatisticsDurationS=std::nextafter(
+		bindingMutation.centerlineStatisticsDurationS,
+		std::numeric_limits<double>::infinity());
+	Check(Binary64AuthorityMutationRejects("wrong_statistics_duration",bindingMutation),
+		"r148 binary64 authority binds the serialized statistics duration at writer and loader");
 	RISECBOR64::Bytes migrationBuildRecord;std::string migrationNewBuildId,
 		migrationNewExecutableDigest;
 	Check(CurrentRendererBuildIdentity(migrationBuildRecord,migrationNewBuildId)&&

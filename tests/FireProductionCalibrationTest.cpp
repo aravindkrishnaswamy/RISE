@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"db3d49448eb466bd56a199962ce752235cec8fa9f59408cd038e1cab1b637e99"&&
+		"f4ae4d1416dd9d478c6b2eb1170de211b9e09f48a17ad842baae9c89a10eefc4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -555,7 +555,7 @@ int main()
 		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"3910dca3e3c8609cbace19989c1e448ae02fc5ce5c2df64102440d1423e84167"&&
+		"97be938671d20f8307890c887f7a41d6dcdcab6e09b7fa4c1e836f9c5ee3a783"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -576,7 +576,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"6e6099a1e97c343b926f3339039dd37836b357093c4af219110279a8094a12b0"&&
+		"53bdc5058693febcb2f923c0b33665512e897a8eff1aadc79d7b0d497e6401de"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -638,6 +638,10 @@ int main()
 		manifoldClosure.find("accepted_binary32_promotion_v5_through_v13_writer_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("binary64_checkpoint_origin_authority_opaque_payload_bound true")!=
+			std::string::npos&&
+		manifoldClosure.find("binary64_origin_digest_is_canonical_complete_checkpoint_prefix true")!=
+			std::string::npos&&
+		manifoldClosure.find("binary64_origin_frame_integral_duration_mutants_writer_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("binary64_current_v13_writer_loader_authority_required true")!=
 			std::string::npos&&
