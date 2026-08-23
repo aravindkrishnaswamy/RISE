@@ -1421,6 +1421,38 @@ namespace RISE
 					"},\"required\":[\"description\"]}"
 				},
 				{
+					// Doc 90 slice R1 (2026-08-22) -- THE ITERATION RATCHET's
+					// verb.  Kept semantically identical to
+					// AgentMcpAdapter.cpp's tools/list entry for the same
+					// drift-class reason as file_build_plan / imagine_scene.
+					"set_render_anchor",
+					"Keep the render you are looking at as this session's ANCHOR -- the picture "
+					"every later render is shown beside. Call it the moment a render is better "
+					"than the one you have been comparing against; it takes NO arguments and pins "
+					"your MOST RECENT full-frame production render. WHY IT EXISTS: without an "
+					"anchor you only ever see the newest frame, so an edit that made the scene "
+					"worse looks exactly like one that made it better, and a long refinement pass "
+					"can walk a good scene downhill with nothing noticing. From the first "
+					"full-frame production render after you finish your last element (or, in a "
+					"session with no build plan, your first full-frame render), every such render "
+					"you ask an image of comes back as ONE picture -- the anchor ABOVE, this "
+					"render BELOW, each pane labelled with the head revision it was rendered at -- "
+					"and the result carries an `anchor` block: {anchored, established, "
+					"anchorRevision, currentRevision, composite, compositeWidth, compositeHeight}. "
+					"THERE IS NO SCORE and there is deliberately no similarity number: which of "
+					"the two pictures is better is your judgment, nothing is gated on it, and no "
+					"particular answer is expected. The render that BECAME the anchor carries no "
+					"composite -- there is nothing yet to set it beside. Draft renders, mode: "
+					"renders and isolate renders are never anchored and never compared, because a "
+					"difference against one of those would be a render setting rather than a "
+					"change to the scene. It changes nothing in the document -- no chunk, no head "
+					"version, no undo step -- so there is no baseHeadVersion and no conflict "
+					"outcome. Returns {ok,pinned,anchorRevision,previousAnchorRevision,message}; "
+					"ok:false means only that no full-frame production render has completed in "
+					"this session yet.",
+					"{\"type\":\"object\",\"properties\":{},\"required\":[]}"
+				},
+				{
 					"ask_user",
 					"Pause and ask the user a single, SPECIFIC clarifying question when a "
 					"real ambiguity would MATERIALLY change the scene you build -- subject "

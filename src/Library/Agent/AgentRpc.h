@@ -1337,7 +1337,8 @@
 //    render_status, render_wait, render_cancel, read_image,
 //    list_proposals, read_viewport, query_object_at, scene_inventory,
 //    compare_to_reference,
-//    file_build_plan, finish_element, reopen_element, imagine_scene --
+//    file_build_plan, finish_element, reopen_element, imagine_scene,
+//    set_render_anchor --
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
@@ -1460,7 +1461,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/scene_inventory/compare_to_reference/file_build_plan/finish_element/reopen_element/imagine_scene) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/scene_inventory/compare_to_reference/file_build_plan/finish_element/reopen_element/imagine_scene/set_render_anchor) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
 			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but

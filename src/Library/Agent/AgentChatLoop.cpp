@@ -556,6 +556,17 @@ namespace RISE
 			//! A RENDER that carries a `sceneTarget` comparison is of course
 			//! still a look: it is a `render`, already on the list by name,
 			//! and it really did produce scene pixels.
+			//!
+			//! Doc 90 slice R1 (2026-08-22): `set_render_anchor` is likewise
+			//! NEITHER, and the call is easier than its predecessors'.  It
+			//! mutates nothing (no chunk, no param, no head bump).  And it is
+			//! plainly not a LOOK: it returns no image AT ALL -- it re-points
+			//! a bookmark at a render the model has ALREADY seen, so there is
+			//! not even a picture to argue about.  A render that carries an
+			//! `anchor` composite is of course still a look, for the reason
+			//! the sceneTarget paragraph above gives: it is a `render`,
+			//! already on the list by name, and it really did produce scene
+			//! pixels.
 			//! S1 (2026-08-11): `finish_element` IS a look, by the very test
 			//! the two paragraphs above apply -- it performs a REAL isolate
 			//! render of the live scene and returns those pixels, so it is not
@@ -1418,6 +1429,7 @@ namespace RISE
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
 			//!   7b. name == "file_build_plan"                -> "<n> element(s): <element>=<construction>[+<construction>], ... (<p> piece(s), <k> sketch(es))" (G2; sketches G3a; elements/pieces S1; multi-method C4)
 			//!   7c. name == "imagine_scene"                 -> "scene imagined (image received) <w>x<h>[, replaced previous]"
+			//!   7c2. name == "set_render_anchor"           -> "anchor pinned at rev <n>[ (was rev <m>)]" | "no anchor: <msg>" (doc 90 R1)
 			//!   7d. name == "finish_element"                -> "finished <element> (<n> chunks, <k>/<m> pieces named) -> <next>|compose" (S1)
 			//!       name == "reopen_element"                -> "reopened <element> (from <phase>)" (S1)
 			//!                                                  | "no image generation on this provider" | "not imagined: <msg>" (Arc 77 Phase 2)
@@ -1680,6 +1692,27 @@ namespace RISE
 					// the transcript, and only the second is worth retrying.
 					if( result.has( "capabilityAvailable" ) ) return "no image generation on this provider";
 					return TruncateForOutcome( "not imagined: " + result.get( "message" ).asString(), 140 );
+				}
+
+				// 7c2. Doc 90 slice R1 (2026-08-22) set_render_anchor: "ok"
+				// would throw away the one fact a human reading the transcript
+				// wants -- WHICH render the model chose to keep, and whether
+				// it displaced an earlier choice.  That is the ratchet's whole
+				// census fingerprint: a session that never re-pinned and a
+				// session that re-pinned five times are different runs, and no
+				// other line records the difference.  Factual echo only, no
+				// verdict on the choice.
+				if( call.name == "set_render_anchor" ) {
+					if( result.get( "ok" ).asBool() ) {
+						std::string line = "anchor pinned at rev " + std::to_string(
+							static_cast<long long>( result.get( "anchorRevision" ).asNumber() ) );
+						if( result.has( "previousAnchorRevision" ) ) {
+							line += " (was rev " + std::to_string( static_cast<long long>(
+								result.get( "previousAnchorRevision" ).asNumber() ) ) + ")";
+						}
+						return TruncateForOutcome( line, 140 );
+					}
+					return TruncateForOutcome( "no anchor: " + result.get( "message" ).asString(), 140 );
 				}
 
 				if( call.name == "file_build_plan" ) {

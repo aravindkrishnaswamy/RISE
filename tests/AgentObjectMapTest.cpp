@@ -1678,9 +1678,39 @@ static std::string ReadImageReq( double id, const std::string& extraParamsJson )
 	       ",\"method\":\"read_image\",\"params\":{" + extraParamsJson + "}}";
 }
 
+//! Doc 90 slice R1 (2026-08-22): restore the PRODUCTION build-protocol
+//! default for the width of one fixture.
+//!
+//! main() opts this whole binary OUT of the build-plan gate as a
+//! convenience (its fixtures insert geometry directly).  That is invisible
+//! to almost everything -- but `BuildProtocolActive_()` is
+//! `protocolEnabled && gateEnabled`, so switching the gate off ALSO takes
+//! the phase machinery off, which puts these sessions in the "no staged
+//! build at all" configuration where the iteration ratchet arms on the
+//! FIRST full-frame render instead of waiting for the Compose phase.
+//!
+//! The two fixtures below are about the render -> inline-image PLUMBING --
+//! "one encoder, not two", the clamp is read_image's clamp, the exact key
+//! set -- and those properties are stated for a render with NO composite
+//! mechanism in force.  A production session's early renders are exactly
+//! that (protocol on, still in the Plan phase, nothing anchored), so
+//! turning the gate back on here makes the fixture MATCH production rather
+//! than dodge the ratchet.  Neither fixture creates geometry, so the gate
+//! itself never fires.  The ratchet's own coverage -- including that the
+//! composite REPLACES the frame once armed, and that read_image still
+//! serves the plain frame -- is AgentRenderAnchorTest.
+namespace {
+struct ProductionBuildProtocolForFixture
+{
+	ProductionBuildProtocolForFixture()  { AgentSession::SetBuildPlanGateDefaultEnabled( true ); }
+	~ProductionBuildProtocolForFixture() { AgentSession::SetBuildPlanGateDefaultEnabled( false ); }
+};
+}
+
 static void RunInlineRenderImageTest()
 {
 	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} one-call observe ===\n" );
+	const ProductionBuildProtocolForFixture productionProtocol;
 	// Review P3-5 (fixture-coupling): the exact-key-set assertion below
 	// (b) depends on kScene3 tripping design-note condition A (3 bare
 	// spheres, no scalar_painter chunk).  Assert that PRECONDITION
@@ -1910,6 +1940,12 @@ static void RunInlineRenderImageTest()
 static void RunDriverAsyncInlineImageTest()
 {
 	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} through the drivers' async detour ===\n" );
+	// Doc 90 slice R1: same reason as RunInlineRenderImageTest's -- see
+	// ProductionBuildProtocolForFixture.  This one compares the async
+	// detour's result FIELD BY FIELD against the synchronous form, which
+	// only means anything when neither carries a composite whose content
+	// depends on which render came first.
+	const ProductionBuildProtocolForFixture productionProtocol;
 	const std::string scenePath = WriteTemp( "rise_driver_inline_img.RISEscene", kScene3 );
 	Job* pJob = new Job();
 	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "driver-inline scene loads" ); return; }

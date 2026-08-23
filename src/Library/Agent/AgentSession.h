@@ -1369,6 +1369,84 @@ namespace RISE
 			std::vector<unsigned char> sceneTargetCompositePng;
 			unsigned int               sceneTargetCompositeWidth = 0;
 			unsigned int               sceneTargetCompositeHeight = 0;
+			//! Doc 90 slice R1 (2026-08-22): THE ITERATION RATCHET -- this
+			//! render shown beneath the session's ANCHOR RENDER, both panes
+			//! labelled with the head revision they were rendered at.
+			//!
+			//! THE FAILURE IT ANSWERS (doc 90 sec 1, measured on the dragon
+			//! probe): render 00 was the best picture of the session and
+			//! twelve self-directed edit rounds made it strictly worse.  The
+			//! model judges only the CURRENT frame against the prompt; nothing
+			//! anchors best-so-far, so every regression is permanent.  The
+			//! anchor composite puts the earlier picture back in front of the
+			//! model at the exact moment it looks at the new one.
+			//!
+			//! THERE IS NO NUMBER HERE, DELIBERATELY, AND NONE MAY BE ADDED
+			//! -- not a score, not a difference percentage, not under any
+			//! other name.  This is Phase 2b's law (see `sceneTargetApplied`
+			//! above), and doc 90 sec 2's history note records what happened
+			//! to the scored form of this very slice: the original R1 spec'd a
+			//! target/best SCALAR, and a harness over the real scorer showed
+			//! the metric INVERTS in the operative regime -- against a
+			//! divergent generated target, DELETING the hero object improves
+			//! it, so a ratchet on that scalar would pin "best" to the most
+			//! mangled document.  A PAIRWISE PICTURE cannot be gamed that way:
+			//! a vision model comparing two frames sees the missing dragon.
+			//!
+			//! WHERE IT ATTACHES: the scene target's qualification rule -- a
+			//! SUCCEEDED, FULL-FRAME, PRODUCTION BEAUTY render that did NOT
+			//! isolate and carried no element `target` -- plus ONE exclusion
+			//! of its own.  The shared three are the same honesty
+			//! requirements, for the same reasons, and they matter more here:
+			//! a draft frame beside a production anchor would read as a
+			//! regression that is really a quality setting.  The extra one is
+			//! `fromAgentSurface`: the anchor is a bookmark in the MODEL's own
+			//! sequence of looks, so a render it never issued (notably
+			//! compare_to_reference's internal grading pass, which passes
+			//! every other test) must not silently re-point it.
+			//!
+			//! WHICH RENDER IS THE ANCHOR: the FIRST qualifying render at or
+			//! after the session enters the COMPOSE phase (in the failed
+			//! dragon run, exactly the render that was best), or -- for a
+			//! session where the phase machinery is not in force -- the first
+			//! qualifying render of the session.  `set_render_anchor` re-pins
+			//! it to the most recent qualifying render whenever the model
+			//! judges the new one better.  See AgentSession::SetRenderAnchor.
+			//!
+			//! `anchorEstablished` is the call that BECAME the anchor: it
+			//! reports the facts and carries NO composite, because there is
+			//! nothing yet to compare it against.  `anchorApplied` covers
+			//! both that call and every later one.
+			//!
+			//! `anchorCompositePng` follows the scene target's geometry and
+			//! its size contract exactly: panes STACKED (never side by side)
+			//! so THIS RENDER keeps the full width the plain frame would have
+			//! had, the anchor scaled to that width and never UP, a thin grey
+			//! rule between them, and a labelled strip above each pane naming
+			//! the revision that pane was rendered at.  When a scene-target
+			//! composite was also built for this call, THAT composite is the
+			//! lower pane (so the stack reads anchor / imagined target / this
+			//! render, and the label above it says so) -- the two mechanisms
+			//! compose instead of one silently suppressing the other, which
+			//! matters because the run this slice exists for had a scene
+			//! target held for its entire length.  Like the scene target's,
+			//! this composite exists ONLY when the caller asked for an inline
+			//! image (`AgentRenderParams::imageMaxEdge != 0`); a render that
+			//! wanted no picture still gets the facts and no bytes.  AT THE
+			//! IMAGEMAXEDGE FLOOR the label strip has no room to say much --
+			//! at 16px wide a label truncates to roughly 4 characters (see
+			//! DrawAnchorLabel_'s drop-not-wrap rule) -- and that is left as
+			//! is rather than built out into text wrapping: the note text
+			//! carries both revisions in full prose regardless of composite
+			//! width, so the floor's job is only "don't crash, don't read
+			//! garbage", not "stay legible at any size".
+			bool                       anchorApplied = false;
+			bool                       anchorEstablished = false;
+			std::uint64_t              anchorRevision = 0;
+			std::uint64_t              anchorCurrentRevision = 0;
+			std::vector<unsigned char> anchorCompositePng;
+			unsigned int               anchorCompositeWidth = 0;
+			unsigned int               anchorCompositeHeight = 0;
 			//! Arc 80 (2026-08-12): THE SCENE INVENTORY, riding the render
 			//! result as a PAYLOAD FACT.  It answers "where is everything?"
 			//! for the frame just rendered: every scene object, its screen
@@ -4246,6 +4324,60 @@ namespace RISE
 			//! Does this session have a scene target?  Observation only.
 			bool HasSceneTarget() const { return mSceneTarget != nullptr; }
 
+			//! Doc 90 slice R1 (2026-08-22): the structured result of
+			//! SetRenderAnchor.  `ok` is false only when there is nothing to
+			//! pin (no qualifying render has completed in this session yet);
+			//! the message says so plainly and nothing changes.
+			struct AgentSetRenderAnchorResult
+			{
+				bool          ok = false;
+				bool          pinned = false;
+				//! The revision the newly pinned anchor was rendered at.
+				std::uint64_t anchorRevision = 0;
+				//! The revision of the anchor this call REPLACED, meaningful
+				//! only with `hadPreviousAnchor`.
+				std::uint64_t previousAnchorRevision = 0;
+				bool          hadPreviousAnchor = false;
+				std::string   message;
+			};
+
+			//! Doc 90 slice R1 (2026-08-22): re-pin the session's ANCHOR
+			//! RENDER to the MOST RECENT qualifying render.  Touches the
+			//! Document not at all -- per-session bookkeeping only, exactly
+			//! like file_build_plan and imagine_scene, and read-safe on the
+			//! same test (see AgentRpc.cpp's IsReadSafeVerb).
+			//!
+			//! IT TAKES NO ARGUMENT, and that is a decision, not an omission.
+			//! A revision argument would mean "re-pin to any render I still
+			//! remember", which requires retaining EVERY render's pixels for
+			//! the life of the session; this shape needs exactly two frames
+			//! held at any moment (the anchor and the latest).  It is also
+			//! the shape the measured failure asks for: the dragon run needed
+			//! "this new one is better, keep it", never arbitrary time travel
+			//! -- and time travel on the DOCUMENT is slice R2's verb, not
+			//! this one's.
+			//!
+			//! "Qualifying" is the render-result rule (see
+			//! AgentRenderResult::anchorApplied): a succeeded, full-frame,
+			//! production beauty render, made from the agent surface, that
+			//! did not isolate and carried no element target.  A session that
+			//! has only ever drafted, or only ever looked at isolated parts,
+			//! has nothing to pin and is told so.
+			//!
+			//! It may be called BEFORE the Compose phase.  The automatic
+			//! anchor waits for compose (a render of parts being built is not
+			//! a render of the scene), but an EXPLICIT pin is the model
+			//! saying it knows what it is keeping, and refusing that would be
+			//! the mechanism overruling the judgment it exists to support.
+			AgentSetRenderAnchorResult SetRenderAnchor();
+
+			//! Doc 90 R1: is an anchor render pinned?  Observation only.
+			bool HasRenderAnchor() const;
+
+			//! Doc 90 R1: the pinned anchor's head revision, 0 when none is
+			//! pinned.  Observation only.
+			std::uint64_t RenderAnchorRevision() const;
+
 			//! Does this session's provider generate images (i.e. did the
 			//! host install a capable generator)?  Observation only -- this
 			//! is what makes the gate's imagine half conditional.
@@ -6950,10 +7082,31 @@ namespace RISE
 			//! A non-empty `target` with a null snapshot is a programming
 			//! error in a private caller and fails the render loudly rather
 			//! than silently skipping the comparison.
+			//! Doc 90 slice R1 (2026-08-22): `outHeadRevision`, when non-null,
+			//! receives THE HEAD REVISION THIS RENDER WAS MADE FROM, stamped
+			//! INSIDE the parked closure beside `res.integrator`.
+			//!
+			//! IT IS READ THERE AND NOWHERE ELSE, and both halves of that are
+			//! load-bearing.  Inside the park the render OWNS the scene, so
+			//! the unsynchronized read is not merely safe but exact -- no
+			//! commit can be in flight to tear the 16 non-atomic bytes, and
+			//! the answer is precisely the revision the pixels came from.
+			//! OUTSIDE it, both obvious alternatives are wrong: the
+			//! controller-mediated ReadHeadVersion() takes the very mutex a
+			//! live render holds, so calling it before RenderCore_ DEADLOCKS
+			//! the synchronous path against the render loop and makes the
+			//! async submit block instead of returning (both measured against
+			//! AgentRenderAsyncTest, 2026-08-22); and a raw HeadVersion()
+			//! outside the park races the GUI thread's commits.
+			//!
+			//! Left at 0 by every path that bails before the closure runs --
+			//! which is every path that also leaves `ok` false, so the one
+			//! consumer (ApplyRenderAnchorComparison_) never sees it.
 			AgentRenderResult RenderCore_( const AgentRenderParams& params,
 			                                bool assumeParked = false,
 			                                std::uint64_t forcedJobId = 0,
-			                                const AgentElementSketch* resolvedTarget = nullptr );
+			                                const AgentElementSketch* resolvedTarget = nullptr,
+			                                std::uint64_t* outHeadRevision = nullptr );
 
 			//! G3b (2026-08-10): measure the just-completed isolate render's
 			//! silhouette against `params.target`'s filed sketch and fill
@@ -7042,6 +7195,63 @@ namespace RISE
 			void ApplySceneTargetComparison_( const AgentRenderParams& params,
 			                                   AgentRenderResult& rr,
 			                                   const std::shared_ptr<const AgentSceneTarget>& target );
+
+			//! Doc 90 slice R1 (2026-08-22): THE ITERATION RATCHET -- record
+			//! this render as the session's latest, establish the anchor if
+			//! there is none yet, and (once there is one) attach the anchor
+			//! composite.  See AgentRenderResult::anchorApplied for the
+			//! qualification rule, the anchor definition and the composite's
+			//! geometry, and doc 90 sec 2 for why there is no number in it.
+			//!
+			//! Runs NO EXTRA RENDER, exactly like ApplySceneTargetComparison_
+			//! -- it reads the frame `rr` already carries.  It MUST run AFTER
+			//! ApplySceneTargetComparison_: when a scene-target composite was
+			//! built, that composite is the lower pane of this one, so this
+			//! function has to see the final state of `rr`.
+			//!
+			//! `anchorArmed` is a SNAPSHOT the CALLER took on the CALLER's
+			//! thread at submission time, for exactly the reason the sketch
+			//! and scene-target snapshots are taken there: on the async path
+			//! this runs on the controller's render worker, where
+			//! `mBuildPhase` may be being reassigned by a FinishElement on the
+			//! dispatcher thread.  It means "the anchor may be ESTABLISHED by
+			//! this render" -- true once the session has entered the Compose
+			//! phase, or immediately for a session whose phase machinery is
+			//! not in force.
+			//!
+			//! `currentRevision` is the head revision this render was made
+			//! from, stamped by RenderCore_ from INSIDE the park (see its
+			//! `outHeadRevision` doc).  It is deliberately NOT read on either
+			//! caller's thread: the controller-mediated read deadlocks
+			//! against a live render, and the raw read races the GUI's
+			//! commits.
+			//!
+			//! The anchor frames themselves live under mAsyncCacheMutex (no
+			//! new lock: that is the mutex this session already uses for
+			//! render bookkeeping the worker thread writes, and the
+			//! worker-side nesting mMutex -> mAsyncCacheMutex is the one
+			//! RenderCore_'s cache-population tail already establishes).
+			//!
+			//! A failure anywhere in building the composite leaves it empty
+			//! and appends a factual note to `rr.message`; the facts still
+			//! ride and AgentRpc falls back to whatever image would otherwise
+			//! have gone out.  It NEVER fails the render.
+			void ApplyRenderAnchorComparison_( const AgentRenderParams& params,
+			                                    AgentRenderResult& rr,
+			                                    bool anchorArmed,
+			                                    std::uint64_t currentRevision );
+
+			//! Doc 90 R1: is this render one the ratchet measures?  The
+			//! qualification rule of AgentRenderResult::anchorApplied, in one
+			//! place, shared by the capture and the composite so the two can
+			//! never disagree about which frames the anchor is drawn from.
+			static bool RenderQualifiesForAnchor_( const AgentRenderParams& params,
+			                                        const AgentRenderResult& rr );
+
+			//! Doc 90 R1: is the anchor allowed to be ESTABLISHED by a render
+			//! happening now?  Read on the dispatcher thread only (it reads
+			//! mBuildPhase), snapshotted into the async closure.
+			bool RenderAnchorArmed_() const;
 
 			//! Arc 80 (2026-08-12): THE SHARED INVENTORY CORE -- the one code
 			//! path behind both the render payload's `inventory` block and
@@ -7317,6 +7527,53 @@ namespace RISE
 			//! leaf lock -- see AgentImageCache).
 			std::uint64_t     mLastAsyncRenderResultJobId = 0;
 			AgentRenderResult mLastAsyncRenderResult;
+
+			//! Doc 90 slice R1 (2026-08-22): ONE remembered render -- the
+			//! frame's own PNG bytes and the head revision it was rendered
+			//! at.  Two of these exist per session and never more (see
+			//! mRenderAnchor / mRenderAnchorLatest below), which is the whole
+			//! reason `set_render_anchor` takes no revision argument.
+			struct RenderAnchorFrame
+			{
+				bool                       set = false;
+				std::uint64_t              revision = 0;
+				std::vector<unsigned char> png;
+			};
+
+			//! Doc 90 R1: the biggest frame the ratchet will remember.
+			//!
+			//! MEASURED (2026-08-22, the demo scene): a 96x96 beauty PNG from
+			//! this pipeline is 4.7 KB and a 256x256 one -- the agent
+			//! surface's own cap, kAgentSurfaceMaxRenderEdge -- is 25.6 KB.
+			//! Two frames are held at any moment (the anchor and the latest,
+			//! which is what makes `set_render_anchor` need no revision
+			//! argument), so the ratchet's real cost on a wire-driven session
+			//! is ~51 KB, and 8 MB is ~320x headroom -- roughly a 3000x3000
+			//! noisy beauty frame.
+			//!
+			//! IT IS THEREFORE BELT-AND-BRACES, not a live limit: the
+			//! qualification rule already requires `fromAgentSurface`, and
+			//! AgentRpc clamps those dims to the 256 cap.  What it covers is
+			//! a DIRECT C++ caller that sets `fromAgentSurface` itself and
+			//! asks for megapixel dims.  A frame above the bound is simply
+			//! not remembered (the ratchet skips that render and says
+			//! nothing); it is never downscaled behind the caller's back,
+			//! because a silently shrunken anchor would make the pane
+			//! comparison partly a comparison of two resolutions.
+			static constexpr std::size_t kRenderAnchorMaxPngBytes = 8u * 1024u * 1024u;
+
+			//! Doc 90 R1: THE ANCHOR -- the render the ratchet compares
+			//! against, established by the first qualifying render at or
+			//! after the Compose phase begins and re-pinned by
+			//! `set_render_anchor`.  Guarded by mAsyncCacheMutex: the async
+			//! render worker writes it, the dispatcher thread reads and
+			//! re-pins it.  No new lock -- this is render bookkeeping, which
+			//! is exactly what that mutex already guards.
+			RenderAnchorFrame mRenderAnchor;
+
+			//! Doc 90 R1: the MOST RECENT qualifying render, which is what
+			//! `set_render_anchor` promotes.  Same guard, same reasoning.
+			RenderAnchorFrame mRenderAnchorLatest;
 
 			//! Model-B F2 slice S1: SESSION-LOCAL render-id counter, used
 			//! whenever this call does NOT route through a

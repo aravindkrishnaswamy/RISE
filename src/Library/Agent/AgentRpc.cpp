@@ -180,7 +180,25 @@ namespace RISE
 				       // ways to disarm the build-plan gate, and a gate whose
 				       // unblock the autonomy layer refuses would be an
 				       // un-unlockable session.
-				       method == "imagine_scene";
+				       method == "imagine_scene" ||
+				       // Doc 90 slice R1 (2026-08-22): set_render_anchor
+				       // re-points a per-session BOOKMARK (which completed
+				       // render the next render is shown beside) and touches
+				       // the retained Document not at all -- no chunk, no
+				       // param, no head bump, no staging, no authority branch.
+				       // Read-safe on exactly the test file_build_plan and
+				       // imagine_scene pass.
+				       //
+				       // It has no second, gate-shaped reason to be on this
+				       // list -- it unblocks nothing, and a session that never
+				       // calls it is never stranded.  It belongs here on the
+				       // first test alone, and it must be reachable under Read
+				       // for the plain reason that `render` is: a Read-posture
+				       // session still renders, so it still accumulates the
+				       // renders this verb bookmarks, and refusing the bookmark
+				       // while allowing the renders would be an arbitrary
+				       // half-mechanism.
+				       method == "set_render_anchor";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -794,6 +812,40 @@ namespace RISE
 							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
 					}
 					result.set( "sceneTarget", st );
+				}
+				// Doc 90 slice R1 (2026-08-22): THE ITERATION RATCHET, under
+				// ONE nested key, same omit-when-absent convention and same
+				// `rr.ok` belt-and-braces as the blocks above.  `anchorApplied`
+				// is only ever set on a qualifying, successful full-frame
+				// production render (see AgentRenderResult::anchorApplied), so
+				// a session that never got one produces a byte-identical
+				// render result to before this slice.
+				//
+				// THERE IS NO SCORE IN THIS BLOCK, AND NONE MAY BE ADDED --
+				// Phase 2b's law (see the sceneTarget block above), which doc
+				// 90 sec 2's history note reaffirmed after the SCORED form of
+				// this very slice was falsified.  `anchorRevision` and
+				// `currentRevision` are IDENTITIES: which render is the
+				// anchor, and which one this is.  Nothing here is a
+				// measurement of one image against another, and nothing may
+				// become one.
+				if( rr.ok && rr.anchorApplied ) {
+					JsonValue an = JsonValue::MakeObject();
+					an.set( "anchored", JsonValue::MakeBool( true ) );
+					an.set( "established", JsonValue::MakeBool( rr.anchorEstablished ) );
+					an.set( "anchorRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr.anchorRevision ) ) );
+					an.set( "currentRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr.anchorCurrentRevision ) ) );
+					const bool haveAnchorComposite = !rr.anchorCompositePng.empty();
+					an.set( "composite", JsonValue::MakeBool( haveAnchorComposite ) );
+					if( haveAnchorComposite ) {
+						an.set( "compositeWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeWidth ) ) );
+						an.set( "compositeHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeHeight ) ) );
+					}
+					result.set( "anchor", an );
 				}
 				// Arc 80 (2026-08-12): the SCENE INVENTORY -- "where is
 				// everything?" -- under ONE nested key, same omit-when-absent
@@ -3212,6 +3264,46 @@ namespace RISE
 					return MakeSuccess( idValue, result );
 				}
 
+				//--------------------------------------------------------------
+				// set_render_anchor {}  ->  {ok, pinned, anchorRevision,
+				//                            previousAnchorRevision?, message}
+				//   Doc 90 slice R1 (2026-08-22).  READ-SAFE -- it re-points a
+				//   per-session bookmark and touches the Document not at all,
+				//   so there is no headVersion, no conflict, no staging and no
+				//   authority branch, exactly like file_build_plan.
+				//
+				//   IT TAKES NO PARAMETERS, so there is no schema error it can
+				//   produce: any `params` object is accepted and ignored.  See
+				//   AgentSession::SetRenderAnchor for why the no-argument
+				//   shape was chosen over a revision argument (two frames held
+				//   instead of every frame of the session, and "keep this one"
+				//   is the move the measured failure needed -- time travel on
+				//   the DOCUMENT is slice R2's verb).
+				//
+				//   `ok:false` means only "nothing to pin": no full-frame
+				//   production render has completed in this session yet.  It
+				//   is a plain answer, not an error, and nothing changed.
+				//--------------------------------------------------------------
+				if( m == "set_render_anchor" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const AgentSession::AgentSetRenderAnchorResult ar = s->SetRenderAnchor();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",     JsonValue::MakeBool( ar.ok ) );
+					// `pinned` is the same bool under the name a reader of the
+					// verb expects, mirroring file_build_plan's `filed` and
+					// imagine_scene's `imagined`.
+					result.set( "pinned", JsonValue::MakeBool( ar.pinned ) );
+					if( ar.ok ) {
+						result.set( "anchorRevision",
+							JsonValue::MakeNumber( static_cast<double>( ar.anchorRevision ) ) );
+						if( ar.hadPreviousAnchor )
+							result.set( "previousAnchorRevision",
+								JsonValue::MakeNumber( static_cast<double>( ar.previousAnchorRevision ) ) );
+					}
+					result.set( "message", JsonValue::MakeString( ar.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
 				if( m == "insert_material_scaffold" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const JsonValue* familyVal = params.find( "family" );
@@ -4466,7 +4558,24 @@ namespace RISE
 					// imePresent is 0 there.)
 					const bool sceneTargetImageRides =
 						rr.ok && rr.sceneTargetApplied && !rr.sceneTargetCompositePng.empty();
-					if( imePresent == 1 && rr.ok && !rr.targetApplied && !sceneTargetImageRides ) {
+					// Doc 90 slice R1 (2026-08-22): the ANCHOR composite joins
+					// the exactly-one-`png_base64` discipline as the OUTERMOST
+					// of the three, because it CONTAINS whichever of the other
+					// two would otherwise have ridden: when a scene-target
+					// composite was built, AgentSession::
+					// ApplyRenderAnchorComparison_ used it as the anchor
+					// composite's lower pane, and otherwise the lower pane is
+					// the very frame the plain branch would have returned, at
+					// the very dimensions that branch would have used.  So
+					// this is a SUPERSET, never a substitution -- nothing the
+					// model would have seen is lost by this branch winning.
+					// (The part-`target` strip is disjoint by construction: it
+					// requires `isolate`, which the anchor's qualification rule
+					// refuses.)
+					const bool anchorImageRides =
+						rr.ok && rr.anchorApplied && !rr.anchorCompositePng.empty();
+					if( imePresent == 1 && rr.ok && !rr.targetApplied &&
+						!sceneTargetImageRides && !anchorImageRides ) {
 						unsigned int imgW = 0, imgH = 0;
 						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
 						if( !png.empty() ) {
@@ -4538,7 +4647,7 @@ namespace RISE
 					// A caller that wants the plain frame can call read_image,
 					// which still serves THIS render's own beauty pixels
 					// (nothing here touches the image cache).
-					if( sceneTargetImageRides ) {
+					if( sceneTargetImageRides && !anchorImageRides ) {
 						renderResult.set( "png_base64",
 							JsonValue::MakeString( Base64Encode( rr.sceneTargetCompositePng ) ) );
 						renderResult.set( "byteLength",
@@ -4547,6 +4656,26 @@ namespace RISE
 							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
 						renderResult.set( "imageHeight",
 							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
+					}
+					// Doc 90 slice R1 (2026-08-22): the ANCHOR composite --
+					// this render set beneath the render the model chose as
+					// its reference point, both panes labelled with the head
+					// revision they were rendered at.  It wins over both
+					// branches above because it CONTAINS what they would have
+					// shown (see anchorImageRides' comment); it never fires
+					// without `imageMaxEdge`, because the lower pane is sized
+					// by exactly the rule that flag drives, and it never fires
+					// on the render that BECAME the anchor, because there is
+					// then nothing to set it beside.
+					if( anchorImageRides ) {
+						renderResult.set( "png_base64",
+							JsonValue::MakeString( Base64Encode( rr.anchorCompositePng ) ) );
+						renderResult.set( "byteLength",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositePng.size() ) ) );
+						renderResult.set( "imageWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeWidth ) ) );
+						renderResult.set( "imageHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeHeight ) ) );
 					}
 					return MakeSuccess( idValue, renderResult );
 				}

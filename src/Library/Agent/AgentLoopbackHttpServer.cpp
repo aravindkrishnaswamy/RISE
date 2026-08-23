@@ -380,6 +380,16 @@ namespace
 		// cost -- one provider round trip per call -- is bounded by the
 		// caller's own turn budget, not by this limiter, whose job is to
 		// meter DOCUMENT mutations.
+		//
+		// Doc 90 slice R1 (2026-08-22): `set_render_anchor` is likewise
+		// DELIBERATELY not on this list.  It changes nothing in the document,
+		// so it carries none of the leverage this limiter meters; it costs
+		// nothing beyond a bounded copy of the PNG bytes the session is
+		// already holding (SetRenderAnchor's `mRenderAnchor = mRenderAnchorLatest`
+		// -- a vector copy capped by kRenderAnchorMaxPngBytes, not a pointer
+		// swap); and it is read-safe in IsReadSafeVerb.  Unlike the three
+		// verbs above it unblocks no gate, so there is no stranding argument
+		// -- the first count alone keeps it off.
 		return false;
 	}
 

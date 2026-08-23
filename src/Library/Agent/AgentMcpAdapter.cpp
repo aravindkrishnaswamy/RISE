@@ -1396,6 +1396,42 @@ namespace RISE
 					tools.push_back( MakeTool( "imagine_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// set_render_anchor (doc 90 slice R1, 2026-08-22) -- READ-SAFE
+				// (on IsReadSafeVerb, so it dispatches under Read and Propose
+				// exactly as under Commit; no autonomy note).
+				//
+				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for the
+				// drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					std::vector<std::string> required;
+
+					const std::string desc =
+						"Keep the render you are looking at as this session's ANCHOR -- the picture every "
+						"later render is shown beside. Call it the moment a render is better than the one "
+						"you have been comparing against; it takes NO arguments and pins your MOST RECENT "
+						"full-frame production render. WHY IT EXISTS: without an anchor you only ever see "
+						"the newest frame, so an edit that made the scene worse looks exactly like one that "
+						"made it better, and a long refinement pass can walk a good scene downhill with "
+						"nothing noticing. From the first full-frame production render after you finish your "
+						"last element (or, in a session with no build plan, your first full-frame render), "
+						"every such render you ask an image of comes back as ONE picture -- the anchor "
+						"ABOVE, this render BELOW, each pane labelled with the head revision it was rendered "
+						"at -- and the result carries an `anchor` block: {anchored, established, "
+						"anchorRevision, currentRevision, composite, compositeWidth, compositeHeight}. THERE "
+						"IS NO SCORE and there is deliberately no similarity number: which of the two "
+						"pictures is better is your judgment, nothing is gated on it, and no particular "
+						"answer is expected. The render that BECAME the anchor carries no composite -- there "
+						"is nothing yet to set it beside. Draft renders, mode: renders and isolate renders "
+						"are never anchored and never compared, because a difference against one of those "
+						"would be a render setting rather than a change to the scene. It changes nothing in "
+						"the document -- no chunk, no head version, no undo step -- so there is no "
+						"baseHeadVersion and no conflict outcome. Returns "
+						"{ok,pinned,anchorRevision,previousAnchorRevision,message}; ok:false means only that "
+						"no full-frame production render has completed in this session yet.";
+					tools.push_back( MakeTool( "set_render_anchor", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// insert_geometry_scaffold (Arc-75 slice S3b; extended by slice E3
 				// with blended_chain, volume_bank)
 				{
@@ -2125,7 +2161,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 36 tool names this adapter recognizes --
+			//! The list of the 37 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -2142,6 +2178,12 @@ namespace RISE
 					// AgentMcpAdapterTest so no future verb can land half-wired).
 					"build_element", "place_element",
 					"imagine_scene",    // Arc 77 Phase 2 (2026-08-11): read-safe, the gate's OTHER unblock
+					// Doc 90 slice R1 (2026-08-22): read-safe -- it re-points a
+					// per-session bookmark (which completed render the next
+					// render is shown beside) and touches the Document not at
+					// all.  Unlike the two above it unblocks no gate; it is
+					// here on the read-safe test alone.
+					"set_render_anchor",
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 					"insert_material_scaffold", "insert_geometry_scaffold",
 					"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision

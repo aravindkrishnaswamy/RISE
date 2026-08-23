@@ -386,6 +386,31 @@ static void TestReadPosture()
 	Check( ReadDoc( rpc, 17 ) == docBefore,
 	       "G2: RED-PROVE -- the document is BYTE-IDENTICAL after file_build_plan" );
 
+	// Fix-round (P2-2): set_render_anchor is on the SAME read-safe
+	// allowlist as file_build_plan and imagine_scene (see AgentRpc.cpp's
+	// IsReadSafeVerb doc, doc 90 slice R1) and for a parallel reason -- it
+	// re-points a per-session BOOKMARK (which completed render the next
+	// render is shown beside) and touches the retained Document not at
+	// all: no chunk, no param, no head bump.  Exactly parallel to the
+	// file_build_plan case just above: dispatches under Read rather than
+	// being refused, and the document is unchanged by it.  The render at
+	// id 11 above already produced a qualifying full-frame beauty render
+	// (spot-checked ok==true there), so this session already has a render
+	// to pin -- the no-render-yet refusal shape is covered elsewhere
+	// (AgentRenderAnchorTest), not here.
+	{
+		JsonValue env = ParseResponse(
+			rpc.HandleLine( Req( 8802, "set_render_anchor", JsonValue::MakeObject() ) ), 8802 );
+		Check( !env.has( "error" ),
+		       "set_render_anchor DISPATCHES under Read (it mutates no Document state)" );
+		Check( env.get( "result" ).get( "ok" ).asBool( false ),
+		       "and it SUCCEEDS under Read -- the earlier render (id 11) is a render to pin" );
+		Check( env.get( "result" ).get( "pinned" ).asBool( false ),
+		       "and pins the anchor under Read" );
+	}
+	Check( ReadDoc( rpc, 18 ) == docBefore,
+	       "set_render_anchor: RED-PROVE -- the document is BYTE-IDENTICAL after it, under Read" );
+
 	std::remove( scenePath.c_str() );
 
 }
@@ -867,8 +892,8 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 36,
-		       "tools/list under Read STILL lists all 36 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 37,
+		       "tools/list under Read STILL lists all 37 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
@@ -941,7 +966,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 36, "tools/list under Commit lists all 36 tools" );
+		Check( tools.isArray() && tools.size() == 37, "tools/list under Commit lists all 37 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -979,7 +1004,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 36, "tools/list under Propose lists all 36 tools" );
+		Check( tools.isArray() && tools.size() == 37, "tools/list under Propose lists all 37 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove

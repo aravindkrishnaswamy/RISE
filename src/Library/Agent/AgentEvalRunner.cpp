@@ -7067,6 +7067,14 @@ namespace RISE
 										// the protocol's own advance, which a run may
 										// legitimately call before ever asking the user
 										// anything.
+										// Doc 90 slice R1 (2026-08-22):
+										// `set_render_anchor` is absent for the
+										// identical reason -- it changes nothing in
+										// the document, it only re-points a
+										// per-session bookmark at a render that has
+										// already happened, and a run that keeps a
+										// good frame before asking the user anything
+										// has mutated nothing to ask about.
 										"propose_patch", "propose_patches", "remove_chunk",
 										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
 										// remove -- ONE call removes N chunks, so it is very

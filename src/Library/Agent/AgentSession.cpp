@@ -16447,8 +16447,23 @@ namespace RISE
 			// re-imagine cannot re-point what this render measured against.
 			const std::shared_ptr<const AgentSceneTarget> sceneTargetSnapshot = mSceneTarget;
 
+			// Doc 90 slice R1 (2026-08-22): the RATCHET's PHASE snapshot, taken
+			// HERE on the dispatcher's own thread for the same discipline the
+			// two snapshots above follow -- `mBuildPhase` is dispatcher-thread
+			// state that must not be read once RenderCore_ has started.  It
+			// costs no lock at all.
+			//
+			// The HEAD REVISION is NOT read here.  ReadHeadVersion() takes the
+			// controller mutex that the render loop holds, so reading it on
+			// this thread DEADLOCKS the moment a render already owns the scene
+			// (measured against AgentRenderAsyncTest, 2026-08-22).  RenderCore_
+			// stamps it from inside the park instead -- see `outHeadRevision`.
+			const bool anchorArmedSnapshot = RenderAnchorArmed_();
+
+			std::uint64_t anchorRenderRevision = 0;
 			AgentRenderResult rr = RenderCore_( params, /*assumeParked=*/false,
-			                                    /*forcedJobId=*/0, resolvedTargetPtr );
+			                                    /*forcedJobId=*/0, resolvedTargetPtr,
+			                                    &anchorRenderRevision );
 			// G3b (2026-08-10): the sketch comparison runs AFTER the render
 			// returns, on this thread, with the render's park already
 			// released (assumeParked=false) -- it fires ONE more internal
@@ -16467,6 +16482,12 @@ namespace RISE
 			// extra render, so unlike the sketch comparison it does not care
 			// whether the park has released.
 			ApplySceneTargetComparison_( params, rr, sceneTargetSnapshot );
+			// Doc 90 slice R1 (2026-08-22): the ITERATION RATCHET, AFTER the
+			// scene-target comparison and not before it -- when that one built
+			// a composite, this one sets the anchor above it, so it has to see
+			// the final state of `rr`.  Like the scene-target comparison it
+			// fires no render of its own, so it needs no park reasoning.
+			ApplyRenderAnchorComparison_( params, rr, anchorArmedSnapshot, anchorRenderRevision );
 			// Arc 80 (2026-08-12): the SCENE INVENTORY, last, for the same
 			// reason the sketch comparison runs here rather than inside
 			// RenderCore_ -- it fires one more internal render of its own and
@@ -16625,9 +16646,11 @@ namespace RISE
 		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
 		                                              bool assumeParked,
 		                                              std::uint64_t forcedJobId,
-		                                              const AgentElementSketch* resolvedTarget )
+		                                              const AgentElementSketch* resolvedTarget,
+		                                              std::uint64_t* outHeadRevision )
 		{
 			AgentRenderResult res;
+			if( outHeadRevision ) *outHeadRevision = 0;
 
 			if( !mJob ) {
 				res.ok = false;
@@ -17786,6 +17809,17 @@ namespace RISE
 				// success or failure) -- matches the pre-fix contract exactly,
 				// just resolved fresh here instead of on the calling thread.
 				res.integrator = mJob->GetActiveRasterizerName();
+
+				// Doc 90 slice R1 (2026-08-22): THE HEAD REVISION THIS RENDER
+				// IS OF, stamped here for exactly the reason `res.integrator`
+				// above is -- this is the one place the live Job may be read,
+				// because the render owns the scene here.  See the
+				// `outHeadRevision` doc on this function's declaration for why
+				// neither of the two obvious outside-the-park alternatives
+				// works (one deadlocks against the render loop, the other
+				// races the GUI thread's commits).
+				if( outHeadRevision )
+					*outHeadRevision = mJob->GetCstHeadVersion().revision;
 
 				if( !isObjectMap ) {
 					ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform, beautyColorSpace );
@@ -21553,6 +21587,530 @@ namespace RISE
 				rr.message += " (scene target: this session has an imagined scene target, but the "
 				              "composite could not be encoded, so the plain frame was returned.)";
 			}
+		}
+
+		//----------------------------------------------------------------------
+		// Doc 90 slice R1 (2026-08-22) -- THE ITERATION RATCHET.
+		//
+		// docs/agentic-redesign/90-iteration-ratchet.md sec 1 records the
+		// failure: on the dragon probe, render 00 was the best picture of the
+		// session and twelve self-directed edit rounds later the final render
+		// was strictly worse.  The model judges only the CURRENT frame against
+		// the prompt.  Nothing anchored best-so-far, so every regression was
+		// permanent, and 7.5M input tokens went mostly into degrading a scene
+		// that had already succeeded.
+		//
+		// The answer is a PICTURE, not a number, and that is the sharpest
+		// constraint on this whole file.  Sec 2's history note records that
+		// the original R1 spec'd a similarity SCALAR and that the scalar form
+		// was falsified twice over: Phase 2b had already shipped, measured and
+		// DELETED exactly such a score from exactly this surface (16 score
+		// consultations drove 23 emissive/power-cranking edits into a
+		// blown-out frame, and AgentRenderAsyncTest pins its absence), and a
+		// harness over the real scorer showed the metric INVERTS in the
+		// operative regime -- against a divergent generated target, deleting
+		// the hero object IMPROVES it.  A ratchet on that scalar would pin
+		// "best" to the most mangled document.  So: NO SCORE, NO DIFFERENCE
+		// PERCENTAGE, NO NUMBER COMPUTED FROM TWO IMAGES, HERE OR ANYWHERE
+		// DOWNSTREAM.  The two revisions this code prints are IDENTITIES, not
+		// measurements.
+		//
+		// What ships instead is Phase 2b's law applied a second time: the
+		// composite IS the comparison.  A vision model comparing two frames
+		// side by side sees the missing dragon; a scalar cannot.
+		//----------------------------------------------------------------------
+
+		namespace
+		{
+			//! A 3x5 uppercase/digit bitmap font, one byte per row, low three
+			//! bits = left/middle/right.  RISE has no text rasterizer of any
+			//! kind (checked: nothing under src/Library draws glyphs into
+			//! pixels), and the anchor composite needs its two panes labelled
+			//! IN THE IMAGE -- the note text can say "the upper pane is the
+			//! anchor", but a model looking at the picture should not have to
+			//! hold that sentence in mind to know which frame is which.  Kept
+			//! deliberately tiny: the alphabet is exactly A-Z, 0-9 and space,
+			//! and everything else renders as blank.
+			const unsigned char kAnchorGlyph3x5[37][5] = {
+				{ 0x7,0x5,0x5,0x5,0x7 }, // 0
+				{ 0x2,0x6,0x2,0x2,0x7 }, // 1
+				{ 0x7,0x1,0x7,0x4,0x7 }, // 2
+				{ 0x7,0x1,0x7,0x1,0x7 }, // 3
+				{ 0x5,0x5,0x7,0x1,0x1 }, // 4
+				{ 0x7,0x4,0x7,0x1,0x7 }, // 5
+				{ 0x7,0x4,0x7,0x5,0x7 }, // 6
+				{ 0x7,0x1,0x2,0x2,0x2 }, // 7
+				{ 0x7,0x5,0x7,0x5,0x7 }, // 8
+				{ 0x7,0x5,0x7,0x1,0x7 }, // 9
+				{ 0x7,0x5,0x7,0x5,0x5 }, // A
+				{ 0x6,0x5,0x6,0x5,0x6 }, // B
+				{ 0x7,0x4,0x4,0x4,0x7 }, // C
+				{ 0x6,0x5,0x5,0x5,0x6 }, // D
+				{ 0x7,0x4,0x7,0x4,0x7 }, // E
+				{ 0x7,0x4,0x7,0x4,0x4 }, // F
+				{ 0x7,0x4,0x5,0x5,0x7 }, // G
+				{ 0x5,0x5,0x7,0x5,0x5 }, // H
+				{ 0x7,0x2,0x2,0x2,0x7 }, // I
+				{ 0x1,0x1,0x1,0x5,0x7 }, // J
+				{ 0x5,0x5,0x6,0x5,0x5 }, // K
+				{ 0x4,0x4,0x4,0x4,0x7 }, // L
+				{ 0x5,0x7,0x7,0x5,0x5 }, // M
+				{ 0x6,0x5,0x5,0x5,0x5 }, // N
+				{ 0x7,0x5,0x5,0x5,0x7 }, // O
+				{ 0x7,0x5,0x7,0x4,0x4 }, // P
+				{ 0x7,0x5,0x5,0x7,0x3 }, // Q
+				{ 0x7,0x5,0x7,0x6,0x5 }, // R
+				{ 0x7,0x4,0x7,0x1,0x7 }, // S
+				{ 0x7,0x2,0x2,0x2,0x2 }, // T
+				{ 0x5,0x5,0x5,0x5,0x7 }, // U
+				{ 0x5,0x5,0x5,0x5,0x2 }, // V
+				{ 0x5,0x5,0x7,0x7,0x5 }, // W
+				{ 0x5,0x5,0x2,0x5,0x5 }, // X
+				{ 0x5,0x5,0x2,0x2,0x2 }, // Y
+				{ 0x7,0x1,0x2,0x4,0x7 }, // Z
+				{ 0x0,0x0,0x0,0x0,0x0 }  // space / anything else
+			};
+
+			//! Index into kAnchorGlyph3x5 for `c` (case-insensitive); the
+			//! blank row for every character the font does not carry.
+			int AnchorGlyphIndex_( char c )
+			{
+				if( c >= '0' && c <= '9' ) return c - '0';
+				if( c >= 'A' && c <= 'Z' ) return 10 + ( c - 'A' );
+				if( c >= 'a' && c <= 'z' ) return 10 + ( c - 'a' );
+				return 36;
+			}
+
+			//! Glyph advance, in destination pixels, at `scale` (3 columns
+			//! plus a one-column gap).
+			unsigned int AnchorLabelAdvance_( unsigned int scale ) { return 4u * scale; }
+
+			//! The label strip's total height at `scale`: five glyph rows
+			//! plus one row of padding above and below.
+			unsigned int AnchorLabelHeight_( unsigned int scale ) { return 7u * scale; }
+
+			//! The largest scale at which EVERY label in `texts` fits inside
+			//! `canvasW`, clamped to [1,3].  Chosen from the LONGEST label so
+			//! both strips of one composite share a size -- two panes labelled
+			//! at different sizes would read as two different kinds of thing.
+			unsigned int AnchorLabelScale_( unsigned int canvasW,
+			                                const std::string* texts, std::size_t count )
+			{
+				std::size_t longest = 0;
+				for( std::size_t i = 0; i < count; ++i )
+					if( texts[i].size() > longest ) longest = texts[i].size();
+				if( longest == 0 || canvasW == 0 ) return 1;
+				for( unsigned int s = 3; s > 1; --s ) {
+					const std::uint64_t need =
+						static_cast<std::uint64_t>( longest ) * AnchorLabelAdvance_( s );
+					if( need <= canvasW ) return s;
+				}
+				return 1;
+			}
+
+			//! Draw one label strip into a tightly-packed RGB8 canvas: a dark
+			//! bar `AnchorLabelHeight_(scale)` rows tall starting at row `y0`,
+			//! with `text` in light pixels one glyph-column in from the left.
+			//! Characters that would run past the right edge are dropped
+			//! rather than wrapped -- a truncated label is honest, a wrapped
+			//! one would collide with the pane below it.
+			void DrawAnchorLabel_( std::vector<unsigned char>& canvas,
+			                       unsigned int canvasW, unsigned int canvasH,
+			                       unsigned int y0, unsigned int scale,
+			                       const std::string& text )
+			{
+				if( scale == 0 || canvasW == 0 ) return;
+				const unsigned int barH = AnchorLabelHeight_( scale );
+				if( y0 >= canvasH ) return;
+				const unsigned int yEnd = ( y0 + barH < canvasH ) ? ( y0 + barH ) : canvasH;
+				// The bar itself: a near-black ground, so the label reads the
+				// same over a bright frame and a dark one.
+				for( unsigned int y = y0; y < yEnd; ++y ) {
+					for( unsigned int x = 0; x < canvasW; ++x ) {
+						const std::size_t o = ( static_cast<std::size_t>( y ) * canvasW + x ) * 3;
+						canvas[o + 0] = 20;
+						canvas[o + 1] = 20;
+						canvas[o + 2] = 20;
+					}
+				}
+				const unsigned int advance = AnchorLabelAdvance_( scale );
+				unsigned int penX = scale;   // one glyph-column of left margin
+				for( std::size_t i = 0; i < text.size(); ++i ) {
+					if( penX + 3u * scale > canvasW ) break;
+					const unsigned char* rows = kAnchorGlyph3x5[ AnchorGlyphIndex_( text[i] ) ];
+					for( unsigned int gy = 0; gy < 5; ++gy ) {
+						for( unsigned int gx = 0; gx < 3; ++gx ) {
+							if( ( rows[gy] & ( 0x4 >> gx ) ) == 0 ) continue;
+							for( unsigned int sy = 0; sy < scale; ++sy ) {
+								const unsigned int y = y0 + scale + gy * scale + sy;
+								if( y >= yEnd ) continue;
+								for( unsigned int sx = 0; sx < scale; ++sx ) {
+									const unsigned int x = penX + gx * scale + sx;
+									if( x >= canvasW ) continue;
+									const std::size_t o =
+										( static_cast<std::size_t>( y ) * canvasW + x ) * 3;
+									canvas[o + 0] = 236;
+									canvas[o + 1] = 236;
+									canvas[o + 2] = 236;
+								}
+							}
+						}
+					}
+					penX += advance;
+				}
+			}
+
+			//! Blit a tightly-packed RGB8 source into `canvas` at (x0,y0).
+			void BlitRgb8_( std::vector<unsigned char>& canvas,
+			                unsigned int canvasW, unsigned int canvasH,
+			                const std::vector<unsigned char>& src,
+			                unsigned int srcW, unsigned int srcH,
+			                unsigned int x0, unsigned int y0 )
+			{
+				for( unsigned int y = 0; y < srcH; ++y ) {
+					const unsigned int dy = y0 + y;
+					if( dy >= canvasH ) break;
+					for( unsigned int x = 0; x < srcW; ++x ) {
+						const unsigned int dx = x0 + x;
+						if( dx >= canvasW ) break;
+						const std::size_t s = ( static_cast<std::size_t>( y ) * srcW + x ) * 3;
+						const std::size_t d = ( static_cast<std::size_t>( dy ) * canvasW + dx ) * 3;
+						canvas[d + 0] = src[s + 0];
+						canvas[d + 1] = src[s + 1];
+						canvas[d + 2] = src[s + 2];
+					}
+				}
+			}
+		}
+
+		bool AgentSession::RenderQualifiesForAnchor_( const AgentRenderParams& params,
+		                                             const AgentRenderResult& rr )
+		{
+			// EXACTLY the scene target's qualification rule (see
+			// ApplySceneTargetComparison_ and
+			// AgentRenderResult::sceneTargetApplied), and for exactly the same
+			// honesty reasons -- with one of them sharper here.  Draft ignores
+			// the scene's authored materials and lighting, objectmap and the
+			// view modes paint identity or data colours, and isolate deletes
+			// the rest of the scene: setting any of those beside a production
+			// beauty anchor would show a DIFFERENCE that is really a render
+			// setting, and this mechanism exists to be believed when it shows
+			// a regression.
+			if( !rr.ok ) return false;
+			if( params.quality == AgentRenderQuality::Draft ) return false;
+			if( params.renderTarget != AgentRenderTarget::Beauty ) return false;
+			if( !params.isolate.empty() || rr.isolateApplied ) return false;
+			if( !params.target.empty() || rr.targetApplied ) return false;
+			if( rr.png.empty() ) return false;
+			// AND ONE EXCLUSION THE SCENE TARGET DOES NOT MAKE: the render has
+			// to be one the MODEL asked for.  The anchor is a bookmark in the
+			// model's own sequence of looks, so a render it never saw must not
+			// silently re-point it -- and `Render(AgentRenderParams)` is also
+			// the internal entry point for CompareToReference's grading pass,
+			// which is a full-frame production beauty render by every test
+			// above and would otherwise establish (or refresh) an anchor out
+			// of a frame that exists only to be scored against a
+			// host-registered reference.  `fromAgentSurface` is set by
+			// AgentRpc's `render` handler and by FinishElement's own isolate
+			// render, and by nothing else.
+			if( !params.fromAgentSurface ) return false;
+			return true;
+		}
+
+		bool AgentSession::RenderAnchorArmed_() const
+		{
+			// THE ANCHOR DEFINITION, in one predicate.
+			//
+			// Doc 90 sec 2 says "the FIRST completed post-compose render (in
+			// the failed dragon run, exactly the render that was best)".  The
+			// Compose phase is the right moment because that is when the scene
+			// first exists as a whole: before it, a render is a look at parts
+			// being built, and "is this better than before?" has no meaning
+			// yet.  finish_element on the last element is what enters Compose,
+			// so this reads mBuildPhase rather than counting renders.
+			//
+			// AND THE OTHER HALF, which the doc does not spell out and which
+			// the failure mode requires: a session whose phase machinery is
+			// NOT in force (the launch switches are off, or the phase refusals
+			// have given up) never reaches Compose at all, and would never arm
+			// the ratchet.  Those sessions render whole scenes from turn one,
+			// so for them the anchor is simply the first qualifying render.
+			// The alternative -- ratchet only under the build protocol -- would
+			// switch the mechanism off for exactly the configurations that get
+			// no staging discipline either.
+			//
+			// DISPATCHER THREAD ONLY: mBuildPhase is written by FinishElement
+			// on that thread and is not atomic, so the async path snapshots
+			// this at submission time (see ApplyRenderAnchorComparison_'s doc).
+			if( !BuildProtocolActive_() ) return true;
+			return mBuildPhase == AgentBuildPhase::Compose;
+		}
+
+		bool AgentSession::HasRenderAnchor() const
+		{
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			return mRenderAnchor.set;
+		}
+
+		std::uint64_t AgentSession::RenderAnchorRevision() const
+		{
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			return mRenderAnchor.set ? mRenderAnchor.revision : 0;
+		}
+
+		AgentSession::AgentSetRenderAnchorResult AgentSession::SetRenderAnchor()
+		{
+			AgentSetRenderAnchorResult out;
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			if( !mRenderAnchorLatest.set ) {
+				// NOTHING TO PIN, said plainly.  This is the honest answer for
+				// a session that has only drafted, only looked at isolated
+				// parts, or not rendered at all -- and it names what would
+				// make the call work, because a model that hears "no" without
+				// a next step spends the rest of its budget guessing.
+				out.ok      = false;
+				out.message = "set_render_anchor: nothing to pin -- this session has not yet completed a "
+					"full-frame production render (draft renders, mode renders and isolate renders are not "
+					"anchored, because a difference against one of those would be a render setting rather "
+					"than a change to the scene). Render the whole scene, then pin it.";
+				return out;
+			}
+			out.hadPreviousAnchor      = mRenderAnchor.set;
+			out.previousAnchorRevision = mRenderAnchor.set ? mRenderAnchor.revision : 0;
+			mRenderAnchor              = mRenderAnchorLatest;
+			out.ok             = true;
+			out.pinned         = true;
+			out.anchorRevision = mRenderAnchor.revision;
+			out.message = "render anchor pinned to your most recent full-frame render (revision " +
+				std::to_string( static_cast<unsigned long long>( out.anchorRevision ) ) + ")";
+			if( out.hadPreviousAnchor && out.previousAnchorRevision != out.anchorRevision ) {
+				out.message += ", replacing the anchor at revision " +
+					std::to_string( static_cast<unsigned long long>( out.previousAnchorRevision ) );
+			}
+			out.message += ". From now on every full-frame production render you ask an image of shows that "
+				"anchor above this render, both labelled with their revisions.";
+			return out;
+		}
+
+		void AgentSession::ApplyRenderAnchorComparison_( const AgentRenderParams& params,
+		                                                 AgentRenderResult& rr,
+		                                                 bool anchorArmed,
+		                                                 std::uint64_t currentRevision )
+		{
+			if( !RenderQualifiesForAnchor_( params, rr ) ) return;
+			// A frame too large to remember is skipped ENTIRELY -- not
+			// downscaled behind the caller's back.  See
+			// kRenderAnchorMaxPngBytes: an anchor quietly stored at a
+			// different resolution than the render it is set beside would make
+			// the pane comparison partly a comparison of resolutions, which is
+			// the one thing this mechanism must not do.
+			if( rr.png.size() > kRenderAnchorMaxPngBytes ) return;
+
+			std::vector<unsigned char> anchorPng;
+			std::uint64_t              anchorRevision = 0;
+			bool                       established    = false;
+			{
+				// The ONE critical section, on the mutex this session already
+				// uses for the render bookkeeping its worker thread writes.
+				// On the async path this runs inside the controller's park, so
+				// the nesting is mMutex -> mAsyncCacheMutex, which is the
+				// order RenderCore_'s own cache-population tail already
+				// establishes (see mAsyncCacheMutex's lock-order note).
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				mRenderAnchorLatest.set      = true;
+				mRenderAnchorLatest.revision = currentRevision;
+				mRenderAnchorLatest.png      = rr.png;
+				if( !mRenderAnchor.set ) {
+					if( !anchorArmed ) return;   // pre-Compose: nothing is anchored yet
+					mRenderAnchor = mRenderAnchorLatest;
+					established   = true;
+				}
+				else {
+					anchorRevision = mRenderAnchor.revision;
+					anchorPng      = mRenderAnchor.png;
+				}
+			}
+
+			if( established ) {
+				// THIS render became the anchor, so there is nothing to set it
+				// beside: no composite, and the note says what just happened
+				// rather than describing an image that is not there.
+				rr.anchorApplied          = true;
+				rr.anchorEstablished      = true;
+				rr.anchorRevision         = currentRevision;
+				rr.anchorCurrentRevision  = currentRevision;
+				rr.message += " (anchor: this render (revision " +
+					std::to_string( static_cast<unsigned long long>( currentRevision ) ) +
+					") is now this session's anchor -- every later full-frame render you ask an image of "
+					"will show it above the new one so you can see whether you are still moving forward. "
+					"If a later render is better, set_render_anchor keeps that one instead.)";
+				return;
+			}
+
+			rr.anchorApplied         = true;
+			rr.anchorRevision        = anchorRevision;
+			rr.anchorCurrentRevision = currentRevision;
+
+			// No inline image was requested, so there is nothing to compose --
+			// the facts ride and, exactly as before this mechanism existed, no
+			// bytes.  (Same rule, same reason, as the scene target's.)
+			if( params.imageMaxEdge == 0 ) return;
+
+			// THE LOWER PANE.  When a scene-target composite was built for
+			// this call it IS the lower pane -- the two mechanisms compose
+			// rather than one silently suppressing the other, which matters
+			// because the run this slice exists for held a scene target for
+			// its entire length, so a "target wins" rule would have shipped a
+			// ratchet that never appeared.  Otherwise the lower pane is this
+			// render's own tile, sized by exactly the rule
+			// ReadImage(imageMaxEdge) applies (FrameDimsAtMaxEdge_), so
+			// Phase 2b's size contract holds unchanged: the render is never
+			// shown smaller than the plain frame would have been.
+			const bool baseIsSceneTarget = !rr.sceneTargetCompositePng.empty();
+			std::vector<unsigned char> base;
+			unsigned int baseW = 0, baseH = 0;
+			{
+				std::string derr;
+				if( baseIsSceneTarget ) {
+					if( !DecodeReferencePngToRgb8_( rr.sceneTargetCompositePng.data(),
+					                                rr.sceneTargetCompositePng.size(),
+					                                base, baseW, baseH, derr ) ) {
+						rr.message += " (anchor: the composite was not built -- this call's image could "
+						              "not be decoded: " + derr + ")";
+						return;
+					}
+				}
+				else {
+					std::vector<unsigned char> renderRgb;
+					unsigned int rw = 0, rh = 0;
+					if( !DecodeReferencePngToRgb8_( rr.png.data(), rr.png.size(),
+					                                renderRgb, rw, rh, derr ) ) {
+						rr.message += " (anchor: the composite was not built -- this render's image could "
+						              "not be decoded: " + derr + ")";
+						return;
+					}
+					FrameDimsAtMaxEdge_( rw, rh, params.imageMaxEdge, baseW, baseH );
+					if( baseW == 0 || baseH == 0 ||
+						!BoxDownscaleRgb8_( renderRgb, rw, rh, baseW, baseH, base ) ) {
+						rr.message += " (anchor: the composite was not built -- this render's image could "
+						              "not be fitted to the requested size)";
+						return;
+					}
+				}
+			}
+
+			// THE UPPER PANE: the anchor, scaled to the lower pane's width
+			// when it is wider and NEVER up when it is narrower (a narrower
+			// anchor is centred at its own size on black) -- the same "no
+			// interpolation invents detail" rule the scene-target band holds.
+			std::vector<unsigned char> anchorRgb;
+			unsigned int aw = 0, ah = 0;
+			{
+				std::string derr;
+				if( !DecodeReferencePngToRgb8_( anchorPng.data(), anchorPng.size(),
+				                                anchorRgb, aw, ah, derr ) ) {
+					rr.message += " (anchor: the composite was not built -- the anchor render could not "
+					              "be decoded: " + derr + ")";
+					return;
+				}
+			}
+			unsigned int paneW = aw, paneH = ah;
+			if( paneW > baseW ) {
+				const double s = static_cast<double>( baseW ) / static_cast<double>( paneW );
+				paneW = baseW;
+				paneH = static_cast<unsigned int>( std::round( s * static_cast<double>( ah ) ) );
+				if( paneH < 1 ) paneH = 1;
+			}
+			std::vector<unsigned char> pane;
+			if( !BoxDownscaleRgb8_( anchorRgb, aw, ah, paneW, paneH, pane ) ) {
+				rr.message += " (anchor: the composite was not built -- the anchor render could not be "
+				              "fitted to this render's width)";
+				return;
+			}
+
+			// THE LABELS.  Two IDENTITIES, never a measurement: which pane is
+			// which, and what revision each one is.  A model reading the
+			// picture must not have to hold a sentence in mind to know which
+			// frame is the older one.
+			const std::string labels[2] = {
+				"ANCHOR REV " + std::to_string( static_cast<unsigned long long>( anchorRevision ) ),
+				( baseIsSceneTarget
+					? "TARGET AND THIS RENDER REV "
+					: "THIS RENDER REV " ) +
+					std::to_string( static_cast<unsigned long long>( currentRevision ) )
+			};
+			const unsigned int scale  = AnchorLabelScale_( baseW, labels, 2 );
+			const unsigned int labelH = AnchorLabelHeight_( scale );
+			const unsigned int kRule  = 2;
+
+			const unsigned int compW = baseW;
+			const std::uint64_t compH64 =
+				static_cast<std::uint64_t>( labelH ) + paneH + kRule + labelH + baseH;
+			if( compW == 0 || compH64 == 0 || compH64 > 65535u ) {
+				rr.message += " (anchor: the composite was not built -- the two frames do not fit one "
+				              "canvas)";
+				return;
+			}
+			const unsigned int compH = static_cast<unsigned int>( compH64 );
+
+			std::vector<unsigned char> canvas(
+				static_cast<std::size_t>( compW ) * compH * 3, 0 );
+			unsigned int y = 0;
+			DrawAnchorLabel_( canvas, compW, compH, y, scale, labels[0] );
+			y += labelH;
+			BlitRgb8_( canvas, compW, compH, pane, paneW, paneH, ( compW - paneW ) / 2, y );
+			y += paneH;
+			// The grey rule: a dark anchor edge above a dark render edge is
+			// otherwise one continuous image (the scene-target composite's
+			// reason, unchanged).
+			for( unsigned int ry = 0; ry < kRule; ++ry ) {
+				for( unsigned int rx = 0; rx < compW; ++rx ) {
+					const std::size_t o =
+						( static_cast<std::size_t>( y + ry ) * compW + rx ) * 3;
+					canvas[o + 0] = 128;
+					canvas[o + 1] = 128;
+					canvas[o + 2] = 128;
+				}
+			}
+			y += kRule;
+			DrawAnchorLabel_( canvas, compW, compH, y, scale, labels[1] );
+			y += labelH;
+			BlitRgb8_( canvas, compW, compH, base, baseW, baseH, 0, y );
+
+			rr.anchorCompositePng = EncodeRgb8Png_( canvas, compW, compH );
+			if( rr.anchorCompositePng.empty() ) {
+				rr.message += " (anchor: this render is set against your anchor render (revision " +
+					std::to_string( static_cast<unsigned long long>( anchorRevision ) ) +
+					"), but the composite could not be encoded, so the plain image was returned.)";
+				return;
+			}
+			rr.anchorCompositeWidth  = compW;
+			rr.anchorCompositeHeight = compH;
+
+			// THE NOTE.  One sentence of FACTS plus the one action that
+			// follows from them, self-disarming in the design-note way: it
+			// says what to do if this render is better, and it does not tell
+			// the model that anything is wrong.  No number, no verdict, no
+			// "closer"/"worse" characterization -- the two pictures are the
+			// comparison.
+			//
+			// TODO (doc 90 slice R2, `revert_to_revision`): when that verb
+			// lands, append this ONE sentence here and nothing else --
+			// " If this one is worse, revert_to_revision "
+			// + std::to_string(anchorRevision) + " puts the document back to
+			// what the anchor was rendered from."
+			// It is deliberately NOT named yet: doc 90 sec 2 records that a
+			// stale promise burns the repair budget, and a model told to call
+			// a verb that does not exist spends turns discovering that.
+			rr.message += " (anchor: the image returned with this call is your anchor render, revision " +
+				std::to_string( static_cast<unsigned long long>( anchorRevision ) ) + ", above " +
+				( baseIsSceneTarget ? "your imagined target and this render, revision "
+				                    : "this render, revision " ) +
+				std::to_string( static_cast<unsigned long long>( currentRevision ) ) +
+				" -- each pane is labelled. If this render is the better one, set_render_anchor keeps it "
+				"as the anchor; if it is worse, the anchor is what you already had. Nothing is scored and "
+				"nothing is gated: compare the two pictures yourself. read_image returns this render's own "
+				"frame.)";
 		}
 
 		//----------------------------------------------------------------------
@@ -26865,6 +27423,27 @@ namespace RISE
 			// as-it-was-at-submission semantics FIX 1 established for the plan.
 			const std::shared_ptr<const AgentSceneTarget> sceneTargetSnapshot = mSceneTarget;
 
+			// Doc 90 slice R1 (2026-08-22): THE RATCHET's PHASE SNAPSHOT, taken
+			// here for the SAME reason and by the same reachability argument
+			// as the scene target's, and a strictly stronger case than it:
+			// mBuildPhase is plain non-atomic dispatcher-thread state that a
+			// FinishElement can be reassigning while the closure below runs.
+			// Reading it here is also free -- no lock at all.
+			//
+			// THE HEAD REVISION IS NOT SNAPSHOTTED HERE, DELIBERATELY.  The
+			// obvious symmetry (read it beside the phase) is WRONG on this
+			// path: ReadHeadVersion() goes through the controller, which takes
+			// the mutex a PARKED RENDER HOLDS, so a submit issued while
+			// another render is in flight would BLOCK here -- and RenderAsync's
+			// entire contract is that it returns promptly and answers a busy
+			// slot with a refusal rather than a wait.  (Measured: it wedged
+			// AgentRenderAsyncTest's fast-return and single-slot blocks.)
+			// RenderCore_ stamps it from inside the park instead, where the
+			// read is exact rather than merely safe -- the render owns the
+			// scene there, so no commit can be in flight.  See its
+			// `outHeadRevision` doc.
+			const bool anchorArmedSnapshot = RenderAnchorArmed_();
+
 			// Submit a closure that runs the FULL render body (override
 			// capture/apply/render/restore, same as the synchronous path)
 			// via RenderCore_'s `assumeParked` mode -- it must NOT re-enter
@@ -26964,7 +27543,7 @@ namespace RISE
 				// worker consumes the submission-time copy and never reads
 				// mElementSketches.
 				[this, params, ownJobIdCell, resolvedTarget, haveResolvedTarget,
-				 sceneTargetSnapshot]() {
+				 sceneTargetSnapshot, anchorArmedSnapshot]() {
 					struct OutstandingGuard {
 						AgentSession&                       self;
 						std::shared_ptr<std::uint64_t>      ownJobIdCell;
@@ -26982,8 +27561,16 @@ namespace RISE
 					} outstandingGuard{ *this, ownJobIdCell };
 					const AgentElementSketch* const targetSnapshot =
 						haveResolvedTarget ? &resolvedTarget : nullptr;
+					// Doc 90 slice R1 (2026-08-22): `anchorRenderRevision` is
+					// stamped by RenderCore_ from inside the park -- see its
+					// `outHeadRevision` doc.  Reading it here in the closure
+					// would re-enter the non-recursive controller mutex this
+					// worker already holds; reading it at SUBMISSION would
+					// make RenderAsync block on any render already in flight.
+					std::uint64_t anchorRenderRevision = 0;
 					AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true,
-					                                   /*forcedJobId=*/0, targetSnapshot );
+					                                   /*forcedJobId=*/0, targetSnapshot,
+					                                   &anchorRenderRevision );
 					// G3b (2026-08-10): the async path measures a `target`
 					// comparison exactly as the synchronous Render() does --
 					// same helper, same one-extra-identity-render mechanism --
@@ -27009,6 +27596,18 @@ namespace RISE
 					// same reason the sketch comparison is: the cached result a
 					// later render_wait echoes must carry the block.
 					ApplySceneTargetComparison_( params, r, sceneTargetSnapshot );
+					// Doc 90 slice R1 (2026-08-22): the ITERATION RATCHET, on
+					// the async path exactly as on the synchronous one -- same
+					// helper, same AFTER-the-scene-target ordering (that
+					// composite becomes this one's lower pane), against the
+					// SUBMISSION-TIME phase snapshot captured by value above,
+					// and against the head revision RenderCore_ stamped from
+					// inside the park.  Placed before the
+					// mLastAsyncRenderResult store below for the same reason
+					// the others are: the cached result a later render_wait
+					// echoes must carry the block.
+					ApplyRenderAnchorComparison_( params, r, anchorArmedSnapshot,
+					                              anchorRenderRevision );
 					// Arc 80 (2026-08-12): the SCENE INVENTORY, measured on the
 					// async path exactly as the synchronous one measures it --
 					// same helper, same one-extra-identity-render mechanism --
