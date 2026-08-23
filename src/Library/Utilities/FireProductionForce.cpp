@@ -75,15 +75,65 @@ namespace RISE
 	bool FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointFile(
 		const std::string& path,const std::uint64_t payloadBytes,
 		const std::uint64_t payloadChecksum,const std::uint64_t version,
-		const double previousStepS,const double lastAcceptedStepS,
-		const std::uint64_t acceptedSteps,const bool productionState,
-		const std::uint64_t acceptedStateDigest,
+		const FireProductionAcceptedCheckpointStateView& state,
+		const FireProductionAcceptedCheckpointLifecycleView& lifecycle,
 		FireProductionAcceptedManifoldObservation& result,std::string* error )
 	{
 		result.Clear();
 		constexpr std::uint64_t RecordBytes=41u;
-		if(version!=12u||payloadBytes<RecordBytes)
+		if(version!=12u||payloadBytes<RecordBytes||!lifecycle.acceptedTimeStepHistoryS||
+			(lifecycle.productionState&&lifecycle.acceptedSteps>0u&&
+				(!state.conservativeValues||!state.momentum||!state.velocity)))
 			return Fail(error,"production checkpoint manifold record version is invalid");
+		std::uint64_t acceptedStateDigest=0u;
+		if(lifecycle.productionState&&lifecycle.acceptedSteps>0u){
+		if(state.shape.nx==0u||state.shape.ny==0u||state.shape.nz==0u||
+			state.shape.nx>std::numeric_limits<std::size_t>::max()/state.shape.ny||
+			state.shape.nx*state.shape.ny>
+				std::numeric_limits<std::size_t>::max()/state.shape.nz)
+			return Fail(error,"production checkpoint accepted state shape is invalid");
+		const std::size_t cellCount=state.shape.CellCount();
+		if(cellCount==0u||
+			cellCount>std::numeric_limits<std::size_t>::max()/9u||
+			!std::isfinite(state.shape.cellWidthM)||state.shape.cellWidthM<=0.0f||
+			state.conservativeValues->size()!=9u*cellCount)
+			return Fail(error,"production checkpoint accepted state shape is invalid");
+		for(const float value:*state.conservativeValues)
+			if(!std::isfinite(value))return Fail(error,
+				"production checkpoint accepted conservative state is invalid");
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const std::size_t faceCount=FireProductionProjectionFaceCount(state.shape,axis);
+			if(faceCount==0u||(*state.momentum)[axis].size()!=faceCount||
+				(*state.velocity)[axis].size()!=faceCount)return Fail(error,
+					"production checkpoint accepted MAC state shape is invalid");
+			for(const float value:(*state.momentum)[axis])if(!std::isfinite(value))
+				return Fail(error,"production checkpoint accepted momentum is invalid");
+			for(const float value:(*state.velocity)[axis])if(!std::isfinite(value))
+				return Fail(error,"production checkpoint accepted velocity is invalid");
+		}
+		acceptedStateDigest=FireProductionAcceptedStatePayloadDigest(
+			state.shape,*state.conservativeValues,*state.momentum,*state.velocity);
+		}
+		const std::vector<double>& history=*lifecycle.acceptedTimeStepHistoryS;
+		if(!std::isfinite(lifecycle.simulationTimeS)||lifecycle.simulationTimeS<0.0||
+			(lifecycle.productionState&&(history.size()!=lifecycle.acceptedSteps||
+				(lifecycle.acceptedSteps==0u&&(!history.empty()||
+					lifecycle.previousStepS!=0.0||lifecycle.lastAcceptedStepS!=0.0))||
+				(lifecycle.acceptedSteps>0u&&(history.empty()||
+					!std::isfinite(history.back())||history.back()<=0.0||
+					history.back()!=lifecycle.previousStepS||
+					history.back()!=lifecycle.lastAcceptedStepS)))))
+			return Fail(error,"production checkpoint accepted-step lifecycle is invalid");
+		double acceptedDurationS=0.0;
+		for(const double timeStepS:history){
+			if(!std::isfinite(timeStepS)||timeStepS<=0.0)
+				return Fail(error,"production checkpoint accepted-step history is invalid");
+			acceptedDurationS+=timeStepS;
+			if(!std::isfinite(acceptedDurationS))
+				return Fail(error,"production checkpoint accepted-step duration is invalid");
+		}
+		if(lifecycle.productionState&&acceptedDurationS>lifecycle.simulationTimeS)
+			return Fail(error,"production checkpoint accepted-step history exceeds simulation time");
 		std::ifstream input(path.c_str(),std::ios::binary);
 		if(!input)return Fail(error,"cannot reopen production checkpoint authority record");
 		std::array<unsigned char,48u> header={{0u}};
@@ -131,11 +181,12 @@ namespace RISE
 		if(storedPrefixBinding!=(prefixDigest^CheckpointAuthorityDomain))return Fail(error,
 			"production checkpoint manifold record is not bound to the complete payload");
 		if(available){
-			if(!productionState||acceptedSteps==0u||!std::isfinite(timeStepS)||timeStepS<=0.0||
+			if(!lifecycle.productionState||lifecycle.acceptedSteps==0u||
+				!std::isfinite(timeStepS)||timeStepS<=0.0||
 				!std::isfinite(maximumGeneration)||maximumGeneration<0.0||
 				!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
-				restorationDrainFraction>1.0||timeStepS!=previousStepS||
-				timeStepS!=lastAcceptedStepS||storedStateDigest==0u||
+				restorationDrainFraction>1.0||timeStepS!=lifecycle.previousStepS||
+				timeStepS!=lifecycle.lastAcceptedStepS||storedStateDigest==0u||
 				storedStateDigest!=acceptedStateDigest)return Fail(error,
 					"production checkpoint accepted observation does not match accepted state");
 			result.available_=true;result.timeStepS_=timeStepS;
@@ -145,7 +196,8 @@ namespace RISE
 			return true;
 		}
 		if(timeStepS!=0.0||maximumGeneration!=0.0||restorationDrainFraction!=0.0||
-			storedStateDigest!=0u||(productionState&&acceptedSteps!=0u))return Fail(error,
+			storedStateDigest!=0u||(lifecycle.productionState&&lifecycle.acceptedSteps!=0u))
+			return Fail(error,
 				"production checkpoint lacks accepted manifold authority after an accepted step");
 		return true;
 	}
@@ -156,6 +208,7 @@ namespace RISE
 		const double maximumPositiveReducedGravityMPerS2,
 		const double maximumKinematicTransportM2PerS,
 		const double previousStepS,
+		const std::uint64_t currentAcceptedStateDigest,
 		const FireProductionAcceptedManifoldObservation& previousManifold,
 		FireProductionStableTimeStep& result,
 		std::string* error )
@@ -176,9 +229,10 @@ namespace RISE
 				!std::isfinite(previousManifold.restorationDrainFraction_)||
 				previousManifold.restorationDrainFraction_<0.0||
 				previousManifold.restorationDrainFraction_>1.0||
-				previousManifold.acceptedStateDigest_==0u )
+				previousManifold.acceptedStateDigest_==0u||
+				previousManifold.acceptedStateDigest_!=currentAcceptedStateDigest )
 				return Fail(error,"production accepted manifold metadata is invalid");
-		} else if( previousStepS>0.0 ) {
+		} else if( previousStepS>0.0||currentAcceptedStateDigest!=0u ) {
 			return Fail(error,"production manifold metadata is unavailable after the first step");
 		} else if( previousManifold.timeStepS_!=0.0||
 			previousManifold.maximumGeneration_!=0.0||

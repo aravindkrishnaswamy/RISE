@@ -3065,27 +3065,33 @@ Fresh boundary review correctly rejected r147's persisted tuple seal.  It was
 an unkeyed digest of `(dt,G,r)`: useful corruption detection, but neither
 producer authority nor a binding to the state resumed by the solver.  Format
 12 removes the raw tuple-restoration API.  The resident owner now issues a
-second, domain-separated digest over the exact checkpoint-visible Binary32
-state: shape and cell width, component-major conservative fields, and the
-terminal restoration momentum and velocity, all with field tags and lengths.
+second, domain-separated digest over the normalized producer-consumed Binary32
+state: represented shape and cell width, component-major conservative fields,
+and terminal restoration momentum and velocity, all with field tags and lengths.
+Persisted temperature is required to equal the canonical Binary32 inversion of
+those conservative fields, and production selection uses the represented
+Binary32 cell width, so neither stored double is an independent state coordinate.
 Publication retains that private digest.  The checkpoint writer independently
 reconstructs it from the applied state and refuses a transplanted observation;
 the library-owned reader reopens the complete checksum-verified payload,
-checks the trailing record's full-prefix integrity binding, reconstructs the
-same state digest, and only then restores the opaque observation.  The prefix
+checks the trailing record's full-prefix integrity binding, consumes a complete
+normalized state/lifecycle view rather than a caller-authored digest, reconstructs
+the same state digest, and only then restores the opaque observation.  The prefix
 binding is explicitly an integrity device, not a secret MAC.  Authority comes
 from the private producer-issued state digest and the absence of any supported
 raw tuple factory.
 
 The lifecycle invariants are now explicit.  A Binary32 checkpoint with accepted
 history must carry an available observation whose timestep equals both stored
-accepted-step fields and the history tail.  A Binary32 initial state has zero
+accepted-step fields and the history tail; count equals history length and the
+history duration cannot exceed simulation time.  A Binary32 initial state has zero
 accepted steps, zero prior timing, empty accepted-step history, and no
 observation.  Formats 9--11 cannot resume an accepted Binary32 production run;
 they may still decode initial Binary32 states and ordinary Binary64/oracle runs.
-REDs reject an accepted-history/zero-timestep first-step alias and transplanting
-an authentic observation onto a one-bit-different terminal velocity before
-publication.
+REDs reject an accepted-history/zero-timestep first-step alias on both writer and
+checksum-valid loader paths; formats 9, 10, and 11 are exercised independently.
+They also reject temperature and terminal-velocity transplants, plus passing a
+genuine observation to the selector with a different current-state digest.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all
@@ -3094,10 +3100,10 @@ validation result false before token eligibility, and proves that no token can
 be minted or published.  Malformed activation fails before Metal work.  The
 normal twin remains byte-identical and exact exit `255` retains
 `G=1.2031080315688669e-4`, drain `0.99562928290235475`, and resumed CFL step
-`0.0018513042677754073 s`.
+`0.0018513042677754071 s` after canonical Binary32 cell-width promotion.
 
 These authority changes move the source-bound r136 trace to
-`f43824f6...bb6eb5b` without changing its arithmetic census, `0xff` proof gap,
+`ea0d3a82...34f90b63` without changing its arithmetic census, `0xff` proof gap,
 or exact exit `237`.  The burning capacity verdict is unchanged: r144 remains
 exact exit `254`, field deviation `2.5081625764804549e-3`, required drain
 `3.3442167670577247`, and delivered drain `0.97489008508207653`.  The golden

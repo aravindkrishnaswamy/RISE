@@ -278,15 +278,36 @@ namespace RISEFireProductionFP64
 	};
 
 	class FireProductionAcceptedManifoldObservation;
+	struct FireProductionAcceptedCheckpointStateView
+	{
+		FireProductionProjectionShape shape;
+		const std::vector<double>* conservativeValues;
+		const std::array<std::vector<double>,3>* momentum;
+		const std::array<std::vector<double>,3>* velocity;
+
+		FireProductionAcceptedCheckpointStateView() : conservativeValues(0),momentum(0),velocity(0) {}
+	};
+	struct FireProductionAcceptedCheckpointLifecycleView
+	{
+		double simulationTimeS,previousStepS,lastAcceptedStepS;
+		std::uint64_t acceptedSteps;
+		bool productionState;
+		const std::vector<double>* acceptedTimeStepHistoryS;
+
+		FireProductionAcceptedCheckpointLifecycleView() : simulationTimeS(0.0),previousStepS(0.0),
+			lastAcceptedStepS(0.0),acceptedSteps(0u),productionState(false),
+			acceptedTimeStepHistoryS(0) {}
+	};
 	class FireProductionCheckpointManifoldAccess final
 	{
 	public:
-		//! Reopens and independently authenticates the complete v12 checkpoint
+		//! Reopens and independently validates the complete v12 checkpoint
 		//! payload before restoring its trailing manifold record.  There is no
 		//! public raw-tuple restoration seam.
 		static bool RestoreValidatedCheckpointFile(
 			const std::string&,std::uint64_t,std::uint64_t,std::uint64_t,
-			double,double,std::uint64_t,bool,std::uint64_t,
+			const FireProductionAcceptedCheckpointStateView&,
+			const FireProductionAcceptedCheckpointLifecycleView&,
 			FireProductionAcceptedManifoldObservation&,std::string* );
 	private:
 		FireProductionCheckpointManifoldAccess()=delete;
@@ -320,7 +341,7 @@ namespace RISEFireProductionFP64
 		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
-			double,double,double,double,double,
+			double,double,double,double,double,std::uint64_t,
 			const FireProductionAcceptedManifoldObservation&,
 			FireProductionStableTimeStep&,std::string* );
 	};
@@ -347,6 +368,7 @@ namespace RISEFireProductionFP64
 		double maximumPositiveReducedGravityMPerS2,
 		double maximumKinematicTransportM2PerS,
 		double previousStepS,
+		std::uint64_t currentAcceptedStateDigest,
 		const FireProductionAcceptedManifoldObservation& previousManifold,
 		FireProductionStableTimeStep& result,
 		std::string* error=0 );

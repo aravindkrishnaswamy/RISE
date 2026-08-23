@@ -1465,7 +1465,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="f43824f6287939f10e48cd79d979efbd8b1e76a0058b513ecea03bad6bb6eb5b"||
+			traceDigest!="ea0d3a825d3583d8479abd67a8addba93f96f46c80f95c70d69c2d7234f90b63"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1611,9 +1611,13 @@ namespace FireProductionDyadicCalibration
 			RISE::FireProductionStableTimeStep selected;
 			const double previousStep=state.productionManifoldObservation.Available()?
 				state.productionManifoldObservation.TimeStepS():0.0;
-			if(!RISE::SelectFireProductionStableTimeStep(state.cellWidthM,
-				0.5*state.cellWidthM/baseStep,0.0,0.0,previousStep,
-				state.productionManifoldObservation,selected,&error))return 219;
+			std::uint64_t currentAcceptedStateDigest=0u;
+			if(state.productionManifoldObservation.Available()&&
+				!CheckpointAcceptedStateDigest(state,currentAcceptedStateDigest))return 219;
+			const double representedCellWidth=static_cast<double>(static_cast<float>(state.cellWidthM));
+			if(!RISE::SelectFireProductionStableTimeStep(representedCellWidth,
+				0.5*representedCellWidth/baseStep,0.0,0.0,previousStep,
+				currentAcceptedStateDigest,state.productionManifoldObservation,selected,&error))return 219;
 			if(step==1u){selectedAfterResume=selected.seconds;
 				selectedAfterResumeLimit=selected.activeLimit?selected.activeLimit:"";}
 			RISE::FireProductionResidentStepRequest request;
@@ -1821,10 +1825,16 @@ namespace FireProductionDyadicCalibration
 			if(step==0u){
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
 				MethaneRunCheckpoint transplanted=state;
+				MethaneRunCheckpoint temperatureTransplanted=state;
+				MethaneRunCheckpoint widthTransplanted=state;
 				const std::filesystem::path transplantedCheckpoint=
 					std::filesystem::temp_directory_path()/"rise_r148_transplanted_authority.checkpoint";
+				const std::filesystem::path malformedLifecycleCheckpoint=
+					std::filesystem::temp_directory_path()/"rise_r148_malformed_lifecycle.checkpoint";
 				{std::error_code ignored;std::filesystem::remove(transplantedCheckpoint,ignored);}
-				bool transplantRejected=false;
+				{std::error_code ignored;std::filesystem::remove(malformedLifecycleCheckpoint,ignored);}
+				bool transplantRejected=false,temperatureTransplantRejected=false;
+				bool widthNormalizationBound=false;
 				if(!transplanted.velocity.component[0].empty()){
 					const float original=static_cast<float>(transplanted.velocity.component[0].front());
 					transplanted.velocity.component[0].front()=static_cast<double>(
@@ -1833,11 +1843,60 @@ namespace FireProductionDyadicCalibration
 					transplantRejected=!SaveMethaneRunCheckpoint(transplantedCheckpoint,
 						transplanted,transplantError)&&!std::filesystem::exists(transplantedCheckpoint);
 				}
+				if(!temperatureTransplanted.states.empty()){
+					temperatureTransplanted.states.front().temperatureK=std::nextafter(
+						temperatureTransplanted.states.front().temperatureK,
+						std::numeric_limits<double>::infinity());
+					std::string transplantError;
+					suppressExpectedCheckpointStateDiagnostic=true;
+					temperatureTransplantRejected=!SaveMethaneRunCheckpoint(transplantedCheckpoint,
+						temperatureTransplanted,transplantError)&&
+						!std::filesystem::exists(transplantedCheckpoint);
+					suppressExpectedCheckpointStateDiagnostic=false;
+				}
+				widthTransplanted.cellWidthM=std::nextafter(widthTransplanted.cellWidthM,
+					std::numeric_limits<double>::infinity());
+				{std::uint64_t originalDigest=0u,transplantedDigest=0u;
+					widthNormalizationBound=CheckpointAcceptedStateDigest(state,originalDigest)&&
+						CheckpointAcceptedStateDigest(widthTransplanted,transplantedDigest)&&
+						originalDigest==transplantedDigest&&
+						static_cast<float>(state.cellWidthM)==
+							static_cast<float>(widthTransplanted.cellWidthM);}
+				MethaneRunCheckpoint malformedLifecycle=state;
+				++malformedLifecycle.acceptedSteps;
+				forceMalformedManifoldLifecycleWriteForTest=true;
+				const bool malformedLifecycleWritten=SaveMethaneRunCheckpoint(
+					malformedLifecycleCheckpoint,malformedLifecycle,error);
+				forceMalformedManifoldLifecycleWriteForTest=false;
+				MethaneRunCheckpoint malformedLifecycleLoaded;
+				const bool malformedLifecycleLoadRejected=malformedLifecycleWritten&&
+					!LoadMethaneRunCheckpoint(malformedLifecycleCheckpoint,
+						malformedLifecycleLoaded,error);
+				{std::error_code ignored;std::filesystem::remove(malformedLifecycleCheckpoint,ignored);}
 				MethaneRunCheckpoint loaded;
 				const bool saved=SaveMethaneRunCheckpoint(lifecycleCheckpoint,state,error);
 				const bool loadedOK=saved&&LoadMethaneRunCheckpoint(lifecycleCheckpoint,loaded,error);
 				{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
-				acceptedLifecyclePassed=transplantRejected&&loadedOK&&
+				std::uint64_t alternateStateDigest=0u;
+				RISE::FireProductionStableTimeStep transplantedSelection;
+				bool selectorTransplantRejected=false;
+				if(loadedOK&&!loaded.velocity.component[0].empty()){
+					MethaneRunCheckpoint alternateState=loaded;
+					const float original=static_cast<float>(alternateState.velocity.component[0].front());
+					alternateState.velocity.component[0].front()=static_cast<double>(
+						std::nextafter(original,std::numeric_limits<float>::infinity()));
+					selectorTransplantRejected=CheckpointAcceptedStateDigest(
+						alternateState,alternateStateDigest)&&
+						!RISE::SelectFireProductionStableTimeStep(
+							static_cast<double>(static_cast<float>(alternateState.cellWidthM)),
+							0.5*static_cast<double>(static_cast<float>(alternateState.cellWidthM))/baseStep,
+							0.0,0.0,
+							alternateState.previousStepS,alternateStateDigest,
+							loaded.productionManifoldObservation,transplantedSelection,&error);
+				}
+				acceptedLifecyclePassed=transplantRejected&&temperatureTransplantRejected&&
+					widthNormalizationBound&&malformedLifecycleLoadRejected&&
+					selectorTransplantRejected&&loadedOK&&
 					loaded.checkpointFormatVersion==12u&&
 					loaded.acceptedSteps==state.acceptedSteps&&
 					loaded.simulationTimeS==state.simulationTimeS&&
@@ -1851,8 +1910,13 @@ namespace FireProductionDyadicCalibration
 						acceptedObservation.RestorationDrainFraction()&&
 					AnalyticStateDigest(loaded)==stateDigestBefore;
 				if(!acceptedLifecyclePassed){std::fprintf(stderr,
-					"r147 checkpoint lifecycle failed saved=%d loaded=%d version=%llu error=%s\n",
+					"r147 checkpoint lifecycle failed saved=%d loaded=%d version=%llu "
+					"steps=%llu history=%zu time=%.17g previous=%.17g last=%.17g canonical=%d error=%s\n",
 					saved?1:0,loadedOK?1:0,static_cast<unsigned long long>(loaded.checkpointFormatVersion),
+					static_cast<unsigned long long>(state.acceptedSteps),
+					state.values.acceptedTimeStepHistoryS.size(),state.simulationTimeS,
+					state.previousStepS,state.lastAcceptedStepS,
+					[&](){std::uint64_t value=0u;return CheckpointAcceptedStateDigest(state,value)?1:0;}(),
 					error.c_str());return 223;}
 				state=std::move(loaded);
 			}
@@ -1867,7 +1931,7 @@ namespace FireProductionDyadicCalibration
 				state.productionManifoldObservation.Available()&&
 				firstGeneration==0.00012031080315688669&&
 				firstDrain==0.99562928290235475&&
-				selectedAfterResume==0.0018513042677754073&&
+				selectedAfterResume==0.0018513042677754071&&
 				selectedAfterResumeLimit=="advective_CFL"?255:223;
 		}
 		double plateau=0.0,fieldPlateau=0.0;

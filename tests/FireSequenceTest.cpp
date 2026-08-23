@@ -505,26 +505,38 @@ namespace
 		FireProductionAcceptedManifoldObservation productionManifoldObservation;
 	};
 
-	bool CheckpointAcceptedStateDigest(const MethaneRunCheckpoint& checkpoint,
-		std::uint64_t& digest)
+	bool suppressExpectedCheckpointStateDiagnostic=false;
+	bool BuildCheckpointAcceptedStatePayload(const MethaneRunCheckpoint& checkpoint,
+		FireProductionProjectionShape& shape,std::vector<float>& conservative,
+		std::array<std::vector<float>,3>& momentum,
+		std::array<std::vector<float>,3>& velocity,std::uint64_t& digest)
 	{
-		digest=0u;
+		digest=0u;shape=FireProductionProjectionShape();conservative.clear();
+		for(unsigned int axis=0u;axis<3u;++axis){momentum[axis].clear();velocity[axis].clear();}
 		if(checkpoint.dimensions[0u]==0u||checkpoint.dimensions[1u]==0u||
 			checkpoint.dimensions[2u]==0u||!std::isfinite(checkpoint.cellWidthM)||
 			checkpoint.cellWidthM<=0.0)return false;
-		FireProductionProjectionShape shape;
 		shape.nx=checkpoint.dimensions[0u];shape.ny=checkpoint.dimensions[1u];
 		shape.nz=checkpoint.dimensions[2u];shape.cellWidthM=static_cast<float>(checkpoint.cellWidthM);
 		if(shape.CellCount()!=checkpoint.states.size())return false;
 		for(unsigned int axis=0u;axis<3u;++axis){
 			const std::size_t expectedFaces=FireProductionProjectionFaceCount(shape,axis);
 			if(expectedFaces==0u||checkpoint.momentum.component[axis].size()!=expectedFaces||
-				checkpoint.velocity.component[axis].size()!=expectedFaces)return false;
+				checkpoint.velocity.component[axis].size()!=expectedFaces){
+				if(!suppressExpectedCheckpointStateDiagnostic){
+					std::fprintf(stderr,
+					"checkpoint accepted face shape mismatch axis=%u expected=%zu momentum=%zu velocity=%zu\n",
+					axis,expectedFaces,checkpoint.momentum.component[axis].size(),
+					checkpoint.velocity.component[axis].size());}
+				return false;
+			}
 		}
-		std::vector<float> conservative(checkpoint.states.size()*9u,0.0f);
+		conservative.assign(checkpoint.states.size()*9u,0.0f);
+		std::vector<ConservativeVector> conservativeByCell(checkpoint.states.size());
 		for(std::size_t cell=0u;cell<checkpoint.states.size();++cell){
 			const MethaneCellState& state=checkpoint.states[cell];
 			const ConservativeVector values=ToConservativeVector(state);
+			conservativeByCell[cell]=values;
 			for(std::size_t component=0u;component<9u;++component){
 				const double value=values[component];const float represented=static_cast<float>(value);
 				if(!std::isfinite(represented)||static_cast<double>(represented)!=value){
@@ -532,7 +544,27 @@ namespace
 						cell,component,value,static_cast<double>(represented));return false;}
 				conservative[component*checkpoint.states.size()+cell]=represented;}
 		}
-		std::array<std::vector<float>,3> momentum,velocity;
+		std::vector<double> reconstructedTemperature;
+		std::string inversionError;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		if(!InvertPeriodicTemperaturesWithinBounds(conservativeByCell,fuel,
+			fuel.TemperatureMinK(),fuel.TemperatureMaxK(),
+			FireStateProducerPrecision::Binary32,reconstructedTemperature,&inversionError,1u)||
+			reconstructedTemperature.size()!=checkpoint.states.size()){
+			if(!suppressExpectedCheckpointStateDiagnostic){
+				std::fprintf(stderr,
+				"checkpoint accepted temperature reconstruction failed: %s\n",inversionError.c_str());}
+			return false;
+		}
+		for(std::size_t cell=0u;cell<checkpoint.states.size();++cell){
+			if(reconstructedTemperature[cell]!=checkpoint.states[cell].temperatureK){
+				if(!suppressExpectedCheckpointStateDiagnostic){
+				std::fprintf(stderr,
+				"checkpoint accepted temperature mismatch cell=%zu stored=%.17g reconstructed=%.17g\n",
+				cell,checkpoint.states[cell].temperatureK,reconstructedTemperature[cell]);}
+				return false;
+			}
+		}
 		for(unsigned int axis=0u;axis<3u;++axis){
 			momentum[axis].reserve(checkpoint.momentum.component[axis].size());
 			velocity[axis].reserve(checkpoint.velocity.component[axis].size());
@@ -551,6 +583,15 @@ namespace
 		}
 		digest=FireProductionAcceptedStatePayloadDigest(shape,conservative,momentum,velocity);
 		return digest!=0u;
+	}
+
+	bool CheckpointAcceptedStateDigest(const MethaneRunCheckpoint& checkpoint,
+		std::uint64_t& digest)
+	{
+		FireProductionProjectionShape shape;std::vector<float> conservative;
+		std::array<std::vector<float>,3> momentum,velocity;
+		return BuildCheckpointAcceptedStatePayload(checkpoint,shape,conservative,
+			momentum,velocity,digest);
 	}
 
 	bool HomogeneousStateProducerPrecision(const std::vector<MethaneCellState>& states,
@@ -616,6 +657,7 @@ namespace
 			if(!ReadArithmeticVector(reader,field.component[axis]))return false;
 		return true;
 	}
+	bool forceMalformedManifoldLifecycleWriteForTest=false;
 
 	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint,
 		const std::uint64_t version)
@@ -660,6 +702,13 @@ namespace
 		if(!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
 		const bool acceptedProductionState=productionState&&checkpoint.acceptedSteps>0u;
+		double acceptedDurationS=0.0;
+		bool validAcceptedHistory=true;
+		for(const double timeStepS:checkpoint.values.acceptedTimeStepHistoryS){
+			if(!std::isfinite(timeStepS)||timeStepS<=0.0){validAcceptedHistory=false;break;}
+			acceptedDurationS+=timeStepS;
+			if(!std::isfinite(acceptedDurationS)){validAcceptedHistory=false;break;}
+		}
 		const bool invalidManifoldLifecycle=(observation.Available()&&(!std::isfinite(observation.TimeStepS())||
 			observation.TimeStepS()<=0.0||!std::isfinite(observation.MaximumGeneration())||
 			observation.MaximumGeneration()<0.0||
@@ -676,8 +725,11 @@ namespace
 				(version>=12u&&acceptedProductionState)))||
 			(productionState&&checkpoint.acceptedSteps==0u&&
 				(checkpoint.previousStepS!=0.0||checkpoint.lastAcceptedStepS!=0.0||
-				!checkpoint.values.acceptedTimeStepHistoryS.empty()));
-		if(invalidManifoldLifecycle)return false;
+				!checkpoint.values.acceptedTimeStepHistoryS.empty()))||
+			(productionState&&(!validAcceptedHistory||
+				checkpoint.values.acceptedTimeStepHistoryS.size()!=checkpoint.acceptedSteps||
+				acceptedDurationS>checkpoint.simulationTimeS));
+		if(invalidManifoldLifecycle&&!forceMalformedManifoldLifecycleWriteForTest)return false;
 		const unsigned char manifoldAvailable=
 			observation.Available()?1u:0u;
 		const bool observationWritten=writer.Pod(manifoldAvailable)&&
@@ -876,13 +928,25 @@ namespace
 		if(version<12u&&productionState&&decoded.acceptedSteps>0u){
 			error="legacy production checkpoint lacks accepted manifold authority";return false;}
 		if(version>=12u){std::uint64_t acceptedStateDigest=0u;
+			FireProductionProjectionShape acceptedShape;std::vector<float> acceptedConservative;
+			std::array<std::vector<float>,3> acceptedMomentum,acceptedVelocity;
 			if(productionState&&decoded.acceptedSteps>0u&&
-				!CheckpointAcceptedStateDigest(decoded,acceptedStateDigest)){
+				!BuildCheckpointAcceptedStatePayload(decoded,acceptedShape,
+				acceptedConservative,acceptedMomentum,acceptedVelocity,acceptedStateDigest)){
 				error="production checkpoint accepted state is not canonical binary32";return false;}
+			FireProductionAcceptedCheckpointStateView stateView;stateView.shape=acceptedShape;
+			stateView.conservativeValues=&acceptedConservative;stateView.momentum=&acceptedMomentum;
+			stateView.velocity=&acceptedVelocity;
+			FireProductionAcceptedCheckpointLifecycleView lifecycle;
+			lifecycle.simulationTimeS=decoded.simulationTimeS;
+			lifecycle.previousStepS=decoded.previousStepS;
+			lifecycle.lastAcceptedStepS=decoded.lastAcceptedStepS;
+			lifecycle.acceptedSteps=decoded.acceptedSteps;
+			lifecycle.productionState=productionState;
+			lifecycle.acceptedTimeStepHistoryS=&decoded.values.acceptedTimeStepHistoryS;
 			if(!FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointFile(
-				path.string(),payloadBytes,checksum,version,decoded.previousStepS,
-				decoded.lastAcceptedStepS,decoded.acceptedSteps,productionState,
-				acceptedStateDigest,decoded.productionManifoldObservation,&error))return false;
+				path.string(),payloadBytes,checksum,version,stateView,lifecycle,
+				decoded.productionManifoldObservation,&error))return false;
 		}
 		checkpoint=std::move(decoded);
 		return true;
@@ -3536,6 +3600,7 @@ int main(int argc,char** argv)
 		"r115 binary32 checkpoint metadata survives serialization and a binary64 CPU resume cannot relabel the inherited excursion");
 	const std::filesystem::path version9Checkpoint=checkpointFixture/"precision_class_v9.checkpoint";
 	const std::filesystem::path version10Checkpoint=checkpointFixture/"precision_class_v10.checkpoint";
+	const std::filesystem::path version11Checkpoint=checkpointFixture/"precision_class_v11.checkpoint";
 	MethaneRunCheckpoint legacyAccepted=precisionRoundTrip;
 	legacyAccepted.acceptedSteps=1u;legacyAccepted.simulationTimeS=0.001;
 	legacyAccepted.previousStepS=0.0;legacyAccepted.lastAcceptedStepS=0.0;
@@ -3550,8 +3615,10 @@ int main(int argc,char** argv)
 		checkpointFixtureError,9u)&&!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version10Checkpoint,legacyAccepted,
 		checkpointFixtureError,10u)&&!LoadMethaneRunCheckpoint(version10Checkpoint,rejectedLegacy,
+		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version11Checkpoint,legacyAccepted,
+		checkpointFixtureError,11u)&&!LoadMethaneRunCheckpoint(version11Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&unavailableAcceptedV12Rejected,
-		"r148 checksum-valid legacy production resumes cannot alias an accepted history to a first step");
+		"r148 checksum-valid v9-v11 production resumes cannot alias accepted history to a first step");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
 	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
 	const std::filesystem::path corruptedCheckpointPath=checkpointFixture/"corrupt.checkpoint";

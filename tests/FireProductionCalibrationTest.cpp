@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"bcccdc5dd236075fc01f41fdccab8eccb33ddc73c2474c61dd83df9a3771e35d"&&
+		"177737514ecc0ef115998f7cd5c74ee311f878a849e4b473de562c9587eabd1b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -516,10 +516,10 @@ int main()
 		"102212336dc0c1602ca9ec977c4397b4c445a1991fd8fdeee90988033fa11c50"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"f6a6a871857c6dd6ede5b6d61ac8b0aa0818c03f7ed6c42a861f769ec13618d2"&&
+		"c3bb642e6b7572f892c46dfcf1e986db46dd872f7baa3d8da0d89a06662b32bd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-		"5eeb1ce935672709a53ce3c4c389f703cffbe7cf76baf42ebd2e6760ecbffb17"&&
+		"7907ccc6ab816016f0283768d6f33326fed04dad39a4d4f5b90213f29bcd2e62"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionSource.begin(),projectionSource.end()))==
 		"058b986102af2ff34e0ddf66eb64bc3dbab89981a3c60ffb4e83cb2d071ed876"&&
@@ -543,7 +543,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"6faa4c0c121a50d5e2e6ddefc71d0f982cdbd7ce5f661a721401f8f0ffd2fd17"&&
+		"b5bceb4497d2857d0f3df66e4b4c0033e11332827d5c29de677e5c8264def2b7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -552,10 +552,10 @@ int main()
 		"df492334d48bd7b1c0cb05eca927f75043d22f0c665d149a2abb6bd11df6276a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-		"67160cad4587fbec048963a2c76c7e229b2972ca976820893128539ba7a053c4"&&
+		"75ad7405f168ebe29d39d742a428111c7ed65028f400799d8b8f55a9c0f4ea76"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"19c54b17a6201bb2011ede91a22e3c8eb92f2f79d9a765dceca0133b6b9712d9"&&
+		"24e7c25aa65b3bbaabdbf3f0d9096520621e5984f349a997476bf02dbd60d42a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -564,10 +564,10 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"6e22cd76208694922adf053f4530e19b99410fc17d33e41c2a7bcf95277a1437"&&
+		"aecdc80b6c37e480168a693b4d97daf1b6d0028b8fa0084918f9e7b1ea9e4447"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"de87b6e02a693a37acd51385a81c9d2f7495663ff854c138c38ab398c7bb00a3"&&
+		"97b65b2e036c744e9e6a36d7851e2d8ad488fc3df2dc8219c41a8aa02c99c4b0"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
 		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
@@ -591,7 +591,13 @@ int main()
 			std::string::npos&&
 		manifoldClosure.find("accepted_history_without_observation_v12_writer_rejected true")!=
 			std::string::npos&&
-		manifoldClosure.find("legacy_binary32_accepted_history_v9_v10_loader_rejected true")!=
+		manifoldClosure.find("legacy_binary32_accepted_history_v9_v10_v11_loader_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_temperature_transplant_writer_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_selector_state_transplant_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_history_count_mismatch_v12_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("r148_lifecycle_exact_exit 255")!=std::string::npos&&
 		manifoldClosure.find("r142_retained_exact_exit 253")!=std::string::npos&&
