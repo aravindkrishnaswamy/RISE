@@ -2440,8 +2440,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				if( enforcePlateau )
 					computed.projection.validationPassed=plateauValidation.mechanismPassed;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
-				if( enforcePlateau&&plateauPassed&&computed.physicalProjection.validationPassed&&
-					computed.projection.validationPassed ) {
+				if( enforcePlateau&&
+					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
 					computed.acceptedManifoldToken_.available_=true;
 					computed.acceptedManifoldToken_.representedTimeStepS_=
 						static_cast<double>(request.force.timeStepS);

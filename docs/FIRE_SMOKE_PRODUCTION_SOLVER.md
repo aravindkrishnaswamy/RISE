@@ -2948,7 +2948,7 @@ finite positive accepted step, Binary32 producer metadata, validated physical
 and restoration projections, exactly two resident projection invocations,
 zero interstage full-grid transfers, a passing function-level plateau, and
 finite `G`, required/delivered drain, and mechanism-band diagnostics.  Only
-then may `(dt,G,r)` enter the selector.  Checkpoint format 10 persists this
+then may `(dt,G,r)` enter the selector.  Checkpoint format 11 persists this
 tuple; legacy formats 5 through 9 explicitly restore it as unavailable, which
 is the first-step/CFL state rather than an inferred zero-generation sample.
 
@@ -2975,7 +2975,7 @@ remain unrun and blocked at the same function-level detector.
 Fresh review found that r145's serialized tuple was not yet authoritative.
 The publication seam now recomputes required drain, delivered drain, and the
 mechanism band from the accepted result and rejects any caller-authored
-disagreement.  Checkpoint v10 requires the observation timestep to equal both
+disagreement.  Checkpoint v11 requires the observation timestep to equal both
 `previousStepS` and `lastAcceptedStepS`; v5--v9 decoding resets the complete
 tuple before reading, so a reused destination cannot inherit stale capacity
 state.  The retained r118 resident owner now performs the actual lifecycle:
@@ -3017,7 +3017,9 @@ pass.  The token binds the physical residual evidence and a field-tagged,
 length-delimited digest of the complete resident payload, as well as all
 plateau diagnostics.  Publication requires exact agreement, consumes the token,
 and returns an opaque observation whose fields are read-only outside the
-producer and complete, library-owned validated checkpoint codec.  The
+producer and complete, library-owned validated checkpoint codec.  Its persisted
+record carries the producer seal; replay can restore an authentic tuple, while
+changing any finite `(dt,G,r)` value with the same seal rejects.  The
 observation retains the payload digest, so the state-application seam rejects
 mutation after publication as well.
 Public diagnostics remain observable, but they no longer confer authority.  An
@@ -3033,9 +3035,9 @@ physical-validation evidence mutation, coherent diagnostic forgery, and field
 mutation all reject; successful publication consumes the token, immediate
 replay rejects, and post-publication velocity mutation cannot be applied.  It
 then updates the represented timing fields,
-writes and reloads checkpoint v10, and passes the reloaded observation to the
+writes and reloads checkpoint v11, and passes the reloaded observation to the
 second selector.  Separate REDs reject both writer-side timing mismatches and a
-checksum-valid malformed-v10 reload.  Exact exit `255` binds first-step
+checksum-valid malformed-v11 reload.  Exact exit `255` binds first-step
 `G=1.2031080315688669e-4`, drain `0.99562928290235475`, and resumed selection
 `0.0018513042677754073 s` (`advective_CFL`).  The cold manifold candidate is
 valid but subdominant to CFL; the separately bound selector RED proves that an
@@ -3048,7 +3050,7 @@ Retained r118 physics is unchanged: probe plateau
 wall acceptance remains false.  r119 still accepts every spatial scalar,
 velocity, and inventory channel; r138 retains trace `f90a2508...551cebf`; and
 r142/r144 retain exact `253/254`.  r144's rejected burning result has no token.
-The source-bound r136 trace moves to `404d5f27...3a153` solely because this
+The source-bound r136 trace moves to `26b12e46...c7fd9` solely because this
 owner API is in the generated source manifest; the arithmetic census, `0xff`
 proof gap, and exit `237` are unchanged.
 The function-level stop is therefore unchanged: field deviation is still

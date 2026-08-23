@@ -282,7 +282,7 @@ namespace RISE
 		//! The library-owned checkpoint codec is the only persistence authority.
 		//! Defining a lookalike friend in a consumer translation unit is impossible.
 		static bool RestoreValidatedCheckpointRecord(
-			bool,double,double,double,double,double,
+			bool,double,double,double,double,double,std::uint64_t,
 			FireProductionAcceptedManifoldObservation& );
 	private:
 		FireProductionCheckpointManifoldAccess()=delete;
@@ -295,22 +295,24 @@ namespace RISE
 	public:
 		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
 			maximumGeneration_(0.0),restorationDrainFraction_(0.0),
-			residentPayloadDigest_(0u),bindsResidentPayload_(false) {}
+			residentPayloadDigest_(0u),authoritySeal_(0u),bindsResidentPayload_(false) {}
 		bool Available() const { return available_; }
 		double TimeStepS() const { return timeStepS_; }
 		double MaximumGeneration() const { return maximumGeneration_; }
 		double RestorationDrainFraction() const { return restorationDrainFraction_; }
+		std::uint64_t SerializedAuthoritySeal() const { return authoritySeal_; }
 		bool MatchesAcceptedResidentPayload(const FireProductionResidentStepResult&) const;
 
 	private:
 		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
 			restorationDrainFraction_=0.0;residentPayloadDigest_=0u;
-			bindsResidentPayload_=false; }
+			authoritySeal_=0u;bindsResidentPayload_=false; }
 		bool available_;
 		double timeStepS_;
 		double maximumGeneration_;
 		double restorationDrainFraction_;
 		std::uint64_t residentPayloadDigest_;
+		std::uint64_t authoritySeal_;
 		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
@@ -464,6 +466,10 @@ namespace RISE
 			FireProductionAcceptedManifoldObservation&,
 			std::string* );
 	};
+	//! Single owner predicate for accepted-token issuance.  Diagnostics alone do
+	//! not mint authority; both projection validations are structural inputs.
+	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
+		const FireProductionResidentStepResult& );
 
 	//! Publishes the only manifold metadata that may constrain the next
 	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot

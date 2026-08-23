@@ -79,6 +79,8 @@ int main()
 		"src/Library/Utilities/FireProductionProjection.cpp");
 	const std::string projectionHeader=ReadText(
 		"src/Library/Utilities/FireProductionProjection.h");
+	const std::string projectionMetal=ReadText(
+		"src/Library/Utilities/FireProductionProjectionMac.mm");
 	const std::string tracedProjectionSource=ReadText(
 		"tests/fire_production_trace/FireProductionProjection.cpp");
 	const std::string advectionSource=ReadText(
@@ -489,18 +491,38 @@ int main()
 		"tools/generate_fire_production_fp64_mirror.py");
 	const std::string traceGenerator=ReadText(
 		"tools/generate_fire_production_roundoff_trace.py");
+	RISE::FireProductionResidentStepResult tokenEligibility;
+	tokenEligibility.physicalProjection.validationPassed=true;
+	tokenEligibility.projection.validationPassed=true;
+	tokenEligibility.manifoldPlateauPassed=true;
+	tokenEligibility.conservativeProducerPrecision=RISE::FireStateProducerPrecision::Binary32;
+	tokenEligibility.residentProjectionInvocationCount=2u;
+	const bool eligibleTokenState=
+		RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
+	tokenEligibility.physicalProjection.validationPassed=false;
+	const bool physicalValidationMissCannotMint=
+		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"0e686b85a5136fd45a95ea2d08f650e4914019119707adb2f3457ca7cce56351"&&
+		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"ea7772cf2d00997c61fc0810b272991c9c644acf2b4b024722a85683621fb1f3"&&
+		"c6e7c9c3e09e701e2bb2ed8e99ffe825c97704019bfba0e8d90d563be1fd5c39"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"3d1350e7db8b9c6897dce3d90a4f2b152bdfb74e0812b62180d36c00d2664c14"&&
+		"ece6a4a9af8c9c0c73b5c080ee205e5286463cb85b24d21c8d479e24de6972c9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-		"9d0d5d4a6fecac6eb80cdf3c0642a37ecdaff434374fa03f8df1b4d55828b4a3"&&
+		"6be9fee4b6a8ee9b0d34985af97032d5a86b7a99cd5ef5fb6b5a0ff41106e4f2"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionSource.begin(),projectionSource.end()))==
+		"058b986102af2ff34e0ddf66eb64bc3dbab89981a3c60ffb4e83cb2d071ed876"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionHeader.begin(),projectionHeader.end()))==
+		"8282c0b4ebf83b813618d94ec3cfff8f7b23bc2115f77238b911318207bee308"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMetal.begin(),projectionMetal.end()))==
+		"2b3e518e7b69a2d3b0f2014fa42099f650d304212987d7d27e2941173494c331"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireCaseSource.begin(),fireCaseSource.end()))==
 		"ccec8ac875bd2922217a90dad0c114cb2ef1e3ccab47c05bdc65208459adb003"&&
@@ -515,7 +537,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"38ba0ee3d15529da5780e7fecf068b595c835930ce011b23e4eb5654d03dd477"&&
+		"c925c91f6d27897a15ae9627d41bb8d45c94f6207a9458db4aa93a1768a8ce48"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -527,7 +549,7 @@ int main()
 		"2af11bfb9e3e45487a202fc0fe801e7a39dc59a0dda8815ef1a46a8af8c68d81"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"122c985dd140c2a18c8908159e33c83fb8f289f12bc645418e7e134978b45d47"&&
+		"918d633afcee74c318f96086c0d191d9d810650ecd425f4c9629975f8146d844"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -536,16 +558,16 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"a0ae62fe2024d2fac8cda1b72f0e82b967ee3cf31ab4c9d2e0749002845413b0"&&
+		"90620d8934d2ee74851449897b56ffb7c710c1e09c2c8994cf464132e7857eed"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"11fbdb7bc4ff860024e7a2a4de3c7569dac95011dfc73f5716d4aaa3238fcc95"&&
+		"f6fb3472e21ca14170efa590882db0fc4647287bfea5f960ac8997cbd00d2971"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
 		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceGenerator.begin(),traceGenerator.end()))==
-		"d458859a7aa66ad0e656b4063cf22512bcc3a431c9187aa0152aa451c95e08bf"&&
+		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 		"e3ff82b1513a6b78da0da0f10e4f72bb6b26c2eae09c23fb54e51e95d2811328"&&
@@ -561,9 +583,11 @@ int main()
 			std::string::npos&&
 		manifoldClosure.find("post_publication_payload_mutation_rejected true")!=
 			std::string::npos&&
+		manifoldClosure.find("public_checkpoint_changed_tuple_rejected true")!=
+			std::string::npos&&
 		manifoldClosure.find("genuine_token_payload_mutation_rejected true")!=
 			std::string::npos&&
-		manifoldClosure.find("v10_checksum_valid_timing_mismatch_rejected true")!=
+		manifoldClosure.find("v11_checksum_valid_timing_mismatch_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("legacy_v9_production_resume_rejected true")!=
 			std::string::npos&&
@@ -578,6 +602,7 @@ int main()
 			std::string::npos&&
 		traceForceHeader.find("PublishFireProductionAcceptedManifoldObservation")==
 			std::string::npos&&
+		eligibleTokenState&&physicalValidationMissCannotMint&&
 		!std::is_aggregate<RISE::FireProductionAcceptedManifoldObservation>::value&&
 		std::is_final<RISE::FireProductionCheckpointManifoldAccess>::value&&
 		!std::is_default_constructible<RISE::FireProductionCheckpointManifoldAccess>::value&&

@@ -808,12 +808,9 @@ namespace FireProductionDyadicCalibration
 			RISE::ValidateFireProductionDualMomentumRequest(request.dualTransport,&error);
 	}
 
-	bool ApplyProductionResult(const RISE::FireProductionResidentStepResult& production,
-		MethaneRunCheckpoint& state,std::string& error,
-		const RISE::FireProductionAcceptedManifoldObservation* acceptedObservation=nullptr)
+	bool ApplyProductionResultUnchecked(const RISE::FireProductionResidentStepResult& production,
+		MethaneRunCheckpoint& state,std::string& error)
 	{
-		if(acceptedObservation&&!acceptedObservation->MatchesAcceptedResidentPayload(production))
-			return Fail(&error,"accepted manifold observation no longer matches resident payload");
 		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
 			return false;
 		if(production.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32)
@@ -838,6 +835,14 @@ namespace FireProductionDyadicCalibration
 				production.projection.velocityMPerS[axis].end());
 		}
 		return true;
+	}
+	bool ApplyAcceptedProductionResult(const RISE::FireProductionResidentStepResult& production,
+		const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
+		MethaneRunCheckpoint& state,std::string& error)
+	{
+		if(!acceptedObservation.MatchesAcceptedResidentPayload(production))
+			return Fail(&error,"accepted manifold observation no longer matches resident payload");
+		return ApplyProductionResultUnchecked(production,state,error);
 	}
 
 	struct ProductionAffineResidual
@@ -1460,7 +1465,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="404d5f279cf9a95cd32324d516aeac01f3b235256dcfad3f2dd1545d3373a153"||
+			traceDigest!="26b12e46d634944f4134184f3c296c746a8426e8c91371a10529e2dbc02c7fd9"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1744,8 +1749,10 @@ namespace FireProductionDyadicCalibration
 				const float savedTerminalVelocity=terminalVelocity;
 				terminalVelocity=std::nextafter(terminalVelocity,
 					std::numeric_limits<float>::infinity());
+				const std::string stateBeforeRejectedApply=AnalyticStateDigest(state);
 				const bool postPublicationMutationRejected=
-					!acceptedObservation.MatchesAcceptedResidentPayload(production);
+					!ApplyAcceptedProductionResult(production,acceptedObservation,state,error)&&
+					AnalyticStateDigest(state)==stateBeforeRejectedApply;
 				terminalVelocity=savedTerminalVelocity;
 				authorityMutationREDsPassed=authorityMutationREDsPassed&&
 					postPublicationMutationRejected&&
@@ -1754,7 +1761,7 @@ namespace FireProductionDyadicCalibration
 			}
 			if(step==0u){firstGeneration=acceptedObservation.MaximumGeneration();
 				firstDrain=acceptedObservation.RestorationDrainFraction();}
-			if(!ApplyProductionResult(production,state,error,&acceptedObservation)){
+			if(!ApplyAcceptedProductionResult(production,acceptedObservation,state,error)){
 				std::fprintf(stderr,"r118 long consumer step=%zu failed: %s\n",step,error.c_str());
 				return 223;}
 			const double representedStep=static_cast<double>(production.representedTimeStepS);
@@ -1769,7 +1776,7 @@ namespace FireProductionDyadicCalibration
 				const bool saved=SaveMethaneRunCheckpoint(lifecycleCheckpoint,state,error);
 				const bool loadedOK=saved&&LoadMethaneRunCheckpoint(lifecycleCheckpoint,loaded,error);
 				{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
-				acceptedLifecyclePassed=loadedOK&&loaded.checkpointFormatVersion==10u&&
+				acceptedLifecyclePassed=loadedOK&&loaded.checkpointFormatVersion==11u&&
 					loaded.acceptedSteps==state.acceptedSteps&&
 					loaded.simulationTimeS==state.simulationTimeS&&
 					loaded.previousStepS==representedStep&&
@@ -1961,7 +1968,7 @@ namespace FireProductionDyadicCalibration
 						restoredTrajectory.projection.maximumPostProjectionResidualPerS,
 						restoredBeginning.signedProbe,restoredOutput.signedProbe,
 						restoredOutput.signedAtMaximum,restoredOutput.maximumCell);
-					if(!ApplyProductionResult(restoredTrajectory,restoredTrajectoryState,error)){
+					if(!ApplyProductionResultUnchecked(restoredTrajectory,restoredTrajectoryState,error)){
 						std::fprintf(stderr,"EOSRESTORE step=%zu consumer failure: %s\n",step+1u,
 							error.c_str());return 213;}
 					if(step==6u){
@@ -1997,7 +2004,7 @@ namespace FireProductionDyadicCalibration
 							std::fprintf(stderr,"EOSDRAIN restored step-6 changed conservative index %zu\n",
 								mismatch);return 202;}
 						restoredProbeState=states[index];
-						if(!ApplyProductionResult(restored,restoredProbeState,error))return 203;
+						if(!ApplyProductionResultUnchecked(restored,restoredProbeState,error))return 203;
 						restorationReferenceDeviation=beginningDeviation.signedProbe;
 						restoredProbeReady=true;
 					}else if(step==7u&&restoredProbeReady){
@@ -2142,7 +2149,7 @@ namespace FireProductionDyadicCalibration
 						calibratingResidual.maximumScaled,fp32Bound,
 						fp32Bound/calibratingResidual.maximumScaled,
 						calibratingResidual.cell,calibratingResidual.row);}
-				if(!ApplyProductionResult(production,states[index],error)){
+				if(!ApplyProductionResultUnchecked(production,states[index],error)){
 					const ProductionAffineResidual residual=MeasureProductionAffineResidual(
 						production,states[index].states.size());
 					const ProductionConsumerFailure consumer=MeasureProductionConsumerFailure(

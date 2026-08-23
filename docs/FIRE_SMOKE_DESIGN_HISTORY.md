@@ -3327,7 +3327,7 @@ it was already tried and refuted here.
   Binary32 result with both projections validated, two resident invocations,
   zero interstage transfers, a passing `7.5e-4` function gate, and finite
   derived diagnostics can publish the `(dt,G,r)` observation used by the next
-  selector.  Checkpoint format 10 persists that observation; versions 5--9
+  selector.  Checkpoint format 11 persists that observation; versions 5--10
   decode it as unavailable, preserving old golden bytes.
 
   Retained r138 reproduces trace `f90a2508...551cebf` and exit `243`; retained
@@ -3348,7 +3348,7 @@ it was already tried and refuted here.
   accepted step, a reused v5--v9 destination could retain stale metadata, and
   the retained resident campaign did not feed accepted `(dt,G,r)` into its
   next selector.  All four seams now fail closed: publication independently
-  recomputes the plateau mechanism and rejects forged results; v10 requires
+  recomputes the plateau mechanism and rejects forged results; v11 requires
   `observation.dt==previousStep==lastAcceptedStep`; legacy decoding clears the
   tuple; and r118 executes the real publish--select lifecycle before every
   resident step.  Owner-only publication is deliberately omitted from the
@@ -3389,8 +3389,9 @@ it was already tried and refuted here.
 
   Exact exit `255` now exercises a real two-step Metal lifecycle: first-step
   token publication, single-use/copy/payload/diagnostic REDs, represented timing
-  update, v10 checkpoint, reload, and resumed selection.  Writer-side and
-  checksum-valid loader-side timestep mismatch REDs bind both v10 equalities.
+  update, sealed v11 checkpoint, reload, and resumed selection.  Writer-side and
+  checksum-valid loader-side timestep mismatch REDs bind both v11 equalities;
+  changing an otherwise finite tuple while replaying the authentic seal also REDs.
   It pins `G=1.2031080315688669e-4`,
   `r=0.99562928290235475`, and resumed CFL selection
   `0.0018513042677754073 s`.  Retained r118 physics remains byte-identical
@@ -3398,7 +3399,7 @@ it was already tried and refuted here.
   `325.3877 ms` observation against the historical `200 ms` budget.  r119
   accepts every channel; r138 retains `f90a2508...551cebf`; r142/r144 retain
   exact `253/254`.  The owner-only header change moves the source-bound r136
-  trace to `404d5f27...3a153` without changing any arithmetic pin or the
+  trace to `26b12e46...c7fd9` without changing any arithmetic pin or the
   `0xff` refusal.  The burning result remains tokenless and rejected at field
   `2.5081625764804549e-3`, required drain `3.3442167670577247`, delivered
   `0.97489008508207653`.  Durable evidence is the SHA-bound r147 artifact; golden

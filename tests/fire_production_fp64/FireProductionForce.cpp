@@ -23,6 +23,18 @@ namespace RISEFireProductionFP64
 	{
 		constexpr double ManifoldEOSCeiling=0.001;
 		constexpr double ManifoldHeadroom=0.25;
+		std::uint64_t ManifoldObservationAuthoritySeal( const double timeStepS,
+			const double maximumGeneration,const double restorationDrainFraction )
+		{
+			std::uint64_t digest=UINT64_C(0x8d6f3a94c27be105);
+			auto append=[&](const double value){std::uint64_t bits=0u;
+				std::memcpy(&bits,&value,sizeof(bits));
+				for(unsigned int byte=0u;byte<8u;++byte){
+					digest^=static_cast<unsigned char>(bits>>(8u*byte));
+					digest*=UINT64_C(1099511628211);}};
+			append(timeStepS);append(maximumGeneration);append(restorationDrainFraction);
+			return digest^UINT64_C(0x63b96d44f1a72ec8);
+		}
 		bool Fail( std::string* error, const char* message ) noexcept
 		{
 			if( error ) try { *error=message; } catch( const std::bad_alloc& ) {}
@@ -75,7 +87,8 @@ namespace RISEFireProductionFP64
 	bool FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointRecord(
 		const bool available,const double timeStepS,const double maximumGeneration,
 		const double restorationDrainFraction,const double previousStepS,
-		const double lastAcceptedStepS,FireProductionAcceptedManifoldObservation& result )
+		const double lastAcceptedStepS,const std::uint64_t authoritySeal,
+		FireProductionAcceptedManifoldObservation& result )
 	{
 		result.Clear();
 		if(available){
@@ -83,13 +96,16 @@ namespace RISEFireProductionFP64
 				!std::isfinite(maximumGeneration)||maximumGeneration<0.0||
 				!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
 				restorationDrainFraction>1.0||timeStepS!=previousStepS||
-				timeStepS!=lastAcceptedStepS)return false;
+				timeStepS!=lastAcceptedStepS||authoritySeal!=ManifoldObservationAuthoritySeal(
+					timeStepS,maximumGeneration,restorationDrainFraction))return false;
 			result.available_=true;result.timeStepS_=timeStepS;
 			result.maximumGeneration_=maximumGeneration;
 			result.restorationDrainFraction_=restorationDrainFraction;
+			result.authoritySeal_=authoritySeal;
 			return true;
 		}
-		return timeStepS==0.0&&maximumGeneration==0.0&&restorationDrainFraction==0.0;
+		return timeStepS==0.0&&maximumGeneration==0.0&&restorationDrainFraction==0.0&&
+			authoritySeal==0u;
 	}
 
 	bool SelectFireProductionStableTimeStep(
@@ -117,7 +133,10 @@ namespace RISEFireProductionFP64
 				previousManifold.maximumGeneration_<0.0||
 				!std::isfinite(previousManifold.restorationDrainFraction_)||
 				previousManifold.restorationDrainFraction_<0.0||
-				previousManifold.restorationDrainFraction_>1.0 )
+				previousManifold.restorationDrainFraction_>1.0||
+				previousManifold.authoritySeal_!=ManifoldObservationAuthoritySeal(
+					previousManifold.timeStepS_,previousManifold.maximumGeneration_,
+					previousManifold.restorationDrainFraction_) )
 				return Fail(error,"production accepted manifold metadata is invalid");
 		} else if( previousStepS>0.0 ) {
 			return Fail(error,"production manifold metadata is unavailable after the first step");
@@ -164,6 +183,16 @@ namespace RISEFireProductionFP64
 			restorationDrainFraction)/maximumGeneration;
 		return (std::isfinite(timeStepS)&&timeStepS>0.0)||
 			Fail(error,"production manifold timestep is invalid");
+	}
+
+	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
+		const FireProductionResidentStepResult& value )
+	{
+		return value.physicalProjection.validationPassed&&value.projection.validationPassed&&
+			value.manifoldPlateauPassed&&
+			value.conservativeProducerPrecision==RISE::FireStateProducerPrecision::Binary32&&
+			value.residentProjectionInvocationCount==2u&&
+			value.interstageFullGridTransferCount==0u;
 	}
 
 	bool EvaluateFireProductionVremanEddyViscosity(

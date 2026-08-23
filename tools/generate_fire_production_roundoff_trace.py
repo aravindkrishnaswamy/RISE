@@ -309,8 +309,14 @@ def transform(text: str, name: str, suffix: str) -> str:
                   "FireProductionForce": "FIRE_PRODUCTION_FORCE_H"}
         text = text.replace(guards[name], "TRACE_" + guards[name])
     if name == "FireProductionForce" and suffix == ".cpp":
-        text = text.replace("std::memcpy(&bits,&value,sizeof(bits));",
-            "const float rounded=value.Rounded();std::memcpy(&bits,&rounded,sizeof(bits));")
+        digest_word = ("std::uint32_t bits=0u;\n"
+                       "\t\t\t\tstd::memcpy(&bits,&value,sizeof(bits));")
+        if text.count(digest_word) != 1:
+            raise RuntimeError("momentum diagnostic word seam changed")
+        text = text.replace(digest_word,
+            "std::uint32_t bits=0u;\n"
+            "\t\t\t\tconst float rounded=value.Rounded();"
+            "std::memcpy(&bits,&rounded,sizeof(bits));")
     if name == "FireProductionTransport" and suffix == ".cpp":
         cell_loop = ("for( unsigned int pass=0u;pass<5u;++pass )\n"
                      "\t\t\t\tif( !ApplyAxis(request,axes[pass],steps[pass],values,error) ) return false;")
