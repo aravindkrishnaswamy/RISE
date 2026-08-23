@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"c2cb4622e3069aec9f1013ed5e05e7f4eba75604cefa757466619ba8e08d3eff"&&
+		"db3d49448eb466bd56a199962ce752235cec8fa9f59408cd038e1cab1b637e99"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -516,7 +516,7 @@ int main()
 		"102212336dc0c1602ca9ec977c4397b4c445a1991fd8fdeee90988033fa11c50"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"7558b94d93b3744304bf32a0bba9ec5811b22623279dba275ee16bc0ed366ef6"&&
+		"fe7804d46b146fb5d8cad3f56e87f477956db9a6690ccc4264c7c22c639217cb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
 		"b1cdeaee9be45bee222f6e3b21dec4ee6f5d0c2e1f82565592ecc3ecbf31c5e3"&&
@@ -543,7 +543,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"0558fdda70d76e1dcd8ec9324b8ad41bbb0e33c5a00768beb98161598e3eb883"&&
+		"8d9ffdeb7f75de29a9c6ed34e7f7dd8bcd08dce95f25cba2ac9bb4510f38465d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -555,7 +555,7 @@ int main()
 		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"298d7a789dc79f40cd8c498febee55bd528572f553a32a6478a7f666972d0eb7"&&
+		"3910dca3e3c8609cbace19989c1e448ae02fc5ce5c2df64102440d1423e84167"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -564,10 +564,10 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"95d5b0dedf6cdfdb12011212a56423e70b4459c5b483f2ddbb68846202d162d3"&&
+		"d5537ab6c8bc8aa558de014490c5c6712f435cbe507a5f65cd8ce839a6b0b066"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"4dfa0028d13a70ddf77330264a1d00cb41539b31cbfd4e2d8b6f37ef12d9c24f"&&
+		"93e51be43bd7b5665294ea10facf5c150064ad7550fa725f50c331ffa7895409"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
 		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
@@ -589,7 +589,7 @@ int main()
 			std::string::npos&&
 		manifoldClosure.find("checkpoint_payload_binding_is_integrity_not_secret_authentication true")!=
 			std::string::npos&&
-		manifoldClosure.find("accepted_history_without_observation_v12_writer_rejected true")!=
+		manifoldClosure.find("accepted_history_without_observation_v13_writer_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("legacy_binary32_v9_v10_v11_loader_rejected true")!=
 			std::string::npos&&
@@ -599,7 +599,7 @@ int main()
 			std::string::npos&&
 		manifoldClosure.find("coordinated_accepted_metadata_clear_owner_rejected true")!=
 			std::string::npos&&
-		manifoldClosure.find("coordinated_accepted_metadata_clear_v12_loader_rejected true")!=
+		manifoldClosure.find("coordinated_accepted_metadata_clear_v13_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("first_step_owner_requires_binary64 true")!=
 			std::string::npos&&
@@ -635,11 +635,21 @@ int main()
 			std::string::npos&&
 		manifoldClosure.find("accepted_timeline_predicate_shared_owner_writer_loader true")!=
 			std::string::npos&&
-		manifoldClosure.find("accepted_binary32_promotion_v5_through_v12_writer_loader_rejected true")!=
+		manifoldClosure.find("accepted_binary32_promotion_v5_through_v13_writer_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("binary64_checkpoint_origin_authority_opaque_payload_bound true")!=
+			std::string::npos&&
+		manifoldClosure.find("binary64_current_v13_writer_loader_authority_required true")!=
+			std::string::npos&&
+		manifoldClosure.find("binary64_modern_v9_through_v12_resume_rejected_without_origin true")!=
+			std::string::npos&&
+		manifoldClosure.find("intact_accepted_binary64_retag_owner_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_last_step_alias_owner_writer_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("binary64_checkpoint_state_revalidated_in_binary64_envelope true")!=
 			std::string::npos&&
-		manifoldClosure.find("accepted_history_count_mismatch_v12_loader_rejected true")!=
+		manifoldClosure.find("accepted_history_count_mismatch_v13_loader_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("r148_lifecycle_exact_exit 255")!=std::string::npos&&
 		manifoldClosure.find("r142_retained_exact_exit 253")!=std::string::npos&&
@@ -657,7 +667,7 @@ int main()
 		advectionMetal.find("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE")!=
 			std::string::npos&&
 		dyadicFixture.find("physicalValidationOwnerRED")!=std::string::npos&&
-		sequenceTest.find("version!=12u")!=std::string::npos&&
+		sequenceTest.find("version!=13u")!=std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r148_manifold_lifecycle")!=std::string::npos&&
 		unixTestDriver.find("RISE_FIRE_MANIFOLD_LIFECYCLE_PROBE=1")!=std::string::npos&&
 		unixTestDriver.find("lifecycle_rc\" -eq 255")!=std::string::npos&&

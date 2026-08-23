@@ -1465,7 +1465,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="44b0363dae8bb994f78310d355fb22ca1a143600a860a1b40ea8a949a599a574"||
+			traceDigest!="727a9b39f0a0ecc6b13762bab0fbc3b4d426f647b48b50f898624f8d200ff2ed"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1911,17 +1911,48 @@ namespace FireProductionDyadicCalibration
 						loadedRetaggedClear,error);
 				{std::error_code ignored;
 					std::filesystem::remove(coordinatedClearCheckpoint,ignored);}
+				MethaneRunCheckpoint intactRetagged=state;
+				for(MethaneCellState& cell:intactRetagged.states)
+					cell.producerPrecision=RISE::FireStateProducerPrecision::Binary64;
+				RISE::FireProductionStableTimeStep intactRetaggedSelection;
+				const bool intactRetaggedOwnerRejected=!SelectProductionTimeStepForState(
+					intactRetagged,baseStep,intactRetaggedSelection,error);
+				MethaneRunCheckpoint lastStepAlias=state;
+				lastStepAlias.lastAcceptedStepS=std::nextafter(lastStepAlias.lastAcceptedStepS,
+					std::numeric_limits<double>::infinity());
+				RISE::FireProductionStableTimeStep lastStepAliasSelection;
+				const bool lastStepOwnerRejected=!SelectProductionTimeStepForState(
+					lastStepAlias,baseStep,lastStepAliasSelection,error);
+				const std::filesystem::path lastStepAliasCheckpoint=
+					std::filesystem::temp_directory_path()/"rise_r148_last_step_alias.checkpoint";
+				{std::error_code ignored;std::filesystem::remove(lastStepAliasCheckpoint,ignored);}
+				const bool lastStepWriterRejected=!SaveMethaneRunCheckpoint(
+					lastStepAliasCheckpoint,lastStepAlias,error)&&
+					!std::filesystem::exists(lastStepAliasCheckpoint);
+				forceMalformedManifoldLifecycleWriteForTest=true;
+				const bool lastStepAliasWritten=SaveMethaneRunCheckpoint(
+					lastStepAliasCheckpoint,lastStepAlias,error);
+				forceMalformedManifoldLifecycleWriteForTest=false;
+				MethaneRunCheckpoint loadedLastStepAlias;
+				const bool lastStepLoaderRejected=lastStepAliasWritten&&
+					!LoadMethaneRunCheckpoint(lastStepAliasCheckpoint,
+						loadedLastStepAlias,error);
+				{std::error_code ignored;std::filesystem::remove(lastStepAliasCheckpoint,ignored);}
 				authorityMutationREDsPassed=authorityMutationREDsPassed&&
 					lostObservationRejected&&coordinatedClearRejected&&
 					coordinatedClearOwnerRejected&&coordinatedClearLoaderRejected&&
 					retaggedClearOwnerRejected&&retaggedClearWriterRejected&&
-					retaggedClearLoaderRejected;
+					retaggedClearLoaderRejected&&intactRetaggedOwnerRejected&&
+					lastStepOwnerRejected&&lastStepWriterRejected&&lastStepLoaderRejected;
 				if(!lostObservationRejected)std::fprintf(stderr,
 					"r148 lost accepted observation aliased to a first step\n");
 				if(!(coordinatedClearRejected&&coordinatedClearOwnerRejected&&
 					coordinatedClearLoaderRejected&&retaggedClearOwnerRejected&&
 					retaggedClearWriterRejected&&retaggedClearLoaderRejected))std::fprintf(stderr,
 					"r148 coordinated accepted metadata clear aliased to a first step\n");
+				if(!(intactRetaggedOwnerRejected&&lastStepOwnerRejected&&
+					lastStepWriterRejected&&lastStepLoaderRejected))std::fprintf(stderr,
+					"r148 intact precision retag or last-step lifecycle alias was admitted\n");
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
 				MethaneRunCheckpoint transplanted=state;
 				MethaneRunCheckpoint temperatureTransplanted=state;
@@ -2006,7 +2037,7 @@ namespace FireProductionDyadicCalibration
 				acceptedLifecyclePassed=transplantRejected&&temperatureTransplantRejected&&
 					widthNormalizationBound&&malformedLifecycleLoadRejected&&
 					selectorTransplantRejected&&loadedOK&&
-					loaded.checkpointFormatVersion==12u&&
+					loaded.checkpointFormatVersion==13u&&
 					loaded.acceptedSteps==state.acceptedSteps&&
 					loaded.simulationTimeS==state.simulationTimeS&&
 					loaded.previousStepS==representedStep&&

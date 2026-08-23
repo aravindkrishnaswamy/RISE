@@ -485,6 +485,19 @@ namespace
 			ReadArithmeticVector(r,v.workerCountHistory,1000000u);
 	}
 
+	class Binary64CheckpointAuthority final
+	{
+	public:
+		Binary64CheckpointAuthority() : digest_(0u) {}
+		bool Available() const { return digest_!=0u; }
+		std::uint64_t Digest() const { return digest_; }
+	private:
+		std::uint64_t digest_;
+		friend bool IssueBinary64CheckpointAuthority(struct MethaneRunCheckpoint&);
+		friend bool RestoreBinary64CheckpointAuthority(struct MethaneRunCheckpoint&,
+			std::uint64_t);
+	};
+
 	struct MethaneRunCheckpoint
 	{
 		std::uint64_t checkpointFormatVersion=0u;
@@ -503,6 +516,7 @@ namespace
 		double simulationTimeS=0.0,previousStepS=0.0,lastAcceptedStepS=0.0;
 		std::uint64_t acceptedSteps=0u;
 		FireProductionAcceptedManifoldObservation productionManifoldObservation;
+		Binary64CheckpointAuthority binary64CheckpointAuthority;
 	};
 
 	bool AcceptedCheckpointTimelineValid(const MethaneRunCheckpoint& checkpoint)
@@ -536,6 +550,63 @@ namespace
 				reconstructedTemperatureK!=state.temperatureK)return false;
 		}
 		return !checkpoint.states.empty();
+	}
+
+	std::uint64_t Binary64CheckpointPayloadDigest(const MethaneRunCheckpoint& checkpoint)
+	{
+		std::uint64_t digest=UINT64_C(1469598103934665603);
+		auto bytes=[&digest](const void* data,const std::size_t size){
+			const unsigned char* value=static_cast<const unsigned char*>(data);
+			for(std::size_t index=0u;index<size;++index){digest^=value[index];
+				digest*=UINT64_C(1099511628211);}};
+		auto tag=[&bytes](const std::uint64_t value){bytes(&value,sizeof(value));};
+		auto vector=[&bytes,&tag](const std::uint64_t field,const std::vector<double>& value){
+			tag(field);const std::uint64_t size=value.size();tag(size);
+			if(!value.empty())bytes(value.data(),value.size()*sizeof(double));};
+		tag(UINT64_C(0x42363443484b5054));
+		const std::uint64_t caseSize=checkpoint.caseRecordId.size(),buildSize=checkpoint.producerBuildId.size();
+		tag(caseSize);if(caseSize)bytes(checkpoint.caseRecordId.data(),caseSize);
+		tag(buildSize);if(buildSize)bytes(checkpoint.producerBuildId.data(),buildSize);
+		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t value=dimension;tag(value);}
+		bytes(&checkpoint.cellWidthM,sizeof(checkpoint.cellWidthM));
+		const std::uint64_t cellCount=checkpoint.states.size();tag(cellCount);
+		for(const MethaneCellState& state:checkpoint.states){
+			bytes(&state.rhoTotalZ,sizeof(state.rhoTotalZ));
+			bytes(state.constituent.data(),state.constituent.size()*sizeof(double));
+			bytes(&state.sensibleEnergyJPerM3,sizeof(state.sensibleEnergyJPerM3));
+			bytes(&state.temperatureK,sizeof(state.temperatureK));
+			const unsigned char precision=static_cast<unsigned char>(state.producerPrecision);
+			bytes(&precision,sizeof(precision));
+		}
+		for(unsigned int axis=0u;axis<3u;++axis){
+			vector(UINT64_C(0x100)+axis,checkpoint.momentum.component[axis]);
+			vector(UINT64_C(0x200)+axis,checkpoint.velocity.component[axis]);
+		}
+		vector(UINT64_C(0x300),checkpoint.values.acceptedTimeStepHistoryS);
+		bytes(&checkpoint.simulationTimeS,sizeof(checkpoint.simulationTimeS));
+		bytes(&checkpoint.previousStepS,sizeof(checkpoint.previousStepS));
+		bytes(&checkpoint.lastAcceptedStepS,sizeof(checkpoint.lastAcceptedStepS));
+		bytes(&checkpoint.acceptedSteps,sizeof(checkpoint.acceptedSteps));
+		return digest==0u?UINT64_C(1):digest;
+	}
+
+	bool IssueBinary64CheckpointAuthority(MethaneRunCheckpoint& checkpoint)
+	{
+		if(checkpoint.states.empty())return false;
+		for(const MethaneCellState& state:checkpoint.states)
+			if(state.producerPrecision!=FireStateProducerPrecision::Binary64)return false;
+		if(
+			!AcceptedCheckpointTimelineValid(checkpoint)||
+			!Binary64CheckpointStateAdmissible(checkpoint))return false;
+		checkpoint.binary64CheckpointAuthority.digest_=Binary64CheckpointPayloadDigest(checkpoint);
+		return true;
+	}
+
+	bool RestoreBinary64CheckpointAuthority(MethaneRunCheckpoint& checkpoint,
+		const std::uint64_t storedDigest)
+	{
+		if(storedDigest==0u||storedDigest!=Binary64CheckpointPayloadDigest(checkpoint))return false;
+		checkpoint.binary64CheckpointAuthority.digest_=storedDigest;return true;
 	}
 
 	bool suppressExpectedCheckpointStateDiagnostic=false;
@@ -702,10 +773,15 @@ namespace
 		if(checkpoint.acceptedSteps>0u&&
 			(!AcceptedCheckpointTimelineValid(checkpoint)||
 				(precision==FireStateProducerPrecision::Binary64&&
-					!Binary64CheckpointStateAdmissible(checkpoint)))&&
+					(!Binary64CheckpointStateAdmissible(checkpoint)||
+						!checkpoint.binary64CheckpointAuthority.Available()||
+						checkpoint.binary64CheckpointAuthority.Digest()!=
+							Binary64CheckpointPayloadDigest(checkpoint))))&&
 			!forceMalformedManifoldLifecycleWriteForTest)return false;
 		if(version<12u&&precision==FireStateProducerPrecision::Binary32&&
 			!forceMalformedManifoldLifecycleWriteForTest)return false;
+		if(version>=9u&&version<13u&&precision==FireStateProducerPrecision::Binary64&&
+			checkpoint.acceptedSteps>0u&&!forceMalformedManifoldLifecycleWriteForTest)return false;
 		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
 		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
 			if(!writer.Pod(encoded))return false;}
@@ -784,6 +860,12 @@ namespace
 		std::uint64_t stateDigest=0u;
 		if(observation.Available()&&(!CheckpointAcceptedStateDigest(checkpoint,stateDigest)||
 			stateDigest!=observation.SerializedAcceptedStateDigest()))return false;
+		if(version>=13u&&precision==FireStateProducerPrecision::Binary64&&
+			checkpoint.acceptedSteps>0u){
+			stateDigest=checkpoint.binary64CheckpointAuthority.Digest();
+			if((stateDigest==0u||stateDigest!=Binary64CheckpointPayloadDigest(checkpoint))&&
+				!forceMalformedManifoldLifecycleWriteForTest)return false;
+		}
 		if(!writer.Pod(stateDigest))return false;
 		const std::uint64_t payloadBinding=writer.Checksum()^
 			UINT64_C(0x63b96d44f1a72ec8);
@@ -829,10 +911,12 @@ namespace
 			double maximumGeneration=0.0,restorationDrainFraction=0.0;
 			if(!reader.Pod(manifoldAvailable)||manifoldAvailable>1u||!reader.Pod(timeStepS)||
 				!reader.Pod(maximumGeneration)||!reader.Pod(restorationDrainFraction))return false;
-			if(version>=11u){std::uint64_t retiredOrStateDigest=0u;
-				if(!reader.Pod(retiredOrStateDigest))return false;}
+			std::uint64_t retiredOrStateDigest=0u;
+			if(version>=11u&&!reader.Pod(retiredOrStateDigest))return false;
 			if(version>=12u){std::uint64_t payloadBinding=0u;
 				if(!reader.Pod(payloadBinding))return false;}
+			if(version>=13u&&!manifoldAvailable&&checkpoint.acceptedSteps>0u&&
+				!RestoreBinary64CheckpointAuthority(checkpoint,retiredOrStateDigest))return false;
 		}
 		checkpoint.checkpointFormatVersion=version;
 		if(version<7u)checkpoint.values.activeSetAlgorithmVersion=
@@ -891,9 +975,9 @@ namespace
 
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
-		const std::uint64_t version=12u)
+		const std::uint64_t version=13u)
 	{
-		if(version<5u||version>12u){error="run checkpoint output version is invalid";return false;}
+		if(version<5u||version>13u){error="run checkpoint output version is invalid";return false;}
 		if(path.has_parent_path())std::filesystem::create_directories(path.parent_path());
 #if defined(_WIN32)
 		const long long processId=static_cast<long long>(::_getpid());
@@ -952,7 +1036,7 @@ namespace
 		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
 			!reader.HeaderBytes(&version,sizeof(version))||
 				(version!=5u&&version!=6u&&version!=7u&&version!=8u&&version!=9u&&
-					version!=10u&&version!=11u&&version!=12u)||
+					version!=10u&&version!=11u&&version!=12u&&version!=13u)||
 			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
 			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
@@ -978,7 +1062,14 @@ namespace
 			decoded.lastAcceptedStepS!=0.0||
 			!decoded.values.acceptedTimeStepHistoryS.empty())){
 			error="legacy production checkpoint lacks accepted manifold authority";return false;}
-		if(version>=12u){std::uint64_t acceptedStateDigest=0u;
+		if(version>=9u&&version<13u&&!productionState){
+			error="modern binary64 checkpoint lacks producer authority";return false;}
+		if(version>=13u&&!productionState&&
+			(!decoded.binary64CheckpointAuthority.Available()||
+				decoded.binary64CheckpointAuthority.Digest()!=
+					Binary64CheckpointPayloadDigest(decoded))){
+			error="binary64 checkpoint producer authority is invalid";return false;}
+		if(version>=12u&&productionState){std::uint64_t acceptedStateDigest=0u;
 			FireProductionProjectionShape acceptedShape;std::vector<float> acceptedConservative;
 			std::array<std::vector<float>,3> acceptedMomentum,acceptedVelocity;
 			if(productionState&&decoded.acceptedSteps>0u&&
@@ -1885,7 +1976,13 @@ namespace
 							std::setfill('0')<<(acceptedSteps-values.resumedFromStep)<<".checkpoint";
 						checkpointOutput=persistence.equivalenceSnapshotDirectory/snapshotName.str();
 					}
-					const bool checkpointSaved=SaveMethaneRunCheckpoint(
+					FireStateProducerPrecision checkpointOutputPrecision=
+						FireStateProducerPrecision::Unknown;
+					const bool checkpointAuthorized=
+						HomogeneousStateProducerPrecision(checkpoint.states,checkpointOutputPrecision)&&
+						(checkpointOutputPrecision!=FireStateProducerPrecision::Binary64||
+							IssueBinary64CheckpointAuthority(checkpoint));
+					const bool checkpointSaved=checkpointAuthorized&&SaveMethaneRunCheckpoint(
 						checkpointOutput,checkpoint,error);
 					states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
 					advanced.velocityMPerS=std::move(checkpoint.velocity);
@@ -3531,6 +3628,22 @@ int main(int argc,char** argv)
 	Check(HomogeneousStateProducerPrecision(resumedCheckpointMetadata.states,resumedPrecision)&&
 		resumedPrecision==FireStateProducerPrecision::Binary64,
 		"r115 ordinary binary64 checkpoints retain one authoritative producer class");
+	for(std::uint64_t retiredVersion=9u;retiredVersion<=12u;++retiredVersion){
+		const std::filesystem::path retiredBinary64Checkpoint=checkpointFixture/
+			("retired_binary64_v"+std::to_string(retiredVersion)+".checkpoint");
+		const bool writerRejected=!SaveMethaneRunCheckpoint(retiredBinary64Checkpoint,
+			resumedCheckpointMetadata,checkpointFixtureError,retiredVersion)&&
+			!std::filesystem::exists(retiredBinary64Checkpoint);
+		forceMalformedManifoldLifecycleWriteForTest=true;
+		const bool malformedWritten=SaveMethaneRunCheckpoint(retiredBinary64Checkpoint,
+			resumedCheckpointMetadata,checkpointFixtureError,retiredVersion);
+		forceMalformedManifoldLifecycleWriteForTest=false;
+		MethaneRunCheckpoint rejectedRetiredBinary64;
+		const bool loaderRejected=malformedWritten&&!LoadMethaneRunCheckpoint(
+			retiredBinary64Checkpoint,rejectedRetiredBinary64,checkpointFixtureError);
+		Check(writerRejected&&loaderRejected,
+			"r148 modern binary64 v9-v12 checkpoints without origin authority fail closed");
+	}
 	for(std::uint64_t legacyVersion=5u;legacyVersion<=8u;++legacyVersion){
 		const std::filesystem::path legacyPrecisionCheckpoint=checkpointFixture/
 			("precision_class_legacy_v"+std::to_string(legacyVersion)+".checkpoint");
@@ -3674,7 +3787,7 @@ int main(int argc,char** argv)
 	retaggedAccepted.previousStepS=0.001;retaggedAccepted.lastAcceptedStepS=0.001;
 	retaggedAccepted.values.acceptedTimeStepHistoryS.push_back(0.001);
 	bool acceptedBinary32PromotionRejected=true;
-	for(std::uint64_t version=5u;version<=12u;++version){
+	for(std::uint64_t version=5u;version<=13u;++version){
 		const std::filesystem::path retaggedAcceptedCheckpoint=checkpointFixture/
 			("retagged_accepted_v"+std::to_string(version)+".checkpoint");
 		{std::error_code ignored;
@@ -3699,7 +3812,7 @@ int main(int argc,char** argv)
 			writerRejected&&loaderRejected;
 	}
 	Check(acceptedBinary32PromotionRejected,
-		"r148 accepted binary32 bytes cannot be retagged and promoted through v5-v12 checkpoints");
+		"r148 accepted binary32 bytes cannot be retagged and promoted through v5-v13 checkpoints");
 	const std::filesystem::path unavailableV12Checkpoint=
 		checkpointFixture/"precision_class_unavailable_v12.checkpoint";
 	const bool unavailableAcceptedV12Rejected=
@@ -3811,7 +3924,10 @@ int main(int argc,char** argv)
 	auto ValidMutatedCheckpointRejects=[&](const char* name,
 		const MethaneRunCheckpoint& mutated)->bool{
 		const std::filesystem::path path=checkpointFixture/(std::string(name)+".checkpoint");
-		if(!SaveMethaneRunCheckpoint(path,mutated,checkpointFixtureError))return false;
+		forceMalformedManifoldLifecycleWriteForTest=true;
+		const bool written=SaveMethaneRunCheckpoint(path,mutated,checkpointFixtureError);
+		forceMalformedManifoldLifecycleWriteForTest=false;
+		if(!written)return false;
 		RunPersistenceOptions persistence;persistence.checkpointPath=path;persistence.resume=true;
 		const SolverFrameValues attempt=RunMethaneFrameProbe(3u,3u,0.0,1.0,4.0,6.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
@@ -3846,7 +3962,8 @@ int main(int argc,char** argv)
 	MethaneRunCheckpoint migrationSource=resumedCheckpointMetadata;
 	migrationSource.producerBuildId=std::string(64u,'a');
 	const std::filesystem::path migrationCheckpoint=checkpointFixture/"migration_source.checkpoint";
-	Check(SaveMethaneRunCheckpoint(migrationCheckpoint,migrationSource,checkpointFixtureError),
+	Check(IssueBinary64CheckpointAuthority(migrationSource)&&
+		SaveMethaneRunCheckpoint(migrationCheckpoint,migrationSource,checkpointFixtureError),
 		"r78 migration fixture authors a valid foreign-build checkpoint");
 	ResumeEquivalenceTrace oldMigrationTrace,newMigrationTrace;
 	oldMigrationTrace.checkpointDigest=DigestFile(migrationCheckpoint);

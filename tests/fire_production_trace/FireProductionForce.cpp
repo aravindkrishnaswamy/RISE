@@ -119,7 +119,8 @@ namespace RISEFireProductionTrace
 	{
 		result.Clear();
 		constexpr std::uint64_t RecordBytes=41u;
-		if(version!=12u||payloadBytes<RecordBytes||!lifecycle.acceptedTimeStepHistoryS||
+		if((version!=12u&&version!=13u)||payloadBytes<RecordBytes||
+			!lifecycle.acceptedTimeStepHistoryS||
 			(lifecycle.productionState&&lifecycle.acceptedSteps>0u&&
 				(!state.conservativeValues||!state.momentum||!state.velocity)))
 			return Fail(error,"production checkpoint manifold record version is invalid");

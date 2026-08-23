@@ -3088,8 +3088,9 @@ accepted-step fields and the history tail; count equals history length and the
 history duration exactly reconstructs simulation time.  A zero-step state in any
 precision is not a legal checkpoint class: production begins in memory from the
 byte-identified Binary64 analytic owner, and only an accepted result may persist.  Formats
-9--11 cannot resume any Binary32 production state; they remain available to
-ordinary Binary64/oracle runs.
+9--11 cannot resume any Binary32 production state.  Modern Binary64 formats 9--12
+also cannot resume because they predate producer-origin authority; historical
+Binary64 formats 5--8 remain grandfathered by their pre-resident lineage.
 REDs reject an accepted-history/zero-timestep first-step alias on both writer and
 checksum-valid loader paths; formats 9, 10, and 11 are exercised independently.
 They also reject temperature and terminal-velocity transplants, plus passing a
@@ -3100,15 +3101,17 @@ Coordinated clearing of observation, count, time, and history also rejects becau
 it cannot reclassify accepted Binary32 bytes as an initial checkpoint: the live
 owner rebuilds the inferred tier's canonical analytic state and requires an exact
 state digest match at step zero.  Retagging the cleared accepted bytes Binary64
-therefore also rejects.  Both the v12 writer and checksum-valid v12 loader reject
+therefore also rejects.  Both the v13 writer and checksum-valid v13 loader reject
 every zero-step state regardless precision.  The v9/v10/v11 all-zero matrix is
 instantiated separately for Binary32 and Binary64 at both writer and checksum-valid
 loader.  Both sides
 also reject Binary32 formats 9--11, rather than publishing an unloadable legacy file.
 The accepted timeline rule is shared by the live selector, writer, and loader.
-Binary64 checkpoint states are re-gated in the Binary64 r60 envelope and must carry
-the canonical reconstructed temperature, so retagging an accepted resident state
-cannot promote it through any v5--v12 checkpoint path.
+Format 13 carries a private, payload-bound Binary64 origin authority issued by the
+Binary64 owner.  The r60 Binary64 envelope and canonical temperature reconstruction
+remain feasibility checks, not substitutes for origin.  Current writers and loaders
+require that authority; an intact accepted Binary32 state retagged Binary64 fails at
+the live owner, and a last-step-only mutation fails at owner, writer, and loader.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all
@@ -3120,7 +3123,7 @@ normal twin remains byte-identical and exact exit `255` retains
 `0.0018513042677754071 s` after canonical Binary32 cell-width promotion.
 
 These authority changes move the source-bound r136 trace to
-`44b0363d...a599a574` without changing its arithmetic census, `0xff` proof gap,
+`727a9b39...00ff2ed` without changing its arithmetic census, `0xff` proof gap,
 or exact exit `237`.  The burning capacity verdict is unchanged: r144 remains
 exact exit `254`, field deviation `2.5081625764804549e-3`, required drain
 `3.3442167670577247`, and delivered drain `0.97489008508207653`.  The golden

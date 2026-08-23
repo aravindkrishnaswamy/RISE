@@ -3429,7 +3429,7 @@ it was already tried and refuted here.
   selector-side state transplant, coordinated metadata clear, non-tail history/time
   transplant, and every v9/v10/v11 Binary32 resume all RED.
   The live owner itself requires homogeneous Binary64 when accepted count is zero;
-  the coordinated-clear RED reaches that exact selector helper as well as v12 writer
+  the coordinated-clear RED reaches that exact selector helper as well as v13 writer
   and checksum-valid loader paths.  Legacy Binary32 formats 9--11 reject symmetrically
   at writer and loader, with accepted and all-zero cases bound separately on both sides.
   Retagging the cleared accepted state Binary64 also REDs: the live owner rebuilds
@@ -3439,10 +3439,14 @@ it was already tried and refuted here.
   loader REDs separately for Binary32 and Binary64, so neither version nor precision
   can scope the prohibition away.
   The accepted timeline predicate is now one executable rule used by the live
-  selector, writer, and loader.  Binary64 checkpoints are revalidated in the r60
-  Binary64 envelope with canonical temperature reconstruction; retagging the
-  accepted Binary32 excursion therefore cannot promote resident bytes through any
-  v5--v12 writer/loader pair.
+  selector, writer, and loader.  Format 13 adds an opaque, payload-bound Binary64
+  origin authority issued only by the Binary64 owner; r60 revalidation remains a
+  feasibility prerequisite, not provenance.  Modern Binary64 formats 9--12 lack
+  that authority and are retired for resume, while historical formats 5--8 remain
+  grandfathered by their pre-resident format lineage.  Current writers cannot emit
+  any accepted Binary64 checkpoint without the origin authority, and an intact
+  accepted-state retag RED reaches the live owner.  A last-step-only mutation RED
+  reaches owner, writer, and checksum-valid loader.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real
@@ -3452,7 +3456,7 @@ it was already tried and refuted here.
   fails before command submission.  Exact lifecycle exit `255` retains
   `G=1.2031080315688669e-4`, `r=0.99562928290235475`, and resumed CFL step
   `0.0018513042677754071 s` after canonical Binary32 cell-width promotion.  The source-bound r136 trace moves to
-  `44b0363d...a599a574`; arithmetic and exact refusal `237` are unchanged.
+  `727a9b39...00ff2ed`; arithmetic and exact refusal `237` are unchanged.
   r144 still exits `254` at field `2.5081625764804549e-3`, required drain
   `3.3442167670577247`, and delivered drain `0.97489008508207653`, so no later
   contract stage runs.  Golden remains `1b944176...4947`.
