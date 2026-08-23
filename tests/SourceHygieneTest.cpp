@@ -1406,6 +1406,36 @@ int main()
 			       "G2 parity: parsed the closed construction enum out of AgentSession.cpp (got "
 			       + std::to_string( enumValues.size() ) + ")" );
 
+			// Doc 90 R4: the CLOSED SET of construction values whose declaration
+			// summons an extra schema+worked-example block into the builder prompt
+			// -- parsed straight from ComposeBuilderPrompt_'s own gate sites
+			// (HasConstruction( "..." )) rather than hardcoded, so a fourth gate
+			// appearing there makes THIS list grow with it instead of leaving the
+			// two prose surfaces free to keep asserting a stale "only sweep/chain/
+			// lathe summon..." sentence.  (The three occurrences also show up in
+			// this function's own explanatory comments above each real gate, which
+			// is harmless here -- they name the same three methods, so dedup still
+			// lands on the same set.)
+			std::vector<std::string> gatedMethods;
+			{
+				const std::string anchor = "HasConstruction( \"";
+				for( std::size_t at = sessionSrc.find( anchor ); at != std::string::npos;
+				     at = sessionSrc.find( anchor, at + anchor.size() ) ) {
+					const std::size_t start = at + anchor.size();
+					const std::size_t end = sessionSrc.find( '"', start );
+					if( end == std::string::npos ) break;
+					const std::string method = sessionSrc.substr( start, end - start );
+					if( std::find( gatedMethods.begin(), gatedMethods.end(), method ) == gatedMethods.end() )
+						gatedMethods.push_back( method );
+				}
+			}
+			Check( gatedMethods.size() == 3,
+			       "G2 parity: parsed exactly 3 distinct HasConstruction(...) gate names out of "
+			       "AgentSession.cpp (got " + std::to_string( gatedMethods.size() ) + ") -- if a new "
+			       "gate was intentionally added to ComposeBuilderPrompt_, the two prose surfaces' "
+			       "\"only sweep/chain/lathe summon...\" sentence needs a matching update, and this "
+			       "count should be bumped alongside it" );
+
 			static const char* const kPlanSurfaces[] = { "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp" };
 			std::vector<std::string> planProblems;
 			for( const char* fname : kPlanSurfaces ) {
@@ -1534,6 +1564,40 @@ int main()
 					planProblems.push_back( std::string( fname ) + ": does not state that "
 						"`thinnestAxisRatio` is OMITTED when the bounding box is unusable -- same "
 						"conditional-key contract, same misread if it is presented as always-present" );
+				// Doc 90 R4: the plan-slot guidance.  A model that declares
+				// ["displaced","chain"] loses a slot to `displaced`, which
+				// summons nothing -- exactly the blind spot the latest dragon
+				// run exposed (sweep squeezed out, tail/neck unbuildable).  The
+				// fix restates the guidance as the general, POSITIVE claim: name
+				// every gated method (pinned against ComposeBuilderPrompt_'s own
+				// HasConstruction(...) sites above, not hardcoded here) and every
+				// non-gated enum value, so drift in either direction -- a new
+				// gate the prose doesn't mention, or a value wrongly claimed to
+				// summon something -- fails this check.
+				if( src.find( "summon their chunk's schema" ) == std::string::npos ) {
+					planProblems.push_back( std::string( fname ) + ": does not state which "
+						"construction values summon a schema and worked example into the builder "
+						"prompt -- a surface missing this teaches a model every method is equally "
+						"free, which is the blind spot that squeezed `sweep` out of a "
+						"`displaced`+`chain` plan" );
+				}
+				else {
+					for( const std::string& m : gatedMethods )
+						if( src.find( "`" + m + "`" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not name `" + m +
+								"` among the construction values that summon extra schema, though "
+								"ComposeBuilderPrompt_ gates a schema+example block on "
+								"HasConstruction( \"" + m + "\" )" );
+					for( const std::string& v : enumValues ) {
+						const bool gated = std::find( gatedMethods.begin(), gatedMethods.end(), v )
+							!= gatedMethods.end();
+						if( !gated && src.find( "`" + v + "`" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not name `" + v +
+								"` among the construction values that add nothing beyond the "
+								"always-present basics, though it has no HasConstruction gate in "
+								"ComposeBuilderPrompt_" );
+					}
+				}
 			}
 			// G3a: the parts cap is a real dispatcher rejection, and the chat
 			// codec cannot derive it (its schemas are raw string literals), so
