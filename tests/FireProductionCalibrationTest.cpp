@@ -57,6 +57,23 @@ namespace
 
 int main()
 {
+	std::vector<double> longShadowFlat(FireProductionCalibration::LongShadowSteps,0.0025);
+	std::vector<double> longShadowSecular(FireProductionCalibration::LongShadowSteps,0.0);
+	std::vector<double> longShadowMaskedSecular(
+		FireProductionCalibration::LongShadowSteps,0.01);
+	for(std::size_t step=0u;step<FireProductionCalibration::LongShadowSteps;++step)
+		longShadowSecular[step]=0.001+1.0e-6*static_cast<double>(step);
+	const std::size_t longShadowFirst=FireProductionCalibration::LongShadowSteps-
+		2u*FireProductionCalibration::LongShadowWindow;
+	longShadowMaskedSecular[longShadowFirst]=0.03;
+	for(std::size_t step=0u;step<FireProductionCalibration::LongShadowWindow;++step)
+		longShadowMaskedSecular[FireProductionCalibration::LongShadowSteps-
+			FireProductionCalibration::LongShadowWindow+step]=
+			0.01+0.0003*static_cast<double>(step);
+	Check(FireProductionCalibration::LongShadowNonsecular(longShadowFlat)&&
+		!FireProductionCalibration::LongShadowNonsecular(longShadowSecular)&&
+		!FireProductionCalibration::LongShadowNonsecular(longShadowMaskedSecular),
+		"long-shadow detector rejects monotone and prior-outlier-masked secular growth");
 #if defined(__APPLE__)
 	Check(!RISE::FireProductionDualLayoutPackRequiresSerialOwner(false,false)&&
 		RISE::FireProductionDualLayoutPackRequiresSerialOwner(true,false)&&
@@ -579,7 +596,7 @@ int main()
 		"07d6ce4b925875f12cee534e5c22a205bcd5c987a90aa6d051b39f24a8f1cfd4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"babb37cae5b2563f793961292b282f3ccc90291bfd86f4cf0c87bc19f5e3871a"&&
+		"0f8f4d5a150ca6b35f2a1181ce9fbde933eb78eaa2f59f44b4cd469ea954ed08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -1026,7 +1043,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"4de203bf35e81de20999d9141881c2ed4e6690b5d7207fe241ef49c7bc614316"&&
+			"9a11dd1add8bd6a4037593fa3c6164d34f95f52f015aa0131bda2af71d5c651d"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1108,7 +1125,7 @@ int main()
 			"3d6909a47cc75699d0404230ac23e37c39c25c6c7c8c932dafb2b81f6fd8469f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"4de203bf35e81de20999d9141881c2ed4e6690b5d7207fe241ef49c7bc614316"&&
+			"9a11dd1add8bd6a4037593fa3c6164d34f95f52f015aa0131bda2af71d5c651d"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1171,10 +1188,12 @@ int main()
 	const std::string lowMachRefusalEvidence=ReadText(
 		"rendered/fire_production_calibration/r160_low_mach_audited_step_refusal/"
 		"low_mach_audited_step_refusal.v1");
+	const std::string calibrationMathSource=ReadText(
+		"tests/FireProductionCalibrationMath.h");
 	Check(!lowMachRefusalEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(lowMachRefusalEvidence.begin(),
 			lowMachRefusalEvidence.end()))==
-		"48f02d7e982e557a43363eb96d939db2e68edaea980f21565675c6b0d12ade5d"&&
+		"a354c61208e7543d168e56a9534d74b72834f3c7acf408542c23e6a5c5dfa608"&&
 		lowMachRefusalEvidence.find(
 			"production_pressure_deviation_domain_limit absent")!=std::string::npos&&
 		lowMachRefusalEvidence.find(
@@ -1207,7 +1226,10 @@ int main()
 			"2b37a97ff8490507dcd86cf60219c5fa2db272107c40349c948aa1a49cd433c5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"4de203bf35e81de20999d9141881c2ed4e6690b5d7207fe241ef49c7bc614316"&&
+			"9a11dd1add8bd6a4037593fa3c6164d34f95f52f015aa0131bda2af71d5c651d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			calibrationMathSource.begin(),calibrationMathSource.end()))==
+			"d941893a0b1e028400988014499584e9099bfbff66fca73061674f89536cbf0b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionTestSource.begin(),projectionTestSource.end()))==
 			"352691d51ba6486cb846b4f9154079f43d47e7e61f6b17893788f8182c95bed2"&&

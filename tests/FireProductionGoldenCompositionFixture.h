@@ -110,7 +110,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		FireProductionDyadicCalibration::ExpectedProductionVelocityEvidence[1],
 		FireProductionDyadicCalibration::VerifiedOrder,velocityDistance,velocityBound))return 130;
 	RISECBOR64::Bytes precisionTrace;
-	static const std::size_t LongShadowSteps=104u,LongShadowWindow=32u;
+	static const std::size_t LongShadowSteps=FireProductionCalibration::LongShadowSteps;
+	static const std::size_t LongShadowWindow=FireProductionCalibration::LongShadowWindow;
 	std::vector<double> longShadowFieldMaximum;
 	RISECBOR64::Bytes longShadowTrace;
 	MethaneRunCheckpoint longShadowState;
@@ -2103,38 +2104,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			production.projection.validationPassed?1:0);
 	}
 	if(longShadow){
-		auto nonsecular=[](const std::vector<double>& values){
-			if(values.size()!=LongShadowSteps)return false;
-			const std::size_t first=values.size()-2u*LongShadowWindow;
-			const double prior=*std::max_element(values.begin()+first,
-				values.begin()+first+LongShadowWindow);
-			const double terminal=*std::max_element(values.begin()+first+LongShadowWindow,
-				values.end());
-			double terminalTrend=0.0;
-			for(std::size_t offset=0u;offset<LongShadowWindow/2u;++offset){
-				const double weight=static_cast<double>(LongShadowWindow-1u-2u*offset);
-				terminalTrend+=weight*(values[values.size()-1u-offset]-
-					values[values.size()-LongShadowWindow+offset]);
-			}
-			return std::isfinite(prior)&&std::isfinite(terminal)&&terminal<=prior&&
-				std::isfinite(terminalTrend)&&terminalTrend<=0.0&&terminal<=0x1p-5;
-		};
-		std::vector<double> secularRED(LongShadowSteps,0.0),
-			maskedSecularRED(LongShadowSteps,0.01),flatGREEN(LongShadowSteps,0.0025);
-		for(std::size_t step=0u;step<LongShadowSteps;++step)
-			secularRED[step]=0.001+1.0e-6*static_cast<double>(step);
-		const std::size_t redFirst=LongShadowSteps-2u*LongShadowWindow;
-		maskedSecularRED[redFirst]=0.03;
-		for(std::size_t step=0u;step<LongShadowWindow;++step)
-			maskedSecularRED[LongShadowSteps-LongShadowWindow+step]=
-				0.01+0.0003*static_cast<double>(step);
 		const std::size_t first=longShadowFieldMaximum.size()-2u*LongShadowWindow;
 		const double priorMaximum=*std::max_element(longShadowFieldMaximum.begin()+first,
 			longShadowFieldMaximum.begin()+first+LongShadowWindow);
 		const double terminalMaximum=*std::max_element(
 			longShadowFieldMaximum.begin()+first+LongShadowWindow,longShadowFieldMaximum.end());
-		const bool passed=nonsecular(longShadowFieldMaximum)&&nonsecular(flatGREEN)&&
-			!nonsecular(secularRED)&&!nonsecular(maskedSecularRED);
+		const bool passed=FireProductionCalibration::LongShadowNonsecular(
+			longShadowFieldMaximum);
 		std::fprintf(stderr,"GOLDEN_LONG_SHADOW steps=%zu dt=%.17g prior32_max=%.17g "
 			"terminal32_max=%.17g final=%.17g low_mach_ceiling=%.17g nonsecular=%d "
 			"trace=%s final_state=%s\n",longShadowFieldMaximum.size(),

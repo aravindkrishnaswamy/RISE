@@ -5,9 +5,31 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <vector>
 
 namespace FireProductionCalibration
 {
+	constexpr std::size_t LongShadowSteps=104u;
+	constexpr std::size_t LongShadowWindow=32u;
+
+	inline bool LongShadowNonsecular(const std::vector<double>& values)
+	{
+		if(values.size()!=LongShadowSteps)return false;
+		const std::size_t first=values.size()-2u*LongShadowWindow;
+		const double prior=*std::max_element(values.begin()+first,
+			values.begin()+first+LongShadowWindow);
+		const double terminal=*std::max_element(values.begin()+first+LongShadowWindow,
+			values.end());
+		double terminalTrend=0.0;
+		for(std::size_t offset=0u;offset<LongShadowWindow/2u;++offset){
+			const double weight=static_cast<double>(LongShadowWindow-1u-2u*offset);
+			terminalTrend+=weight*(values[values.size()-1u-offset]-
+				values[values.size()-LongShadowWindow+offset]);
+		}
+		return std::isfinite(prior)&&std::isfinite(terminal)&&terminal<=prior&&
+			std::isfinite(terminalTrend)&&terminalTrend<=0.0&&terminal<=0x1p-5;
+	}
+
 	inline double NextUp(const double value)
 	{
 		return std::nextafter(value,std::numeric_limits<double>::infinity());

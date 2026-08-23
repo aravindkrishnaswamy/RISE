@@ -15,6 +15,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
+#include "FireProductionCalibrationMath.h"
 #include "FireProductionCalibrationMirror.h"
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "FireProductionRoundoffWalker.h"
