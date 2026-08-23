@@ -301,7 +301,12 @@ namespace RISE
 			value.manifoldPlateauPassed&&
 			value.conservativeProducerPrecision==FireStateProducerPrecision::Binary32&&
 			value.residentProjectionInvocationCount==2u&&
-			value.interstageFullGridTransferCount==0u;
+			value.interstageFullGridTransferCount==0u&&
+			value.manifoldMapCellCount==value.acceptedShape.CellCount()&&
+			value.manifoldScalarDeviceToHostTransferCount==1u&&
+			value.manifoldFullGridDeviceToHostTransferCount==0u&&
+			value.manifoldStageGeneration[0]==value.maximumManifoldGeneration&&
+			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
 	}
 
 	bool PublishFireProductionAcceptedManifoldObservation(
@@ -317,7 +322,9 @@ namespace RISE
 			acceptedStep.projection.maximumPreProjectionResidualPerS,
 			acceptedStep.projection.maximumPostProjectionResidualPerS,recomputed);
 		const FireProductionAcceptedManifoldToken& token=acceptedStep.acceptedManifoldToken_;
-		if(!token.available_||!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
+		if(!token.available_||
+			!FireProductionResidentStepEligibleForAcceptedManifoldToken(acceptedStep)||
+			!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
 			!std::isfinite(acceptedStep.representedTimeStepS)||
 			acceptedStep.representedTimeStepS<=0.0f||
 			acceptedStepS!=static_cast<double>(acceptedStep.representedTimeStepS)||
@@ -590,9 +597,10 @@ namespace RISE
 		const std::uint64_t allFaces=static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz+
 			static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz+
 			static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
-		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/19u ) return false;
-		const std::uint64_t extraValues=19u*cells+3u*allFaces;
+		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/22u ) return false;
+		const std::uint64_t extraValues=22u*cells+3u*allFaces;
 		const std::uint64_t rawTarget=cells*sizeof(float),alignment=UINT64_C(16384);
+		const std::uint64_t manifoldAllocationAllowance=5u*alignment;
 		if( rawTarget>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
 		const std::uint64_t targetAllocation=(rawTarget+alignment-1u)&~(alignment-1u);
 		if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(float)||
@@ -604,9 +612,12 @@ namespace RISE
 				std::numeric_limits<std::uint64_t>::max()-restorationProjectionBytes||
 			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(float)+
 				restorationProjectionBytes>std::numeric_limits<std::uint64_t>::max()-
-					2u*targetAllocation ) return false;
+					2u*targetAllocation||
+			forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(float)+
+				restorationProjectionBytes+2u*targetAllocation>
+					std::numeric_limits<std::uint64_t>::max()-manifoldAllocationAllowance ) return false;
 		bytes=forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(float)+
-			restorationProjectionBytes+2u*targetAllocation;return true;
+			restorationProjectionBytes+2u*targetAllocation+manifoldAllocationAllowance;return true;
 	}
 
 	bool ValidateFireProductionFrozenForceRequest(

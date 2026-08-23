@@ -3169,6 +3169,53 @@ value may alter this decision tree.  The sealed protocol is
 `rendered/fire_production_calibration/r149_manifold_stage_budget_protocol/`
 `manifold_stage_budget_protocol.v1`.
 
+### 7.55j Burning stage budget and reconstruction falsification (r150)
+
+The frozen campaign identifies the burning capacity term without ambiguity.
+At CFL, CFL/2, and CFL/4 the remap contribution is respectively
+`2.5327801704406738e-3`, `2.5155544281005859e-3`, and
+`2.5067925453186035e-3`; its adjacent scaling exponents are only
+`0.009845460522765278` and `0.005033797039351196`.  The physical and
+restoration projections contribute exact zero to the scalar EOS-volume map in
+all three runs because neither projection changes the conservative scalar
+state.  Remap therefore owns 100% of the directly observed generation and the
+term is per-step-finite, not proportional to timestep.
+The same device evaluator gives cold-state `G=1.2048172357026488e-4`, versus
+the earlier Binary64-host observation `1.2031080315688669e-4`; the device-domain
+burning/cold contrast is `21.0221110x`.
+
+The pre-registered remap branch was executed next.  A shared-alpha ten-tuple
+trial transported `rho*T` beside the original nine conservative components and
+rebuilt sensible energy from reconstructed temperature and composition.  It
+preserved the existing shared-alpha conservation coupling and monotonicity.
+All three post-trial generation maxima were bit-identical to the baseline, so
+the ineffective trial was removed rather than shipped.  The restoration-
+anomaly branch was not activated: its precondition is restoration-dominant
+self-generation, whereas both projection-stage scalar contributions are exact
+zero.  The frozen rule therefore reaches its contract-level production-ceiling
+stop.  The current `7.5e-4` allowance is exceeded by `3.3770759518x` at the CFL
+burning state, and long shadow, `B_fp32`, guard supersession, temporal
+refinement, readmission, source maps, and first light remain unrun pending that
+ruling.
+
+The production measurement itself is now resident.  A private two-float map per
+cell holds beginning/terminal deviation; an exact nonnegative binary32 atomic
+max publishes only the two scalars through the already-required terminal read.
+The independent Binary64 reconstruction remains a diagnostic audit.  There is
+one scalar read and zero new full-grid device-to-host transfers.  Warm device
+p95 is `67.1234167 ms`, meeting the requested approximately-70-ms device path,
+but warm wall p95 is still `198.997584 ms`; the earlier `600.471584 ms` wall
+observation is reduced by `66.8598%`, not restored to 70 ms.  At the represented
+limited step this changes the tier-10 x 25 s wall projection from `262.3922 h`
+to `86.9573 h` (device-only projection `29.3314 h`).  The remaining wall/device
+gap is retained as an explicit performance finding, not hidden in the capacity
+verdict.  Exact evidence is
+`rendered/fire_production_calibration/r150_manifold_stage_budget/`
+`manifold_stage_budget_evidence.v1`; the golden checkpoint is unchanged.
+The source-bound r136 digest moves to `a0e42abe...b85989e` solely because the
+resident result schema is mirrored; its arithmetic census, `0xff` refusal, and
+exact exit `237` are unchanged.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

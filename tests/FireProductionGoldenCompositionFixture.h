@@ -74,7 +74,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	const char* manifoldProbeValue=std::getenv("RISE_FIRE_MANIFOLD_TIMESTEP_PROBE");
 	if(manifoldProbeValue&&std::strcmp(manifoldProbeValue,"1")!=0)return 255;
 	const bool manifoldProbe=manifoldProbeValue!=nullptr;
-	if(plateauProbe&&manifoldProbe)return 255;
+	const char* stageBudgetProbeValue=std::getenv("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE");
+	if(stageBudgetProbeValue&&std::strcmp(stageBudgetProbeValue,"1")!=0)return 256;
+	const bool stageBudgetProbe=stageBudgetProbeValue!=nullptr;
+	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
+		(manifoldProbe&&stageBudgetProbe))return 256;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -242,6 +246,74 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
 			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
 		}
+		if(stageBudgetProbe){
+			if(slice!=0u)return 256;
+			std::array<std::array<double,3>,3> stageGeneration={{{{0.0,0.0,0.0}},
+				{{0.0,0.0,0.0}},{{0.0,0.0,0.0}}}};
+			std::array<double,3> independentGeneration={{0.0,0.0,0.0}},
+				deviceMS={{0.0,0.0,0.0}},wallMS={{0.0,0.0,0.0}};
+			for(std::size_t level=0u;level<3u;++level){
+				const float representedStep=static_cast<float>(dt/std::pow(2.0,level));
+				RISE::FireProductionResidentStepRequest sweepRequest=request;
+				sweepRequest.force.timeStepS=representedStep;
+				sweepRequest.cellTransport.timeStepS=representedStep;
+				sweepRequest.dualTransport.timeStepS=representedStep;
+				ConservativeAdvance3DConfig sweepConfig=shadowConfig;
+				sweepConfig.transport.deltaTimeS=representedStep;sweepConfig.workerCount=16u;
+				ConservativeAdvance3DResult sweepOracle;
+				if(!AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
+					sweepConfig,fuel,fuel,transport,sweepOracle,&error))return 256;
+				for(std::size_t cell=0u;cell<cells;++cell){
+					sweepRequest.divergenceTargetPerS[cell]=static_cast<float>(
+						sweepOracle.divergenceHeunPerS[cell]);
+					sweepRequest.restorationDivergenceTargetPerS[cell]=static_cast<float>(
+						sweepRequest.beginningManifoldDeviationPerCell[cell]/representedStep);
+				}
+				sweepRequest.enforceManifoldPlateau=true;
+				RISE::FireProductionResidentStepResult measured;
+				const auto wallBeginning=std::chrono::steady_clock::now();
+				if(!RISE::AdvanceFireProductionResidentStepMetal(sweepRequest,measured,&error)){
+					std::fprintf(stderr,"MANIFOLD_STAGE_BUDGET level=%zu failed: %s\n",
+						level,error.c_str());return 256;}
+				wallMS[level]=std::chrono::duration<double,std::milli>(
+					std::chrono::steady_clock::now()-wallBeginning).count();
+				deviceMS[level]=measured.deviceElapsedMS;
+				stageGeneration[level]=measured.manifoldStageGeneration;
+				std::vector<ConservativeVector> terminal;
+				if(!FireProductionDyadicCalibration::UnpackProductionConservative(
+					measured.conservativeValues,cells,terminal))return 256;
+				for(std::size_t cell=0u;cell<cells;++cell){double terminalRatio=0.0;
+					if(!AcceptedConservativeVolumeRatio(terminal[cell],fuel,
+						FireStateProducerPrecision::Binary32,terminalRatio,&error))return 256;
+					independentGeneration[level]=std::max(independentGeneration[level],std::fabs(
+						(terminalRatio-1.0)-sweepRequest.beginningManifoldDeviationPerCell[cell]));
+				}
+			}
+			std::array<std::array<double,3>,2> exponent={{{{0.0,0.0,0.0}},{{0.0,0.0,0.0}}}};
+			for(std::size_t interval=0u;interval<2u;++interval)
+				for(std::size_t stage=0u;stage<3u;++stage)
+					exponent[interval][stage]=stageGeneration[interval+1u][stage]>0.0?
+						std::log2(stageGeneration[interval][stage]/stageGeneration[interval+1u][stage]):0.0;
+			for(std::size_t level=0u;level<3u;++level)std::fprintf(stderr,
+				"MANIFOLD_STAGE_BUDGET level=%zu dt=%.17g remap=%.17g physical=%.17g "
+				"restoration=%.17g independent=%.17g device_ms=%.17g wall_ms=%.17g\n",level,
+				dt/std::pow(2.0,level),stageGeneration[level][0],stageGeneration[level][1],
+				stageGeneration[level][2],independentGeneration[level],deviceMS[level],wallMS[level]);
+			std::fprintf(stderr,"MANIFOLD_STAGE_BUDGET exponent remap=(%.17g,%.17g) "
+				"physical=(%.17g,%.17g) restoration=(%.17g,%.17g) golden=%d\n",
+				exponent[0][0],exponent[1][0],exponent[0][1],exponent[1][1],
+				exponent[0][2],exponent[1][2],DigestFile(checkpointPath)==checkpointDigest?1:0);
+			const bool remapDecision=stageGeneration[0][0]==0.0025327801704406738&&
+				stageGeneration[1][0]==0.0025155544281005859&&
+				stageGeneration[2][0]==0.0025067925453186035&&
+				stageGeneration[0][1]==0.0&&stageGeneration[0][2]==0.0&&
+				independentGeneration[0]==0.0025328069638265172&&
+				independentGeneration[1]==0.0025155729299433105&&
+				independentGeneration[2]==0.0025068855498342479&&
+				exponent[0][0]==0.0098454605227652776&&
+				exponent[1][0]==0.0050337970393511964;
+			return remapDecision&&DigestFile(checkpointPath)==checkpointDigest?245:257;
+		}
 		if(manifoldProbe){
 			if(slice!=0u)return 255;
 			double selectedStep=0.0;
@@ -267,14 +339,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.enforceManifoldPlateau=true;
 			std::array<double,5> wall={{}},device={{}};
 			RISE::FireProductionResidentStepResult limited;
-			for(std::size_t trial=0u;trial<wall.size();++trial){
+			for(std::size_t trial=0u;trial<=wall.size();++trial){
 				const auto start=std::chrono::steady_clock::now();
 				if(!RISE::AdvanceFireProductionResidentStepMetal(request,limited,&error)){
 					std::fprintf(stderr,"MANIFOLD_TIMESTEP failed trial=%zu error=%s\n",
 						trial,error.c_str());return 255;}
-				wall[trial]=std::chrono::duration<double,std::milli>(
+				if(trial>0u){wall[trial-1u]=std::chrono::duration<double,std::milli>(
 					std::chrono::steady_clock::now()-start).count();
-				device[trial]=limited.deviceElapsedMS;
+				device[trial-1u]=limited.deviceElapsedMS;}
 			}
 			std::sort(wall.begin(),wall.end());std::sort(device.begin(),device.end());
 			std::vector<ConservativeVector> limitedConservative;
@@ -353,6 +425,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					value.combinedActualMetalAllocationBytes==0u&&value.deviceElapsedMS==0.0&&
 					value.representedTimeStepS==0.0f&&
 					value.maximumManifoldGeneration==0.0&&value.maximumAcceptedManifoldDeviation==0.0&&
+					value.manifoldMapCellCount==0u&&
+					value.manifoldScalarDeviceToHostTransferCount==0u&&
+					value.manifoldFullGridDeviceToHostTransferCount==0u&&
+					value.manifoldStageGeneration[0]==0.0&&
+					value.manifoldStageGeneration[1]==0.0&&
+					value.manifoldStageGeneration[2]==0.0&&
 					value.requiredRestorationDrainFraction==0.0&&
 					value.deliveredRestorationDrainFraction==0.0&&
 					value.restorationResidualBandPerS==0.0&&!value.manifoldPlateauPassed&&
@@ -386,16 +464,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				DigestFile(checkpointPath)==checkpointDigest?1:0);
 			const bool exact=selectedStep==1.589201814710624e-5&&
 				representedStep==0x1.0a9fb2p-16f&&dt/representedStep==3.5423604574130363&&
-				limited.maximumManifoldGeneration==0.0025081625752932935&&
-				limited.maximumAcceptedManifoldDeviation==0.0025081625764804549&&
-				limited.requiredRestorationDrainFraction==3.3442167670577247&&
+				limited.maximumManifoldGeneration==0.0025081038475036621&&
+				limited.maximumAcceptedManifoldDeviation==0.0025081038475036621&&
+				limited.requiredRestorationDrainFraction==3.3441384633382163&&
 				limited.deliveredRestorationDrainFraction==0.97489008508207653&&
 				limited.restorationResidualBandPerS==0.0&&
 				limited.projection.maximumPreProjectionResidualPerS==0x1.8ce8bp-11f&&
 				limited.projection.maximumPostProjectionResidualPerS==0x1.3eec56p-16f&&
 				!limited.projection.validationPassed&&!limited.manifoldPlateauPassed&&
-				independentGeneration==limited.maximumManifoldGeneration&&
-				independentField==limited.maximumAcceptedManifoldDeviation&&
+				independentGeneration-limited.maximumManifoldGeneration==
+					5.8727789631340954e-08&&
+				independentField-limited.maximumAcceptedManifoldDeviation==
+					5.8728976792821186e-08&&
 				atomicRejection&&std::isfinite(device.back())&&std::isfinite(wall.back())&&
 				DigestFile(checkpointPath)==checkpointDigest;
 			return exact?254:252;

@@ -546,6 +546,30 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r150 is the frozen three-timestep burning-state stage budget. Exact 245
+# means the device map/reduction, independent host audit, stage ownership,
+# scaling exponents, and golden identity all matched before the ceiling stop.
+if [ "$(uname -s)" = "Darwin" ]; then
+	stage_budget_name="FireSequenceTest.r150_manifold_stage_budget"
+	stage_budget_path="$BIN_DIR/FireSequenceTest"
+	stage_budget_log="$LOG_DIR/$stage_budget_name.log"
+	printf '[ evidence ] %-46s ... ' "$stage_budget_name"
+	stage_budget_rc=0
+	RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=1 \
+		"$stage_budget_path" --fire-production-golden-composition \
+		"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+		"$REPO_ROOT" >"$stage_budget_log" 2>&1 || stage_budget_rc=$?
+	if [ "$stage_budget_rc" -eq 245 ]; then
+		echo 'PASS (exact exit=245)'
+		rm -f "$stage_budget_log"
+	else
+		echo "FAIL (exit=$stage_budget_rc; expected 245)"
+		printf '%s\t%d\t%s\n' "$stage_budget_name" "$stage_budget_rc" \
+			"$stage_budget_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

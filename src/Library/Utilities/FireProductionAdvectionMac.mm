@@ -30,35 +30,133 @@ namespace RISE
 
 	namespace
 	{
-		bool MeasureMethaneManifold(
-			const std::vector<double>& beginningDeviation,
-			const float* terminal,
-			const std::size_t cells,
-			double& maximumGeneration,
-			double& maximumTerminalDeviation,
+		struct MetalManifoldParameters
+		{
+			std::uint32_t cellCount;
+			std::uint32_t affineRowCount;
+			std::uint32_t affineStateDimension;
+			std::uint32_t reserved;
+			float temperatureMinK;
+			float temperatureMaxK;
+			float pressurePa;
+			float feasibilityFactor;
+		};
+
+		constexpr std::size_t MetalThermochemistrySpeciesStride=32u;
+		constexpr std::size_t MetalThermochemistrySpeciesValues=
+			7u*MetalThermochemistrySpeciesStride;
+		constexpr std::size_t MetalManifoldCertificateValues=
+			MetalThermochemistrySpeciesValues+64u;
+
+		bool PackMetalMethaneThermochemistry(
+			std::array<float,MetalManifoldCertificateValues>& packed,
+			MetalManifoldParameters& parameters,
+			std::array<double,7>& lowerEnthalpy,
+			std::array<double,7>& upperEnthalpy,
 			std::string* error )
 		{
-			maximumGeneration=0.0;maximumTerminalDeviation=0.0;
-			if(!terminal||beginningDeviation.size()!=cells)return false;
+			packed.fill(0.0f);
 			const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
-			if(!fuel.IsValid()||fuel.SpeciesOrder().size()!=7u)return false;
-			for(std::size_t cell=0u;cell<cells;++cell){
-				double terminalState[9];
-				for(std::size_t component=0u;component<9u;++component)
-					terminalState[component]=terminal[component*cells+cell];
-				double terminalRatio=0.0;
-				if(!std::isfinite(beginningDeviation[cell])||
-					!fuel.AcceptedConservativeVolumeRatioByComponentOrder(terminalState,9u,
-						FireStateProducerPrecision::Binary32,
-						terminalRatio,error))return false;
-				const double terminalDeviation=terminalRatio-1.0;
-				maximumGeneration=std::max(maximumGeneration,
-					std::fabs(terminalDeviation-beginningDeviation[cell]));
-				maximumTerminalDeviation=std::max(maximumTerminalDeviation,
-					std::fabs(terminalDeviation));
+			if(!fuel.IsValid()||fuel.SpeciesOrder().size()!=7u||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
+					lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
+					upperEnthalpy.data(),upperEnthalpy.size(),error))return false;
+			for(std::size_t speciesIndex=0u;speciesIndex<7u;++speciesIndex){
+				const FireThermochemistrySpecies* species=fuel.FindSpecies(
+					fuel.SpeciesOrder()[speciesIndex].c_str());
+				if(!species||species->segments.empty()||species->segments.size()>3u)return false;
+				float* destination=packed.data()+speciesIndex*MetalThermochemistrySpeciesStride;
+				destination[0]=static_cast<float>(species->molecularWeightKGPerKMol);
+				destination[1]=static_cast<float>(species->segments.size());
+				for(std::size_t segmentIndex=0u;segmentIndex<species->segments.size();++segmentIndex){
+					const FireThermochemistrySegment& segment=species->segments[segmentIndex];
+					float* output=destination+2u+10u*segmentIndex;
+					output[0]=static_cast<float>(segment.temperatureMinK);
+					output[1]=static_cast<float>(segment.temperatureMaxK);
+					for(std::size_t coefficient=0u;coefficient<7u;++coefficient)
+						output[2u+coefficient]=static_cast<float>(segment.coefficients[coefficient]);
+					output[9]=static_cast<float>(segment.sensibleEnthalpyOffsetJPerKG);
+				}
 			}
-			return std::isfinite(maximumGeneration)&&
-				std::isfinite(maximumTerminalDeviation);
+			const FireCertifiedNullspace& affine=fuel.ConservativeReconstruction();
+			if(affine.stateDimension>8u||affine.constraintRows*affine.stateDimension>64u||
+				affine.constraintMatrix.size()!=affine.constraintRows*affine.stateDimension)
+				return false;
+			parameters.affineRowCount=static_cast<std::uint32_t>(affine.constraintRows);
+			parameters.affineStateDimension=static_cast<std::uint32_t>(affine.stateDimension);
+			for(std::size_t coefficient=0u;coefficient<affine.constraintMatrix.size();++coefficient)
+				packed[MetalThermochemistrySpeciesValues+coefficient]=
+					static_cast<float>(affine.constraintMatrix[coefficient]);
+			parameters.temperatureMinK=static_cast<float>(fuel.TemperatureMinK());
+			parameters.temperatureMaxK=static_cast<float>(fuel.TemperatureMaxK());
+			parameters.pressurePa=static_cast<float>(fuel.ThermodynamicPressurePa());
+			parameters.feasibilityFactor=static_cast<float>(
+				fuel.AcceptedStateFeasibilityEnvelope().kappaEpsilon32*
+				static_cast<double>(std::numeric_limits<float>::epsilon()));
+			return std::isfinite(parameters.temperatureMinK)&&
+				std::isfinite(parameters.temperatureMaxK)&&
+				std::isfinite(parameters.pressurePa)&&
+				std::isfinite(parameters.feasibilityFactor)&&
+				parameters.temperatureMinK>0.0f&&
+				parameters.temperatureMaxK>parameters.temperatureMinK&&
+				parameters.pressurePa>0.0f&&parameters.feasibilityFactor>0.0f;
+		}
+
+		bool ValidateDualMomentumStaticOwnerMetadata(
+			const FireProductionDualMomentumRequest& request,
+			std::string* error )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				request.timeStepS<0.0f||!std::isfinite(shape.cellWidthM)||
+				!std::isfinite(request.timeStepS)||!(request.ambientDensityKGPerM3>0.0f)||
+				!std::isfinite(request.ambientDensityKGPerM3))return false;
+			auto faceIndex=[&](const unsigned int axis,const std::size_t x,
+				const std::size_t y,const std::size_t z){
+				if(axis==0u)return (z*shape.ny+y)*(shape.nx+1u)+x;
+				if(axis==1u)return (z*(shape.ny+1u)+y)*shape.nx+x;
+				return (z*shape.ny+y)*shape.nx+x;
+			};
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				const bool periodic=lower==FireProductionProjectionPeriodic;
+				const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					(periodic!=(upper==FireProductionProjectionPeriodic))||(!periodic&&extent<5u)||
+					request.beginningFaceDensity[axis].size()!=faces||
+					request.beginningMomentum[axis].size()!=faces||
+					request.frozenVelocityMPerS[axis].size()!=faces)return false;
+				for(const float density:request.beginningFaceDensity[axis])
+					if(!(density>0.0f)||!std::isfinite(density))return false;
+				for(const float momentum:request.beginningMomentum[axis])
+					if(!std::isfinite(momentum))return false;
+				for(const float velocity:request.frozenVelocityMPerS[axis])
+					if(!std::isfinite(velocity))return false;
+				if(periodic){
+					const std::size_t firstExtent=axis==0u?shape.ny:shape.nx;
+					const std::size_t secondExtent=axis==2u?shape.ny:shape.nz;
+					for(std::size_t second=0u;second<secondExtent;++second)
+						for(std::size_t first=0u;first<firstExtent;++first){
+							const std::size_t lx=axis==0u?0u:first;
+							const std::size_t ly=axis==0u?first:(axis==1u?0u:second);
+							const std::size_t lz=axis==2u?0u:second;
+							const std::size_t hx=axis==0u?extent:lx;
+							const std::size_t hy=axis==1u?extent:ly;
+							const std::size_t hz=axis==2u?extent:lz;
+							const std::size_t low=faceIndex(axis,lx,ly,lz),high=faceIndex(axis,hx,hy,hz);
+							if(request.beginningFaceDensity[axis][low]!=request.beginningFaceDensity[axis][high]||
+								request.beginningMomentum[axis][low]!=request.beginningMomentum[axis][high]||
+								request.frozenVelocityMPerS[axis][low]!=request.frozenVelocityMPerS[axis][high])
+								return false;
+						}
+				}
+			}
+			if(error)error->clear();return true;
 		}
 
 		struct MetalParameters
@@ -497,6 +595,89 @@ kernel void extract_gas_density(device const float* conservative [[buffer(0)]],
 kernel void add_face_sources(device float* momentum [[buffer(0)]],
  device const float* source [[buffer(1)]],constant uint& count [[buffer(2)]],
  uint gid [[thread_position_in_grid]]){if(gid<count)momentum[gid]+=source[gid];}
+struct ManifoldParams { uint cells; uint affineRows; uint affineDimension; uint reserved;
+ float Tmin; float Tmax; float pressure; float feasibility; };
+inline float methane_enthalpy(device const float* thermo,uint species,float temperature){
+ device const float* record=thermo+32u*species;uint segmentCount=uint(record[1]);
+ device const float* selected=record+2u;
+ for(uint segment=0u;segment<segmentCount;++segment){device const float* candidate=record+2u+10u*segment;
+  if(temperature>=candidate[0]&&(temperature<candidate[1]||
+   (segment+1u==segmentCount&&temperature==candidate[1])))selected=candidate;}
+ float inverse=1.0f/temperature,logT=log(temperature),t2=temperature*temperature;
+ float t3=t2*temperature,t4=t3*temperature,t5=t4*temperature;
+ float primitive=-selected[2]*inverse+selected[3]*logT+selected[4]*temperature+
+  selected[5]*t2/2.0f+selected[6]*t3/3.0f+selected[7]*t4/4.0f+
+  selected[8]*t5/5.0f;
+ return 8314.46261815324f/record[0]*primitive+selected[9];
+}
+inline bool methane_state_admissible(device const float* state,device const float* thermo,
+ constant ManifoldParams& p,uint cell){
+ float values[9];for(uint component=0u;component<9u;++component){
+  values[component]=state[component*p.cells+cell];if(!isfinite(values[component]))return false;}
+ float totalMass=0.0f,massScale=abs(values[0]);for(uint species=0u;species<7u;++species){
+  totalMass+=values[species+1u];massScale+=abs(values[species+1u]);}
+ if(!(totalMass>0.0f)||!isfinite(totalMass))return false;massScale=max(1.0f,massScale);
+ if(-values[0]>p.feasibility*massScale)return false;float closure=values[0];
+ for(uint species=0u;species<7u;++species){closure-=values[species+1u];
+  if(-values[species+1u]>p.feasibility*massScale)return false;}
+ if(closure>p.feasibility*massScale)return false;
+ float below=-values[8],above=values[8],energyScale=abs(values[8]);
+ for(uint species=0u;species<7u;++species){float lowerH=methane_enthalpy(thermo,species,p.Tmin);
+  float upperH=methane_enthalpy(thermo,species,p.Tmax),density=values[species+1u];
+  below+=lowerH*density;above-=upperH*density;
+  energyScale+=abs(lowerH*density)+abs(upperH*density);}
+ energyScale=max(1.0f,energyScale);
+ if(below>p.feasibility*energyScale||above>p.feasibility*energyScale)return false;
+ device const float* matrix=thermo+224u;
+ for(uint row=0u;row<p.affineRows;++row){float residual=0.0f,scale=0.0f;
+  for(uint column=0u;column<p.affineDimension;++column){
+   float term=matrix[row*p.affineDimension+column]*values[column];
+   residual+=term;scale+=abs(term);}
+  if(!isfinite(residual)||abs(residual)>p.feasibility*max(1.0f,scale))return false;}
+ return true;
+}
+inline bool methane_temperature(device const float* state,device const float* thermo,
+ constant ManifoldParams& p,uint cell,thread float& temperature){
+ float sensible=state[8u*p.cells+cell],lowerEnergy=0.0f,upperEnergy=0.0f,scale=abs(sensible);
+ for(uint species=0u;species<7u;++species){float density=state[(species+1u)*p.cells+cell];
+  float lowerH=methane_enthalpy(thermo,species,p.Tmin);
+  float upperH=methane_enthalpy(thermo,species,p.Tmax);
+  lowerEnergy+=density*lowerH;upperEnergy+=density*upperH;
+  scale+=abs(density*lowerH)+abs(density*upperH);}
+ scale=max(1.0f,scale);float tolerance=p.feasibility*scale;temperature=0.0f;
+ if(sensible<=lowerEnergy+tolerance)temperature=p.Tmin;
+ else if(sensible>=upperEnergy-tolerance)temperature=p.Tmax;
+ else {float lower=p.Tmin,upper=p.Tmax;
+  for(uint iteration=0u;iteration<32u;++iteration){float midpoint=0.5f*(lower+upper),energy=0.0f;
+   for(uint species=0u;species<7u;++species)
+    energy+=state[(species+1u)*p.cells+cell]*methane_enthalpy(thermo,species,midpoint);
+   if(energy<sensible)lower=midpoint;else upper=midpoint;}
+  temperature=0.5f*(lower+upper);}
+ return isfinite(temperature)&&temperature>=p.Tmin&&temperature<=p.Tmax;
+}
+inline bool methane_volume_ratio(device const float* state,device const float* thermo,
+ constant ManifoldParams& p,uint cell,thread float& ratio){
+ float temperature=0.0f;if(!methane_temperature(state,thermo,p,cell,temperature))return false;
+ float molar=0.0f;for(uint species=0u;species<6u;++species)
+  molar+=max(0.0f,state[(species+1u)*p.cells+cell])/thermo[32u*species];
+ ratio=molar*8314.46261815324f*temperature/p.pressure;
+ return isfinite(ratio)&&ratio>0.0f;
+}
+kernel void measure_methane_manifold(device const float* beginningDeviation [[buffer(0)]],
+ device const float* terminal [[buffer(1)]],device const float* thermo [[buffer(2)]],
+ device float2* deviationMap [[buffer(3)]],device atomic_uint* reduction [[buffer(4)]],
+ constant ManifoldParams& p [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.cells)return;float terminalRatio=0.0f;
+ if(!methane_state_admissible(terminal,thermo,p,gid)||
+  !methane_volume_ratio(terminal,thermo,p,gid,terminalRatio)){
+  atomic_fetch_or_explicit(reduction+2u,1u,memory_order_relaxed);return;}
+ float beginning=beginningDeviation[gid],terminalDeviation=terminalRatio-1.0f;
+ if(!isfinite(beginning)){atomic_fetch_or_explicit(reduction+2u,1u,memory_order_relaxed);return;}
+ deviationMap[gid]=float2(beginning,terminalDeviation);
+ float generation=abs(terminalDeviation-beginning),field=abs(terminalDeviation);
+ atomic_fetch_max_explicit(reduction,as_type<uint>(generation),memory_order_relaxed);
+ atomic_fetch_max_explicit(reduction+1u,as_type<uint>(field),memory_order_relaxed);
+}
 )METAL";
 		}
 
@@ -521,6 +702,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 			id<MTLComputePipelineState> addCellSources;
 			id<MTLComputePipelineState> extractGasDensity;
 			id<MTLComputePipelineState> addFaceSources;
+			id<MTLComputePipelineState> measureMethaneManifold;
 			std::string error;
 
 			MetalRemapContext() : device(nil), queue(nil), reconstruct(nil), scan(nil),
@@ -528,7 +710,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				gatherPeriodicDualValues(nil),gatherPeriodicDualCarrier(nil),
 				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil),
 				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil),
-				addCellSources(nil),extractGasDensity(nil),addFaceSources(nil)
+				addCellSources(nil),extractGasDensity(nil),addFaceSources(nil),
+				measureMethaneManifold(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -563,12 +746,14 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					addCellSources=makePipeline("add_cell_sources");
 					extractGasDensity=makePipeline("extract_gas_density");
 					addFaceSources=makePipeline("add_face_sources");
+					measureMethaneManifold=makePipeline("measure_methane_manifold");
 					if( !reconstruct||!scan||!flux||!update||!gatherValues||
 						!scatterValues||!gatherVelocity||!gatherPeriodicDualValues||
 						!gatherPeriodicDualCarrier||!scatterPeriodicDualValues||
 						!publishPeriodicDualSeam||!gatherDualLineValues||
 						!scatterDualLineValues||!prescribeDualComponentWalls||
-						!addCellSources||!extractGasDensity||!addFaceSources ) {
+						!addCellSources||!extractGasDensity||!addFaceSources||
+						!measureMethaneManifold ) {
 						error=MetalError("production fire remap pipeline creation failed",metalError);
 						return;
 					}
@@ -584,6 +769,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
 					publishPeriodicDualSeam&&gatherDualLineValues&&scatterDualLineValues&&
 				prescribeDualComponentWalls&&addCellSources&&extractGasDensity&&addFaceSources&&
+				measureMethaneManifold&&
 					error.empty();
 			}
 		};
@@ -1686,7 +1872,11 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					"production resident dual working set exceeds two GiB";
 				return false;
 			}
-			if( !ValidateFireProductionDualMomentumRequest(request,structuredError) ) return false;
+			if( !ValidateDualMomentumStaticOwnerMetadata(request,structuredError) ) {
+				if( structuredError ) *structuredError=
+					"production resident dual static metadata is invalid";
+				return false;
+			}
 			MetalRemapContext& context=Context();
 			if( !context.Valid() ) {
 				if( structuredError ) *structuredError=context.error;return false;
@@ -2071,6 +2261,14 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					"production manifold timestep probe activation is invalid";
 				return false;
 			}
+			const char* manifoldStageBudgetActivation=std::getenv(
+				"RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE");
+			if( manifoldStageBudgetActivation&&
+				std::strcmp(manifoldStageBudgetActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production manifold stage-budget probe activation is invalid";
+				return false;
+			}
 			const char* plateauEvidenceActivation=std::getenv(
 				"RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 			if( plateauEvidenceActivation&&std::strcmp(plateauEvidenceActivation,"1")!=0 ) {
@@ -2115,6 +2313,25 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				return false;
 			}
 			const std::size_t cells=shape.CellCount();
+			const bool measureManifold=request.enforceManifoldPlateau&&!plateauEvidenceEnabled;
+			if( measureManifold&&request.beginningManifoldDeviationPerCell.size()!=cells ) {
+				if( structuredError ) *structuredError=
+					"production resident step lacks beginning manifold metadata";
+				return false;
+			}
+			std::array<float,MetalManifoldCertificateValues> packedThermochemistry;
+			std::vector<float> representedBeginningDeviation;
+			if( measureManifold ) {
+				representedBeginningDeviation.resize(cells);
+				for(std::size_t cell=0u;cell<cells;++cell)
+					representedBeginningDeviation[cell]=static_cast<float>(
+						request.beginningManifoldDeviationPerCell[cell]);
+			}
+			std::array<double,7> lowerEnthalpy,upperEnthalpy;
+			MetalManifoldParameters manifoldParameters={static_cast<std::uint32_t>(cells),
+				0u,0u,0u,0.0f,0.0f,0.0f,0.0f};
+			if( measureManifold&&!PackMetalMethaneThermochemistry(packedThermochemistry,
+				manifoldParameters,lowerEnthalpy,upperEnthalpy,structuredError) ) return false;
 			std::array<std::size_t,3> faceCounts,faceOffsets;std::size_t allFaces=0u;
 			for( unsigned int axis=0u;axis<3u;++axis ) {
 				faceOffsets[axis]=allFaces*sizeof(float);
@@ -2127,14 +2344,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.cellSourceIncrement.size()!=9u*cells||
 				request.divergenceTargetPerS.size()!=cells||
 				request.restorationDivergenceTargetPerS.size()!=cells||
-				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError)||
-				!ValidateFireProductionDualMomentumRequest(request.dualTransport,structuredError) ) return false;
-			if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled&&
-				request.beginningManifoldDeviationPerCell.size()!=cells ) {
-				if( structuredError ) *structuredError=
-					"production resident step lacks beginning manifold metadata";
-				return false;
-			}
+				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError) ) return false;
 			if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled )
 				for( const double value:request.beginningManifoldDeviationPerCell )
 					if( !std::isfinite(value) ) {
@@ -2224,9 +2434,19 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				id<MTLBuffer> restorationTargetStage=stage(
 					request.restorationDivergenceTargetPerS.data(),cells*sizeof(float));
 				id<MTLBuffer> restorationTargetPrivate=privateBuffer(cells*sizeof(float));
+				id<MTLBuffer> manifoldThermochemistry=measureManifold?
+					stage(packedThermochemistry.data(),packedThermochemistry.size()*sizeof(float)):nil;
+				id<MTLBuffer> manifoldBeginningDeviation=measureManifold?
+					stage(representedBeginningDeviation.data(),cells*sizeof(float)):nil;
+				id<MTLBuffer> manifoldParametersBuffer=measureManifold?
+					[context.device newBufferWithBytes:&manifoldParameters
+						length:sizeof(manifoldParameters) options:MTLResourceStorageModeShared]:nil;
+				id<MTLBuffer> manifoldMap=measureManifold?privateBuffer(2u*cells*sizeof(float)):nil;
 				if( !cellStage||!cellPrivate||!ambientStage||!ambientPrivate||!cellSourceStage||
 					!cellSourcePrivate||!faceSourceStage||!faceSourcePrivate||!targetStage||!targetPrivate||
-					!restorationTargetStage||!restorationTargetPrivate )
+					!restorationTargetStage||!restorationTargetPrivate||
+					(measureManifold&&(!manifoldThermochemistry||!manifoldBeginningDeviation||
+						!manifoldParametersBuffer||!manifoldMap)) )
 					return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
@@ -2243,6 +2463,9 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					!recordOwner(faceSourcePrivate)||!recordOwner(targetStage)||!recordOwner(targetPrivate)||
 					!recordOwner(restorationTargetStage)||!recordOwner(restorationTargetPrivate) )
 					return false;
+				if( measureManifold&&(!recordOwner(manifoldThermochemistry)||
+					!recordOwner(manifoldBeginningDeviation)||
+					!recordOwner(manifoldParametersBuffer)||!recordOwner(manifoldMap)) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) if(
 					!recordOwner(velocityStage[axis])||!recordOwner(velocityPrivate[axis]) ) return false;
 				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
@@ -2344,11 +2567,26 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
 						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
 				}
+				const std::size_t manifoldReductionOffset=cellValueBytes+2u*packedFaceBytes;
+				const std::size_t manifoldReductionBytes=3u*sizeof(std::uint32_t);
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:
-					(cellValueBytes+2u*packedFaceBytes) options:MTLResourceStorageModeShared];
+					(manifoldReductionOffset+(measureManifold?manifoldReductionBytes:0u))
+					options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> terminalCommand=TrackedMetalCommandBuffer(context.queue);
-				blit=terminalCommand?[terminalCommand blitCommandEncoder]:nil;
-				if( !recordOwner(terminal)||!blit ) return false;
+				if( !recordOwner(terminal)||!terminalCommand ) return false;
+				if( measureManifold ) {
+					std::memset(static_cast<unsigned char*>([terminal contents])+
+						manifoldReductionOffset,0,manifoldReductionBytes);
+					encoder=[terminalCommand computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:manifoldBeginningDeviation offset:0 atIndex:0];
+					[encoder setBuffer:cell.conservativeValues offset:0 atIndex:1];
+					[encoder setBuffer:manifoldThermochemistry offset:0 atIndex:2];
+					[encoder setBuffer:manifoldMap offset:0 atIndex:3];
+					[encoder setBuffer:terminal offset:manifoldReductionOffset atIndex:4];
+					[encoder setBuffer:manifoldParametersBuffer offset:0 atIndex:5];
+					Dispatch(encoder,context.measureMethaneManifold,cells);[encoder endEncoding];
+				}
+				blit=[terminalCommand blitCommandEncoder];if( !blit ) return false;
 				[blit copyFromBuffer:cell.conservativeValues sourceOffset:0 toBuffer:terminal
 					destinationOffset:0 size:cellValueBytes];
 				[blit copyFromBuffer:dual.packedAuxiliaryFaceDensity sourceOffset:0 toBuffer:terminal
@@ -2358,6 +2596,9 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				[blit endEncoding];CommitTrackedMetalCommand(terminalCommand);[terminalCommand waitUntilCompleted];
 				if( [terminalCommand status]!=MTLCommandBufferStatusCompleted ) return false;
 				float* values=static_cast<float*>(ReadTrackedMetalBuffer(terminal));
+				const std::uint32_t* manifoldReduction=measureManifold?
+					reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const unsigned char*>(values)+
+						manifoldReductionOffset):0;
 				const char* injected=std::getenv("RISE_FIRE_PRODUCTION_STEP_FAILURE");
 				if( values&&injected&&std::strcmp(injected,"terminal-nonfinite")==0 )
 					values[0]=std::numeric_limits<float>::quiet_NaN();
@@ -2374,21 +2615,47 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					terminalValid=std::isfinite(values[9u*cells+face])&&
 						values[9u*cells+face]>0.0f&&
 						std::isfinite(values[9u*cells+allFaces+face]);
-				if( !terminalValid ) return false;
+				if( !terminalValid ) {
+					if( manifoldStageBudgetActivation&&values ) {
+						for(std::size_t cellIndex=0u;cellIndex<cells;++cellIndex){
+							float gas=values[cells+cellIndex];bool finite=true;
+							for(std::size_t component=0u;component<9u;++component)
+								finite=finite&&std::isfinite(values[component*cells+cellIndex]);
+							for(std::size_t component=2u;component<=6u;++component)
+								gas+=values[component*cells+cellIndex];
+							if(!finite||!(gas>0.0f)||!std::isfinite(gas)){std::fprintf(stderr,
+								"MANIFOLD_OWNER invalid_cell=%zu gas=%.9g energy=%.9g\n",
+								cellIndex,gas,values[8u*cells+cellIndex]);break;}
+						}
+						for(std::size_t face=0u;face<allFaces;++face)if(
+							!std::isfinite(values[9u*cells+face])||
+							!(values[9u*cells+face]>0.0f)||
+							!std::isfinite(values[9u*cells+allFaces+face])){
+							std::fprintf(stderr,"MANIFOLD_OWNER invalid_face=%zu density=%.9g momentum=%.9g\n",
+								face,values[9u*cells+face],values[9u*cells+allFaces+face]);break;}
+					}
+					return false;
+				}
 				const bool enforcePlateau=request.enforceManifoldPlateau&&
 					!restorationRemoved&&!plateauEvidenceEnabled;
-				double maximumManifoldGeneration=0.0,maximumTerminalDeviation=0.0;
+				float maximumManifoldGenerationFloat=0.0f,maximumTerminalDeviationFloat=0.0f;
+				if( measureManifold&&manifoldReduction ) {
+					std::memcpy(&maximumManifoldGenerationFloat,manifoldReduction,sizeof(float));
+					std::memcpy(&maximumTerminalDeviationFloat,manifoldReduction+1u,sizeof(float));
+				}
+				const double maximumManifoldGeneration=maximumManifoldGenerationFloat;
+				const double maximumTerminalDeviation=maximumTerminalDeviationFloat;
 				FireProductionRestorationPlateauValidation plateauValidation;
-				if( enforcePlateau&&(!MeasureMethaneManifold(
-					request.beginningManifoldDeviationPerCell,values,cells,
-					maximumManifoldGeneration,maximumTerminalDeviation,structuredError)||
+				if( enforcePlateau&&(!manifoldReduction||manifoldReduction[2u]!=0u||
+					!std::isfinite(maximumManifoldGeneration)||
+					!std::isfinite(maximumTerminalDeviation)||
 					!FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
 						projection.maximumPreProjectionResidualPerS,
 						projection.maximumPostProjectionResidualPerS,plateauValidation)) ) return false;
 				const bool plateauPassed=!enforcePlateau||
 					(plateauValidation.requiredDrainFraction<=1.0&&
 					plateauValidation.mechanismPassed&&maximumTerminalDeviation<=0.00075);
-				if( !plateauPassed&&!manifoldProbeActivation ) {
+				if( !plateauPassed&&!manifoldProbeActivation&&!manifoldStageBudgetActivation ) {
 					if( structuredError ) *structuredError=
 						plateauValidation.requiredDrainFraction>1.0?
 						"production manifold generation exceeds the accepted-step allowance":
@@ -2435,10 +2702,18 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+cell.deviceElapsedMS+
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
 					(restorationRemoved?computed.projection.deviceElapsedMS:
-						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS);
+						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS)+
+					([terminalCommand GPUEndTime]-[terminalCommand GPUStartTime])*1000.0;
 				computed.representedTimeStepS=request.force.timeStepS;
 				computed.maximumManifoldGeneration=maximumManifoldGeneration;
 				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
+				computed.manifoldMapCellCount=measureManifold?
+					static_cast<std::uint32_t>(cells):0u;
+				computed.manifoldScalarDeviceToHostTransferCount=measureManifold?1u:0u;
+				computed.manifoldFullGridDeviceToHostTransferCount=0u;
+				computed.manifoldStageGeneration[0]=maximumManifoldGeneration;
+				computed.manifoldStageGeneration[1]=0.0;
+				computed.manifoldStageGeneration[2]=0.0;
 				computed.requiredRestorationDrainFraction=
 					plateauValidation.requiredDrainFraction;
 				computed.deliveredRestorationDrainFraction=
@@ -2480,6 +2755,13 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					computed.sourceCommandCommitCount!=1u||
 					computed.residentProjectionInvocationCount!=(restorationRemoved?1u:2u)||
 					computed.interstageFullGridTransferCount!=0u||
+					MetalHostBufferReadCount-beginningReads!=1u||
+					(measureManifold&&(computed.manifoldMapCellCount!=cells||
+						computed.manifoldScalarDeviceToHostTransferCount!=1u||
+						computed.manifoldFullGridDeviceToHostTransferCount!=0u||
+						computed.manifoldStageGeneration[0]!=computed.maximumManifoldGeneration||
+						computed.manifoldStageGeneration[1]!=0.0||
+						computed.manifoldStageGeneration[2]!=0.0))||
 					computed.combinedActualMetalAllocationBytes>certified||
 					!std::isfinite(computed.deviceElapsedMS) ) return false;
 				result=std::move(computed);

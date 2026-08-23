@@ -3477,3 +3477,34 @@ it was already tried and refuted here.
   composition reconstruction with rebuilt energy; dominant restoration
   self-generation triggers the two-pass anomaly-aware target; failure of both
   to hold `7.5e-4` requires a contract-level production-ceiling ruling.
+- **r150 burning stage budget and ceiling stop (2026-08-22):** the device-side
+  per-cell EOS map and exact nonnegative max reduction replace the CPU field
+  walk without adding a full-grid transfer.  At CFL, CFL/2, and CFL/4 the
+  remap/advection generation is `2.5327801704406738e-3`,
+  `2.5155544281005859e-3`, and `2.5067925453186035e-3`, with adjacent exponents
+  `0.009845460522765278` and `0.005033797039351196`; both projection-stage
+  scalar contributions are exact zero.  Thus remap owns the complete directly
+  measured budget and the burning term is timestep-invariant.  The same device
+  evaluator measures cold `G=1.2048172357026488e-4`, making the burning/cold
+  contrast `21.0221110x`.
+
+  The frozen decision branch was executed.  A shared-alpha ten-tuple
+  reconstruction transported `rho*T` with the nine conservative components
+  and rebuilt energy while preserving shared-alpha and monotonicity.  Its three
+  generation maxima were bit-identical to baseline, so the ineffective change
+  was removed.  The anomaly-aware restoration branch is inapplicable under the
+  pre-registered rule because restoration scalar generation is zero rather than
+  dominant.  With the CFL term still `3.3770759518x` the `7.5e-4` allowance,
+  r150 requires the contract-level production-ceiling ruling and stops before
+  long shadow, golden `B_fp32`, guard supersession, temporal refinement,
+  readmission, source maps, or first light.
+
+  Warm device p95 is `67.1234167 ms`, while wall p95 is `198.997584 ms`: the
+  former meets the requested approximately-70-ms resident target and the latter
+  is a truthful remaining regression, though it is `66.8598%` below the prior
+  `600.471584 ms`.  The represented tier-10 x 25 s wall projection is therefore
+  corrected from `262.3922 h` to `86.9573 h` (device-only `29.3314 h`), not
+  claimed as a 70-ms wall result.  Durable evidence is the r150 stage-budget
+  artifact; the golden checkpoint remains unchanged.  Mirroring the resident
+  result schema moves the source-bound r136 digest to
+  `a0e42abe...b85989e` without changing its arithmetic refusal.

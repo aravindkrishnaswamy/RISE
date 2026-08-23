@@ -558,6 +558,21 @@ namespace
 		return !checkpoint.states.empty();
 	}
 
+	bool CanonicalizeLegacyBinary64CheckpointTemperature(MethaneRunCheckpoint& checkpoint)
+	{
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		for(MethaneCellState& state:checkpoint.states){
+			double reconstructedTemperatureK=0.0;
+			if(state.producerPrecision!=FireStateProducerPrecision::Binary64||
+				!AcceptedMethaneCellStateAdmissible(state,fuel,
+					FireStateProducerPrecision::Binary64)||
+				!InvertMethaneTemperatureWithinAcceptedEnvelope(state,300.0,2300.0,fuel,
+					FireStateProducerPrecision::Binary64,reconstructedTemperatureK))return false;
+			state.temperatureK=reconstructedTemperatureK;
+		}
+		return !checkpoint.states.empty();
+	}
+
 	std::uint64_t Binary64CheckpointPayloadDigest(const MethaneRunCheckpoint& checkpoint);
 
 	bool IssueBinary64CheckpointAuthority(MethaneRunCheckpoint& checkpoint)
@@ -1031,6 +1046,9 @@ namespace
 		if(!HomogeneousStateProducerPrecision(decoded.states,precision)){
 			error="run checkpoint producer precision is invalid";return false;}
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
+		if(version<=8u&&precision==FireStateProducerPrecision::Binary64&&
+			!CanonicalizeLegacyBinary64CheckpointTemperature(decoded)){
+			error="legacy binary64 checkpoint temperature cannot be canonicalized";return false;}
 		if(decoded.acceptedSteps==0u){
 			error="zero-step checkpoint state is not resumable";return false;}
 		if(!AcceptedCheckpointTimelineValid(decoded)){

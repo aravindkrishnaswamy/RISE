@@ -465,6 +465,10 @@ namespace RISE
 		float representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
+		std::uint32_t manifoldMapCellCount;
+		std::uint32_t manifoldScalarDeviceToHostTransferCount;
+		std::uint32_t manifoldFullGridDeviceToHostTransferCount;
+		std::array<double,3> manifoldStageGeneration;
 		double requiredRestorationDrainFraction;
 		double deliveredRestorationDrainFraction;
 		double restorationResidualBandPerS;
@@ -478,7 +482,9 @@ namespace RISE
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
 			deviceElapsedMS(0.0),representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
-			maximumAcceptedManifoldDeviation(0.0),requiredRestorationDrainFraction(0.0),
+			maximumAcceptedManifoldDeviation(0.0),manifoldMapCellCount(0u),
+			manifoldScalarDeviceToHostTransferCount(0u),manifoldFullGridDeviceToHostTransferCount(0u),
+			manifoldStageGeneration{{0.0,0.0,0.0}},requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(FireStateProducerPrecision::Unknown) {}

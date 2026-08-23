@@ -3921,6 +3921,9 @@ int main()
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
 		seeded.representedTimeStepS=1.0f;
 		seeded.maximumManifoldGeneration=1.0;seeded.maximumAcceptedManifoldDeviation=1.0;
+		seeded.manifoldMapCellCount=1u;seeded.manifoldScalarDeviceToHostTransferCount=1u;
+		seeded.manifoldFullGridDeviceToHostTransferCount=1u;
+		seeded.manifoldStageGeneration={{1.0,1.0,1.0}};
 		seeded.requiredRestorationDrainFraction=1.0;
 		seeded.deliveredRestorationDrainFraction=1.0;
 		seeded.restorationResidualBandPerS=1.0;seeded.manifoldPlateauPassed=true;
@@ -3943,6 +3946,12 @@ int main()
 			rejected.representedTimeStepS==0.0f&&
 			rejected.maximumManifoldGeneration==0.0&&
 			rejected.maximumAcceptedManifoldDeviation==0.0&&
+			rejected.manifoldMapCellCount==0u&&
+			rejected.manifoldScalarDeviceToHostTransferCount==0u&&
+			rejected.manifoldFullGridDeviceToHostTransferCount==0u&&
+			rejected.manifoldStageGeneration[0]==0.0&&
+			rejected.manifoldStageGeneration[1]==0.0&&
+			rejected.manifoldStageGeneration[2]==0.0&&
 			rejected.requiredRestorationDrainFraction==0.0&&
 			rejected.deliveredRestorationDrainFraction==0.0&&
 			rejected.restorationResidualBandPerS==0.0&&!rejected.manifoldPlateauPassed&&
@@ -3960,6 +3969,18 @@ int main()
 	Check(malformedManifoldProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
 		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeMalformedManifoldProbe,
 		"r143 malformed diagnostic activation fails before Metal work and publishes no result");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedStageBudgetProbe=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE","malformed",1);
+	const bool malformedStageBudgetProbeRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE");
+	Check(malformedStageBudgetProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			commitsBeforeMalformedStageBudgetProbe&&
+		error.find("stage-budget probe activation is invalid")!=std::string::npos,
+		"r149 malformed stage-budget activation fails before Metal work");
 	seedFullStepResult(rejectedFullStep);error.clear();
 	const std::uint64_t commitsBeforeMalformedPlateauProbe=
 		FireProductionResidentStepMetalCommandCommitCount();
@@ -4039,9 +4060,9 @@ int main()
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;
-	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=268u;
+	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=265u;
 	fullStepUnderShape.cellWidthM=0.01f;
-	fullStepOverShape.nx=65u;fullStepOverShape.ny=80u;fullStepOverShape.nz=277u;
+	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=266u;
 	fullStepOverShape.cellWidthM=0.01f;
 	std::uint64_t fullStepUnderBytes=0u,fullStepOverBytes=0u;
 	const bool fullStepBoundaryQuery=
@@ -4049,8 +4070,8 @@ int main()
 			fullStepAdmissionBoundary,fullStepUnderBytes)&&
 		FireProductionResidentStepWorkingSetBytes(fullStepOverShape,
 			fullStepAdmissionBoundary,fullStepOverBytes)&&
-		fullStepUnderBytes==UINT64_C(2147482404)&&
-		fullStepOverBytes==UINT64_C(2147486388);
+		fullStepUnderBytes==UINT64_C(2141662308)&&
+		fullStepOverBytes==UINT64_C(2149873316);
 	auto makeEmptyFullStepAdmission=[&](const FireProductionProjectionShape& admissionShape) {
 		FireProductionResidentStepRequest admission;
 		admission.force.shape=admissionShape;admission.force.timeStepS=0.01f;
@@ -4217,7 +4238,7 @@ int main()
 			tier10ResidentStepResult.projection.validationPassed&&
 			tier10ResidentStepResult.physicalProjection.executedVCycleCount==12u&&
 			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
-			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1439303780)&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1451100964)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1338301072)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
@@ -4555,7 +4576,11 @@ int main()
 		advectionMetalSource.find("MTLMathModeSafe")!=std::string::npos&&
 		advectionMetalSource.find("MTLMathModeFast")==std::string::npos&&
 		advectionMetalSource.find("fast::")==std::string::npos&&
-		advectionMetalSource.find("atomic_")==std::string::npos&&
+		CountSubstring(advectionMetalSource,"device atomic_uint* reduction")==1u&&
+		CountSubstring(advectionMetalSource,"atomic_fetch_max_explicit")==2u&&
+		CountSubstring(advectionMetalSource,"atomic_fetch_or_explicit")==2u&&
+		advectionMetalSource.find("kernel void measure_methane_manifold(")!=std::string::npos&&
+		advectionMetalSource.find("makePipeline(\"measure_methane_manifold\")")!=std::string::npos&&
 		advectionMetalSource.find("simd_")==std::string::npos&&
 		advectionMetalSource.find("RemapFireProductionCPU")==std::string::npos&&
 		advectionMetalSource.find("makePipeline(\"reconstruct\")")!=std::string::npos&&
@@ -4689,6 +4714,9 @@ int main()
 		residentFullStepBody.find("context.addCellSources")!=std::string::npos&&
 		residentFullStepBody.find("context.extractGasDensity")!=std::string::npos&&
 		residentFullStepBody.find("context.addFaceSources")!=std::string::npos&&
+		residentFullStepBody.find("context.measureMethaneManifold")!=std::string::npos&&
+		residentFullStepBody.find("computed.manifoldFullGridDeviceToHostTransferCount=0u")!=
+			std::string::npos&&
 		residentFullStepBody.find("computed.projection.residentProjectionInvocationCount")!=
 			std::string::npos&&residentFullStepBody.find(
 			"computed.interstageFullGridTransferCount!=0u")!=std::string::npos,
