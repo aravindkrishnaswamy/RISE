@@ -3747,17 +3747,17 @@ it was already tried and refuted here.
   reduction with one scalar and zero full-grid device-to-host transfers.
   Parallelizing the nine independent dual-layout packs on the topology-aware
   global thread pool, under `render_thread_reserve_count 0`, reduces the
-  controlled same-step completed-wall p95 from `190.612583` to
-  `143.78762499999999 ms`; device p95 moves from `66.893458249978721` to
-  `66.401999909430742 ms`.  That is a `24.565512550658841%` wall reduction and
+  controlled same-step completed-wall p95 from `202.659166` to
+  `154.74187499999999 ms`; device p95 moves from `73.046958423219621` to
+  `73.379833251237869 ms`.  That is a `23.644275235989082%` wall reduction and
   projects the audited 25.03248-s tier-10 stepping work to
-  `0.60732741539266599 h` wall (`0.28046749490367212 h` device).  The remaining
-  `77.385625090569249 ms` host residual—preflight/layout, uploads, command
+  `0.6535957666507461 h` wall (`0.3099403336721022 h` device).  The remaining
+  `81.36204174876212 ms` host residual—preflight/layout, uploads, command
   submission/waits, and postprocessing—is named work; the `200 ms` gate is a
   ceiling, not the target.
   The timed result itself binds the represented selected step and one-substep
-  duration; serial and parallel runs byte-match the complete payload and match
-  every non-timing semantic diagnostic.  Legacy
+  duration; every warmup and measured serial/parallel execution byte-matches
+  the baseline complete payload and every non-timing semantic diagnostic.  Legacy
   `force_all_threads_low_priority` execution retains a serial packing route so
   a saturated render pool cannot enter the documented non-stealing nested-pool
   deadlock.

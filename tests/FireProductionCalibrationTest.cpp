@@ -1020,7 +1020,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"6bd7380d0da39c46e4842c70ae704005b159b2acddca61de3a15baed46d3668f"&&
+			"a4b30970d7020bfb0d069a51e8234998bb90dd19a247c5e3c454bd4f8567257f"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1042,7 +1042,7 @@ int main()
 	Check(!timestepVelocityCeilingEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(timestepVelocityCeilingEvidence.begin(),
 			timestepVelocityCeilingEvidence.end()))==
-		"77b4b3fdcb47768cbdc712a6b1942769e68412382f56b7b4e2efe7a8f0e88e40"&&
+		"3a67d2bcca299f4e6ca0224d6ae73c63d56c8c23a5e7df671b7fab09c8164bb6"&&
 		timestepVelocityCeilingEvidence.find(
 			"accepted_step_implied_velocity_m_per_s 217.37616398903009")!=
 			std::string::npos&&
@@ -1073,6 +1073,9 @@ int main()
 		timestepVelocityCeilingEvidence.find(
 			"serial_parallel_payload_digest_bit_identical true")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
+			"serial_parallel_every_warmup_and_measured_execution_identical true")!=
+			std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
 			"legacy_low_priority_nested_pack_routes_serial true")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"oracle_two_class_zeno_fix_already_landed true")!=std::string::npos&&
@@ -1084,9 +1087,9 @@ int main()
 			"calibrating_observed_plateau_over_derived_ceiling 3.3770759517686897")!=
 			std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
-			"controlled_serial_wall_p95_ms 190.612583")!=std::string::npos&&
+			"controlled_serial_wall_p95_ms 202.659166")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
-			"corrected_warm_wall_p95_ms 143.78762499999999")!=std::string::npos&&
+			"corrected_warm_wall_p95_ms 154.74187499999999")!=std::string::npos&&
 		timestepVelocityCeilingEvidence.find(
 			"ceiling_verdict thermo_temperature_inversion_domain_finding_stop")!=
 			std::string::npos&&
@@ -1099,7 +1102,7 @@ int main()
 			"d503fe4bd8c59f8995c65ec50eddff8788aff5f9d5c9b52072b2cef1d0d4845b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"6bd7380d0da39c46e4842c70ae704005b159b2acddca61de3a15baed46d3668f"&&
+			"a4b30970d7020bfb0d069a51e8234998bb90dd19a247c5e3c454bd4f8567257f"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1113,9 +1116,12 @@ int main()
 		goldenCompositionFixture.find(
 			"auditedSelection.seconds==transportCFL")!=std::string::npos&&
 		goldenCompositionFixture.find(
-			"timeSelectedStep(\"serial\",serialWall,serialDevice)")!=std::string::npos&&
+			"timeSelectedStep(\"serial\",true,serialWall,serialDevice)")!=std::string::npos&&
 		goldenCompositionFixture.find(
-			"timeSelectedStep(\"parallel\",auditedWall,auditedDevice)")!=
+			"timeSelectedStep(\"parallel\",false,auditedWall,auditedDevice)")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"else if(!sameResidentArithmetic(serialResident,auditedResident))")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
 			"auditedResident.representedTimeStepS!=representedAuditedStep")!=

@@ -381,32 +381,6 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					request.beginningManifoldDeviationPerCell[cell]/
 					static_cast<double>(representedAuditedStep));
 			}
-			std::array<double,5> serialWall={{}},serialDevice={{}},auditedWall={{}},auditedDevice={{}};
-			RISE::FireProductionResidentStepResult auditedResident;
-			auto timeSelectedStep=[&](const char* mode,std::array<double,5>& wall,
-				std::array<double,5>& device){
-				if(!setAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE",mode))return false;
-				for(std::size_t trial=0u;trial<=wall.size();++trial){
-					const auto trialStart=std::chrono::steady_clock::now();
-					if(!RISE::AdvanceFireProductionResidentStepMetal(request,auditedResident,&error)){
-						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
-							"trial=%zu failed: %s\n",mode,trial,error.c_str());return false;}
-					if(auditedResident.representedTimeStepS!=representedAuditedStep||
-						auditedResident.forceSchedule.substepCount!=1u||
-						auditedResident.forceSchedule.substepTimeS!=representedAuditedStep){
-						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
-							"trial=%zu did not execute the represented selected step\n",mode,trial);
-						return false;}
-					if(trial>0u){wall[trial-1u]=std::chrono::duration<double,std::milli>(
-						std::chrono::steady_clock::now()-trialStart).count();
-						device[trial-1u]=auditedResident.deviceElapsedMS;}
-				}
-				return true;
-			};
-			if(!timeSelectedStep("serial",serialWall,serialDevice))return 225;
-			const RISE::FireProductionResidentStepResult serialResident=auditedResident;
-			if(!timeSelectedStep("parallel",auditedWall,auditedDevice)||
-				!clearAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE"))return 225;
 			auto sameProjectionArithmetic=[](const RISE::FireProductionProjectionResult& left,
 				const RISE::FireProductionProjectionResult& right){return
 				left.maximumPreProjectionResidualPerS==right.maximumPreProjectionResidualPerS&&
@@ -480,7 +454,40 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				left.acceptedShape.cellWidthM==right.acceptedShape.cellWidthM&&
 				sameProjectionArithmetic(left.physicalProjection,right.physicalProjection)&&
 				sameProjectionArithmetic(left.projection,right.projection);};
-			const bool serialParallelArithmeticIdentical=
+			std::array<double,5> serialWall={{}},serialDevice={{}},auditedWall={{}},auditedDevice={{}};
+			RISE::FireProductionResidentStepResult auditedResident,serialResident;
+			bool serialBaselineAvailable=false;
+			auto timeSelectedStep=[&](const char* mode,const bool establishSerialBaseline,
+				std::array<double,5>& wall,std::array<double,5>& device){
+				if(!setAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE",mode))return false;
+				for(std::size_t trial=0u;trial<=wall.size();++trial){
+					const auto trialStart=std::chrono::steady_clock::now();
+					if(!RISE::AdvanceFireProductionResidentStepMetal(request,auditedResident,&error)){
+						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
+							"trial=%zu failed: %s\n",mode,trial,error.c_str());return false;}
+					if(auditedResident.representedTimeStepS!=representedAuditedStep||
+						auditedResident.forceSchedule.substepCount!=1u||
+						auditedResident.forceSchedule.substepTimeS!=representedAuditedStep){
+						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
+							"trial=%zu did not execute the represented selected step\n",mode,trial);
+						return false;}
+					const auto trialEnd=std::chrono::steady_clock::now();
+					if(!serialBaselineAvailable){
+						if(!establishSerialBaseline)return false;
+						serialResident=auditedResident;serialBaselineAvailable=true;
+					}else if(!sameResidentArithmetic(serialResident,auditedResident)){
+						std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT selected-step mode=%s "
+							"trial=%zu changed arithmetic\n",mode,trial);return false;}
+					if(trial>0u){wall[trial-1u]=std::chrono::duration<double,std::milli>(
+						trialEnd-trialStart).count();
+						device[trial-1u]=auditedResident.deviceElapsedMS;}
+				}
+				return true;
+			};
+			if(!timeSelectedStep("serial",true,serialWall,serialDevice)||
+				!timeSelectedStep("parallel",false,auditedWall,auditedDevice)||
+				!clearAuditEnvironment("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE"))return 225;
+			const bool serialParallelArithmeticIdentical=serialBaselineAvailable&&
 				sameResidentArithmetic(serialResident,auditedResident);
 			std::sort(serialWall.begin(),serialWall.end());
 			std::sort(serialDevice.begin(),serialDevice.end());

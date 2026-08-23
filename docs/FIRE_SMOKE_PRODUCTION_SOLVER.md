@@ -3537,12 +3537,12 @@ layouts.  Dispatching those packs through the topology-aware global thread
 pool leaves arithmetic unchanged.  Under the required benchmark policy
 `render_thread_reserve_count 0`, and at the actual selected step with its one
 force substep, the controlled serial-pack p95 is
-`66.893458249978721/190.612583 ms` device/wall and the parallel-pack p95 is
-`66.401999909430742/143.78762499999999 ms`.  This is a `24.565512550658841%` wall
+`73.046958423219621/202.659166 ms` device/wall and the parallel-pack p95 is
+`73.379833251237869/154.74187499999999 ms`.  This is a `23.644275235989082%` wall
 reduction.  At the physical CFL the 25.0324805-s tier-10 stepping work projects
-to `0.28046749490367212 h` device and `0.60732741539266599 h` completed wall.
-The remaining wall/device ratio is `2.1654110598493972`, with
-`77.385625090569249 ms` of host orchestration still attributable to
+to `0.3099403336721022 h` device and `0.6535957666507461 h` completed wall.
+The remaining wall/device ratio is `2.1087793218362156`, with
+`81.36204174876212 ms` of host orchestration still attributable to
 preflight/layout, uploads, command submission/waits, and postprocessing.  The
 `200 ms` gate is a ceiling, not a performance target; no claim that production
 is faster than the oracle in validated practice is made while the thermo stop
@@ -3550,8 +3550,9 @@ is active.
 
 The timed resident result must report the represented `1.6462659696117043e-3 s`
 step and the one force substep must carry that same represented duration.
-Serial and parallel pack campaigns are accepted only when the complete resident
-payload digest and every non-timing schedule/diagnostic field are identical.
+Every warmup and measured serial/parallel execution is accepted only when its
+complete resident payload digest and every non-timing schedule/diagnostic field
+are identical to the first serial baseline.
 The legacy `force_all_threads_low_priority` mode routes these nine packs
 serially, because that pool mode deliberately forbids nested `ParallelFor`
 waiting under worker saturation.
