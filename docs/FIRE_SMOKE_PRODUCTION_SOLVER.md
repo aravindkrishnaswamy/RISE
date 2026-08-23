@@ -3079,19 +3079,22 @@ normalized state/lifecycle view rather than a caller-authored digest, reconstruc
 the same state digest, and only then restores the opaque observation.  The prefix
 binding is explicitly an integrity device, not a secret MAC.  Authority comes
 from the private producer-issued state digest and the absence of any supported
-raw tuple factory.
+raw tuple factory.  The selector likewise consumes the current normalized state
+view and recomputes its digest; it never accepts a caller-supplied digest scalar.
 
 The lifecycle invariants are now explicit.  A Binary32 checkpoint with accepted
 history must carry an available observation whose timestep equals both stored
 accepted-step fields and the history tail; count equals history length and the
-history duration cannot exceed simulation time.  A Binary32 initial state has zero
+history duration exactly reconstructs simulation time.  A Binary32 initial state has zero
 accepted steps, zero prior timing, empty accepted-step history, and no
 observation.  Formats 9--11 cannot resume an accepted Binary32 production run;
 they may still decode initial Binary32 states and ordinary Binary64/oracle runs.
 REDs reject an accepted-history/zero-timestep first-step alias on both writer and
 checksum-valid loader paths; formats 9, 10, and 11 are exercised independently.
 They also reject temperature and terminal-velocity transplants, plus passing a
-genuine observation to the selector with a different current-state digest.
+genuine observation to the selector with a different current-state view.  Clearing
+only an accepted state's observation, changing a non-tail history term, or changing
+simulation time all fail at the owning selector/writer and checksum-valid loader.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all
@@ -3103,7 +3106,7 @@ normal twin remains byte-identical and exact exit `255` retains
 `0.0018513042677754071 s` after canonical Binary32 cell-width promotion.
 
 These authority changes move the source-bound r136 trace to
-`ea0d3a82...34f90b63` without changing its arithmetic census, `0xff` proof gap,
+`44b0363d...a599a574` without changing its arithmetic census, `0xff` proof gap,
 or exact exit `237`.  The burning capacity verdict is unchanged: r144 remains
 exact exit `254`, field deviation `2.5081625764804549e-3`, required drain
 `3.3442167670577247`, and delivered drain `0.97489008508207653`.  The golden

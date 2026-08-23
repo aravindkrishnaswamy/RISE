@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"177737514ecc0ef115998f7cd5c74ee311f878a849e4b473de562c9587eabd1b"&&
+		"bb9fceb48a4b77ebaf8d58d34dd5fc8de8d3c1529693a991d3b3a478fedef04f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -516,10 +516,10 @@ int main()
 		"102212336dc0c1602ca9ec977c4397b4c445a1991fd8fdeee90988033fa11c50"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-		"c3bb642e6b7572f892c46dfcf1e986db46dd872f7baa3d8da0d89a06662b32bd"&&
+		"7558b94d93b3744304bf32a0bba9ec5811b22623279dba275ee16bc0ed366ef6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-		"7907ccc6ab816016f0283768d6f33326fed04dad39a4d4f5b90213f29bcd2e62"&&
+		"b1cdeaee9be45bee222f6e3b21dec4ee6f5d0c2e1f82565592ecc3ecbf31c5e3"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionSource.begin(),projectionSource.end()))==
 		"058b986102af2ff34e0ddf66eb64bc3dbab89981a3c60ffb4e83cb2d071ed876"&&
@@ -543,7 +543,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"b5bceb4497d2857d0f3df66e4b4c0033e11332827d5c29de677e5c8264def2b7"&&
+		"4434716eeda6e43eea2abb7fa3f8ba58e0877591e5b21ebb6a054210a5b6e349"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -552,10 +552,10 @@ int main()
 		"df492334d48bd7b1c0cb05eca927f75043d22f0c665d149a2abb6bd11df6276a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-		"75ad7405f168ebe29d39d742a428111c7ed65028f400799d8b8f55a9c0f4ea76"&&
+		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"24e7c25aa65b3bbaabdbf3f0d9096520621e5984f349a997476bf02dbd60d42a"&&
+		"9396b8df5d3211bc436164472ff5b445323a6fc14bc103bd6c72aa119616896b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -564,10 +564,10 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-		"aecdc80b6c37e480168a693b4d97daf1b6d0028b8fa0084918f9e7b1ea9e4447"&&
+		"95d5b0dedf6cdfdb12011212a56423e70b4459c5b483f2ddbb68846202d162d3"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-		"97b65b2e036c744e9e6a36d7851e2d8ad488fc3df2dc8219c41a8aa02c99c4b0"&&
+		"4dfa0028d13a70ddf77330264a1d00cb41539b31cbfd4e2d8b6f37ef12d9c24f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
 		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
@@ -596,6 +596,16 @@ int main()
 		manifoldClosure.find("accepted_temperature_transplant_writer_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_selector_state_transplant_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("production_selector_recomputes_current_state_digest true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_observation_clear_owner_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_history_non_tail_transplant_writer_loader_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_simulation_time_transplant_writer_loader_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("accepted_history_exactly_reconstructs_simulation_time true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_history_count_mismatch_v12_loader_rejected true")!=
 			std::string::npos&&

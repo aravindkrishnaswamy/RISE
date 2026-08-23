@@ -1465,7 +1465,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="ea0d3a825d3583d8479abd67a8addba93f96f46c80f95c70d69c2d7234f90b63"||
+			traceDigest!="44b0363dae8bb994f78310d355fb22ca1a143600a860a1b40ea8a949a599a574"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1583,6 +1583,32 @@ namespace FireProductionDyadicCalibration
 		return 237;
 	}
 
+	bool SelectProductionTimeStepForState(const MethaneRunCheckpoint& state,
+		const double baseStep,RISE::FireProductionStableTimeStep& selected,
+		std::string& error)
+	{
+		const double previousStep=state.previousStepS;
+		RISE::FireProductionAcceptedCheckpointStateView currentAcceptedState;
+		RISE::FireProductionProjectionShape acceptedShape;
+		std::vector<float> acceptedConservative;
+		std::array<std::vector<float>,3> acceptedMomentum,acceptedVelocity;
+		std::uint64_t currentAcceptedStateDigest=0u;
+		if(state.acceptedSteps>0u){
+			if(!state.productionManifoldObservation.Available()||
+				!BuildCheckpointAcceptedStatePayload(state,acceptedShape,
+					acceptedConservative,acceptedMomentum,acceptedVelocity,
+					currentAcceptedStateDigest))return false;
+			currentAcceptedState.shape=acceptedShape;
+			currentAcceptedState.conservativeValues=&acceptedConservative;
+			currentAcceptedState.momentum=&acceptedMomentum;
+			currentAcceptedState.velocity=&acceptedVelocity;
+		}
+		const double representedCellWidth=static_cast<double>(static_cast<float>(state.cellWidthM));
+		return RISE::SelectFireProductionStableTimeStep(representedCellWidth,
+			0.5*representedCellWidth/baseStep,0.0,0.0,previousStep,
+			currentAcceptedState,state.productionManifoldObservation,selected,&error);
+	}
+
 	int CheckRestorationLong(const std::filesystem::path& directory,
 		const std::array<std::string,4>& targetDigests,const bool lifecycleOnly=false)
 	{
@@ -1609,15 +1635,7 @@ namespace FireProductionDyadicCalibration
 		{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
 		for(std::size_t step=0u;step<StepCount;++step){
 			RISE::FireProductionStableTimeStep selected;
-			const double previousStep=state.productionManifoldObservation.Available()?
-				state.productionManifoldObservation.TimeStepS():0.0;
-			std::uint64_t currentAcceptedStateDigest=0u;
-			if(state.productionManifoldObservation.Available()&&
-				!CheckpointAcceptedStateDigest(state,currentAcceptedStateDigest))return 219;
-			const double representedCellWidth=static_cast<double>(static_cast<float>(state.cellWidthM));
-			if(!RISE::SelectFireProductionStableTimeStep(representedCellWidth,
-				0.5*representedCellWidth/baseStep,0.0,0.0,previousStep,
-				currentAcceptedStateDigest,state.productionManifoldObservation,selected,&error))return 219;
+			if(!SelectProductionTimeStepForState(state,baseStep,selected,error))return 219;
 			if(step==1u){selectedAfterResume=selected.seconds;
 				selectedAfterResumeLimit=selected.activeLimit?selected.activeLimit:"";}
 			RISE::FireProductionResidentStepRequest request;
@@ -1823,6 +1841,15 @@ namespace FireProductionDyadicCalibration
 			state.values.acceptedTimeStepHistoryS.push_back(representedStep);
 			state.productionManifoldObservation=acceptedObservation;
 			if(step==0u){
+				MethaneRunCheckpoint lostObservation=state;
+				lostObservation.productionManifoldObservation=
+					RISE::FireProductionAcceptedManifoldObservation();
+				RISE::FireProductionStableTimeStep lostObservationSelection;
+				const bool lostObservationRejected=!SelectProductionTimeStepForState(
+					lostObservation,baseStep,lostObservationSelection,error);
+				authorityMutationREDsPassed=authorityMutationREDsPassed&&lostObservationRejected;
+				if(!lostObservationRejected)std::fprintf(stderr,
+					"r148 lost accepted observation aliased to a first step\n");
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
 				MethaneRunCheckpoint transplanted=state;
 				MethaneRunCheckpoint temperatureTransplanted=state;
@@ -1877,7 +1904,6 @@ namespace FireProductionDyadicCalibration
 				const bool saved=SaveMethaneRunCheckpoint(lifecycleCheckpoint,state,error);
 				const bool loadedOK=saved&&LoadMethaneRunCheckpoint(lifecycleCheckpoint,loaded,error);
 				{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
-				std::uint64_t alternateStateDigest=0u;
 				RISE::FireProductionStableTimeStep transplantedSelection;
 				bool selectorTransplantRejected=false;
 				if(loadedOK&&!loaded.velocity.component[0].empty()){
@@ -1885,13 +1911,24 @@ namespace FireProductionDyadicCalibration
 					const float original=static_cast<float>(alternateState.velocity.component[0].front());
 					alternateState.velocity.component[0].front()=static_cast<double>(
 						std::nextafter(original,std::numeric_limits<float>::infinity()));
-					selectorTransplantRejected=CheckpointAcceptedStateDigest(
-						alternateState,alternateStateDigest)&&
+					RISE::FireProductionProjectionShape alternateShape;
+					std::vector<float> alternateConservative;
+					std::array<std::vector<float>,3> alternateMomentum,alternateVelocity;
+					std::uint64_t alternateStateDigest=0u;
+					RISE::FireProductionAcceptedCheckpointStateView alternateView;
+					selectorTransplantRejected=BuildCheckpointAcceptedStatePayload(
+						alternateState,alternateShape,alternateConservative,
+						alternateMomentum,alternateVelocity,alternateStateDigest);
+					alternateView.shape=alternateShape;
+					alternateView.conservativeValues=&alternateConservative;
+					alternateView.momentum=&alternateMomentum;
+					alternateView.velocity=&alternateVelocity;
+					selectorTransplantRejected=selectorTransplantRejected&&
 						!RISE::SelectFireProductionStableTimeStep(
 							static_cast<double>(static_cast<float>(alternateState.cellWidthM)),
 							0.5*static_cast<double>(static_cast<float>(alternateState.cellWidthM))/baseStep,
 							0.0,0.0,
-							alternateState.previousStepS,alternateStateDigest,
+							alternateState.previousStepS,alternateView,
 							loaded.productionManifoldObservation,transplantedSelection,&error);
 				}
 				acceptedLifecyclePassed=transplantRejected&&temperatureTransplantRejected&&
@@ -1922,6 +1959,58 @@ namespace FireProductionDyadicCalibration
 			}
 		}
 		if(lifecycleOnly){
+			const std::filesystem::path historyAliasCheckpoint=
+				std::filesystem::temp_directory_path()/"rise_r148_history_alias.checkpoint";
+			const std::filesystem::path timeAliasCheckpoint=
+				std::filesystem::temp_directory_path()/"rise_r148_time_alias.checkpoint";
+			{std::error_code ignored;std::filesystem::remove(historyAliasCheckpoint,ignored);
+				std::filesystem::remove(timeAliasCheckpoint,ignored);}
+			MethaneRunCheckpoint historyAlias=state,timeAlias=state;
+			bool historyWriterRejected=false,historyLoaderRejected=false;
+			bool timeWriterRejected=false,timeLoaderRejected=false;
+			if(historyAlias.values.acceptedTimeStepHistoryS.size()>=2u){
+				historyAlias.values.acceptedTimeStepHistoryS.front()*=0.5;
+				historyWriterRejected=!SaveMethaneRunCheckpoint(
+					historyAliasCheckpoint,historyAlias,error);
+				forceMalformedManifoldLifecycleWriteForTest=true;
+				const bool written=SaveMethaneRunCheckpoint(
+					historyAliasCheckpoint,historyAlias,error);
+				forceMalformedManifoldLifecycleWriteForTest=false;
+				MethaneRunCheckpoint loadedAlias;
+				historyLoaderRejected=written&&!LoadMethaneRunCheckpoint(
+					historyAliasCheckpoint,loadedAlias,error);
+			}
+			timeAlias.simulationTimeS=std::nextafter(timeAlias.simulationTimeS,
+				std::numeric_limits<double>::infinity());
+			timeWriterRejected=!SaveMethaneRunCheckpoint(timeAliasCheckpoint,timeAlias,error);
+			forceMalformedManifoldLifecycleWriteForTest=true;
+			const bool timeAliasWritten=SaveMethaneRunCheckpoint(
+				timeAliasCheckpoint,timeAlias,error);
+			forceMalformedManifoldLifecycleWriteForTest=false;
+			MethaneRunCheckpoint loadedTimeAlias;
+			timeLoaderRejected=timeAliasWritten&&!LoadMethaneRunCheckpoint(
+				timeAliasCheckpoint,loadedTimeAlias,error);
+			{std::error_code ignored;std::filesystem::remove(historyAliasCheckpoint,ignored);
+				std::filesystem::remove(timeAliasCheckpoint,ignored);}
+			authorityMutationREDsPassed=authorityMutationREDsPassed&&
+				historyWriterRejected&&historyLoaderRejected&&
+				timeWriterRejected&&timeLoaderRejected;
+			if(!(historyWriterRejected&&historyLoaderRejected&&timeWriterRejected&&
+				timeLoaderRejected)){double historyAliasSum=0.0;
+				for(const double dt:historyAlias.values.acceptedTimeStepHistoryS)historyAliasSum+=dt;
+				RISE::FireStateProducerPrecision aliasPrecision=
+					RISE::FireStateProducerPrecision::Unknown;
+				const bool homogeneous=HomogeneousStateProducerPrecision(
+					historyAlias.states,aliasPrecision);
+				std::fprintf(stderr,
+				"r148 lifecycle alias RED failed history=%d/%d time=%d/%d count=%zu/%llu "
+				"sum=%.17g time=%.17g homogeneous=%d precision=%u error=%s\n",
+				historyWriterRejected?1:0,historyLoaderRejected?1:0,
+				timeWriterRejected?1:0,timeLoaderRejected?1:0,
+				historyAlias.values.acceptedTimeStepHistoryS.size(),
+				static_cast<unsigned long long>(historyAlias.acceptedSteps),historyAliasSum,
+				historyAlias.simulationTimeS,homogeneous?1:0,
+				static_cast<unsigned int>(aliasPrecision),error.c_str());}
 			std::fprintf(stderr,"r148 accepted lifecycle checkpoint=%d authority_reds=%d steps=%llu "
 				"first_G=%.17g first_r=%.17g selected_after_resume=%.17g limit=%s\n",
 				acceptedLifecyclePassed?1:0,authorityMutationREDsPassed?1:0,

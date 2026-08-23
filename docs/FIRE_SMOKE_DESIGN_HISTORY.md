@@ -3417,11 +3417,15 @@ it was already tried and refuted here.
   state and digest from the applied checkpoint; the library-owned reader consumes
   the complete normalized state and lifecycle view, reopens and verifies the
   payload, its domain-separated prefix binding, accepted-step count/history/timing,
-  and the reconstructed state digest before restoring the observation.  The
+  and the reconstructed state digest before restoring the observation.  The selector
+  also consumes the current state view and derives its digest internally; no caller-
+  supplied digest scalar can preserve stale authority.  Accepted history exactly
+  reconstructs simulation time, including the zero-time first-step case.  The
   prefix checksum is deliberately described only as integrity evidence, not a
   keyed authenticator.  A transplanted observation, accepted-history/zero-dt
-  alias, temperature/velocity transplant, selector-side state transplant, and
-  v9/v10/v11 accepted Binary32 resume all RED.
+  alias, temperature/velocity transplant, cleared-observation owner alias,
+  selector-side state transplant, non-tail history/time transplant, and v9/v10/v11
+  accepted Binary32 resume all RED.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real
@@ -3431,7 +3435,7 @@ it was already tried and refuted here.
   fails before command submission.  Exact lifecycle exit `255` retains
   `G=1.2031080315688669e-4`, `r=0.99562928290235475`, and resumed CFL step
   `0.0018513042677754071 s` after canonical Binary32 cell-width promotion.  The source-bound r136 trace moves to
-  `ea0d3a82...34f90b63`; arithmetic and exact refusal `237` are unchanged.
+  `44b0363d...a599a574`; arithmetic and exact refusal `237` are unchanged.
   r144 still exits `254` at field `2.5081625764804549e-3`, required drain
   `3.3442167670577247`, and delivered drain `0.97489008508207653`, so no later
   contract stage runs.  Golden remains `1b944176...4947`.

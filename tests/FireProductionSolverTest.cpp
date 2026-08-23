@@ -875,14 +875,15 @@ int main()
 	std::string error;
 	{
 		FireProductionAcceptedManifoldObservation none;
+		FireProductionAcceptedCheckpointStateView noAcceptedState;
 		FireProductionStableTimeStep first;
-		Check(SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,0.0,0u,none,
+		Check(SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,0.0,noAcceptedState,none,
 			first,&error)&&first.seconds==0.025&&
 			std::string(first.activeLimit)=="advective_CFL",
 			"r143 first-step selection uses only the frozen CFL-family limits");
 		FireProductionStableTimeStep rejected;
 		Check(!SelectFireProductionStableTimeStep(0.1,2.0,8.0,0.01,
-			5.629525428363875e-5,0u,none,rejected,&error)&&rejected.seconds==0.0,
+			5.629525428363875e-5,noAcceptedState,none,rejected,&error)&&rejected.seconds==0.0,
 			"r143 a resumed production step cannot bypass the manifold limit with unavailable metadata");
 	}
 	{

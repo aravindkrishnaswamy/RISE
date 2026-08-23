@@ -695,11 +695,18 @@ namespace
 			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
 		if(!activeSetWritten)return false;
 		if(version>=8u&&!writer.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
-		if(version<10u)return true;
+		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+		if(version>=9u&&!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
+		if(version<10u){
+			if(version==9u&&precision==FireStateProducerPrecision::Binary32&&
+				(checkpoint.acceptedSteps!=0u||checkpoint.simulationTimeS!=0.0||
+				checkpoint.previousStepS!=0.0||checkpoint.lastAcceptedStepS!=0.0||
+				!checkpoint.values.acceptedTimeStepHistoryS.empty())&&
+				!forceMalformedManifoldLifecycleWriteForTest)return false;
+			return true;
+		}
 		const FireProductionAcceptedManifoldObservation& observation=
 			checkpoint.productionManifoldObservation;
-		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
-		if(!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
 		const bool acceptedProductionState=productionState&&checkpoint.acceptedSteps>0u;
 		double acceptedDurationS=0.0;
@@ -728,7 +735,7 @@ namespace
 				!checkpoint.values.acceptedTimeStepHistoryS.empty()))||
 			(productionState&&(!validAcceptedHistory||
 				checkpoint.values.acceptedTimeStepHistoryS.size()!=checkpoint.acceptedSteps||
-				acceptedDurationS>checkpoint.simulationTimeS));
+				acceptedDurationS!=checkpoint.simulationTimeS));
 		if(invalidManifoldLifecycle&&!forceMalformedManifoldLifecycleWriteForTest)return false;
 		const unsigned char manifoldAvailable=
 			observation.Available()?1u:0u;
@@ -925,7 +932,10 @@ namespace
 		if(!HomogeneousStateProducerPrecision(decoded.states,precision)){
 			error="run checkpoint producer precision is invalid";return false;}
 		const bool productionState=precision==FireStateProducerPrecision::Binary32;
-		if(version<12u&&productionState&&decoded.acceptedSteps>0u){
+		if(version<12u&&productionState&&(decoded.acceptedSteps>0u||
+			decoded.simulationTimeS!=0.0||decoded.previousStepS!=0.0||
+			decoded.lastAcceptedStepS!=0.0||
+			!decoded.values.acceptedTimeStepHistoryS.empty())){
 			error="legacy production checkpoint lacks accepted manifold authority";return false;}
 		if(version>=12u){std::uint64_t acceptedStateDigest=0u;
 			FireProductionProjectionShape acceptedShape;std::vector<float> acceptedConservative;
@@ -3599,6 +3609,8 @@ int main(int argc,char** argv)
 		resumedPrecisionRoundTrip.acceptedSteps==precisionRoundTrip.acceptedSteps,
 		"r115 binary32 checkpoint metadata survives serialization and a binary64 CPU resume cannot relabel the inherited excursion");
 	const std::filesystem::path version9Checkpoint=checkpointFixture/"precision_class_v9.checkpoint";
+	const std::filesystem::path version9ZeroCountCheckpoint=
+		checkpointFixture/"precision_class_v9_zero_count.checkpoint";
 	const std::filesystem::path version10Checkpoint=checkpointFixture/"precision_class_v10.checkpoint";
 	const std::filesystem::path version11Checkpoint=checkpointFixture/"precision_class_v11.checkpoint";
 	MethaneRunCheckpoint legacyAccepted=precisionRoundTrip;
@@ -3611,8 +3623,18 @@ int main(int argc,char** argv)
 	const bool unavailableAcceptedV12Rejected=
 		!SaveMethaneRunCheckpoint(unavailableV12Checkpoint,legacyAccepted,
 			checkpointFixtureError,12u)&&!std::filesystem::exists(unavailableV12Checkpoint);
-	Check(SaveMethaneRunCheckpoint(version9Checkpoint,legacyAccepted,
-		checkpointFixtureError,9u)&&!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
+	forceMalformedManifoldLifecycleWriteForTest=true;
+	const bool malformedVersion9Written=SaveMethaneRunCheckpoint(version9Checkpoint,
+		legacyAccepted,checkpointFixtureError,9u);
+	MethaneRunCheckpoint legacyZeroCount=precisionRoundTrip;
+	legacyZeroCount.simulationTimeS=0.001;
+	legacyZeroCount.values.acceptedTimeStepHistoryS.push_back(0.001);
+	const bool malformedVersion9ZeroCountWritten=SaveMethaneRunCheckpoint(
+		version9ZeroCountCheckpoint,legacyZeroCount,checkpointFixtureError,9u);
+	forceMalformedManifoldLifecycleWriteForTest=false;
+	Check(malformedVersion9Written&&!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion9ZeroCountWritten&&
+		!LoadMethaneRunCheckpoint(version9ZeroCountCheckpoint,rejectedLegacy,
 		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version10Checkpoint,legacyAccepted,
 		checkpointFixtureError,10u)&&!LoadMethaneRunCheckpoint(version10Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version11Checkpoint,legacyAccepted,

@@ -339,7 +339,8 @@ namespace RISE
 		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
-			double,double,double,double,double,std::uint64_t,
+			double,double,double,double,double,
+			const FireProductionAcceptedCheckpointStateView&,
 			const FireProductionAcceptedManifoldObservation&,
 			FireProductionStableTimeStep&,std::string* );
 		friend bool PublishFireProductionAcceptedManifoldObservation(
@@ -439,7 +440,7 @@ namespace RISE
 		double maximumPositiveReducedGravityMPerS2,
 		double maximumKinematicTransportM2PerS,
 		double previousStepS,
-		std::uint64_t currentAcceptedStateDigest,
+		const FireProductionAcceptedCheckpointStateView& currentAcceptedState,
 		const FireProductionAcceptedManifoldObservation& previousManifold,
 		FireProductionStableTimeStep& result,
 		std::string* error=0 );
