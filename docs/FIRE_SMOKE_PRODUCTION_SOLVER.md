@@ -3285,22 +3285,66 @@ discipline remain intact.  Because energy is replaced by `n*T` in the limited
 tuple, both alpha and composition may change relative to production; the trial
 does not assume the old off-manifold topology.
 
-The resulting G maxima are `2.5328069638265172e-3`,
+Fresh review found that this first trial evolved the nominally algebraic `n*T`
+field after the first sweep.  It therefore established fixed pressure only for
+the first x half-pass, and its unclamped-topology/capacity conclusion is
+retired by r153.  The resulting diagnostic G maxima were `2.5328069638265172e-3`,
 `2.5155729299433105e-3`, and `2.5068855498342479e-3` at CFL, CFL/2, and CFL/4.
-Thus the admissible reconstruction provides no reduction and remains
-`3.3770759518x` above the `7.5e-4` allowance at CFL.  Cell 3227 moves from
-`-1.1871614802316799e-12` to `-2.5328069650136786e-3`.  Since both projection
-scalar contributions are still zero, the restoration-anomaly branch does not
-apply.  The pre-registered decision rule now reaches the contract-level
-production-ceiling stop on a legal conservative topology.  Production is not
-changed and long shadow, `B_fp32`, guard supersession, temporal refinement,
-readmission, source maps, and first light remain blocked.
+Thus the historical diagnostic provided no reduction and remained
+`3.3770759518x` above the `7.5e-4` allowance at CFL.  Cell 3227 moved from
+`-1.1871614802316799e-12` to `-2.5328069650136786e-3`.  Its claimed legal-
+topology capacity stop is superseded by r153; only the raw diagnostic values
+and production-unchanged status remain historical evidence.
 
 r151's completed-call timing correction remains binding: device `<=75 ms`,
 wall `<=200 ms`, with observed `66.366791725158691/199.188458 ms` and an
 `87.0407538 h` tier-10 x 25 s wall projection.  Exact evidence is
 `rendered/fire_production_calibration/r152_conservative_face_reconstruction_stop/`
-`conservative_face_reconstruction_evidence.v1`; the golden checkpoint is
+`conservative_face_reconstruction_evidence.v1`; this is historical evidence,
+not the final capacity conclusion.  The golden checkpoint is unchanged.
+
+### 7.55m Fixed-pressure reconstruction/domain stop (r153)
+
+r153 resets the algebraic auxiliary to `n*T=P/R` before every one of the five
+directional sweeps and never scatters its conservative update.  The independent
+face integral is `(P/R)*dt_sub*u_face`; the same shared alpha still limits
+`rhoZ`, the seven constituents, and the auxiliary.  Reconstruction-specific
+field hashes, production-field hashes, shared-alpha/energy-flux trace hashes,
+and a global boundary-flux energy ledger make bypassing the trial observable.
+
+The corrected trial exposes a thermochemistry-domain obstruction rather than
+an arithmetic tolerance issue.  Conservative compression of the transported
+composition requires fixed-pressure face temperatures below the certified
+`300 K` lower endpoint.  At CFL/CFL/2/CFL/4, respectively,
+`2,307,844`, `2,326,957`, and `2,356,525` face evaluations require endpoint
+projection; the largest excursions are `0.3536066003 K`, `0.1761488694 K`,
+and `0.08734068083 K`.  Their approximately linear dt scaling identifies a
+real conservative-compression/domain conflict.  Shared-alpha relaxation,
+monotonicity relaxation, and uncertified thermochemistry extrapolation remain
+rejected.
+
+For diagnosis only, r153 applies the favorable endpoint projection and carries
+its energy solely through conservative face fluxes.  The reconstructed fields
+are byte-distinct from production (maximum energy differences `308.03125`,
+`153.9375`, and `76.9375 J/m3`), and the largest relative global energy-ledger
+residual is `1.4020231210267571e-10`.  Nevertheless its field-max G is exactly
+`2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+`2.5068855498342479e-3`: no reduction, with CFL still `3.3770759518x` the
+`7.5e-4` allowance.  This endpoint projection is not admitted as production
+arithmetic; it is the favorable counterfactual showing that the legal
+fixed-pressure route both meets the certified-domain boundary and cannot drain
+the observed anomaly.  Projection-stage scalar G remains exactly zero, so the
+restoration-anomaly remedy is inapplicable.  The pre-registered decision rule
+therefore stops for an explicit production-ceiling ruling.  Long shadow,
+`B_fp32`, guard supersession, temporal refinement, readmission, source maps,
+and first light remain blocked.
+
+The corrected residency timing remains separately pinned at `66.4652500 ms`
+device and `194.687208 ms` completed wall, for a tier-10 x 25 s projection of
+`29.0438 h` device and `85.0738 h` wall.  This meets the 75/200-ms budgets but
+not the requested approximately-70-ms wall target.  Exact r153 evidence is in
+`rendered/fire_production_calibration/r153_fixed_pressure_reconstruction_stop/`
+`fixed_pressure_reconstruction_evidence.v1`; the golden checkpoint is
 unchanged.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)

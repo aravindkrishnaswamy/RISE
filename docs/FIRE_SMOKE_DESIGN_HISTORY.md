@@ -3565,18 +3565,47 @@ it was already tried and refuted here.
   are preserved; no cell-average repair exists in the trial.  Alpha and
   composition are explicitly free to differ from the baseline.
 
-  The legal reconstruction produces CFL/CFL/2/CFL/4 maxima
+  The historical diagnostic produced CFL/CFL/2/CFL/4 maxima
   `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
   `2.5068855498342479e-3`: no reduction.  Cell 3227 remains limiting, from
   beginning deviation `-1.1871614802316799e-12` to terminal deviation
   `-2.5328069650136786e-3`.  The CFL result is `3.3770759518x` the unchanged
   `7.5e-4` allowance.  Projection-stage scalar generation remains exactly
-  zero, so the anomaly-aware restoration branch is still inapplicable.  This
-  is the first result that executes the complete r149 remap remedy without
-  crossing the prior no-repair boundary; it therefore supports the requested
-  contract-level production-ceiling stop.  Production remains unchanged and
-  all later contract stages remain blocked.  r151's timing correction remains
+  zero, so the anomaly-aware restoration branch is still inapplicable.  Fresh
+  review later found that the algebraic auxiliary evolved after the first
+  pass, so this legal-topology capacity inference is superseded by r153.
+  Production remained unchanged.  r151's timing correction remains
   valid (`<=75 ms` device, `<=200 ms` completed wall; observed
   `66.3667917/199.188458 ms`).  Durable evidence is
   `r152_conservative_face_reconstruction_stop/conservative_face_reconstruction_evidence.v1`;
   golden remains byte-identical.
+- **r153 fixed-pressure reconstruction/domain stop (2026-08-23):** fresh
+  review invalidates r152's capacity inference because its `n*T` auxiliary was
+  evolved after the first sweep.  The corrected exact-`245` diagnostic resets
+  `n*T=P/R` before every x/2,y/2,z,y/2,x/2 pass, independently derives the
+  geometric fixed-pressure face integral, and binds reconstruction/production
+  field hashes, limiter-plus-energy-flux trace hashes, a nonzero field delta,
+  endpoint counts, and the boundary-flux energy ledger.
+
+  The corrected topology encounters the certified thermochemistry boundary:
+  conservative compression requires face temperatures below `300 K` on
+  `2,307,844`, `2,326,957`, and `2,356,525` evaluations at CFL/CFL/2/CFL/4,
+  with maximum excursions `0.3536066003`, `0.1761488694`, and
+  `0.08734068083 K`.  Those values scale approximately with dt and are not a
+  rounding-bound calibration.  Shared-alpha or monotonicity relaxation and
+  uncertified thermochemistry extrapolation remain rejected.
+
+  A diagnostic-only favorable endpoint projection preserves the conservative
+  energy ledger to at worst `1.4020231210267571e-10` relative and produces
+  byte-distinct fields, but leaves G exactly at
+  `2.5328069638265172e-3`, `2.5155729299433105e-3`, and
+  `2.5068855498342479e-3`.  The CFL value is still `3.3770759518x` the
+  allowance.  Because physical- and restoration-projection scalar G remain
+  exactly zero, the anomaly-aware restoration branch is inapplicable.  The
+  r149 rule therefore reaches the explicit production-ceiling ruling boundary;
+  no endpoint projection is admitted into production and later contract work
+  stays blocked.  The corrected 75/200-ms residency gate observes
+  `66.4652500/194.687208 ms`; the corresponding `29.0438/85.0738 h` tier-10
+  device/wall projections remain binding.  Durable
+  evidence is `r153_fixed_pressure_reconstruction_stop/`
+  `fixed_pressure_reconstruction_evidence.v1`; golden remains byte-identical.

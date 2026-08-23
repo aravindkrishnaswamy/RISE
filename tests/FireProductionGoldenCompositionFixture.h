@@ -254,7 +254,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionGeneration={{0.0,0.0,0.0}},
 				reconstructionBeginningDeviation={{0.0,0.0,0.0}},
 				reconstructionTerminalDeviation={{0.0,0.0,0.0}},
+				reconstructionProductionMaximumDifference={{0.0,0.0,0.0}},
+				reconstructionMaximumEnergyLedgerResidual={{0.0,0.0,0.0}},
+				reconstructionMaximumEnergyLedgerRelative={{0.0,0.0,0.0}},
+				reconstructionMaximumEndpointProjection={{0.0,0.0,0.0}},
 				deviceMS={{0.0,0.0,0.0}},wallMS={{0.0,0.0,0.0}};
+			std::array<std::string,3> reconstructionFieldDigest,reconstructionTraceDigest,
+				productionFieldDigest;
+			std::array<std::size_t,3> reconstructionEndpointProjectionCount={{0u,0u,0u}};
 			std::array<std::size_t,3> reconstructionCell={{0u,0u,0u}};
 			for(std::size_t level=0u;level<3u;++level){
 				const float representedStep=static_cast<float>(dt/std::pow(2.0,level));
@@ -300,6 +307,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				// and temperature.  No cell-average repair occurs.
 				std::vector<float> reconstructed=sweepRequest.cellTransport.conservativeValues;
 				std::vector<float> transported(9u*cells),energy(cells);
+				RISECBOR64::Bytes reconstructionTrace;
 				const float manifoldNT=static_cast<float>(fuel.ThermodynamicPressurePa()/
 					8314.46261815324);
 				for(std::size_t cell=0u;cell<cells;++cell){
@@ -337,6 +345,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				for(unsigned int pass=0u;pass<5u;++pass){
 					const unsigned int axis=axes[pass];const std::size_t length=axisExtent(axis),
 						lines=axisLines(axis);
+					// Fixed pressure is an algebraic manifold constraint, not a conserved
+					// tracer.  Re-establish n*T=P/R before every directional sweep so every
+					// reconstructed slug, rather than only the first x half-sweep, lies on
+					// the same fixed-pressure EOS surface.
+					for(std::size_t cell=0u;cell<cells;++cell)
+						transported[8u*cells+cell]=manifoldNT;
 					RISE::FireProductionRemapRequest lineRequest;lineRequest.lineLength=length;
 					lineRequest.lineCount=lines;lineRequest.componentCount=9u;
 					lineRequest.cellWidthM=sweepRequest.cellTransport.shape.cellWidthM;
@@ -372,6 +386,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 									transported[component*cells+cell];}}
 					RISE::FireProductionRemapResult lineResult;
 					if(!RISE::RemapFireProductionCPU(lineRequest,lineResult,&error))return 225;
+					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,pass);
+					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,
+						lineResult.sharedLimiterAlpha.size());
+					for(const float alpha:lineResult.sharedLimiterAlpha){std::uint32_t bits=0u;
+						std::memcpy(&bits,&alpha,sizeof(bits));
+						FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,bits);}
 					std::vector<float> energyFlux(lines*(length+1u),0.0f),nextEnergy=energy;
 					for(std::size_t line=0u;line<lines;++line)for(std::size_t face=0u;face<=length;++face){
 						const std::size_t fluxBase=line*(length+1u)+face;
@@ -381,11 +401,32 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 								fuel.SpeciesOrder()[species].c_str());if(!record)return 225;
 							molarFlux+=lineResult.faceFluxes[((species+1u)*lines+line)*
 								(length+1u)+face]/record->molecularWeightKGPerKMol;}
-						const double qFlux=lineResult.faceFluxes[(8u*lines+line)*(length+1u)+face];
+						// The fixed-pressure auxiliary is algebraic.  Its exact face integral is
+						// (P/R)*dt*u for this sub-cell-Courant sweep; derive it independently
+						// instead of inheriting the rounded constant-tracer flux.
+						const double sweptLength=static_cast<double>(steps[pass])*static_cast<double>(
+							lineRequest.faceVelocityMPerS[fluxBase]);
+						const double qFlux=(fuel.ThermodynamicPressurePa()/8314.46261815324)*
+							sweptLength;
 						if(molarFlux==0.0&&qFlux==0.0)continue;
 						if(molarFlux==0.0)return 225;
-						const double temperature=std::max(fuel.TemperatureMinK(),std::min(
-							fuel.TemperatureMaxK(),qFlux/molarFlux));
+						double temperature=qFlux/molarFlux;
+						if(!std::isfinite(temperature)||temperature<=0.0){std::fprintf(stderr,
+								"MANIFOLD_RECONSTRUCTION_TEMPERATURE level=%zu pass=%u line=%zu "
+								"face=%zu molar_flux=%.17g nt_flux=%.17g temperature=%.17g\n",
+								level,pass,line,face,molarFlux,qFlux,temperature);return 225;}
+						if(temperature<fuel.TemperatureMinK()){
+							reconstructionMaximumEndpointProjection[level]=std::max(
+								reconstructionMaximumEndpointProjection[level],
+								fuel.TemperatureMinK()-temperature);
+							temperature=fuel.TemperatureMinK();
+							++reconstructionEndpointProjectionCount[level];}
+						else if(temperature>fuel.TemperatureMaxK()){
+							reconstructionMaximumEndpointProjection[level]=std::max(
+								reconstructionMaximumEndpointProjection[level],
+								temperature-fuel.TemperatureMaxK());
+							temperature=fuel.TemperatureMaxK();
+							++reconstructionEndpointProjectionCount[level];}
 						std::array<double,MethaneSpeciesCount> enthalpy;
 						if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(temperature,
 							enthalpy.data(),enthalpy.size(),&error))return 225;
@@ -393,15 +434,37 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 							fluxEnergy+=lineResult.faceFluxes[((species+1u)*lines+line)*
 								(length+1u)+face]*enthalpy[species];
 						energyFlux[fluxBase]=static_cast<float>(fluxEnergy);}
+					FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,
+						energyFlux.size());
+					for(const float flux:energyFlux){std::uint32_t bits=0u;
+						std::memcpy(&bits,&flux,sizeof(bits));
+						FireProductionDyadicCalibration::AppendInteger(reconstructionTrace,bits);}
+					double energyBefore=0.0,boundaryFluxDifference=0.0;
+					for(const float value:energy)energyBefore+=value;
+					for(std::size_t line=0u;line<lines;++line)
+						boundaryFluxDifference+=static_cast<double>(
+							energyFlux[line*(length+1u)+length])-static_cast<double>(
+								energyFlux[line*(length+1u)]);
 					for(std::size_t line=0u;line<lines;++line)for(std::size_t coordinate=0u;
 						coordinate<length;++coordinate){std::size_t x=0u,y=0u,z=0u;
 						coordinates(axis,line,coordinate,x,y,z);const std::size_t cell=cellIndex(x,y,z);
 						nextEnergy[cell]=energy[cell]-(energyFlux[line*(length+1u)+coordinate+1u]-
 							energyFlux[line*(length+1u)+coordinate])/
 								sweepRequest.cellTransport.shape.cellWidthM;
-						for(std::size_t component=0u;component<9u;++component)
+						for(std::size_t component=0u;component<8u;++component)
 							transported[component*cells+cell]=lineResult.updatedValues[
 								(component*lines+line)*length+coordinate];}
+					double energyAfter=0.0;for(const float value:nextEnergy)energyAfter+=value;
+					const double ledgerResidual=std::fabs(energyAfter-(energyBefore-
+						boundaryFluxDifference/sweepRequest.cellTransport.shape.cellWidthM));
+					reconstructionMaximumEnergyLedgerResidual[level]=std::max(
+						reconstructionMaximumEnergyLedgerResidual[level],ledgerResidual);
+					const double expectedEnergyAfter=energyBefore-boundaryFluxDifference/
+						sweepRequest.cellTransport.shape.cellWidthM;
+					reconstructionMaximumEnergyLedgerRelative[level]=std::max(
+						reconstructionMaximumEnergyLedgerRelative[level],ledgerResidual/
+							std::max(1.0,std::max(std::fabs(energyAfter),
+								std::fabs(expectedEnergyAfter))));
 					energy.swap(nextEnergy);
 				}
 				for(std::size_t cell=0u;cell<cells;++cell){
@@ -409,6 +472,26 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						reconstructed[component*cells+cell]=transported[component*cells+cell];
 					reconstructed[8u*cells+cell]=energy[cell];
 				}
+				RISECBOR64::Bytes reconstructionFieldBytes,productionFieldBytes;
+				for(std::size_t value=0u;value<reconstructed.size();++value){
+					std::uint32_t reconstructedBits=0u,productionBits=0u;
+					std::memcpy(&reconstructedBits,&reconstructed[value],sizeof(reconstructedBits));
+					std::memcpy(&productionBits,&measured.conservativeValues[value],
+						sizeof(productionBits));
+					FireProductionDyadicCalibration::AppendInteger(reconstructionFieldBytes,
+						reconstructedBits);
+					FireProductionDyadicCalibration::AppendInteger(productionFieldBytes,
+						productionBits);
+					reconstructionProductionMaximumDifference[level]=std::max(
+						reconstructionProductionMaximumDifference[level],std::fabs(
+							static_cast<double>(reconstructed[value])-static_cast<double>(
+								measured.conservativeValues[value])));
+				}
+				reconstructionFieldDigest[level]=RISECBOR64::SHA256Hex(reconstructionFieldBytes);
+				reconstructionTraceDigest[level]=RISECBOR64::SHA256Hex(reconstructionTrace);
+				productionFieldDigest[level]=RISECBOR64::SHA256Hex(productionFieldBytes);
+				if(reconstructionFieldDigest[level]==productionFieldDigest[level]||
+					reconstructionProductionMaximumDifference[level]==0.0)return 225;
 				for(std::size_t cell=0u;cell<cells;++cell){
 					ConservativeVector rebuilt{};
 					for(std::size_t component=0u;component<9u;++component)
@@ -436,11 +519,23 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"MANIFOLD_STAGE_BUDGET level=%zu dt=%.17g remap=%.17g physical=%.17g "
 				"restoration=%.17g independent=%.17g reconstruction=%.17g "
 				"reconstruction_cell=%zu reconstruction_beginning=%.17g "
-				"reconstruction_terminal=%.17g device_ms=%.17g wall_ms=%.17g\n",level,
+				"reconstruction_terminal=%.17g reconstruction_production_max=%.17g "
+				"energy_ledger_residual=%.17g energy_ledger_relative=%.17g "
+				"endpoint_projections=%zu "
+				"maximum_endpoint_projection=%.17g "
+				"field_digest=%s production_digest=%s trace_digest=%s "
+				"device_ms=%.17g wall_ms=%.17g\n",level,
 				dt/std::pow(2.0,level),stageGeneration[level][0],stageGeneration[level][1],
 				stageGeneration[level][2],independentGeneration[level],
 				reconstructionGeneration[level],reconstructionCell[level],
 				reconstructionBeginningDeviation[level],reconstructionTerminalDeviation[level],
+				reconstructionProductionMaximumDifference[level],
+				reconstructionMaximumEnergyLedgerResidual[level],
+				reconstructionMaximumEnergyLedgerRelative[level],
+				reconstructionEndpointProjectionCount[level],
+				reconstructionMaximumEndpointProjection[level],reconstructionFieldDigest[level].c_str(),
+				productionFieldDigest[level].c_str(),
+				reconstructionTraceDigest[level].c_str(),
 				deviceMS[level],wallMS[level]);
 			std::fprintf(stderr,"MANIFOLD_STAGE_BUDGET exponent remap=(%.17g,%.17g) "
 				"physical=(%.17g,%.17g) restoration=(%.17g,%.17g) golden=%d\n",
@@ -460,6 +555,39 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				reconstructionCell[2]==3227u&&
 				reconstructionBeginningDeviation[0]==-1.1871614802316799e-12&&
 				reconstructionTerminalDeviation[0]==-0.0025328069650136786&&
+				reconstructionProductionMaximumDifference[0]==308.03125&&
+				reconstructionProductionMaximumDifference[1]==153.9375&&
+				reconstructionProductionMaximumDifference[2]==76.9375&&
+				reconstructionMaximumEnergyLedgerResidual[0]==0.31164741516113281&&
+				reconstructionMaximumEnergyLedgerResidual[1]==0.19146203994750977&&
+				reconstructionMaximumEnergyLedgerResidual[2]==0.47876596450805664&&
+				reconstructionMaximumEnergyLedgerRelative[0]==9.1267265857582786e-11&&
+				reconstructionMaximumEnergyLedgerRelative[1]==5.6067095289423908e-11&&
+				reconstructionMaximumEnergyLedgerRelative[2]==1.4020231210267571e-10&&
+				reconstructionEndpointProjectionCount[0]==2307844u&&
+				reconstructionEndpointProjectionCount[1]==2326957u&&
+				reconstructionEndpointProjectionCount[2]==2356525u&&
+				reconstructionMaximumEndpointProjection[0]==0.35360660028368329&&
+				reconstructionMaximumEndpointProjection[1]==0.17614886943493957&&
+				reconstructionMaximumEndpointProjection[2]==0.087340680831175632&&
+				reconstructionFieldDigest[0]==
+					"f750477c4aea40fa2e29fc37b636d3b8d9c2e87468d5db34930a611da6ae6991"&&
+				reconstructionFieldDigest[1]==
+					"e3864e286f4c36b64485f6c63afe7eb86cccf759d5d28680f58d38e8010159c4"&&
+				reconstructionFieldDigest[2]==
+					"991589ceef69145772959651b0eb100d6ce5998a010f346323a22d2d9ed31465"&&
+				productionFieldDigest[0]==
+					"0d00decc071ff85108435d59f8118a1ab2daba9e2b9f5c8c7cc6a77344383b8c"&&
+				productionFieldDigest[1]==
+					"26d16d971c825fbfe5e146a65d3cbd88b2773467b3f875a73a8edf99c799c690"&&
+				productionFieldDigest[2]==
+					"41d0a4170d42a52185ba2ebe69f631e917f1f21bb7843fdd7ae5652305fafd4b"&&
+				reconstructionTraceDigest[0]==
+					"f09eebb2f0f329699928d9d1c5647b367f909dfb557301b1d44c7a073694cd90"&&
+				reconstructionTraceDigest[1]==
+					"a857c93c947a7c2c03648440617f45ca842f294abfbe3284c8d23a22d8674e7a"&&
+				reconstructionTraceDigest[2]==
+					"49510fe3c962d453e2c78c7434322b038688be35096abd5adc171db3ea599dc0"&&
 				exponent[0][0]==0.0098454605227652776&&
 				exponent[1][0]==0.0050337970393511964;
 			return remapDecision&&DigestFile(checkpointPath)==checkpointDigest?245:226;

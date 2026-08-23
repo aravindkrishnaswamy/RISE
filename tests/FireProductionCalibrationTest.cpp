@@ -764,9 +764,6 @@ int main()
 			advectionMetal.begin(),advectionMetal.end()))==
 			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"1e1f1a8223e0b40dc275ad6e26c5f50a4df36348218956ecc9cbb10d7db6d11b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
@@ -798,7 +795,67 @@ int main()
 		unixTestDriver.find("stage_budget_rc\" -eq 245")!=std::string::npos&&
 		unixTestDriver.find("PASS (exact exit=245)")!=std::string::npos&&
 		unixTestDriver.find("expected 245")!=std::string::npos,
-		"r152 binds the legal conservative face reconstruction and capacity stop");
+		"r152 historical pass-evolved auxiliary evidence remains byte-bound");
+	const std::string fixedPressureReconstructionEvidence=ReadText(
+		"rendered/fire_production_calibration/r153_fixed_pressure_reconstruction_stop/"
+		"fixed_pressure_reconstruction_evidence.v1");
+	Check(!fixedPressureReconstructionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(fixedPressureReconstructionEvidence.begin(),
+			fixedPressureReconstructionEvidence.end()))==
+		"dd62f9224853e5756e8d74b64a996a2b6762edccd6bf05af7e46010fd33098ba"&&
+		fixedPressureReconstructionEvidence.find(
+			"parent_r152_evidence_sha256 87c1578ba051c022c9b21f961413c28be76cd4ba8de5cf48c5b898ebec7bc1ad")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"retired_r152_inference pass_evolved_nT_is_not_fixed_pressure_after_first_directional_sweep")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"maximum_endpoint_projection_K_level_0 0.35360660028368329")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"endpoint_projection_count_level_0 2307844")!=std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"maximum_energy_ledger_relative_level_2 1.4020231210267571e-10")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"reconstruction_field_sha256_level_0 f750477c4aea40fa2e29fc37b636d3b8d9c2e87468d5db34930a611da6ae6991")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"production_field_sha256_level_0 0d00decc071ff85108435d59f8118a1ab2daba9e2b9f5c8c7cc6a77344383b8c")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"limiter_energy_trace_sha256_level_0 f09eebb2f0f329699928d9d1c5647b367f909dfb557301b1d44c7a073694cd90")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"thermochemistry_domain_action diagnostic_endpoint_projection_only_not_admitted_production_remedy")!=
+			std::string::npos&&
+		fixedPressureReconstructionEvidence.find(
+			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"27ed3004c8b152ae365a14d3300ca41bf21389e04589a7d761ed1678778260e8"&&
+		goldenCompositionFixture.find(
+			"transported[8u*cells+cell]=manifoldNT")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"for(std::size_t component=0u;component<8u;++component)")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"productionFieldDigest[level]=RISECBOR64::SHA256Hex(productionFieldBytes)")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"reconstructionMaximumEnergyLedgerRelative[level]=std::max")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"reconstructionEndpointProjectionCount[0]==2307844u")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionSource.begin(),advectionSource.end()))==
+			"389eb83c649375ec8649b372bb1db33bb62785d1b6324c6cc29943d21c2bfa58"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			productionTransportSource.begin(),productionTransportSource.end()))==
+			"89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056",
+		"r153 binds the corrected fixed-pressure reconstruction and domain stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
