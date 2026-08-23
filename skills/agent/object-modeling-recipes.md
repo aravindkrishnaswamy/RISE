@@ -426,7 +426,13 @@ None of this WELDS anything: RISE only reads two chunks as connected where
 their geometry actually overlaps, so any attaching part -- a leg into a
 torso, a handle into a mug, a membrane into the body it grows from -- must
 penetrate its neighbor, not merely touch it, or displacement/blending will
-open a seam.
+open a seam.  The converse trap: the coordinates in a `point`/`joint`/
+`profile` line are the AXIS of a solid, not its surface -- the surface lies
+the local radius away from every number you can read, so anything placed AT
+another chunk's own coordinates lands at its core (a rivet row using a
+pipe's path points sits inside the pipe; a handle started at a vase's
+profile coordinates starts at the vase's centerline).  Attaching parts go
+PAST the surface; surface-riding parts go OFFSET OUTWARD from the axis.
 
 Read `read_schema` for `standard_object` for the full parameter text;
 what follows is the part the schema cannot tell you -- when to reach

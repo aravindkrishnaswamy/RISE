@@ -15960,7 +15960,11 @@ namespace RISE
 						     "never welds: two chunks read as connected only where they overlap, so an attaching "
 						     "end -- a limb into a torso, a membrane into the body it grows from -- must "
 						     "penetrate its neighbor, not just touch it, or the seam shows under displacement or "
-						     "blending.\n\n";
+						     "blending. And the coordinates in a point/joint/profile line are the AXIS of the "
+						     "solid, not its surface -- the surface lies the local radius away from every number "
+						     "you can read. Position an attaching part PAST the surface, and a surface-riding "
+						     "part OFFSET OUTWARD from the axis -- never at another chunk's own coordinates, "
+						     "which is its core.\n\n";
 						p += "WORKED EXAMPLE for the chain method (adapt values; delete nothing you need):\n"
 						     "sdf_geometry\n"
 						     "{\n"
