@@ -3405,3 +3405,28 @@ it was already tried and refuted here.
   `0.97489008508207653`.  Durable evidence is the SHA-bound r147 artifact; golden
   remains `1b944176...4947`.  Later contract stages remain blocked at the same
   function-level capacity finding.
+- **r148 checkpoint-state authority closure (2026-08-22):** fresh review
+  rejected r147's unkeyed `(dt,G,r)` seal as integrity metadata masquerading as
+  authority.  Format 12 removes the raw tuple factory and binds the opaque
+  observation to the exact producer-issued checkpoint-visible Binary32 state:
+  shape, component-major conservative values, and terminal restoration momentum
+  and velocity, with field tags and lengths.  The writer reconstructs that
+  digest from the applied state; the library-owned reader reopens and verifies
+  the complete payload, its domain-separated prefix binding, lifecycle timing,
+  and the reconstructed state digest before restoring the observation.  The
+  prefix checksum is deliberately described only as integrity evidence, not a
+  keyed authenticator.  A transplanted observation, accepted-history/zero-dt
+  alias, and v9/v10 accepted Binary32 resume all RED.
+
+  Review also required the token-mint rule at the actual Metal owner rather than
+  only its extracted predicate.  A preflighted exact probe now executes the real
+  physical and restoration projections, changes only the physical validation
+  result before minting, proves the result tokenless and unpublishable, and
+  byte-compares its resident payload to the normal twin.  Malformed activation
+  fails before command submission.  Exact lifecycle exit `255` retains
+  `G=1.2031080315688669e-4`, `r=0.99562928290235475`, and resumed CFL step
+  `0.0018513042677754073 s`.  The source-bound r136 trace moves to
+  `f43824f6...bb6eb5`; arithmetic and exact refusal `237` are unchanged.
+  r144 still exits `254` at field `2.5081625764804549e-3`, required drain
+  `3.3442167670577247`, and delivered drain `0.97489008508207653`, so no later
+  contract stage runs.  Golden remains `1b944176...4947`.

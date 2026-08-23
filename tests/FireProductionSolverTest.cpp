@@ -3970,6 +3970,18 @@ int main()
 		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeMalformedPlateauProbe&&
 		error.find("plateau probe activation is invalid")!=std::string::npos,
 		"r143 malformed plateau evidence activation fails before Metal work");
+	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedPhysicalValidationProbe=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE","bogus",1);
+	const bool malformedPhysicalValidationProbeRejected=
+		!AdvanceFireProductionResidentStepMetal(composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE");
+	Check(malformedPhysicalValidationProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			commitsBeforeMalformedPhysicalValidationProbe&&
+		error.find("physical projection validation probe activation is invalid")!=std::string::npos,
+		"accepted-token physical-validation probe rejects malformed activation before Metal work");
 	FireProductionResidentStepRequest malformedFullStep=composedStep;
 	malformedFullStep.force.cellGasDensityKGPerM3.clear();
 	seedFullStepResult(rejectedFullStep);error.clear();

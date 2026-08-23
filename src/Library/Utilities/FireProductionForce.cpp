@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <new>
 #include <utility>
@@ -21,18 +22,7 @@ namespace RISE
 	{
 		constexpr double ManifoldEOSCeiling=0.001;
 		constexpr double ManifoldHeadroom=0.25;
-		std::uint64_t ManifoldObservationAuthoritySeal( const double timeStepS,
-			const double maximumGeneration,const double restorationDrainFraction )
-		{
-			std::uint64_t digest=UINT64_C(0x8d6f3a94c27be105);
-			auto append=[&](const double value){std::uint64_t bits=0u;
-				std::memcpy(&bits,&value,sizeof(bits));
-				for(unsigned int byte=0u;byte<8u;++byte){
-					digest^=static_cast<unsigned char>(bits>>(8u*byte));
-					digest*=UINT64_C(1099511628211);}};
-			append(timeStepS);append(maximumGeneration);append(restorationDrainFraction);
-			return digest^UINT64_C(0x63b96d44f1a72ec8);
-		}
+		constexpr std::uint64_t CheckpointAuthorityDomain=UINT64_C(0x63b96d44f1a72ec8);
 		bool Fail( std::string* error, const char* message ) noexcept
 		{
 			if( error ) try { *error=message; } catch( const std::bad_alloc& ) {}
@@ -82,28 +72,82 @@ namespace RISE
 		}
 	}
 
-	bool FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointRecord(
-		const bool available,const double timeStepS,const double maximumGeneration,
-		const double restorationDrainFraction,const double previousStepS,
-		const double lastAcceptedStepS,const std::uint64_t authoritySeal,
-		FireProductionAcceptedManifoldObservation& result )
+	bool FireProductionCheckpointManifoldAccess::RestoreValidatedCheckpointFile(
+		const std::string& path,const std::uint64_t payloadBytes,
+		const std::uint64_t payloadChecksum,const std::uint64_t version,
+		const double previousStepS,const double lastAcceptedStepS,
+		const std::uint64_t acceptedSteps,const bool productionState,
+		const std::uint64_t acceptedStateDigest,
+		FireProductionAcceptedManifoldObservation& result,std::string* error )
 	{
 		result.Clear();
+		constexpr std::uint64_t RecordBytes=41u;
+		if(version!=12u||payloadBytes<RecordBytes)
+			return Fail(error,"production checkpoint manifold record version is invalid");
+		std::ifstream input(path.c_str(),std::ios::binary);
+		if(!input)return Fail(error,"cannot reopen production checkpoint authority record");
+		std::array<unsigned char,48u> header={{0u}};
+		input.read(reinterpret_cast<char*>(header.data()),static_cast<std::streamsize>(header.size()));
+		if(!input)return Fail(error,"production checkpoint authority header is incomplete");
+		std::uint64_t storedVersion=0u,storedPayloadBytes=0u,storedChecksum=0u;
+		std::memcpy(&storedVersion,header.data()+16u,sizeof(storedVersion));
+		std::memcpy(&storedPayloadBytes,header.data()+32u,sizeof(storedPayloadBytes));
+		std::memcpy(&storedChecksum,header.data()+40u,sizeof(storedChecksum));
+		if(storedVersion!=version||storedPayloadBytes!=payloadBytes||
+			storedChecksum!=payloadChecksum)return Fail(error,
+				"production checkpoint authority header does not match decoded header");
+		std::uint64_t checksum=UINT64_C(1469598103934665603);
+		std::uint64_t prefixDigest=UINT64_C(1469598103934665603);
+		std::array<unsigned char,RecordBytes> record={{0u}};
+		std::array<unsigned char,65536u> buffer={{0u}};
+		std::uint64_t consumed=0u;
+		while(consumed<payloadBytes){
+			const std::size_t count=static_cast<std::size_t>(std::min<std::uint64_t>(
+				payloadBytes-consumed,buffer.size()));
+			input.read(reinterpret_cast<char*>(buffer.data()),static_cast<std::streamsize>(count));
+			if(!input)return Fail(error,"production checkpoint authority payload is incomplete");
+			for(std::size_t index=0u;index<count;++index){
+				const std::uint64_t offset=consumed+index;
+				const unsigned char byte=buffer[index];
+				checksum^=byte;checksum*=UINT64_C(1099511628211);
+				if(offset<payloadBytes-sizeof(std::uint64_t)){
+					prefixDigest^=byte;prefixDigest*=UINT64_C(1099511628211);}
+				if(offset>=payloadBytes-RecordBytes)
+					record[static_cast<std::size_t>(offset-(payloadBytes-RecordBytes))]=byte;
+			}
+			consumed+=count;
+		}
+		if(checksum!=payloadChecksum)return Fail(error,
+			"production checkpoint authority payload checksum is invalid");
+		const bool available=record[0u]!=0u;
+		if(record[0u]>1u)return Fail(error,"production checkpoint manifold availability is invalid");
+		double timeStepS=0.0,maximumGeneration=0.0,restorationDrainFraction=0.0;
+		std::uint64_t storedStateDigest=0u,storedPrefixBinding=0u;
+		std::memcpy(&timeStepS,record.data()+1u,sizeof(timeStepS));
+		std::memcpy(&maximumGeneration,record.data()+9u,sizeof(maximumGeneration));
+		std::memcpy(&restorationDrainFraction,record.data()+17u,sizeof(restorationDrainFraction));
+		std::memcpy(&storedStateDigest,record.data()+25u,sizeof(storedStateDigest));
+		std::memcpy(&storedPrefixBinding,record.data()+33u,sizeof(storedPrefixBinding));
+		if(storedPrefixBinding!=(prefixDigest^CheckpointAuthorityDomain))return Fail(error,
+			"production checkpoint manifold record is not bound to the complete payload");
 		if(available){
-			if(!std::isfinite(timeStepS)||timeStepS<=0.0||
+			if(!productionState||acceptedSteps==0u||!std::isfinite(timeStepS)||timeStepS<=0.0||
 				!std::isfinite(maximumGeneration)||maximumGeneration<0.0||
 				!std::isfinite(restorationDrainFraction)||restorationDrainFraction<0.0||
 				restorationDrainFraction>1.0||timeStepS!=previousStepS||
-				timeStepS!=lastAcceptedStepS||authoritySeal!=ManifoldObservationAuthoritySeal(
-					timeStepS,maximumGeneration,restorationDrainFraction))return false;
+				timeStepS!=lastAcceptedStepS||storedStateDigest==0u||
+				storedStateDigest!=acceptedStateDigest)return Fail(error,
+					"production checkpoint accepted observation does not match accepted state");
 			result.available_=true;result.timeStepS_=timeStepS;
 			result.maximumGeneration_=maximumGeneration;
 			result.restorationDrainFraction_=restorationDrainFraction;
-			result.authoritySeal_=authoritySeal;
+			result.acceptedStateDigest_=storedStateDigest;
 			return true;
 		}
-		return timeStepS==0.0&&maximumGeneration==0.0&&restorationDrainFraction==0.0&&
-			authoritySeal==0u;
+		if(timeStepS!=0.0||maximumGeneration!=0.0||restorationDrainFraction!=0.0||
+			storedStateDigest!=0u||(productionState&&acceptedSteps!=0u))return Fail(error,
+				"production checkpoint lacks accepted manifold authority after an accepted step");
+		return true;
 	}
 
 	bool SelectFireProductionStableTimeStep(
@@ -132,9 +176,7 @@ namespace RISE
 				!std::isfinite(previousManifold.restorationDrainFraction_)||
 				previousManifold.restorationDrainFraction_<0.0||
 				previousManifold.restorationDrainFraction_>1.0||
-				previousManifold.authoritySeal_!=ManifoldObservationAuthoritySeal(
-					previousManifold.timeStepS_,previousManifold.maximumGeneration_,
-					previousManifold.restorationDrainFraction_) )
+				previousManifold.acceptedStateDigest_==0u )
 				return Fail(error,"production accepted manifold metadata is invalid");
 		} else if( previousStepS>0.0 ) {
 			return Fail(error,"production manifold metadata is unavailable after the first step");
@@ -238,14 +280,17 @@ namespace RISE
 				acceptedStep.physicalProjection.maximumPreProjectionResidualPerS||
 			token.physicalMaximumPostResidualPerS_!=
 				acceptedStep.physicalProjection.maximumPostProjectionResidualPerS||
-			token.payloadDigest_!=FireProductionAcceptedManifoldPayloadDigest(acceptedStep))
+			token.payloadDigest_!=FireProductionAcceptedManifoldPayloadDigest(acceptedStep)||
+			token.acceptedStateDigest_!=FireProductionAcceptedStatePayloadDigest(
+				acceptedStep.acceptedShape,acceptedStep.conservativeValues,
+				acceptedStep.projection.momentumKGPerM2S,
+				acceptedStep.projection.velocityMPerS))
 			return Fail(error,"production accepted manifold token does not match diagnostics");
 		result.available_=true;
 		result.timeStepS_=acceptedStepS;
 		result.maximumGeneration_=acceptedStep.maximumManifoldGeneration;
 		result.restorationDrainFraction_=acceptedStep.deliveredRestorationDrainFraction;
-		result.authoritySeal_=ManifoldObservationAuthoritySeal(result.timeStepS_,
-			result.maximumGeneration_,result.restorationDrainFraction_);
+		result.acceptedStateDigest_=token.acceptedStateDigest_;
 		result.residentPayloadDigest_=token.payloadDigest_;
 		result.bindsResidentPayload_=true;
 		acceptedStep.acceptedManifoldToken_.Clear();

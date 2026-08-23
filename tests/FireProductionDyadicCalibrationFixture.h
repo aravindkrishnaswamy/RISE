@@ -1465,7 +1465,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="26b12e46d634944f4134184f3c296c746a8426e8c91371a10529e2dbc02c7fd9"||
+			traceDigest!="f43824f6287939f10e48cd79d979efbd8b1e76a0058b513ecea03bad6bb6eb5b"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1665,6 +1665,45 @@ namespace FireProductionDyadicCalibration
 				wallTimes.push_back(wall);}
 			if(step==0u){
 				const double represented=static_cast<double>(production.representedTimeStepS);
+				RISE::FireProductionResidentStepResult physicalValidationMiss;
+				setenv("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE","1",1);
+				const bool physicalValidationProbeRan=
+					RISE::AdvanceFireProductionResidentStepMetal(request,physicalValidationMiss,&error);
+				unsetenv("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE");
+				RISE::FireProductionAcceptedManifoldObservation invalidPhysicalObservation;
+				const bool physicalValidationOwnerRED=physicalValidationProbeRan&&
+					!physicalValidationMiss.physicalProjection.validationPassed&&
+					physicalValidationMiss.projection.validationPassed&&
+					physicalValidationMiss.manifoldPlateauPassed&&
+					physicalValidationMiss.residentProjectionInvocationCount==2u&&
+					physicalValidationMiss.interstageFullGridTransferCount==0u&&
+					!physicalValidationMiss.HasAcceptedManifoldToken()&&
+					physicalValidationMiss.representedTimeStepS==production.representedTimeStepS&&
+					physicalValidationMiss.conservativeProducerPrecision==
+						production.conservativeProducerPrecision&&
+					physicalValidationMiss.maximumManifoldGeneration==
+						production.maximumManifoldGeneration&&
+					physicalValidationMiss.maximumAcceptedManifoldDeviation==
+						production.maximumAcceptedManifoldDeviation&&
+					physicalValidationMiss.requiredRestorationDrainFraction==
+						production.requiredRestorationDrainFraction&&
+					physicalValidationMiss.deliveredRestorationDrainFraction==
+						production.deliveredRestorationDrainFraction&&
+					physicalValidationMiss.restorationResidualBandPerS==
+						production.restorationResidualBandPerS&&
+					physicalValidationMiss.physicalProjection.maximumPreProjectionResidualPerS==
+						production.physicalProjection.maximumPreProjectionResidualPerS&&
+					physicalValidationMiss.physicalProjection.maximumPostProjectionResidualPerS==
+						production.physicalProjection.maximumPostProjectionResidualPerS&&
+					physicalValidationMiss.projection.maximumPreProjectionResidualPerS==
+						production.projection.maximumPreProjectionResidualPerS&&
+					physicalValidationMiss.projection.maximumPostProjectionResidualPerS==
+						production.projection.maximumPostProjectionResidualPerS&&
+					RISE::FireProductionAcceptedManifoldPayloadDigest(physicalValidationMiss)==
+						RISE::FireProductionAcceptedManifoldPayloadDigest(production)&&
+					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,
+						physicalValidationMiss,invalidPhysicalObservation,&error)&&
+					!invalidPhysicalObservation.Available();
 				RISE::FireProductionResidentStepResult copied=production;
 				RISE::FireProductionAcceptedManifoldObservation rejected;
 				const bool copyClearsToken=!copied.HasAcceptedManifoldToken();
@@ -1728,17 +1767,24 @@ namespace FireProductionDyadicCalibration
 					!RISE::PublishFireProductionAcceptedManifoldObservation(represented,production,
 						rejected,&error)&&!rejected.Available()&&production.HasAcceptedManifoldToken();
 				production.physicalProjection.maximumPostProjectionResidualPerS=savedPhysicalResidual;
-				authorityMutationREDsPassed=copyClearsToken&&wrongStepRejected&&
+				authorityMutationREDsPassed=physicalValidationOwnerRED&&copyClearsToken&&wrongStepRejected&&
 					payloadMutationRejected&&vectorBoundaryMutationRejected&&
 					coherentDiagnosticForgeryRejected&&
 					deviationMutationRejected&&physicalValidationMutationRejected&&
 					physicalResidualMutationRejected;
-				if(!authorityMutationREDsPassed)return 223;
+				if(!authorityMutationREDsPassed){std::fprintf(stderr,
+					"r147 authority RED failed physical=%d copy=%d step=%d payload=%d boundary=%d coherent=%d deviation=%d validation=%d residual=%d error=%s\n",
+					physicalValidationOwnerRED?1:0,copyClearsToken?1:0,wrongStepRejected?1:0,
+					payloadMutationRejected?1:0,vectorBoundaryMutationRejected?1:0,
+					coherentDiagnosticForgeryRejected?1:0,deviationMutationRejected?1:0,
+					physicalValidationMutationRejected?1:0,physicalResidualMutationRejected?1:0,
+					error.c_str());return 223;}
 			}
 			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
 			if(!RISE::PublishFireProductionAcceptedManifoldObservation(
 				static_cast<double>(request.force.timeStepS),production,
-				acceptedObservation,&error))return 223;
+				acceptedObservation,&error)){std::fprintf(stderr,
+					"r147 accepted observation publication failed: %s\n",error.c_str());return 223;}
 			if(step==0u){
 				RISE::FireProductionAcceptedManifoldObservation replayed;
 				const bool replayRejected=!RISE::PublishFireProductionAcceptedManifoldObservation(
@@ -1757,7 +1803,8 @@ namespace FireProductionDyadicCalibration
 				authorityMutationREDsPassed=authorityMutationREDsPassed&&
 					postPublicationMutationRejected&&
 					acceptedObservation.MatchesAcceptedResidentPayload(production);
-				if(!authorityMutationREDsPassed)return 223;
+				if(!authorityMutationREDsPassed){std::fprintf(stderr,
+					"r147 post-publication authority RED failed: %s\n",error.c_str());return 223;}
 			}
 			if(step==0u){firstGeneration=acceptedObservation.MaximumGeneration();
 				firstDrain=acceptedObservation.RestorationDrainFraction();}
@@ -1769,14 +1816,29 @@ namespace FireProductionDyadicCalibration
 			state.previousStepS=representedStep;
 			state.lastAcceptedStepS=representedStep;
 			++state.acceptedSteps;
+			state.values.acceptedTimeStepHistoryS.push_back(representedStep);
 			state.productionManifoldObservation=acceptedObservation;
 			if(step==0u){
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
+				MethaneRunCheckpoint transplanted=state;
+				const std::filesystem::path transplantedCheckpoint=
+					std::filesystem::temp_directory_path()/"rise_r148_transplanted_authority.checkpoint";
+				{std::error_code ignored;std::filesystem::remove(transplantedCheckpoint,ignored);}
+				bool transplantRejected=false;
+				if(!transplanted.velocity.component[0].empty()){
+					const float original=static_cast<float>(transplanted.velocity.component[0].front());
+					transplanted.velocity.component[0].front()=static_cast<double>(
+						std::nextafter(original,std::numeric_limits<float>::infinity()));
+					std::string transplantError;
+					transplantRejected=!SaveMethaneRunCheckpoint(transplantedCheckpoint,
+						transplanted,transplantError)&&!std::filesystem::exists(transplantedCheckpoint);
+				}
 				MethaneRunCheckpoint loaded;
 				const bool saved=SaveMethaneRunCheckpoint(lifecycleCheckpoint,state,error);
 				const bool loadedOK=saved&&LoadMethaneRunCheckpoint(lifecycleCheckpoint,loaded,error);
 				{std::error_code ignored;std::filesystem::remove(lifecycleCheckpoint,ignored);}
-				acceptedLifecyclePassed=loadedOK&&loaded.checkpointFormatVersion==11u&&
+				acceptedLifecyclePassed=transplantRejected&&loadedOK&&
+					loaded.checkpointFormatVersion==12u&&
 					loaded.acceptedSteps==state.acceptedSteps&&
 					loaded.simulationTimeS==state.simulationTimeS&&
 					loaded.previousStepS==representedStep&&
@@ -1788,12 +1850,15 @@ namespace FireProductionDyadicCalibration
 					loaded.productionManifoldObservation.RestorationDrainFraction()==
 						acceptedObservation.RestorationDrainFraction()&&
 					AnalyticStateDigest(loaded)==stateDigestBefore;
-				if(!acceptedLifecyclePassed)return 223;
+				if(!acceptedLifecyclePassed){std::fprintf(stderr,
+					"r147 checkpoint lifecycle failed saved=%d loaded=%d version=%llu error=%s\n",
+					saved?1:0,loadedOK?1:0,static_cast<unsigned long long>(loaded.checkpointFormatVersion),
+					error.c_str());return 223;}
 				state=std::move(loaded);
 			}
 		}
 		if(lifecycleOnly){
-			std::fprintf(stderr,"r147 accepted lifecycle checkpoint=%d authority_reds=%d steps=%llu "
+			std::fprintf(stderr,"r148 accepted lifecycle checkpoint=%d authority_reds=%d steps=%llu "
 				"first_G=%.17g first_r=%.17g selected_after_resume=%.17g limit=%s\n",
 				acceptedLifecyclePassed?1:0,authorityMutationREDsPassed?1:0,
 				static_cast<unsigned long long>(state.acceptedSteps),firstGeneration,firstDrain,selectedAfterResume,

@@ -2079,6 +2079,15 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				return false;
 			}
 			const bool plateauEvidenceEnabled=plateauEvidenceActivation!=0;
+			const char* physicalValidationProbeActivation=std::getenv(
+				"RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE");
+			if( physicalValidationProbeActivation&&
+				std::strcmp(physicalValidationProbeActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production physical projection validation probe activation is invalid";
+				return false;
+			}
+			const bool physicalValidationProbeEnabled=physicalValidationProbeActivation!=0;
 			unsigned int restorationProbeCycles=0u;bool restorationProbeEnabled=false;
 			if( !ValidateFireProductionRestorationCycleProbe(restorationProbeCycles,
 				restorationProbeEnabled,structuredError) ) return false;
@@ -2439,7 +2448,10 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				computed.manifoldPlateauPassed=enforcePlateau&&plateauPassed;
 				if( enforcePlateau )
 					computed.projection.validationPassed=plateauValidation.mechanismPassed;
+				if( physicalValidationProbeEnabled )
+					computed.physicalProjection.validationPassed=false;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
+				computed.acceptedShape=request.force.shape;
 				if( enforcePlateau&&
 					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
 					computed.acceptedManifoldToken_.available_=true;
@@ -2459,6 +2471,10 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 						computed.physicalProjection.maximumPostProjectionResidualPerS;
 					computed.acceptedManifoldToken_.payloadDigest_=
 						FireProductionAcceptedManifoldPayloadDigest(computed);
+					computed.acceptedManifoldToken_.acceptedStateDigest_=
+						FireProductionAcceptedStatePayloadDigest(computed.acceptedShape,
+							computed.conservativeValues,computed.projection.momentumKGPerM2S,
+							computed.projection.velocityMPerS);
 				}
 				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=1u||

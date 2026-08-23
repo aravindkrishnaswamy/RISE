@@ -279,11 +279,13 @@ namespace RISE
 	class FireProductionCheckpointManifoldAccess final
 	{
 	public:
-		//! The library-owned checkpoint codec is the only persistence authority.
-		//! Defining a lookalike friend in a consumer translation unit is impossible.
-		static bool RestoreValidatedCheckpointRecord(
-			bool,double,double,double,double,double,std::uint64_t,
-			FireProductionAcceptedManifoldObservation& );
+		//! Reopens and independently authenticates the complete v12 checkpoint
+		//! payload before restoring its trailing manifold record.  There is no
+		//! public raw-tuple restoration seam.
+		static bool RestoreValidatedCheckpointFile(
+			const std::string&,std::uint64_t,std::uint64_t,std::uint64_t,
+			double,double,std::uint64_t,bool,std::uint64_t,
+			FireProductionAcceptedManifoldObservation&,std::string* );
 	private:
 		FireProductionCheckpointManifoldAccess()=delete;
 	};
@@ -295,24 +297,24 @@ namespace RISE
 	public:
 		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
 			maximumGeneration_(0.0),restorationDrainFraction_(0.0),
-			residentPayloadDigest_(0u),authoritySeal_(0u),bindsResidentPayload_(false) {}
+			residentPayloadDigest_(0u),acceptedStateDigest_(0u),bindsResidentPayload_(false) {}
 		bool Available() const { return available_; }
 		double TimeStepS() const { return timeStepS_; }
 		double MaximumGeneration() const { return maximumGeneration_; }
 		double RestorationDrainFraction() const { return restorationDrainFraction_; }
-		std::uint64_t SerializedAuthoritySeal() const { return authoritySeal_; }
+		std::uint64_t SerializedAcceptedStateDigest() const { return acceptedStateDigest_; }
 		bool MatchesAcceptedResidentPayload(const FireProductionResidentStepResult&) const;
 
 	private:
 		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
 			restorationDrainFraction_=0.0;residentPayloadDigest_=0u;
-			authoritySeal_=0u;bindsResidentPayload_=false; }
+			acceptedStateDigest_=0u;bindsResidentPayload_=false; }
 		bool available_;
 		double timeStepS_;
 		double maximumGeneration_;
 		double restorationDrainFraction_;
 		std::uint64_t residentPayloadDigest_;
-		std::uint64_t authoritySeal_;
+		std::uint64_t acceptedStateDigest_;
 		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
@@ -346,7 +348,7 @@ namespace RISE
 			maximumGeneration_(0.0),maximumAcceptedDeviation_(0.0),requiredDrainFraction_(0.0),
 			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0),
 			physicalMaximumPreResidualPerS_(0.0f),physicalMaximumPostResidualPerS_(0.0f),
-			payloadDigest_(0u) {}
+			payloadDigest_(0u),acceptedStateDigest_(0u) {}
 		FireProductionAcceptedManifoldToken(const FireProductionAcceptedManifoldToken&) :
 			FireProductionAcceptedManifoldToken() {}
 		FireProductionAcceptedManifoldToken& operator=(
@@ -360,7 +362,8 @@ namespace RISE
 			maximumPostResidualPerS_(other.maximumPostResidualPerS_),
 			physicalMaximumPreResidualPerS_(other.physicalMaximumPreResidualPerS_),
 			physicalMaximumPostResidualPerS_(other.physicalMaximumPostResidualPerS_),
-			payloadDigest_(other.payloadDigest_) { other.Clear(); }
+			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_) {
+			other.Clear(); }
 		FireProductionAcceptedManifoldToken& operator=(
 			FireProductionAcceptedManifoldToken&& other) noexcept {
 			if(this!=&other){available_=other.available_;
@@ -372,7 +375,8 @@ namespace RISE
 				maximumPostResidualPerS_=other.maximumPostResidualPerS_;
 				physicalMaximumPreResidualPerS_=other.physicalMaximumPreResidualPerS_;
 				physicalMaximumPostResidualPerS_=other.physicalMaximumPostResidualPerS_;
-				payloadDigest_=other.payloadDigest_;other.Clear();}
+				payloadDigest_=other.payloadDigest_;
+				acceptedStateDigest_=other.acceptedStateDigest_;other.Clear();}
 			return *this;
 		}
 		bool Available() const { return available_; }
@@ -382,7 +386,7 @@ namespace RISE
 			maximumAcceptedDeviation_=0.0;requiredDrainFraction_=0.0;
 			deliveredDrainFraction_=0.0;maximumPostResidualPerS_=0.0;
 			physicalMaximumPreResidualPerS_=0.0f;physicalMaximumPostResidualPerS_=0.0f;
-			payloadDigest_=0u; }
+			payloadDigest_=0u;acceptedStateDigest_=0u; }
 		bool available_;
 		double representedTimeStepS_;
 		double maximumGeneration_;
@@ -393,6 +397,7 @@ namespace RISE
 		float physicalMaximumPreResidualPerS_;
 		float physicalMaximumPostResidualPerS_;
 		std::uint64_t payloadDigest_;
+		std::uint64_t acceptedStateDigest_;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
@@ -442,6 +447,7 @@ namespace RISE
 		double restorationResidualBandPerS;
 		bool manifoldPlateauPassed;
 		FireStateProducerPrecision conservativeProducerPrecision;
+		FireProductionProjectionShape acceptedShape;
 		bool HasAcceptedManifoldToken() const { return acceptedManifoldToken_.Available(); }
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
@@ -470,6 +476,41 @@ namespace RISE
 	//! not mint authority; both projection validations are structural inputs.
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
 		const FireProductionResidentStepResult& );
+
+	//! Canonical bytes that an accepted production step applies to the next
+	//! checkpoint state.  Checkpoint persistence must reproduce this digest;
+	//! it cannot transplant a valid observation onto different state bytes.
+	inline std::uint64_t FireProductionAcceptedStatePayloadDigest(
+		const FireProductionProjectionShape& shape,
+		const std::vector<float>& conservativeValues,
+		const std::array<std::vector<float>,3>& momentum,
+		const std::array<std::vector<float>,3>& velocity )
+	{
+		std::uint64_t digest=UINT64_C(0x65f07b31c42a98de);
+		auto appendWord=[&](const std::uint64_t word) {
+			for(unsigned int byte=0u;byte<8u;++byte){
+				digest^=static_cast<unsigned char>(word>>(8u*byte));
+				digest*=UINT64_C(1099511628211);}
+		};
+		std::uint64_t fieldTag=0u;
+		appendWord(UINT64_C(0x7265736964656e74));
+		appendWord(static_cast<std::uint64_t>(shape.nx));
+		appendWord(static_cast<std::uint64_t>(shape.ny));
+		appendWord(static_cast<std::uint64_t>(shape.nz));
+		std::uint32_t widthBits=0u;std::memcpy(&widthBits,&shape.cellWidthM,sizeof(widthBits));
+		appendWord(widthBits);
+		auto append=[&](const std::vector<float>& values) {
+			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
+			for(const float scalar:values){std::uint32_t bits=0u;
+				std::memcpy(&bits,&scalar,sizeof(bits));
+				for(unsigned int byte=0u;byte<4u;++byte){
+					digest^=static_cast<unsigned char>(bits>>(8u*byte));
+					digest*=UINT64_C(1099511628211);}}
+		};
+		append(conservativeValues);
+		for(unsigned int axis=0u;axis<3u;++axis){append(momentum[axis]);append(velocity[axis]);}
+		return digest^UINT64_C(0xd64b291e3fa5708c);
+	}
 
 	//! Publishes the only manifold metadata that may constrain the next
 	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot

@@ -3059,6 +3059,51 @@ drain `0.97489008508207653`.  No long burning shadow, golden `B_fp32`, temporal
 refinement, readmission, source map, or preview runs.  Evidence is
 `rendered/fire_production_calibration/r147_producer_authority_lifecycle/producer_authority_lifecycle.v1`.
 
+### 7.55h Checkpoint-state authority closure (r148)
+
+Fresh boundary review correctly rejected r147's persisted tuple seal.  It was
+an unkeyed digest of `(dt,G,r)`: useful corruption detection, but neither
+producer authority nor a binding to the state resumed by the solver.  Format
+12 removes the raw tuple-restoration API.  The resident owner now issues a
+second, domain-separated digest over the exact checkpoint-visible Binary32
+state: shape and cell width, component-major conservative fields, and the
+terminal restoration momentum and velocity, all with field tags and lengths.
+Publication retains that private digest.  The checkpoint writer independently
+reconstructs it from the applied state and refuses a transplanted observation;
+the library-owned reader reopens the complete checksum-verified payload,
+checks the trailing record's full-prefix integrity binding, reconstructs the
+same state digest, and only then restores the opaque observation.  The prefix
+binding is explicitly an integrity device, not a secret MAC.  Authority comes
+from the private producer-issued state digest and the absence of any supported
+raw tuple factory.
+
+The lifecycle invariants are now explicit.  A Binary32 checkpoint with accepted
+history must carry an available observation whose timestep equals both stored
+accepted-step fields and the history tail.  A Binary32 initial state has zero
+accepted steps, zero prior timing, empty accepted-step history, and no
+observation.  Formats 9--11 cannot resume an accepted Binary32 production run;
+they may still decode initial Binary32 states and ordinary Binary64/oracle runs.
+REDs reject an accepted-history/zero-timestep first-step alias and transplanting
+an authentic observation onto a one-bit-different terminal velocity before
+publication.
+
+The other missing behavioral boundary is also executable rather than inferred.
+An exact diagnostic runs the real two-projection Metal owner, preserves all
+payload bytes and restoration evidence, forces only the physical projection's
+validation result false before token eligibility, and proves that no token can
+be minted or published.  Malformed activation fails before Metal work.  The
+normal twin remains byte-identical and exact exit `255` retains
+`G=1.2031080315688669e-4`, drain `0.99562928290235475`, and resumed CFL step
+`0.0018513042677754073 s`.
+
+These authority changes move the source-bound r136 trace to
+`f43824f6...bb6eb5b` without changing its arithmetic census, `0xff` proof gap,
+or exact exit `237`.  The burning capacity verdict is unchanged: r144 remains
+exact exit `254`, field deviation `2.5081625764804549e-3`, required drain
+`3.3442167670577247`, and delivered drain `0.97489008508207653`.  The golden
+checkpoint remains `1b944176...4947`; long shadow, golden `B_fp32`, temporal
+refinement, readmission, source maps, and first light remain blocked.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed
