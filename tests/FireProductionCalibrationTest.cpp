@@ -552,9 +552,6 @@ int main()
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-		"811544a8e2dd9ffd700887810419080ec251ede359e459f7d7b3d3d4e0ad38cb"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 		"4f4774cead433f065f71296c516758eb3c3fa680528c12b1d16ee1ecb50a50e6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
@@ -714,59 +711,61 @@ int main()
 			manifoldStageBudgetEvidence.end()))==
 		"eade8e7ab31a71bfb51f75445b03ea5f25822c8b715ba82cb05521d78a7031de"&&
 		manifoldStageBudgetEvidence.find("canonical_exit 245")!=std::string::npos&&
-		manifoldStageBudgetEvidence.find("new_full_grid_device_to_host_transfers 0")!=
-			std::string::npos&&
 		manifoldStageBudgetEvidence.find(
 			"baseline_remap_G_level_0 0.0025327801704406738")!=std::string::npos&&
-		manifoldStageBudgetEvidence.find("baseline_physical_projection_G_level_0 0")!=
-			std::string::npos&&
-		manifoldStageBudgetEvidence.find("baseline_restoration_projection_G_level_0 0")!=
-			std::string::npos&&
 		manifoldStageBudgetEvidence.find(
-			"remap_scaling_exponent_0_to_1 0.0098454605227652776")!=std::string::npos&&
-		manifoldStageBudgetEvidence.find(
-			"reconstruction_trial_execution retained_diagnostic_only_exact_245")!=
+			"reconstruction_trial shared_alpha_ten_tuple_rhoT_plus_original_conservative_components_rebuild_energy")!=
+			std::string::npos,
+		"r150 historical stage budget and superseded rho*T diagnostic remain byte-bound");
+	const std::string acceptedMapReconstructionEvidence=ReadText(
+		"rendered/fire_production_calibration/r151_accepted_map_reconstruction_stop/"
+		"accepted_map_reconstruction_evidence.v1");
+	const std::string fireSimulatorCore=ReadText("tools/fire_simulator_core.h");
+	const std::string fireSimulationRecords=ReadText(
+		"src/Library/Utilities/FireSimulationRecords.cpp");
+	Check(!acceptedMapReconstructionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(acceptedMapReconstructionEvidence.begin(),
+			acceptedMapReconstructionEvidence.end()))==
+		"ca28527b85a4da372fdce7776c0d6f1b0d7cfa29c945af94fb2146f2827cc0dc"&&
+		acceptedMapReconstructionEvidence.find(
+			"parent_r150_evidence_sha256 eade8e7ab31a71bfb51f75445b03ea5f25822c8b715ba82cb05521d78a7031de")!=
 			std::string::npos&&
-		manifoldStageBudgetEvidence.find(
-			"reconstruction_post_remap_G_level_0 0.0025328069638265172")!=
+		acceptedMapReconstructionEvidence.find(
+			"reconstruction_G_level_0 0.001302156695613399")!=std::string::npos&&
+		acceptedMapReconstructionEvidence.find(
+			"limiting_candidate_ratio_below 0.99869784330740574")!=std::string::npos&&
+		acceptedMapReconstructionEvidence.find(
+			"limiting_candidate_ratio_above 1.0014969001088954")!=std::string::npos&&
+		acceptedMapReconstructionEvidence.find(
+			"best_reconstruction_G_over_allowance 1.736208927484532")!=std::string::npos&&
+		acceptedMapReconstructionEvidence.find(
+			"timing_completed_wall_budget_ms 200")!=std::string::npos&&
+		acceptedMapReconstructionEvidence.find("completed_wall_budget_met true")!=
 			std::string::npos&&
-		manifoldStageBudgetEvidence.find(
-			"reconstruction_bit_identical_all_three_levels false")!=std::string::npos&&
-		manifoldStageBudgetEvidence.find("reconstruction_reduces_G false")!=
+		acceptedMapReconstructionEvidence.find("requested_wall_target_met false")!=
 			std::string::npos&&
-		manifoldStageBudgetEvidence.find("timing_gate canonical_exit_254")!=
-			std::string::npos&&
-		manifoldStageBudgetEvidence.find("timing_sample_count 5")!=std::string::npos&&
-		manifoldStageBudgetEvidence.find("wall_target_met false")!=std::string::npos&&
-		manifoldStageBudgetEvidence.find(
+		acceptedMapReconstructionEvidence.find(
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
 			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			forceSource.begin(),forceSource.end()))==
-			"06ee59fc4cbc0980c1f4349b4bb0acc453ffa4619ec9063bff56886e6a992520"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			forceHeader.begin(),forceHeader.end()))==
-			"7962d4d8b7fc67acd23b8dc3d57e952dd4268230d188ed83a14a34c41b720575"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"811544a8e2dd9ffd700887810419080ec251ede359e459f7d7b3d3d4e0ad38cb"&&
+			"11b813bcc513ef16023c4a7ba29420a6213fc6c372c7bfdde71be23a3d182ce6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			productionSolverTest.begin(),productionSolverTest.end()))==
-			"4f4774cead433f065f71296c516758eb3c3fa680528c12b1d16ee1ecb50a50e6"&&
+			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
+			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"babb37cae5b2563f793961292b282f3ccc90291bfd86f4cf0c87bc19f5e3871a"&&
-		goldenCompositionFixture.find("reconstruction.componentCount=10u")!=
-			std::string::npos&&
+			fireSimulationRecords.begin(),fireSimulationRecords.end()))==
+			"04d7f0b21ae1e078f125759a2a08d8b82da68c7a2bdc1a1c8b8aff8f4c8ddc96"&&
 		goldenCompositionFixture.find("RemapFireProductionCellPalindromeCPU(reconstruction")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("reconstructionGeneration[0]==0.0025328069638265172")!=
+		goldenCompositionFixture.find("std::array<float,4> candidateEnergy")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("reconstructionGeneration[0]==0.001302156695613399")!=
 			std::string::npos&&
 		goldenCompositionFixture.find("device.back()<=75.0")!=std::string::npos&&
-		goldenCompositionFixture.find("wall.back()<600.471584")!=std::string::npos&&
-		advectionMetal.find("componentCount=10u")==std::string::npos&&
+		goldenCompositionFixture.find("wall.back()<=200.0")!=std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r150_manifold_stage_budget")!=
 			std::string::npos&&
 		unixTestDriver.find("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE=malformed")!=
@@ -779,7 +778,7 @@ int main()
 		unixTestDriver.find("stage_budget_rc\" -eq 245")!=std::string::npos&&
 		unixTestDriver.find("PASS (exact exit=245)")!=std::string::npos&&
 		unixTestDriver.find("expected 245")!=std::string::npos,
-		"r150 binds the resident stage budget, reconstruction falsification, and ceiling stop");
+		"r151 binds the accepted-map reconstruction, completed-call budget, and capacity stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

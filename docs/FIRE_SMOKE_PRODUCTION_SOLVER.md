@@ -3226,6 +3226,45 @@ The source-bound r136 digest moves to `a0e42abe...b85989e` solely because the
 resident result schema is mirrored; its arithmetic census, `0xff` refusal, and
 exact exit `237` are unchanged.
 
+### 7.55k Accepted-map reconstruction and capacity stop (r151)
+
+Review invalidated only r150's reconstruction proxy, not its stage budget.
+Transporting `rho_total*T` does not preserve the fixed-pressure manifold when
+the gas molecular weight changes across a front: `V=(R/P)*(q/rho_total)*n`
+still depends on `n/rho_total`.  The retained exact-`245` diagnostic is
+therefore replaced by a direct projection through the authoritative accepted
+map.  It runs the actual nine-component strict-binary32 shared-alpha remap,
+keeps components 0 through 7 unchanged, and searches the sensible-energy
+lattice until it finds the adjacent binary32 values bracketing `V=1` under
+`AcceptedConservativeVolumeRatio`.  Choosing the closer endpoint is the most
+favorable energy-only manifold reconstruction compatible with the existing
+r60 endpoint semantics; the trial remains diagnostic-only.
+
+At CFL, CFL/2, and CFL/4 the best reconstructed maxima are
+`1.302156695613399e-3`, `1.2866699325340125e-3`, and
+`1.2788512525973017e-3`.  These are reductions of 48.59%, 48.85%, and 48.99%
+from the independent baseline, but the CFL result is still
+`1.7362089275 * 7.5e-4`.  Cell 3478 is limiting.  It begins at deviation
+`3.0191404931656507e-12`; its nearest accepted ratios on the two sides are
+`0.99869784330740574` and `1.0014969001088954`, so neither representable state
+meets the plateau allowance.  Projection-stage scalar generation remains
+exactly zero, hence the anomaly-aware restoration branch is not applicable.
+The pre-registered r149 decision rule therefore stops for a contract-level
+production-ceiling ruling.  No reconstruction, ceiling change, long shadow,
+`B_fp32`, guard supersession, temporal refinement, readmission, source map, or
+preview is admitted.
+
+The timing gate now uses the actual completed-call budget: after one warmup,
+the maximum of five samples must satisfy device `<=75 ms` and wall `<=200 ms`.
+The calibrating observation is `66.366791725158691 ms` device and
+`199.188458 ms` wall.  This closes the prior `600.471584 ms` regression and
+meets the 200-ms production budget, but it does not meet the requested
+approximately-70-ms wall target.  At the represented limited timestep, the
+tier-10 x 25 s projection is `87.0407538 h` wall (`29.0007546 h` device-only),
+down from `262.3922081 h`.  Exact evidence is
+`rendered/fire_production_calibration/r151_accepted_map_reconstruction_stop/`
+`accepted_map_reconstruction_evidence.v1`; the golden checkpoint is unchanged.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

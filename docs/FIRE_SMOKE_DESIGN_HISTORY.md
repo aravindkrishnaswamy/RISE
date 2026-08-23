@@ -3516,3 +3516,38 @@ it was already tried and refuted here.
   artifact; the golden checkpoint remains unchanged.  Mirroring the resident
   result schema moves the source-bound r136 digest to
   `a0e42abe...b85989e` without changing its arithmetic refusal.
+- **r151 accepted-map reconstruction stop (2026-08-23):** fresh review found
+  that r150's `rho_total*T` tracer was not a manifold-consistent
+  reconstruction when molecular weight varies across a burning front.  That
+  diagnostic conclusion is retired; the r150 device stage ownership and
+  timestep-scaling measurements remain valid.  The replacement retained
+  exact-`245` diagnostic runs the actual nine-component shared-alpha remap,
+  leaves components 0 through 7 byte-identical, and searches the binary32
+  sensible-energy lattice for the two adjacent values bracketing `V=1` under
+  the authoritative r60 accepted-volume map.  This is the favorable
+  manifold projection: it tests the real endpoint tolerance and fp32
+  representability rather than an auxiliary tracer.
+
+  The reconstruction reduces the CFL/CFL/2/CFL/4 maxima to
+  `1.302156695613399e-3`, `1.2866699325340125e-3`, and
+  `1.2788512525973017e-3` (48.59%, 48.85%, and 48.99% reductions), but the
+  CFL value remains `1.7362089275x` the unchanged `7.5e-4` allowance.  The
+  limiting cell is 3478; its beginning deviation is
+  `3.0191404931656507e-12`, while the nearest accepted ratios straddle the
+  switching gap at `0.99869784330740574` and `1.0014969001088954`.  Thus no
+  representable energy at that fixed composition holds the required
+  plateau.  The anomaly-aware restoration branch remains inapplicable:
+  physical- and restoration-projection scalar generation are both exactly
+  zero.  Under the pre-registered r149 decision rule this is the requested
+  contract-level production-ceiling stop; production arithmetic is unchanged.
+
+  The resident timing gate is also corrected to the load-bearing completed-
+  call budget: five warm samples use the maximum order statistic and require
+  device `<=75 ms` and wall `<=200 ms`, not merely improvement over the old
+  `600.471584 ms` regression.  The calibrating observation is
+  `66.3667917 ms` device and `199.188458 ms` wall.  The completed-call budget
+  passes, but the requested approximately-70-ms wall target does not; the
+  corrected tier-10 x 25 s projection is `87.0408 h` wall (`29.0008 h`
+  device-only), versus the prior `262.3922 h`.  Durable evidence is
+  `r151_accepted_map_reconstruction_stop/accepted_map_reconstruction_evidence.v1`;
+  the golden checkpoint remains byte-identical.
