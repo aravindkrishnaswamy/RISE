@@ -3431,7 +3431,7 @@ it was already tried and refuted here.
   The live owner itself requires homogeneous Binary64 when accepted count is zero;
   the coordinated-clear RED reaches that exact selector helper as well as v12 writer
   and checksum-valid loader paths.  Legacy Binary32 formats 9--11 reject symmetrically
-  at writer and loader.
+  at writer and loader, with accepted and all-zero writer cases bound separately.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real

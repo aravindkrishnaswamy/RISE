@@ -3625,6 +3625,13 @@ int main(int argc,char** argv)
 			checkpointFixtureError,10u)&&!std::filesystem::exists(version10Checkpoint)&&
 		!SaveMethaneRunCheckpoint(version11Checkpoint,legacyAccepted,
 			checkpointFixtureError,11u)&&!std::filesystem::exists(version11Checkpoint);
+	const bool legacyZeroCountBinary32WriterRejected=
+		!SaveMethaneRunCheckpoint(version9ZeroCountCheckpoint,precisionRoundTrip,
+			checkpointFixtureError,9u)&&!std::filesystem::exists(version9ZeroCountCheckpoint)&&
+		!SaveMethaneRunCheckpoint(version10ZeroCountCheckpoint,precisionRoundTrip,
+			checkpointFixtureError,10u)&&!std::filesystem::exists(version10ZeroCountCheckpoint)&&
+		!SaveMethaneRunCheckpoint(version11ZeroCountCheckpoint,precisionRoundTrip,
+			checkpointFixtureError,11u)&&!std::filesystem::exists(version11ZeroCountCheckpoint);
 	forceMalformedManifoldLifecycleWriteForTest=true;
 	const bool malformedVersion9Written=SaveMethaneRunCheckpoint(version9Checkpoint,
 		legacyAccepted,checkpointFixtureError,9u);
@@ -3642,7 +3649,8 @@ int main(int argc,char** argv)
 	const bool malformedVersion11AcceptedWritten=SaveMethaneRunCheckpoint(
 		version11Checkpoint,legacyAccepted,checkpointFixtureError,11u);
 	forceMalformedManifoldLifecycleWriteForTest=false;
-	Check(legacyBinary32WriterRejected&&malformedVersion9Written&&
+	Check(legacyBinary32WriterRejected&&legacyZeroCountBinary32WriterRejected&&
+		malformedVersion9Written&&
 		!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion9ZeroCountWritten&&
 		!LoadMethaneRunCheckpoint(version9ZeroCountCheckpoint,rejectedLegacy,

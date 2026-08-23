@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"f45263bd2349a0d3fa8aa4f70ee2c6f25e89e45c70afc9ecdaad09d87bf57874"&&
+		"348b375ccd45b4f21a3c0793dd64c313cdeb9a4fff0b5893ce9083d3a99fceb6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -555,7 +555,7 @@ int main()
 		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"3b5a4925ea38952d6561624c4dd1dac9e80fb745c2929e3444ed25716b8d3863"&&
+		"023b535922fd046694266bc02f58288be04b183ad92d273826c8207e9069f2e7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -604,6 +604,8 @@ int main()
 		manifoldClosure.find("first_step_owner_requires_binary64 true")!=
 			std::string::npos&&
 		manifoldClosure.find("legacy_binary32_v9_v10_v11_writer_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("legacy_binary32_zero_count_v9_v10_v11_writer_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_temperature_transplant_writer_rejected true")!=
 			std::string::npos&&
