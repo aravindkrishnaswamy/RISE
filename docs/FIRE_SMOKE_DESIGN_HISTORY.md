@@ -3704,3 +3704,51 @@ it was already tried and refuted here.
   `28.8746/86.2105 h`.  Durable evidence is
   `r158_producer_rounded_reconstruction_stop/`
   `producer_rounded_reconstruction_evidence.v1`; golden remains byte-identical.
+- **r159 timestep-velocity audit and function-derived ceiling stop
+  (2026-08-23):** the frozen `5.6295254283638751e-5 s` accepted step was
+  incorrectly being read as a production CFL step, which implies
+  `217.37616398903009 m/s`.  The exact on-device audit instead finds the
+  golden transport field at `7.4333348274230957 m/s`, the 17-cycle physical
+  projection at `7.371121883392334 m/s`, and the terminal field at
+  `7.3644394874572754 m/s`.  The largest restoration correction is only
+  `0.40413093566894531 m/s` (`2.275065378736813e-5 m/s*s` impulse), so neither
+  the physical field nor the finite-per-step correction explains 217 m/s.
+
+  The preserved oracle console log supplies the actual lineage: the immutable
+  checkpoint predates r80/r81 and was accepted after repeated R0/R1 augmented
+  active-set cycle retries.  r59's two-class doctrine was subsequently applied
+  to that Zeno class by r80/r81; no new oracle fix is needed and the golden
+  physical state is healthy.  The production selector is re-evaluated from the
+  transport field alone—per-step-finite projection/restoration corrections are
+  excluded under the r70 death-spiral rule—and selects the advective CFL at
+  `1.6462660045688639e-3 s` (`1.6601606404766957e-3 s` from the physical-
+  projection maximum).  The old step was a retry-history surrogate, not a CFL
+  measurement.
+
+  Only after that physical-reference audit is the ceiling ruling applied.
+  Following r72, the gate derives from its function: r60's accepted thermo/
+  temperature-inversion pressure-deviation tolerance is `1e-3`; with the
+  pinned stability headroom `h=2^-2`, the bounded-plateau ceiling is exactly
+  `(1-h)*1e-3=7.5e-4`.  The earlier inheritance of that number without this
+  function derivation is recorded as a design-level derivation error, not an
+  invitation to change the value.  The producer-rounded reconstruction's
+  calibrating plateau `2.5328069638265172e-3` is `3.3770759517686897x` above
+  the derived ceiling.  The ceiling is not widened: this is the requested
+  thermo-domain finding and a real stop; physical fidelity remains owned by
+  the oracle-comparison contract.
+
+  The field-G/drain path remains an exact Binary32 per-cell Metal map plus max
+  reduction with one scalar and zero full-grid device-to-host transfers.
+  Parallelizing the nine independent dual-layout packs on the topology-aware
+  global thread pool reduces warm completed-wall p95 from `197.288084` to
+  `146.323667 ms` while device p95 is `66.3970417 ms`.  That is a
+  `25.8325%` wall reduction and projects the audited 25.03248-s tier-10 stepping
+  work to `0.6180 h` wall (`0.2804 h` device).  The remaining `79.9266 ms`
+  host residual—preflight/layout, uploads, command submission/waits, and
+  postprocessing—is named work; the `200 ms` gate is a ceiling, not the target.
+  The production solver is therefore not claimed faster than the oracle in
+  validated practice while the thermo stop remains.  Long shadow, `B_fp32`,
+  guard supersession, temporal refinement, readmission, source maps, and first
+  light remain blocked.  Durable evidence is
+  `r159_timestep_velocity_ceiling_stop/timestep_velocity_ceiling_evidence.v1`;
+  golden remains byte-identical.

@@ -595,6 +595,54 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r159 audits the velocity actually carried by the immutable burning state.
+# Exact 247 binds the transport, physical-projection, and restoration-correction
+# maxima, their owning faces, the physical CFL step, and the resident topology.
+# Malformed activation must return 222 before Metal work.
+if [ "$(uname -s)" = "Darwin" ]; then
+	velocity_audit_name="FireSequenceTest.r159_timestep_velocity_audit"
+	velocity_audit_path="$BIN_DIR/FireSequenceTest"
+	velocity_audit_log="$LOG_DIR/$velocity_audit_name.log"
+	velocity_audit_malformed_log="$LOG_DIR/$velocity_audit_name.malformed.log"
+	printf '[ evidence ] %-46s ... ' "$velocity_audit_name"
+	velocity_audit_rc=0
+	velocity_audit_malformed_rc=0
+	if [ ! -x "$velocity_audit_path" ]; then
+		velocity_audit_rc=127
+		velocity_audit_malformed_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=malformed \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$velocity_audit_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$velocity_audit_malformed_log" 2>&1 || velocity_audit_malformed_rc=$?
+		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=1 \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$velocity_audit_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$velocity_audit_log" 2>&1 || velocity_audit_rc=$?
+	else
+		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=malformed \
+			"$velocity_audit_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$velocity_audit_malformed_log" 2>&1 || velocity_audit_malformed_rc=$?
+		RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=1 \
+			"$velocity_audit_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$velocity_audit_log" 2>&1 || velocity_audit_rc=$?
+	fi
+	if [ "$velocity_audit_malformed_rc" -eq 222 ] && [ "$velocity_audit_rc" -eq 247 ]; then
+		echo 'PASS (exact exit=247)'
+		rm -f "$velocity_audit_log" "$velocity_audit_malformed_log"
+	else
+		echo "FAIL (malformed_exit=$velocity_audit_malformed_rc expected 222; "\
+"evidence_exit=$velocity_audit_rc expected 247)"
+		printf '%s\t%d\t%s\n' "$velocity_audit_name" "$velocity_audit_rc" \
+			"$velocity_audit_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

@@ -77,8 +77,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	const char* stageBudgetProbeValue=std::getenv("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE");
 	if(stageBudgetProbeValue&&std::strcmp(stageBudgetProbeValue,"1")!=0)return 223;
 	const bool stageBudgetProbe=stageBudgetProbeValue!=nullptr;
+	const char* timestepVelocityAuditValue=std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT");
+	if(timestepVelocityAuditValue&&std::strcmp(timestepVelocityAuditValue,"1")!=0)return 222;
+	const bool timestepVelocityAudit=timestepVelocityAuditValue!=nullptr;
 	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
-		(manifoldProbe&&stageBudgetProbe))return 224;
+		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAudit&&plateauProbe)||
+		(timestepVelocityAudit&&manifoldProbe)||(timestepVelocityAudit&&stageBudgetProbe))return 224;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -245,6 +249,149 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
 				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
 			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
+		}
+		if(timestepVelocityAudit){
+			if(slice!=0u)return 222;
+			request.enforceManifoldPlateau=true;
+			auto setAuditEnvironment=[](const char* name,const char* value){
+#if defined(_WIN32)
+				return _putenv_s(name,value)==0;
+#else
+				return setenv(name,value,1)==0;
+#endif
+			};
+			auto clearAuditEnvironment=[](const char* name){
+#if defined(_WIN32)
+				return _putenv_s(name,"")==0;
+#else
+				return unsetenv(name)==0;
+#endif
+			};
+			if(!setAuditEnvironment("RISE_FIRE_RESTORATION_PLATEAU_PROBE","1")||
+				!setAuditEnvironment("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed"))return 225;
+			RISE::FireProductionResidentStepResult physicalOnly;
+			if(!RISE::AdvanceFireProductionResidentStepMetal(request,physicalOnly,&error)){
+				std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT physical-only failed: %s\n",
+					error.c_str());return 225;
+			}
+			if(!clearAuditEnvironment("RISE_FIRE_PRODUCTION_RESTORATION_TEST")||
+				!clearAuditEnvironment("RISE_FIRE_RESTORATION_PLATEAU_PROBE"))return 225;
+			RISE::FireProductionResidentStepResult measured;
+			if(!RISE::AdvanceFireProductionResidentStepMetal(request,measured,&error)){
+				std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT failed: %s\n",error.c_str());
+				return 225;
+			}
+			double transportMaximum=0.0,beginningMomentumVelocityMaximum=0.0;
+			double beginningCorrectionMaximum=0.0,physicalMaximum=0.0,finalMaximum=0.0;
+			double restorationCorrectionMaximum=0.0;
+			unsigned int transportAxis=0u,beginningCorrectionAxis=0u,physicalAxis=0u,
+				finalAxis=0u,restorationCorrectionAxis=0u;
+			std::size_t transportFace=0u,beginningCorrectionFace=0u,physicalFace=0u,
+				finalFace=0u,restorationCorrectionFace=0u;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				for(std::size_t face=0u;face<request.cellTransport.frozenVelocityMPerS[axis].size();
+					++face){
+					const double transportVelocity=request.cellTransport.frozenVelocityMPerS[axis][face];
+					const double momentumVelocity=request.force.beginningMomentumKGPerM2S[axis][face]/
+						request.force.faceDensityKGPerM3[axis][face];
+					if(std::fabs(transportVelocity)>transportMaximum){transportMaximum=
+						std::fabs(transportVelocity);transportAxis=axis;transportFace=face;}
+					beginningMomentumVelocityMaximum=std::max(beginningMomentumVelocityMaximum,
+						std::fabs(momentumVelocity));
+					if(std::fabs(transportVelocity-momentumVelocity)>beginningCorrectionMaximum){
+						beginningCorrectionMaximum=std::fabs(transportVelocity-momentumVelocity);
+						beginningCorrectionAxis=axis;beginningCorrectionFace=face;}
+				}
+				for(std::size_t face=0u;face<physicalOnly.projection.velocityMPerS[axis].size();
+					++face){
+					const double physical=physicalOnly.projection.velocityMPerS[axis][face];
+					const double final=measured.transportedDual.momentum[axis][face]/
+						measured.transportedDual.auxiliaryFaceDensity[axis][face];
+					if(std::fabs(physical)>physicalMaximum){physicalMaximum=std::fabs(physical);
+						physicalAxis=axis;physicalFace=face;}
+					if(std::fabs(final)>finalMaximum){finalMaximum=std::fabs(final);
+						finalAxis=axis;finalFace=face;}
+					if(std::fabs(final-physical)>restorationCorrectionMaximum){
+						restorationCorrectionMaximum=std::fabs(final-physical);
+						restorationCorrectionAxis=axis;restorationCorrectionFace=face;}
+				}
+			}
+			const double selectorMaximum=0.5*shape.cellWidthM/dt;
+			const double transportCFL=transportMaximum>0.0?0.5*shape.cellWidthM/transportMaximum:
+				std::numeric_limits<double>::infinity();
+			const double physicalCFL=physicalMaximum>0.0?0.5*shape.cellWidthM/physicalMaximum:
+				std::numeric_limits<double>::infinity();
+			RISE::FireProductionStableTimeStep auditedSelection;
+			const RISE::FireProductionAcceptedCheckpointStateView initialState;
+			const RISE::FireProductionAcceptedManifoldObservation initialObservation;
+			if(!RISE::SelectFireProductionStableTimeStep(shape.cellWidthM,transportMaximum,
+				0.0,0.0,0.0,initialState,initialObservation,auditedSelection,&error))return 225;
+			std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT dt=%.17g dx=%.17g selector_max=%.17g "
+				"transport_max=%.17g transport_axis=%u transport_face=%zu "
+				"beginning_momentum_velocity_max=%.17g beginning_correction_max=%.17g "
+				"beginning_correction_axis=%u beginning_correction_face=%zu\n",
+				dt,shape.cellWidthM,selectorMaximum,transportMaximum,transportAxis,transportFace,
+				beginningMomentumVelocityMaximum,beginningCorrectionMaximum,
+				beginningCorrectionAxis,beginningCorrectionFace);
+			std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT physical_max=%.17g physical_axis=%u "
+				"physical_face=%zu final_max=%.17g final_axis=%u final_face=%zu "
+				"restoration_correction_max=%.17g restoration_axis=%u restoration_face=%zu "
+				"restoration_impulse_max=%.17g transport_cfl_dt=%.17g physical_cfl_dt=%.17g\n",
+				physicalMaximum,physicalAxis,physicalFace,finalMaximum,finalAxis,finalFace,
+				restorationCorrectionMaximum,restorationCorrectionAxis,restorationCorrectionFace,
+				restorationCorrectionMaximum*dt,transportCFL,physicalCFL);
+			const bool topologyBound=
+				physicalOnly.residentProjectionInvocationCount==1u&&
+				physicalOnly.interstageFullGridTransferCount==0u&&
+				physicalOnly.projection.validationPassed&&
+				physicalOnly.projection.executedVCycleCount==17u&&
+				physicalOnly.manifoldScalarDeviceToHostTransferCount==0u&&
+				physicalOnly.manifoldFullGridDeviceToHostTransferCount==0u&&
+				measured.residentProjectionInvocationCount==2u&&
+				measured.interstageFullGridTransferCount==0u&&
+				measured.physicalProjection.validationPassed&&
+				measured.physicalProjection.executedVCycleCount==17u&&
+				!measured.projection.validationPassed&&
+				measured.projection.executedVCycleCount==16u&&
+				measured.manifoldScalarDeviceToHostTransferCount==1u&&
+				measured.manifoldFullGridDeviceToHostTransferCount==0u;
+			const bool valuesBound=
+				dt==5.6295254283638751e-05&&shape.cellWidthM==0.02447449285392881&&
+				selectorMaximum==217.37616398903009&&
+				transportMaximum==7.4333348274230957&&transportAxis==2u&&
+				transportFace==714534u&&
+				beginningMomentumVelocityMaximum==7.4333348274230957&&
+				beginningCorrectionMaximum==0.03793315589427948&&
+				beginningCorrectionAxis==2u&&beginningCorrectionFace==3657u&&
+				physicalMaximum==7.371121883392334&&physicalAxis==2u&&
+				physicalFace==714534u&&finalMaximum==7.3644394874572754&&
+				finalAxis==2u&&finalFace==714534u&&
+				restorationCorrectionMaximum==0.40413093566894531&&
+				restorationCorrectionAxis==1u&&restorationCorrectionFace==40805u&&
+				restorationCorrectionMaximum*dt==2.275065378736813e-05&&
+				transportCFL==0.0016462660045688639&&
+				physicalCFL==0.0016601606404766957&&
+				auditedSelection.seconds==transportCFL&&auditedSelection.activeLimit&&
+				std::strcmp(auditedSelection.activeLimit,"advective_CFL")==0;
+			std::fprintf(stderr,"TIMESTEP_VELOCITY_AUDIT topology=%d values=%d "
+				"physical_only_invocations=%u cycles=%u validation=%d scalar_reads=%u full_reads=%u "
+				"normal_invocations=%u physical_cycles=%u physical_validation=%d "
+				"restoration_cycles=%u restoration_validation=%d scalar_reads=%u full_reads=%u "
+				"audited_selected=%.17g audited_limit=%s\n",topologyBound?1:0,valuesBound?1:0,
+				physicalOnly.residentProjectionInvocationCount,
+				physicalOnly.projection.executedVCycleCount,
+				physicalOnly.projection.validationPassed?1:0,
+				physicalOnly.manifoldScalarDeviceToHostTransferCount,
+				physicalOnly.manifoldFullGridDeviceToHostTransferCount,
+				measured.residentProjectionInvocationCount,
+				measured.physicalProjection.executedVCycleCount,
+				measured.physicalProjection.validationPassed?1:0,
+				measured.projection.executedVCycleCount,
+				measured.projection.validationPassed?1:0,
+				measured.manifoldScalarDeviceToHostTransferCount,
+				measured.manifoldFullGridDeviceToHostTransferCount,auditedSelection.seconds,
+				auditedSelection.activeLimit?auditedSelection.activeLimit:"null");
+			return DigestFile(checkpointPath)==checkpointDigest&&topologyBound&&valuesBound?247:225;
 		}
 		if(stageBudgetProbe){
 			if(slice!=0u)return 225;

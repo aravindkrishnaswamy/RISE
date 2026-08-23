@@ -517,7 +517,7 @@ int main()
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-		"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
+		"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
 		"06ee59fc4cbc0980c1f4349b4bb0acc453ffa4619ec9063bff56886e6a992520"&&
@@ -577,7 +577,7 @@ int main()
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-		"9e4577659acc8b16ca767d054362de2ddd77cbc5b13f01f07b5058aa64bd3c02"&&
+		"e36a76942cdc852cb4cdc9cc1fa4f9b679fbc996e16eed7ed254ee8e03b327f5"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -762,7 +762,7 @@ int main()
 			"contract_level_production_ceiling_ruling_required true")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
+			"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
@@ -878,7 +878,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"dc619f6cbceb6d2c0eefd8266c54f5bd9ab4226b9342ddd98b8f28453da9b23e"&&
+			"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionSource.begin(),advectionSource.end()))==
 			"389eb83c649375ec8649b372bb1db33bb62785d1b6324c6cc29943d21c2bfa58"&&
@@ -1003,7 +1003,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"3ecb485ac2d265b8a665dce17578445ebea0514e6a77c5de6db6f9362b7b08e4"&&
+			"3f610e026e0d0d0094b282acbf25b9452448264641f4ffe140824b9a474d342e"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1019,6 +1019,65 @@ int main()
 		goldenCompositionFixture.find(
 			"reconstructionValidatedPassCellCount[0]==4881360u")!=std::string::npos,
 		"r158 binds the producer-rounded r60 reconstruction stop");
+	const std::string timestepVelocityCeilingEvidence=ReadText(
+		"rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/"
+		"timestep_velocity_ceiling_evidence.v1");
+	Check(!timestepVelocityCeilingEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(timestepVelocityCeilingEvidence.begin(),
+			timestepVelocityCeilingEvidence.end()))==
+		"8374c52a1d09277f5caf419bf45524ee9b81eaa8a533314c984391c3662d1151"&&
+		timestepVelocityCeilingEvidence.find(
+			"accepted_step_implied_velocity_m_per_s 217.37616398903009")!=
+			std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"transport_velocity_max_m_per_s 7.4333348274230957")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"physical_projection_velocity_max_m_per_s 7.371121883392334")!=
+			std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"restoration_correction_velocity_max_m_per_s 0.40413093566894531")!=
+			std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"audited_transport_CFL_step_s 0.0016462660045688639")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"oracle_two_class_zeno_fix_already_landed true")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"normal_restoration_projection_validation false")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"derived_production_manifold_ceiling 0.00075")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"calibrating_observed_plateau_over_derived_ceiling 3.3770759517686897")!=
+			std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"corrected_warm_wall_p95_ms 146.323667")!=std::string::npos&&
+		timestepVelocityCeilingEvidence.find(
+			"ceiling_verdict thermo_temperature_inversion_domain_finding_stop")!=
+			std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+			"25c562f6e299602b1e1e47efbd6fc17caa1fcbcee82f6937018d810d291d1866"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"3f610e026e0d0d0094b282acbf25b9452448264641f4ffe140824b9a474d342e"&&
+		goldenCompositionFixture.find(
+			"selectorMaximum==217.37616398903009")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"auditedSelection.seconds==transportCFL")!=std::string::npos&&
+		goldenCompositionFixture.find(
+			"measured.residentProjectionInvocationCount==2u")!=std::string::npos&&
+		advectionMetal.find("GlobalThreadPool().ParallelFor(9u")!=std::string::npos&&
+		advectionMetal.find(
+			"production timestep velocity audit activation is invalid")!=std::string::npos&&
+		unixTestDriver.find("FireSequenceTest.r159_timestep_velocity_audit")!=
+			std::string::npos&&
+		unixTestDriver.find("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT=malformed")!=
+			std::string::npos&&
+		unixTestDriver.find("velocity_audit_malformed_rc\" -eq 222")!=
+			std::string::npos&&
+		unixTestDriver.find("velocity_audit_rc\" -eq 247")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=247)")!=std::string::npos&&
+		unixTestDriver.find("expected 247")!=std::string::npos,
+		"r159 binds the physical velocity audit, host reduction, and thermo-domain stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

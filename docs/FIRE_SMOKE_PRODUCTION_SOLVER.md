@@ -3483,6 +3483,65 @@ unchanged and the later sequence stays blocked.  Fresh exact-`254` timing is
 `rendered/fire_production_calibration/r158_producer_rounded_reconstruction_stop/`
 `producer_rounded_reconstruction_evidence.v1`; golden remains unchanged.
 
+### 7.55s Timestep-velocity audit and thermo ceiling (r159)
+
+The immutable golden checkpoint's accepted `5.6295254283638751e-5 s` step is
+not a production CFL measurement.  Back-solving `0.5*dx/dt` gives
+`217.37616398903009 m/s`, but the exact resident audit measures only
+`7.4333348274230957 m/s` in the transport field, `7.371121883392334 m/s`
+after the physical projection, and `7.3644394874572754 m/s` after restoration.
+The largest restoration correction is `0.40413093566894531 m/s`, only 5.48%
+of the physical maximum.  The old step instead belongs to the preserved
+binary64 oracle's retry history: its console log records repeated R0/R1
+augmented-active-set cycles before r80/r81 applied r59's two-class acceptance
+to that Zeno topology.  The checkpoint remains the immutable pre-fix root, but
+its physical velocity bytes are healthy.
+
+The production selector is therefore audited with the transport velocity, not
+the retry-limited oracle step and not a finite-per-step projection correction.
+This is the r70 death-spiral boundary: a `1/dt`-mode correction impulse may be
+validated as part of the accepted step, but its velocity quotient does not
+become the next step's advective speed.  The selector consumes
+`7.4333348274230957 m/s`, reports `advective_CFL`, and returns
+`1.6462660045688639e-3 s`; the physical-projection maximum independently gives
+`1.6601606404766957e-3 s`.
+
+The ceiling is then derived under the r72 function-owner rule.  The production
+plateau gate protects the r60 thermo/temperature-inversion domain, whose
+dimensionless pressure-deviation tolerance is `1e-3`.  Applying the pinned
+headroom `h=2^-2` gives
+
+`C_manifold=(1-h)*1e-3=7.5e-4`.
+
+The former inheritance of `7.5e-4` from the physical projection is a design-
+level derivation error even though the corrected function derivation yields
+the same number.  The measured producer-rounded burning plateau is
+`2.5328069638265172e-3`, or `3.3770759517686897x C_manifold`.  The ceiling is
+not widened to admit it.  This is a thermo-domain finding, so the sequence
+stops before long shadow, golden `B_fp32`, guard supersession, temporal
+refinement, readmission, source maps, or first light.  Physical-fidelity
+judgment remains a separate oracle-comparison contract.
+
+The predictor path remains resident: one exact per-cell Binary32 manifold map,
+one max reduction, one scalar readback, and no full-grid transfer.  The largest
+host cost was instead serial construction of nine independent dual-remap
+layouts.  Dispatching those packs through the topology-aware global thread
+pool leaves arithmetic unchanged and moves warm p95 from
+`66.0780417/197.288084 ms` device/wall to
+`66.3970417/146.323667 ms`.  At the physical CFL this projects the
+25.0324805-s tier-10 stepping work to `0.2804 h` device and `0.6180 h`
+completed wall.  The remaining wall/device ratio is `2.2038`, with
+`79.9266 ms` of host orchestration still attributable to preflight/layout,
+uploads, command submission/waits, and postprocessing.  The `200 ms` gate is a
+ceiling, not a performance target; no claim that production is faster than the
+oracle in validated practice is made while the thermo stop is active.
+
+The exact audit exits `247` only after binding all velocity values, owning
+faces, projection counts/cycles, transfer counts, and golden SHA.  Malformed
+activation exits `222` before Metal.  Exact evidence is
+`rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/`
+`timestep_velocity_ceiling_evidence.v1`.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

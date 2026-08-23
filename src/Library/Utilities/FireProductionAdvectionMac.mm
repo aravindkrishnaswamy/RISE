@@ -13,8 +13,10 @@
 #include "FireProductionForce.h"
 #include "FireSimulationRecords.h"
 #include "FireProductionTransport.h"
+#include "ThreadPool.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
@@ -1885,6 +1887,17 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				const float steps[]={0.5f*request.timeStepS,0.5f*request.timeStepS,
 					request.timeStepS};
 				std::array<std::array<FireProductionRemapRequest,3>,3> packed;
+				std::array<std::string,9> packErrors;
+				std::array<bool,9> packSucceeded={{false,false,false,false,false,false,false,false,false}};
+				Implementation::GlobalThreadPool().ParallelFor(9u,[&](const unsigned int task){
+					const unsigned int component=task/3u,sweep=task%3u;
+					packSucceeded[task]=BuildFireProductionDualAxisRequest(request,component,sweep,
+						steps[sweep],request.beginningFaceDensity[component],
+						request.beginningMomentum[component],packed[component][sweep],
+						&packErrors[task]);
+				});
+				for(unsigned int task=0u;task<packSucceeded.size();++task)if(!packSucceeded[task]){
+					if(structuredError)*structuredError=packErrors[task];return false;}
 				std::array<std::array<id<MTLBuffer>,3>,3> velocityStage,lowerStage,upperStage;
 				FireProductionMetalDualMomentumStaticState computed;
 				computed.shape=request.shape;computed.timeStepS=request.timeStepS;
@@ -1898,9 +1911,6 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				};
 				for( unsigned int component=0u;component<3u;++component )
 					for( unsigned int sweep=0u;sweep<3u;++sweep ) {
-						if( !BuildFireProductionDualAxisRequest(request,component,sweep,steps[sweep],
-							request.beginningFaceDensity[component],request.beginningMomentum[component],
-							packed[component][sweep],structuredError) ) return false;
 						const FireProductionRemapRequest& line=packed[component][sweep];
 						FireProductionMetalDualAxisStaticState& output=computed.axis[component][sweep];
 						output.lineLength=static_cast<std::uint32_t>(line.lineLength);
@@ -1952,6 +1962,10 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					}
 				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
 				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
+				const char* velocityAudit=std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT");
+				if( velocityAudit&&std::strcmp(velocityAudit,"1")==0 ) std::fprintf(stderr,
+					"TIMESTEP_VELOCITY_DEVICE dual_static_upload=%.9g\n",
+					([upload GPUEndTime]-[upload GPUStartTime])*1000.0);
 				computed.uploadCommandCommitCount=1u;computed.actualMetalAllocationBytes=actual;
 				state=std::move(computed);
 			}
@@ -2269,6 +2283,23 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					"production manifold stage-budget probe activation is invalid";
 				return false;
 			}
+			const char* timestepVelocityAuditActivation=std::getenv(
+				"RISE_FIRE_TIMESTEP_VELOCITY_AUDIT");
+			if( timestepVelocityAuditActivation&&
+				std::strcmp(timestepVelocityAuditActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production timestep velocity audit activation is invalid";
+				return false;
+			}
+			const bool timestepVelocityAuditEnabled=timestepVelocityAuditActivation!=0;
+			const auto timestepVelocityAuditStart=std::chrono::steady_clock::now();
+			auto timestepVelocityAuditMS=[&](){return std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-timestepVelocityAuditStart).count();};
+			double timestepVelocityAuditValidatedMS=0.0,timestepVelocityAuditDualStaticMS=0.0,
+				timestepVelocityAuditUploadMS=0.0,timestepVelocityAuditForceMS=0.0,
+				timestepVelocityAuditCellMS=0.0,timestepVelocityAuditDualMS=0.0,
+				timestepVelocityAuditSourceMS=0.0,timestepVelocityAuditPhysicalMS=0.0,
+				timestepVelocityAuditRestorationMS=0.0,timestepVelocityAuditTerminalMS=0.0;
 			const char* plateauEvidenceActivation=std::getenv(
 				"RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 			if( plateauEvidenceActivation&&std::strcmp(plateauEvidenceActivation,"1")!=0 ) {
@@ -2397,9 +2428,11 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 						"production resident step momentum source is not positive zero";
 					return false;
 				}
+			timestepVelocityAuditValidatedMS=timestepVelocityAuditMS();
 			FireProductionMetalDualMomentumStaticState dualStatic;
 			if( !PrepareFireProductionDualMomentumMetalStaticState(request.dualTransport,
 				dualStatic,structuredError) ) return false;
+			timestepVelocityAuditDualStaticMS=timestepVelocityAuditMS();
 			MetalRemapContext& context=Context();
 			if( !context.Valid() ) return false;
 			@autoreleasepool {
@@ -2482,14 +2515,19 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					restorationTargetPrivate destinationOffset:0 size:cells*sizeof(float)];
 				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
 				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
+				const double timestepVelocityAuditOwnerUploadDeviceMS=
+					([upload GPUEndTime]-[upload GPUStartTime])*1000.0;
+				timestepVelocityAuditUploadMS=timestepVelocityAuditMS();
 				FireProductionMetalFrozenForceResidentState force;
 				if( !AdvanceFireProductionFrozenForceMetalResidentState(request.force,force,
 					structuredError) ) return false;
+				timestepVelocityAuditForceMS=timestepVelocityAuditMS();
 				FireProductionMetalCellPalindromeResidentInput cellInput;cellInput.conservativeValues=cellPrivate;
 				cellInput.frozenVelocityMPerS=velocityPrivate;cellInput.ambientValues=ambientPrivate;
 				FireProductionMetalCellPalindromeResidentResult cell;
 				if( !RemapFireProductionCellPalindromeMetalResident(request.cellTransport,cellInput,
 					cell,structuredError) ) return false;
+				timestepVelocityAuditCellMS=timestepVelocityAuditMS();
 				FireProductionMetalDualMomentumResidentInput dualInput;
 				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
 				dualInput.packedMomentum=force.packedMomentumKGPerM2S;
@@ -2497,6 +2535,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				FireProductionMetalDualMomentumResidentResult dual;
 				if( !RemapFireProductionDualMomentumMetalResident(request.dualTransport,dualStatic,
 					dualInput,dual,structuredError) ) return false;
+				timestepVelocityAuditDualMS=timestepVelocityAuditMS();
 				id<MTLBuffer> projectedDensity=privateBuffer(cells*sizeof(float));
 				const MetalGridParameters sourceGrid={static_cast<std::uint32_t>(shape.nx),
 					static_cast<std::uint32_t>(shape.ny),static_cast<std::uint32_t>(shape.nz),0u,9u};
@@ -2530,6 +2569,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				const std::uint64_t sourceCommits=MetalCommandCommitCount-beginningCommits;
 				if( [sourceCommand status]!=MTLCommandBufferStatusCompleted||sourceCommits!=1u||
 					MetalHostBufferReadCount-beginningReads!=0u ) return false;
+				timestepVelocityAuditSourceMS=timestepVelocityAuditMS();
 				FireProductionProjectionRequest projectionRequest;
 				projectionRequest.shape=shape;projectionRequest.timeStepS=request.force.timeStepS;
 				projectionRequest.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
@@ -2551,10 +2591,13 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				if( restorationRemoved ) {
 					if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,
 						projection,structuredError) ) return false;
+					timestepVelocityAuditPhysicalMS=timestepVelocityAuditMS();
+					timestepVelocityAuditRestorationMS=timestepVelocityAuditPhysicalMS;
 				} else {
 					FireProductionMetalProjectionResidentState physicalState;
 					if( !ProjectFireProductionMetalResidentState(projectionRequest,projectionInput,
 						physicalState,physicalProjection,structuredError) ) return false;
+					timestepVelocityAuditPhysicalMS=timestepVelocityAuditMS();
 					FireProductionProjectionRequest restorationRequest=projectionRequest;
 					restorationRequest.divergenceTargetPerS=
 						request.restorationDivergenceTargetPerS;
@@ -2566,6 +2609,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 						targetPrivate:restorationTargetPrivate;
 					if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
 						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
+					timestepVelocityAuditRestorationMS=timestepVelocityAuditMS();
 				}
 				const std::size_t manifoldReductionOffset=cellValueBytes+2u*packedFaceBytes;
 				const std::size_t manifoldReductionBytes=3u*sizeof(std::uint32_t);
@@ -2595,6 +2639,7 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					destinationOffset:cellValueBytes+packedFaceBytes size:packedFaceBytes];
 				[blit endEncoding];CommitTrackedMetalCommand(terminalCommand);[terminalCommand waitUntilCompleted];
 				if( [terminalCommand status]!=MTLCommandBufferStatusCompleted ) return false;
+				timestepVelocityAuditTerminalMS=timestepVelocityAuditMS();
 				float* values=static_cast<float*>(ReadTrackedMetalBuffer(terminal));
 				const std::uint32_t* manifoldReduction=measureManifold?
 					reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const unsigned char*>(values)+
@@ -2655,7 +2700,8 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 				const bool plateauPassed=!enforcePlateau||
 					(plateauValidation.requiredDrainFraction<=1.0&&
 					plateauValidation.mechanismPassed&&maximumTerminalDeviation<=0.00075);
-				if( !plateauPassed&&!manifoldProbeActivation&&!manifoldStageBudgetActivation ) {
+				if( !plateauPassed&&!manifoldProbeActivation&&!manifoldStageBudgetActivation&&
+					!timestepVelocityAuditActivation ) {
 					if( structuredError ) *structuredError=
 						plateauValidation.requiredDrainFraction>1.0?
 						"production manifold generation exceeds the accepted-step allowance":
@@ -2765,6 +2811,36 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
 					computed.combinedActualMetalAllocationBytes>certified||
 					!std::isfinite(computed.deviceElapsedMS) ) return false;
 				result=std::move(computed);
+				if( timestepVelocityAuditEnabled ) {
+					const double completeMS=timestepVelocityAuditMS();
+					std::fprintf(stderr,"TIMESTEP_VELOCITY_WALL preflight=%.9g dual_static=%.9g "
+						"upload=%.9g force=%.9g cell=%.9g dual=%.9g source=%.9g "
+						"physical_projection=%.9g restoration_projection=%.9g terminal=%.9g "
+						"postprocess=%.9g total=%.9g\n",timestepVelocityAuditValidatedMS,
+						timestepVelocityAuditDualStaticMS-timestepVelocityAuditValidatedMS,
+						timestepVelocityAuditUploadMS-timestepVelocityAuditDualStaticMS,
+						timestepVelocityAuditForceMS-timestepVelocityAuditUploadMS,
+						timestepVelocityAuditCellMS-timestepVelocityAuditForceMS,
+						timestepVelocityAuditDualMS-timestepVelocityAuditCellMS,
+						timestepVelocityAuditSourceMS-timestepVelocityAuditDualMS,
+						timestepVelocityAuditPhysicalMS-timestepVelocityAuditSourceMS,
+						timestepVelocityAuditRestorationMS-timestepVelocityAuditPhysicalMS,
+						timestepVelocityAuditTerminalMS-timestepVelocityAuditRestorationMS,
+						completeMS-timestepVelocityAuditTerminalMS,completeMS);
+					const double sourceDeviceMS=([sourceCommand GPUEndTime]-
+						[sourceCommand GPUStartTime])*1000.0;
+					const double terminalDeviceMS=([terminalCommand GPUEndTime]-
+						[terminalCommand GPUStartTime])*1000.0;
+					std::fprintf(stderr,"TIMESTEP_VELOCITY_DEVICE owner_upload=%.9g force=%.9g "
+						"cell=%.9g dual=%.9g source=%.9g physical_projection=%.9g "
+						"restoration_projection=%.9g terminal=%.9g reported_total=%.9g\n",
+						timestepVelocityAuditOwnerUploadDeviceMS,
+						force.diagnostics.advanceDeviceElapsedMS,cell.deviceElapsedMS,
+						dual.deviceElapsedMS,sourceDeviceMS,
+						restorationRemoved?projection.deviceElapsedMS:physicalProjection.deviceElapsedMS,
+						restorationRemoved?0.0:projection.deviceElapsedMS,terminalDeviceMS,
+						result.deviceElapsedMS);
+				}
 			}
 			if( structuredError ) structuredError->clear();return true;
 		} catch( const std::bad_alloc& ) {
