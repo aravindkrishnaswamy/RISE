@@ -1587,6 +1587,9 @@ namespace FireProductionDyadicCalibration
 		const double baseStep,RISE::FireProductionStableTimeStep& selected,
 		std::string& error)
 	{
+		RISE::FireStateProducerPrecision statePrecision=
+			RISE::FireStateProducerPrecision::Unknown;
+		if(!HomogeneousStateProducerPrecision(state.states,statePrecision))return false;
 		const double previousStep=state.previousStepS;
 		RISE::FireProductionAcceptedCheckpointStateView currentAcceptedState;
 		RISE::FireProductionProjectionShape acceptedShape;
@@ -1594,7 +1597,8 @@ namespace FireProductionDyadicCalibration
 		std::array<std::vector<float>,3> acceptedMomentum,acceptedVelocity;
 		std::uint64_t currentAcceptedStateDigest=0u;
 		if(state.acceptedSteps>0u){
-			if(!state.productionManifoldObservation.Available()||
+			if(statePrecision!=RISE::FireStateProducerPrecision::Binary32||
+				!state.productionManifoldObservation.Available()||
 				!BuildCheckpointAcceptedStatePayload(state,acceptedShape,
 					acceptedConservative,acceptedMomentum,acceptedVelocity,
 					currentAcceptedStateDigest))return false;
@@ -1602,7 +1606,11 @@ namespace FireProductionDyadicCalibration
 			currentAcceptedState.conservativeValues=&acceptedConservative;
 			currentAcceptedState.momentum=&acceptedMomentum;
 			currentAcceptedState.velocity=&acceptedVelocity;
-		}
+		} else if(statePrecision!=RISE::FireStateProducerPrecision::Binary64||
+			state.simulationTimeS!=0.0||state.previousStepS!=0.0||
+			state.lastAcceptedStepS!=0.0||
+			!state.values.acceptedTimeStepHistoryS.empty()||
+			state.productionManifoldObservation.Available())return false;
 		const double representedCellWidth=static_cast<double>(static_cast<float>(state.cellWidthM));
 		return RISE::SelectFireProductionStableTimeStep(representedCellWidth,
 			0.5*representedCellWidth/baseStep,0.0,0.0,previousStep,
@@ -1860,11 +1868,26 @@ namespace FireProductionDyadicCalibration
 				const bool coordinatedClearRejected=!SaveMethaneRunCheckpoint(
 					coordinatedClearCheckpoint,coordinatedClear,error)&&
 					!std::filesystem::exists(coordinatedClearCheckpoint);
+				RISE::FireProductionStableTimeStep coordinatedClearSelection;
+				const bool coordinatedClearOwnerRejected=!SelectProductionTimeStepForState(
+					coordinatedClear,baseStep,coordinatedClearSelection,error);
+				forceMalformedManifoldLifecycleWriteForTest=true;
+				const bool coordinatedClearWritten=SaveMethaneRunCheckpoint(
+					coordinatedClearCheckpoint,coordinatedClear,error);
+				forceMalformedManifoldLifecycleWriteForTest=false;
+				MethaneRunCheckpoint loadedCoordinatedClear;
+				const bool coordinatedClearLoaderRejected=coordinatedClearWritten&&
+					!LoadMethaneRunCheckpoint(coordinatedClearCheckpoint,
+						loadedCoordinatedClear,error);
+				{std::error_code ignored;
+					std::filesystem::remove(coordinatedClearCheckpoint,ignored);}
 				authorityMutationREDsPassed=authorityMutationREDsPassed&&
-					lostObservationRejected&&coordinatedClearRejected;
+					lostObservationRejected&&coordinatedClearRejected&&
+					coordinatedClearOwnerRejected&&coordinatedClearLoaderRejected;
 				if(!lostObservationRejected)std::fprintf(stderr,
 					"r148 lost accepted observation aliased to a first step\n");
-				if(!coordinatedClearRejected)std::fprintf(stderr,
+				if(!(coordinatedClearRejected&&coordinatedClearOwnerRejected&&
+					coordinatedClearLoaderRejected))std::fprintf(stderr,
 					"r148 coordinated accepted metadata clear aliased to a first step\n");
 				const std::string stateDigestBefore=AnalyticStateDigest(state);
 				MethaneRunCheckpoint transplanted=state;

@@ -3428,6 +3428,10 @@ it was already tried and refuted here.
   alias, temperature/velocity transplant, cleared-observation owner alias,
   selector-side state transplant, coordinated metadata clear, non-tail history/time
   transplant, and every v9/v10/v11 Binary32 resume all RED.
+  The live owner itself requires homogeneous Binary64 when accepted count is zero;
+  the coordinated-clear RED reaches that exact selector helper as well as v12 writer
+  and checksum-valid loader paths.  Legacy Binary32 formats 9--11 reject symmetrically
+  at writer and loader.
 
   Review also required the token-mint rule at the actual Metal owner rather than
   only its extracted predicate.  A preflighted exact probe now executes the real

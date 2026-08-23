@@ -3097,7 +3097,10 @@ genuine observation to the selector with a different current-state view.  Cleari
 only an accepted state's observation, changing a non-tail history term, or changing
 simulation time all fail at the owning selector/writer and checksum-valid loader.
 Coordinated clearing of observation, count, time, and history also rejects because
-it cannot reclassify accepted Binary32 bytes as an initial checkpoint.
+it cannot reclassify accepted Binary32 bytes as an initial checkpoint: the live
+owner requires homogeneous Binary64 at step zero, and both the v12 writer and a
+checksum-valid v12 loader mutation reject the cleared Binary32 state.  Both sides
+also reject Binary32 formats 9--11, rather than publishing an unloadable legacy file.
 
 The other missing behavioral boundary is also executable rather than inferred.
 An exact diagnostic runs the real two-projection Metal owner, preserves all

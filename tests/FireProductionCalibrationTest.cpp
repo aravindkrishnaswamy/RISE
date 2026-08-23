@@ -507,7 +507,7 @@ int main()
 		!RISE::FireProductionResidentStepEligibleForAcceptedManifoldToken(tokenEligibility);
 	Check(!manifoldClosure.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldClosure.begin(),manifoldClosure.end()))==
-		"51705deaefaa2d514ccc3d79f4ed8ca8828afc85eb78a3250a612bcb9dfcdc93"&&
+		"f45263bd2349a0d3fa8aa4f70ee2c6f25e89e45c70afc9ecdaad09d87bf57874"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			priorManifoldClosure.begin(),priorManifoldClosure.end()))==
 		"c095c05a6fe2e92c58744a9de589f6600e8249a5824537ee4392e1ff0ade21fb"&&
@@ -543,7 +543,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-		"0756260beb837c4bf9b2f8ff936b295151a43d0a9c09bd3385fa4ecbab49fa40"&&
+		"c5d710bcdc2dab167cedb863f9e7e9ddc943309e490534b47f6fda84c1e0058e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -555,7 +555,7 @@ int main()
 		"9e1112867adc0015b5f39e1d2685a427e216cd4486dc07d992a8f6789333660b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-		"ffb043462d418bcfd1932e6781bf7fc94fde48729261fbea3e3d229b21f7d40b"&&
+		"3b5a4925ea38952d6561624c4dd1dac9e80fb745c2929e3444ed25716b8d3863"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			simulationSolverTest.begin(),simulationSolverTest.end()))==
 		"34251daf960a8f5adb6596b1a6445999dbde7f4a5657a5921fd2bf8d57269703"&&
@@ -596,6 +596,14 @@ int main()
 		manifoldClosure.find("unaccepted_binary32_checkpoint_forbidden true")!=
 			std::string::npos&&
 		manifoldClosure.find("coordinated_accepted_metadata_clear_writer_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("coordinated_accepted_metadata_clear_owner_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("coordinated_accepted_metadata_clear_v12_loader_rejected true")!=
+			std::string::npos&&
+		manifoldClosure.find("first_step_owner_requires_binary64 true")!=
+			std::string::npos&&
+		manifoldClosure.find("legacy_binary32_v9_v10_v11_writer_rejected true")!=
 			std::string::npos&&
 		manifoldClosure.find("accepted_temperature_transplant_writer_rejected true")!=
 			std::string::npos&&

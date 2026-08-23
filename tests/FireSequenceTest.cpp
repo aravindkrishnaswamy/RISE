@@ -697,6 +697,9 @@ namespace
 		if(version>=8u&&!writer.String(checkpoint.values.priorActiveSetAlgorithmVersion))return false;
 		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
 		if(version>=9u&&!HomogeneousStateProducerPrecision(checkpoint.states,precision))return false;
+		if(version>=9u&&version<12u&&
+			precision==FireStateProducerPrecision::Binary32&&
+			!forceMalformedManifoldLifecycleWriteForTest)return false;
 		if(version>=9u&&precision==FireStateProducerPrecision::Binary32&&
 			checkpoint.acceptedSteps==0u&&!forceMalformedManifoldLifecycleWriteForTest)
 			return false;
@@ -3598,6 +3601,13 @@ int main(int argc,char** argv)
 		checkpointFixture/"precision_class_v10_zero_count.checkpoint";
 	const std::filesystem::path version11ZeroCountCheckpoint=
 		checkpointFixture/"precision_class_v11_zero_count.checkpoint";
+	{std::error_code ignored;
+		std::filesystem::remove(version9Checkpoint,ignored);
+		std::filesystem::remove(version9ZeroCountCheckpoint,ignored);
+		std::filesystem::remove(version10Checkpoint,ignored);
+		std::filesystem::remove(version10ZeroCountCheckpoint,ignored);
+		std::filesystem::remove(version11Checkpoint,ignored);
+		std::filesystem::remove(version11ZeroCountCheckpoint,ignored);}
 	MethaneRunCheckpoint legacyAccepted=precisionRoundTrip;
 	legacyAccepted.acceptedSteps=1u;legacyAccepted.simulationTimeS=0.001;
 	legacyAccepted.previousStepS=0.0;legacyAccepted.lastAcceptedStepS=0.0;
@@ -3608,6 +3618,13 @@ int main(int argc,char** argv)
 	const bool unavailableAcceptedV12Rejected=
 		!SaveMethaneRunCheckpoint(unavailableV12Checkpoint,legacyAccepted,
 			checkpointFixtureError,12u)&&!std::filesystem::exists(unavailableV12Checkpoint);
+	const bool legacyBinary32WriterRejected=
+		!SaveMethaneRunCheckpoint(version9Checkpoint,legacyAccepted,
+			checkpointFixtureError,9u)&&!std::filesystem::exists(version9Checkpoint)&&
+		!SaveMethaneRunCheckpoint(version10Checkpoint,legacyAccepted,
+			checkpointFixtureError,10u)&&!std::filesystem::exists(version10Checkpoint)&&
+		!SaveMethaneRunCheckpoint(version11Checkpoint,legacyAccepted,
+			checkpointFixtureError,11u)&&!std::filesystem::exists(version11Checkpoint);
 	forceMalformedManifoldLifecycleWriteForTest=true;
 	const bool malformedVersion9Written=SaveMethaneRunCheckpoint(version9Checkpoint,
 		legacyAccepted,checkpointFixtureError,9u);
@@ -3620,18 +3637,23 @@ int main(int argc,char** argv)
 		version10ZeroCountCheckpoint,legacyZeroCount,checkpointFixtureError,10u);
 	const bool malformedVersion11ZeroCountWritten=SaveMethaneRunCheckpoint(
 		version11ZeroCountCheckpoint,legacyZeroCount,checkpointFixtureError,11u);
+	const bool malformedVersion10AcceptedWritten=SaveMethaneRunCheckpoint(
+		version10Checkpoint,legacyAccepted,checkpointFixtureError,10u);
+	const bool malformedVersion11AcceptedWritten=SaveMethaneRunCheckpoint(
+		version11Checkpoint,legacyAccepted,checkpointFixtureError,11u);
 	forceMalformedManifoldLifecycleWriteForTest=false;
-	Check(malformedVersion9Written&&!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
+	Check(legacyBinary32WriterRejected&&malformedVersion9Written&&
+		!LoadMethaneRunCheckpoint(version9Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion9ZeroCountWritten&&
 		!LoadMethaneRunCheckpoint(version9ZeroCountCheckpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion10ZeroCountWritten&&
 		!LoadMethaneRunCheckpoint(version10ZeroCountCheckpoint,rejectedLegacy,
 		checkpointFixtureError)&&malformedVersion11ZeroCountWritten&&
 		!LoadMethaneRunCheckpoint(version11ZeroCountCheckpoint,rejectedLegacy,
-		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version10Checkpoint,legacyAccepted,
-		checkpointFixtureError,10u)&&!LoadMethaneRunCheckpoint(version10Checkpoint,rejectedLegacy,
-		checkpointFixtureError)&&SaveMethaneRunCheckpoint(version11Checkpoint,legacyAccepted,
-		checkpointFixtureError,11u)&&!LoadMethaneRunCheckpoint(version11Checkpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion10AcceptedWritten&&
+		!LoadMethaneRunCheckpoint(version10Checkpoint,rejectedLegacy,
+		checkpointFixtureError)&&malformedVersion11AcceptedWritten&&
+		!LoadMethaneRunCheckpoint(version11Checkpoint,rejectedLegacy,
 		checkpointFixtureError)&&unavailableAcceptedV12Rejected,
 		"r148 checksum-valid v9-v11 production resumes cannot alias accepted history to a first step");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
