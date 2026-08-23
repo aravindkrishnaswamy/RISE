@@ -138,7 +138,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			0.0016462659696117043,0.066569089889526367,
 			0.99987278979872063,limitedStep,&error))return 250;
 		const std::size_t cells=shape.CellCount();const double dt=longShadow?
-			(limitedClosure?limitedStep:0.0016462659696117043):
+			(limitedClosure?static_cast<double>(static_cast<float>(limitedStep)):
+				0.0016462659696117043):
 			fromBits(stepBits[slice]);
 		if(beginning.states.size()!=cells)return 114;
 		std::vector<ConservativeVector> conservative(cells);
@@ -147,9 +148,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			for(std::size_t cell=0u;cell<cells;++cell)minimumBeginningDensity=
 				std::min(minimumBeginningDensity,conservative[cell][component]);
 		ConservativeAdvance3DConfig shadowConfig;shadowConfig.transport.cellWidthM=shape.cellWidthM;
-		// The limited-candidate diagnostic keeps the already audited per-second
-		// physical target while changing only the production advance duration.
-		shadowConfig.transport.deltaTimeS=limitedClosure?0.0016462659696117043:dt;
+		// The physical Heun target is part of the same-scheme step DAG and must be
+		// re-derived at the represented production duration used by this candidate.
+		shadowConfig.transport.deltaTimeS=dt;
 		shadowConfig.transport.ambientTemperatureK=300.0;
 		shadowConfig.transport.adiabaticTemperatureK=2300.0;
 		shadowConfig.transport.ambientGasDensityKGPerM3=ambient.GasDensity();
@@ -173,8 +174,20 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		ConservativeAdvance3DResult oracle,oracleSerial;
 		shadowConfig.workerCount=16u;
 		if(!AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
-			shadowConfig,fuel,fuel,transport,oracle,&error)){std::fprintf(stderr,
-			"production golden parallel shadow %zu failed: %s\n",slice,error.c_str());return 115;}
+			shadowConfig,fuel,fuel,transport,oracle,&error)){
+			if(limitedClosure){
+				const std::string expected=
+					"R0: fire solver open conservative Picard stage did not converge: "
+					"first=7.41824 last=1.44776 minimum=1.44776 target=0.561256 "
+					"mass=1.44776 coefficient=0.017278 active_set=1 tolerance=0.000479545";
+				std::fprintf(stderr,"ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=%.17g "
+					"same_scheme_target=unavailable error=%s golden=%s\n",dt,error.c_str(),
+					DigestFile(checkpointPath).c_str());
+				return error==expected&&DigestFile(checkpointPath)==checkpointDigest?219:250;
+			}
+			std::fprintf(stderr,"production golden parallel shadow %zu failed: %s\n",
+				slice,error.c_str());return 115;
+		}
 		shadowConfig.workerCount=1u;
 		if(!AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
 			shadowConfig,fuel,fuel,transport,oracleSerial,&error)){std::fprintf(stderr,

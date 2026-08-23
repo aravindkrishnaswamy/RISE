@@ -3816,30 +3816,25 @@ it was already tried and refuted here.
   `0.066569089889526367` (`0.7749984039880868` of the disabled result), an
   effective dose coefficient `38.91887613503045 s^-1`, but still exceeds the
   exact `2^-5` hard ceiling.  The amended 25%-headroom predictor derives
-  `0.00057953997747972608 s`.  There the predictor G is
-  `0.020501971244812012`; the corrected field is
-  `0.024326920509338379`, or `1.0379486083984375x` the headroom allowance
-  `0.0234375`, while the hard ceiling remains `0.03125` and restoration drains
-  `0.99965526094762158`.  The next predictor would require
-  `0.0005581588363136789 s`.
+  `0.00057953997747972608 s`.  The first candidate evidence incorrectly kept
+  the audited-CFL Heun divergence target while changing the represented step;
+  fresh boundary review rejected that measurement because the physical target
+  is part of the dt-dependent same-scheme DAG.  With the target correctly
+  re-derived at the limiter step, the frozen R0 open conservative Picard solve
+  does not converge: first residual `7.41824`, last/minimum `1.44776`, target
+  `0.561256`, mass `1.44776`, coefficient `0.017278`, active set `1`, and
+  tolerance `0.000479545`.  No limited G, plateau, timing, or wall projection
+  is therefore admissible.
 
-  The limited diagnostic changes only the represented production step.  Its
-  divergence target remains the already audited golden per-second physical
-  target; no binary64-oracle solve is reused as a production operand.  The
-  zero-anomaly RED is a complete on-device A/B: after device reconstruction of
+  The zero-anomaly RED remains a complete on-device A/B: after device reconstruction of
   the beginning manifold value, closure-active and single-pass runs publish
   byte-identical accepted payloads and the active route records one predictor
   pass with no corrector palindrome.
 
-  The serialized one-warmup/five-sample observation is
-  `89.76820833049715/175.376917 ms` device/wall at the first limited step,
-  projecting `1.0756640781528488/2.1014861860622025 h` for tier-10 x 25 s.
-  Applying the still-tighter next predictor projects
-  `1.1183201200267554/2.184821759472852 h` at the same measured cost.  Thus
-  closure plus the automatic backstop cannot hold the 25%-headroom plateau
-  within the pre-registered approximately two-hour wall envelope.  Exact exit
-  218 records a genuine remap-scheme finding; no accepted token is minted and
-  the 104-step shadow does not start.  Reconstruction-class change is now the
-  required owner ruling.  B_fp32, guard supersession, temporal refinement,
-  readmission, source maps, and first light remain blocked.  Golden remains
-  byte-identical.
+  Exact exit 219 now records the earlier, stronger remap-scheme finding: the
+  automatic limiter cannot form its same-scheme physical target under the
+  frozen Picard topology.  The approximately two-hour rule is not evaluated;
+  no accepted token is minted and the 104-step shadow does not start.
+  Reconstruction-class change or an owner ruling on that fixed-point topology
+  is required.  B_fp32, guard supersession, temporal refinement, readmission,
+  source maps, and first light remain blocked.  Golden remains byte-identical.

@@ -705,9 +705,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 # r161 executes the pre-registered anomaly closure, then applies the amended
-# 25%-headroom manifold predictor.  Exact 218 is a measured remap-scheme stop:
-# the limited candidate remains above the headroom allowance and its serialized
-# max-of-five wall projection exceeds the approximately two-hour decision cap.
+# 25%-headroom manifold predictor.  Exact 219 is the fail-closed same-scheme
+# stop: the limiter step cannot derive its dt-dependent Heun target within the
+# frozen Picard topology, so no limited G or wall projection is admissible.
 if [ "$(uname -s)" = "Darwin" ]; then
 	closure_name="FireSequenceTest.r161_advective_anomaly_closure"
 	closure_path="$BIN_DIR/FireSequenceTest"
@@ -745,17 +745,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
 	fi
-	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_limited_rc" -eq 218 ] &&
+	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_limited_rc" -eq 219 ] &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
-		grep -Fq 'dt=0.00057953997747972608 predictor_G=0.020501971244812012 corrected_G=0.024326920509338379' "$closure_limited_log" &&
-		grep -Fq 'allowance=0.0234375 ceiling=0.03125' "$closure_limited_log" &&
-		grep -Fq 'passes=2 cell_submaps=10 source_commits=2 scalar_reads=2' "$closure_limited_log" &&
-		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
-		echo 'PASS (exact exit=218, remap-scheme stop)'
+		grep -Fq 'ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=0.00057953997747972608 same_scheme_target=unavailable' "$closure_limited_log" &&
+		grep -Fq 'first=7.41824 last=1.44776 minimum=1.44776 target=0.561256 mass=1.44776 coefficient=0.017278 active_set=1 tolerance=0.000479545' "$closure_limited_log" &&
+		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
+		echo 'PASS (exact exit=219, same-scheme target stop)'
 		rm -f "$closure_cfl_log" "$closure_limited_log"
 	else
-		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; limited_exit=$closure_limited_rc expected 218)"
+		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; limited_exit=$closure_limited_rc expected 219)"
 		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
 			"$closure_limited_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))

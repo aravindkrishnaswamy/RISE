@@ -3644,27 +3644,20 @@ The audited-CFL correction reduces G from `0.085895776748657227` to
 `0.066569089889526367`, but this is still above `2^-5`.  With headroom
 `h=2^-2`, the retained predictor uses the allowance
 `(1-h)*2^-5=0.0234375` and derives the represented step
-`0.00057953997747972608 s`.  At that step the predictor G is
-`0.020501971244812012` and corrected G/field is
-`0.024326920509338379`; restoration drain is `0.99965526094762158`.
-Because the field remains `1.0379486083984375x` above the headroom allowance,
-the next candidate is `0.0005581588363136789 s`.
+`0.00057953997747972608 s`.  The physical Heun target must be re-derived at
+that represented step because it is part of the same-scheme dt-dependent DAG.
+When that is done, the frozen R0 open conservative Picard solve fails to
+converge: first residual `7.41824`, last/minimum `1.44776`, target `0.561256`,
+mass `1.44776`, coefficient `0.017278`, active set `1`, and tolerance
+`0.000479545`.  The earlier limited G/timing observation, which had reused the
+audited-CFL target, is rejected and carries no contract weight.
 
-This limited run retains the audited golden divergence target as a per-second
-physical request and changes only the represented production timestep.  It
-does not import a binary64-oracle result or retune the target at the observed
-plateau.
-
-One warmup plus five byte-stable resident samples at the first limited step
-measure `89.76820833049715 ms` device and `175.376917 ms` completed wall p95.
-That projects tier-10 x 25 s to `1.0756640781528488/2.1014861860622025 h`;
-the next candidate projects `1.1183201200267554/2.184821759472852 h` at the
-same cost.  This crosses the pre-registered approximately two-hour wall rule
-before the headroom plateau is held.  Exact exit 218 therefore withholds the
-accepted token and classifies a remap-scheme finding.  The long shadow and all
-later arithmetic/readmission/source-map/preview milestones remain blocked
-pending a reconstruction-class ruling; neither ceiling nor timing budget is
-widened.
+Exact exit 219 therefore withholds the accepted token at the stronger
+same-scheme-target boundary.  No limited G, plateau, timing, or tier-10 wall
+projection is reported, so the approximately two-hour rule is not evaluated.
+The long shadow and all later arithmetic/readmission/source-map/preview
+milestones remain blocked pending a reconstruction-class or fixed-point
+topology ruling; neither ceiling nor timing budget is widened.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
