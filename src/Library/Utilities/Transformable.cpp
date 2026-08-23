@@ -186,6 +186,9 @@ bool MatrixIsFinite_( const Matrix4& matrix )
 
 bool TransformStateV2IsValid_( const TransformStateV2& state )
 {
+	// doc 89 slice C: an out-of-range mirror axis fails the WHOLE restore rather
+	// than being dropped, so a corrupt snapshot cannot half-apply.
+	if( state.mirrorAxis < -1 || state.mirrorAxis > 2 ) return false;
 	if( !MatrixIsFinite_( state.transform.position )
 	 || !MatrixIsFinite_( state.transform.orientation )
 	 || !MatrixIsFinite_( state.transform.scale )
@@ -215,6 +218,8 @@ Transformable::Transformable( ) :
 	m_mxOrientation( Matrix4Ops::Identity() ),
 	m_mxScale( Matrix4Ops::Identity() ),
 	m_mxStretch( Matrix4Ops::Identity() ),
+	m_mxMirror( Matrix4Ops::Identity() ),
+	m_mirrorAxis( -1 ),
 	m_mxLocalTrans( Matrix4Ops::Identity() ),
 	m_mxParentWorld( Matrix4Ops::Identity() ),
 	m_mxParentWorldInv( Matrix4Ops::Identity() ),
@@ -285,6 +290,14 @@ void Transformable::ClearAllTransforms( )
 	m_mxOrientation = Matrix4Ops::Identity();
 	m_mxScale = Matrix4Ops::Identity();
 	m_mxStretch = Matrix4Ops::Identity();
+	// doc 89 slice C: the MIRROR is a local transform building block, so it goes
+	// too.  Job::AddObject calls this on every re-apply and then re-issues only
+	// the params the chunk still carries -- so a mirror left standing here would
+	// survive an edit that DELETED the `mirror` line, and the object would keep
+	// rendering reflected until a save + reload silently un-reflected it.  That is
+	// the same failure `parent` avoids by being re-issued unconditionally.
+	m_mxMirror = Matrix4Ops::Identity();
+	m_mirrorAxis = -1;
 	ClearFinalMetadata_( this );
 	// Re-finalize rather than hand-assigning the two matrices: that also
 	// refreshes m_mxLocalTrans AND the subclass caches (Object's
@@ -451,6 +464,27 @@ void Transformable::ReplaceFinalStack_( const Matrix4& matrix )
 	m_mxStretch = Matrix4Ops::Identity();
 }
 
+bool Transformable::SetMirrorAxis( int axis )
+{
+	// REFUSED, not clamped: the axis comes from an authored `mirror x|y|z` token,
+	// and a value outside the set means the caller mis-decoded it.  Mapping it onto
+	// some axis would reflect the object about a plane nobody asked for, which is
+	// indistinguishable from a correct render of a different scene.
+	if( axis < -1 || axis > 2 ) return false;
+	m_mirrorAxis = axis;
+	m_mxMirror = Matrix4Ops::Identity();
+	// A reflection is its OWN inverse and its determinant is -1.  Object::
+	// FinalizeTransformations reads that sign into m_tangentFrameSign (so an
+	// imported TANGENT.w flips and tangent-space normal maps stay right) and takes
+	// |det| for the world-area Jacobian (so a mirrored EMITTER keeps its true,
+	// positive area).  Both were already written for `scale -1 1 1`; this is the
+	// same negative-determinant transform arriving from a named param.
+	if( axis == 0 )      m_mxMirror._00 = -1;
+	else if( axis == 1 ) m_mxMirror._11 = -1;
+	else if( axis == 2 ) m_mxMirror._22 = -1;
+	return true;
+}
+
 void Transformable::FinalizeTransformations( )
 {
 	// Re-compose against the parent world transform this node was LAST given.
@@ -466,7 +500,12 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	// ---- LOCAL: this node's own authored transform, no parent contribution.
 	// First apply the scale, orientation and position matrices
-	m_mxLocalTrans = m_mxPosition * m_mxOrientation * m_mxStretch * m_mxScale;
+	// doc 89 slice C appends the MIRROR at the RIGHT (innermost) end:
+	// `P * O * Stretch * Scale * M`.  Innermost is what makes `mirror` reflect the
+	// SHAPE in its own frame and then place the reflected shape by this node's own
+	// transform -- so `mirror x  position 3 0 0` puts a reflected copy at +3, where
+	// an outermost reflection would put the un-reflected shape at -3.
+	m_mxLocalTrans = m_mxPosition * m_mxOrientation * m_mxStretch * m_mxScale * m_mxMirror;
 
 	// Go through the transformation stack and multiply the transformations...
 	TransformStackType::const_iterator		i;
@@ -730,6 +769,12 @@ TransformStateV2 Transformable::CaptureTransformStateV2( ) const
 	state.finalScaleBaseValid = metadata.scaleBaseValid;
 	state.stackEntries.assign( m_transformstack.begin(), m_transformstack.end() );
 	state.authoritativeStackIndex = metadata.authoritativeIndex;
+	// doc 89 slice C.  Carried by V2 only: TransformState (V1) is a frozen
+	// by-value struct with binary callers, so the mirror cannot go in it -- which
+	// is why RestoreTransformState leaves the mirror ALONE rather than resetting
+	// it.  Restoring a V1 snapshot onto a mirrored node keeps the mirror, matching
+	// V1's contract of restoring exactly what it captured.
+	state.mirrorAxis = m_mirrorAxis;
 	return state;
 }
 
@@ -741,6 +786,7 @@ bool Transformable::RestoreTransformStateV2( const TransformStateV2& state )
 	m_mxOrientation = state.transform.orientation;
 	m_mxScale = state.transform.scale;
 	m_mxStretch = state.transform.stretch;
+	SetMirrorAxis( state.mirrorAxis );   // validated by TransformStateV2IsValid_ above
 	if( state.finalMatrixOnStack ) {
 		FinalMatrixMetadata metadata;
 		metadata.active = true;

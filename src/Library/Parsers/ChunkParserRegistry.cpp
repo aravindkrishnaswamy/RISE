@@ -8069,6 +8069,35 @@ namespace RISE
 							name.c_str() );
 					}
 
+					// doc 89 slice C: the LOCAL MIRROR.  ALWAYS called, mirror line or
+					// not, for the reason `parent` is (below): this Finalize also runs on
+					// an INCREMENTAL re-apply, where the edit may have DELETED the
+					// `mirror` line, and skipping the call would leave the object
+					// rendering reflected until a save + reload silently un-reflected it.
+					//
+					// LEGAL ON A CONTAINER, unlike `interior_medium` above, and the
+					// asymmetry is not an oversight.  `interior_medium` on a container is
+					// WARNED-AND-IGNORED there (the chunk still derives) because a
+					// container has no SURFACE to be inside of -- it is a binding with no
+					// referent.  A mirror is a TRANSFORM, and a container
+					// is nothing BUT a transform: `position`, `orientation`, `scale` and
+					// `matrix` are all honoured on one, and every object parented under it
+					// composes through the result.  Refusing the reflection alone would
+					// mean the one transform an assembly most wants (mirror the whole
+					// left arm into a right arm, in one edit) is the one it cannot have,
+					// while `scale -1 1 1` -- the same negative-determinant matrix, spelled
+					// obscurely -- kept working.  So: children compose through it, exactly
+					// once, and that IS the feature.
+					if( bRet && !pJob.SetObjectMirror( name.c_str(), bag.GetString( "mirror", "none" ).c_str() ) ) {
+						const std::string diag = "standard_object `" + name + "`: `mirror " +
+							bag.GetString( "mirror", "none" ) + "` -- the axis must be `x`, `y` or `z` "
+							"(lower case).  A mirror reflects the object across the plane through its OWN "
+							"origin perpendicular to that axis.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						bRet = false;
+					}
+
 					// 87 recursive scene graph: record the parent LINK.  Nothing
 					// is composed here -- `world = parent.world * local` is baked
 					// by the derive's tail walk -- which is what makes editing a
@@ -8142,6 +8171,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
 						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
 						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "mirror";           p.kind = ValueKind::Enum;      p.enumValues = {"x","y","z","none"}; p.description = "REFLECT this node across the plane through its OWN origin perpendicular to the named LOCAL axis -- author one wing, hand, fin or shoe and mirror the other instead of building both.  Applied INNERMOST, before this node's `position` / `orientation` / `scale`, so `mirror x  position 3 0 0` puts the reflected shape AT +3 (it does not move it to -3).  With `source` the whole cloned SUBTREE arrives reflected, which is the headline use: `standard_object { name right_wing  source left_wing  mirror x }` off an UN-mirrored `left_wing`; with `count_u` every repetition is mirrored.  `mirror` is INSTANCE-OWN, never inherited through `source` -- exactly like `position` / `orientation` / `scale`.  So if the SOURCE itself carries a `mirror`, a plain `source` copy DROPS it and comes out as the source's mirror image; repeat the same `mirror <axis>` on the copy to reproduce the source exactly (the derive warns when you have not).  Legal on a geometry-less CONTAINER too -- everything parented under it composes through the reflection, exactly once, so a mirrored arm's own children are not double-mirrored.  `none` (or omitting the line) means no mirror"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "radiance_map";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }

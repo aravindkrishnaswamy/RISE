@@ -156,6 +156,7 @@ namespace
 		case SceneEdit::SetObjectShader:        return "Set Shader";
 		case SceneEdit::SetObjectShadowFlags:   return "Set Shadow Flags";
 		case SceneEdit::SetObjectInteriorMedium:return "Set Interior Medium";
+		case SceneEdit::SetObjectMirror:      return "Set Mirror";
 		case SceneEdit::SetCameraTransform:     return "Set Camera";
 		case SceneEdit::OrbitCamera:            return "Orbit Camera";
 		case SceneEdit::PanCamera:              return "Pan Camera";

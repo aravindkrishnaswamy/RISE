@@ -404,6 +404,15 @@ before you write the tenth near-identical chunk:
   chunk's own parameters free to be per-component `expr(...)` over the
   instance variables `i` / `j` (indices) and `u` / `v` (the same,
   normalized into [0,1]).
+- **`mirror x|y|z`** -- reflects the node (and everything parented under
+  it, including a whole cloned subtree) across the plane through its own
+  origin, so a bilateral pair is ONE authored half plus
+  `source <half>  mirror x` instead of two hand-built ones that drift
+  apart.  Author the half UN-mirrored and put the `mirror` on the copy:
+  `mirror` is instance-own, never inherited through `source`, so a plain
+  `source` of an ALREADY-mirrored node drops its reflection and comes out
+  as that node's mirror image (repeat the same `mirror <axis>` on the copy
+  if you wanted an exact duplicate -- the derive warns when you have not).
 
 Read `read_schema` for `standard_object` for the full parameter text;
 what follows is the part the schema cannot tell you -- when to reach

@@ -210,6 +210,13 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.m_mxOrientation   = m_mxOrientation;
 	dst.m_mxScale         = m_mxScale;
 	dst.m_mxStretch       = m_mxStretch;
+	// doc 89 slice C: the mirror is one of the building blocks, so it is copied
+	// with them.  Omitting it would give the snapshot the right FINAL matrix
+	// (copied below) but an un-mirrored local frame -- so the first re-finalize on
+	// the clone (any absolute setter, a restore, the animator) would un-reflect it,
+	// exactly the failure mode the local/parent-world copy below already documents.
+	dst.m_mxMirror        = m_mxMirror;
+	dst.m_mirrorAxis      = m_mirrorAxis;
 	CopyTransformMetadataTo( dst );
 	dst.m_transformstack  = m_transformstack;   // std::deque<Matrix4> value copy
 
@@ -669,8 +676,20 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		if( ri.geometric.bHasTangent ) {
 			ri.geometric.vTangent = Vector3Ops::Normalize(
 				Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vTangent ) );
-			ri.geometric.bitangentSign *= m_tangentFrameSign;
 		}
+		// doc 89 slice C: UNCONDITIONAL, outside the bHasTangent gate.  The sign is
+		// a property of THIS TRANSFORM, not of whether the asset shipped a TANGENT
+		// accessor -- and the consumer that needs it most is the branch with NO
+		// imported tangent: NormalMap's derivative fallback builds
+		// `B = cross(N, T) * bitangentSign` from dpdu, which is exactly the
+		// cross-product whose world direction flips under a negative determinant.
+		// Folded here (it initialises to 1.0, so this is a no-op for an
+		// orientation-preserving transform and for an un-tangented hit under one)
+		// rather than at each consumer, so every reader of `bitangentSign` sees the
+		// same world-handedness convention.  Without it a mirrored, normal-mapped
+		// asset renders with its green channel inverted -- lathe / sweep / skin
+		// bakes, which carry derivatives but no TANGENT, are exactly that case.
+		ri.geometric.bitangentSign *= m_tangentFrameSign;
 
 		// Transform surface derivatives from object space to world space.
 		// dpdu, dpdv are tangent vectors — transform like positions (use

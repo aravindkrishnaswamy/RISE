@@ -3106,6 +3106,10 @@ namespace RISE
 		bool SetObjectParent( const char* child, const char* parent );
 		bool ComposeObjectHierarchy( );
 
+		//! doc 89 slice C: set / clear an object's LOCAL mirror axis.  Contract on
+		//! the IJob virtual.  (No `override` keyword -- see the note above.)
+		bool SetObjectMirror( const char* object_name, const char* axis );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

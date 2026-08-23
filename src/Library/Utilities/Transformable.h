@@ -40,6 +40,30 @@ namespace RISE
 			Matrix4		m_mxScale;			// Scale matrix
 			Matrix4		m_mxStretch;		// Stretch matrix
 
+			//! doc 89 slice C -- the MIRROR: a reflection across a plane through
+			//! the node's LOCAL origin, perpendicular to one local axis.  Identity
+			//! when no mirror is set.  Composed INNERMOST (rightmost) in
+			//! `P * O * Stretch * Scale * M`, so it reflects the node's own shape
+			//! -- and, through the composed world matrix, its whole subtree --
+			//! BEFORE the node's own placement is applied.  Author one wing, mirror
+			//! the other.
+			//!
+			//! A SEPARATE MATRIX, NOT A NEGATIVE `m_mxStretch` COMPONENT, and the
+			//! reason is that `stretch` is an AUTHORED param with its own value: a
+			//! mirror folded into it could not be read back, could not be cleared
+			//! independently, and would be silently destroyed by the next absolute
+			//! SetStretch (which the transform panel issues on any `scale` edit).
+			//! It is also NOT on the transform stack: stack entries LEFT-multiply
+			//! (outermost), which is the wrong side -- a mirror applied outside the
+			//! node's own rotation reflects the WORLD placement, not the shape.
+			Matrix4		m_mxMirror;
+			//! The authored axis behind `m_mxMirror`: -1 none, 0 = x, 1 = y, 2 = z.
+			//! Kept alongside the matrix so the value can be read back EXACTLY (for
+			//! the properties panel, and to un-apply the reflection before decomposing
+			//! the local matrix into position / orientation / scale) without having to
+			//! recognise a reflection in a composed matrix.
+			int			m_mirrorAxis;
+
 			//! This node's OWN transform: (P * O * Stretch * Scale) folded with
 			//! the transform stack, with NO parent contribution.  Cached by
 			//! FinalizeTransformations so the authored value can be read back
@@ -132,6 +156,30 @@ namespace RISE
 			//! (whose callers all reach RunObjectInvariantChain).  A new one that
 			//! forgets would read stale matrices with no diagnostic.
 			void SetFinalTransformMatrix( const Matrix4& matrix );
+
+			//! doc 89 slice C: set (or clear) this node's LOCAL mirror axis.
+			//! `axis` is -1 for none, 0 for x, 1 for y, 2 for z; any other value is
+			//! REFUSED (returns false, changes nothing) rather than silently mapped.
+			//!
+			//! NON-VIRTUAL, reached through `dynamic_cast<Implementation::Transformable*>`
+			//! exactly as `SetFinalTransformMatrix` is -- no interface vtable grows for
+			//! it, so there is no ABI decision to review.
+			//!
+			//! THE CALLER MUST FINALIZE.  Like SetFinalTransformMatrix, this updates
+			//! the building block only; `m_mxLocalTrans` / `m_mxFinalTrans` and the
+			//! Object caches still describe the PREVIOUS transform until
+			//! FinalizeTransformations() runs.
+			/// \return TRUE if the axis was accepted, FALSE if it was out of range
+			bool SetMirrorAxis( int axis );
+
+			//! The authored mirror axis: -1 none, 0 = x, 1 = y, 2 = z.
+			inline int GetMirrorAxis( ) const { return m_mirrorAxis; }
+
+			//! The mirror as a matrix (identity when no mirror is set).  Its own
+			//! inverse, so `GetLocalTransformMatrix() * GetMirrorMatrix()` is the
+			//! local transform with the reflection UN-applied -- which is what a
+			//! position / orientation / scale readback has to decompose.
+			inline Matrix4 const GetMirrorMatrix( ) const { return m_mxMirror; }
 
 			// Retrieves the transformation matrix
 			virtual inline Matrix4 const GetFinalTransformMatrix( ) const override { return m_mxFinalTrans; };

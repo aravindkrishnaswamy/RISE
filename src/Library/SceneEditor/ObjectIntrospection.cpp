@@ -42,6 +42,7 @@
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Parsers/ChunkDescriptor.h"
+#include "../Utilities/Transformable.h"   // doc 89 slice C: the mirror axis behind the local matrix
 
 #include <cmath>
 #include <cstdio>
@@ -326,9 +327,35 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 	// SetObjectStretch) is an absolute LOCAL setter for the same reason.  For
 	// an unparented object local == world, which is every object that existed
 	// before hierarchy.
-	const Matrix4 m = obj.GetLocalTransformMatrix();
+	// doc 89 slice C: UN-APPLY THE MIRROR before decomposing.  The local matrix is
+	// `P * O * Stretch * Scale * Mirror`, and a reflection is its own inverse, so
+	// right-multiplying by the same mirror recovers `P * O * Stretch * Scale`
+	// EXACTLY (no fitting, no tolerance).  Without this, a `mirror x` object with
+	// no rotation at all decomposes to a phantom `orientation 0 180 0` -- because
+	// DecomposeFinalAffine builds a PROPER (det +1) frame and has nowhere to put the
+	// reflection -- and the panel would then be showing, and offering to commit, a
+	// rotation the author never wrote on top of the mirror they did.
+	//
+	// dynamic_cast because the mirror is a non-virtual member of the concrete
+	// Implementation::Transformable (no interface vtable grew for it); an IObject
+	// that is not one degrades to the un-corrected read, which is what this did
+	// before the mirror existed.
+	Matrix4 m = obj.GetLocalTransformMatrix();
+	if( const Implementation::Transformable* tf =
+			dynamic_cast<const Implementation::Transformable*>( &obj ) ) {
+		if( tf->GetMirrorAxis() >= 0 ) m = m * tf->GetMirrorMatrix();
+	}
 	char buf[256];
 
+	if( paramName == String( "mirror" ) ) {
+		const Implementation::Transformable* tf =
+			dynamic_cast<const Implementation::Transformable*>( &obj );
+		const int axis = tf ? tf->GetMirrorAxis() : -1;
+		// EMPTY, not "none", for no mirror: the row then reads the same as an
+		// omitted optional param everywhere else in this panel, and committing the
+		// value back writes no `mirror` line.
+		return String( axis == 0 ? "x" : axis == 1 ? "y" : axis == 2 ? "z" : "" );
+	}
 	if( paramName == String( "position" ) ) {
 		std::snprintf( buf, sizeof(buf), "%g %g %g",
 			static_cast<double>( m._30 ),
@@ -446,6 +473,7 @@ bool IsRuntimeEditable( const std::string& paramName )
 	if( paramName == "receives_shadows" ) return true;
 	if( paramName == "interior_medium" )  return true;
 	if( paramName == "geometry" )         return true;
+	if( paramName == "mirror" )           return true;   // doc 89 slice C -> SceneEdit::SetObjectMirror
 	return false;
 }
 

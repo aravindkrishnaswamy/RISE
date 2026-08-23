@@ -50,6 +50,10 @@ namespace RISE
 		bool finalScaleBaseValid = false;
 		std::vector<Matrix4> stackEntries;
 		size_t authoritativeStackIndex = 0;
+		//! doc 89 slice C: the authored LOCAL mirror axis (-1 none, 0 = x, 1 = y,
+		//! 2 = z).  Appended at this struct's TAIL, and only to V2 -- the legacy
+		//! `TransformState` above stays byte-identical for its binary callers.
+		int mirrorAxis = -1;
 	};
 
 //! The ability to have a basic transformation abilities

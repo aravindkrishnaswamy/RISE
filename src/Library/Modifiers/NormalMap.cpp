@@ -127,7 +127,18 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// rotated arbitrarily relative to UV.
 		T = Vector3Ops::Normalize(
 			ri.derivatives.dpdu - N * Vector3Ops::Dot( ri.derivatives.dpdu, N ) );
-		B = Vector3Ops::Cross( N, T );
+		// `* ri.bitangentSign` (doc 89 slice C).  With no imported TANGENT the sign
+		// carries only ONE thing -- the object transform's handedness, folded in
+		// unconditionally by Object::IntersectRay -- and this cross product is
+		// precisely what a negative determinant flips: N comes through the
+		// inverse-transpose while dpdu comes through the forward matrix, so under a
+		// reflection `cross(N_world, T_world)` points opposite the transformed
+		// original bitangent.  Omitting it inverts the normal map's green channel on
+		// every mirrored asset that carries derivatives but no TANGENT accessor --
+		// i.e. every lathe / sweep / skin bake, which is the asset class `mirror`
+		// exists to serve.  For an un-mirrored object the sign is +1 and this is
+		// byte-identical to the previous expression.
+		B = Vector3Ops::Cross( N, T ) * ri.bitangentSign;
 	} else {
 		// Last-ditch fallback: no TANGENT and no surface derivatives
 		// (some non-triangle geometry, or future geometry types that

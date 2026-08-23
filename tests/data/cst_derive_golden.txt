@@ -145,6 +145,7 @@ scenes/Tests/Geometry/lathe_stress.RISEscene  1a72494c10a76c9df085d62553c3872db0
 scenes/Tests/Geometry/loft_stress.RISEscene  04168a2a43779a6c56b0e772a17bab0e25c735b831042f07450c0a6fc1c1180d  2213  43
 scenes/Tests/Geometry/misc_geometry_stress.RISEscene  d8473a941a1ff877d0b7296964ef712f25a45f7c4d9c46e8ed0a591d65a647ba  2402  49
 scenes/Tests/Geometry/object_instancing.RISEscene  e068518ab29c8a9a578dc1935351433e3b467df87363ead5a9f093d06d2e5b31  7996  72
+scenes/Tests/Geometry/object_mirror.RISEscene  30634cb9a88ab75d492476a78bfd8b9a1cb942a876ccf28906cdbb2fa79a0bd7  4838  53
 scenes/Tests/Geometry/object_parenting.RISEscene  b051295559a14f9dc939a2d44a618c31bc6885e4d6429c7443928ba758367134  3379  42
 scenes/Tests/Geometry/scenegraph_stress.RISEscene  68ffd128197275782fa75224113ebd2b8321ebc578a96a5f43f663b356a18f38  8788  88
 scenes/Tests/Geometry/shapes.RISEscene  6940e3ff651e44619a1773f0f4fd68cd830de811094c4d7a6c6cca7410460548  5735  57

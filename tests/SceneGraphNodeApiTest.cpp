@@ -2197,6 +2197,45 @@ int main()
 		std::remove( s );
 	}
 	{
+		// -- doc 89 slice C: a MIRRORED subtree clone folds exactly like an
+		//    un-mirrored one.  `mirror` is a plain descriptor param -- it
+		//    declares no cross-chunk Reference, so it adds no graph edge and
+		//    nothing about the outliner is supposed to change.  "Supposed to"
+		//    is the reason this block exists: the fold is driven by the
+		//    PROVENANCE map, which `ExpandSourceInstance` writes per entry, and
+		//    the mirrored expansion runs through that same code -- so if a
+		//    future mirror-aware short-cut ever skipped provenance for a
+		//    reflected clone, the outliner would start showing `M.X` as its own
+		//    orphan row while the row the author can edit stayed unhighlighted,
+		//    with every OTHER assertion in this file still green.
+		const char* s = "sgnode_rowresolve_mirror.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname X\nparent S\ngeometry g\nmaterial m\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname M\nsource S\nmirror x\nposition 5 0 0\n}\n"
+			"standard_object\n{\nname R\nsource S\nmirror z\ncount_u 2\nposition expr(i*3) 0 -4\n}\n",
+			"AA: the mirrored-instance scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			Check( om && om->GetItem( "M.X" ) != 0 && om->GetItem( "R[1,0].X" ) != 0,
+			       "AA: the premise -- the mirrored expansions really synthesized their subtree members" );
+
+			CheckEq( TreeDump( c, Cat::Object ), "S|  X|M|R",
+			         "AA: a mirrored `source` clone is ONE row (its authoring chunk), exactly like an "
+			         "un-mirrored one -- the reflection is a param, not a new node" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "M.X" ) ).c_str() ), "M",
+			         "AA: a member of a MIRRORED cloned subtree folds into its instancing chunk's row" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "R[1,0]" ) ).c_str() ), "R",
+			         "AA: a mirrored COUNTED repetition folds into its chunk's row" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "R[1,0].X" ) ).c_str() ), "R",
+			         "AA: ... and so does a member beneath one" );
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
 		// -- case M's REFUSED fold: the repetitions are their own rows, so
 		//    they must resolve to themselves and NOT to the unrelated live
 		//    object whose name their provenance still records.  Same

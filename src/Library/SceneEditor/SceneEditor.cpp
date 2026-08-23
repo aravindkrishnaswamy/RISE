@@ -933,6 +933,56 @@ void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 	}
 }
 
+//! doc 89 slice C -- THE MIRROR-FREE FRAME, and why every editor op that derives a
+//! new matrix FROM the current one has to do its arithmetic in it.
+//!
+//! `GetLocalTransformMatrix()` ENDS IN THE NODE'S OWN MIRROR: the composed local
+//! transform is `P * O * Stretch * Scale * M`.  `SetFinalTransformMatrix` (through
+//! `Transformable::ReplaceFinalStack_`) clears P / O / Stretch / Scale and the stack
+//! but deliberately LEAVES `m_mxMirror` standing, so the next finalize re-appends it:
+//! `SetFinalTransformMatrix(X)` means `local == X * M`, NOT `local == X`.
+//!
+//! THAT CONTRACT IS CORRECT AND MUST NOT BE CHANGED, because it is what makes the
+//! round-trip to disk work.  `CommitPendingCstObjectTransforms` writes the chunk's
+//! `matrix` param with the mirror STRIPPED, while the chunk's own `mirror` line
+//! survives (a mirror is not part of standard_object's matrix > quaternion >
+//! orientation precedence chain -- it composes with whichever of them wins).  The
+//! next derive hands that stored matrix to `Job::AddObjectMatrix` and re-issues the
+//! `mirror` line separately, and only the "finalize re-appends M" rule puts the two
+//! back together.  Teaching `ReplaceFinalStack_` to consume the mirror instead would
+//! make every saved scene with a `matrix` + `mirror` pair re-derive UN-reflected --
+//! so the fix belongs HERE, on the editor side of that boundary, where it cannot
+//! reach the derive path at all.
+//!
+//! WHAT GOES WRONG WITHOUT IT: an op that reads `P*O*St*Sc*M`, multiplies a diagonal
+//! into it, and hands the product back gets the M it read AND the M finalize appends
+//! -- and `M * S * M == S` for the diagonal S every one of these ops builds, so the
+//! two reflections CANCEL.  The object silently loses its reflection, and then
+//! PERSISTS un-reflected, because the commit strips a mirror that is no longer in the
+//! matrix.  A reflection is its own inverse, so `X * M` un-applies it EXACTLY -- no
+//! fitting, no tolerance -- which is the same right-multiply the read path
+//! (ObjectIntrospection::ReadObjectParam) and the commit path already use.
+Matrix4 MirrorOf_( const IObjectPriv& obj )
+{
+	// Identity for a node with no mirror (Transformable keeps `m_mxMirror` at
+	// identity while `m_mirrorAxis` is -1) and for anything that is not a
+	// Transformable at all -- which is where the mirror lives, as a non-virtual
+	// member, exactly as `SetFinalTransformMatrix` does.
+	const Implementation::Transformable* tf =
+		dynamic_cast<const Implementation::Transformable*>( &obj );
+	return tf ? tf->GetMirrorMatrix() : Matrix4Ops::Identity();
+}
+
+//! The node's LOCAL matrix with its own mirror UN-APPLIED: `P * O * Stretch * Scale`.
+//! This is the matrix a position / orientation / scale decomposition has to see --
+//! `DecomposeFinalAffine` builds a PROPER (det +1) frame and has nowhere to put a
+//! reflection, so decomposing the un-corrected matrix invents a phantom 180-degree
+//! rotation and folds the reflection into the residual.
+Matrix4 MirrorFreeLocal_( const IObjectPriv& obj )
+{
+	return obj.GetLocalTransformMatrix() * MirrorOf_( obj );
+}
+
 //! Is `obj` an 87 CONTAINER -- a pure transform node with no surface?  A
 //! CSGObject also has null geometry (its shape comes from its operands), so
 //! "no geometry" alone is not the test.  Mirrors Job.cpp's IsContainerObject_;
@@ -1102,7 +1152,14 @@ void SetAbsoluteStretch_( IObjectPriv& obj, const Vector3& target )
 	// LOCAL: an absolute scale is a property of the node's own transform.  A
 	// parented node inherits its parent's scale on top of this, which is what
 	// a scene graph is for.
-	const Matrix4 base = ScaleFreeAffineBase_( obj.GetLocalTransformMatrix() );
+	//
+	// MIRROR-FREE (doc 89 slice C, see MirrorFreeLocal_): the base and the stretch
+	// are both what the chunk's `scale` line means, and finalize appends the mirror
+	// to the product.  Reading the un-corrected local matrix instead would carry an
+	// M into `base`, and `M * Stretch * M == Stretch` -- so `scale 2 1 1` on a
+	// `mirror x` object would come out at det +2 where -2 is correct, and the commit
+	// would then write an un-mirrored pose to disk beside a surviving `mirror x`.
+	const Matrix4 base = ScaleFreeAffineBase_( MirrorFreeLocal_( obj ) );
 	ReplaceFinalTransform_( obj, base * Matrix4Ops::Stretch( target ) );
 }
 
@@ -1170,7 +1227,17 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 	case SceneEdit::SetObjectOrientation:
 		{
 			// Absolute setter -> LOCAL, for the same reason as SetObjectPosition.
-			const Matrix4 current = obj.GetLocalTransformMatrix();
+			//
+			// MIRROR-FREE (doc 89 slice C, see MirrorFreeLocal_), and here it is not
+			// only about the double-M cancellation: `DecomposeFinalAffine` builds a
+			// PROPER frame, so handed a reflection-bearing matrix it invents a
+			// phantom rotation (an unrotated `mirror x` object decomposes to
+			// `orientation 0 180 0`) and buries the reflection in the residual.  The
+			// READ path un-applies the mirror for exactly that reason, so committing
+			// the value the panel just showed has to decompose the SAME matrix the
+			// panel decomposed -- otherwise a no-op Enter on a correct value
+			// un-reflects the object and adds the phantom 180 degrees.
+			const Matrix4 current = MirrorFreeLocal_( obj );
 			const Vector3 position(
 				current._30,
 				current._31,
@@ -1196,8 +1263,13 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 		// Keep the scaled result in the authoritative-final representation.
 		// A raw Clear+Push sequence leaves component-mode active, so a later
 		// public/keyframed absolute setter composes underneath this matrix.
+		//
+		// `edit.prevTransform` is the captured LOCAL matrix, so it too ends in the
+		// node's mirror -- un-apply it before the stretch (doc 89 slice C, see
+		// MirrorFreeLocal_) or the gizmo's scale drag lands a uniform x2 at det +8
+		// instead of -8 on a mirrored object.
 		ReplaceFinalTransform_(
-			obj, edit.prevTransform * Matrix4Ops::Stretch( edit.v3a ) );
+			obj, edit.prevTransform * MirrorOf_( obj ) * Matrix4Ops::Stretch( edit.v3a ) );
 		break;
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
@@ -1281,6 +1353,27 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 			ok = false;
 		}
 		break;
+	case SceneEdit::SetObjectMirror:
+		// doc 89 slice C.  Routed through IJob so the ONE decode of the axis
+		// string, the ONE csg refusal and the ONE "no real change -> no churn"
+		// early-out live in Job::SetObjectMirror, shared with the parser -- the
+		// live path and the derive path can then never disagree about what
+		// `mirror z` means.  DELIBERATELY NO CONTAINER GATE: a container is
+		// nothing but a transform, and mirroring a whole assembly in one edit is
+		// the feature (see the standard_object parser's own note).
+		//
+		// Empty / "none" clears, matching the chunk's spelling and the panel's
+		// blank row.  The spatial-structure invalidation and the light-generation
+		// bump are Job's; the caller's OpNeedsSpatialRebuild branch covers the
+		// editor-side TLAS churn for the same reason SetObjectGeometry relies on it.
+		if( mJob ) {
+			const String axis = ( edit.propertyValue.size() <= 1 )
+				? String( "none" ) : edit.propertyValue;
+			ok = mJob->SetObjectMirror( edit.objectName.c_str(), axis.c_str() );
+		} else {
+			ok = false;
+		}
+		break;
 	case SceneEdit::SetObjectGeometry:
 		// Runtime geometry swap.  Resolve the new geometry name via
 		// IJob (same mechanism as interior_medium) and rebind.  The
@@ -1336,8 +1429,38 @@ void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edi
 	// `prevTransform` is the captured LOCAL matrix, and the stack is local, so
 	// this restores the node's own transform and leaves its parent link's
 	// contribution to the next compose.
+	//
+	// doc 89 slice C: `ClearAllTransforms` also clears the MIRROR (it is a local
+	// transform building block, and Job::AddObject's re-apply depends on that clearing
+	// -- an edit that DELETED the `mirror` line has to actually un-reflect the object).
+	// The captured `prevTransform` already has the reflection BAKED IN, so clear-then-
+	// push alone restores the right world matrix but leaves `mirrorAxis == none`: the
+	// commit path then finds no mirror to STRIP, writes the reflection into the `matrix`
+	// param with no `mirror` line beside it, and the next edit in this session reflects
+	// what is already reflected.  Re-issue the axis and un-apply its matrix from what we
+	// push (M * M == I), so both the pose and the authored axis come back.
+	//
+	// THE AXIS IS READ OFF THE LIVE NODE when the edit carries no V2 snapshot, and that
+	// is the case that actually reaches this fallback: `ScaleObjectFromAnchor` -- the
+	// gizmo's scale drag -- deliberately skips CaptureForApply's snapshot block (its
+	// `prevTransform` is the controller's drag-start anchor, which must not be
+	// overwritten per frame), so `hasTransformState` is FALSE for exactly the op whose
+	// undo lands here.  A transform op never changes the mirror axis, so the live value
+	// IS the value to restore.  The snapshot is preferred when there is one, since it is
+	// the state this edit promised to restore.
+	Implementation::Transformable* t = dynamic_cast<Implementation::Transformable*>( &obj );
+	const int restoreAxis = !t ? -1
+		: ( edit.hasTransformState ? edit.prevTransformState.mirrorAxis : t->GetMirrorAxis() );
 	obj.ClearAllTransforms();
-	obj.PushTopTransStack( edit.prevTransform );
+	Matrix4 restored = edit.prevTransform;
+	// Guarded on the RETURN, not assumed: a snapshot whose axis is out of range is
+	// exactly why RestoreTransformStateV2 above may have refused, and a refused
+	// SetMirrorAxis must leave `restored` reflection-bearing (world-correct, axis lost)
+	// rather than un-apply a mirror that is not there.
+	if( t && restoreAxis >= 0 && t->SetMirrorAxis( restoreAxis ) ) {
+		restored = restored * t->GetMirrorMatrix();
+	}
+	obj.PushTopTransStack( restored );
 }
 
 void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
@@ -1412,6 +1535,7 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	case SceneEdit::SetObjectShader:
 	case SceneEdit::SetObjectShadowFlags:
 	case SceneEdit::SetObjectInteriorMedium:
+	case SceneEdit::SetObjectMirror:   // doc 89 slice C: a standard_object param edit like the rest
 		mDirtyTracker.MarkEntityDirty( EntityCategory::Object,
 			std::string( edit.objectName.c_str() ) );
 		break;
@@ -1812,6 +1936,23 @@ static inline const char* ObjectBindingRole( SceneEdit::Op op )
 	}
 }
 
+// doc 89 slice C: `mirror` is a standard_object PARAM edit that routes per-op through the same
+// RouteCstParamEdit_ as the bindings -- but it is NOT a binding.  It names no other chunk (so
+// there is no manager to reverse-look-up and no "the referent was deleted" undo failure), and it
+// is LEGAL ON A CONTAINER, which is the whole feature.  `IsObjectBindingOp`'s other job is driving
+// the container refusal in ApplyForwardMutation, so joining that predicate would refuse exactly
+// the case `mirror` exists for.  Hence a second predicate over both, used at the two ROUTING
+// sites only.
+static inline bool IsObjectCstParamOp( SceneEdit::Op op )
+{
+	return IsObjectBindingOp( op ) || op == SceneEdit::SetObjectMirror;
+}
+
+static inline const char* ObjectCstParamRole( SceneEdit::Op op )
+{
+	return ( op == SceneEdit::SetObjectMirror ) ? "mirror" : ObjectBindingRole( op );
+}
+
 // P5 Slice 3 expansion (object transform): a TRANSFORM edit (panel absolute OR gizmo delta) is committed to the
 // standard_object `matrix` param (authoritative, lossless) at the composite/edit boundary -- NOT per-op (a gizmo
 // drag emits one per frame, which would be N full re-derives).  See CommitPendingCstObjectTransforms.
@@ -1928,7 +2069,7 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol )
 		Local::Add( why, "its transform contains SHEAR, which position+orientation cannot express" );
 	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 )
-		Local::Add( why, "its transform contains a REFLECTION -- a negative determinant, commonly a negative `scale` component -- which position+orientation cannot express" );
+		Local::Add( why, "its transform contains a REFLECTION -- a negative determinant, from a `mirror` axis or a negative `scale` component -- which position+orientation cannot express" );
 	// Euler extraction for RISE's Rx*Ry*Rz (the cell-by-cell derivation originally lived in the byte-splice
 	// SaveEngine's §9.5 TryDecompose, deleted in Slice 6d).
 	const double sin_y = r2.x;
@@ -2481,7 +2622,28 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 		// commit SQUARED the group matrix") and had to paper over with a G^-1
 		// division that could not be done at all when G was singular.  Reading
 		// the local matrix back needs no inverse and has no degenerate case.
-		const Matrix4 M = obj->GetLocalTransformMatrix();
+		Matrix4 M;
+		// doc 89 slice C: STRIP THE MIRROR before committing.  The local matrix is
+		// `P * O * Stretch * Scale * Mirror`, but `mirror` is NOT one of the params
+		// ApplyCstObjectMatrixEdit strips beside the `matrix` it writes -- it is not
+		// in standard_object's matrix > quaternion > orientation precedence chain at
+		// all, it composes with whichever of them wins.  So a `matrix` that already
+		// contained the reflection would be re-multiplied by the chunk's surviving
+		// `mirror` line on the next derive and the object would come back reflected
+		// TWICE.  A reflection is its own inverse, so right-multiplying by the same
+		// mirror recovers `P * O * Stretch * Scale` EXACTLY -- no fitting, no
+		// tolerance -- which is precisely what the chunk's other transform params
+		// mean and what the derive will re-compose the mirror onto.
+		//
+		// (The kind-2 / csg branch below needs no equivalent: DecomposeRigid REFUSES
+		// a negative determinant outright, and the apply-time gate above has already
+		// restored and refused the gesture before it could reach here -- and
+		// Job::SetObjectMirror refuses a csg a mirror in the first place.)
+		//
+		// The SAME right-multiply the editor's own ops use, through the same helper:
+		// MirrorFreeLocal_ is where the other half of this -- why `SetFinalTransformMatrix`
+		// takes a mirror-free matrix and finalize re-appends M -- is written up.
+		M = MirrorFreeLocal_( *obj );
 		const int kind = mJob->CstObjectTransformKind( it->c_str() );
 		Route r; r.name = *it; r.kind = kind; r.ready = false;
 		if( kind == 1 ) {
@@ -2685,6 +2847,21 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 			// genuinely was no medium bound.
 			if( obj->GetInteriorMedium() != 0 && edit.prevPropertyValue.size() <= 1 ) return false;
 			break;
+		case SceneEdit::SetObjectMirror: {
+			// doc 89 slice C.  The prior value is read straight off the node -- an
+			// AXIS, not a name -- so unlike the binding ops there is no manager
+			// reverse-lookup that can come back empty, and no "the referent was
+			// deleted" undo failure to guard against.  A node that is not a
+			// Transformable cannot carry a mirror at all, and Job::SetObjectMirror
+			// would refuse the forward edit for that same reason, so capture "none"
+			// and let the apply produce the diagnostic.
+			const Implementation::Transformable* tf =
+				dynamic_cast<const Implementation::Transformable*>( obj );
+			const int axis = tf ? tf->GetMirrorAxis() : -1;
+			edit.prevPropertyValue = String(
+				axis == 0 ? "x" : axis == 1 ? "y" : axis == 2 ? "z" : "none" );
+			break;
+		}
 		case SceneEdit::SetObjectGeometry:
 			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
 				return false;
@@ -3194,7 +3371,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// through the same CST path), so undo stays Document-consistent.  A cleared prior binding routes "none"
 		// (the standard_object unbind sentinel the load-time parser honours: material/shader/interior "none" == 0).
 		if( mJob && mJob->HasRetainedCstDocument() ) {
-			if( IsObjectBindingOp( edit.op ) ) {
+			if( IsObjectCstParamOp( edit.op ) ) {
 				String val;
 				switch( edit.op ) {
 				case SceneEdit::SetObjectMaterial:
@@ -3202,13 +3379,19 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 					val = edit.prevBindingWasNull ? String( "none" ) : edit.prevPropertyValue;
 					break;
 				case SceneEdit::SetObjectInteriorMedium:
+				case SceneEdit::SetObjectMirror:
+					// doc 89 slice C: an empty prev is "no mirror", and `mirror none` is
+					// the chunk's own spelling for it (PartE of ObjectMirrorTest pins that
+					// it derives clean) -- so the undo of a first mirror WRITES a param
+					// rather than removing one, which is the same shape the interior-medium
+					// unbind uses and needs no RouteCstParamRemove_.
 					val = ( edit.prevPropertyValue.size() <= 1 ) ? String( "none" ) : edit.prevPropertyValue;
 					break;
 				default:   // SetObjectGeometry -- prev is always a real registered name (CaptureForApply rejected otherwise)
 					val = edit.prevPropertyValue;
 					break;
 				}
-				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectCstParamRole( edit.op ), val.c_str() ) ) return false;
 				mLastScope = Dirty_ObjectTransform;
 				return true;
 			}
@@ -3297,6 +3480,24 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			} else {
 				restored = false;
 			}
+			break;
+		case SceneEdit::SetObjectMirror:
+			// doc 89 slice C.  An EXPLICIT arm, not the `default:` below: that one
+			// restores the captured TRANSFORM state, which for a mirror edit is the
+			// state the mirror edit never touched -- it would leave the reflection
+			// standing and report success.  Replays the captured axis through the
+			// same IJob entry point the forward edit used, so the finalize /
+			// TLAS-invalidation / light-generation bump are identical in both
+			// directions.  "none" is the clear, and it always resolves (the axis is
+			// a literal, not a reference), so the only failure here is a missing Job.
+			if( mJob ) {
+				restored = mJob->SetObjectMirror( edit.objectName.c_str(),
+					edit.prevPropertyValue.size() <= 1 ? "none" : edit.prevPropertyValue.c_str() );
+			} else {
+				restored = false;
+			}
+			RunObjectInvariantChain( *obj );   // rebake this node's subtree + the TLAS leaf
+			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
 			break;
 		default:
 			// Transform op -- restores from the captured component/matrix state,
@@ -3631,11 +3832,11 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 					"bind it to a child that has geometry", edit.objectName.c_str() );
 				return false;
 			}
-			if( IsObjectBindingOp( edit.op ) ) {
+			if( IsObjectCstParamOp( edit.op ) ) {
 				String val = edit.propertyValue;
-				if( edit.op == SceneEdit::SetObjectInteriorMedium
+				if( ( edit.op == SceneEdit::SetObjectInteriorMedium || edit.op == SceneEdit::SetObjectMirror )
 				 && ( val.size() <= 1 || val == String( "none" ) ) ) val = String( "none" );
-				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectCstParamRole( edit.op ), val.c_str() ) ) return false;
 				mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
 				mLastScope = Dirty_ObjectTransform;
 				return true;

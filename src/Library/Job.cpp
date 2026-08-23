@@ -6150,6 +6150,113 @@ bool Job::SetObjectParent( const char* child, const char* parent )
 	return true;
 }
 
+bool Job::SetObjectMirror( const char* object_name, const char* axis )
+{
+	if( !pObjectManager || !object_name ) return false;
+
+	// DECODE FIRST, MUTATE SECOND.  A bad axis must fail the whole call with the
+	// object untouched -- the same refuse-before-any-mutation discipline
+	// Job::AddObject's reference resolution follows.
+	int axisIdx = -1;
+	const std::string a = axis ? std::string( axis ) : std::string();
+	if     ( a.empty() || a == "none" ) axisIdx = -1;
+	else if( a == "x" )                 axisIdx = 0;
+	else if( a == "y" )                 axisIdx = 1;
+	else if( a == "z" )                 axisIdx = 2;
+	else {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMirror:: `%s`: mirror axis `%s` must be x, y or z (lower case), "
+			"or `none` to clear it", object_name, a.c_str() );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( object_name );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMirror:: Object not found `%s`", object_name );
+		return false;
+	}
+
+	// The mirror lives on Implementation::Transformable as a NON-virtual member --
+	// no interface vtable grows for it -- so it is reached the way
+	// SetFinalTransformMatrix is reached from AddObjectMatrix.
+	Implementation::Transformable* t = dynamic_cast<Implementation::Transformable*>( pObj );
+	if( !t ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMirror:: `%s` is not a Transformable, so it cannot carry a mirror", object_name );
+		return false;
+	}
+
+	// NOTHING TO DO IS NOT NOTHING TO SKIP -- except for the invariants.  The
+	// parser calls this on EVERY standard_object, mirror or not, so the
+	// overwhelmingly common case is "-1 was already -1"; re-finalizing and bumping
+	// the light generation on those would churn the whole scene through every load,
+	// which is exactly the trap SetObjectParent's before/after comparison exists to
+	// avoid.  Compare, and do the expensive half only on a real change.
+	if( t->GetMirrorAxis() == axisIdx ) return true;
+
+	// A csg_object is REFUSED BY NAME, and the reason is not "it is a different
+	// class" -- a CSGObject IS a Transformable and would happily carry the matrix.
+	// It is that a composite's transform is COMMITTED as `position` + `orientation`
+	// (the csg_object chunk has no `matrix` param; CstObjectTransformKind answers 2
+	// for it and SceneEditor::DecomposeRigid refuses a negative determinant
+	// outright), so a mirror set here would RENDER and could never round-trip to
+	// disk -- the live scene diverging from its file, which is the failure mode the
+	// whole commit gate exists to prevent.  Unreachable from a scene file (the
+	// `csg_object` grammar declares no `mirror` param, so the descriptor-driven
+	// parser rejects the line before this call), but IJob is public API and the
+	// console can name any object.  Same shape, and the same dynamic_cast, as
+	// Job::AddObject's csg re-point refusal.
+	//
+	// PLACED AFTER THE NO-CHANGE EARLY-OUT, deliberately: the refusal exists to
+	// keep an UNSAVEABLE state unreachable, and `mirror none` on a composite that
+	// already has none reaches no state at all.  Refusing it too would make a
+	// caller that clears mirrors across a whole selection fail on every csg in it,
+	// for a call that would have done nothing.
+	if( dynamic_cast<Implementation::CSGObject*>( pObj ) != 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMirror:: `%s` names a csg_object, which cannot carry a mirror -- a composite's "
+			"transform is saved as position + orientation, and neither can express a reflection.  Mirror the "
+			"operands, or parent the csg_object under a mirrored standard_object container",
+			object_name );
+		return false;
+	}
+
+	if( !t->SetMirrorAxis( axisIdx ) ) return false;   // unreachable: axisIdx is already in range
+	pObj->FinalizeTransformations();
+	pObj->ResetRuntimeData();   // this node's own world-space caches, sampled at the un-reflected pose
+
+	// NO ComposeObjectHierarchy HERE, and that is SetObjectParent's reasoning, not
+	// SetObjectPosition's -- because this shares SetObjectParent's CALL SITE, not
+	// that one's.  The `standard_object` parser calls this once per object chunk,
+	// so a walk per call is O(N^2) over the whole derive: measured 1.10 s vs
+	// 0.07 s on a synthetic 1500-mirrored-child scene, a 16x regression on load.
+	// (`SetObjectPosition` and friends compose because they are one-shot API
+	// calls; the same choice here is the O(N^2) trap `Job::AddObject`'s own
+	// comment refuses for exactly the same reason.)
+	//
+	// The descendants are composed anyway, by BOTH of the two paths that can
+	// reach this:
+	//   * a DERIVE walks the whole graph once at the tail (Cst.cpp), which is
+	//     what makes `source` + `mirror` land its subtree correctly -- pinned by
+	//     ObjectMirrorTest's D2 / D5 blocks, which read a grandchild's world
+	//     matrix straight after the derive;
+	//   * an API caller's next render / pick goes through
+	//     ObjectManager::Prepare, whose per-frame `RebakeHierarchy()`
+	//     recomposes every parented node against its parent's CURRENT world.
+	// What neither of them does is invalidate on OUR behalf before that point,
+	// so both invariants that do not survive a stale structure are maintained
+	// here and now: a reflected object has a different world bounding box (stale
+	// TLAS leaf -> unhittable and unpickable), and it may BE, or carry, an
+	// emitter that the LightSampler would keep sampling at the un-reflected pose.
+	// Bumped unconditionally on a real change rather than gated on this node's
+	// own material, because a mirrored CONTAINER carries no material at all and
+	// is the case the feature exists for -- the same gate argument
+	// SetObjectPosition spells out.
+	pObjectManager->InvalidateSpatialStructure();
+	BumpSceneLightGen( pScene );
+	return true;
+}
+
 bool Job::ComposeObjectHierarchy( )
 {
 	if( !pObjectManager ) return false;

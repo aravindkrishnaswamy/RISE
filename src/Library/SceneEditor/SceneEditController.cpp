@@ -17854,6 +17854,25 @@ bool SceneEditController::SetPropertyInner_(
 			edit.op = SceneEdit::SetObjectInteriorMedium;
 			edit.propertyValue = valueStr;
 		}
+		else if( name == String( "mirror" ) ) {
+			// doc 89 slice C: the transform panel's `mirror` row.  Without this arm
+			// the row READ back a value (ObjectIntrospection::ReadObjectParam has
+			// answered `mirror` since the slice landed) that no writer could commit,
+			// so the panel offered an edit it would then reject with "unknown
+			// property" -- the drift this else-chain and the descriptor are supposed
+			// to be two views of.
+			//
+			// EMPTY normalises to "none" because empty is exactly what the read path
+			// returns for an un-mirrored object (deliberately, so the row looks like
+			// every other omitted optional param); re-committing an untouched blank
+			// row must therefore be a no-op clear, not a refusal.  The AXIS itself is
+			// NOT validated here: `Job::SetObjectMirror` is the single decode shared
+			// with the derive path, and it refuses a bad axis with a diagnostic that
+			// names the accepted set.  Duplicating the check here is how the parser
+			// and the panel start disagreeing about what `mirror X` means.
+			edit.op = SceneEdit::SetObjectMirror;
+			edit.propertyValue = ( valueStr.size() <= 1 ) ? String( "none" ) : valueStr;
+		}
 		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
 			if( !ParsePropertyBool( valueStr, shadowValue ) ) return false;
 			shadowEdit = true;

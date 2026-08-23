@@ -1,0 +1,338 @@
+RISE ASCII SCENE 7
+#
+# object_mirror.RISEscene -- docs/agentic-redesign/89-generic-shape-operators.md slice C
+#
+# `mirror x|y|z` on a `standard_object` REFLECTS that node across the plane
+# through its OWN local origin perpendicular to the named axis, composed
+# INNERMOST:
+#
+#     world = parent.world * position * orientation * scale * mirror
+#
+# Author one wing and mirror the other.  This scene is the visual check for
+# all four ways that pays off; the deterministic coverage lives in
+# tests/ObjectMirrorTest.cpp.
+#
+# WHY A SEPARATE SCENE FROM object_instancing.RISEscene, which this obviously
+# belongs beside: that scene's live-object and outliner-row counts are pinned
+# NUMERICALLY by tests/ReferenceGraphTest.cpp PART14b (`objCount == 9`) and
+# narrated in its own header ("42 live objects and 7 outliner rows").  Adding
+# chunks there means editing an unrelated test's expected counts and rewriting
+# its teaching prose.  One added golden line either way.
+#
+# LEFT TO RIGHT:
+#
+#   1. THE PAYOFF -- a bilateral pair from ONE authored assembly.
+#      `left_wing` is a container with two parts (a spar and a fin) that is
+#      DELIBERATELY asymmetric in x, so a reflection is visible rather than a
+#      no-op.  `right_wing` is `source left_wing  mirror x`: one chunk, the
+#      whole subtree cloned AND reflected.  Look at where the fins point --
+#      they lean toward each other, which is what "mirrored" means and what a
+#      second hand-authored assembly would have got wrong.
+#
+#   2. INNERMOST, not outermost.  `solo_mirrored` sits at a POSITIVE x and is
+#      reflected in place.  If the mirror composed outside the node's own
+#      transform it would have been thrown to the negative side instead.  Its
+#      un-mirrored twin `solo_plain` stands beside it for comparison: same
+#      chunk, same position sign, opposite chirality.
+#
+#   3. `count_u` + `mirror` -- every repetition is mirrored.  The authored
+#      `hook` (bead on the +x end) stands alone at the far left; the three
+#      repetitions to its right all have the bead on the -x end.  `source`
+#      COPIES, so the original keeps rendering -- which is what makes the
+#      comparison possible here.
+#
+#   4. A MIRRORED CONTAINER with a child that carries its OWN `mirror x`.
+#      The two reflections CANCEL -- the child's world transform is
+#      orientation-preserving again, so its shape is not reflected -- while the
+#      parent still mirrors the child's PLACEMENT and conjugates its rotation.
+#      So it leans the opposite way from `solo_plain` without being a
+#      reflection of it.  That is the composition rule, and it is what stops a
+#      mirrored parent from double-mirroring a child that also asks for one.
+#
+# WHAT TO LOOK FOR IN THE GUI:
+#
+#   * `right_wing` is ONE outliner row, exactly like any other `source` clone
+#     -- `mirror` is a plain parameter, not a new node, so it draws no new
+#     graph edge and folds the same way.
+#   * The Objects panel shows `mirror x` on that row and reports `orientation
+#     0 0 0`: the reflection is un-applied before the local matrix is
+#     decomposed, so the panel does not invent a phantom 180-degree rotation.
+#
+
+film
+{
+width 720
+height 400
+}
+
+pinhole_camera
+{
+name cam
+location 0 9.0 14.5
+lookat 0 0.5 -0.6
+up 0 1 0
+}
+
+# ---------------------------------------------------------------- materials
+
+uniformcolor_painter
+{
+name pnt_spar
+color 0.30 0.34 0.42
+}
+
+uniformcolor_painter
+{
+name pnt_fin
+color 0.86 0.42 0.20
+}
+
+uniformcolor_painter
+{
+name pnt_hook
+color 0.35 0.62 0.45
+}
+
+uniformcolor_painter
+{
+name pnt_floor
+color 0.55 0.56 0.55
+}
+
+lambertian_material
+{
+name mat_spar
+reflectance pnt_spar
+}
+
+lambertian_material
+{
+name mat_fin
+reflectance pnt_fin
+}
+
+lambertian_material
+{
+name mat_hook
+reflectance pnt_hook
+}
+
+lambertian_material
+{
+name mat_floor
+reflectance pnt_floor
+}
+
+# ---------------------------------------------------------------- geometry
+
+infiniteplane_geometry
+{
+name geo_floor
+xtile 4
+ytile 4
+}
+
+box_geometry
+{
+name geo_spar
+width 1.6
+height 0.16
+depth 0.30
+}
+
+box_geometry
+{
+name geo_fin
+width 0.22
+height 0.90
+depth 0.26
+}
+
+sphere_geometry
+{
+name geo_bead
+radius 0.26
+}
+
+# ---------------------------------------------------------------- the floor
+
+standard_object
+{
+name floor
+geometry geo_floor
+material mat_floor
+position 0 0 0
+orientation -90 0 0
+}
+
+# =================================================== 1. THE BILATERAL PAIR
+#
+# ONE authored wing.  The container carries the placement; the two parts are
+# offset along +x from it, so the assembly is asymmetric and a reflection is
+# plainly visible.  `wing_fin` is also TILTED, which is the detail a
+# hand-authored second copy gets wrong first.
+
+standard_object
+{
+name left_wing
+position -1.4 0.9 3.6
+}
+
+standard_object
+{
+name wing_spar
+parent left_wing
+geometry geo_spar
+material mat_spar
+position -0.8 0 0
+}
+
+standard_object
+{
+name wing_fin
+parent left_wing
+geometry geo_fin
+material mat_fin
+position -1.45 0.42 0
+orientation 0 0 -22
+}
+
+# ONE CHUNK for the whole other side: the subtree is cloned AND reflected.
+# `source` drops the source's own transform, so `position` here says where
+# this copy goes; `mirror x` says which way it faces.
+
+standard_object
+{
+name right_wing
+source left_wing
+mirror x
+position 1.4 0.9 3.6
+}
+
+# ============================================ 2. INNERMOST, NOT OUTERMOST
+#
+# Both of these are at POSITIVE x.  The mirrored one stays there -- the
+# reflection is applied in its own frame, before its placement.
+
+standard_object
+{
+name solo_plain
+geometry geo_fin
+material mat_fin
+position 3.1 0.45 0.0
+orientation 0 0 -30
+}
+
+standard_object
+{
+name solo_mirrored
+geometry geo_fin
+material mat_fin
+position 4.7 0.45 0.0
+orientation 0 0 -30
+mirror x
+}
+
+# ================================================ 3. count_u + mirror
+#
+# Every repetition is mirrored.  The hook is an off-centre bead on a spar, so
+# which end the bead sits on is the whole tell.
+
+standard_object
+{
+name hook
+position -5.0 0.5 -3.8
+}
+
+standard_object
+{
+name hook_bar
+parent hook
+geometry geo_spar
+material mat_hook
+position 0 0 0
+}
+
+standard_object
+{
+name hook_bead
+parent hook
+geometry geo_bead
+material mat_hook
+position 0.82 0.30 0
+}
+
+standard_object
+{
+name hook_row
+source hook
+mirror x
+count_u 3
+position expr(-1.8 + i*2.6) 0.5 -3.8
+}
+
+# ============================ 4. A MIRRORED CONTAINER, AND A MIRRORED CHILD
+#
+# `twice_root` is a mirrored CONTAINER.  `twice_kid` carries its own
+# `mirror x`, so the two reflections CANCEL: its world transform has a POSITIVE
+# determinant and the fin is not reflected.  The parent still reflects its
+# placement (the child written at local +1.2 lands at world -1.2 from the
+# group) and conjugates its rotation, so it leans the OPPOSITE way from
+# `solo_plain` -- a rotation, not a reflection.
+
+standard_object
+{
+name twice_root
+position -3.4 0.5 0.0
+mirror x
+}
+
+standard_object
+{
+name twice_kid
+parent twice_root
+geometry geo_fin
+material mat_fin
+position 1.2 0.35 0
+orientation 0 0 -30
+mirror x
+}
+
+# ---------------------------------------------------------------- lighting
+#
+# `direction` is the vector FROM the surface TO the light, so a camera at +Z
+# needs a POSITIVE z here or every front face goes dark.
+
+directional_light
+{
+name key
+power 2.6
+color 1 0.97 0.90
+direction 0.30 0.82 0.60
+}
+
+ambient_light
+{
+name fill
+power 0.30
+color 0.56 0.62 0.74
+}
+
+standard_shader
+{
+name global
+shaderop DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+samples 24
+}
+
+file_rasterizeroutput
+{
+pattern rendered/object_mirror
+type PNG
+bpp 8
+color_space sRGB
+}

@@ -148,6 +148,24 @@ namespace RISE
 			//! run — interior_medium swap is a pointer change that
 			//! doesn't invalidate spatial structure.
 			SetObjectInteriorMedium,
+			//! doc 89 slice C: set (or clear) the object's LOCAL mirror
+			//! axis.  `propertyValue` is "x" / "y" / "z", or "none" (or
+			//! empty) to clear it; anything else is refused by
+			//! `Job::SetObjectMirror` with a diagnostic naming the
+			//! accepted set.  `prevPropertyValue` captures the axis the
+			//! object currently carries, in the SAME spelling, so undo
+			//! round-trips through the identical path -- there is no
+			//! reverse-lookup to fail, unlike the binding ops.
+			//!
+			//! A TRANSFORM in effect (it changes the object's world
+			//! matrix and bounding box, hence OpNeedsSpatialRebuild
+			//! below) but NOT an IsObjectTransformOp: those commit to
+			//! the `matrix` param at the composite boundary, whereas
+			//! `mirror` is its own standard_object param and routes
+			//! per-op like a binding.  Legal on a CONTAINER, which is
+			//! why it is not one of the binding ops the container gate
+			//! refuses.
+			SetObjectMirror,
 
 			// Camera (objectName ignored)
 			SetCameraTransform,     ///< v3a = pos, v3b = look-at
@@ -597,15 +615,19 @@ namespace RISE
 			    || op == SetObjectShader
 			    || op == SetObjectShadowFlags
 			    || op == SetObjectGeometry
-			    || op == SetObjectInteriorMedium;
+			    || op == SetObjectInteriorMedium
+			    || op == SetObjectMirror;
 		}
 
 		//! Returns true if this edit op changes the object's bounding
 		//! box and therefore needs a top-level-acceleration (TLAS)
 		//! rebuild on the next render.  All transform ops qualify; so
 		//! does SetObjectGeometry (a runtime geometry swap changes the
-		//! object's extents).  Property-only ops (material / shader /
-		//! shadow flags / interior medium) leave the bbox unchanged.
+		//! object's extents); so does SetObjectMirror (doc 89 slice C --
+		//! a reflection about a plane through the node's own origin moves
+		//! every world vertex of an off-centre shape).  Property-only ops
+		//! (material / shader / shadow flags / interior medium) leave the
+		//! bbox unchanged.
 		static bool OpNeedsSpatialRebuild( Op op )
 		{
 			return op == TranslateObject
@@ -615,7 +637,8 @@ namespace RISE
 			    || op == SetObjectScale
 			    || op == SetObjectStretch
 			    || op == ScaleObjectFromAnchor
-			    || op == SetObjectGeometry;
+			    || op == SetObjectGeometry
+			    || op == SetObjectMirror;
 		}
 
 		//! Returns true if this edit op mutates the camera.

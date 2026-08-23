@@ -1504,6 +1504,16 @@ static const long long kMaxSynthesizedEntries = 10000000LL;
 //! an instance is a node in its own right, placeable anywhere in the tree --
 //! and `source` itself is consumed by the expansion.
 //!
+//! doc 89 slice C adds `mirror`.  A mirror is part of a node's own LOCAL TRANSFORM --
+//! it composes innermost in `P * O * Stretch * Scale * Mirror` -- so it belongs with
+//! `position` / `orientation` / `scale`, which are dropped for exactly the reason given
+//! above.  Inheriting it instead would make `standard_object { name right_wing  source
+//! left_wing  mirror x }` DOUBLE-mirror any further copy of `right_wing`, and would make
+//! an un-mirrored instance of a mirrored source silently come out reflected.  It also
+//! keeps the subtree right without a second rule: descendants are built from their OWN
+//! chunks and composed through the mirrored parent's world matrix, so they reflect
+//! exactly once -- a child that inherited the root's `mirror` would reflect twice.
+//!
 //! 87 step 3c adds `count_u` / `count_v` to the list: a count says how many times THIS
 //! chunk repeats, so inheriting one would make a copy of a repetition repeat again.
 //! Belt-and-braces rather than the live guard -- `ChunkCarriesCounts` refuses a counted
@@ -1512,7 +1522,7 @@ static bool IsInstanceOwnParam( const std::string& pname )
 {
 	return pname == "name"        || pname == "parent"      || pname == "source"
 	    || pname == "position"    || pname == "orientation" || pname == "quaternion"
-	    || pname == "matrix"      || pname == "scale"
+	    || pname == "matrix"      || pname == "scale"      || pname == "mirror"
 	    || pname == "count_u"     || pname == "count_v";
 }
 
@@ -2565,6 +2575,38 @@ static bool ExpandSourceInstance(
 	if( !SourceChainOf( items, index, instIndex, chain ) || chain.empty() ) {
 		diags.push_back( who + ": `source` chain from `" + srcName + "` does not resolve (a broken link, or deeper than 256 links)" );
 		return false;
+	}
+
+	// doc 89 slice C: WARN when the SOURCE ROOT carries a `mirror` and this instancing
+	// chunk does not.  `mirror` is instance-own (see IsInstanceOwnParam), so the copy
+	// is built WITHOUT the source's reflection -- which makes a plain `source` clone of
+	// a mirrored node come out as that node's MIRROR IMAGE, the exact opposite of what
+	// "copy" suggests.  The mechanics are correct and deliberate (they are `position` /
+	// `scale`'s, and pinned by ObjectMirrorTest [D4]); what is not obvious is which of
+	// the two things an author gets, so say it, and say the one-token fix.
+	//
+	// A WARNING, NOT A DIAGNOSTIC.  A `diags` entry fails the derive -- every caller
+	// treats a non-empty bag as a refusal -- and both readings are legitimate scenes:
+	// `source W` on a mirrored `W` is how you author the OTHER half of a bilateral pair
+	// from a half that was itself mirrored into place.
+	//
+	// Keyed on `chain.front()`, the chunk `source` actually NAMES: that is the node the
+	// author is looking at, and it is the node whose own `mirror` param decides how it
+	// renders (a mirror further up the chain is dropped for that chunk by the same rule).
+	{
+		std::string ownMirror, srcMirror;
+		ParamValue( inst.get(), "mirror", ownMirror );
+		ParamValue( items[ chain.front() ].get(), "mirror", srcMirror );
+		const bool ownHas = ( !ownMirror.empty() && ownMirror != "none" );
+		const bool srcHas = ( !srcMirror.empty() && srcMirror != "none" );
+		if( srcHas && !ownHas ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"%s: `source %s` copies a node that carries `mirror %s`, but this chunk carries none.  "
+				"`mirror` is INSTANCE-OWN -- dropped with `position` / `orientation` / `scale` -- so the clone "
+				"will be the MIRROR IMAGE of what you see, not a copy of it.  Add `mirror %s` here to reproduce "
+				"the source exactly.",
+				who.c_str(), srcName.c_str(), srcMirror.c_str(), srcMirror.c_str() );
+		}
 	}
 
 	// THE SUBTREE PLAN, built before anything is applied, and NAMED RELATIVE to the

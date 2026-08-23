@@ -4053,6 +4053,35 @@ namespace RISE
 									const SkinDescriptor& desc		///< [in] Rails + tessellation + billow parameters
 									) = 0;
 
+		//! Sets (or clears) an object's LOCAL MIRROR (doc 89 slice C): a reflection
+		//! across the plane through the node's own origin perpendicular to `axis`,
+		//! composed INNERMOST -- `world = parent.world * P * O * Stretch * Scale *
+		//! Mirror` -- so it reflects the node's shape, and everything parented under
+		//! it, before the node's own placement applies.  Author one wing, mirror the
+		//! other; with `source`, the whole cloned subtree arrives reflected.
+		//!
+		//! `axis` is "x", "y" or "z"; a NULL / empty / "none" axis CLEARS the mirror.
+		//! Any other string is REFUSED (returns false, changes nothing) rather than
+		//! mapped onto an axis nobody asked for.
+		//!
+		//! ALWAYS CALLED, mirror on or off, by the `standard_object` parser -- for
+		//! the reason `SetObjectParent` is: an incremental re-apply of a chunk whose
+		//! `mirror` line was DELETED must actively clear it, or the object keeps
+		//! rendering reflected until a save + reload silently un-reflects it.
+		//!
+		//! Appended after AddSkinGeometry per the append-only IJob tail (preserves
+		//! every prior vtable slot).
+		//! A `csg_object` is REFUSED (except for a no-op clear): a composite's
+		//! transform is saved as `position` + `orientation`, and neither can express
+		//! a reflection, so a mirror there would render and never round-trip to disk.
+		//!
+		/// \return TRUE if the mirror was set or cleared, FALSE if the object is
+		///         unknown, is a csg_object, or the axis is not one of x / y / z / none
+		virtual bool SetObjectMirror(
+									const char* object_name,		///< [in] Name of the object
+									const char* axis				///< [in] "x", "y", "z", or null/""/"none" to clear
+									) = 0;
+
 	};
 
 
