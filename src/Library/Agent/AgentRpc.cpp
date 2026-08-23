@@ -1785,8 +1785,13 @@ namespace RISE
 								"validate; supply 'text' to validate a candidate document" );
 						}
 						JsonValue headResult = JsonValue::MakeObject();
+						// (Doc 91) condition G's phase gate: `s` is non-null here
+						// (checked just above), so pass its real build phase
+						// through rather than ValidateText's conservative
+						// no-session default.
 						headResult.set( "diagnostics", diagnosticsArray(
-							AgentSession::ValidateText( snap.document ) ) );
+							AgentSession::ValidateText( snap.document,
+								s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
 						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
 						// Creative-richness P2.b (73-creative-richness-design.md
@@ -1802,8 +1807,13 @@ namespace RISE
 						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();
+					// (Doc 91) `s` may be null here (the text form works with no
+					// head/session loaded -- the no-head bootstrap case
+					// ValidateText's default is conservative for); when it
+					// exists, pass its real build phase through.
 					result.set( "diagnostics", diagnosticsArray(
-						AgentSession::ValidateText( text->asString() ) ) );
+						AgentSession::ValidateText( text->asString(),
+							s && s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces ) ) );
 					result.set( "validated", JsonValue::MakeString( "text" ) );
 					// Creative-richness P2.b: no `note` field here either -- see
 					// the head-form branch's comment above.

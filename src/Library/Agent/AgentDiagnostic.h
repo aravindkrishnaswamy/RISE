@@ -192,6 +192,54 @@ namespace RISE
 			//! N passes, not all at once -- acceptable for an advisory that
 			//! is re-computed on every render/validate call anyway.
 			static const char* const DESIGN_ORPHANED_PAINTERS = "DESIGN_ORPHANED_PAINTERS";
+			//! Doc 91 (2026-08-23), the same advisory family, condition G:
+			//! a Material-category chunk with a name that NO reference
+			//! anywhere in the document resolves to -- DESIGN_ORPHANED_PAINTERS
+			//! above is the direct precedent, both the scan (the SAME
+			//! SceneReferenceGraph::EdgesAndDangling pass, just scoped to
+			//! ChunkCategory::Material instead of excluded from it) and the
+			//! message shape.  A Material is a graph ROOT for the
+			//! Painter/Function orphan question (nothing references a
+			//! material FROM a painter), which is why DESIGN_ORPHANED_PAINTERS
+			//! excludes it -- but that is exactly backwards for this
+			//! condition, which asks the opposite question about the same
+			//! root category: does any OBJECT bind it?  Generic across any
+			//! scene shape (still life, furniture, creature, landscape) --
+			//! nothing here is keyed to a subject.  Severity::Info,
+			//! self-disarming ("bind it or remove_chunk it"), same
+			//! bounded-list formatting as its two siblings above.  SUPPRESSED
+			//! while a build-protocol element is actively under construction
+			//! (`AgentSession::BuildProtocolActive() && BuildPhase() ==
+			//! AgentBuildPhase::Pieces`, the session's own PUBLIC accessors --
+			//! threaded in by each caller as `ValidateText`'s `inPiecesPhase`
+			//! argument, since ValidateText itself is a stateless static):
+			//! a material authored before the
+			//! object that will bind it is normal mid-build, not a mistake,
+			//! and the whole point of the Pieces phase is that a scene is
+			//! transiently incomplete while one element is under
+			//! construction -- see AgentSession.cpp's
+			//! ComputeDesignNoteConditionsFromDoc_ condition G for the exact
+			//! gate.
+			static const char* const DESIGN_UNBOUND_MATERIAL = "DESIGN_UNBOUND_MATERIAL";
+			//! Doc 91 (2026-08-23), the same advisory family, condition H:
+			//! the COLOUR-pipe twin of DESIGN_SCALAR_PIPE_UNUSED above.  The
+			//! scene has enough standard_object chunks (>=3, the SAME
+			//! threshold condition A uses) to plausibly want a
+			//! spatially-varying colour, but every colour-carrying material
+			//! slot that exists (base_color / reflectance / emission / ...,
+			//! enumerated from the registered Material-category descriptors'
+			//! `ParameterSemantics.pipe == ParameterPipe::Color` Reference
+			//! params -- never hand-listed, so a material kind added later is
+			//! covered without editing this condition) resolves to a flat
+			//! uniformcolor_painter (or an equivalent constant-by-construction
+			//! kind, blackbody_painter/spectral_painter).  MUST NOT fire when
+			//! ANY colour-pipe material slot anywhere in the document binds to
+			//! a spatially-varying painter (a perlin/expression/checker/
+			//! ramp/... painter into base_color or reflectance) -- one such
+			//! binding proves the author has already reached the affordance.
+			//! Severity::Info, self-disarming, same
+			//! ComputeDesignNoteConditionsFromDoc_ scan as its siblings.
+			static const char* const DESIGN_FLAT_ALBEDO = "DESIGN_FLAT_ALBEDO";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

@@ -6658,7 +6658,12 @@ namespace RISE
 					if( !cp.has( "expect" ) || !cp.get( "expect" ).isString() )
 						return { false, "diagnostics checkpoint missing string field \"expect\"" };
 					const std::string expect = cp.get( "expect" ).asString();
-					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+					// (Doc 91) pass the live session's real build phase through
+					// rather than ValidateText's conservative no-session
+					// default, so a scenario checkpoint sees the SAME
+					// DESIGN_UNBOUND_MATERIAL gating a live run would.
+					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument(),
+						session->BuildProtocolActive() && session->BuildPhase() == AgentSession::AgentBuildPhase::Pieces );
 
 					if( expect == "clean" ) {
 						// Creative-richness P2.b (73-creative-richness-design.md

@@ -2555,7 +2555,21 @@ namespace RISE
 			//! REPAIRING a scene from scratch (the CLI's `--agent-stdio` with
 			//! no scene loaded) must be able to `validate` a candidate BEFORE
 			//! any head exists.  Identical result to `Validate()`.
-			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText );
+			//!
+			//! `inPiecesPhase` (doc 91): true when the CALLER's session is
+			//! mid-build (`BuildProtocolActive() && BuildPhase() ==
+			//! AgentBuildPhase::Pieces`).  Being static, this function has no
+			//! session of its own to ask, so a caller that HAS one (`Validate()`
+			//! below; AgentRpc.cpp's `validate` handler) passes its own
+			//! answer through; a caller with no session (the no-head
+			//! bootstrap this function exists for) leaves the default
+			//! `false`, which is the conservative choice -- it can only make
+			//! the unbound-material note fire MORE often, never silence a
+			//! real one.  See AgentDiagnosticCode::DESIGN_UNBOUND_MATERIAL's
+			//! doc for why this ONE condition is phase-sensitive when none
+			//! of the others are.
+			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText,
+			                                                  bool inPiecesPhase = false );
 
 			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
 			//! RE-TARGETED by sec 7): the shared engine-side "design note"
@@ -2576,7 +2590,12 @@ namespace RISE
 			//! "DESIGN NOTE: ..." string carrying every firing clause plus
 			//! a load-bearing anti-churn escape clause.  See
 			//! AgentSession.cpp for the exact scan and wording.
-			static std::string ComputeDesignNote( const std::string& documentText );
+			//!
+			//! `inPiecesPhase` -- same contract as ValidateText's own
+			//! parameter above (doc 91); default `false` for the same
+			//! conservative reason.
+			static std::string ComputeDesignNote( const std::string& documentText,
+			                                      bool inPiecesPhase = false );
 
 			//! Facet 5 slice S1: read_skill -- STATELESS, like ReadSchema /
 			//! ValidateText (references NO member state; exposed static so the

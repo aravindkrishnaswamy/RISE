@@ -1066,10 +1066,14 @@ namespace RISE
 
 		std::vector<AgentDiagnostic> AgentSession::Validate( const std::string& candidateText ) const
 		{
-			// Thin forwarder to the stateless core: Validate references NO
-			// member state, so the transport can validate a candidate with no
-			// head loaded (no-head bootstrap) via ValidateText directly.
-			return ValidateText( candidateText );
+			// Thin forwarder to the stateless core: the CST-derive logic
+			// itself references NO member state, so the transport can
+			// validate a candidate with no head loaded (no-head bootstrap)
+			// via ValidateText directly.  This session DOES have build-phase
+			// state, though (doc 91), so -- unlike the no-head bootstrap
+			// path -- it is passed through rather than left at ValidateText's
+			// conservative default.
+			return ValidateText( candidateText, BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces );
 		}
 
 		namespace
@@ -1084,7 +1088,7 @@ namespace RISE
 			//! namespace (see AttachParamEditRejectionIssues's forward
 			//! declaration further down for the identical pattern), so this and
 			//! the later definition refer to the same symbol.
-			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out );
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase = false );
 
 			//! Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
 			//! arc.md sec 7's LUMINAIRE_NULL_GEOMETRY entry; 76-...-log.md sec 3's
@@ -2702,7 +2706,7 @@ namespace RISE
 			return CheckZeroAreaLightConfirmation_( added );
 		}
 
-		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
+		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText, bool inPiecesPhase )
 		{
 			std::vector<AgentDiagnostic> out;
 
@@ -2926,8 +2930,11 @@ namespace RISE
 			// untouched (see 73-creative-richness-design.md sec 9's closing
 			// recommendation -- "keep the render-result note as-is").
 			// candidateDoc is ALREADY parsed above (step (a)), so this is a
-			// second scan of the same Document, not a re-parse.
-			AppendDesignDiagnostics_( candidateDoc, out );
+			// second scan of the same Document, not a re-parse.  (Doc 91)
+			// condition G's phase gate: suppress it while an element is
+			// actively mid-build -- see AppendDesignDiagnostics_'s and this
+			// function's own `inPiecesPhase` doc.
+			AppendDesignDiagnostics_( candidateDoc, out, inPiecesPhase );
 
 			return out;
 		}
@@ -3210,6 +3217,43 @@ namespace RISE
 				return table;
 			}
 
+			//! Doc 91's colour-pipe twin of ScalarMaterialSlotsByKind_ just
+			//! above -- built the IDENTICAL way (enumerated from the
+			//! registered Material-category descriptors, never hand-listed)
+			//! so condition H covers base_color / reflectance / emission /
+			//! every other colour-carrying material slot in the whole
+			//! material vocabulary without a private name list, which is
+			//! exactly the staleness trap condition A's PRE-adoption-polish
+			//! wording fell into.  EXCLUDES the one name pair
+			//! ScalarMaterialSlotsByKind_ reclassifies as scalar-meaning
+			//! despite its Color-pipe descriptor entry
+			//! (`pbr_metallic_roughness_material`'s `roughness`/`metallic`,
+			//! MicrosurfaceKindUsesColourPipe_) -- those two are condition
+			//! A's domain, and counting them here would test the identical
+			//! binding under two different condition letters.
+			const std::map<std::string, std::vector<std::string> >& ColorMaterialSlotsByKind_()
+			{
+				static const std::map<std::string, std::vector<std::string> > table = [] {
+					std::map<std::string, std::vector<std::string> > out;
+					for( const String& kw : AllKeywordsForCategory( ChunkCategory::Material ) ) {
+						const ChunkDescriptor* d = DescriptorForKeyword( kw );
+						if( !d ) continue;
+						const std::string kind = std::string( kw.c_str() );
+						std::vector<std::string> slots;
+						for( const ParameterDescriptor& p : d->parameters ) {
+							if( p.kind != ValueKind::Reference ) continue;
+							if( p.semantics.pipe != ParameterPipe::Color ) continue;
+							if( MicrosurfaceKindUsesColourPipe_( kind ) &&
+							    ( p.name == "roughness" || p.name == "metallic" ) ) continue;
+							slots.push_back( p.name );
+						}
+						if( !slots.empty() ) out[kind] = slots;
+					}
+					return out;
+				}();
+				return table;
+			}
+
 			//! "MOST PROMINENT" -- ONE definition, read by design-note condition D
 			//! (which NAMES the material in its clause) and by a bare
 			//! `vary_material` call (which REWRITES it).  If these two ever
@@ -3239,6 +3283,8 @@ namespace RISE
 				bool conditionD = false;   //!< every material's microsurface is a bare number (88 S5)
 				bool conditionE = false;   //!< adoption polish item 1: param-metadata erosion
 				bool conditionF = false;   //!< adoption polish item 2: orphaned Painter/Function chunks
+				bool conditionG = false;   //!< doc 91: a Material chunk zero standard_objects reference
+				bool conditionH = false;   //!< doc 91: every colour-carrying material slot is a flat constant
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -3286,6 +3332,13 @@ namespace RISE
 				//! order.  Condition F's population; same bounded-list
 				//! formatting as paramErodedChunkNames.
 				std::vector<std::string> orphanedPainterNames;
+
+				//! Doc 91: every Material-category chunk name with zero
+				//! document-wide referrers, in DOCUMENT order -- condition G's
+				//! population, the SAME SceneReferenceGraph scan as
+				//! orphanedPainterNames just scoped to Material.  Same
+				//! bounded-list formatting.
+				std::vector<std::string> unboundMaterialNames;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -3640,7 +3693,44 @@ namespace RISE
 				return MicrosurfaceBinding_::Opaque;
 			}
 
-			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc )
+			//! Doc 91, condition H's per-slot classifier -- the COLOUR-pipe
+			//! sibling of ClassifyMicrosurfaceBinding_ just above, simpler
+			//! because a colour-pipe Reference param NEVER accepts an inline
+			//! numeric literal the way a scalar-pipe one does (Job.cpp
+			//! resolves it purely as a painter-chunk NAME -- e.g.
+			//! lambertian_material's `reflectance` is `bag.GetString(...)`
+			//! looked up in the colour painter manager), so there is no
+			//! scalar_painter-shaped sub-form to walk.  Reuses
+			//! MicrosurfacePainterKindIsConstant_ rather than re-listing the
+			//! same three constant-by-construction painter kinds
+			//! (uniformcolor_painter / blackbody_painter / spectral_painter)
+			//! under a second name -- "is this painter kind spatially
+			//! constant" is the same question regardless of which pipe asked
+			//! it.
+			MicrosurfaceBinding_ ClassifyColorBinding_(
+				const std::string& value,
+				const std::map<std::string, std::string>& painterKinds )
+			{
+				if( value.empty() || value == "none" ) return MicrosurfaceBinding_::Absent;
+				const std::map<std::string, std::string>::const_iterator pk = painterKinds.find( value );
+				if( pk == painterKinds.end() ) return MicrosurfaceBinding_::Opaque;
+				return MicrosurfacePainterKindIsConstant_( pk->second )
+					? MicrosurfaceBinding_::Constant : MicrosurfaceBinding_::Varying;
+			}
+
+			//! `inPiecesPhase` (doc 91): true when the caller is mid-build --
+			//! `AgentSession::BuildProtocolActive_() && BuildPhase() ==
+			//! AgentBuildPhase::Pieces`, one element actively under
+			//! construction.  Consulted ONLY by condition G (a material
+			//! authored before the object that will bind it is normal
+			//! mid-build, and firing on every intermediate render/validate
+			//! call during that window would be the exact nag-loop this
+			//! file's other conditions are built to avoid); every other
+			//! condition is phase-agnostic, matching this family's existing
+			//! (lack of) phase gating elsewhere.  Defaults false so the two
+			//! phase-blind callers below (VaryMaterial's material census)
+			//! need no change.
+			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc, bool inPiecesPhase = false )
 			{
 				DesignNoteConditions_ c;
 				bool hasAdvancedGeometry = false;
@@ -3819,7 +3909,19 @@ namespace RISE
 					}
 					if( d->category == ChunkCategory::Material &&
 					    ( MicrosurfaceSlotsForKind_( role ) != nullptr ||
-					      ScalarMaterialSlotsByKind_().count( role ) != 0 ) ) {
+					      ScalarMaterialSlotsByKind_().count( role ) != 0 ||
+					      // (Doc 91) condition H needs materials that carry
+					      // ONLY colour-pipe slots too -- lambertian_material
+					      // (no microsurface, no scalar slot at all) is the
+					      // most common example, and without this a scene
+					      // built entirely from it would never have its
+					      // `reflectance` examined by ANY condition.  Adding
+					      // this candidacy is safe for A/D: both re-filter
+					      // pendingMaterials by their OWN kind-specific slot
+					      // lookup and simply skip a kind absent from it,
+					      // exactly as they already do for every other
+					      // colour-only material kind.
+					      ColorMaterialSlotsByKind_().count( role ) != 0 ) ) {
 						PendingMaterial_ pmEntry;
 						pmEntry.itemIndex = i;
 						pmEntry.kind      = role;
@@ -3863,6 +3965,30 @@ namespace RISE
 				c.conditionA = c.standardObjectCount >= 3 && !anyScalarMaterialSlotVaries;
 				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
 
+				// (Doc 91) Condition H's binding-aware resolution: does ANY
+				// colour-pipe material slot anywhere in the document bind to
+				// something that varies spatially?  Mirrors condition A's
+				// anyScalarMaterialSlotVaries loop immediately above,
+				// swapping ScalarMaterialSlotsByKind_ for
+				// ColorMaterialSlotsByKind_ and ClassifyMicrosurfaceBinding_
+				// for its simpler colour-pipe sibling ClassifyColorBinding_.
+				bool anyColorMaterialSlotVaries = false;
+				for( const PendingMaterial_& pm : pendingMaterials ) {
+					const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+						ColorMaterialSlotsByKind_().find( pm.kind );
+					if( slotsIt == ColorMaterialSlotsByKind_().end() ) continue;
+					for( const std::string& slotName : slotsIt->second ) {
+						const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
+						if( v == pm.params.end() ) continue;
+						if( ClassifyColorBinding_( v->second, painterKinds ) == MicrosurfaceBinding_::Varying ) {
+							anyColorMaterialSlotVaries = true;
+							break;
+						}
+					}
+					if( anyColorMaterialSlotVaries ) break;
+				}
+				c.conditionH = c.standardObjectCount >= 3 && !anyColorMaterialSlotVaries;
+
 				// (Adoption polish item 2) Condition F: Painter/Function-
 				// category chunks with ZERO document-wide referrers.
 				// Deliberately its OWN `SceneReferenceGraph` pass rather than
@@ -3900,8 +4026,27 @@ namespace RISE
 						if( referredIds.count( dc.id ) ) continue;
 						c.orphanedPainterNames.push_back( std::string( dc.name.c_str() ) );
 					}
+
+					// (Doc 91) Condition G: the SAME scan, SAME `refChunks` /
+					// `referredIds` computed just above -- 108c01ed's
+					// DESIGN_ORPHANED_PAINTERS is the direct precedent, scoped
+					// to Material instead of excluded from it.  That
+					// function's own comment explains why Materials are
+					// excluded THERE ("a Material is this graph's natural
+					// ROOT, so zero referrers there is normal"); this
+					// condition asks the opposite question about the SAME
+					// root category -- does any OBJECT bind it? -- so being a
+					// root is exactly what makes zero referrers meaningful
+					// here.
+					for( const SceneReferenceGraph::DocumentChunk& dc : refChunks ) {
+						if( !dc.hasCategory || dc.category != ChunkCategory::Material ) continue;
+						if( dc.name.size() <= 1 ) continue;
+						if( referredIds.count( dc.id ) ) continue;
+						c.unboundMaterialNames.push_back( std::string( dc.name.c_str() ) );
+					}
 				}
 				c.conditionF = !c.orphanedPainterNames.empty();
+				c.conditionG = !c.unboundMaterialNames.empty() && !inPiecesPhase;
 
 				// (Adoption polish item 1) Condition E: populated inline
 				// during the main walk above (both the scalar_painter early
@@ -4189,6 +4334,43 @@ namespace RISE
 					"scratch draft.";
 			}
 
+			//! Doc 91's whole clause, condition G -- SHARED by the note
+			//! builder and the diagnostic builder, the FormatOrphanedPaintersClause_
+			//! precedent one hop over: same shape, same "harmless to leave in
+			//! place" posture, Material instead of Painter/Function.  States
+			//! BOTH honest fixes (bind it, or remove it) rather than picking
+			//! one for the author -- an unbound material could be either a
+			//! forgotten binding or a superseded revision, and only the
+			//! author knows which.
+			std::string FormatUnboundMaterialClause_( const std::vector<std::string>& materialNames )
+			{
+				const bool plural = materialNames.size() != 1;
+				return std::to_string( materialNames.size() ) + " material chunk" +
+					( plural ? std::string( "s" ) : std::string() ) + " (" + FormatBoundedNameList_( materialNames ) +
+					") " + ( plural ? std::string( "are" ) : std::string( "is" ) ) +
+					" bound to no `standard_object` (or any other geometry-bearing chunk) anywhere in this "
+					"document -- authored, then never attached. Either bind it (`material <name>` on the "
+					"object it belongs to) or `remove_chunk` it if it was superseded (refuses if anything "
+					"still references it, so trying is safe). Harmless to leave in place if you would rather "
+					"keep it as a scratch draft.";
+			}
+
+			//! Doc 91's whole clause, condition H -- the COLOUR-pipe twin of
+			//! FormatScalarPipeUnusedClause_ above: identical claim shape and
+			//! escape clause, swapped pipe.  No material/roughness NUMBER to
+			//! cite the way condition D's clause does (a colour has no single
+			//! scalar to quote), so this names the affordance rather than a
+			//! verb -- condition A's clause does the same for the same
+			//! reason (no `vary_material`-style rewrite exists for it either).
+			std::string FormatFlatAlbedoClause_()
+			{
+				return "no colour material parameter (base_color, reflectance, emission, ...) varies "
+					"spatially anywhere in this scene -- every one that exists is a flat uniformcolor_painter. "
+					"A perlin_painter / expression_painter (or any of the other procedural colour painters) "
+					"bound into base_color/reflectance adds realism "
+					"(read_skill {\"name\":\"procedural-textures\"}).";
+			}
+
 			//! RETURNS empty iff NO condition fires (the "omit the note
 			//! entirely when clean" convention -- see AgentSkillResult::note
 			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
@@ -4199,11 +4381,11 @@ namespace RISE
 			//! wasted-turn loop).  RENDER-RESULT PATH ONLY as of sec 9's P2.b
 			//! (validate no longer attaches this string -- see
 			//! AppendDesignDiagnostics_ below, its validate-side sibling).
-			std::string ComputeDesignNoteFromDoc_( const Document& doc )
+			std::string ComputeDesignNoteFromDoc_( const Document& doc, bool inPiecesPhase = false )
 			{
-				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
-				    !c.conditionE && !c.conditionF ) return std::string();
+				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -4260,6 +4442,12 @@ namespace RISE
 				if( c.conditionF ) {
 					note += " " + FormatOrphanedPaintersClause_( c.orphanedPainterNames );
 				}
+				if( c.conditionG ) {
+					note += " " + FormatUnboundMaterialClause_( c.unboundMaterialNames );
+				}
+				if( c.conditionH ) {
+					note += " " + FormatFlatAlbedoClause_();
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -4291,11 +4479,11 @@ namespace RISE
 			//! RenderCore_, plus the ComputeDesignNote text wrapper) is
 			//! untouched; see that function's doc for why validate no longer
 			//! calls it.
-			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out )
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase )
 			{
-				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
-				    !c.conditionE && !c.conditionF ) return;
+				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -4379,6 +4567,31 @@ namespace RISE
 					d.message  = FormatOrphanedPaintersClause_( c.orphanedPainterNames );
 					out.push_back( d );
 				}
+				if( c.conditionG ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_UNBOUND_MATERIAL;
+					// SHARED formatter -- cannot drift from the note's G
+					// clause.  No kSelfDisarm: the clause already states its
+					// own "harmless to leave in place" escape, the condition
+					// F precedent one hop over from Painter/Function to
+					// Material.
+					d.message  = FormatUnboundMaterialClause_( c.unboundMaterialNames );
+					out.push_back( d );
+				}
+				if( c.conditionH ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_FLAT_ALBEDO;
+					// SHARED formatter -- cannot drift from the note's H
+					// clause.  kSelfDisarm applies here (unlike C/D/E/F): the
+					// claim IS "flat/simple STYLING", condition A's own
+					// topic, so this reuses condition A's suffix rather than
+					// inventing a second one.
+					d.message  = FormatFlatAlbedoClause_();
+					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
 			}
 		}
 
@@ -4401,10 +4614,10 @@ namespace RISE
 		//! `mJob->GetCstDocument()` from INSIDE doRenderWork's tail, while
 		//! still under the park -- see designNoteLocal's declaration and
 		//! its two call sites in RenderCore_.
-		std::string AgentSession::ComputeDesignNote( const std::string& documentText )
+		std::string AgentSession::ComputeDesignNote( const std::string& documentText, bool inPiecesPhase )
 		{
 			if( documentText.empty() ) return std::string();
-			return ComputeDesignNoteFromDoc_( RISE::Cst::ParseToCst( documentText ) );
+			return ComputeDesignNoteFromDoc_( RISE::Cst::ParseToCst( documentText ), inPiecesPhase );
 		}
 
 		namespace
@@ -15743,7 +15956,11 @@ namespace RISE
 						     "cushion/torso exponent range); skeleton_geometry makes the limbs, with `aspect` "
 						     "flattening a bone that should not be a pipe; sweep_geometry makes what tapers along "
 						     "a curve. Steering a whole creature into a single chain or a single sweep is what "
-						     "makes it silhouette as a bent tube.\n\n";
+						     "makes it silhouette as a bent tube. Whichever method builds a part, remember RISE "
+						     "never welds: two chunks read as connected only where they overlap, so an attaching "
+						     "end -- a limb into a torso, a membrane into the body it grows from -- must "
+						     "penetrate its neighbor, not just touch it, or the seam shows under displacement or "
+						     "blending.\n\n";
 						p += "WORKED EXAMPLE for the chain method (adapt values; delete nothing you need):\n"
 						     "sdf_geometry\n"
 						     "{\n"
@@ -15800,9 +16017,20 @@ namespace RISE
 						// MEET at both ends, which is how a wing (or a leaf)
 						// closes.  The counts deliberately DIFFER (4 vs 3) so
 						// the example itself states that they may.
+						//
+						// OVERLAP LAW (doc 91): the two rails' shared end
+						// vertices used to sit at x = +-0.85, OUTSIDE the
+						// torso mass the chain example above builds (its
+						// shoulder part's x half-width is ~0.575) -- the
+						// membrane touched the body at one point and floated
+						// otherwise, the exact dragon-run bug this slice is
+						// fixing generally.  Both ends now land at x = +-0.45,
+						// INSIDE that mass, so the example itself demonstrates
+						// the rule stated above: an attaching rail must
+						// penetrate its neighbor, not merely touch it.
 						// LocalFrameContract rule 1: the lowest point is
 						// rail_b's middle vertex at exactly y = 0, and the
-						// sheet is symmetric about x = 0 (span -0.85 .. 0.85),
+						// sheet is symmetric about x = 0 (span -0.45 .. 0.45),
 						// so it is authored base-at-origin and horizontally
 						// centred.  n_len / n_across are spelled because the
 						// defaults are tuned for a plain sheet and a billowed
@@ -15826,13 +16054,13 @@ namespace RISE
 						     "skin_geometry\n"
 						     "{\n"
 						     "\tname " + prefix + "wing_skin\n"
-						     "\trail_a -0.85 0.55 0.3\n"
+						     "\trail_a -0.45 0.55 0.3\n"
 						     "\trail_a -0.3 1.15 0.42\n"
 						     "\trail_a 0.3 1.15 0.42\n"
-						     "\trail_a 0.85 0.55 0.3\n"
-						     "\trail_b -0.85 0.55 0.3\n"
+						     "\trail_a 0.45 0.55 0.3\n"
+						     "\trail_b -0.45 0.55 0.3\n"
 						     "\trail_b 0 0 -0.35\n"
-						     "\trail_b 0.85 0.55 0.3\n"
+						     "\trail_b 0.45 0.55 0.3\n"
 						     "\tn_across 10\n"
 						     "\tbillow 0.12\n"
 						     "}\n"
@@ -18825,7 +19053,8 @@ namespace RISE
 					// (ReadDocumentSnapshot / ComputeDesignNote) from inside
 					// this closure.  See designNoteLocal's declaration above.
 					if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
-						designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc );
+						designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc,
+							BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces );
 					publishCompletedToLastRender();
 					return;
 				}
@@ -19307,7 +19536,8 @@ namespace RISE
 				// never go through ReadDocumentSnapshot / ComputeDesignNote
 				// (both re-enter the controller) from inside this closure.
 				if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
-					designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc );
+					designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc,
+						BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces );
 				publishCompletedToLastRender();
 			};
 

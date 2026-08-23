@@ -1076,6 +1076,9 @@ static void TestDiagnosticsLiveDocInvariant()
 
 		if( session ) {
 			// The invariant: the rejected edit left the document validate-clean.
+			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
+			// fixtures never drive the build-protocol RPC surface, the only
+			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
 			Check( diags.empty(), "the live document is STILL validate-clean after the rejected edit (0 diagnostics) -- "
 				"a validate-dirty live document is unreachable by construction" );
@@ -1171,6 +1174,9 @@ static void TestDiagnosticsCheckpointCleanIgnoresInfo()
 			// actually fire, at Info severity, DESIGN_NO_ADVANCED_GEOMETRY
 			// must NOT (3 < 4), and no error/warning may be present -- else
 			// the assertions below are vacuous.
+			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
+			// fixtures never drive the build-protocol RPC surface, the only
+			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
 			bool sawScalarInfo = false, sawGeom = false, sawAnyNonInfo = false;
 			for( const AgentDiagnostic& d : diags ) {
@@ -1273,6 +1279,9 @@ static void TestDiagnosticsCheckpointCleanFailsOnLuminaireNullGeometryWarning()
 			// actually fire, at Warning severity, and it must be the ONLY
 			// non-Info diagnostic present -- else the assertions below are
 			// vacuous (either passing/failing for an unrelated reason).
+			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
+			// fixtures never drive the build-protocol RPC surface, the only
+			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
 			bool sawWarning = false;
 			unsigned int nonInfoCount = 0;

@@ -422,6 +422,12 @@ before you write the tenth near-identical chunk:
   as that node's mirror image (repeat the same `mirror <axis>` on the copy
   if you wanted an exact duplicate -- the derive warns when you have not).
 
+None of this WELDS anything: RISE only reads two chunks as connected where
+their geometry actually overlaps, so any attaching part -- a leg into a
+torso, a handle into a mug, a membrane into the body it grows from -- must
+penetrate its neighbor, not merely touch it, or displacement/blending will
+open a seam.
+
 Read `read_schema` for `standard_object` for the full parameter text;
 what follows is the part the schema cannot tell you -- when to reach
 for them, and what bites.

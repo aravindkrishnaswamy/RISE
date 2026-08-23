@@ -443,9 +443,29 @@ static void RunDesignNoteScanTest()
 
 	const std::string docA3WithScalar =
 		"RISE ASCII SCENE 7\n"
-		"standard_object\n{\n\tname a\n}\n\n"
-		"standard_object\n{\n\tname b\n}\n\n"
+		// Doc 91: `a` binds `material rm` (declared further down -- fine,
+		// the reference-graph scan is order-independent per the P2-1 note
+		// just below) so condition G (DESIGN_UNBOUND_MATERIAL) does not
+		// ALSO fire: this fixture's whole point is that the note goes
+		// FULLY empty, and an unreferenced ggx_material would otherwise
+		// make that legitimately false.  `b` binds a SECOND material whose
+		// `reflectance` is a procedural expression field, so condition H
+		// (DESIGN_FLAT_ALBEDO) does not fire EITHER -- `rm` spells out only
+		// `alphax` (its OTHER colour-pipe slots, `rd`/`rs`/`emissive`, are
+		// left at their descriptor defaults, which do not count as bound),
+		// so without this the document would have zero SPELLED colour
+		// bindings and H would fire VACUOUSLY, the
+		// same "every one that exists is a constant" wording condition A's
+		// own comment just below explains for the scalar pipe.
+		"standard_object\n{\n\tname a\n\tmaterial rm\n}\n\n"
+		"standard_object\n{\n\tname b\n\tmaterial doc91_procedural_mat\n}\n\n"
 		"standard_object\n{\n\tname c\n}\n\n"
+		// Deliberately only 4 distinct numeric literals in the body (below
+		// kParamErosionLiteralGate == 6) so this fixture does not ALSO trip
+		// DESIGN_PARAM_METADATA_EROSION -- that condition is orthogonal to
+		// what this fixture is testing.
+		"expression_painter\n{\n\tname doc91_field\n\texpr fbm(P*4.0,4,0.5,2.0)\n}\n\n"
+		"lambertian_material\n{\n\tname doc91_procedural_mat\n\treflectance doc91_field\n}\n\n"
 		// Adoption polish item 3: condition A is now BINDING-aware, so a
 		// scalar_painter chunk with nothing referencing it no longer
 		// silences the note (that WAS the bug -- a decoy chunk used to be
@@ -474,8 +494,18 @@ static void RunDesignNoteScanTest()
 		"scalar_painter\n{\n\tname r\n\texpression\tu\n}\n\n"
 		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
-		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
-		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
+		// Doc 91: `a` binds `material rm` so the derived docB4WithSdf fixture
+		// below (whose whole point is a FULLY empty note) does not also trip
+		// condition G on the otherwise-unreferenced ggx_material; `b` binds a
+		// SECOND material with a procedural `reflectance` so condition H does
+		// not fire either (`rm` spells only `alphax` -- its other colour-pipe
+		// slots are unspelled defaults, which do not count as bound -- so
+		// without this the document would have zero SPELLED colour bindings and H
+		// would fire VACUOUSLY -- see docA3WithScalar's identical note above).
+		"expression_painter\n{\n\tname doc91_field\n\texpr fbm(P*4.0,4,0.5,2.0)\n}\n\n"
+		"lambertian_material\n{\n\tname doc91_procedural_mat\n\treflectance doc91_field\n}\n\n"
+		"standard_object\n{\n\tname a\n\tgeometry geo\n\tmaterial rm\n}\n\n"
+		"standard_object\n{\n\tname b\n\tgeometry geo\n\tmaterial doc91_procedural_mat\n}\n\n"
 		"standard_object\n{\n\tname c\n\tgeometry geo\n}\n\n"
 		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
 	{
@@ -874,7 +904,29 @@ static void RunDesignRepeatedCopiesScanTest()
 
 	// -- (1) RED-PROVE: the measured pattern.  SIX copies of one geometry,
 	//    identical bindings, transform-only differences, no instancing.
+	//    Doc 91: three throwaway anchors so neither of the two NEW design
+	//    conditions ALSO fires on this fixture -- several downstream checks
+	//    (GREEN-PROVE C at (2) below) require the note to go FULLY empty
+	//    once the repetition is instanced away.  Two bind `rm` and `mat2`
+	//    (both otherwise unreferenced by anything below), silencing
+	//    condition G (DESIGN_UNBOUND_MATERIAL); the third binds a
+	//    PROCEDURAL colour painter, silencing condition H
+	//    (DESIGN_FLAT_ALBEDO) -- without it every colour slot in this
+	//    fixture (`mat`/`mat2`'s `reflectance`, both bound to the constant
+	//    `pnt`) would be a flat constant.  Each anchor's OWN binding
+	//    signature is unique (different `material`), so none joins the
+	//    six-`bottle_geo`/`mat` group condition C measures.
 	const std::string docSix = preamble +
+		"standard_object\n{\n\tname rm_anchor\n\tgeometry bottle_geo\n\tmaterial rm\n}\n\n"
+		"standard_object\n{\n\tname mat2_anchor\n\tgeometry bottle_geo\n\tmaterial mat2\n}\n\n"
+		// Deliberately only 4 distinct numeric literals in the body (below
+		// kParamErosionLiteralGate == 6) so this fixture does not ALSO trip
+		// DESIGN_PARAM_METADATA_EROSION -- that condition is orthogonal to
+		// what this fixture is testing.
+		"expression_painter\n{\n\tname doc91_field\n\texpr fbm(P*4.0,4,0.5,2.0)\n}\n\n"
+		"lambertian_material\n{\n\tname doc91_procedural_mat\n\treflectance doc91_field\n}\n\n"
+		"standard_object\n{\n\tname procedural_anchor\n\tgeometry bottle_geo\n"
+		"\tmaterial doc91_procedural_mat\n}\n\n" +
 		bottle( "b0", "0" ) + bottle( "b1", "0.5" ) + bottle( "b2", "1.0" ) +
 		bottle( "b3", "1.5" ) + bottle( "b4", "2.0" ) + bottle( "b5", "2.5" );
 	{
@@ -1274,6 +1326,184 @@ static void RunAdoptionPolishScanTest()
 		Check( !hasCode( AgentSession::ValidateText( docEnvReferenced ), "DESIGN_ORPHANED_PAINTERS" ),
 		       "ITEM 2 GREEN-PROVE (environment): a painter bound only as the rasterizer's "
 		       "`radiance_map` is NOT flagged as orphaned" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Doc 91 (2026-08-23), the same shared ComputeDesignNoteConditionsFromDoc_
+// scan, two more conditions:
+//
+//   Condition G -- DESIGN_UNBOUND_MATERIAL: a Material-category chunk NO
+//     standard_object (or other geometry-bearing chunk) references.
+//     Suppressed while a build-protocol element is actively mid-build
+//     (`inPiecesPhase`) -- a material authored before the object that
+//     will bind it is normal there.
+//   Condition H -- DESIGN_FLAT_ALBEDO: every colour-carrying material
+//     slot (base_color / reflectance / ..., enumerated from the
+//     descriptors, not a hand list) is a flat uniformcolor_painter, at
+//     the SAME >=3-object threshold condition A uses.
+//
+// Fixtures are deliberately NON-CREATURE (a still-life: a lamp base and
+// shade) -- the point of this slice is that neither condition is keyed
+// to any subject, so a furniture/still-life scene is what proves that
+// rather than undermines it.
+//----------------------------------------------------------------------
+static void RunUnboundMaterialAndFlatAlbedoScanTest()
+{
+	std::printf( "[design-note] doc 91: DESIGN_UNBOUND_MATERIAL / DESIGN_FLAT_ALBEDO\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	//--------------------------------------------------------------
+	// Condition G: DESIGN_UNBOUND_MATERIAL.
+	//--------------------------------------------------------------
+	// A still-life lamp base: one bound material, one authored-then-
+	// never-attached material (`unused_shade_mat`) -- the general shape
+	// of the dragon-run gap (a fourth palette material never bound to
+	// anything), on a fixture with nothing creature-specific about it.
+	const std::string docLampUnboundMat =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
+		"lambertian_material\n{\n\tname base_mat\n\treflectance base_pnt\n}\n\n"
+		"lambertian_material\n{\n\tname unused_shade_mat\n\treflectance base_pnt\n}\n\n"
+		"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
+		"standard_object\n{\n\tname base_obj\n\tgeometry base_geo\n\tmaterial base_mat\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docLampUnboundMat );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_UNBOUND_MATERIAL" );
+		Check( d != nullptr,
+		       "CONDITION G RED-PROVE: a material chunk no standard_object references fires "
+		       "DESIGN_UNBOUND_MATERIAL" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "`unused_shade_mat`" ) != std::string::npos,
+			       "...NAMING the unbound material" );
+			Check( d->message.find( "`base_mat`" ) == std::string::npos,
+			       "...NOT naming the bound material" );
+			Check( d->message.find( "material <name>" ) != std::string::npos,
+			       "...stating the FIRST honest fix (bind it)" );
+			Check( d->message.find( "remove_chunk" ) != std::string::npos,
+			       "...stating the SECOND honest fix (remove it)" );
+
+			// THE VERBATIM-COPY INVARIANT: condition G carries no
+			// kSelfDisarm suffix of its own (its shared clause states its
+			// own escape, the condition C/D/E/F precedent), so its whole
+			// diagnostic message must appear BYTE-IDENTICALLY inside the
+			// render-result note -- one shared FormatUnboundMaterialClause_,
+			// two callers, so they cannot drift.
+			const std::string note = AgentSession::ComputeDesignNote( docLampUnboundMat );
+			Check( note.find( d->message ) != std::string::npos,
+			       "MONEY (verbatim invariant): the DESIGN_UNBOUND_MATERIAL message appears "
+			       "BYTE-IDENTICALLY inside the render-result note" );
+		}
+	}
+	// GREEN-PROVE: the SAME material, now bound to a second object -- must
+	// go silent.
+	{
+		const std::string docBound = docLampUnboundMat +
+			"standard_object\n{\n\tname shade_obj\n\tgeometry base_geo\n\tmaterial unused_shade_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docBound ), "DESIGN_UNBOUND_MATERIAL" ),
+		       "CONDITION G GREEN-PROVE: binding the material to an object silences the note" );
+	}
+	// PHASE GATE: the identical unbound-material fixture, but with the
+	// caller declaring it is mid-build (`inPiecesPhase = true`) -- a
+	// material authored before the object that will bind it is normal
+	// there, so the note must stay silent even though the underlying fact
+	// (a zero-referrer material) is unchanged.
+	{
+		Check( !hasCode( AgentSession::ValidateText( docLampUnboundMat, /*inPiecesPhase=*/true ),
+		                 "DESIGN_UNBOUND_MATERIAL" ),
+		       "CONDITION G PHASE GATE: the SAME unbound-material fixture stays silent when the "
+		       "caller reports an element actively mid-build (Pieces phase) -- authored-before-bound "
+		       "is normal there" );
+		// ...and restoring inPiecesPhase=false (ValidateText's default) is
+		// what makes it fire again -- proves the gate is the phase
+		// argument, not some other difference between the two calls.
+		Check( hasCode( AgentSession::ValidateText( docLampUnboundMat ), "DESIGN_UNBOUND_MATERIAL" ),
+		       "CONDITION G PHASE GATE: ...and omitting inPiecesPhase (outside any build phase) "
+		       "fires again on the IDENTICAL document" );
+	}
+
+	//--------------------------------------------------------------
+	// Condition H: DESIGN_FLAT_ALBEDO.
+	//--------------------------------------------------------------
+	// Three lamp-base copies, every colour slot a flat uniformcolor_painter
+	// -- the SAME >=3-object threshold condition A gates on.
+	const std::string docFlatAlbedo =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
+		"lambertian_material\n{\n\tname base_mat\n\treflectance base_pnt\n}\n\n"
+		"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
+		"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+		"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+		"standard_object\n{\n\tname c\n\tgeometry base_geo\n\tmaterial base_mat\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docFlatAlbedo );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_ALBEDO" );
+		Check( d != nullptr,
+		       "CONDITION H RED-PROVE: >=3 standard_objects with every colour slot a flat constant "
+		       "fires DESIGN_FLAT_ALBEDO" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "base_color" ) != std::string::npos &&
+			       d->message.find( "reflectance" ) != std::string::npos,
+			       "...naming the procedural colour PATH generically (base_color/reflectance), not a "
+			       "single material's slot" );
+			Check( d->message.find( "read_skill" ) != std::string::npos &&
+			       d->message.find( "procedural-textures" ) != std::string::npos,
+			       "...pointing at read_skill procedural-textures" );
+			Check( d->message.find( "this is fine -- ignore" ) != std::string::npos,
+			       "...self-disarming, condition A's own escape clause" );
+
+			// THE VERBATIM-COPY INVARIANT, clause-level: condition H's
+			// diagnostic carries condition A's kSelfDisarm suffix (the note
+			// carrier does not), so the message as a WHOLE cannot appear
+			// byte-identically inside the note the way condition G's does
+			// -- but the shared clause text itself (FormatFlatAlbedoClause_,
+			// one function, two callers) must, proving note and diagnostic
+			// read the identical claim.
+			const std::string note = AgentSession::ComputeDesignNote( docFlatAlbedo );
+			const std::string kClaim = "every one that exists is a flat uniformcolor_painter";
+			Check( d->message.find( kClaim ) != std::string::npos && note.find( kClaim ) != std::string::npos,
+			       "MONEY (verbatim invariant): the DESIGN_FLAT_ALBEDO claim text appears "
+			       "BYTE-IDENTICALLY in both the diagnostic and the render-result note -- one shared "
+			       "FormatFlatAlbedoClause_, two callers" );
+		}
+	}
+	// GREEN-PROVE: the SAME three objects, but one more material in the
+	// document has a colour slot bound to a procedural (expression_painter)
+	// field -- MUST silence H even though that material sits on a FOURTH
+	// object, not on a/b/c.
+	{
+		const std::string docOneProcedural = docFlatAlbedo +
+			"expression_painter\n{\n\tname weathered_field\n"
+			"\tdef n fbm(P*4.0,4,0.5,2.0)\n\texpr clamp(0.5+n*0.3,0,1)\n}\n\n"
+			"lambertian_material\n{\n\tname shade_mat\n\treflectance weathered_field\n}\n\n"
+			"standard_object\n{\n\tname d\n\tgeometry base_geo\n\tmaterial shade_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docOneProcedural ), "DESIGN_FLAT_ALBEDO" ),
+		       "CONDITION H GREEN-PROVE: one procedural colour painter bound anywhere in the "
+		       "document (not necessarily on a/b/c) silences the note" );
+	}
+	// BELOW THRESHOLD: the same all-constant palette, but only 2 objects --
+	// condition A's own >=3 gate, reused verbatim, must stay silent.
+	{
+		const std::string docBelowThreshold =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
+			"lambertian_material\n{\n\tname base_mat\n\treflectance base_pnt\n}\n\n"
+			"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
+			"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docBelowThreshold ), "DESIGN_FLAT_ALBEDO" ),
+		       "CONDITION H BELOW THRESHOLD: only 2 standard_objects (below condition A's >=3 gate) "
+		       "stays silent even though every colour slot is a flat constant" );
 	}
 }
 
@@ -1925,6 +2155,7 @@ int main()
 	RunValidateDesignDiagnosticsScanTest();
 	RunValidateDesignDiagnosticsCarrierTest();
 	RunAdoptionPolishScanTest();
+	RunUnboundMaterialAndFlatAlbedoScanTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
