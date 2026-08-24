@@ -9646,6 +9646,39 @@ namespace RISE
 			//! single-threaded like mDrainChunkMsForTest.
 			bool mThrowBeforeRasterizeForTest = false;
 
+			//! 2026-08-24 (the cycling close look): what finish_element showed
+			//! for an element last time, and the FORM the element had when it
+			//! did.  Keyed by element name.
+			//!
+			//! WHY IT EXISTS.  The close look picks ONE object out of an
+			//! element that may hold several, so a re-finish of an UNCHANGED
+			//! element used to return a word-for-word identical composite --
+			//! and the advisory that sends a model back for another look
+			//! ("reopen_element and adjust") therefore had a failure mode where
+			//! following it in good faith bought nothing.  It was observed:
+			//! reopen -> read_document -> finish, byte-identical document,
+			//! byte-identical result, and the object that actually needed
+			//! looking at shipped unexamined because a SIBLING object won the
+			//! pick.  With this, the second look shows the next object instead.
+			//!
+			//! SCOPE, stated because it is deliberately narrow: SESSION-LOCAL.
+			//! It is not persisted, not serialized into any wire result, and
+			//! does not survive a session restart -- a fresh session shows
+			//! every element's primary (most-authored) object again, which is
+			//! the right answer for a reader who has seen nothing yet.  The
+			//! `digest` is over the element's FORM-BEARING chunks only (see
+			//! FinishElement), so a change to the shape resets the cycle to
+			//! that primary object rather than advancing past it.
+			//!
+			//! Dispatcher-thread only, exactly like mBuildPhase / mActiveElement
+			//! beside it: written by FinishElement and read by nothing else.
+			struct ElementLookState_
+			{
+				std::string lastObject;   //!< the object the last finish showed
+				std::string formDigest;   //!< the element's form fingerprint at that finish
+			};
+			std::map<std::string, ElementLookState_> mElementLookState;
+
 			//! 2026-08-24 fix-round test hook -- see
 			//! ForTest_SetFinishElementBetweenRendersHook's doc.  Empty =
 			//! disabled (FinishElement composes straight through); read/set

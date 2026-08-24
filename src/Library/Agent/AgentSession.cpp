@@ -1178,6 +1178,136 @@ namespace RISE
 				return NodeRef();
 			}
 
+			//! How many times `pname` appears as a param on `chunkItem`.  The
+			//! repeatable-param counterpart of ChunkParamString_ above, which
+			//! only ever returns the FIRST occurrence -- and a repeatable param
+			//! is exactly what "how much did the author put in this chunk"
+			//! means for the geometry kinds that have one.
+			unsigned int ChunkParamCount_( const RISE::Cst::NodeRef& chunkItem, const char* pname )
+			{
+				if( !chunkItem || !pname ) return 0;
+				unsigned int n = 0;
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					for( const NodeRef& tk : kid->kids ) {
+						if( tk && tk->kind == NodeKind::Token && tk->role == "pname" && tk->text == pname )
+							++n;
+					}
+				}
+				return n;
+			}
+
+			//! Everything a chunk SAYS, flattened: its role, then every
+			//! parameter name and value in document order.  Not the raw bytes
+			//! -- comments and whitespace are deliberately excluded, so
+			//! reformatting a chunk is not a change and re-authoring the same
+			//! part list with different indentation is not either.
+			std::string ChunkSemanticText_( const RISE::Cst::NodeRef& chunkItem )
+			{
+				std::string out;
+				if( !chunkItem ) return out;
+				out += chunkItem->role;
+				out += '{';
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" )       { out += ';'; out += tk->text; out += '='; }
+						else if( tk->role == "pvalue" ) { out += ' '; out += tk->text; }
+					}
+				}
+				out += '}';
+				return out;
+			}
+
+			//! 64-bit FNV-1a, rendered hex.  A digest, not a hash table key:
+			//! all it has to do is change when the text does.
+			std::string Fnv1a64Hex_( const std::string& text )
+			{
+				std::uint64_t h = 1469598103934665603ULL;
+				for( unsigned char c : text ) {
+					h ^= static_cast<std::uint64_t>( c );
+					h *= 1099511628211ULL;
+				}
+				char buf[24];
+				std::snprintf( buf, sizeof( buf ), "%016llx", static_cast<unsigned long long>( h ) );
+				return std::string( buf );
+			}
+
+			//! The first top-level chunk named `name` whose registry category
+			//! is `cat`, or a null NodeRef.  The category-qualified sibling of
+			//! FindChunkByRoleAndName_ above, for the case where the CALLER
+			//! knows what KIND of thing it is looking for but not which
+			//! keyword spells it -- "the geometry this object names" can be
+			//! any of a dozen roles.
+			RISE::Cst::NodeRef FindChunkByNameInCategory_( const RISE::Cst::Document& doc,
+			                                               const std::string& name,
+			                                               ChunkCategory cat )
+			{
+				if( name.empty() ) return NodeRef();
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != NodeKind::Chunk ) continue;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
+					if( !d || d->category != cat ) continue;
+					if( ChunkParamString_( it, "name" ) != name ) continue;
+					return it;
+				}
+				return NodeRef();
+			}
+
+			//! THE AUTHORED PART COUNT of a geometry chunk -- how many pieces
+			//! of shape the author actually wrote down.
+			//!
+			//! Only the kinds that HAVE a repeatable authored-part param can
+			//! answer this, and they are exactly the kinds an element's
+			//! anatomy is built out of: sdf_geometry's `part`,
+			//! skeleton_geometry's `joint`, sweep_geometry's profile and path
+			//! points.  Everything else -- a sphere, a box, a loaded mesh --
+			//! returns 0, which is the honest answer to "how many parts did
+			//! you author": one primitive, or a file.
+			//!
+			//! Deliberately NOT a mesh triangle count or any other measure of
+			//! resulting complexity.  The question this feeds is "which object
+			//! did the author put the most work into", because that is the one
+			//! whose detail is most likely to have melted -- and a 40k-triangle
+			//! imported rock is not authored detail in that sense.
+			unsigned int GeometryAuthoredPartCount_( const RISE::Cst::NodeRef& geomItem )
+			{
+				if( !geomItem ) return 0;
+				const std::string& role = geomItem->role;
+				if( role == "sdf_geometry" )      return ChunkParamCount_( geomItem, "part" );
+				if( role == "skeleton_geometry" ) return ChunkParamCount_( geomItem, "joint" );
+				if( role == "sweep_geometry" )
+					return ChunkParamCount_( geomItem, "point" ) +
+					       ChunkParamCount_( geomItem, "profile_point" );
+				return 0;
+			}
+
+			//! The authored complexity of an OBJECT: the part count of the
+			//! geometry it names, or -- for a csg_object, which names two other
+			//! OBJECTS rather than a geometry -- the sum of its operands'.
+			//! `depth` bounds the operand recursion; a document that somehow
+			//! made a cycle would otherwise not terminate, and this runs on a
+			//! model-authored document.
+			unsigned int ObjectAuthoredComplexity_( const RISE::Cst::Document& doc,
+			                                        const std::string& objectName,
+			                                        int depth = 6 )
+			{
+				if( depth <= 0 || objectName.empty() ) return 0;
+				const NodeRef obj = FindChunkByNameInCategory_( doc, objectName, ChunkCategory::Object );
+				if( !obj ) return 0;
+				if( obj->role == "csg_object" ) {
+					return ObjectAuthoredComplexity_( doc, ChunkParamString_( obj, "obja" ), depth - 1 ) +
+					       ObjectAuthoredComplexity_( doc, ChunkParamString_( obj, "objb" ), depth - 1 );
+				}
+				const std::string geomName = ChunkParamString_( obj, "geometry" );
+				if( geomName.empty() ) return 0;
+				return GeometryAuthoredPartCount_(
+					FindChunkByNameInCategory_( doc, geomName, ChunkCategory::Geometry ) );
+			}
+
 			//! 87 step 5: the four chunk roles that PRODUCE a world object AND
 			//! declare a `parent` -- so the four an element's placement can
 			//! legitimately carry.  `standard_object` and `csg_object` are the
@@ -15830,12 +15960,37 @@ namespace RISE
 			// registry category is Object and which G1 can actually isolate --
 			// that filter drops CSG operands (world-invisible by construction)
 			// and any object the scene no longer has, for free and with G1's
-			// own definition of renderable.  With several, the one with the
-			// LARGEST world bounding-box diagonal, stated in the message so the
-			// choice is never silent.
-			std::string isolateName;
+			// own definition of renderable.
+			//
+			// RANKED BY AUTHORED PART COUNT FIRST, SIZE SECOND (2026-08-24).
+			// It used to be size alone, and that was wrong for the question
+			// this look asks.  Measured failure: an apothecary element held a
+			// seven-part sdf_geometry CAT and a one-part CUSHION whose bounding
+			// boxes were within 7% of each other (0.29 vs 0.31 after 93fcbc42's
+			// bbox fix legitimately moved them past one another).  Size picked
+			// the cushion.  The close look exists to verify AUTHORED DETAIL --
+			// "are the parts I wrote still there, or did they melt" -- and a
+			// one-part cushion has no authored detail to verify, while the cat
+			// whose anatomy had in fact dissolved was never looked at.  Parts
+			// first inverts that; size stays as the tie-break, which is what
+			// decides between two objects of equal authored complexity (and is
+			// the WHOLE order for the common all-primitives element, where
+			// every part count is 0 and the ranking is byte-for-byte what G1
+			// shipped).
+			//
+			// AND THE ORDER IS TOTAL, not merely a maximum: name breaks a tie
+			// in both, because the cycling below indexes into this list and a
+			// list whose order could differ between two finishes of the same
+			// unchanged element would cycle to somewhere arbitrary.
+			struct LookCandidate_
 			{
-				double bestDiag = -1.0;
+				std::string  name;
+				unsigned int parts = 0;
+				double       diag  = 0.0;
+			};
+			std::vector<LookCandidate_> candidates;
+			{
+				const RISE::Cst::Document* doc = mJob ? mJob->GetCstDocument() : nullptr;
 				for( std::size_t i = 0; i < out.chunks.size(); ++i ) {
 					const ChunkAttribution_* a = FindChunkAttribution_( out.chunks[i] );
 					if( !a ) continue;
@@ -15851,13 +16006,87 @@ namespace RISE
 					const double dy = bb.ur.y - bb.ll.y;
 					const double dz = bb.ur.z - bb.ll.z;
 					const double diag = std::sqrt( dx*dx + dy*dy + dz*dz );
-					// A non-finite or zero-extent box loses to any real one but
-					// still beats "no object at all" (bestDiag starts at -1), so
-					// a degenerate object is rendered rather than silently
-					// dropped -- the render itself is then the honest report.
-					const double score = RISE::IsFiniteDouble( diag ) ? diag : 0.0;
-					if( score > bestDiag ) { bestDiag = score; isolateName = out.chunks[i]; }
+					LookCandidate_ c;
+					c.name = out.chunks[i];
+					// A non-finite or zero-extent box scores 0 rather than
+					// dropping the object: a degenerate object is rendered and
+					// the render is then the honest report (G1's rule, kept).
+					c.diag  = RISE::IsFiniteDouble( diag ) ? diag : 0.0;
+					c.parts = doc ? ObjectAuthoredComplexity_( *doc, c.name ) : 0u;
+					candidates.push_back( c );
 				}
+				std::sort( candidates.begin(), candidates.end(),
+					[]( const LookCandidate_& x, const LookCandidate_& y ) {
+						if( x.parts != y.parts ) return x.parts > y.parts;
+						if( x.diag  != y.diag  ) return x.diag  > y.diag;
+						return x.name < y.name;
+					} );
+			}
+
+			// AND WHICH ONE THIS TIME.  A re-finish of an element whose FORM is
+			// unchanged shows the NEXT object in the ranking, wrapping around.
+			//
+			// This is the other half of the same measured failure.  The
+			// advisory this result carries asks the model to reopen_element and
+			// look again -- and when it did exactly that, with nothing changed
+			// in between, it got a word-for-word identical composite of the
+			// same sibling object.  A loop that costs a render and returns zero
+			// new information teaches a model to stop following the advisory.
+			// Cycling makes the second look STRUCTURALLY informative: the
+			// element has more than one object, and asking again shows another.
+			//
+			// THE FINGERPRINT is over the element's FORM-BEARING chunks only --
+			// its Geometry chunks and the Object chunks that place them -- and
+			// over what those chunks SAY, not their bytes (see
+			// ChunkSemanticText_), so reformatting is not a change.  A form
+			// change RESETS to the primary object rather than advancing: an
+			// element whose shape was just edited wants a fresh look at its
+			// most-authored object, which is the one the edit was most likely
+			// about.  A material or painter edit does NOT reset -- the cycle
+			// tracks "did the shape I asked you to check change", and the next
+			// object is a better answer than the same one again.
+			std::string isolateName;
+			std::size_t isolateRank = 0;      // 1-based position in `candidates`
+			bool        isolateCycled = false;
+			if( !candidates.empty() ) {
+				std::string formText;
+				{
+					const RISE::Cst::Document* doc = mJob ? mJob->GetCstDocument() : nullptr;
+					for( std::size_t i = 0; i < out.chunks.size() && doc; ++i ) {
+						const ChunkAttribution_* a = FindChunkAttribution_( out.chunks[i] );
+						if( !a ) continue;
+						const ChunkDescriptor* d = DescriptorForKeyword( String( a->kind.c_str() ) );
+						if( !d ) continue;
+						if( d->category != ChunkCategory::Object &&
+						    d->category != ChunkCategory::Geometry ) continue;
+						formText += ChunkSemanticText_(
+							FindChunkByNameInCategory_( *doc, out.chunks[i], d->category ) );
+					}
+				}
+				const std::string formDigest = Fnv1a64Hex_( formText );
+
+				std::size_t idx = 0;
+				const std::map<std::string, ElementLookState_>::const_iterator prev =
+					mElementLookState.find( entry.element );
+				if( prev != mElementLookState.end() && prev->second.formDigest == formDigest ) {
+					// Unchanged since the last look: advance past whatever it
+					// showed.  A `lastObject` that is no longer a candidate
+					// (removed since) leaves idx at 0 -- the primary -- which is
+					// the right answer for an element that just lost an object.
+					for( std::size_t i = 0; i < candidates.size(); ++i ) {
+						if( candidates[i].name == prev->second.lastObject ) {
+							idx = ( i + 1 ) % candidates.size();
+							isolateCycled = ( candidates.size() > 1 );
+							break;
+						}
+					}
+				}
+				isolateName   = candidates[idx].name;
+				isolateRank   = idx + 1;
+				ElementLookState_ st;
+				st.lastObject = isolateName;
+				st.formDigest = formDigest;
+				mElementLookState[ entry.element ] = st;
 			}
 
 			std::string renderNote;
@@ -16036,9 +16265,24 @@ namespace RISE
 
 				if( out.rendered ) {
 					renderNote = " Isolate render of \"" + isolateName + "\"";
-					if( out.isolateCandidates > 1 )
-						renderNote += " (the largest of the " + std::to_string( out.isolateCandidates ) +
-							" objects recorded against this element, by bounding-box diagonal)";
+					// WHICH ONE, OUT OF HOW MANY, AND WHAT ASKING AGAIN WOULD
+					// SHOW (2026-08-24).  The old note said "the largest of the
+					// N objects ... by bounding-box diagonal", which was true
+					// of the old rule and is now false twice over: the ranking
+					// is authored parts first, and this may not be the top of
+					// it.  A model that has just been told to look again is
+					// owed the fact that there IS something else to look at --
+					// without it, the reopen loop is a guess.
+					if( out.isolateCandidates > 1 ) {
+						renderNote += " (" + std::to_string( isolateRank ) + " of " +
+							std::to_string( out.isolateCandidates ) +
+							" objects recorded against this element, ranked by authored part count "
+							"then size";
+						if( isolateCycled )
+							renderNote += "; the previous finish of this element showed a different one";
+						renderNote += " -- finishing this element again with no change to its shape "
+							"shows the next)";
+					}
 					renderNote += ", auto-framed, with every other object hidden for this render only.";
 					// THE ADVISORY, and the only sentence in this result that
 					// asks for anything.  It is here because the failure it

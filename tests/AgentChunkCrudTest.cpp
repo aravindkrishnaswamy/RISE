@@ -10344,6 +10344,198 @@ static void TestFinishElementIgnoresSharedImageCache()
 	std::remove( tmp.c_str() );
 }
 
+//! 2026-08-24: WHICH OBJECT THE CLOSE LOOK SHOWS, AND WHAT ASKING AGAIN
+//! SHOWS.
+//!
+//! Two regressions found by differential trajectory analysis, both in the
+//! pick and both caused by correct fixes compounding.
+//!
+//!  (a) The pick was "largest bounding-box diagonal".  93fcbc42's (correct)
+//!      bbox fix moved an apothecary element's CUSHION (0.31) past its CAT
+//!      (0.29), so both panels showed the cushion -- a one-part primitive
+//!      with no authored detail to verify -- while the seven-part cat whose
+//!      anatomy had actually melted was never looked at.  Authored part
+//!      count now ranks first, size second.
+//!
+//!  (b) The advisory asks the model to reopen_element and look again.  It
+//!      did: reopen -> read_document -> finish, byte-identical document, and
+//!      a word-for-word identical composite of the same sibling object.  A
+//!      re-finish of an UNCHANGED element now shows the NEXT object.
+//!
+//! The fixture mirrors the real element: a many-part SMALL object, a
+//! one-part LARGER one, and a third smaller still -- and it PROVES the
+//! shape rather than assuming it, by reading the two bounding boxes back
+//! through the public render result before asserting anything about the
+//! pick.  Without that precondition, (a) could pass by the fixture
+//! accidentally agreeing with the old rule.
+static void TestFinishElementObjectPickAndCycle()
+{
+	std::printf( "S1d: the close look picks by authored parts, and cycles on an unchanged re-finish...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1d.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1d fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1d the plan files" );
+
+	// THE CAT: seven authored sdf parts, deliberately SMALL.
+	Check( sess->InsertChunk(
+		"sdf_geometry\n{\n\tname cat_geom\n"
+		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.10 0 0  0\n"
+		"\tpart sphere smin 0.02  0 0.12 0  0 0 0  1 1 1  0.06 0 0  0\n"
+		"\tpart sphere smin 0.02  0.05 0.17 0  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart sphere smin 0.02  -0.05 0.17 0  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart capsule smin 0.02  0 -0.05 -0.12  0 0 0  1 1 1  0.02 0.08 0  0\n"
+		"\tpart sphere smin 0.02  0.06 -0.09 0.05  0 0 0  1 1 1  0.03 0 0  0\n"
+		"\tpart sphere smin 0.02  -0.06 -0.09 0.05  0 0 0  1 1 1  0.03 0 0  0\n"
+		"\tsampling_detail 32\n}\n" ).applied, "S1d the seven-part cat geometry inserts" );
+	Check( sess->InsertChunk( "standard_object\n{\n\tname cat_obj\n\tgeometry cat_geom\n"
+	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the cat object inserts" );
+	// THE CUSHION: one primitive, deliberately LARGER than the cat.
+	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname cushion_geom\n\tradius 0.22\n}\n" ).applied,
+	       "S1d the one-part cushion geometry inserts" );
+	Check( sess->InsertChunk( "standard_object\n{\n\tname cushion_obj\n\tgeometry cushion_geom\n"
+	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the cushion object inserts" );
+	// A THIRD, smaller than both -- the real element had three, and a
+	// three-long cycle is what proves the wrap-around.
+	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname plinth_geom\n\tradius 0.09\n}\n" ).applied,
+	       "S1d the plinth geometry inserts" );
+	Check( sess->InsertChunk( "standard_object\n{\n\tname plinth_obj\n\tgeometry plinth_geom\n"
+	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the plinth object inserts" );
+
+	// THE PRECONDITION THAT MAKES (a) MEAN ANYTHING: read both bounding
+	// boxes back through the public render result and require the CUSHION
+	// to be the bigger one.  If it is not, the fixture does not reproduce
+	// the regression and every assertion below would be agreeing with the
+	// old rule by accident.
+	{
+		auto longestEdge = [&]( const char* obj ) -> double {
+			Agent::AgentRenderParams p;
+			p.isolate          = obj;
+			p.fromAgentSurface = true;
+			p.quality          = Agent::AgentRenderQuality::Draft;
+			p.width            = 32;
+			p.height           = 32;
+			const Agent::AgentRenderResult r = sess->Render( p );
+			return ( r.ok && r.isolateBBoxUsable ) ? r.isolateLongestEdge : -1.0;
+		};
+		const double catEdge     = longestEdge( "cat_obj" );
+		const double cushionEdge = longestEdge( "cushion_obj" );
+		Check( catEdge > 0.0 && cushionEdge > 0.0, "S1d both bounding boxes read back" );
+		Check( cushionEdge > catEdge,
+		       "S1d PRECONDITION: the one-part CUSHION really is the LARGER object (" +
+		       std::to_string( cushionEdge ) + " vs " + std::to_string( catEdge ) +
+		       ") -- so a size-ranked pick would choose it, exactly as the trajectory showed" );
+	}
+
+	// ---- (a) THE PICK.
+	const Agent::AgentSession::AgentFinishElementResult f1 = sess->FinishElement();
+	Check( f1.ok, "S1d the first finish succeeds" );
+	Check( f1.isolateCandidates == 3, "S1d all three objects are candidates" );
+	Check( f1.isolateObject == "cat_obj",
+	       "S1d MONEY ASSERTION: the close look shows the SEVEN-PART CAT, not the larger one-part "
+	       "cushion -- the look exists to verify authored detail, and a primitive has none to "
+	       "verify (got \"" + f1.isolateObject + "\")" );
+	Check( f1.message.find( "1 of 3 objects" ) != std::string::npos &&
+	       f1.message.find( "authored part count" ) != std::string::npos,
+	       "S1d MONEY ASSERTION: and the message says WHICH of how many, and by what ranking -- the "
+	       "old note claimed \"the largest ... by bounding-box diagonal\", which is now false twice" );
+	Check( f1.message.find( "shows the next" ) != std::string::npos,
+	       "S1d and tells the model what finishing again would show, so the reopen loop is not a guess" );
+	Check( f1.message.find( "previous finish" ) == std::string::npos,
+	       "S1d with no cycling clause on the FIRST look at an element" );
+
+	// ---- (b) RE-FINISH, UNCHANGED -> THE NEXT OBJECT.  reopen_element is
+	// the verb the advisory itself names, so this is the exact loop the
+	// trajectory ran.
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen_element re-enters the element" );
+	const std::string docBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentFinishElementResult f2 = sess->FinishElement();
+	Check( f2.ok, "S1d the second finish succeeds" );
+	Check( sess->ReadDocument() == docBefore,
+	       "S1d PRECONDITION: the document is byte-identical across the reopen/finish loop -- the "
+	       "trajectory's exact situation" );
+	Check( f2.isolateObject == "cushion_obj",
+	       "S1d MONEY ASSERTION: finishing an UNCHANGED element again shows the NEXT object, not the "
+	       "same one -- a loop that returns a word-for-word identical composite teaches a model to "
+	       "stop following the advisory that sent it there (got \"" + f2.isolateObject + "\")" );
+	Check( f2.message.find( "2 of 3 objects" ) != std::string::npos,
+	       "S1d and the message discloses its new position in the ranking" );
+	Check( f2.message.find( "previous finish of this element showed a different one" ) != std::string::npos,
+	       "S1d and says outright that it moved, so the model is not left comparing two frames it "
+	       "believes are of the same thing" );
+
+	// ...and around: third look is the plinth, fourth wraps to the cat.
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen again" );
+	const Agent::AgentSession::AgentFinishElementResult f3 = sess->FinishElement();
+	Check( f3.isolateObject == "plinth_obj" && f3.message.find( "3 of 3 objects" ) != std::string::npos,
+	       "S1d the third unchanged look shows the third object (got \"" + f3.isolateObject + "\")" );
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen once more" );
+	const Agent::AgentSession::AgentFinishElementResult f4 = sess->FinishElement();
+	Check( f4.isolateObject == "cat_obj" && f4.message.find( "1 of 3 objects" ) != std::string::npos,
+	       "S1d MONEY ASSERTION: and the cycle WRAPS rather than running out -- a model that keeps "
+	       "looking keeps getting a look (got \"" + f4.isolateObject + "\")" );
+
+	// ---- (c) A SHAPE EDIT RESETS TO THE PRIMARY.  Cycle off the cat
+	// first, so "back to the cat" cannot be the cycle merely continuing.
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen before the edit" );
+	const Agent::AgentSession::AgentFinishElementResult f5 = sess->FinishElement();
+	Check( f5.isolateObject == "cushion_obj", "S1d PRECONDITION: the cycle has moved off the cat" );
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen to edit" );
+	{
+		Agent::AgentSetPatch patch;
+		patch.target = "cushion_geom";
+		patch.kind   = "sphere_geometry";
+		patch.param  = "radius";
+		patch.value  = "0.26";
+		Check( sess->ProposePatch( patch ).applied, "S1d the cushion's radius edit applies" );
+	}
+	const Agent::AgentSession::AgentFinishElementResult f6 = sess->FinishElement();
+	Check( f6.isolateObject == "cat_obj",
+	       "S1d MONEY ASSERTION: a SHAPE edit resets the look to the element's primary (most-authored) "
+	       "object instead of advancing the cycle -- an element that was just reshaped wants a fresh "
+	       "look at the thing the edit was most likely about (got \"" + f6.isolateObject + "\")" );
+	Check( f6.message.find( "previous finish" ) == std::string::npos,
+	       "S1d and the reset carries no cycling clause, because it did not cycle" );
+
+	// ---- (d) A SINGLE-OBJECT ELEMENT IS UNTOUCHED BY ANY OF THIS.
+	Check( sess->ReopenElement( "terrain" ).ok, "S1d reopen the second element" );
+	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname lone_geom\n\tradius 0.4\n}\n" ).applied,
+	       "S1d the lone geometry inserts" );
+	Check( sess->InsertChunk( "standard_object\n{\n\tname lone_obj\n\tgeometry lone_geom\n"
+	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the lone object inserts" );
+	const Agent::AgentSession::AgentFinishElementResult g1 = sess->FinishElement();
+	Check( g1.ok && g1.isolateObject == "lone_obj" && g1.isolateCandidates == 1,
+	       "S1d a one-object element shows its one object" );
+	Check( g1.message.find( " of 1 objects" ) == std::string::npos &&
+	       g1.message.find( "shows the next" ) == std::string::npos,
+	       "S1d MONEY ASSERTION: and says NOTHING about ranking or a next object -- there is no "
+	       "choice to disclose, and an offer to show something else that does not exist would be "
+	       "the kind of false payload fact this surface exists to avoid" );
+	Check( sess->ReopenElement( "terrain" ).ok, "S1d reopen the one-object element" );
+	const Agent::AgentSession::AgentFinishElementResult g2 = sess->FinishElement();
+	Check( g2.isolateObject == "lone_obj",
+	       "S1d and an unchanged re-finish of it still shows that same one object -- cycling through "
+	       "a set of one is the same object, not an absence" );
+
+	// NO SCORE, EVER (Phase 2b's law) -- the sweep re-run over the new
+	// ranking and cycling sentences.
+	{
+		std::string lower = f2.message;
+		for( std::size_t i = 0; i < lower.size(); ++i )
+			lower[i] = static_cast<char>( std::tolower( static_cast<unsigned char>( lower[i] ) ) );
+		static const char* const kBanned[] = {
+			"similarity", "score", "rmse", "psnr", "ssim", "percent match", "confidence" };
+		for( const char* b : kBanned ) {
+			Check( lower.find( b ) == std::string::npos,
+			       std::string( "S1d the ranking/cycling disclosure carries no `" ) + b + "`" );
+		}
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 static void TestBuildProtocolIsolateRenderAndSwitchOff()
 {
 	std::printf( "S1c: finish_element returns the element's isolate render; --agent-build-protocol=off is total...\n" );
@@ -19043,6 +19235,7 @@ int main()
 	TestBuildProtocolExemptionsAndGiveUp();
 	TestBuildProtocolIsolateRenderAndSwitchOff();
 	TestFinishElementIgnoresSharedImageCache();
+	TestFinishElementObjectPickAndCycle();
 	TestFinishElementIsolateCoverage();
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();
