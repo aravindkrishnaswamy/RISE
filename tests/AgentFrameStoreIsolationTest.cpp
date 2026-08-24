@@ -86,6 +86,9 @@
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/ILightManager.h"
+#include "../src/Library/Interfaces/IRadianceMap.h"
+#include "../src/Library/Scene.h"   // material-look throw test: GetLightTopologyGeneration on the concrete Scene
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IIrradianceCache.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
@@ -1528,6 +1531,167 @@ static void RunDraftThrowTest()
 	std::remove( scenePath.c_str() );
 }
 
+//======================================================================
+// 2026-08-24 fix round, P2-2: THE MATERIAL LOOK'S RESTORE SURVIVES A THROW.
+//
+// quality:"material" installs a CANONICAL STUDIO RIG for the duration of one
+// render -- it swaps the SCENE's light manager and its global radiance map
+// (AgentSession.cpp's StudioRigRestoreGuard) and puts both back in a
+// destructor.  A destructor is only a guarantee if it actually runs on the
+// abnormal path, and this fidelity has a REAL one: unlike the draft pipeline,
+// the material-look pipeline turns OIDN ON, and OIDN is this tree's documented
+// throw site inside Rasterize().
+//
+// Sibling of RunDraftThrowTest above, with the rig-specific probes added.  The
+// scene deliberately declares its OWN radiance map so the environment restore
+// is tested in its sharp form: a map the scene holds ONE reference to, which a
+// release-too-many would destroy outright rather than merely mislay.
+//
+// Red-proved by making StudioRigRestoreGuard's destructor return early: the
+// four rig assertions below fail and the follow-up render sees the rig.
+//======================================================================
+static void RunMaterialLookThrowTest()
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: material-look throw-path (studio-rig restore) ===\n" );
+
+	// The SAME body BuildScene produces, plus an environment: `radiance_map`
+	// is a rasterizer parameter, so the painter has to be declared before the
+	// rasterizer chunk that names it.
+	const std::string sceneText =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 0.25 0.30 0.40\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n"
+		"\tradiance_map pnt_env\n\tradiance_background true\n}\n\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+		"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+		"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
+
+	const std::string scenePath = WriteTemp(
+		"agent_framestore_isolation_material_throw.RISEscene", sceneText );
+	Check( !scenePath.empty(), "material-throw: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "material-throw: scene loads via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "material-throw: AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	IScenePriv* scene = pJob->GetScene();
+	Check( scene != nullptr, "material-throw: the Job has a Scene" );
+	if( !scene ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	// THE STATE THE RIG SWAPS, captured before anything runs.
+	const ILightManager* lightsBefore = scene->GetLights();
+	const IRadianceMap*  envBefore    = scene->GetGlobalRadianceMap();
+	Check( lightsBefore != nullptr, "material-throw: the scene has a light manager" );
+	Check( envBefore != nullptr,
+		"material-throw PRECONDITION: the scene declares its OWN radiance map -- without one the "
+		"environment restore is only tested in its easy (null) form" );
+	if( !lightsBefore || !envBefore ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+	const unsigned int lightsRcBefore = lightsBefore->refcount();
+	const unsigned int envRcBefore    = envBefore->refcount();
+	Check( envRcBefore == 1,
+		"material-throw PRECONDITION: the scene holds exactly ONE reference to its radiance map "
+		"(rc=" + std::to_string( envRcBefore ) + ") -- the sharp case, where one release too many "
+		"destroys it instead of merely mislaying it" );
+
+	RISE::Implementation::Scene* concreteScene =
+		dynamic_cast<RISE::Implementation::Scene*>( scene );
+	Check( concreteScene != nullptr, "material-throw: the Scene is the concrete Implementation::Scene" );
+	const unsigned int genBefore = concreteScene ? concreteScene->GetLightTopologyGeneration() : 0u;
+
+	IRasterizer* rast = pJob->GetRasterizer();
+	Implementation::Rasterizer* concreteRast = rast ? dynamic_cast<Implementation::Rasterizer*>( rast ) : nullptr;
+	Implementation::FrameStore* displayStore = concreteRast ? concreteRast->GetFrameStore() : nullptr;
+	const uint64_t fsGenBefore = displayStore ? displayStore->Generation() : 0;
+
+	session->ForTest_SetThrowBeforeRasterize( true );
+
+	AgentRenderParams params;
+	params.quality = AgentRenderQuality::MaterialLook;
+	params.width   = 32;   // a film-dims override too, exactly as the draft-throw sibling does
+	params.height  = 32;
+
+	AgentRenderResult res;
+	bool escaped = false;
+	std::string escapedWhat;
+	try {
+		res = session->Render( params );
+	}
+	catch( const std::exception& e ) { escaped = true; escapedWhat = e.what(); }
+	catch( ... )                     { escaped = true; escapedWhat = "unknown exception"; }
+
+	Check( !escaped, "material-throw: the forced throw did NOT escape RenderCore_ as a raw C++ exception" );
+	if( escaped ) std::printf( "  (raw exception escaped: %s)\n", escapedWhat.c_str() );
+	Check( !res.ok, "material-throw: render reports ok=false (the seam's throw actually fired)" );
+	Check( res.renderMode == "material", "material-throw: the failed result still reports renderMode==\"material\"" );
+	Check( res.message.find( "material-look path" ) != std::string::npos,
+		"material-throw: failure message names the MATERIAL-LOOK throw site specifically (not the "
+		"draft or production one) -- so the seam under test is the one that fired" );
+	Check( true, "material-throw: process did NOT crash" );
+
+	// ---- THE RIG IS GONE.  Four probes, because there are four ways it
+	// could survive: the wrong manager installed, the right one at the wrong
+	// refcount (a leak or a pending double-free), the environment lost, or the
+	// rig's own lights merged into the scene's set.
+	Check( scene->GetLights() == lightsBefore,
+		"material-throw MONEY ASSERTION: the scene's LIGHT MANAGER is the same object again after a "
+		"throw inside the rig's window" );
+	Check( scene->GetLights() && scene->GetLights()->refcount() == lightsRcBefore,
+		"material-throw MONEY ASSERTION: and at its original refcount -- neither leaked a reference "
+		"nor left one owed" );
+	Check( scene->GetGlobalRadianceMap() == envBefore,
+		"material-throw MONEY ASSERTION: the scene's OWN radiance map is the same object again, not "
+		"cleared and not replaced by the rig's dome" );
+	Check( scene->GetGlobalRadianceMap() && scene->GetGlobalRadianceMap()->refcount() == envRcBefore,
+		"material-throw MONEY ASSERTION: and at its original refcount (the rc=1 case, where getting "
+		"this wrong destroys the map)" );
+	{
+		const ILightManager* lm = scene->GetLights();
+		const bool anyRigLight =
+			lm && ( lm->GetItem( "__rise_studio_key" ) || lm->GetItem( "__rise_studio_fill" ) ||
+			        lm->GetItem( "__rise_studio_rim" ) );
+		Check( !anyRigLight,
+			"material-throw MONEY ASSERTION: none of the rig's three lights are in the scene's light "
+			"set -- the manager was SWAPPED BACK, not merged into" );
+	}
+	Check( !concreteScene || concreteScene->GetLightTopologyGeneration() == genBefore + 2u,
+		"material-throw: the light-topology generation advanced exactly TWICE (the rig's install and "
+		"its restore), so no caster is left holding a luminary list built against the rig" );
+
+	// The production rasterizer is untouched, same probes the draft-throw
+	// sibling uses -- the material-look path never references `rast` either.
+	if( concreteRast && displayStore ) {
+		Check( concreteRast->GetFrameStore() == displayStore,
+			"material-throw: production rasterizer's FrameStore identity is untouched" );
+		Check( displayStore->Generation() == fsGenBefore,
+			"material-throw: production rasterizer's canonical FrameStore Generation() did NOT advance" );
+	}
+
+	// USABLE AFTER: a clean material look succeeds, and -- the part that makes
+	// this more than a smoke check -- the rig it installs is gone again.
+	session->ForTest_SetThrowBeforeRasterize( false );
+	AgentRenderParams cleanParams;
+	cleanParams.quality = AgentRenderQuality::MaterialLook;
+	cleanParams.width   = 32;
+	cleanParams.height  = 32;
+	const AgentRenderResult clean = session->Render( cleanParams );
+	Check( clean.ok, "material-throw: a follow-up clean material render succeeds after the throw" );
+	Check( clean.renderMode == "material", "material-throw: follow-up render reports renderMode==\"material\"" );
+	Check( scene->GetLights() == lightsBefore && scene->GetGlobalRadianceMap() == envBefore,
+		"material-throw: and the ORDINARY path restores both just as the throwing one did" );
+
+	std::printf( "=== material-look throw-path: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 static void RunConcurrentReadLeasePeakProbe()
 {
 	const std::string scenePath = WriteTemp(
@@ -1908,6 +2072,8 @@ int main()
 	RunQueuedReadAdmissionTeardownProbe();
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
+
+	RunMaterialLookThrowTest();
 
 	std::printf( "=== AgentFrameStoreIsolationTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

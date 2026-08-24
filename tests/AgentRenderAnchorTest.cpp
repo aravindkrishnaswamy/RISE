@@ -1092,6 +1092,63 @@ int main()
 				}
 			}
 
+			// ---- D. THE BOUNCE CAP IS THE ONE THE RATIONALE CLAIMS.
+			//
+			// kMaterialLookMaxBounces is 6, justified by "a closed dielectric
+			// shell costs FOUR specular vertices to see through".  The probes
+			// above cannot check that: a solid sphere costs TWO, so a silent
+			// drop to 4 would pass every one of them and the look would start
+			// rendering the very "opaque glass" it exists to expose -- as an
+			// artifact of the cap rather than of the material.
+			//
+			// So: a HOLLOW dielectric shell, one object, built as an SDF
+			// sphere with a smaller sphere subtracted.  A ray through it
+			// crosses outer-front, inner-front, inner-back, outer-back before
+			// anything terminates it.
+			{
+				Check( mat->InsertChunk( "sdf_geometry\n{\n\tname probe_shell_geom\n"
+				                          "\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.8 0 0  0\n"
+				                          "\tpart sphere subtract 0  0 0 0  0 0 0  1 1 1  0.62 0 0  0\n"
+				                          "\tsampling_detail 64\n}\n" ).applied,
+				       "4d-D: the hollow-shell SDF geometry inserts" );
+				Check( mat->InsertChunk( "standard_object\n{\n\tname probe_shell\n"
+				                          "\tgeometry probe_shell_geom\n\tmaterial probe_glass_mat\n}\n" ).applied,
+				       "4d-D: the hollow dielectric shell object inserts" );
+
+				Decoded shellDraft, shellMat;
+				if( shoot( "probe_shell", AgentRenderQuality::Draft,        shellDraft ) &&
+				    shoot( "probe_shell", AgentRenderQuality::MaterialLook, shellMat ) )
+				{
+					const std::vector<std::size_t> shellCore = CoreDiscFromDraft( shellDraft );
+					Check( shellCore.size() > 500,
+					       "4d-D: the shell's core disc covers its interior (" +
+					       std::to_string( shellCore.size() ) + " px)" );
+					const CoreStats sm = MeasureCore( shellMat, shellCore );
+					if( std::getenv( "RISE_TEST_PRINT_SHELL_STATS" ) ) {
+						std::printf( "  [4d-D shell] p50=%.4f peak=%.4f std=%.4f darkFrac=%.4f\n",
+							sm.median, sm.peak, sm.stdDev, sm.darkFrac );
+					}
+					// MEASURED BOTH WAYS, which is the only thing that makes
+					// these thresholds mean anything.  At the shipped cap of 6
+					// the shell transmits: darkFrac 0.309, stdDev 0.192.
+					// Rebuilt with kMaterialLookMaxBounces = 4 -- one short of
+					// the four vertices the wall costs -- the SAME render comes
+					// back a near-uniform dark disc: darkFrac 0.998, stdDev
+					// 0.032.  Both thresholds sit in the gap with room to
+					// spare, and at 4 the solid-sphere probes above all still
+					// pass, which is exactly why this fixture had to exist.
+					Check( sm.darkFrac < 0.55,
+					       "4d-D MONEY ASSERTION: a HOLLOW dielectric shell still transmits -- its "
+					       "interior is not the near-uniform dark disc a bounce cap too low to cross "
+					       "four specular vertices produces (measured 0.309 at the shipped cap of 6, "
+					       "0.998 at 4; ceiling 0.55)" );
+					Check( sm.stdDev > 0.12,
+					       "4d-D MONEY ASSERTION: and it carries real refracted STRUCTURE, which is "
+					       "what dies first when the path is cut short inside the wall (measured 0.192 "
+					       "at 6, 0.032 at 4; floor 0.12)" );
+				}
+			}
+
 			// ---- THE EPHEMERAL RIG DOES NOT LEAK.
 			//
 			// The rig replaces the SCENE's light manager and global radiance

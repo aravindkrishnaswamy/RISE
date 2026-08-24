@@ -1822,24 +1822,32 @@ namespace
 	//! look is not a viewport render mode and must never appear in the mode
 	//! registry (see CreateMaterialLookPipeline's header doc).
 	//!
-	//! 24 SPP + OIDN, measured against the budget the feature was specified
-	//! with (well under 2-3 s per element at 256x256 on typical hardware):
-	//! it is the point where a denoised 256-square of a single isolated
-	//! object is clean enough that a highlight's SHAPE -- which is the
-	//! roughness read -- is not competing with sampling noise, and it is
-	//! still a small fraction of that budget.  Raising it buys smoothness
-	//! nobody reads at this size; lowering it puts noise exactly where the
-	//! specular energy is.
+	//! 64 SPP + OIDN, and the number was MEASURED rather than picked.  This
+	//! look's whole value is that two of them are comparable, so the figure
+	//! that decided it is RUN-TO-RUN AGREEMENT, not smoothness: RISE's PT
+	//! workers each seed their own RandomNumberGenerator
+	//! (RasterizeDispatchers.h's DoWork), so a render carries a noise floor
+	//! that a model comparing iterations would read as change.  At 24 spp
+	//! two renders of one glossy sphere differed by up to 44/255 per pixel;
+	//! at 64 the same measurement is 13/255 worst and 0.09/255 mean -- below
+	//! anything a reader would call a difference.  The cost of that is small
+	//! against the budget the feature was specified with (well under 2-3 s
+	//! per element at 256x256): 173 ms for a sphere and 357 ms for a
+	//! five-part sphere-traced sdf_geometry, on an M-series Mac.
 	const unsigned int kMaterialLookSamplesPerPixel = 64;
 
-	//! Six bounces, not the PT default.  Transmission is the reason: a
-	//! closed dielectric shell costs FOUR specular vertices to see through
-	//! (enter front, exit back of the outer wall, enter and exit the inner
-	//! one) before a single diffuse or environment vertex is reached, so a
-	//! cap of 4 would render exactly the "opaque glass" the look exists to
-	//! expose -- as an artifact of the cap rather than of the material.
-	//! Six leaves headroom for that chain plus the environment hit that
-	//! terminates it.
+	//! Six bounces, not the PT default, and MEASURED rather than reasoned.
+	//! Transmission is the reason: a closed dielectric shell costs FOUR
+	//! specular vertices to see through (enter front, exit back of the outer
+	//! wall, enter and exit the inner one) before a single diffuse or
+	//! environment vertex is reached, so a cap too low renders exactly the
+	//! "opaque glass" the look exists to expose -- as an artifact of the cap
+	//! rather than of the material.  Pinned by AgentRenderAnchorTest's [4d-D]
+	//! hollow-shell fixture, which was run at both settings: at 6 the shell's
+	//! interior carries refracted background (darkFrac 0.309, stdDev 0.192);
+	//! rebuilt at 4 the same render is a near-uniform dark disc (0.998,
+	//! 0.032).  A SOLID sphere costs only two vertices and looks fine at 4,
+	//! which is why that fixture is a shell and not the obvious sphere.
 	const unsigned int kMaterialLookMaxBounces = 6;
 }
 

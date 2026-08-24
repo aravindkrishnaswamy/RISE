@@ -13789,6 +13789,16 @@ namespace RISE
 				//! every environment-lit render, which is not this slice's to
 				//! do.  Noted here so the next reader of this dome does not
 				//! rediscover it as a new bug.
+				//! ONE MORE HAZARD WORTH NAMING, since the painters below are
+				//! plain RISEPel uniforms: those are safe here ONLY because
+				//! this dome is consumed by the RGB pathtracing_pel pipeline
+				//! CreateMaterialLookPipeline builds, whose GetColor path
+				//! returns the RISEPel verbatim.  A spectral routing would go
+				//! through GetColorNM and JH-uplift them (see
+				//! docs/ISCALARPAINTER_REFACTOR.md -- the same mechanism that
+				//! once made glass spheres invisible in every spectral
+				//! rasterizer).  If the material look is ever given a spectral
+				//! pipeline, these two painters have to be revisited first.
 				static const IRadianceMap* BuildStudioDome_()
 				{
 					IPainter* dark = nullptr;
@@ -15914,12 +15924,52 @@ namespace RISE
 				rp.width             = kAgentSurfaceMaxRenderEdge;
 				rp.height            = kAgentSurfaceMaxRenderEdge;
 
+				// THE PANEL BYTES COME OUT OF THE RESULT STRUCT, NOT THE
+				// IMAGE CACHE (2026-08-24 fix round).  `ReadImage` reads
+				// `mImageCache`, which is DELIBERATELY SHAREABLE ACROSS
+				// SESSIONS (see AgentImageCache's doc -- the GUIs stand up
+				// three sessions over one Job precisely so "the last render"
+				// means one thing to all of them).  The park that serializes a
+				// render ends when Render() RETURNS, so a sibling session's
+				// render landing between that return and a ReadImage on the
+				// next line replaces the cache -- and this composite would
+				// then present another session's frame, captioned as "this is
+				// your element".  There is no lock a caller can hold across
+				// those two calls.
+				//
+				// `AgentRenderResult::png` is race-free by construction: it is
+				// filled from THIS render's own sink inside RenderCore_ (see
+				// `res.png = sink->ToPng()`), on the value the call returns, and
+				// nothing outside this stack frame can reach it.  It costs
+				// nothing to prefer: both renders are pinned to
+				// kAgentSurfaceMaxRenderEdge, and ToPngDownscaled documents that
+				// a frame already inside the bound is encoded at native size
+				// with "identical bytes to ToPng()" -- so this is the same
+				// image the cache read would have returned on a quiet system,
+				// and the RIGHT one on a busy one.
+				//
+				// The DRAFT panel is fixed here too, not just the new one: the
+				// same call shape shipped with db9a88a9, so the race is
+				// pre-existing in kind and both call sites are the fix.
+				//
 				// ---- PANEL 1: the DRAFT (form) look.
 				rp.quality = AgentRenderQuality::Draft;
 				std::vector<unsigned char> draftPng;
 				unsigned int draftW = 0, draftH = 0;
 				const AgentRenderResult rr = Render( rp );
-				if( rr.ok ) draftPng = ReadImage( kAgentSurfaceMaxRenderEdge, draftW, draftH );
+				// TEST SEAM, and the ONLY thing it exists for: it occupies the
+				// exact window the cache read used to sit in -- AFTER Render()
+				// returns and BEFORE the bytes are taken -- so a test can
+				// poison the shared cache there and prove this composite no
+				// longer looks at it.  Null (the default) in every real
+				// session -- see ForTest_SetFinishElementBetweenRendersHook.
+				if( mFinishElementBetweenRendersHookForTest )
+					mFinishElementBetweenRendersHookForTest();
+				if( rr.ok ) {
+					draftPng = rr.png;
+					draftW   = rr.width;
+					draftH   = rr.height;
+				}
 
 				// ---- PANEL 2: the MATERIAL look, under the canonical studio
 				// rig.  Second rather than first on purpose: the draft is the
@@ -15934,11 +15984,27 @@ namespace RISE
 				std::vector<unsigned char> matPng;
 				unsigned int matW = 0, matH = 0;
 				const AgentRenderResult mr = Render( rp );
-				if( mr.ok ) matPng = ReadImage( kAgentSurfaceMaxRenderEdge, matW, matH );
+				if( mFinishElementBetweenRendersHookForTest )
+					mFinishElementBetweenRendersHookForTest();
+				if( mr.ok ) {
+					matPng = mr.png;
+					matW   = mr.width;
+					matH   = mr.height;
+				}
 
 				// ---- COMPOSE.  Both panels -> the two-panel composite; one
 				// panel -> that panel alone at its own size; neither -> no
 				// image, and the message says so.
+				//
+				// TWO DIFFERENT FACTS, tracked separately (fix round): whether
+				// the studio-lit render SUCCEEDED, and whether its panel ended
+				// up IN the attached image.  They come apart in exactly one
+				// case -- both panels rendered but the composite could not be
+				// encoded -- and collapsing them made the advisory say "the
+				// studio-lit frame did not render" about a frame that had.  A
+				// result that misreports its own failure mode sends the model
+				// to fix the wrong thing.
+				const bool materialRenderSucceeded = !matPng.empty();
 				if( !draftPng.empty() && !matPng.empty() ) {
 					unsigned int compW = 0, compH = 0;
 					std::vector<unsigned char> comp =
@@ -16023,7 +16089,15 @@ namespace RISE
 							"details you authored are missing or melted, reopen_element and adjust before "
 							"moving on. It is a DRAFT frame (studio-preview shading), so it shows form and "
 							"proportion, not the scene's authored materials or lighting; the studio-lit "
-							"companion frame that would have shown them did not render.";
+							"companion frame that would have shown them ";
+						// The ONE case where "did not render" would be a lie:
+						// it rendered, and the two frames could not be put in
+						// one image.  Named as its own outcome so nobody goes
+						// looking for a render failure that did not happen.
+						renderNote += materialRenderSucceeded
+							? std::string( "rendered, but the two could not be combined into a single "
+							               "image, so only this one is attached." )
+							: std::string( "did not render." );
 					}
 				}
 				else {
@@ -18811,6 +18885,16 @@ namespace RISE
 				// beauty render, so without this the GUI's Last Render pane
 				// would show a flat segmentation map instead of the picture
 				// the user just asked for, every single time.
+				//
+				// THE TWO EPHEMERAL ELEMENT LOOKS DO PUBLISH HERE, and that is
+				// DELIBERATE (reviewed 2026-08-24, inherited from the draft
+				// look db9a88a9 shipped): finish_element's draft and
+				// material-look isolates are renders the SESSION took on the
+				// model's behalf, and the Last Render pane's job is to show a
+				// watching human what the agent just looked at.  Hiding them
+				// would leave the pane showing a stale whole-scene frame while
+				// the transcript discusses a close-up nobody can see.  Do not
+				// "fix" this by adding them to the exclusion above.
 				if( params.internalEphemeral ) return;
 				if( !mController || !renderRan || !rendered || wasCancelled
 				 || !sink || !sink->HasImage() )
@@ -21521,7 +21605,16 @@ namespace RISE
 			// block only runs when res.ok, i.e. either `light` was empty or
 			// it resolved.
 			if( res.ok && !params.light.empty() ) {
-				if( isMaterialLook ) {
+				// The material-look arm is guarded on the OTHER two targets
+				// too (fix round): `quality` and `renderTarget` are orthogonal
+				// fields, so a caller could in principle ask for MaterialLook
+				// AND a view mode / objectmap -- in which case the dispatch
+				// order above sends the render down the VIEW-MODE branch and
+				// no rig is ever installed.  Unreachable today (nothing sets
+				// MaterialLook but FinishElement, which sets neither), but a
+				// note claiming a rig that did not run would be exactly the
+				// kind of false payload fact this surface is built to avoid.
+				if( isMaterialLook && !isViewMode && !isObjectMap ) {
 					// 2026-08-24: the material look is the ONE ignoring branch
 					// whose reason is not "no lighting is evaluated" -- it
 					// evaluates plenty, just none of the scene's.  Soloing a

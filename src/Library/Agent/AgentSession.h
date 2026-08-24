@@ -7345,6 +7345,30 @@ namespace RISE
 			//! concurrently.
 			void ForTest_SetThrowBeforeRasterize( bool on ) { mThrowBeforeRasterizeForTest = on; }
 
+			//! 2026-08-24 fix-round test hook: run `fn` inside FinishElement at
+			//! the EXACT point each panel render returns -- i.e. the window a
+			//! shared-image-cache read used to occupy, and the window a sibling
+			//! session's render can land in on a live host.
+			//!
+			//! It exists to make a NEGATIVE provable.  FinishElement now takes
+			//! its panel bytes from AgentRenderResult::png rather than from
+			//! ReadImage/mImageCache, precisely because that cache is
+			//! deliberately shared across the sessions a GUI stands up over one
+			//! Job and nothing can hold a lock across "Render returns" and "read
+			//! the cache".  A test installs a hook that renders something
+			//! visibly different through a SIBLING session sharing this
+			//! session's cache; the composite must be unchanged.  Without this
+			//! seam that assertion could only be written as a thread race, which
+			//! would prove the fix only probabilistically.
+			//!
+			//! Default empty; production code never sets it.  Single-threaded,
+			//! like the throw seam above: set it before the FinishElement call
+			//! that will observe it, never concurrently.
+			void ForTest_SetFinishElementBetweenRendersHook( std::function<void()> fn )
+			{
+				mFinishElementBetweenRendersHookForTest = std::move( fn );
+			}
+
 			//! Toolkit slice 3a fix-round P2-1 test hook: exercise the objectmap
 			//! identity-palette generator standalone (it is otherwise a file-
 			//! static in AgentSession.cpp).  Fills `outBytes` with `count`
@@ -9621,6 +9645,12 @@ namespace RISE
 			//! only from doRenderWork and the test-hook setter above,
 			//! single-threaded like mDrainChunkMsForTest.
 			bool mThrowBeforeRasterizeForTest = false;
+
+			//! 2026-08-24 fix-round test hook -- see
+			//! ForTest_SetFinishElementBetweenRendersHook's doc.  Empty =
+			//! disabled (FinishElement composes straight through); read/set
+			//! only from FinishElement and that setter, single-threaded.
+			std::function<void()> mFinishElementBetweenRendersHookForTest;
 		};
 	}
 }

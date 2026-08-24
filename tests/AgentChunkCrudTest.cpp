@@ -10207,6 +10207,143 @@ static void TestBuildProtocolExemptionsAndGiveUp()
 	Check( sess->FinishElement().ok, "S1b finish_element still advances after a give-up" );
 }
 
+//! 2026-08-24 fix round, P2-1: THE COMPOSITE DOES NOT READ THE SHARED
+//! IMAGE CACHE.
+//!
+//! `mImageCache` is deliberately SHAREABLE across the sessions a host stands
+//! up over one Job (AgentImageCache's doc: the GUIs run three), and the park
+//! that serializes a render ends when Render() RETURNS -- so a sibling
+//! session's render landing between that return and a ReadImage on the next
+//! line replaces "the last render" underneath the reader.  FinishElement used
+//! to source both panels that way, which meant the composite could present
+//! ANOTHER SESSION'S FRAME captioned as "this is your element".
+//!
+//! The fix takes the bytes from AgentRenderResult::png, which is filled from
+//! this render's own sink inside RenderCore_ and is unreachable from any other
+//! stack.  Proving a negative needs the window occupied on purpose, so
+//! ForTest_SetFinishElementBetweenRendersHook exists to occupy it: the hook
+//! below renders a VISIBLY DIFFERENT frame through a sibling session that
+//! shares this session's cache, at exactly the point the cache read used to
+//! sit.  Deterministic and single-threaded -- a thread race would prove the
+//! fix only probabilistically, and would be flaky in the green direction.
+//!
+//! RED-PROVES cleanly: restore either `ReadImage` call and the byte-for-byte
+//! panel assertions below fail, because the poisoning frame is a whole-scene
+//! render at different dims with a completely different histogram.
+static void TestFinishElementIgnoresSharedImageCache()
+{
+	std::printf( "S1c-cache: finish_element's panels come from the render result, not the shared cache...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1c_cache.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1c-cache fixture loads" );
+	if( !pJob ) return;
+
+	// ONE cache, TWO sessions over the ONE Job -- the exact configuration the
+	// cache's own doc describes a host using, and the one the race needs.
+	std::shared_ptr<Agent::AgentImageCache> shared = Agent::AgentSession::MakeSharedImageCache();
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJobWithSessionMode(
+		pJob, Agent::AgentSession::AgentSessionMode::Building,
+		Agent::AgentAuthority::Owner, shared );
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
+	std::unique_ptr<Agent::AgentSession> sibling = Agent::AgentSession::WrapJob(
+		pJob, Agent::AgentAuthority::Owner, shared );
+	Check( sess != nullptr && sibling != nullptr, "S1c-cache both sessions wrap the Job" );
+	if( !sess || !sibling ) { pJob->release(); std::remove( tmp.c_str() ); return; }
+
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1c-cache the plan files" );
+	std::vector<std::string> chunks;
+	chunks.push_back( S1Box( "wizard_robe" ) );
+	chunks.push_back( "standard_object\n{\n\tname wizard_obj\n\tgeometry wizard_robe\n\tmaterial mat_diffuse\n}" );
+	const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
+	Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1c-cache both chunks land" );
+
+	// The reference panel: an isolate DRAFT render of the very element about
+	// to be finished, taken BEFORE any poisoning, through the ordinary verb.
+	// Draft is deterministic (a fixed studio-preview shader, no MC noise), so
+	// this is a byte-for-byte reference, not a statistical one.
+	DecodedLuma refDraft;
+	{
+		Agent::AgentRenderParams probe;
+		probe.isolate          = "wizard_obj";
+		probe.fromAgentSurface = true;
+		probe.quality          = Agent::AgentRenderQuality::Draft;
+		probe.width            = Agent::kAgentSurfaceMaxRenderEdge;
+		probe.height           = Agent::kAgentSurfaceMaxRenderEdge;
+		const Agent::AgentRenderResult pr = sess->Render( probe );
+		Check( pr.ok && DecodeRenderLuma( pr.png, refDraft ),
+		       "S1c-cache the reference draft isolate renders and decodes" );
+	}
+
+	// THE POISON.  A whole-scene render through the SIBLING, at different
+	// dims and with the whole scene in frame -- nothing like the isolate.
+	// Counted, so a hook that silently stopped firing cannot make this test
+	// pass by doing nothing.
+	int poisonCount = 0;
+	DecodedLuma poisonLuma;
+	sess->ForTest_SetFinishElementBetweenRendersHook( [&]() {
+		Agent::AgentRenderParams whole;
+		whole.fromAgentSurface = true;
+		whole.width            = 96;
+		whole.height           = 96;
+		const Agent::AgentRenderResult wr = sibling->Render( whole );
+		if( wr.ok ) {
+			++poisonCount;
+			if( poisonLuma.luma.empty() ) DecodeRenderLuma( wr.png, poisonLuma );
+		}
+	} );
+
+	const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+	sess->ForTest_SetFinishElementBetweenRendersHook( std::function<void()>() );
+
+	Check( f.ok, "S1c-cache finish_element succeeds" );
+	Check( poisonCount == 2,
+	       "S1c-cache PRECONDITION: the sibling really rendered into the shared cache in BOTH "
+	       "windows (" + std::to_string( poisonCount ) + ") -- without that this test proves nothing" );
+	Check( !poisonLuma.luma.empty() && poisonLuma.w == 96,
+	       "S1c-cache PRECONDITION: and the poisoning frame is a different image at different dims, "
+	       "so a composite built from it could not accidentally match the reference" );
+	// AND the cache really was left holding the sibling's frame, which is the
+	// state FinishElement used to read from.
+	{
+		unsigned int cw = 0, ch = 0;
+		const std::vector<unsigned char> cached =
+			sess->ReadImage( Agent::kAgentSurfaceMaxRenderEdge, cw, ch );
+		Check( !cached.empty() && cw == 96 && ch == 96,
+		       "S1c-cache PRECONDITION: the SHARED cache is left holding the sibling's 96x96 whole-scene "
+		       "frame -- the old code path would have composited exactly this" );
+	}
+
+	Check( f.materialLookRendered &&
+	       f.width == 2u * Agent::kAgentSurfaceMaxRenderEdge + 2u &&
+	       f.height == Agent::kAgentSurfaceMaxRenderEdge,
+	       "S1c-cache MONEY ASSERTION: the composite is still two full agent-surface panels -- it did "
+	       "not take the sibling's 96x96 frame for either half" );
+
+	DecodedLuma comp;
+	Check( DecodeRenderLuma( f.png, comp ), "S1c-cache the composite decodes" );
+	if( !comp.luma.empty() && comp.w == 2u * Agent::kAgentSurfaceMaxRenderEdge + 2u &&
+	    !refDraft.luma.empty() )
+	{
+		const unsigned int e = Agent::kAgentSurfaceMaxRenderEdge;
+		double worst = 0.0;
+		for( unsigned int y = 0; y < e; ++y )
+			for( unsigned int x = 0; x < e; ++x )
+				worst = std::max( worst, std::fabs(
+					comp.luma[ (std::size_t)y * comp.w + x ] - refDraft.luma[ (std::size_t)y * e + x ] ) );
+		Check( worst < 0.05,
+		       "S1c-cache MONEY ASSERTION: the LEFT panel is still this element's own draft frame, "
+		       "pixel for pixel, with a sibling session's render sitting in the shared cache at the "
+		       "exact moment the old code read it" );
+	}
+	else {
+		Check( false, "S1c-cache the composite and the reference are comparable" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 static void TestBuildProtocolIsolateRenderAndSwitchOff()
 {
 	std::printf( "S1c: finish_element returns the element's isolate render; --agent-build-protocol=off is total...\n" );
@@ -18905,6 +19042,7 @@ int main()
 	TestBuildProtocolPhasesAndAttribution();
 	TestBuildProtocolExemptionsAndGiveUp();
 	TestBuildProtocolIsolateRenderAndSwitchOff();
+	TestFinishElementIgnoresSharedImageCache();
 	TestFinishElementIsolateCoverage();
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();
