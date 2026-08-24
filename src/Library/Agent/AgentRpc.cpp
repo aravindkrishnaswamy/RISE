@@ -665,10 +665,14 @@ namespace RISE
 				result.set( "samplesOverridden", JsonValue::MakeBool( rr.samplesOverridden ) );
 				result.set( "effectiveSamples", JsonValue::MakeNumber( static_cast<double>( rr.effectiveSamples ) ) );
 				// Toolkit slice 2 ADDITIVE wire field -- see
-				// AgentRenderResult::renderMode's doc.  "production" or
-				// "draft"; distinct from `integrator`, which always names
-				// the head's ACTIVE (production) rasterizer regardless of
-				// which mode this render actually used.
+				// AgentRenderResult::renderMode's doc for the CURRENT value
+				// set, deliberately not re-listed here: it has grown three
+				// times since this comment was written ("objectmap", the view
+				// modes' own wire names, and 2026-08-24's "material"), and a
+				// copy of the list is a copy that goes stale.  Distinct from
+				// `integrator`, which always names the head's ACTIVE
+				// (production) rasterizer regardless of which mode this render
+				// actually used.
 				result.set( "renderMode", JsonValue::MakeString( rr.renderMode ) );
 				result.set( "perceptionAvailable", JsonValue::MakeBool( rr.perceptionAvailable ) );
 				result.set( "perceptionPersistentBytes", JsonValue::MakeNumber(
@@ -2447,7 +2451,7 @@ namespace RISE
 				// finish_element {}
 				//   -> {ok, element, phase, nextElement?, chunks:[...],
 				//       piecesNamed:[...], piecesNotNamed:[...], isolate?,
-				//       isolateCandidates?, rendered,
+				//       isolateCandidates?, rendered, materialLook,
 				//       png_base64?, byteLength?, imageWidth?, imageHeight?,
 				//       message}
 				//   S1 (2026-08-11).  Takes NO params: it closes whichever
@@ -2490,10 +2494,20 @@ namespace RISE
 							result.set( "isolateCandidates",
 								JsonValue::MakeNumber( static_cast<double>( fr.isolateCandidates ) ) );
 						}
+						// 2026-08-24 (the lit material look): whether the SECOND,
+						// studio-lit panel made it into the image below.  A
+						// tail-appended boolean beside the existing `rendered`,
+						// never a second image field -- see
+						// AgentFinishElementResult::png's doc for why a second
+						// `png_base64` would reach no model on any transport.
+						result.set( "materialLook", JsonValue::MakeBool( fr.materialLookRendered ) );
 						// The isolate look rides under the SAME `png_base64`
 						// field name every image-bearing verb uses, so every
 						// image-retention and surfacing policy covers it with no
-						// second code path.
+						// second code path.  Since 2026-08-24 those bytes are
+						// normally a TWO-PANEL composite (draft form left,
+						// studio-lit materials right) and `imageWidth`/
+						// `imageHeight` describe the composite, not a panel.
 						if( !fr.png.empty() ) {
 							result.set( "png_base64",  JsonValue::MakeString( Base64Encode( fr.png ) ) );
 							result.set( "byteLength",  JsonValue::MakeNumber( static_cast<double>( fr.png.size() ) ) );

@@ -107,6 +107,15 @@ arc tests is about.
   That last part is the payload-fact form the law endorses: a look the model
   did not have to ask for, arriving in the result of a call it just made.
   This is where "flesh it out" gets its feedback.
+  *(2026-08-23 / 2026-08-24, as shipped: that render is a close-range 256px
+  isolate, and there are now **two** of them composited side by side — a
+  DRAFT panel for form, and a fixed-PT panel under a canonical studio light
+  rig for MATERIALS, because draft shading is lighting- and
+  material-independent by construction and so cannot show specular rolloff,
+  roughness, fresnel or transmission at all.  The rig replaces the scene's
+  lights and environment for that one render and is restored after it; the
+  document is untouched.  See `AgentSession::FinishElement` and
+  `AgentRenderQuality::MaterialLook`.)*
 - `reopen_element {name}` — legal from any phase, including COMPOSE.
   Re-enters that element's window.  Always available; never gated.
 - The phase gate inherits G2's **3-refusal cap and give-up per transition**,

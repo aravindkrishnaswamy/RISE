@@ -64,7 +64,9 @@
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Reference.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -356,6 +358,152 @@ static AgentRenderParams FullFrameParams( unsigned int imageMaxEdge )
 	AgentRenderParams p;
 	p.imageMaxEdge     = imageMaxEdge;
 	p.fromAgentSurface = true;
+	return p;
+}
+
+//======================================================================
+// 4d (2026-08-24, THE LIT MATERIAL LOOK) helpers.
+//
+// Every probe below reads LUMINANCE off a decoded 256-square and reduces
+// it to ONE robust statistic.  Deliberately statistics, not byte
+// comparisons: the material look is a real path-traced frame, and RISE's
+// PT workers each seed their own RandomNumberGenerator (see
+// RasterizeDispatchers.h's DoWork), so two runs of the same render differ
+// by a Monte-Carlo noise floor -- measured at max 13/255 per pixel, mean
+// 0.09/255, at this pipeline's fixed 64 spp with OIDN on.  A statistic
+// whose margin is an order of magnitude wider than that floor is a pin;
+// a byte comparison would be a flake.
+//======================================================================
+
+static double Luma( const Px& p )
+{
+	return ( 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2] ) / 255.0;
+}
+
+//! The four frame CORNERS, in decode order.  The isolate auto-frame puts
+//! the object in the middle at 85% fill, so a corner is always background
+//! -- which is exactly the pixel a draft frame and a material look
+//! disagree about most sharply (see 4d-A).
+static std::vector<double> CornerLumas( const Decoded& d )
+{
+	std::vector<double> out;
+	if( d.w < 2 || d.h < 2 ) return out;
+	out.push_back( Luma( d.at( 0, 0 ) ) );
+	out.push_back( Luma( d.at( d.w - 1, 0 ) ) );
+	out.push_back( Luma( d.at( 0, d.h - 1 ) ) );
+	out.push_back( Luma( d.at( d.w - 1, d.h - 1 ) ) );
+	return out;
+}
+
+//! Pixel indices of a CORE DISC inside the object's silhouette, derived
+//! from an OPAQUE DRAFT frame of the same isolate (draft backgrounds are
+//! exactly black, so "not background" is unambiguous) and then shrunk to
+//! 70% of the silhouette's radius.
+//!
+//! DERIVED, NOT HARDCODED: the isolate auto-framing is a solve over the
+//! object's bounding box and the active camera's FOV, so a hardcoded disc
+//! would silently start probing background the day either changes.
+//!
+//! SHRUNK, because the rim is where every probe would lie to us: a
+//! silhouette edge pixel is part object and part background under any
+//! filter, so at the rim a "the object is dark here" reading is
+//! indistinguishable from "the background is dark here".  70% keeps the
+//! probe strictly interior.
+static std::vector<std::size_t> CoreDiscFromDraft( const Decoded& draft, double bgEps = 0.02 )
+{
+	std::vector<std::size_t> out;
+	if( draft.w == 0 || draft.h == 0 ) return out;
+	unsigned int minX = draft.w, maxX = 0, minY = draft.h, maxY = 0;
+	bool any = false;
+	for( unsigned int y = 0; y < draft.h; ++y ) {
+		for( unsigned int x = 0; x < draft.w; ++x ) {
+			if( Luma( draft.at( x, y ) ) > bgEps ) {
+				any = true;
+				if( x < minX ) minX = x;
+				if( x > maxX ) maxX = x;
+				if( y < minY ) minY = y;
+				if( y > maxY ) maxY = y;
+			}
+		}
+	}
+	if( !any ) return out;
+	const double cx = ( minX + maxX ) * 0.5;
+	const double cy = ( minY + maxY ) * 0.5;
+	const double spanX = static_cast<double>( maxX - minX );
+	const double spanY = static_cast<double>( maxY - minY );
+	const double r = 0.70 * ( ( spanX < spanY ) ? spanX : spanY ) * 0.5;
+	if( !( r > 2.0 ) ) return out;
+	for( unsigned int y = 0; y < draft.h; ++y ) {
+		for( unsigned int x = 0; x < draft.w; ++x ) {
+			const double dx = x - cx, dy = y - cy;
+			if( dx*dx + dy*dy <= r*r ) out.push_back( (std::size_t)y * draft.w + x );
+		}
+	}
+	return out;
+}
+
+//! The reductions every 4d probe is stated in.
+struct CoreStats
+{
+	double median   = 0.0;
+	double peak     = 0.0;   //!< the brightest core pixel
+	double stdDev   = 0.0;
+	double darkFrac = 0.0;   //!< fraction of core pixels below kDarkLuma
+	double peakOverMedian() const { return peak / ( median > 1e-6 ? median : 1e-6 ); }
+};
+
+//! "Dark" means DARKER THAN THE RIG'S OWN DARK CHECK could ever leave an
+//! opaque, rig-lit surface.  The rig floors a lit surface at its ambient
+//! term; only background seen THROUGH the object gets below this.
+static const double kDarkLuma = 0.15;
+
+static CoreStats MeasureCore( const Decoded& img, const std::vector<std::size_t>& core )
+{
+	CoreStats s;
+	if( core.empty() || img.px.size() < core.back() + 1 ) return s;
+	std::vector<double> v;
+	v.reserve( core.size() );
+	for( std::size_t i : core ) v.push_back( Luma( img.px[i] ) );
+	std::vector<double> sorted = v;
+	std::sort( sorted.begin(), sorted.end() );
+	s.median = sorted[ sorted.size() / 2 ];
+	s.peak   = sorted.back();
+	double mean = 0.0;
+	for( double x : v ) mean += x;
+	mean /= (double)v.size();
+	double acc = 0.0;
+	std::size_t dark = 0;
+	for( double x : v ) {
+		acc += ( x - mean ) * ( x - mean );
+		if( x < kDarkLuma ) ++dark;
+	}
+	s.stdDev   = std::sqrt( acc / (double)v.size() );
+	s.darkFrac = (double)dark / (double)v.size();
+	return s;
+}
+
+//! Mean absolute per-pixel luminance difference over the whole frame.
+static double MeanAbsLuma( const Decoded& a, const Decoded& b )
+{
+	if( a.w != b.w || a.h != b.h || a.px.empty() ) return 1.0;
+	double acc = 0.0;
+	for( std::size_t i = 0; i < a.px.size(); ++i )
+		acc += std::fabs( Luma( a.px[i] ) - Luma( b.px[i] ) );
+	return acc / (double)a.px.size();
+}
+
+//! An isolate render of ONE object at the SAME size, framing and caps
+//! FinishElement uses -- the only free variable is `q`.  That the two
+//! qualities share every other input is what makes the 4d comparisons a
+//! statement about FIDELITY rather than about framing.
+static AgentRenderParams IsolateProbeParams( const char* object, AgentRenderQuality q )
+{
+	AgentRenderParams p;
+	p.isolate          = object;
+	p.fromAgentSurface = true;
+	p.quality          = q;
+	p.width            = kAgentSurfaceMaxRenderEdge;
+	p.height           = kAgentSurfaceMaxRenderEdge;
 	return p;
 }
 
@@ -736,6 +884,319 @@ int main()
 			Check( ar.anchorEstablished && iso->HasRenderAnchor(),
 			       "4c: and THAT render is the one that becomes the anchor -- so the session was armed "
 			       "the whole time the isolate render was running" );
+		}
+	}
+
+	//------------------------------------------------------------------
+	// 4d. THE LIT MATERIAL LOOK (2026-08-24).
+	//
+	//     finish_element now takes TWO renders of its one isolate: the
+	//     draft form look 4c covers, and a fixed-PT render of the SAME
+	//     object under a canonical studio rig.  The reason is a measured
+	//     one: the three worst appearance failures this project has seen
+	//     -- glass rendered opaque, a membrane faked with emission, no
+	//     specular at all -- are INVISIBLE in a draft frame, because
+	//     draft shading answers a question about form.
+	//
+	//     Every assertion below is a STATISTIC over a decoded frame, with
+	//     the margins stated.  See the 4d helper block above for why a
+	//     byte comparison would be the wrong instrument (a real path
+	//     tracer has a noise floor) and for how the probe disc is derived
+	//     rather than hardcoded.
+	//
+	//     THREE PROBES, then the leak checks:
+	//       A. THE RIG IS THERE, and the draft cannot fake it.  A draft
+	//          background is exactly black -- its pipeline evaluates no
+	//          environment at all -- while the material look's corners
+	//          carry the rig's checker dome, and carry it UNEVENLY (the
+	//          checker), so a flat fill could not pass either.
+	//       B. SPECULAR.  A low-roughness GGX sphere's core peaks far
+	//          above its own median under the rig; the diffuse sphere in
+	//          the same frame geometry does not.  That ratio IS the
+	//          roughness read.
+	//       C. TRANSMISSION -- the money assertion.  The SAME geometry
+	//          with a dielectric material versus a lambertian one: the
+	//          dielectric's interior carries the dark half of the
+	//          background refracted through it, the opaque one cannot.
+	//          Pinned as a fraction of core pixels darker than any
+	//          rig-lit opaque surface can be, so it is one-sided and
+	//          cannot be satisfied by "the glass render is just darker".
+	//------------------------------------------------------------------
+	std::printf( "[4d] the lit material look: rig, specular, transmission, and no leak\n" );
+	{
+		std::unique_ptr<AgentSession> mat = AgentSession::LoadFromFile( scenePath );
+		Check( mat != nullptr, "4d: a fresh session loads the scene" );
+		if( mat ) {
+			std::vector<AgentSession::AgentBuildPlanEntry> plan;
+			AgentSession::AgentBuildPlanEntry e1;
+			e1.element = "orbs";
+			e1.pieces.push_back( "shell" );
+			e1.construction.push_back( "primitive" );
+			e1.outline = "0 0; 1 0; 1 1; 0 1";
+			plan.push_back( e1 );
+			Check( mat->FileBuildPlan( plan ).ok, "4d: a one-element plan files" );
+
+			// THREE OBJECTS ON ONE GEOMETRY, at one position.  Sharing the
+			// scene's own `sph` chunk is what makes probe C a statement about
+			// MATERIALS: identical geometry means an identical world bounding
+			// box, means an identical auto-framed camera, means the two frames
+			// are pixel-aligned and the ONLY thing that differs between them
+			// is the material.  (They overlap in world space, which is
+			// irrelevant: `isolate` renders exactly one of them at a time.)
+			Check( mat->InsertChunk( "uniformcolor_painter\n{\n\tname probe_spec\n\tcolor 0.9 0.9 0.9\n}\n" ).applied,
+			       "4d: the specular painter inserts" );
+			Check( mat->InsertChunk( "uniformcolor_painter\n{\n\tname probe_dark\n\tcolor 0.04 0.04 0.04\n}\n" ).applied,
+			       "4d: the dark painter inserts" );
+			Check( mat->InsertChunk( "dielectric_material\n{\n\tname probe_glass_mat\n\ttau 1 1 1\n"
+			                          "\tior 1.5\n\tscattering 1000000\n}\n" ).applied,
+			       "4d: the dielectric material inserts (scattering 1e6 = delta pass-through, "
+			       "the idiom SCENE_CONVENTIONS records -- `scattering 0` would be maximally DIFFUSE "
+			       "transmission, not clear glass)" );
+			Check( mat->InsertChunk( "ggx_material\n{\n\tname probe_glossy_mat\n\trd probe_dark\n"
+			                          "\trs probe_spec\n\talphax 0.08\n\talphay 0.08\n\tior 1.5\n"
+			                          "\textinction 0\n\tfresnel_mode schlick_f0\n}\n" ).applied,
+			       "4d: the glossy GGX material inserts" );
+			Check( mat->InsertChunk( "standard_object\n{\n\tname probe_opaque\n\tgeometry sph\n"
+			                          "\tmaterial mat_diffuse\n}\n" ).applied,
+			       "4d: the opaque probe object inserts" );
+			Check( mat->InsertChunk( "standard_object\n{\n\tname probe_glass\n\tgeometry sph\n"
+			                          "\tmaterial probe_glass_mat\n}\n" ).applied,
+			       "4d: the dielectric probe object inserts" );
+			Check( mat->InsertChunk( "standard_object\n{\n\tname probe_glossy\n\tgeometry sph\n"
+			                          "\tmaterial probe_glossy_mat\n}\n" ).applied,
+			       "4d: the glossy probe object inserts" );
+
+			auto shoot = [&]( const char* obj, AgentRenderQuality q, Decoded& out ) -> bool {
+				const AgentRenderResult r = mat->Render( IsolateProbeParams( obj, q ) );
+				if( !r.ok || r.png.empty() ) {
+					Check( false, std::string( "4d: render of " ) + obj + " failed: " + r.message );
+					return false;
+				}
+				return DecodePng( r.png, out );
+			};
+
+			Decoded opaqueDraft, opaqueMat, glassDraft, glassMat, glossyMat;
+			const bool decoded =
+				shoot( "probe_opaque", AgentRenderQuality::Draft,        opaqueDraft ) &&
+				shoot( "probe_opaque", AgentRenderQuality::MaterialLook, opaqueMat )   &&
+				shoot( "probe_glass",  AgentRenderQuality::Draft,        glassDraft )  &&
+				shoot( "probe_glass",  AgentRenderQuality::MaterialLook, glassMat )    &&
+				shoot( "probe_glossy", AgentRenderQuality::MaterialLook, glossyMat );
+			Check( decoded, "4d: all five probe frames decode" );
+
+			if( decoded ) {
+				Check( opaqueDraft.w == kAgentSurfaceMaxRenderEdge &&
+				       opaqueMat.w   == opaqueDraft.w && opaqueMat.h == opaqueDraft.h &&
+				       glassMat.w    == opaqueDraft.w && glassMat.h  == opaqueDraft.h,
+				       "4d: draft and material look render at the SAME dims -- the comparisons below "
+				       "are between pixel-aligned frames, not between two framings" );
+
+				const std::vector<std::size_t> core = CoreDiscFromDraft( opaqueDraft );
+				Check( core.size() > 1000,
+				       "4d: the core disc really covers the silhouette's interior (" +
+				       std::to_string( core.size() ) + " px) -- a tiny or empty disc would make every "
+				       "statistic below vacuously true" );
+
+				// ---- A. THE RIG IS THERE, AND ONLY THE MATERIAL LOOK HAS IT.
+				{
+					const std::vector<double> dc = CornerLumas( opaqueDraft );
+					const std::vector<double> mc = CornerLumas( opaqueMat );
+					Check( dc.size() == 4 && mc.size() == 4, "4d-A: four corners each" );
+					if( dc.size() == 4 && mc.size() == 4 ) {
+						double dMax = 0.0, mMin = 1.0, mMax = 0.0;
+						for( int i = 0; i < 4; ++i ) {
+							if( dc[i] > dMax ) dMax = dc[i];
+							if( mc[i] < mMin ) mMin = mc[i];
+							if( mc[i] > mMax ) mMax = mc[i];
+						}
+						Check( dMax < 0.02,
+						       "4d-A: the DRAFT frame's background is black -- its pipeline evaluates no "
+						       "environment at all (measured 0.000)" );
+						Check( mMax > 0.30,
+						       "4d-A MONEY ASSERTION: the material look's background carries the rig's "
+						       "environment dome, which a draft frame structurally cannot produce "
+						       "(measured max corner 0.594, floor 0.30)" );
+						Check( ( mMax - mMin ) > 0.20,
+						       "4d-A: and it carries it UNEVENLY -- the dome is a two-tone checker, so a "
+						       "flat grey fill (or a leaked scene environment) could not pass this "
+						       "(measured spread 0.519, floor 0.20)" );
+					}
+				}
+
+				// ---- B. SPECULAR / ROUGHNESS.
+				{
+					const CoreStats glossy = MeasureCore( glossyMat, core );
+					const CoreStats diff   = MeasureCore( opaqueMat, core );
+					Check( glossy.peakOverMedian() > 1.7,
+					       "4d-B MONEY ASSERTION: a low-roughness GGX sphere PEAKS far above its own "
+					       "median under the rig -- a specular highlight, and the tightness of it is "
+					       "the roughness read (measured 2.21, floor 1.7)" );
+					Check( diff.peakOverMedian() < 1.35,
+					       "4d-B: and the LAMBERTIAN sphere in the same frame geometry does not, so the "
+					       "ratio is measuring the material and not the rig (measured 1.12, ceiling 1.35)" );
+					Check( glossy.peak > 0.85,
+					       "4d-B: the highlight reaches near the top of the range rather than being a "
+					       "faint gradient (measured 0.996, floor 0.85)" );
+				}
+
+				// ---- C. TRANSMISSION.  THE money assertion of this slice.
+				{
+					const CoreStats glassM  = MeasureCore( glassMat,   core );
+					const CoreStats opaqueM = MeasureCore( opaqueMat,  core );
+					const CoreStats glassD  = MeasureCore( glassDraft, core );
+
+					Check( glassM.darkFrac > 0.15,
+					       "4d-C MONEY ASSERTION: under the rig, a DIELECTRIC's interior carries the dark "
+					       "half of the background refracted through it -- pixels darker than any rig-lit "
+					       "opaque surface can be (measured 0.391 of the core, floor 0.15)" );
+					Check( opaqueM.darkFrac < 0.03,
+					       "4d-C MONEY ASSERTION: and the SAME GEOMETRY with a lambertian material has "
+					       "none of them -- so the statistic is reading TRANSMISSION, not exposure "
+					       "(measured 0.000, ceiling 0.03)" );
+					Check( glassM.stdDev > 2.0 * opaqueM.stdDev,
+					       "4d-C: the dielectric's interior also carries far more structure than the "
+					       "opaque twin's smooth shading gradient (measured 0.210 vs 0.057)" );
+
+					// AND THE WHOLE POINT, stated as its own assertion: the
+					// DRAFT of that same dielectric is a nearly FLAT DISC.  It
+					// is not that the draft shows transmission worse -- it
+					// shows none, and it shows the object as opaque, which is
+					// precisely the failure that shipped opaque "glass"
+					// bottles past a draft-only review.
+					Check( glassD.darkFrac < 0.03 && glassD.stdDev < 0.03,
+					       "4d-C MONEY ASSERTION: the DRAFT frame of that same dielectric is a nearly "
+					       "FLAT DISC -- no refracted background, almost no variation (measured darkFrac "
+					       "0.000, stddev 0.007).  This is the entire reason the second render exists: "
+					       "reviewing glass through a draft frame reviews an opaque ball" );
+				}
+
+				// ---- DETERMINISM.  Two material looks of one object, taken
+				// in the same session with an unrelated render in between,
+				// must agree -- stated on the ROBUST statistics plus a
+				// whole-frame mean, never byte equality (see the helper
+				// block's noise-floor note).
+				{
+					Decoded again;
+					if( shoot( "probe_glass", AgentRenderQuality::MaterialLook, again ) ) {
+						const CoreStats a = MeasureCore( glassMat, core );
+						const CoreStats b = MeasureCore( again,    core );
+						Check( MeanAbsLuma( glassMat, again ) < 0.02,
+						       "4d: two material looks of one element agree over the whole frame "
+						       "(measured mean |dLuma| ~0.0008, ceiling 0.02)" );
+						Check( std::fabs( a.median - b.median ) < 0.03 &&
+						       std::fabs( a.darkFrac - b.darkFrac ) < 0.03,
+						       "4d MONEY ASSERTION: and agree on the statistics the model would be "
+						       "comparing across iterations -- the rig, the framing, the fidelity and "
+						       "the tone curve are all fixed, so only a Monte-Carlo noise floor moves" );
+					}
+				}
+			}
+
+			// ---- THE EPHEMERAL RIG DOES NOT LEAK.
+			//
+			// The rig replaces the SCENE's light manager and global radiance
+			// map for the duration of one render.  Everything below is about
+			// the state that survives it.
+			{
+				const std::string          docBefore = mat->ReadDocument();
+				const RISE::Cst::CstHeadVersion verBefore = mat->ReadHeadVersion();
+				const std::size_t          revsBefore = mat->RecordedRevisionCount();
+
+				const AgentRenderResult r =
+					mat->Render( IsolateProbeParams( "probe_opaque", AgentRenderQuality::MaterialLook ) );
+				Check( r.ok, std::string( "4d-leak: the material look under test succeeded: " ) + r.message );
+
+				Check( mat->ReadDocument() == docBefore,
+				       "4d-leak MONEY ASSERTION: the DOCUMENT is byte-identical across a material-look "
+				       "render -- the rig is Scene state, mutated and restored inside the render, and "
+				       "never a chunk" );
+				Check( mat->ReadHeadVersion() == verBefore,
+				       "4d-leak MONEY ASSERTION: and the head version (uuid AND revision) did not move "
+				       "-- no epoch bump" );
+				Check( mat->RecordedRevisionCount() == revsBefore,
+				       "4d-leak MONEY ASSERTION: and no revision was recorded -- nothing for "
+				       "revert_to_revision to land on, i.e. no undo entry" );
+
+				// THE SCENE'S OWN LIGHT SET, read back through the one public
+				// surface that enumerates it: an UNRESOLVED `light` name fails
+				// the render with the available names listed.  If any rig light
+				// had survived the restore, its name would be in that list.
+				AgentRenderParams probe = FullFrameParams( kMaxEdge );
+				probe.light = "__rise_no_such_light__";
+				const AgentRenderResult lr = mat->Render( probe );
+				Check( !lr.ok,
+				       "4d-leak: an unresolved `light` fails loudly and lists the scene's lights (the "
+				       "probe this check is built on)" );
+				Check( lr.message.find( "__rise_studio_" ) == std::string::npos,
+				       "4d-leak MONEY ASSERTION: NONE of the rig's lights are in the scene's light list "
+				       "afterwards -- the swapped-in light manager was put back, not merged" );
+				Check( lr.message.find( "obj_emit" ) != std::string::npos ||
+				       lr.message.find( "\"" ) != std::string::npos,
+				       "4d-leak: and the list is a real one (not empty), so the absence above is a "
+				       "restored scene rather than an unread one" );
+			}
+
+			// ---- AND A SUBSEQUENT WHOLE-SCENE RENDER IS UNAFFECTED.  The
+			// scene is lit ONLY by its emissive quad and has no environment,
+			// so its background is black; a leaked rig dome would paint that
+			// background with the checker, which no tolerance could hide.
+			{
+				const AgentRenderResult after = mat->Render( FullFrameParams( kMaxEdge ) );
+				Check( after.ok && !after.png.empty(),
+				       "4d-after: a whole-scene render after the material look still succeeds" );
+				Decoded d;
+				if( !after.png.empty() && DecodePng( after.png, d ) ) {
+					const std::vector<double> c = CornerLumas( d );
+					double worst = 0.0;
+					for( double v : c ) if( v > worst ) worst = v;
+					Check( worst < 0.05,
+					       "4d-after MONEY ASSERTION: the scene's background is still BLACK -- the rig's "
+					       "environment dome did not survive the render that installed it" );
+				}
+			}
+
+			// ---- AND IT NEVER BECOMES THE ANCHOR.  4c pins the outcome for
+			// finish_element's pair; this pins the QUALITY's own exclusion,
+			// which is the beam that would still hold if `isolate` were ever
+			// dropped from the rule.
+			{
+				std::unique_ptr<AgentSession> anch = AgentSession::LoadFromFile( scenePath );
+				Check( anch != nullptr, "4d-anchor: a fresh session loads" );
+				if( anch ) {
+					std::vector<AgentSession::AgentBuildPlanEntry> p2;
+					AgentSession::AgentBuildPlanEntry e2;
+					e2.element = "body";
+					e2.pieces.push_back( "shell" );
+					e2.construction.push_back( "primitive" );
+					e2.outline = "0 0; 1 0; 1 1; 0 1";
+					p2.push_back( e2 );
+					Check( anch->FileBuildPlan( p2 ).ok, "4d-anchor: a one-element plan files" );
+					Check( anch->FinishElement().ok, "4d-anchor: finishing it enters Compose" );
+					Check( anch->BuildPhase() == AgentSession::AgentBuildPhase::Compose,
+					       "4d-anchor: the ratchet is armed" );
+					Check( !anch->HasRenderAnchor(),
+					       "4d-anchor: nothing is anchored yet (the element had no object, so the finish "
+					       "carried no render at all)" );
+					// A MaterialLook render WITHOUT `isolate`, so the isolate
+					// beam cannot be what holds this.
+					AgentRenderParams full = FullFrameParams( kMaxEdge );
+					full.quality = AgentRenderQuality::MaterialLook;
+					full.width   = kAgentSurfaceMaxRenderEdge;
+					full.height  = kAgentSurfaceMaxRenderEdge;
+					const AgentRenderResult mr = anch->Render( full );
+					Check( mr.ok, std::string( "4d-anchor: the un-isolated material look succeeded: " ) + mr.message );
+					Check( mr.renderMode == "material",
+					       "4d-anchor: and reports its own renderMode, distinct from production/draft" );
+					Check( !mr.anchorEstablished && !anch->HasRenderAnchor(),
+					       "4d-anchor MONEY ASSERTION: a material-look render never establishes the "
+					       "anchor even with no `isolate` in play -- an anchor made of a rig-lit frame "
+					       "would show every later render as a regression the moment the rig went away" );
+					const AgentRenderResult pr2 = anch->Render( FullFrameParams( kMaxEdge ) );
+					Check( pr2.anchorEstablished && anch->HasRenderAnchor(),
+					       "4d-anchor: and the very next production render DOES anchor -- so the session "
+					       "was armed the whole time" );
+				}
+			}
 		}
 	}
 

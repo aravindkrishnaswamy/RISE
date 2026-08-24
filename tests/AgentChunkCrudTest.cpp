@@ -10235,9 +10235,20 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		Check( f.rendered && !f.png.empty() && f.width > 0 && f.height > 0,
 		       "S1c MONEY ASSERTION: the result carries a real isolate render -- a look the model "
 		       "did not have to ask for" );
-		Check( f.width <= Agent::kAgentSurfaceMaxRenderEdge &&
-		       f.height <= Agent::kAgentSurfaceMaxRenderEdge,
-		       "S1c sized by the agent-surface cap, exactly like a model-issued render" );
+		// 2026-08-24 (the lit material look): TWO panels now, so the cap
+		// applies per PANEL and the composite is one rule wider.  Stated as
+		// the exact composite geometry rather than "<= cap", because the
+		// number is the assertion: each panel is a full agent-surface square
+		// (neither is downscaled to make room for the other) and the two
+		// pixels between them are the rule.
+		Check( f.materialLookRendered,
+		       "S1c MONEY ASSERTION: the studio-lit MATERIAL panel rendered too -- a draft frame is "
+		       "lighting- and material-independent by construction, so without this one the result "
+		       "carries no evidence about appearance at all" );
+		Check( f.height == Agent::kAgentSurfaceMaxRenderEdge &&
+		       f.width  == 2u * Agent::kAgentSurfaceMaxRenderEdge + 2u,
+		       "S1c the attached image is the TWO-PANEL composite: two agent-surface squares side by "
+		       "side with a 2px rule, each panel at full size" );
 
 		// ---- 2026-08-23, the CLOSE-RANGE ELEMENT LOOK.
 		//
@@ -10259,7 +10270,28 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		       "S1c MONEY ASSERTION: the frame carries STRUCTURE, not a flat field -- a blank "
 		       "frame passes every non-empty check there is and is exactly the look that lets "
 		       "sub-pixel anatomy go unnoticed" );
-		{
+		// Cut one square panel out of the composite at `x0`.  Written as a
+		// crop rather than as two remembered images because the composite is
+		// what actually reaches the model -- probing it is what proves the
+		// panels survived the compose step in the right places and the right
+		// order.
+		auto panelAt = [&]( unsigned int x0 ) -> DecodedLuma {
+			DecodedLuma out;
+			const unsigned int e = Agent::kAgentSurfaceMaxRenderEdge;
+			if( finishLuma.w < x0 + e || finishLuma.h < e ) return out;
+			out.w = e; out.h = e;
+			out.luma.resize( (std::size_t)e * e );
+			for( unsigned int y = 0; y < e; ++y )
+				for( unsigned int x = 0; x < e; ++x )
+					out.luma[ (std::size_t)y * e + x ] =
+						finishLuma.luma[ (std::size_t)y * finishLuma.w + x0 + x ];
+			return out;
+		};
+		const DecodedLuma leftPanel  = panelAt( 0 );
+		const DecodedLuma rightPanel = panelAt( Agent::kAgentSurfaceMaxRenderEdge + 2u );
+		const bool bothPanels = !leftPanel.luma.empty() && !rightPanel.luma.empty();
+		Check( bothPanels, "S1c both panels cut out of the composite" );
+		if( bothPanels ) {
 			Agent::AgentRenderParams probe;
 			probe.isolate          = "wizard_obj";
 			probe.fromAgentSurface = true;
@@ -10270,12 +10302,12 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 			Check( pr.ok && !pr.png.empty(), "S1c a direct isolate render of the same element succeeds" );
 			DecodedLuma probeLuma;
 			Check( DecodeRenderLuma( pr.png, probeLuma ), "S1c and it decodes" );
-			if( probeLuma.w == finishLuma.w && probeLuma.h == finishLuma.h &&
+			if( probeLuma.w == leftPanel.w && probeLuma.h == leftPanel.h &&
 			    !probeLuma.luma.empty() )
 			{
 				double worst = 0.0, sum = 0.0;
 				for( std::size_t i = 0; i < probeLuma.luma.size(); ++i ) {
-					const double d = std::fabs( probeLuma.luma[i] - finishLuma.luma[i] );
+					const double d = std::fabs( probeLuma.luma[i] - leftPanel.luma[i] );
 					sum += d;
 					if( d > worst ) worst = d;
 				}
@@ -10286,13 +10318,48 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 				// nowhere near this close (the background alone differs by
 				// far more).
 				Check( meanAbs < 0.005 && worst < 0.05,
-				       "S1c MONEY ASSERTION: finish_element's image IS a render of the element it "
-				       "closed -- it matches an independently issued isolate render of the same "
+				       "S1c MONEY ASSERTION: the composite's LEFT panel IS a render of the element it "
+				       "closed -- it matches an independently issued isolate DRAFT render of the same "
 				       "object pixel for pixel" );
 			}
 			else {
-				Check( false, "S1c the probe render's dims match the finish render's" );
+				Check( false, "S1c the probe render's dims match one composite panel's" );
 			}
+		}
+		// AND THE RIGHT PANEL IS A DIFFERENT PICTURE OF THE SAME THING
+		// (2026-08-24).  Two assertions, because the two ways this could go
+		// wrong are opposite: the composite could carry the draft TWICE (the
+		// material render silently reused), or it could carry a blank second
+		// half.  A large mean difference rules out the first; real structure
+		// rules out the second.  The margin is enormous by construction --
+		// the material panel's background is the rig's environment dome and
+		// the draft panel's is pure black.
+		if( bothPanels ) {
+			double sum = 0.0;
+			for( std::size_t i = 0; i < leftPanel.luma.size(); ++i )
+				sum += std::fabs( leftPanel.luma[i] - rightPanel.luma[i] );
+			const double meanAbs = sum / static_cast<double>( leftPanel.luma.size() );
+			Check( meanAbs > 0.05,
+			       "S1c MONEY ASSERTION: the RIGHT panel is a materially different image from the "
+			       "left -- the composite is two fidelities of one element, not the draft twice" );
+			Check( LumaStdDev( rightPanel ) > 0.05,
+			       "S1c and the right panel carries real structure of its own, so the difference "
+			       "above is a second picture rather than a blank half" );
+		}
+		// THE RULE BETWEEN THEM: two grey columns, there so two dark frame
+		// edges do not read as one continuous image.
+		if( bothPanels ) {
+			const unsigned int rx = Agent::kAgentSurfaceMaxRenderEdge;
+			double ruleMin = 1.0, ruleMax = 0.0;
+			for( unsigned int y = 0; y < finishLuma.h; ++y ) {
+				for( unsigned int x = rx; x < rx + 2u; ++x ) {
+					const double v = finishLuma.luma[ (std::size_t)y * finishLuma.w + x ];
+					if( v < ruleMin ) ruleMin = v;
+					if( v > ruleMax ) ruleMax = v;
+				}
+			}
+			Check( ruleMin > 0.15 && ruleMax < 0.35 && ( ruleMax - ruleMin ) < 0.05,
+			       "S1c the two columns between the panels are a uniform mid-grey rule" );
 		}
 		// (b) THE ADVISORY, and the disclosure that rides with it.  The
 		// sentence is the whole point of the look: the model is still inside
@@ -10306,6 +10373,26 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		Check( f.message.find( "DRAFT" ) != std::string::npos,
 		       "S1c and it discloses that the frame is a draft, so the model does not read the "
 		       "absence of authored materials or lighting as a fault in what it built" );
+		// 2026-08-24: the MATERIALS clause, and it has to name all three of
+		// what the panel is, what a bad material looks like, and what to
+		// reach for -- a model told "check the materials" with no failure
+		// signature and no vocabulary changes nothing.
+		Check( f.message.find( "MATERIALS" ) != std::string::npos &&
+		       f.message.find( "studio light rig" ) != std::string::npos,
+		       "S1c MONEY ASSERTION: the advisory names the second panel for what it is -- the "
+		       "element's MATERIALS under a studio rig, not the scene's lighting" );
+		Check( f.message.find( "one flat colour" ) != std::string::npos &&
+		       f.message.find( "opaque" ) != std::string::npos,
+		       "S1c MONEY ASSERTION: and names the two failures it exists to catch -- a surface that "
+		       "reads as one flat colour, and something meant to be transmissive reading opaque" );
+		Check( f.message.find( "dielectric" ) != std::string::npos &&
+		       f.message.find( "spatial variation" ) != std::string::npos,
+		       "S1c and hands over the vocabulary for the fix, so the advisory is actionable rather "
+		       "than an observation" );
+		Check( f.message.find( "LEFT" ) != std::string::npos &&
+		       f.message.find( "RIGHT" ) != std::string::npos,
+		       "S1c and says which panel is which -- the image is two pictures and an advisory that "
+		       "did not say so would be advice about an unidentified half" );
 		// (c) NO SCORE, EVER (Phase 2b's law).  The look is the judgement.
 		{
 			std::string lower = f.message;

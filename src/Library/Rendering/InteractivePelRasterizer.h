@@ -335,6 +335,58 @@ namespace RISE
 			IRayCaster** ppCaster,
 			IShader* pDefaultShader = 0 );
 
+		//! THE MATERIAL LOOK (2026-08-24, docs: AgentSession::FinishElement).
+		//! An EPHEMERAL, FIXED-FIDELITY path-tracing pipeline built for one
+		//! purpose: rendering a single isolated element under a canonical
+		//! studio light rig so its MATERIALS can be read -- specular rolloff,
+		//! roughness, fresnel, transmission -- none of which a draft
+		//! (studio-preview) frame can show, because draft shading is
+		//! lighting- and material-independent by construction.
+		//!
+		//! WHY A FIXED PT RATHER THAN THE SCENE'S OWN RASTERIZER.  The look's
+		//! whole value is that two renders of the same element, in different
+		//! sessions and different phases, are directly comparable.  The
+		//! scene's configured rasterizer is none of those things: it may be
+		//! MLT or a photon-map family (whose per-render cost is unbounded and
+		//! whose sample count is not even introspectable -- see
+		//! AgentRenderParams::fromAgentSurface's "unknown is not cheap" note),
+		//! it may be `auto_rasterizer` (whose once-only integrator resolution
+		//! would then be decided by, or poisoned for, this diagnostic), and it
+		//! changes the instant the model inserts a different rasterizer chunk.
+		//! A fixed PT at a fixed spp and a fixed bounce cap is the only
+		//! configuration under which "the material changed" and "the render
+		//! settings changed" cannot be confused.
+		//!
+		//! Structurally the SAME shape as CreateBeautyVariantPipeline above --
+		//! a plain RayCaster (seeRadianceMap=true, showLuminaires=true) +
+		//! RISE_API_CreatePathTracingPelRasterizer with a multijittered
+		//! sampler, a box filter, SMS off, OIDN on, and a post-construction
+		//! SetMaxPathDepth -- and it takes the SAME optional production
+		//! default shader for the same reason (see CreateBeautyVariantPipeline's
+		//! `pDefaultShader` doc: the caster-dispatched BSSRDF / random-walk
+		//! SSS continuations resolve shading through it).  It differs only in
+		//! that its config comes from this factory's own two constants rather
+		//! than a ViewportRenderModeInfo row: the material look is NOT a
+		//! viewport render mode, has no wire name in the mode registry, and is
+		//! never selectable from the GUI dropdown or the agent `mode:` param.
+		//!
+		//! `outSamplesPerPixel` / `outMaxBounces` (optional) report the fixed
+		//! configuration the pipeline was built with, so a caller can state it
+		//! honestly instead of restating a literal that could drift.
+		//!
+		//! It does NOT install the light rig -- lighting is Scene state, not
+		//! rasterizer state, so the rig is applied and restored by the caller
+		//! around the render (AgentSession.cpp's StudioRigRestoreGuard).
+		//!
+		//! Returned pointers are refcounted ownership references for the
+		//! caller to release, exactly like every sibling factory here.
+		bool CreateMaterialLookPipeline(
+			IRasterizer** ppRasterizer,
+			IRayCaster** ppCaster,
+			IShader* pDefaultShader = 0,
+			unsigned int* outSamplesPerPixel = 0,
+			unsigned int* outMaxBounces = 0 );
+
 		//! Configure one BeautyVariant pass for the current interaction state.
 		//! Active gestures use one sample and suppress OIDN; the release/idle
 		//! pass restores the registry-authored sample count and OIDN policy.

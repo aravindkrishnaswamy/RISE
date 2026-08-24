@@ -10727,6 +10727,91 @@ namespace RISE
 			std::vector<unsigned char> EncodeLinearPassthroughPng_(
 				const std::vector<RISEColor>& pels, unsigned int w, unsigned int h );
 
+			//! FORWARD DECLARATION, same convention and same reason as the
+			//! encoder above: the decoder is compare_to_reference's own
+			//! DecodeReferencePngToRgb8_, defined beside it further down, and
+			//! FinishElement's two-panel composite (2026-08-24) is implemented
+			//! above that point.  Reusing it is again the point -- two "PNG
+			//! bytes -> pixels" paths in one file would be two chances to
+			//! disagree about colour space.
+			bool DecodeReferencePngToRgb8_( const unsigned char* bytes, std::size_t byteCount,
+				std::vector<unsigned char>& outRgb, unsigned int& outW, unsigned int& outH,
+				std::string& err );
+
+			//! Lay two already-encoded PNG panels SIDE BY SIDE into one PNG,
+			//! separated by a thin grey rule, and return the encoded result
+			//! (empty on any failure -- the caller then falls back to a single
+			//! panel rather than to nothing).
+			//!
+			//! SIDE BY SIDE, not stacked like the scene-target composite: both
+			//! panels here are square portraits of the SAME object, and the
+			//! reading order left-to-right is the order the message names them
+			//! in (form first, then materials).  The rule exists for the same
+			//! reason it does there -- two dark frame edges meeting would
+			//! otherwise read as one image.
+			//!
+			//! NEITHER PANEL IS RESCALED.  Whatever each render produced is
+			//! what lands in the composite, so the material panel is exactly
+			//! as large as it would have been alone; panels of unequal height
+			//! are centred on a black field rather than stretched to match
+			//! (this project's standing "no interpolation invents detail"
+			//! rule, the same one the scene-target band follows).
+			std::vector<unsigned char> BuildTwoPanelCompositePng_(
+				const std::vector<unsigned char>& leftPng,
+				const std::vector<unsigned char>& rightPng,
+				unsigned int& outW, unsigned int& outH )
+			{
+				outW = 0;
+				outH = 0;
+				std::vector<unsigned char> empty;
+				if( leftPng.empty() || rightPng.empty() ) return empty;
+
+				std::vector<unsigned char> lRgb, rRgb;
+				unsigned int lw = 0, lh = 0, rw = 0, rh = 0;
+				std::string derr;
+				if( !DecodeReferencePngToRgb8_( leftPng.data(), leftPng.size(), lRgb, lw, lh, derr ) )
+					return empty;
+				if( !DecodeReferencePngToRgb8_( rightPng.data(), rightPng.size(), rRgb, rw, rh, derr ) )
+					return empty;
+				if( lw == 0 || lh == 0 || rw == 0 || rh == 0 ) return empty;
+
+				const unsigned int kRule = 2;
+				const unsigned int compW = lw + kRule + rw;
+				const unsigned int compH = ( lh > rh ) ? lh : rh;
+				// Guard the one arithmetic hazard: two 256-squares cannot come
+				// close, but this helper takes whatever the renders produced.
+				if( compW < lw || compH == 0 || compW > 65535u || compH > 65535u ) return empty;
+
+				std::vector<RISEColor> pels( static_cast<std::size_t>( compW ) * compH,
+				                             RISEColor( 0.0, 0.0, 0.0, 1.0 ) );
+				auto blit = []( std::vector<RISEColor>& dst, unsigned int dstW,
+				                const std::vector<unsigned char>& src, unsigned int sw, unsigned int sh,
+				                unsigned int atX, unsigned int atY )
+				{
+					for( unsigned int y = 0; y < sh; ++y ) {
+						for( unsigned int x = 0; x < sw; ++x ) {
+							const std::size_t i = ( static_cast<std::size_t>( y ) * sw + x ) * 3;
+							dst[ static_cast<std::size_t>( atY + y ) * dstW + atX + x ] =
+								RISEColor( src[i+0] / 255.0, src[i+1] / 255.0, src[i+2] / 255.0, 1.0 );
+						}
+					}
+				};
+				blit( pels, compW, lRgb, lw, lh, 0,           ( compH - lh ) / 2 );
+				blit( pels, compW, rRgb, rw, rh, lw + kRule,  ( compH - rh ) / 2 );
+				for( unsigned int y = 0; y < compH; ++y ) {
+					for( unsigned int x = 0; x < kRule; ++x ) {
+						pels[ static_cast<std::size_t>( y ) * compW + lw + x ] =
+							RISEColor( 0.5, 0.5, 0.5, 1.0 );
+					}
+				}
+
+				std::vector<unsigned char> png = EncodeLinearPassthroughPng_( pels, compW, compH );
+				if( png.empty() ) return empty;
+				outW = compW;
+				outH = compH;
+				return png;
+			}
+
 			//! One parsed outline vertex, in the model's own 2D coordinates.
 			struct SketchPoint_ { double x; double y; };
 
@@ -13437,6 +13522,304 @@ namespace RISE
 				bool                        mArmed;
 			};
 
+			//----------------------------------------------------------------
+			// THE CANONICAL STUDIO RIG (2026-08-24, the lit material look).
+			//
+			// A material is only ever seen through the light that falls on it,
+			// so a render meant to show one has to bring its own light -- and
+			// the same light every time, or two looks at the same element are
+			// not comparable.  This guard swaps the SCENE's light manager and
+			// global radiance map for a fixed rig, and puts both back on every
+			// exit path including an exception.
+			//
+			// WHY THE SCENE'S LIGHTING IS REPLACED RATHER THAN ADDED TO.  Both
+			// halves of the phase problem point the same way.  In the PIECES
+			// phase, where finish_element actually fires, lighting is not yet
+			// the model's job -- the scene routinely has NO light at all, and
+			// a lit render of it is a black frame.  In the COMPOSE phase the
+			// scene does have lights, and they are the WRONG ones for this
+			// question: an element lit by the scene's own dramatic single
+			// key would read as "half of it is black" and an element beside a
+			// bright emissive neighbour would read as "it is orange", neither
+			// of which is a fact about its materials.  Replacing gives one
+			// answer in both phases, and makes the look a pure function of the
+			// element's geometry and materials -- the property that lets the
+			// model compare a fix against what it saw before.
+			//
+			// THE RIG ITSELF, and why each part is there:
+			//
+			//  * A NEUTRAL CHECKER ENVIRONMENT DOME.  It is doing three jobs
+			//    at once and none of them can be dropped.  (1) It is the broad
+			//    soft source: a specular surface shows the light's SHAPE, and
+			//    the sharp-versus-smeared edge of a reflected check is the
+			//    roughness read -- a delta light cannot produce one, because a
+			//    perfectly smooth BSDF has zero response to a light of zero
+			//    solid angle.  (2) It is what makes TRANSMISSION visible: a
+			//    smooth dielectric's only visible content is what it refracts,
+			//    so against a featureless background a glass shell and a grey
+			//    ball are nearly the same image -- which is precisely the
+			//    failure this look exists to catch, and would catch backwards.
+			//    (3) It keeps the silhouette off a black field.  Grey-on-grey,
+			//    so it carries no colour cast into an albedo judgement.
+			//
+			//  * THREE DIRECTIONAL LIGHTS -- key, fill, rim.  They are what a
+			//    dome alone cannot give: directional shading that reads FORM,
+			//    a light-to-shadow ratio, and a crisp highlight on anything
+			//    rough enough to have one.  Directional rather than positional
+			//    on purpose: a directional light has no position and no
+			//    distance falloff, so the SAME rig lights a 0.05-unit vial and
+			//    a 5-unit dragon identically, with no scale term anywhere.
+			//    (The framing is scale-adaptive already -- the isolate
+			//    auto-frame fits the object's own bounding box.)  Their world
+			//    directions are fixed and chosen against the isolate's own
+			//    fixed three-quarter vantage (IsolateThreeQuarterOffset), so
+			//    key/fill/rim mean what they say relative to the camera.
+			//
+			// A NOTE ON THE DIRECTION CONVENTION, because it has bitten this
+			// project before (docs/SCENE_CONVENTIONS.md sec 1): a
+			// DirectionalLight's `direction` is the vector FROM the surface
+			// TOWARD the light, i.e. where the light IS -- not where it
+			// shines.  The camera sits on +X/+Y/+Z, so a light meant to reach
+			// the camera-facing side needs POSITIVE Z.
+			//
+			// NOTHING HERE TOUCHES THE DOCUMENT.  No chunk is written, no
+			// revision is cut, no undo entry is made -- this is Scene-level
+			// state, mutated and restored inside one render exactly the way
+			// ObjectSoloRestoreGuard above mutates and restores object
+			// visibility.  The light-topology generation is bumped on BOTH the
+			// install and the restore, for that guard's invariant 2 verbatim:
+			// any caster that builds a luminary list during this render must
+			// see the RIG, and none may be left holding one afterwards.
+			//----------------------------------------------------------------
+			class StudioRigRestoreGuard
+			{
+			public:
+				explicit StudioRigRestoreGuard( IScenePriv* scene )
+					: mScene( scene ), mSavedLights( nullptr ), mSavedEnv( nullptr ),
+					  mArmed( false )
+				{
+				}
+
+				//! Build and install the rig.  Returns false having changed
+				//! NOTHING when it cannot be done, so the caller can decline
+				//! the render rather than produce a picture lit by something
+				//! other than the rig it will claim in the message.
+				bool Install()
+				{
+					if( !mScene || mArmed ) return false;
+
+					// THE RESTORE HAS TO BE POSSIBLE BEFORE THE INSTALL
+					// HAPPENS.  Scene::SetLightManager ignores a null argument
+					// (a deliberate no-op there, unlike SetGlobalRadianceMap's
+					// null-as-clear), so a scene with no light manager at all
+					// could be given the rig and never have it taken away.
+					// Refuse instead: an unremovable rig is exactly the leak
+					// this whole class exists to make impossible.
+					const ILightManager* savedLights = mScene->GetLights();
+					if( !savedLights ) return false;
+
+					ILightManager* rig = nullptr;
+					RISE_API_CreateLightManager( &rig );
+					if( !rig ) return false;
+
+					const IRadianceMap* dome = BuildStudioDome_();
+					if( !dome ) { safe_release( rig ); return false; }
+
+					if( !AddRigLights_( *rig ) ) {
+						safe_release( dome );
+						safe_release( rig );
+						return false;
+					}
+
+					// Past this point every failure mode is gone, so capture
+					// the originals (an owned ref each -- SetLightManager
+					// releases whatever it is replacing) and swap.
+					savedLights->addref();
+					mSavedLights = savedLights;
+					// A scene with NO environment saves a null here, which is
+					// the correct restore value too: SetGlobalRadianceMap
+					// treats null as a real CLEAR (unlike SetLightManager
+					// above), so the two cases need no separate flag.
+					mSavedEnv    = mScene->GetGlobalRadianceMap();
+					if( mSavedEnv ) mSavedEnv->addref();
+
+					mScene->SetLightManager( rig );
+					mScene->SetGlobalRadianceMap( dome );
+					// Both are now owned by the Scene; drop our construction refs.
+					safe_release( dome );
+					safe_release( rig );
+
+					BumpLightTopology_();
+					mArmed = true;
+					return true;
+				}
+
+				~StudioRigRestoreGuard()
+				{
+					if( !mArmed ) {
+						// Never installed: the only state is the captured
+						// refs, which cannot exist here (they are taken in
+						// the same breath as the swap).  Belt and braces.
+						safe_release( mSavedLights );
+						safe_release( mSavedEnv );
+						return;
+					}
+					try {
+						// Lights first, then the environment, then the bump --
+						// the order is irrelevant to correctness (nothing
+						// reads either between the two calls) but keeps the
+						// restore a mirror of the install.
+						if( mSavedLights ) mScene->SetLightManager( mSavedLights );
+						// Null here means the scene had no environment before
+						// the rig, and null CLEARS on this setter -- exactly
+						// the restore that case needs (see Install's note).
+						mScene->SetGlobalRadianceMap( mSavedEnv );
+						safe_release( mSavedLights );
+						safe_release( mSavedEnv );
+						BumpLightTopology_();
+					}
+					catch( ... ) {
+						// NEVER rethrow from a destructor -- the same rule and
+						// the same reason as ObjectSoloRestoreGuard's: this
+						// can be unwinding from Rasterize()'s own exception,
+						// and a skipped restore leaves the SCENE lit by the
+						// rig.
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the studio-rig restore -- the "
+							"scene may be left carrying the material-look light rig" );
+					}
+				}
+
+			private:
+				StudioRigRestoreGuard( const StudioRigRestoreGuard& );             // deleted
+				StudioRigRestoreGuard& operator=( const StudioRigRestoreGuard& );  // deleted
+
+				void BumpLightTopology_()
+				{
+					if( RISE::Implementation::Scene* concrete =
+							dynamic_cast<RISE::Implementation::Scene*>( mScene ) ) {
+						concrete->BumpLightTopologyGeneration();
+					}
+				}
+
+				//! One rig light.  `dir` is FROM the surface TOWARD the light
+				//! (see the block comment); it is normalized here so the
+				//! constants below can be written as readable whole-ish
+				//! numbers without any of them secretly also setting an
+				//! intensity.
+				static bool AddDirectional_( ILightManager& mgr, const char* name,
+				                             double dx, double dy, double dz, double power )
+				{
+					const double len = std::sqrt( dx*dx + dy*dy + dz*dz );
+					if( !( len > 0.0 ) ) return false;
+					ILightPriv* light = nullptr;
+					RISE_API_CreateDirectionalLight( &light, power, RISEPel( 1.0, 1.0, 1.0 ),
+						Vector3( dx/len, dy/len, dz/len ) );
+					if( !light ) return false;
+					const bool ok = mgr.AddItem( light, name );
+					safe_release( light );   // the manager took its own ref
+					return ok;
+				}
+
+				//! KEY / FILL / RIM.  Powers are a plain multiplier on the
+				//! light's radiance (DirectionalLight::ComputeDirectLighting
+				//! is `color * brdf.value * cos * power`), tuned against the
+				//! dome below so a mid-grey Lambertian lands mid-frame under
+				//! the default ACES display transform -- bright enough that a
+				//! dark material is not black, dim enough that a white one
+				//! does not sit on the tone curve's shoulder where every
+				//! roughness looks the same.
+				static bool AddRigLights_( ILightManager& mgr )
+				{
+					// KEY: high, camera-LEFT, in front.  The three-quarter
+					// isolate vantage looks from about (0.52, 0.42, 0.74), so
+					// a key at negative X and positive Y/Z puts the light-to-
+					// shadow terminator across the visible side instead of
+					// flattening it head-on.
+					if( !AddDirectional_( mgr, "__rise_studio_key",  -0.42,  0.66,  0.62, 1.00 ) ) return false;
+					// FILL: camera-RIGHT and low, a third of the key, so the
+					// shadow side keeps readable albedo without erasing the
+					// modelling the key just created.
+					if( !AddDirectional_( mgr, "__rise_studio_fill",  0.72,  0.12,  0.68, 0.32 ) ) return false;
+					// RIM: behind and above.  On an opaque surface it draws
+					// the silhouette away from the background; on a rough
+					// transmissive one it is the light that comes THROUGH.
+					if( !AddDirectional_( mgr, "__rise_studio_rim",   0.10,  0.42, -0.90, 0.68 ) ) return false;
+					return true;
+				}
+
+				//! The dome: a neutral two-tone checker over the whole sphere,
+				//! wrapped in the ordinary RadianceMap so the environment
+				//! IMPORTANCE SAMPLER (built by RayCaster::RebuildLightSamplers
+				//! from the map's own painter, scale and transform) is exactly
+				//! consistent with what the miss rays see.  That consistency
+				//! is the reason this is a painter-backed RadianceMap rather
+				//! than a bespoke IRadianceMap: a custom radiance function
+				//! that the sampler could not read would be importance-sampled
+				//! against a DIFFERENT distribution than it renders, and the
+				//! one image whose job is to be believed would carry a bias.
+				//!
+				//! CELL SIZE is in the light-probe map's own uv, and that
+				//! mapping is azimuthal-equidistant: the uv distance from the
+				//! image centre is exactly theta/(2*pi), so ONE uv unit is a
+				//! full 360 degrees and a 0.045 cell subtends about 16.
+				//! That number is a measured compromise between the dome's two
+				//! consumers, which want opposite things.  The BACKGROUND
+				//! visible around an auto-framed object spans only the
+				//! camera's own ~40-degree cone, so coarse cells leave it
+				//! nearly featureless; a REFRACTING object folds most of a
+				//! hemisphere into its silhouette, so fine cells turn its
+				//! interior into noise instead of a readable image.  16 degrees
+				//! puts a few cells behind the object and roughly a dozen
+				//! through it, and keeps each cell broad enough to act as a
+				//! soft source rather than a speckle.  Returns an owned
+				//! reference.
+				//!
+				//! ONE PRE-EXISTING SHARP EDGE, disclosed rather than
+				//! silently inherited: the light-probe mapping is singular at
+				//! its two poles (`RadianceMap::GetRadiance` divides by
+				//! `sqrt(vx^2+vy^2)`, which is 0 for a direction of exactly
+				//! (0,0,+/-1)), so a ray on EXACTLY that axis produces a
+				//! non-finite texture coordinate.  That is a property of
+				//! RadianceMap shared with every IBL scene in the tree, not
+				//! something this rig introduces or makes materially more
+				//! reachable -- camera rays are jittered and scattered
+				//! directions are sampled, so the axis is a measure-zero set --
+				//! and closing it means changing a core rendering class used by
+				//! every environment-lit render, which is not this slice's to
+				//! do.  Noted here so the next reader of this dome does not
+				//! rediscover it as a new bug.
+				static const IRadianceMap* BuildStudioDome_()
+				{
+					IPainter* dark = nullptr;
+					IPainter* lite = nullptr;
+					RISE_API_CreateUniformColorPainter( &dark, RISEPel( 0.018, 0.018, 0.018 ),
+						eSpectrumKind_Unbounded );
+					RISE_API_CreateUniformColorPainter( &lite, RISEPel( 0.19, 0.19, 0.19 ),
+						eSpectrumKind_Unbounded );
+					if( !dark || !lite ) {
+						safe_release( dark );
+						safe_release( lite );
+						return nullptr;
+					}
+					IPainter* checker = nullptr;
+					RISE_API_CreateCheckerPainter( &checker, 0.045, *dark, *lite );
+					safe_release( dark );   // the checker addref'd both operands
+					safe_release( lite );
+					if( !checker ) return nullptr;
+
+					IRadianceMap* map = nullptr;
+					RISE_API_CreateRadianceMap( &map, *checker, 1.0 );
+					safe_release( checker );   // the map addref'd the painter
+					return map;
+				}
+
+				IScenePriv*          mScene;
+				const ILightManager* mSavedLights;
+				const IRadianceMap*  mSavedEnv;
+				bool                 mArmed;
+			};
+
 			//! Offscreen isolation for agent/LLM renders: RAII restore of the
 			//! active rasterizer's FrameStore IDENTITY, matching the SAME
 			//! house shape as RenderOverrideRestoreGuard / ProgressRestoreGuard
@@ -15470,6 +15853,21 @@ namespace RISE
 			std::string renderNote;
 			if( !isolateName.empty() ) {
 				out.isolateObject = isolateName;
+
+				// TWO RENDERS OF ONE ISOLATE (2026-08-24).  Same object, same
+				// auto-framing, same size, same caps -- the ONLY difference is
+				// the fidelity, and that difference is the whole feature: a
+				// draft frame is lighting- and material-independent by
+				// construction, so it answers "is the form there" and can
+				// answer nothing at all about appearance.  The two are
+				// composited into one image below because the chat transports
+				// carry exactly one image per tool result.
+				//
+				// THE PARAMS ARE BUILT ONCE and re-used with `quality` flipped,
+				// deliberately: if the isolate name, the framing inputs or the
+				// dims could ever differ between the two, the composite would
+				// be two pictures of different things placed side by side and
+				// invited to be compared.
 				AgentRenderParams rp;
 				rp.isolate           = isolateName;
 				// The agent-surface caps (<= 256 px long edge, <= 16 spp) apply
@@ -15506,14 +15904,70 @@ namespace RISE
 				// independent of whatever aspect the scene's Film happens to
 				// carry, so two finishes of the same element are directly
 				// comparable.
-				rp.quality           = AgentRenderQuality::Draft;
+				//
+				// 2026-08-24: the DRAFT half of the note above now describes
+				// PANEL 1 only -- panel 2 answers the question a draft frame
+				// structurally cannot (see the MATERIAL LOOK block below).
+				// The SIZING half applies to both, and for both reasons: the
+				// material look is on the same isProductionBeauty exclusion,
+				// and a square is what makes the two panels the same shape.
 				rp.width             = kAgentSurfaceMaxRenderEdge;
 				rp.height            = kAgentSurfaceMaxRenderEdge;
+
+				// ---- PANEL 1: the DRAFT (form) look.
+				rp.quality = AgentRenderQuality::Draft;
+				std::vector<unsigned char> draftPng;
+				unsigned int draftW = 0, draftH = 0;
 				const AgentRenderResult rr = Render( rp );
-				if( rr.ok ) {
-					out.png = ReadImage( kAgentSurfaceMaxRenderEdge, out.width, out.height );
-					out.rendered = !out.png.empty();
+				if( rr.ok ) draftPng = ReadImage( kAgentSurfaceMaxRenderEdge, draftW, draftH );
+
+				// ---- PANEL 2: the MATERIAL look, under the canonical studio
+				// rig.  Second rather than first on purpose: the draft is the
+				// cheap, never-black one, so if anything about the scene makes
+				// a real render impossible the model still gets a look.  This
+				// render's rig is installed and restored entirely inside
+				// RenderCore_ (StudioRigRestoreGuard) -- the Document is not
+				// touched, no revision is cut, no undo entry is made, and the
+				// scene's own lights and environment are exactly as they were
+				// by the time this call returns.
+				rp.quality = AgentRenderQuality::MaterialLook;
+				std::vector<unsigned char> matPng;
+				unsigned int matW = 0, matH = 0;
+				const AgentRenderResult mr = Render( rp );
+				if( mr.ok ) matPng = ReadImage( kAgentSurfaceMaxRenderEdge, matW, matH );
+
+				// ---- COMPOSE.  Both panels -> the two-panel composite; one
+				// panel -> that panel alone at its own size; neither -> no
+				// image, and the message says so.
+				if( !draftPng.empty() && !matPng.empty() ) {
+					unsigned int compW = 0, compH = 0;
+					std::vector<unsigned char> comp =
+						BuildTwoPanelCompositePng_( draftPng, matPng, compW, compH );
+					if( !comp.empty() ) {
+						out.png    = comp;
+						out.width  = compW;
+						out.height = compH;
+						out.materialLookRendered = true;
+					} else {
+						// The encode failed, which is not a reason to hand back
+						// nothing: fall back to the draft panel, exactly what
+						// this result carried before the material look existed.
+						out.png    = draftPng;
+						out.width  = draftW;
+						out.height = draftH;
+					}
+				} else if( !draftPng.empty() ) {
+					out.png    = draftPng;
+					out.width  = draftW;
+					out.height = draftH;
+				} else if( !matPng.empty() ) {
+					out.png    = matPng;
+					out.width  = matW;
+					out.height = matH;
+					out.materialLookRendered = true;
 				}
+				out.rendered = !out.png.empty();
+
 				if( out.rendered ) {
 					renderNote = " Isolate render of \"" + isolateName + "\"";
 					if( out.isolateCandidates > 1 )
@@ -15537,20 +15991,54 @@ namespace RISE
 					// fine.  The draft disclosure rides with it because a model
 					// told to look for missing detail must know what this frame
 					// cannot show.
-					renderNote += " This is \"" + entry.element + "\" by itself at close range -- if "
-						"details you authored are missing or melted, reopen_element and adjust before "
-						"moving on. It is a DRAFT frame (studio-preview shading), so it shows form and "
-						"proportion, not the scene's authored materials or lighting.";
+					if( out.materialLookRendered && !draftPng.empty() ) {
+						// BOTH PANELS.  Two sentences, one per panel, each
+						// naming what its panel can and cannot show -- because
+						// the two failures they catch are different failures,
+						// and a model told to look for one will not see the
+						// other.  The second is the MATERIALS clause
+						// (2026-08-24): the three worst appearance failures
+						// this project has measured -- glass rendered opaque,
+						// a membrane faked with emission, no specular at all
+						// -- are all INVISIBLE in a draft frame, and all
+						// obvious under light.
+						renderNote += " Two looks at \"" + entry.element + "\" by itself at close range. "
+							"LEFT is a DRAFT frame (studio-preview shading): it shows form and proportion, "
+							"not appearance -- if details you authored are missing or melted, reopen_element "
+							"and adjust before moving on. RIGHT is the same object's MATERIALS, real BSDFs "
+							"under a fixed studio light rig that replaces the scene's own lighting for that "
+							"render only -- if the surface reads as one flat colour, or something you meant "
+							"to be glass, membrane or liquid reads opaque, fix the material before moving on "
+							"(spatial variation for the flat case; a dielectric, translucent or "
+							"subsurface-scattering material for anything light is supposed to pass through).";
+					} else if( out.materialLookRendered ) {
+						renderNote += " This is \"" + entry.element + "\" by itself at close range, showing "
+							"its MATERIALS -- real BSDFs under a fixed studio light rig that replaces the "
+							"scene's own lighting for this render only. If details you authored are missing "
+							"or melted, or the surface reads as one flat colour, or something you meant to "
+							"be glass, membrane or liquid reads opaque, reopen_element and adjust before "
+							"moving on. The draft companion frame did not render, so this one is on its own.";
+					} else {
+						renderNote += " This is \"" + entry.element + "\" by itself at close range -- if "
+							"details you authored are missing or melted, reopen_element and adjust before "
+							"moving on. It is a DRAFT frame (studio-preview shading), so it shows form and "
+							"proportion, not the scene's authored materials or lighting; the studio-lit "
+							"companion frame that would have shown them did not render.";
+					}
 				}
 				else {
 					// A failed render never fails the call -- the advance
 					// already happened -- but it is never silent either: a
 					// missing image with no explanation reads as "the element
-					// renders empty".
+					// renders empty".  Both renders are reported, in order,
+					// because "neither produced an image" and "the lit one
+					// didn't" are different situations.
 					renderNote = " The isolate render of \"" + isolateName +
 						"\" did not produce an image" +
 						( rr.ok || rr.message.empty() ? std::string( "." )
 						                              : ( ": " + rr.message ) );
+					if( !mr.ok && !mr.message.empty() )
+						renderNote += " The studio-lit render did not either: " + mr.message;
 				}
 			}
 			else {
@@ -17945,6 +18433,16 @@ namespace RISE
 			// AgentRenderResult::renderMode's doc for why the two fields
 			// answer different questions.
 			const bool isDraft = ( params.quality == AgentRenderQuality::Draft );
+			// THE MATERIAL LOOK (2026-08-24): the third fidelity, and a
+			// structural sibling of isDraft in every respect that matters
+			// here -- its own ephemeral pipeline (never the production
+			// rasterizer), its own FIXED spp/bounce config (so `samples` is
+			// ignored, honestly noted below), and its own `renderMode` wire
+			// name.  It differs from draft in exactly one direction: it
+			// evaluates REAL BSDFs, under a canonical studio rig installed for
+			// this render alone (see StudioRigRestoreGuard), which is why it
+			// is the one fidelity that can answer a question about appearance.
+			const bool isMaterialLook = ( params.quality == AgentRenderQuality::MaterialLook );
 			// Toolkit slice 3a: objectmap is a THIRD, orthogonal render
 			// target (a flat per-object identity segmentation).  It routes
 			// through its OWN ephemeral pipeline (like draft, never the
@@ -17975,7 +18473,9 @@ namespace RISE
 				isViewMode && viewModeInfo && Implementation::IsBeautyVariantMode( viewModeInfo->mode );
 			res.renderMode = isObjectMap ? "objectmap"
 				: isViewMode ? ( viewModeInfo ? viewModeInfo->name : "" )
-				: ( isDraft ? "draft" : "production" );
+				: isDraft ? "draft"
+				: isMaterialLook ? "material"
+				: "production";
 
 			// Round-3 additive wire field: report the ACTIVE rasterizer's
 			// registered type name (= its scene-file chunk keyword, e.g.
@@ -18016,7 +18516,13 @@ namespace RISE
 			// R1b (2026-08-09): a "production BEAUTY" render is exactly the
 			// case none of the three fixed-fidelity targets claim -- pure
 			// function of `params`, same safety rationale as the flags above.
-			const bool isProductionBeauty = !isDraft && !isObjectMap && !isViewMode;
+			// 2026-08-24: isMaterialLook joins the exclusion list for the same
+			// reason isDraft is on it -- it is a FIXED-fidelity target with
+			// its own ephemeral pipeline, so neither the agent-surface
+			// absent-dims default nor the AutoRasterizer pre-resolve (both
+			// gated on this flag) applies to it.
+			const bool isProductionBeauty =
+				!isDraft && !isMaterialLook && !isObjectMap && !isViewMode;
 			// R1b: the agent-surface ABSENT-dims default (see
 			// AgentRenderParams::fromAgentSurface's doc) applies iff this is a
 			// production beauty render, on the agent RPC surface, that did NOT
@@ -18198,6 +18704,18 @@ namespace RISE
 			bool draftSamplesApplied   = false;
 			bool draftSamplesCapped    = false;
 			int  draftEffectiveSamples = 0;
+			// The material look's OWN fixed fidelity, reported rather than
+			// restated: CreateMaterialLookPipeline hands back the spp and
+			// bounce cap it actually built with, so the honest note below can
+			// never drift from the pipeline.  Both stay 0 unless
+			// doMaterialLookRenderWork runs.
+			unsigned int materialLookSamples  = 0;
+			unsigned int materialLookBounces  = 0;
+			// Set when the rig itself could not be installed -- distinct
+			// from "the pipeline failed", because it is the ONE failure whose
+			// honest answer is "this frame would have been lit by something
+			// other than the rig, so it was not rendered at all".
+			bool materialLookRigUnavailable = false;
 			// Toolkit slice 3a (objectmap): the per-render identity palette +
 			// registry + atomic pixel tally, built INSIDE doObjectMapRenderWork
 			// (on the render thread, before RasterizeScene) and read AFTER the
@@ -18985,6 +19503,143 @@ namespace RISE
 				restoreGuard.Disarm();
 			};
 
+			// THE MATERIAL LOOK (2026-08-24): the EPHEMERAL fixed-PT render
+			// body, under the canonical studio rig.  Structurally the closest
+			// sibling of doBeautyVariantRenderWork above -- a real
+			// production-class path tracer built for this one render, driven
+			// directly, released before the lambda returns, and never touching
+			// the production rasterizer, its FrameStore, or
+			// mJob->RemoveRasterizerOutputs().  Two things are its own:
+			//
+			//   (1) THE RIG, installed before the render and restored by
+			//       `rigGuard` on every exit path including a throw.  If it
+			//       cannot be installed the render does NOT happen -- see
+			//       StudioRigRestoreGuard::Install's doc for why a look lit by
+			//       something other than the rig is worse than no look.
+			//
+			//   (2) NO RESOLUTION DIVISOR.  A BeautyVariant answers a
+			//       transport question and can afford quarter-res; this one is
+			//       already a small square by the time it gets here (the
+			//       caller sizes it at the agent-surface cap) and every pixel
+			//       of it is spent on reading a surface.
+			//
+			// `params.samples` / `params.xray` are ignored, exactly as under
+			// BeautyVariant -- the fidelity is the pipeline's, honestly noted
+			// in RenderCore_'s tail.
+			auto doMaterialLookRenderWork = [&]()
+			{
+				// The production rasterizer's own resolved default shader,
+				// recovered for the SAME reason doBeautyVariantRenderWork
+				// recovers it (see that lambda's comment): the caster-
+				// dispatched BSSRDF / random-walk SSS continuations resolve
+				// shading through it, and a scene whose `global` shader is a
+				// custom chain would otherwise diverge on exactly the
+				// translucent materials this look exists to show.
+				IShader* pProductionDefaultShader = nullptr;
+				{
+					const std::string activeRastName = mJob->GetActiveRasterizerName();
+					if( !activeRastName.empty() ) {
+						const std::string shaderName = mJob->GetRasterizerParameter(
+							activeRastName.c_str(), "shader" );
+						if( !shaderName.empty() && mJob->GetShaders() ) {
+							pProductionDefaultShader = mJob->GetShaders()->GetItem( shaderName.c_str() );
+						}
+					}
+				}
+
+				// THE RIG'S GUARD IS DECLARED FIRST, so it destructs LAST --
+				// after the pipeline guard below.  The order is load-bearing:
+				// the ephemeral caster's LightSampler ADDREFS the rig's
+				// environment map (LightSampler::SetEnvironmentSampler, and
+				// its destructor releases it), so tearing the pipeline down
+				// before restoring the scene keeps the "who owns the dome"
+				// question trivially ordered rather than merely survivable.
+				StudioRigRestoreGuard rigGuard( mJob->GetScene() );
+
+				IRasterizer* ephemeralRast = nullptr;
+				IRayCaster*  lookCaster    = nullptr;
+				if( !Implementation::CreateMaterialLookPipeline(
+						&ephemeralRast, &lookCaster, pProductionDefaultShader,
+						&materialLookSamples, &materialLookBounces ) )
+				{
+					return;   // rendered/renderRan stay false -- the shared tail reports "render failed"
+				}
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
+				} pipelineGuard{ ephemeralRast, lookCaster };
+
+				// INSTALLED BEFORE RasterizeScene, because the fresh caster
+				// builds its LuminaryManager / LightSampler /
+				// EnvironmentSampler from the scene at attach time -- it picks
+				// up whatever lighting is installed when the render starts,
+				// and nothing after.  A failure to install is a REFUSAL, not a
+				// fallback: see StudioRigRestoreGuard::Install's doc for why a
+				// frame lit by something other than the rig is worse than no
+				// frame at all.
+				if( !rigGuard.Install() ) {
+					materialLookRigUnavailable = true;
+					return;   // no image, and the tail says exactly why
+				}
+
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				sink = new InMemoryRasterizerOutput();
+				// A material look genuinely shades and denoises, so it takes
+				// the SAME display transform as production/draft beauty rather
+				// than the raw-linear treatment the data modes get.  That is
+				// also the tone answer for an EMISSIVE element: the resolved
+				// transform defaults to ACES filmic at 0 EV
+				// (ResolveBeautyDisplayTransform_), a FIXED curve with no
+				// auto-exposure anywhere in this pipeline -- an emissive
+				// surface rolls off its shoulder instead of blowing the frame,
+				// and it does so identically on every finish of that element.
+				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				applyFilmOverride();
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as every other branch.
+					return;
+				}
+
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared contract with the other branches).
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (material-look path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
 				// Re-review P1 fix: resolve ALL live Job/rasterizer/camera state
@@ -19058,10 +19713,14 @@ namespace RISE
 				// Fetch the live rasterizer, fresh, under the park.  Same gating
 				// condition and same message as the pre-fix calling-thread check:
 				// the "!rast" bail-out applies ONLY to the production BEAUTY
-				// branch -- draft/objectmap/view-mode all run their own ephemeral
-				// pipelines and never dereference the production rasterizer.
+				// branch -- draft/objectmap/view-mode/material-look all run their
+				// own ephemeral pipelines and never dereference the production
+				// rasterizer.  Spelled as `isProductionBeauty` rather than
+				// re-listing the exclusions (2026-08-24): that flag IS this
+				// condition, and a hand-written copy of it is one more place a
+				// new fidelity has to remember to appear.
 				IRasterizer* rast = mJob->GetRasterizer();
-				if( !isDraft && !isObjectMap && !isViewMode && !rast ) {
+				if( isProductionBeauty && !rast ) {
 					res.ok = false;
 					res.message = "no active rasterizer";
 					// This bail moved INSIDE the park (P1: no snapshotting live
@@ -19630,6 +20289,17 @@ namespace RISE
 					publishCompletedToLastRender();
 					return;
 				}
+				if( isMaterialLook ) {
+					// Deliberately BEFORE the draft branch and after the view
+					// modes, matching the order the flags are computed in.
+					// No design note is attached here (see the carrier site's
+					// renderMode gate): the note is anchored to "the model
+					// just looked at its finished work", and a rig-lit isolate
+					// of one part is a diagnostic, not that moment.
+					runEphemeralIsolated( doMaterialLookRenderWork );
+					publishCompletedToLastRender();
+					return;
+				}
 				if( isDraft ) {
 					runEphemeralIsolated( doDraftRenderWork );
 					// Creative-richness P2: read the LIVE document HERE, still
@@ -19950,7 +20620,11 @@ namespace RISE
 					// production/display FrameStore remains byte- and allocation-
 					// identical.  Other agent render modes already ARE diagnostics;
 					// only a production beauty render compiles this multi-AOV view.
-					if( params.perception && !isDraft && !isObjectMap && !isViewMode ) {
+					// Same `isProductionBeauty` spelling as the !rast bail above
+					// (2026-08-24), for the same anti-drift reason -- this block
+					// is only reachable on that branch anyway, so the condition
+					// is unchanged in behaviour.
+					if( params.perception && isProductionBeauty ) {
 						spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Albedo );
 						spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Normal );
 						spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Depth );
@@ -20633,7 +21307,10 @@ namespace RISE
 				if( wantSamplesOverride && res.ok ) {
 					res.message += " (objectmap ignores the samples override -- an identity render is exactly 1 spp for per-pixel exactness)";
 				}
-				if( params.quality == AgentRenderQuality::Draft && res.ok ) {
+				// 2026-08-24: `!= Production` rather than `== Draft` -- there
+				// are three fidelities now, and a check that names one of them
+				// goes quiet the moment a third exists.
+				if( params.quality != AgentRenderQuality::Production && res.ok ) {
 					res.message += " (objectmap ignores quality -- it has a single fidelity)";
 				}
 				// P2-1: at large object counts the palette exhausts its default
@@ -20683,7 +21360,7 @@ namespace RISE
 				// legend (no per-object identity registry).
 				res.samplesOverridden = false;
 				res.effectiveSamples  = viewModeInfo ? static_cast<int>( viewModeInfo->variantSamplesPerPass ) : 0;
-				if( res.ok && ( wantSamplesOverride || params.quality == AgentRenderQuality::Draft ) ) {
+				if( res.ok && ( wantSamplesOverride || params.quality != AgentRenderQuality::Production ) ) {
 					const char* modeName = viewModeInfo ? viewModeInfo->name : "view";
 					res.message += " (mode:";
 					res.message += modeName;
@@ -20697,11 +21374,35 @@ namespace RISE
 				// identity registry).
 				res.samplesOverridden = false;
 				res.effectiveSamples  = 1;
-				if( res.ok && ( wantSamplesOverride || params.quality == AgentRenderQuality::Draft ) ) {
+				if( res.ok && ( wantSamplesOverride || params.quality != AgentRenderQuality::Production ) ) {
 					const char* modeName = viewModeInfo ? viewModeInfo->name : "view";
 					res.message += " (mode:";
 					res.message += modeName;
 					res.message += " is a single-pass diagnostic render; quality/samples ignored)";
+				}
+			} else if( isMaterialLook ) {
+				// THE MATERIAL LOOK: a FIXED production-class config, exactly
+				// like a BeautyVariant -- `samples` and `quality` have nothing
+				// left to select, and the effective sample count reported is
+				// the pipeline's REAL fixed spp (read back from the factory,
+				// never restated as a literal here).
+				res.samplesOverridden = false;
+				res.effectiveSamples  = static_cast<int>( materialLookSamples );
+				if( res.ok ) {
+					char rigNote[288];
+					std::snprintf( rigNote, sizeof( rigNote ),
+						" (material look: real BSDFs at a fixed %u spp / %u bounces, under a canonical "
+						"studio rig -- a neutral checker environment plus key/fill/rim; the scene's own "
+						"lights and environment are replaced for this render only and restored after it)",
+						materialLookSamples, materialLookBounces );
+					res.message += rigNote;
+					if( wantSamplesOverride ) {
+						res.message += " (samples ignored -- the material look's fidelity is fixed)";
+					}
+				} else if( materialLookRigUnavailable ) {
+					res.message += " (material look: the studio light rig could not be installed on this "
+					               "scene, and a frame lit by anything else would not be the look it "
+					               "claims to be, so none was rendered)";
 				}
 			} else if( isDraft ) {
 				res.samplesOverridden = draftSamplesApplied;
@@ -20820,7 +21521,15 @@ namespace RISE
 			// block only runs when res.ok, i.e. either `light` was empty or
 			// it resolved.
 			if( res.ok && !params.light.empty() ) {
-				if( isBeautyVariant || ( !isObjectMap && !isViewMode && !isDraft ) ) {
+				if( isMaterialLook ) {
+					// 2026-08-24: the material look is the ONE ignoring branch
+					// whose reason is not "no lighting is evaluated" -- it
+					// evaluates plenty, just none of the scene's.  Soloing a
+					// scene light it has already replaced would be a claim
+					// about an image that contains no such light.
+					res.message += " (light is ignored under the material look -- the scene's lights are "
+					               "replaced by the canonical studio rig for this render)";
+				} else if( isBeautyVariant || ( !isObjectMap && !isViewMode && !isDraft ) ) {
 					res.message += " (light solo: \"" + params.light + "\" is the only active light)";
 				} else {
 					const char* what = isObjectMap ? "objectmap"
@@ -22669,6 +23378,11 @@ namespace RISE
 			// cannot disagree with what actually rendered.
 			if( !target || !rr.ok ) return;
 			if( params.quality == AgentRenderQuality::Draft ) return;
+			// 2026-08-24: the material look is excluded for the same reason
+			// the anchor excludes it -- it is a rig-lit isolate of one part,
+			// and setting an imagined WHOLE SCENE beside it would compare two
+			// pictures of different things.
+			if( params.quality == AgentRenderQuality::MaterialLook ) return;
 			if( params.renderTarget != AgentRenderTarget::Beauty ) return;
 			if( !params.isolate.empty() || rr.isolateApplied ) return;
 			// A part-sketch comparison already owns this call's image and its
@@ -23003,6 +23717,13 @@ namespace RISE
 			// a regression.
 			if( !rr.ok ) return false;
 			if( params.quality == AgentRenderQuality::Draft ) return false;
+			// 2026-08-24: and the MATERIAL LOOK, for a reason sharper still
+			// than draft's.  It deletes the scene's lighting outright and
+			// substitutes a canonical rig -- an anchor made of one would
+			// bookmark a picture of a light rig, and every later comparison
+			// against a real render would show a "regression" that is nothing
+			// but the rig going away.
+			if( params.quality == AgentRenderQuality::MaterialLook ) return false;
 			if( params.renderTarget != AgentRenderTarget::Beauty ) return false;
 			if( !params.isolate.empty() || rr.isolateApplied ) return false;
 			if( !params.target.empty() || rr.targetApplied ) return false;

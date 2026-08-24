@@ -1815,6 +1815,129 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	return true;
 }
 
+namespace
+{
+	//! THE MATERIAL LOOK's fixed fidelity (2026-08-24).  Deliberately
+	//! constants here rather than a ViewportRenderModeInfo row: the material
+	//! look is not a viewport render mode and must never appear in the mode
+	//! registry (see CreateMaterialLookPipeline's header doc).
+	//!
+	//! 24 SPP + OIDN, measured against the budget the feature was specified
+	//! with (well under 2-3 s per element at 256x256 on typical hardware):
+	//! it is the point where a denoised 256-square of a single isolated
+	//! object is clean enough that a highlight's SHAPE -- which is the
+	//! roughness read -- is not competing with sampling noise, and it is
+	//! still a small fraction of that budget.  Raising it buys smoothness
+	//! nobody reads at this size; lowering it puts noise exactly where the
+	//! specular energy is.
+	const unsigned int kMaterialLookSamplesPerPixel = 64;
+
+	//! Six bounces, not the PT default.  Transmission is the reason: a
+	//! closed dielectric shell costs FOUR specular vertices to see through
+	//! (enter front, exit back of the outer wall, enter and exit the inner
+	//! one) before a single diffuse or environment vertex is reached, so a
+	//! cap of 4 would render exactly the "opaque glass" the look exists to
+	//! expose -- as an artifact of the cap rather than of the material.
+	//! Six leaves headroom for that chain plus the environment hit that
+	//! terminates it.
+	const unsigned int kMaterialLookMaxBounces = 6;
+}
+
+bool RISE::Implementation::CreateMaterialLookPipeline(
+	IRasterizer** ppRasterizer,
+	IRayCaster** ppCaster,
+	IShader* pDefaultShader,
+	unsigned int* outSamplesPerPixel,
+	unsigned int* outMaxBounces )
+{
+	if( ppRasterizer ) {
+		*ppRasterizer = 0;
+	}
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( outSamplesPerPixel ) {
+		*outSamplesPerPixel = kMaterialLookSamplesPerPixel;
+	}
+	if( outMaxBounces ) {
+		*outMaxBounces = kMaterialLookMaxBounces;
+	}
+	if( !ppRasterizer || !ppCaster ) {
+		return false;
+	}
+
+	// The caster and the owned-default-shader dance are LINE-FOR-LINE
+	// CreateBeautyVariantPipeline's above, and deliberately so -- the two
+	// pipelines have the same correctness requirements (a real per-object
+	// material path, and a real default shader so an SSS/BSSRDF continuation
+	// through RayCaster::SelectShader does not resolve to black).  See that
+	// function's comments for the full reasoning behind each argument.
+	IShader* pOwnedShader = 0;
+	BeautyVariantDefaultShader* pOwnedBVDefault = 0;
+	if( !pDefaultShader ) {
+		pOwnedBVDefault = BeautyVariantDefaultShader::Create();
+		if( !pOwnedBVDefault ) {
+			return false;
+		}
+		pOwnedShader = pOwnedBVDefault;
+		pOwnedBVDefault->SetMaxPathDepth( kMaterialLookMaxBounces );
+		// Neither diagnostic mask belongs on a material look: `indirectOnly`
+		// would delete the direct highlight that IS the roughness read, and
+		// `clayOverride` substitutes every reflectance for a neutral clay --
+		// i.e. it would delete the materials this render exists to show.
+		pOwnedBVDefault->SetIndirectOnly( false );
+		pOwnedBVDefault->SetClayOverride( false );
+	}
+	IShader* pShader = pDefaultShader ? pDefaultShader : pOwnedShader;
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, /*seeRadianceMap*/true, kMaterialLookMaxBounces, *pShader, /*showLuminaires*/true );
+	safe_release( pOwnedShader );
+	if( !pCaster ) {
+		return false;
+	}
+
+	ISampling2D* pSampler = 0;
+	RISE_API_CreateMultiJitteredSampling2D( &pSampler, 1.0, 1.0 );
+	if( pSampler ) {
+		pSampler->SetNumSamples( kMaterialLookSamplesPerPixel );
+	}
+	IPixelFilter* pFilter = 0;
+	RISE_API_CreateBoxPixelFilter( &pFilter, 1.0, 1.0 );
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pSampler, pFilter,
+		/*smsEnabled*/false, /*smsMaxIterations*/0, /*smsThreshold*/0.0, /*smsMaxChainDepth*/0,
+		/*smsBiased*/false, /*smsBernoulliTrials*/0, /*smsMultiTrials*/1, /*smsPhotonCount*/0,
+		/*smsTwoStage*/false, /*smsUseLevenbergMarquardt*/false, SMSSeedingMode::Snell, /*smsTargetBounces*/0,
+		/*oidnDenoise*/true, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
+		PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), /*useZSobol*/false );
+
+	safe_release( pSampler );
+	safe_release( pFilter );
+
+	if( !pRaster ) {
+		safe_release( pCaster );
+		return false;
+	}
+
+	{
+		// dynamic_cast for the same reason CreateBeautyVariantPipeline uses
+		// one: IRasterizer is a virtual base of PathTracingPelRasterizer.
+		PathTracingPelRasterizer* pPT = dynamic_cast<PathTracingPelRasterizer*>( pRaster );
+		if( pPT ) {
+			pPT->SetMaxPathDepth( kMaterialLookMaxBounces );
+			pPT->SetIndirectOnly( false );
+			pPT->SetClayOverride( false );
+		}
+	}
+
+	// `pCaster` is RETURNED as an owning reference (see the identical note at
+	// the end of CreateBeautyVariantPipeline) -- not released here.
+	*ppRasterizer = pRaster;
+	*ppCaster = pCaster;
+	return true;
+}
+
 bool RISE::Implementation::ConfigureBeautyVariantPass(
 	IRasterizer& rasterizer,
 	ViewportRenderMode mode,

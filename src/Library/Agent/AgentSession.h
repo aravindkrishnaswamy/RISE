@@ -488,10 +488,43 @@ namespace RISE
 		//! contract (a draft render is geometry/composition/camera-
 		//! accurate but IGNORES the scene's authored materials and
 		//! lighting; never judge those from a draft).
+		//!
+		//! MaterialLook (2026-08-24, the lit material look) is the THIRD
+		//! fidelity, and the only one whose subject is APPEARANCE.  It renders
+		//! through a wholly SEPARATE, EPHEMERAL fixed path-tracing pipeline
+		//! (CreateMaterialLookPipeline -- real per-object materials, real BSDF
+		//! evaluation, fixed spp and bounce cap) under a CANONICAL STUDIO
+		//! LIGHT RIG that exists only for the duration of that one render:
+		//! the scene's own light manager and environment are swapped out and
+		//! restored (see AgentSession.cpp's StudioRigRestoreGuard), so the
+		//! image is a pure function of the object's GEOMETRY and MATERIALS and
+		//! says nothing about how the scene happens to be lit -- which is
+		//! exactly what makes two of them, taken in different sessions and
+		//! different build phases, comparable.
+		//!
+		//! WHY IT EXISTS ALONGSIDE Draft rather than instead of it.  Draft is
+		//! lighting-independent BY CONSTRUCTION, so it answers "is the form I
+		//! authored there" in an unlit scene where a production render would
+		//! come back black -- and, for the same reason, it structurally
+		//! CANNOT show specular rolloff, a roughness read, fresnel, or
+		//! transmission.  The three worst material failures the trajectory
+		//! diagnosis behind this slice turned up -- "glass" bottles that read
+		//! opaque, a "translucent" jellyfish faked with emission, and no
+		//! specular anywhere -- would look IDENTICAL in a draft frame, which
+		//! is why draft-only review kept passing them.  Materials are judged
+		//! under light; this is the light.
+		//!
+		//! NOT REACHABLE FROM THE WIRE.  AgentRpc's `quality` parser accepts
+		//! only "draft" and "production"; nothing sets this value except
+		//! FinishElement's own second render.  It is a fidelity the session
+		//! spends on the model's behalf, not a knob the model turns -- and
+		//! keeping it off the wire keeps the rig's canonical-ness a
+		//! guarantee rather than a default a caller could talk around.
 		enum class AgentRenderQuality
 		{
 			Production,   //!< today's exact behaviour -- the head's active rasterizer (default)
-			Draft         //!< a cheap, ephemeral studio-preview render -- see the class doc above
+			Draft,        //!< a cheap, ephemeral studio-preview render -- see the class doc above
+			MaterialLook  //!< an ephemeral fixed-PT render under the canonical studio rig -- see the block above
 		};
 
 		//! Toolkit slice 3a: `render`'s optional SEGMENTATION selector,
@@ -1108,6 +1141,14 @@ namespace RISE
 			//! produced this image without cross-referencing the request.
 			//! `legend` stays empty for these (view modes have no per-object
 			//! identity registry -- that is ObjectMap's own thing).
+			//! 2026-08-24 (the lit material look) adds a FIFTH value,
+			//! "material" (set when params.quality == MaterialLook): real
+			//! per-object materials and real BSDF evaluation -- the OPPOSITE
+			//! of "draft" in exactly the way that matters -- but under a
+			//! CANONICAL STUDIO RIG that replaces the scene's own lights and
+			//! environment for that render alone.  So the MATERIALS in it are
+			//! the scene's and can be judged; the LIGHTING is not the scene's
+			//! and must not be.  `legend` stays empty.
 			std::string                renderMode;
 			//! Toolkit slice 3a: the object-colour legend of an OBJECTMAP
 			//! render -- one LegendEntry per registered scene object,
@@ -4174,8 +4215,31 @@ namespace RISE
 				//! How many attributed objects were candidates; > 1 means the
 				//! largest-bounding-box one was picked and the message says so.
 				unsigned int isolateCandidates = 0;
-				//! true iff an isolate render was attempted and SUCCEEDED.
+				//! true iff at least one isolate render was attempted and
+				//! SUCCEEDED, i.e. iff `png` carries pixels.
 				bool         rendered = false;
+				//! 2026-08-24 (the lit material look): true iff the SECOND,
+				//! studio-lit render also succeeded and its panel is in `png`.
+				//! false means the caller is looking at the draft panel alone
+				//! -- the material pipeline could not be built, the rig could
+				//! not be installed, or that render failed; the message says
+				//! which.  Tail-appended, and reported on the wire as its own
+				//! boolean, so nothing that already read this struct changes
+				//! shape.
+				bool         materialLookRendered = false;
+				//! THE ATTACHED IMAGE, and since 2026-08-24 it is normally a
+				//! TWO-PANEL COMPOSITE: the draft (form) look on the LEFT, the
+				//! studio-lit material look on the RIGHT, separated by a thin
+				//! grey rule -- built the way every other multi-image result
+				//! in this surface is built (the sketch tiling, the target
+				//! comparison, the scene-target stack), because the chat
+				//! transports carry exactly ONE image block per tool result
+				//! (AgentChatCodecs' IsImageResult keys on a single
+				//! `png_base64`, and the retention policy keeps exactly one
+				//! live image) -- a second field would never reach the model
+				//! at all.  With only one panel available it is that panel
+				//! alone, at its own size.  `width`/`height` describe the
+				//! composite, not a panel.
 				std::vector<unsigned char> png;
 				unsigned int width = 0;
 				unsigned int height = 0;
@@ -4210,11 +4274,32 @@ namespace RISE
 			//! advisory sentence -- reopen_element if authored detail is missing
 			//! or melted -- and, per the Phase 2b law, NO score of any kind.
 			//!
-			//! IT NEVER BECOMES THE RENDER ANCHOR.  Two independent exclusions
-			//! in RenderQualifiesForAnchor_ cover it (isolate, and draft); see
+			//! AND SINCE 2026-08-24 THERE ARE TWO RENDERS, NOT ONE -- because a
+			//! draft frame, being lighting- and material-independent by
+			//! construction, cannot show a material at all.  The same isolate,
+			//! the same framing, the same caps, rendered a SECOND time at
+			//! AgentRenderQuality::MaterialLook (see that enum's doc): a fixed
+			//! ephemeral path tracer, real BSDFs, under a CANONICAL STUDIO
+			//! RIG installed for that render alone.  The two panels are
+			//! composited into the one image this result carries -- draft
+			//! left, material right -- because the chat transports carry
+			//! exactly one image per tool result (see `png`'s doc).  The
+			//! advisory grows one clause to match: the right panel is this
+			//! element's MATERIALS under studio light, and a surface that
+			//! reads as one flat colour, or a thing meant to be glass or
+			//! membrane or liquid that reads opaque, is a material to fix
+			//! before moving on.  Still NO score of any kind, in either
+			//! clause.  A failed material render never fails the call and
+			//! never costs the draft panel: the draft alone is attached and
+			//! the message states the omission.
+			//!
+			//! NEITHER RENDER EVER BECOMES THE RENDER ANCHOR, and each is held
+			//! out by TWO independent exclusions in RenderQualifiesForAnchor_
+			//! rather than one: `isolate` covers both, and then `draft` covers
+			//! the first while `material-look` covers the second.  See
 			//! AgentRenderResult::anchorApplied's doc for why an anchor made of
-			//! an isolated or draft frame would make the comparison a comparison
-			//! of render settings.
+			//! an isolated, draft or rig-lit frame would make the comparison a
+			//! comparison of render settings.
 			//!
 			//! Never gated, never counted against any cap.  Touches the Document
 			//! not at all.
