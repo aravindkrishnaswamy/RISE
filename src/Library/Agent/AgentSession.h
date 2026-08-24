@@ -9666,9 +9666,30 @@ namespace RISE
 			//! does not survive a session restart -- a fresh session shows
 			//! every element's primary (most-authored) object again, which is
 			//! the right answer for a reader who has seen nothing yet.  The
-			//! `digest` is over the element's FORM-BEARING chunks only (see
-			//! FinishElement), so a change to the shape resets the cycle to
-			//! that primary object rather than advancing past it.
+			//! `formDigest` covers exactly what RESETS the cycle, and the
+			//! scope is narrower than "the element's chunks" in two ways that
+			//! both matter (fix round 2026-08-24):
+			//!
+			//!   * ONLY Geometry and Object chunks are digested at all -- a
+			//!     material, painter or shader the element also owns is not
+			//!     form.
+			//!   * AND AN OBJECT CHUNK CONTRIBUTES ONLY ITS FORM-BEARING
+			//!     PARAMS.  standard_object carries `material`, `shader`,
+			//!     `modifier`, `radiance_*` and `interior_medium` on the SAME
+			//!     chunk as `geometry` and the transform, so digesting it
+			//!     whole made REASSIGNING A MATERIAL reset the cycle -- which
+			//!     is the opposite of the rule.  See
+			//!     ObjectParamIsFormBearing_ for the exact predicate: a
+			//!     reference to a Geometry / Object / Modifier is form, a
+			//!     reference to a Painter / Material / Shader / Medium is not,
+			//!     and the transform + instancing vocabulary (`position`,
+			//!     `orientation`, `quaternion`, `matrix`, `scale`, `mirror`,
+			//!     `count_u`, `count_v`, csg's `operation`) is form.
+			//!
+			//! So: editing a geometry, re-pointing an object at a different
+			//! geometry, or MOVING one resets to the primary object.
+			//! Recolouring it does not, and the next finish shows the next
+			//! object instead.
 			//!
 			//! Dispatcher-thread only, exactly like mBuildPhase / mActiveElement
 			//! beside it: written by FinishElement and read by nothing else.

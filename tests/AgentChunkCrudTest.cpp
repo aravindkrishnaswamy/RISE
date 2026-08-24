@@ -10390,7 +10390,8 @@ static void TestFinishElementObjectPickAndCycle()
 		"\tpart sphere smin 0.02  -0.06 -0.09 0.05  0 0 0  1 1 1  0.03 0 0  0\n"
 		"\tsampling_detail 32\n}\n" ).applied, "S1d the seven-part cat geometry inserts" );
 	Check( sess->InsertChunk( "standard_object\n{\n\tname cat_obj\n\tgeometry cat_geom\n"
-	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the cat object inserts" );
+	                           "\tmaterial mat_diffuse\n\tposition 0 0 0\n}\n" ).applied,
+	       "S1d the cat object inserts (with an authored `position`, so (e) can move it)" );
 	// THE CUSHION: one primitive, deliberately LARGER than the cat.
 	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname cushion_geom\n\tradius 0.22\n}\n" ).applied,
 	       "S1d the one-part cushion geometry inserts" );
@@ -10498,6 +10499,54 @@ static void TestFinishElementObjectPickAndCycle()
 	Check( f6.message.find( "previous finish" ) == std::string::npos,
 	       "S1d and the reset carries no cycling clause, because it did not cycle" );
 
+	// ---- (e) AN APPEARANCE EDIT DOES NOT RESET; A MOVE DOES.  The
+	// fingerprint reads the placing object's FORM params only -- a
+	// standard_object carries `material`, `shader`, `modifier`,
+	// `radiance_*` and `interior_medium` on the SAME chunk as `geometry`
+	// and its transform, so digesting the chunk whole made a material
+	// REASSIGNMENT reset the cycle, contradicting this mechanism's own
+	// rule.  Both directions are pinned, because a rule that only ever
+	// says "no" would pass the first half and be useless.
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen for the appearance edit" );
+	Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname alt_pnt\n\tcolor 0.2 0.7 0.3\n}\n" ).applied,
+	       "S1d the alternate painter inserts" );
+	Check( sess->InsertChunk( "lambertian_material\n{\n\tname alt_mat\n\treflectance alt_pnt\n}\n" ).applied,
+	       "S1d the alternate material inserts" );
+	{
+		Agent::AgentSetPatch patch;
+		patch.target = "cat_obj";
+		patch.kind   = "standard_object";
+		patch.param  = "material";
+		patch.value  = "alt_mat";
+		Check( sess->ProposePatch( patch ).applied,
+		       "S1d PRECONDITION: the placing object's MATERIAL is reassigned (the edit that used to "
+		       "reset the cycle)" );
+	}
+	const Agent::AgentSession::AgentFinishElementResult f7 = sess->FinishElement();
+	Check( f7.isolateObject == "cushion_obj",
+	       "S1d MONEY ASSERTION: reassigning a MATERIAL on the placing object does NOT reset the "
+	       "cycle -- the fingerprint reads that chunk's form params only, so the look advances as it "
+	       "would for any unchanged element (got \"" + f7.isolateObject + "\")" );
+	Check( f7.message.find( "previous finish of this element showed a different one" ) != std::string::npos,
+	       "S1d and it discloses the move, exactly as an unchanged re-finish does" );
+
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen for the move" );
+	{
+		Agent::AgentSetPatch patch;
+		patch.target = "cat_obj";
+		patch.kind   = "standard_object";
+		patch.param  = "position";
+		patch.value  = "0.01 0 0";
+		Check( sess->ProposePatch( patch ).applied, "S1d the placing object is MOVED" );
+	}
+	const Agent::AgentSession::AgentFinishElementResult f8 = sess->FinishElement();
+	Check( f8.isolateObject == "cat_obj",
+	       "S1d MONEY ASSERTION: but MOVING that same object DOES reset to the primary -- placement is "
+	       "form, so the rule is a distinction and not a blanket refusal to reset (got \"" +
+	       f8.isolateObject + "\")" );
+	Check( f8.message.find( "previous finish" ) == std::string::npos,
+	       "S1d and the move's reset carries no cycling clause" );
+
 	// ---- (d) A SINGLE-OBJECT ELEMENT IS UNTOUCHED BY ANY OF THIS.
 	Check( sess->ReopenElement( "terrain" ).ok, "S1d reopen the second element" );
 	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname lone_geom\n\tradius 0.4\n}\n" ).applied,
@@ -10531,6 +10580,96 @@ static void TestFinishElementObjectPickAndCycle()
 			       std::string( "S1d the ranking/cycling disclosure carries no `" ) + b + "`" );
 		}
 	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! 2026-08-24 fix round, P2-2: A TEMPLATING GEOMETRY IS RANKED BY WHAT IT
+//! TEMPLATES.
+//!
+//! `displaced_geometry` and `path_instances_geometry` author almost nothing
+//! themselves -- they name ANOTHER geometry and perturb or repeat it -- so
+//! counting only their own params scored an eight-part sdf wrapped in a
+//! displacement at ZERO, ranking it below a bare two-part sdf.  That is the
+//! same wrong-pick class the parts-first ranking fixes, one reference hop
+//! further out: the object with the real authored anatomy loses the close
+//! look to the object without any.
+//!
+//! Fixture: a 2-part raw sdf object that is also the LARGER of the two (so
+//! neither the part count NOR the size tie-break can hand the win to the
+//! displaced one by accident), against an 8-part sdf behind a
+//! displaced_geometry.
+static void TestFinishElementTemplatedGeometryRank()
+{
+	std::printf( "S1e: a displaced/instanced geometry ranks by the parts it templates...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1e.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1e fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1e the plan files" );
+
+	// THE RAW OBJECT: two authored parts, and the BIGGER of the pair.
+	Check( sess->InsertChunk(
+		"sdf_geometry\n{\n\tname raw_geom\n"
+		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.30 0 0  0\n"
+		"\tpart sphere smin 0.05  0 0.25 0  0 0 0  1 1 1  0.18 0 0  0\n"
+		"\tsampling_detail 32\n}\n" ).applied, "S1e the two-part raw sdf inserts" );
+	Check( sess->InsertChunk( "standard_object\n{\n\tname raw_obj\n\tgeometry raw_geom\n"
+	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1e the raw object inserts" );
+
+	// THE TEMPLATED ONE: eight authored parts, behind a displacement, and
+	// deliberately SMALLER.
+	Check( sess->InsertChunk(
+		"sdf_geometry\n{\n\tname base_geom\n"
+		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.08 0 0  0\n"
+		"\tpart sphere smin 0.02  0 0.09 0  0 0 0  1 1 1  0.05 0 0  0\n"
+		"\tpart sphere smin 0.02  0.04 0.13 0  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart sphere smin 0.02  -0.04 0.13 0  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart sphere smin 0.02  0.05 -0.05 0  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart sphere smin 0.02  -0.05 -0.05 0  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart sphere smin 0.02  0 -0.06 0.05  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tpart sphere smin 0.02  0 -0.06 -0.05  0 0 0  1 1 1  0.02 0 0  0\n"
+		"\tsampling_detail 32\n}\n" ).applied, "S1e the eight-part base sdf inserts" );
+	Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname disp_pnt\n\tcolor 0.5 0.5 0.5\n}\n" ).applied,
+	       "S1e the displacement painter inserts" );
+	const Agent::AgentChunkResult dispIns = sess->InsertChunk(
+		"displaced_geometry\n{\n\tname disp_geom\n\tbase_geometry base_geom\n"
+		"\tdisplacement disp_pnt\n\tdisp_scale 0.01\n\tdetail 8\n}\n" );
+	Check( dispIns.applied, std::string( "S1e the displaced geometry inserts: " ) + dispIns.message );
+	Check( sess->InsertChunk( "standard_object\n{\n\tname disp_obj\n\tgeometry disp_geom\n"
+	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1e the displaced object inserts" );
+
+	// PRECONDITION: the RAW object is the larger one, so the size tie-break
+	// would pick it and only the templated part count can flip this.
+	{
+		auto longestEdge = [&]( const char* obj ) -> double {
+			Agent::AgentRenderParams p;
+			p.isolate          = obj;
+			p.fromAgentSurface = true;
+			p.quality          = Agent::AgentRenderQuality::Draft;
+			p.width            = 32;
+			p.height           = 32;
+			const Agent::AgentRenderResult r = sess->Render( p );
+			return ( r.ok && r.isolateBBoxUsable ) ? r.isolateLongestEdge : -1.0;
+		};
+		const double rawEdge  = longestEdge( "raw_obj" );
+		const double dispEdge = longestEdge( "disp_obj" );
+		Check( rawEdge > 0.0 && dispEdge > 0.0, "S1e both bounding boxes read back" );
+		Check( rawEdge > dispEdge,
+		       "S1e PRECONDITION: the two-part RAW object is the LARGER one (" +
+		       std::to_string( rawEdge ) + " vs " + std::to_string( dispEdge ) +
+		       ") -- so neither the old size rule nor the size tie-break can hand this to the "
+		       "displaced object by accident" );
+	}
+
+	const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+	Check( f.ok && f.isolateCandidates == 2, "S1e both objects are candidates" );
+	Check( f.isolateObject == "disp_obj",
+	       "S1e MONEY ASSERTION: the close look shows the DISPLACED object, because the ranking "
+	       "follows base_geometry to the eight parts it templates -- an authored anatomy does not "
+	       "stop being authored because something wraps it (got \"" + f.isolateObject + "\")" );
 
 	pJob->release();
 	std::remove( tmp.c_str() );
@@ -19236,6 +19375,7 @@ int main()
 	TestBuildProtocolIsolateRenderAndSwitchOff();
 	TestFinishElementIgnoresSharedImageCache();
 	TestFinishElementObjectPickAndCycle();
+	TestFinishElementTemplatedGeometryRank();
 	TestFinishElementIsolateCoverage();
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();

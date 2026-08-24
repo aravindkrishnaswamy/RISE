@@ -1197,12 +1197,71 @@ namespace RISE
 				return n;
 			}
 
-			//! Everything a chunk SAYS, flattened: its role, then every
-			//! parameter name and value in document order.  Not the raw bytes
-			//! -- comments and whitespace are deliberately excluded, so
+			//! Does `pname` on a chunk of role `role` describe the element's
+			//! FORM -- its shape, or where that shape sits -- as opposed to
+			//! its appearance or its render flags?
+			//!
+			//! This decides what RESETS the close look's object cycle (see
+			//! FinishElement), so its bias is deliberate and one-directional:
+			//! a param this returns false for can never reset the cycle, and
+			//! the worst that costs is showing the element's NEXT object
+			//! instead of re-showing the edited one -- still a new look, never
+			//! a stale one.  Getting it wrong the other way is the bug this
+			//! rule exists to prevent: a full-chunk digest made a
+			//! MATERIAL REASSIGNMENT on the placing standard_object reset the
+			//! cycle, which is precisely the "material edit does not reset"
+			//! contract it was supposed to keep.
+			//!
+			//! DESCRIPTOR-DRIVEN where it can be, so it does not drift as
+			//! chunks grow params.  A REFERENCE param is form iff it points at
+			//! a Geometry, another Object, or a Modifier -- what shape this
+			//! is, whose copy it is, what it hangs off, what perturbs its
+			//! surface.  A reference to a Painter / Material / Shader / Medium
+			//! is appearance and never form.
+			//!
+			//! NON-reference params need a named set, because nothing in the
+			//! descriptor distinguishes `position` from `radiance_scale`: it is
+			//! the shared transform/instancing vocabulary plus csg's
+			//! `operation`.  That vocabulary is stable across the tree, but it
+			//! IS the maintenance point -- a future placement param has to be
+			//! added here or a move of that kind will not reset the cycle.
+			bool ObjectParamIsFormBearing_( const std::string& role, const std::string& pname )
+			{
+				const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
+				if( d ) {
+					for( std::size_t i = 0; i < d->parameters.size(); ++i ) {
+						if( d->parameters[i].name != pname ) continue;
+						if( d->parameters[i].kind == ValueKind::Reference ) {
+							const std::vector<ChunkCategory>& cats = d->parameters[i].referenceCategories;
+							for( std::size_t c = 0; c < cats.size(); ++c ) {
+								if( cats[c] == ChunkCategory::Geometry ||
+								    cats[c] == ChunkCategory::Object   ||
+								    cats[c] == ChunkCategory::Modifier ) return true;
+							}
+							return false;   // an appearance reference: material / shader / painter / medium
+						}
+						break;   // declared, and not a reference -- fall through to the named set
+					}
+				}
+				return pname == "position"    || pname == "orientation" || pname == "quaternion" ||
+				       pname == "matrix"      || pname == "scale"       || pname == "mirror"     ||
+				       pname == "count_u"     || pname == "count_v"     || pname == "operation";
+			}
+
+			//! Everything a chunk SAYS, flattened: its role, then parameter
+			//! names and values in document order.  Not the raw bytes --
+			//! comments and whitespace are deliberately excluded, so
 			//! reformatting a chunk is not a change and re-authoring the same
 			//! part list with different indentation is not either.
-			std::string ChunkSemanticText_( const RISE::Cst::NodeRef& chunkItem )
+			//!
+			//! `formOnly` (default false = every param) restricts the flatten
+			//! to the params ObjectParamIsFormBearing_ accepts.  Used for the
+			//! close look's cycle fingerprint, where an appearance edit must
+			//! NOT read as a change; see that predicate for the rule and its
+			//! bias.  A GEOMETRY chunk is digested whole either way -- every
+			//! param on one is about shape, and there is no appearance half to
+			//! separate out.
+			std::string ChunkSemanticText_( const RISE::Cst::NodeRef& chunkItem, bool formOnly = false )
 			{
 				std::string out;
 				if( !chunkItem ) return out;
@@ -1210,11 +1269,18 @@ namespace RISE
 				out += '{';
 				for( const NodeRef& kid : chunkItem->kids ) {
 					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string pname, pvals;
 					for( const NodeRef& tk : kid->kids ) {
 						if( !tk || tk->kind != NodeKind::Token ) continue;
-						if( tk->role == "pname" )       { out += ';'; out += tk->text; out += '='; }
-						else if( tk->role == "pvalue" ) { out += ' '; out += tk->text; }
+						if( tk->role == "pname" )       pname = tk->text;
+						else if( tk->role == "pvalue" ) { pvals += ' '; pvals += tk->text; }
 					}
+					if( pname.empty() ) continue;
+					if( formOnly && !ObjectParamIsFormBearing_( chunkItem->role, pname ) ) continue;
+					out += ';';
+					out += pname;
+					out += '=';
+					out += pvals;
 				}
 				out += '}';
 				return out;
@@ -1273,15 +1339,38 @@ namespace RISE
 			//! did the author put the most work into", because that is the one
 			//! whose detail is most likely to have melted -- and a 40k-triangle
 			//! imported rock is not authored detail in that sense.
-			unsigned int GeometryAuthoredPartCount_( const RISE::Cst::NodeRef& geomItem )
+			//! AND IT FOLLOWS A TEMPLATING GEOMETRY TO WHAT IT TEMPLATES
+			//! (fix round).  `displaced_geometry` and `path_instances_geometry`
+			//! author almost nothing themselves -- they name ANOTHER geometry
+			//! and repeat or perturb it -- so counting only their own params
+			//! scored an eight-part sdf wrapped in a displacement at ZERO and
+			//! ranked it below a bare two-part sdf.  That is exactly the
+			//! wrong-pick class this ranking exists to fix, one hop further
+			//! out.
+			//!
+			//! `depth` bounds the chain because these compose: a
+			//! displaced_geometry's base may itself be displaced, and a
+			//! model-authored document is the input here.  A mesh or a
+			//! primitive at the end of the chain still scores 0 -- the wrapper
+			//! adds detail to what is under it, and if nothing authored is
+			//! under it there is nothing authored to find.
+			unsigned int GeometryAuthoredPartCount_( const RISE::Cst::Document& doc,
+			                                         const RISE::Cst::NodeRef& geomItem,
+			                                         int depth = 6 )
 			{
-				if( !geomItem ) return 0;
+				if( !geomItem || depth <= 0 ) return 0;
 				const std::string& role = geomItem->role;
 				if( role == "sdf_geometry" )      return ChunkParamCount_( geomItem, "part" );
 				if( role == "skeleton_geometry" ) return ChunkParamCount_( geomItem, "joint" );
 				if( role == "sweep_geometry" )
 					return ChunkParamCount_( geomItem, "point" ) +
 					       ChunkParamCount_( geomItem, "profile_point" );
+				if( role == "displaced_geometry" || role == "path_instances_geometry" ) {
+					const std::string inner = ChunkParamString_(
+						geomItem, role == "displaced_geometry" ? "base_geometry" : "geometry" );
+					return GeometryAuthoredPartCount_(
+						doc, FindChunkByNameInCategory_( doc, inner, ChunkCategory::Geometry ), depth - 1 );
+				}
 				return 0;
 			}
 
@@ -1305,7 +1394,7 @@ namespace RISE
 				const std::string geomName = ChunkParamString_( obj, "geometry" );
 				if( geomName.empty() ) return 0;
 				return GeometryAuthoredPartCount_(
-					FindChunkByNameInCategory_( doc, geomName, ChunkCategory::Geometry ) );
+					doc, FindChunkByNameInCategory_( doc, geomName, ChunkCategory::Geometry ) );
 			}
 
 			//! 87 step 5: the four chunk roles that PRODUCE a world object AND
@@ -16231,8 +16320,18 @@ namespace RISE
 						if( !d ) continue;
 						if( d->category != ChunkCategory::Object &&
 						    d->category != ChunkCategory::Geometry ) continue;
+						// AN OBJECT CHUNK CONTRIBUTES ONLY ITS FORM-BEARING
+						// PARAMS (fix round).  standard_object carries
+						// `material` / `shader` / `modifier` / `radiance_*` /
+						// `interior_medium` on the SAME chunk as `geometry` and
+						// the transform, so digesting it whole made a material
+						// REASSIGNMENT reset the cycle -- contradicting this
+						// mechanism's own rule that an appearance edit does not.
+						// A GEOMETRY chunk is still digested whole: every param
+						// on one is about shape.
 						formText += ChunkSemanticText_(
-							FindChunkByNameInCategory_( *doc, out.chunks[i], d->category ) );
+							FindChunkByNameInCategory_( *doc, out.chunks[i], d->category ),
+							/*formOnly*/ d->category == ChunkCategory::Object );
 					}
 				}
 				const std::string formDigest = Fnv1a64Hex_( formText );
