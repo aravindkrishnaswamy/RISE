@@ -3224,6 +3224,83 @@ namespace RISE
 			//! few plastics with a textured hero).
 			static const double kCoverageFraction = 0.5;
 
+			//! The blend-scale law (fix 2, 2026-08-24): db9a88a9's own
+			//! guidance sentence on `sdf_geometry`'s `part` descriptor --
+			//! "a k comparable to the smallest part in the join DISSOLVES
+			//! that part into its neighbour... wants k at about a third of
+			//! that small part's radius or less" -- mechanized VERBATIM at
+			//! this same fraction, not a separately-picked number, so the
+			//! computable check and the prose it teaches can never disagree
+			//! about where the line is.
+			static const double kBlendScaleFraction = 1.0 / 3.0;
+
+			//! The blend-scale law's per-primitive "characteristic
+			//! dimension" -- the smallest local extent that a k comparable
+			//! to it would dissolve.  Reuses SDFGeometry::SDFPrim's OWN
+			//! documented per-type meaning of a/b/c (SDFGeometry.h's enum
+			//! comments), never re-derived: radius for sphere/capsule/
+			//! superellipsoid (radius-uniform by construction, its own doc
+			//! comment); min(half-extents) for box/roundbox (the "half-
+			//! thickness" a plate's thinnest axis needs); min(radius,half-
+			//! height) for cylinder (whichever is smaller -- a thin disc or
+			//! a thin rod); the TUBE radius (b) for torus (the guidance's
+			//! own vocabulary -- a torus's "small part" is its cross-
+			//! section, not its ring); min(base radius, TIP radius) for
+			//! roundcone (the measured apothecary-cat defect: a 0.004 tip
+			//! against a 0.012 k).  Multiplied by the part's own precomputed
+			//! `minScale` -- the SAME conservative per-axis-scale factor
+			//! `partEval`'s Lipschitz bound already applies (Part::minScale's
+			//! own doc comment) -- so an anisotropically-squashed part's
+			//! TRUE local size is what gets compared, not its unscaled a/b/c.
+			Scalar SDFPartCharacteristicDim_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				using SDFGeometry = RISE::Implementation::SDFGeometry;
+				Scalar dim = 0.0;
+				switch( pt.type ) {
+					case SDFGeometry::ePrimSphere:
+					case SDFGeometry::ePrimCapsule:
+					case SDFGeometry::ePrimSuperellipsoid:
+						dim = pt.a;
+						break;
+					case SDFGeometry::ePrimBox:
+					case SDFGeometry::ePrimRoundBox:
+						dim = std::min( pt.a, std::min( pt.b, pt.c ) );
+						break;
+					case SDFGeometry::ePrimCylinder:
+						dim = std::min( pt.a, pt.b );
+						break;
+					case SDFGeometry::ePrimTorus:
+						dim = pt.b;   // tube radius -- the ring's own cross-section, not the major radius
+						break;
+					case SDFGeometry::ePrimRoundCone:
+						dim = std::min( pt.a, pt.b );   // base radius vs TIP radius, whichever smaller
+						break;
+					default:
+						return 0.0;   // unrecognized (future primitive): skip rather than guess
+				}
+				return dim * pt.minScale;
+			}
+
+			//! The part-grammar's own primitive keyword, for the clause's
+			//! "part N (<kind>)" naming -- the SAME vocabulary
+			//! SDFGeometry::ParsePartLines accepts, so a reader can search
+			//! the scene text for the exact word this note names.
+			const char* SDFPrimName_( int type )
+			{
+				using SDFGeometry = RISE::Implementation::SDFGeometry;
+				switch( type ) {
+					case SDFGeometry::ePrimSphere:        return "sphere";
+					case SDFGeometry::ePrimBox:           return "box";
+					case SDFGeometry::ePrimRoundBox:      return "roundbox";
+					case SDFGeometry::ePrimCylinder:      return "cylinder";
+					case SDFGeometry::ePrimTorus:         return "torus";
+					case SDFGeometry::ePrimCapsule:       return "capsule";
+					case SDFGeometry::ePrimRoundCone:     return "roundcone";
+					case SDFGeometry::ePrimSuperellipsoid:return "superellipsoid";
+					default:                              return "part";
+				}
+			}
+
 			//! Materials-realism item 1: one (objectCount, flat) sample for
 			//! CoverageSatisfied_ below -- shared shape for both the
 			//! roughness and colour pipes so they cannot each grow a
@@ -3597,6 +3674,7 @@ namespace RISE
 				bool conditionG = false;   //!< doc 91: a Material chunk zero standard_objects reference
 				bool conditionH = false;   //!< doc 91: every colour-carrying material slot is a flat constant
 				bool conditionI = false;   //!< materials-realism item 4: briefed-vs-bound (glass/liquid-NAMED but opaque-bound) mismatch
+				bool conditionJ = false;   //!< the blend-scale law (db9a88a9): an sdf_geometry smin joint whose k dissolves the part it joins
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -3700,6 +3778,15 @@ namespace RISE
 				//! order.  Condition I reads it through !empty(); the clause
 				//! formatter reads it bounded.
 				std::vector<std::string> mismatchedObjectNames;
+
+				//! The blend-scale law (db9a88a9): every sdf_geometry `smin`
+				//! joint whose blend radius k exceeds ~1/3 of the joined
+				//! part's own characteristic dimension, one pre-formatted
+				//! "`<geo>` part <N> (<kind>): k=<k> > max ~<k/3 bound>"
+				//! entry per offender, in document order.  Condition J reads
+				//! it through !empty(); the clause formatter reads it
+				//! bounded (same FormatBoundedNameList_ convention).
+				std::vector<std::string> blendScaleOffenders;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -4275,6 +4362,50 @@ namespace RISE
 					    role == "skin_geometry" || role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
 						++c.geometryCensus[role];
+						// Fix 2 (2026-08-24): the blend-scale law, scoped to
+						// literal `sdf_geometry` chunks only -- `skeleton_geometry`
+						// is a DIFFERENT role at this CST-item level (it only
+						// expands into an sdf_geometry at DERIVE time, per this
+						// very branch's own comment above), so it is excluded
+						// for free by this `role ==` check, exactly as db9a88a9
+						// says it should be (its blend self-scales by the joint
+						// radius; a raw smin k does not).
+						if( role == "sdf_geometry" ) {
+							const std::string geoName = ChunkParamString_( item, "name" );
+							std::string joined;
+							for( const std::string& line : ChunkParamOccurrences_( item, "part" ) ) {
+								joined += line;
+								joined += "\n";
+							}
+							if( !joined.empty() ) {
+								std::vector<RISE::Implementation::SDFGeometry::Part> parts;
+								// Malformed part text is NOT this scan's problem to
+								// diagnose (the real chunk parser already refuses a
+								// hard-malformed document at derive time) -- silently
+								// skip rather than let a bad part list break the
+								// whole design-note scan.  ParsePartLines logs its
+								// own diagnostic on failure; this scan doesn't
+								// duplicate it.
+								if( RISE::Implementation::SDFGeometry::ParsePartLines(
+										joined.c_str(), "<design-note scan>", parts ) ) {
+									for( std::size_t pi = 0; pi < parts.size(); ++pi ) {
+										const RISE::Implementation::SDFGeometry::Part& pt = parts[pi];
+										if( pt.op != RISE::Implementation::SDFGeometry::eOpSmin ) continue;
+										const Scalar dim = SDFPartCharacteristicDim_( pt );
+										if( dim <= 0.0 ) continue;
+										const Scalar maxK = dim * kBlendScaleFraction;
+										if( pt.k <= maxK ) continue;
+										char buf[256];
+										std::snprintf( buf, sizeof( buf ),
+											"%s part %u (%s): k=%g > max ~%g",
+											( geoName.empty() ? "noname" : geoName.c_str() ),
+											static_cast<unsigned int>( pi + 1 ), SDFPrimName_( pt.type ),
+											static_cast<double>( pt.k ), static_cast<double>( maxK ) );
+										c.blendScaleOffenders.push_back( buf );
+									}
+								}
+							}
+						}
 						continue;
 					}
 
@@ -4559,6 +4690,12 @@ namespace RISE
 					}
 				}
 				c.conditionI = !c.mismatchedObjectNames.empty();
+				// Fix 2: populated inline during the main walk above (the
+				// sdf_geometry branch) -- fires on ANY offending smin joint,
+				// no volume gate (an unrecognizable-forever creature costs
+				// nothing to flag once, unlike the "many similar small
+				// nits" conditions C/D/E which need one to avoid noise).
+				c.conditionJ = !c.blendScaleOffenders.empty();
 
 				// (88 S5) Condition D's resolution pass -- ONE predicate, read by
 				// the note AND by AgentSession::VaryMaterial.
@@ -4998,6 +5135,27 @@ namespace RISE
 					"coincidental), this is fine, ignore it.";
 			}
 
+			//! Fix 2's whole clause, SHARED by the note builder and the
+			//! diagnostic builder.  Each bounded-list entry is already fully
+			//! formatted ("`<geo>` part <N> (<kind>): k=<k> > max ~<bound>"
+			//! -- see the struct field's own doc) -- this just states the
+			//! law once and points at the descriptor sentence it mechanizes,
+			//! deliberately NOT re-explaining the per-primitive dimension
+			//! rule inline (that lives in the code comment; the user-facing
+			//! text stays short).
+			std::string FormatSDFBlendScaleClause_( const std::vector<std::string>& offenders )
+			{
+				const bool plural = offenders.size() != 1;
+				return std::to_string( offenders.size() ) + " smin joint" +
+					( plural ? std::string( "s" ) : std::string() ) + " (" + FormatBoundedNameList_( offenders ) +
+					") " + ( plural ? std::string( "blend" ) : std::string( "blends" ) ) +
+					" wider than about a third of the part being joined -- a blend radius (k) comparable "
+					"to a part's own size dissolves it into its neighbour (see sdf_geometry's `part` "
+					"parameter description for the full guidance). Try k at roughly a third of that "
+					"part's radius or half-thickness, or less. skeleton_geometry is exempt -- its blend "
+					"self-scales by the joint radius.";
+			}
+
 			//! RETURNS empty iff NO condition fires (the "omit the note
 			//! entirely when clean" convention -- see AgentSkillResult::note
 			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
@@ -5013,7 +5171,7 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI ) return std::string();
+				    !c.conditionI && !c.conditionJ ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -5083,6 +5241,9 @@ namespace RISE
 				if( c.conditionI ) {
 					note += " " + FormatMaterialKindMismatchClause_( c.mismatchedObjectNames );
 				}
+				if( c.conditionJ ) {
+					note += " " + FormatSDFBlendScaleClause_( c.blendScaleOffenders );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -5119,7 +5280,7 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI ) return;
+				    !c.conditionI && !c.conditionJ ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -5242,6 +5403,17 @@ namespace RISE
 					// this is fine, ignore it" escape, the condition C/D/E/F/G
 					// precedent of not carrying two.
 					d.message  = FormatMaterialKindMismatchClause_( c.mismatchedObjectNames );
+					out.push_back( d );
+				}
+				if( c.conditionJ ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE;
+					// SHARED formatter -- cannot drift from the note's J
+					// clause.  No kSelfDisarm: this is a geometric-scale
+					// mechanics fact, not a styling judgement -- there is no
+					// "deliberately simple" reading of a dissolved ear.
+					d.message  = FormatSDFBlendScaleClause_( c.blendScaleOffenders );
 					out.push_back( d );
 				}
 			}

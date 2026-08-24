@@ -1850,6 +1850,112 @@ static void RunMaterialsRealismScanTest()
 	}
 }
 
+//----------------------------------------------------------------------
+// Materials-realism FIX 2 (2026-08-24): DESIGN_SDF_BLEND_SCALE, the
+// blend-scale law mechanized (db9a88a9's `part` guidance: a smin k
+// comparable to the smallest joined part's own dimension dissolves it --
+// want k at about a third of that dimension or less).  Fixture numbers
+// below reproduce the apothecary-cat ear that motivated the fix: a
+// roundcone tip radius of 0.004 joined at k=0.012 (3x the tip radius).
+//----------------------------------------------------------------------
+static void RunSDFBlendScaleScanTest()
+{
+	std::printf( "[design-note] materials-realism FIX 2: DESIGN_SDF_BLEND_SCALE\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	{
+		// RED-PROVE: the apothecary-cat ear itself -- a roundcone tip
+		// radius of 0.004 (a=0.02 base, b=0.004 tip, c=0.05 height; the
+		// characteristic dimension is min(a,b) = the tip) joined via smin
+		// at k=0.012, exactly 3x the tip radius -- must fire, naming the
+		// chunk, the part index, the primitive kind, k, and the max bound.
+		const std::string docCatEar =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname apothecary_cat_head\n"
+			"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  0.05 0 0  0\n"
+			"\tpart\troundcone smin 0.012  0 0.05 0  0 0 0  1 1 1  0.02 0.004 0.05  0\n"
+			"}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docCatEar );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_SDF_BLEND_SCALE" );
+		Check( d != nullptr,
+		       "RED-PROVE: apothecary_cat_head's ear (roundcone tip radius 0.004, k=0.012, 3x ratio) "
+		       "fires DESIGN_SDF_BLEND_SCALE" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "apothecary_cat_head" ) != std::string::npos,
+			       "...naming the sdf_geometry chunk" );
+			Check( d->message.find( "part 2" ) != std::string::npos, "...naming the offending part index" );
+			Check( d->message.find( "roundcone" ) != std::string::npos, "...naming the primitive kind" );
+			Check( d->message.find( "k=0.012" ) != std::string::npos, "...reporting the authored k" );
+			Check( d->message.find( "smin joint" ) != std::string::npos &&
+			       d->message.find( "wider than about a third" ) != std::string::npos,
+			       "...stating the blend-scale law" );
+		}
+	}
+	{
+		// GREEN-PROVE: the SAME ear geometry, but k dropped to 0.001 --
+		// 1/4 of the 0.004 tip radius, comfortably under the ~1/3 bound --
+		// must stay silent.
+		const std::string docCompliantEar =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname compliant_cat_head\n"
+			"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  0.05 0 0  0\n"
+			"\tpart\troundcone smin 0.001  0 0.05 0  0 0 0  1 1 1  0.02 0.004 0.05  0\n"
+			"}\n";
+		Check( !hasCode( AgentSession::ValidateText( docCompliantEar ), "DESIGN_SDF_BLEND_SCALE" ),
+		       "GREEN-PROVE: the same ear at k=0.001 (~1/4 of the 0.004 tip radius, under the ~1/3 "
+		       "bound) stays silent" );
+	}
+	{
+		// GREEN-PROVE (exclusion): skeleton_geometry is a DIFFERENT CST
+		// role at this scan's level (it only expands into an sdf_geometry
+		// at derive time) -- a joint with an equivalently tiny radius must
+		// not fire, because this scan never looks inside a skeleton_geometry
+		// chunk at all.
+		const std::string docSkeleton =
+			"RISE ASCII SCENE 7\n"
+			"skeleton_geometry\n{\n\tname apothecary_cat_skel\n"
+			"\tjoint\thead none 0 0 0 0.05\n"
+			"\tjoint\tear head 0 0.05 0 0.004\n"
+			"}\n";
+		Check( !hasCode( AgentSession::ValidateText( docSkeleton ), "DESIGN_SDF_BLEND_SCALE" ),
+		       "GREEN-PROVE (exclusion): a skeleton_geometry chunk with an equivalently tiny joint "
+		       "radius stays silent -- skeleton_geometry self-scales its own blends and is excluded" );
+	}
+	{
+		// Bounded list: 5 offending smin joints on one sdf_geometry chunk
+		// -- message shows the first 3 (FormatBoundedNameList_'s cap) plus
+		// "and 2 more".
+		const std::string docManyBlobs =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname manyblobs\n"
+			"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  1 0 0  0\n"
+			"\tpart\tsphere smin 0.5  1 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
+			"\tpart\tsphere smin 0.5  2 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
+			"\tpart\tsphere smin 0.5  3 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
+			"\tpart\tsphere smin 0.5  4 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
+			"\tpart\tsphere smin 0.5  5 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
+			"}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docManyBlobs );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_SDF_BLEND_SCALE" );
+		Check( d != nullptr, "BOUNDED LIST: 5 offending smin joints on one chunk fires" );
+		if( d ) {
+			Check( d->message.find( "5 smin joints" ) != std::string::npos,
+			       "...reporting the true offender count (5)" );
+			Check( d->message.find( "and 2 more" ) != std::string::npos,
+			       "...bounding the named list to 3, stating the truncation (2 more)" );
+		}
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -2499,6 +2605,7 @@ int main()
 	RunValidateDesignDiagnosticsCarrierTest();
 	RunAdoptionPolishScanTest();
 	RunMaterialsRealismScanTest();
+	RunSDFBlendScaleScanTest();
 	RunUnboundMaterialAndFlatAlbedoScanTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );

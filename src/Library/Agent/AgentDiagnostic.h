@@ -267,6 +267,29 @@ namespace RISE
 			//! same bounded-list formatting and same
 			//! ComputeDesignNoteConditionsFromDoc_ scan as its siblings.
 			static const char* const DESIGN_MATERIAL_KIND_MISMATCH = "DESIGN_MATERIAL_KIND_MISMATCH";
+			//! Fix 2 (2026-08-24), THE BLEND-SCALE LAW mechanized: db9a88a9
+			//! added one sentence to sdf_geometry's `part` descriptor --
+			//! "k IS A WORLD-UNIT RADIUS... a k comparable to the smallest
+			//! part in the join DISSOLVES that part into its neighbour...
+			//! wants k at about a third of that small part's radius or
+			//! less" -- and models don't do the arithmetic.  Fires on ANY
+			//! `smin` joint (union/subtract/intersect are NOT this law's
+			//! concern) whose blend radius k exceeds ~1/3
+			//! (kBlendScaleFraction, the SAME fraction the prose states) of
+			//! the joined part's own characteristic dimension
+			//! (SDFPartCharacteristicDim_, AgentSession.cpp -- radius for
+			//! sphere/capsule/superellipsoid, min(half-extents) for box/
+			//! roundbox, min(radius,half-height) for cylinder, tube radius
+			//! for torus, min(base,tip radius) for roundcone; scaled by the
+			//! part's own precomputed minScale).  Scoped to literal
+			//! `sdf_geometry` chunks -- `skeleton_geometry` is excluded
+			//! because it is a DIFFERENT chunk role at this scan's level
+			//! (it only expands into an sdf_geometry at derive time) and its
+			//! blend self-scales by the joint radius by construction
+			//! (db9a88a9's own stated contrast). Severity::Info, self-
+			//! disarming, same bounded-list formatting as its siblings, no
+			//! volume gate (fires on the first offending joint).
+			static const char* const DESIGN_SDF_BLEND_SCALE = "DESIGN_SDF_BLEND_SCALE";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a
