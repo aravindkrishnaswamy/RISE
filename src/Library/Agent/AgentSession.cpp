@@ -3107,27 +3107,31 @@ namespace RISE
 			//! Materials-realism item 1: hero-weighted coverage verdict,
 			//! shared by conditions D (roughness) and H (colour) so the two
 			//! pipes cannot silently disagree about what "enough coverage"
-			//! means.  Prefers weighting by referring-object count over a
-			//! raw fraction (the brief's own instruction): if ANY sample is
-			//! a HERO (kHeroObjectCount+ objects), coverage is satisfied iff
-			//! EVERY hero varies -- a still-flat hero (the material doing
-			//! most of the visual work) keeps the note alive even if every
-			//! incidental one-off prop already varies.  Only when NO hero
-			//! exists (every material in the document is a one-off) does
-			//! this fall back to the plain kCoverageFraction over the whole
-			//! set.  An EMPTY input is vacuously satisfied (never fires) --
-			//! the caller's own `eligibleCount >= kConstantMicrosurfaceGate`
-			//! gate already keeps this from mattering in practice.
+			//! means.
+			//!
+			//! Review-round P2-1 (2026-08-24): the ORIGINAL shape ("every
+			//! hero varies" ALONE is sufficient) re-opened the exact bug
+			//! item 1 was built to close -- one varying hero + fifteen flat
+			//! one-off props went silent, because the hero rule never looked
+			//! at the non-heroes at all.  The hero rule is now NECESSARY but
+			//! not SUFFICIENT: satisfied = (every hero varies, vacuously true
+			//! when there is no hero) AND (the plain kCoverageFraction ALSO
+			//! holds over the WHOLE eligible set, heroes included).  This
+			//! keeps both spirits at once -- a still-flat hero keeps the
+			//! note alive on its own (the fraction check never even runs),
+			//! and a hero-only fix with the rest of the document still
+			//! majority-flat ALSO keeps it alive (a 1-of-16 fraction fails
+			//! the >=50% bar even though the one hero varies).  An EMPTY
+			//! input is vacuously satisfied (never fires) -- the caller's
+			//! own `eligibleCount >= kConstantMicrosurfaceGate` gate already
+			//! keeps this from mattering in practice.
 			bool CoverageSatisfied_( const std::vector<MaterialCoverageSample_>& samples )
 			{
 				if( samples.empty() ) return true;
-				bool anyHero = false;
 				for( const MaterialCoverageSample_& s : samples ) {
 					if( s.objectCount < kHeroObjectCount ) continue;
-					anyHero = true;
-					if( s.flat ) return false;   // one flat hero is enough to keep the note alive
+					if( s.flat ) return false;   // one flat hero is enough to keep the note alive, on its own
 				}
-				if( anyHero ) return true;   // every hero varies, no incidental-prop veto
 				int varied = 0;
 				for( const MaterialCoverageSample_& s : samples ) if( !s.flat ) ++varied;
 				return ( static_cast<double>( varied ) / static_cast<double>( samples.size() ) ) >= kCoverageFraction;
@@ -3322,12 +3326,51 @@ namespace RISE
 			//! EXCLUDED (never flagged by condition I) when:
 			//!
 			//!   (a) it declares a TRANSMISSION/SCATTERING-class param --
-			//!       `tau`, `scattering`, `absorption`, or `refractance`
+			//!       `tau`, `scattering`, `absorption`, `refractance`,
+			//!       `subdermal_layer`, `epidermis_thickness`, or `sca`
 			//!       (audited against ChunkParserRegistry.cpp 2026-08-24:
 			//!       covers dielectric_material, subsurfacescattering_material,
 			//!       randomwalk_sss_material, translucent_material,
-			//!       polished_material, perfectrefractor_material -- every
-			//!       kind that can actually transmit light through itself).
+			//!       polished_material, perfectrefractor_material, PLUS the
+			//!       three layered/parametric SKIN-and-tissue kinds review-
+			//!       round P2-3 added -- biospec_skin_material (its own
+			//!       `subdermal_layer` Bool literally means "model the
+			//!       subsurface fat layer"), donner_jensen_skin_bssrdf_material
+			//!       (`epidermis_thickness`, one of its layer-thickness
+			//!       params -- a BSSRDF has no meaning without a subsurface
+			//!       to transport through), generic_human_tissue_material
+			//!       (`sca`, its scattering-amplitude Scalar-pipe param).
+			//!       NOT "every kind that can actually transmit light" --
+			//!       an EARLIER version of this comment overclaimed that;
+			//!       correct only insofar as the marker set below has been
+			//!       checked against the descriptors that exist today.  A
+			//!       future material kind that transmits via some OTHER
+			//!       param spelling still needs its own marker added here.
+			//!
+			//!       HONEST NOTE on which of the three is actually LOAD-
+			//!       BEARING today (found while red-proving P2-3): only
+			//!       `sca` changes anything.  biospec_skin_material's and
+			//!       donner_jensen_skin_bssrdf_material's Reference params
+			//!       (including `subdermal_layer`'s siblings and
+			//!       `epidermis_thickness`) were never individually pipe-
+			//!       audited -- every one sits at the default
+			//!       `ParameterSemantics.pipe == Unspecified` -- so those
+			//!       two kinds have NO entry in ScalarMaterialSlotsByKind_ /
+			//!       ColorMaterialSlotsByKind_ at all and never reach
+			//!       `pendingMaterials`, hence never reach THIS
+			//!       classification either way; they are excluded today by
+			//!       that upstream gap, not by these two markers.
+			//!       `subdermal_layer`/`epidermis_thickness` are kept here
+			//!       defensively -- the correct choice already made for the
+			//!       day someone pipe-audits those two kinds' descriptors --
+			//!       but removing them right now would change nothing
+			//!       observable, which is why their own test pins
+			//!       (AgentReadValidateTest.cpp's ITEM 4 GREEN-PROVE, P2-3)
+			//!       currently exercise the pipe-Unspecified path, not this
+			//!       marker set. `generic_human_tissue_material`'s `sca` IS
+			//!       load-bearing (it carries `semantics.pipe ==
+			//!       ParameterPipe::Scalar`, audited), and is the one whose
+			//!       GREEN-PROVE test red-proves this marker set for real.
 			//!   (b) it declares `exitance` -- an EMITTER
 			//!       (lambertian_luminaire_material, phong_luminaire_material).
 			//!       CALIBRATION EVIDENCE (full in-tree scene corpus scan,
@@ -3371,7 +3414,8 @@ namespace RISE
 				static const std::set<std::string> table = [] {
 					std::set<std::string> out;
 					static const std::set<std::string> kTransmissionMarkers =
-						{ "tau", "scattering", "absorption", "refractance" };
+						{ "tau", "scattering", "absorption", "refractance",
+						  "subdermal_layer", "epidermis_thickness", "sca" };
 					static const std::set<std::string> kWrapperOrFileDrivenKinds =
 						{ "composite_material", "datadriven_material" };
 					for( const String& kw : AllKeywordsForCategory( ChunkCategory::Material ) ) {
@@ -4331,6 +4375,26 @@ namespace RISE
 					static const char* const kTriggerWords[] = {
 						"glass", "crystal", "translucent", "membrane", "jelly", "ice", "liquid", "water", "gel"
 					};
+					// Review-round P3-a (2026-08-24): PLAIN substring match,
+					// deliberately, not word-boundary-guarded.  KNOWN, NOT
+					// FIXED risk: a name like "waterfall", "iceberg", or
+					// "gelato" would false-positive (none appear in the
+					// in-tree corpus this condition was calibrated against --
+					// see OpaqueReflectionOnlyMaterialKinds_'s own corpus-scan
+					// doc, which is scoped to that corpus and does not cover
+					// this).  A naive word-boundary guard (require a non-
+					// alnum character, or string start/end, on both sides of
+					// the match) was considered and REJECTED: it would ALSO
+					// reject "jellyfish_bell" -- "jelly" is followed
+					// immediately by the letters "fish", no boundary -- which
+					// is condition I's own calibrated RED-PROVE case
+					// (AgentReadValidateTest.cpp's ITEM 4 RED-PROVE). Fixing
+					// the false-positive class without breaking the
+					// jellyfish/waterfall distinction needs its own
+					// calibration pass (a real English-compound-word list, or
+					// per-trigger-word boundary rules), not a blanket guard --
+					// out of scope for this fix round.  Documented honestly
+					// rather than forced.
 					auto containsTrigger = []( const std::string& s ) {
 						std::string lower = s;
 						for( char& ch : lower ) ch = static_cast<char>( std::tolower( static_cast<unsigned char>( ch ) ) );
@@ -4619,16 +4683,25 @@ namespace RISE
 			//! does NOT spell out the rewrite for hand-authoring.
 			//!
 			//! Materials-realism item 1 (2026-08-24): COVERAGE, not a single
-			//! bare count -- "N of M materials vary" plus a bounded (most-
-			//! referenced-first) list of the flattest offenders, replacing the
-			//! old binary disarm's silent "3+ materials, all constant" claim
-			//! (which stayed TRUE, and kept naming the SAME single material,
-			//! long after a `vary_material` call had fixed it and 16 others
-			//! remained flat -- the measured underwater-session miss this
-			//! item exists to close).  Materials-realism item 2: also names
-			//! the `all:true` batch form, so the model learns the one-call
-			//! fix for a "many still flat" report instead of calling this
-			//! verb once per material.
+			//! bare count -- "N of M materials [are] not flat" plus a bounded
+			//! (most-referenced-first) list of the flattest offenders,
+			//! replacing the old binary disarm's silent "3+ materials, all
+			//! constant" claim (which stayed TRUE, and kept naming the SAME
+			//! single material, long after a `vary_material` call had fixed
+			//! it and 16 others remained flat -- the measured underwater-
+			//! session miss this item exists to close).  Materials-realism
+			//! item 2: also names the `all:true` batch form, so the model
+			//! learns the one-call fix for a "many still flat" report
+			//! instead of calling this verb once per material.
+			//!
+			//! Review-round P3-d: `variedCount` is `eligibleCount -
+			//! constantMicrosurfaceCount`, i.e. "not PROVEN flat" -- it also
+			//! counts a material whose binding is OPAQUE (unresolved
+			//! reference, a per-channel triple, a Sellmeier curve -- classified
+			//! ambiguously, never proven Varying) toward the count.  The
+			//! clause text below therefore says "are not a flat, constant
+			//! roughness", never "vary" -- the weaker claim this predicate can
+			//! actually make.
 			std::string FormatConstantMicrosurfaceClause_( int variedCount, int eligibleCount,
 			                                               const std::vector<std::string>& flattestNames,
 			                                               const std::string& materialName,
@@ -4638,7 +4711,7 @@ namespace RISE
 				const std::string fieldKind = MicrosurfaceKindUsesColourPipe_( materialKind )
 					? "expression_painter { expr ... }" : "scalar_painter { expression ... }";
 				return std::to_string( variedCount ) + " of " + std::to_string( eligibleCount ) +
-					" materials have spatially-varying roughness -- the rest (" +
+					" materials are not a flat, constant roughness -- the rest (" +
 					FormatBoundedNameList_( flattestNames ) + ") still carry a bare number, the single most "
 					"recognisable untextured-render signature. `vary_material` fixes the most "
 					"prominent one for you: call it with NO ARGUMENTS and it takes `" + materialName +
@@ -4757,11 +4830,17 @@ namespace RISE
 			//! (measured too loose: the underwater-session colour note fired
 			//! unchanged to the end of the run and was ignorable because it
 			//! never reported how much of the document was still flat).
+			//!
+			//! Review-round P3-d: same honesty fix as
+			//! FormatConstantMicrosurfaceClause_ -- `variedCount` also counts
+			//! an OPAQUE (unresolved reference, non-numeric-constant) colour
+			//! slot as "not flat", which is not the same claim as "varies".
+			//! The text says "are not a flat colour", never "vary".
 			std::string FormatFlatAlbedoClause_( int variedCount, int eligibleCount,
 			                                     const std::vector<std::string>& flattestNames )
 			{
 				return std::to_string( variedCount ) + " of " + std::to_string( eligibleCount ) +
-					" materials have spatially-varying colour -- the rest (" +
+					" materials are not a flat colour -- the rest (" +
 					FormatBoundedNameList_( flattestNames ) + ") are still a flat uniformcolor_painter. "
 					"A perlin_painter / expression_painter (or any of the other procedural colour painters) "
 					"bound into base_color/reflectance adds realism "
@@ -30557,6 +30636,11 @@ namespace RISE
 			// landed, deliberately).
 			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
 			if( !snap.hasDocument ) {
+				// Review-round P2-2: STRUCTURAL pre-commit refusal ->
+				// status="rejected", so the wire's generic status
+				// interception catches it (see AgentVaryMaterialBatchResult::
+				// status's own doc).
+				out.status  = "rejected";
 				out.message = "vary_material {all:true} refused: no retained CST Document -- this verb "
 					"needs a CST-loaded head";
 				return out;
@@ -30567,6 +30651,12 @@ namespace RISE
 					"vary_material {all:true} refused: baseHeadVersion does not match the current head "
 					"(revision %llu) -- re-read and re-propose -- document unchanged",
 					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				// Review-round P2-2: matches VaryMaterial's OWN single-
+				// material conflict convention exactly (ok=true, status=
+				// "conflict") -- a stale base is a well-formed request whose
+				// precondition failed, not a structural refusal.
+				out.ok      = true;
+				out.status  = "conflict";
 				out.message = buf;
 				return out;
 			}
@@ -30580,6 +30670,7 @@ namespace RISE
 			const DesignNoteConditions_ cond   = ComputeDesignNoteConditionsFromDoc_( headDoc );
 			out.qualifyingMaterials = cond.constantMicrosurfaceCount;
 			if( cond.constantMicrosurfaceMaterials.empty() ) {
+				out.status  = "rejected";
 				out.message = "vary_material {all:true} refused: no material in this document has a "
 					"microsurface this can read -- see vary_material's own no-arguments refusal message "
 					"for the exact material kinds and slot shapes it needs -- document unchanged";

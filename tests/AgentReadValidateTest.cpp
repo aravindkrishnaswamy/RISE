@@ -1568,13 +1568,18 @@ static void RunUnboundMaterialAndFlatAlbedoScanTest()
 	}
 	// GREEN-PROVE (hero-weighted): the IDENTICAL document, except the HERO
 	// material (base_mat, bound to 3 objects) now reflects a procedural
-	// field instead of the flat painter -- MUST silence H even though the
-	// two INCIDENTAL one-object materials are still flat, because coverage
-	// is hero-weighted: every hero varies, so the incidental flat props
-	// don't veto it.  This is the exact mechanism the old "any procedural
-	// painter anywhere" GREEN-PROVE could no longer demonstrate (that
-	// shape is now the "one fix, 17 materials still flat" bug item 1
-	// exists to close).
+	// field, AND one incidental one-object material (extra_mat1) ALSO
+	// varies, with only ONE incidental (extra_mat2) still flat.
+	//
+	// Review-round P2-1: the hero rule is NECESSARY but not SUFFICIENT
+	// (CoverageSatisfied_'s own doc) -- "every hero varies" alone used to
+	// silence this with BOTH incidentals still flat (1 of 3, 33%), which
+	// re-opened the exact "one fix silences a mostly-flat document" bug
+	// item 1 was built to close.  This fixture now ALSO clears the 50%
+	// fraction (2 of 3 = 67%), so it demonstrates the real, corrected
+	// mechanism: the hero must vary (necessary) AND the document must be
+	// majority-not-flat (sufficient) -- one incidental staying flat still
+	// does not veto it once both hold.
 	{
 		const std::string docHeroVaries =
 			"RISE ASCII SCENE 7\n"
@@ -1582,8 +1587,9 @@ static void RunUnboundMaterialAndFlatAlbedoScanTest()
 			// 4 distinct literals -- below kParamErosionLiteralGate (6) so
 			// this doesn't ALSO trip DESIGN_PARAM_METADATA_EROSION.
 			"expression_painter\n{\n\tname base_field\n\texpr fbm(P*3.0,3,0.5,2.0)\n}\n\n"
+			"expression_painter\n{\n\tname extra_field\n\texpr fbm(P*4.0,3,0.5,2.0)\n}\n\n"
 			"lambertian_material\n{\n\tname base_mat\n\treflectance base_field\n}\n\n"
-			"lambertian_material\n{\n\tname extra_mat1\n\treflectance base_pnt\n}\n\n"
+			"lambertian_material\n{\n\tname extra_mat1\n\treflectance extra_field\n}\n\n"
 			"lambertian_material\n{\n\tname extra_mat2\n\treflectance base_pnt\n}\n\n"
 			"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
 			"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
@@ -1592,8 +1598,38 @@ static void RunUnboundMaterialAndFlatAlbedoScanTest()
 			"standard_object\n{\n\tname d\n\tgeometry base_geo\n\tmaterial extra_mat1\n}\n"
 			"standard_object\n{\n\tname e\n\tgeometry base_geo\n\tmaterial extra_mat2\n}\n";
 		Check( !hasCode( AgentSession::ValidateText( docHeroVaries ), "DESIGN_FLAT_ALBEDO" ),
-		       "CONDITION H GREEN-PROVE (hero-weighted): the HERO material (3 objects) varies -- "
-		       "coverage is satisfied even though 2 incidental one-object materials stay flat" );
+		       "CONDITION H GREEN-PROVE (hero-weighted, P2-1-corrected): the HERO material (3 "
+		       "objects) varies AND coverage clears 50% (2 of 3) -- silent even though ONE "
+		       "incidental one-object material stays flat" );
+	}
+	// FIRING PIN (review-round P2-1): the HERO varies, but coverage is
+	// STILL below 50% because many incidental one-off props stay flat --
+	// this is the exact bug the hero-alone-sufficient rule re-opened
+	// (one varying hero + many flat props used to go silent).  Must fire.
+	{
+		std::string docOneHeroManyFlatProps =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
+			"expression_painter\n{\n\tname base_field\n\texpr fbm(P*3.0,3,0.5,2.0)\n}\n\n"
+			"lambertian_material\n{\n\tname base_mat\n\treflectance base_field\n}\n\n"
+			"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
+			"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname c\n\tgeometry base_geo\n\tmaterial base_mat\n}\n";
+		for( int i = 0; i < 15; ++i ) {
+			const std::string nm = "prop" + std::to_string( i );
+			docOneHeroManyFlatProps += "lambertian_material\n{\n\tname " + nm + "\n\treflectance base_pnt\n}\n\n";
+			docOneHeroManyFlatProps += "standard_object\n{\n\tname obj_" + nm +
+				"\n\tgeometry base_geo\n\tmaterial " + nm + "\n}\n";
+		}
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docOneHeroManyFlatProps );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_ALBEDO" );
+		Check( d != nullptr,
+		       "CONDITION H FIRING PIN (P2-1): one varying HERO (3 objects) + 15 flat one-off "
+		       "props (1 of 16 = 6.25%, below the 50% fraction) -- fires, hero-alone is not "
+		       "enough" );
+		if( d ) Check( d->message.find( "1 of 16" ) != std::string::npos,
+		               "...reporting the true coverage count (1 of 16 vary)" );
 	}
 	// BELOW THRESHOLD: only 2 DISTINCT flat materials (the new gate is on
 	// ELIGIBLE MATERIAL COUNT, not standard_object count) -- must stay
@@ -1754,6 +1790,63 @@ static void RunMaterialsRealismScanTest()
 		       "ITEM 4 GREEN-PROVE (calibration): a `glass1`-named lambertian_luminaire_material "
 		       "(the photon_cloister/bdpt_cloister shape) stays silent -- emitters are excluded from "
 		       "the opaque set" );
+	}
+	{
+		// GREEN-PROVE (review-round P2-3): a `membrane`-named object bound
+		// to biospec_skin_material -- "membrane" is a plausible name on a
+		// tissue material.  HONEST NOTE (found while red-proving P2-3):
+		// this stays silent TODAY via a DIFFERENT, upstream mechanism, not
+		// the `subdermal_layer` marker this fix added -- biospec_skin_
+		// material's Reference params were never individually pipe-
+		// audited (all sit at ParameterSemantics.pipe == Unspecified), so
+		// the kind never enters ScalarMaterialSlotsByKind_/
+		// ColorMaterialSlotsByKind_/pendingMaterials at all, and condition
+		// I never classifies it either way.  `subdermal_layer` is kept as
+		// the correct marker for the day that pipe audit happens (see
+		// OpaqueReflectionOnlyMaterialKinds_'s own doc) -- this pin still
+		// documents the user-visible behaviour (silent), just not (today)
+		// via the mechanism its own name suggests.
+		const std::string docSkinMembrane =
+			"RISE ASCII SCENE 7\n"
+			"biospec_skin_material\n{\n\tname membrane_mat\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.2\n}\n\n"
+			"standard_object\n{\n\tname membrane_layer\n\tgeometry geo\n\tmaterial membrane_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docSkinMembrane ), "DESIGN_MATERIAL_KIND_MISMATCH" ),
+		       "ITEM 4 GREEN-PROVE (P2-3): a `membrane`-named object bound to biospec_skin_material "
+		       "stays silent (today: never classified at all, its Reference params being pipe-"
+		       "Unspecified -- see the doc comment above)" );
+	}
+	{
+		// Same pin, donner_jensen_skin_bssrdf_material -- SAME honest
+		// caveat as biospec_skin_material above: its params are ALSO
+		// pipe-Unspecified today, so it is silent via the same upstream
+		// non-classification, not via `epidermis_thickness` (kept for the
+		// same future-pipe-audit reason).
+		const std::string docDonnerJensenMembrane =
+			"RISE ASCII SCENE 7\n"
+			"donner_jensen_skin_bssrdf_material\n{\n\tname membrane_mat2\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.2\n}\n\n"
+			"standard_object\n{\n\tname membrane_layer2\n\tgeometry geo\n\tmaterial membrane_mat2\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docDonnerJensenMembrane ), "DESIGN_MATERIAL_KIND_MISMATCH" ),
+		       "ITEM 4 GREEN-PROVE (P2-3): a `membrane`-named object bound to "
+		       "donner_jensen_skin_bssrdf_material stays silent (today: never classified, pipe-"
+		       "Unspecified)" );
+	}
+	{
+		// Same pin, generic_human_tissue_material -- the ONE of the three
+		// where `sca` is genuinely LOAD-BEARING: `sca` carries an audited
+		// `semantics.pipe == ParameterPipe::Scalar`, so this kind DOES
+		// enter pendingMaterials/condition I's classification, and `sca`
+		// is what keeps it out of the opaque set.  Red-proved for real
+		// (removing `sca` from the marker set flips this test to FAIL).
+		const std::string docTissueMembrane =
+			"RISE ASCII SCENE 7\n"
+			"generic_human_tissue_material\n{\n\tname membrane_mat3\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.2\n}\n\n"
+			"standard_object\n{\n\tname membrane_layer3\n\tgeometry geo\n\tmaterial membrane_mat3\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docTissueMembrane ), "DESIGN_MATERIAL_KIND_MISMATCH" ),
+		       "ITEM 4 GREEN-PROVE (P2-3 MONEY): a `membrane`-named object bound to "
+		       "generic_human_tissue_material stays silent -- `sca` genuinely marks it transmissive" );
 	}
 }
 

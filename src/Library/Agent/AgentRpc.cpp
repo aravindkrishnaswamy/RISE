@@ -4002,6 +4002,12 @@ namespace RISE
 							s->VaryMaterialAll( ( b == 1 ) ? &base : nullptr );
 						JsonValue result = JsonValue::MakeObject();
 						result.set( "ok",         JsonValue::MakeBool( br.ok ) );
+						// Review-round P2-2: matches the single-material form
+						// (and AgentCollapseResult) -- always set, "" for a
+						// normal (non-conflict/non-rejected) outcome, so the
+						// wire's generic status=="conflict"/"rejected"
+						// interception can catch a batch refusal.
+						result.set( "status",     JsonValue::MakeString( br.status ) );
 						result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( br.qualifyingMaterials ) ) );
 						result.set( "applied",    JsonValue::MakeNumber( static_cast<double>( br.appliedCount ) ) );
 						result.set( "refused",    JsonValue::MakeNumber( static_cast<double>( br.refusedCount ) ) );

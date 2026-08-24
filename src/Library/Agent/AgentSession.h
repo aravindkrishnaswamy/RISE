@@ -5964,6 +5964,20 @@ namespace RISE
 			struct AgentVaryMaterialBatchResult
 			{
 				bool ok = false;                    //!< true iff at least one material was applied
+				//! Review-round P2-2 (2026-08-24): the SAME status convention
+				//! VaryMaterial's own AgentVaryMaterialResult and
+				//! AgentCollapseResult use -- "" for a normal outcome (batch
+				//! ran, whatever it applied/refused), "conflict" for a stale
+				//! baseHeadVersion, "rejected" for a STRUCTURAL pre-commit
+				//! refusal (no retained document, or zero qualifying
+				//! materials).  Set so the wire's generic status=="conflict"/
+				//! "rejected" interception (AgentChatLoop.cpp's ToolOutcomeLine
+				//! rules 2/3) can catch a batch refusal BEFORE the vary_material-
+				//! specific rule 4b-3 ever runs -- the bug this field closes:
+				//! without it, a stale-head or zero-qualifying batch call fell
+				//! through to "0 applied, 0 refused", silently losing the
+				//! reason in `message`.
+				std::string status;
 				int  qualifyingMaterials = 0;        //!< how many materials were flagged at batch START
 				int  appliedCount        = 0;
 				int  refusedCount        = 0;

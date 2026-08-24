@@ -1572,6 +1572,19 @@ namespace RISE
 					// never carried them.
 					const JsonValue& perMaterial = result.get( "perMaterial" );
 					if( perMaterial.isArray() ) {
+						// Review-round P2-2: a STRUCTURAL batch refusal (no
+						// retained document, zero qualifying materials) now
+						// sets status="rejected"/"conflict" (see
+						// AgentVaryMaterialBatchResult::status's own doc),
+						// which rules 2/3 above already intercept before this
+						// branch runs -- but this is the belt: any refusal
+						// that somehow reaches here (perMaterial empty, ok
+						// false) still surfaces `message` instead of the
+						// content-free "0 applied, 0 refused" that used to
+						// hide it.
+						if( perMaterial.size() == 0 && !result.get( "ok" ).asBool() ) {
+							return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+						}
 						const long long applied   = static_cast<long long>( result.get( "applied" ).asNumber() );
 						const long long refused   = static_cast<long long>( result.get( "refused" ).asNumber() );
 						const long long remaining = static_cast<long long>( result.get( "remaining" ).asNumber() );

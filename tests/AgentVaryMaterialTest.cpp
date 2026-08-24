@@ -1056,11 +1056,53 @@ static void TestPostVaryDisarmsCensus()
 	Check( hasCode( Agent::AgentSession::ValidateText( after ), kCode ) == nullptr,
 	       "G4b MONEY: once BOTH heroes (mat_a, mat_b) vary, the census falls silent even though "
 	       "mat_c (1 object, not a hero) is still a bare number -- hero-weighted coverage does not "
-	       "veto on an incidental prop" );
+	       "veto on an incidental prop.  (Review-round P2-1: this ALSO clears the 50% fraction -- "
+	       "2 of 3 vary -- which is now a SECOND, independently-checked requirement alongside "
+	       "'every hero varies'; see TestOneHeroManyFlatPropsFires below for the case where the "
+	       "hero rule alone is NOT enough.)" );
 
 	sess.reset();
 	pJob->release();
 	std::remove( tmp.c_str() );
+}
+
+//! Review-round P2-1 firing pin: ONE hero material varies, but coverage
+//! is STILL below the 50% fraction because many incidental one-off props
+//! stay flat.  This is the EXACT bug the "every hero varies is
+//! sufficient on its own" rule re-opened -- one varying hero + fifteen
+//! flat one-off props used to go silent, structurally identical to the
+//! measured underwater-session miss (one vary_material call silencing a
+//! note that should still describe sixteen other flat materials).
+static void TestOneHeroManyFlatPropsFires()
+{
+	std::printf( "G4c (P2-1): one varying HERO + many flat one-off props -- STILL fires\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code ) -> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCode = "DESIGN_CONSTANT_MICROSURFACE";
+
+	std::string body = Preamble();
+	body += "scalar_painter\n{\n\tname sp_hero\n\texpression\tu\n}\n\n";
+	body += Ggx( "hero_mat", "sp_hero" );
+	body += Obj( "hero_o1", "hero_mat", -3 );
+	body += Obj( "hero_o2", "hero_mat", -2 );
+	body += Obj( "hero_o3", "hero_mat", -1 );
+	for( int i = 0; i < 15; ++i ) {
+		const std::string nm = "prop" + std::to_string( i );
+		body += Ggx( nm, "0.3" );
+		body += Obj( "obj_" + nm, nm, static_cast<double>( i ) );
+	}
+
+	const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+	const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+	Check( d != nullptr,
+	       "G4c MONEY (P2-1): a varying HERO (3 objects) with 15 flat one-off props (1 of 16 = "
+	       "6.25%, below the 50% fraction) still FIRES -- the hero rule alone is necessary, not "
+	       "sufficient" );
+	if( d ) Check( d->message.find( "1 of 16" ) != std::string::npos,
+	               "G4c: ...reporting the true coverage count (1 of 16 vary)" );
 }
 
 //----------------------------------------------------------------------
@@ -1296,6 +1338,123 @@ static void TestWireSurface()
 
 	pJob->release();
 	std::remove( tmp.c_str() );
+
+	//----------------------------------------------------------------
+	// Review-round P2-4: end-to-end `all:true` wire coverage -- the
+	// coverage whose ABSENCE let P2-2 (the batch refusal losing its
+	// reason on the wire) ship in fd899428.  Mutual-exclusivity
+	// rejection, JSON field names, the MCP adapter, and (with P2-2) the
+	// status field on a stale-head call.
+	//----------------------------------------------------------------
+	{
+		const std::string tmp3 = TempPath( "varymat_all_rpc.RISEscene" );
+		Job* pJob3 = LoadScene( SceneThreeMaterials(), tmp3 );
+		Check( pJob3 != nullptr, "H-all: fixture derives" );
+		if( pJob3 ) {
+			const RISE::Cst::CstHeadVersion preVersion = pJob3->GetCstHeadVersion();
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob3 );
+			Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+			// Mutual exclusivity: all:true + material together -> a
+			// malformed-params JSON-RPC ERROR, not a silently-prioritized
+			// pick of one over the other.
+			{
+				const std::string resp = disp.HandleLine(
+					"{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"vary_material\","
+					"\"params\":{\"all\":true,\"material\":\"mat_a\"}}" );
+				Agent::JsonValue env; std::string perr;
+				Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "H-all: mutual-exclusivity response parses" );
+				Check( env.has( "error" ),
+				       "H-all MONEY: all:true + material together is a JSON-RPC ERROR (mutually "
+				       "exclusive), not a silent pick" );
+			}
+
+			// The all:true round trip itself -- JSON field names.
+			{
+				const std::string resp = disp.HandleLine(
+					"{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"vary_material\",\"params\":{\"all\":true}}" );
+				Agent::JsonValue env; std::string perr;
+				Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "H-all: response parses" );
+				const Agent::JsonValue& result = env.get( "result" );
+				Check( result.get( "ok" ).asBool(), "H-all MONEY: ok=true (at least one applied)" );
+				Check( result.get( "status" ).asString().empty(),
+				       "H-all: status is EMPTY on a normal (non-conflict/non-rejected) outcome" );
+				Check( static_cast<long long>( result.get( "qualifying" ).asNumber() ) == 3,
+				       "H-all MONEY: qualifying == 3 (the true flagged count)" );
+				Check( static_cast<long long>( result.get( "applied" ).asNumber() ) == 3,
+				       "H-all MONEY: applied == 3 (all three materials, one call)" );
+				Check( static_cast<long long>( result.get( "refused" ).asNumber() ) == 0,
+				       "H-all: refused == 0" );
+				Check( static_cast<long long>( result.get( "remaining" ).asNumber() ) == 0,
+				       "H-all: remaining == 0 (3 < the cap of 24)" );
+				Check( result.get( "perMaterial" ).isArray() && result.get( "perMaterial" ).size() == 3,
+				       "H-all MONEY: perMaterial carries one entry per applied material" );
+				const Agent::JsonValue& entry0 = result.get( "perMaterial" ).at( 0 );
+				Check( entry0.has( "applied" ) && entry0.has( "material" ) && entry0.has( "materialKind" ) &&
+				       entry0.has( "painter" ),
+				       "H-all: each perMaterial entry carries applied/material/materialKind/painter" );
+			}
+
+			// P2-2's own money assertion: a STALE baseHeadVersion on the
+			// all:true form sets status=="conflict" -- reachable by the
+			// wire's generic status interception -- rather than silently
+			// reporting "0 applied, 0 refused" with the reason buried.
+			{
+				char line[256];
+				std::snprintf( line, sizeof( line ),
+					"{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"vary_material\",\"params\":"
+					"{\"all\":true,\"baseHeadVersion\":{\"uuid\":%llu,\"revision\":%llu}}}",
+					static_cast<unsigned long long>( preVersion.uuid ),
+					static_cast<unsigned long long>( preVersion.revision + 100 ) );
+				const std::string resp = disp.HandleLine( line );
+				Agent::JsonValue env; std::string perr;
+				Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "H-all: stale-head response parses" );
+				const Agent::JsonValue& result = env.get( "result" );
+				Check( result.get( "status" ).asString() == "conflict",
+				       "H-all MONEY (P2-2): a stale baseHeadVersion on all:true sets "
+				       "status==\"conflict\" -- the wire's generic conflict interception can now "
+				       "catch a batch refusal" );
+				Check( !result.get( "message" ).asString().empty(),
+				       "H-all: ...and the reason is still in `message`" );
+				Check( result.get( "perMaterial" ).isArray() && result.get( "perMaterial" ).size() == 0,
+				       "H-all: ...with an EMPTY perMaterial (nothing was attempted)" );
+			}
+		}
+	}
+
+	// MCP adapter: all:true is ADVERTISED in the schema and ROUTABLE.
+	{
+		const std::string tmp4 = TempPath( "varymat_all_mcp.RISEscene" );
+		Job* pJob4 = LoadScene( SceneThreeMaterials(), tmp4 );
+		Check( pJob4 != nullptr, "H-all MCP: fixture derives" );
+		if( pJob4 ) {
+			std::unique_ptr<Agent::AgentSession> mcpSess = Agent::AgentSession::WrapJob( pJob4 );
+			Agent::AgentMcpAdapter mcp( std::move( mcpSess ), Agent::AgentAutonomy::Commit );
+
+			Agent::JsonValue listEnv; std::string lerr;
+			Check( Agent::JsonParse( mcp.HandleLine(
+			           "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/list\",\"params\":{}}" ),
+			       listEnv, lerr ), "H-all MCP: tools/list parses" );
+			bool sawAllProp = false;
+			const Agent::JsonValue& tools = listEnv.get( "result" ).get( "tools" );
+			for( std::size_t i = 0; i < tools.size(); ++i ) {
+				if( tools.at( i ).get( "name" ).asString() != "vary_material" ) continue;
+				const Agent::JsonValue& props =
+					tools.at( i ).get( "inputSchema" ).get( "properties" );
+				sawAllProp = props.has( "all" );
+			}
+			Check( sawAllProp, "H-all MCP MONEY: the tool schema ADVERTISES the `all` property" );
+
+			Agent::JsonValue callEnv; std::string cerr;
+			Check( Agent::JsonParse( mcp.HandleLine(
+			           "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\","
+			           "\"params\":{\"name\":\"vary_material\",\"arguments\":{\"all\":true}}}" ),
+			       callEnv, cerr ), "H-all MCP: tools/call parses" );
+			const bool disowned = callEnv.has( "error" ) &&
+			                      callEnv.get( "error" ).get( "code" ).asNumber( 0 ) == -32601.0;
+			Check( !disowned, "H-all MCP MONEY: tools/call ROUTES vary_material{all:true} (not -32601)" );
+		}
+	}
 }
 
 //! Materials-realism item 2 (2026-08-24): vary_material {all:true} applies
@@ -1414,6 +1573,82 @@ static void TestVaryMaterialAllBatch()
 			std::remove( tmp.c_str() );
 		}
 	}
+
+	// Review-round P3-c: TWO flagged materials sharing ONE constant
+	// scalar_painter (both `alphax`/`alphay` point at the SAME
+	// `shared_rough { value 0.3 }` chunk by name -- still Constant, per
+	// ClassifyMicrosurfaceBinding_'s `value` form, so BOTH qualify) --
+	// pin no cross-contamination: each gets its OWN independently-named
+	// field chunk, rebound only on ITS OWN alphax/alphay, and the shared
+	// source chunk itself is left untouched (neither material rewrites
+	// it -- VaryMaterial always MINTS a new field, never edits the
+	// chunk a slot currently points at).
+	{
+		std::string body = Preamble();
+		body += "scalar_painter\n{\n\tname shared_rough\n\tvalue 0.3\n}\n\n";
+		body += "ggx_material\n{\n\tname mat_x\n\trd pnt_dark\n\trs pnt_spec\n"
+		        "\talphax shared_rough\n\talphay shared_rough\n\tior 1.5\n\textinction 0.0\n}\n\n";
+		body += "ggx_material\n{\n\tname mat_y\n\trd pnt_dark\n\trs pnt_spec\n"
+		        "\talphax shared_rough\n\talphay shared_rough\n\tior 1.5\n\textinction 0.0\n}\n\n";
+		body += Obj( "ox", "mat_x", -1 );
+		body += Obj( "oy", "mat_y", 1 );
+		const std::string tmp = TempPath( "varymat_all_shared.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "P3-c fixture: derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentVaryMaterialBatchResult br = sess->VaryMaterialAll();
+			Check( br.ok && br.appliedCount == 2 && br.qualifyingMaterials == 2,
+			       "P3-c: both materials sharing the constant painter qualify, and both applied" );
+
+			std::string matX, matY, painterX, painterY;
+			for( const Agent::AgentSession::AgentVaryMaterialResult& r : br.perMaterial ) {
+				if( r.material == "mat_x" ) { matX = r.material; painterX = r.painterChunk; }
+				if( r.material == "mat_y" ) { matY = r.material; painterY = r.painterChunk; }
+			}
+			Check( !painterX.empty() && !painterY.empty(),
+			       "P3-c: both minted their own field chunk" );
+			Check( painterX != painterY,
+			       "P3-c MONEY: the two minted field chunks are DIFFERENTLY NAMED -- no collision" );
+
+			const std::string after = sess->ReadDocument();
+			// Each material's OWN alphax/alphay now names ITS OWN field --
+			// cross-contamination would show up as mat_x pointing at
+			// mat_y's field (or vice versa), or either slot still naming
+			// the ORIGINAL shared_rough chunk.
+			const std::size_t xBlock = after.find( "name mat_x" );
+			const std::size_t yBlock = after.find( "name mat_y" );
+			Check( xBlock != std::string::npos && yBlock != std::string::npos,
+			       "P3-c: both material chunks are still present in the mutated document" );
+			if( xBlock != std::string::npos && yBlock != std::string::npos ) {
+				const std::size_t xEnd = after.find( '}', xBlock );
+				const std::size_t yEnd = after.find( '}', yBlock );
+				const std::string xText = after.substr( xBlock, xEnd - xBlock );
+				const std::string yText = after.substr( yBlock, yEnd - yBlock );
+				Check( xText.find( painterX ) != std::string::npos && xText.find( painterY ) == std::string::npos,
+				       "P3-c MONEY: mat_x's block names ONLY its own field, never mat_y's" );
+				Check( yText.find( painterY ) != std::string::npos && yText.find( painterX ) == std::string::npos,
+				       "P3-c MONEY: mat_y's block names ONLY its own field, never mat_x's" );
+				Check( xText.find( "shared_rough" ) == std::string::npos &&
+				       yText.find( "shared_rough" ) == std::string::npos,
+				       "P3-c: neither material still points at the original shared_rough chunk" );
+			}
+			// The ORIGINAL shared chunk is untouched (still `value 0.3`) --
+			// VaryMaterial rebinds the SLOT, it never edits the chunk the
+			// slot used to point at.
+			const std::size_t sharedBlock = after.find( "name shared_rough" );
+			Check( sharedBlock != std::string::npos, "P3-c: the original shared_rough chunk is still present" );
+			if( sharedBlock != std::string::npos ) {
+				const std::size_t sharedEnd = after.find( '}', sharedBlock );
+				Check( after.substr( sharedBlock, sharedEnd - sharedBlock ).find( "value 0.3" ) != std::string::npos,
+				       "P3-c MONEY: the original shared_rough chunk is BYTE-UNTOUCHED (still `value 0.3`)" );
+			}
+
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
 }
 
 int main()
@@ -1429,6 +1664,7 @@ int main()
 	TestNote();
 	TestOpaqueTripleDisqualifies();
 	TestPostVaryDisarmsCensus();
+	TestOneHeroManyFlatPropsFires();
 	TestPbrColourPipe();
 	TestPbrDeterminism();
 	TestWireSurface();
