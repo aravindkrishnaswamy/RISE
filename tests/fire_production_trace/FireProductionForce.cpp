@@ -302,6 +302,19 @@ namespace RISEFireProductionTrace
 			Fail(error,"production manifold timestep is invalid");
 	}
 
+	bool DeriveFireProductionInitialManifoldTimeStep(
+		const double auditTimeStepS,const double auditMaximumGeneration,
+		double& timeStepS,std::string* error )
+	{
+		timeStepS=0.0;
+		if(!std::isfinite(auditTimeStepS)||auditTimeStepS<=0.0||
+			!std::isfinite(auditMaximumGeneration)||auditMaximumGeneration<=0.0)
+			return Fail(error,"production initial manifold calibration is invalid");
+		timeStepS=auditTimeStepS*ManifoldPlateauAllowance/auditMaximumGeneration;
+		return (std::isfinite(timeStepS)&&timeStepS>0.0)||
+			Fail(error,"production initial manifold timestep is invalid");
+	}
+
 	bool DeriveFireProductionAdvectiveAnomalyTarget(
 		const double beginningDeviation,const double predictedDeviation,
 		const double representedTimeStepS,const double inheritedTargetPerS,

@@ -874,6 +874,23 @@ int main()
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	std::string error;
 	{
+		double initialManifoldStep=0.0;
+		Check(DeriveFireProductionInitialManifoldTimeStep(
+			0.00057953997747972608,0.024358630180358887,initialManifoldStep,&error)&&
+			initialManifoldStep==0.0005576244690940563&&
+			static_cast<double>(static_cast<float>(initialManifoldStep))==
+				0.00055762444389984012,
+			"r163 first production step is deterministically predicted from the sealed audit G");
+		double rejectedInitialStep=1.0;
+		Check(!DeriveFireProductionInitialManifoldTimeStep(
+			0.0,0.024358630180358887,rejectedInitialStep,&error)&&
+			rejectedInitialStep==0.0&&
+			!DeriveFireProductionInitialManifoldTimeStep(
+				0.0016462659696117043,0.0,rejectedInitialStep,&error)&&
+			rejectedInitialStep==0.0,
+			"r163 initial manifold predictor rejects missing audit operands");
+	}
+	{
 		FireProductionAcceptedManifoldObservation none;
 		FireProductionAcceptedCheckpointStateView noAcceptedState;
 		FireProductionStableTimeStep first;

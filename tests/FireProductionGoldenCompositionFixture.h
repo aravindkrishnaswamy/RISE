@@ -142,7 +142,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		const bool disabledClosure=longShadow&&closureMode&&
 			std::strcmp(closureMode,"disabled")==0;
 		double limitedStep=0.0;
-		if((limitedClosure||contractionProbe)&&!RISE::DeriveFireProductionManifoldTimeStep(
+		if(limitedClosure&&!RISE::DeriveFireProductionInitialManifoldTimeStep(
+			0.00057953997747972608,0.024358630180358887,limitedStep,&error))return 250;
+		if(contractionProbe&&!RISE::DeriveFireProductionManifoldTimeStep(
 			0.0016462659696117043,0.066569089889526367,
 			0.99987278979872063,limitedStep,&error))return 250;
 		const std::size_t cells=shape.CellCount();const double dt=(longShadow||contractionProbe)?
@@ -2121,6 +2123,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				std::fprintf(stderr,"EQUAL_TIME_LIMITED_PRODUCTION dt=%.17g reference_substeps=8 "
 					"reference_substep_dt=%.17g reference_end=%.17g target_time=%.17g "
 					"schedule=%s terminal_target=%s predictor_G=%.17g G=%.17g field_max=%.17g "
+					"initial_audit_dt=%.17g initial_audit_G=%.17g initial_selected_dt=%.17g "
+					"initial_calibration=%d "
 					"headroom_allowance=%.17g low_mach_ceiling=%.17g headroom_met=%d "
 					"delivered_drain=%.17g next_dt_manifold=%.17g limiter_binding=1 "
 					"device_p95_ms=%.17g wall_p95_ms=%.17g tier10_device_hours=%.17g "
@@ -2131,6 +2135,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					equalTimeTerminalTargetDigest.c_str(),
 					production.maximumPredictedAdvectiveManifoldAnomaly,
 					production.maximumManifoldGeneration,fieldMaximum,
+					0.00057953997747972608,0.024358630180358887,limitedStep,1,
 					PlateauHeadroomAllowance,LowMachValidityCeiling,
 					fieldMaximum<=PlateauHeadroomAllowance?1:0,
 					production.deliveredRestorationDrainFraction,followingManifoldStep,
@@ -2141,14 +2146,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					production.manifoldScalarDeviceToHostTransferCount,
 					production.HasAcceptedManifoldToken()?1:0,
 					DigestFile(checkpointPath).c_str());
-				const bool exactStop=!production.manifoldPlateauPassed&&
+				const bool exactPredictorRefusal=!production.manifoldPlateauPassed&&
 					!production.HasAcceptedManifoldToken()&&followingStepDerived&&
+					limitedStep==0.0005576244690940563&&
 					production.maximumPredictedAdvectiveManifoldAnomaly==
-						0.020501971244812012&&
-					production.maximumManifoldGeneration==0.024358630180358887&&
-					fieldMaximum==0.024358630180358887&&
-					production.deliveredRestorationDrainFraction==0.99965523398960998&&
-					followingManifoldStep==0.00055743221913055079&&
+						0.019734203815460205&&
+					production.maximumManifoldGeneration==0.023458600044250488&&
+					fieldMaximum==0.023458600044250488&&
+					production.deliveredRestorationDrainFraction==0.99965004321877993&&
+					followingManifoldStep==0.00055692791475544124&&
 					fieldMaximum>PlateauHeadroomAllowance&&
 					fieldMaximum<LowMachValidityCeiling&&
 					production.advectiveAnomalyClosurePassCount==2u&&
@@ -2162,11 +2168,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					deviceProjectionHours>=0.8&&deviceProjectionHours<=1.5&&
 					wallProjectionHours>2.0&&wallProjectionHours<=3.0&&
 					equalTimeTerminalTargetDigest==
-						"d198eaaaebd5d8322ba7582456ccdb4fd83016a65120379e7cd1c3e1ae6351ec"&&
+						"522347125277cf97fe0c58fb4db86e906892ef81182f280b95a92ac35d68f833"&&
 					equalTimeReferenceScheduleDigest==
-						"e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0"&&
+						"1c7944ddde6e673330ccf115c388b0a424027cfcb86e0b8bf8d503f22d7c531d"&&
 					DigestFile(checkpointPath)==checkpointDigest;
-				return exactStop?213:212;
+				return exactPredictorRefusal?215:212;
 			}
 			if(!production.manifoldPlateauPassed){
 				const bool acceptedTokenMinted=production.HasAcceptedManifoldToken();

@@ -3885,3 +3885,39 @@ it was already tried and refuted here.
   is therefore the pre-registered remap-scheme finding; no ceiling or budget
   moves.  Long shadow and every later arithmetic/readmission/source/preview
   gate remain blocked.  Golden remains byte-identical.
+- **r163 predictive-initial-step refusal (2026-08-24):** the remap-scheme
+  change is rejected.  r162's limiter fixed point near `5.57e-4 s` is the
+  intended operating class; its first-step miss is classified as a transient
+  and the excess wall time remains the named host residual.  The contraction
+  sweep is retained as an oracle property: steep states enter proved
+  two-class R0/R1 cycling at the three tested `dt`, `dt/2`, and `dt/4`
+  values.  `1.4488499436993152e-4 s` is the smallest tested cycling step and
+  `7.244249718496576e-5 s` the largest tested convergent step; no continuous
+  monotonic boundary is inferred.  The sealed eight-substep equal-time
+  schedule remains the standing per-slice answer.
+
+  The owner-mandated first-step predictor is implemented and source-bound as
+  `dt0=dt_audit*allowance/G_audit`.  With the sealed r162 observation
+  `dt_audit=5.7953997747972608e-4 s`, `G_audit=2.4358630180358887e-2`,
+  and allowance `2.34375e-2`, it derives binary64
+  `5.576244690940563e-4 s`, represented in production as
+  `5.5762444389984012e-4 s`.  The SHA-bound golden fixture owns and records
+  all three operands; no generic resident request is claimed to authenticate
+  a caller-authored calibration tuple.  The old CFL-initialized exact-252
+  branch remains RED.
+
+  Equal-time replay exposes a small but real nonlinearity that the mandated
+  proportional predictor does not cover.  Predictor G is
+  `1.9734203815460205e-2`, but corrected G and the realized plateau are
+  `2.3458600044250488e-2`, exceeding the allowance by
+  `2.1100044250488281e-5`.  The hard `2^-5` ceiling is respected and the
+  backstop derives `5.5692791475544124e-4 s`, but the requested first accepted
+  step is not legal: no token is minted and exact exit 215 records the
+  refusal.  The measured `89.7549167/178.69375 ms` device/wall values and
+  `1.1177739/2.2253845 h` projections are diagnostic only.  Host profiling is
+  technically possible on rejected byte-stable replays, but the owner ordered
+  that campaign after a legal predictive first step, so it is not advanced in
+  this entry.  Long shadow and accepted-state milestones remain blocked
+  without widening or silently substituting the backstop step.  Durable evidence is
+  `r163_predictive_initial_step_refusal/predictive_initial_step_evidence.v1`;
+  golden remains byte-identical.

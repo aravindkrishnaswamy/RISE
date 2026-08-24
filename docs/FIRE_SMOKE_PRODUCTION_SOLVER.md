@@ -3727,6 +3727,56 @@ pending a reconstruction-class ruling.  Durable evidence is
 `rendered/fire_production_calibration/r162_equal_time_composition_stop/`
 `equal_time_composition_evidence.v1`; the golden checkpoint is unchanged.
 
+### 7.55w Predictive first-step initialization (r163 refusal)
+
+The owner rejects a remap-scheme change and classifies the r162 state as the
+designed limiter operating class.  The oracle contraction boundary is now a
+permanent protocol property rather than a production defect: at steep states,
+the tested `dt`, `dt/2`, and `dt/4` values exhibit proved two-class active-set
+cycling.  `1.4488499436993152e-4 s` is the smallest tested cycling value and
+`7.244249718496576e-5 s` the largest tested convergent value; the experiment
+does not claim a continuous monotone boundary between them.  The converged
+`dt/8` schedule is sealed independently for every slice and composes the
+binary64 flow to production's physical endpoint.
+
+The SHA-bound golden-composition fixture owns the sealed calibration tuple
+`(dt_audit,G_audit)` and derives
+
+`dt0 = dt_audit * ((1-2^-2)*2^-5) / G_audit`,
+
+publishes the represented float timestep in the production request, and emits
+the tuple plus derived double in its evidence record.  The generic resident
+API does not accept or authenticate a caller-authored calibration tuple; this
+avoids creating another mutable bearer-authority surface.  Later accepted
+steps continue to use the drain-aware manifold limiter, and no checkpoint-
+authority rule is weakened.
+
+For the frozen observation `dt_audit=0.00057953997747972608 s` and
+`G_audit=0.024358630180358887`, the formula gives
+`0.0005576244690940563 s`, represented as
+`0.00055762444389984012 s`.  Its equal-time reference uses eight substeps of
+`6.9703055487480015e-5 s` (schedule `1c7944dd...531d`, terminal target
+`52234712...f833`).  The production corrector measures
+`G=field_max=0.023458600044250488`, which is
+`0.000021100044250488281` above the `0.0234375` headroom allowance.  The hard
+`0.03125` ceiling still passes, but headroom is load-bearing: the accepted
+token is withheld and the automatic backstop reports
+`0.00055692791475544124 s`.
+
+Exact exit 215 records that the mandated proportional initialization is close
+but not sufficient to make the first accepted step legal.  The old CFL path
+still reproduces exact 252.  Timing (`89.7549167/178.69375 ms`, projecting
+`1.1177739/2.2253845 h`) is diagnostic only because the step is rejected.
+The owner ordered host-residual work after first-step legality, so that
+campaign does not start in this entry.  Diagnostic profiling of rejected,
+byte-stable replays would be technically valid; it is the requested ordering,
+not accepted-state authority, that defers it.  The 104-step shadow and
+subsequent accepted-state arithmetic/readmission milestones remain blocked.
+This is not grounds to widen the allowance or quietly replace the prescribed
+formula with the observed backstop.  Evidence is
+`rendered/fire_production_calibration/r163_predictive_initial_step_refusal/`
+`predictive_initial_step_evidence.v1`.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

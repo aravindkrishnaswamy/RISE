@@ -704,12 +704,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
-# r162 first characterizes the binary64 generator's contraction ceiling, then
-# composes its converged substeps to the production endpoint.  The limited
-# production step must refuse exactly at the pre-registered headroom/two-hour
-# boundary; stale equal-dt target evidence is no longer an admissible reference.
+# r163 retains r162's contraction and stale-CFL controls, then applies the
+# owner-mandated predictive first-step formula.  The formula is fail-closed:
+# its measured headroom miss must refuse before host optimization can start.
 if [ "$(uname -s)" = "Darwin" ]; then
-	closure_name="FireSequenceTest.r162_equal_time_composition"
+	closure_name="FireSequenceTest.r163_predictive_initial_step"
 	closure_path="$BIN_DIR/FireSequenceTest"
 	closure_cfl_log="$LOG_DIR/$closure_name.cfl.log"
 	closure_contraction_log="$LOG_DIR/$closure_name.contraction.log"
@@ -758,7 +757,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
 	fi
 	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_contraction_rc" -eq 217 ] &&
-		[ "$closure_limited_rc" -eq 213 ] &&
+		[ "$closure_limited_rc" -eq 215 ] &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
@@ -766,17 +765,18 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'tier10_device_hours=' "$closure_cfl_log" &&
 		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_cfl_log" &&
 		grep -Fq 'largest_converged_dt=7.244249718496576e-05 largest_converged_level=3 monotone=1 trace=900a7acc56a0c9c51d07788753132d59269bdb591aee699960a3c62b448a051c' "$closure_contraction_log" &&
-		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION dt=0.00057953997747972608 reference_substeps=8 reference_substep_dt=7.244249718496576e-05' "$closure_limited_log" &&
-		grep -Fq 'schedule=e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0 terminal_target=d198eaaaebd5d8322ba7582456ccdb4fd83016a65120379e7cd1c3e1ae6351ec predictor_G=0.020501971244812012 G=0.024358630180358887 field_max=0.024358630180358887' "$closure_limited_log" &&
+		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION dt=0.00055762444389984012 reference_substeps=8 reference_substep_dt=6.9703055487480015e-05' "$closure_limited_log" &&
+		grep -Fq 'schedule=1c7944ddde6e673330ccf115c388b0a424027cfcb86e0b8bf8d503f22d7c531d terminal_target=522347125277cf97fe0c58fb4db86e906892ef81182f280b95a92ac35d68f833 predictor_G=0.019734203815460205 G=0.023458600044250488 field_max=0.023458600044250488' "$closure_limited_log" &&
+		grep -Fq 'initial_audit_dt=0.00057953997747972608 initial_audit_G=0.024358630180358887 initial_selected_dt=0.0005576244690940563 initial_calibration=1' "$closure_limited_log" &&
 		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=0' "$closure_limited_log" &&
-		grep -Fq 'next_dt_manifold=0.00055743221913055079 limiter_binding=1' "$closure_limited_log" &&
+		grep -Fq 'next_dt_manifold=0.00055692791475544124 limiter_binding=1' "$closure_limited_log" &&
 		grep -Fq 'tier10_wall_hours=' "$closure_limited_log" &&
 		grep -Fq 'accepted_token=0' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
-		echo 'PASS (exact exit=213, equal-time headroom/wall stop)'
+		echo 'PASS (exact exit=215, predictive first-step headroom refusal)'
 		rm -f "$closure_cfl_log" "$closure_contraction_log" "$closure_limited_log"
 	else
-		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 213)"
+		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 215)"
 		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
 			"$closure_limited_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))

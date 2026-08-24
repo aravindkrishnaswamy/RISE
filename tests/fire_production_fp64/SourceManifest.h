@@ -9,8 +9,8 @@ inline constexpr const char* FireProductionProjectionHeader="cbca38f310a3c227d2a
 inline constexpr const char* FireProductionProjectionSource="4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4";
 inline constexpr const char* FireProductionTransportHeader="99fd2c6f4ab583c522c4bd5bfc0c62f49e5abd319c9acd624e72d9c2666fbfb2";
 inline constexpr const char* FireProductionTransportSource="89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056";
-inline constexpr const char* FireProductionForceHeader="4bf1d9b305a18010639615639b5dd2508929e6a71a0bc27a4b2a2325da1a2f92";
-inline constexpr const char* FireProductionForceSource="ac7a5813704b00efee73ab9a73feeb94a25e8c3f53ca61bbcb081fcdea5327db";
+inline constexpr const char* FireProductionForceHeader="216e12f19719bd2aed75ba335cdc2545206d479a54f613e6f9a7e213ffb3f307";
+inline constexpr const char* FireProductionForceSource="f29c379727395c6b4a524e2501afd3fe4b8f6eb465fe04252a7da7bde6f0224e";
 inline constexpr const char* Generator="1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53";
 } }
 

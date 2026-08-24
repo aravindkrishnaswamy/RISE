@@ -359,6 +359,12 @@ namespace RISEFireProductionFP64
 	bool DeriveFireProductionManifoldTimeStep(
 		double previousStepS,double maximumGeneration,double restorationDrainFraction,
 		double& timeStepS,std::string* error=0 );
+	//! Predictive production-campaign handoff.  The first Binary32 step uses the
+	//! sealed audit observation directly; later steps use the accepted-step
+	//! drain-aware predictor above.
+	bool DeriveFireProductionInitialManifoldTimeStep(
+		double auditTimeStepS,double auditMaximumGeneration,
+		double& timeStepS,std::string* error=0 );
 
 	//! Exact scalar topology consumed by the resident predictor/fold kernels.
 	//! It replaces the beginning-state target with the predictor-state target.
