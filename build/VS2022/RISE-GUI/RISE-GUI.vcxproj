@@ -123,7 +123,7 @@
          MSVC-verified); see NodeGraphCanvas.cpp's PARITY TABLE. -->
     <ClCompile Include="NodeGraphCanvas.cpp" />
     <!-- S3 (Qt carry, MSVC-owed as usual): the sibling Object Graph
-         canvas -- see NodeGraphCanvas.cpp's PARITY TABLE, row 30. -->
+         canvas; see NodeGraphCanvas.cpp's PARITY TABLE, row 30. -->
     <ClCompile Include="ObjectGraphCanvas.cpp" />
   </ItemGroup>
   <!-- MOC-generated source files (compiled like regular .cpp) -->
