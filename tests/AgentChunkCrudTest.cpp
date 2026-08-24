@@ -5594,6 +5594,30 @@ static double LumaStdDev( const DecodedLuma& d )
 	return std::sqrt( var );
 }
 
+//! DIAGNOSTIC/S1-FIX (2026-08-23, "the fitted isolate"): the fraction of
+//! pixels that are NOT background, used as a stand-in for silhouette
+//! coverage.  The background reference is read from the four CORNER
+//! pixels rather than a hardcoded colour -- the studio-preview pipeline's
+//! background is an implementation detail this test does not otherwise
+//! depend on, and a well-framed isolate (whether scene-camera-sized or
+//! auto-fit) never puts its subject in all four corners at once (the
+//! auto-fit margin is kIsolateFrameFill's 15%; the scene-camera case
+//! this test exists to catch is far smaller still).  A pixel counts as
+//! "subject" when its luma differs from that reference by more than a
+//! small epsilon -- generous enough to ignore PNG quantization noise,
+//! tight enough that a genuinely tiny silhouette does not get rounded
+//! up into passing.
+static double NonBackgroundFraction( const DecodedLuma& d, double eps = 0.02 )
+{
+	if( d.luma.empty() || d.w == 0 || d.h == 0 ) return 0.0;
+	const double bg = ( d.luma[0] + d.luma[d.w - 1] +
+	                     d.luma[(std::size_t)(d.h - 1) * d.w] +
+	                     d.luma[(std::size_t)d.h * d.w - 1] ) / 4.0;
+	std::size_t count = 0;
+	for( double v : d.luma ) if( std::fabs( v - bg ) > eps ) ++count;
+	return static_cast<double>( count ) / static_cast<double>( d.luma.size() );
+}
+
 //! A tiny dedicated scene (no pre-existing objects/lights beyond camera +
 //! one directional key) for GS1b's flat-vs-bumpy comparison.  Camera
 //! looks STRAIGHT DOWN (-Y) from close range at a NARROW fov chosen so
@@ -10350,6 +10374,131 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Plan,
 		       "S1c/gate-off and no phase transition happens" );
 	}
+}
+
+//----------------------------------------------------------------------
+// S1-COVERAGE (2026-08-23, "the fitted isolate"): finish_element's
+// isolate render must actually FILL the frame with a small, off-center
+// element, not leave it a speck in a white void at its in-scene size.
+//
+// INVESTIGATION NOTE, stated here because it changes what this test is
+// FOR: a report described finish_element (db9a88a9) attaching an isolate
+// render that kept the SCENE camera, so a small off-center part rendered
+// at in-scene size (a cited example: a sleeping cat at ~60px adrift in a
+// 256x256 field, ~4% coverage).  Reading FinishElement's isolate call
+// (AgentSession.cpp) shows it sets ONLY `rp.isolate`, `rp.fromAgentSurface`,
+// `rp.quality` and explicit dims -- no camera, no view -- which is exactly
+// the shape that trips G1's (2026-08-10, predates db9a88a9 by 13 days)
+// unconditional isolate auto-framing in AgentSession::Render: absent a
+// caller-supplied camera/view, it fits the isolated object's OWN world
+// bbox (not the element's union bbox -- ElementWorldBounds_ is for a
+// different caller, PlaceElement/QueryObjectAt, and isolate always shows
+// one object) at a fixed three-quarter studio vantage (35 deg azimuth off
+// +Z toward +X, 25 deg elevation -- IsolateThreeQuarterOffset) at the
+// EXACT 8-corner distance that fits the whole AABB into kIsolateFrameFill
+// (0.85) of both frame half-extents for the active camera's own fov
+// (IsolateFitDistance; tan(fov/2) per axis, corner-by-corner lower bound,
+// see its derivation comment) -- lookat = bbox centre.  Degenerate boxes
+// (non-finite, negative-extent, or zero-extent -- diag <= 0) are refused
+// loudly (res.ok=false, the box stated in the message) rather than
+// silently falling back, the SAME family convention `view`/`light`
+// already use.  So on paper the fit finish_element needed already
+// existed and was already being reused -- no second render path to add.
+//
+// The MEASURED check below confirms it empirically rather than trusting
+// the reading: on a box far off the fixture's scene-camera axis and far
+// smaller than the fixture's own sphere, finish_element's isolate covers
+// ~40% of the frame (comfortably over the >=25% floor below), while the
+// SAME isolate with the scene's own camera pose supplied explicitly
+// (the shape of the reported bug -- object isolated, camera untouched)
+// covers under 1%.  So the reported failure mode is real and exactly
+// this test's RED case, but it does not reproduce at HEAD: the fix it
+// asks for was already shipped, just never covered by a test that could
+// tell "auto-framed" apart from "coincidentally centered" -- S1c's own
+// pixel-probe fixture (`wizard_robe`) sits AT the scene camera's lookat
+// point and is comparably sized to it, so it would pass with or without
+// any reframing at all.  THIS test closes that hole: it is deliberately
+// built off-axis and small so a FUTURE regression that dropped or
+// bypassed the reuse (e.g. a refactor that supplied `rp.camera`, or one
+// that stopped calling through the shared Render() path) has something
+// to fail against.  See RED-PROVE evidence in the commit/session log for
+// this slice: temporarily forcing the auto-frame branch off collapses
+// the measured fraction to the same sub-1% regime as the explicit-
+// scene-camera comparison below, which the >=25% assertion catches.
+//
+// THE THRESHOLD, justified against the fit formula: kIsolateFrameFill
+// guarantees the AABB's screen footprint reaches its 85%-of-half-extent
+// limit on whichever axis binds, i.e. up to ~72% (0.85^2) of the frame
+// area for the bounding RECTANGLE; a convex primitive's actual silhouette
+// at a generic 3/4 angle covers a large majority of its own projected
+// bbox (a cube's hexagonal silhouette is roughly 2/3-3/4 of its bounding
+// rectangle), so 25% leaves ample margin above the fitted case (measured
+// ~40%) while sitting two orders of magnitude above the unfit case
+// (measured <1%) -- nowhere near ambiguous either way.
+//----------------------------------------------------------------------
+static void TestFinishElementIsolateCoverage()
+{
+	std::printf( "S1-COVERAGE: finish_element's isolate render fills the frame for a small off-center part...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1_coverage.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1-COVERAGE fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1-COVERAGE the plan files" );
+
+	// A SMALL box (0.15 on a side, vs. the fixture's radius-0.8 sphere),
+	// well OFF the scene camera's optical axis (camera at (0,0,3.5)
+	// looking at the origin, 40 degree fov) -- small AND off-center,
+	// exactly db9a88a9's reported failure shape.
+	std::vector<std::string> chunks;
+	chunks.push_back( "box_geometry\n{\n\tname cov_box\n\twidth 0.15\n\theight 0.15\n\tdepth 0.15\n}" );
+	chunks.push_back( "standard_object\n{\n\tname cov_obj\n\tgeometry cov_box\n\tmaterial mat_diffuse\n"
+	                   "\tposition 0.9 0.5 0\n}" );
+	const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
+	Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1-COVERAGE both chunks land" );
+
+	const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+	Check( f.ok && f.isolateObject == "cov_obj", "S1-COVERAGE finish_element isolates cov_obj" );
+	Check( f.rendered && !f.png.empty(), "S1-COVERAGE a real isolate render came back" );
+
+	DecodedLuma luma;
+	Check( DecodeRenderLuma( f.png, luma ), "S1-COVERAGE the image decodes" );
+	const double frac = NonBackgroundFraction( luma );
+	std::printf( "S1-COVERAGE: finish_element isolate non-background fraction = %.4f (dims %ux%u)\n",
+	             frac, luma.w, luma.h );
+	Check( frac >= 0.25,
+	       "S1-COVERAGE MONEY ASSERTION: the isolated part fills a SUBSTANTIAL fraction of the frame "
+	       "(>=25%, see the fitted-fov derivation above) -- not the ~1% (measured) a scene-camera-sized "
+	       "render of the same small off-center object would give" );
+
+	// The COMPARISON case, kept as a live measurement rather than a
+	// hardcoded number: the SAME isolate, but with the scene's own
+	// camera pose supplied explicitly -- callerSuppliedCamera wins, so
+	// NO auto-framing happens at all.  This is what the reported bug
+	// looked like: the object isolated (everything else hidden) but
+	// rendered at its in-scene size.  Asserted BELOW the money threshold
+	// so this block also proves the threshold is not accidentally loose.
+	Agent::AgentRenderParams sceneCamProbe;
+	sceneCamProbe.isolate            = "cov_obj";
+	sceneCamProbe.fromAgentSurface   = true;
+	sceneCamProbe.quality            = Agent::AgentRenderQuality::Draft;
+	sceneCamProbe.width              = Agent::kAgentSurfaceMaxRenderEdge;
+	sceneCamProbe.height             = Agent::kAgentSurfaceMaxRenderEdge;
+	sceneCamProbe.camera.hasLocation = true;
+	sceneCamProbe.camera.location    = "0 0 3.5";
+	sceneCamProbe.camera.hasLookAt   = true;
+	sceneCamProbe.camera.lookAt      = "0 0 0";
+	sceneCamProbe.camera.hasUp       = true;
+	sceneCamProbe.camera.up          = "0 1 0";
+	const Agent::AgentRenderResult sceneCamResult = sess->Render( sceneCamProbe );
+	Check( sceneCamResult.ok && !sceneCamResult.png.empty(), "S1-COVERAGE the scene-camera comparison render succeeds" );
+	DecodedLuma sceneCamLuma;
+	Check( DecodeRenderLuma( sceneCamResult.png, sceneCamLuma ), "S1-COVERAGE and it decodes" );
+	const double sceneCamFrac = NonBackgroundFraction( sceneCamLuma );
+	std::printf( "S1-COVERAGE: scene-camera (unfit) isolate non-background fraction = %.4f\n", sceneCamFrac );
+	Check( sceneCamFrac < 0.25,
+	       "S1-COVERAGE and the unfit scene-camera framing of the SAME object stays well under the "
+	       "money threshold -- the assertion above is discriminating, not vacuously satisfied" );
 }
 
 //----------------------------------------------------------------------
@@ -18574,6 +18723,7 @@ int main()
 	TestBuildProtocolPhasesAndAttribution();
 	TestBuildProtocolExemptionsAndGiveUp();
 	TestBuildProtocolIsolateRenderAndSwitchOff();
+	TestFinishElementIsolateCoverage();
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();
 	TestBuildProtocolDiagnosedAttribution();
