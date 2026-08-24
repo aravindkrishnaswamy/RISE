@@ -670,6 +670,76 @@ int main()
 	}
 
 	//------------------------------------------------------------------
+	// 4c. finish_element's OWN isolate render never becomes the anchor
+	//     (2026-08-23, the close-range element look).
+	//
+	//     This is the render most likely to be mistaken for "the first
+	//     post-compose render", and by construction rather than by
+	//     accident: finish_element on the LAST element advances the phase
+	//     to COMPOSE -- the exact moment the ratchet arms -- and THEN
+	//     renders the element it just closed.  A ratchet anchored on one
+	//     part alone, at draft fidelity, would make every later
+	//     comparison partly a comparison of render settings, and the
+	//     model would read the whole scene appearing beside it as a
+	//     regression.
+	//
+	//     TWO independent exclusions in RenderQualifiesForAnchor_ cover
+	//     it (`isolate` and `quality == Draft`).  This block pins the
+	//     OUTCOME rather than either exclusion, so removing one alone
+	//     still passes here and removing BOTH fails -- which is exactly
+	//     the honest statement: the guarantee is "not anchored", held up
+	//     by two beams.
+	//
+	//     A FRESH session, because `session` above already has an anchor
+	//     pinned: the assertion has to be "no anchor exists at all", not
+	//     "the anchor did not move", or an isolate that ESTABLISHED one
+	//     would slip through.
+	//------------------------------------------------------------------
+	std::printf( "[4c] finish_element's own isolate render never becomes the anchor\n" );
+	{
+		std::unique_ptr<AgentSession> iso = AgentSession::LoadFromFile( scenePath );
+		Check( iso != nullptr, "4c: a fresh session loads the scene" );
+		if( iso ) {
+			std::vector<AgentSession::AgentBuildPlanEntry> plan;
+			AgentSession::AgentBuildPlanEntry e1;
+			e1.element = "body";
+			e1.pieces.push_back( "shell" );
+			e1.construction.push_back( "primitive" );
+			e1.outline = "0 0; 1 0; 1 1; 0 1";
+			plan.push_back( e1 );
+			Check( iso->FileBuildPlan( plan ).ok, "4c: a one-element plan files" );
+
+			// A WHOLE object -- geometry PLUS the standard_object that makes
+			// it renderable.  Without one there is no isolate render at all
+			// and every assertion below would pass vacuously.
+			Check( iso->InsertChunk( "sphere_geometry\n{\n\tname body_sph\n\tradius 0.5\n}\n" ).applied,
+			       "4c: the element's geometry inserts" );
+			Check( iso->InsertChunk( "standard_object\n{\n\tname body_obj\n\tgeometry body_sph\n"
+			                          "\tmaterial mat_diffuse\n}\n" ).applied,
+			       "4c: the element's object inserts" );
+
+			const AgentSession::AgentFinishElementResult fe = iso->FinishElement();
+			Check( fe.ok, std::string( "4c: finish_element closes the only element: " ) + fe.message );
+			Check( iso->BuildPhase() == AgentSession::AgentBuildPhase::Compose,
+			       "4c: and the session is in COMPOSE -- the ratchet is armed from here on" );
+			Check( fe.rendered && !fe.png.empty(),
+			       "4c: the finish carried a REAL isolate render (so the assertion below is not vacuous)" );
+			Check( !iso->HasRenderAnchor(),
+			       "MONEY ASSERTION: finish_element's own isolate render did NOT establish the anchor, "
+			       "even though it ran with the phase already advanced to COMPOSE" );
+
+			// AND NOT VACUOUS FROM THE OTHER SIDE EITHER: the very next
+			// full-frame render DOES establish the anchor, which proves the
+			// session was genuinely armed while the isolate render ran.
+			const AgentRenderResult ar = iso->Render( FullFrameParams( kMaxEdge ) );
+			Check( ar.ok, std::string( "4c: the following full-frame render succeeded: " ) + ar.message );
+			Check( ar.anchorEstablished && iso->HasRenderAnchor(),
+			       "4c: and THAT render is the one that becomes the anchor -- so the session was armed "
+			       "the whole time the isolate render was running" );
+		}
+	}
+
+	//------------------------------------------------------------------
 	// 5. The RPC surface: the `anchor` block and the composite as the
 	//    call's one image.
 	//------------------------------------------------------------------

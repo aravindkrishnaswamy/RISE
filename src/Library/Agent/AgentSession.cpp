@@ -14975,6 +14975,38 @@ namespace RISE
 				// spent on the model's context, so it is sized by the same
 				// policy and never by the scene's authored Film.
 				rp.fromAgentSurface  = true;
+				// DRAFT, AND EXPLICITLY SIZED -- two halves of one decision
+				// (2026-08-23, the close-range element look).
+				//
+				// DRAFT because of WHEN this render happens.  It fires in the
+				// PIECES phase, where lighting is not the model's job yet:
+				// lighting, arrangement and camera are COMPOSE-phase work, so
+				// the scene an element is finished into routinely has no light
+				// at all.  A production isolate of an unlit scene is a BLACK
+				// FRAME -- an image that says "your element is missing" about a
+				// scene that is merely unlit, which is the most expensive lie
+				// this payload fact could tell.  The draft pipeline's
+				// studio-preview shading is lighting-independent by
+				// construction, so the element's SHAPE reads whatever the scene
+				// is lit like.  The honesty cost is stated in the message
+				// rather than hidden: a draft frame ignores the scene's
+				// authored materials and lighting (see AgentRenderQuality's
+				// doc), so it answers "is the form I authored there" and
+				// nothing about appearance.
+				//
+				// EXPLICITLY SIZED because the agent surface's absent-dims
+				// default is gated on isProductionBeauty (see
+				// `wantsAgentDefaultResolutionCap` in RenderCore_): a draft
+				// render with no dims would rasterize at the scene's AUTHORED
+				// film size and only then be downscaled by ReadImage below --
+				// paying a full-resolution render for a 256 px image.  A square
+				// at the agent-surface cap also makes the element portrait
+				// independent of whatever aspect the scene's Film happens to
+				// carry, so two finishes of the same element are directly
+				// comparable.
+				rp.quality           = AgentRenderQuality::Draft;
+				rp.width             = kAgentSurfaceMaxRenderEdge;
+				rp.height            = kAgentSurfaceMaxRenderEdge;
 				const AgentRenderResult rr = Render( rp );
 				if( rr.ok ) {
 					out.png = ReadImage( kAgentSurfaceMaxRenderEdge, out.width, out.height );
@@ -14986,6 +15018,27 @@ namespace RISE
 						renderNote += " (the largest of the " + std::to_string( out.isolateCandidates ) +
 							" objects recorded against this element, by bounding-box diagonal)";
 					renderNote += ", auto-framed, with every other object hidden for this render only.";
+					// THE ADVISORY, and the only sentence in this result that
+					// asks for anything.  It is here because the failure it
+					// names is one this project has measured: an element whose
+					// anatomy was authored at a scale no whole-scene frame can
+					// resolve was verified through a whole-scene frame, and the
+					// detail that had melted away was never seen.  This frame is
+					// the element alone, close up, at the one moment the model
+					// is still inside that element's window -- so the advisory
+					// names the ONE verb that reopens it.
+					//
+					// SELF-DISARMING, per the family conventions: it states the
+					// condition ("missing or melted") rather than asserting one,
+					// carries NO score, NO similarity number and no judgement of
+					// what was built, and costs nothing when the element is
+					// fine.  The draft disclosure rides with it because a model
+					// told to look for missing detail must know what this frame
+					// cannot show.
+					renderNote += " This is \"" + entry.element + "\" by itself at close range -- if "
+						"details you authored are missing or melted, reopen_element and adjust before "
+						"moving on. It is a DRAFT frame (studio-preview shading), so it shows form and "
+						"proportion, not the scene's authored materials or lighting.";
 				}
 				else {
 					// A failed render never fails the call -- the advance
@@ -15984,7 +16037,12 @@ namespace RISE
 						     "solid, not its surface -- the surface lies the local radius away from every number "
 						     "you can read. Position an attaching part PAST the surface, and a surface-riding "
 						     "part OFFSET OUTWARD from the axis -- never at another chunk's own coordinates, "
-						     "which is its core.\n\n";
+						     "which is its core. One more scale to keep straight: an sdf_geometry `smin` k is a "
+						     "blend radius in WORLD UNITS, not a fraction of the parts, so a k comparable to the "
+						     "smallest part in the join DISSOLVES that part into its neighbour -- a small feature "
+						     "meeting a large mass wants k at about a third of that small part's radius or less "
+						     "(skeleton_geometry's `blend` self-scales, multiplying the smaller joint radius; a "
+						     "raw smin k does not).\n\n";
 						p += "WORKED EXAMPLE for the chain method (adapt values; delete nothing you need):\n"
 						     "sdf_geometry\n"
 						     "{\n"

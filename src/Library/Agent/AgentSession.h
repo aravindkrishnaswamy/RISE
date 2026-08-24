@@ -4198,6 +4198,24 @@ namespace RISE
 			//! the advance already happened and the failure is reported as a
 			//! fact.
 			//!
+			//! IT IS A DRAFT, EXPLICITLY SIZED (2026-08-23).  This render fires
+			//! in the PIECES phase, where lighting is not yet the model's job --
+			//! a production isolate of a not-yet-lit scene is a black frame that
+			//! reads as "your element is missing".  The draft pipeline's
+			//! studio-preview shading is lighting-independent, so the form reads
+			//! whatever the scene is lit like; the message discloses that the
+			//! frame says nothing about materials or lighting.  Dims are set
+			//! explicitly because the agent surface's absent-dims default only
+			//! covers production beauty renders.  The message also carries ONE
+			//! advisory sentence -- reopen_element if authored detail is missing
+			//! or melted -- and, per the Phase 2b law, NO score of any kind.
+			//!
+			//! IT NEVER BECOMES THE RENDER ANCHOR.  Two independent exclusions
+			//! in RenderQualifiesForAnchor_ cover it (isolate, and draft); see
+			//! AgentRenderResult::anchorApplied's doc for why an anchor made of
+			//! an isolated or draft frame would make the comparison a comparison
+			//! of render settings.
+			//!
 			//! Never gated, never counted against any cap.  Touches the Document
 			//! not at all.
 			AgentFinishElementResult FinishElement();

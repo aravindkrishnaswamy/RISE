@@ -10214,6 +10214,101 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		Check( f.width <= Agent::kAgentSurfaceMaxRenderEdge &&
 		       f.height <= Agent::kAgentSurfaceMaxRenderEdge,
 		       "S1c sized by the agent-surface cap, exactly like a model-issued render" );
+
+		// ---- 2026-08-23, the CLOSE-RANGE ELEMENT LOOK.
+		//
+		// (a) THE PIXELS ARE THE ELEMENT'S.  "png is non-empty" is satisfied
+		// by a 256x256 field of background, which is precisely the failure
+		// this payload fact exists to prevent (an element verified through a
+		// frame that cannot show it).  So: decode it, require it to carry
+		// genuine structure, and then check it against an INDEPENDENTLY
+		// issued render of the same element through the public `render`
+		// verb -- same object, same fidelity, same dims.  Two renders of one
+		// element must agree pixel-for-pixel; a mechanism that attached the
+		// wrong frame, a stale frame or an empty one fails here and cannot
+		// fail the non-empty check above.
+		DecodedLuma finishLuma;
+		Check( DecodeRenderLuma( f.png, finishLuma ), "S1c the finish_element image decodes" );
+		Check( finishLuma.w == f.width && finishLuma.h == f.height,
+		       "S1c and its decoded dims are the dims the result reports" );
+		Check( LumaStdDev( finishLuma ) > 0.01,
+		       "S1c MONEY ASSERTION: the frame carries STRUCTURE, not a flat field -- a blank "
+		       "frame passes every non-empty check there is and is exactly the look that lets "
+		       "sub-pixel anatomy go unnoticed" );
+		{
+			Agent::AgentRenderParams probe;
+			probe.isolate          = "wizard_obj";
+			probe.fromAgentSurface = true;
+			probe.quality          = Agent::AgentRenderQuality::Draft;
+			probe.width            = Agent::kAgentSurfaceMaxRenderEdge;
+			probe.height           = Agent::kAgentSurfaceMaxRenderEdge;
+			const Agent::AgentRenderResult pr = sess->Render( probe );
+			Check( pr.ok && !pr.png.empty(), "S1c a direct isolate render of the same element succeeds" );
+			DecodedLuma probeLuma;
+			Check( DecodeRenderLuma( pr.png, probeLuma ), "S1c and it decodes" );
+			if( probeLuma.w == finishLuma.w && probeLuma.h == finishLuma.h &&
+			    !probeLuma.luma.empty() )
+			{
+				double worst = 0.0, sum = 0.0;
+				for( std::size_t i = 0; i < probeLuma.luma.size(); ++i ) {
+					const double d = std::fabs( probeLuma.luma[i] - finishLuma.luma[i] );
+					sum += d;
+					if( d > worst ) worst = d;
+				}
+				const double meanAbs = sum / static_cast<double>( probeLuma.luma.size() );
+				// A tolerance, not equality: both frames come from the same
+				// deterministic preview pipeline, but tolerating a byte of
+				// encode/decode rounding costs nothing and a wrong frame is
+				// nowhere near this close (the background alone differs by
+				// far more).
+				Check( meanAbs < 0.005 && worst < 0.05,
+				       "S1c MONEY ASSERTION: finish_element's image IS a render of the element it "
+				       "closed -- it matches an independently issued isolate render of the same "
+				       "object pixel for pixel" );
+			}
+			else {
+				Check( false, "S1c the probe render's dims match the finish render's" );
+			}
+		}
+		// (b) THE ADVISORY, and the disclosure that rides with it.  The
+		// sentence is the whole point of the look: the model is still inside
+		// this element's window at the moment it reads this, and
+		// reopen_element is the verb that keeps it there.
+		Check( f.message.find( "by itself at close range" ) != std::string::npos &&
+		       f.message.find( "missing or melted" ) != std::string::npos &&
+		       f.message.find( "reopen_element" ) != std::string::npos,
+		       "S1c MONEY ASSERTION: the result carries the ONE advisory sentence -- what the frame "
+		       "is, what to look for, and the verb that reopens the element" );
+		Check( f.message.find( "DRAFT" ) != std::string::npos,
+		       "S1c and it discloses that the frame is a draft, so the model does not read the "
+		       "absence of authored materials or lighting as a fault in what it built" );
+		// (c) NO SCORE, EVER (Phase 2b's law).  The look is the judgement.
+		{
+			std::string lower = f.message;
+			for( std::size_t i = 0; i < lower.size(); ++i )
+				lower[i] = static_cast<char>( std::tolower( static_cast<unsigned char>( lower[i] ) ) );
+			static const char* const kBanned[] = {
+				"similarity", "score", "rmse", "psnr", "ssim", "percent match", "confidence" };
+			for( const char* b : kBanned ) {
+				Check( lower.find( b ) == std::string::npos,
+				       std::string( "S1c the finish result carries no `" ) + b + "` -- the close-range "
+				       "look states what it is and stops" );
+			}
+		}
+		// (d) THE EMPTY ELEMENT: nothing to show, said in one clause, with
+		// no image attached.  "terrain" is the plan's second element and had
+		// nothing built against it.
+		{
+			const Agent::AgentSession::AgentFinishElementResult e = sess->FinishElement();
+			Check( e.ok && e.element == "terrain", "S1c the second element finishes too" );
+			Check( !e.rendered && e.png.empty() && e.isolateObject.empty(),
+			       "S1c MONEY ASSERTION: an element with nothing built against it carries NO image "
+			       "-- an empty frame would be a picture of nothing, read as a picture of a failure" );
+			Check( e.message.find( "No chunk was recorded against this element" ) != std::string::npos,
+			       "S1c and the result says so in one clause instead" );
+			Check( e.message.find( "close range" ) == std::string::npos,
+			       "S1c with no advisory about a frame that does not exist" );
+		}
 	}
 	// The switch: with the protocol off, filing changes no phase, nothing is
 	// attributed, and no phase refusal can fire -- the session behaves
