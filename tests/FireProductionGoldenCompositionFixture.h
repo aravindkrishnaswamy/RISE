@@ -252,19 +252,41 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			return exactDiagnostic&&
 				DigestFile(checkpointPath)==checkpointDigest?217:215;
 		}
+		auto publishedTargetDigest=[](const std::vector<float>& target){
+			RISECBOR64::Bytes bytes;
+			FireProductionDyadicCalibration::AppendInteger(bytes,target.size());
+			for(const float value:target)
+				FireProductionDyadicCalibration::AppendDouble(bytes,static_cast<double>(value));
+			return RISECBOR64::SHA256Hex(bytes);
+		};
 		std::string equalTimeReferenceScheduleDigest,equalTimeReferenceSerialDigest;
+		std::string equalTimeTerminalTargetDigest,equalTimeSerialTerminalTargetDigest;
+		std::vector<float> equalTimeTerminalTarget,equalTimeSerialTerminalTarget;
+		double equalTimeTerminalTargetTime=0.0,equalTimeSerialTerminalTargetTime=0.0;
 		auto advanceReference=[&](unsigned int workerCount,
-			ConservativeAdvance3DResult& composed,std::string& scheduleDigest)->bool{
+			ConservativeAdvance3DResult& composed,std::string& scheduleDigest,
+			std::vector<float>& terminalTarget,std::string& terminalTargetDigest,
+			double& terminalTargetTime)->bool{
 			if(!limitedClosure){
 				ConservativeAdvance3DConfig directConfig=shadowConfig;
 				directConfig.workerCount=workerCount;
-				return AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
+				const bool advanced=AdvanceConservative3D(shape,conservative,
+					beginning.momentum,zeroPackets,
 					directConfig,fuel,fuel,transport,composed,&error);
+				if(advanced){
+					terminalTarget.resize(composed.divergenceHeunPerS.size());
+					for(std::size_t cell=0u;cell<terminalTarget.size();++cell)
+						terminalTarget[cell]=static_cast<float>(composed.divergenceHeunPerS[cell]);
+					terminalTargetDigest=publishedTargetDigest(terminalTarget);
+					terminalTargetTime=dt;
+				}
+				return advanced;
 			}
 			constexpr std::size_t ReferenceSubstepCount=8u;
 			const double referenceStep=dt/static_cast<double>(ReferenceSubstepCount);
 			const std::vector<double> schedule(ReferenceSubstepCount,referenceStep);
-			if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,schedule,dt,dt)){
+			if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,schedule,dt,dt,
+				"precomposition","precomposition")){
 				error="equal-time reference schedule does not reach the production endpoint";
 				return false;
 			}
@@ -272,6 +294,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			PeriodicMACField referenceMomentum=beginning.momentum;
 			RISECBOR64::Bytes scheduleTrace;
 			double referenceTime=0.0;
+			std::vector<float> penultimateTarget;
 			for(std::size_t substep=0u;substep<ReferenceSubstepCount;++substep){
 				ConservativeAdvance3DConfig referenceConfig=shadowConfig;
 				referenceConfig.transport.deltaTimeS=referenceStep;
@@ -290,27 +313,50 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					advanced.maximumDivergenceResidualPerS);
 				for(const double target:advanced.divergenceHeunPerS)
 					FireProductionDyadicCalibration::AppendDouble(scheduleTrace,target);
+				std::vector<float> publishedTarget(advanced.divergenceHeunPerS.size());
+				for(std::size_t cell=0u;cell<publishedTarget.size();++cell)
+					publishedTarget[cell]=static_cast<float>(advanced.divergenceHeunPerS[cell]);
+				if(substep+2u==ReferenceSubstepCount)penultimateTarget=publishedTarget;
+				if(substep+1u==ReferenceSubstepCount){
+					terminalTarget=std::move(publishedTarget);
+					terminalTargetDigest=publishedTargetDigest(terminalTarget);
+					terminalTargetTime=referenceTime;
+				}
 				referenceState=advanced.conservative;
 				referenceMomentum=advanced.momentumKGPerM2S;
 				composed=std::move(advanced);
 			}
 			if(referenceTime!=dt||!FireProductionCalibration::EqualTimeReferenceSchedule(
-				dt,schedule,referenceTime,referenceTime)){
+				dt,schedule,referenceTime,terminalTargetTime,terminalTargetDigest,
+				terminalTargetDigest)){
 				error="equal-time reference endpoint drifted from production";
+				return false;
+			}
+			if(penultimateTarget.empty()||FireProductionCalibration::EqualTimeReferenceSchedule(
+				dt,schedule,referenceTime,terminalTargetTime,terminalTargetDigest,
+				publishedTargetDigest(penultimateTarget))){
+				error="equal-time reference accepted its penultimate target at the endpoint";
 				return false;
 			}
 			scheduleDigest=RISECBOR64::SHA256Hex(scheduleTrace);
 			return true;
 		};
 		error.clear();
-		if(!advanceReference(16u,oracle,equalTimeReferenceScheduleDigest)){
+		if(!advanceReference(16u,oracle,equalTimeReferenceScheduleDigest,
+			equalTimeTerminalTarget,equalTimeTerminalTargetDigest,
+			equalTimeTerminalTargetTime)){
 			std::fprintf(stderr,"production golden parallel reference %zu failed: %s\n",
 				slice,error.c_str());return 115;
 		}
 		error.clear();
-		if(!advanceReference(1u,oracleSerial,equalTimeReferenceSerialDigest)){std::fprintf(stderr,
+		if(!advanceReference(1u,oracleSerial,equalTimeReferenceSerialDigest,
+			equalTimeSerialTerminalTarget,equalTimeSerialTerminalTargetDigest,
+			equalTimeSerialTerminalTargetTime)){std::fprintf(stderr,
 			"production golden serial reference %zu failed: %s\n",slice,error.c_str());return 116;}
-		if(limitedClosure&&equalTimeReferenceScheduleDigest!=equalTimeReferenceSerialDigest)
+		if(limitedClosure&&(equalTimeReferenceScheduleDigest!=equalTimeReferenceSerialDigest||
+			equalTimeTerminalTargetDigest!=equalTimeSerialTerminalTargetDigest||
+			equalTimeTerminalTarget!=equalTimeSerialTerminalTarget||
+			equalTimeTerminalTargetTime!=equalTimeSerialTerminalTargetTime))
 			return 128;
 		if(oracle.maximumPreProjectionDivergenceResidualPerS!=
 			oracleSerial.maximumPreProjectionDivergenceResidualPerS)return 128;
@@ -405,14 +451,24 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		request.divergenceTargetPerS.resize(cells);
 		request.restorationDivergenceTargetPerS.resize(cells);
 		request.beginningManifoldDeviationPerCell.resize(cells);
+		if(limitedClosure&&equalTimeTerminalTarget.size()!=cells)return 129;
 		for(std::size_t cell=0u;cell<cells;++cell){
-			request.divergenceTargetPerS[cell]=static_cast<float>(oracle.divergenceHeunPerS[cell]);
+			request.divergenceTargetPerS[cell]=limitedClosure?equalTimeTerminalTarget[cell]:
+				static_cast<float>(oracle.divergenceHeunPerS[cell]);
 			double volumeRatio=0.0;
 			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(beginning.states[cell]),fuel,
 				beginning.states[cell].producerPrecision,volumeRatio,&error))return 117;
 			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
 				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
 			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
+		}
+		if(limitedClosure){
+			constexpr std::size_t ReferenceSubstepCount=8u;
+			const std::vector<double> referenceSchedule(ReferenceSubstepCount,
+				dt/static_cast<double>(ReferenceSubstepCount));
+			if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,referenceSchedule,dt,
+				equalTimeTerminalTargetTime,equalTimeTerminalTargetDigest,
+				publishedTargetDigest(request.divergenceTargetPerS)))return 129;
 		}
 		if(timestepVelocityAuditMalformed){
 			const std::uint64_t beginningCommandCount=
@@ -2064,7 +2120,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					production.deliveredRestorationDrainFraction,followingManifoldStep,&error);
 				std::fprintf(stderr,"EQUAL_TIME_LIMITED_PRODUCTION dt=%.17g reference_substeps=8 "
 					"reference_substep_dt=%.17g reference_end=%.17g target_time=%.17g "
-					"schedule=%s predictor_G=%.17g G=%.17g field_max=%.17g "
+					"schedule=%s terminal_target=%s predictor_G=%.17g G=%.17g field_max=%.17g "
 					"headroom_allowance=%.17g low_mach_ceiling=%.17g headroom_met=%d "
 					"delivered_drain=%.17g next_dt_manifold=%.17g limiter_binding=1 "
 					"device_p95_ms=%.17g wall_p95_ms=%.17g tier10_device_hours=%.17g "
@@ -2072,6 +2128,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					"source_commits=%u scalar_reads=%u accepted_token=%d golden=%s\n",
 					static_cast<double>(production.representedTimeStepS),dt/8.0,dt,dt,
 					equalTimeReferenceScheduleDigest.c_str(),
+					equalTimeTerminalTargetDigest.c_str(),
 					production.maximumPredictedAdvectiveManifoldAnomaly,
 					production.maximumManifoldGeneration,fieldMaximum,
 					PlateauHeadroomAllowance,LowMachValidityCeiling,
@@ -2104,6 +2161,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					closureWallP95MS>=125.0&&closureWallP95MS<=250.0&&
 					deviceProjectionHours>=0.8&&deviceProjectionHours<=1.5&&
 					wallProjectionHours>2.0&&wallProjectionHours<=3.0&&
+					equalTimeTerminalTargetDigest==
+						"d198eaaaebd5d8322ba7582456ccdb4fd83016a65120379e7cd1c3e1ae6351ec"&&
 					equalTimeReferenceScheduleDigest==
 						"e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0"&&
 					DigestFile(checkpointPath)==checkpointDigest;

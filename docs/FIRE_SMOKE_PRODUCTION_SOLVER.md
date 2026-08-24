@@ -3690,6 +3690,9 @@ is tagged with that same endpoint and is the only target supplied to the
 single production step.  Parallel and serial reference schedules have the
 same digest `e4472da7...c97e0`.  A mismatched accumulated endpoint and a
 terminal target tagged with a stale substep time are independent REDs.  The
+producer-rounded terminal target is separately bound by `d198eaaa...351ec`;
+substituting the actual penultimate target while retaining the current endpoint
+is RED.  The
 reference costs minutes per slice (eight substeps here, close to the
 pre-registered estimate of ten); that is an acceptable fixture cost and is
 not a production optimization target.
@@ -3708,9 +3711,9 @@ limited step measures predictor `G=0.020501971244812012` and corrected
 `2^-5=0.03125`, but its 25%-headroom allowance is `0.0234375`; the realized
 field is above that allowance, so no accepted-state token is minted.  The
 backstop derives the next manifold step as `0.00055743221913055079 s`.
-One warmup plus five stable samples measure `89.663458173163235 ms` device and
-`176.37566699999999 ms` wall p95.  At the current (larger) limited step those
-already project to `1.074408890113336/2.1134538917570724 h` for tier-10 x
+One warmup plus five stable samples measure `89.583708089776337 ms` device and
+`175.805542 ms` wall p95.  At the current (larger) limited step those
+already project to `1.073453270061155/2.1066222640131049 h` for tier-10 x
 25 s.  A smaller backstop step can only increase the fixed-work step count, so
 the pre-registered approximately two-hour wall rule cannot be met by further
 timestep reduction.

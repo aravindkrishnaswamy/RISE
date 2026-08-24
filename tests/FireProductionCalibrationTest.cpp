@@ -62,17 +62,26 @@ int main()
 		static_cast<float>(0.000579539999762149));
 	const double equalTimeSubstep=equalTimeProduction*0.125;
 	const std::vector<double> equalTimeSchedule(8u,equalTimeSubstep);
+	const std::string equalTimeTerminalTarget="terminal-target";
+	const std::string equalTimePenultimateTarget="penultimate-target";
 	std::vector<double> mismatchedEqualTimeSchedule=equalTimeSchedule;
 	mismatchedEqualTimeSchedule.back()=std::nextafter(mismatchedEqualTimeSchedule.back(),0.0);
 	Check(FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
-		equalTimeSchedule,equalTimeProduction,equalTimeProduction),
+		equalTimeSchedule,equalTimeProduction,equalTimeProduction,
+		equalTimeTerminalTarget,equalTimeTerminalTarget),
 		"equal-time reference accepts the exact shared endpoint");
 	Check(!FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
-		mismatchedEqualTimeSchedule,equalTimeProduction,equalTimeProduction),
+		mismatchedEqualTimeSchedule,equalTimeProduction,equalTimeProduction,
+		equalTimeTerminalTarget,equalTimeTerminalTarget),
 		"equal-time reference rejects a mismatched endpoint");
 	Check(!FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
-		equalTimeSchedule,equalTimeProduction,equalTimeSubstep),
+		equalTimeSchedule,equalTimeProduction,equalTimeSubstep,
+		equalTimeTerminalTarget,equalTimeTerminalTarget),
 		"equal-time reference refuses a stale-dt terminal target");
+	Check(!FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
+		equalTimeSchedule,equalTimeProduction,equalTimeProduction,
+		equalTimeTerminalTarget,equalTimePenultimateTarget),
+		"equal-time reference refuses the penultimate target at the current endpoint");
 	double zeroAnomalyTarget=0.0,activeAnomalyTarget=0.0;
 	const bool zeroAnomalyDerived=RISE::DeriveFireProductionAdvectiveAnomalyTarget(
 		0.125,0.125,0.5,0.25,zeroAnomalyTarget);
@@ -1385,7 +1394,7 @@ int main()
 		"equal_time_composition_evidence.v1");
 	Check(!equalTimeEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(equalTimeEvidence.begin(),equalTimeEvidence.end()))==
-		"b0645a2582e1c1c818b5629734cd6b864a9e4d8445cab2b4a94c2cb7bf4d311f"&&
+		"a5e88f780cccd34682c95ea120b981bdb38ec32d157f3ad390a2a4d32e9defa7"&&
 		equalTimeEvidence.find("protocol_change pre_registered_before_equal_time_measurement")!=
 			std::string::npos&&
 		equalTimeEvidence.find("reference_role oracle_flow_reference_not_production_step_operator")!=
@@ -1400,30 +1409,39 @@ int main()
 		equalTimeEvidence.find("reference_schedule_sha256 "
 			"e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0")!=
 			std::string::npos&&
+		equalTimeEvidence.find("terminal_published_target_sha256 "
+			"d198eaaaebd5d8322ba7582456ccdb4fd83016a65120379e7cd1c3e1ae6351ec")!=
+			std::string::npos&&
+		equalTimeEvidence.find("actual_penultimate_target_substitution_RED true")!=
+			std::string::npos&&
 		equalTimeEvidence.find("limited_corrected_G 0.024358630180358887")!=
 			std::string::npos&&
 		equalTimeEvidence.find("headroom_met false")!=std::string::npos&&
-		equalTimeEvidence.find("limited_tier10_wall_projection_hours 2.1134538917570724")!=
+		equalTimeEvidence.find("limited_tier10_wall_projection_hours 2.1066222640131049")!=
 			std::string::npos&&
 		equalTimeEvidence.find("two_hour_wall_rule_met false")!=std::string::npos&&
 		equalTimeEvidence.find("long_shadow_started false")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"b44cacaeb04d8c88f12b460dad2d795a7c812f7341668fb9796f7a7974f05513"&&
+			"de785abf887b57c30399eb504bcfcb6d8dbc2b1be22752f3d7c0420e0c3edb16"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"7dd047435497b0ce5c49e95c35c7f04b42c34fbe5bfef44500ff8549034ff666"&&
+			"41d3723c03f2a55e179b3c777460e826a5f7a347726344a2585fb29aaddd94ec"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
 			"cd03e6596562103227c912222213e7459ab0f1701ba9a0034cac85fce1095fe1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"bcc6e2c0c815a9fb14e54baced56f81d7e2598dc988fc3dafd9acb14e5c39949"&&
+			"4fb2cb8611210c94d0460977c119e839c7b933a268d8881d75b2ee2401d28e4c"&&
 		goldenCompositionFixture.find("EQUAL_TIME_CONTRACTION_SUMMARY")!=
 			std::string::npos&&
 		goldenCompositionFixture.find("EQUAL_TIME_LIMITED_PRODUCTION")!=
 			std::string::npos&&
 		goldenCompositionFixture.find("referenceTime!=dt")!=std::string::npos&&
+		goldenCompositionFixture.find("penultimateTarget=publishedTarget")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("publishedTargetDigest(request.divergenceTargetPerS)")!=
+			std::string::npos&&
 		goldenCompositionFixture.find("return exactStop?213:212")!=std::string::npos&&
 		fireSimulator3DAdvance.find("OpenPicardContractionDiagnostic")!=std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r162_equal_time_composition")!=

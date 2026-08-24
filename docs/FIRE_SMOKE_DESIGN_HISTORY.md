@@ -3865,7 +3865,9 @@ it was already tried and refuted here.
   Eight exact binary64 substeps reach the production endpoint
   `0.00057953997747972608 s`; the terminal target is tagged with that endpoint
   and schedule digest `e4472da7...c97e0` matches in serial and parallel.
-  Mismatched endpoint and stale-substep target REDs fail.  Minutes per slice
+  The producer-rounded terminal target is separately bound by
+  `d198eaaa...351ec`; the actual penultimate vector substituted at the current
+  endpoint is RED.  Mismatched endpoint and stale-substep target REDs fail.  Minutes per slice
   are accepted fixture cost and are deliberately not optimized.  The amended
   additive contract is scheme distance + oracle temporal distance + production
   temporal distance + subdominance, all at one end time; temporal refinement
@@ -3877,8 +3879,8 @@ it was already tried and refuted here.
   `G=field_max=0.024358630180358887`; the 25%-headroom allowance below `2^-5`
   is `0.0234375`.  The token is withheld and the backstop derives
   `dt_next=0.00055743221913055079 s`.  Device/wall p95 are
-  `89.663458173163235/176.37566699999999 ms`, projecting the current larger
-  step to `1.074408890113336/2.1134538917570724 h`.  Further timestep
+  `89.583708089776337/175.805542 ms`, projecting the current larger
+  step to `1.073453270061155/2.1066222640131049 h`.  Further timestep
   reduction cannot recover a fixed-work two-hour wall budget.  Exact exit 213
   is therefore the pre-registered remap-scheme finding; no ceiling or budget
   moves.  Long shadow and every later arithmetic/readmission/source/preview

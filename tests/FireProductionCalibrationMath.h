@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace FireProductionCalibration
@@ -14,7 +15,8 @@ namespace FireProductionCalibration
 
 	inline bool EqualTimeReferenceSchedule(const double productionDurationS,
 		const std::vector<double>& referenceSubstepsS,const double referenceEndS,
-		const double terminalTargetTimeS)
+		const double terminalTargetTimeS,const std::string& terminalTargetDigest,
+		const std::string& consumedTargetDigest)
 	{
 		if(!(productionDurationS>0.0)||!std::isfinite(productionDurationS)||
 			referenceSubstepsS.empty())return false;
@@ -26,7 +28,8 @@ namespace FireProductionCalibration
 			accumulated+=step;
 		}
 		return std::isfinite(accumulated)&&accumulated==productionDurationS&&
-			referenceEndS==productionDurationS&&terminalTargetTimeS==referenceEndS;
+			referenceEndS==productionDurationS&&terminalTargetTimeS==referenceEndS&&
+			!terminalTargetDigest.empty()&&consumedTargetDigest==terminalTargetDigest;
 	}
 
 	inline bool LongShadowNonsecular(const std::vector<double>& values)

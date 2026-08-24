@@ -767,7 +767,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_cfl_log" &&
 		grep -Fq 'largest_converged_dt=7.244249718496576e-05 largest_converged_level=3 monotone=1 trace=900a7acc56a0c9c51d07788753132d59269bdb591aee699960a3c62b448a051c' "$closure_contraction_log" &&
 		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION dt=0.00057953997747972608 reference_substeps=8 reference_substep_dt=7.244249718496576e-05' "$closure_limited_log" &&
-		grep -Fq 'schedule=e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0 predictor_G=0.020501971244812012 G=0.024358630180358887 field_max=0.024358630180358887' "$closure_limited_log" &&
+		grep -Fq 'schedule=e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0 terminal_target=d198eaaaebd5d8322ba7582456ccdb4fd83016a65120379e7cd1c3e1ae6351ec predictor_G=0.020501971244812012 G=0.024358630180358887 field_max=0.024358630180358887' "$closure_limited_log" &&
 		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=0' "$closure_limited_log" &&
 		grep -Fq 'next_dt_manifold=0.00055743221913055079 limiter_binding=1' "$closure_limited_log" &&
 		grep -Fq 'tier10_wall_hours=' "$closure_limited_log" &&
