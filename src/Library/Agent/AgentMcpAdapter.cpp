@@ -1696,7 +1696,15 @@ namespace RISE
 						"OPTIONAL. The name of the material to vary. Omit it to take the MOST PROMINENT "
 						"material whose microsurface is still a bare number -- which is what a DESIGN NOTE "
 						"about constant microsurface is pointing at, so the no-argument call is the usual "
-						"one." ) );
+						"one. Mutually exclusive with `all`." ) );
+					props.set( "all", BoolProp(
+						"OPTIONAL, default false. Materials-realism item 2: fix EVERY currently-flagged "
+						"material in this ONE call instead of the most prominent one -- the coverage-per-"
+						"call fix for a scene with many flagged materials (a DESIGN NOTE reporting \"N of M "
+						"materials vary\" is exactly when this is the right call). Applies the SAME per-"
+						"material idiom as the single-material form, most-referenced-first, capped at 24 "
+						"per call; the response's `remaining` count says how many are left -- call again "
+						"with `all:true` to continue. Mutually exclusive with `material`." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
 					// Commit-only, and for the SAME reason collapse_to_instances is:
@@ -1717,7 +1725,9 @@ namespace RISE
 						"material's roughness slot(s) to it -- ONE headVersion bump, ONE undo step. The "
 						"material stays the material you authored: only the microsurface stops being flat. "
 						"Pass NO ARGUMENTS to take the most prominent qualifying material. Pass `material` to "
-						"name a different one. Every knob it writes is a named `param` carrying min/max/step/"
+						"name a different one, or `all:true` to fix EVERY currently-flagged material in ONE "
+						"call (capped at 24; the response names how many remain -- call again to continue). "
+						"Every knob it writes is a named `param` carrying min/max/step/"
 						"label (rough_lo, rough_hi, field_scale, field_contrast) plus a `seed`, so retuning it "
 						"afterwards is one propose_patch on a named line rather than an edit to expression "
 						"text -- and that is the idiom to COPY when you author varying scalars by hand. It "
@@ -1725,9 +1735,10 @@ namespace RISE
 						"is a readable constant (already varying, absent, a per-channel triple, or a "
 						"deliberate mirror-specular zero). Roughness only -- it never repaints colour. Returns "
 						"{ok,applied,rawCode,status,retriable,headVersion,message,material,materialKind,"
-						"painter,slots,previousRoughness,qualifying,objects}; a PRE-COMMIT refusal is ok=false "
-						"with an EMPTY status, so branch on `applied`. Always pass the headVersion you last "
-						"read as baseHeadVersion." );
+						"painter,slots,previousRoughness,qualifying,objects} for the single-material form, or "
+						"{ok,qualifying,applied,refused,remaining,message,perMaterial} for `all:true`. A "
+						"PRE-COMMIT refusal is ok=false with an EMPTY status, so branch on `applied`. Always "
+						"pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "vary_material", desc, ObjectProp( "", props, required ) ) );
 				}
 

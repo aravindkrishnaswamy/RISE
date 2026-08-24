@@ -913,7 +913,16 @@ static void RunDesignRepeatedCopiesScanTest()
 		"ggx_material\n{\n\tname rm\n\talphax r\n}\n\n"
 		"sdf_geometry\n{\n\tname sdf_geo\n\tpart\t\tsphere union 0 0 0 0 0 0 0 0 0 1 0\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
-		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+		// Materials-realism item 1: condition H is now COVERAGE-aware, so
+		// `mat` -- the HERO material bound to every repeated bottle in
+		// these fixtures (6-7 objects) -- must itself vary; a flat hero
+		// plus one incidental varying anchor elsewhere (the old silencing
+		// trick) is now EXACTLY the "coverage still low" case this
+		// condition is built to keep firing on.  Kept below
+		// kParamErosionLiteralGate (4 distinct literals) so it doesn't ALSO
+		// trip condition E, same precaution as `anchors`' doc91_field.
+		"expression_painter\n{\n\tname mat_field\n\texpr fbm(P*3.0,3,0.5,2.0)\n}\n\n"
+		"lambertian_material\n{\n\tname mat\n\treflectance mat_field\n}\n\n"
 		"lambertian_material\n{\n\tname mat2\n\treflectance pnt\n}\n\n"
 		"sphere_geometry\n{\n\tname bottle_geo\n\tradius 0.2\n}\n\n";
 
@@ -1495,26 +1504,43 @@ static void RunUnboundMaterialAndFlatAlbedoScanTest()
 	}
 
 	//--------------------------------------------------------------
-	// Condition H: DESIGN_FLAT_ALBEDO.
+	// Condition H: DESIGN_FLAT_ALBEDO.  Materials-realism item 1
+	// (2026-08-24): H is now COVERAGE-aware and hero-weighted, like D --
+	// the gate is on DISTINCT eligible materials (not standard_object
+	// count), and the disarm needs the HERO material (>= kHeroObjectCount
+	// objects bound) to vary, not just any incidental one elsewhere.  This
+	// fixture family was rewritten from doc 91's original (3 objects
+	// sharing ONE flat material, silenced by ANY unrelated procedural
+	// painter existing anywhere) to demonstrate the new mechanism -- the
+	// OLD shape is now precisely the "3 chrome spheres" case the brief
+	// says must not fire (1 distinct material never reaches the gate of
+	// 3), so it could not stay as the RED-PROVE.
 	//--------------------------------------------------------------
-	// Three lamp-base copies, every colour slot a flat uniformcolor_painter
-	// -- the SAME >=3-object threshold condition A gates on.
+	// base_mat is the HERO (bound to a/b/c, 3 objects); extra_mat1/
+	// extra_mat2 are incidental (1 object each) -- all three flat, so
+	// eligibleColorMaterialCount == 3 (>= gate) and coverage is 0/3.
 	const std::string docFlatAlbedo =
 		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
 		"lambertian_material\n{\n\tname base_mat\n\treflectance base_pnt\n}\n\n"
+		"lambertian_material\n{\n\tname extra_mat1\n\treflectance base_pnt\n}\n\n"
+		"lambertian_material\n{\n\tname extra_mat2\n\treflectance base_pnt\n}\n\n"
 		"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
 		"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
 		"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
-		"standard_object\n{\n\tname c\n\tgeometry base_geo\n\tmaterial base_mat\n}\n";
+		"standard_object\n{\n\tname c\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+		"standard_object\n{\n\tname d\n\tgeometry base_geo\n\tmaterial extra_mat1\n}\n"
+		"standard_object\n{\n\tname e\n\tgeometry base_geo\n\tmaterial extra_mat2\n}\n";
 	{
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docFlatAlbedo );
 		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_ALBEDO" );
 		Check( d != nullptr,
-		       "CONDITION H RED-PROVE: >=3 standard_objects with every colour slot a flat constant "
-		       "fires DESIGN_FLAT_ALBEDO" );
+		       "CONDITION H RED-PROVE: 3 distinct flat-colour materials (the HERO bound to 3 objects "
+		       "plus 2 incidental one-object materials), none varying -- fires DESIGN_FLAT_ALBEDO" );
 		if( d ) {
 			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "0 of 3" ) != std::string::npos,
+			       "...reporting the true coverage count (0 of 3 vary)" );
 			Check( d->message.find( "base_color" ) != std::string::npos &&
 			       d->message.find( "reflectance" ) != std::string::npos,
 			       "...naming the procedural colour PATH generically (base_color/reflectance), not a "
@@ -1533,40 +1559,201 @@ static void RunUnboundMaterialAndFlatAlbedoScanTest()
 			// one function, two callers) must, proving note and diagnostic
 			// read the identical claim.
 			const std::string note = AgentSession::ComputeDesignNote( docFlatAlbedo );
-			const std::string kClaim = "every one that exists is a flat uniformcolor_painter";
+			const std::string kClaim = "are still a flat uniformcolor_painter";
 			Check( d->message.find( kClaim ) != std::string::npos && note.find( kClaim ) != std::string::npos,
 			       "MONEY (verbatim invariant): the DESIGN_FLAT_ALBEDO claim text appears "
 			       "BYTE-IDENTICALLY in both the diagnostic and the render-result note -- one shared "
 			       "FormatFlatAlbedoClause_, two callers" );
 		}
 	}
-	// GREEN-PROVE: the SAME three objects, but one more material in the
-	// document has a colour slot bound to a procedural (expression_painter)
-	// field -- MUST silence H even though that material sits on a FOURTH
-	// object, not on a/b/c.
+	// GREEN-PROVE (hero-weighted): the IDENTICAL document, except the HERO
+	// material (base_mat, bound to 3 objects) now reflects a procedural
+	// field instead of the flat painter -- MUST silence H even though the
+	// two INCIDENTAL one-object materials are still flat, because coverage
+	// is hero-weighted: every hero varies, so the incidental flat props
+	// don't veto it.  This is the exact mechanism the old "any procedural
+	// painter anywhere" GREEN-PROVE could no longer demonstrate (that
+	// shape is now the "one fix, 17 materials still flat" bug item 1
+	// exists to close).
 	{
-		const std::string docOneProcedural = docFlatAlbedo +
-			"expression_painter\n{\n\tname weathered_field\n"
-			"\tdef n fbm(P*4.0,4,0.5,2.0)\n\texpr clamp(0.5+n*0.3,0,1)\n}\n\n"
-			"lambertian_material\n{\n\tname shade_mat\n\treflectance weathered_field\n}\n\n"
-			"standard_object\n{\n\tname d\n\tgeometry base_geo\n\tmaterial shade_mat\n}\n";
-		Check( !hasCode( AgentSession::ValidateText( docOneProcedural ), "DESIGN_FLAT_ALBEDO" ),
-		       "CONDITION H GREEN-PROVE: one procedural colour painter bound anywhere in the "
-		       "document (not necessarily on a/b/c) silences the note" );
+		const std::string docHeroVaries =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
+			// 4 distinct literals -- below kParamErosionLiteralGate (6) so
+			// this doesn't ALSO trip DESIGN_PARAM_METADATA_EROSION.
+			"expression_painter\n{\n\tname base_field\n\texpr fbm(P*3.0,3,0.5,2.0)\n}\n\n"
+			"lambertian_material\n{\n\tname base_mat\n\treflectance base_field\n}\n\n"
+			"lambertian_material\n{\n\tname extra_mat1\n\treflectance base_pnt\n}\n\n"
+			"lambertian_material\n{\n\tname extra_mat2\n\treflectance base_pnt\n}\n\n"
+			"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
+			"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname c\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname d\n\tgeometry base_geo\n\tmaterial extra_mat1\n}\n"
+			"standard_object\n{\n\tname e\n\tgeometry base_geo\n\tmaterial extra_mat2\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docHeroVaries ), "DESIGN_FLAT_ALBEDO" ),
+		       "CONDITION H GREEN-PROVE (hero-weighted): the HERO material (3 objects) varies -- "
+		       "coverage is satisfied even though 2 incidental one-object materials stay flat" );
 	}
-	// BELOW THRESHOLD: the same all-constant palette, but only 2 objects --
-	// condition A's own >=3 gate, reused verbatim, must stay silent.
+	// BELOW THRESHOLD: only 2 DISTINCT flat materials (the new gate is on
+	// ELIGIBLE MATERIAL COUNT, not standard_object count) -- must stay
+	// silent even with >=3 standard_objects total, which is exactly the
+	// "3 chrome spheres" shape the brief calls out.
 	{
 		const std::string docBelowThreshold =
 			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
 			"lambertian_material\n{\n\tname base_mat\n\treflectance base_pnt\n}\n\n"
+			"lambertian_material\n{\n\tname extra_mat1\n\treflectance base_pnt\n}\n\n"
 			"cylinder_geometry\n{\n\tname base_geo\n\tradius 0.3\n\theight 0.15\n}\n\n"
 			"standard_object\n{\n\tname a\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
-			"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n";
+			"standard_object\n{\n\tname b\n\tgeometry base_geo\n\tmaterial base_mat\n}\n"
+			"standard_object\n{\n\tname c\n\tgeometry base_geo\n\tmaterial extra_mat1\n}\n";
 		Check( !hasCode( AgentSession::ValidateText( docBelowThreshold ), "DESIGN_FLAT_ALBEDO" ),
-		       "CONDITION H BELOW THRESHOLD: only 2 standard_objects (below condition A's >=3 gate) "
-		       "stays silent even though every colour slot is a flat constant" );
+		       "CONDITION H BELOW THRESHOLD (a.k.a. the 3-chrome-spheres case): 3 standard_objects but "
+		       "only 2 DISTINCT flat materials -- below the eligible-material gate of 3 -- stays "
+		       "silent" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Materials-realism (2026-08-24), items 1 + 4.
+//   Item 1: coverage-fraction disarm at exactly the 50% boundary (no
+//     hero material -- see AgentVaryMaterialTest.cpp's G3/G4b for the
+//     hero-weighted cases).
+//   Item 4: DESIGN_MATERIAL_KIND_MISMATCH, the briefed-vs-bound note.
+//----------------------------------------------------------------------
+static void RunMaterialsRealismScanTest()
+{
+	std::printf( "[design-note] materials-realism items 1 + 4\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	//--------------------------------------------------------------
+	// Item 1: fraction-boundary (no hero -- every material bound to
+	// exactly ONE object, so CoverageSatisfied_ falls back to the plain
+	// fraction).  kCoverageFraction is 0.5: exactly 2 of 4 (50%) must
+	// SATISFY (>=), and 1 of 4 (25%) must NOT (already pinned by
+	// AgentVaryMaterialTest.cpp's G3).
+	//--------------------------------------------------------------
+	{
+		const std::string docHalfVaries =
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\n\tname sp_var\n\texpression\tu\n}\n\n"
+			"ggx_material\n{\n\tname m1\n\talphax 0.3\n}\n\n"
+			"ggx_material\n{\n\tname m2\n\talphax 0.4\n}\n\n"
+			"ggx_material\n{\n\tname m3\n\talphax sp_var\n}\n\n"
+			"ggx_material\n{\n\tname m4\n\talphax sp_var\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
+			"standard_object\n{\n\tname o1\n\tgeometry geo\n\tmaterial m1\n}\n"
+			"standard_object\n{\n\tname o2\n\tgeometry geo\n\tmaterial m2\n}\n"
+			"standard_object\n{\n\tname o3\n\tgeometry geo\n\tmaterial m3\n}\n"
+			"standard_object\n{\n\tname o4\n\tgeometry geo\n\tmaterial m4\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docHalfVaries ), "DESIGN_CONSTANT_MICROSURFACE" ),
+		       "ITEM 1 FRACTION BOUNDARY: 2 of 4 materials vary (exactly 50%, no hero -- every "
+		       "material bound to one object) -- coverage IS satisfied (the gate is >=, not >)" );
+	}
+	{
+		// RED-PROVE (item 1): the SAME shape, but only 1 of 4 varies
+		// (25%, below the fraction) -- must still fire, and report the
+		// true coverage.
+		const std::string docBelowFraction =
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\n\tname sp_var\n\texpression\tu\n}\n\n"
+			"ggx_material\n{\n\tname m1\n\talphax 0.3\n}\n\n"
+			"ggx_material\n{\n\tname m2\n\talphax 0.4\n}\n\n"
+			"ggx_material\n{\n\tname m3\n\talphax 0.5\n}\n\n"
+			"ggx_material\n{\n\tname m4\n\talphax sp_var\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
+			"standard_object\n{\n\tname o1\n\tgeometry geo\n\tmaterial m1\n}\n"
+			"standard_object\n{\n\tname o2\n\tgeometry geo\n\tmaterial m2\n}\n"
+			"standard_object\n{\n\tname o3\n\tgeometry geo\n\tmaterial m3\n}\n"
+			"standard_object\n{\n\tname o4\n\tgeometry geo\n\tmaterial m4\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docBelowFraction );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_CONSTANT_MICROSURFACE" );
+		Check( d != nullptr,
+		       "ITEM 1 RED-PROVE: 1 of 4 materials vary (25%, below the 50% fraction, no hero) -- "
+		       "fires DESIGN_CONSTANT_MICROSURFACE" );
+		if( d ) Check( d->message.find( "1 of 4" ) != std::string::npos,
+		               "...reporting the true coverage count (1 of 4 vary)" );
+	}
+
+	//--------------------------------------------------------------
+	// Item 4: DESIGN_MATERIAL_KIND_MISMATCH.
+	//--------------------------------------------------------------
+	{
+		// RED-PROVE: an object/material NAMED like a jellyfish (the
+		// "emissive-jellyfish" shape from vcm_sdf_luminaire_jellyfish.RISEscene
+		// -- pbr_metallic_roughness_material, NOT itself a luminaire kind)
+		// bound to an OPAQUE material fires the mismatch note.
+		const std::string docJellyfish =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.7 0.8\n}\n\n"
+			"pbr_metallic_roughness_material\n{\n\tname jellyfish_bell_mat\n\tbase_color pnt\n"
+			"\tmetallic 0.0\n\troughness 0.3\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
+			"standard_object\n{\n\tname jellyfish_bell\n\tgeometry geo\n\tmaterial jellyfish_bell_mat\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docJellyfish );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_MATERIAL_KIND_MISMATCH" );
+		Check( d != nullptr,
+		       "ITEM 4 RED-PROVE: an object/material named `jellyfish_bell`/`jellyfish_bell_mat` "
+		       "bound to an OPAQUE pbr_metallic_roughness_material fires DESIGN_MATERIAL_KIND_MISMATCH" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "`jellyfish_bell`" ) != std::string::npos,
+			       "...naming the mismatched object" );
+			Check( d->message.find( "dielectric_material" ) != std::string::npos &&
+			       d->message.find( "subsurfacescattering_material" ) != std::string::npos,
+			       "...naming the transmissive alternatives" );
+			Check( d->message.find( "named like" ) != std::string::npos,
+			       "...hedging as a heuristic on the NAME" );
+			Check( d->message.find( "this is fine, ignore it" ) != std::string::npos,
+			       "...self-disarming" );
+		}
+	}
+	{
+		// GREEN-PROVE (the brief's own named case): a painter named
+		// `glass_green` bound through a GENUINELY transmissive
+		// dielectric_material -- must NOT fire.  The material KIND, not
+		// the painter's name, is what this condition classifies.
+		const std::string docGenuineGlass =
+			"RISE ASCII SCENE 7\n"
+			// `tau` is a SCALAR-pipe slot (ISCALARPAINTER_REFACTOR.md), so
+			// the painter naming "glass" here is a scalar_painter, not a
+			// colour one -- still exactly the brief's scenario: a chunk
+			// named like the trigger words, genuinely bound through a
+			// transmissive material kind.
+			"scalar_painter\n{\n\tname glass_green\n\tvalue 0.9\n}\n\n"
+			"dielectric_material\n{\n\tname mat_pane\n\ttau glass_green\n\tior 1.5\n}\n\n"
+			"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 0.05\n}\n\n"
+			"standard_object\n{\n\tname pane\n\tgeometry geo\n\tmaterial mat_pane\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docGenuineGlass ), "DESIGN_MATERIAL_KIND_MISMATCH" ),
+		       "ITEM 4 GREEN-PROVE: a painter named `glass_green` bound through a genuinely "
+		       "transmissive dielectric_material stays silent -- the material KIND decides, not the "
+		       "painter's name" );
+	}
+	{
+		// GREEN-PROVE (calibration): a TRUE luminaire named `glass1` (the
+		// photon_cloister.RISEscene / bdpt_cloister.RISEscene shape, 7 of
+		// the corpus's 25 raw name hits) stays silent -- a glowing shell
+		// sold by emission, not transmission, is deliberately excluded.
+		const std::string docGlassLuminaire =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\n\tname pnt\n\tcolor 5 5 5\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname glass1\n\texitance pnt\n\tscale 20.0\n\tmaterial none\n}\n\n"
+			"sphere_geometry\n{\n\tname geo\n\tradius 0.2\n}\n\n"
+			"standard_object\n{\n\tname glass1_obj\n\tgeometry geo\n\tmaterial glass1\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docGlassLuminaire ), "DESIGN_MATERIAL_KIND_MISMATCH" ),
+		       "ITEM 4 GREEN-PROVE (calibration): a `glass1`-named lambertian_luminaire_material "
+		       "(the photon_cloister/bdpt_cloister shape) stays silent -- emitters are excluded from "
+		       "the opaque set" );
 	}
 }
 
@@ -2218,6 +2405,7 @@ int main()
 	RunValidateDesignDiagnosticsScanTest();
 	RunValidateDesignDiagnosticsCarrierTest();
 	RunAdoptionPolishScanTest();
+	RunMaterialsRealismScanTest();
 	RunUnboundMaterialAndFlatAlbedoScanTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );

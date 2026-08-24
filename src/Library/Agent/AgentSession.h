@@ -5956,6 +5956,44 @@ namespace RISE
 			AgentVaryMaterialResult VaryMaterial( const std::string& material = std::string(),
 			                                      const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! Materials-realism item 2 (2026-08-24): what vary_material
+			//! {all:true} did -- ONE bounded summary of a LOOP of ordinary
+			//! VaryMaterial calls (see the .cpp's own doc: this is a loop
+			//! around proven per-material machinery, never a second material
+			//! rewrite path).
+			struct AgentVaryMaterialBatchResult
+			{
+				bool ok = false;                    //!< true iff at least one material was applied
+				int  qualifyingMaterials = 0;        //!< how many materials were flagged at batch START
+				int  appliedCount        = 0;
+				int  refusedCount        = 0;
+				int  remainingCount      = 0;        //!< qualifyingMaterials beyond the cap -- "call again"
+				//! One entry per material actually attempted (applied or
+				//! refused), most-referenced-first, capped at
+				//! kVaryMaterialBatchCap -- see AgentVaryMaterialResult for
+				//! the per-entry shape.
+				std::vector<AgentVaryMaterialResult> perMaterial;
+				std::string message;
+			};
+
+			//! Materials-realism item 2: apply VaryMaterial's exact per-
+			//! material idiom to EVERY currently-flagged constant-
+			//! microsurface material in ONE call, instead of the model
+			//! having to name each one across separate calls (measured
+			//! motivation: coverage-per-call was 1, against 17-20 flagged
+			//! materials per underwater-session document).  NOT a second
+			//! rewrite path -- a bounded loop over the SAME VaryMaterial(name)
+			//! this file already ships, most-referenced-first (the same
+			//! tie-break SelectMaterialToVary_ uses for the bare-call pick),
+			//! capped at kVaryMaterialBatchCap (24) so a pathological
+			//! document cannot blow up one tool result -- `remainingCount`
+			//! names how many are left; call again to continue.  `baseOrNull`
+			//! is checked ONCE, against the head this call started from
+			//! (each per-material sub-call then commits against whatever the
+			//! PRIOR sub-call just landed, deliberately -- a batch is
+			//! multiple intentional commits, not one atomic swap).
+			AgentVaryMaterialBatchResult VaryMaterialAll( const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
 			//! reason it declined.
 			//!

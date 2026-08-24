@@ -874,9 +874,16 @@ static void TestNote()
 		       "that fired on every small scene would be noise" );
 	}
 
-	// (3) THREE qualifying but ONE spatially-varying microsurface binding
-	//     already in the document -> SILENT.  The note prices an unreached
-	//     affordance; one varying binding proves the author has reached it.
+	// (3) THREE qualifying flat materials (one object each) plus ONE
+	//     already-varying microsurface binding (also one object) ->
+	//     materials-realism item 1 (2026-08-24): this does NOT fully
+	//     disarm the note anymore.  No material here is a HERO (every one
+	//     binds exactly one object), so coverage falls back to the plain
+	//     fraction: 1 of 4 varying (25%) is below kCoverageFraction (50%),
+	//     so the note correctly KEEPS FIRING -- three flat materials are
+	//     still an unfixed deficit.  This is the exact measured bug item 1
+	//     closes: the OLD binary disarm ("does ANY binding vary anywhere")
+	//     let one incidental fix silence a note about three others.
 	{
 		std::string body = Preamble();
 		body += "scalar_painter\n{\n\tname sp_var\n\tparam f 3.0\n\texpression clamp(fbm(P*f, 3, 0.5, 2.0)+0.5, 0.05, 0.9)\n}\n\n";
@@ -889,12 +896,19 @@ static void TestNote()
 		body += Obj( "o3", "m3", 1 );
 		body += Obj( "o4", "m4", 2 );
 		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
-		Check( hasCode( diags, kCode ) == nullptr,
-		       "G3 MONEY: three qualifying materials but ONE already-varying microsurface binding "
-		       "DISARMS the note -- it prices an unreached affordance, and one varying binding "
-		       "proves the author has already reached it" );
-		// ...and the VERB still works on that document, because a scene that
-		// textured one material may still be shipping three flat ones.
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr,
+		       "G3 MONEY (materials-realism item 1): three flat materials + one already-varying "
+		       "one-object material does NOT disarm the note -- coverage 1/4 (25%, no hero material "
+		       "exists) is below the 50% fraction gate, so it correctly keeps firing" );
+		if( d ) {
+			Check( d->message.find( "1 of 4" ) != std::string::npos,
+			       "G3: ...reporting the true coverage count (1 of 4 vary)" );
+		}
+		// ...and the VERB still works on that document (unaffected by item
+		// 1 -- VaryMaterial's own gate has always been per-material, not
+		// coverage), because a scene that textured one material may still
+		// be shipping three flat ones.
 		{
 			const std::string tmp = TempPath( "varymat_g3.RISEscene" );
 			Job* pJob = LoadScene( body, tmp );
@@ -988,15 +1002,22 @@ static void TestOpaqueTripleDisqualifies()
 	}
 }
 
-//! After vary_material runs, the SAME condition-D census re-run on the
-//! mutated document must no longer fire: the chosen material's roughness
-//! slot(s) are now bound to the minted (Varying) scalar_painter, which both
-//! drops the constant-microsurface count below the gate AND directly trips
-//! the varying-binding disarm -- either alone would already silence it.
+//! Materials-realism item 1 (2026-08-24) rewrote this case: the OLD
+//! assertion was "ONE vary_material call disarms the census" -- exactly
+//! the measured bug item 1 exists to close (a roughness note vanishing
+//! after 2 fixes with 17 materials still flat).  SceneThreeMaterials has
+//! TWO hero materials (mat_a: 2 objects, mat_b: 3 objects -- both >=
+//! kHeroObjectCount) plus one incidental one (mat_c: 1 object).  A bare
+//! VaryMaterial() call picks the MOST-bound material (mat_b) -- fixing
+//! ONE hero while the OTHER hero (mat_a) stays flat must NOT silence the
+//! note under hero-weighted coverage.  A SECOND call (naming mat_a, the
+//! remaining flat hero) is what actually clears it -- which is exactly
+//! the coverage note's own "or `all true`" guidance (materials-realism
+//! item 2) pointing at this same fix.
 static void TestPostVaryDisarmsCensus()
 {
-	std::printf( "G4b: after vary_material runs, re-running the census on the MUTATED document -- D "
-	             "no longer fires\n" );
+	std::printf( "G4b: after vary_material runs, re-running the census on the MUTATED document -- "
+	             "coverage-aware, so ONE hero fixed while another stays flat KEEPS firing\n" );
 
 	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code ) -> const Agent::AgentDiagnostic* {
 		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
@@ -1017,14 +1038,25 @@ static void TestPostVaryDisarmsCensus()
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 	const Agent::AgentSession::AgentVaryMaterialResult r = sess->VaryMaterial();
 	Check( r.ok && r.applied, std::string( "G4b: vary_material applied -- " ) + r.message );
+	Check( r.material == "mat_b", "G4b: the bare call picked mat_b -- the most-bound (3 objects) hero" );
+	const std::string afterOne = sess->ReadDocument();
+
+	Check( hasCode( Agent::AgentSession::ValidateText( afterOne ), kCode ) != nullptr,
+	       "G4b MONEY (materials-realism item 1): fixing ONE hero (mat_b) does NOT silence the "
+	       "census -- mat_a (2 objects, also a hero) is still flat, and hero-weighted coverage "
+	       "requires EVERY hero to vary. This is the exact 'one fix, still-flat materials remain' "
+	       "bug the binary disarm used to hide." );
+
+	// The SECOND call -- naming the remaining flat hero directly -- is
+	// what the coverage note's own text now points a model at.
+	const Agent::AgentSession::AgentVaryMaterialResult r2 = sess->VaryMaterial( "mat_a" );
+	Check( r2.ok && r2.applied, std::string( "G4b: second vary_material(mat_a) applied -- " ) + r2.message );
 	const std::string after = sess->ReadDocument();
 
 	Check( hasCode( Agent::AgentSession::ValidateText( after ), kCode ) == nullptr,
-	       "G4b MONEY: re-running the SAME census on the document vary_material just mutated -- "
-	       "condition D no longer fires.  `mat_b`'s alphax/alphay are now bound to the minted "
-	       "scalar_painter (Varying), which drops the constant-microsurface count to 2 (below the "
-	       "gate of 3) AND trips the varying-binding disarm directly -- the new binding really does "
-	       "disarm the census it used to fire" );
+	       "G4b MONEY: once BOTH heroes (mat_a, mat_b) vary, the census falls silent even though "
+	       "mat_c (1 object, not a hero) is still a bare number -- hero-weighted coverage does not "
+	       "veto on an incidental prop" );
 
 	sess.reset();
 	pJob->release();
@@ -1266,6 +1298,124 @@ static void TestWireSurface()
 	std::remove( tmp.c_str() );
 }
 
+//! Materials-realism item 2 (2026-08-24): vary_material {all:true} applies
+//! the SAME per-material idiom to EVERY currently-flagged constant-
+//! microsurface material in ONE call -- the coverage-per-call fix
+//! (measured motivation: coverage-per-call observed at 1, against
+//! 17-20 flagged materials per underwater-session document).
+static void TestVaryMaterialAllBatch()
+{
+	std::printf( "I1: vary_material {all:true} -- batch applies to EVERY flagged material in one call\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code ) -> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+
+	// FIVE flat ggx materials, one object each -- no hero, so ONLY a batch
+	// (or five separate calls) can clear coverage; the design note itself
+	// would report "0 of 5 vary".
+	{
+		std::string body = Preamble();
+		for( int i = 0; i < 5; ++i ) {
+			const std::string nm = "matb" + std::to_string( i );
+			body += Ggx( nm, "0.3" );
+			body += Obj( "objb" + std::to_string( i ), nm, static_cast<double>( i ) - 2.0 );
+		}
+		const std::string tmp = TempPath( "varymat_all.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "I1: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentVaryMaterialBatchResult br = sess->VaryMaterialAll();
+			Check( br.ok, "I1: batch call succeeded (ok=true)" );
+			Check( br.qualifyingMaterials == 5, "I1: qualifyingMaterials reports the true flagged count (5)" );
+			Check( br.appliedCount == 5, "I1 MONEY: all 5 flagged materials applied in ONE call" );
+			Check( br.refusedCount == 0, "I1: none refused" );
+			Check( br.remainingCount == 0, "I1: nothing left beyond the cap (5 < 24)" );
+			Check( br.perMaterial.size() == 5, "I1: per-material summary carries one entry per applied material" );
+			bool allApplied = true;
+			for( const Agent::AgentSession::AgentVaryMaterialResult& r : br.perMaterial )
+				if( !r.applied ) allApplied = false;
+			Check( allApplied, "I1: every per-material entry itself reports applied=true" );
+
+			// ...and re-running the design-note census on the batch-mutated
+			// document confirms it end to end: condition D is now silent.
+			const std::vector<Agent::AgentDiagnostic> after =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			Check( hasCode( after, "DESIGN_CONSTANT_MICROSURFACE" ) == nullptr,
+			       "I1 MONEY: re-running the census on the batch-mutated document -- condition D is "
+			       "silent (5 of 5 now vary)" );
+
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// CAP: 26 flat materials -- the batch call attempts only 24 (the cap)
+	// and reports 2 remaining, "call again".
+	{
+		std::string body = Preamble();
+		for( int i = 0; i < 26; ++i ) {
+			const std::string nm = "matc" + std::to_string( i );
+			body += Ggx( nm, "0.3" );
+			body += Obj( "objc" + std::to_string( i ), nm, static_cast<double>( i ) - 13.0 );
+		}
+		const std::string tmp = TempPath( "varymat_all_cap.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "I1 CAP: 26-material fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentVaryMaterialBatchResult br = sess->VaryMaterialAll();
+			Check( br.qualifyingMaterials == 26, "I1 CAP: qualifyingMaterials reports the true total (26)" );
+			Check( br.appliedCount == 24, "I1 CAP MONEY: only the cap (24) is applied in one call" );
+			Check( br.perMaterial.size() == 24, "I1 CAP: the per-material summary itself is bounded at 24" );
+			Check( br.remainingCount == 2, "I1 CAP MONEY: remainingCount names the 2 left beyond the cap" );
+			Check( br.message.find( "call again" ) != std::string::npos,
+			       "I1 CAP: the message tells the caller to call again for the rest" );
+
+			// A SECOND batch call on the now-mutated document clears the
+			// remaining two.
+			const Agent::AgentSession::AgentVaryMaterialBatchResult br2 = sess->VaryMaterialAll();
+			Check( br2.qualifyingMaterials == 2, "I1 CAP: the second call sees only the 2 still-flat materials" );
+			Check( br2.appliedCount == 2 && br2.remainingCount == 0,
+			       "I1 CAP MONEY: the second call clears the rest -- 'call again' was honest" );
+
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// RED-PROVE ONE ASSERTION (item 2): a fixture with ZERO qualifying
+	// materials must REFUSE (ok=false), not silently report success -- if
+	// the batch loop's empty-input guard were missing, `ok = appliedCount
+	// > 0` would still correctly read false, but `qualifyingMaterials`
+	// would misreport; this pins the refusal message itself fires and
+	// names why.
+	{
+		std::string body = Preamble();
+		body += "lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_dark\n}\n\n";
+		body += Obj( "o1", "mat_diffuse", 0 );
+		const std::string tmp = TempPath( "varymat_all_none.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "I1 RED-PROVE fixture: derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentVaryMaterialBatchResult br = sess->VaryMaterialAll();
+			Check( !br.ok, "I1 RED-PROVE: zero qualifying materials (lambertian has no roughness slot) "
+			       "refuses (ok=false), not a false success" );
+			Check( br.appliedCount == 0 && br.qualifyingMaterials == 0,
+			       "I1 RED-PROVE: applied/qualifying both report zero, honestly" );
+			Check( !br.message.empty(), "I1 RED-PROVE: the refusal states a reason" );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "AgentVaryMaterialTest -- 88 S5: vary_material\n" );
@@ -1282,6 +1432,7 @@ int main()
 	TestPbrColourPipe();
 	TestPbrDeterminism();
 	TestWireSurface();
+	TestVaryMaterialAllBatch();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

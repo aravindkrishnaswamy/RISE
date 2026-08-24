@@ -3949,7 +3949,7 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// vary_material {material?, baseHeadVersion?}
+				// vary_material {material?, all?, baseHeadVersion?}
 				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
 				//       material,materialKind,painter,slots:[string,...],
 				//       previousRoughness,qualifying,objects}
@@ -3962,6 +3962,17 @@ namespace RISE
 				//   material here has a readable constant microsurface" is an
 				//   answer rather than a malformed call (the same shape
 				//   collapse_to_instances uses).
+				//
+				//   Materials-realism item 2 (2026-08-24): `all:true` routes to
+				//   AgentSession::VaryMaterialAll instead -- ONE call fixes EVERY
+				//   currently-flagged material (capped, `remaining` names the
+				//   rest) rather than requiring one call per material, which
+				//   measurement showed models rarely do on their own (coverage-
+				//   per-call observed at 1 against 17-20 flagged materials).
+				//   `all` and `material` are mutually exclusive: `all:true` with
+				//   a `material` string is a malformed call, same posture as any
+				//   other param combination this dispatcher already refuses
+				//   rather than silently prioritizes one over the other.
 				//--------------------------------------------------------------
 				if( m == "vary_material" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -3971,10 +3982,44 @@ namespace RISE
 						else if( !mv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
 					}
+					bool allFlag = false;
+					if( const JsonValue* av = params.find( "all" ) ) {
+						if( av->isBool() ) allFlag = av->asBool();
+						else if( !av->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'all' must be a boolean" );
+					}
+					if( allFlag && !materialStr.empty() )
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'all' and 'material' are mutually exclusive -- pass 'all':true to "
+							"fix every flagged material, or 'material' to name one" );
 					RISE::Cst::CstHeadVersion base;
 					std::string bErr;
 					const int b = ParseBaseHeadVersionParam( params, base, bErr );
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					if( allFlag ) {
+						const AgentSession::AgentVaryMaterialBatchResult br =
+							s->VaryMaterialAll( ( b == 1 ) ? &base : nullptr );
+						JsonValue result = JsonValue::MakeObject();
+						result.set( "ok",         JsonValue::MakeBool( br.ok ) );
+						result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( br.qualifyingMaterials ) ) );
+						result.set( "applied",    JsonValue::MakeNumber( static_cast<double>( br.appliedCount ) ) );
+						result.set( "refused",    JsonValue::MakeNumber( static_cast<double>( br.refusedCount ) ) );
+						result.set( "remaining",  JsonValue::MakeNumber( static_cast<double>( br.remainingCount ) ) );
+						if( !br.message.empty() ) result.set( "message", JsonValue::MakeString( br.message ) );
+						JsonValue arr = JsonValue::MakeArray();
+						for( const AgentSession::AgentVaryMaterialResult& vr : br.perMaterial ) {
+							JsonValue entry = JsonValue::MakeObject();
+							entry.set( "applied", JsonValue::MakeBool( vr.applied ) );
+							if( !vr.material.empty() )     entry.set( "material",     JsonValue::MakeString( vr.material ) );
+							if( !vr.materialKind.empty() ) entry.set( "materialKind", JsonValue::MakeString( vr.materialKind ) );
+							if( !vr.painterChunk.empty() ) entry.set( "painter",      JsonValue::MakeString( vr.painterChunk ) );
+							if( !vr.message.empty() )      entry.set( "message",      JsonValue::MakeString( vr.message ) );
+							arr.push_back( entry );
+						}
+						result.set( "perMaterial", arr );
+						return MakeSuccess( idValue, result );
+					}
 
 					const AgentSession::AgentVaryMaterialResult vr =
 						s->VaryMaterial( materialStr, ( b == 1 ) ? &base : nullptr );

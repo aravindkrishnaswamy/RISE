@@ -3071,6 +3071,68 @@ namespace RISE
 			//! private thresholds.
 			static const int kConstantMicrosurfaceGate = 3;
 
+			//! Materials-realism item 1: a material counts as a HERO for
+			//! coverage purposes once >= this many `standard_object` chunks
+			//! bind it.  TWO, per the brief's own wording ("materials bound
+			//! to 2+ objects") -- one object could be an incidental prop
+			//! (the "3 chrome spheres" scene each objects's material is
+			//! ALSO 1-object if authored as three distinct chunks, or one
+			//! 3-object hero if they share ONE chrome material; either way a
+			//! deliberately-uniform look is what the note's existing
+			//! self-disarm sentence is for, not this gate -- see
+			//! CoverageSatisfied_'s own comment).
+			static const int kHeroObjectCount = 2;
+
+			//! Materials-realism item 1: the plain-fraction fallback when NO
+			//! hero material exists (every material in the document is a
+			//! one-off prop) -- HALF, so a 2-material scene needs at least
+			//! one varying to disarm and a 4-material scene needs 2.  Not
+			//! separately measured; chosen as the obvious midpoint between
+			//! "any one material varying disarms everything" (the old,
+			//! measured-too-loose behaviour) and "every last material must
+			//! vary" (measured-too-strict -- a scene may legitimately mix a
+			//! few plastics with a textured hero).
+			static const double kCoverageFraction = 0.5;
+
+			//! Materials-realism item 1: one (objectCount, flat) sample for
+			//! CoverageSatisfied_ below -- shared shape for both the
+			//! roughness and colour pipes so they cannot each grow a
+			//! private notion of "hero-weighted".
+			struct MaterialCoverageSample_
+			{
+				int  objectCount = 0;
+				bool flat        = false;   //!< true iff this material is the offender (no spatial variation)
+			};
+
+			//! Materials-realism item 1: hero-weighted coverage verdict,
+			//! shared by conditions D (roughness) and H (colour) so the two
+			//! pipes cannot silently disagree about what "enough coverage"
+			//! means.  Prefers weighting by referring-object count over a
+			//! raw fraction (the brief's own instruction): if ANY sample is
+			//! a HERO (kHeroObjectCount+ objects), coverage is satisfied iff
+			//! EVERY hero varies -- a still-flat hero (the material doing
+			//! most of the visual work) keeps the note alive even if every
+			//! incidental one-off prop already varies.  Only when NO hero
+			//! exists (every material in the document is a one-off) does
+			//! this fall back to the plain kCoverageFraction over the whole
+			//! set.  An EMPTY input is vacuously satisfied (never fires) --
+			//! the caller's own `eligibleCount >= kConstantMicrosurfaceGate`
+			//! gate already keeps this from mattering in practice.
+			bool CoverageSatisfied_( const std::vector<MaterialCoverageSample_>& samples )
+			{
+				if( samples.empty() ) return true;
+				bool anyHero = false;
+				for( const MaterialCoverageSample_& s : samples ) {
+					if( s.objectCount < kHeroObjectCount ) continue;
+					anyHero = true;
+					if( s.flat ) return false;   // one flat hero is enough to keep the note alive
+				}
+				if( anyHero ) return true;   // every hero varies, no incidental-prop veto
+				int varied = 0;
+				for( const MaterialCoverageSample_& s : samples ) if( !s.flat ) ++varied;
+				return ( static_cast<double>( varied ) / static_cast<double>( samples.size() ) ) >= kCoverageFraction;
+			}
+
 			//! The MICROSURFACE scalar slots each material kind exposes, audited
 			//! against `ChunkParserRegistry.cpp`'s own descriptors (2026-08-20),
 			//! never guessed.
@@ -3254,6 +3316,81 @@ namespace RISE
 				return table;
 			}
 
+			//! Materials-realism item 4 (2026-08-24): every Material-category
+			//! chunk keyword that is OPAQUE / REFLECTION-ONLY -- derived from
+			//! the registered descriptors, not a hand-listed set.  A kind is
+			//! EXCLUDED (never flagged by condition I) when:
+			//!
+			//!   (a) it declares a TRANSMISSION/SCATTERING-class param --
+			//!       `tau`, `scattering`, `absorption`, or `refractance`
+			//!       (audited against ChunkParserRegistry.cpp 2026-08-24:
+			//!       covers dielectric_material, subsurfacescattering_material,
+			//!       randomwalk_sss_material, translucent_material,
+			//!       polished_material, perfectrefractor_material -- every
+			//!       kind that can actually transmit light through itself).
+			//!   (b) it declares `exitance` -- an EMITTER
+			//!       (lambertian_luminaire_material, phong_luminaire_material).
+			//!       CALIBRATION EVIDENCE (full in-tree scene corpus scan,
+			//!       2026-08-24): of 25 material chunks named like glass/
+			//!       crystal/jelly/etc. bound to an otherwise-opaque kind, 17
+			//!       (68%) were LUMINAIRES -- photon_cloister.RISEscene /
+			//!       bdpt_cloister.RISEscene's seven `glass<N>` light chunks,
+			//!       dreamscape_covenant_of_the_vale's `mat_crystal_heart`,
+			//!       dreamscape_coral_queens_hour{,_v2}'s `mat_jelly_bell`.
+			//!       A glowing shell sold by EMISSION rather than
+			//!       transmission is a deliberate, common authoring choice
+			//!       (a "glass lantern" or a bioluminescent jellyfish bell)
+			//!       this note must not second-guess -- excluding emitters is
+			//!       what keeps that 68% from being a false-positive flood.
+			//!   (c) `composite_material` (wraps OTHER materials via `top`/
+			//!       `bottom` -- not determinately opaque from its own
+			//!       descriptor) and `datadriven_material` (an opaque, file-
+			//!       driven measured BRDF/BTDF whose actual transmission
+			//!       behaviour the descriptor cannot see either way).  These
+			//!       two are the one named exception to "derive, don't
+			//!       hand-list": every OTHER kind's classification comes
+			//!       from (a)/(b) alone.
+			//!
+			//! RESIDUAL, DOCUMENTED false-positive risk from the SAME
+			//! corpus scan (not excluded -- no single dominant pattern the
+			//! way luminaires were): `pbr_metallic_roughness_material`
+			//! named `jellyfish_*` (vcm_sdf_luminaire_jellyfish.RISEscene --
+			//! itself a luminaire scene, plausibly a deliberate opaque-bell-
+			//! plus-separate-light design), `lambertian_material` named
+			//! `mat_water`/`lambert_water`/`mat_membrane` (receding_pier,
+			//! gerstner_plane, skin_stress), `isotropic_phong_material`
+			//! named `ice_mat` (planetary_survey) -- 8 of 25 corpus hits.
+			//! Left firing deliberately: this is an Info-severity, self-
+			//! disarming, "named like" HEDGED advisory, and each of these is
+			//! a plausible genuine miss (a stylized/background water or ice
+			//! surface CAN legitimately skip transmission) as much as a
+			//! deliberate choice -- exactly the ambiguity the message's own
+			//! "named like" hedge and self-disarm exist for.
+			const std::set<std::string>& OpaqueReflectionOnlyMaterialKinds_()
+			{
+				static const std::set<std::string> table = [] {
+					std::set<std::string> out;
+					static const std::set<std::string> kTransmissionMarkers =
+						{ "tau", "scattering", "absorption", "refractance" };
+					static const std::set<std::string> kWrapperOrFileDrivenKinds =
+						{ "composite_material", "datadriven_material" };
+					for( const String& kw : AllKeywordsForCategory( ChunkCategory::Material ) ) {
+						const ChunkDescriptor* d = DescriptorForKeyword( kw );
+						if( !d ) continue;
+						const std::string kind = std::string( kw.c_str() );
+						if( kWrapperOrFileDrivenKinds.count( kind ) ) continue;
+						bool transmissive = false, emitter = false;
+						for( const ParameterDescriptor& p : d->parameters ) {
+							if( kTransmissionMarkers.count( p.name ) ) transmissive = true;
+							if( p.name == "exitance" ) emitter = true;
+						}
+						if( !transmissive && !emitter ) out.insert( kind );
+					}
+					return out;
+				}();
+				return table;
+			}
+
 			//! "MOST PROMINENT" -- ONE definition, read by design-note condition D
 			//! (which NAMES the material in its clause) and by a bare
 			//! `vary_material` call (which REWRITES it).  If these two ever
@@ -3285,6 +3422,7 @@ namespace RISE
 				bool conditionF = false;   //!< adoption polish item 2: orphaned Painter/Function chunks
 				bool conditionG = false;   //!< doc 91: a Material chunk zero standard_objects reference
 				bool conditionH = false;   //!< doc 91: every colour-carrying material slot is a flat constant
+				bool conditionI = false;   //!< materials-realism item 4: briefed-vs-bound (glass/liquid-NAMED but opaque-bound) mismatch
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -3339,6 +3477,55 @@ namespace RISE
 				//! orphanedPainterNames just scoped to Material.  Same
 				//! bounded-list formatting.
 				std::vector<std::string> unboundMaterialNames;
+
+				//! Materials-realism item 1 (2026-08-24): COVERAGE for
+				//! conditions D and H, replacing the old binary "does ANY
+				//! slot vary anywhere" disarm (one vary_material call used
+				//! to silence the whole note with 17 materials still flat).
+				//! `eligible*` is every material this pipe has an opinion
+				//! about (kind known to the relevant slot table AND spells
+				//! out at least one relevant slot -- D's existing
+				//! constantMicrosurfaceMaterials is the FLAT subset of
+				//! eligibleRoughnessMaterialCount; flatColorMaterials is the
+				//! analogous flat subset for colour, condition H's own
+				//! resolution pass building it fresh since H never needed a
+				//! per-material list before this).  `varied* = eligible* -
+				//! flat*` is the "N of M" the clause reports.
+				int eligibleRoughnessMaterialCount = 0;
+				int variedRoughnessMaterialCount   = 0;
+				int eligibleColorMaterialCount     = 0;
+				int variedColorMaterialCount       = 0;
+				//! Condition H's flat-colour-material population, the colour
+				//! twin of constantMicrosurfaceMaterials (name/kind/
+				//! objectCount only -- roughnessSlots/roughness are unused
+				//! for this list, MicrosurfaceMaterial_ reused rather than a
+				//! near-duplicate struct).
+				std::vector<MicrosurfaceMaterial_> flatColorMaterials;
+				//! Both flat lists, sorted MOST-REFERENCED first (ties by
+				//! name) for the clause's "flattest offenders" bounded list
+				//! -- a copy, not a re-sort of constantMicrosurfaceMaterials/
+				//! flatColorMaterials in place, since SelectMaterialToVary_
+				//! and the batch-vary_material verb (materials-realism item
+				//! 2) read those in DOCUMENT order and must not have their
+				//! iteration order silently changed by a display concern.
+				std::vector<std::string> roughnessFlattestNames;
+				std::vector<std::string> colorFlattestNames;
+				//! Hero-weighted disarm inputs (item 1): true when either (a)
+				//! at least one material is bound to >= kHeroObjectCount
+				//! objects and EVERY such hero material varies, or (b) no
+				//! hero material exists and the plain variedCount/eligibleCount
+				//! fraction clears kCoverageFraction.  Computed once per pipe;
+				//! conditions D/H read it directly.
+				bool roughnessCoverageSatisfied = false;
+				bool colorCoverageSatisfied     = false;
+
+				//! Materials-realism item 4: every OBJECT name flagged by the
+				//! briefed-vs-bound mismatch scan (named like glass/crystal/
+				//! translucent/membrane/jelly/ice/liquid/water/gel, bound to
+				//! an opaque-reflection-only material kind), in document
+				//! order.  Condition I reads it through !empty(); the clause
+				//! formatter reads it bounded.
+				std::vector<std::string> mismatchedObjectNames;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -3761,6 +3948,10 @@ namespace RISE
 				std::map<std::string, std::map<std::string, std::string> > scalarPainterForms;
 				std::map<std::string, std::string>                          painterKinds;
 				std::map<std::string, int>                                  materialObjectCounts;
+				//! Materials-realism item 4: every (object name, material
+				//! name) binding seen, in document order -- the briefed-vs-
+				//! bound mismatch scan's input (below the main walk).
+				std::vector<std::pair<std::string, std::string> >          objectMaterialPairs;
 				struct PendingMaterial_ { int itemIndex; std::string name; std::string kind;
 				                          std::map<std::string, std::string> params; };
 				std::vector<PendingMaterial_> pendingMaterials;
@@ -3826,8 +4017,18 @@ namespace RISE
 						// standing for six posts is still one binding decision.
 						{
 							const std::map<std::string, std::string>::const_iterator mat = pm.find( "material" );
-							if( mat != pm.end() && !mat->second.empty() && mat->second != "none" )
+							if( mat != pm.end() && !mat->second.empty() && mat->second != "none" ) {
 								++materialObjectCounts[mat->second];
+								// Materials-realism item 4: (object name,
+								// material name) pairs, for the briefed-vs-
+								// bound mismatch scan below -- an object can
+								// be named "glass_sphere" even when its
+								// MATERIAL isn't, and the mismatch is about
+								// what the OBJECT was meant to be.
+								const std::map<std::string, std::string>::const_iterator onm = pm.find( "name" );
+								objectMaterialPairs.push_back( std::make_pair(
+									( onm != pm.end() ) ? onm->second : std::string(), mat->second ) );
+							}
 						}
 
 						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
@@ -3982,29 +4183,73 @@ namespace RISE
 				c.conditionA = c.standardObjectCount >= 3 && !anyScalarMaterialSlotVaries;
 				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
 
-				// (Doc 91) Condition H's binding-aware resolution: does ANY
-				// colour-pipe material slot anywhere in the document bind to
-				// something that varies spatially?  Mirrors condition A's
-				// anyScalarMaterialSlotVaries loop immediately above,
-				// swapping ScalarMaterialSlotsByKind_ for
-				// ColorMaterialSlotsByKind_ and ClassifyMicrosurfaceBinding_
-				// for its simpler colour-pipe sibling ClassifyColorBinding_.
-				bool anyColorMaterialSlotVaries = false;
+				// Materials-realism item 1: condition H's COVERAGE resolution,
+				// the colour twin of the roughness loop above -- replacing
+				// doc 91's original binary "does ANY colour slot vary
+				// anywhere" disarm (measured too loose the same way
+				// condition D's was: the underwater-session colour note
+				// fired to the end and was ignorable because it never
+				// reported how MUCH of the document was still flat).
+				// ELIGIBLE ("has an opinion about colour") = spells out >= 1
+				// colour-pipe slot for its kind; FLAT = every SPELLED-OUT
+				// slot classifies Constant (an unspelled slot defaults per
+				// descriptor and is not itself evidence either way, matching
+				// the Absent handling in the roughness loop; a Varying OR
+				// Opaque slot disqualifies -- Opaque is treated as "cannot
+				// prove flat", never silently counted as flat).  Colour has
+				// no primary/all-slots split the way microsurface does (no
+				// single slot the verb rebinds; batch vary_material,
+				// materials-realism item 2, uses FormatConstantMicrosurfaceClause_'s
+				// existing per-kind field routing for the actual rewrite).
+				std::vector<MaterialCoverageSample_> colorSamples;
 				for( const PendingMaterial_& pm : pendingMaterials ) {
 					const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
 						ColorMaterialSlotsByKind_().find( pm.kind );
 					if( slotsIt == ColorMaterialSlotsByKind_().end() ) continue;
+
+					bool anySlotSpelled = false;
+					bool isFlat = true;
 					for( const std::string& slotName : slotsIt->second ) {
 						const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
 						if( v == pm.params.end() ) continue;
-						if( ClassifyColorBinding_( v->second, painterKinds ) == MicrosurfaceBinding_::Varying ) {
-							anyColorMaterialSlotVaries = true;
-							break;
-						}
+						anySlotSpelled = true;
+						if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+							isFlat = false;
 					}
-					if( anyColorMaterialSlotVaries ) break;
+					if( !anySlotSpelled ) continue;   // no colour opinion at all -- not a coverage candidate
+
+					const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( pm.name );
+					const int objCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
+					if( isFlat ) {
+						MicrosurfaceMaterial_ m;
+						m.itemIndex   = pm.itemIndex;
+						m.name        = pm.name;
+						m.kind        = pm.kind;
+						m.objectCount = objCount;
+						c.flatColorMaterials.push_back( m );
+					}
+					MaterialCoverageSample_ sample;
+					sample.objectCount = objCount;
+					sample.flat        = isFlat;
+					colorSamples.push_back( sample );
 				}
-				c.conditionH = c.standardObjectCount >= 3 && !anyColorMaterialSlotVaries;
+				c.eligibleColorMaterialCount = static_cast<int>( colorSamples.size() );
+				c.variedColorMaterialCount   = c.eligibleColorMaterialCount - static_cast<int>( c.flatColorMaterials.size() );
+				c.colorCoverageSatisfied     = CoverageSatisfied_( colorSamples );
+				{
+					std::vector<MicrosurfaceMaterial_> sorted = c.flatColorMaterials;
+					std::sort( sorted.begin(), sorted.end(),
+						[]( const MicrosurfaceMaterial_& a, const MicrosurfaceMaterial_& b ) {
+							if( a.objectCount != b.objectCount ) return a.objectCount > b.objectCount;
+							return a.name < b.name;
+						} );
+					for( const MicrosurfaceMaterial_& m : sorted ) c.colorFlattestNames.push_back( m.name );
+				}
+				// Gate harmonized with condition D (materials-realism item
+				// 1): volume on ELIGIBLE material count, not the OLD
+				// standardObjectCount>=3 -- consistent "N of M materials"
+				// framing across both pipes now that both report coverage.
+				c.conditionH = c.eligibleColorMaterialCount >= kConstantMicrosurfaceGate && !c.colorCoverageSatisfied;
 
 				// (Adoption polish item 2) Condition F: Painter/Function-
 				// category chunks with ZERO document-wide referrers.
@@ -4072,6 +4317,55 @@ namespace RISE
 				// visited) -- fires whenever at least one chunk eroded.
 				c.conditionE = !c.paramErodedChunkNames.empty();
 
+				// Materials-realism item 4: condition I, the briefed-vs-bound
+				// mismatch scan.  Fires when an OBJECT's name, its bound
+				// MATERIAL's name, or a colour painter bound INTO that
+				// material (reflectance/base_color/emission/...) contains one
+				// of the trigger words while the material's KIND is opaque/
+				// reflection-only (OpaqueReflectionOnlyMaterialKinds_ above).
+				// A heuristic on NAMES, deliberately -- see that function's
+				// own doc for the calibration evidence and the two excluded
+				// false-positive classes (luminaires, wrapper/file-driven
+				// kinds).
+				{
+					static const char* const kTriggerWords[] = {
+						"glass", "crystal", "translucent", "membrane", "jelly", "ice", "liquid", "water", "gel"
+					};
+					auto containsTrigger = []( const std::string& s ) {
+						std::string lower = s;
+						for( char& ch : lower ) ch = static_cast<char>( std::tolower( static_cast<unsigned char>( ch ) ) );
+						for( const char* w : kTriggerWords )
+							if( lower.find( w ) != std::string::npos ) return true;
+						return false;
+					};
+					std::map<std::string, const PendingMaterial_*> materialsByName;
+					for( const PendingMaterial_& pm : pendingMaterials ) materialsByName[pm.name] = &pm;
+
+					for( const std::pair<std::string, std::string>& op : objectMaterialPairs ) {
+						const std::string& objName = op.first;
+						const std::string& matName = op.second;
+						const std::map<std::string, const PendingMaterial_*>::const_iterator mit =
+							materialsByName.find( matName );
+						if( mit == materialsByName.end() ) continue;   // not a colour-carrying kind at all -- nothing to classify
+						const PendingMaterial_& pm = *mit->second;
+						if( !OpaqueReflectionOnlyMaterialKinds_().count( pm.kind ) ) continue;
+
+						bool trigger = containsTrigger( objName ) || containsTrigger( matName );
+						if( !trigger ) {
+							const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+								ColorMaterialSlotsByKind_().find( pm.kind );
+							if( slotsIt != ColorMaterialSlotsByKind_().end() ) {
+								for( const std::string& slotName : slotsIt->second ) {
+									const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
+									if( v != pm.params.end() && containsTrigger( v->second ) ) { trigger = true; break; }
+								}
+							}
+						}
+						if( trigger && !objName.empty() ) c.mismatchedObjectNames.push_back( objName );
+					}
+				}
+				c.conditionI = !c.mismatchedObjectNames.empty();
+
 				// (88 S5) Condition D's resolution pass -- ONE predicate, read by
 				// the note AND by AgentSession::VaryMaterial.
 				//
@@ -4085,9 +4379,24 @@ namespace RISE
 				// Over-refusing here costs a model one call and a clear reason;
 				// under-refusing would have the verb vary around a number it never
 				// actually read.
+				// Materials-realism item 1: per-material coverage samples for
+				// CoverageSatisfied_, collected alongside the flat-material
+				// list below.  A material is ELIGIBLE ("has an opinion about
+				// roughness") the moment it spells out >= 1 primary slot --
+				// computed FIRST, independent of the `qualifies` control
+				// flow below, because a Varying/Opaque NON-primary allSlot
+				// (e.g. pbr's `metallic`) disqualifies the material from the
+				// FLAT list via an early exit that would otherwise skip past
+				// the primary-slot scan entirely and silently under-count
+				// eligibility.
+				std::vector<MaterialCoverageSample_> roughnessSamples;
 				for( const PendingMaterial_& pm : pendingMaterials ) {
 					const MicrosurfaceKindSlots_* slots = MicrosurfaceSlotsForKind_( pm.kind );
 					if( !slots ) continue;
+
+					bool anyPrimarySpelled = false;
+					for( int s = 0; s < 3 && slots->primarySlots[s]; ++s )
+						if( pm.params.count( slots->primarySlots[s] ) ) { anyPrimarySpelled = true; break; }
 
 					// EVERY slot is classified before qualification is decided --
 					// no early exit -- because `varyingMicrosurfaceBindings` is a
@@ -4105,36 +4414,62 @@ namespace RISE
 						if( b != MicrosurfaceBinding_::Absent && b != MicrosurfaceBinding_::Constant )
 							qualifies = false;
 					}
-					if( !qualifies ) continue;
 
-					MicrosurfaceMaterial_ m;
-					m.itemIndex = pm.itemIndex;
-					m.name      = pm.name;
-					m.kind      = pm.kind;
-					bool haveRoughness = false;
-					for( int s = 0; s < 3 && slots->primarySlots[s] && qualifies; ++s ) {
-						const std::map<std::string, std::string>::const_iterator v =
-							pm.params.find( slots->primarySlots[s] );
-						if( v == pm.params.end() ) continue;   // defaulted: nothing to rebind
-						double val = 0.0;
-						if( ClassifyMicrosurfaceBinding_( v->second, scalarPainterForms, painterKinds, val )
-						    != MicrosurfaceBinding_::Constant ) { qualifies = false; break; }
-						// Two primary slots that disagree (an anisotropic
-						// alphax != alphay) are a deliberate authored anisotropy,
-						// not a flat microsurface -- one band around one number
-						// would erase it, so the material drops out.
-						if( haveRoughness && val != m.roughness ) { qualifies = false; break; }
-						m.roughness = val;
-						haveRoughness = true;
-						m.roughnessSlots.push_back( slots->primarySlots[s] );
+					bool isFlat = false;
+					if( qualifies ) {
+						MicrosurfaceMaterial_ m;
+						m.itemIndex = pm.itemIndex;
+						m.name      = pm.name;
+						m.kind      = pm.kind;
+						bool haveRoughness = false;
+						for( int s = 0; s < 3 && slots->primarySlots[s] && qualifies; ++s ) {
+							const std::map<std::string, std::string>::const_iterator v =
+								pm.params.find( slots->primarySlots[s] );
+							if( v == pm.params.end() ) continue;   // defaulted: nothing to rebind
+							double val = 0.0;
+							if( ClassifyMicrosurfaceBinding_( v->second, scalarPainterForms, painterKinds, val )
+							    != MicrosurfaceBinding_::Constant ) { qualifies = false; break; }
+							// Two primary slots that disagree (an anisotropic
+							// alphax != alphay) are a deliberate authored anisotropy,
+							// not a flat microsurface -- one band around one number
+							// would erase it, so the material drops out.
+							if( haveRoughness && val != m.roughness ) { qualifies = false; break; }
+							m.roughness = val;
+							haveRoughness = true;
+							m.roughnessSlots.push_back( slots->primarySlots[s] );
+						}
+						if( qualifies && haveRoughness ) {
+							isFlat = true;
+							const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( m.name );
+							m.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
+							c.constantMicrosurfaceMaterials.push_back( m );
+						}
 					}
-					if( !qualifies || !haveRoughness ) continue;
 
-					const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( m.name );
-					m.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
-					c.constantMicrosurfaceMaterials.push_back( m );
+					if( anyPrimarySpelled ) {
+						const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( pm.name );
+						MaterialCoverageSample_ sample;
+						sample.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
+						sample.flat        = isFlat;
+						roughnessSamples.push_back( sample );
+					}
 				}
-				c.constantMicrosurfaceCount = static_cast<int>( c.constantMicrosurfaceMaterials.size() );
+				c.constantMicrosurfaceCount        = static_cast<int>( c.constantMicrosurfaceMaterials.size() );
+				c.eligibleRoughnessMaterialCount    = static_cast<int>( roughnessSamples.size() );
+				c.variedRoughnessMaterialCount      = c.eligibleRoughnessMaterialCount - c.constantMicrosurfaceCount;
+				c.roughnessCoverageSatisfied        = CoverageSatisfied_( roughnessSamples );
+				// Flattest offenders, most-referenced first (a copy -- see
+				// the struct field's own comment for why this must not
+				// reorder constantMicrosurfaceMaterials in place).
+				{
+					std::vector<MicrosurfaceMaterial_> sorted = c.constantMicrosurfaceMaterials;
+					std::sort( sorted.begin(), sorted.end(),
+						[]( const MicrosurfaceMaterial_& a, const MicrosurfaceMaterial_& b ) {
+							if( a.objectCount != b.objectCount ) return a.objectCount > b.objectCount;
+							return a.name < b.name;
+						} );
+					for( const MicrosurfaceMaterial_& m : sorted ) c.roughnessFlattestNames.push_back( m.name );
+				}
 
 				// The note's chosen material is the SAME one a bare `vary_material`
 				// call takes: most objects bound, ties broken lexicographically by
@@ -4151,8 +4486,21 @@ namespace RISE
 						c.varyMaterialRoughness = pick->roughness;
 					}
 				}
-				c.conditionD = c.constantMicrosurfaceCount >= kConstantMicrosurfaceGate &&
-				               c.varyingMicrosurfaceBindings == 0 &&
+				// Materials-realism item 1: COVERAGE, not the old binary "any
+				// slot varies anywhere" disarm (measured too loose -- one
+				// vary_material call silenced the note with 17 materials
+				// still flat).  The volume gate is now on ELIGIBLE materials
+				// (>= kConstantMicrosurfaceGate materials with an opinion
+				// about roughness at all), not just flat ones -- a scene
+				// with 3 total roughness-bearing materials where 2 already
+				// vary and 1 doesn't is exactly the case this note should
+				// still describe ("2 of 3 vary"), which the OLD gate (>= 3
+				// FLAT materials) could never reach.  `varyingMicrosurfaceBindings`
+				// is no longer part of the disarm (CoverageSatisfied_
+				// subsumes it); the field is kept for its other consumer
+				// (none today, but see its own struct-field doc).
+				c.conditionD = c.eligibleRoughnessMaterialCount >= kConstantMicrosurfaceGate &&
+				               !c.roughnessCoverageSatisfied &&
 				               !c.varyMaterialName.empty();
 
 				// (88) Condition C: the LARGEST qualifying group wins, so the
@@ -4269,24 +4617,40 @@ namespace RISE
 			//! So this clause states the call, its refusal contract (so trying it
 			//! is knowably free), and what it leaves behind -- and, deliberately,
 			//! does NOT spell out the rewrite for hand-authoring.
-			std::string FormatConstantMicrosurfaceClause_( int constantCount,
+			//!
+			//! Materials-realism item 1 (2026-08-24): COVERAGE, not a single
+			//! bare count -- "N of M materials vary" plus a bounded (most-
+			//! referenced-first) list of the flattest offenders, replacing the
+			//! old binary disarm's silent "3+ materials, all constant" claim
+			//! (which stayed TRUE, and kept naming the SAME single material,
+			//! long after a `vary_material` call had fixed it and 16 others
+			//! remained flat -- the measured underwater-session miss this
+			//! item exists to close).  Materials-realism item 2: also names
+			//! the `all:true` batch form, so the model learns the one-call
+			//! fix for a "many still flat" report instead of calling this
+			//! verb once per material.
+			std::string FormatConstantMicrosurfaceClause_( int variedCount, int eligibleCount,
+			                                               const std::vector<std::string>& flattestNames,
 			                                               const std::string& materialName,
 			                                               const std::string& materialKind,
 			                                               double roughness )
 			{
 				const std::string fieldKind = MicrosurfaceKindUsesColourPipe_( materialKind )
 					? "expression_painter { expr ... }" : "scalar_painter { expression ... }";
-				return std::to_string( constantCount ) + " materials have a microsurface that is a bare "
-					"number -- nothing in this scene's roughness varies across a surface, which is the "
-					"single most recognisable untextured-render signature. `vary_material` fixes the most "
+				return std::to_string( variedCount ) + " of " + std::to_string( eligibleCount ) +
+					" materials have spatially-varying roughness -- the rest (" +
+					FormatBoundedNameList_( flattestNames ) + ") still carry a bare number, the single most "
+					"recognisable untextured-render signature. `vary_material` fixes the most "
 					"prominent one for you: call it with NO ARGUMENTS and it takes `" + materialName +
 					"` (" + materialKind + ", roughness " + MicrosurfaceFmt_( roughness ) + "), adds one "
 					"`" + fieldKind + "` chunk holding an fbm wear field banded around the "
 					"number that is already there, and rebinds the roughness slot to it -- ONE call, ONE "
 					"undo step, and every knob it writes is a named `param` with a min/max you can retune "
-					"with propose_patch. Pass `material` to choose a different one. It REFUSES -- changing "
-					"nothing, costing one call -- when no material's microsurface is a readable constant. "
-					"For the wider vocabulary (expression_painter fields, ramp_painter colour, the "
+					"with propose_patch. Pass `material` to choose a different one, or `all true` to fix "
+					"EVERY flagged material in this one call (capped at 24; call again for the rest) -- the "
+					"right call whenever more than one material is still flat, like here. It REFUSES -- "
+					"changing nothing, costing one call -- when no material's microsurface is a readable "
+					"constant. For the wider vocabulary (expression_painter fields, ramp_painter colour, the "
 					"any-painter -> scalar bridge) read_skill {\"name\":\"procedural-textures\"}. If a flat, "
 					"stylised look is the point, this is fine -- ignore and do not churn.";
 			}
@@ -4381,14 +4745,48 @@ namespace RISE
 			//! cite the way condition D's clause does (a colour has no single
 			//! scalar to quote), so this names the affordance rather than a
 			//! verb -- condition A's clause does the same for the same
-			//! reason (no `vary_material`-style rewrite exists for it either).
-			std::string FormatFlatAlbedoClause_()
+			//! reason (no `vary_material`-style rewrite exists for it either;
+			//! `vary_material` -- even its item-2 `all:true` batch form --
+			//! is ROUGHNESS ONLY and never touches colour, so this clause
+			//! does not mention it).
+			//!
+			//! Materials-realism item 1: COVERAGE wording, the colour twin of
+			//! FormatConstantMicrosurfaceClause_'s rewrite -- "N of M
+			//! materials" plus the bounded flattest-offenders list, replacing
+			//! the old binary "does any colour slot vary anywhere" claim
+			//! (measured too loose: the underwater-session colour note fired
+			//! unchanged to the end of the run and was ignorable because it
+			//! never reported how much of the document was still flat).
+			std::string FormatFlatAlbedoClause_( int variedCount, int eligibleCount,
+			                                     const std::vector<std::string>& flattestNames )
 			{
-				return "no colour material parameter (base_color, reflectance, emission, ...) varies "
-					"spatially anywhere in this scene -- every one that exists is a flat uniformcolor_painter. "
+				return std::to_string( variedCount ) + " of " + std::to_string( eligibleCount ) +
+					" materials have spatially-varying colour -- the rest (" +
+					FormatBoundedNameList_( flattestNames ) + ") are still a flat uniformcolor_painter. "
 					"A perlin_painter / expression_painter (or any of the other procedural colour painters) "
 					"bound into base_color/reflectance adds realism "
 					"(read_skill {\"name\":\"procedural-textures\"}).";
+			}
+
+			//! Materials-realism item 4's whole clause, SHARED by the note
+			//! builder and the diagnostic builder.  Names the mismatched
+			//! object(s) and the transmissive alternatives; hedges the claim
+			//! ("named like") since this is a heuristic on text, not a
+			//! physical-property check.
+			std::string FormatMaterialKindMismatchClause_( const std::vector<std::string>& objectNames )
+			{
+				const bool plural = objectNames.size() != 1;
+				return std::to_string( objectNames.size() ) + " object" +
+					( plural ? std::string( "s" ) : std::string() ) + " (" + FormatBoundedNameList_( objectNames ) +
+					") " + ( plural ? std::string( "are" ) : std::string( "is" ) ) +
+					" named like glass/crystal/translucent/membrane/jelly/ice/liquid/water/gel but "
+					"bound to an opaque, reflection-only material -- if that surface is meant to "
+					"transmit or scatter light, dielectric_material / translucent_material / "
+					"subsurfacescattering_material / randomwalk_sss_material are the physically-"
+					"transmissive alternatives; an opaque material there will read as painted plastic, "
+					"not glass or liquid. This is a heuristic on the NAME, not a check of what the "
+					"surface actually does -- if the flat opaque look is deliberate (or the name is "
+					"coincidental), this is fine, ignore it.";
 			}
 
 			//! RETURNS empty iff NO condition fires (the "omit the note
@@ -4405,7 +4803,8 @@ namespace RISE
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
-				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH ) return std::string();
+				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
+				    !c.conditionI ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -4452,7 +4851,9 @@ namespace RISE
 					note += " " + FormatRepeatedCopiesClause_( c.repeatedCopyCount, c.repeatedCopyGeometry );
 				}
 				if( c.conditionD ) {
-					note += " " + FormatConstantMicrosurfaceClause_( c.constantMicrosurfaceCount,
+					note += " " + FormatConstantMicrosurfaceClause_( c.variedRoughnessMaterialCount,
+					                                                 c.eligibleRoughnessMaterialCount,
+					                                                 c.roughnessFlattestNames,
 					                                                 c.varyMaterialName, c.varyMaterialKind,
 					                                                 c.varyMaterialRoughness );
 				}
@@ -4466,7 +4867,12 @@ namespace RISE
 					note += " " + FormatUnboundMaterialClause_( c.unboundMaterialNames );
 				}
 				if( c.conditionH ) {
-					note += " " + FormatFlatAlbedoClause_();
+					note += " " + FormatFlatAlbedoClause_( c.variedColorMaterialCount,
+					                                       c.eligibleColorMaterialCount,
+					                                       c.colorFlattestNames );
+				}
+				if( c.conditionI ) {
+					note += " " + FormatMaterialKindMismatchClause_( c.mismatchedObjectNames );
 				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
@@ -4503,7 +4909,8 @@ namespace RISE
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
-				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH ) return;
+				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
+				    !c.conditionI ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -4557,7 +4964,9 @@ namespace RISE
 					// condition C's reason: the clause carries its own targeted
 					// "if a flat, stylised look is the point" escape, so BOTH
 					// carriers get one and neither carries two.
-					d.message  = FormatConstantMicrosurfaceClause_( c.constantMicrosurfaceCount,
+					d.message  = FormatConstantMicrosurfaceClause_( c.variedRoughnessMaterialCount,
+					                                                c.eligibleRoughnessMaterialCount,
+					                                                c.roughnessFlattestNames,
 					                                                c.varyMaterialName, c.varyMaterialKind,
 					                                                c.varyMaterialRoughness );
 					out.push_back( d );
@@ -4608,8 +5017,22 @@ namespace RISE
 					// claim IS "flat/simple STYLING", condition A's own
 					// topic, so this reuses condition A's suffix rather than
 					// inventing a second one.
-					d.message  = FormatFlatAlbedoClause_();
+					d.message  = FormatFlatAlbedoClause_( c.variedColorMaterialCount,
+					                                      c.eligibleColorMaterialCount,
+					                                      c.colorFlattestNames );
 					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
+				if( c.conditionI ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_MATERIAL_KIND_MISMATCH;
+					// SHARED formatter -- cannot drift from the note's I
+					// clause.  No kSelfDisarm: the clause already carries its
+					// own targeted "if the flat opaque look is deliberate...
+					// this is fine, ignore it" escape, the condition C/D/E/F/G
+					// precedent of not carrying two.
+					d.message  = FormatMaterialKindMismatchClause_( c.mismatchedObjectNames );
 					out.push_back( d );
 				}
 			}
@@ -30109,6 +30532,96 @@ namespace RISE
 			if( ResultMutatedDocument_( commit ) )
 				AttributeChunkToActiveElement_( fieldName, fieldChunkKind );
 
+			return out;
+		}
+
+		//! Materials-realism item 2: how many materials one vary_material
+		//! {all:true} call attempts before it stops and reports
+		//! `remainingCount` -- see AgentVaryMaterialBatchResult's own doc.
+		//! 24, matching the bounded-list caps elsewhere in this file's
+		//! notion of "cannot flood one tool result": high enough that the
+		//! measured 17-20-flagged-materials underwater-session case clears
+		//! in ONE call, low enough that a pathological hundreds-of-materials
+		//! document still returns a boundable JSON payload.
+		static const int kVaryMaterialBatchCap = 24;
+
+		AgentSession::AgentVaryMaterialBatchResult AgentSession::VaryMaterialAll(
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentVaryMaterialBatchResult out;
+
+			// ---- (1) Same head-snapshot/base-check shape VaryMaterial's own
+			// top uses, checked ONCE for the whole batch -- see this
+			// function's header doc for why sub-calls below pass no base at
+			// all (each one commits against whatever the PRIOR sub-call just
+			// landed, deliberately).
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "vary_material {all:true} refused: no retained CST Document -- this verb "
+					"needs a CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"vary_material {all:true} refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.message = buf;
+				return out;
+			}
+
+			// ---- (2) THE SAME shared predicate VaryMaterial and design-note
+			// condition D read -- see VaryMaterial's own comment for why
+			// this call takes neither D's gate-of-three nor its coverage
+			// disarm (a batch call about a document's CURRENT flagged
+			// materials is deliberate regardless of how many there are).
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+			const DesignNoteConditions_ cond   = ComputeDesignNoteConditionsFromDoc_( headDoc );
+			out.qualifyingMaterials = cond.constantMicrosurfaceCount;
+			if( cond.constantMicrosurfaceMaterials.empty() ) {
+				out.message = "vary_material {all:true} refused: no material in this document has a "
+					"microsurface this can read -- see vary_material's own no-arguments refusal message "
+					"for the exact material kinds and slot shapes it needs -- document unchanged";
+				return out;
+			}
+
+			// Most-referenced-first -- the SAME tie-break SelectMaterialToVary_
+			// uses for the bare-call pick, so a batch call and a sequence of
+			// bare calls process materials in the identical order.
+			std::vector<MicrosurfaceMaterial_> ordered = cond.constantMicrosurfaceMaterials;
+			std::sort( ordered.begin(), ordered.end(),
+				[]( const MicrosurfaceMaterial_& a, const MicrosurfaceMaterial_& b ) {
+					if( a.objectCount != b.objectCount ) return a.objectCount > b.objectCount;
+					return a.name < b.name;
+				} );
+
+			const int total      = static_cast<int>( ordered.size() );
+			const int toProcess  = ( total < kVaryMaterialBatchCap ) ? total : kVaryMaterialBatchCap;
+			out.remainingCount   = total - toProcess;
+
+			// ---- (3) THE LOOP.  Each iteration is an ordinary, unmodified
+			// VaryMaterial(name) call -- same bands, same pbr colour-pipe
+			// routing (MicrosurfaceKindUsesColourPipe_), same refusal
+			// contract -- so this function contains no per-material rewrite
+			// logic of its own to drift from VaryMaterial's.  `nullptr` base:
+			// see this function's header doc.
+			for( int i = 0; i < toProcess; ++i ) {
+				const AgentVaryMaterialResult r = VaryMaterial( ordered[i].name, nullptr );
+				out.perMaterial.push_back( r );
+				if( r.applied ) ++out.appliedCount; else ++out.refusedCount;
+			}
+			out.ok = out.appliedCount > 0;
+
+			char buf[256];
+			std::snprintf( buf, sizeof( buf ),
+				"vary_material {all:true}: %d applied, %d refused, of %d flagged material%s this call "
+				"attempted", out.appliedCount, out.refusedCount, toProcess, toProcess == 1 ? "" : "s" );
+			out.message = buf;
+			if( out.remainingCount > 0 )
+				out.message += " -- " + std::to_string( out.remainingCount ) +
+					" more flagged material" + ( out.remainingCount == 1 ? std::string() : std::string( "s" ) ) +
+					" beyond the cap of " + std::to_string( kVaryMaterialBatchCap ) + ": call again";
 			return out;
 		}
 

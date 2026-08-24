@@ -1564,6 +1564,21 @@ namespace RISE
 				// its reason rather than falling through to a zero count that reads
 				// like a success.
 				if( call.name == "vary_material" ) {
+					// Materials-realism item 2: the `all:true` batch form
+					// returns a DIFFERENT shape (no top-level "applied" bool,
+					// no "material"/"painter" -- `perMaterial` is the tell)
+					// -- summarize the COUNTS rather than trying to read this
+					// call's single-material fields off a response that
+					// never carried them.
+					const JsonValue& perMaterial = result.get( "perMaterial" );
+					if( perMaterial.isArray() ) {
+						const long long applied   = static_cast<long long>( result.get( "applied" ).asNumber() );
+						const long long refused   = static_cast<long long>( result.get( "refused" ).asNumber() );
+						const long long remaining = static_cast<long long>( result.get( "remaining" ).asNumber() );
+						std::string s = std::to_string( applied ) + " applied, " + std::to_string( refused ) + " refused";
+						if( remaining > 0 ) s += " (" + std::to_string( remaining ) + " more flagged -- call again)";
+						return s;
+					}
 					if( !result.get( "applied" ).asBool() ) {
 						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
 					}

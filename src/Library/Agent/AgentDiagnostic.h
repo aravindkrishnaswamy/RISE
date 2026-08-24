@@ -240,6 +240,33 @@ namespace RISE
 			//! Severity::Info, self-disarming, same
 			//! ComputeDesignNoteConditionsFromDoc_ scan as its siblings.
 			static const char* const DESIGN_FLAT_ALBEDO = "DESIGN_FLAT_ALBEDO";
+			//! Materials-realism item 4 (2026-08-24): a BRIEFED-VS-BOUND
+			//! mismatch -- an object name, its bound material's name, or a
+			//! colour painter bound INTO that material (reflectance/
+			//! base_color/emission/...) contains a transmissive-surface word
+			//! (glass, crystal, translucent, membrane, jelly, ice, liquid,
+			//! water, gel -- case-insensitive substring) while the material's
+			//! KIND is opaque/reflection-only -- no transmission or
+			//! scattering-class param, derived from the registered Material
+			//! descriptors (OpaqueReflectionOnlyMaterialKinds_, AgentSession.cpp)
+			//! rather than a hand-listed kind set.  Motivated by three
+			//! trajectories that all summoned glass/liquid-briefed geometry
+			//! and got an opaque pbr_metallic_roughness_material.  A
+			//! HEURISTIC on NAMES -- the message says so ("named like") -- so
+			//! it deliberately does NOT fire on the inverse case (a painter
+			//! named e.g. `glass_green` bound through a genuinely transmissive
+			//! dielectric_material/translucent_material/etc. -- that IS the
+			//! correct authoring, and the material KIND, not the name, is
+			//! what this condition classifies).  Two calibrated exclusions
+			//! from the opaque-kind set (see OpaqueReflectionOnlyMaterialKinds_'s
+			//! own doc for the corpus evidence): EMITTERS (a glass/crystal/
+			//! jelly LUMINAIRE sold by emission, not transmission -- 68% of
+			//! the in-tree corpus's raw name hits) and two wrapper/file-
+			//! driven kinds whose transmission behaviour isn't determinable
+			//! from the descriptor alone. Severity::Info, self-disarming,
+			//! same bounded-list formatting and same
+			//! ComputeDesignNoteConditionsFromDoc_ scan as its siblings.
+			static const char* const DESIGN_MATERIAL_KIND_MISMATCH = "DESIGN_MATERIAL_KIND_MISMATCH";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a
