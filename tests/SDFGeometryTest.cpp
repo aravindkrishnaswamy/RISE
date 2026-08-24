@@ -21,6 +21,7 @@
 #include "../src/Library/Interfaces/IFunction2D.h"
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/FiniteMath.h"	// Test 36d's finite-bbox assertion (-Ofast-resistant)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -2569,6 +2570,334 @@ static void TestRoundBoxLargeRoundDoesNotClipSurface()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 36: the smin AABB bulge is k/4 PER PART, not k on the RUNNING BOX.
+//
+// ComputeBounds used to union the raw part box and then pad the WHOLE running
+// box by the FULL blend radius k, once per smin part.  Both halves were wrong:
+//   * sminP(a,b,k) = min(a,b) - h*h*k/4 with h in [0,1], so a smin dips at most
+//     k/4 below the hard min -- a QUARTER of k, straight out of the formula.
+//   * the pad landed on the running box, so an N-part blend chain accumulated
+//     sum(k) per side rather than reserving one shared budget.
+// A 9-part smin creature (parts extent 0.375 x 0.169 x 0.353, sum(k) = 0.136)
+// reported 0.622 x 0.413 x 0.575 -- ~1.7x per axis.  Nothing about that is
+// cosmetic: the agent surface's isolate auto-framer fits the reported box (so
+// the subject rendered at ~4.5 % of frame instead of ~40 %) and its
+// largest-diagonal object pick reads the same number.
+//
+// The two halves of this test pull in OPPOSITE directions on purpose.  36a
+// pins CONSERVATIVENESS (nothing solid may escape the box) so the tightening
+// cannot be "fixed" by simply shrinking; 36b pins TIGHTNESS against the
+// analytic hard-union extent plus the theoretical sum(k)/4 budget, and is the
+// half the old code fails.
+//////////////////////////////////////////////////////////////////////
+
+// 36a -- CONSERVATIVE.  A deliberately hostile fold: rotated, anisotropically
+// scaled superellipsoids (including the e = 2 octahedral corner, where the
+// field under-reports local distance by a factor of 2 and the per-part
+// inflation has to carry an F > 1 stretch), a capsule, a round cone, an
+// intersect clip, a subtract, and a smin AFTER the clip so the fold's
+// order-awareness is live.  Dense-sample a box 1.5x the reported one and
+// assert no point of the solid { Map <= 0 } sits outside the report.
+static void TestSminBoundStaysConservative()
+{
+	std::cout << "Test 36a: multi-part smin bound still contains the whole solid" << std::endl;
+
+	std::vector<SDFGeometry::Part> parts;
+	// seed (parser guarantees the first op is additive)
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), 0.6, 0,0,0 ) );
+	// rotated + anisotropic superellipsoid, e2 > 1 (F = 2^0.2)
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpSmin, 0.50,
+		Point3(0.8,0.2,0.0), 0,0,35, Vector3(1.3,0.6,0.9), 0.50, 0.6, 1.4, 0 ) );
+	// the octahedral corner e1 = e2 = 2 -- the largest stretch the family has
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpSmin, 0.40,
+		Point3(-0.7,0.3,0.4), 20,40,10, Vector3(0.8,1.5,0.7), 0.45, 2.0, 2.0, 0 ) );
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimCapsule, SDFGeometry::eOpSmin, 0.45,
+		Point3(0.2,-0.8,0.3), 0,0,60, Vector3(1,1,1), 0.25, 0.5, 0, 0 ) );
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimRoundCone, SDFGeometry::eOpSmin, 0.30,
+		Point3(-0.3,0.9,-0.5), 15,0,25, Vector3(1.1,1.0,0.9), 0.30, 0.15, 0.70, 0 ) );
+	// clip, then carve, then a LATER smin -- the lobe added after the clip must
+	// survive, and it must carry its own budget
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpIntersect, 0.20,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), 2.0, 2.0, 1.2, 0 ) );
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSubtract, 0.25,
+		Point3(0.5,0.5,0.5), 0,0,0, Vector3(1,1,1), 0.40, 0,0,0 ) );
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin, 0.35,
+		Point3(1.4,-0.4,0.2), 0,0,0, Vector3(1,1,1), 0.35, 0,0,0 ) );
+
+	FieldProbe* g = new FieldProbe( parts );
+	const BoundingBox bb = g->GenerateBoundingBox();
+
+	const Point3 c( (bb.ll.x+bb.ur.x)*Scalar(0.5), (bb.ll.y+bb.ur.y)*Scalar(0.5), (bb.ll.z+bb.ur.z)*Scalar(0.5) );
+	const Scalar hx = (bb.ur.x-bb.ll.x)*Scalar(0.75);	// 1.5x the box, about its centre
+	const Scalar hy = (bb.ur.y-bb.ll.y)*Scalar(0.75);
+	const Scalar hz = (bb.ur.z-bb.ll.z)*Scalar(0.75);
+
+	const int    N = 72;
+	int          escapes = 0;
+	Scalar       worstDepth = 0, worstOut = 0;
+	Point3       worstP(0,0,0);
+	int          inside = 0;
+	for( int ix = 0; ix <= N; ++ix )
+	for( int iy = 0; iy <= N; ++iy )
+	for( int iz = 0; iz <= N; ++iz )
+	{
+		const Point3 p( c.x + hx*(Scalar(2)*ix/N - 1),
+		                c.y + hy*(Scalar(2)*iy/N - 1),
+		                c.z + hz*(Scalar(2)*iz/N - 1) );
+		const Scalar d = g->FieldAt( p );
+		if( d > 0 ) continue;
+		++inside;
+		// how far OUTSIDE the reported box does this solid point sit?
+		const Scalar ox = std::max( bb.ll.x - p.x, p.x - bb.ur.x );
+		const Scalar oy = std::max( bb.ll.y - p.y, p.y - bb.ur.y );
+		const Scalar oz = std::max( bb.ll.z - p.z, p.z - bb.ur.z );
+		const Scalar out = std::max( ox, std::max( oy, oz ) );
+		if( out > 0 ) {
+			++escapes;
+			if( out > worstOut ) { worstOut = out; worstDepth = d; worstP = p; }
+		}
+	}
+	std::cout << "    solid grid points: " << inside << ", escaping the bbox: " << escapes << std::endl;
+	std::cout << "    bbox = [" << bb.ll.x << "," << bb.ur.x << "] x ["
+	          << bb.ll.y << "," << bb.ur.y << "] x [" << bb.ll.z << "," << bb.ur.z << "]" << std::endl;
+	if( escapes ) {
+		std::cout << "    worst escape " << worstOut << " at (" << worstP.x << "," << worstP.y << ","
+		          << worstP.z << "), Map = " << worstDepth << std::endl;
+	}
+	Check( inside > 1000, "the hostile fixture actually has a solid to bound (sanity)" );
+	Check( escapes == 0, "MONEY -- no point of { Map <= 0 } escapes the reported AABB" );
+	safe_release( g );
+}
+
+// 36b -- TIGHT.  Uniform scale, exact-SDF primitives, five spheres chained by
+// four smins with a large k.  The bound may exceed the analytic HARD-union
+// extent by at most 2*(sum(k)/4) -- one shared budget per side -- plus the
+// fixed safety pad.  The old form padded the running box by k four times over,
+// i.e. 2*sum(k) = 4x the allowance, and fails every axis.
+static void TestSminBoundIsTight()
+{
+	std::cout << "Test 36b: smin bound spends sum(k)/4 per side, not sum(k)" << std::endl;
+
+	const Scalar r = 0.5, k = 0.4, step = 0.6;
+	const int    n = 5;			// 1 union seed + 4 smins
+	std::vector<SDFGeometry::Part> parts;
+	Scalar sumK = 0;
+	for( int i = 0; i < n; ++i ) {
+		const bool first = ( i == 0 );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere,
+			first ? SDFGeometry::eOpUnion : SDFGeometry::eOpSmin, first ? Scalar(0) : k,
+			Point3( step*i, 0, 0 ), 0,0,0, Vector3(1,1,1), r, 0,0,0 ) );
+		if( !first ) sumK += k;
+	}
+
+	SDFGeometry* g = MakeGeom( parts );
+	const BoundingBox bb = g->GenerateBoundingBox();
+
+	// analytic HARD-union extent of the five spheres
+	const Scalar hardX = ( step*(n-1) + r ) - ( -r );
+	const Scalar hardY = 2*r, hardZ = 2*r;
+	// The whole allowance: one shared sum(k)/4 budget per side, plus the safety
+	// pad ComputeBounds always applies.  The pad is DERIVED from the same
+	// formula the implementation uses -- pad = max(1e-3, 3*eps0) with
+	// eps0 = max(diag0*epsFrac, 1e-6) off the UNPADDED box -- rather than
+	// hardcoded, so a deliberate future pad change is absorbed here instead of
+	// silently eating the budget headroom this test is measuring.  (The
+	// unpadded box the implementation sees is the hard union grown by one
+	// budget per side, which for these uniform-scale exact-SDF spheres is
+	// exactly what the analytic form below reconstructs.)  epsFrac = 1e-5 comes
+	// from MakeGeom, so on this ~4-unit box the 1e-3 floor wins -- but the test
+	// no longer depends on that staying true.
+	//
+	// NOTE ON HEADROOM: X clears the cap by ~0.3, but Y and Z land ~0.002 under
+	// it, and that is EXACT rather than lucky -- a smin part whose box is
+	// concentric with the running box in Y/Z spends its whole budget on those
+	// axes, so hard + 2*sum(k)/4 IS the theoretical bound there and the pad is
+	// the only slack.  Deliberate: a cap loosened to "feel safer" would stop
+	// measuring the budget at all.  If this ever fails by a hair on Y/Z, look
+	// for a pad change, not for a budget bug.
+	const Scalar bud   = sumK*Scalar(0.25);
+	const Scalar unpX  = hardX + 2*bud, unpY = hardY + 2*bud, unpZ = hardZ + 2*bud;
+	const Scalar diag0 = std::sqrt( unpX*unpX + unpY*unpY + unpZ*unpZ );
+	const Scalar eps0  = std::max( diag0*Scalar(1e-5), Scalar(1e-6) );	// MakeGeom's epsFrac
+	const Scalar pad   = std::max( Scalar(1e-3), Scalar(3)*eps0 );
+	const Scalar allow = 2*bud + 2*pad + Scalar(1e-9);
+
+	const Scalar gotX = bb.ur.x-bb.ll.x, gotY = bb.ur.y-bb.ll.y, gotZ = bb.ur.z-bb.ll.z;
+	std::cout << "    sum(k) = " << sumK << ", budget/side = " << bud
+	          << ", pad = " << pad << ", allowance = " << allow << std::endl;
+	std::cout << "    extent X " << gotX << " (hard " << hardX << ", cap " << hardX+allow << ")" << std::endl;
+	std::cout << "    extent Y " << gotY << " (hard " << hardY << ", cap " << hardY+allow << ")" << std::endl;
+	std::cout << "    extent Z " << gotZ << " (hard " << hardZ << ", cap " << hardZ+allow << ")" << std::endl;
+
+	Check( gotX >= hardX, "bound still contains the hard-union X extent" );
+	Check( gotY >= hardY, "bound still contains the hard-union Y extent" );
+	Check( gotZ >= hardZ, "bound still contains the hard-union Z extent" );
+	Check( gotX <= hardX + allow, "MONEY -- X extent within hard + 2*sum(k)/4 (old form spent 2*sum(k))" );
+	Check( gotY <= hardY + allow, "MONEY -- Y extent within hard + 2*sum(k)/4 (old form spent 2*sum(k))" );
+	Check( gotZ <= hardZ + allow, "MONEY -- Z extent within hard + 2*sum(k)/4 (old form spent 2*sum(k))" );
+	safe_release( g );
+}
+
+// 36c -- the LIVE SHAPE, scaled down to the regime that produced the report:
+// nine small smin parts, k comparable to the part size.  Pins the aggregate
+// number the auto-framer consumes (the box diagonal) rather than a per-axis
+// extent, because that is what the regression was measured through.
+static void TestSminBoundOnSmallBlobChain()
+{
+	std::cout << "Test 36c: nine-part small-blob chain -- diagonal near the parts' own" << std::endl;
+
+	const Scalar k = 0.015;		// 9 parts -> sum(k) = 0.12, budget/side = 0.03
+	std::vector<SDFGeometry::Part> parts;
+	const Scalar px[9] = { 0.00, 0.07,-0.06, 0.11,-0.10, 0.04,-0.03, 0.14,-0.13 };
+	const Scalar py[9] = { 0.00, 0.03,-0.02, 0.05, 0.01,-0.04, 0.06,-0.01, 0.02 };
+	const Scalar pz[9] = { 0.00,-0.05, 0.06, 0.02,-0.07, 0.08,-0.06, 0.03, 0.05 };
+	for( int i = 0; i < 9; ++i ) {
+		const bool first = ( i == 0 );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere,
+			first ? SDFGeometry::eOpUnion : SDFGeometry::eOpSmin, first ? Scalar(0) : k,
+			Point3( px[i], py[i], pz[i] ), 0,0,0, Vector3(1,1,1), 0.06, 0,0,0 ) );
+	}
+	SDFGeometry* g = MakeGeom( parts );
+	const BoundingBox bb = g->GenerateBoundingBox();
+
+	// analytic hard union of nine r = 0.06 spheres at the listed centres
+	Scalar lo[3] = { 1e9, 1e9, 1e9 }, hi[3] = { -1e9, -1e9, -1e9 };
+	for( int i = 0; i < 9; ++i ) {
+		const Scalar cc[3] = { px[i], py[i], pz[i] };
+		for( int a = 0; a < 3; ++a ) {
+			lo[a] = std::min( lo[a], cc[a]-Scalar(0.06) );
+			hi[a] = std::max( hi[a], cc[a]+Scalar(0.06) );
+		}
+	}
+	const Scalar hardDiag = std::sqrt( (hi[0]-lo[0])*(hi[0]-lo[0]) + (hi[1]-lo[1])*(hi[1]-lo[1]) + (hi[2]-lo[2])*(hi[2]-lo[2]) );
+	const Scalar gotDiag  = std::sqrt( (bb.ur.x-bb.ll.x)*(bb.ur.x-bb.ll.x)
+	                                 + (bb.ur.y-bb.ll.y)*(bb.ur.y-bb.ll.y)
+	                                 + (bb.ur.z-bb.ll.z)*(bb.ur.z-bb.ll.z) );
+	std::cout << "    hard-union extent " << (hi[0]-lo[0]) << " x " << (hi[1]-lo[1]) << " x " << (hi[2]-lo[2])
+	          << " (diag " << hardDiag << ")" << std::endl;
+	std::cout << "    reported  extent " << (bb.ur.x-bb.ll.x) << " x " << (bb.ur.y-bb.ll.y) << " x " << (bb.ur.z-bb.ll.z)
+	          << " (diag " << gotDiag << "), ratio " << gotDiag/hardDiag << std::endl;
+	// budget/side = sum(k)/4 = 0.03.  Growing the 0.39 x 0.22 x 0.27 hard box
+	// by 0.06 per axis caps the diagonal at 0.624, i.e. 1.194x -- so 1.25x is
+	// above the theoretical bound with margin, while the MEASURED numbers on
+	// either side of the fix are 1.079x (fixed) and 1.498x (the old
+	// running-box-by-full-k form).  Comfortably discriminating both ways.
+	Check( gotDiag >= hardDiag, "diagonal still contains the hard union" );
+	Check( gotDiag <= hardDiag*Scalar(1.25), "MONEY -- diagonal within 1.25x the parts' own (measured 1.079x fixed, 1.498x pre-fix)" );
+	safe_release( g );
+}
+
+// 36d -- DEGENERATE INPUTS to the per-part inflation.  Both reach the field
+// through KEYFRAMING (`part<i>.scale` and `part<i>.blend` are animatable, and
+// SetIntermediateValue writes them RAW), so neither is a synthetic worry.
+//
+// (a) SUB-FLOOR SCALE.  partEval divides by pt.invScale and multiplies by
+//     pt.minScale, both built from RecomputePartDerived's
+//     `fabs(s) > 1e-9 ? s : 1e-9` flooring -- so a part authored at scale 0
+//     behaves as though it were scaled by the FLOOR, and its world
+//     tau-sublevel still reaches tau.  The inflation divides by that same
+//     floored minScale; if the corner transform were to multiply by the RAW
+//     scale instead, it would scale the inflated box back to a point and
+//     under-bound by the whole budget.
+// (b) NON-FINITE BLEND.  An infinite k makes the suffix budget infinite and
+//     the inflation infinite.  Under strict IEEE the corner transform then
+//     evaluates 0*inf for every zero rotation-matrix entry, every corner comes
+//     out NaN, and min/max against NaN leaves worldAABB's +-RISE_INFINITY
+//     seeds in place -- an INVERTED box (ll = +INF, ur = -INF) that reaches
+//     the TLAS / octree as a NaN centroid.
+//
+//     MEASURED CAVEAT, because it changes what this test can assert: on THIS
+//     build (macOS, -ffast-math with -fno-finite-math-only) the unguarded form
+//     does NOT invert -- the 0*inf terms fold away and the box degrades to
+//     [-inf, +inf], which passes an `ll <= ur` check.  So well-formedness
+//     ALONE cannot red-prove the guard here.  The assertion is therefore
+//     FINITENESS, which is what the guard actually delivers and which catches
+//     BOTH degradations: an inverted box has ll = +INF, so it fails the finite
+//     test too, on whichever platform produces it.
+//
+// Both halves assert well-formedness (ll <= ur on every axis) -- the property
+// every downstream consumer assumes -- and (b) additionally asserts the box is
+// finite.
+static void TestSminBoundDegenerateInputs()
+{
+	std::cout << "Test 36d: sub-floor scale + non-finite blend still give a well-formed box" << std::endl;
+
+	// (a) a zero-scale part inside an smin chain
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 0.5, 0,0,0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin, 0.4,
+			Point3(0.6,0,0), 0,0,0, Vector3(0,0,0), 0.5, 0,0,0 ) );
+		FieldProbe* g = new FieldProbe( parts );
+		const BoundingBox bb = g->GenerateBoundingBox();
+		std::cout << "    zero-scale part: bbox = [" << bb.ll.x << "," << bb.ur.x << "] x ["
+		          << bb.ll.y << "," << bb.ur.y << "] x [" << bb.ll.z << "," << bb.ur.z << "]" << std::endl;
+		Check( bb.ll.x <= bb.ur.x && bb.ll.y <= bb.ur.y && bb.ll.z <= bb.ur.z,
+		       "zero-scale smin part: the reported box is well-formed" );
+
+		// and it still CONTAINS the solid: same dense sweep as 36a, over 1.5x
+		// the reported box.  This is the half that catches a corner transform
+		// that multiplied by the raw (zero) scale after inflating by the
+		// floored one -- the box would collapse and the seed sphere would
+		// escape it.
+		const Point3 c( (bb.ll.x+bb.ur.x)*Scalar(0.5), (bb.ll.y+bb.ur.y)*Scalar(0.5), (bb.ll.z+bb.ur.z)*Scalar(0.5) );
+		const Scalar hx = (bb.ur.x-bb.ll.x)*Scalar(0.75), hy = (bb.ur.y-bb.ll.y)*Scalar(0.75), hz = (bb.ur.z-bb.ll.z)*Scalar(0.75);
+		const int N = 56;
+		int escapes = 0, inside = 0;
+		Scalar worstOut = 0;
+		for( int ix = 0; ix <= N; ++ix )
+		for( int iy = 0; iy <= N; ++iy )
+		for( int iz = 0; iz <= N; ++iz )
+		{
+			const Point3 p( c.x + hx*(Scalar(2)*ix/N - 1), c.y + hy*(Scalar(2)*iy/N - 1), c.z + hz*(Scalar(2)*iz/N - 1) );
+			if( g->FieldAt( p ) > 0 ) continue;
+			++inside;
+			const Scalar out = std::max( std::max( bb.ll.x - p.x, p.x - bb.ur.x ),
+			                   std::max( std::max( bb.ll.y - p.y, p.y - bb.ur.y ),
+			                             std::max( bb.ll.z - p.z, p.z - bb.ur.z ) ) );
+			if( out > 0 ) { ++escapes; worstOut = std::max( worstOut, out ); }
+		}
+		std::cout << "    zero-scale part: solid grid points " << inside << ", escaping " << escapes
+		          << " (worst " << worstOut << ")" << std::endl;
+		Check( inside > 500, "zero-scale fixture still has a solid to bound (sanity)" );
+		Check( escapes == 0, "MONEY -- a sub-floor-scale smin part does not let the solid escape the box" );
+		safe_release( g );
+	}
+
+	// (b) an infinite blend radius
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 0.5, 0,0,0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin,
+			std::numeric_limits<Scalar>::infinity(),
+			Point3(0.6,0,0), 0,0,0, Vector3(1,1,1), 0.5, 0,0,0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		const BoundingBox bb = g->GenerateBoundingBox();
+		std::cout << "    infinite k: bbox = [" << bb.ll.x << "," << bb.ur.x << "] x ["
+		          << bb.ll.y << "," << bb.ur.y << "] x [" << bb.ll.z << "," << bb.ur.z << "]" << std::endl;
+		Check( bb.ll.x <= bb.ur.x && bb.ll.y <= bb.ur.y && bb.ll.z <= bb.ur.z,
+		       "an infinite blend radius gives a well-formed box, not an INVERTED one" );
+		const bool finiteBox =
+			RISE::IsFiniteDouble( bb.ll.x ) && RISE::IsFiniteDouble( bb.ur.x ) &&
+			RISE::IsFiniteDouble( bb.ll.y ) && RISE::IsFiniteDouble( bb.ur.y ) &&
+			RISE::IsFiniteDouble( bb.ll.z ) && RISE::IsFiniteDouble( bb.ur.z );
+		Check( finiteBox,
+		       "MONEY -- an infinite blend radius is dropped from the budget, so the box stays FINITE "
+		       "(without the guard it degrades to [-inf,inf] here, and inverts under strict IEEE)" );
+		// and it is the box the same parts would give with the smin's blend
+		// disabled -- the budget contributes nothing, nothing else moves
+		// hard union of spheres r=0.5 at x=0 and x=0.6 is [-0.5, 1.1]; the only
+		// growth left is ComputeBounds' safety pad (1e-3 on this small box)
+		Check( bb.ur.x <= Scalar(1.1) + Scalar(2e-3) && bb.ll.x >= Scalar(-0.5) - Scalar(2e-3),
+		       "the finite box is the ordinary hard-union one (spheres at 0 and 0.6, r 0.5, + pad)" );
+		safe_release( g );
+	}
+}
+
 int main()
 {
 	std::cout << "SDFGeometryTest" << std::endl;
@@ -2623,6 +2952,10 @@ int main()
 	TestSDFKeyframedSizeStaysConservative();
 	TestRoundBoxLargeRoundDoesNotClipSurface();
 	TestCapsuleNegativeHalfHeightDoesNotClipSurface();
+	TestSminBoundStaysConservative();
+	TestSminBoundIsTight();
+	TestSminBoundOnSmallBlobChain();
+	TestSminBoundDegenerateInputs();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

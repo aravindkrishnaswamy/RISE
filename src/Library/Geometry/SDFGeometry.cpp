@@ -521,6 +521,62 @@ namespace
 			lmax = Point3(  rx, ry1,  rz );
 		}
 	}
+
+	// FIELD-TO-LOCAL-DISTANCE STRETCH.  ComputeBounds needs, for a sublevel
+	// threshold tau >= 0, a box containing { l : primDist(pt,l) <= tau } -- not
+	// just the solid { primDist <= 0 } that primLocalAABB bounds.  Write that
+	// containment as "primLocalAABB inflated by F*tau on every axis"; this
+	// returns F.
+	//
+	// F = 1 whenever the primitive's field is the EXACT exterior distance,
+	// because then { d <= tau } = solid (+) B(0,tau), which the axis-inflated
+	// AABB contains.  Note the direction that matters here is the OPPOSITE of
+	// the sphere-trace contract: tracing needs d <= true distance (never
+	// overestimate), while this bound needs d >= true distance (never
+	// UNDERestimate) -- so a merely CONSERVATIVE field is not automatically
+	// F = 1, and each primitive has to be exact or carry its own F.
+	//
+	//   sphere / box / roundbox / cylinder / torus / capsule / roundcone: all
+	//   seven are exact exterior SDFs, so F = 1.
+	//     - sdBox / sdRoundBox: IQ's exact box form (outside = |max(q,0)|).
+	//     - sdCylinderY: the solid is the intersection of the radial and the
+	//       axial slab constraints, whose gradients are ORTHOGONAL, so
+	//       sqrt(max(dr,0)^2 + max(dy,0)^2) is the exact exterior distance.
+	//     - sdTorusY: dist(p, generating circle) is exact for every R > 0
+	//       (including on the axis, where qx = -R gives sqrt(R^2+y^2)), and a
+	//       tube is the rr-sublevel of that exact distance.
+	//     - sdCapsuleY: exact point-to-segment distance minus the radius.
+	//     - sdRoundConeY: the lateral branch returns a*qx + b*qy - r1, which IS
+	//       the signed distance to the line of unit normal (a,b) tangent to
+	//       BOTH cap circles: tangency to circle1 (centre origin, radius r1)
+	//       forces the offset c = r1, tangency to circle2 (centre (0,h),
+	//       radius r2) forces b*h - c = -r2, i.e. b = (r1-r2)/h -- exactly the
+	//       code's b, with a = sqrt(1-b^2).  The k < 0 / k > a*h branches hand
+	//       off to the two cap spheres at precisely the tangency points, and
+	//       the bb >= 1 branch IS the containing cap sphere.  Exact throughout.
+	//
+	//   superellipsoid: d = rin*(g-1) with g the gauge -- a deliberate UNDER-
+	//   estimate of the true distance (see sdSuperellipsoidY's derivation), so
+	//   F > 1 in general.  g is homogeneous of degree 1, hence
+	//   { d <= tau } = { g <= 1 + tau/rin } = (1 + tau/rin) * { g <= 1 }, and
+	//   { g <= 1 } sits exactly within [-a,a]^3 (primLocalAABB's row above), so
+	//   the per-axis growth is a*tau/rin -- i.e. F = a/rin, with `a` cancelling:
+	//     F = 2^max(0,(e1-1)/2) * 2^max(0,(e2-1)/2).
+	//   F = 1 over the whole e <= 1 regime (sphere / cushion / box), rising to
+	//   2 at the octahedral corner e1 = e2 = 2.  The exponents are read through
+	//   clampSuperExp so this agrees with the rin the FIELD actually used --
+	//   a raw e > 2 would otherwise claim a stretch the clamped field does not
+	//   have, and a NaN e would poison the box.
+	inline Scalar primFieldStretch( const SDFGeometry::Part& pt )
+	{
+		if( pt.type != SDFGeometry::ePrimSuperellipsoid ) {
+			return Scalar(1);
+		}
+		const Scalar e1 = clampSuperExp( pt.b );
+		const Scalar e2 = clampSuperExp( pt.c );
+		return std::pow( Scalar(2), std::max( Scalar(0), (e1-Scalar(1))*Scalar(0.5) ) )
+		     * std::pow( Scalar(2), std::max( Scalar(0), (e2-Scalar(1))*Scalar(0.5) ) );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -666,33 +722,154 @@ void SDFGeometry::ComputeBounds()
 	// solid OUTSIDE the clip box, and a class-split bound would miss that lobe
 	// (bbox-gated rays would then skip real surface, and the marching grid would
 	// clip it).  Folding sequentially is conservative and order-correct:
-	//   union     -> running = AABB-union( running, partBox )
-	//   smin      -> running = AABB-union( running, partBox ) then inflate by k
-	//                (a polynomial smin of radius k bulges BOTH the part surface
-	//                 and the running solid by at most k near the blend)
-	//   intersect -> running = AABB-intersection( running, partBox )
-	//   subtract  -> no-op (a carve only ever shrinks the solid)
+	//   union / smin -> running = AABB-union       ( running, partBox_i )
+	//   intersect    -> running = AABB-intersection( running, partBox_i )
+	//   subtract     -> no-op (a carve only ever shrinks the solid)
 	// e.g. for [ unionA1, intersectC, unionA2 ] this yields
 	// ( box(A1) INTERSECT box(C) ) UNION box(A2) -- the second lobe survives.
+	//
+	// THE SMIN BULGE IS A PER-PART SUBLEVEL SET, NOT A RUNNING-BOX PAD.
+	//
+	// What a smin can do to the bound: sminP(a,b,k) = min(a,b) - h*h*k/4 with
+	// h = max(k-|a-b|,0)/k in [0,1], so it dips BELOW the hard min by at most
+	//     k/4  -- a QUARTER of the blend radius, straight out of the formula --
+	// and never rises above it.  Its dual smaxP(a,b,k) = -sminP(-a,-b,k) is
+	// therefore always >= max(a,b): intersect and subtract only ever RAISE the
+	// field, i.e. shrink the solid, and can be ignored by a bound (subtract
+	// entirely; intersect still clips).
+	//
+	// So the only downward pressure comes from smin, and it is bounded by a
+	// SUFFIX SUM.  Let d_i be the accumulator after part i and
+	//     T_i = sum over j >= i of ( op_j == smin ? max(k_j,0)/4 : 0 )
+	// (built below as `budget`, right-to-left).  Fold invariant, maintained by
+	// downward induction with B_0 = empty:
+	//     { p : d_i(p) <= T_{i+1} }  is contained in  B_i.
+	// Step i+1 with sublevel tau = T_{i+1}:
+	//   union:     d_{i+1} = min(d_i, dp) <= T_{i+2} = T_{i+1} forces d_i <= tau
+	//              OR dp <= tau -> B_i UNION partBox(tau).
+	//   smin(k):   d_{i+1} <= T_{i+2} = T_{i+1} - k/4, and
+	//              min(d_i,dp) <= d_{i+1} + k/4 <= T_{i+1} = tau -- the SAME
+	//              union, with the k/4 already reserved inside tau.
+	//   intersect: d_{i+1} >= max(d_i, dp), so d_{i+1} <= tau forces BOTH
+	//              d_i <= tau and dp <= tau -> B_i INTERSECT partBox(tau).
+	//   subtract:  d_{i+1} >= d_i, so d_{i+1} <= tau forces d_i <= tau -> B_i.
+	// T_N = 0 at the end, which is exactly the containment we want: the solid
+	// { Map <= 0 } lies inside the final box.
+	//
+	// This REPLACES an earlier form that unioned the raw part box and then
+	// padded the WHOLE RUNNING BOX by the full k, once per smin part.  That was
+	// wrong twice over -- k instead of k/4, and cumulative over the chain, so an
+	// N-part blend grew by sum(k) per side.  Measured on a 9-part smin creature
+	// (parts extent 0.375 x 0.169 x 0.353, sum(k) = 0.136) it reported
+	// 0.622 x 0.413 x 0.575, ~1.7x per axis -- which then drove auto-framing
+	// and largest-extent object picking to visibly wrong answers.  It was also
+	// UNCONSERVATIVE for anisotropically scaled parts, which the per-part form
+	// below handles exactly (see partBox's tau plumbing).
+	//
+	// (The pad is per-part rather than on the running box for a second reason:
+	// the running box has no primitive behind it, so there is nothing to inflate
+	// in the part's own local frame -- and the local frame is where the
+	// anisotropic-scale correction is exact.)
+	//
+	// ACCEPTED LOOSENESS, so nobody re-derives it as a bug.  The bound is a
+	// UNION of per-part sublevel boxes, and it charges EVERY part the full
+	// budget independently.  The real blend region is smaller than that: a
+	// point only gets pulled into the solid where BOTH fields are within about
+	// 5k/4 of zero at once -- h > 0 needs |d_prev - d_part| < k before the
+	// quadratic can subtract anything -- so the true bulge lives in the
+	// INTERSECTION of the two neighbourhoods (a collar around the seam), not
+	// the union of them.  A part sitting far from every seam therefore pays for
+	// a bulge it can never have; on strongly ANISOTROPIC parts, where lambda is
+	// amplified by scale_max/scale_min, that shows up as a visibly loose box
+	// (the live cat: 1.27x the tight extent instead of ~1.06x).  Deliberately
+	// accepted: it errs in the CONSERVATIVE direction, and the form it replaced
+	// -- a world-space pad of k -- was outright UNSAFE for exactly these
+	// anisotropic parts (see partBox's tau plumbing).  The seam-intersection
+	// refinement (intersect each pair's inflated boxes before unioning) is the
+	// tightening to reach for if a real scene ever needs it; it costs O(N^2)
+	// box work and nothing in the tree has asked for it yet.
 
-	// World-space AABB of one part's primitive: 8 local corners -> scale ->
-	// rotate ( R*v = cx*vx + cy*vy + cz*vz ) -> translate.
-	auto worldAABB = []( const Part& pt, Point3& outMn, Point3& outMx )
+	// Per-part smin budget T_i, as a suffix sum (budget[N] = 0).
+	//
+	// The FINITENESS test is load-bearing, not defensive noise.  `k` is
+	// KEYFRAMABLE (`part<i>.blend`), so an eased value can arrive as +inf or
+	// NaN.  An infinite budget makes lambda infinite below, which makes every
+	// transformed corner NaN, and min/max against NaN keeps the sentinel seeds
+	// -- worldAABB would hand back an INVERTED box (ll = +INF, ur = -INF) that
+	// propagates into the TLAS / octree as a NaN centroid.  The OLD full-k pad
+	// degraded to a well-formed [-inf, +inf] instead, so this is a regression
+	// the per-part form has to close explicitly.  A NaN k is already excluded
+	// by `k > 0` (every compare against NaN is false); note that sminP does NOT
+	// filter it -- a NaN k makes the FIELD NaN at that part -- but a garbage
+	// field is no reason to also hand the TLAS a garbage box.
+	std::vector<Scalar> budget( m_parts.size() + 1, Scalar(0) );
+	for( size_t i = m_parts.size(); i-- > 0; ) {
+		const Part& pt = m_parts[i];
+		const bool spends = ( pt.op == eOpSmin && pt.k > 0 && RISE::IsFiniteDouble( pt.k ) );
+		budget[i] = budget[i+1] + ( spends ? pt.k * Scalar(0.25) : Scalar(0) );
+	}
+
+	// World-space AABB of the tau-SUBLEVEL SET of one part's field, i.e. of
+	// { p : partEval(pt,p) <= tau }: 8 local corners (inflated for tau) ->
+	// scale -> rotate ( R*v = cx*vx + cy*vy + cz*vz ) -> translate.
+	//
+	// The inflation happens in the LOCAL frame, BEFORE the scale, because that
+	// is where it is exact.  partEval is primDist(local) * minScale, so a WORLD
+	// sublevel tau is a LOCAL sublevel tau/minScale, and a local sublevel is
+	// contained in the local AABB grown by
+	//     lambda = ( tau / minScale ) * primFieldStretch(pt)
+	// per axis.  Running THAT box through the existing corner transform lets the
+	// per-axis scale and the rotation spread lambda correctly and tightly.  A
+	// world-space pad of tau cannot do this: for a flattened part (say
+	// scale = (1,1,0.01)) the world field is 0.01x the local one along x, so its
+	// tau-sublevel genuinely reaches 100*tau out in x -- the blend really can
+	// pull surface that far -- and a tau pad would UNDER-bound it.
+	auto worldAABB = []( const Part& pt, const Scalar tau, Point3& outMn, Point3& outMx )
 	{
 		Point3 lmin, lmax;
 		primLocalAABB( pt, lmin, lmax );
-		const Scalar xs[2] = { lmin.x, lmax.x };
-		const Scalar ys[2] = { lmin.y, lmax.y };
-		const Scalar zs[2] = { lmin.z, lmax.z };
+		// Sort before inflating.  Every primLocalAABB row is min-first for sane
+		// authoring, but `size` is KEYFRAMABLE (SetIntermediateValue writes a/b/c
+		// raw), and an inverted row would turn the +-lambda growth into a SHRINK.
+		// The corner loop below is order-blind, so this costs nothing else.
+		Scalar xs[2] = { std::min(lmin.x,lmax.x), std::max(lmin.x,lmax.x) };
+		Scalar ys[2] = { std::min(lmin.y,lmax.y), std::max(lmin.y,lmax.y) };
+		Scalar zs[2] = { std::min(lmin.z,lmax.z), std::max(lmin.z,lmax.z) };
+		// THE SCALE USED HERE IS THE FLOORED ONE, and it has to be: partEval
+		// divides the world offset by pt.invScale, which RecomputePartDerived
+		// built from the SAME `fabs(s) > 1e-9 ? s : 1e-9` flooring, and takes
+		// minScale from those floored magnitudes too.  Read pt.scale RAW in the
+		// corner transform and the two halves disagree exactly where it hurts:
+		// with every |scale| component at or below the floor, lambda inflates
+		// the local box by tau/1e-9 while the transform multiplies it back by
+		// ~0, so the reported box collapses to a point even though the world
+		// tau-sublevel genuinely reaches tau (the effective world scale is the
+		// FLOOR, 1e-9, not the authored 0).  Measured deficit 0.099 -- far past
+		// the safety pad -- for scale = (0, 1e-9, 1e-9) on two a = 0.5 spheres
+		// with smin k = 0.4.  Recomputed locally rather than cached on the Part
+		// so a hand-built Part that never went through RecomputePartDerived is
+		// handled the same way.
+		const Scalar sxA = ( std::fabs(pt.scale.x) > Scalar(1e-9) ) ? pt.scale.x : Scalar(1e-9);
+		const Scalar syA = ( std::fabs(pt.scale.y) > Scalar(1e-9) ) ? pt.scale.y : Scalar(1e-9);
+		const Scalar szA = ( std::fabs(pt.scale.z) > Scalar(1e-9) ) ? pt.scale.z : Scalar(1e-9);
+		if( tau > Scalar(0) ) {
+			// The matching minScale, from the same floored magnitudes -- NOT
+			// pt.minScale, which a hand-built Part may never have had derived.
+			const Scalar ms  = std::min( std::fabs(sxA), std::min( std::fabs(syA), std::fabs(szA) ) );
+			const Scalar lam = ( tau / ms ) * primFieldStretch( pt );
+			xs[0] -= lam; xs[1] += lam;
+			ys[0] -= lam; ys[1] += lam;
+			zs[0] -= lam; zs[1] += lam;
+		}
 		outMn = Point3(  RISE_INFINITY,  RISE_INFINITY,  RISE_INFINITY );
 		outMx = Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 		for( int cxi = 0; cxi < 2; ++cxi )
 		for( int cyi = 0; cyi < 2; ++cyi )
 		for( int czi = 0; czi < 2; ++czi )
 		{
-			const Scalar vx = xs[cxi] * pt.scale.x;
-			const Scalar vy = ys[cyi] * pt.scale.y;
-			const Scalar vz = zs[czi] * pt.scale.z;
+			const Scalar vx = xs[cxi] * sxA;
+			const Scalar vy = ys[cyi] * syA;
+			const Scalar vz = zs[czi] * szA;
 			const Scalar wx = pt.pos.x + pt.cx.x*vx + pt.cy.x*vy + pt.cz.x*vz;
 			const Scalar wy = pt.pos.y + pt.cx.y*vx + pt.cy.y*vy + pt.cz.y*vz;
 			const Scalar wz = pt.pos.z + pt.cx.z*vx + pt.cy.z*vy + pt.cz.z*vz;
@@ -713,7 +890,7 @@ void SDFGeometry::ComputeBounds()
 		}
 
 		Point3 pmn, pmx;
-		worldAABB( pt, pmn, pmx );
+		worldAABB( pt, budget[i], pmn, pmx );
 
 		if( !have ) {
 			// The parser guarantees the first part is union/smin (see
@@ -735,11 +912,9 @@ void SDFGeometry::ComputeBounds()
 			mn.x = std::min( mn.x, pmn.x ); mx.x = std::max( mx.x, pmx.x );
 			mn.y = std::min( mn.y, pmn.y ); mx.y = std::max( mx.y, pmx.y );
 			mn.z = std::min( mn.z, pmn.z ); mx.z = std::max( mx.z, pmx.z );
-			if( pt.op == eOpSmin && pt.k > 0 ) {
-				// the blend bulges both sides by up to k near the seam
-				mn.x -= pt.k; mn.y -= pt.k; mn.z -= pt.k;
-				mx.x += pt.k; mx.y += pt.k; mx.z += pt.k;
-			}
+			// No running-box pad here: the smin bulge this part (and every smin
+			// after it) can produce is already inside budget[i], which widened
+			// pmn/pmx in the part's own local frame.
 		}
 	}
 

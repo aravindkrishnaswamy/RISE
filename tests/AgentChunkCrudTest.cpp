@@ -10499,6 +10499,101 @@ static void TestFinishElementIsolateCoverage()
 	Check( sceneCamFrac < 0.25,
 	       "S1-COVERAGE and the unfit scene-camera framing of the SAME object stays well under the "
 	       "money threshold -- the assertion above is discriminating, not vacuously satisfied" );
+
+	//------------------------------------------------------------------
+	// SECOND ARM -- the SMIN-BLEND shape, which the box arm above cannot
+	// see.  The fit is only ever as good as the bbox it is handed, and
+	// the box arm's fixture is a `box_geometry`: its AABB is exact, so
+	// the arm passes for ANY bbox implementation.  The reported live
+	// failure was a nine-part smin SDF creature, and there
+	// SDFGeometry::ComputeBounds was INFLATING the reported box --
+	// padding the whole RUNNING box by the FULL blend radius k once per
+	// smin part, when sminP(a,b,k) = min(a,b) - h*h*k/4 (h in [0,1])
+	// dips at most k/4 below the hard min, and one shared budget covers
+	// the chain rather than sum(k) accumulating.  On the live cat (parts
+	// extent 0.375 x 0.169 x 0.353, sum(k) = 0.136) that reported
+	// 0.622 x 0.413 x 0.575.  IsolateFitDistance then fitted the
+	// INFLATED box, so the subject rendered at a fraction of the frame
+	// it should have -- and the same inflated diagonal beat a larger
+	// neighbour in finish_element's largest-diagonal object pick.
+	//
+	// The fixture is modelled on that cat: six overlapping 0.07-0.11
+	// radius blobs, k comparable to the blob size (0.030-0.035,
+	// sum(k) = 0.165 -- i.e. the pre-fix pad alone nearly doubled every
+	// axis), hard-union extent 0.405 x 0.285 x 0.235, on an element root
+	// that is both ROTATED and OFF-ORIGIN so the world AABB carries the
+	// error through a transform exactly as the live scene did.  The
+	// blobs OVERLAP rather than merely chaining, so the silhouette fills
+	// a decent share of its own bounding rectangle and the measured
+	// fraction tracks the fit rather than the shape's sparseness.
+	//
+	// THE THRESHOLD comes from measurement, not from the fit formula.
+	// RED-PROVED by stashing ONLY the ComputeBounds change and rebuilding:
+	//     pre-fix  0.0300      post-fix  0.0826      (256x256, same fixture)
+	// -- a 2.75x swing, from a bbox diagonal the old form reported ~1.5x
+	// too large (SDFGeometryTest Test 36c measures that ratio directly on
+	// the same class of fixture).  The 0.10 floor the first draft used sat
+	// ABOVE the fixed measurement, so the floor here is 0.055: ~33% below
+	// the fixed value and ~83% above the pre-fix one.
+	//
+	// It is deliberately LOWER than the box arm's 0.25, and the two are
+	// NOT comparable: a six-lobe blob's silhouette fills far less of its
+	// own bounding rectangle than a cube's does, and its solid fills far
+	// less of its own AABB, so the same quality of fit yields a much
+	// smaller non-background fraction.  The number that carries meaning
+	// here is fixed-vs-unfixed on THIS fixture.
+	{
+		const std::string tmp2 = TempPath( "agentcrud_s1_coverage_sdf.RISEscene" );
+		Job* pJob2 = LoadScene( kScene, tmp2 );
+		Check( pJob2 != nullptr, "S1-COVERAGE/sdf fixture loads" );
+		if( !pJob2 ) return;
+		std::unique_ptr<Agent::AgentSession> sess2 = WrapJobGateArmed( pJob2 );
+		Check( sess2->FileBuildPlan( TwoElementPlan() ).ok, "S1-COVERAGE/sdf the plan files" );
+
+		std::vector<std::string> sdfChunks;
+		sdfChunks.push_back(
+			"sdf_geometry\n{\n\tname cov_blob\n"
+			// <prim> <op> <k>  <px py pz>  <ex ey ez>  <sx sy sz>  <a b c>  <round>
+			"\tpart sphere union 0.0     0.00  0.00  0.00   0 0 0   1 1 1   0.110 0 0   0\n"
+			"\tpart sphere smin  0.035   0.11  0.02  0.01   0 0 0   1 1 1   0.090 0 0   0\n"
+			"\tpart sphere smin  0.035  -0.10  0.03 -0.02   0 0 0   1 1 1   0.085 0 0   0\n"
+			"\tpart sphere smin  0.030   0.05 -0.07  0.04   0 0 0   1 1 1   0.075 0 0   0\n"
+			"\tpart sphere smin  0.030  -0.04  0.07  0.03   0 0 0   1 1 1   0.070 0 0   0\n"
+			"\tpart sphere smin  0.035   0.14  0.05 -0.04   0 0 0   1 1 1   0.080 0 0   0\n"
+			"}" );
+		sdfChunks.push_back( "standard_object\n{\n\tname cov_blob_obj\n\tgeometry cov_blob\n"
+		                     "\tmaterial mat_diffuse\n\tposition 0.9 0.5 0\n\torientation 0 -25 0\n}" );
+		const std::vector<Agent::AgentChunkResult> ins2 = sess2->InsertChunks( sdfChunks );
+		Check( ins2.size() == 2 && ins2[0].applied && ins2[1].applied,
+		       "S1-COVERAGE/sdf both chunks land" );
+		// Print WHICHEVER chunk was refused -- the object chunk fails for its
+		// own reasons (an unresolved `geometry` / `material` reference, a bad
+		// `orientation`), and a diagnostic that only ever names the geometry
+		// would send a future reader hunting in the wrong chunk.
+		for( std::size_t ci = 0; ci < ins2.size(); ++ci ) {
+			if( !ins2[ci].applied ) {
+				std::printf( "S1-COVERAGE/sdf: chunk %u (%s `%s`) refused: %s\n",
+				             (unsigned)ci, ins2[ci].kind.c_str(), ins2[ci].name.c_str(),
+				             ins2[ci].message.c_str() );
+			}
+		}
+
+		const Agent::AgentSession::AgentFinishElementResult f2 = sess2->FinishElement();
+		Check( f2.ok && f2.isolateObject == "cov_blob_obj",
+		       "S1-COVERAGE/sdf finish_element isolates the smin blob" );
+		Check( f2.rendered && !f2.png.empty(), "S1-COVERAGE/sdf a real isolate render came back" );
+
+		DecodedLuma luma2;
+		Check( DecodeRenderLuma( f2.png, luma2 ), "S1-COVERAGE/sdf the image decodes" );
+		const double frac2 = NonBackgroundFraction( luma2 );
+		std::printf( "S1-COVERAGE/sdf: smin-blend isolate non-background fraction = %.4f (dims %ux%u)\n",
+		             frac2, luma2.w, luma2.h );
+		Check( frac2 >= 0.055,
+		       "S1-COVERAGE/sdf MONEY ASSERTION: a SMIN-BLENDED SDF element fills the frame too -- "
+		       "the pre-fix ComputeBounds padded the running box by the FULL k once per smin part "
+		       "(vs the k/4-per-chain the sminP formula actually allows), and the auto-framer fitted "
+		       "that inflated box instead of the geometry" );
+	}
 }
 
 //----------------------------------------------------------------------
