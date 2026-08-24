@@ -3777,6 +3777,53 @@ formula with the observed backstop.  Evidence is
 `rendered/fire_production_calibration/r163_predictive_initial_step_refusal/`
 `predictive_initial_step_evidence.v1`.
 
+### 7.55x Drain-aware plateau retry and accepted host profile (r164)
+
+The ordinary plateau-refusal path now consumes the already-derived manifold
+backstop.  The predictive initializer remains candidate zero; a failed
+headroom check may retry only at a finite, positive, strictly smaller
+drain-aware suggestion and only inside the existing 20-attempt rejection cap.
+This is more informed than blind halving and does not alter the hard ceiling or
+headroom allowance.  The r162 wording that step 1 is “already legal” meant
+that initialization removes a separate CFL-transient class, not that a
+fail-closed refusal is forbidden.  r163's residual is only
+`0.09002685546875%` of the allowance, so the ruled one-retry mechanism is used
+without a floor-aware second-order predictor.
+
+The exact path first reproduces candidate zero at
+`0.00055762444389984012 s`: terminal target `52234712...f833`, field
+`0.023458600044250488`, no token, suggestion
+`0.00055692791475544124 s`.  Candidate one represents that suggestion as
+`0.00055692793102934957 s` and owns a fresh eight-substep equal-time schedule
+`0db10079...b08b` plus terminal target `cf67f48c...8bae`.  It measures predictor
+`G=0.019709885120391846`, corrected `G=field=0.023429989814758301`, delivered
+drain `0.99964541417058472`, and a `7.510185241699219e-6` margin below the
+`0.0234375` allowance.  Both projections validate, the hard `0.03125` ceiling
+passes, and the accepted token is minted.  Exact exit `206` binds the refusal,
+retry, and acceptance; exact `252` remains the old-CFL RED.
+
+Host profiling is performed on the accepted candidate under
+`render_thread_reserve_count 0`.  The first accepted replay—not the rejected
+r163 replay—revealed p95 `95.109874848276377/323.04645799999997 ms`
+device/wall because authority hashing/postprocessing alone consumed roughly
+`146 ms`.  The optimized path keeps the legacy checkpoint digest unchanged,
+uses a versioned live accepted-state digest, parallelizes independent owner
+validation, and overlaps dual-static preparation, force, and the first cell
+palindrome on the topology-aware global pool.  Legacy low-priority mode uses
+the serial route; Metal kernels and queue order do not change, and exact-247
+complete-payload equivalence remains the arithmetic invariant.
+
+Final accepted p95 is `91.582666500471532 ms` device and `155.944041 ms` wall.
+For 25 s at this operating step, the projections are
+`1.1419623691904432 h` device and `1.9444970683461671 h` wall.  This is a
+`51.727054379280645%` accepted-wall reduction, but it does not meet the
+approximately `1.3 h` target.  The remaining `64.361374499528466 ms` residual
+is explicitly retained as host work toward device-bound execution, and source
+maps are expected to increase device time.  No performance number changes the
+physics acceptance.  Durable evidence is
+`rendered/fire_production_calibration/r164_drain_aware_retry_acceptance/`
+`drain_aware_retry_acceptance.v1`; the golden checkpoint is unchanged.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

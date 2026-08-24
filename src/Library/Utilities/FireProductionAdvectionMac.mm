@@ -2341,6 +2341,17 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			}
 			const bool anomalyClosureTestDisabled=anomalyClosureTestActivation&&
 				std::strcmp(anomalyClosureTestActivation,"disabled")==0;
+			const char* hostResidualProbeActivation=std::getenv(
+				"RISE_FIRE_HOST_RESIDUAL_PROBE");
+			if( hostResidualProbeActivation&&(!goldenLongShadowActivation||
+				!anomalyClosureTestActivation||
+				std::strcmp(anomalyClosureTestActivation,"limited")!=0||
+				std::strcmp(hostResidualProbeActivation,"1")!=0) ) {
+				if( structuredError ) *structuredError=
+					"production host-residual probe activation is invalid";
+				return false;
+			}
+			const bool hostResidualProbeEnabled=hostResidualProbeActivation!=0;
 			const char* timestepVelocityPackMode=std::getenv(
 				"RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
 			if( timestepVelocityPackMode&&(!timestepVelocityAuditEnabled||
@@ -2430,70 +2441,88 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);
 				allFaces+=faceCounts[axis];
 			}
-			if( !ValidateFireProductionFrozenForceRequest(request.force,structuredError)||
-				request.force.cellGasDensityKGPerM3.size()!=cells||
-				request.cellTransport.conservativeValues.size()!=9u*cells||
-				request.cellSourceIncrement.size()!=9u*cells||
-				request.divergenceTargetPerS.size()!=cells||
-				request.restorationDivergenceTargetPerS.size()!=cells||
-				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError) ) return false;
-			if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled )
-				for( const double value:request.beginningManifoldDeviationPerCell )
-					if( !std::isfinite(value) ) {
-						if( structuredError ) *structuredError=
-							"production resident step beginning manifold metadata is nonfinite";
-						return false;
-					}
-			for( const float value:request.divergenceTargetPerS ) if( !std::isfinite(value) ) {
-				if( structuredError ) *structuredError=
-					"production resident step physical divergence target is nonfinite";
-				return false;
-			}
-			for( const float value:request.restorationDivergenceTargetPerS ) if(
-				!std::isfinite(value) ) {
-				if( structuredError ) *structuredError=
-					"production resident step restoration divergence target is nonfinite";
-				return false;
-			}
-			for( std::size_t cell=0u;cell<cells;++cell ) {
-				float gas=request.cellTransport.conservativeValues[cells+cell];
-				for( std::size_t component=2u;component<=6u;++component )
-					gas+=request.cellTransport.conservativeValues[component*cells+cell];
-				if( gas!=request.force.cellGasDensityKGPerM3[cell] ) {
-					if( structuredError ) *structuredError=
-						"production resident step packed gas density does not match force input";
-					return false;
-				}
-			}
-			for( unsigned int axis=0u;axis<3u;++axis ) if(
-				request.momentumSourceIncrement[axis].size()!=faceCounts[axis]||
-				request.dualTransport.beginningFaceDensity[axis]!=request.force.faceDensityKGPerM3[axis]||
-				request.dualTransport.beginningMomentum[axis]!=request.force.beginningMomentumKGPerM2S[axis]||
-				request.dualTransport.frozenVelocityMPerS[axis]!=
-					request.cellTransport.frozenVelocityMPerS[axis] ) {
-				if( structuredError ) *structuredError=
-					"production resident step dual ownership does not match force/cell input";
-				return false;
-			}
 			auto positiveZero=[](float value) {
 				std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));return bits==0u;
 			};
-			for( const float value : request.cellSourceIncrement ) if( !positiveZero(value) ) {
-				if( structuredError ) *structuredError=
-					"production resident step cell source is not positive zero";
-				return false;
-			}
-			for( const std::vector<float>& source : request.momentumSourceIncrement )
-				for( const float value : source ) if( !positiveZero(value) ) {
-					if( structuredError ) *structuredError=
-						"production resident step momentum source is not positive zero";
+			std::array<bool,10> ownerValidationSucceeded;
+			ownerValidationSucceeded.fill(false);
+			std::array<std::string,10> ownerValidationError;
+			auto validateOwnerPayload=[&](const unsigned int task) {
+				bool valid=true;std::string& taskError=ownerValidationError[task];
+				if( task==0u ) valid=ValidateFireProductionFrozenForceRequest(request.force,&taskError);
+				else if( task==1u ) {
+					valid=request.force.cellGasDensityKGPerM3.size()==cells&&
+						request.cellTransport.conservativeValues.size()==9u*cells&&
+						request.cellSourceIncrement.size()==9u*cells&&
+						request.divergenceTargetPerS.size()==cells&&
+						request.restorationDivergenceTargetPerS.size()==cells;
+					if( valid ) valid=ValidateFireProductionCellPalindromeRequest(
+						request.cellTransport,&taskError);
+					else taskError="production resident step payload shape is invalid";
+				} else if( task==2u ) {
+					if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled )
+						for( const double value:request.beginningManifoldDeviationPerCell )
+							if( !std::isfinite(value) ) { valid=false;break; }
+					if( !valid ) taskError=
+						"production resident step beginning manifold metadata is nonfinite";
+				} else if( task==3u ) {
+					for( const float value:request.divergenceTargetPerS )
+						if( !std::isfinite(value) ) { valid=false;break; }
+					if( !valid ) taskError=
+						"production resident step physical divergence target is nonfinite";
+				} else if( task==4u ) {
+					for( const float value:request.restorationDivergenceTargetPerS )
+						if( !std::isfinite(value) ) { valid=false;break; }
+					if( !valid ) taskError=
+						"production resident step restoration divergence target is nonfinite";
+				} else if( task==5u ) {
+					if( request.cellTransport.conservativeValues.size()==9u*cells&&
+						request.force.cellGasDensityKGPerM3.size()==cells )
+						for( std::size_t cell=0u;cell<cells;++cell ) {
+							float gas=request.cellTransport.conservativeValues[cells+cell];
+							for( std::size_t component=2u;component<=6u;++component )
+								gas+=request.cellTransport.conservativeValues[component*cells+cell];
+							if( gas!=request.force.cellGasDensityKGPerM3[cell] ) {valid=false;break;}
+						}
+					else valid=false;
+					if( !valid ) taskError=
+						"production resident step packed gas density does not match force input";
+				} else if( task==6u ) {
+					for( const float value:request.cellSourceIncrement )
+						if( !positiveZero(value) ) {valid=false;break;}
+					if( !valid ) taskError="production resident step cell source is not positive zero";
+				} else {
+					const unsigned int axis=task-7u;
+					valid=request.momentumSourceIncrement[axis].size()==faceCounts[axis]&&
+						request.dualTransport.beginningFaceDensity[axis]==
+							request.force.faceDensityKGPerM3[axis]&&
+						request.dualTransport.beginningMomentum[axis]==
+							request.force.beginningMomentumKGPerM2S[axis]&&
+						request.dualTransport.frozenVelocityMPerS[axis]==
+							request.cellTransport.frozenVelocityMPerS[axis];
+					if( !valid ) taskError=
+						"production resident step dual ownership does not match force/cell input";
+					else for( const float value:request.momentumSourceIncrement[axis] )
+						if( !positiveZero(value) ) {valid=false;taskError=
+							"production resident step momentum source is not positive zero";break;}
+				}
+				ownerValidationSucceeded[task]=valid;
+			};
+			const bool serialOwnerValidation=GlobalOptions().ReadBool(
+				"force_all_threads_low_priority",false);
+			if( serialOwnerValidation )
+				for( unsigned int task=0u;task<ownerValidationSucceeded.size();++task )
+					validateOwnerPayload(task);
+			else Implementation::GlobalThreadPool().ParallelFor(
+				ownerValidationSucceeded.size(),validateOwnerPayload);
+			for( unsigned int task=0u;task<ownerValidationSucceeded.size();++task )
+				if( !ownerValidationSucceeded[task] ) {
+					if( structuredError ) *structuredError=ownerValidationError[task];
 					return false;
 				}
 			timestepVelocityAuditValidatedMS=timestepVelocityAuditMS();
 			FireProductionMetalDualMomentumStaticState dualStatic;
-			if( !PrepareFireProductionDualMomentumMetalStaticState(request.dualTransport,
-				dualStatic,structuredError) ) return false;
-			timestepVelocityAuditDualStaticMS=timestepVelocityAuditMS();
+			timestepVelocityAuditDualStaticMS=timestepVelocityAuditValidatedMS;
 			MetalRemapContext& context=Context();
 			if( !context.Valid() ) return false;
 			@autoreleasepool {
@@ -2584,18 +2613,40 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const double timestepVelocityAuditOwnerUploadDeviceMS=
 					([upload GPUEndTime]-[upload GPUStartTime])*1000.0;
 				timestepVelocityAuditUploadMS=timestepVelocityAuditMS();
-				FireProductionMetalFrozenForceResidentState force;
-				if( !AdvanceFireProductionFrozenForceMetalResidentState(request.force,force,
-					structuredError) ) return false;
-				timestepVelocityAuditForceMS=timestepVelocityAuditMS();
 				FireProductionMetalCellPalindromeResidentInput cellInput;cellInput.conservativeValues=cellPrivate;
 				cellInput.frozenVelocityMPerS=velocityPrivate;cellInput.ambientValues=ambientPrivate;
+				FireProductionMetalFrozenForceResidentState force;
 				FireProductionMetalCellPalindromeResidentResult cell;
-				if( !RemapFireProductionCellPalindromeMetalResident(request.cellTransport,cellInput,
-					cell,structuredError) ) return false;
+				std::array<bool,3> preparationSucceeded={{false,false,false}};
+				std::array<std::string,3> preparationError;
+				std::array<double,3> preparationWallMS={{0.0,0.0,0.0}};
+				auto prepareIndependent=[&](const unsigned int task) {
+					const auto start=std::chrono::steady_clock::now();
+					if(task==0u)preparationSucceeded[task]=
+						PrepareFireProductionDualMomentumMetalStaticState(request.dualTransport,
+							dualStatic,&preparationError[task]);
+					else if(task==1u)preparationSucceeded[task]=
+						AdvanceFireProductionFrozenForceMetalResidentState(request.force,force,
+							&preparationError[task]);
+					else preparationSucceeded[task]=RemapFireProductionCellPalindromeMetalResident(
+						request.cellTransport,cellInput,cell,&preparationError[task]);
+					preparationWallMS[task]=std::chrono::duration<double,std::milli>(
+						std::chrono::steady_clock::now()-start).count();
+				};
+				const bool serialIndependentPreparation=GlobalOptions().ReadBool(
+					"force_all_threads_low_priority",false);
+				if(serialIndependentPreparation)
+					for(unsigned int task=0u;task<preparationSucceeded.size();++task)
+						prepareIndependent(task);
+				else Implementation::GlobalThreadPool().ParallelFor(
+					preparationSucceeded.size(),prepareIndependent);
+				for(unsigned int task=0u;task<preparationSucceeded.size();++task)
+					if(!preparationSucceeded[task]){
+						if(structuredError)*structuredError=preparationError[task];return false;}
+				timestepVelocityAuditForceMS=timestepVelocityAuditMS();
 				const double predictorCellDeviceMS=cell.deviceElapsedMS;
 				const std::uint64_t predictorCellActualMetalBytes=cell.actualMetalAllocationBytes;
-				timestepVelocityAuditCellMS=timestepVelocityAuditMS();
+				timestepVelocityAuditCellMS=timestepVelocityAuditForceMS;
 				FireProductionMetalDualMomentumResidentInput dualInput;
 				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
 				dualInput.packedMomentum=force.packedMomentumKGPerM2S;
@@ -2937,9 +2988,10 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					computed.acceptedManifoldToken_.payloadDigest_=
 						FireProductionAcceptedManifoldPayloadDigest(computed);
 					computed.acceptedManifoldToken_.acceptedStateDigest_=
-						FireProductionAcceptedStatePayloadDigest(computed.acceptedShape,
+						FireProductionAcceptedStatePayloadDigestFast(computed.acceptedShape,
 							computed.conservativeValues,computed.projection.momentumKGPerM2S,
 							computed.projection.velocityMPerS);
+					computed.acceptedManifoldToken_.acceptedStateDigestVersion_=2u;
 				}
 				if( computed.cellSubmapCount!=(anomalyCorrectorExecuted?10u:5u)||
 					computed.dualSubmapCount!=15u||
@@ -2957,12 +3009,18 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					computed.combinedActualMetalAllocationBytes>certified||
 					!std::isfinite(computed.deviceElapsedMS) ) return false;
 				result=std::move(computed);
-				if( timestepVelocityAuditEnabled ) {
+				if( timestepVelocityAuditEnabled||hostResidualProbeEnabled ) {
 					const double completeMS=timestepVelocityAuditMS();
-					std::fprintf(stderr,"TIMESTEP_VELOCITY_WALL preflight=%.9g dual_static=%.9g "
+					if(hostResidualProbeEnabled)std::fprintf(stderr,
+						"HOST_RESIDUAL_PREP dual_static=%.9g force=%.9g cell=%.9g "
+						"parallel=%d\n",preparationWallMS[0u],preparationWallMS[1u],
+						preparationWallMS[2u],serialIndependentPreparation?0:1);
+					const char* wallLabel=hostResidualProbeEnabled?
+						"HOST_RESIDUAL_WALL":"TIMESTEP_VELOCITY_WALL";
+					std::fprintf(stderr,"%s preflight=%.9g dual_static=%.9g "
 						"upload=%.9g force=%.9g cell=%.9g dual=%.9g source=%.9g "
 						"physical_projection=%.9g restoration_projection=%.9g terminal=%.9g "
-						"postprocess=%.9g total=%.9g\n",timestepVelocityAuditValidatedMS,
+						"postprocess=%.9g total=%.9g\n",wallLabel,timestepVelocityAuditValidatedMS,
 						timestepVelocityAuditDualStaticMS-timestepVelocityAuditValidatedMS,
 						timestepVelocityAuditUploadMS-timestepVelocityAuditDualStaticMS,
 						timestepVelocityAuditForceMS-timestepVelocityAuditUploadMS,
@@ -2977,10 +3035,12 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						[sourceCommand GPUStartTime])*1000.0;
 					const double terminalDeviceMS=([terminalCommand GPUEndTime]-
 						[terminalCommand GPUStartTime])*1000.0;
-					std::fprintf(stderr,"TIMESTEP_VELOCITY_DEVICE owner_upload=%.9g force=%.9g "
+					const char* deviceLabel=hostResidualProbeEnabled?
+						"HOST_RESIDUAL_DEVICE":"TIMESTEP_VELOCITY_DEVICE";
+					std::fprintf(stderr,"%s owner_upload=%.9g force=%.9g "
 						"cell=%.9g dual=%.9g source=%.9g physical_projection=%.9g "
 						"restoration_projection=%.9g terminal=%.9g reported_total=%.9g\n",
-						timestepVelocityAuditOwnerUploadDeviceMS,
+						deviceLabel,timestepVelocityAuditOwnerUploadDeviceMS,
 						force.diagnostics.advanceDeviceElapsedMS,cell.deviceElapsedMS,
 						dual.deviceElapsedMS,sourceDeviceMS,
 						restorationRemoved?projection.deviceElapsedMS:physicalProjection.deviceElapsedMS,

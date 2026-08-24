@@ -318,24 +318,29 @@ namespace RISE
 	public:
 		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
 			maximumGeneration_(0.0),restorationDrainFraction_(0.0),
-			residentPayloadDigest_(0u),acceptedStateDigest_(0u),bindsResidentPayload_(false) {}
+			residentPayloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u),
+			bindsResidentPayload_(false) {}
 		bool Available() const { return available_; }
 		double TimeStepS() const { return timeStepS_; }
 		double MaximumGeneration() const { return maximumGeneration_; }
 		double RestorationDrainFraction() const { return restorationDrainFraction_; }
 		std::uint64_t SerializedAcceptedStateDigest() const { return acceptedStateDigest_; }
 		bool MatchesAcceptedResidentPayload(const FireProductionResidentStepResult&) const;
+		bool MatchesAcceptedStatePayload(const FireProductionProjectionShape&,
+			const std::vector<float>&,const std::array<std::vector<float>,3>&,
+			const std::array<std::vector<float>,3>&) const;
 
 	private:
 		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
 			restorationDrainFraction_=0.0;residentPayloadDigest_=0u;
-			acceptedStateDigest_=0u;bindsResidentPayload_=false; }
+			acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u;bindsResidentPayload_=false; }
 		bool available_;
 		double timeStepS_;
 		double maximumGeneration_;
 		double restorationDrainFraction_;
 		std::uint64_t residentPayloadDigest_;
 		std::uint64_t acceptedStateDigest_;
+		unsigned int acceptedStateDigestVersion_;
 		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
@@ -383,7 +388,7 @@ namespace RISE
 			maximumGeneration_(0.0),maximumAcceptedDeviation_(0.0),requiredDrainFraction_(0.0),
 			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0),
 			physicalMaximumPreResidualPerS_(0.0f),physicalMaximumPostResidualPerS_(0.0f),
-			payloadDigest_(0u),acceptedStateDigest_(0u) {}
+			payloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u) {}
 		FireProductionAcceptedManifoldToken(const FireProductionAcceptedManifoldToken&) :
 			FireProductionAcceptedManifoldToken() {}
 		FireProductionAcceptedManifoldToken& operator=(
@@ -397,7 +402,8 @@ namespace RISE
 			maximumPostResidualPerS_(other.maximumPostResidualPerS_),
 			physicalMaximumPreResidualPerS_(other.physicalMaximumPreResidualPerS_),
 			physicalMaximumPostResidualPerS_(other.physicalMaximumPostResidualPerS_),
-			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_) {
+			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_),
+			acceptedStateDigestVersion_(other.acceptedStateDigestVersion_) {
 			other.Clear(); }
 		FireProductionAcceptedManifoldToken& operator=(
 			FireProductionAcceptedManifoldToken&& other) noexcept {
@@ -411,7 +417,8 @@ namespace RISE
 				physicalMaximumPreResidualPerS_=other.physicalMaximumPreResidualPerS_;
 				physicalMaximumPostResidualPerS_=other.physicalMaximumPostResidualPerS_;
 				payloadDigest_=other.payloadDigest_;
-				acceptedStateDigest_=other.acceptedStateDigest_;other.Clear();}
+				acceptedStateDigest_=other.acceptedStateDigest_;
+				acceptedStateDigestVersion_=other.acceptedStateDigestVersion_;other.Clear();}
 			return *this;
 		}
 		bool Available() const { return available_; }
@@ -421,7 +428,7 @@ namespace RISE
 			maximumAcceptedDeviation_=0.0;requiredDrainFraction_=0.0;
 			deliveredDrainFraction_=0.0;maximumPostResidualPerS_=0.0;
 			physicalMaximumPreResidualPerS_=0.0f;physicalMaximumPostResidualPerS_=0.0f;
-			payloadDigest_=0u;acceptedStateDigest_=0u; }
+			payloadDigest_=0u;acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u; }
 		bool available_;
 		double representedTimeStepS_;
 		double maximumGeneration_;
@@ -433,6 +440,7 @@ namespace RISE
 		float physicalMaximumPostResidualPerS_;
 		std::uint64_t payloadDigest_;
 		std::uint64_t acceptedStateDigest_;
+		unsigned int acceptedStateDigestVersion_;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
@@ -557,6 +565,45 @@ namespace RISE
 		for(unsigned int axis=0u;axis<3u;++axis){append(momentum[axis]);append(velocity[axis]);}
 		return digest^UINT64_C(0xd64b291e3fa5708c);
 	}
+	inline std::uint64_t FireProductionAcceptedStatePayloadDigestFast(
+		const FireProductionProjectionShape& shape,
+		const std::vector<float>& conservativeValues,
+		const std::array<std::vector<float>,3>& momentum,
+		const std::array<std::vector<float>,3>& velocity )
+	{
+		std::uint64_t digest=UINT64_C(0x65f07b31c42a98de);
+		auto avalanche=[](std::uint64_t word) {
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			return word^(word>>32u);
+		};
+		auto appendWord=[&](const std::uint64_t word) {
+			digest^=word+UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);
+		};
+		std::uint64_t fieldTag=0u;
+		appendWord(UINT64_C(0x7265736964656e74));
+		appendWord(static_cast<std::uint64_t>(shape.nx));
+		appendWord(static_cast<std::uint64_t>(shape.ny));
+		appendWord(static_cast<std::uint64_t>(shape.nz));
+		std::uint32_t widthBits=0u;std::memcpy(&widthBits,&shape.cellWidthM,sizeof(widthBits));
+		appendWord(widthBits);
+		auto append=[&](const std::vector<float>& values) {
+			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
+			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
+				weighted=UINT64_C(0x13198a2e03707344);
+			for(std::size_t index=0u;index<values.size();++index){std::uint32_t bits=0u;
+				std::memcpy(&bits,&values[index],sizeof(bits));
+				const std::uint64_t mixed=(static_cast<std::uint64_t>(bits)^
+					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
+					UINT64_C(0xd6e8feb86659fd93);
+				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+			}
+			appendWord(avalanche(sum));appendWord(avalanche(weighted));
+		};
+		append(conservativeValues);
+		for(unsigned int axis=0u;axis<3u;++axis){append(momentum[axis]);append(velocity[axis]);}
+		return avalanche(digest^fieldTag^UINT64_C(0xd64b291e3fa5708c));
+	}
 
 	//! Publishes the only manifold metadata that may constrain the next
 	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot
@@ -564,20 +611,28 @@ namespace RISE
 	inline std::uint64_t FireProductionAcceptedManifoldPayloadDigest(
 		const FireProductionResidentStepResult& value )
 	{
-		std::uint64_t digest=UINT64_C(14695981039346656037);
+		std::uint64_t digest=UINT64_C(0xd6e8feb86659fd93);
+		auto avalanche=[](std::uint64_t word) {
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			return word^(word>>32u);
+		};
 		auto appendWord=[&](const std::uint64_t word) {
-			for(unsigned int byte=0u;byte<8u;++byte){
-				digest^=static_cast<unsigned char>(word>>(8u*byte));
-				digest*=UINT64_C(1099511628211);}
+			digest^=word+UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);
 		};
 		std::uint64_t fieldTag=0u;
 		auto append=[&](const std::vector<float>& values) {
 			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
-			for(const float scalar:values){std::uint32_t bits=0u;
-				std::memcpy(&bits,&scalar,sizeof(bits));
-				for(unsigned int byte=0u;byte<4u;++byte){
-					digest^=static_cast<unsigned char>(bits>>(8u*byte));
-					digest*=UINT64_C(1099511628211);}}
+			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
+				weighted=UINT64_C(0x13198a2e03707344);
+			for(std::size_t index=0u;index<values.size();++index){std::uint32_t bits=0u;
+				std::memcpy(&bits,&values[index],sizeof(bits));
+				const std::uint64_t mixed=(static_cast<std::uint64_t>(bits)^
+					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
+					UINT64_C(0xd6e8feb86659fd93);
+				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+			}
+			appendWord(avalanche(sum));appendWord(avalanche(weighted));
 		};
 		append(value.conservativeValues);
 		for(unsigned int axis=0u;axis<3u;++axis){
@@ -594,18 +649,36 @@ namespace RISE
 		append(value.projection.pressurePa);
 		auto appendBytes=[&](const std::vector<unsigned char>& values) {
 			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
-			for(const unsigned char scalar:values){digest^=scalar;
-				digest*=UINT64_C(1099511628211);}
+			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
+				weighted=UINT64_C(0x13198a2e03707344);
+			for(std::size_t index=0u;index<values.size();++index){
+				const std::uint64_t mixed=(static_cast<std::uint64_t>(values[index])^
+					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
+					UINT64_C(0xd6e8feb86659fd93);
+				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+			}
+			appendWord(avalanche(sum));appendWord(avalanche(weighted));
 		};
 		for(const auto& side:value.physicalProjection.pressureOpenInflow)appendBytes(side);
 		for(const auto& side:value.projection.pressureOpenInflow)appendBytes(side);
-		return digest;
+		return avalanche(digest^fieldTag);
 	}
 	inline bool FireProductionAcceptedManifoldObservation::MatchesAcceptedResidentPayload(
 		const FireProductionResidentStepResult& value ) const
 	{
 		return available_&&bindsResidentPayload_&&residentPayloadDigest_==
 			FireProductionAcceptedManifoldPayloadDigest(value);
+	}
+	inline bool FireProductionAcceptedManifoldObservation::MatchesAcceptedStatePayload(
+		const FireProductionProjectionShape& shape,const std::vector<float>& conservativeValues,
+		const std::array<std::vector<float>,3>& momentum,
+		const std::array<std::vector<float>,3>& velocity ) const
+	{
+		const std::uint64_t digest=acceptedStateDigestVersion_==1u?
+			FireProductionAcceptedStatePayloadDigest(shape,conservativeValues,momentum,velocity):
+			(acceptedStateDigestVersion_==2u?FireProductionAcceptedStatePayloadDigestFast(
+				shape,conservativeValues,momentum,velocity):0u);
+		return available_&&digest!=0u&&digest==acceptedStateDigest_;
 	}
 	bool PublishFireProductionAcceptedManifoldObservation(
 		double acceptedStepS,

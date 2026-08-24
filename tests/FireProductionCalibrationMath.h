@@ -12,6 +12,15 @@ namespace FireProductionCalibration
 {
 	constexpr std::size_t LongShadowSteps=104u;
 	constexpr std::size_t LongShadowWindow=32u;
+	constexpr unsigned int ManifoldPlateauRetryCap=20u;
+
+	inline bool DrainAwarePlateauRetryAllowed(const unsigned int candidateIndex,
+		const bool plateauPassed,const double candidateStepS,const double suggestedStepS)
+	{
+		return !plateauPassed&&candidateIndex+1u<ManifoldPlateauRetryCap&&
+		candidateStepS>0.0&&std::isfinite(candidateStepS)&&suggestedStepS>0.0&&
+		std::isfinite(suggestedStepS)&&suggestedStepS<candidateStepS;
+	}
 
 	inline bool EqualTimeReferenceSchedule(const double productionDurationS,
 		const std::vector<double>& referenceSubstepsS,const double referenceEndS,

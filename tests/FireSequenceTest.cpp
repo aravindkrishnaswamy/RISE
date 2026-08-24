@@ -684,6 +684,17 @@ namespace
 			momentum,velocity,digest);
 	}
 
+	bool CheckpointAcceptedStateMatchesObservation(const MethaneRunCheckpoint& checkpoint,
+		const FireProductionAcceptedManifoldObservation& observation,
+		std::uint64_t& legacyDigest)
+	{
+		FireProductionProjectionShape shape;std::vector<float> conservative;
+		std::array<std::vector<float>,3> momentum,velocity;
+		return BuildCheckpointAcceptedStatePayload(checkpoint,shape,conservative,
+			momentum,velocity,legacyDigest)&&observation.MatchesAcceptedStatePayload(
+				shape,conservative,momentum,velocity);
+	}
+
 	bool HomogeneousStateProducerPrecision(const std::vector<MethaneCellState>& states,
 		FireStateProducerPrecision& precision)
 	{
@@ -855,8 +866,8 @@ namespace
 			return writer.Pod(retiredTupleSeal);}
 		if(version<12u)return true;
 		std::uint64_t stateDigest=0u;
-		if(observation.Available()&&(!CheckpointAcceptedStateDigest(checkpoint,stateDigest)||
-			stateDigest!=observation.SerializedAcceptedStateDigest()))return false;
+		if(observation.Available()&&!CheckpointAcceptedStateMatchesObservation(
+			checkpoint,observation,stateDigest))return false;
 		if(version>=13u&&precision==FireStateProducerPrecision::Binary64&&
 			checkpoint.acceptedSteps>0u){
 			stateDigest=checkpoint.binary64CheckpointAuthority.Digest();

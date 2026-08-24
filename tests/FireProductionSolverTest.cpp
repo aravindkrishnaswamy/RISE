@@ -4110,6 +4110,18 @@ int main()
 		error=="production advective anomaly closure test activation is invalid",
 		"r161 malformed closure activation fails before Metal work");
 	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeMalformedHostResidualProbe=
+		FireProductionResidentStepMetalCommandCommitCount();
+	setenv("RISE_FIRE_HOST_RESIDUAL_PROBE","1",1);
+	const bool malformedHostResidualProbeRejected=!AdvanceFireProductionResidentStepMetal(
+		composedStep,rejectedFullStep,&error);
+	unsetenv("RISE_FIRE_HOST_RESIDUAL_PROBE");
+	Check(malformedHostResidualProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			commitsBeforeMalformedHostResidualProbe&&
+		error=="production host-residual probe activation is invalid",
+		"r164 host-residual activation outside the limited predictor path fails before Metal work");
+	seedFullStepResult(rejectedFullStep);error.clear();
 	const std::uint64_t commitsBeforeMalformedPlateauProbe=
 		FireProductionResidentStepMetalCommandCommitCount();
 	setenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE","bogus",1);

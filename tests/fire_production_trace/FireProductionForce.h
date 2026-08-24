@@ -321,24 +321,29 @@ namespace RISEFireProductionTrace
 	public:
 		FireProductionAcceptedManifoldObservation() : available_(false),timeStepS_(0.0),
 			maximumGeneration_(0.0),restorationDrainFraction_(0.0),
-			residentPayloadDigest_(0u),acceptedStateDigest_(0u),bindsResidentPayload_(false) {}
+			residentPayloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u),
+			bindsResidentPayload_(false) {}
 		bool Available() const { return available_; }
 		double TimeStepS() const { return timeStepS_; }
 		double MaximumGeneration() const { return maximumGeneration_; }
 		double RestorationDrainFraction() const { return restorationDrainFraction_; }
 		std::uint64_t SerializedAcceptedStateDigest() const { return acceptedStateDigest_; }
 		bool MatchesAcceptedResidentPayload(const FireProductionResidentStepResult&) const;
+		bool MatchesAcceptedStatePayload(const FireProductionProjectionShape&,
+			const std::vector<FireProductionRoundoffTrace::TraceFloat>&,const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>&,
+			const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>&) const;
 
 	private:
 		void Clear() { available_=false;timeStepS_=0.0;maximumGeneration_=0.0;
 			restorationDrainFraction_=0.0;residentPayloadDigest_=0u;
-			acceptedStateDigest_=0u;bindsResidentPayload_=false; }
+			acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u;bindsResidentPayload_=false; }
 		bool available_;
 		double timeStepS_;
 		double maximumGeneration_;
 		double restorationDrainFraction_;
 		std::uint64_t residentPayloadDigest_;
 		std::uint64_t acceptedStateDigest_;
+		unsigned int acceptedStateDigestVersion_;
 		bool bindsResidentPayload_;
 		friend class FireProductionCheckpointManifoldAccess;
 		friend bool SelectFireProductionStableTimeStep(
@@ -479,6 +484,45 @@ namespace RISEFireProductionTrace
 		append(conservativeValues);
 		for(unsigned int axis=0u;axis<3u;++axis){append(momentum[axis]);append(velocity[axis]);}
 		return digest^UINT64_C(0xd64b291e3fa5708c);
+	}
+	inline std::uint64_t FireProductionAcceptedStatePayloadDigestFast(
+		const FireProductionProjectionShape& shape,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& conservativeValues,
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& momentum,
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& velocity )
+	{
+		std::uint64_t digest=UINT64_C(0x65f07b31c42a98de);
+		auto avalanche=[](std::uint64_t word) {
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			return word^(word>>32u);
+		};
+		auto appendWord=[&](const std::uint64_t word) {
+			digest^=word+UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);
+		};
+		std::uint64_t fieldTag=0u;
+		appendWord(UINT64_C(0x7265736964656e74));
+		appendWord(static_cast<std::uint64_t>(shape.nx));
+		appendWord(static_cast<std::uint64_t>(shape.ny));
+		appendWord(static_cast<std::uint64_t>(shape.nz));
+		std::uint32_t widthBits=0u;std::memcpy(&widthBits,&shape.cellWidthM,sizeof(widthBits));
+		appendWord(widthBits);
+		auto append=[&](const std::vector<FireProductionRoundoffTrace::TraceFloat>& values) {
+			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
+			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
+				weighted=UINT64_C(0x13198a2e03707344);
+			for(std::size_t index=0u;index<values.size();++index){std::uint32_t bits=0u;
+				std::memcpy(&bits,&values[index],sizeof(bits));
+				const std::uint64_t mixed=(static_cast<std::uint64_t>(bits)^
+					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
+					UINT64_C(0xd6e8feb86659fd93);
+				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+			}
+			appendWord(avalanche(sum));appendWord(avalanche(weighted));
+		};
+		append(conservativeValues);
+		for(unsigned int axis=0u;axis<3u;++axis){append(momentum[axis]);append(velocity[axis]);}
+		return avalanche(digest^fieldTag^UINT64_C(0xd64b291e3fa5708c));
 	}
 
 	//! Full resident P3 shadow step: frozen force, cell and dual transport,

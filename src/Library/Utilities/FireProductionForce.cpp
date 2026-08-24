@@ -78,7 +78,7 @@ namespace RISE
 
 		bool AcceptedCheckpointStateDigest(
 			const FireProductionAcceptedCheckpointStateView& state,
-			std::uint64_t& digest,std::string* error )
+			std::uint64_t& digest,std::string* error,const unsigned int digestVersion )
 		{
 			digest=0u;
 			if(!state.conservativeValues||!state.momentum||!state.velocity||
@@ -105,8 +105,10 @@ namespace RISE
 				for(const float value:(*state.velocity)[axis])if(!std::isfinite(value))
 					return Fail(error,"production checkpoint accepted velocity is invalid");
 			}
-			digest=FireProductionAcceptedStatePayloadDigest(state.shape,
-				*state.conservativeValues,*state.momentum,*state.velocity);
+			digest=digestVersion==1u?FireProductionAcceptedStatePayloadDigest(state.shape,
+				*state.conservativeValues,*state.momentum,*state.velocity):
+				(digestVersion==2u?FireProductionAcceptedStatePayloadDigestFast(state.shape,
+					*state.conservativeValues,*state.momentum,*state.velocity):0u);
 			return digest!=0u||Fail(error,
 				"production checkpoint accepted state digest is invalid");
 		}
@@ -128,7 +130,7 @@ namespace RISE
 			return Fail(error,"production checkpoint manifold record version is invalid");
 		std::uint64_t acceptedStateDigest=0u;
 		if(lifecycle.productionState&&lifecycle.acceptedSteps>0u&&
-			!AcceptedCheckpointStateDigest(state,acceptedStateDigest,error))return false;
+			!AcceptedCheckpointStateDigest(state,acceptedStateDigest,error,1u))return false;
 		const std::vector<double>& history=*lifecycle.acceptedTimeStepHistoryS;
 		if(!std::isfinite(lifecycle.simulationTimeS)||lifecycle.simulationTimeS<0.0||
 			(lifecycle.productionState&&(history.size()!=lifecycle.acceptedSteps||
@@ -209,6 +211,7 @@ namespace RISE
 			result.maximumGeneration_=maximumGeneration;
 			result.restorationDrainFraction_=restorationDrainFraction;
 			result.acceptedStateDigest_=storedStateDigest;
+			result.acceptedStateDigestVersion_=1u;
 			return true;
 		}
 		if(timeStepS!=0.0||maximumGeneration!=0.0||restorationDrainFraction!=0.0||
@@ -240,7 +243,8 @@ namespace RISE
 		std::uint64_t currentAcceptedStateDigest=0u;
 		if( previousManifold.available_ ) {
 			if(!AcceptedCheckpointStateDigest(currentAcceptedState,
-				currentAcceptedStateDigest,error))return false;
+				currentAcceptedStateDigest,error,
+				previousManifold.acceptedStateDigestVersion_))return false;
 			if( previousStepS<=0.0||!std::isfinite(previousManifold.timeStepS_)||
 				previousManifold.timeStepS_<=0.0||previousManifold.timeStepS_!=previousStepS||
 				!std::isfinite(previousManifold.maximumGeneration_)||
@@ -394,7 +398,8 @@ namespace RISE
 			token.physicalMaximumPostResidualPerS_!=
 				acceptedStep.physicalProjection.maximumPostProjectionResidualPerS||
 			token.payloadDigest_!=FireProductionAcceptedManifoldPayloadDigest(acceptedStep)||
-			token.acceptedStateDigest_!=FireProductionAcceptedStatePayloadDigest(
+			token.acceptedStateDigestVersion_!=2u||
+			token.acceptedStateDigest_!=FireProductionAcceptedStatePayloadDigestFast(
 				acceptedStep.acceptedShape,acceptedStep.conservativeValues,
 				acceptedStep.projection.momentumKGPerM2S,
 				acceptedStep.projection.velocityMPerS))
@@ -404,6 +409,7 @@ namespace RISE
 		result.maximumGeneration_=acceptedStep.maximumManifoldGeneration;
 		result.restorationDrainFraction_=acceptedStep.deliveredRestorationDrainFraction;
 		result.acceptedStateDigest_=token.acceptedStateDigest_;
+		result.acceptedStateDigestVersion_=token.acceptedStateDigestVersion_;
 		result.residentPayloadDigest_=token.payloadDigest_;
 		result.bindsResidentPayload_=true;
 		acceptedStep.acceptedManifoldToken_.Clear();

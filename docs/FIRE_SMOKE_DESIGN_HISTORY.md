@@ -3921,3 +3921,34 @@ it was already tried and refuted here.
   without widening or silently substituting the backstop step.  Durable evidence is
   `r163_predictive_initial_step_refusal/predictive_initial_step_evidence.v1`;
   golden remains byte-identical.
+- **r164 drain-aware retry acceptance and host-residual campaign
+  (2026-08-24):** r163's `0.09002685546875%` headroom excess is predictor
+  precision, not a new transient class or a reason to widen the allowance.
+  “Step 1 already legal” is clarified to mean that the first production step
+  starts in the limiter operating class; an ordinary fail-closed refusal is
+  still permitted.  Candidate 0 therefore reproduces the sealed r163 refusal
+  at `5.5762444389984012e-4 s`, and its drain-aware suggestion is retried under
+  the existing 20-attempt rejection cap instead of blind halving.  Candidate 1
+  runs at represented `5.5692793102934957e-4 s`, measures
+  `G=field_max=0.023429989814758301`, clears the `0.0234375` allowance by
+  `7.510185241699219e-6`, respects the `0.03125` hard ceiling, and mints the
+  accepted token.  Its next limiter prediction is
+  `5.5690890514272363e-4 s`.  No floor-aware analytic corrector is added.
+
+  The first genuinely accepted replay exposed a postpublication cost that the
+  rejected r163 timing could not exercise: initial accepted p95 was
+  `95.109874848276377/323.04645799999997 ms` device/wall, including roughly
+  `146 ms` of authority hashing/postprocessing.  A versioned live-state digest
+  preserves the legacy checkpoint digest, and independent owner validation
+  plus dual-static/force/cell preparation now use the topology-aware global
+  pool; legacy low-priority execution stays serial.  Kernels, serial Metal
+  queue order, and complete payload bytes are unchanged.  Final accepted p95
+  is `91.582666500471532/155.944041 ms`, a `51.727054379280645%` wall reduction
+  from the accepted baseline and a tier-10 x 25 s projection of
+  `1.1419623691904432/1.9444970683461671 h` device/wall.  The approximately
+  `1.3 h` target is not met; the remaining `64.361374499528466 ms` host
+  residual remains named critical-path work, and source maps will add device
+  time when they land.  Durable evidence is
+  `r164_drain_aware_retry_acceptance/drain_aware_retry_acceptance.v1`; golden
+  remains byte-identical.  The 104-step shadow and later milestones await the
+  fresh r164 contract-boundary review.

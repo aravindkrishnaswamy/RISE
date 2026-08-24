@@ -80,7 +80,7 @@ namespace RISEFireProductionFP64
 
 		bool AcceptedCheckpointStateDigest(
 			const FireProductionAcceptedCheckpointStateView& state,
-			std::uint64_t& digest,std::string* error )
+			std::uint64_t& digest,std::string* error,const unsigned int digestVersion )
 		{
 			digest=0u;
 			if(!state.conservativeValues||!state.momentum||!state.velocity||
@@ -107,8 +107,10 @@ namespace RISEFireProductionFP64
 				for(const double value:(*state.velocity)[axis])if(!std::isfinite(value))
 					return Fail(error,"production checkpoint accepted velocity is invalid");
 			}
-			digest=FireProductionAcceptedStatePayloadDigest(state.shape,
-				*state.conservativeValues,*state.momentum,*state.velocity);
+			digest=digestVersion==1u?FireProductionAcceptedStatePayloadDigest(state.shape,
+				*state.conservativeValues,*state.momentum,*state.velocity):
+				(digestVersion==2u?FireProductionAcceptedStatePayloadDigestFast(state.shape,
+					*state.conservativeValues,*state.momentum,*state.velocity):0u);
 			return digest!=0u||Fail(error,
 				"production checkpoint accepted state digest is invalid");
 		}
@@ -130,7 +132,7 @@ namespace RISEFireProductionFP64
 			return Fail(error,"production checkpoint manifold record version is invalid");
 		std::uint64_t acceptedStateDigest=0u;
 		if(lifecycle.productionState&&lifecycle.acceptedSteps>0u&&
-			!AcceptedCheckpointStateDigest(state,acceptedStateDigest,error))return false;
+			!AcceptedCheckpointStateDigest(state,acceptedStateDigest,error,1u))return false;
 		const std::vector<double>& history=*lifecycle.acceptedTimeStepHistoryS;
 		if(!std::isfinite(lifecycle.simulationTimeS)||lifecycle.simulationTimeS<0.0||
 			(lifecycle.productionState&&(history.size()!=lifecycle.acceptedSteps||
@@ -211,6 +213,7 @@ namespace RISEFireProductionFP64
 			result.maximumGeneration_=maximumGeneration;
 			result.restorationDrainFraction_=restorationDrainFraction;
 			result.acceptedStateDigest_=storedStateDigest;
+			result.acceptedStateDigestVersion_=1u;
 			return true;
 		}
 		if(timeStepS!=0.0||maximumGeneration!=0.0||restorationDrainFraction!=0.0||
@@ -242,7 +245,8 @@ namespace RISEFireProductionFP64
 		std::uint64_t currentAcceptedStateDigest=0u;
 		if( previousManifold.available_ ) {
 			if(!AcceptedCheckpointStateDigest(currentAcceptedState,
-				currentAcceptedStateDigest,error))return false;
+				currentAcceptedStateDigest,error,
+				previousManifold.acceptedStateDigestVersion_))return false;
 			if( previousStepS<=0.0||!std::isfinite(previousManifold.timeStepS_)||
 				previousManifold.timeStepS_<=0.0||previousManifold.timeStepS_!=previousStepS||
 				!std::isfinite(previousManifold.maximumGeneration_)||
