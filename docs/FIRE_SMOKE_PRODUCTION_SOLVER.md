@@ -3663,6 +3663,67 @@ evaluated.  The long shadow and all later arithmetic/readmission/source-map/
 preview milestones remain blocked pending a target-generation/fixed-point
 topology ruling; neither ceiling nor timing budget is widened.
 
+### 7.55v Equal-time reference composition and limited-step stop (r162)
+
+The owner ruling retires equal-step comparison at the golden-composition
+boundary.  A coupled Picard map owns a timestep-dependent contraction radius;
+requiring the production step and the binary64 oracle to share one `dt`
+therefore assumed a common step-operator domain that neither scheme promised.
+The oracle is the reference flow.  It may reach the production endpoint with
+its own converged substeps, while production retains one limiter-selected step.
+
+The pre-measurement contraction sweep tests the represented limiter duration
+and its exact binary halves.  `dt`, `dt/2`, and `dt/4` fail in proved
+two-class active-set cycles.  The failing stage moves from R0 to R1 and back to
+R0; the relevant terminal residuals are `1.4477584866157618`,
+`0.72567590358972345`, and `0.56139851539581598 s^-1`.  This is not smooth
+non-contraction.  At `dt/8=7.244249718496576e-5 s`, the existing r59/r80
+two-class selector resolves the one remaining R1 switch and all R0/R1/R2
+stages converge, ending at `2.5305532581487711e-4`,
+`4.6488187337700992e-4`, and `6.0149754458578642e-5 s^-1`.  The complete
+diagnostic trace is `900a7acc...a051c`.
+
+The equal-time reference consequently executes eight binary64 Heun substeps
+from the exact golden beginning.  Their durations sum bit-exactly to the
+production duration `0.00057953997747972608 s`; the terminal physical target
+is tagged with that same endpoint and is the only target supplied to the
+single production step.  Parallel and serial reference schedules have the
+same digest `e4472da7...c97e0`.  A mismatched accumulated endpoint and a
+terminal target tagged with a stale substep time are independent REDs.  The
+reference costs minutes per slice (eight substeps here, close to the
+pre-registered estimate of ten); that is an acceptable fixture cost and is
+not a production optimization target.
+
+Under this amendment, the per-quantity additive contract is evaluated at one
+physical time as scheme distance plus oracle temporal distance plus production
+temporal distance plus subdominance.  The two temporal distances remain
+Richardson-derived under their own formal orders.  Temporal refinement is now
+part of the equal-time protocol rather than a later correction to an
+equal-step comparison.  No temporal number is admitted by this entry because
+the limited production prerequisite fails first.
+
+The equal-time target removes r161's protocol blocker and reaches Metal.  The
+limited step measures predictor `G=0.020501971244812012` and corrected
+`G=field_max=0.024358630180358887`.  The hard low-Mach ceiling remains
+`2^-5=0.03125`, but its 25%-headroom allowance is `0.0234375`; the realized
+field is above that allowance, so no accepted-state token is minted.  The
+backstop derives the next manifold step as `0.00055743221913055079 s`.
+One warmup plus five stable samples measure `89.663458173163235 ms` device and
+`176.37566699999999 ms` wall p95.  At the current (larger) limited step those
+already project to `1.074408890113336/2.1134538917570724 h` for tier-10 x
+25 s.  A smaller backstop step can only increase the fixed-work step count, so
+the pre-registered approximately two-hour wall rule cannot be met by further
+timestep reduction.
+
+Exact exit `213` is therefore the requested remap-scheme finding: equal-time
+composition succeeds, but closure plus its automatic limiter cannot
+simultaneously hold the headroom allowance and the wall budget.  No ceiling or
+budget is widened.  The 104-step shadow, golden `B_fp32`, guard supersession,
+temporal evidence, readmission, source maps, and first light remain blocked
+pending a reconstruction-class ruling.  Durable evidence is
+`rendered/fire_production_calibration/r162_equal_time_composition_stop/`
+`equal_time_composition_evidence.v1`; the golden checkpoint is unchanged.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

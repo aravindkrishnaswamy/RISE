@@ -3844,3 +3844,42 @@ it was already tried and refuted here.
   Owner ruling on target generation/fixed-point topology is required.  B_fp32,
   guard supersession, temporal refinement, readmission, source maps, and first
   light remain blocked.  Golden remains byte-identical.
+- **r162 equal-time golden composition and remap-scheme stop (2026-08-23):**
+  equal-step comparison is retired.  A coupled Picard fixed point has a
+  timestep-dependent contraction radius, so the old protocol silently
+  required a shared step-size domain that neither solver promised.  The
+  binary64 oracle is now the flow reference: it advances from the exact golden
+  beginning to production's endpoint with its own converged schedule, while
+  production takes one limiter-derived step.
+
+  A pre-measurement sweep at limiter `dt`, `dt/2`, `dt/4`, and `dt/8` finds
+  proved two-class active-set cycles at the first three levels.  Their failing
+  terminal residuals are `1.4477584866157618`, `0.72567590358972345`, and
+  `0.56139851539581598 s^-1`; they are not a smooth contraction stall.  The
+  existing r59/r80 two-class treatment succeeds at
+  `dt/8=7.244249718496576e-5 s`, where R0/R1/R2 end at
+  `2.5305532581487711e-4`, `4.6488187337700992e-4`, and
+  `6.0149754458578642e-5 s^-1`.  Trace `900a7acc...a051c` binds the complete
+  curves and active-set census.
+
+  Eight exact binary64 substeps reach the production endpoint
+  `0.00057953997747972608 s`; the terminal target is tagged with that endpoint
+  and schedule digest `e4472da7...c97e0` matches in serial and parallel.
+  Mismatched endpoint and stale-substep target REDs fail.  Minutes per slice
+  are accepted fixture cost and are deliberately not optimized.  The amended
+  additive contract is scheme distance + oracle temporal distance + production
+  temporal distance + subdominance, all at one end time; temporal refinement
+  moves inside this protocol.
+
+  Equal-time composition clears r161's target-schedule blocker, but the
+  limited production result does not clear the next contract boundary.
+  Predictor `G=0.020501971244812012`; corrected
+  `G=field_max=0.024358630180358887`; the 25%-headroom allowance below `2^-5`
+  is `0.0234375`.  The token is withheld and the backstop derives
+  `dt_next=0.00055743221913055079 s`.  Device/wall p95 are
+  `89.663458173163235/176.37566699999999 ms`, projecting the current larger
+  step to `1.074408890113336/2.1134538917570724 h`.  Further timestep
+  reduction cannot recover a fixed-work two-hour wall budget.  Exact exit 213
+  is therefore the pre-registered remap-scheme finding; no ceiling or budget
+  moves.  Long shadow and every later arithmetic/readmission/source/preview
+  gate remain blocked.  Golden remains byte-identical.

@@ -58,6 +58,21 @@ namespace
 
 int main()
 {
+	const double equalTimeProduction=static_cast<double>(
+		static_cast<float>(0.000579539999762149));
+	const double equalTimeSubstep=equalTimeProduction*0.125;
+	const std::vector<double> equalTimeSchedule(8u,equalTimeSubstep);
+	std::vector<double> mismatchedEqualTimeSchedule=equalTimeSchedule;
+	mismatchedEqualTimeSchedule.back()=std::nextafter(mismatchedEqualTimeSchedule.back(),0.0);
+	Check(FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
+		equalTimeSchedule,equalTimeProduction,equalTimeProduction),
+		"equal-time reference accepts the exact shared endpoint");
+	Check(!FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
+		mismatchedEqualTimeSchedule,equalTimeProduction,equalTimeProduction),
+		"equal-time reference rejects a mismatched endpoint");
+	Check(!FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
+		equalTimeSchedule,equalTimeProduction,equalTimeSubstep),
+		"equal-time reference refuses a stale-dt terminal target");
 	double zeroAnomalyTarget=0.0,activeAnomalyTarget=0.0;
 	const bool zeroAnomalyDerived=RISE::DeriveFireProductionAdvectiveAnomalyTarget(
 		0.125,0.125,0.5,0.25,zeroAnomalyTarget);
@@ -375,6 +390,8 @@ int main()
 		"golden_restoration_refusal.v1");
 	const std::string goldenCompositionFixture=ReadText(
 		"tests/FireProductionGoldenCompositionFixture.h");
+	const std::string fireSimulator3DAdvance=ReadText(
+		"tools/fire_simulator_3d_advance.h");
 	const std::string timestepVelocityBenchmarkOptions=ReadText(
 		"rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/"
 		"benchmark.options");
@@ -630,9 +647,6 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceGenerator.begin(),traceGenerator.end()))==
 		"34f2cf9aefaf0f786702fe5edae9b130fda02c22b16802f3a3562156529b748a"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-		"46a9a0d8ec761346c3603e54908588cddae938828158df49915dceb1e5ad048a"&&
 		manifoldClosure.find("retired_v11_tuple_seal_is_not_authority true")!=
 			std::string::npos&&
 		manifoldClosure.find("public_raw_tuple_restoration_api_absent true")!=
@@ -1056,9 +1070,6 @@ int main()
 		producerRoundedReconstructionEvidence.find(
 			"verdict producer_rounded_r60_admissible_reconstruction_fails_plateau_contract_level_ruling_required")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
 		goldenCompositionFixture.find(
 			"domainError!=\"methane thermochemistry lookup is out of domain\"")!=
 			std::string::npos&&
@@ -1138,9 +1149,6 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
 			"318eea853e8c5a1b3a570b631c17ef3dbe82904375ed93cbd54cce4eef21f140"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
 		goldenCompositionFixture.find(
 			"selectorMaximum==217.37616398903009")!=std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1240,17 +1248,8 @@ int main()
 			projectionHeader.begin(),projectionHeader.end()))==
 			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"d941893a0b1e028400988014499584e9099bfbff66fca73061674f89536cbf0b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionTestSource.begin(),projectionTestSource.end()))==
 			"8d97d9f5112f4b6dcefedd4781d7b857e160cfbb47737d875c102540e10a4177"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"46a9a0d8ec761346c3603e54908588cddae938828158df49915dceb1e5ad048a"&&
 		fireSimulatorCore.find("equationOfStateResidual > 1.0e-3")!=
 			std::string::npos&&
 		CountText(forceSource,"1e-3")==1u&&
@@ -1346,14 +1345,8 @@ int main()
 			projectionHeader.begin(),projectionHeader.end()))==
 			"cbca38f310a3c227d2a4c0bdb1ff12692f6d56595eb5888d1ad1fe3c38f17cf1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"1fb82a2ebf23ad954de5510817b0822ef9c58d4c9d6ddbcfb715f828aa1d136b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"b237cc38edf4987293217acf10d9967441323b505f6d3bd19db10c8b763048aa"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"46a9a0d8ec761346c3603e54908588cddae938828158df49915dceb1e5ad048a"&&
 		advectionMetal.find("fold_methane_advective_anomaly_target")!=
 			std::string::npos&&
 		advectionMetal.find(
@@ -1371,12 +1364,6 @@ int main()
 		forceSource.find("ManifoldPlateauAllowance")!=std::string::npos&&
 		forceSource.find("DeriveFireProductionAdvectiveAnomalyTarget")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP")!=
-			std::string::npos&&
-		goldenCompositionFixture.find("shadowConfig.transport.deltaTimeS=dt")!=
-			std::string::npos&&
-		goldenCompositionFixture.find(
-			"binary64_target_schedule=unavailable error=%s golden=%s")!=std::string::npos&&
 		goldenCompositionFixture.find("production.cellSubmapCount==10u")!=
 			std::string::npos&&
 		goldenCompositionFixture.find("production.dualSubmapCount==15u")!=
@@ -1386,21 +1373,66 @@ int main()
 			std::string::npos&&
 		goldenCompositionFixture.find("for(std::size_t sample=0u;sample<5u;++sample)")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("closureWallProjectionHours<=2.0")!=
-			std::string::npos&&
 		productionSolverTest.find(
 			"r161 malformed closure activation fails before Metal work")!=
 			std::string::npos&&
 		productionSolverTest.find(
 			"zero-anomaly closure skips the corrector and is byte-identical")!=
-			std::string::npos&&
-		unixTestDriver.find("FireSequenceTest.r161_advective_anomaly_closure")!=
-			std::string::npos&&
-		unixTestDriver.find("closure_limited_rc\" -eq 219")!=std::string::npos&&
-		unixTestDriver.find("tier10_device_hours=")!=std::string::npos&&
-		unixTestDriver.find("PASS (exact exit=219, target-schedule stop)")!=
 			std::string::npos,
-		"r161 binds the resident two-pass closure and target-schedule stop");
+		"r161 historical evidence and resident two-pass closure remain byte-bound");
+	const std::string equalTimeEvidence=ReadText(
+		"rendered/fire_production_calibration/r162_equal_time_composition_stop/"
+		"equal_time_composition_evidence.v1");
+	Check(!equalTimeEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
+		RISE::RISECBOR64::Bytes(equalTimeEvidence.begin(),equalTimeEvidence.end()))==
+		"b0645a2582e1c1c818b5629734cd6b864a9e4d8445cab2b4a94c2cb7bf4d311f"&&
+		equalTimeEvidence.find("protocol_change pre_registered_before_equal_time_measurement")!=
+			std::string::npos&&
+		equalTimeEvidence.find("reference_role oracle_flow_reference_not_production_step_operator")!=
+			std::string::npos&&
+		equalTimeEvidence.find("largest_tested_convergent_dt 7.244249718496576e-05")!=
+			std::string::npos&&
+		equalTimeEvidence.find("contraction_class discrete_active_set_cycling_not_smooth_noncontraction")!=
+			std::string::npos&&
+		equalTimeEvidence.find("contraction_trace_sha256 "
+			"900a7acc56a0c9c51d07788753132d59269bdb591aee699960a3c62b448a051c")!=
+			std::string::npos&&
+		equalTimeEvidence.find("reference_schedule_sha256 "
+			"e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0")!=
+			std::string::npos&&
+		equalTimeEvidence.find("limited_corrected_G 0.024358630180358887")!=
+			std::string::npos&&
+		equalTimeEvidence.find("headroom_met false")!=std::string::npos&&
+		equalTimeEvidence.find("limited_tier10_wall_projection_hours 2.1134538917570724")!=
+			std::string::npos&&
+		equalTimeEvidence.find("two_hour_wall_rule_met false")!=std::string::npos&&
+		equalTimeEvidence.find("long_shadow_started false")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"b44cacaeb04d8c88f12b460dad2d795a7c812f7341668fb9796f7a7974f05513"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			calibrationMathSource.begin(),calibrationMathSource.end()))==
+			"7dd047435497b0ce5c49e95c35c7f04b42c34fbe5bfef44500ff8549034ff666"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
+			"cd03e6596562103227c912222213e7459ab0f1701ba9a0034cac85fce1095fe1"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"bcc6e2c0c815a9fb14e54baced56f81d7e2598dc988fc3dafd9acb14e5c39949"&&
+		goldenCompositionFixture.find("EQUAL_TIME_CONTRACTION_SUMMARY")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("EQUAL_TIME_LIMITED_PRODUCTION")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("referenceTime!=dt")!=std::string::npos&&
+		goldenCompositionFixture.find("return exactStop?213:212")!=std::string::npos&&
+		fireSimulator3DAdvance.find("OpenPicardContractionDiagnostic")!=std::string::npos&&
+		unixTestDriver.find("FireSequenceTest.r162_equal_time_composition")!=
+			std::string::npos&&
+		unixTestDriver.find("closure_contraction_rc\" -eq 217")!=std::string::npos&&
+		unixTestDriver.find("closure_limited_rc\" -eq 213")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=213, equal-time headroom/wall stop)")!=
+			std::string::npos,
+		"r162 binds the contraction ceiling, equal-time schedule, and limited-step stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

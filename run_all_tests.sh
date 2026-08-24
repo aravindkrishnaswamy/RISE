@@ -704,21 +704,24 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
-# r161 executes the pre-registered anomaly closure, then applies the amended
-# 25%-headroom manifold predictor.  Exact 219 is the fail-closed target-schedule
-# stop: the binary64 oracle cannot derive the limiter step's dt-dependent Heun
-# target within its frozen Picard topology, so production is never invoked.
+# r162 first characterizes the binary64 generator's contraction ceiling, then
+# composes its converged substeps to the production endpoint.  The limited
+# production step must refuse exactly at the pre-registered headroom/two-hour
+# boundary; stale equal-dt target evidence is no longer an admissible reference.
 if [ "$(uname -s)" = "Darwin" ]; then
-	closure_name="FireSequenceTest.r161_advective_anomaly_closure"
+	closure_name="FireSequenceTest.r162_equal_time_composition"
 	closure_path="$BIN_DIR/FireSequenceTest"
 	closure_cfl_log="$LOG_DIR/$closure_name.cfl.log"
+	closure_contraction_log="$LOG_DIR/$closure_name.contraction.log"
 	closure_limited_log="$LOG_DIR/$closure_name.limited.log"
 	closure_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
 	printf '[ evidence ] %-46s ... ' "$closure_name"
 	closure_cfl_rc=0
+	closure_contraction_rc=0
 	closure_limited_rc=0
 	if [ ! -x "$closure_path" ]; then
 		closure_cfl_rc=127
+		closure_contraction_rc=127
 		closure_limited_rc=127
 	elif [ -n "$timeout_bin" ]; then
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$closure_options" \
@@ -726,6 +729,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$closure_cfl_log" 2>&1 || closure_cfl_rc=$?
+		RISE_FIRE_EQUAL_TIME_CONTRACTION_PROBE=1 \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_contraction_log" 2>&1 || closure_contraction_rc=$?
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
 			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
 			RISE_OPTIONS_FILE="$closure_options" \
@@ -738,6 +746,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$closure_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$closure_cfl_log" 2>&1 || closure_cfl_rc=$?
+		RISE_FIRE_EQUAL_TIME_CONTRACTION_PROBE=1 \
+			"$closure_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_contraction_log" 2>&1 || closure_contraction_rc=$?
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
 			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
 			RISE_OPTIONS_FILE="$closure_options" \
@@ -745,20 +757,26 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
 	fi
-	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_limited_rc" -eq 219 ] &&
+	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_contraction_rc" -eq 217 ] &&
+		[ "$closure_limited_rc" -eq 213 ] &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
 		grep -Fq 'certified_bytes=1919317208 actual_bytes=1630052936' "$closure_cfl_log" &&
 		grep -Fq 'tier10_device_hours=' "$closure_cfl_log" &&
 		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_cfl_log" &&
-		grep -Fq 'ADVECTIVE_ANOMALY_LIMITER_TARGET_STOP dt=0.00057953997747972608 binary64_target_schedule=unavailable' "$closure_limited_log" &&
-		grep -Fq 'first=7.41824 last=1.44776 minimum=1.44776 target=0.561256 mass=1.44776 coefficient=0.017278 active_set=1 tolerance=0.000479545' "$closure_limited_log" &&
+		grep -Fq 'largest_converged_dt=7.244249718496576e-05 largest_converged_level=3 monotone=1 trace=900a7acc56a0c9c51d07788753132d59269bdb591aee699960a3c62b448a051c' "$closure_contraction_log" &&
+		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION dt=0.00057953997747972608 reference_substeps=8 reference_substep_dt=7.244249718496576e-05' "$closure_limited_log" &&
+		grep -Fq 'schedule=e4472da794d084158ccb6a3c2c073e6afce943bfc075429628fa27fc527c97e0 predictor_G=0.020501971244812012 G=0.024358630180358887 field_max=0.024358630180358887' "$closure_limited_log" &&
+		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=0' "$closure_limited_log" &&
+		grep -Fq 'next_dt_manifold=0.00055743221913055079 limiter_binding=1' "$closure_limited_log" &&
+		grep -Fq 'tier10_wall_hours=' "$closure_limited_log" &&
+		grep -Fq 'accepted_token=0' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
-		echo 'PASS (exact exit=219, target-schedule stop)'
-		rm -f "$closure_cfl_log" "$closure_limited_log"
+		echo 'PASS (exact exit=213, equal-time headroom/wall stop)'
+		rm -f "$closure_cfl_log" "$closure_contraction_log" "$closure_limited_log"
 	else
-		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; limited_exit=$closure_limited_rc expected 219)"
+		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 213)"
 		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
 			"$closure_limited_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))

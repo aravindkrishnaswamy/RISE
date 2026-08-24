@@ -12,6 +12,23 @@ namespace FireProductionCalibration
 	constexpr std::size_t LongShadowSteps=104u;
 	constexpr std::size_t LongShadowWindow=32u;
 
+	inline bool EqualTimeReferenceSchedule(const double productionDurationS,
+		const std::vector<double>& referenceSubstepsS,const double referenceEndS,
+		const double terminalTargetTimeS)
+	{
+		if(!(productionDurationS>0.0)||!std::isfinite(productionDurationS)||
+			referenceSubstepsS.empty())return false;
+		const double expectedSubstep=productionDurationS/
+			static_cast<double>(referenceSubstepsS.size());
+		double accumulated=0.0;
+		for(const double step:referenceSubstepsS){
+			if(!(step>0.0)||!std::isfinite(step)||step!=expectedSubstep)return false;
+			accumulated+=step;
+		}
+		return std::isfinite(accumulated)&&accumulated==productionDurationS&&
+			referenceEndS==productionDurationS&&terminalTargetTimeS==referenceEndS;
+	}
+
 	inline bool LongShadowNonsecular(const std::vector<double>& values)
 	{
 		if(values.size()!=LongShadowSteps)return false;

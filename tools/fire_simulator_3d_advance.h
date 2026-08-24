@@ -1952,6 +1952,19 @@
 			return result;
 		}
 
+		struct OpenPicardContractionDiagnostic
+		{
+			std::vector<double> residualPerS;
+			double targetResidualPerS=0.0;
+			double massResidualPerS=0.0;
+			double coefficientResidual=0.0;
+			bool converged=false;
+			bool activeSetChanged=false;
+			unsigned int activeSetDiscontinuousEventCount=0u;
+			std::size_t activeSetCycleLength=0u;
+			std::size_t activeSetDifferingFaceCount=0u;
+		};
+
 		struct ConservativeAdvance3DConfig
 		{
 			PeriodicTransportConfig transport;
@@ -1963,9 +1976,10 @@
 			unsigned int workerCount;
 			OpenBoundaryConfig3D openBoundary;
 			double injectedTemperatureK;
+			std::vector<OpenPicardContractionDiagnostic>* openPicardDiagnostics;
 			ConservativeAdvance3DConfig() : projectionTolerancePerS(0.0),dns(false),
 				periodicBoundaries(true),retainStageDiagnostics(false),workerCount(1u),
-				injectedTemperatureK(0.0)
+				injectedTemperatureK(0.0),openPicardDiagnostics(0)
 			{
 				gravityMPerS2.fill(0.0);
 			}
@@ -2519,6 +2533,21 @@
 				maximumActiveSetDifferingFaceCount=0u;
 			std::vector<std::array<std::vector<bool>,6> > outerActiveSetHistory;
 			std::vector<std::array<std::vector<bool>,6> > provedOuterCycle;
+			auto publishContractionDiagnostic=[&](bool converged){
+				if(!config.openPicardDiagnostics)return;
+				OpenPicardContractionDiagnostic diagnostic;
+				diagnostic.residualPerS=result.picardResidualPerS;
+				diagnostic.targetResidualPerS=lastTargetResidual;
+				diagnostic.massResidualPerS=lastMassResidual;
+				diagnostic.coefficientResidual=lastCoefficientResidual;
+				diagnostic.converged=converged;
+				diagnostic.activeSetChanged=lastActiveSetChanged;
+				diagnostic.activeSetDiscontinuousEventCount=activeSetDiscontinuousEvents;
+				diagnostic.activeSetCycleLength=std::max(maximumActiveSetCycleLength,
+					provedOuterCycle.size());
+				diagnostic.activeSetDifferingFaceCount=maximumActiveSetDifferingFaceCount;
+				config.openPicardDiagnostics->push_back(std::move(diagnostic));
+			};
 			auto observeActiveSet=[&](const OpenMACProjection3DResult& observed){
 				maximumActiveSetDiscrepancy=std::max(maximumActiveSetDiscrepancy,
 					observed.maximumActiveSetComplementarityDiscrepancyMPerS);
@@ -2777,10 +2806,13 @@
 					result.diffusivityM2PerS=acceptedDiffusivity;
 					result.conductivityWPerMK=acceptedConductivity;
 					result.dynamicViscosityPaS=acceptedViscosity;
-					return BuildOpenNonpressureMomentumRHS3D(shape,state,result.projection,
+					const bool rhsOK=BuildOpenNonpressureMomentumRHS3D(shape,state,result.projection,
 						acceptedViscosity,sourceDelta,config,result.nonpressureMomentumRHS,error);
+					if(rhsOK)publishContractionDiagnostic(true);
+					return rhsOK;
 				}
 			}
+			publishContractionDiagnostic(false);
 			std::ostringstream message;
 			message << "fire solver open conservative Picard stage did not converge";
 			if(!result.picardResidualPerS.empty()) message << ": first=" <<
