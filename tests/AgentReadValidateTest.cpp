@@ -1933,16 +1933,22 @@ static void RunSDFBlendScaleScanTest()
 	{
 		// Bounded list: 5 offending smin joints on one sdf_geometry chunk
 		// -- message shows the first 3 (FormatBoundedNameList_'s cap) plus
-		// "and 2 more".
+		// "and 2 more".  RADIATING star layout (not a line): each of the 5
+		// small satellites sits far from the OTHER satellites but close to
+		// the shared big base, so review-round B's nearest-by-gap pick
+		// (below) lands each one on the base, not on a same-sized sibling
+		// -- a line would let satellite N pick satellite N-1 as its
+		// "nearest", which the discriminator correctly treats as a
+		// comparable-size meld and silences.
 		const std::string docManyBlobs =
 			"RISE ASCII SCENE 7\n"
 			"sdf_geometry\n{\n\tname manyblobs\n"
 			"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  1 0 0  0\n"
-			"\tpart\tsphere smin 0.5  1 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
-			"\tpart\tsphere smin 0.5  2 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
-			"\tpart\tsphere smin 0.5  3 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
-			"\tpart\tsphere smin 0.5  4 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
-			"\tpart\tsphere smin 0.5  5 0 0  0 0 0  1 1 1  0.3 0 0  0\n"
+			"\tpart\tsphere smin 0.5  1.1 0 0  0 0 0  1 1 1  0.2 0 0  0\n"
+			"\tpart\tsphere smin 0.5  0 1.1 0  0 0 0  1 1 1  0.2 0 0  0\n"
+			"\tpart\tsphere smin 0.5  -1.1 0 0  0 0 0  1 1 1  0.2 0 0  0\n"
+			"\tpart\tsphere smin 0.5  0 -1.1 0  0 0 0  1 1 1  0.2 0 0  0\n"
+			"\tpart\tsphere smin 0.5  0 0 1.1  0 0 0  1 1 1  0.2 0 0  0\n"
 			"}\n";
 		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docManyBlobs );
 		const AgentDiagnostic* d = findCode( diags, "DESIGN_SDF_BLEND_SCALE" );
@@ -1953,6 +1959,137 @@ static void RunSDFBlendScaleScanTest()
 			Check( d->message.find( "and 2 more" ) != std::string::npos,
 			       "...bounding the named list to 3, stating the truncation (2 more)" );
 		}
+	}
+
+	//------------------------------------------------------------------
+	// Review-round B (2026-08-24): P1 (compare against the smallest
+	// PART IN THE JOIN, not just the current one), P2 (a first-part smin
+	// is geometrically inert), and the size-mismatch discriminator (fire
+	// only on a genuine small-feature-into-big-mass join, not a gradual/
+	// comparable-size meld).
+	//------------------------------------------------------------------
+	{
+		// P1 RED-PROVE: thin-end-first -- a TINY part authored FIRST
+		// (r=0.05), a BIG roundcone smin-joined onto it SECOND at
+		// k=0.2.  Under a current-part-only comparison this is SILENT
+		// (dim=min(1,1)=1, max~0.333, k=0.2 <= 0.333) -- the false
+		// negative the brief calls out.  Comparing against the smallest
+		// part WITHIN REACH (here, the tiny predecessor) catches it:
+		// dim_effective=0.05, max~0.0167, k=0.2 fires.
+		const std::string docThinEndFirst =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname thin_first_chain\n"
+			"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  0.05 0 0  0\n"
+			"\tpart\troundcone smin 0.2  0 0.05 0  0 0 0  1 1 1  1 1 0.5  0\n"
+			"}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docThinEndFirst );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_SDF_BLEND_SCALE" );
+		Check( d != nullptr,
+		       "P1 RED-PROVE: thin-end-first (tiny part FIRST, big roundcone smin-joined onto it "
+		       "SECOND at k=0.2) fires -- a current-part-only comparison would stay silent" );
+		if( d ) Check( d->message.find( "part 2" ) != std::string::npos,
+		               "...naming the SECOND part (the join), not the tiny first part" );
+	}
+	{
+		// P2 GREEN-PROVE: a chunk whose FIRST part is authored `smin` --
+		// the running field starts empty, so it composes against nothing
+		// and dissolves nothing (SDFGeometry.cpp's own ParsePartLines
+		// comment).  Even with an extreme k, part 1 must not fire.
+		const std::string docFirstPartSmin =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname smin_first\n"
+			"\tpart\troundcone smin 5.0  0 0 0  0 0 0  1 1 1  0.02 0.004 0.05  0\n"
+			"\tpart\tsphere union 0.0  0 0.05 0  0 0 0  1 1 1  0.05 0 0  0\n"
+			"}\n";
+		Check( !hasCode( AgentSession::ValidateText( docFirstPartSmin ), "DESIGN_SDF_BLEND_SCALE" ),
+		       "P2 GREEN-PROVE: a first-part `smin` (geometrically inert -- the running field starts "
+		       "empty) never fires regardless of k" );
+	}
+	{
+		// P3 GREEN-PROVE: a heavily-ROUNDED roundbox -- a=b=c=0.05 but
+		// round=0.5 -- reaches max(half-extent, round) per axis
+		// (ComputeBounds, SDFGeometry.cpp ~500-516), so its TRUE
+		// characteristic dimension is 0.5, not 0.05.  The predecessor
+		// part is placed far out of reach so this isolates
+		// SDFPartCharacteristicDim_'s roundbox case alone (no P1/
+		// discriminator interaction).  Pre-P3, min(a,b,c)=0.05 would
+		// have put max~0.0167 and fired on k=0.1; post-P3 the true
+		// dim=0.5 puts max~0.1667 and stays silent.
+		const std::string docRoundedBox =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname rounded_box_chunk\n"
+			"\tpart\tsphere union 0  100 100 100  0 0 0  1 1 1  0.01 0 0  0\n"
+			"\tpart\troundbox smin 0.1  0 0 0  0 0 0  1 1 1  0.05 0.05 0.05  0.5\n"
+			"}\n";
+		Check( !hasCode( AgentSession::ValidateText( docRoundedBox ), "DESIGN_SDF_BLEND_SCALE" ),
+		       "P3 GREEN-PROVE: a heavily-rounded roundbox (a=b=c=0.05, round=0.5) is judged by "
+		       "max(half-extent, round)=0.5, not the bare 0.05 half-extents -- stays silent at k=0.1" );
+	}
+	{
+		// Discriminator GREEN-PROVE: a real BuildBlendedVessel draw
+		// (insert_geometry_scaffold "blended_vessel" "vjit0" 0.5 0.0 0.7,
+		// verbatim from AgentSession::ReadDocument()'s own output) -- a
+		// turned-profile taper where each roundcone's base radius
+		// EXACTLY matches the previous segment's tip radius.  Before the
+		// discriminator this fired on 44/45 jittered draws across the
+		// family's whole size/detail/aspect range; a comparably-sized,
+		// continuous join is legitimate authoring, not the law's target.
+		const std::string docVessel =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname tmpl_vjit0_vessel\n"
+			"\tpart\troundcone union 0.0000  0.0000 0.0000 0.0000  0.0000 0.0000 0.0000  1.0000 1.0000 1.0000  0.0569 0.0729 0.0456  0.0000\n"
+			"\tpart\troundcone smin 0.1113  0.0000 0.0456 0.0000  0.0000 0.0000 0.0000  1.0000 1.0000 1.0000  0.0729 0.2165 0.1794  0.0000\n"
+			"\tpart\troundcone smin 0.0830  0.0000 0.2250 0.0000  0.0000 0.0000 0.0000  1.0000 1.0000 1.0000  0.2165 0.1225 0.1047  0.0000\n"
+			"\tpart\tbox subtract 0.0000  0.0000 -0.0853 0.0000  0.0000 0.0000 0.0000  1.0000 1.0000 1.0000  0.1138 0.0853 0.1138  0.0000\n"
+			"}\n";
+		Check( !hasCode( AgentSession::ValidateText( docVessel ), "DESIGN_SDF_BLEND_SCALE" ),
+		       "DISCRIMINATOR GREEN-PROVE: a real blended_vessel scaffold draw (turned-profile taper, "
+		       "matched base/tip radii at every joint) stays silent" );
+	}
+	{
+		// Discriminator GREEN-PROVE: the mermaid-tail SPINE, verbatim
+		// from scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene
+		// -- a gradual, equal-ish-radius metaball chain (0.05 -> 0.175
+		// across 8 joints).  Before the discriminator this fired on
+		// every one of its 8 joints.
+		const std::string docMermaid =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname mermaid_tail\n"
+			"\tpart\tsphere union 0  -1.72 0.34 0  0 0 0  1 1 1  0.05 0 0  0.0\n"
+			"\tpart\tsphere smin 0.16  -1.56 0.22 0  0 0 0  1 1 1  0.075 0 0  0.0\n"
+			"\tpart\tsphere smin 0.13  -1.38 0.10 0  0 0 0  1 1 1  0.095 0 0  0.0\n"
+			"\tpart\tsphere smin 0.12  -1.16 0.01 0  0 0 0  1 1 1  0.11 0 0  0.0\n"
+			"\tpart\tsphere smin 0.12  -0.92 -0.04 0  0 0 0  1 1 1  0.13 0 0  0.0\n"
+			"\tpart\tsphere smin 0.12  -0.66 -0.03 0  0 0 0  1 1 1  0.15 0 0  0.0\n"
+			"\tpart\tsphere smin 0.12  -0.40 0.05 0  0 0 0  1 1 1  0.165 0 0  0.0\n"
+			"\tpart\tsphere smin 0.12  -0.16 0.16 0  0 0 0  1 1 1  0.175 0 0  0.0\n"
+			"\tpart\tsphere smin 0.12  0.05 0.28 0  0 0 0  1 1 1  0.165 0 0  0.0\n"
+			"}\n";
+		Check( !hasCode( AgentSession::ValidateText( docMermaid ), "DESIGN_SDF_BLEND_SCALE" ),
+		       "DISCRIMINATOR GREEN-PROVE: the mermaid-tail spine (gradual equal-radius metaball "
+		       "chain) stays silent" );
+	}
+	{
+		// Discriminator RED-PROVE (still fires): the apothecary-cat ear
+		// AND se_creature's limb (scenes/Tests/Geometry/superellipsoid_
+		// stress.RISEscene) both survive the discriminator -- a genuine
+		// size mismatch (torso dim 0.8 vs limb dim 0.18, ratio 4.4x)
+		// clears kSizeMismatchGate comfortably.
+		const std::string docCreature =
+			"RISE ASCII SCENE 7\n"
+			"sdf_geometry\n{\n\tname se_creature\n"
+			"\tpart\tsuperellipsoid union 0  0 0 0  0 0 0  1.0 1.25 0.8  1.0 0.5 0.7  0\n"
+			"\tpart\tsphere smin 0.45  0 1.55 0  0 0 0  1 1 1  0.52 0 0  0\n"
+			"\tpart\troundcone smin 0.4  -0.75 -0.3 0  0 0 35  1 1 1  0.34 0.18 1.25  0\n"
+			"\tpart\troundcone smin 0.4  0.75 -0.3 0  0 0 -35  1 1 1  0.34 0.18 1.25  0\n"
+			"}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docCreature );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_SDF_BLEND_SCALE" );
+		Check( d != nullptr, "DISCRIMINATOR RED-PROVE: se_creature's limb joints still fire "
+		       "(genuine 4.4x size mismatch against the torso)" );
+		if( d ) Check( d->message.find( "part 3" ) != std::string::npos &&
+		               d->message.find( "part 4" ) != std::string::npos,
+		               "...naming BOTH limb joints" );
 	}
 }
 

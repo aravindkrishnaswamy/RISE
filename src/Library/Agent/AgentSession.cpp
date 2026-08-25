@@ -3323,24 +3323,49 @@ namespace RISE
 			//! about where the line is.
 			static const double kBlendScaleFraction = 1.0 / 3.0;
 
+			//! Review-round B, P1 (2026-08-24): how far a size-mismatch
+			//! discriminator (below) or a P1 proximity sweep looks before
+			//! calling two joined masses "the same scale" vs "a small
+			//! feature dissolved into a big one".  Calibrated against the
+			//! corpus (see the Fix-2-B commit message for the full numbers):
+			//! the worst-case ratio across BuildBlendedVessel/BuildSdfColumn's
+			//! full jitter sweep (45+45 draws) and the mermaid-tail metaball
+			//! chain (a legitimate gradual meld) is 2.72; the apothecary-cat
+			//! ear and se_creature's limb joints (the real defects this law
+			//! exists to catch) measure 12.5 and 4.44.  3.0 sits with ~10%
+			//! margin below the legitimate-meld ceiling and ~48% margin
+			//! above the real-defect floor.
+			static const double kSizeMismatchGate = 3.0;
+
 			//! The blend-scale law's per-primitive "characteristic
 			//! dimension" -- the smallest local extent that a k comparable
 			//! to it would dissolve.  Reuses SDFGeometry::SDFPrim's OWN
 			//! documented per-type meaning of a/b/c (SDFGeometry.h's enum
 			//! comments), never re-derived: radius for sphere/capsule/
 			//! superellipsoid (radius-uniform by construction, its own doc
-			//! comment); min(half-extents) for box/roundbox (the "half-
-			//! thickness" a plate's thinnest axis needs); min(radius,half-
-			//! height) for cylinder (whichever is smaller -- a thin disc or
-			//! a thin rod); the TUBE radius (b) for torus (the guidance's
-			//! own vocabulary -- a torus's "small part" is its cross-
-			//! section, not its ring); min(base radius, TIP radius) for
-			//! roundcone (the measured apothecary-cat defect: a 0.004 tip
-			//! against a 0.012 k).  Multiplied by the part's own precomputed
-			//! `minScale` -- the SAME conservative per-axis-scale factor
-			//! `partEval`'s Lipschitz bound already applies (Part::minScale's
-			//! own doc comment) -- so an anisotropically-squashed part's
-			//! TRUE local size is what gets compared, not its unscaled a/b/c.
+			//! comment); min(half-extents) for box (the "half-thickness" a
+			//! plate's thinnest axis needs); min(radius,half-height) for
+			//! cylinder (whichever is smaller -- a thin disc or a thin rod);
+			//! the TUBE radius (b) for torus (the guidance's own vocabulary
+			//! -- a torus's "small part" is its cross-section, not its
+			//! ring); min(base radius, TIP radius) for roundcone (the
+			//! measured apothecary-cat defect: a 0.004 tip against a 0.012
+			//! k).  Multiplied by the part's own precomputed `minScale` --
+			//! the SAME conservative per-axis-scale factor `partEval`'s
+			//! Lipschitz bound already applies (Part::minScale's own doc
+			//! comment) -- so an anisotropically-squashed part's TRUE local
+			//! size is what gets compared, not its unscaled a/b/c.
+			//!
+			//! Review-round B, P3 (2026-08-24): ROUNDBOX is NOT
+			//! min(half-extents) -- ComputeBounds (SDFGeometry.cpp ~500-516)
+			//! documents that sdRoundBox shrinks the core box by `round`
+			//! then inflates the result by `round`, so the surface reaches
+			//! max(half-extent, round) PER AXIS, not the bare half-extent;
+			//! once `round` exceeds a half-extent the "box" IS the sphere of
+			//! that radius, which the half-extents alone under-state.  A
+			//! plain BOX still ignores `round` entirely (ComputeBounds'
+			//! own comment: "round is IGNORED by the plain box field"), so
+			//! only ePrimRoundBox takes the max(.,round) treatment.
 			Scalar SDFPartCharacteristicDim_( const RISE::Implementation::SDFGeometry::Part& pt )
 			{
 				using SDFGeometry = RISE::Implementation::SDFGeometry;
@@ -3352,9 +3377,14 @@ namespace RISE
 						dim = pt.a;
 						break;
 					case SDFGeometry::ePrimBox:
-					case SDFGeometry::ePrimRoundBox:
 						dim = std::min( pt.a, std::min( pt.b, pt.c ) );
 						break;
+					case SDFGeometry::ePrimRoundBox: {
+						const Scalar r = std::max( pt.round, Scalar( 0 ) );
+						dim = std::min( std::max( pt.a, r ),
+						         std::min( std::max( pt.b, r ), std::max( pt.c, r ) ) );
+						break;
+					}
 					case SDFGeometry::ePrimCylinder:
 						dim = std::min( pt.a, pt.b );
 						break;
@@ -3368,6 +3398,50 @@ namespace RISE
 						return 0.0;   // unrecognized (future primitive): skip rather than guess
 				}
 				return dim * pt.minScale;
+			}
+
+			//! Review-round B, P1 (2026-08-24): straight-line distance
+			//! between two parts' `pos` -- both are authored in the SAME
+			//! sdf_geometry chunk's shared object-space frame (Part::pos's
+			//! own doc comment), so no per-part transform is needed to
+			//! compare them.
+			Scalar SDFPartDistance_( const RISE::Implementation::SDFGeometry::Part& a,
+			                        const RISE::Implementation::SDFGeometry::Part& b )
+			{
+				const Scalar dx = a.pos.x - b.pos.x;
+				const Scalar dy = a.pos.y - b.pos.y;
+				const Scalar dz = a.pos.z - b.pos.z;
+				return static_cast<Scalar>( std::sqrt( dx * dx + dy * dy + dz * dz ) );
+			}
+
+			//! Review-round B, P1's proximity gate needs a "how far can this
+			//! part's OWN bulk reach from its `pos`" bound -- deliberately
+			//! the MAX of a/b/c (times minScale), the opposite choice from
+			//! SDFPartCharacteristicDim_'s MIN.  `pos` is a directional
+			//! primitive's BASE anchor, not its centroid (a roundcone's
+			//! `pos` sits at its y=0 cap, per the object-modeling-recipes
+			//! turned-profile idiom -- BuildSdfColumn's own generator chains
+			//! `pos.y = baseH`, `baseH+shaftH`, ...), so a long thin shaft's
+			//! FAR end (where it touches the next segment) sits `c` away
+			//! from `pos`, not `min(a,b)` away.  Using the min-based
+			//! characteristic dim here made every genuinely-touching but
+			//! elongated join (a tall column shaft, a long capsule) look
+			//! "out of reach" of its own neighbour -- caught in calibration
+			//! (BuildSdfColumn's capital join fired on 29/45 jittered draws
+			//! before this; the shaft segment's true touching point was
+			//! being measured `shaftH` away from where this looked).  A
+			//! plain max(a,b,c) is a cheap, defensible over-estimate: it
+			//! never UNDER-reaches (so it can only pull in an extra
+			//! candidate for the size-comparison sweep above to then
+			//! correctly reject on mismatch, never miss a real neighbour),
+			//! at the cost of occasionally over-including a distant part in
+			//! a very elongated or very large chunk -- acceptable because
+			//! the actual FIRE decision still runs through the size-
+			//! mismatch gate, not this reach test alone.
+			Scalar SDFPartReachRadius_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				const Scalar m = std::max( pt.a, std::max( pt.b, pt.c ) );
+				return m * pt.minScale;
 			}
 
 			//! The part-grammar's own primitive keyword, for the clause's
@@ -4480,9 +4554,80 @@ namespace RISE
 									for( std::size_t pi = 0; pi < parts.size(); ++pi ) {
 										const RISE::Implementation::SDFGeometry::Part& pt = parts[pi];
 										if( pt.op != RISE::Implementation::SDFGeometry::eOpSmin ) continue;
-										const Scalar dim = SDFPartCharacteristicDim_( pt );
-										if( dim <= 0.0 ) continue;
-										const Scalar maxK = dim * kBlendScaleFraction;
+										// P2: the running field starts EMPTY (+1e30), so a
+										// FIRST part authored as `smin` composes against
+										// nothing and degenerates to plain union (SDFGeometry.
+										// cpp's own ParsePartLines comment, ~line 2088) -- it
+										// dissolves nothing, and firing on it was a genuine
+										// false positive (the dragon_body/part-1 corpus hit).
+										if( pi == 0 ) continue;
+										const Scalar dimCur = SDFPartCharacteristicDim_( pt );
+										if( dimCur <= 0.0 ) continue;
+
+										// P1: k dissolves the SMALLEST part in the join, not
+										// just the current one -- a thin-end-first chain (a
+										// tiny part authored FIRST, a big mass smin-joined
+										// onto it later) is a false negative under a
+										// current-part-only comparison.  Sweep prior parts,
+										// proximity-gated (blend influence extends ~k, so
+										// only a prior part whose OWN REACH -- SDFPartReach
+										// Radius_'s max-based bound, not the min-based
+										// characteristic dim -- comes within ~k of this part's
+										// own reach is plausibly what it is joining into) --
+										// cheap: positions/dims are already parsed, this is an
+										// O(n) scan of doubles, no shape re-evaluation.
+										//
+										// Among the candidates that pass the gate, pick the
+										// CLOSEST one (smallest surface gap, distance minus
+										// the two reach radii), not the smallest-dimensioned
+										// one -- calibration caught the difference: a same-
+										// sized SIBLING feature (se_creature's other leg) can
+										// sit within the generous max-based reach radius of a
+										// long/thin part without being what it is actually
+										// touching, and picking "smallest dim among anything
+										// nearby" let that sibling silently replace the real
+										// neighbour (the torso) and mask a genuine defect.
+										// "Nearest by gap" answers "what does this part's own
+										// surface actually meet", which is what a smin join
+										// physically means.
+										const Scalar reachCur = SDFPartReachRadius_( pt );
+										Scalar priorMinDim = -1.0;
+										Scalar bestGap = 0.0;
+										for( std::size_t pj = 0; pj < pi; ++pj ) {
+											const RISE::Implementation::SDFGeometry::Part& prevPt = parts[pj];
+											const Scalar prevDim = SDFPartCharacteristicDim_( prevPt );
+											if( prevDim <= 0.0 ) continue;
+											const Scalar prevReach = SDFPartReachRadius_( prevPt );
+											const Scalar gap = SDFPartDistance_( pt, prevPt ) - prevReach - reachCur;
+											if( gap > Scalar( 2 ) * pt.k ) continue;   // out of reach
+											if( priorMinDim < 0.0 || gap < bestGap ) { priorMinDim = prevDim; bestGap = gap; }
+										}
+										const Scalar dimEffective = ( priorMinDim >= 0.0 )
+											? std::min( dimCur, priorMinDim ) : dimCur;
+										if( dimEffective <= 0.0 ) continue;
+
+										// Discriminator (calibration, see kSizeMismatchGate's
+										// doc comment for the numbers): fire only when the
+										// two joined masses are genuinely SIZE-MISMATCHED --
+										// a small feature dissolving into a much bigger one.
+										// A gradual, comparably-sized meld (a turned-profile
+										// taper -- BuildBlendedVessel/BuildSdfColumn's own
+										// roundcone chains -- or an equal-radius metaball
+										// chain, the mermaid-tail idiom) is legitimate
+										// authoring the law never meant to flag; without this
+										// gate the law fired on 44/45 and 45/45 jittered
+										// scaffold draws.  When no prior part is found within
+										// reach, this gate does not apply -- fall back to the
+										// size check alone (a rare false positive on an
+										// unusual layout beats silently missing a genuinely
+										// isolated small feature).
+										if( priorMinDim >= 0.0 ) {
+											const Scalar mismatch = ( dimCur > priorMinDim )
+												? ( dimCur / priorMinDim ) : ( priorMinDim / dimCur );
+											if( mismatch < kSizeMismatchGate ) continue;
+										}
+
+										const Scalar maxK = dimEffective * kBlendScaleFraction;
 										if( pt.k <= maxK ) continue;
 										char buf[256];
 										std::snprintf( buf, sizeof( buf ),
