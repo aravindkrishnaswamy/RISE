@@ -171,8 +171,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				if(!RISE::DeriveFireProductionInitialManifoldTimeStep(
 					0.00057953997747972608,0.024358630180358887,limitedStep,&error))return 250;
 			}else{
-				if(effectiveManifoldRetryCandidate>=
-					FireProductionCalibration::ManifoldPlateauRetryCap||
+				if(effectiveManifoldRetryCandidate>=RISE::FireStepRejectionRetryCap||
 					!(effectiveManifoldRetryStepS>0.0)||
 					!std::isfinite(effectiveManifoldRetryStepS))return 250;
 				limitedStep=effectiveManifoldRetryStepS;
@@ -2269,26 +2268,23 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					equalTimeReferenceScheduleDigest==
 						"1c7944ddde6e673330ccf115c388b0a424027cfcb86e0b8bf8d503f22d7c531d"&&
 					DigestFile(checkpointPath)==checkpointDigest;
-				unsigned int nextRetryCandidate=0u;
-				const bool retryAllowed=
-					FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(
-					effectiveManifoldRetryCandidate,production.manifoldPlateauPassed,
-					static_cast<double>(production.representedTimeStepS),followingManifoldStep,
-					nextRetryCandidate);
+				unsigned int nextRetryCandidate=0u;double classifiedRetryStep=0.0;
+				const RISE::FireProductionResidentStepAttemptDisposition attemptDisposition=
+					RISE::ClassifyFireProductionResidentStepAttempt(
+						effectiveManifoldRetryCandidate,production,nextRetryCandidate,
+						classifiedRetryStep);
+				const bool retryAllowed=attemptDisposition==
+					RISE::FireProductionResidentStepAttemptDisposition::RetryAtSuggestedTimeStep&&
+					classifiedRetryStep==followingManifoldStep;
 				const bool retryDispositionValid=!productionSucceeded&&
 					production.manifoldNextTimeStepAvailable&&!production.manifoldPlateauPassed&&
 					!production.HasAcceptedManifoldToken();
-				unsigned int laterCandidateNext=0u;
-				const bool laterCandidateControllerRED=
-					FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(1u,false,
-						0.00055692793102934957,0.00055690890514272363,
-						laterCandidateNext)&&laterCandidateNext==2u;
 				if(effectiveManifoldRetryCandidate==0u)std::fprintf(stderr,
 					"DRAIN_AWARE_RETRY_GATE exact=%d retry_allowed=%d attempt_succeeded=%d "
 					"ordinary_refused=%d diagnostics=%d\n",exactPredictorRefusal?1:0,
 					retryAllowed?1:0,productionSucceeded?1:0,ordinaryAdvanceRefused?1:0,
 					production.manifoldNextTimeStepAvailable?1:0);
-				if(exactPredictorRefusal&&retryAllowed&&laterCandidateControllerRED){
+				if(exactPredictorRefusal&&retryAllowed){
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY refused_candidate=%u "
 						"refused_dt=%.17g field_max=%.17g allowance=%.17g suggested_dt=%.17g "
 						"next_candidate=%u cap=%u ordinary_advance_refused=1 attempt_diagnostics=1\n",
@@ -2296,9 +2292,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						static_cast<double>(production.representedTimeStepS),fieldMaximum,
 						PlateauHeadroomAllowance,followingManifoldStep,
 						nextRetryCandidate,
-						FireProductionCalibration::ManifoldPlateauRetryCap);
+						RISE::FireStepRejectionRetryCap);
 				}
+				const bool controllerAccepted=attemptDisposition==
+					RISE::FireProductionResidentStepAttemptDisposition::Accepted;
 				const bool retryAccepted=effectiveManifoldRetryCandidate>0u&&productionSucceeded&&
+					controllerAccepted&&
 					followingStepDerived&&
 					production.manifoldPlateauPassed&&production.HasAcceptedManifoldToken()&&
 					effectiveManifoldRetryCandidate==1u&&
@@ -2336,13 +2335,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						PlateauHeadroomAllowance,followingManifoldStep,checkpointDigest);
 					return 206;
 				}
-				if(retryAllowed&&retryDispositionValid&&laterCandidateControllerRED){
+				if(controllerAccepted&&productionSucceeded){
+					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED_GENERIC candidate=%u "
+						"dt=%.17g accepted_token=1\n",effectiveManifoldRetryCandidate,
+						static_cast<double>(production.representedTimeStepS));
+					return 206;
+				}
+				if(retryAllowed&&retryDispositionValid){
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=%u "
 						"refused_dt=%.17g suggested_dt=%.17g next_candidate=%u cap=%u\n",
 						effectiveManifoldRetryCandidate,
 						static_cast<double>(production.representedTimeStepS),followingManifoldStep,
 						nextRetryCandidate,
-						FireProductionCalibration::ManifoldPlateauRetryCap);
+						RISE::FireStepRejectionRetryCap);
 					return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
 						nextRetryCandidate,followingManifoldStep);
 				}

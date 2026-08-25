@@ -17,6 +17,7 @@
 #include "../../src/Library/Utilities/FireSimulationRecords.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -461,6 +462,7 @@ namespace RISEFireProductionTrace
 			FireProductionResidentStepResult&,
 			std::string* );
 	};
+
 	//! Single owner predicate for accepted-token issuance.  Diagnostics alone do
 	//! not mint authority; both projection validations are structural inputs.
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(

@@ -3787,6 +3787,11 @@ the refused payload accidentally.  The predictive initializer remains
 candidate zero; the owning retry loop may retry only at a finite, positive,
 strictly smaller drain-aware suggestion and only inside the same shared
 `FireStepRejectionRetryCap=20` used by the capstone rejection loop.
+`ClassifyFireProductionResidentStepAttempt` is the production-owned
+accepted/retry/rejected disposition: it advances every refused candidate index,
+rejects the cap boundary, and accepts an authorized plateau pass at any
+candidate. The equal-time protocol owner remains responsible for rebuilding the
+independently sealed target before invoking the next attempt.
 This is more informed than blind halving and does not alter the hard ceiling or
 headroom allowance.  The r162 wording that step 1 is “already legal” meant
 that initialization removes a separate CFL-transient class, not that a

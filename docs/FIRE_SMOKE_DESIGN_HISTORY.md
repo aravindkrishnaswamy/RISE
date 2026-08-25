@@ -3936,6 +3936,9 @@ it was already tried and refuted here.
   `7.510185241699219e-6`, respects the `0.03125` hard ceiling, and mints the
   accepted token.  Its next limiter prediction is
   `5.5690890514272363e-4 s`.  No floor-aware analytic corrector is added.
+  The accepted/retry/rejected disposition and shared cap are production-owned;
+  every candidate can advance or accept. The equal-time campaign owner only
+  regenerates the sealed target at the production-selected retry duration.
 
   The earlier `323 ms` value is retained only as an uncalibrated pilot.  The
   same-binary controlled serial wall p95 is `230.814416 ms`; production-parallel

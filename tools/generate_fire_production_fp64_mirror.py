@@ -76,6 +76,12 @@ def transform(text: str, name: str, suffix: str) -> str:
         if text.count(token_accessor) != 1:
             raise RuntimeError("accepted manifold token accessor seam changed")
         text = text.replace(token_accessor, "")
+        disposition_begin = text.find(
+            "\n\tenum class FireProductionResidentStepAttemptDisposition")
+        disposition_end = text.find("\n\t//! Single owner predicate", disposition_begin)
+        if disposition_begin < 0 or disposition_end < 0:
+            raise RuntimeError("production retry disposition seam changed")
+        text = text[:disposition_begin] + text[disposition_end:]
         begin = text.find("\n\t//! Publishes the only manifold metadata")
         end = text.find("\n\t//! Full resident P3 shadow step:", begin)
         if begin < 0 or end < 0:

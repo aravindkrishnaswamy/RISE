@@ -9,9 +9,9 @@ inline constexpr const char* FireProductionProjectionHeader="9691348b8fdb77388be
 inline constexpr const char* FireProductionProjectionSource="4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4";
 inline constexpr const char* FireProductionTransportHeader="7f9bf4b42a020251c17b090130dc348d81a6d39c3462272294db0afa74e4c96a";
 inline constexpr const char* FireProductionTransportSource="89e7d007e106b751f7faa75dab2f66648c1bbd125e36cde0f37207218db1f056";
-inline constexpr const char* FireProductionForceHeader="8ff86bb29f165109ff4518028faf5a65b87ffa733284fbdbd7b3ab4ce330736a";
+inline constexpr const char* FireProductionForceHeader="85ddea23435292cc0930cadc41eca0e844f9afc60332281cc1f0bc6650c06594";
 inline constexpr const char* FireProductionForceSource="277e01f23783872e94171ef33476f5312dcb3a643782745408545073dae97628";
-inline constexpr const char* Generator="1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53";
+inline constexpr const char* Generator="4bf64597bd04326d80f3e7cb378f1ad0dfac20daf938e4ced8834b39bb3c8663";
 } }
 
 #endif

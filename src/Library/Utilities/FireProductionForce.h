@@ -14,6 +14,7 @@
 #include "FireSimulationRecords.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -545,6 +546,39 @@ namespace RISE
 			FireProductionAcceptedManifoldObservation&,
 			std::string* );
 	};
+
+	enum class FireProductionResidentStepAttemptDisposition : std::uint8_t
+	{
+		Accepted=0u,
+		RetryAtSuggestedTimeStep=1u,
+		Rejected=2u
+	};
+
+	//! Production-owned ordinary rejection policy. The step operator reports a
+	//! tokenless plateau refusal; the trajectory owner uses this disposition to
+	//! rebuild its independently sealed target at the suggested duration. The
+	//! retry index and cap live here rather than in calibration fixtures.
+	inline FireProductionResidentStepAttemptDisposition
+		ClassifyFireProductionResidentStepAttempt(const unsigned int candidateIndex,
+			const FireProductionResidentStepResult& attempted,
+			unsigned int& nextCandidateIndex,double& nextTimeStepS)
+	{
+		nextCandidateIndex=0u;nextTimeStepS=0.0;
+		if(attempted.manifoldPlateauPassed&&attempted.HasAcceptedManifoldToken())
+			return FireProductionResidentStepAttemptDisposition::Accepted;
+		const double represented=static_cast<double>(attempted.representedTimeStepS);
+		if(!attempted.manifoldPlateauPassed&&!attempted.HasAcceptedManifoldToken()&&
+			attempted.manifoldNextTimeStepAvailable&&candidateIndex+1u<
+			FireStepRejectionRetryCap&&represented>0.0&&std::isfinite(represented)&&
+			attempted.suggestedManifoldTimeStepS>0.0&&
+			std::isfinite(attempted.suggestedManifoldTimeStepS)&&
+			attempted.suggestedManifoldTimeStepS<represented){
+			nextCandidateIndex=candidateIndex+1u;
+			nextTimeStepS=attempted.suggestedManifoldTimeStepS;
+			return FireProductionResidentStepAttemptDisposition::RetryAtSuggestedTimeStep;
+		}
+		return FireProductionResidentStepAttemptDisposition::Rejected;
+	}
 	//! Single owner predicate for accepted-token issuance.  Diagnostics alone do
 	//! not mint authority; both projection validations are structural inputs.
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
