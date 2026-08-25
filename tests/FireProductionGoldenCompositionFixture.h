@@ -2431,12 +2431,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					// resident payload and request alive while the next 1.63-GiB owner is
 					// allocated.  The next attempt reloads the shared golden beginning and
 					// rebuilds its independently sealed equal-time target.
-					production=RISE::FireProductionResidentStepResult();
-					request=RISE::FireProductionResidentStepRequest();
-					beginning=MethaneRunCheckpoint();
 					return continueAfterDrainAwareRefusal(effectiveManifoldRetryCandidate,
 						production,[&](const unsigned int candidate,const double step){
 							if(candidate!=nextRetryCandidate||step!=followingManifoldStep)return 212;
+							production=RISE::FireProductionResidentStepResult();
+							request=RISE::FireProductionResidentStepRequest();
+							beginning=MethaneRunCheckpoint();
 							return continueDrainAwareRetry(candidate,step);
 						});
 				}

@@ -1523,7 +1523,7 @@ int main()
 	Check(!drainAwareRetryEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(drainAwareRetryEvidence.begin(),
 			drainAwareRetryEvidence.end()))==
-		"855f37154366b3717584c22d64c8d0a56e384703d233d35f6e3ab8ab4e2b4f22"&&
+		"e6482ed60996975086abc9f66af603ccfb7cf253565b16d3a44374f7cf3a534f"&&
 		drainAwareRetryEvidence.find("candidate_0_refusal_reproduced true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_represented_dt "
@@ -1610,7 +1610,7 @@ int main()
 			"0d77432eb9e4ccf4e76829ce230f82037435abfb33a437abb062096dde6f9057"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"76afe1bb819d9a3f337da7550042051d2e9a8aadf57396773cf28b04bf225516"&&
+			"cbcefe61ea90aa620b0438bdefdcd9baa753f3f6eafb2f34ad3897d1087499e3"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
