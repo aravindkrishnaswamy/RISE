@@ -532,16 +532,28 @@ static void TestRefusals()
 
 static void TestNoteNamesTheVerb()
 {
+	// Regression note (2026-08-24): 46504bc5 retuned condition C's note
+	// gate (kRepeatedCopyGate) from 5 to 10 and updated
+	// AgentReadValidateTest.cpp's fixtures to match, but missed this
+	// file's own separate fixture -- it stayed at 6 copies, which the
+	// retuned gate (>= 10) silently no longer fires on.  Bisected
+	// precisely (e2515d1c, 46504bc5's parent: 92/0; 46504bc5 itself:
+	// 85/1, this one test) -- the regression predates fd899428/651ab688
+	// and a2204592/1a8c17cf by multiple commits; none of those touched
+	// kRepeatedCopyGate or this file.  Bumped to 10, the exact gate --
+	// AgentReadValidateTest.cpp already pins the 9-silent/10-fires
+	// boundary itself, so this file only needs enough copies to
+	// reliably exercise the verb-naming clause content below.
 	std::printf( "E: the design note NAMES the verb, and keeps its escape\n" );
 	std::string body = Preamble();
-	for( int k = 0; k < 6; ++k )
+	for( int k = 0; k < 10; ++k )
 		body += Bottle( std::string( "b" ) + std::to_string( k ), std::to_string( k ) + " 1 0" );
 
 	const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
 	const Agent::AgentDiagnostic* d = nullptr;
 	for( const Agent::AgentDiagnostic& e : diags )
 		if( e.code == "DESIGN_HAND_REPEATED_COPIES" ) { d = &e; break; }
-	Check( d != nullptr, "E: condition C still fires on six hand-authored copies" );
+	Check( d != nullptr, "E: condition C still fires on ten hand-authored copies" );
 	if( !d ) return;
 
 	Check( d->message.find( "`collapse_to_instances` writes it for you" ) != std::string::npos,
@@ -551,8 +563,8 @@ static void TestNoteNamesTheVerb()
 	       "E: ...and states the zero-argument call, the lowest-friction form" );
 	Check( d->message.find( "REFUSES -- changing nothing" ) != std::string::npos,
 	       "E: ...and is honest about the refusal, so trying it is knowably free" );
-	Check( d->message.find( "count_u 5" ) != std::string::npos &&
-	       d->message.find( "are 6, not 5" ) != std::string::npos,
+	Check( d->message.find( "count_u 9" ) != std::string::npos &&
+	       d->message.find( "are 10, not 9" ) != std::string::npos,
 	       "E: ...while still teaching the off-by-one (unchanged from step 1)" );
 	Check( d->message.find( "this is fine -- ignore and do not churn" ) != std::string::npos,
 	       "E: ...and the ANTI-CHURN escape survives (load-bearing for conditions A and B)" );
