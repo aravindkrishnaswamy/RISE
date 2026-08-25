@@ -1808,10 +1808,12 @@ not N hand-placed copies.
    flesh.
 7. **A sub-feature has to be proportioned to what it attaches to, or no
    blend width will make it read.**  An ear, a horn, a fingertip
-   authored at less than about 1/4 the characteristic dimension of the
-   mass it joins is invisible at ordinary framing no matter how tight
-   the `smin` k is drawn -- `fix_blend_scale`'s own proportion caveat
-   exists precisely because narrowing k cannot fix a feature that is
-   simply too small.  Author the sub-feature at roughly 1/4 or more of
-   what it joins first, THEN use `smin` k to blend the seam -- not the
-   other way around.
+   authored at less than 1/5 the characteristic dimension of the mass
+   it joins is invisible at ordinary framing no matter how tight the
+   `smin` k is drawn -- that 1/5 figure is not a rule of thumb, it is
+   the exact ratio `fix_blend_scale`'s own proportion caveat gates on,
+   so a sub-feature under that line will be flagged with "narrowing k
+   will not make this part readable" even after the verb clamps its
+   blend.  Author the sub-feature at 1/5 or more of what it joins
+   first, THEN use `smin` k to blend the seam -- not the other way
+   around.

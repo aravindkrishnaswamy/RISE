@@ -3393,6 +3393,61 @@ namespace RISE
 			//! fix" is warranted over "just narrow the blend".
 			static const double kProportionCaveatGate = 5.0;
 
+			//! Review round P3-b (2026-08-25): the ONE core clause every
+			//! surface that carries the proportion caveat -- condition J's
+			//! offender line, the fix_blend_scale verb's per-joint summary,
+			//! and finish_element's inline sentence -- builds its own
+			//! sentence around, so a future wording change to the ADVICE
+			//! ITSELF lands in one place instead of three.  Deliberately
+			//! just the actionable imperative core, not a full sentence:
+			//! each surface still owns its own opening clause and
+			//! punctuation (a parenthetical aside reads differently from a
+			//! standalone sentence), so forcing byte-identical FULL
+			//! sentences across three grammatically different contexts
+			//! would read worse than three consistent wrappers around the
+			//! same shared advice.
+			static const char* const kProportionCaveatCore_ =
+				"enlarge it toward proportion, or rebuild with skeleton_geometry";
+
+			//! Review round P1 fix-round follow-up (2026-08-25): a WRITTEN
+			//! k must round-trip through text at or under `fireThreshold`
+			//! (the scan's own fire/silent boundary, i.e. detectionMaxK),
+			//! or the multi-pass convergence FixBlendScale relies on can
+			//! stall forever at a floating-point boundary -- found via this
+			//! slice's own P1 regression fixture: dimEffective=0.3 gives a
+			//! clamp target of 0.3/3 = 0.099999999999999992 in IEEE double
+			//! precision; plain `%g` (6 significant digits) rounds that UP
+			//! to the text "0.1", which re-parses to
+			//! 0.10000000000000000555 -- STRICTLY GREATER than the fresh
+			//! detectionMaxK the next pass recomputes, so the scan fires
+			//! again forever (never converges, even though the true value
+			//! and the threshold are the same double).  A blanket safety
+			//! margin on every clamp (shrink-then-format) was rejected: it
+			//! uglifies the OVERWHELMING MAJORITY of clamps that never hit
+			//! this boundary (e.g. a clean 0.09 becomes the ugly
+			//! "0.0899999" under a margin large enough to matter at `%g`'s
+			//! own rounding granularity).  Escalating PRECISION ONLY WHEN
+			//! THE CHEAP FORMAT FAILS keeps the common case pretty and pays
+			//! the ugly-number cost only on the rare boundary case: try
+			//! successively more significant digits, accept the FIRST
+			//! (shortest) one whose round-trip lands AT OR UNDER
+			//! `fireThreshold`; 17 significant digits always succeeds (the
+			//! standard round-trip guarantee for an IEEE double), so this
+			//! function always returns a valid token.
+			std::string FormatSafeClampK_( double clampTargetK, double fireThreshold )
+			{
+				static const int kPrecisions[] = { 6, 9, 12, 15, 17 };
+				char buf[64];
+				for( int prec : kPrecisions ) {
+					std::snprintf( buf, sizeof( buf ), "%.*g", prec, clampTargetK );
+					if( std::strtod( buf, nullptr ) <= fireThreshold ) return buf;
+				}
+				// Unreachable in practice (17 significant digits always
+				// round-trips a double exactly) -- last-resort return
+				// rather than an empty token.
+				return buf;
+			}
+
 			//! GPT slice item 4 (2026-08-24, the env-reflection advisory):
 			//! HSV saturation ( (max-min)/max ) an env dome's flat colour
 			//! must clear before condition K's low-roughness-metallic
@@ -3760,7 +3815,13 @@ namespace RISE
 					// false positive (the dragon_body/part-1 corpus hit).
 					if( pi == 0 ) continue;
 					const Scalar dimCur = SDFPartCharacteristicDim_( pt );
-					if( dimCur <= 0.0 ) continue;
+					// Review round P2-1 (2026-08-25): a NaN dimension fails
+					// EVERY ordered comparison against it (including
+					// `<= 0.0`), so a bare non-finite check here would sail
+					// straight past the very guard meant to catch a
+					// degenerate part -- checked explicitly, not folded into
+					// the ordered compare.
+					if( !std::isfinite( static_cast<double>( dimCur ) ) || dimCur <= 0.0 ) continue;
 
 					// P1: k dissolves the SMALLEST part in the join, not
 					// just the current one.  Sweep prior parts, proximity-
@@ -3784,7 +3845,7 @@ namespace RISE
 						if( prevPt.op == RISE::Implementation::SDFGeometry::eOpSubtract ||
 						    prevPt.op == RISE::Implementation::SDFGeometry::eOpIntersect ) continue;
 						const Scalar prevDim = SDFPartCharacteristicDim_( prevPt );
-						if( prevDim <= 0.0 ) continue;
+						if( !std::isfinite( static_cast<double>( prevDim ) ) || prevDim <= 0.0 ) continue;
 						const Scalar prevReach = SDFPartReachRadius_( prevPt );
 						const Scalar distance = SDFPartDistance_( pt, prevPt );
 						const Scalar gap = distance - prevReach - reachCur;
@@ -3796,7 +3857,12 @@ namespace RISE
 					}
 					const Scalar dimEffective = ( priorMinDim >= 0.0 )
 						? std::min( dimCur, priorMinDim ) : dimCur;
-					if( dimEffective <= 0.0 ) continue;
+					// Belt-and-suspenders: dimCur/priorMinDim are already
+					// validated finite above, so dimEffective is finite by
+					// construction -- checked again anyway, cheaply, so
+					// this guard does not silently depend on that upstream
+					// invariant never changing.
+					if( !std::isfinite( static_cast<double>( dimEffective ) ) || dimEffective <= 0.0 ) continue;
 
 					// Discriminator + P2-1 total-dissolve bypass -- see
 					// kSizeMismatchGate's / kTotalDissolveGate's own doc
@@ -3821,6 +3887,14 @@ namespace RISE
 						reportedDimEffective = std::min( reportedDimEffective,
 							SDFPartReportedDim_( parts[bestPriorIndex] ) );
 					}
+					// Review round P2-1: reportedDimEffective runs through
+					// SDFPartMedianScale_'s own std::sort over pt.scale's raw
+					// components -- a DIFFERENT path than dimCur/dimEffective's
+					// (already validated above), so a NaN scale component
+					// reaches here unguarded.  Same explicit finite check,
+					// same reason: an ordered compare alone would not catch it.
+					if( !std::isfinite( static_cast<double>( reportedDimEffective ) ) ||
+					    reportedDimEffective <= 0.0 ) continue;
 					const Scalar reportedMaxK = reportedDimEffective * kBlendScaleFraction;
 
 					// Cat plan mid-flight adjustment: the PROPORTION
@@ -3842,17 +3916,27 @@ namespace RISE
 						}
 					}
 
+					// GUARANTEED safe: detectionMaxK <= reportedMaxK always
+					// (median >= min), so this is never LARGER than
+					// detectionMaxK -- clamping k here is always enough to
+					// make pt.k <= detectionMaxK true again.  Both operands
+					// are already validated finite above, so this is finite
+					// by construction -- checked explicitly anyway (review
+					// round P2-1): the whole POINT of an offender is that a
+					// caller may write this value to the document, so its
+					// finiteness must be a proven fact here, not an
+					// assumption a future edit upstream could silently
+					// break.
+					const Scalar clampTargetK = std::min( reportedMaxK, detectionMaxK );
+					if( !std::isfinite( static_cast<double>( clampTargetK ) ) ) continue;
+
 					SDFBlendScaleOffender_ off;
 					off.partIndex        = pi;
 					off.primType         = pt.type;
 					off.k                = pt.k;
 					off.detectionMaxK    = detectionMaxK;
 					off.reportedMaxK     = reportedMaxK;
-					// GUARANTEED safe: detectionMaxK <= reportedMaxK
-					// always (median >= min), so this is never LARGER
-					// than detectionMaxK -- clamping k here is always
-					// enough to make pt.k <= detectionMaxK true again.
-					off.clampTargetK     = std::min( reportedMaxK, detectionMaxK );
+					off.clampTargetK     = clampTargetK;
 					off.proportionCaveat = proportionCaveat;
 					char buf[256];
 					std::snprintf( buf, sizeof( buf ),
@@ -3862,12 +3946,16 @@ namespace RISE
 						static_cast<double>( pt.k ), static_cast<double>( reportedMaxK ) );
 					off.formattedLine = buf;
 					if( proportionCaveat ) {
-						char pbuf[192];
+						// Review round P3-b: the core advice
+						// (kProportionCaveatCore_) is SHARED with the verb's
+						// per-joint summary and finish_element's inline
+						// sentence -- only the ratio number and this
+						// surface's own wrapper text are local.
+						char pbuf[256];
 						std::snprintf( pbuf, sizeof( pbuf ),
 							" -- also a proportion problem (this part reads ~%.0fx smaller than what it "
-							"joins): narrowing k alone will not make it readable; enlarge it toward "
-							"proportion, or rebuild with skeleton_geometry",
-							static_cast<double>( proportionRatio ) );
+							"joins): narrowing k alone will not make it readable; %s",
+							static_cast<double>( proportionRatio ), kProportionCaveatCore_ );
 						off.formattedLine += pbuf;
 					}
 					out.push_back( off );
@@ -17528,11 +17616,13 @@ namespace RISE
 								// caveat when narrowing k alone will not be
 								// enough -- the SAME proportionCaveat flag
 								// condition J's own clause and fix_blend_scale's
-								// per-joint summary already carry.
+								// per-joint summary already carry.  Review round
+								// P3-b: shares kProportionCaveatCore_ with those
+								// two surfaces -- only this sentence's own
+								// opening clause is local.
 								if( worst->proportionCaveat )
-									m += " It also reads too small for what it joins -- enlarging it "
-										"toward proportion, or rebuilding with skeleton_geometry, is the "
-										"real fix.";
+									m += " It also reads too small for what it joins -- narrowing k will "
+										"not make it readable; " + std::string( kProportionCaveatCore_ ) + ".";
 							}
 						}
 					}
@@ -33076,68 +33166,175 @@ namespace RISE
 				}
 			}
 
-			// ---- (5) Build the candidate: for each offender (capped),
-			// replace ONLY the k token (index 2 of the 16-token `part`
-			// grammar) in that occurrence's ORIGINAL value text, read back
-			// to verify the edit took (VaryMaterial's own discipline for
-			// every param mutation this file makes).
+			// ---- (5) Build the candidate.  ITERATIVE per joint (review
+			// round P1, empirically reproduced): the reach gate that
+			// decides which prior part a joint's k is measured against
+			// (`gap > 2*pt.k` inside ScanSdfGeometryBlendScaleOffenders_)
+			// depends on THIS joint's OWN k.  Clamping k SHRINKS that
+			// gate, which can EXCLUDE the pre-clamp winning prior and
+			// admit a farther candidate instead -- with a SMALLER dim, so
+			// dimEffective (and detectionMaxK) can drop BELOW the
+			// just-applied clamp.  Reproduced: a joint flagged "k=1 > max
+			// ~0.2" clamped to 0.2 in one shot, then RE-fired at "k=0.2 >
+			// max ~0.0333" on the identical joint -- a single-pass clamp
+			// is not provably safe, and the old code's `remaining:0` /
+			// `status:applied` report on that first call was FALSE.
+			//
+			// Termination IS guaranteed, though: k only ever decreases
+			// (each pass's clampTargetK is computed against a FRESH scan
+			// of the document as THIS pass's k left it, and only fires
+			// again if that fresh clampTargetK is smaller than the k just
+			// written); the reach gate's admitted-candidate set can only
+			// SHRINK as k shrinks (a smaller k never re-admits a
+			// candidate a larger k excluded), which is a monotonically
+			// non-growing subset of a FINITE part list -- it stabilizes
+			// in at most (part count) passes, at which point the scan's
+			// own fire/silent test is satisfied by construction.
+			// kFixBlendScaleMaxPasses bounds this DEFENSIVELY, well above
+			// any realistic chunk's part count; if a joint is somehow
+			// still firing after the cap, this is reported HONESTLY
+			// (folded into `out.remainingCount`, named in the per-joint
+			// line) rather than claimed as a silence never re-verified.
+			static const int kFixBlendScaleMaxPasses = 8;
 			RISE::Cst::Document work = headDoc;
 			std::vector<std::string> perJoint;
 			int fixedCount = 0;
+			int stillFiringCount = 0;
 			for( int i = 0; i < toProcess; ++i ) {
 				const FlatOffender_& fo = flat[static_cast<std::size_t>( i )];
-				const NodeRef curItem = RISE::Cst::DocResolveNodeId( work, fo.id );
-				if( !curItem ) continue;   // NodeId is preserved across edits (D44); should not happen
-				const std::string rawValue = RISE::Cst::ParamValueAtOccurrence(
-					curItem, "part", static_cast<int>( fo.off.partIndex ) );
-				std::vector<std::string> toks = CollapseSplitWs_( rawValue );
-				// 16 tokens per SDFGeometry::ParsePartLines' own grammar
-				// (<prim> <op> <k> <pos x3> <euler x3> <scale x3> <abc x3>
-				// <round>) -- k is token index 2.  A mismatch here means the
-				// document changed shape under us between the scan and the
-				// edit; skip defensively rather than corrupt the line.
-				if( toks.size() != 16 ) continue;
-				char kbuf[64];
-				std::snprintf( kbuf, sizeof( kbuf ), "%g", static_cast<double>( fo.off.clampTargetK ) );
-				const std::string oldKTok = toks[2];
-				toks[2] = kbuf;
-				std::string newValue;
-				for( std::size_t t = 0; t < toks.size(); ++t ) {
-					if( t ) newValue += " ";
-					newValue += toks[t];
+				std::string initialKTok, finalKTok;
+				bool proportionCaveat = fo.off.proportionCaveat;
+				bool silenced  = false;   // a fresh re-scan found this joint absent from the offender list
+				bool attempted = false;   // at least one write actually landed
+
+				for( int pass = 0; pass < kFixBlendScaleMaxPasses; ++pass ) {
+					const NodeRef curItem = RISE::Cst::DocResolveNodeId( work, fo.id );
+					if( !curItem ) break;   // NodeId preserved across edits (D44); should not happen
+					std::string joined;
+					for( const std::string& line : ChunkParamOccurrences_( curItem, "part" ) ) {
+						joined += line;
+						joined += "\n";
+					}
+					std::vector<RISE::Implementation::SDFGeometry::Part> parts;
+					if( joined.empty() ||
+					    !RISE::Implementation::SDFGeometry::ParsePartLines(
+					        joined.c_str(), "<fix_blend_scale re-scan>", parts ) ) break;
+					const std::vector<SDFBlendScaleOffender_> fresh =
+						ScanSdfGeometryBlendScaleOffenders_( fo.geoName, parts );
+					const SDFBlendScaleOffender_* stillOffending = nullptr;
+					for( const SDFBlendScaleOffender_& f : fresh )
+						if( f.partIndex == fo.off.partIndex ) { stillOffending = &f; break; }
+					if( !stillOffending ) { silenced = true; break; }   // the scan's OWN test says silent now
+
+					const std::string rawValue = RISE::Cst::ParamValueAtOccurrence(
+						curItem, "part", static_cast<int>( fo.off.partIndex ) );
+					std::vector<std::string> toks = CollapseSplitWs_( rawValue );
+					// 16 tokens per SDFGeometry::ParsePartLines' own grammar
+					// (<prim> <op> <k> <pos x3> <euler x3> <scale x3>
+					// <abc x3> <round>) -- k is token index 2.  A mismatch
+					// here means the document changed shape under us
+					// between the scan and the edit; stop this joint's
+					// passes defensively rather than corrupt the line.
+					if( toks.size() != 16 ) break;
+					// Review round P2-1: a non-finite clamp target must
+					// NEVER be written to the document (it would poison
+					// the part line with literal "nan"/"inf" text) -- the
+					// shared scan already guards its own inputs/output for
+					// finiteness, so this fires only if some future change
+					// upstream regresses that guarantee; refuse to write
+					// and stop this joint's passes rather than trust it.
+					if( !std::isfinite( static_cast<double>( stillOffending->clampTargetK ) ) ) break;
+
+					if( !attempted ) { initialKTok = toks[2]; attempted = true; }
+					// FormatSafeClampK_'s own doc: a plain `%g` text
+					// round-trip can round UP past detectionMaxK at an
+					// unlucky floating-point boundary, which would make
+					// this joint fire again forever -- escalates precision
+					// only when the cheap format is not actually safe.
+					const std::string kbuf = FormatSafeClampK_(
+						static_cast<double>( stillOffending->clampTargetK ),
+						static_cast<double>( stillOffending->detectionMaxK ) );
+					toks[2] = kbuf;
+					std::string newValue;
+					for( std::size_t t = 0; t < toks.size(); ++t ) {
+						if( t ) newValue += " ";
+						newValue += toks[t];
+					}
+					work = RISE::Cst::DocSetParamValue( work, fo.id, "part",
+						static_cast<int>( fo.off.partIndex ), newValue );
+					const NodeRef verifyItem = RISE::Cst::DocResolveNodeId( work, fo.id );
+					const std::string verifyValue = verifyItem
+						? RISE::Cst::ParamValueAtOccurrence( verifyItem, "part", static_cast<int>( fo.off.partIndex ) )
+						: std::string();
+					if( verifyValue.find( kbuf ) == std::string::npos ) {
+						out.message = "fix_blend_scale refused: internal -- clamping `" + fo.geoName +
+							"` part " + std::to_string( fo.off.partIndex + 1 ) +
+							"'s k did not take; document unchanged";
+						return out;
+					}
+					finalKTok        = kbuf;
+					proportionCaveat = stillOffending->proportionCaveat;
+					// Loop continues: the TOP of the next pass re-parses
+					// and re-scans the mutated chunk, which is the only
+					// way to know whether THIS write actually silenced it
+					// (see the P1 finding above -- it is not guaranteed
+					// in one pass).
 				}
-				work = RISE::Cst::DocSetParamValue( work, fo.id, "part",
-					static_cast<int>( fo.off.partIndex ), newValue );
-				const NodeRef verifyItem = RISE::Cst::DocResolveNodeId( work, fo.id );
-				const std::string verifyValue = verifyItem
-					? RISE::Cst::ParamValueAtOccurrence( verifyItem, "part", static_cast<int>( fo.off.partIndex ) )
-					: std::string();
-				if( verifyValue.find( kbuf ) == std::string::npos ) {
-					out.message = "fix_blend_scale refused: internal -- clamping `" + fo.geoName + "` part " +
-						std::to_string( fo.off.partIndex + 1 ) + "'s k did not take; document unchanged";
-					return out;
+
+				if( !attempted ) {
+					// Never wrote anything for this joint -- either a
+					// non-finite clamp target on the very first pass
+					// (P2-1) or a shape mismatch.  Honest per-joint
+					// refusal line; no mutation, no fixedCount credit.
+					perJoint.push_back( "`" + fo.geoName + "` part " +
+						std::to_string( fo.off.partIndex + 1 ) +
+						": SKIPPED -- could not compute a safe, finite k; no write made" );
+					continue;
 				}
+
 				++fixedCount;
-				char summary[256];
+				char summary[300];
 				std::snprintf( summary, sizeof( summary ), "`%s` part %u: k %s -> %s",
 					fo.geoName.c_str(), static_cast<unsigned int>( fo.off.partIndex + 1 ),
-					oldKTok.c_str(), kbuf );
+					initialKTok.c_str(), finalKTok.c_str() );
 				std::string summaryStr = summary;
+				if( !silenced ) {
+					// The pass cap was reached without the scan's own
+					// test going quiet -- should not happen (termination
+					// is proven above for a finite part list well under
+					// kFixBlendScaleMaxPasses), but if it ever does, say
+					// so plainly rather than let the "k old -> new" line
+					// alone imply the joint is now fixed.
+					++stillFiringCount;
+					summaryStr += " (STILL FIRING after " + std::to_string( kFixBlendScaleMaxPasses ) +
+						" passes -- call again)";
+				}
 				// Cat plan mid-flight adjustment: honesty about the
 				// PROPORTION case -- clamping k always silences the scan
-				// (that invariant is unconditional), but when the joint's
+				// (once `silenced` above is true), but when the joint's
 				// own SDFBlendScaleOffender_::proportionCaveat is set, k
 				// alone will not make the part READABLE (see that field's
 				// own doc: the cat-ear case, tip ~10x smaller than the
 				// head).  Say so right where the clamp is reported, not
 				// just in the note -- a caller acting on THIS call's own
 				// output should not have to cross-reference condition J's
-				// message to learn the fix is partial.
-				if( fo.off.proportionCaveat )
+				// message to learn the fix is partial.  Uses the LAST
+				// pass's own proportionCaveat verdict, not the original
+				// scan's, in case the reach-gate swap (the P1 finding)
+				// changed which prior part this joint is measured against.
+				if( proportionCaveat )
 					summaryStr += " (proportion problem too -- narrowing k will not make this part "
-						"readable; enlarge it toward proportion, or rebuild with skeleton_geometry)";
+						"readable; " + std::string( kProportionCaveatCore_ ) + ")";
 				perJoint.push_back( summaryStr );
 			}
+			// P1 fix round: `stillFiringCount` is a DISTINCT concept from
+			// `out.remainingCount` (offenders beyond the batch cap,
+			// AgentFixBlendScaleResult's own documented meaning) --
+			// mixing the two into one field would make a wire caller
+			// unable to tell "call again to cover more chunks" apart
+			// from "some joints didn't converge in the pass budget", so
+			// it is surfaced separately in the message below and in the
+			// per-joint lines above, never folded into remainingCount.
 			if( fixedCount == 0 ) {
 				out.message = "fix_blend_scale refused: internal -- every candidate joint failed to "
 					"re-verify after clamping; document unchanged";
@@ -33239,6 +33436,20 @@ namespace RISE
 						m += " -- " + std::to_string( out.remainingCount ) + " more offending joint" +
 							( out.remainingCount == 1 ? std::string() : std::string( "s" ) ) +
 							" beyond the cap of " + std::to_string( kFixBlendScaleBatchCap ) + ": call again";
+					// P1 fix round: a DISTINCT signal from the batch-cap
+					// overflow above -- one or more of the joints THIS call
+					// attempted did not go silent within
+					// kFixBlendScaleMaxPasses passes (see the per-joint
+					// "STILL FIRING" lines for which).  Should not happen in
+					// practice (termination is proven for a finite part
+					// list); named plainly rather than folded into the
+					// batch-cap sentence, which would misreport WHY there is
+					// more to do.
+					if( stillFiringCount > 0 )
+						m += " -- " + std::to_string( stillFiringCount ) + " clamped joint" +
+							( stillFiringCount == 1 ? std::string() : std::string( "s" ) ) +
+							" still fired after " + std::to_string( kFixBlendScaleMaxPasses ) +
+							" passes (see per-joint detail): call again";
 				}
 				else if( commit.status == "diagnosed" ) {
 					m = "fix_blend_scale NOT a clean success: the Document was mutated and the live "

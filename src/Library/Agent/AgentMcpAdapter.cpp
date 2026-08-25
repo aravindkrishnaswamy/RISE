@@ -2299,7 +2299,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 38 tool names this adapter recognizes --
+			//! The list of the 39 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{

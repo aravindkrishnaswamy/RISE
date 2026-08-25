@@ -199,6 +199,102 @@ static std::string ProportionateOverBlendScene()
 	return s;
 }
 
+//! Review round P1 (empirically reproduced): the reach gate that decides
+//! which prior part an offending joint's k is measured against depends
+//! on the joint's OWN k (`gap > 2*pt.k`).  This fixture is engineered so
+//! that gap, dim and distance ARE the numbers below -- worked out by
+//! hand against SDFPartReachRadius_ / SDFPartEnvelopeRadius_'s own
+//! formulas, not guessed:
+//!   pt (part 2, the offender): sphere a=10 at origin -- huge dim/reach,
+//!     deliberately irrelevant, so dimEffective is decided ENTIRELY by
+//!     whichever prior wins (isolates the swap mechanism cleanly).
+//!   part 0 "close_sphere": sphere a=0.6 at (11.6,0,0).  reach=0.6,
+//!     dim=0.6.  gap = 11.6 - 0.6 - 10 = 1.0.
+//!   part 1 "far_thin_box": box a=0.33 b=0.33 c=8 at (15,0,0).  envelope=
+//!     sqrt(0.33^2+0.33^2+8^2)=~8.0136, reach=~8.0136, dim=min(a,b,c)=
+//!     0.33.  gap = 15 - 8.0136 - 10 = ~-3.0136 (deeply within reach,
+//!     admitted at essentially any k>0).  (0.33, not the rounder 0.3:
+//!     0.3/3 lands within one ULP-after-%g-rounding of the clean
+//!     decimal 0.1 on the WRONG side, which stalls convergence on a
+//!     text round-trip artifact unrelated to the swap mechanism this
+//!     fixture targets -- FormatSafeClampK_'s own fix-round doc has the
+//!     worked numbers; 0.33/3 = 0.11 round-trips cleanly.)
+//! Pass 0 (k=1, threshold 2*1=2): BOTH gaps (1.0 and -3.0136) admitted;
+//!   close_sphere is CLOSER by raw distance (11.6 < 15) -> WINS.
+//!   dimEffective=min(10,0.6)=0.6, detectionMaxK=0.2 -- fires "k=1 >
+//!   max ~0.2" (the reviewer's own reproduction numbers).  A SINGLE-PASS
+//!   clamp writes k=0.2 and (the pre-fix bug) reports success.
+//! Pass 1 (re-scan at k=0.2, threshold 2*0.2=0.4): close_sphere's gap
+//!   (1.0) now EXCEEDS 0.4 -- EXCLUDED.  far_thin_box's gap (-3.0136)
+//!   still admitted -- WINS BY DEFAULT (a farther candidate, larger
+//!   reach, SMALLER dim: 0.33 vs 0.6).  dimEffective=min(10,0.33)=0.33,
+//!   detectionMaxK=0.11 -- k=0.2 > 0.11, STILL FIRES on the SAME joint.
+//!   The multi-pass fix clamps again, to k=0.11.
+//! Pass 2 (re-scan at k=0.11, threshold 0.22): far_thin_box still wins
+//!   (same as pass 1: its own gap does not depend on k), detectionMaxK
+//!   stays 0.11 -- k=0.11 <= 0.11, SILENT.  Converges in 2 writes.
+static std::string SwapCaseScene()
+{
+	std::string s = Preamble();
+	s += "sdf_geometry\n{\n\tname swap_case\n"
+		"\tpart\tsphere union 0  11.6 0 0  0 0 0  1 1 1  0.6 0 0  0\n"
+		"\tpart\tbox union 0  15 0 0  0 0 0  1 1 1  0.33 0.33 8  0\n"
+		"\tpart\tsphere smin 1  0 0 0  0 0 0  1 1 1  10 0 0  0\n"
+		"}\n\n";
+	s += StdObj( "swap_obj", "swap_case" );
+	return s;
+}
+
+//! Review round P2-1: a NaN dimension fails EVERY ordered comparison
+//! against it (including `<= 0.0`), so a bare `dimCur <= 0.0` guard
+//! sails straight past it.  `a=nan` on this roundcone (the `r1` field)
+//! propagates through SDFPartLocalCharacteristicDim_'s `min(a,b)` (NaN
+//! either way, per std::min's `(b<a)?b:a` definition -- `b<NaN` is
+//! always false) into dimCur, dimEffective, detectionMaxK and (pre-fix)
+//! clampTargetK -- which the OLD verb code would `%g`-format into the
+//! literal text "nan" and WRITE into the document, corrupting the part
+//! line with a non-numeric k.  sscanf's `%lf` accepts the literal
+//! "nan" token, so this parses cleanly (no parse-time rejection) and
+//! actually reaches the scan.  A SECOND, ordinary offending chunk
+//! (the cat ear) sits alongside it in the same document, to prove the
+//! NaN part poisons neither the scan nor the verb call for anything
+//! else.
+static std::string NanScene()
+{
+	std::string s = Preamble();
+	s += "sdf_geometry\n{\n\tname badnum_chunk\n"
+		"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  0.05 0 0  0\n"
+		"\tpart\troundcone smin 0.012  0 0.05 0  0 0 0  1 1 1  nan 0.004 0.05  0\n"
+		"}\n\n";
+	s += StdObj( "badnum_obj", "badnum_chunk" );
+	s += CatEarSdf( "cat_head" );
+	s += StdObj( "cat_obj", "cat_head" );
+	return s;
+}
+
+//! The FULL raw `part` line text (marker through end-of-line) for
+//! occurrence `occ` of chunk `chunkName` -- for a byte-level "this line
+//! was never touched" assertion (PartKToken alone only shows the k
+//! token, which would miss a write that corrupted some OTHER token on
+//! the same line).
+static std::string PartFullLine( const std::string& doc, const std::string& chunkName, int occ )
+{
+	const std::size_t chunkPos = doc.find( "name " + chunkName );
+	if( chunkPos == std::string::npos ) return std::string();
+	static const std::string kMarker = "\tpart\t";
+	std::size_t pos = chunkPos;
+	int seen = -1;
+	while( seen < occ ) {
+		pos = doc.find( kMarker, pos );
+		if( pos == std::string::npos ) return std::string();
+		++seen;
+		if( seen == occ ) break;
+		pos += kMarker.size();
+	}
+	const std::size_t eol = doc.find( '\n', pos );
+	return doc.substr( pos, eol == std::string::npos ? std::string::npos : eol - pos );
+}
+
 //! The `k` token (index 2 of the 16-token `part` grammar) for `part`
 //! occurrence `occ` of chunk `chunkName`, read straight out of the
 //! serialized document text -- independent of AgentSession, so this can
@@ -675,7 +771,7 @@ static void TestFinishElementInlineFinding()
 			       f.message.substr( f.message.size() > 300 ? f.message.size() - 300 : 0 ) + "`" );
 			Check( f.message.find( "fix_blend_scale repairs this" ) != std::string::npos,
 			       "G1 MONEY: ...and names the VERB that fixes it" );
-			Check( f.message.find( "enlarging it" ) != std::string::npos &&
+			Check( f.message.find( "enlarge it toward proportion" ) != std::string::npos &&
 			       f.message.find( "skeleton_geometry" ) != std::string::npos,
 			       "G1: ...and the proportion caveat too (this ear IS the 12.5x-mismatched cat ear)" );
 
@@ -712,6 +808,149 @@ static void TestFinishElementInlineFinding()
 	}
 }
 
+//----------------------------------------------------------------------
+// H.  Review round P1: the multi-pass swap reproduction.  ONE verb
+// call must silence the re-scan even when the reach-gate winner swaps
+// mid-clamp -- see SwapCaseScene's own doc for the worked arithmetic.
+//----------------------------------------------------------------------
+static void TestSwapCaseMultiPass()
+{
+	std::printf( "H: review round P1 -- the reach-gate winner swap, reproduced and fixed by iterating\n" );
+	const std::string tmp = TempPath( "fixblend_h.RISEscene" );
+	Job* pJob = LoadScene( SwapCaseScene(), tmp );
+	Check( pJob != nullptr, "H: fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// PRECONDITION: the pre-clamp scan fires with EXACTLY the numbers
+	// the fixture was engineered for -- "k=1 > max ~0.2" (dimEffective
+	// 0.6 via close_sphere, the pre-clamp winner).
+	{
+		const std::vector<Agent::AgentDiagnostic> diags =
+			Agent::AgentSession::ValidateText( sess->ReadDocument() );
+		std::string msg;
+		for( const Agent::AgentDiagnostic& d : diags )
+			if( d.code == Agent::AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE ) msg = d.message;
+		Check( msg.find( "k=1 > max ~0.2" ) != std::string::npos,
+		       "H PRECONDITION: fires exactly \"k=1 > max ~0.2\" pre-clamp (got `" + msg + "`)" );
+	}
+
+	const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+	Check( r.ok && r.applied, "H: the call applies" );
+	Check( r.fixedCount == 1, "H: one joint clamped" );
+
+	// MONEY: the FINAL k is 0.11, not the single-pass-wrong 0.2 -- the
+	// verb kept clamping after re-scanning found the winner had swapped.
+	const std::string after = sess->ReadDocument();
+	const std::string kAfter = PartKToken( after, "swap_case", 2 );
+	Check( kAfter == "0.11",
+	       "H MONEY: the verb converged to k=0.11 (the SECOND pass's bound), not 0.2 (the "
+	       "single-pass-wrong first clamp) -- got `" + kAfter + "`" );
+
+	// The per-joint summary is ONE line, "initial -> final" across both
+	// passes -- not two separate lines, and no "STILL FIRING" (it
+	// converged well inside the pass budget).
+	Check( r.perJointSummary.size() == 1, "H: one summary line despite two internal passes" );
+	if( !r.perJointSummary.empty() ) {
+		Check( r.perJointSummary[0].find( "k 1 -> 0.11" ) != std::string::npos,
+		       "H MONEY: the summary reports initial->FINAL (\"k 1 -> 0.11\"), not the "
+		       "intermediate 0.2 -- got `" + r.perJointSummary[0] + "`" );
+		Check( r.perJointSummary[0].find( "STILL FIRING" ) == std::string::npos,
+		       "H: no STILL FIRING marker -- it converged" );
+	}
+	Check( r.remainingCount == 0, "H: remainingCount stays 0 -- converged within the pass budget, "
+	                              "not a batch-cap or still-firing overflow" );
+
+	// THE INVARIANT: after this ONE verb call, a fresh re-scan is
+	// SILENT -- the whole point of iterating past the first pass.
+	{
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( after );
+		bool fired = false;
+		for( const Agent::AgentDiagnostic& d : diags )
+			if( d.code == Agent::AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE ) fired = true;
+		Check( !fired, "H MONEY: re-scanning after ONE fix_blend_scale call is SILENT, even though "
+		               "the reach-gate winner swapped mid-clamp" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// I.  Review round P2-1: a NaN dimension must never reach a written
+// token, and must not poison an ordinary offender sharing the document.
+//----------------------------------------------------------------------
+static void TestNanGuard()
+{
+	std::printf( "I: review round P2-1 -- a NaN dimension is skipped, never written, never poisons "
+	             "an ordinary offender\n" );
+	const std::string tmp = TempPath( "fixblend_i.RISEscene" );
+	Job* pJob = LoadScene( NanScene(), tmp );
+	Check( pJob != nullptr, "I: fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const std::string before = sess->ReadDocument();
+	const std::string nanLineBefore = PartFullLine( before, "badnum_chunk", 1 );
+	Check( nanLineBefore.find( "nan" ) != std::string::npos, "I PRECONDITION: the nan token is present pre-call" );
+
+	// PRECONDITION: the scan does NOT flag the NaN chunk as an offender
+	// at all -- it is silently skipped, not merely "found but refused".
+	{
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( before );
+		bool nanChunkNamed = false, catChunkNamed = false;
+		for( const Agent::AgentDiagnostic& d : diags ) {
+			if( d.code != Agent::AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE ) continue;
+			if( d.message.find( "badnum_chunk" ) != std::string::npos ) nanChunkNamed = true;
+			if( d.message.find( "cat_head" )  != std::string::npos ) catChunkNamed = true;
+		}
+		Check( !nanChunkNamed, "I PRECONDITION: the NaN joint never appears in the scan's own offender list" );
+		Check( catChunkNamed,  "I PRECONDITION: the ordinary cat-ear offender in the SAME document still fires" );
+	}
+
+	const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+	Check( r.ok && r.applied, "I: the call applies (the ordinary offender)" );
+	Check( r.offendersFound == 1, "I MONEY: offendersFound counts ONLY the ordinary joint -- the NaN one "
+	                              "was never a candidate" );
+	Check( r.fixedCount == 1, "I: one joint clamped (cat_head's, not badnum_chunk's)" );
+
+	const std::string after = sess->ReadDocument();
+	const std::string nanLineAfter = PartFullLine( after, "badnum_chunk", 1 );
+	Check( nanLineAfter == nanLineBefore,
+	       "I MONEY: the NaN joint's part line is BYTE-IDENTICAL after the call -- no write was ever "
+	       "attempted, so no \"nan\" text could leak into k (before: `" + nanLineBefore + "`, after: `" +
+	       nanLineAfter + "`)" );
+	{
+		// Sanity: the total COUNT of "nan" occurrences in the document
+		// is unchanged -- no new one leaked in anywhere, and the one
+		// pre-existing token is still exactly one.
+		auto countNan = []( const std::string& s ) {
+			std::size_t n = 0, pos = 0;
+			while( ( pos = s.find( "nan", pos ) ) != std::string::npos ) { ++n; ++pos; }
+			return n;
+		};
+		Check( countNan( before ) == countNan( after ) && countNan( before ) == 1,
+		       "I: sanity -- exactly one \"nan\" occurrence in the document, before and after" );
+	}
+
+	// The ordinary offender is still fixed correctly, exactly like the
+	// plain basic-apply case -- the NaN sibling did not derail it.
+	const std::string kCatAfter = PartKToken( after, "cat_head", 1 );
+	Check( !kCatAfter.empty() && kCatAfter != "0.012",
+	       "I: cat_head's k still changed normally (got `" + kCatAfter + "`)" );
+	{
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( after );
+		bool catFired = false;
+		for( const Agent::AgentDiagnostic& d : diags )
+			if( d.code == Agent::AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE &&
+			    d.message.find( "cat_head" ) != std::string::npos ) catFired = true;
+		Check( !catFired, "I: re-scan is silent for cat_head after the fix" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFixBlendScaleTest (cat plan item 1: fix_blend_scale) ===\n" );
@@ -722,6 +961,8 @@ int main()
 	TestProportionCaveat();
 	TestAnisotropicInvariant();
 	TestFinishElementInlineFinding();
+	TestSwapCaseMultiPass();
+	TestNanGuard();
 	std::printf( "\n=== AgentFixBlendScaleTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
