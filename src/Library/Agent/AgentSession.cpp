@@ -10959,6 +10959,31 @@ namespace RISE
 			//! individual variety, while two calls with the SAME name and
 			//! params stay byte-identical (pinned by this test file's own
 			//! determinism case).
+			//!
+			//! THIS SCAFFOLD'S STANDING ACCEPTANCE RULE (review round,
+			//! 2026-08-25): the FIRST version of this function passed
+			//! every numeric gate available at the time -- zero blend-
+			//! scale offenders, zero proportion caveats, joints
+			//! declared/parented correctly, a clean derive -- and STILL
+			//! rendered as a straight-legged, buried-eared mess (a
+			//! reviewer's actual renders caught it; no test here did).
+			//! Every joint position/radius change to this function from
+			//! now on -- not just a preset/jitter-range retune, an
+			//! actual shape change -- MUST be rendered (all three
+			//! presets, at least one side-profile view showing the full
+			//! silhouette) and LOOKED AT before it lands, in addition to
+			//! the numeric sweep test.  The numeric gates catch
+			//! blend-scale/proportion regressions; they cannot catch
+			//! "this reads as a hand with dangling fingers, not an
+			//! animal" -- only eyes can.  tests/
+			//! AgentQuadrupedScaffoldTest.cpp's TestLegArticulationAndEarProtrusion
+			//! pins the two numeric PROXIES this review round found
+			//! (leg z-offsets nonzero; ear joint center >= 1.15x head
+			//! radius) precisely because they are cheap to check on
+			//! every CI run, but a proxy passing is NOT a substitute for
+			//! the render-and-look step on an actual shape change --
+			//! only for catching a REGRESSION of a shape already
+			//! verified by eye once.
 			GeoScaffoldGraph BuildQuadrupedSkeleton( const std::string& name, double size, const std::string& build )
 			{
 				GeoScaffoldGraph out;
@@ -11013,10 +11038,49 @@ namespace RISE
 				// radius (fix_blend_scale's own kProportionCaveatGate),
 				// targeted at 0.24-0.32 for a comfortable margin above
 				// the 0.20 line rather than skimming it.
-				const double earLen    = size * 0.075 * jNeck;
-				const double earR      = headR * ScaffoldJitterRange( name, "quad_earr", 0.24, 0.32 );
-				const double earSpread = headR * ScaffoldJitterRange( name, "quad_earspread", 0.55, 0.75 );
-				const double earBack   = headR * ScaffoldJitterRange( name, "quad_earback", 0.05, 0.20 );
+				const double earR = headR * ScaffoldJitterRange( name, "quad_earr", 0.24, 0.32 );
+				// P2 fix-round (2026-08-25 -- the render-and-look gate
+				// found this too): the ORIGINAL earSpread/earLen/earBack
+				// ranges put the joint CENTER at only ~0.9-1.0x headR from
+				// the head's own center -- with the ear a smin-blended
+				// SPHERE, a center that close to the head's own surface
+				// leaves almost the whole ear sphere submerged inside the
+				// head's silhouette (one faint bump, not a protruding
+				// ear).  `earDist` now targets the joint center itself at
+				// 1.15-1.30x headR from the head center -- comfortably
+				// past the head's own surface, so a real fraction of the
+				// ear sphere clears it -- and earSpread/earUp/earBack are
+				// DERIVED from that one distance (a fixed split of it
+				// across the three axes) rather than three independently
+				// jittered numbers that could each land short.
+				//
+				// TRIED AND REVERTED: flattening the ear bone with a
+				// per-joint `aspect` (a "pointed plate" instead of a
+				// round knob -- the object-modeling-recipes skill's own
+				// "a bone need not be a pipe" idiom).  skeleton_geometry
+				// DOES carry a per-joint aspect; the problem is what it
+				// does to the SCALE this bone's part carries.  `aspect`
+				// becomes that bone's minScale (the OTHER two axes stay
+				// 1), and the blend-scale scan's detection dimension is
+				// MIN-scaled (SDFPartCharacteristicDim_'s own doc) -- so
+				// an aspect of ~0.5 roughly HALVES the ear bone's
+				// detection dimension while `blend` (already calibrated
+				// to a ~1.7-2x margin under the scan's 1/3 fire
+				// threshold with round ears) stays fixed, which erases
+				// that margin and re-opens exactly the offender class
+				// this scaffold exists to avoid -- confirmed empirically
+				// (the 72-instance sweep went from 0 to 120 offenders,
+				// concentrated on the ear bones, the moment aspect
+				// shipped).  Round ears at the right DISTANCE read as a
+				// real animal's ears; a flattened plate is a polish this
+				// scaffold's own quality gate does not have margin for
+				// today -- left round (aspect 1.0) rather than re-tuning
+				// `blend` tighter for one joint pair and eating into the
+				// margin every OTHER bone still relies on.
+				const double earDist    = headR * ScaffoldJitterRange( name, "quad_eardist", 1.15, 1.30 );
+				const double earSpread  = earDist * 0.60;
+				const double earUp      = earDist * 0.72;
+				const double earBack    = earDist * 0.35;
 
 				// ---- Tail: 3 tapering segments off the hips.
 				const double tailLen1 = size * 0.16 * bodyLenMul * jTail;
@@ -11047,6 +11111,34 @@ namespace RISE
 				const double xLegFront = chestR * 0.85;
 				const double xLegBack  = hipsR  * 0.85;
 
+				// ---- Leg ANGULATION (P1 fix-round, 2026-08-25 -- the
+				// scaffold's own render-and-look gate found this: with
+				// only `y` varying per leg chain, all four legs rendered
+				// as straight vertical poles/fingers, not an animal's
+				// legs).  z offsets, fractions of standH (leg length),
+				// order of magnitude the review specified (10-20%, wider
+				// for the hind hock specifically, matching real anatomy's
+				// own more pronounced hind-leg bend).  FRONT: the elbow
+				// tucks back from the shoulder, the wrist bends further
+				// back still (the deepest point), the paw returns forward
+				// to land close under the shoulder.  HIND: the classic
+				// hock silhouette -- the stifle angles back from the hip,
+				// the hock bends further back, the paw returns forward
+				// under the body.  `angulationMul`: stocky reads
+				// STRAIGHTER (less articulation, a heavier stance), lean
+				// reads MORE bent (a leggier, more sprung silhouette) --
+				// the SAME direction legLenMul/girthMul already move in.
+				double angulationMul = 1.00;
+				if( build == "lean" )        angulationMul = 1.15;
+				else if( build == "stocky" ) angulationMul = 0.75;
+				const double angMul = angulationMul * ScaffoldJitterRange( name, "quad_jangulation", 0.90, 1.10 );
+				const double feZ_upper = -0.12 * standH * angMul;   // front elbow: behind the shoulder
+				const double feZ_lower = -0.16 * standH * angMul;   // front wrist: the deepest backward point
+				const double feZ_paw   = -0.03 * standH * angMul;   // front paw: returns forward, near-under the shoulder
+				const double heZ_upper = -0.14 * standH * angMul;   // hind stifle: behind the hip
+				const double heZ_lower = -0.24 * standH * angMul;   // hind hock: the deepest backward point
+				const double heZ_paw   = -0.04 * standH * angMul;   // hind paw: returns forward, under the body
+
 				// ---- Assemble the joint graph.  DECLARE-BEFORE-USE order
 				// (the grammar's own rule): every parent line precedes
 				// every line naming it.
@@ -11059,8 +11151,8 @@ namespace RISE
 				js.push_back( { "head",      "neck",      0.0,  standH + neckLen*0.55 + headLen*0.35, halfBody + neckLen*0.75 + headLen*0.85, headR, 1.0 } );
 				const J& headJ = js.back();
 				js.push_back( { "muzzle",    "head",      0.0,  headJ.y - muzzleLen*0.10, headJ.z + muzzleLen, muzzleR, 1.0 } );
-				js.push_back( { "ear_l",     "head",     -earSpread, headJ.y + earLen*0.85, headJ.z - earBack, earR, 1.0 } );
-				js.push_back( { "ear_r",     "head",      earSpread, headJ.y + earLen*0.85, headJ.z - earBack, earR, 1.0 } );
+				js.push_back( { "ear_l",     "head",     -earSpread, headJ.y + earUp, headJ.z - earBack, earR, 1.0 } );
+				js.push_back( { "ear_r",     "head",      earSpread, headJ.y + earUp, headJ.z - earBack, earR, 1.0 } );
 
 				js.push_back( { "tail1", "hips",  0.0, standH - tailDrop,       -halfBody - tailLen1,                          tailR0, 1.0 } );
 				const J& t1 = js.back();
@@ -11076,18 +11168,18 @@ namespace RISE
 				// joint via its own incoming bone; see the struct-level
 				// "A JOINT'S ASPECT SHAPES THE BONE THAT ARRIVES AT IT"
 				// rule) so the shin/forearm reads as a strap, not a pipe.
-				js.push_back( { "FL_upper", "chest", -xLegFront, standH - standH*upperFrac,                     halfBody, legUpperR_F, 1.0 } );
-				js.push_back( { "FL_lower", "FL_upper", -xLegFront, standH - standH*(upperFrac+lowerFrac),      halfBody, legLowerR_F, 0.75 } );
-				js.push_back( { "FL_paw",   "FL_lower", -xLegFront, 0.0,                                        halfBody, legPawR_F,   1.0 } );
-				js.push_back( { "FR_upper", "chest",     xLegFront, standH - standH*upperFrac,                  halfBody, legUpperR_F, 1.0 } );
-				js.push_back( { "FR_lower", "FR_upper",  xLegFront, standH - standH*(upperFrac+lowerFrac),      halfBody, legLowerR_F, 0.75 } );
-				js.push_back( { "FR_paw",   "FR_lower",  xLegFront, 0.0,                                        halfBody, legPawR_F,   1.0 } );
-				js.push_back( { "BL_upper", "hips",     -xLegBack,  standH - standH*upperFrac,                 -halfBody, legUpperR_B, 1.0 } );
-				js.push_back( { "BL_lower", "BL_upper", -xLegBack,  standH - standH*(upperFrac+lowerFrac),     -halfBody, legLowerR_B, 0.75 } );
-				js.push_back( { "BL_paw",   "BL_lower", -xLegBack,  0.0,                                       -halfBody, legPawR_B,   1.0 } );
-				js.push_back( { "BR_upper", "hips",      xLegBack,  standH - standH*upperFrac,                 -halfBody, legUpperR_B, 1.0 } );
-				js.push_back( { "BR_lower", "BR_upper",  xLegBack,  standH - standH*(upperFrac+lowerFrac),     -halfBody, legLowerR_B, 0.75 } );
-				js.push_back( { "BR_paw",   "BR_lower",  xLegBack,  0.0,                                       -halfBody, legPawR_B,   1.0 } );
+				js.push_back( { "FL_upper", "chest", -xLegFront, standH - standH*upperFrac,                     halfBody + feZ_upper, legUpperR_F, 1.0 } );
+				js.push_back( { "FL_lower", "FL_upper", -xLegFront, standH - standH*(upperFrac+lowerFrac),      halfBody + feZ_lower, legLowerR_F, 0.75 } );
+				js.push_back( { "FL_paw",   "FL_lower", -xLegFront, 0.0,                                        halfBody + feZ_paw,   legPawR_F,   1.0 } );
+				js.push_back( { "FR_upper", "chest",     xLegFront, standH - standH*upperFrac,                  halfBody + feZ_upper, legUpperR_F, 1.0 } );
+				js.push_back( { "FR_lower", "FR_upper",  xLegFront, standH - standH*(upperFrac+lowerFrac),      halfBody + feZ_lower, legLowerR_F, 0.75 } );
+				js.push_back( { "FR_paw",   "FR_lower",  xLegFront, 0.0,                                        halfBody + feZ_paw,   legPawR_F,   1.0 } );
+				js.push_back( { "BL_upper", "hips",     -xLegBack,  standH - standH*upperFrac,                 -halfBody + heZ_upper, legUpperR_B, 1.0 } );
+				js.push_back( { "BL_lower", "BL_upper", -xLegBack,  standH - standH*(upperFrac+lowerFrac),     -halfBody + heZ_lower, legLowerR_B, 0.75 } );
+				js.push_back( { "BL_paw",   "BL_lower", -xLegBack,  0.0,                                       -halfBody + heZ_paw,   legPawR_B,   1.0 } );
+				js.push_back( { "BR_upper", "hips",      xLegBack,  standH - standH*upperFrac,                 -halfBody + heZ_upper, legUpperR_B, 1.0 } );
+				js.push_back( { "BR_lower", "BR_upper",  xLegBack,  standH - standH*(upperFrac+lowerFrac),     -halfBody + heZ_lower, legLowerR_B, 0.75 } );
+				js.push_back( { "BR_paw",   "BR_lower",  xLegBack,  0.0,                                       -halfBody + heZ_paw,   legPawR_B,   1.0 } );
 
 				std::vector<std::string> jointLines;
 				jointLines.reserve( js.size() );

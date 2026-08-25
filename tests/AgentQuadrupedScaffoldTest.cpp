@@ -52,9 +52,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -195,6 +197,82 @@ static void TestBasicGeneration()
 	const std::vector<std::string> joints = JointLines( doc, r.geometryName );
 	Check( joints.size() >= 18 && joints.size() <= 24,
 	       "A MONEY: joint count in [18,24] -- got " + std::to_string( joints.size() ) );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// A2.  Review round P1/P2 (2026-08-25, found by RENDERING, not by any
+// numeric gate): leg ARTICULATION and ear PROTRUSION, pinned directly
+// against the generated joint text.  These are the visual-adjacent
+// numeric proxies for what the render-and-look gate below actually
+// verifies with eyes -- see that gate's own doc for why neither
+// substitutes for the other.
+//----------------------------------------------------------------------
+static void TestLegArticulationAndEarProtrusion()
+{
+	std::printf( "A2: review round P1/P2 -- leg z-offsets are nonzero (articulated, not a straight pole), "
+	             "ear joint centers clear 1.15x head radius\n" );
+	const std::string tmp = TempPath( "quad_a2.RISEscene" );
+	Job* pJob = LoadScene( Preamble(), tmp );
+	Check( pJob != nullptr, "A2: fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = ArmedSession( pJob );
+	const Agent::AgentSession::AgentGeometryScaffoldResult r =
+		sess->InsertGeometryScaffold( "quadruped", "artbeast", 1.7, 0.0, 1.0 );
+	Check( r.ok && !r.chunkResults.empty(), "A2: the call applies" );
+
+	std::map<std::string, ParsedJoint> byName;
+	for( const std::string& ln : JointLines( sess->ReadDocument(), r.geometryName ) ) {
+		const ParsedJoint j = ParseJointLine( ln );
+		byName[j.name] = j;
+	}
+
+	// P1 MONEY: within EVERY leg chain, the three z coordinates are not
+	// all equal -- a straight vertical pole (the reviewer's own
+	// reproduction, quad_average_full_zoom.png) has upper.z == lower.z
+	// == paw.z exactly, since only y varied.  "Not all equal" is
+	// deliberately the WHOLE assertion (not a specific offset shape):
+	// it is the one fact a render-and-look verdict can be reduced to
+	// as a numeric pin, and it is exactly what reverting the P1 fix
+	// makes false.
+	static const char* const kLegs[4][3] = {
+		{ "FL_upper", "FL_lower", "FL_paw" },
+		{ "FR_upper", "FR_lower", "FR_paw" },
+		{ "BL_upper", "BL_lower", "BL_paw" },
+		{ "BR_upper", "BR_lower", "BR_paw" },
+	};
+	for( const auto& leg : kLegs ) {
+		const ParsedJoint& up  = byName.at( leg[0] );
+		const ParsedJoint& lo  = byName.at( leg[1] );
+		const ParsedJoint& paw = byName.at( leg[2] );
+		const bool articulated = !( up.z == lo.z && lo.z == paw.z );
+		Check( articulated,
+		       std::string( "A2 MONEY: " ) + leg[0] + "/" + leg[1] + "/" + leg[2] +
+		       " are NOT collinear in z (articulated, not a straight pole) -- z=" +
+		       std::to_string( up.z ) + "/" + std::to_string( lo.z ) + "/" + std::to_string( paw.z ) );
+		// Every leg still keeps ground contact and the radius taper
+		// (P1's fix must not cost either): paw.y == 0, and upper/lower/
+		// paw radii still strictly shrink toward the paw.
+		Check( paw.y == 0.0, std::string( "A2: " ) + leg[2] + " still sits exactly on the ground (y=0)" );
+		Check( up.r > lo.r && lo.r > paw.r,
+		       std::string( "A2: " ) + leg[0] + "/" + leg[1] + "/" + leg[2] + " still taper (radius strictly shrinks)" );
+	}
+
+	// P2 MONEY: the ear joint's own distance from the head's center
+	// clears 1.15x the head radius (the reviewer's own reproduction,
+	// quad_average_ear_zoom.png, measured ~0.93x -- most of the ear
+	// sphere submerged).
+	const ParsedJoint& head = byName.at( "head" );
+	for( const char* earName : { "ear_l", "ear_r" } ) {
+		const ParsedJoint& ear = byName.at( earName );
+		const double dx = ear.x - head.x, dy = ear.y - head.y, dz = ear.z - head.z;
+		const double dist = std::sqrt( dx*dx + dy*dy + dz*dz );
+		Check( dist >= 1.15 * head.r - 1e-9,
+		       std::string( "A2 MONEY: " ) + earName + " joint center clears 1.15x head radius (got " +
+		       std::to_string( dist / head.r ) + "x)" );
+	}
 
 	pJob->release();
 	std::remove( tmp.c_str() );
@@ -532,6 +610,7 @@ int main()
 {
 	std::printf( "=== AgentQuadrupedScaffoldTest (creature scaffold slice: quadruped) ===\n" );
 	TestBasicGeneration();
+	TestLegArticulationAndEarProtrusion();
 	TestAlias();
 	TestDeterminism();
 	TestBuildPresets();
