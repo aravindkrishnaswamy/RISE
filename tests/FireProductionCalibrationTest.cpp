@@ -1523,7 +1523,7 @@ int main()
 	Check(!drainAwareRetryEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(drainAwareRetryEvidence.begin(),
 			drainAwareRetryEvidence.end()))==
-		"0128452a66d3b4e63211030584ad38f13f681427dbf9065c03e717900c218106"&&
+		"855f37154366b3717584c22d64c8d0a56e384703d233d35f6e3ab8ab4e2b4f22"&&
 		drainAwareRetryEvidence.find("candidate_0_refusal_reproduced true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_represented_dt "
@@ -1544,7 +1544,7 @@ int main()
 			"authentic_token_retained_mutate_classify_restore_reaccept")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("retry_controller_RED "
-			"candidates_0_1_2_through_actual_recursive_continuation")!=
+			"candidate_1_refusal_classify_branch_continues_candidate_2")!=
 			std::string::npos&&
 		forceHeader.find("ClassifyFireProductionResidentStepAttempt")!=std::string::npos&&
 		drainAwareRetryEvidence.find("accepted_path_final_wall_p95_ms 151.894375")!=
@@ -1610,7 +1610,7 @@ int main()
 			"0d77432eb9e4ccf4e76829ce230f82037435abfb33a437abb062096dde6f9057"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"e09479ad8f4b5bafa255f87016c247a69c1d4e2abd7bdba8261cd9ab5b522605"&&
+			"76afe1bb819d9a3f337da7550042051d2e9a8aadf57396773cf28b04bf225516"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
@@ -1628,7 +1628,7 @@ int main()
 			"f8ce31ee45872933069bd7af818ab3747b3152032dc724e9544b96520115bb91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"f468bf7b1fc0b5a7d9b6b0c53e24b90e863ecc10b4a2d182b92ff9585c0dcf97"&&
+			"183735135701668a01b571f2ee32ff1303ccf4f5100102eed0f3f419687c49c3"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			timestepVelocityBenchmarkOptions.begin(),timestepVelocityBenchmarkOptions.end()))==
 			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&

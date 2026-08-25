@@ -3941,8 +3941,8 @@ it was already tried and refuted here.
   before increment, and acceptance revalidates the producer token against the
   current complete payload, closing overflow and post-attempt mutation aliases.
   The mutation RED retains the authentic token while changing one payload bit,
-  and a no-Metal `0 -> 1 -> 2` recursion RED executes the owner's actual
-  continuation seam rather than only the classifier helper.
+  and a no-Metal candidate-1 refusal RED executes the owner's actual
+  classify/branch/recursive-continuation seam and requires candidate 2.
   The equal-time campaign owner only
   regenerates the sealed target at the production-selected retry duration.
 

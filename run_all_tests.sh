@@ -771,7 +771,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_contraction_rc" -eq 217 ] &&
 		[ "$closure_limited_rc" -eq 206 ] && [ "$closure_controller_rc" -eq 204 ] &&
-		grep -Fq 'DRAIN_AWARE_RETRY_CONTROLLER_RED candidates=0,1,2 cap=20 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_controller_log" &&
+		grep -Fq 'DRAIN_AWARE_RETRY_CONTROLLER_RED refused_candidate=1 next_candidate=2 cap=20 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_controller_log" &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
