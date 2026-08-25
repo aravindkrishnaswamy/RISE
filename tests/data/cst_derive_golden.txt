@@ -2,9 +2,9 @@
 # Regenerate:  export RISE_MEDIA_PATH="$(pwd)/" && ./bin/tests/CstDeriveGoldenTest --generate
 # Then REVIEW git diff before commit -- an unexpected digest change is a CST-derive regression.
 # Columns:  <repo-relative-path>  <sha256(DumpJob)>  <dump-bytes>  <dump-lines>
-scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene  ae6a171777df18b6ec1fc3b46ea4c9eae92a3e9bcb1052bc949b2731d9afd4fd  13678  180
-scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene  c4243f057194d1eb5c86a456c80b70d638cbf87171fdd32339624032ad5c1e97  13685  180
-scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene  191a755409b6e85a1cf494df98332db796f2825e01762ef5da4e323234935e31  6755  102
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene  461060ab0495c0fcfe7c307bc0bed75a8ae17e26d5afa28b288cc829560af6a8  13678  180
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene  3cc750dc41bb05b5a7a37f22600ec858999155bb34c80318eebdb26e2761abb1  13688  180
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene  84a01ac56802aa9a0e164ed7557f02b66155b279421c2d7d59390a3d2ccb599f  6757  102
 scenes/FeatureBased/Animation/caustic_animation.RISEscene  61e32bd3f3db0e26604ba282b6f8b626ae2d4511518447a8c75f2d2e3580573f  904  25
 scenes/FeatureBased/Animation/translucent_bunny.RISEscene  8af372a2d43c68d6246e2c2714d6267ec3b549dc4a33265a590608c1e361bb3f  700  25
 scenes/FeatureBased/BDPT/bdpt_cloister.RISEscene  49ce499810d15a79abf70f651ccab22b77ad052a21d7f7690249722f9839b7cd  13480  151
@@ -22,12 +22,12 @@ scenes/FeatureBased/Combined/sculptors_studio.RISEscene  c5c11b9b4e41cc8c88f4e4f
 scenes/FeatureBased/Combined/showroom.RISEscene  ca3eea8cb351428940fbfd8b21d3b48dae98906d2f493f41e4b4c169d223771f  2632  52
 scenes/FeatureBased/Combined/spotlight_drama.RISEscene  2964ab29b798901fd43c27c6c32f06d0fad4d27bf51fdbecb09e160401db23a3  2570  45
 scenes/FeatureBased/Combined/tidepools.RISEscene  d26ae1b598d1c0943b7bbdd1c428acfbb089f73a50ca4dab044c424d1ad1c0b8  3482  61
-scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene  3a9c304d263b4619aec92306e66ee041d1ccc20a299efc14d2e06ab0f72742c7  6939  117
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene  5431dc3cbcb058150e7b2e81a21c79a125d447017b5bdbb752ab9fa2f52584eb  6937  117
 scenes/FeatureBased/Geometry/aphrodite.RISEscene  5d8c167c8190c19736e6ed0d5cf25dd8f24c89efe4bbc8d817272336d84bdd32  669  25
 scenes/FeatureBased/Geometry/f16.RISEscene  9eeb268a88b7cc353cf4c56045aacad8ed4c2e4b5038e1ed71c47763f1f3da9c  675  25
 scenes/FeatureBased/Geometry/teapot.RISEscene  b962c50a94ced3ddea115807f4857c192672d88c33a4ad1ad952333a006461f9  856  35
 scenes/FeatureBased/GlobalIllumination/irradiance_cache_torture.RISEscene  afc86991ac7b90de2873b508b03790ab6e0916527a73f49ecf2d00c1909ac738  3865  62
-scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene  93c74c8184f6481763a3ea60fe2fd6a202007fe04ce011447b6ef5ca0b187480  5585  99
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene  f3e9322258f4c9a18e6565576803d697dab9cf03e9ae59bb1a9319cb55f607ac  5582  99
 scenes/FeatureBased/MLT/mlt_caustic_chain.RISEscene  b5fc91b4a0053ece97c537d09910b1b0255d9fa3ea933d0b60e0ebc27ea406df  2214  43
 scenes/FeatureBased/MLT/mlt_keyhole.RISEscene  4d4344bb1c42594fd51524419a5228bab461b694ba451333a346266af5b7ca94  2790  46
 scenes/FeatureBased/MLT/mlt_luminous_orb.RISEscene  914526d176cfe4f6977402c08ca5555114cdb601731d37fd405bd92777c15147  2019  42
@@ -44,13 +44,13 @@ scenes/FeatureBased/Parser/pillow.RISEscene  40528f38e3ab17897e6b35f8ebd077a9aed
 scenes/FeatureBased/Parser/sombrero.RISEscene  6a933d2e50fe06cd96a4ebe908ce7210a5d0a49082c7908d4f49c8c41251d5c9  891995  11181
 scenes/FeatureBased/PathTracing/pt_alchemists_sanctum.RISEscene  13891940d4a32afae544e95bc458b8526a22b3e56fb079bb2e74b8c06cd79166  7459  102
 scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene  e37740f5e9f2f781beff70ba35af102d52d14e89769bbf9d12ce2367370a1d3f  8117  115
-scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene  f1c4831c8ce555070352409ff2f176dabb03a1d117635a134a703a8faad66341  1654  39
+scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene  5ccd712d1db2080acb77234ecf0cabe9ca2e4eee03ce18d03ae5824517224d13  1655  39
 scenes/FeatureBased/Shaders/SSS/sss_gi_dragon.RISEscene  4cf9290f54a3c3f6687270f8ae0c1c3ecd4e1f50d489ee1b84098d02567b17fa  1621  29
 scenes/FeatureBased/Shaders/visiblehuman.RISEscene  2d3c56a9c7a50b4efef97849cf9b8fcdf20e2441743e84aeb77de3264236fcb6  450  22
 scenes/FeatureBased/Textures/oxidized_copper.RISEscene  c869834c8fd87e13ee527f98cb12d6ceed29c8902d085a550420ca872a84b300  1500  37
 scenes/FeatureBased/Textures/receding_pier.RISEscene  0efb477b8904320e5bc37739a474fc4303b45711a63cd10e1ed2514c1497e0f7  1174  28
 scenes/FeatureBased/Textures/weathered_workbench.RISEscene  21703f068022db51de218d63345104b9e3de5a6d7be631859144d0bd6b4bde86  2818  55
-scenes/FeatureBased/VCM/vcm_sdf_luminaire_jellyfish.RISEscene  589e88bfdcc260f6a3639dbbb43bf9bdcf6ba00fcb6f3081ad12ee30eff976e4  10778  206
+scenes/FeatureBased/VCM/vcm_sdf_luminaire_jellyfish.RISEscene  0ed4e29e4a4807cd070d415b1ca6d3441cb7b4dfdb5163fc6cac85cd6459a315  10809  206
 scenes/FeatureBased/VCM/vcm_veach_egg_displaced.RISEscene  83f10e9f44db8da21efe19496ef11d9cb74cd95eb6e07cd7a5934c6e01d9edc8  2089  45
 scenes/Templates/empty_starter.RISEscene  8402d4ae8e7cf9bcf9298d9b5795cc3610fb82f5f45e05af6c7dcd36835eff33  218  16
 scenes/Tests/Animation/animation_exposure.RISEscene  8691de00b63ed482a0e9bc72bb45d389d1f973de1cdf977d16dd4bdba7327303  913  25
@@ -129,7 +129,7 @@ scenes/Tests/Geometry/bilinear_patch.RISEscene  d6d2a06a07905648e9a63a854da90622
 scenes/Tests/Geometry/csg.RISEscene  c885504f746ecfe3b71eb3153ad29796424b8e929c826543cadec16cc6db8faa  2507  40
 scenes/Tests/Geometry/csg_comprehensive.RISEscene  52769e63c5bcc9c7a86f2dd785286f458a3d3a8adce47d553f77818276c12701  8845  96
 scenes/Tests/Geometry/displaced_box.RISEscene  e395d8bae437dd25ba0e1466ae250667970b10cee4ae63ea38f531584b692e2d  654  23
-scenes/Tests/Geometry/displaced_builders_stress.RISEscene  4a8f0bdbd63996817cb2b70fa0ec554cd16b4fc0ad1953563e7bb9a0e11db22d  2652  59
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene  5af5128cd8fd06fc1a14cf64c9eb1df0224a536bf4346178524350bc44e86fec  2652  59
 scenes/Tests/Geometry/displaced_procedural.RISEscene  84f828f95479c19d567a34597a1943e989acc7d5cd4fbfcd9427b6a843f70e53  1251  37
 scenes/Tests/Geometry/displaced_self_shadow.RISEscene  ef0ec94cb57088d68bd82c11714abd23e1cd3bf7183dd82607491c41940c80b5  649  23
 scenes/Tests/Geometry/displaced_shapes.RISEscene  ad56f1c468079ca8ca0f61b85e49afe5df7ae9073be9cf43237acf0d8584a128  4740  63
@@ -150,10 +150,10 @@ scenes/Tests/Geometry/object_mirror.RISEscene  30634cb9a88ab75d492476a78bfd8b9a1
 scenes/Tests/Geometry/object_parenting.RISEscene  b051295559a14f9dc939a2d44a618c31bc6885e4d6429c7443928ba758367134  3379  42
 scenes/Tests/Geometry/scenegraph_stress.RISEscene  68ffd128197275782fa75224113ebd2b8321ebc578a96a5f43f663b356a18f38  8788  88
 scenes/Tests/Geometry/shapes.RISEscene  6940e3ff651e44619a1773f0f4fd68cd830de811094c4d7a6c6cca7410460548  5735  57
-scenes/Tests/Geometry/skeleton_basic.RISEscene  2edbda6da3bfd3794ff59c5a5a7d6ce9806aa64d6d8b10ad7913e607f484496d  1377  30
-scenes/Tests/Geometry/skeleton_stress.RISEscene  b71e03db8b92c338f6070389365e627a7f2d781f47858f20eeee7dfd1d774931  2607  47
-scenes/Tests/Geometry/skin_stress.RISEscene  366a6926e4e9e79148bbe0b7c0c265521157519fc990366774d16ac57045be90  2743  49
-scenes/Tests/Geometry/superellipsoid_stress.RISEscene  1c7bb3429b39c69054c59e8e6f4c78d86028b0427db68e5ed6dfdea4d88c34e6  4206  69
+scenes/Tests/Geometry/skeleton_basic.RISEscene  613983c0be33bff85fe30028a3e565d75e78b4294198dc1f99e36bda3c0fe0b3  1378  30
+scenes/Tests/Geometry/skeleton_stress.RISEscene  32926830b10f60d7c97e68af3a45ac98a333676375dec438be7f0ae47d7759fc  2604  47
+scenes/Tests/Geometry/skin_stress.RISEscene  636dc3730fedb615ee235bf99877ba8d53edf41f3abd0ffa12bdbe9af86e646f  2743  49
+scenes/Tests/Geometry/superellipsoid_stress.RISEscene  291f5a5888a0a719554eb326e4904901893a3ede97739b6c628d09203cebe591  4192  69
 scenes/Tests/Geometry/sweep_instances.RISEscene  376274d8c54fbc241f8bc662831f5b8d67fb3231765cef45012101b5d6795b86  1618  35
 scenes/Tests/Geometry/sweep_loop.RISEscene  3067bfc3219cc307918651729451a76dc78888645206f18973660d47b702a527  1083  26
 scenes/Tests/Geometry/sweep_stress.RISEscene  ef674eef8a4c601f4c7a05d31356cc62aa4a1a2fce07258a0c2a5d9f74cc094f  2840  51
@@ -256,10 +256,10 @@ scenes/Tests/PixelFilters/mitchell-netravali.RISEscene  6217f7c5fa18e4fcc9fd75cb
 scenes/Tests/PixelFilters/tent.RISEscene  6217f7c5fa18e4fcc9fd75cb3db30f401192413bac9dcde60f95d09b20ca4452  1010  29
 scenes/Tests/SDF/sdf_arealight.RISEscene  831696f277000e1f2c0f2a8a745610c469d49767e262da5253a7790d43b313b6  713  24
 scenes/Tests/SDF/sdf_caustic.RISEscene  0773e4e1b2828a3a13400bbfffd39723b71169234464009f0af00db205578fad  920  27
-scenes/Tests/SDF/sdf_luminaire_fog.RISEscene  23fb73a44b18c2a05ab78bd215969cab385b04ef0d85b4ff15a1c2ce99f8d21d  1470  34
-scenes/Tests/SDF/sdf_luminaire_heterofog.RISEscene  0afb5340b490173b83738bf3e4cdfd1d3f0d94f5b43f6db0a785d91affc7fee7  1332  32
-scenes/Tests/SDF/sdf_shadows.RISEscene  b33ca326feceaf8443f1fe687f421972d31f05f3ad9e403ebbedacc01750da82  1468  34
-scenes/Tests/SDF/sdf_volume.RISEscene  b49d2d2f1a1061215bcea657e4bb25d37909fddcbbd7c7d01c309a5a7bdf1882  1482  35
+scenes/Tests/SDF/sdf_luminaire_fog.RISEscene  bff9dda0f6b9d943a516d68153f25b3201787be1a580b60c01559ebd2609526c  1442  34
+scenes/Tests/SDF/sdf_luminaire_heterofog.RISEscene  57e8bd53790a0f4939269c65ba1a7385ae06061f01f61d6c735cca95fc8b4f73  1302  32
+scenes/Tests/SDF/sdf_shadows.RISEscene  fa3b0077d6cff28e0dd7f2097641afc1f1c379361ce95d44f0fc43d98c93c683  1471  34
+scenes/Tests/SDF/sdf_volume.RISEscene  35d4e91fc83caf18359a17cba1f65be3cc399426973e6901e71bb1ef085fdd62  1452  35
 scenes/Tests/SMS/sms_k1_botonly.RISEscene  74a23a29bb462f4336ac5d96e6d4705d12813a3e1f7057105c3c2b5353ee295c  1041  33
 scenes/Tests/SMS/sms_k1_botonly_ref.RISEscene  74a23a29bb462f4336ac5d96e6d4705d12813a3e1f7057105c3c2b5353ee295c  1041  33
 scenes/Tests/SMS/sms_k1_mirror.RISEscene  006172663d6facfaf794c47b2f784215ada34a5bcef6a64224327a0396706035  1014  32
