@@ -329,6 +329,30 @@ namespace RISE
 		// ChatTrajectory.h's kTrajectoryDedupRefMarker doc for the design.
 		//==============================================================
 
+		//! Review-round C, P3-c: the marker's JSON LITERAL, shared by the
+		//! write side (DedupeResponseBody_) and the read side
+		//! (ExpandOneDedupKey_) so the two cannot disagree about its exact
+		//! bytes.  A JSON OBJECT, not a bare string -- neither `tools`
+		//! (always an array) nor `instructions` (always a string) can EVER
+		//! legitimately hold a JSON object under the Responses API schema
+		//! this dedup targets, so this marker is STRUCTURALLY impossible
+		//! to collide with a genuine value, not merely "vanishingly
+		//! unlikely" the way a same-shaped string sentinel would be.  An
+		//! earlier draft used a bare `"__RISE_TRAJECTORY_DEDUP_REF__"`
+		//! string literal -- indistinguishable, by construction, from a
+		//! genuine `instructions` value that happened to equal that exact
+		//! text (caught in review: ExpandOneDedupKey_ compares raw SPAN
+		//! TEXT, so a same-shaped genuine string is not a decoding
+		//! ambiguity a "parse and compare" fix would remove either -- the
+		//! ambiguity is in the VALUE, not the encoding).  kTrajectoryDedupRefMarker
+		//! itself stays a plain tag string, embedded as this object's ONE
+		//! member's value, purely for grep-ability in a raw trajectory
+		//! file.
+		static std::string TrajectoryDedupMarkerLiteral_()
+		{
+			return std::string( "{\"$dedupRef\":\"" ) + kTrajectoryDedupRefMarker + "\"}";
+		}
+
 		//! One key's expand-in-place step, shared by both keys below.
 		//! Returns `body` unchanged if `key` is not a top-level member.
 		static std::string ExpandOneDedupKey_( const std::string& body, const char* key,
@@ -337,9 +361,7 @@ namespace RISE
 			std::size_t vs, ve;
 			if( !FindTopLevelJsonValueSpan_( body, 0, key, vs, ve ) ) return body;
 			const std::string spanText = body.substr( vs, ve - vs );
-			static const std::string kMarkerLiteral =
-				std::string( "\"" ) + kTrajectoryDedupRefMarker + "\"";
-			if( spanText == kMarkerLiteral ) {
+			if( spanText == TrajectoryDedupMarkerLiteral_() ) {
 				if( !have ) return body;   // no prior real value recorded: leave the marker (never guess)
 				return body.substr( 0, vs ) + cache + body.substr( ve );
 			}
@@ -467,10 +489,19 @@ namespace RISE
 				std::size_t vs, ve;
 				if( !FindTopLevelJsonValueSpan_( out, 0, key, vs, ve ) ) continue;
 				const std::string spanText = out.substr( vs, ve - vs );
+				// Review-round C, P3-c: a genuine value that happens to be
+				// marker-SHAPED is left untouched -- neither cached (which
+				// would corrupt a later expand's substitution) nor
+				// deduped this round.  Structurally UNREACHABLE today
+				// (TrajectoryDedupMarkerLiteral_'s own doc: `tools` is
+				// always an array, `instructions` always a string, and
+				// the marker is a JSON OBJECT, so spanText can never
+				// equal it) -- kept as a defensive belt for the day a
+				// third key is added to this dedup with a shape that
+				// COULD coincide.
+				if( spanText == TrajectoryDedupMarkerLiteral_() ) continue;
 				if( have && cache == spanText ) {
-					const std::string marker =
-						std::string( "\"" ) + kTrajectoryDedupRefMarker + "\"";
-					out = out.substr( 0, vs ) + marker + out.substr( ve );
+					out = out.substr( 0, vs ) + TrajectoryDedupMarkerLiteral_() + out.substr( ve );
 				} else {
 					cache = spanText;
 					have  = true;

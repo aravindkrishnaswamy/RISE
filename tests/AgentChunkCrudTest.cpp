@@ -19015,6 +19015,30 @@ static const char* const kCoverageDeltaScene =
 	"standard_object\n{\n\tname side_obj\n\tgeometry sph_side\n\tmaterial mat\n\tposition 2.2 0 0\n}\n\n"
 	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0 0 1\n}\n";
 
+//! Review-round C, P2-2: the SAME fixture, but the camera is UNNAMED.
+//! DocFindByNameAnyRole's own doc comment (Cst.cpp ~5203-5207) is
+//! explicit: the empty-target singleton fallback is for a truly
+//! UNNAMED chunk only -- "Named chunks are excluded deliberately:
+//! empty-target singleton addressing must never broaden into
+//! 'whichever sole material/object happens to exist.'"  So
+//! {target:"", kind:"camera"} genuinely CANNOT resolve kCoverageDeltaScene's
+//! own NAMED "cam1" camera (an earlier draft of this test assumed it
+//! could and failed for exactly this reason) -- it needs its OWN
+//! unnamed-camera fixture to exercise the shape at all.
+static const char* const kCoverageDeltaSceneUnnamedCamera =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_center\n\tradius 0.3\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_side\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname center_obj\n\tgeometry sph_center\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname side_obj\n\tgeometry sph_side\n\tmaterial mat\n\tposition 2.2 0 0\n}\n\n"
+	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0 0 1\n}\n";
+
 //! frame_scene's answer: pull back to z=6, widen to fov 60 -- covers BOTH
 //! objects, establishing the baseline the later crop patch violates.
 static const char* const kCoverageDeltaWideAnswer =
@@ -19074,6 +19098,57 @@ static void TestCoverageDeltaNoteAfterCameraPatch()
 		Check( rr2.ok && rr2.coverageDeltaNote.empty(),
 		       "GPT/1a the note is ONE-SHOT -- a second render off the same patch carries nothing" );
 	}
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! GPT/1a2 (review-round C, P2-2): the SAME crop, but through the
+//! `{target:"", kind:"camera"}` shape -- the unnamed-singleton
+//! resolution TestComposePhaseFirstCameraRefusal's own precedent uses,
+//! and the shape GPT/1a-d had stopped exercising once kCoverageDeltaScene's
+//! camera gained an explicit name (needed for GPT/1c's RemoveChunk
+//! bypass, which requires a non-empty target).
+//!
+//! Uses kCoverageDeltaSceneUnnamedCamera, NOT kCoverageDeltaScene --
+//! CORRECTED after an earlier draft assumed ResolveCameraPatchKind_'s
+//! uniqueFallback route would resolve a NAMED singleton camera the same
+//! way it resolves an unnamed one.  It does not, BY DESIGN:
+//! DocFindByNameAnyRole (Cst.cpp ~5202-5207) restricts the empty-target
+//! fallback to chunks with NO name at all -- "empty-target singleton
+//! addressing must never broaden into 'whichever sole material/object
+//! happens to exist.'"  ProposePatch itself refused the earlier draft's
+//! attempt against the named "cam1" camera (caught by the gate this
+//! commit is proving), which is what surfaced this correction.
+static void TestCoverageDeltaNoteAfterEmptyTargetCameraPatch()
+{
+	std::printf( "GPT/1a2: the coverage-delta note fires through {target:\"\", kind:\"camera\"} too...\n" );
+	const std::string tmp = TempPath( "agentcrud_gpt1a2.RISEscene" );
+	Job* pJob = LoadScene( kCoverageDeltaSceneUnnamedCamera, tmp );
+	Check( pJob != nullptr, "GPT/1a2 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
+	sess->SetTextCompleter( MakeFakeCompleter( { kCoverageDeltaWideAnswer } ) );
+
+	const Agent::AgentSession::AgentFrameSceneResult fr = sess->FrameScene();
+	Check( fr.ok && fr.coveredAfter >= 2, "GPT/1a2 frame_scene establishes the wide baseline" );
+
+	Agent::AgentSetPatch p;
+	p.target = "";
+	p.kind   = "camera";
+	p.param  = "fov";
+	p.value  = "10";
+	const Agent::AgentPatchResult pr = sess->ProposePatch( p );
+	Check( pr.applied, "GPT/1a2 the empty-target cropping patch applies (the unnamed-singleton "
+	       "fallback finds the one, truly-unnamed camera): " + pr.message );
+
+	const Agent::AgentRenderResult rr = CoverageDeltaTestRender( *sess );
+	Check( rr.ok, "GPT/1a2 the render succeeds" );
+	Check( !rr.coverageDeltaNote.empty(),
+	       "GPT/1a2 MONEY ASSERTION: {target:\"\", kind:\"camera\"} arms the note exactly like "
+	       "{target:\"cam1\", kind:\"camera\"} does" );
+	Check( rr.coverageDeltaNote.find( "side_obj" ) != std::string::npos,
+	       "GPT/1a2 ...naming the object that dropped out of frame" );
 
 	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 }
@@ -19737,6 +19812,7 @@ int main()
 
 	// GPT slice item 1 (2026-08-24): the coverage-delta note.
 	TestCoverageDeltaNoteAfterCameraPatch();
+	TestCoverageDeltaNoteAfterEmptyTargetCameraPatch();
 	TestNoCoverageDeltaNoteWhenCoverageHolds();
 	TestNoCoverageDeltaNoteOnNonFramingParam();
 	TestNoCoverageDeltaNoteWithoutFrameSceneBaseline();

@@ -310,14 +310,28 @@ namespace RISE
 		//! finds the exact byte span of ONE top-level key's value and
 		//! nothing else; the surrounding bytes are untouched.
 		//!
-		//! THE MARKER: kTrajectoryDedupRefMarker, a JSON STRING literal
-		//! chosen to be vanishingly unlikely to collide with a genuine
-		//! `tools`/`instructions` value (which are always an array or a
-		//! long free-text string, never this exact short sentinel).  A
-		//! naive consumer that doesn't know about dedup and tries to
-		//! iterate a deduped `tools` as an array gets a TYPE MISMATCH,
-		//! not silently wrong data -- fail loud, not quiet, is the
-		//! fallback for any reader this fix did not get updated.
+		//! THE MARKER: kTrajectoryDedupRefMarker is a plain tag string,
+		//! but the LITERAL spliced into a record's response_body
+		//! (ChatTrajectory.cpp's TrajectoryDedupMarkerLiteral_) wraps
+		//! it in a JSON OBJECT -- `{"$dedupRef":"<tag>"}`, not a bare
+		//! string.  Review-round C, P3-c: an earlier draft spliced the
+		//! bare-string form (`"<tag>"`), which was merely "vanishingly
+		//! unlikely" to collide with a genuine value -- a real
+		//! `instructions` string that happened to equal that exact
+		//! text would be indistinguishable from the marker on the
+		//! read side, and "parse and compare the decoded value"
+		//! doesn't fix that either, because the AMBIGUITY IS IN THE
+		//! VALUE, not the encoding.  The object form is a STRUCTURAL
+		//! guarantee instead of a probabilistic one: `tools` is
+		//! always a JSON array and `instructions` is always a JSON
+		//! string under the Responses API schema this dedup targets,
+		//! and NEITHER can ever legitimately be a JSON object, so this
+		//! marker cannot collide with a genuine value at all, for any
+		//! content that value holds.  A naive consumer that doesn't
+		//! know about dedup and tries to iterate a deduped `tools` as
+		//! an array gets a TYPE MISMATCH, not silently wrong data --
+		//! fail loud, not quiet, is the fallback for any reader this
+		//! fix did not get updated.
 		static const char* const kTrajectoryDedupRefMarker = "__RISE_TRAJECTORY_DEDUP_REF__";
 
 		//! Per-session cache an EXPANDING reader owns while walking a

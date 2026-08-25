@@ -1234,6 +1234,114 @@ static void TestResponseBodyDedup()
 }
 
 //----------------------------------------------------------------------
+// Review-round C, P3-c (2026-08-24): the MARKER-COLLISION case.  An
+// earlier draft's marker was a bare JSON STRING -- indistinguishable, on
+// the read side, from a genuine `instructions` value that happened to
+// equal that exact text.  The shipped fix wraps the marker in a JSON
+// OBJECT instead ({"$dedupRef":"..."}), which neither `tools` (always an
+// array) nor `instructions` (always a string) can ever legitimately be --
+// a structural guarantee, not a probabilistic one.  This proves it: a
+// genuine `instructions` value that IS the marker's own tag text, as a
+// plain string, round-trips correctly (never mistaken for the marker),
+// and a genuine REPEAT of that same collision-shaped value still dedupes
+// normally.
+//----------------------------------------------------------------------
+static void TestResponseBodyDedupMarkerCollision()
+{
+	std::printf( "E10b: a genuine value shaped like the dedup marker's own tag text...\n" );
+
+	static const char* const kToolsJson =
+		"[{\"type\":\"function\",\"name\":\"propose_patch\",\"description\":\"d1\"}]";
+	static const char* const kInstructions = "You are an agent.";
+	// The exact text an OLD bare-string marker would have spliced in --
+	// authored here as a GENUINE `instructions` value, on purpose.
+	static const char* const kCollisionText = "__RISE_TRAJECTORY_DEDUP_REF__";
+
+	std::shared_ptr<std::vector<std::string> > lines = std::make_shared<std::vector<std::string> >();
+	std::function<void(const std::string&)> sink =
+		[lines]( const std::string& l ) { lines->push_back( l ); };
+	ChatTrajectoryConfig cfg;
+	cfg.traceId = "trace-collision";
+	cfg.clock = MakeCounterClock( 2000 );
+	ChatTrajectoryRecorder rec( sink, cfg );
+
+	TrajectorySessionRecord sess;
+	sess.provider = "openai";
+	rec.EmitSession( sess );
+
+	// Record 1: an ordinary baseline (tools/instructions cached normally).
+	{
+		TrajectoryLlmRecord r;
+		r.responseBody = MakeGptStyleBody( kToolsJson, kInstructions, "turn1" );
+		rec.EmitLlm( r );
+	}
+	// Record 2: instructions is now the collision text -- GENUINELY
+	// DIFFERENT from record 1's cached value, so this must NOT dedupe;
+	// it must be stored (and later expand back to) the collision text
+	// itself, never record 1's "You are an agent." (the corruption an
+	// unguarded bare-string marker would produce).
+	{
+		TrajectoryLlmRecord r;
+		r.responseBody = MakeGptStyleBody( kToolsJson, kCollisionText, "turn2" );
+		rec.EmitLlm( r );
+	}
+	// Record 3: a GENUINE repeat of the collision text -- this SHOULD
+	// dedupe normally against record 2's now-cached collision value.
+	{
+		TrajectoryLlmRecord r;
+		r.responseBody = MakeGptStyleBody( kToolsJson, kCollisionText, "turn3" );
+		rec.EmitLlm( r );
+	}
+
+	Check( lines->size() == 4, "session + 3 llm records emitted" );
+	if( lines->size() != 4 ) return;
+
+	std::vector<JsonValue> j;
+	for( std::size_t i = 1; i < lines->size(); ++i ) j.push_back( Parse( ( *lines )[i] ) );
+	const std::string body1 = j[0].get( "response_body" ).asString();
+	const std::string body2 = j[1].get( "response_body" ).asString();
+	const std::string body3 = j[2].get( "response_body" ).asString();
+
+	// MONEY: record 2's STORED bytes carry the collision text verbatim,
+	// as a plain JSON string -- NOT converted to (or confused with) the
+	// object-shaped marker.
+	JsonValue p2 = Parse( body2 );
+	Check( p2.get( "instructions" ).asString() == kCollisionText,
+	       "E10b MONEY ASSERTION: record 2's stored `instructions` is the genuine collision-text "
+	       "STRING value, not misidentified as the marker" );
+	Check( !p2.get( "instructions" ).isObject(),
+	       "E10b ...specifically NOT an object -- `tools` legitimately dedupes in this same record "
+	       "(it repeats record 1's), so this checks the `instructions` field's own shape, not the "
+	       "whole body for the marker tag" );
+
+	// Record 3 SHOULD have genuinely deduped against record 2's cached
+	// collision value (the object-shaped marker, distinguishable from
+	// the plain-string collision text by its very shape).
+	JsonValue p3 = Parse( body3 );
+	Check( p3.get( "instructions" ).isObject() &&
+	       p3.get( "instructions" ).get( "$dedupRef" ).asString() == kCollisionText,
+	       "E10b record 3 (a genuine REPEAT of the collision text) dedupes normally, marked with "
+	       "the object-shaped marker" );
+
+	// ROUND-TRIP: expanding all three, in order, reconstructs the exact
+	// per-record instructions value each one actually carried -- record
+	// 1 "You are an agent.", records 2 AND 3 the collision text itself
+	// (never record 1's value, which is what an unguarded bare-string
+	// marker misread would have produced for record 2).
+	TrajectoryDedupExpandState state;
+	const std::string exp1 = ExpandTrajectoryResponseBody( body1, state );
+	const std::string exp2 = ExpandTrajectoryResponseBody( body2, state );
+	const std::string exp3 = ExpandTrajectoryResponseBody( body3, state );
+	Check( Parse( exp1 ).get( "instructions" ).asString() == kInstructions,
+	       "E10b round-trip record 1: expanded instructions == \"You are an agent.\"" );
+	Check( Parse( exp2 ).get( "instructions" ).asString() == kCollisionText,
+	       "E10b MONEY ROUND-TRIP: record 2 expands to the collision text itself, NOT record 1's "
+	       "value -- the corruption an unguarded bare-string marker would have produced" );
+	Check( Parse( exp3 ).get( "instructions" ).asString() == kCollisionText,
+	       "E10b round-trip record 3: expands to the collision text too (the genuine dedup)" );
+}
+
+//----------------------------------------------------------------------
 // Review-round P2: "recording never disrupts the chat" must hold for ANY
 // sink -- a throwing sink is swallowed and recording is disabled for the
 // rest of the session (the sink is dropped after the first throw).
@@ -1278,6 +1386,7 @@ int main()
 	TestAuxiliaryHttpRound();
 	TestDocumentSnapshotPolicy();
 	TestResponseBodyDedup();
+	TestResponseBodyDedupMarkerCollision();
 	RunThrowingSinkTest();
 	std::printf( "=== AgentTrajectoryTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

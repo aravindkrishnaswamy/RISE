@@ -666,10 +666,19 @@ static void TestReplaySourceExpandsDedupedBody()
 	// hand here (this is exactly the shape ChatTrajectoryRecorder::
 	// EmitLlm produces -- AgentTrajectoryTest.cpp's E10 covers the
 	// recorder side; this test covers the READ side specifically).
+	// Review-round C, P3-c: the marker is a JSON OBJECT
+	// ({"$dedupRef":"<tag>"}), NOT a bare string -- see ChatTrajectory.h's
+	// kTrajectoryDedupRefMarker doc for why (a bare-string marker is
+	// indistinguishable from a genuine value that happens to equal that
+	// exact text; the object form is structurally impossible to collide
+	// with, since neither `tools` nor `instructions` is ever legitimately
+	// an object).
 	JsonValue body2 = JsonValue::MakeObject();
 	{
-		body2.set( "tools", JsonValue::MakeString( "__RISE_TRAJECTORY_DEDUP_REF__" ) );
-		body2.set( "instructions", JsonValue::MakeString( "__RISE_TRAJECTORY_DEDUP_REF__" ) );
+		JsonValue marker = JsonValue::MakeObject();
+		marker.set( "$dedupRef", JsonValue::MakeString( "__RISE_TRAJECTORY_DEDUP_REF__" ) );
+		body2.set( "tools", marker );
+		body2.set( "instructions", marker );
 		JsonValue out = JsonValue::MakeArray();
 		out.push_back( JsonValue::MakeString( "turn2" ) );
 		body2.set( "output", out );

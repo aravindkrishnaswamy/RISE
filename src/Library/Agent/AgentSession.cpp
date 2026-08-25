@@ -3337,6 +3337,41 @@ namespace RISE
 			//! above the real-defect floor.
 			static const double kSizeMismatchGate = 3.0;
 
+			//! Review-round C, P2-1 (2026-08-24): the TOTAL-DISSOLVE
+			//! BYPASS.  Two SAME-size parts (a mismatch ratio comfortably
+			//! under kSizeMismatchGate) can still be joined at a k so
+			//! large it dissolves the smaller one ENTIRELY -- e.g. two
+			//! 0.05-dim parts smin'd at k=0.5, ratio 10 (well under the
+			//! 3.0 mismatch gate on SIZE, so the mismatch gate alone
+			//! silenced it), yet k is 10x the dimension it is blending:
+			//! that is erasure, not an intended meld, and the
+			//! discriminator must not silence it just because both sides
+			//! happen to be the same size.  Checked BEFORE the size-
+			//! mismatch gate so it can never be shadowed by it.
+			//!
+			//! RECALIBRATED from an initial 1.0 (the review's own proposed
+			//! value, "~3x past the advisory bound"): measured against the
+			//! corpus, 1.0 is FALSE-POSITIVE-PRONE, not merely
+			//! conservative.  A gradual, comparably-sized metaball chain
+			//! deliberately authors k close to or past EITHER bead's own
+			//! dimension to get a continuous, soft join -- that is what
+			//! "soft" means, not erasure.  tests/AgentReadValidateTest.
+			//! cpp's own pinned mermaid-tail spine fixture (the SAME one
+			//! `RunSDFBlendScaleScanTest`'s discriminator green-proof
+			//! uses) reaches k/dimEffective = 3.2 at its OWN join (part 2,
+			//! k=0.16 vs dimEffective=0.05); BuildBlendedVessel/
+			//! BuildSdfColumn's full 45+45 jitter sweep reaches 1.75.  A
+			//! gate of 1.0 fired on BOTH (mermaid tail AND 20/45 vessel +
+			//! 12/45 column draws) -- reopening exactly the false-positive
+			//! problem the size-mismatch gate exists to close, not just on
+			//! the cases it was calibrated against but on the discrim-
+			//! inator's OWN pinned regression fixture.  5.0 sits with 56%
+			//! margin above the confirmed-legitimate 3.2 ceiling and 2x
+			//! margin below the motivating same-size-erasure example's
+			//! own ratio of 10 -- comfortably separates "a soft, gradual
+			//! meld" from "the blend radius has swallowed the feature".
+			static const double kTotalDissolveGate = 5.0;
+
 			//! GPT slice item 4 (2026-08-24, the env-reflection advisory):
 			//! HSV saturation ( (max-min)/max ) an env dome's flat colour
 			//! must clear before condition K's low-roughness-metallic
@@ -3346,6 +3381,22 @@ namespace RISE
 			//! moderately-warm/blue domes (a soft studio fill, a pale sky)
 			//! sit below this; the deliberately vivid "dusk"/saturated-hue
 			//! domes this note targets sit above it.
+			//!
+			//! CALIBRATION RECORD, corrected (review-round C, P2-3): the
+			//! shipping commit's own message claimed "only ONE scene in
+			//! the in-tree corpus binds BOTH radiance_map and pbr_
+			//! metallic_roughness_material" -- that scan globbed
+			//! `*.RISEscene` only.  scenes/Benchmarks/sea_creatures is a
+			//! SECOND such scene, and the only tracked scene file in this
+			//! repo missing the `.RISEscene` extension (so it never
+			//! matched the glob).  It is ALSO correctly silent -- every
+			//! pbr_metallic_roughness_material in it has metallic <= 0.05,
+			//! nowhere near the 0.7 gate -- so this correction does not
+			//! change the "essentially no reach in this corpus today"
+			//! finding, only its scene count (2, not 1).  The commit
+			//! message itself cannot be amended after the fact (this
+			//! repo's own convention); this comment is the corrected
+			//! record going forward.
 			static const double kEnvReflectionSaturationGate = 0.5;
 
 			//! The blend-scale law's per-primitive "characteristic
@@ -3425,34 +3476,116 @@ namespace RISE
 				return static_cast<Scalar>( std::sqrt( dx * dx + dy * dy + dz * dz ) );
 			}
 
+			//! Review-round C, P1-A (2026-08-24): mirrors SDFGeometry.cpp's
+			//! own ComputeBounds envelope math (primLocalAABB, ~lines
+			//! 437-497) -- max(|rx|,|ry0|,|ry1|,|rz|), the local AABB's own
+			//! farthest corner from `pos`, per primitive.  Used ONLY by
+			//! SDFPartReachRadius_ below; NOT a general-purpose bounds
+			//! function (it does not need the box/roundbox axis remap
+			//! ComputeBounds does, since sqrt(a^2+b^2+c^2) is invariant to
+			//! which local axis each of a/b/c names).
+			Scalar SDFPartEnvelopeRadius_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				using SDFGeometry = RISE::Implementation::SDFGeometry;
+				switch( pt.type ) {
+					case SDFGeometry::ePrimSphere:
+						return pt.a;
+					case SDFGeometry::ePrimCapsule:
+						// ry0=-(|b|+a), ry1=|b|+a (primLocalAABB's own capsule
+						// case, including its negative-b half-height fix).
+						return std::fabs( pt.b ) + pt.a;
+					case SDFGeometry::ePrimSuperellipsoid:
+						// Same special case SDFPartCharacteristicDim_ already
+						// has: b/c are shape EXPONENTS, not extents -- the
+						// envelope is a ONLY (primLocalAABB's own comment:
+						// "same box as ePrimSphere... exact").  An earlier
+						// draft of this function missed this case entirely
+						// and fell through to the box formula, folding two
+						// exponents into a radius -- caught in review.
+						return pt.a;
+					case SDFGeometry::ePrimBox:
+						return static_cast<Scalar>( std::sqrt(
+							pt.a * pt.a + pt.b * pt.b + pt.c * pt.c ) );
+					case SDFGeometry::ePrimRoundBox: {
+						// Same max(half-extent, round) per axis
+						// SDFPartCharacteristicDim_'s roundbox case already
+						// applies (ComputeBounds' own "reaches max(half-
+						// extent, round)" comment), THEN the 3-axis corner
+						// distance -- round widens the corner, not just one
+						// axis.
+						const Scalar r  = std::max( pt.round, Scalar( 0 ) );
+						const Scalar ea = std::max( pt.a, r );
+						const Scalar eb = std::max( pt.b, r );
+						const Scalar ec = std::max( pt.c, r );
+						return static_cast<Scalar>( std::sqrt( ea * ea + eb * eb + ec * ec ) );
+					}
+					case SDFGeometry::ePrimCylinder:
+						// rx=rz=a, ry0=-b, ry1=b -- disc radius vs half-height.
+						return static_cast<Scalar>( std::sqrt( pt.a * pt.a + pt.b * pt.b ) );
+					case SDFGeometry::ePrimTorus:
+						// rx=rz=a+b, ry0=-b, ry1=b -- a+b dominates (b <= a+b).
+						return pt.a + pt.b;
+					case SDFGeometry::ePrimRoundCone:
+						// max(a,c+b) safely bounds primLocalAABB's own
+						// max(rx=max(a,b), |ry0|, ry1=max(a,c+b)) -- see the
+						// commit message for the proof (b <= c+b, and
+						// |ry0| <= c+b always, for every well-formed AND
+						// degenerate cone).
+						return std::max( pt.a, pt.c + pt.b );
+					default:
+						return std::max( pt.a, std::max( pt.b, pt.c ) );   // unreachable: every known SDFPrim is handled above
+				}
+			}
+
+			//! Review-round C, P1-A: the largest per-axis |scale| component
+			//! -- mirrors RecomputePartDerived's own minScale derivation
+			//! (SDFGeometry.cpp ~600-605) but MAX instead of MIN, since
+			//! Part carries no maxScale field of its own.  Reads pt.scale
+			//! RAW (no near-zero floor): a floor only matters for minScale,
+			//! where SDFGeometry.cpp floors to avoid a 1/0 invScale: MAX
+			//! never divides by anything, so a genuinely-zero scale on one
+			//! axis is correctly ignored by the other two, and flooring it
+			//! to 1e-9 would only ever LOWER an already-tiny candidate,
+			//! never change which axis wins the max.
+			Scalar SDFPartMaxScale_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				return std::max( std::fabs( pt.scale.x ),
+				         std::max( std::fabs( pt.scale.y ), std::fabs( pt.scale.z ) ) );
+			}
+
 			//! Review-round B, P1's proximity gate needs a "how far can this
-			//! part's OWN bulk reach from its `pos`" bound -- deliberately
-			//! the MAX of a/b/c (times minScale), the opposite choice from
-			//! SDFPartCharacteristicDim_'s MIN.  `pos` is a directional
-			//! primitive's BASE anchor, not its centroid (a roundcone's
-			//! `pos` sits at its y=0 cap, per the object-modeling-recipes
-			//! turned-profile idiom -- BuildSdfColumn's own generator chains
-			//! `pos.y = baseH`, `baseH+shaftH`, ...), so a long thin shaft's
-			//! FAR end (where it touches the next segment) sits `c` away
-			//! from `pos`, not `min(a,b)` away.  Using the min-based
-			//! characteristic dim here made every genuinely-touching but
-			//! elongated join (a tall column shaft, a long capsule) look
-			//! "out of reach" of its own neighbour -- caught in calibration
-			//! (BuildSdfColumn's capital join fired on 29/45 jittered draws
-			//! before this; the shaft segment's true touching point was
-			//! being measured `shaftH` away from where this looked).  A
-			//! plain max(a,b,c) is a cheap, defensible over-estimate: it
-			//! never UNDER-reaches (so it can only pull in an extra
-			//! candidate for the size-comparison sweep above to then
-			//! correctly reject on mismatch, never miss a real neighbour),
-			//! at the cost of occasionally over-including a distant part in
-			//! a very elongated or very large chunk -- acceptable because
-			//! the actual FIRE decision still runs through the size-
-			//! mismatch gate, not this reach test alone.
+			//! part's OWN bulk reach from its `pos`" bound.  `pos` is a
+			//! directional primitive's BASE anchor, not its centroid (a
+			//! roundcone's `pos` sits at its y=0 cap, per the object-
+			//! modeling-recipes turned-profile idiom -- BuildSdfColumn's own
+			//! generator chains `pos.y = baseH`, `baseH+shaftH`, ...), so a
+			//! long thin shaft's FAR end (where it touches the next
+			//! segment) sits `c` away from `pos`, not `min(a,b)` away.
+			//!
+			//! Review-round C, P1-A (2026-08-24): an EARLIER draft of this
+			//! function used max(a,b,c)*minScale, which review-round B's
+			//! own doc comment claimed "never under-reaches" -- FALSE on
+			//! two counts, both caught in review and fixed here.  (1)
+			//! max(a,b,c) is not the true per-primitive envelope radius --
+			//! e.g. a roundcone's true reach is max(a,c+b), which can
+			//! exceed max(a,b,c) whenever c is the largest of the three
+			//! params (a tall thin cone).  SDFPartEnvelopeRadius_ now
+			//! mirrors SDFGeometry.cpp's own ComputeBounds math exactly.
+			//! (2) minScale is the WRONG-DIRECTION scale factor for a reach
+			//! bound under ANISOTROPIC scale: minScale is correct for
+			//! SDFPartCharacteristicDim_ (the THINNEST feature a blend can
+			//! dissolve shrinks with the smallest axis), but reach needs
+			//! the part's FARTHEST possible extent, which grows with the
+			//! LARGEST axis.  A real dreamscape part at scale (1.8, 1.0,
+			//! 0.22) reached maxScale/minScale = 8.2x farther than the old
+			//! formula credited it for -- exactly the "genuinely touching
+			//! but looks out of reach" failure mode P1 was originally
+			//! written to fix, reopened via this new path.  Red-proved:
+			//! reverting to max(a,b,c)*minScale fails the new anisotropic-
+			//! scale fixture in tests/AgentReadValidateTest.cpp.
 			Scalar SDFPartReachRadius_( const RISE::Implementation::SDFGeometry::Part& pt )
 			{
-				const Scalar m = std::max( pt.a, std::max( pt.b, pt.c ) );
-				return m * pt.minScale;
+				return SDFPartEnvelopeRadius_( pt ) * SDFPartMaxScale_( pt );
 			}
 
 			//! The part-grammar's own primitive keyword, for the clause's
@@ -4670,36 +4803,57 @@ namespace RISE
 										// current-part-only comparison.  Sweep prior parts,
 										// proximity-gated (blend influence extends ~k, so
 										// only a prior part whose OWN REACH -- SDFPartReach
-										// Radius_'s max-based bound, not the min-based
-										// characteristic dim -- comes within ~k of this part's
-										// own reach is plausibly what it is joining into) --
-										// cheap: positions/dims are already parsed, this is an
-										// O(n) scan of doubles, no shape re-evaluation.
+										// Radius_'s envelope-based bound -- comes within ~k
+										// of this part's own reach is plausibly what it is
+										// joining into) -- cheap: positions/dims are already
+										// parsed, this is an O(n) scan of doubles, no shape
+										// re-evaluation.
 										//
-										// Among the candidates that pass the gate, pick the
-										// CLOSEST one (smallest surface gap, distance minus
-										// the two reach radii), not the smallest-dimensioned
-										// one -- calibration caught the difference: a same-
-										// sized SIBLING feature (se_creature's other leg) can
-										// sit within the generous max-based reach radius of a
-										// long/thin part without being what it is actually
-										// touching, and picking "smallest dim among anything
-										// nearby" let that sibling silently replace the real
-										// neighbour (the torso) and mask a genuine defect.
-										// "Nearest by gap" answers "what does this part's own
-										// surface actually meet", which is what a smin join
-										// physically means.
+										// Review-round C, P3-a: SUBTRACT/INTERSECT prior parts
+										// are excluded from the sweep entirely -- a carved
+										// cavity (a socket, a bore) is not a "feature" this
+										// join could dissolve; it REMOVES mass, so treating
+										// its dimension as a candidate small-part-to-protect
+										// would be a category error, not a defensible
+										// approximation.
+										//
+										// Among the REMAINING (smin/union) candidates that
+										// pass the reach gate, pick the one with the smallest
+										// RAW DISTANCE -- not the smallest surface GAP.
+										// Review-round C: gap (distance minus BOTH reach
+										// radii) double-counts bulk as proximity -- a large,
+										// far-away part's own big reach radius can make its
+										// gap read smaller (more negative) than a small,
+										// truly-touching part's, wrongly crowning the bulky
+										// far part "nearest".  Raw distance has no such bias.
+										// The reach radii still gate INCLUSION (permissive,
+										// so a genuinely touching elongated part is never
+										// excluded for looking "far" by pos-to-pos distance
+										// alone -- P1's original problem); only the TIE-BREAK
+										// among included candidates switched.  This still
+										// avoids the ORIGINAL sibling-swallowing failure
+										// (se_creature's second leg picking the first leg
+										// instead of the torso): the torso sits genuinely
+										// closer to each leg by raw distance too, so raw-
+										// distance and gap agree there -- the two metrics
+										// differ only in the far-bulky-part regime gap
+										// mishandles.
 										const Scalar reachCur = SDFPartReachRadius_( pt );
 										Scalar priorMinDim = -1.0;
-										Scalar bestGap = 0.0;
+										Scalar bestDistance = 0.0;
 										for( std::size_t pj = 0; pj < pi; ++pj ) {
 											const RISE::Implementation::SDFGeometry::Part& prevPt = parts[pj];
+											if( prevPt.op == RISE::Implementation::SDFGeometry::eOpSubtract ||
+											    prevPt.op == RISE::Implementation::SDFGeometry::eOpIntersect ) continue;
 											const Scalar prevDim = SDFPartCharacteristicDim_( prevPt );
 											if( prevDim <= 0.0 ) continue;
 											const Scalar prevReach = SDFPartReachRadius_( prevPt );
-											const Scalar gap = SDFPartDistance_( pt, prevPt ) - prevReach - reachCur;
+											const Scalar distance = SDFPartDistance_( pt, prevPt );
+											const Scalar gap = distance - prevReach - reachCur;
 											if( gap > Scalar( 2 ) * pt.k ) continue;   // out of reach
-											if( priorMinDim < 0.0 || gap < bestGap ) { priorMinDim = prevDim; bestGap = gap; }
+											if( priorMinDim < 0.0 || distance < bestDistance ) {
+												priorMinDim = prevDim; bestDistance = distance;
+											}
 										}
 										const Scalar dimEffective = ( priorMinDim >= 0.0 )
 											? std::min( dimCur, priorMinDim ) : dimCur;
@@ -4720,7 +4874,12 @@ namespace RISE
 										// size check alone (a rare false positive on an
 										// unusual layout beats silently missing a genuinely
 										// isolated small feature).
-										if( priorMinDim >= 0.0 ) {
+										// Review-round C, P2-1: the total-dissolve bypass --
+										// checked FIRST, so a same-size join that k has
+										// nonetheless dissolved entirely is never silenced by
+										// the mismatch gate below.
+										const bool totalDissolve = ( pt.k >= dimEffective * kTotalDissolveGate );
+										if( !totalDissolve && priorMinDim >= 0.0 ) {
 											const Scalar mismatch = ( dimCur > priorMinDim )
 												? ( dimCur / priorMinDim ) : ( priorMinDim / dimCur );
 											if( mismatch < kSizeMismatchGate ) continue;
@@ -12594,52 +12753,79 @@ namespace RISE
 
 		const std::set<std::string>& AgentSession::CameraFramingParamNames_( const std::string& cameraKind )
 		{
-			// Built ONCE per kind, first call -- these are the descriptor's
-			// OWN parameter names, never re-typed: the curated candidate
-			// list below picks which of AddCameraCommonParams' shared pose
-			// params (plus each kind's own field-of-view control) actually
-			// change WHAT IS IN FRAME, then keeps only the ones the real
-			// descriptor still declares -- so a future rename can only ever
-			// shrink this set, never leave it silently comparing against a
-			// name the parser no longer accepts.
+			// These are the descriptor's OWN parameter names, never
+			// re-typed: the curated candidate list below picks which of
+			// AddCameraCommonParams' shared pose params (plus each kind's
+			// own field-of-view control) actually change WHAT IS IN
+			// FRAME, then keeps only the ones the real descriptor still
+			// declares -- so a future rename can only ever shrink this
+			// set, never leave it silently comparing against a name the
+			// parser no longer accepts.
+			//
+			// Review-round C, P1-B (2026-08-24): EAGER, built ONCE for
+			// every camera kind inside this function-local static
+			// initializer's immediately-invoked lambda -- magic statics
+			// ([stmt.dcl]p4) guarantee the one-time INITIALIZATION itself
+			// is thread-safe, and kCache is never mutated again after
+			// that, so concurrent READS need no further synchronization.
+			// An EARLIER draft lazily emplaced into a MUTABLE static map
+			// on first lookup per kind -- unguarded, and AgentSession.h's
+			// own doc (~2064-2066) records the hosted-MCP topology
+			// running a SECOND AgentSession on its own thread: two
+			// sessions' first-ever lookups could race inside std::map::
+			// emplace, which is UB.  The candidate set is small and fixed
+			// (five camera keywords, three of them ever populated), so
+			// eager beats a mutex outright -- no lock on this read path
+			// at all, hot or not.  (Verified this is the ONLY lazily-
+			// populated mutable function-local static this arc added to
+			// AgentSession.cpp -- every other new cache in this file,
+			// ChatTrajectory.cpp's dedup state included, is either a
+			// per-instance member or, like this one, now eager.)
 			static const std::set<std::string> kEmpty;
-			static std::map<std::string, std::set<std::string>> cache;
-			const std::map<std::string, std::set<std::string>>::const_iterator hit = cache.find( cameraKind );
-			if( hit != cache.end() ) return hit->second;
-
-			std::set<std::string> candidates = {
-				"location", "lookat", "up",
-				"orientation", "pitch", "roll", "yaw",
-				"theta", "phi", "target_orientation",
-			};
-			if( cameraKind == "pinhole_camera" || cameraKind == "onb_pinhole_camera" ) {
-				candidates.insert( "fov" );
-			} else if( cameraKind == "thinlens_camera" ) {
-				// Thinlens has no `fov` param -- focal_length/sensor_size
-				// derive its field of view instead (ChunkParserRegistry.cpp's
-				// thinlens_camera descriptor).  Deliberately EXCLUDES
-				// focus_distance/aperture_*/tilt_*/shift_* -- those are DOF
-				// and lens-correction controls that change how the frame
-				// looks, not what is in it.
-				candidates.insert( "focal_length" );
-				candidates.insert( "sensor_size" );
-			} else {
-				// Out of scope for this fix (fisheye_camera/orthographic_
-				// camera/a kind FrameScene never produces) -- no candidates,
-				// so NoteCameraFramingPatchIfQualifying_ never fires for one.
-				return cache.emplace( cameraKind, kEmpty ).first->second;
-			}
-
-			std::set<std::string> filtered;
-			const ChunkDescriptor* d = DescriptorForKeyword( String( cameraKind.c_str() ) );
-			if( d ) {
-				for( const std::string& name : candidates ) {
-					for( std::size_t i = 0; i < d->parameters.size(); ++i ) {
-						if( d->parameters[i].name == name ) { filtered.insert( name ); break; }
+			static const std::map<std::string, std::set<std::string>> kCache = []{
+				std::map<std::string, std::set<std::string>> m;
+				static const char* const kPopulatedKinds[] = {
+					"pinhole_camera", "onb_pinhole_camera", "thinlens_camera"
+				};
+				for( const char* kind : kPopulatedKinds ) {
+					std::set<std::string> candidates = {
+						"location", "lookat", "up",
+						"orientation", "pitch", "roll", "yaw",
+						"theta", "phi", "target_orientation",
+					};
+					const std::string kindStr( kind );
+					if( kindStr == "thinlens_camera" ) {
+						// Thinlens has no `fov` param -- focal_length/
+						// sensor_size derive its field of view instead
+						// (ChunkParserRegistry.cpp's thinlens_camera
+						// descriptor).  Deliberately EXCLUDES focus_
+						// distance/aperture_*/tilt_*/shift_* -- those are
+						// DOF and lens-correction controls that change how
+						// the frame looks, not what is in it.
+						candidates.insert( "focal_length" );
+						candidates.insert( "sensor_size" );
+					} else {
+						candidates.insert( "fov" );
 					}
+					std::set<std::string> filtered;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( kind ) );
+					if( d ) {
+						for( const std::string& name : candidates ) {
+							for( std::size_t i = 0; i < d->parameters.size(); ++i ) {
+								if( d->parameters[i].name == name ) { filtered.insert( name ); break; }
+							}
+						}
+					}
+					m[kindStr] = filtered;
 				}
-			}
-			return cache.emplace( cameraKind, filtered ).first->second;
+				return m;
+			}();
+			// fisheye_camera/orthographic_camera/anything else is out of
+			// scope for this fix (a kind FrameScene never produces) --
+			// falls through to kEmpty, so NoteCameraFramingPatchIfQualifying_
+			// never fires for one.
+			const std::map<std::string, std::set<std::string>>::const_iterator hit = kCache.find( cameraKind );
+			return ( hit != kCache.end() ) ? hit->second : kEmpty;
 		}
 
 		void AgentSession::NoteCameraFramingPatchIfQualifying_( const AgentSetPatch& patch, bool applied )
@@ -12671,14 +12857,11 @@ namespace RISE
 
 			std::sort( dropped.begin(), dropped.end() );
 			const bool plural = dropped.size() != 1;
-			const std::size_t cap = 3;
-			std::string list;
-			const std::size_t shown = ( dropped.size() > cap ) ? cap : dropped.size();
-			for( std::size_t i = 0; i < shown; ++i ) {
-				if( i ) list += ", ";
-				list += "`" + dropped[i] + "`";
-			}
-			if( shown < dropped.size() ) list += ", and " + std::to_string( dropped.size() - shown ) + " more";
+			// Review-round C, P3-b: FormatBoundedNameList_ (the SAME
+			// cap-3/"and N more" convention condition J/K's clauses use)
+			// instead of a private reimplementation -- one bounding rule,
+			// not a second one that could quietly drift from it.
+			const std::string list = FormatBoundedNameList_( dropped );
 
 			rr.coverageDeltaNote =
 				"COVERAGE DELTA: this render's camera no longer covers " +

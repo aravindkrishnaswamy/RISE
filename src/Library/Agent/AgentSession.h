@@ -9302,6 +9302,24 @@ namespace RISE
 			//! 20260824T224346Z: frame_scene covered the cat, a later
 			//! fov-42 patch cropped it, the render response said nothing,
 			//! and the model reported success anyway).
+			//!
+			//! REVIEW-ROUND C, P3-b: this and its two sibling flags below
+			//! carry NO document/head-version identity of their own -- they
+			//! implicitly trust that `mJob` (this session's ONE document,
+			//! for its whole lifetime) never gets silently replaced with a
+			//! DIFFERENT scene out from under them.  That invariant holds
+			//! today by construction: grep confirms `mJob` is assigned
+			//! exactly once, at WrapJob/construction, and cleared to
+			//! nullptr only on teardown -- AgentSession is 1:1 with the
+			//! document it was built against ("session-per-document-
+			//! load"), never repointed at a second one.  If a future slice
+			//! ever adds a "load a different document into this SAME
+			//! session" verb, that verb MUST also reset these three fields
+			//! (mirroring EmitSession's reset on ChatTrajectoryRecorder's
+			//! dedup baseline for exactly the same reason) -- otherwise a
+			//! stale baseline from the OLD document could name an object
+			//! that means nothing in the new one, or worse, coincidentally
+			//! collide with a same-named object in it.
 			std::set<std::string> mFrameSceneBaselineCovered;
 			//! True once mFrameSceneBaselineCovered has been stamped by a
 			//! successful FrameScene "after" measurement.  Distinct from

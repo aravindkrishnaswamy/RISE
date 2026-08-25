@@ -1877,6 +1877,21 @@ static void RunSDFBlendScaleScanTest()
 		// characteristic dimension is min(a,b) = the tip) joined via smin
 		// at k=0.012, exactly 3x the tip radius -- must fire, naming the
 		// chunk, the part index, the primitive kind, k, and the max bound.
+		//
+		// Review-round C, P3-a: this fixture is ALSO the in-tree source
+		// for kSizeMismatchGate's own doc comment's cited "12.5" ratio
+		// (previously cited from an out-of-band session, not a committed
+		// fixture) -- worked here so a reader can check it against
+		// COMMITTED numbers, not take it on faith: dimCur = min(a,b) =
+		// 0.004 (the ear).  The sphere head is the only prior part, dim
+		// 0.05, within reach (distance 0.05, well inside its own +
+		// the ear's envelope radii plus 2k).  priorMinDim = 0.05, so
+		// mismatch = max(dimCur, priorMinDim) / min(...) = 0.05 / 0.004
+		// = 12.5 -- comfortably past kSizeMismatchGate (3.0), which is
+		// why this fires on genuine size mismatch alone (independent of
+		// the k >= dimEffective total-dissolve bypass, kTotalDissolveGate
+		// 5.0 -- this join's own k/dimEffective is 0.012/0.004 = 3.0,
+		// under that bypass's own gate).
 		const std::string docCatEar =
 			"RISE ASCII SCENE 7\n"
 			"sdf_geometry\n{\n\tname apothecary_cat_head\n"
