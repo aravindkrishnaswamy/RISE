@@ -16,6 +16,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		return unsetenv(name)==0;
 #endif
 	};
+	auto continueDrainAwareRetry=[&](const unsigned int candidate,const double step){
+		return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
+			candidate,step);
+	};
 	static const char* checkpointDigest=
 		"1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947";
 	static const std::array<const char*,8> beginningDigests={{
@@ -29,6 +33,21 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"000a7fe24c64b00a61ec6256b75d0403a193100752abacb39e9f68149f20402b"}};
 	if(DigestFile(checkpointPath)!=checkpointDigest){std::fprintf(stderr,
 		"production golden composition checkpoint digest mismatch\n");return 110;}
+	const char* retryControllerREDValue=std::getenv(
+		"RISE_FIRE_DRAIN_AWARE_RETRY_CONTROLLER_RED");
+	if(retryControllerREDValue&&std::strcmp(retryControllerREDValue,"1")!=0)return 203;
+	if(retryControllerREDValue){
+		if(manifoldRetryCandidate==0u&&manifoldRetryStepS==0.0)
+			return continueDrainAwareRetry(1u,0x1p-11);
+		if(manifoldRetryCandidate==1u&&manifoldRetryStepS==0x1p-11)
+			return continueDrainAwareRetry(2u,0x1p-12);
+		if(manifoldRetryCandidate==2u&&manifoldRetryStepS==0x1p-12){
+			std::fprintf(stderr,"DRAIN_AWARE_RETRY_CONTROLLER_RED candidates=0,1,2 "
+				"cap=%u golden=%s\n",RISE::FireStepRejectionRetryCap,checkpointDigest);
+			return 204;
+		}
+		return 203;
+	}
 	const std::array<std::uint64_t,8> stepBits={{
 		4543432537948766955ull,4544197666642132584ull,4544654590867399846ull,
 		4545157207515193834ull,4545710085827767221ull,4546318251971597947ull,
@@ -2322,16 +2341,22 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 							std::numeric_limits<unsigned int>::max(),production,
 							redCandidate,redStep)==
 						RISE::FireProductionResidentStepAttemptDisposition::Rejected;
-					RISE::FireProductionResidentStepResult mutated=production;
-					if(mutated.conservativeValues.empty())mutatedAcceptedPayloadRejected=false;
+					if(production.conservativeValues.empty())mutatedAcceptedPayloadRejected=false;
 					else{
-						std::uint32_t bits=0u;std::memcpy(&bits,&mutated.conservativeValues[0],
-							sizeof(bits));++bits;std::memcpy(&mutated.conservativeValues[0],&bits,
-							sizeof(bits));
+						std::uint32_t bits=0u;std::memcpy(&bits,&production.conservativeValues[0],
+							sizeof(bits));const std::uint32_t originalBits=bits;++bits;
+						std::memcpy(&production.conservativeValues[0],&bits,sizeof(bits));
 						mutatedAcceptedPayloadRejected=
+							production.HasAcceptedManifoldToken()&&
 							RISE::ClassifyFireProductionResidentStepAttempt(
-								effectiveManifoldRetryCandidate,mutated,redCandidate,redStep)==
-							RISE::FireProductionResidentStepAttemptDisposition::Rejected;
+								effectiveManifoldRetryCandidate,production,redCandidate,redStep)==
+								RISE::FireProductionResidentStepAttemptDisposition::Rejected;
+						std::memcpy(&production.conservativeValues[0],&originalBits,sizeof(originalBits));
+						mutatedAcceptedPayloadRejected=mutatedAcceptedPayloadRejected&&
+							production.HasAcceptedManifoldToken()&&
+							RISE::ClassifyFireProductionResidentStepAttempt(
+								effectiveManifoldRetryCandidate,production,redCandidate,redStep)==
+								RISE::FireProductionResidentStepAttemptDisposition::Accepted;
 					}
 				}
 				const bool retryAccepted=effectiveManifoldRetryCandidate>0u&&productionSucceeded&&
@@ -2397,8 +2422,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					production=RISE::FireProductionResidentStepResult();
 					request=RISE::FireProductionResidentStepRequest();
 					beginning=MethaneRunCheckpoint();
-					return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
-						nextRetryCandidate,followingManifoldStep);
+					return continueDrainAwareRetry(nextRetryCandidate,followingManifoldStep);
 				}
 				return 212;
 			}

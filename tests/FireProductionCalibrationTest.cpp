@@ -1523,7 +1523,7 @@ int main()
 	Check(!drainAwareRetryEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(drainAwareRetryEvidence.begin(),
 			drainAwareRetryEvidence.end()))==
-		"f6f7881a05f53a289717e00f8032f9b33162b131514a79ceee91a521652a25cb"&&
+		"0128452a66d3b4e63211030584ad38f13f681427dbf9065c03e717900c218106"&&
 		drainAwareRetryEvidence.find("candidate_0_refusal_reproduced true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_represented_dt "
@@ -1540,6 +1540,12 @@ int main()
 			"candidate_index_below_cap_before_accept_or_increment")!=std::string::npos&&
 		drainAwareRetryEvidence.find("retry_acceptance_authority "
 			"producer_token_revalidated_against_current_payload")!=std::string::npos&&
+		drainAwareRetryEvidence.find("retry_payload_mutation_RED "
+			"authentic_token_retained_mutate_classify_restore_reaccept")!=
+			std::string::npos&&
+		drainAwareRetryEvidence.find("retry_controller_RED "
+			"candidates_0_1_2_through_actual_recursive_continuation")!=
+			std::string::npos&&
 		forceHeader.find("ClassifyFireProductionResidentStepAttempt")!=std::string::npos&&
 		drainAwareRetryEvidence.find("accepted_path_final_wall_p95_ms 151.894375")!=
 			std::string::npos&&
@@ -1556,9 +1562,9 @@ int main()
 		!drainAwareRetryRawMeasurement.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			drainAwareRetryRawMeasurement.begin(),drainAwareRetryRawMeasurement.end()))==
-			"d71277b19b107872b8d2486b3491beb6a3ddc813d4b11505ceaaaf6fb5372c84"&&
+			"e812eef43817ff7d4039b82177cd7084f9aff680d8d3d82ce19a76fb5a050d7b"&&
 		drainAwareRetryEvidence.find("raw_measurement_trace_sha256 "
-			"d71277b19b107872b8d2486b3491beb6a3ddc813d4b11505ceaaaf6fb5372c84")!=
+			"e812eef43817ff7d4039b82177cd7084f9aff680d8d3d82ce19a76fb5a050d7b")!=
 			std::string::npos&&
 		drainAwareRetryRawMeasurement.find("DRAIN_AWARE_PLATEAU_RETRY_CONTINUE "
 			"refused_candidate=0")!=std::string::npos&&
@@ -1572,6 +1578,8 @@ int main()
 			"16bba8260bb71a7bc28e5af174efd970b189fa6404d252d755fe5bcd9d0baaf6")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("retry_acceptance_exact_exit 206")!=
+			std::string::npos&&
+		drainAwareRetryEvidence.find("retry_controller_RED_exact_exit 204")!=
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
@@ -1602,7 +1610,7 @@ int main()
 			"0d77432eb9e4ccf4e76829ce230f82037435abfb33a437abb062096dde6f9057"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"8f13e036a35cf7727447de8011f0287d87db2adf4da1ade0d7aa7e0e546ea466"&&
+			"e09479ad8f4b5bafa255f87016c247a69c1d4e2abd7bdba8261cd9ab5b522605"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
@@ -1620,7 +1628,7 @@ int main()
 			"f8ce31ee45872933069bd7af818ab3747b3152032dc724e9544b96520115bb91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"219c1232932997a4758c0543ba781c3e26aa1da937f4459ca6a8100b1d845acd"&&
+			"f468bf7b1fc0b5a7d9b6b0c53e24b90e863ecc10b4a2d182b92ff9585c0dcf97"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			timestepVelocityBenchmarkOptions.begin(),timestepVelocityBenchmarkOptions.end()))==
 			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&

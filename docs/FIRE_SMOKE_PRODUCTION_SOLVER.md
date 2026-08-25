@@ -3793,7 +3793,10 @@ rejects the cap boundary, and accepts an authorized plateau pass at any
 candidate. Candidate range is checked before acceptance or increment, and an
 accepted disposition revalidates the producer token against the current
 diagnostics and complete payload, so unsigned wrap and post-attempt mutation
-both reject. The equal-time protocol owner remains responsible for rebuilding the
+both reject.  The payload RED mutates and restores the authentic token-bearing
+result in place, and a no-Metal `0 -> 1 -> 2` RED traverses the same recursive
+continuation seam as the real owner, so later-candidate continuation is live.
+The equal-time protocol owner remains responsible for rebuilding the
 independently sealed target before invoking the next attempt.
 This is more informed than blind halving and does not alter the hard ceiling or
 headroom allowance.  The r162 wording that step 1 is “already legal” meant

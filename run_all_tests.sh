@@ -712,15 +712,18 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	closure_cfl_log="$LOG_DIR/$closure_name.cfl.log"
 	closure_contraction_log="$LOG_DIR/$closure_name.contraction.log"
 	closure_limited_log="$LOG_DIR/$closure_name.limited.log"
+	closure_controller_log="$LOG_DIR/$closure_name.controller.log"
 	closure_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
 	printf '[ evidence ] %-46s ... ' "$closure_name"
 	closure_cfl_rc=0
 	closure_contraction_rc=0
 	closure_limited_rc=0
+	closure_controller_rc=0
 	if [ ! -x "$closure_path" ]; then
 		closure_cfl_rc=127
 		closure_contraction_rc=127
 		closure_limited_rc=127
+		closure_controller_rc=127
 	elif [ -n "$timeout_bin" ]; then
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$closure_options" \
 			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_path" \
@@ -740,6 +743,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
+		RISE_FIRE_DRAIN_AWARE_RETRY_CONTROLLER_RED=1 \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_controller_log" 2>&1 || closure_controller_rc=$?
 	else
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_OPTIONS_FILE="$closure_options" \
 			"$closure_path" --fire-production-golden-composition \
@@ -756,9 +764,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$closure_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
 			"$REPO_ROOT" >"$closure_limited_log" 2>&1 || closure_limited_rc=$?
+		RISE_FIRE_DRAIN_AWARE_RETRY_CONTROLLER_RED=1 \
+			"$closure_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_controller_log" 2>&1 || closure_controller_rc=$?
 	fi
 	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_contraction_rc" -eq 217 ] &&
-		[ "$closure_limited_rc" -eq 206 ] &&
+		[ "$closure_limited_rc" -eq 206 ] && [ "$closure_controller_rc" -eq 204 ] &&
+		grep -Fq 'DRAIN_AWARE_RETRY_CONTROLLER_RED candidates=0,1,2 cap=20 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_controller_log" &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
@@ -787,7 +800,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED candidate=1 dt=0.00055692793102934957 field_max=0.023429989814758301 allowance=0.0234375 next_dt=0.00055690890514272363 accepted_token=1' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
 		echo 'PASS (exact exit=206, drain-aware retry acceptance)'
-		rm -f "$closure_cfl_log" "$closure_contraction_log" "$closure_limited_log"
+		rm -f "$closure_cfl_log" "$closure_contraction_log" "$closure_limited_log" "$closure_controller_log"
 	else
 		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 206)"
 		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
