@@ -2808,6 +2808,69 @@ static void TestProposePatchOccurrence()
 		}
 		std::remove( tmp.c_str() );
 	}
+
+	// (d) review round P3(b): a NEGATIVE occurrence hits AgentSetPatch's
+	// OWN guard directly at the struct/session layer -- not just the
+	// RPC-layer JSON validation (AgentRpc.cpp's `occ->asNumber() >= 0.0`
+	// check), which a caller building the struct in-process (any embedder
+	// other than the JSON-RPC surface) never goes through.
+	{
+		const std::string tmp = TempPath( "agentcrud_occ_d.RISEscene" );
+		Job* pJob = LoadScene( kSkeletonPatchScene, tmp );
+		Check( pJob != nullptr, "1b(d) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			Agent::AgentSetPatch p;
+			p.target        = "occ_skel";
+			p.kind          = "skeleton_geometry";
+			p.param         = "joint";
+			p.value         = "c b 0 3 0 0.222";
+			p.hasOccurrence = true;
+			p.occurrence    = -1;
+			const Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( !r.applied && r.status == "rejected",
+			       "1b(d) MONEY: a negative occurrence is REJECTED at the AgentSession layer directly, "
+			       "not only at the JSON-RPC parse boundary" );
+			Check( sess->ReadDocument() == before, "1b(d) document is byte-identical after the refusal" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) review round P2-2: occurrence 0 on an UNSPELLED param is a
+	// legal INSERT, not an out-of-range refusal. `obj_skel` never spells
+	// `casts_shadows` (defaults true) -- addressing occurrence 0 of it
+	// explicitly must still succeed, mirroring SceneEditController's
+	// Rewire path carve-out (`occurrence > 0 && occurrence >= count`, so
+	// occurrence 0 is NEVER refused for range regardless of count).
+	{
+		const std::string tmp = TempPath( "agentcrud_occ_e.RISEscene" );
+		Job* pJob = LoadScene( kSkeletonPatchScene, tmp );
+		Check( pJob != nullptr, "1b(e) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Check( sess->ReadDocument().find( "casts_shadows" ) == std::string::npos,
+			       "1b(e) PRECONDITION: `casts_shadows` is genuinely unspelled on obj_skel" );
+			Agent::AgentSetPatch p;
+			p.target        = "obj_skel";
+			p.kind          = "standard_object";
+			p.param         = "casts_shadows";
+			p.value         = "false";
+			p.hasOccurrence = true;
+			p.occurrence    = 0;
+			const Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( r.applied && r.status == "applied",
+			       "1b(e) MONEY: occurrence 0 on an unspelled param INSERTS and applies -- not refused as "
+			       "\"out of range for 0 occurrences\" (got status=`" + r.status + "` message=`" + r.message + "`)" );
+			Check( sess->ReadDocument().find( "casts_shadows" ) != std::string::npos,
+			       "1b(e) the param is now spelled in the document" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
 }
 
 //----------------------------------------------------------------------

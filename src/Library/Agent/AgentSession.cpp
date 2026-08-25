@@ -6480,6 +6480,23 @@ namespace RISE
 			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
 			AttributePatchOnApply_ s1Attr{ *this, r, std::string(), std::string() };
 
+			// P3(e) fix-round PERF NOTE: this precheck pays its own
+			// ReadDocumentSnapshot() + ParseToCst() -- a full extra parse
+			// on every occurrence-addressed patch, even though BOTH
+			// commit paths below (mController's orphan-pressure snapshot,
+			// and the headless path's `*mJob->GetCstDocument()`) end up
+			// with a parsed Document of their own moments later. Not
+			// deduplicated: this precheck sits BEFORE the mController/
+			// headless split (deliberately -- see its own doc, "so a
+			// live GUI session gets the identical guarantee"), so no
+			// already-parsed Document exists yet at this point in either
+			// mode; sharing one would mean hoisting the parse above the
+			// split and threading it into both branches' own
+			// snapshot/orphan-check logic, a real restructuring with its
+			// own risk, not a local tweak. Cheap in absolute terms next
+			// to a render; left as a known, bounded cost rather than a
+			// silent one.
+			//
 			// 1b fix-round (2026-08-25): an OUT-OF-RANGE `occurrence` must be
 			// a visible REFUSAL, not a silent success.  `RISE::Cst::
 			// DocSetOrAddParamValue` (the primitive underneath BOTH the live
@@ -6507,6 +6524,23 @@ namespace RISE
 				const AgentDocumentSnapshot occSnap = ReadDocumentSnapshot();
 				if( occSnap.hasDocument ) {
 					const RISE::Cst::Document occDoc = RISE::Cst::ParseToCst( occSnap.document );
+					// P3(d) fix-round note: this `uniqueFallback` is the
+					// GENERAL empty-target/non-empty-kind singleton rule
+					// only -- it deliberately does NOT replicate Job::
+					// ApplyCstParamEditImpl_'s camera-specific fallback
+					// (DocCameraUniqueFallbackPermitted, which ALSO permits
+					// resolving-by-position for a NAMED camera in a
+					// single-camera document). A camera-kind patch that only
+					// the fuller rule would resolve fails to resolve HERE
+					// (occId stays 0), so this whole occurrence-range
+					// precheck is silently SKIPPED for it -- intended, not a
+					// gap: skipping the precheck just defers occurrence-range
+					// validation to the real commit path below, which uses
+					// the fuller rule and is authoritative anyway. This
+					// precheck exists to upgrade a SILENT no-op into a
+					// visible refusal (see its own doc above); it is never
+					// the only thing standing between a bad occurrence and a
+					// write.
 					const bool uniqueFallback = patch.target.empty() && !patch.kind.empty();
 					const RISE::Cst::NodeId occId = RISE::Cst::DocFindByNameAnyRole(
 						occDoc, patch.target, nullptr, patch.kind, uniqueFallback );
@@ -6514,8 +6548,27 @@ namespace RISE
 						const NodeRef occItem = RISE::Cst::DocResolveNodeId( occDoc, occId );
 						if( occItem ) {
 							const std::size_t occCount = ChunkParamOccurrences_( occItem, patch.param ).size();
+							// P2-2 fix-round: occurrence 0 on an UNSPELLED param
+							// (occCount == 0) is NOT out of range -- it is a
+							// legal INSERT (DocSetOrAddParamValue's own INSERT
+							// arm exists precisely for this: `param` has never
+							// been written on this chunk yet, and occurrence 0
+							// is the only occurrence an insert can ever target).
+							// SAME carve-out SceneEditController's Rewire path
+							// already applies (`occurrence > 0 && occurrence >=
+							// count`, not a bare `>= count`) -- mirrored here,
+							// not re-derived, so the two never drift. Without
+							// it, patching a param a chunk had never spelled at
+							// all (a defaulted slot, exactly the property
+							// panel's own motivating case for the Rewire
+							// carve-out) was refused as "occurrence 0 is out of
+							// range for 0 occurrences", which is backwards: 0 of
+							// 0 is the ONE occurrence an insert can legally
+							// address. A negative occurrence is refused
+							// unconditionally -- there is no "insert at -1".
 							if( patch.occurrence < 0 ||
-							    static_cast<std::size_t>( patch.occurrence ) >= occCount ) {
+							    ( patch.occurrence > 0 &&
+							      static_cast<std::size_t>( patch.occurrence ) >= occCount ) ) {
 								r.applied     = false;
 								r.rawCode     = 0;
 								r.status      = "rejected";
@@ -33971,6 +34024,29 @@ namespace RISE
 							( stillFiringCount == 1 ? std::string() : std::string( "s" ) ) +
 							" still fired after " + std::to_string( kFixBlendScaleMaxPasses ) +
 							" passes (see per-joint detail): call again";
+					// P2-1 (fix-round, 2026-08-25): a MIXED-SCOPE call -- one
+					// chunk gate-skipped by the mass-clamp caveat, a DIFFERENT
+					// chunk genuinely clamped -- used to report only the
+					// clamp, with the skip note silently dropped (it was read
+					// ONLY inside the `flat.empty()` early return above, never
+					// reachable once ANY chunk had real offenders to clamp).
+					// A caller reading a clean "N joints clamped" success had
+					// no way to learn a sibling chunk was deliberately left
+					// alone, and `offendersFound` (the TRUE total across
+					// scope) would silently exceed fixedCount+remainingCount
+					// with no explanation. Append here too, unconditionally
+					// once there's anything to say -- same bounded-list
+					// join as the flat.empty() branch, just appended rather
+					// than replacing the clamp summary.
+					if( !massClampSkipNotes.empty() ) {
+						m += " -- " + std::to_string( massClampSkipNotes.size() ) + " chunk" +
+							( massClampSkipNotes.size() == 1 ? std::string() : std::string( "s" ) ) +
+							" skipped (mass-clamp caveat): ";
+						for( std::size_t i = 0; i < massClampSkipNotes.size(); ++i ) {
+							if( i ) m += "; ";
+							m += massClampSkipNotes[i];
+						}
+					}
 				}
 				else if( commit.status == "diagnosed" ) {
 					m = "fix_blend_scale NOT a clean success: the Document was mutated and the live "

@@ -164,12 +164,18 @@ are the point):
   in under the curled mass instead of standing; (d) patch `tail1..3` so
   the tail continues the spine's own curl outward, wrapping alongside the
   body toward the muzzle with a real gap, not touching it.
-- Step 4: the muzzle now sits close to the flank/hip region on purpose --
-  give `muzzle`'s joint line (the bone arriving at it, from `head`) a
-  tight `blend` override (e.g. `muzzle head <x> <y> <z> <radius> 1 0.02`)
-  so it reads as tucked-in-close, not fused. Do the SAME for whichever
-  tail segment ends up nearest the head/flank once the wrap is posed --
-  read back where it actually landed before picking which joint needs it.
+- Step 4: the muzzle and a tail segment now sit close together on
+  purpose -- give ONE of that pair a tight `blend` override, and it
+  matters WHICH: `skeleton_geometry`'s `joint` parameter description
+  states the rule plainly -- two spatially-close, graph-unrelated joints
+  bridge under the LATER-DECLARED one's own blend, so the override goes
+  on whichever of the two comes LATER in the `joint` list, not
+  necessarily the one that reads as "the seam" to your eye. In the usual
+  scaffold declaration order (`hips`...`muzzle`, THEN `tail1..3`), that
+  is the tail segment, not the muzzle: e.g. `tail3 tail2 <x> <y> <z>
+  <radius> 1 0.02`. Overriding the earlier-declared joint of the pair
+  does nothing -- read back the actual declaration order before picking
+  which one to tighten, do not assume.
 - Step 5: `fix_blend_scale` (no `target`) on the finished chunk -- with
   most of its own joints now legitimately close together, expect it to
   report the mass-clamp caveat and skip the chunk, which is the CORRECT
@@ -179,6 +185,18 @@ are the point):
 - Verify by LOOKING (step 3, one more time) from a high 3/4 angle --
   curled poses read best from above-and-to-the-side, where the spine's
   own arc is visible.
+
+Honesty note: this worked example has NOT been validated end to end as
+a single finished render -- it illustrates the STEPS, not a proven
+result. The two likeliest ways an attempt at it goes wrong, both
+observed while writing it: executing it as a few large batches with a
+look only at the end instead of the small-batch-then-look discipline
+step 3 actually prescribes (a whole-body redesign between looks
+converges far slower than many small, checked adjustments); and
+tightening the earlier-declared joint of a close pair instead of the
+later-declared one (step 4's rule) -- an override on the wrong side of
+the pair silently does nothing, and the bridge you were trying to fix
+is still there on the next render.
 
 **A BRANCHING body (a creature, not a single profile) has its own
 chunk now: `skeleton_geometry`.**  Hand-chaining `roundcone` parts this

@@ -110,6 +110,10 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Geometry/SDFGeometry.h"		// F3 guard -- builds hand-authored
 														// reference/spurious variants directly
+#include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"	// review round P2-3: pins the
+														// `joint` param's descriptor text --
+														// the read_schema/describe_chunk
+														// surface a model actually sees
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1805,6 +1809,33 @@ void TestBlendOverrideKeepsRegionsDistinct()
 	       "the deliberate 0.02 gap READS AS a gap, not a fused mass" );
 }
 
+//! Review round P2-3: the DECLARATION-ORDER rule (two spatially-close,
+//! graph-unrelated joints bridge under the LATER-declared one's own
+//! blend) must live on the `joint` parameter's OWN descriptor text --
+//! the read_schema/describe_chunk surface a model actually reads (per
+//! the measured skill-pull-rate finding: a model reads 1-2 skills, but
+//! EVERY schema read sees every descriptor), not just the skill prose.
+//! A substring check, not a full-text pin -- this chunk's description is
+//! long and still actively edited; the rule sentence is the contract.
+void TestJointDescriptorDeclarationOrderRule()
+{
+	std::cout << "Test: review round P2-3 -- the joint descriptor states the declaration-order "
+	             "bridging rule" << std::endl;
+	const ChunkDescriptor* d = DescriptorForKeyword( String( "skeleton_geometry" ) );
+	Check( d != 0, "P2-3: skeleton_geometry has a registered descriptor" );
+	if( !d ) return;
+	const ParameterDescriptor* jointParam = 0;
+	for( std::size_t i = 0; i < d->parameters.size(); ++i )
+		if( d->parameters[i].name == "joint" ) { jointParam = &d->parameters[i]; break; }
+	Check( jointParam != 0, "P2-3: the `joint` parameter is declared" );
+	if( !jointParam ) return;
+	const std::string& desc = jointParam->description;
+	Check( desc.find( "DECLARATION ORDER MATTERS" ) != std::string::npos,
+	       "P2-3 MONEY: the joint descriptor states the declaration-order rule explicitly" );
+	Check( desc.find( "LATER-DECLARED" ) != std::string::npos,
+	       "P2-3: ...and says WHICH joint of a close pair to override (the later-declared one)" );
+}
+
 } // anonymous namespace
 
 int main()
@@ -1821,6 +1852,7 @@ int main()
 	TestBlendOverrideKValue();
 	TestBlendOverrideRejectsNegative();
 	TestBlendOverrideKeepsRegionsDistinct();
+	TestJointDescriptorDeclarationOrderRule();
 	TestAspectBackCompat();
 	TestAspectAxisAndMapping();
 	TestAspectBlendConservative();

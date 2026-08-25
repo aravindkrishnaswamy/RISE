@@ -328,6 +328,55 @@ static std::string CatEarAmongManyScene()
 	return s;
 }
 
+//! Review round P2-1: chunk A (mass_head, 6-of-6 flagged -- gate-skipped)
+//! and chunk B (the ordinary single-offender cat ear -- genuinely
+//! clamped) sharing ONE document, for the undirected sweep's MIXED-SCOPE
+//! report.
+static std::string MixedMassClampAndCatEarScene()
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "mixed_mass_head", 6, 6 );
+	s += StdObj( "mixed_mass_obj", "mixed_mass_head" );
+	s += CatEarSdf( "mixed_cat_head" );
+	s += StdObj( "mixed_cat_obj", "mixed_cat_head" );
+	return s;
+}
+
+//! Review round P3(a): the mass-clamp gate's AND-logic boundary --
+//! `count`(name(A)) exactly kMassClampMinCount(4) with fraction well
+//! above 70% (isolates the COUNT boundary); fraction exactly 0.70 with
+//! count well above 4 (isolates the FRACTION boundary); count>=4 but
+//! fraction<70% (should NOT skip); count<4 but fraction>=70% (should NOT
+//! skip). Each its own single-chunk document.
+static std::string MassClampCountBoundaryScene()      // 4-of-5 = 80%, count==4 exactly
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "boundary_count4_head", 5, 4 );
+	s += StdObj( "boundary_count4_obj", "boundary_count4_head" );
+	return s;
+}
+static std::string MassClampFractionBoundaryScene()   // 7-of-10 = 0.70 exactly, count==7
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "boundary_frac70_head", 10, 7 );
+	s += StdObj( "boundary_frac70_obj", "boundary_frac70_head" );
+	return s;
+}
+static std::string MassClampCountOkFractionLowScene()  // 4-of-10 = 40%, count==4 (>=4, <70%)
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "boundary_fraclow_head", 10, 4 );
+	s += StdObj( "boundary_fraclow_obj", "boundary_fraclow_head" );
+	return s;
+}
+static std::string MassClampCountLowFractionOkScene()  // 3-of-3 = 100%, count==3 (<4, >=70%)
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "boundary_countlow_head", 3, 3 );
+	s += StdObj( "boundary_countlow_obj", "boundary_countlow_head" );
+	return s;
+}
+
 //! The FULL raw `part` line text (marker through end-of-line) for
 //! occurrence `occ` of chunk `chunkName` -- for a byte-level "this line
 //! was never touched" assertion (PartKToken alone only shows the k
@@ -1039,6 +1088,132 @@ static void TestMassClampCaveatCatEarStillAutoClamps()
 }
 
 //----------------------------------------------------------------------
+// Review round P2-1: a MIXED-SCOPE undirected sweep -- one chunk
+// gate-skipped, a DIFFERENT chunk genuinely clamped -- must report BOTH
+// facts, not just the clamp.  Before this fix, massClampSkipNotes was
+// read only inside the flat.empty() early return, so a call with ANY
+// real fix anywhere in scope silently dropped every skip note.
+//----------------------------------------------------------------------
+static void TestMassClampCaveatMixedScopeReportsBoth()
+{
+	std::printf( "J: mass-clamp caveat -- a MIXED-SCOPE sweep (one chunk skipped, one clamped) "
+	             "reports BOTH in its message\n" );
+	const std::string tmp = TempPath( "fixblend_j4.RISEscene" );
+	Job* pJob = LoadScene( MixedMassClampAndCatEarScene(), tmp );
+	Check( pJob != nullptr, "J(d): fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const std::string before = sess->ReadDocument();
+	const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+
+	Check( r.ok && r.applied, "J(d) MONEY: the call still applies -- chunk B's genuine offender is clamped" );
+	Check( r.offendersFound == 7, "J(d): offendersFound is the TRUE total in scope (6 skipped + 1 clamped)" );
+	Check( r.fixedCount == 1, "J(d): fixedCount counts only what was actually clamped (chunk B's one joint)" );
+
+	Check( r.message.find( "1 smin joint" ) != std::string::npos &&
+	       r.message.find( "mixed_cat_head" ) != std::string::npos,
+	       "J(d) MONEY: the message reports chunk B's clamp (got `" + r.message + "`)" );
+	Check( r.message.find( "1 chunk skipped (mass-clamp caveat)" ) != std::string::npos &&
+	       r.message.find( "mixed_mass_head" ) != std::string::npos &&
+	       r.message.find( "tight meld" ) != std::string::npos,
+	       "J(d) MONEY: the SAME message ALSO names chunk A's skip -- not silently dropped "
+	       "(got `" + r.message + "`)" );
+
+	const std::string after = sess->ReadDocument();
+	Check( PartFullLine( after, "mixed_mass_head", 1 ) == PartFullLine( before, "mixed_mass_head", 1 ),
+	       "J(d): chunk A's first ear part is byte-identical -- genuinely untouched" );
+	Check( PartFullLine( after, "mixed_cat_head", 1 ) != PartFullLine( before, "mixed_cat_head", 1 ),
+	       "J(d): chunk B's ear part DID change -- genuinely clamped" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Review round P3(a): the mass-clamp gate's AND-logic, at its own
+// boundaries -- count==4 exactly, fraction==0.70 exactly, and each
+// condition failing alone.
+//----------------------------------------------------------------------
+static void TestMassClampCaveatBoundaries()
+{
+	std::printf( "J: mass-clamp caveat -- AND-logic boundaries (count==4, fraction==0.70, "
+	             "each failing alone)\n" );
+
+	// count==4 exactly (4-of-5, 80% -- comfortably over the fraction line):
+	// the >= 4 boundary is INCLUSIVE -- this skips.
+	{
+		const std::string tmp = TempPath( "fixblend_j5a.RISEscene" );
+		Job* pJob = LoadScene( MassClampCountBoundaryScene(), tmp );
+		Check( pJob != nullptr, "J(e) count==4: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+			Check( !r.ok && !r.applied, "J(e) count==4: SKIPPED (>=4 is inclusive)" );
+			Check( r.message.find( "tight meld" ) != std::string::npos, "J(e) count==4: caveat message fires" );
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// fraction==0.70 exactly (7-of-10): the >= 0.70 boundary is INCLUSIVE
+	// -- this skips too.
+	{
+		const std::string tmp = TempPath( "fixblend_j5b.RISEscene" );
+		Job* pJob = LoadScene( MassClampFractionBoundaryScene(), tmp );
+		Check( pJob != nullptr, "J(e) fraction==0.70: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+			Check( !r.ok && !r.applied, "J(e) fraction==0.70: SKIPPED (>=0.70 is inclusive)" );
+			Check( r.message.find( "tight meld" ) != std::string::npos,
+			       "J(e) fraction==0.70: caveat message fires" );
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// count>=4 but fraction<70% (4-of-10, 40%): fraction alone fails --
+	// must NOT skip (auto-clamps).
+	{
+		const std::string tmp = TempPath( "fixblend_j5c.RISEscene" );
+		Job* pJob = LoadScene( MassClampCountOkFractionLowScene(), tmp );
+		Check( pJob != nullptr, "J(e) count-ok/fraction-low: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+			Check( r.ok && r.applied, "J(e) count-ok/fraction-low: NOT skipped (fraction alone fails "
+			                          "the AND) -- auto-clamps" );
+			Check( r.fixedCount == 4, "J(e) count-ok/fraction-low: all 4 flagged joints clamped" );
+			Check( r.message.find( "tight meld" ) == std::string::npos,
+			       "J(e) count-ok/fraction-low: caveat message never fires" );
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// count<4 but fraction>=70% (3-of-3, 100%): count alone fails --
+	// must NOT skip (auto-clamps) -- the cat-ear-class guarantee restated
+	// at the OTHER boundary (a small, fully-flagged chunk).
+	{
+		const std::string tmp = TempPath( "fixblend_j5d.RISEscene" );
+		Job* pJob = LoadScene( MassClampCountLowFractionOkScene(), tmp );
+		Check( pJob != nullptr, "J(e) count-low/fraction-ok: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+			Check( r.ok && r.applied, "J(e) count-low/fraction-ok: NOT skipped (count alone fails "
+			                          "the AND) -- auto-clamps" );
+			Check( r.fixedCount == 3, "J(e) count-low/fraction-ok: all 3 flagged joints clamped" );
+			Check( r.message.find( "tight meld" ) == std::string::npos,
+			       "J(e) count-low/fraction-ok: caveat message never fires" );
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
 // I.  Review round P2-1: a NaN dimension must never reach a written
 // token, and must not poison an ordinary offender sharing the document.
 //----------------------------------------------------------------------
@@ -1127,6 +1302,8 @@ int main()
 	TestNanGuard();
 	TestMassClampCaveatSkipsIntendedMeld();
 	TestMassClampCaveatCatEarStillAutoClamps();
+	TestMassClampCaveatMixedScopeReportsBoth();
+	TestMassClampCaveatBoundaries();
 	std::printf( "\n=== AgentFixBlendScaleTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
