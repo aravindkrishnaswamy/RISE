@@ -818,6 +818,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( [preflight status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force preflight command failed");
 				observed.preflightDeviceElapsedMS=([preflight GPUEndTime]-[preflight GPUStartTime])*1000.0;
+				observed.deviceStartTimeS=[preflight GPUStartTime];
 				observed.outwardLambdaPerS=*static_cast<const float*>(ResidentForceBufferContents(
 					lambda,ResidentForceScalarAccess));
 				observed.scalarDiagnosticTransferCount=1u;
@@ -884,6 +885,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					[advance status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force advance command failed");
 				observed.advanceDeviceElapsedMS=([advance GPUEndTime]-[advance GPUStartTime])*1000.0;
+				observed.deviceEndTimeS=[advance GPUEndTime];
 				if( residentForceCommandCommitCount<beginningCommandCommits||
 					residentForceInterstageFullGridReadCount<beginningInterstageReads ) return false;
 				observed.commandCommitCount=static_cast<std::uint32_t>(

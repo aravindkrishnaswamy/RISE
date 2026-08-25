@@ -1,6 +1,8 @@
 #ifndef FIRE_PRODUCTION_CALIBRATION_MATH_H
 #define FIRE_PRODUCTION_CALIBRATION_MATH_H
 
+#include "../src/Library/Utilities/FireProductionForce.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -12,7 +14,7 @@ namespace FireProductionCalibration
 {
 	constexpr std::size_t LongShadowSteps=104u;
 	constexpr std::size_t LongShadowWindow=32u;
-	constexpr unsigned int ManifoldPlateauRetryCap=20u;
+	constexpr unsigned int ManifoldPlateauRetryCap=RISE::FireStepRejectionRetryCap;
 
 	inline bool DrainAwarePlateauRetryAllowed(const unsigned int candidateIndex,
 		const bool plateauPassed,const double candidateStepS,const double suggestedStepS)

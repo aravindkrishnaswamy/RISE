@@ -3928,27 +3928,33 @@ it was already tried and refuted here.
   starts in the limiter operating class; an ordinary fail-closed refusal is
   still permitted.  Candidate 0 therefore reproduces the sealed r163 refusal
   at `5.5762444389984012e-4 s`, and its drain-aware suggestion is retried under
-  the existing 20-attempt rejection cap instead of blind halving.  Candidate 1
+  the one shared 20-attempt production/capstone rejection cap instead of blind
+  halving.  The attempt seam returns the refused diagnostics and no token;
+  ordinary `Advance` still returns false with a default result.  Candidate 1
   runs at represented `5.5692793102934957e-4 s`, measures
   `G=field_max=0.023429989814758301`, clears the `0.0234375` allowance by
   `7.510185241699219e-6`, respects the `0.03125` hard ceiling, and mints the
   accepted token.  Its next limiter prediction is
   `5.5690890514272363e-4 s`.  No floor-aware analytic corrector is added.
 
-  The first genuinely accepted replay exposed a postpublication cost that the
-  rejected r163 timing could not exercise: initial accepted p95 was
-  `95.109874848276377/323.04645799999997 ms` device/wall, including roughly
-  `146 ms` of authority hashing/postprocessing.  A versioned live-state digest
-  preserves the legacy checkpoint digest, and independent owner validation
-  plus dual-static/force/cell preparation now use the topology-aware global
-  pool; legacy low-priority execution stays serial.  Kernels, serial Metal
-  queue order, and complete payload bytes are unchanged.  Final accepted p95
-  is `91.582666500471532/155.944041 ms`, a `51.727054379280645%` wall reduction
-  from the accepted baseline and a tier-10 x 25 s projection of
-  `1.1419623691904432/1.9444970683461671 h` device/wall.  The approximately
-  `1.3 h` target is not met; the remaining `64.361374499528466 ms` host
-  residual remains named critical-path work, and source maps will add device
-  time when they land.  Durable evidence is
+  The earlier `323 ms` value is retained only as an uncalibrated pilot.  The
+  same-binary controlled serial wall p95 is `239.496167 ms`; production-parallel
+  p95 is `157.703416 ms`, a `34.152008370138134%` reduction.  A versioned,
+  order-sensitive, field-tagged/length-delimited live-state digest preserves
+  the legacy checkpoint digest; independent digest fields and owner validation
+  run in parallel.  Dual-static/force/cell preparation and the independent
+  corrector/restoration-publication branches overlap on their existing queues;
+  legacy low-priority execution stays serial.  Kernels and complete payload
+  bytes are unchanged, while queue scheduling intentionally changes and is
+  guarded by exact-247 serial/parallel payload equivalence.
+
+  The corrected device quantity is the queue-DAG span, not a sum of overlapping
+  command durations.  Final accepted p95 is `121.42204167321324/157.703416 ms`
+  device-span/wall, with paired residual p95 `37.036624315074448 ms`, and the
+  tier-10 x 25 s projection is
+  `1.5140354357379344/1.9664350629478431 h`.  This clears the earlier two-hour
+  stop class but misses the approximately `1.3 h` target; the residual remains
+  named critical-path work, and source maps will add device time. Durable evidence is
   `r164_drain_aware_retry_acceptance/drain_aware_retry_acceptance.v1`; golden
   remains byte-identical.  The 104-step shadow and later milestones await the
   fresh r164 contract-boundary review.

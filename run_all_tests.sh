@@ -772,12 +772,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=0' "$closure_limited_log" &&
 		grep -Fq 'next_dt_manifold=0.00055692791475544124 limiter_binding=1' "$closure_limited_log" &&
 		grep -Fq 'accepted_token=0' "$closure_limited_log" &&
-		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY refused_candidate=0 refused_dt=0.00055762444389984012 field_max=0.023458600044250488 allowance=0.0234375 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20' "$closure_limited_log" &&
+		grep -Fq 'DRAIN_AWARE_RETRY_GATE exact=1 retry_allowed=1 attempt_succeeded=0 ordinary_refused=1 diagnostics=1' "$closure_limited_log" &&
+		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY refused_candidate=0 refused_dt=0.00055762444389984012 field_max=0.023458600044250488 allowance=0.0234375 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20 ordinary_advance_refused=1 attempt_diagnostics=1' "$closure_limited_log" &&
+		grep -Fq 'HOST_RESIDUAL_SAMPLES candidate=0' "$closure_limited_log" &&
 		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION candidate=1 dt=0.00055692793102934957 reference_substeps=8 reference_substep_dt=6.9615991378668696e-05' "$closure_limited_log" &&
 		grep -Fq 'schedule=0db10079074f5006eff7b2f9e27b2b6f5fc2c2017d1d333c29264e113c03b08b terminal_target=cf67f48c2e6320404d7af6794c87966c4c199b3c652fdb5b62d849c691068bae predictor_G=0.019709885120391846 G=0.023429989814758301 field_max=0.023429989814758301' "$closure_limited_log" &&
 		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=1' "$closure_limited_log" &&
 		grep -Fq 'next_dt_manifold=0.00055690890514272363 limiter_binding=1' "$closure_limited_log" &&
 		grep -Fq 'tier10_wall_hours=' "$closure_limited_log" &&
+		grep -Fq 'HOST_RESIDUAL_SAMPLES candidate=1' "$closure_limited_log" &&
+		grep -Fq 'parallel_host_residual_p95=' "$closure_limited_log" &&
 		grep -Fq 'accepted_token=1' "$closure_limited_log" &&
 		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED candidate=1 dt=0.00055692793102934957 field_max=0.023429989814758301 allowance=0.0234375 next_dt=0.00055690890514272363 accepted_token=1' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then

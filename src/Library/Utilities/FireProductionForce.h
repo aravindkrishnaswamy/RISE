@@ -21,6 +21,10 @@
 
 namespace RISE
 {
+	//! Shared bound for fail-closed step reductions.  The binary64 trajectory
+	//! owner and the production manifold owner use the same rejection budget.
+	constexpr unsigned int FireStepRejectionRetryCap=20u;
+
 	struct FireProductionVremanInput
 	{
 		std::array<float,9> velocityGradientPerS;
@@ -184,12 +188,14 @@ namespace RISE
 		std::uint64_t actualMetalAllocationBytes;
 		double preflightDeviceElapsedMS;
 		double advanceDeviceElapsedMS;
+		double deviceStartTimeS;
+		double deviceEndTimeS;
 
 		FireProductionResidentForceDiagnostics() : outwardLambdaPerS(0.0f),
 			scalarDiagnosticTransferCount(0u),substepLoopDeviceToHostTransferCount(0u),
 			terminalStagingCount(0u),commandCommitCount(0u),certifiedWorkingSetBytes(0u),
 			actualMetalAllocationBytes(0u),preflightDeviceElapsedMS(0.0),
-			advanceDeviceElapsedMS(0.0) {}
+			advanceDeviceElapsedMS(0.0),deviceStartTimeS(0.0),deviceEndTimeS(0.0) {}
 	};
 
 	//! Standalone oracle wrapper around the resident force sequence. Full-grid
@@ -445,6 +451,10 @@ namespace RISE
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
 			std::string* );
+		friend bool AttemptFireProductionResidentStepMetal(
+			const FireProductionResidentStepRequest&,
+			FireProductionResidentStepResult&,
+			std::string* );
 		friend bool PublishFireProductionAcceptedManifoldObservation(
 			double,
 			FireProductionResidentStepResult&,
@@ -483,6 +493,7 @@ namespace RISE
 		std::uint64_t combinedCertifiedWorkingSetBytes;
 		std::uint64_t combinedActualMetalAllocationBytes;
 		double deviceElapsedMS;
+		double deviceMakespanMS;
 		float representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
@@ -495,6 +506,8 @@ namespace RISE
 		double requiredRestorationDrainFraction;
 		double deliveredRestorationDrainFraction;
 		double restorationResidualBandPerS;
+		double suggestedManifoldTimeStepS;
+		bool manifoldNextTimeStepAvailable;
 		bool manifoldPlateauPassed;
 		FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
@@ -504,19 +517,25 @@ namespace RISE
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0),representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
+			deviceElapsedMS(0.0),deviceMakespanMS(0.0),
+			representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
 			maximumAcceptedManifoldDeviation(0.0),maximumPredictedAdvectiveManifoldAnomaly(0.0),
 			manifoldMapCellCount(0u),
 			manifoldScalarDeviceToHostTransferCount(0u),manifoldFullGridDeviceToHostTransferCount(0u),
 			advectiveAnomalyClosurePassCount(0u),
 			manifoldStageGeneration{{0.0,0.0,0.0}},requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
+			suggestedManifoldTimeStepS(0.0),manifoldNextTimeStepAvailable(false),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(FireStateProducerPrecision::Unknown) {}
 
 	private:
 		FireProductionAcceptedManifoldToken acceptedManifoldToken_;
 		friend bool AdvanceFireProductionResidentStepMetal(
+			const FireProductionResidentStepRequest&,
+			FireProductionResidentStepResult&,
+			std::string* );
+		friend bool AttemptFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
 			std::string* );
@@ -577,6 +596,9 @@ namespace RISE
 			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
 			return word^(word>>32u);
 		};
+		auto rotate=[](const std::uint64_t word,const unsigned int bits) {
+			return (word<<bits)|(word>>(64u-bits));
+		};
 		auto appendWord=[&](const std::uint64_t word) {
 			digest^=word+UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);
 		};
@@ -589,16 +611,15 @@ namespace RISE
 		appendWord(widthBits);
 		auto append=[&](const std::vector<float>& values) {
 			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
-			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
-				weighted=UINT64_C(0x13198a2e03707344);
+			std::uint64_t ordered=UINT64_C(0x243f6a8885a308d3)^fieldTag;
 			for(std::size_t index=0u;index<values.size();++index){std::uint32_t bits=0u;
 				std::memcpy(&bits,&values[index],sizeof(bits));
-				const std::uint64_t mixed=(static_cast<std::uint64_t>(bits)^
-					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
-					UINT64_C(0xd6e8feb86659fd93);
-				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+				ordered^=static_cast<std::uint64_t>(bits)+UINT64_C(0x9e3779b97f4a7c15)+
+					(static_cast<std::uint64_t>(index)<<32u);
+				ordered=rotate(ordered,27u)*UINT64_C(0x3c79ac492ba7b653)+
+					UINT64_C(0x1c69b3f74ac4ae35);
 			}
-			appendWord(avalanche(sum));appendWord(avalanche(weighted));
+			appendWord(avalanche(ordered));
 		};
 		append(conservativeValues);
 		for(unsigned int axis=0u;axis<3u;++axis){append(momentum[axis]);append(velocity[axis]);}
@@ -617,22 +638,24 @@ namespace RISE
 			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
 			return word^(word>>32u);
 		};
+		auto rotate=[](const std::uint64_t word,const unsigned int bits) {
+			return (word<<bits)|(word>>(64u-bits));
+		};
 		auto appendWord=[&](const std::uint64_t word) {
 			digest^=word+UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);
 		};
 		std::uint64_t fieldTag=0u;
 		auto append=[&](const std::vector<float>& values) {
 			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
-			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
-				weighted=UINT64_C(0x13198a2e03707344);
+			std::uint64_t ordered=UINT64_C(0x243f6a8885a308d3)^fieldTag;
 			for(std::size_t index=0u;index<values.size();++index){std::uint32_t bits=0u;
 				std::memcpy(&bits,&values[index],sizeof(bits));
-				const std::uint64_t mixed=(static_cast<std::uint64_t>(bits)^
-					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
-					UINT64_C(0xd6e8feb86659fd93);
-				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+				ordered^=static_cast<std::uint64_t>(bits)+UINT64_C(0x9e3779b97f4a7c15)+
+					(static_cast<std::uint64_t>(index)<<32u);
+				ordered=rotate(ordered,27u)*UINT64_C(0x3c79ac492ba7b653)+
+					UINT64_C(0x1c69b3f74ac4ae35);
 			}
-			appendWord(avalanche(sum));appendWord(avalanche(weighted));
+			appendWord(avalanche(ordered));
 		};
 		append(value.conservativeValues);
 		for(unsigned int axis=0u;axis<3u;++axis){
@@ -649,15 +672,14 @@ namespace RISE
 		append(value.projection.pressurePa);
 		auto appendBytes=[&](const std::vector<unsigned char>& values) {
 			appendWord(++fieldTag);appendWord(static_cast<std::uint64_t>(values.size()));
-			std::uint64_t sum=UINT64_C(0x243f6a8885a308d3),
-				weighted=UINT64_C(0x13198a2e03707344);
+			std::uint64_t ordered=UINT64_C(0x243f6a8885a308d3)^fieldTag;
 			for(std::size_t index=0u;index<values.size();++index){
-				const std::uint64_t mixed=(static_cast<std::uint64_t>(values[index])^
-					((static_cast<std::uint64_t>(index)+1u)*UINT64_C(0x9e3779b97f4a7c15)))*
-					UINT64_C(0xd6e8feb86659fd93);
-				sum+=mixed;weighted+=mixed*(static_cast<std::uint64_t>(index)+1u);
+				ordered^=static_cast<std::uint64_t>(values[index])+
+					UINT64_C(0x9e3779b97f4a7c15)+(static_cast<std::uint64_t>(index)<<32u);
+				ordered=rotate(ordered,27u)*UINT64_C(0x3c79ac492ba7b653)+
+					UINT64_C(0x1c69b3f74ac4ae35);
 			}
-			appendWord(avalanche(sum));appendWord(avalanche(weighted));
+			appendWord(avalanche(ordered));
 		};
 		for(const auto& side:value.physicalProjection.pressureOpenInflow)appendBytes(side);
 		for(const auto& side:value.projection.pressureOpenInflow)appendBytes(side);
@@ -693,6 +715,15 @@ namespace RISE
 	bool AdvanceFireProductionResidentStepMetal(
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,
+		std::string* error=0 );
+
+	//! Executes one candidate without weakening rejection semantics.  A
+	//! plateau refusal returns false but preserves only the computed, tokenless
+	//! result and its derived next-step suggestion so the owner may retry from
+	//! the unchanged beginning.  Every other failure leaves a default result.
+	bool AttemptFireProductionResidentStepMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionResidentStepResult& rejectedOrAcceptedResult,
 		std::string* error=0 );
 
 	//! Thread-local observed Metal commits, exposed only to bind fail-before-work

@@ -41,6 +41,109 @@ namespace RISE
 
 	namespace
 	{
+		std::uint64_t AvalancheAcceptedDigest(std::uint64_t word)
+		{
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
+			return word^(word>>32u);
+		}
+
+		std::uint64_t OrderedAcceptedFloatFieldDigest(
+			const std::vector<float>& values,const std::uint64_t fieldTag )
+		{
+			std::uint64_t ordered=UINT64_C(0x243f6a8885a308d3)^fieldTag;
+			for(std::size_t index=0u;index<values.size();++index){
+				std::uint32_t bits=0u;std::memcpy(&bits,&values[index],sizeof(bits));
+				ordered^=static_cast<std::uint64_t>(bits)+UINT64_C(0x9e3779b97f4a7c15)+
+					(static_cast<std::uint64_t>(index)<<32u);
+				ordered=((ordered<<27u)|(ordered>>37u))*UINT64_C(0x3c79ac492ba7b653)+
+					UINT64_C(0x1c69b3f74ac4ae35);
+			}
+			return AvalancheAcceptedDigest(ordered);
+		}
+
+		std::uint64_t OrderedAcceptedByteFieldDigest(
+			const std::vector<unsigned char>& values,const std::uint64_t fieldTag )
+		{
+			std::uint64_t ordered=UINT64_C(0x243f6a8885a308d3)^fieldTag;
+			for(std::size_t index=0u;index<values.size();++index){
+				ordered^=static_cast<std::uint64_t>(values[index])+
+					UINT64_C(0x9e3779b97f4a7c15)+(static_cast<std::uint64_t>(index)<<32u);
+				ordered=((ordered<<27u)|(ordered>>37u))*UINT64_C(0x3c79ac492ba7b653)+
+					UINT64_C(0x1c69b3f74ac4ae35);
+			}
+			return AvalancheAcceptedDigest(ordered);
+		}
+
+		std::uint64_t ParallelAcceptedManifoldPayloadDigest(
+			const FireProductionResidentStepResult& value,const bool serial )
+		{
+			std::array<const std::vector<float>*,27> floatFields;
+			std::size_t field=0u;floatFields[field++]=&value.conservativeValues;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				floatFields[field++]=&value.transportedDual.auxiliaryFaceDensity[axis];
+				floatFields[field++]=&value.transportedDual.momentum[axis];
+				floatFields[field++]=&value.physicalProjection.faceDensityKGPerM3[axis];
+				floatFields[field++]=&value.physicalProjection.velocityMPerS[axis];
+				floatFields[field++]=&value.physicalProjection.momentumKGPerM2S[axis];
+				floatFields[field++]=&value.projection.faceDensityKGPerM3[axis];
+				floatFields[field++]=&value.projection.velocityMPerS[axis];
+				floatFields[field++]=&value.projection.momentumKGPerM2S[axis];
+			}
+			floatFields[field++]=&value.physicalProjection.pressurePa;
+			floatFields[field++]=&value.projection.pressurePa;
+			if(field!=floatFields.size())return 0u;
+			std::array<const std::vector<unsigned char>*,12> byteFields;
+			field=0u;
+			for(const auto& side:value.physicalProjection.pressureOpenInflow)
+				byteFields[field++]=&side;
+			for(const auto& side:value.projection.pressureOpenInflow)byteFields[field++]=&side;
+			if(field!=byteFields.size())return 0u;
+			std::array<std::uint64_t,39> ordered;
+			auto hashField=[&](const std::size_t index){
+				if(index<floatFields.size())ordered[index]=OrderedAcceptedFloatFieldDigest(
+					*floatFields[index],static_cast<std::uint64_t>(index+1u));
+				else {const std::size_t byteIndex=index-floatFields.size();
+					ordered[index]=OrderedAcceptedByteFieldDigest(*byteFields[byteIndex],
+						static_cast<std::uint64_t>(index+1u));}
+			};
+			if(serial)for(std::size_t index=0u;index<ordered.size();++index)hashField(index);
+			else Implementation::GlobalThreadPool().ParallelFor(ordered.size(),hashField);
+			std::uint64_t digest=UINT64_C(0xd6e8feb86659fd93);
+			auto appendWord=[&](const std::uint64_t word){digest^=word+
+				UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);};
+			for(std::size_t index=0u;index<floatFields.size();++index){
+				appendWord(index+1u);appendWord(floatFields[index]->size());appendWord(ordered[index]);}
+			for(std::size_t index=0u;index<byteFields.size();++index){
+				const std::size_t combined=index+floatFields.size();appendWord(combined+1u);
+				appendWord(byteFields[index]->size());appendWord(ordered[combined]);}
+			return AvalancheAcceptedDigest(digest^ordered.size());
+		}
+
+		std::uint64_t ParallelAcceptedStatePayloadDigestFast(
+			const FireProductionProjectionShape& shape,
+			const std::vector<float>& conservativeValues,
+			const std::array<std::vector<float>,3>& momentum,
+			const std::array<std::vector<float>,3>& velocity,const bool serial )
+		{
+			std::array<const std::vector<float>*,7> fields={{&conservativeValues,
+				&momentum[0],&velocity[0],&momentum[1],&velocity[1],&momentum[2],&velocity[2]}};
+			std::array<std::uint64_t,7> ordered;
+			auto hashField=[&](const std::size_t index){ordered[index]=
+				OrderedAcceptedFloatFieldDigest(*fields[index],static_cast<std::uint64_t>(index+1u));};
+			if(serial)for(std::size_t index=0u;index<ordered.size();++index)hashField(index);
+			else Implementation::GlobalThreadPool().ParallelFor(ordered.size(),hashField);
+			std::uint64_t digest=UINT64_C(0x65f07b31c42a98de);
+			auto appendWord=[&](const std::uint64_t word){digest^=word+
+				UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);};
+			appendWord(UINT64_C(0x7265736964656e74));appendWord(shape.nx);appendWord(shape.ny);
+			appendWord(shape.nz);std::uint32_t widthBits=0u;
+			std::memcpy(&widthBits,&shape.cellWidthM,sizeof(widthBits));appendWord(widthBits);
+			for(std::size_t index=0u;index<fields.size();++index){appendWord(index+1u);
+				appendWord(fields[index]->size());appendWord(ordered[index]);}
+			return AvalancheAcceptedDigest(digest^fields.size()^UINT64_C(0xd64b291e3fa5708c));
+		}
+
 		struct MetalManifoldParameters
 		{
 			std::uint32_t cellCount;
@@ -1503,6 +1606,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.commandCommitCount=1u;computed.interstageFullGridTransferCount=0u;
 				computed.actualMetalAllocationBytes=actualBytes;
 				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				computed.deviceStartTimeS=[command GPUStartTime];
+				computed.deviceEndTimeS=[command GPUEndTime];
 				if( !std::isfinite(computed.deviceElapsedMS) ) return false;
 				result=std::move(computed);
 			}
@@ -2203,6 +2308,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.commandCommitCount=1u;computed.interstageFullGridTransferCount=0u;
 				computed.actualMetalAllocationBytes=actual;
 				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				computed.deviceStartTimeS=[command GPUStartTime];
+				computed.deviceEndTimeS=[command GPUEndTime];
 				if( !std::isfinite(computed.deviceElapsedMS) ) return false;
 				result=std::move(computed);
 			}
@@ -2291,12 +2398,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		}
 	}
 
-	bool AdvanceFireProductionResidentStepMetal(
+	bool AttemptFireProductionResidentStepMetal(
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,
 		std::string* structuredError )
 	{
 		result=FireProductionResidentStepResult();
+		bool plateauRefused=false;
 		try {
 			const char* manifoldProbeActivation=std::getenv(
 				"RISE_FIRE_MANIFOLD_TIMESTEP_PROBE");
@@ -2354,21 +2462,27 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			const bool hostResidualProbeEnabled=hostResidualProbeActivation!=0;
 			const char* timestepVelocityPackMode=std::getenv(
 				"RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE");
-			if( timestepVelocityPackMode&&(!timestepVelocityAuditEnabled||
+			if( timestepVelocityPackMode&&(!(timestepVelocityAuditEnabled||hostResidualProbeEnabled)||
 				(std::strcmp(timestepVelocityPackMode,"serial")!=0&&
-				std::strcmp(timestepVelocityPackMode,"parallel")!=0)) ) {
+				 std::strcmp(timestepVelocityPackMode,"parallel")!=0)) ) {
 				if( structuredError ) *structuredError=
 					"production timestep velocity pack mode is invalid";
 				return false;
 			}
+			const bool timestepVelocityAuditSerial=timestepVelocityPackMode&&
+				std::strcmp(timestepVelocityPackMode,"serial")==0;
 			const auto timestepVelocityAuditStart=std::chrono::steady_clock::now();
 			auto timestepVelocityAuditMS=[&](){return std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-timestepVelocityAuditStart).count();};
-			double timestepVelocityAuditValidatedMS=0.0,timestepVelocityAuditDualStaticMS=0.0,
-				timestepVelocityAuditUploadMS=0.0,timestepVelocityAuditForceMS=0.0,
-				timestepVelocityAuditCellMS=0.0,timestepVelocityAuditDualMS=0.0,
-				timestepVelocityAuditSourceMS=0.0,timestepVelocityAuditPhysicalMS=0.0,
-				timestepVelocityAuditRestorationMS=0.0,timestepVelocityAuditTerminalMS=0.0;
+				double timestepVelocityAuditValidatedMS=0.0,timestepVelocityAuditDualStaticMS=0.0,
+					timestepVelocityAuditUploadMS=0.0,timestepVelocityAuditForceMS=0.0,
+					timestepVelocityAuditCellMS=0.0,timestepVelocityAuditDualMS=0.0,
+					timestepVelocityAuditSourceMS=0.0,timestepVelocityAuditPhysicalMS=0.0,
+					timestepVelocityAuditRestorationMS=0.0,timestepVelocityAuditTerminalMS=0.0,
+					timestepVelocityAuditTerminalValidationMS=0.0,
+					timestepVelocityAuditResultCopyMS=0.0,
+					timestepVelocityAuditMetadataMS=0.0,
+					timestepVelocityAuditAuthorityMS=0.0;
 			const char* plateauEvidenceActivation=std::getenv(
 				"RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 			if( plateauEvidenceActivation&&std::strcmp(plateauEvidenceActivation,"1")!=0 ) {
@@ -2508,8 +2622,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				}
 				ownerValidationSucceeded[task]=valid;
 			};
-			const bool serialOwnerValidation=GlobalOptions().ReadBool(
-				"force_all_threads_low_priority",false);
+			const bool serialOwnerValidation=timestepVelocityAuditSerial||
+				GlobalOptions().ReadBool("force_all_threads_low_priority",false);
 			if( serialOwnerValidation )
 				for( unsigned int task=0u;task<ownerValidationSucceeded.size();++task )
 					validateOwnerPayload(task);
@@ -2633,8 +2747,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					preparationWallMS[task]=std::chrono::duration<double,std::milli>(
 						std::chrono::steady_clock::now()-start).count();
 				};
-				const bool serialIndependentPreparation=GlobalOptions().ReadBool(
-					"force_all_threads_low_priority",false);
+				const bool serialIndependentPreparation=timestepVelocityAuditSerial||
+					GlobalOptions().ReadBool("force_all_threads_low_priority",false);
 				if(serialIndependentPreparation)
 					for(unsigned int task=0u;task<preparationSucceeded.size();++task)
 						prepareIndependent(task);
@@ -2645,6 +2759,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						if(structuredError)*structuredError=preparationError[task];return false;}
 				timestepVelocityAuditForceMS=timestepVelocityAuditMS();
 				const double predictorCellDeviceMS=cell.deviceElapsedMS;
+				const double predictorCellDeviceStartTimeS=cell.deviceStartTimeS;
+				const double predictorCellDeviceEndTimeS=cell.deviceEndTimeS;
 				const std::uint64_t predictorCellActualMetalBytes=cell.actualMetalAllocationBytes;
 				timestepVelocityAuditCellMS=timestepVelocityAuditForceMS;
 				FireProductionMetalDualMomentumResidentInput dualInput;
@@ -2690,7 +2806,10 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					MetalHostBufferReadCount-beginningReads!=0u ) return false;
 				timestepVelocityAuditSourceMS=timestepVelocityAuditMS();
 				float maximumPredictedAdvectiveAnomalyFloat=0.0f;
-				double anomalyPredictorDeviceMS=0.0,anomalyCorrectorSourceDeviceMS=0.0;
+				double anomalyPredictorDeviceMS=0.0,anomalyCorrectorSourceDeviceMS=0.0,
+					anomalyPredictorDeviceStartTimeS=0.0,anomalyPredictorDeviceEndTimeS=0.0,
+					anomalyCorrectorSourceDeviceStartTimeS=0.0,
+					anomalyCorrectorSourceDeviceEndTimeS=0.0;
 				if( closeAdvectiveAnomaly ) {
 					std::memset([manifoldPredictorReduction contents],0,3u*sizeof(std::uint32_t));
 					id<MTLCommandBuffer> predictorCommand=TrackedMetalCommandBuffer(context.queue);
@@ -2717,6 +2836,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					if( [predictorCommand status]!=MTLCommandBufferStatusCompleted ) return false;
 					anomalyPredictorDeviceMS=
 						([predictorCommand GPUEndTime]-[predictorCommand GPUStartTime])*1000.0;
+					anomalyPredictorDeviceStartTimeS=[predictorCommand GPUStartTime];
+					anomalyPredictorDeviceEndTimeS=[predictorCommand GPUEndTime];
 					const std::uint32_t* predictorReduction=static_cast<const std::uint32_t*>(
 						ReadTrackedMetalBuffer(manifoldPredictorReduction));
 					if( !predictorReduction||predictorReduction[2u]!=0u ) return false;
@@ -2743,7 +2864,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				FireProductionProjectionResult physicalProjection,projection;
 				FireProductionMetalProjectionResidentState restorationState;
 				bool anomalyCorrectorExecuted=false;
-				double anomalyCorrectorCellDeviceMS=0.0;
+				double anomalyCorrectorCellDeviceMS=0.0,
+					anomalyCorrectorCellDeviceStartTimeS=0.0,
+					anomalyCorrectorCellDeviceEndTimeS=0.0;
 				if( restorationRemoved ) {
 					if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,
 						projection,structuredError) ) return false;
@@ -2772,25 +2895,46 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						correctorInput.frozenVelocityMPerS=restorationState.velocityMPerS;
 						correctorInput.ambientValues=ambientPrivate;
 						FireProductionMetalCellPalindromeResidentResult corrector;
-						if( !RemapFireProductionCellPalindromeMetalResident(request.cellTransport,
-							correctorInput,corrector,structuredError) ) return false;
-						anomalyCorrectorCellDeviceMS=corrector.deviceElapsedMS;
-						id<MTLCommandBuffer> correctorSource=TrackedMetalCommandBuffer(context.queue);
-						id<MTLComputeCommandEncoder> correctorEncoder=
-							correctorSource?[correctorSource computeCommandEncoder]:nil;
-						if( !correctorEncoder ) return false;
-						[correctorEncoder setBuffer:corrector.conservativeValues offset:0 atIndex:0];
-						[correctorEncoder setBuffer:cellSourcePrivate offset:0 atIndex:1];
-						[correctorEncoder setBuffer:sourceGridParameter offset:0 atIndex:2];
-						Dispatch(correctorEncoder,context.addCellSources,9u*cells);
-						[correctorEncoder endEncoding];CommitTrackedMetalCommand(correctorSource);
-						[correctorSource waitUntilCompleted];
-						if( [correctorSource status]!=MTLCommandBufferStatusCompleted ) return false;
-						anomalyCorrectorSourceDeviceMS=
-							([correctorSource GPUEndTime]-[correctorSource GPUStartTime])*1000.0;
+						std::array<bool,2> correctorSucceeded={{false,false}};
+						std::array<std::string,2> correctorError;
+						auto finishCorrector=[&](const std::size_t task){
+							if(task==0u){
+								if(!RemapFireProductionCellPalindromeMetalResident(request.cellTransport,
+									correctorInput,corrector,&correctorError[task]))return;
+								anomalyCorrectorCellDeviceMS=corrector.deviceElapsedMS;
+								anomalyCorrectorCellDeviceStartTimeS=corrector.deviceStartTimeS;
+								anomalyCorrectorCellDeviceEndTimeS=corrector.deviceEndTimeS;
+								id<MTLCommandBuffer> correctorSource=TrackedMetalCommandBuffer(context.queue);
+								id<MTLComputeCommandEncoder> correctorEncoder=
+									correctorSource?[correctorSource computeCommandEncoder]:nil;
+								if(!correctorEncoder){correctorError[task]=
+									"production anomaly corrector source encoder failed";return;}
+								[correctorEncoder setBuffer:corrector.conservativeValues offset:0 atIndex:0];
+								[correctorEncoder setBuffer:cellSourcePrivate offset:0 atIndex:1];
+								[correctorEncoder setBuffer:sourceGridParameter offset:0 atIndex:2];
+								Dispatch(correctorEncoder,context.addCellSources,9u*cells);
+								[correctorEncoder endEncoding];CommitTrackedMetalCommand(correctorSource);
+								[correctorSource waitUntilCompleted];
+								if([correctorSource status]!=MTLCommandBufferStatusCompleted){
+									correctorError[task]="production anomaly corrector source failed";return;}
+								anomalyCorrectorSourceDeviceMS=([correctorSource GPUEndTime]-
+									[correctorSource GPUStartTime])*1000.0;
+								anomalyCorrectorSourceDeviceStartTimeS=[correctorSource GPUStartTime];
+								anomalyCorrectorSourceDeviceEndTimeS=[correctorSource GPUEndTime];
+								correctorSucceeded[task]=true;
+							}else correctorSucceeded[task]=
+								PublishFireProductionMetalRestorationResidentState(restorationRequest,
+									restorationState,projection,&correctorError[task]);
+						};
+						if(serialIndependentPreparation){finishCorrector(0u);finishCorrector(1u);}
+						else Implementation::GlobalThreadPool().ParallelFor(
+							correctorSucceeded.size(),finishCorrector);
+						for(std::size_t task=0u;task<correctorSucceeded.size();++task)
+							if(!correctorSucceeded[task]){
+								if(structuredError)*structuredError=correctorError[task];
+								return false;
+							}
 						++sourceCommits;cell=std::move(corrector);anomalyCorrectorExecuted=true;
-						if( !PublishFireProductionMetalRestorationResidentState(restorationRequest,
-							restorationState,projection,structuredError) ) return false;
 					} else if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
 						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
 					timestepVelocityAuditRestorationMS=timestepVelocityAuditMS();
@@ -2865,6 +3009,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					}
 					return false;
 				}
+				timestepVelocityAuditTerminalValidationMS=timestepVelocityAuditMS();
 				const bool enforcePlateau=request.enforceManifoldPlateau&&
 					!restorationRemoved&&!plateauEvidenceEnabled;
 				float maximumManifoldGenerationFloat=0.0f,maximumTerminalDeviationFloat=0.0f;
@@ -2887,14 +3032,6 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const bool plateauPassed=!enforcePlateau||
 					(plateauValidation.mechanismPassed&&
 					maximumTerminalDeviation<=lowMachPlateauAllowance);
-				if( !plateauPassed&&!manifoldProbeActivation&&!manifoldStageBudgetActivation&&
-					!timestepVelocityAuditActivation&&!goldenLongShadowActivation ) {
-					if( structuredError ) *structuredError=
-						maximumTerminalDeviation>lowMachPlateauAllowance?
-							"production realized manifold deviation exceeds the low-Mach headroom allowance":
-							"production restoration residual is amplified";
-					return false;
-				}
 				FireProductionResidentStepResult computed;
 				computed.conservativeValues.assign(values,values+9u*cells);
 				for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -2904,6 +3041,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					computed.transportedDual.momentum[axis].assign(values+9u*cells+allFaces+beginning,
 						values+9u*cells+allFaces+beginning+faceCounts[axis]);
 				}
+				timestepVelocityAuditResultCopyMS=timestepVelocityAuditMS();
 				computed.physicalProjection=std::move(physicalProjection);
 				computed.projection=std::move(projection);computed.forceSchedule=force.schedule;
 				computed.forceDiagnostics=force.diagnostics;computed.cellSubmapCount=
@@ -2940,6 +3078,33 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					(restorationRemoved?computed.projection.deviceElapsedMS:
 						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS)+
 					([terminalCommand GPUEndTime]-[terminalCommand GPUStartTime])*1000.0;
+				double deviceStartTimeS=[upload GPUStartTime],deviceEndTimeS=[terminalCommand GPUEndTime];
+				auto includeDeviceWindow=[&](const double beginning,const double end) {
+					if(!(beginning>0.0)||!std::isfinite(beginning)||end<beginning||!std::isfinite(end))
+						return false;
+					deviceStartTimeS=std::min(deviceStartTimeS,beginning);
+					deviceEndTimeS=std::max(deviceEndTimeS,end);return true;
+				};
+				const bool completeDeviceWindow=
+					includeDeviceWindow(force.diagnostics.deviceStartTimeS,
+						force.diagnostics.deviceEndTimeS)&&
+					includeDeviceWindow(predictorCellDeviceStartTimeS,predictorCellDeviceEndTimeS)&&
+					includeDeviceWindow(dual.deviceStartTimeS,dual.deviceEndTimeS)&&
+					includeDeviceWindow([sourceCommand GPUStartTime],[sourceCommand GPUEndTime])&&
+					includeDeviceWindow(computed.projection.deviceStartTimeS,
+						computed.projection.deviceEndTimeS)&&
+					(restorationRemoved||includeDeviceWindow(computed.physicalProjection.deviceStartTimeS,
+						computed.physicalProjection.deviceEndTimeS))&&
+					(!closeAdvectiveAnomaly||
+						(includeDeviceWindow(anomalyPredictorDeviceStartTimeS,
+							anomalyPredictorDeviceEndTimeS)&&
+						 (!anomalyCorrectorExecuted||
+						  (includeDeviceWindow(anomalyCorrectorCellDeviceStartTimeS,
+							anomalyCorrectorCellDeviceEndTimeS)&&
+						   includeDeviceWindow(anomalyCorrectorSourceDeviceStartTimeS,
+							anomalyCorrectorSourceDeviceEndTimeS)))));
+				if(!completeDeviceWindow)return false;
+				computed.deviceMakespanMS=(deviceEndTimeS-deviceStartTimeS)*1000.0;
 				computed.representedTimeStepS=request.force.timeStepS;
 				computed.maximumManifoldGeneration=maximumManifoldGeneration;
 				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
@@ -2961,15 +3126,37 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					plateauValidation.deliveredDrainFraction;
 				computed.restorationResidualBandPerS=
 					plateauValidation.maximumPostResidualPerS;
+				double suggestedManifoldTimeStepS=0.0;
+				computed.manifoldNextTimeStepAvailable=enforcePlateau&&
+					DeriveFireProductionManifoldTimeStep(
+						static_cast<double>(request.force.timeStepS),maximumManifoldGeneration,
+						plateauValidation.deliveredDrainFraction,suggestedManifoldTimeStepS,0);
+				computed.suggestedManifoldTimeStepS=computed.manifoldNextTimeStepAvailable?
+					suggestedManifoldTimeStepS:0.0;
 				computed.manifoldPlateauPassed=enforcePlateau&&plateauPassed;
+				plateauRefused=enforcePlateau&&!plateauPassed&&
+					!manifoldProbeActivation&&!manifoldStageBudgetActivation;
 				if( enforcePlateau )
 					computed.projection.validationPassed=plateauValidation.mechanismPassed;
 				if( physicalValidationProbeEnabled )
 					computed.physicalProjection.validationPassed=false;
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 				computed.acceptedShape=request.force.shape;
+				timestepVelocityAuditMetadataMS=timestepVelocityAuditMS();
 				if( enforcePlateau&&
 					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
+					std::array<std::uint64_t,2> authorityDigests={{0u,0u}};
+					auto deriveAuthorityDigest=[&](const std::size_t digestIndex){
+						if(digestIndex==0u)authorityDigests[digestIndex]=
+							ParallelAcceptedManifoldPayloadDigest(computed,serialOwnerValidation);
+						else authorityDigests[digestIndex]=ParallelAcceptedStatePayloadDigestFast(
+							computed.acceptedShape,computed.conservativeValues,
+							computed.projection.momentumKGPerM2S,
+							computed.projection.velocityMPerS,serialOwnerValidation);
+					};
+					if(serialOwnerValidation){deriveAuthorityDigest(0u);deriveAuthorityDigest(1u);}
+					else Implementation::GlobalThreadPool().ParallelFor(
+						authorityDigests.size(),deriveAuthorityDigest);
 					computed.acceptedManifoldToken_.available_=true;
 					computed.acceptedManifoldToken_.representedTimeStepS_=
 						static_cast<double>(request.force.timeStepS);
@@ -2985,14 +3172,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						computed.physicalProjection.maximumPreProjectionResidualPerS;
 					computed.acceptedManifoldToken_.physicalMaximumPostResidualPerS_=
 						computed.physicalProjection.maximumPostProjectionResidualPerS;
-					computed.acceptedManifoldToken_.payloadDigest_=
-						FireProductionAcceptedManifoldPayloadDigest(computed);
-					computed.acceptedManifoldToken_.acceptedStateDigest_=
-						FireProductionAcceptedStatePayloadDigestFast(computed.acceptedShape,
-							computed.conservativeValues,computed.projection.momentumKGPerM2S,
-							computed.projection.velocityMPerS);
+					computed.acceptedManifoldToken_.payloadDigest_=authorityDigests[0u];
+					computed.acceptedManifoldToken_.acceptedStateDigest_=authorityDigests[1u];
 					computed.acceptedManifoldToken_.acceptedStateDigestVersion_=2u;
 				}
+				timestepVelocityAuditAuthorityMS=timestepVelocityAuditMS();
 				if( computed.cellSubmapCount!=(anomalyCorrectorExecuted?10u:5u)||
 					computed.dualSubmapCount!=15u||
 					computed.sourceCommandCommitCount!=(anomalyCorrectorExecuted?2u:1u)||
@@ -3007,7 +3191,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						computed.manifoldStageGeneration[1]!=0.0||
 						computed.manifoldStageGeneration[2]!=0.0))||
 					computed.combinedActualMetalAllocationBytes>certified||
-					!std::isfinite(computed.deviceElapsedMS) ) return false;
+					!std::isfinite(computed.deviceElapsedMS)||
+					!std::isfinite(computed.deviceMakespanMS)||computed.deviceMakespanMS<0.0 ) return false;
 				result=std::move(computed);
 				if( timestepVelocityAuditEnabled||hostResidualProbeEnabled ) {
 					const double completeMS=timestepVelocityAuditMS();
@@ -3031,6 +3216,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						timestepVelocityAuditRestorationMS-timestepVelocityAuditPhysicalMS,
 						timestepVelocityAuditTerminalMS-timestepVelocityAuditRestorationMS,
 						completeMS-timestepVelocityAuditTerminalMS,completeMS);
+					std::fprintf(stderr,"%s_POST validation=%.9g result_copy=%.9g "
+						"metadata=%.9g authority=%.9g final_checks=%.9g\n",wallLabel,
+						timestepVelocityAuditTerminalValidationMS-timestepVelocityAuditTerminalMS,
+						timestepVelocityAuditResultCopyMS-timestepVelocityAuditTerminalValidationMS,
+						timestepVelocityAuditMetadataMS-timestepVelocityAuditResultCopyMS,
+						timestepVelocityAuditAuthorityMS-timestepVelocityAuditMetadataMS,
+						completeMS-timestepVelocityAuditAuthorityMS);
 					const double sourceDeviceMS=([sourceCommand GPUEndTime]-
 						[sourceCommand GPUStartTime])*1000.0;
 					const double terminalDeviceMS=([terminalCommand GPUEndTime]-
@@ -3039,14 +3231,21 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						"HOST_RESIDUAL_DEVICE":"TIMESTEP_VELOCITY_DEVICE";
 					std::fprintf(stderr,"%s owner_upload=%.9g force=%.9g "
 						"cell=%.9g dual=%.9g source=%.9g physical_projection=%.9g "
-						"restoration_projection=%.9g terminal=%.9g reported_total=%.9g\n",
+						"restoration_projection=%.9g terminal=%.9g work_total=%.9g makespan=%.9g\n",
 						deviceLabel,timestepVelocityAuditOwnerUploadDeviceMS,
 						force.diagnostics.advanceDeviceElapsedMS,cell.deviceElapsedMS,
 						dual.deviceElapsedMS,sourceDeviceMS,
 						restorationRemoved?projection.deviceElapsedMS:physicalProjection.deviceElapsedMS,
 						restorationRemoved?0.0:projection.deviceElapsedMS,terminalDeviceMS,
-						result.deviceElapsedMS);
+						result.deviceElapsedMS,result.deviceMakespanMS);
 				}
+			}
+			if(plateauRefused){
+				if(structuredError)*structuredError=
+					result.maximumAcceptedManifoldDeviation>0x1.8p-6?
+						"production realized manifold deviation exceeds the low-Mach headroom allowance":
+						"production restoration residual is amplified";
+				return false;
 			}
 			if( structuredError ) structuredError->clear();return true;
 		} catch( const std::bad_alloc& ) {
@@ -3055,6 +3254,17 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				"production resident step allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
+	}
+
+	bool AdvanceFireProductionResidentStepMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionResidentStepResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionResidentStepResult();
+		FireProductionResidentStepResult attempted;
+		if(!AttemptFireProductionResidentStepMetal(request,attempted,structuredError))return false;
+		result=std::move(attempted);return true;
 	}
 
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount()

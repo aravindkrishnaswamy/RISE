@@ -4017,6 +4017,7 @@ int main()
 		seeded.residentProjectionInvocationCount=2u;seeded.interstageFullGridTransferCount=1u;
 		seeded.terminalStagingCount=1u;seeded.combinedCertifiedWorkingSetBytes=1u;
 		seeded.combinedActualMetalAllocationBytes=1u;seeded.deviceElapsedMS=1.0;
+		seeded.deviceMakespanMS=1.0;
 		seeded.representedTimeStepS=1.0f;
 		seeded.maximumManifoldGeneration=1.0;seeded.maximumAcceptedManifoldDeviation=1.0;
 		seeded.manifoldMapCellCount=1u;seeded.manifoldScalarDeviceToHostTransferCount=2u;
@@ -4026,7 +4027,8 @@ int main()
 		seeded.manifoldStageGeneration={{1.0,1.0,1.0}};
 		seeded.requiredRestorationDrainFraction=1.0;
 		seeded.deliveredRestorationDrainFraction=1.0;
-		seeded.restorationResidualBandPerS=1.0;seeded.manifoldPlateauPassed=true;
+		seeded.restorationResidualBandPerS=1.0;seeded.suggestedManifoldTimeStepS=0.5;
+		seeded.manifoldNextTimeStepAvailable=true;seeded.manifoldPlateauPassed=true;
 		seeded.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 	};
 		auto fullStepResultIsDefault=[&](const FireProductionResidentStepResult& rejected) {
@@ -4043,6 +4045,7 @@ int main()
 			rejected.interstageFullGridTransferCount==0u&&rejected.terminalStagingCount==0u&&
 			rejected.combinedCertifiedWorkingSetBytes==0u&&
 			rejected.combinedActualMetalAllocationBytes==0u&&rejected.deviceElapsedMS==0.0&&
+			rejected.deviceMakespanMS==0.0&&
 			rejected.representedTimeStepS==0.0f&&
 			rejected.maximumManifoldGeneration==0.0&&
 			rejected.maximumAcceptedManifoldDeviation==0.0&&
@@ -4056,7 +4059,9 @@ int main()
 			rejected.manifoldStageGeneration[2]==0.0&&
 			rejected.requiredRestorationDrainFraction==0.0&&
 			rejected.deliveredRestorationDrainFraction==0.0&&
-			rejected.restorationResidualBandPerS==0.0&&!rejected.manifoldPlateauPassed&&
+			rejected.restorationResidualBandPerS==0.0&&
+			rejected.suggestedManifoldTimeStepS==0.0&&
+			!rejected.manifoldNextTimeStepAvailable&&!rejected.manifoldPlateauPassed&&
 			!rejected.HasAcceptedManifoldToken()&&
 			rejected.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 	};
@@ -4689,7 +4694,7 @@ int main()
 		advectionMetalSource.substr(residentMixedDualBeginning,
 			mixedDualComparatorBeginning-residentMixedDualBeginning);
 	const std::size_t residentFullStepBeginning=advectionMetalSource.find(
-		"bool AdvanceFireProductionResidentStepMetal(");
+		"bool AttemptFireProductionResidentStepMetal(");
 	const std::string residentFullStepBody=residentFullStepBeginning==std::string::npos?
 		std::string():advectionMetalSource.substr(residentFullStepBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");

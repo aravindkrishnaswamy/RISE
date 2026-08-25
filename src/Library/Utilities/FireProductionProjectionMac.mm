@@ -1292,6 +1292,8 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				if( !validBand ) {
 					result=FireProductionProjectionResult();if( error ) *error="production fire projection validation band overflowed";return false;}
 				result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				result.deviceStartTimeS=[command GPUStartTime];
+				result.deviceEndTimeS=[command GPUEndTime];
 				if( InjectedFailure("output")&&!result.pressurePa.empty() )
 					result.pressurePa[0]=std::numeric_limits<float>::quiet_NaN();
 			}

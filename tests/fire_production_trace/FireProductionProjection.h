@@ -78,6 +78,8 @@ namespace RISEFireProductionTrace
 		std::uint64_t residentActualMetalAllocationBytes;
 		bool validationPassed;
 		double deviceElapsedMS;
+		double deviceStartTimeS;
+		double deviceEndTimeS;
 
 		FireProductionProjectionResult() : maximumPreProjectionResidualPerS(0.0f),
 			maximumPostProjectionResidualPerS(0.0f),
@@ -87,7 +89,7 @@ namespace RISEFireProductionTrace
 			residentInterstageDeviceToHostTransferCount(0u),residentTerminalStagingCount(0u),
 			residentCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			residentCertifiedWorkingSetBytes(0u),residentActualMetalAllocationBytes(0u),validationPassed(false),
-			deviceElapsedMS(0.0) {}
+			deviceElapsedMS(0.0),deviceStartTimeS(0.0),deviceEndTimeS(0.0) {}
 	};
 
 	std::size_t FireProductionProjectionFaceCount(

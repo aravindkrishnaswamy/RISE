@@ -154,11 +154,13 @@ namespace RISE
 		std::uint32_t interstageFullGridTransferCount;
 		std::uint64_t actualMetalAllocationBytes;
 		double deviceElapsedMS;
+		double deviceStartTimeS;
+		double deviceEndTimeS;
 
 		FireProductionMetalCellPalindromeResidentResult() : conservativeValues(nil),
 			executedSubmapCount(0u),commandCommitCount(0u),
 			interstageFullGridTransferCount(0u),actualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0) {}
+			deviceElapsedMS(0.0),deviceStartTimeS(0.0),deviceEndTimeS(0.0) {}
 	};
 
 	//! Private-buffer production seam. The host request supplies validation and
@@ -325,11 +327,14 @@ namespace RISE
 		std::uint32_t interstageFullGridTransferCount;
 		std::uint64_t actualMetalAllocationBytes;
 		double deviceElapsedMS;
+		double deviceStartTimeS;
+		double deviceEndTimeS;
 
 		FireProductionMetalDualMomentumResidentResult() :
 			packedAuxiliaryFaceDensity(nil),packedMomentum(nil),executedSubmapCount(0u),
 			commandCommitCount(0u),interstageFullGridTransferCount(0u),
-			actualMetalAllocationBytes(0u),deviceElapsedMS(0.0) { faceByteOffset.fill(0u); }
+			actualMetalAllocationBytes(0u),deviceElapsedMS(0.0),deviceStartTimeS(0.0),
+			deviceEndTimeS(0.0) { faceByteOffset.fill(0u); }
 	};
 
 	//! Step-boundary upload of the nine frozen carrier/ambient layouts.

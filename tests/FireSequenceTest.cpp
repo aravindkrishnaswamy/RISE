@@ -1611,7 +1611,8 @@ namespace
 			const FireStateProducerPrecision advanceOutputPrecision=
 				FireStateProducerPrecision::Binary64;
 			std::vector<double> pilotSetpointTemperatureK(shape.CellCount(),0.0);
-			for(unsigned int reduction=0;reduction<20u&&!advancedOK;++reduction) {
+			for(unsigned int reduction=0;
+				reduction<RISE::FireStepRejectionRetryCap&&!advancedOK;++reduction) {
 				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
 				bool commandOK=true;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell) {
