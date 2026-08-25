@@ -3372,6 +3372,27 @@ namespace RISE
 			//! meld" from "the blend radius has swallowed the feature".
 			static const double kTotalDissolveGate = 5.0;
 
+			//! Cat plan mid-flight adjustment (2026-08-25): the PROPORTION
+			//! caveat gate -- SDFBlendScaleOffender_::proportionCaveat
+			//! fires when a flagged part's reported dimension is <= this
+			//! fraction of the reported dimension of whatever prior part
+			//! it joins.  1/5, from the engine A/B finding's own worked
+			//! numbers: the apothecary-cat ear (tip radius ~0.006) against
+			//! its head (radius ~0.062) measures ratio ~0.097 -- clearly a
+			//! proportion defect, not just a blend-width one, since
+			//! clamping k restores the torso's lobes but leaves the ear
+			//! sub-pixel regardless of k.  Deliberately the RECIPROCAL
+			//! framing of kSizeMismatchGate (3.0, "flag when mismatch >=
+			//! 3x") rather than the same number: kSizeMismatchGate decides
+			//! whether THIS join fires AT ALL (a much lower bar, so
+			//! moderate mismatches still get the ordinary "shrink k"
+			//! advice); this gate decides whether shrinking k is even
+			//! WORTH suggesting on its own, which needs a much starker
+			//! mismatch (5x, matching kTotalDissolveGate's own margin
+			//! reasoning) before telling an author "enlarging is the real
+			//! fix" is warranted over "just narrow the blend".
+			static const double kProportionCaveatGate = 5.0;
+
 			//! GPT slice item 4 (2026-08-24, the env-reflection advisory):
 			//! HSV saturation ( (max-min)/max ) an env dome's flat colour
 			//! must clear before condition K's low-roughness-metallic
@@ -3428,38 +3449,83 @@ namespace RISE
 			//! plain BOX still ignores `round` entirely (ComputeBounds'
 			//! own comment: "round is IGNORED by the plain box field"), so
 			//! only ePrimRoundBox takes the max(.,round) treatment.
-			Scalar SDFPartCharacteristicDim_( const RISE::Implementation::SDFGeometry::Part& pt )
+			//! Cat plan item 3-b (2026-08-25): the LOCAL (UNSCALED) twin --
+			//! the exact same per-primitive switch, minus the final scale
+			//! multiply, so a caller can apply whichever scale factor its
+			//! own purpose needs (min, for detection's "how thin is the
+			//! thinnest feature"; median, for a REPORTED number a reader
+			//! can act on -- see SDFPartReportedDim_'s doc for why min
+			//! alone is unfit to print).  SDFPartCharacteristicDim_ below
+			//! is now a thin wrapper; this is the ONE place the per-
+			//! primitive semantics live.
+			Scalar SDFPartLocalCharacteristicDim_( const RISE::Implementation::SDFGeometry::Part& pt )
 			{
 				using SDFGeometry = RISE::Implementation::SDFGeometry;
-				Scalar dim = 0.0;
 				switch( pt.type ) {
 					case SDFGeometry::ePrimSphere:
 					case SDFGeometry::ePrimCapsule:
 					case SDFGeometry::ePrimSuperellipsoid:
-						dim = pt.a;
-						break;
+						return pt.a;
 					case SDFGeometry::ePrimBox:
-						dim = std::min( pt.a, std::min( pt.b, pt.c ) );
-						break;
+						return std::min( pt.a, std::min( pt.b, pt.c ) );
 					case SDFGeometry::ePrimRoundBox: {
 						const Scalar r = std::max( pt.round, Scalar( 0 ) );
-						dim = std::min( std::max( pt.a, r ),
+						return std::min( std::max( pt.a, r ),
 						         std::min( std::max( pt.b, r ), std::max( pt.c, r ) ) );
-						break;
 					}
 					case SDFGeometry::ePrimCylinder:
-						dim = std::min( pt.a, pt.b );
-						break;
+						return std::min( pt.a, pt.b );
 					case SDFGeometry::ePrimTorus:
-						dim = pt.b;   // tube radius -- the ring's own cross-section, not the major radius
-						break;
+						return pt.b;   // tube radius -- the ring's own cross-section, not the major radius
 					case SDFGeometry::ePrimRoundCone:
-						dim = std::min( pt.a, pt.b );   // base radius vs TIP radius, whichever smaller
-						break;
+						return std::min( pt.a, pt.b );   // base radius vs TIP radius, whichever smaller
 					default:
 						return 0.0;   // unrecognized (future primitive): skip rather than guess
 				}
-				return dim * pt.minScale;
+			}
+
+			Scalar SDFPartCharacteristicDim_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				return SDFPartLocalCharacteristicDim_( pt ) * pt.minScale;
+			}
+
+			//! Cat plan item 3-b: the MEDIAN of a part's three absolute
+			//! per-axis scale magnitudes.  Mirrors SDFPartMaxScale_'s own
+			//! "read pt.scale RAW, no near-zero floor" reasoning -- a
+			//! median needs no divide, so flooring a near-zero axis (only
+			//! relevant for invScale's 1/0 guard) cannot change which
+			//! value sorts into the middle.
+			Scalar SDFPartMedianScale_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				Scalar s[3] = { std::fabs( pt.scale.x ), std::fabs( pt.scale.y ), std::fabs( pt.scale.z ) };
+				std::sort( s, s + 3 );
+				return s[1];
+			}
+
+			//! Cat plan item 3-b (2026-08-25): the REPORTED dimension --
+			//! what condition J's message shows and what fix_blend_scale's
+			//! SUGGESTED (not necessarily applied) target derives from.
+			//! DISTINCT from SDFPartCharacteristicDim_ (the DETECTION
+			//! dimension, min-scaled): a heavily anisotropically-squashed
+			//! part's min-scaled dimension collapses to an unreadable,
+			//! non-actionable number ("max ~4e-05" on a real dreamscape
+			//! ear) even though the min-scaled FIRE verdict is correct in
+			//! kind (the squashed axis really is that thin in that one
+			//! direction, which is a legitimate reason to warn).  The
+			//! reported number should instead read as an actionable
+			//! authoring instruction, which means resisting the single
+			//! worst axis -- median, not min, is the honest middle ground
+			//! between "ignore anisotropy entirely" (report the isotropic-
+			//! looking a/b/c, which would UNDER-warn on a genuinely
+			//! squashed part) and "always report the worst axis" (which is
+			//! what produces the unreadable number in the first place).
+			//! For an isotropic part (the common case) median == min, so
+			//! this is BYTE-IDENTICAL to SDFPartCharacteristicDim_ there --
+			//! zero behaviour change for every already-pinned isotropic
+			//! fixture.
+			Scalar SDFPartReportedDim_( const RISE::Implementation::SDFGeometry::Part& pt )
+			{
+				return SDFPartLocalCharacteristicDim_( pt ) * SDFPartMedianScale_( pt );
 			}
 
 			//! Review-round B, P1 (2026-08-24): straight-line distance
@@ -3606,6 +3672,207 @@ namespace RISE
 					case SDFGeometry::ePrimSuperellipsoid:return "superellipsoid";
 					default:                              return "part";
 				}
+			}
+
+			//! Cat plan item 1 (2026-08-25): ONE offending smin joint, as
+			//! ScanSdfGeometryBlendScaleOffenders_ finds it -- SHARED by
+			//! condition J's note/diagnostic clauses, the fix_blend_scale
+			//! verb, and finish_element's inline finding, so all three
+			//! read the identical math and can never disagree about what
+			//! "an offender" is or what its safe fix looks like.
+			struct SDFBlendScaleOffender_
+			{
+				//! 0-based index into the chunk's `part` occurrences --
+				//! SAME index ParsePartLines' parts[] uses and
+				//! DocSetParamValue's `occ` argument needs verbatim (the
+				//! two are the SAME ordering by construction: both walk
+				//! the chunk's repeated `part` params in document order).
+				std::size_t partIndex = 0;
+				int         primType = 0;   //!< SDFPrim, for naming (SDFPrimName_)
+				Scalar      k = 0.0;        //!< the authored, offending k
+				//! The DETECTION bound (dimEffective/3, min-scaled) --
+				//! what decided this fires.  Used only to compute the
+				//! verb's GUARANTEED-safe clamp target; never shown to a
+				//! reader (see reportedMaxK's doc for why the min-scaled
+				//! number alone is unfit to print).
+				Scalar      detectionMaxK = 0.0;
+				//! The REPORTED suggested bound (median-scaled) -- what
+				//! the message shows and what a reader should act on.
+				//! Cat plan item 3-b.
+				Scalar      reportedMaxK = 0.0;
+				//! The verb's actual clamp target: min(reportedMaxK,
+				//! detectionMaxK) -- GUARANTEED to silence the scan
+				//! (detectionMaxK <= reportedMaxK always; see
+				//! SDFPartReportedDim_'s doc -- median >= min for any set
+				//! of 3 positive numbers), even though it is occasionally
+				//! a STRICTER number than the message suggests (only
+				//! under anisotropic scale; the two are numerically EQUAL
+				//! for the common isotropic case, where "message and
+				//! mechanical fix agree" holds literally).
+				Scalar      clampTargetK = 0.0;
+				//! Cat plan mid-flight adjustment (2026-08-25, engine A/B
+				//! finding): TRUE when this part's own reported dimension
+				//! is itself <= ~1/5 of the prior part it joins -- e.g. a
+				//! cat ear authored at tip radius 0.006 smin-joined onto a
+				//! head of radius 0.062 (ratio ~0.10).  Distinct from "k
+				//! is too wide": that is a BLEND-WIDTH problem k can fix;
+				//! this is a PROPORTION problem k cannot -- shrinking k
+				//! stops the ear from dissolving into the head's surface,
+				//! but a 0.006-radius nub is still too small to read at
+				//! scene framing no matter how sharp its blend is.  The
+				//! verb, the note clause, and finish_element's inline
+				//! finding all gate their "enlarge toward proportion, or
+				//! rebuild with skeleton_geometry" caveat off this flag,
+				//! never re-deriving the ratio themselves.
+				bool        proportionCaveat = false;
+				//! "geoName part N (kind): k=X > max ~Y" -- the SAME text
+				//! the note and the diagnostic both show (built from
+				//! reportedMaxK, per item 3-b), with the proportion
+				//! caveat appended when proportionCaveat is set.
+				std::string formattedLine;
+			};
+
+			//! Cat plan item 1: scan ONE sdf_geometry chunk's ALREADY-
+			//! PARSED part list for condition J's offenders.  `geoName`
+			//! names the chunk for the formatted line.  This is the
+			//! ENTIRE per-chunk offender scan Fix 2 / review-round B/C
+			//! used to run INLINE inside ComputeDesignNoteConditionsFromDoc_
+			//! -- extracted here so fix_blend_scale (which needs the
+			//! STRUCTURED per-offender data, not just a formatted string)
+			//! and finish_element's inline finding share the IDENTICAL
+			//! math, never a second copy that could silently drift from
+			//! condition J's own.  Byte-identical behaviour to the inline
+			//! version it replaces (verified: the whole condition-J test
+			//! suite, unchanged, still passes).
+			std::vector<SDFBlendScaleOffender_> ScanSdfGeometryBlendScaleOffenders_(
+				const std::string& geoName,
+				const std::vector<RISE::Implementation::SDFGeometry::Part>& parts )
+			{
+				std::vector<SDFBlendScaleOffender_> out;
+				for( std::size_t pi = 0; pi < parts.size(); ++pi ) {
+					const RISE::Implementation::SDFGeometry::Part& pt = parts[pi];
+					if( pt.op != RISE::Implementation::SDFGeometry::eOpSmin ) continue;
+					// P2: the running field starts EMPTY (+1e30), so a
+					// FIRST part authored as `smin` composes against
+					// nothing and degenerates to plain union (SDFGeometry.
+					// cpp's own ParsePartLines comment, ~line 2088) -- it
+					// dissolves nothing, and firing on it was a genuine
+					// false positive (the dragon_body/part-1 corpus hit).
+					if( pi == 0 ) continue;
+					const Scalar dimCur = SDFPartCharacteristicDim_( pt );
+					if( dimCur <= 0.0 ) continue;
+
+					// P1: k dissolves the SMALLEST part in the join, not
+					// just the current one.  Sweep prior parts, proximity-
+					// gated; subtract/intersect priors excluded (P3-a: a
+					// carved cavity is not a feature that dissolves);
+					// among remaining candidates, the one with the
+					// smallest RAW DISTANCE wins (review-round C: not
+					// smallest gap, which double-counts bulk as
+					// proximity).  See review-round B/C's own commit
+					// messages for the full reasoning -- unchanged here,
+					// just tracking WHICH prior part won (bestPriorIndex)
+					// in addition to its dimension, so the reported-dim
+					// computation below can look it up again.
+					const Scalar reachCur = SDFPartReachRadius_( pt );
+					Scalar priorMinDim = -1.0;
+					Scalar bestDistance = 0.0;
+					std::size_t bestPriorIndex = 0;
+					bool haveBestPrior = false;
+					for( std::size_t pj = 0; pj < pi; ++pj ) {
+						const RISE::Implementation::SDFGeometry::Part& prevPt = parts[pj];
+						if( prevPt.op == RISE::Implementation::SDFGeometry::eOpSubtract ||
+						    prevPt.op == RISE::Implementation::SDFGeometry::eOpIntersect ) continue;
+						const Scalar prevDim = SDFPartCharacteristicDim_( prevPt );
+						if( prevDim <= 0.0 ) continue;
+						const Scalar prevReach = SDFPartReachRadius_( prevPt );
+						const Scalar distance = SDFPartDistance_( pt, prevPt );
+						const Scalar gap = distance - prevReach - reachCur;
+						if( gap > Scalar( 2 ) * pt.k ) continue;   // out of reach
+						if( priorMinDim < 0.0 || distance < bestDistance ) {
+							priorMinDim = prevDim; bestDistance = distance;
+							bestPriorIndex = pj; haveBestPrior = true;
+						}
+					}
+					const Scalar dimEffective = ( priorMinDim >= 0.0 )
+						? std::min( dimCur, priorMinDim ) : dimCur;
+					if( dimEffective <= 0.0 ) continue;
+
+					// Discriminator + P2-1 total-dissolve bypass -- see
+					// kSizeMismatchGate's / kTotalDissolveGate's own doc
+					// comments for the calibration numbers.
+					const bool totalDissolve = ( pt.k >= dimEffective * kTotalDissolveGate );
+					if( !totalDissolve && priorMinDim >= 0.0 ) {
+						const Scalar mismatch = ( dimCur > priorMinDim )
+							? ( dimCur / priorMinDim ) : ( priorMinDim / dimCur );
+						if( mismatch < kSizeMismatchGate ) continue;
+					}
+
+					const Scalar detectionMaxK = dimEffective * kBlendScaleFraction;
+					if( pt.k <= detectionMaxK ) continue;
+
+					// Cat plan item 3-b: the REPORTED dimension mirrors
+					// dimEffective's own "min of current + winning prior"
+					// shape, but built from the MEDIAN-scaled dimension
+					// instead of the min-scaled one (SDFPartReportedDim_'s
+					// own doc).
+					Scalar reportedDimEffective = SDFPartReportedDim_( pt );
+					if( haveBestPrior ) {
+						reportedDimEffective = std::min( reportedDimEffective,
+							SDFPartReportedDim_( parts[bestPriorIndex] ) );
+					}
+					const Scalar reportedMaxK = reportedDimEffective * kBlendScaleFraction;
+
+					// Cat plan mid-flight adjustment: the PROPORTION
+					// caveat, computed straight from the two REPORTED
+					// dimensions already on hand -- reuses reportedDimCur
+					// / reportedDimPrior, no new scan.  Only meaningful
+					// when a winning prior was actually found; a first-
+					// reach part with nothing to compare against cannot
+					// be judged out of proportion.
+					bool proportionCaveat = false;
+					Scalar proportionRatio = 0.0;   // prior / cur, i.e. "cur is 1/ratio the size of prior"
+					if( haveBestPrior ) {
+						const Scalar reportedDimCur   = SDFPartReportedDim_( pt );
+						const Scalar reportedDimPrior = SDFPartReportedDim_( parts[bestPriorIndex] );
+						if( reportedDimCur > 0.0 && reportedDimPrior > 0.0 &&
+						    reportedDimCur <= reportedDimPrior / kProportionCaveatGate ) {
+							proportionCaveat = true;
+							proportionRatio  = reportedDimPrior / reportedDimCur;
+						}
+					}
+
+					SDFBlendScaleOffender_ off;
+					off.partIndex        = pi;
+					off.primType         = pt.type;
+					off.k                = pt.k;
+					off.detectionMaxK    = detectionMaxK;
+					off.reportedMaxK     = reportedMaxK;
+					// GUARANTEED safe: detectionMaxK <= reportedMaxK
+					// always (median >= min), so this is never LARGER
+					// than detectionMaxK -- clamping k here is always
+					// enough to make pt.k <= detectionMaxK true again.
+					off.clampTargetK     = std::min( reportedMaxK, detectionMaxK );
+					off.proportionCaveat = proportionCaveat;
+					char buf[256];
+					std::snprintf( buf, sizeof( buf ),
+						"%s part %u (%s): k=%g > max ~%g",
+						( geoName.empty() ? "noname" : geoName.c_str() ),
+						static_cast<unsigned int>( pi + 1 ), SDFPrimName_( pt.type ),
+						static_cast<double>( pt.k ), static_cast<double>( reportedMaxK ) );
+					off.formattedLine = buf;
+					if( proportionCaveat ) {
+						char pbuf[192];
+						std::snprintf( pbuf, sizeof( pbuf ),
+							" -- also a proportion problem (this part reads ~%.0fx smaller than what it "
+							"joins): narrowing k alone will not make it readable; enlarge it toward "
+							"proportion, or rebuild with skeleton_geometry",
+							static_cast<double>( proportionRatio ) );
+						off.formattedLine += pbuf;
+					}
+					out.push_back( off );
+				}
+				return out;
 			}
 
 			//! Materials-realism item 1: one (objectCount, flat) sample for
@@ -4783,117 +5050,14 @@ namespace RISE
 								// duplicate it.
 								if( RISE::Implementation::SDFGeometry::ParsePartLines(
 										joined.c_str(), "<design-note scan>", parts ) ) {
-									for( std::size_t pi = 0; pi < parts.size(); ++pi ) {
-										const RISE::Implementation::SDFGeometry::Part& pt = parts[pi];
-										if( pt.op != RISE::Implementation::SDFGeometry::eOpSmin ) continue;
-										// P2: the running field starts EMPTY (+1e30), so a
-										// FIRST part authored as `smin` composes against
-										// nothing and degenerates to plain union (SDFGeometry.
-										// cpp's own ParsePartLines comment, ~line 2088) -- it
-										// dissolves nothing, and firing on it was a genuine
-										// false positive (the dragon_body/part-1 corpus hit).
-										if( pi == 0 ) continue;
-										const Scalar dimCur = SDFPartCharacteristicDim_( pt );
-										if( dimCur <= 0.0 ) continue;
-
-										// P1: k dissolves the SMALLEST part in the join, not
-										// just the current one -- a thin-end-first chain (a
-										// tiny part authored FIRST, a big mass smin-joined
-										// onto it later) is a false negative under a
-										// current-part-only comparison.  Sweep prior parts,
-										// proximity-gated (blend influence extends ~k, so
-										// only a prior part whose OWN REACH -- SDFPartReach
-										// Radius_'s envelope-based bound -- comes within ~k
-										// of this part's own reach is plausibly what it is
-										// joining into) -- cheap: positions/dims are already
-										// parsed, this is an O(n) scan of doubles, no shape
-										// re-evaluation.
-										//
-										// Review-round C, P3-a: SUBTRACT/INTERSECT prior parts
-										// are excluded from the sweep entirely -- a carved
-										// cavity (a socket, a bore) is not a "feature" this
-										// join could dissolve; it REMOVES mass, so treating
-										// its dimension as a candidate small-part-to-protect
-										// would be a category error, not a defensible
-										// approximation.
-										//
-										// Among the REMAINING (smin/union) candidates that
-										// pass the reach gate, pick the one with the smallest
-										// RAW DISTANCE -- not the smallest surface GAP.
-										// Review-round C: gap (distance minus BOTH reach
-										// radii) double-counts bulk as proximity -- a large,
-										// far-away part's own big reach radius can make its
-										// gap read smaller (more negative) than a small,
-										// truly-touching part's, wrongly crowning the bulky
-										// far part "nearest".  Raw distance has no such bias.
-										// The reach radii still gate INCLUSION (permissive,
-										// so a genuinely touching elongated part is never
-										// excluded for looking "far" by pos-to-pos distance
-										// alone -- P1's original problem); only the TIE-BREAK
-										// among included candidates switched.  This still
-										// avoids the ORIGINAL sibling-swallowing failure
-										// (se_creature's second leg picking the first leg
-										// instead of the torso): the torso sits genuinely
-										// closer to each leg by raw distance too, so raw-
-										// distance and gap agree there -- the two metrics
-										// differ only in the far-bulky-part regime gap
-										// mishandles.
-										const Scalar reachCur = SDFPartReachRadius_( pt );
-										Scalar priorMinDim = -1.0;
-										Scalar bestDistance = 0.0;
-										for( std::size_t pj = 0; pj < pi; ++pj ) {
-											const RISE::Implementation::SDFGeometry::Part& prevPt = parts[pj];
-											if( prevPt.op == RISE::Implementation::SDFGeometry::eOpSubtract ||
-											    prevPt.op == RISE::Implementation::SDFGeometry::eOpIntersect ) continue;
-											const Scalar prevDim = SDFPartCharacteristicDim_( prevPt );
-											if( prevDim <= 0.0 ) continue;
-											const Scalar prevReach = SDFPartReachRadius_( prevPt );
-											const Scalar distance = SDFPartDistance_( pt, prevPt );
-											const Scalar gap = distance - prevReach - reachCur;
-											if( gap > Scalar( 2 ) * pt.k ) continue;   // out of reach
-											if( priorMinDim < 0.0 || distance < bestDistance ) {
-												priorMinDim = prevDim; bestDistance = distance;
-											}
-										}
-										const Scalar dimEffective = ( priorMinDim >= 0.0 )
-											? std::min( dimCur, priorMinDim ) : dimCur;
-										if( dimEffective <= 0.0 ) continue;
-
-										// Discriminator (calibration, see kSizeMismatchGate's
-										// doc comment for the numbers): fire only when the
-										// two joined masses are genuinely SIZE-MISMATCHED --
-										// a small feature dissolving into a much bigger one.
-										// A gradual, comparably-sized meld (a turned-profile
-										// taper -- BuildBlendedVessel/BuildSdfColumn's own
-										// roundcone chains -- or an equal-radius metaball
-										// chain, the mermaid-tail idiom) is legitimate
-										// authoring the law never meant to flag; without this
-										// gate the law fired on 44/45 and 45/45 jittered
-										// scaffold draws.  When no prior part is found within
-										// reach, this gate does not apply -- fall back to the
-										// size check alone (a rare false positive on an
-										// unusual layout beats silently missing a genuinely
-										// isolated small feature).
-										// Review-round C, P2-1: the total-dissolve bypass --
-										// checked FIRST, so a same-size join that k has
-										// nonetheless dissolved entirely is never silenced by
-										// the mismatch gate below.
-										const bool totalDissolve = ( pt.k >= dimEffective * kTotalDissolveGate );
-										if( !totalDissolve && priorMinDim >= 0.0 ) {
-											const Scalar mismatch = ( dimCur > priorMinDim )
-												? ( dimCur / priorMinDim ) : ( priorMinDim / dimCur );
-											if( mismatch < kSizeMismatchGate ) continue;
-										}
-
-										const Scalar maxK = dimEffective * kBlendScaleFraction;
-										if( pt.k <= maxK ) continue;
-										char buf[256];
-										std::snprintf( buf, sizeof( buf ),
-											"%s part %u (%s): k=%g > max ~%g",
-											( geoName.empty() ? "noname" : geoName.c_str() ),
-											static_cast<unsigned int>( pi + 1 ), SDFPrimName_( pt.type ),
-											static_cast<double>( pt.k ), static_cast<double>( maxK ) );
-										c.blendScaleOffenders.push_back( buf );
+									// Cat plan item 1: the scan itself now lives in
+									// ScanSdfGeometryBlendScaleOffenders_ -- shared
+									// verbatim with fix_blend_scale and finish_element's
+									// inline finding, so all three can never disagree
+									// about what "an offender" is.
+									for( const SDFBlendScaleOffender_& off :
+									     ScanSdfGeometryBlendScaleOffenders_( geoName, parts ) ) {
+										c.blendScaleOffenders.push_back( off.formattedLine );
 									}
 								}
 							}
@@ -5672,8 +5836,10 @@ namespace RISE
 					" wider than about a third of the part being joined -- a blend radius (k) comparable "
 					"to a part's own size dissolves it into its neighbour (see sdf_geometry's `part` "
 					"parameter description for the full guidance). Try k at roughly a third of that "
-					"part's radius or half-thickness, or less. skeleton_geometry is exempt -- its blend "
-					"self-scales by the joint radius.";
+					"part's radius or half-thickness, or less -- fix_blend_scale applies the safe k for "
+					"every flagged joint in one call. skeleton_geometry is exempt -- its blend self-scales "
+					"by the joint radius, so a creature or other organic body is usually better served "
+					"building the joint graph there than chaining raw smin parts.";
 			}
 
 			//! GPT slice item 4: condition K's clause.  SHARED by the note
@@ -17307,6 +17473,72 @@ namespace RISE
 			     "NAMES of the chunks recorded against this element -- it says nothing about what "
 			     "was built or how well.";
 			m += renderNote;
+
+			// Cat plan item 3-a (2026-08-25): ONE short, SELF-DISARMING
+			// sentence naming the worst offending smin joint on the SHOWN
+			// object's geometry, and the verb that fixes it -- the finish-
+			// time twin of condition J's note/diagnostic clauses, reading
+			// the IDENTICAL ScanSdfGeometryBlendScaleOffenders_ scan so it
+			// can never disagree with them about what "an offender" is.
+			// Gated on `out.rendered`: this names what is IN the frame the
+			// model is looking at, not a fact about some other object this
+			// element happens to also hold.  Costs nothing when the shown
+			// object has no sdf_geometry, or none of its joints offend --
+			// matching the family's "silent unless there is something to
+			// say" convention (the ranking/cycling disclosure just above
+			// it, the render advisory before that).
+			if( out.rendered && !isolateName.empty() && mJob ) {
+				const RISE::Cst::Document* doc = mJob->GetCstDocument();
+				const NodeRef objItem = doc
+					? FindChunkByNameInCategory_( *doc, isolateName, ChunkCategory::Object ) : NodeRef();
+				const std::string geoName = objItem ? ChunkParamString_( objItem, "geometry" ) : std::string();
+				const NodeRef geoItem = ( doc && !geoName.empty() )
+					? FindChunkByNameInCategory_( *doc, geoName, ChunkCategory::Geometry ) : NodeRef();
+				// Only sdf_geometry carries the smin-joint concept at all
+				// (skeleton_geometry's blend self-scales and is out of
+				// scope by the SAME `role ==` check condition J's own scan
+				// uses -- see that comment for the reasoning).
+				if( geoItem && geoItem->role == "sdf_geometry" ) {
+					std::string joined;
+					for( const std::string& line : ChunkParamOccurrences_( geoItem, "part" ) ) {
+						joined += line;
+						joined += "\n";
+					}
+					if( !joined.empty() ) {
+						std::vector<RISE::Implementation::SDFGeometry::Part> parts;
+						if( RISE::Implementation::SDFGeometry::ParsePartLines(
+								joined.c_str(), "<finish_element scan>", parts ) ) {
+							const std::vector<SDFBlendScaleOffender_> offenders =
+								ScanSdfGeometryBlendScaleOffenders_( geoName, parts );
+							if( !offenders.empty() ) {
+								// WORST = the joint whose k overshoots its own
+								// reported bound by the largest ratio -- the one
+								// joint that reads worst if only one can be named.
+								const SDFBlendScaleOffender_* worst = &offenders[0];
+								double worstRatio = ( worst->reportedMaxK > 0.0 )
+									? ( worst->k / worst->reportedMaxK ) : 0.0;
+								for( std::size_t oi = 1; oi < offenders.size(); ++oi ) {
+									const double ratio = ( offenders[oi].reportedMaxK > 0.0 )
+										? ( offenders[oi].k / offenders[oi].reportedMaxK ) : 0.0;
+									if( ratio > worstRatio ) { worst = &offenders[oi]; worstRatio = ratio; }
+								}
+								m += " Part " + std::to_string( worst->partIndex + 1 ) +
+									"'s blend k dissolves it -- fix_blend_scale repairs this.";
+								// Engine A/B finding (mid-flight, 2026-08-25): a
+								// caveat when narrowing k alone will not be
+								// enough -- the SAME proportionCaveat flag
+								// condition J's own clause and fix_blend_scale's
+								// per-joint summary already carry.
+								if( worst->proportionCaveat )
+									m += " It also reads too small for what it joins -- enlarging it "
+										"toward proportion, or rebuilding with skeleton_geometry, is the "
+										"real fix.";
+							}
+						}
+					}
+				}
+			}
+
 			if( !out.nextElement.empty() ) {
 				m += " The active element is now \"" + out.nextElement + "\"";
 				std::size_t remaining = 0;
@@ -32700,6 +32932,327 @@ namespace RISE
 				out.message += " -- " + std::to_string( out.remainingCount ) +
 					" more flagged material" + ( out.remainingCount == 1 ? std::string() : std::string( "s" ) ) +
 					" beyond the cap of " + std::to_string( kVaryMaterialBatchCap ) + ": call again";
+			return out;
+		}
+
+		//! Cat plan item 1: how many offending smin joints one fix_blend_scale
+		//! call clamps before it stops and reports `remainingCount` -- see
+		//! AgentFixBlendScaleResult's own doc.  Same value as
+		//! kVaryMaterialBatchCap and the same reasoning: high enough to clear
+		//! a realistic flagged-joint count in one call, low enough that a
+		//! pathological document still returns a boundable payload.
+		static const int kFixBlendScaleBatchCap = 24;
+
+		AgentSession::AgentFixBlendScaleResult AgentSession::FixBlendScale(
+			const std::string& target, const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
+			// capture point -- see ProposePatch's / VaryMaterial's own copy
+			// of this line for the rule.
+			CaptureHeadRevisionSnapshot_();
+			AgentFixBlendScaleResult out;
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE; the commit re-checks it.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "fix_blend_scale refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"fix_blend_scale refused: baseHeadVersion does not match the current head (revision "
+					"%llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			// ---- (2) Resolve scope: every sdf_geometry chunk to scan, or
+			// just the one `target` names.  Mirrors VaryMaterial's own
+			// "exists but wrong kind" vs "does not exist" split, adapted to
+			// a CHUNK KIND question instead of a material-readability one.
+			struct GeoChunk_ { RISE::Cst::NodeId id; std::string name; };
+			std::vector<GeoChunk_> chunks;
+			bool targetFound = false;
+			bool targetIsSdf = false;
+			{
+				const int n = RISE::Cst::DocItemCount( headDoc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( headDoc, i );
+					if( !id ) continue;
+					const NodeRef item = RISE::Cst::DocResolveNodeId( headDoc, id );
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					if( !target.empty() ) {
+						if( ChunkParamString_( item, "name" ) != target ) continue;
+						targetFound = true;
+						if( item->role == "sdf_geometry" ) {
+							targetIsSdf = true;
+							chunks.push_back( { id, target } );
+						}
+						continue;
+					}
+					if( item->role == "sdf_geometry" )
+						chunks.push_back( { id, ChunkParamString_( item, "name" ) } );
+				}
+			}
+			if( !target.empty() && !targetFound ) {
+				out.message = "fix_blend_scale refused: no chunk named `" + target + "` is in this document "
+					"-- `target` must name an sdf_geometry chunk (read_document to see the names), or omit "
+					"it entirely to scan the whole document -- document unchanged";
+				return out;
+			}
+			if( !target.empty() && !targetIsSdf ) {
+				out.message = "fix_blend_scale refused: `" + target + "` exists but is not an sdf_geometry "
+					"chunk -- this verb only clamps smin joints inside sdf_geometry (skeleton_geometry "
+					"self-scales its own blends and is exempt already) -- document unchanged";
+				return out;
+			}
+
+			// ---- (3) THE SHARED SCAN.  Same ScanSdfGeometryBlendScaleOffenders_
+			// condition J's note and diagnostic read, per chunk in scope -- see
+			// that function's own doc for why sharing it is the whole point of
+			// this slice.
+			struct FlatOffender_ { RISE::Cst::NodeId id; std::string geoName; SDFBlendScaleOffender_ off; };
+			std::vector<FlatOffender_> flat;
+			for( const GeoChunk_& gc : chunks ) {
+				const NodeRef item = RISE::Cst::DocResolveNodeId( headDoc, gc.id );
+				if( !item ) continue;
+				std::string joined;
+				for( const std::string& line : ChunkParamOccurrences_( item, "part" ) ) {
+					joined += line;
+					joined += "\n";
+				}
+				if( joined.empty() ) continue;
+				std::vector<RISE::Implementation::SDFGeometry::Part> parts;
+				if( !RISE::Implementation::SDFGeometry::ParsePartLines(
+						joined.c_str(), "<fix_blend_scale scan>", parts ) ) continue;
+				for( const SDFBlendScaleOffender_& off :
+				     ScanSdfGeometryBlendScaleOffenders_( gc.name, parts ) )
+					flat.push_back( { gc.id, gc.name, off } );
+			}
+
+			out.offendersFound = static_cast<int>( flat.size() );
+			if( flat.empty() ) {
+				out.message = "fix_blend_scale: no offending smin joints found" +
+					( target.empty() ? std::string( " in this document" )
+					                 : ( " in `" + target + "`" ) ) +
+					" -- document unchanged";
+				return out;
+			}
+
+			const int total     = static_cast<int>( flat.size() );
+			const int toProcess = ( total < kFixBlendScaleBatchCap ) ? total : kFixBlendScaleBatchCap;
+			out.remainingCount  = total - toProcess;
+
+			// ---- (4) S1 (2026-08-11) the CROSS-ELEMENT arm, over every
+			// UNIQUE chunk this call is about to touch -- mirrors
+			// remove_chunks' own "scan every unique target up front" shape
+			// (this file's established idiom for a batch verb whose targets
+			// span more than one chunk).  Deliberately AFTER the scan (a
+			// call refused for having nothing to fix must not ALSO burn a
+			// shared phase-refusal slot), same ordering rule
+			// CheckBuildPlanGate_'s doc states.
+			{
+				std::vector<std::string> uniqueNames;
+				for( int i = 0; i < toProcess; ++i ) {
+					const std::string& nm = flat[static_cast<std::size_t>( i )].geoName;
+					if( std::find( uniqueNames.begin(), uniqueNames.end(), nm ) == uniqueNames.end() )
+						uniqueNames.push_back( nm );
+				}
+				std::string clause;
+				for( std::size_t u = 0; u < uniqueNames.size() && clause.empty(); ++u )
+					clause = CheckElementWindowForEdit_( "fix_blend_scale", uniqueNames[u], &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (5) Build the candidate: for each offender (capped),
+			// replace ONLY the k token (index 2 of the 16-token `part`
+			// grammar) in that occurrence's ORIGINAL value text, read back
+			// to verify the edit took (VaryMaterial's own discipline for
+			// every param mutation this file makes).
+			RISE::Cst::Document work = headDoc;
+			std::vector<std::string> perJoint;
+			int fixedCount = 0;
+			for( int i = 0; i < toProcess; ++i ) {
+				const FlatOffender_& fo = flat[static_cast<std::size_t>( i )];
+				const NodeRef curItem = RISE::Cst::DocResolveNodeId( work, fo.id );
+				if( !curItem ) continue;   // NodeId is preserved across edits (D44); should not happen
+				const std::string rawValue = RISE::Cst::ParamValueAtOccurrence(
+					curItem, "part", static_cast<int>( fo.off.partIndex ) );
+				std::vector<std::string> toks = CollapseSplitWs_( rawValue );
+				// 16 tokens per SDFGeometry::ParsePartLines' own grammar
+				// (<prim> <op> <k> <pos x3> <euler x3> <scale x3> <abc x3>
+				// <round>) -- k is token index 2.  A mismatch here means the
+				// document changed shape under us between the scan and the
+				// edit; skip defensively rather than corrupt the line.
+				if( toks.size() != 16 ) continue;
+				char kbuf[64];
+				std::snprintf( kbuf, sizeof( kbuf ), "%g", static_cast<double>( fo.off.clampTargetK ) );
+				const std::string oldKTok = toks[2];
+				toks[2] = kbuf;
+				std::string newValue;
+				for( std::size_t t = 0; t < toks.size(); ++t ) {
+					if( t ) newValue += " ";
+					newValue += toks[t];
+				}
+				work = RISE::Cst::DocSetParamValue( work, fo.id, "part",
+					static_cast<int>( fo.off.partIndex ), newValue );
+				const NodeRef verifyItem = RISE::Cst::DocResolveNodeId( work, fo.id );
+				const std::string verifyValue = verifyItem
+					? RISE::Cst::ParamValueAtOccurrence( verifyItem, "part", static_cast<int>( fo.off.partIndex ) )
+					: std::string();
+				if( verifyValue.find( kbuf ) == std::string::npos ) {
+					out.message = "fix_blend_scale refused: internal -- clamping `" + fo.geoName + "` part " +
+						std::to_string( fo.off.partIndex + 1 ) + "'s k did not take; document unchanged";
+					return out;
+				}
+				++fixedCount;
+				char summary[256];
+				std::snprintf( summary, sizeof( summary ), "`%s` part %u: k %s -> %s",
+					fo.geoName.c_str(), static_cast<unsigned int>( fo.off.partIndex + 1 ),
+					oldKTok.c_str(), kbuf );
+				std::string summaryStr = summary;
+				// Cat plan mid-flight adjustment: honesty about the
+				// PROPORTION case -- clamping k always silences the scan
+				// (that invariant is unconditional), but when the joint's
+				// own SDFBlendScaleOffender_::proportionCaveat is set, k
+				// alone will not make the part READABLE (see that field's
+				// own doc: the cat-ear case, tip ~10x smaller than the
+				// head).  Say so right where the clamp is reported, not
+				// just in the note -- a caller acting on THIS call's own
+				// output should not have to cross-reference condition J's
+				// message to learn the fix is partial.
+				if( fo.off.proportionCaveat )
+					summaryStr += " (proportion problem too -- narrowing k will not make this part "
+						"readable; enlarge it toward proportion, or rebuild with skeleton_geometry)";
+				perJoint.push_back( summaryStr );
+			}
+			if( fixedCount == 0 ) {
+				out.message = "fix_blend_scale refused: internal -- every candidate joint failed to "
+					"re-verify after clamping; document unchanged";
+				return out;
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "fix_blend_scale refused: internal -- the candidate document serialized to "
+					"nothing; document unchanged";
+				return out;
+			}
+
+			// ---- (6) COMMIT: ONE whole-document swap, ONE dry-run-guarded
+			// re-derive, ONE head bump, ONE undo step -- the SAME composite
+			// primitive vary_material / collapse_to_instances /
+			// replace_geometry_scaffold all share, for the same reason:
+			// every joint clamped by one call lands together or not at all.
+			AgentChunkResult commit;
+			commit.name = target.empty() ? flat[0].geoName : target;
+			commit.kind = "sdf_geometry";
+
+			if( mAuthority == AgentAuthority::External ) {
+				out.message = "fix_blend_scale refused: this session is External-authority, and this verb "
+					"has no staged-proposal form (it is ONE composite document swap across every flagged "
+					"joint, not a single chunk edit an Owner can approve card-by-card) -- do it in staged "
+					"steps instead: propose_patch `k` on each flagged sdf_geometry `part` to its safe "
+					"bound -- document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( commit.name.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "fix_blend_scale" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "fix_blend_scale refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"fix_blend_scale refused: the head moved (revision %llu) while the rewrite was "
+						"being composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "fix_blend_scale" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 )      { commit.applied = true;  commit.status = "applied"; }
+				else if( code == 3 ) { commit.applied = false; commit.status = "diagnosed"; }
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (7) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			if( ResultMutatedDocument_( commit ) ) {
+				out.fixedCount      = fixedCount;
+				out.perJointSummary = perJoint;
+			}
+
+			{
+				std::string m;
+				if( commit.applied ) {
+					m = std::to_string( fixedCount ) + " smin joint" + ( fixedCount == 1 ? "" : "s" ) +
+						" clamped to " + ( fixedCount == 1 ? std::string( "its" ) : std::string( "their" ) ) +
+						" safe k (" + FormatBoundedNameList_( perJoint ) + ")";
+					if( out.remainingCount > 0 )
+						m += " -- " + std::to_string( out.remainingCount ) + " more offending joint" +
+							( out.remainingCount == 1 ? std::string() : std::string( "s" ) ) +
+							" beyond the cap of " + std::to_string( kFixBlendScaleBatchCap ) + ": call again";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "fix_blend_scale NOT a clean success: the Document was mutated and the live "
+						"managers were replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT "
+						"treat as applied";
+				}
+				else {
+					m = "fix_blend_scale rejected (NOTHING changed): the candidate document would not "
+						"derive -- head unchanged";
+				}
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
 			return out;
 		}
 

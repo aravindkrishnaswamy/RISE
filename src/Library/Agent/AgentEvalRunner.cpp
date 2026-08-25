@@ -7066,6 +7066,12 @@ namespace RISE
 										// material before asking must not VACUOUSLY pass
 										// askUserBeforeMutation.
 										"vary_material",
+										// Cat plan item 1 (2026-08-25): fix_blend_scale mutates
+										// the document (one composite swap clamping k on every
+										// flagged smin joint in scope), so a run that fixed a
+										// blend before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"fix_blend_scale",
 										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
 										// the document (one composite swap restoring an
 										// earlier revision's whole text), so a run that

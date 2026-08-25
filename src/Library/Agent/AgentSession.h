@@ -6112,6 +6112,115 @@ namespace RISE
 			//! multiple intentional commits, not one atomic swap).
 			AgentVaryMaterialBatchResult VaryMaterialAll( const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! Cat plan item 1 (2026-08-25): what fix_blend_scale did, or the
+			//! reason it declined -- the CALLABLE VERB half of design-note
+			//! condition J (the blend-scale law), mirroring VaryMaterial's
+			//! own "ADVICE ALONE DOES NOT CONVERT" motivation: the note has
+			//! fired since Fix 2 and named the ~1/3 bound, but a model reading
+			//! it still has to compute the safe k itself and re-author the
+			//! `part` line by hand -- the same slot-typing-prior barrier
+			//! VaryMaterial's own doc cites, just for a numeric param instead
+			//! of a colour one.
+			//!
+			//! `ok` follows the SAME convention as every other composite verb
+			//! in this file (AgentCollapseResult / AgentVaryMaterialResult /
+			//! AgentRevertResult): true once the request was well-formed AND
+			//! reached a commit-stage disposition, so `status` carries the
+			//! real outcome ("applied"/"rejected"/"diagnosed"/"conflict"). A
+			//! PRE-COMMIT refusal -- no retained document, a named `target`
+			//! that does not resolve to an sdf_geometry chunk, zero offenders
+			//! in scope, an External-authority session -- leaves `ok` false
+			//! and `status` EMPTY, with the whole reason in `message`, and
+			//! leaves the document, the head version, the history and the
+			//! proposal queue byte-identical.
+			struct AgentFixBlendScaleResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				//! How many offending smin joints ScanSdfGeometryBlendScale
+				//! Offenders_ found across the scope this call resolved to
+				//! (the whole document, or just `target`'s chunk) -- a fact
+				//! about the document, set even on the "nothing to fix"
+				//! refusal.
+				int offendersFound  = 0;
+				//! How many of those were actually clamped THIS call --
+				//! bounded by kFixBlendScaleBatchCap, same "cap now, call
+				//! again" idiom VaryMaterialAll uses.
+				int fixedCount      = 0;
+				//! offendersFound beyond the cap -- 0 unless a single call
+				//! could not cover every offender in scope.
+				int remainingCount  = 0;
+				//! One bounded line per joint actually clamped, most-
+				//! offending-first: "`<geo>` part <N>: k <old> -> <new>".
+				//! Empty on any refusal (nothing was clamped).
+				std::vector<std::string> perJointSummary;
+			};
+
+			//! ZERO REQUIRED ARGUMENTS.  Called bare, it scans the WHOLE
+			//! document via ScanSdfGeometryBlendScaleOffenders_ (the SAME
+			//! scan condition J's note and diagnostic read -- see that
+			//! function's own doc: sharing it is the point, so the verb can
+			//! never disagree with the advisory that named it) and clamps
+			//! EVERY flagged joint's k down to its safe bound in ONE call.
+			//! Optional `target` (an sdf_geometry chunk's `name`) scopes the
+			//! scan-and-fix to just that one chunk, leaving every other
+			//! chunk's offenders (if any) untouched -- `target` narrows what
+			//! `offendersFound` counts in the first place, the same way
+			//! VaryMaterial's `material` argument narrows what
+			//! SelectMaterialToVary_ considers rather than what it reports.
+			//! `remainingCount` is reserved for batch-cap overflow WITHIN the
+			//! chosen scope.
+			//!
+			//! THE CLAMP TARGET.  Per-joint, `min(reportedMaxK, detectionMaxK)`
+			//! -- see SDFBlendScaleOffender_::clampTargetK's own doc for why:
+			//! GUARANTEED to silence a re-scan (detectionMaxK is the exact
+			//! bound the scan's own fire/silent test uses), even though it is
+			//! occasionally a touch stricter than the REPORTED bound the
+			//! message shows (only under anisotropic scale; the two are
+			//! numerically equal, and the fix matches the message exactly,
+			//! for the common isotropic case).
+			//!
+			//! WHAT IT WRITES.  For each clamped joint, ONE `RISE::Cst::
+			//! DocSetParamValue` call on the owning sdf_geometry chunk's
+			//! NodeId, occurrence = the joint's `partIndex` (ChunkParamOccurrences_'s
+			//! ordering over repeated `part` params IS ParsePartLines' parts[]
+			//! ordering, by construction -- both walk the same repeat group in
+			//! document order), replacing ONLY the k token (index 2 of the
+			//! 16-token `part` grammar) in that line's ORIGINAL text -- every
+			//! other token (position, euler, scale, a/b/c, round) is preserved
+			//! byte-identical, so this can never perturb anything about the
+			//! part except the one number condition J flagged.
+			//!
+			//! BATCH-CAPPED at kFixBlendScaleBatchCap, same "cap now, call
+			//! again" idiom VaryMaterialAll uses -- `remainingCount` names how
+			//! many offenders in scope are still unclamped.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: no
+			//! retained CST Document; a named `target` that does not resolve
+			//! to an `sdf_geometry` chunk (message distinguishes "no such
+			//! chunk" from "exists but is a different kind"); zero offenders
+			//! found in scope (a clean, honest "nothing to fix" -- not an
+			//! error); a stale `baseOrNull` (`status` = "conflict"); an
+			//! External-authority session (no staged-proposal form, same
+			//! reasoning VaryMaterial's own refusal gives -- a composite
+			//! multi-occurrence document swap is not one AgentProposalKind an
+			//! Owner could approve card-by-card).
+			//!
+			//! ONE whole-document swap, ONE dry-run-guarded re-derive, ONE
+			//! head bump, ONE undo step -- the SAME composite commit path
+			//! VaryMaterial / CollapseToInstances / ReplaceGeometryScaffold
+			//! all share, for the same reason: every joint clamped by one call
+			//! lands together or not at all, so a single Cmd-Z always undoes
+			//! the whole batch.
+			AgentFixBlendScaleResult FixBlendScale( const std::string& target = std::string(),
+			                                        const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
 			//! reason it declined.
 			//!

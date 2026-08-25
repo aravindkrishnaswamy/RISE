@@ -1337,9 +1337,11 @@ static JsonValue ParseBody( const std::string& body )
 static void TestChatLoopWiring()
 {
 	// 32 -> 33, doc 90 slice R2 (2026-08-23): `revert_to_revision` joined the
-	// shared kToolDefs table.  Bumped deliberately, in all three provider
-	// renderings, because agreement ACROSS them is the property this pins.
-	std::printf( "S4: chat-loop tool table (thirty-three tools, three providers) + SetSkillIndex...\n" );
+	// shared kToolDefs table.  33 -> 34, cat plan item 1 (2026-08-25):
+	// `fix_blend_scale` joined it too.  Bumped deliberately, in all three
+	// provider renderings, because agreement ACROSS them is the property
+	// this pins.
+	std::printf( "S4: chat-loop tool table (thirty-four tools, three providers) + SetSkillIndex...\n" );
 
 	// The count below is asserted, not narrated: every provider's request
 	// body must carry the SAME kToolDefs table, so a tool added to one codec
@@ -1356,7 +1358,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 33, "anthropic body carries thirty-three tools" );
+		Check( tools.isArray() && tools.size() == 34, "anthropic body carries thirty-four tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -1385,7 +1387,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 33, "gemini body carries thirty-three functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 34, "gemini body carries thirty-four functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
@@ -1399,7 +1401,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 33, "openai body carries thirty-three tools" );
+		Check( tools.isArray() && tools.size() == 34, "openai body carries thirty-four tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "type" ).asString() == "function" &&

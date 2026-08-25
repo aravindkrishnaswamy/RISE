@@ -346,6 +346,10 @@ namespace
 		    // call, exactly like collapse_to_instances -- same per-call leverage,
 		    // same rate-limit membership.
 		    name == "vary_material" ||
+		    // Cat plan item 1 (2026-08-25): fix_blend_scale rewrites the whole
+		    // document in one call, exactly like vary_material -- same per-call
+		    // leverage, same rate-limit membership.
+		    name == "fix_blend_scale" ||
 		    // Doc 90 slice R2 (2026-08-23): revert_to_revision replaces the
 		    // whole document in one call, exactly like the three swaps above --
 		    // same per-call leverage, same rate-limit membership.  Metering the

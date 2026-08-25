@@ -1390,6 +1390,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// Cat plan item 1 (2026-08-25): fix_blend_scale is the FIFTH
+					// verb whose commit is one composite whole-document swap
+					// (potentially across multiple sdf_geometry chunks' `part`
+					// occurrences in a single call), so it is excluded from
+					// IsProposeSafeVerb for exactly the reason vary_material
+					// above is, with the same message shape.
+					if( m == "fix_blend_scale" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; fix_blend_scale "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -4107,6 +4121,57 @@ namespace RISE
 						result.set( "previousRoughness", JsonValue::MakeNumber( vr.previousRoughness ) );
 					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( vr.qualifyingMaterials ) ) );
 					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( vr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// fix_blend_scale {target?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       offendersFound,fixed,remaining,perJoint:[string,...]}
+				//   Cat plan item 1 (2026-08-25): the CALLABLE VERB half of
+				//   design-note condition J (the blend-scale law) -- clamps
+				//   every offending smin joint's k down to its safe bound in
+				//   ONE call, using the SAME ScanSdfGeometryBlendScaleOffenders_
+				//   scan the note and diagnostic read.  `target` (optional)
+				//   scopes the scan-and-fix to one named sdf_geometry chunk;
+				//   omitted, it covers the whole document.  A pre-commit
+				//   refusal (nothing to fix, an unresolvable target) comes
+				//   back as ok=false with the reason in `message` -- a
+				//   SUCCESSFUL response, not a JSON-RPC error, the same shape
+				//   vary_material uses for its own "nothing qualifies" case.
+				//--------------------------------------------------------------
+				if( m == "fix_blend_scale" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string targetStr;
+					if( const JsonValue* tv = params.find( "target" ) ) {
+						if( tv->isString() ) targetStr = tv->asString();
+						else if( !tv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'target' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentFixBlendScaleResult fr =
+						s->FixBlendScale( targetStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",             JsonValue::MakeBool( fr.ok ) );
+					result.set( "applied",        JsonValue::MakeBool( fr.applied ) );
+					result.set( "rawCode",        JsonValue::MakeNumber( static_cast<double>( fr.rawCode ) ) );
+					result.set( "status",         JsonValue::MakeString( fr.status ) );
+					result.set( "retriable",      JsonValue::MakeBool( fr.retriable ) );
+					result.set( "headVersion",    HeadVersionJson( fr.headVersion ) );
+					if( !fr.message.empty() ) result.set( "message", JsonValue::MakeString( fr.message ) );
+					result.set( "offendersFound", JsonValue::MakeNumber( static_cast<double>( fr.offendersFound ) ) );
+					result.set( "fixed",          JsonValue::MakeNumber( static_cast<double>( fr.fixedCount ) ) );
+					result.set( "remaining",      JsonValue::MakeNumber( static_cast<double>( fr.remainingCount ) ) );
+					if( !fr.perJointSummary.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& line : fr.perJointSummary ) arr.push_back( JsonValue::MakeString( line ) );
+						result.set( "perJoint", arr );
+					}
 					return MakeSuccess( idValue, result );
 				}
 

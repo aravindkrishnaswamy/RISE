@@ -440,6 +440,12 @@ namespace RISE
 				       // mutation on the same argument -- one composite document
 				       // swap, one head bump, one undo step, made without looking.
 				       v == "vary_material" ||
+				       // Cat plan item 1 (2026-08-25): ONE fix_blend_scale call
+				       // is ONE blind mutation on the same argument -- one
+				       // composite document swap (across however many joints it
+				       // clamps), one head bump, one undo step, made without
+				       // looking.
+				       v == "fix_blend_scale" ||
 				       // Doc 90 R2 (2026-08-23): ONE revert_to_revision call is
 				       // ONE blind mutation on the same argument -- one composite
 				       // document swap, one head bump, one undo step.  It counts
@@ -1432,6 +1438,7 @@ namespace RISE
 			//!   4d. name == "collapse_to_instances"      -> "<n> copies -> `<source>` + instancing[ (<u>x<v> grid)]", or "refused: <=80 chars of message" (88 step 2: a pre-commit refusal carries an EMPTY status, so it cannot reach rule 2)
 			//!   4e. name == "vary_material"              -> "`<material>` <slot(s)> -> `<painter>` (varying)", or "refused: <=80 chars of message" (88 S5: same empty-status-on-refusal shape as 4d)
 			//!   4f. name == "revert_to_revision"         -> "rev <requested> restored as rev <new> (was rev <previous>)", or "refused: <=80 chars of message" (doc 90 R2: same empty-status-on-refusal shape as 4d, and refusing is the COMMON outcome -- every "that is the current head" / "that one has aged out" answer arrives this way)
+			//!   4g. name == "fix_blend_scale"            -> "<n> joint(s) clamped[ -- <k> more: call again]", or "refused: <=80 chars of message" (cat plan item 1: same empty-status-on-refusal shape as 4d, and "nothing to fix" is a common, honest outcome)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1627,6 +1634,24 @@ namespace RISE
 						? static_cast<long long>( hv.get( "revision" ).asNumber() ) : 0;
 					return "rev " + std::to_string( want ) + " restored as rev " + std::to_string( now ) +
 						" (was rev " + std::to_string( prev ) + ")";
+				}
+
+				// 4b-5. Cat plan item 1 (2026-08-25) fix_blend_scale: ONE atomic
+				// mutation whose meaning is HOW MANY offending smin joints were
+				// clamped, not a name/count of chunks -- report the joint count
+				// and, when the batch cap left work behind, that too.  Same
+				// empty-status-on-refusal shape as vary_material above; "nothing
+				// to fix" (offendersFound == 0) is a common, honest refusal here,
+				// not the exception.
+				if( call.name == "fix_blend_scale" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long fixed     = static_cast<long long>( result.get( "fixed" ).asNumber() );
+					const long long remaining = static_cast<long long>( result.get( "remaining" ).asNumber() );
+					std::string s = std::to_string( fixed ) + " joint" + ( fixed == 1 ? "" : "s" ) + " clamped";
+					if( remaining > 0 ) s += " (" + std::to_string( remaining ) + " more -- call again)";
+					return s;
 				}
 
 				// 4b. R1a (2026-08-09) remove_chunks: an ALL-OR-NOTHING batch, so

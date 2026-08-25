@@ -94,11 +94,22 @@ primitive vocabulary.  See the geometry vocabulary table above.
 
 **Compose a creature from all three verbs, never one: a BODY is
 overlapping MASSES (two or three `superellipsoid` parts `smin`-blended
-in one `sdf_geometry`, exponents in the 0.4-0.7 cushion range), LIMBS
-are CHAINS (`skeleton_geometry`, with the per-joint `aspect` token
-flattening any bone that should not read as a pipe), and a NECK or TAIL
-is a SWEEP** -- steering a whole animal into a single sweep or a single
-bone chain is what makes it silhouette as a bent tube.
+in one `sdf_geometry`, exponents CLOSE TO 1.0 -- an organic torso or
+head mass wants an ellipsoid, not the vocabulary table's 0.4-0.7 cushion
+range, which is for a literal pillow/cushion shape and reads as a
+rounded CUBE on a body), LIMBS are CHAINS (`skeleton_geometry`, with the
+per-joint `aspect` token flattening any bone that should not read as a
+pipe), and a NECK or TAIL is a SWEEP** -- steering a whole animal into a
+single sweep or a single bone chain is what makes it silhouette as a
+bent tube.
+
+A minimal worked graph -- a hip branching into two legs, five joints in
+one chunk: `joint hips none 0 0.5 0 0.22`, `joint hip_l hips -0.15 0.4 0
+0.10`, `joint hip_r hips 0.15 0.4 0 0.10`, `joint paw_l hip_l -0.18 0.05
+0.05 0.05`, `joint paw_r hip_r 0.18 0.05 0.05 0.05`.  The hand-authored
+`sdf_geometry` equivalent is five `roundcone` parts whose position,
+orientation and length you would otherwise compute from these same five
+points by hand -- `skeleton_geometry` reads the points directly.
 
 **A WING, FIN or web is a `skin_geometry` between two rails -- the bones
 are the skeleton, the membrane stretched over them is the skin** (`rail_a`
@@ -1786,3 +1797,21 @@ not N hand-placed copies.
    edit; the same error caught after wiring in the CSG hollow or the
    SDF taper means re-deriving a costlier chunk.  Confirm proportions
    from 2-3 angles BEFORE the refine pass, every time.
+6. **A superellipsoid exponent near 0.5-0.6 renders as a rounded CUBE,
+   not an organic mass.**  A cat body built from `superellipsoid` parts
+   at exponents in that range read as blocky, melted-looking lumps once
+   actually rendered, even though the parts composed correctly -- the
+   shape itself was the wrong primitive for the intent.  Organic
+   masses (a torso, a head, a limb) want exponents CLOSE TO 1.0 (a true
+   ellipsoid); reserve 0.4-0.7 for a literal cushion/pillow, and render
+   before committing to a low exponent on anything meant to read as
+   flesh.
+7. **A sub-feature has to be proportioned to what it attaches to, or no
+   blend width will make it read.**  An ear, a horn, a fingertip
+   authored at less than about 1/4 the characteristic dimension of the
+   mass it joins is invisible at ordinary framing no matter how tight
+   the `smin` k is drawn -- `fix_blend_scale`'s own proportion caveat
+   exists precisely because narrowing k cannot fix a feature that is
+   simply too small.  Author the sub-feature at roughly 1/4 or more of
+   what it joins first, THEN use `smin` k to blend the seam -- not the
+   other way around.

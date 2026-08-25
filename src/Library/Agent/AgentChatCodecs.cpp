@@ -643,6 +643,33 @@ namespace RISE
 					"}}"
 				},
 				{
+					"fix_blend_scale",
+					"CLAMP AN SDF `smin` BLEND THAT IS TOO WIDE, in one call. Call this the moment you notice "
+					"(or are told) that an sdf_geometry joint's blend radius (k) is comparable to the size of "
+					"the part it joins -- a wide k dissolves a small feature (a limb, an ear, a fin) into its "
+					"neighbour instead of blending it. It finds EVERY offending smin joint in scope and rewrites "
+					"just its `k` value down to the safe bound for that joint, leaving position/orientation/"
+					"scale/shape untouched -- ONE headVersion bump, ONE undo step, no matter how many joints it "
+					"fixes. Pass NO ARGUMENTS to fix every offending joint in the WHOLE document -- that is the "
+					"normal way to call it, and it is what a DESIGN NOTE naming a blend-scale joint is asking "
+					"for. Pass `target` (the name of one sdf_geometry chunk) to scope the fix to just that "
+					"chunk. It REFUSES, changing nothing and costing only this call, when no joint in scope is "
+					"currently offending (a clean, honest \\\"nothing to fix\\\"). NOTE: if the response names a "
+					"proportion problem on a joint (the part is much smaller than what it joins), narrowing k "
+					"alone will not make that part readable -- the part itself needs enlarging toward "
+					"proportion, or the body needs rebuilding with skeleton_geometry; this verb still clamps "
+					"that joint's k (it is not wrong to do), it just cannot fix size on its own. Always pass "
+					"the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of one sdf_geometry chunk to scope the fix to. Omit it to fix every offending joint in the whole document -- which is what a DESIGN NOTE about a blend-scale joint is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
 					"remove_chunks",
 					"DELETE SEVERAL entities (whole chunks) in ONE call, ATOMICALLY. Prefer ONE remove_chunks "
 					"call over repeated remove_chunk calls whenever you are deleting more than one chunk: each "

@@ -367,6 +367,20 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! Cat plan item 1 (2026-08-25): fix_blend_scale's own annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- same rationale as
+			//! kVaryMaterialProposeRefusedNote above (it mutates through one
+			//! composite whole-document swap, potentially across multiple
+			//! sdf_geometry chunks; deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb rather than pay the "N mutating verbs" prose
+			//! ripple SourceHygieneTest's verb-parity scan pins; refused
+			//! under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kFixBlendScaleProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: fix_blend_scale is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -1745,6 +1759,48 @@ namespace RISE
 					tools.push_back( MakeTool( "vary_material", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// fix_blend_scale (cat plan item 1, 2026-08-25) -- the VERB half of
+				// design-note condition J (the blend-scale law).  Hand-authored HERE
+				// and semantically identical to the chat-codec definition in
+				// AgentChatCodecs.cpp's kToolDefs (two texts, one verb -- a semantic
+				// change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "target", StringProp(
+						"OPTIONAL. The name of one sdf_geometry chunk to scope the fix to. Omit it to fix "
+						"every offending joint in the whole document -- which is what a DESIGN NOTE about a "
+						"blend-scale joint is pointing at, so the no-argument call is the usual one." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason vary_material is: this
+					// verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kFixBlendScaleProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"CLAMP AN SDF `smin` BLEND THAT IS TOO WIDE, in one call. Call this the moment you "
+						"notice (or are told) that an sdf_geometry joint's blend radius (k) is comparable to "
+						"the size of the part it joins -- a wide k dissolves a small feature (a limb, an ear, "
+						"a fin) into its neighbour instead of blending it. It finds EVERY offending smin joint "
+						"in scope (the SAME scan a DESIGN NOTE about a blend-scale joint reads) and rewrites "
+						"just its `k` value down to the safe bound for that joint, leaving position/"
+						"orientation/scale/shape untouched -- ONE headVersion bump, ONE undo step, no matter "
+						"how many joints it fixes. Pass NO ARGUMENTS to fix every offending joint in the whole "
+						"document. Pass `target` (the name of one sdf_geometry chunk) to scope the fix to just "
+						"that chunk. It REFUSES, changing nothing and costing only this call, when no joint in "
+						"scope is currently offending (a clean, honest \"nothing to fix\"). NOTE: if the "
+						"response names a proportion problem on a joint (the part is much smaller than what it "
+						"joins), narrowing k alone will not make that part readable -- the part itself needs "
+						"enlarging toward proportion, or the body needs rebuilding with skeleton_geometry; this "
+						"verb still clamps that joint's k (it is not wrong to do), it just cannot fix size on "
+						"its own. Returns {ok,applied,rawCode,status,retriable,headVersion,message,"
+						"offendersFound,fixed,remaining,perJoint}. A PRE-COMMIT refusal is ok=false with an "
+						"EMPTY status, so branch on `applied`. Always pass the headVersion you last read as "
+						"baseHeadVersion." );
+					tools.push_back( MakeTool( "fix_blend_scale", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2273,6 +2329,7 @@ namespace RISE
 					"remove_chunks",
 					"collapse_to_instances",   // 88 step 2 (2026-08-19): MUTATING, the condition-C rewrite verb
 					"vary_material",           // 88 S5 (2026-08-20): MUTATING, the condition-D rewrite verb
+					"fix_blend_scale",         // cat plan item 1 (2026-08-25): MUTATING, the condition-J rewrite verb
 					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
