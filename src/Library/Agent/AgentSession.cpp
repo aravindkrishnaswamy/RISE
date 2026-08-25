@@ -6480,6 +6480,61 @@ namespace RISE
 			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
 			AttributePatchOnApply_ s1Attr{ *this, r, std::string(), std::string() };
 
+			// 1b fix-round (2026-08-25): an OUT-OF-RANGE `occurrence` must be
+			// a visible REFUSAL, not a silent success.  `RISE::Cst::
+			// DocSetOrAddParamValue` (the primitive underneath BOTH the live
+			// and headless commit paths below) treats occ >= the param's
+			// current occurrence count as "nothing to do" and returns the
+			// document UNCHANGED -- which its callers (Job::
+			// ApplyCstParamEditImpl_ / ApplyAgentParamEditInner_) cannot
+			// distinguish from "the value happened to already match", so
+			// they report a clean rawCode/status=applied on a NO-OP.  That
+			// is exactly the "silent no-op is worse than a refusal" hazard
+			// Job::ApplyCstParamEditImpl_'s own duplicate-occurrence comment
+			// names for a DIFFERENT case -- reachable here too now that
+			// `occurrence` is agent-facing.  Placed FIRST, ahead of the
+			// mController/headless split just below (both routes share this
+			// one pre-check via ReadDocumentSnapshot(), which already works
+			// uniformly in either mode -- see its own doc), so a live GUI
+			// session gets the identical guarantee.  Checked ONLY when the
+			// caller actually asked for occurrence addressing
+			// (hasOccurrence); every legacy call (hasOccurrence=false) is
+			// completely untouched.  A target/kind that does not resolve at
+			// all is left to the existing downstream resolution to name --
+			// this fires only once the chunk is FOUND and the param's
+			// occurrence count is known.
+			if( patch.hasOccurrence ) {
+				const AgentDocumentSnapshot occSnap = ReadDocumentSnapshot();
+				if( occSnap.hasDocument ) {
+					const RISE::Cst::Document occDoc = RISE::Cst::ParseToCst( occSnap.document );
+					const bool uniqueFallback = patch.target.empty() && !patch.kind.empty();
+					const RISE::Cst::NodeId occId = RISE::Cst::DocFindByNameAnyRole(
+						occDoc, patch.target, nullptr, patch.kind, uniqueFallback );
+					if( occId != 0 ) {
+						const NodeRef occItem = RISE::Cst::DocResolveNodeId( occDoc, occId );
+						if( occItem ) {
+							const std::size_t occCount = ChunkParamOccurrences_( occItem, patch.param ).size();
+							if( patch.occurrence < 0 ||
+							    static_cast<std::size_t>( patch.occurrence ) >= occCount ) {
+								r.applied     = false;
+								r.rawCode     = 0;
+								r.status      = "rejected";
+								r.headVersion = occSnap.headVersion;
+								char buf[256];
+								std::snprintf( buf, sizeof( buf ),
+									"propose_patch refused: occurrence %d is out of range for `%s`'s `%s` "
+									"(it has %u occurrence%s, valid range 0..%u) -- document unchanged",
+									patch.occurrence, patch.target.c_str(), patch.param.c_str(),
+									static_cast<unsigned int>( occCount ), occCount == 1 ? "" : "s",
+									occCount == 0 ? 0 : static_cast<unsigned int>( occCount - 1 ) );
+								r.message = buf;
+								return r;
+							}
+						}
+					}
+				}
+			}
+
 			// ARC 81 FIX-ROUND (2026-08-12, house lighting policy): the
 			// `ambient_light` ban's PATCH arm, first for the same
 			// don't-spend-a-phase-refusal-on-a-permanent-prohibition reason the
@@ -6903,13 +6958,25 @@ namespace RISE
 				}
 				const RISE::Cst::CstHeadVersion* basePtr =
 					patch.hasBaseVersion ? &patch.baseVersion : nullptr;
+				// 1b: thread the occurrence-addressing pair straight through
+				// -- `occAddressed=true` only when the caller actually named
+				// one (patch.hasOccurrence), the SAME "true only when
+				// explicitly reached through an occurrence-addressed row"
+				// convention SceneEditController's own occurrence-addressed
+				// call sites use (e.g. its Reference-rebind path's
+				// `/*occAddressed=*/occurrence > 0` -- here gated on
+				// hasOccurrence instead of occurrence>0 so an explicit
+				// occurrence 0 is still honoured as addressed, not silently
+				// folded into the legacy default).
 				const SceneEditController::AgentCommitResult cr =
 					mController->ApplyAgentParamEdit(
 						String( patch.target.c_str() ),
 						String( patch.kind.c_str() ),
 						String( patch.param.c_str() ),
 						String( patch.value.c_str() ),
-						basePtr );
+						basePtr,
+						patch.hasOccurrence ? patch.occurrence : 0,
+						patch.hasOccurrence );
 				r.applied     = cr.applied;
 				r.retriable   = cr.retriable;
 				r.rawCode     = cr.rawCode;
@@ -7032,11 +7099,15 @@ namespace RISE
 			// is guaranteed non-null here (the guard just above this block
 			// refused already if HasRetainedCstDocument() were false).
 			const RISE::Cst::Document orphanPreDoc = *mJob->GetCstDocument();
+			// 1b: `occ` is the occurrence the caller actually asked for
+			// (0-based, ChunkParamOccurrences_ ordering) when they set
+			// `hasOccurrence`; absent, byte-identical to the pre-1b literal
+			// 0 this call always passed.
 			const int code = mJob->ApplyCstParamEditChecked(
 				patch.target.c_str(),
 				patch.kind.empty() ? nullptr : patch.kind.c_str(),
 				patch.param.c_str(),
-				/*occ=*/0,
+				/*occ=*/patch.hasOccurrence ? patch.occurrence : 0,
 				patch.value.c_str() );
 
 			r.rawCode = code;
@@ -33422,6 +33493,29 @@ namespace RISE
 		//! pathological document still returns a boundable payload.
 		static const int kFixBlendScaleBatchCap = 24;
 
+		//! Woodland-experiment fox-donut regression (2026-08-25): the undirected
+		//! (`target` empty) batch used to clamp EVERY flagged joint in EVERY
+		//! chunk, no matter how many of one chunk's joints were flagged --
+		//! which is exactly wrong for a chunk whose author built a deliberate
+		//! tight meld (a curled pose, an organic fused mass): most of that
+		//! chunk's smin joints being "wide" IS the intended controlled overlap,
+		//! not N independent authoring mistakes, and mass-clamping it flattens
+		//! precisely the shape the author wanted.  A chunk trips this heuristic
+		//! when AT LEAST kMassClampMinCount joints are flagged AND they are AT
+		//! LEAST kMassClampMinFraction of that chunk's own eligible smin joints
+		//! (parts with op==smin, excluding part 0 -- the same population
+		//! ScanSdfGeometryBlendScaleOffenders_ draws offenders from, so the
+		//! ratio is apples-to-apples).  Both conditions gate together so a
+		//! SMALL chunk with few smin joints, all flagged, still trips it (a
+		//! tiny fused blob is exactly the tight-meld case too), while the
+		//! cat-ear class this verb exists for (2 of many joints flagged) never
+		//! does: 2 is under kMassClampMinCount regardless of chunk size.  An
+		//! explicit `target=<chunk>` call is a direct, unambiguous instruction
+		//! ("fix THIS chunk") and bypasses the heuristic entirely -- see the
+		//! scan loop below for where these two constants gate.
+		static const int    kMassClampMinCount    = 4;
+		static const double kMassClampMinFraction = 0.70;
+
 		AgentSession::AgentFixBlendScaleResult AgentSession::FixBlendScale(
 			const std::string& target, const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
@@ -33501,6 +33595,10 @@ namespace RISE
 			// this slice.
 			struct FlatOffender_ { RISE::Cst::NodeId id; std::string geoName; SDFBlendScaleOffender_ off; };
 			std::vector<FlatOffender_> flat;
+			// ITEM 2 (fox-donut mass-clamp caveat): per-chunk skip notes for
+			// the undirected batch -- see kMassClampMinCount's own doc above.
+			std::vector<std::string> massClampSkipNotes;
+			int totalOffendersInScope = 0;
 			for( const GeoChunk_& gc : chunks ) {
 				const NodeRef item = RISE::Cst::DocResolveNodeId( headDoc, gc.id );
 				if( !item ) continue;
@@ -33513,17 +33611,51 @@ namespace RISE
 				std::vector<RISE::Implementation::SDFGeometry::Part> parts;
 				if( !RISE::Implementation::SDFGeometry::ParsePartLines(
 						joined.c_str(), "<fix_blend_scale scan>", parts ) ) continue;
-				for( const SDFBlendScaleOffender_& off :
-				     ScanSdfGeometryBlendScaleOffenders_( gc.name, parts ) )
+				const std::vector<SDFBlendScaleOffender_> chunkOffenders =
+					ScanSdfGeometryBlendScaleOffenders_( gc.name, parts );
+				if( chunkOffenders.empty() ) continue;
+				totalOffendersInScope += static_cast<int>( chunkOffenders.size() );
+
+				// ITEM 2: only the UNDIRECTED sweep second-guesses itself --
+				// an explicit `target` is a direct instruction and always
+				// clamps (the user/model override the brief requires).
+				if( target.empty() ) {
+					std::size_t sminJointTotal = 0;
+					for( std::size_t pi = 1; pi < parts.size(); ++pi )
+						if( parts[pi].op == RISE::Implementation::SDFGeometry::eOpSmin ) ++sminJointTotal;
+					const std::size_t flaggedCount = chunkOffenders.size();
+					if( flaggedCount >= static_cast<std::size_t>( kMassClampMinCount ) &&
+					    sminJointTotal > 0 &&
+					    static_cast<double>( flaggedCount ) >=
+					        kMassClampMinFraction * static_cast<double>( sminJointTotal ) ) {
+						massClampSkipNotes.push_back( "most of `" + gc.name + "`'s joints blend wide -- likely "
+							"an intended tight meld (curled pose / organic mass); pass target:\"" + gc.name +
+							"\" to clamp anyway" );
+						continue;   // SKIP this whole chunk -- do not clamp any of it
+					}
+				}
+
+				for( const SDFBlendScaleOffender_& off : chunkOffenders )
 					flat.push_back( { gc.id, gc.name, off } );
 			}
 
-			out.offendersFound = static_cast<int>( flat.size() );
+			out.offendersFound = totalOffendersInScope;
 			if( flat.empty() ) {
-				out.message = "fix_blend_scale: no offending smin joints found" +
-					( target.empty() ? std::string( " in this document" )
-					                 : ( " in `" + target + "`" ) ) +
-					" -- document unchanged";
+				if( !massClampSkipNotes.empty() ) {
+					std::string msg = "fix_blend_scale: nothing clamped -- every chunk with offending smin "
+						"joints in scope looks like an intended tight meld: ";
+					for( std::size_t i = 0; i < massClampSkipNotes.size(); ++i ) {
+						if( i ) msg += "; ";
+						msg += massClampSkipNotes[i];
+					}
+					msg += " -- document unchanged";
+					out.message = msg;
+				} else {
+					out.message = "fix_blend_scale: no offending smin joints found" +
+						( target.empty() ? std::string( " in this document" )
+						                 : ( " in `" + target + "`" ) ) +
+						" -- document unchanged";
+				}
 				return out;
 			}
 

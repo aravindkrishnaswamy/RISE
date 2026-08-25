@@ -584,6 +584,62 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// propose_patch `occurrence` (1b, 2026-08-25) -- the WIRE round-trip:
+	// a repeatable `joint` param on a skeleton_geometry chunk, patched by
+	// occurrence over the RAW JSON-RPC surface (not the C++ AgentSetPatch
+	// struct directly -- AgentChunkCrudTest.cpp::TestProposePatchOccurrence
+	// covers that half; this proves the JSON param actually parses and
+	// reaches it).
+	//----------------------------------------------------------------------
+	std::printf( "[propose_patch] `occurrence` addresses one line of a repeatable param over JSON-RPC\n" );
+	{
+		JsonValue insParams = JsonValue::MakeObject();
+		insParams.set( "chunkText", JsonValue::MakeString(
+			"skeleton_geometry\n{\n\tname occ_wire_skel\n"
+			"\tjoint root none 0 0 0 0.11\n"
+			"\tjoint mid root 0 1 0 0.12\n"
+			"\tjoint tip mid 0 2 0 0.13\n"
+			"}\n" ) );
+		const std::string insResp = rpc.HandleLine( Req( 100, "insert_chunk", insParams ) );
+		JsonValue insEnv = ParseResponse( insResp, 100 );
+		Check( insEnv.get( "result" ).get( "applied" ).asBool(),
+		       "occurrence wire test: skeleton_geometry fixture inserts cleanly" );
+
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "target",     JsonValue::MakeString( "occ_wire_skel" ) );
+		params.set( "kind",       JsonValue::MakeString( "skeleton_geometry" ) );
+		params.set( "param",      JsonValue::MakeString( "joint" ) );
+		params.set( "value",      JsonValue::MakeString( "mid root 0 1 0 0.999" ) );
+		params.set( "occurrence", JsonValue::MakeNumber( 1.0 ) );   // 0=root, 1=mid, 2=tip
+		const std::string resp = rpc.HandleLine( Req( 101, "propose_patch", params ) );
+		JsonValue env = ParseResponse( resp, 101 );
+		Check( env.get( "result" ).get( "applied" ).asBool(),
+		       "occurrence wire test: occurrence-addressed patch applies" );
+
+		const std::string resp2 = rpc.HandleLine( Req( 102, "read_document", JsonValue::MakeObject() ) );
+		JsonValue env2 = ParseResponse( resp2, 102 );
+		const std::string doc2 = env2.get( "result" ).get( "document" ).asString();
+		Check( doc2.find( "joint mid root 0 1 0 0.999" ) != std::string::npos,
+		       "occurrence wire test: joint `mid` (occurrence 1) carries the new value" );
+		Check( doc2.find( "joint root none 0 0 0 0.11" ) != std::string::npos,
+		       "occurrence wire test: joint `root` (occurrence 0) is UNTOUCHED" );
+		Check( doc2.find( "joint tip mid 0 2 0 0.13" ) != std::string::npos,
+		       "occurrence wire test: joint `tip` (occurrence 2) is UNTOUCHED" );
+
+		// A non-integer `occurrence` is a wire-shape error, not a silent
+		// coercion -- same "Invalid params" idiom baseHeadVersion's own
+		// malformed-object case uses.
+		JsonValue badParams = JsonValue::MakeObject();
+		badParams.set( "target",     JsonValue::MakeString( "occ_wire_skel" ) );
+		badParams.set( "param",      JsonValue::MakeString( "joint" ) );
+		badParams.set( "value",      JsonValue::MakeString( "mid root 0 1 0 0.5" ) );
+		badParams.set( "occurrence", JsonValue::MakeNumber( 1.5 ) );
+		const std::string badResp = rpc.HandleLine( Req( 103, "propose_patch", badParams ) );
+		JsonValue badEnv = ParseResponse( badResp, 103 );
+		Check( badEnv.has( "error" ), "occurrence wire test: a non-integer occurrence is a JSON-RPC error" );
+	}
+
+	//----------------------------------------------------------------------
 	// render — ok, dims match the film; capture the channel-mean signature.
 	//----------------------------------------------------------------------
 	std::printf( "[render]\n" );

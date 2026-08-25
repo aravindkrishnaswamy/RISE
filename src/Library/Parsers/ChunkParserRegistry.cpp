@@ -5809,15 +5809,23 @@ namespace RISE
 					return false;
 				}
 
-				//! One declared `joint <name> <parent|none> <x> <y> <z> <radius> [aspect]` line.
+				//! One declared `joint <name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]` line.
 				struct JointDecl
 				{
 					std::string name;
 					std::string parent;
 					double x, y, z, r;
 					double aspect;        // 7th, OPTIONAL token; 1 = today's circular bone
+					double blend;         // 8th, OPTIONAL token; the bone's OWN blend multiplier,
+					                      // overriding the chunk's `blend` for the bone that ARRIVES
+					                      // at this joint (same "shapes the bone that arrives at it"
+					                      // convention aspect already uses) -- see the struct-level
+					                      // "REGION-AWARE BLEND CONTROL" comment for why this is the
+					                      // grammar's answer to "these parts are spatially close but
+					                      // must NOT merge".
+					bool   hasBlend;      // false = inherit the chunk's `blend` (today's behaviour, unchanged)
 					int    parentIndex;   // resolved index into the joints vector; -1 = root (parent "none")
-					JointDecl() : x(0), y(0), z(0), r(0), aspect(1.0), parentIndex(-1) {}
+					JointDecl() : x(0), y(0), z(0), r(0), aspect(1.0), blend(0.0), hasBlend(false), parentIndex(-1) {}
 				};
 
 				//! Formats a double with full IEEE-double round-trip precision.
@@ -6018,41 +6026,57 @@ namespace RISE
 						// helper is applied only to the trailing numeric run
 						// (same mixed-line idiom sweep_geometry's
 						// `profile_circle` uses elsewhere in this file), and an
-						// exact 6-or-7-token count catches both too few and too
+						// exact 6/7/8-token count catches both too few and too
 						// many (trailing garbage glued as its own token).  The
-						// 7th token is the OPTIONAL `aspect`; 6 tokens is the
-						// pre-doc-90 grammar and still means aspect 1.
+						// 7th token is the OPTIONAL `aspect`; the 8th (blend-
+						// domain-control slice, 2026-08-25) is the OPTIONAL
+						// per-joint `blend` override -- see the struct-level
+						// "REGION-AWARE BLEND CONTROL" comment.  6 tokens is
+						// the pre-doc-90 grammar (aspect 1, inherited blend);
+						// 7 adds aspect; 8 adds the override, and REQUIRES
+						// aspect to be spelled too (no "skip aspect, give
+						// blend" positional gap -- the same reasoning
+						// AllTokensAreFiniteNumbers' contiguous-run design
+						// already forces: this grammar has no named/keyword
+						// tokens, only position).
 						std::vector<std::string> toks;
 						{
 							std::istringstream iss( line );
 							std::string t;
 							while( iss >> t ) toks.push_back( t );
 						}
-						if( toks.size() != 6 && toks.size() != 7 ) {
+						if( toks.size() != 6 && toks.size() != 7 && toks.size() != 8 ) {
 							char buf[32];
 							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)toks.size() );
-							return Reject( "joint `" + line + "` must be 6 or 7 tokens "
-								"`<name> <parent|none> <x> <y> <z> <radius> [aspect]` -- got " + buf );
+							return Reject( "joint `" + line + "` must be 6, 7 or 8 tokens "
+								"`<name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]` -- got " + buf );
 						}
-						const bool haveAspect = ( toks.size() == 7 );
-						const int  nNumeric   = haveAspect ? 5 : 4;
+						const bool haveAspect = ( toks.size() >= 7 );
+						const bool haveBlend  = ( toks.size() == 8 );
+						const int  nNumeric   = haveBlend ? 6 : ( haveAspect ? 5 : 4 );
 
 						std::string tail = toks[2] + " " + toks[3] + " " + toks[4] + " " + toks[5];
 						if( haveAspect ) tail += " " + toks[6];
+						if( haveBlend )  tail += " " + toks[7];
 						int nTok = 0;
 						if( !AllTokensAreFiniteNumbers( tail.c_str(), &nTok ) || nTok != nNumeric ) {
 							return Reject( "joint `" + line + "`: the last " +
-								( haveAspect ? "five fields (x y z radius aspect)" : "four fields (x y z radius)" ) +
+								( haveBlend ? "six fields (x y z radius aspect blend)"
+								            : haveAspect ? "five fields (x y z radius aspect)"
+								                         : "four fields (x y z radius)" ) +
 								" must be finite numbers, with no trailing garbage" );
 						}
 
-						// NB: `jd.aspect` is left at its constructed 1.0 when
-						// the line has only 4 numeric fields -- sscanf simply
-						// stops, it does not zero the unmatched argument.
+						// NB: `jd.aspect`/`jd.blend` are left at their
+						// constructed defaults when the line has fewer
+						// numeric fields -- sscanf simply stops, it does not
+						// zero an unmatched argument.
 						JointDecl jd;
 						jd.name = toks[0];
 						jd.parent = toks[1];
-						std::sscanf( tail.c_str(), "%lf %lf %lf %lf %lf", &jd.x, &jd.y, &jd.z, &jd.r, &jd.aspect );
+						jd.hasBlend = haveBlend;
+						std::sscanf( tail.c_str(), "%lf %lf %lf %lf %lf %lf",
+							&jd.x, &jd.y, &jd.z, &jd.r, &jd.aspect, &jd.blend );
 
 						if( nameToIndex.find( jd.name ) != nameToIndex.end() ) {
 							return Reject( "joint `" + jd.name + "` is declared more than once" );
@@ -6091,6 +6115,16 @@ namespace RISE
 							return Reject( "joint `" + jd.name + "`: aspect (" + buf + ") must be > 0 "
 								"-- it is the bone cross-section's width-to-depth RATIO (1 = a round "
 								"bone, 0.6 = a thigh), not a thickness" );
+						}
+						// Blend-domain-control slice: same `>= 0` rule the
+						// chunk-level `blend` enforces above, and for the
+						// identical reason -- 0 is a legal, INTENDED value
+						// here (a hard union at this one bone, the whole
+						// point of the override), a negative one is not.
+						if( jd.hasBlend && !( jd.blend >= 0.0 ) ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%g", jd.blend );
+							return Reject( "joint `" + jd.name + "`: blend (" + buf + ") must be >= 0" );
 						}
 						if( jd.parentIndex >= 0 ) {
 							const JointDecl& par = joints[jd.parentIndex];
@@ -6170,7 +6204,27 @@ namespace RISE
 							}
 							double exDeg = 0.0, eyDeg = 0.0, ezDeg = 0.0;
 							DirectionToEulerDeg( dx/len, dy/len, dz/len, exDeg, eyDeg, ezDeg );
-							const double k = blend * std::min( par.r, j.r );
+							// Blend-domain-control slice (2026-08-25): `j.blend`
+							// (the CHILD joint's own override -- "shapes the
+							// bone that arrives at it", same convention
+							// `j.aspect` already uses two lines below) replaces
+							// the chunk-level `blend` for THIS bone only when
+							// the joint line carried one.  This is the
+							// grammar's answer to "these parts are spatially
+							// close but must not merge": since Map()'s fold is
+							// sequential and GLOBAL (SDFGeometry.cpp's own
+							// comment -- a part's smin step compares against
+							// whatever the running field already is, not just
+							// its graph-neighbour), a bone's OWN k is what
+							// bounds how far THAT bone's own fold step can
+							// bridge, regardless of what the running field
+							// represents -- so overriding a specific bone's k
+							// down to (or toward) 0 makes THAT bone's fold
+							// step a hard union no matter what unrelated
+							// geometry happens to sit nearby when a pose
+							// brings two chain-distant regions close together.
+							const double kBlend = j.hasBlend ? j.blend : blend;
+							const double k = kBlend * std::min( par.r, j.r );
 							if( !AllFiniteD( { exDeg, eyDeg, ezDeg, k } ) ) {
 								return Reject( "joint `" + par.name + "` -> `" + j.name +
 									"`: a synthesized bone value is not finite (blend * radius "
@@ -6188,7 +6242,14 @@ namespace RISE
 								exDeg, eyDeg, ezDeg, j.aspect, par.r, j.r, len );
 							parts += "\n";
 						} else if( childCount[i] == 0 ) {
-							const double k = blend * j.r;
+							// Blend-domain-control slice: an isolated joint's
+							// OWN blend override applies here too (the sphere
+							// IS the bone that "arrives" at it, in the sense
+							// that no other part supplies its cap) -- same
+							// `j.hasBlend ? j.blend : blend` rule as the bone
+							// branch above, for consistency.
+							const double kBlend = j.hasBlend ? j.blend : blend;
+							const double k = kBlend * j.r;
 							if( !AllFiniteD( { k } ) ) {
 								return Reject( "joint `" + j.name +
 									"`: the synthesized sphere blend width (blend * radius) is "
@@ -6237,11 +6298,11 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "skeleton_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "A JOINT GRAPH that expands into ONE sdf_geometry: a roundcone per bone (parent -> child), smin-blended -- creature flesh authored the way an animator thinks (joints and bones), not sdf_geometry's raw part-line grammar. Each `joint` line is `<name> <parent|none> <x> <y> <z> <radius> [aspect]`; every joint but a root must name an ALREADY-DECLARED joint as `parent` (declare-before-use), which is exactly what makes a parent cycle structurally impossible. A BONE NEED NOT BE A PIPE: the optional `aspect` is the bone cross-section's width-to-depth ratio, so a limb can be a FLATTENED strap rather than the tube one-radius-per-joint would otherwise force -- a thigh is aspect 0.6, a fin-arm 0.35, a wing-arm 1.0. A bone's end caps ARE its two joints -- the roundcone's spherical caps sit exactly at the parent's and child's positions with exactly their radii -- so joints need NO separate sphere of their own; the one exception is a joint with neither parent nor children (otherwise invisible), which gets a `sphere` part instead. `blend` multiplies min(parent radius, child radius) to give each bone's smin blend width (0 = hard union, visible creases at every joint). Registers under this chunk's OWN `name`, exactly like a hand-authored sdf_geometry. COST: parts = bones + isolated joints, NOT one part per joint -- each bone (parent -> child edge) expands to one roundcone part, each parentless childless joint expands to one sphere part, and a joint with children contributes no part of its own (its caps are supplied by its outgoing bone(s)), and Map() is O(parts) per sphere-trace step with no acceleration structure over parts -- a skeleton is a render-time budget, not a free abstraction; a hand-authored sdf_geometry typically has a handful of parts, a skeleton invites 30-70.";
+						cd.description = "A JOINT GRAPH that expands into ONE sdf_geometry: a roundcone per bone (parent -> child), smin-blended -- creature flesh authored the way an animator thinks (joints and bones), not sdf_geometry's raw part-line grammar. Each `joint` line is `<name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]`; every joint but a root must name an ALREADY-DECLARED joint as `parent` (declare-before-use), which is exactly what makes a parent cycle structurally impossible. A BONE NEED NOT BE A PIPE: the optional `aspect` is the bone cross-section's width-to-depth ratio, so a limb can be a FLATTENED strap rather than the tube one-radius-per-joint would otherwise force -- a thigh is aspect 0.6, a fin-arm 0.35, a wing-arm 1.0. REGION-AWARE BLEND CONTROL: the optional per-joint `blend` overrides the chunk-level `blend` for JUST the bone arriving at that joint -- because Map()'s smin fold is SEQUENTIAL and GLOBAL (every part blends against whatever the running field already is, not just its graph-neighbour), a bone's own k is what bounds how far THAT bone's own fold step can bridge, so a pose that brings two chain-distant regions into close proximity (a curled tail near a flank, a tucked muzzle near a haunch) can keep them visually distinct by giving the bone(s) near that seam a near-zero override, while every other bone keeps the chunk's normal, permissive blend -- no multi-chunk split needed. A bone's end caps ARE its two joints -- the roundcone's spherical caps sit exactly at the parent's and child's positions with exactly their radii -- so joints need NO separate sphere of their own; the one exception is a joint with neither parent nor children (otherwise invisible), which gets a `sphere` part instead. `blend` multiplies min(parent radius, child radius) to give each bone's smin blend width (0 = hard union, visible creases at every joint). Registers under this chunk's OWN `name`, exactly like a hand-authored sdf_geometry. COST: parts = bones + isolated joints, NOT one part per joint -- each bone (parent -> child edge) expands to one roundcone part, each parentless childless joint expands to one sphere part, and a joint with children contributes no part of its own (its caps are supplied by its outgoing bone(s)), and Map() is O(parts) per sphere-trace step with no acceleration structure over parts -- a skeleton is a render-time budget, not a free abstraction; a hand-authored sdf_geometry typically has a handful of parts, a skeleton invites 30-70.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "joint"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
-						  p.description = "One joint (repeatable; at least one required): `<name> <parent|none> <x> <y> <z> <radius> [aspect]`. `parent` is `none` for a root, or the name of a joint declared on an EARLIER `joint` line -- forward references and unknown names are both rejected, and this ordering is what makes a cycle impossible. `radius` must be > 0, and a non-root joint may not sit exactly on top of its parent (a zero-length bone has no direction). OPTIONAL `aspect` (> 0, default 1 = a round bone) is the cross-section's WIDTH-to-DEPTH ratio: it NARROWS the bone SIDE-TO-SIDE in the horizontal plane, leaving `radius` exact across the perpendicular that lies in the vertical plane containing the bone (a vertical bone with aspect 0.5 is half as wide along X as along Z), and it never makes a bone THICKER than its radius. A joint's aspect shapes the bone that ARRIVES at it from its parent -- there is no inheritance, so set it per joint along a chain, and on a root WITH children it shapes nothing and is warned about. A bone leaning less than ~0.6 degrees off vertical flattens along world X, same as one that is exactly vertical (near that threshold the flatten axis stays endpoint-exact via a different construction than the exactly-vertical case, but the effect an author sees is identical). An isolated joint (no parent, no children) flattens its `sphere` part along world X unconditionally, the same canonical choice, since no bone direction exists to derive an axis from. Flatten a thigh to ~0.6, a fin or paddle-limb to ~0.35; a very small aspect wants a larger `maxsteps`"; }
+						  p.description = "One joint (repeatable; at least one required): `<name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]`. `parent` is `none` for a root, or the name of a joint declared on an EARLIER `joint` line -- forward references and unknown names are both rejected, and this ordering is what makes a cycle impossible. `radius` must be > 0, and a non-root joint may not sit exactly on top of its parent (a zero-length bone has no direction). OPTIONAL `aspect` (> 0, default 1 = a round bone) is the cross-section's WIDTH-to-DEPTH ratio: it NARROWS the bone SIDE-TO-SIDE in the horizontal plane, leaving `radius` exact across the perpendicular that lies in the vertical plane containing the bone (a vertical bone with aspect 0.5 is half as wide along X as along Z), and it never makes a bone THICKER than its radius. A joint's aspect shapes the bone that ARRIVES at it from its parent -- there is no inheritance, so set it per joint along a chain, and on a root WITH children it shapes nothing and is warned about. A bone leaning less than ~0.6 degrees off vertical flattens along world X, same as one that is exactly vertical (near that threshold the flatten axis stays endpoint-exact via a different construction than the exactly-vertical case, but the effect an author sees is identical). An isolated joint (no parent, no children) flattens its `sphere` part along world X unconditionally, the same canonical choice, since no bone direction exists to derive an axis from. Flatten a thigh to ~0.6, a fin or paddle-limb to ~0.35; a very small aspect wants a larger `maxsteps`. OPTIONAL `blend` (>= 0, REQUIRES `aspect` to also be spelled -- purely positional grammar, no gap) overrides the chunk-level `blend` for JUST this joint's incoming bone -- same 'shapes the bone that ARRIVES at it, no inheritance' rule as aspect. Use it to keep a POSE-INDUCED proximity from smin-bridging: give the bone(s) nearest a deliberate cross-region seam (e.g. a curled tail's root, a tucked muzzle's neck bone) a small or 0 override (0 = hard union at that one bone) while every other bone keeps the chunk default -- see the chunk's own description for why this works despite the fold being global."; }
 						{ auto& p = P(); p.name = "blend"; p.kind = ValueKind::Double;
 						  p.description = "Multiplier (unit-free) on min(parent radius, child radius) giving each bone's smin blend width in world units. 0 = hard union (visible creases at every joint); must be >= 0"; p.defaultValueHint = "0.35"; }
 						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt; p.description = "Sphere-trace step cap, passed through to the expanded sdf_geometry"; p.defaultValueHint = "256"; }

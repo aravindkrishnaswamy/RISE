@@ -538,11 +538,16 @@ namespace RISE
 					props.set( "kind",   StringProp( "OPTIONAL entity KIND keyword (e.g. \"material\", \"sphere_geometry\", \"camera\") to disambiguate a cross-category name clash." ) );
 					props.set( "param",  StringProp( "The parameter role to set (e.g. \"radius\", \"reflectance\", \"location\")." ) );
 					props.set( "value",  StringProp( "The new value, as a string (parsed per the parameter's declared kind by the derive layer)." ) );
+					props.set( "occurrence", NumberProp( "OPTIONAL 0-based index of WHICH occurrence to edit when `param` is a REPEATABLE line on the target chunk (e.g. skeleton_geometry's `joint`, sdf_geometry's `part` -- read_document lists them in document order, so \"the 5th joint line\" is occurrence 4). Omit for a param that occurs at most once. Out-of-range is refused, not clamped." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "target" ); required.push_back( "param" ); required.push_back( "value" );
 					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
 						"Set one parameter on one named entity in the retained scene document. "
+						"To edit ONE line of a REPEATABLE param (skeleton_geometry's `joint`, "
+						"sdf_geometry's `part`), pass `occurrence` (0-based, document order) "
+						"naming which one -- without it every patch targets occurrence 0 "
+						"regardless of intent. "
 						"REQUIRES a scene to be loaded. Returns {applied,rawCode,status,retriable,"
 						"headVersion,message}: applied is true ONLY for a clean apply; status is "
 						"the authoritative gate, one of \"applied\" (clean success), \"rejected\" "
@@ -588,11 +593,12 @@ namespace RISE
 					itemProps.set( "kind",   StringProp( "OPTIONAL entity KIND keyword to disambiguate a name clash." ) );
 					itemProps.set( "param",  StringProp( "The parameter role to set." ) );
 					itemProps.set( "value",  StringProp( "The new value string." ) );
+					itemProps.set( "occurrence", NumberProp( "OPTIONAL 0-based occurrence index for a REPEATABLE param -- same meaning as propose_patch's own `occurrence`." ) );
 					std::vector<std::string> itemRequired;
 					itemRequired.push_back( "target" ); itemRequired.push_back( "param" ); itemRequired.push_back( "value" );
 
 					JsonValue props = JsonValue::MakeObject();
-					JsonValue itemSchema = ObjectProp( "A single patch edit ({target,param,value,kind?}).", itemProps, itemRequired );
+					JsonValue itemSchema = ObjectProp( "A single patch edit ({target,param,value,kind?,occurrence?}).", itemProps, itemRequired );
 					JsonValue patchesArrSchema = JsonValue::MakeObject();
 					patchesArrSchema.set( "type", JsonValue::MakeString( "array" ) );
 					patchesArrSchema.set( "items", itemSchema );

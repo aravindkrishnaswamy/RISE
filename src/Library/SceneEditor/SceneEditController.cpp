@@ -17653,7 +17653,8 @@ void SceneEditController::Redo()
 
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	const String& entityName, const String& entityKind, const String& param,
-	const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+	const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	int occ, bool occAddressed )
 {
 	AgentCommitResult r;
 	{
@@ -17676,7 +17677,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 			return r;
 		}
 		r = ApplyAgentParamEditInner_(
-			entityName, entityKind, param, value, baseVersionOrNull );
+			entityName, entityKind, param, value, baseVersionOrNull, occ, occAddressed );
 	}
 	mEditor.DrainDirtyNotification();
 	return r;

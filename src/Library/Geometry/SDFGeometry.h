@@ -143,6 +143,23 @@ namespace RISE
 			//! expansion by hand in a second, driftable copy.
 			const std::vector<Part>& GetParts() const { return m_parts; }
 
+			//! Blend-domain-control slice (2026-08-25): the composed signed
+			//! distance of an ARBITRARY parts list at an arbitrary point,
+			//! WITHOUT constructing an SDFGeometry -- the exact same
+			//! sequential fold `Map()` runs (union: hard min; smin/subtract/
+			//! intersect: the polynomial blend at that part's own `k`), just
+			//! exposed as a public static so a test can evaluate a
+			//! skeleton_geometry's DERIVED parts (from a Job's
+			//! GetSdfGeometryParts-equivalent, or hand-built for a fixture)
+			//! at a probe point -- e.g. "does the gap between two
+			//! deliberately-close joints still read as two distinct
+			//! surfaces, or did an unrelated part's blend radius bridge
+			//! them" -- without a full render.  `Map()` itself now forwards
+			//! to this (see its own body) so the two can never drift; empty
+			//! `parts` returns the same +1e30 "nothing here" sentinel the
+			//! fold's own running-field seed uses.
+			static Scalar EvaluateParts( const std::vector<Part>& parts, const Point3& p );
+
 		protected:
 			virtual ~SDFGeometry();
 

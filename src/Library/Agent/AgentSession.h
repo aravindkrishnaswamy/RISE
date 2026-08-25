@@ -146,6 +146,33 @@ namespace RISE
 			//! false (the default), the edit is UNCONDITIONAL (slice-0 back-compat: no gating).
 			bool                     hasBaseVersion = false;
 			RISE::Cst::CstHeadVersion baseVersion;   //!< the head-version the patch was built against (checked iff hasBaseVersion)
+
+			//! 1b (2026-08-25, the joint-level re-posing gap): OPTIONAL
+			//! occurrence addressing for a REPEATABLE param -- `param` names a
+			//! role that can appear more than once on one chunk
+			//! (skeleton_geometry's `joint`, sdf_geometry's `part`), and
+			//! without this every patch silently targeted occurrence 0 no
+			//! matter which one the caller meant, so re-posing joint #12 of
+			//! 23 either overwrote joint #1 or (when the replacement text
+			//! didn't fit joint #1's context) failed to derive -- exactly the
+			//! "entity/param not found or the edit would not derive" failure
+			//! mode a model re-posing a curled quadruped hit 0/5 times.  Same
+			//! `has*`/plain-field pairing as `hasBaseVersion`/`baseVersion`
+			//! directly above, for the identical reason: a bare `occurrence`
+			//! field could not distinguish "target occurrence 0 explicitly"
+			//! from "didn't say -- use the legacy single-occurrence
+			//! resolution", and those two cases behave differently on a
+			//! REJECTED occurrence-out-of-range patch (see
+			//! ApplyAgentParamEditInner_'s own doc).  0-based, matching
+			//! ChunkParamOccurrences_'s ordering (document order of the
+			//! repeated param) -- the SAME ordering `read_document` shows a
+			//! repeatable param's lines in, so "the 5th `joint` line" means
+			//! occurrence 4.  Absent (the default) -> occurrence 0,
+			//! `occAddressed=false`, BYTE-IDENTICAL to every patch built
+			//! before this field existed.  Meaningless (silently ignored) on
+			//! a param that occurs at most once on its chunk.
+			bool hasOccurrence = false;
+			int  occurrence    = 0;
 		};
 
 		//! The structured result of ProposePatch.  `applied` means CLEAN

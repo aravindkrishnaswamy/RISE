@@ -47,6 +47,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
@@ -269,6 +270,61 @@ static std::string NanScene()
 	s += StdObj( "badnum_obj", "badnum_chunk" );
 	s += CatEarSdf( "cat_head" );
 	s += StdObj( "cat_obj", "cat_head" );
+	return s;
+}
+
+//! ITEM 2 (woodland-experiment fox-donut regression, 2026-08-25): the
+//! mass-clamp caveat fixtures.  A big head sphere (radius 2.0 -- large
+//! enough that EVERY ear position below is close to its surface, distance
+//! == radius by construction) with `count` roundcone "ear" parts spread
+//! around a great circle in the XZ plane at 360/count degree spacing --
+//! far enough apart (chord well past the smin reach-gate's 2*k exclusion
+//! radius, ~0.024 here) that the HEAD is always each ear's ONLY admitted
+//! "prior", so every ear measures identically to the single-ear CatEarSdf
+//! case regardless of how many others share the chunk.  `flaggedCount` of
+//! the `count` ears carry the SAME offending k(0.012) CatEarSdf uses (the
+//! same 0.02/0.004/0.05 roundcone, so dimEffective/detectionMaxK are
+//! IDENTICAL to the proven single-ear numbers); the rest carry a
+//! comfortably-compliant k(0.0005), which the SAME arithmetic (dim ~0.004,
+//! detectionMaxK ~0.0013) keeps silent.
+static std::string ManyEarSdf( const std::string& name, int count, int flaggedCount )
+{
+	std::string s = "sdf_geometry\n{\n\tname " + name + "\n"
+		"\tpart\tsphere union 0  0 0 0  0 0 0  1 1 1  2.0 0 0  0\n";
+	for( int i = 0; i < count; ++i ) {
+		const double theta = ( 2.0 * 3.14159265358979323846 * i ) / count;
+		const double px = 2.0 * std::sin( theta );
+		const double pz = 2.0 * std::cos( theta );
+		const bool flagged = ( i < flaggedCount );
+		char buf[256];
+		std::snprintf( buf, sizeof(buf),
+			"\tpart\troundcone smin %s  %.10f 0 %.10f  0 0 0  1 1 1  0.02 0.004 0.05  0\n",
+			flagged ? "0.012" : "0.0005", px, pz );
+		s += buf;
+	}
+	s += "}\n\n";
+	return s;
+}
+
+//! 6 ears, ALL flagged (6 >= kMassClampMinCount, 6/6 = 100% >= 70%) --
+//! the "curled pose / organic mass" shape the mass-clamp caveat exists
+//! to recognize: MOST of one chunk's smin joints blend wide.
+static std::string MassClampCurlScene()
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "mass_head", 6, 6 );
+	s += StdObj( "mass_obj", "mass_head" );
+	return s;
+}
+
+//! 10 ears, only 2 flagged (2 < kMassClampMinCount(4), and 2/10 = 20% <<
+//! 70%) -- the cat-ear class the verb exists for, now proven to survive
+//! the caveat even sharing a chunk with several other joints.
+static std::string CatEarAmongManyScene()
+{
+	std::string s = Preamble();
+	s += ManyEarSdf( "catear_many_head", 10, 2 );
+	s += StdObj( "catear_many_obj", "catear_many_head" );
 	return s;
 }
 
@@ -877,6 +933,112 @@ static void TestSwapCaseMultiPass()
 }
 
 //----------------------------------------------------------------------
+// J.  ITEM 2 (woodland-experiment fox-donut regression, 2026-08-25): the
+// mass-clamp caveat.  An undirected sweep (`target` empty) SKIPS a chunk
+// whose smin joints are MOSTLY flagged -- likely an intended tight meld
+// (a curled pose, organic mass), not N independent mistakes -- while an
+// EXPLICIT `target` on that same chunk still clamps it (the override),
+// and the cat-ear class (few of many joints flagged) is UNCHANGED.
+//----------------------------------------------------------------------
+static void TestMassClampCaveatSkipsIntendedMeld()
+{
+	std::printf( "J: mass-clamp caveat -- undirected sweep SKIPS an intended tight meld, "
+	             "explicit target= still clamps it\n" );
+
+	// (a) undirected: the 6-flagged-of-6 chunk is SKIPPED, not clamped.
+	{
+		const std::string tmp = TempPath( "fixblend_j1.RISEscene" );
+		Job* pJob = LoadScene( MassClampCurlScene(), tmp );
+		Check( pJob != nullptr, "J(a): fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// PRECONDITION: the scan really does flag all 6.
+			{
+				const std::vector<Agent::AgentDiagnostic> diags =
+					Agent::AgentSession::ValidateText( sess->ReadDocument() );
+				int fires = 0;
+				for( const Agent::AgentDiagnostic& d : diags )
+					if( d.code == Agent::AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE &&
+					    d.message.find( "mass_head" ) != std::string::npos ) ++fires;
+				Check( fires >= 1, "J(a) PRECONDITION: mass_head fires the blend-scale note" );
+			}
+
+			const std::string before = sess->ReadDocument();
+			const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+			// A pre-commit refusal (nothing to fix IN SCOPE, because
+			// mass_head was skipped and it is the only chunk) -- the SAME
+			// shape a genuinely offender-free document gets.
+			Check( !r.ok && !r.applied, "J(a) MONEY: the undirected batch does NOT clamp -- refused, "
+			                            "not a partial or silent success" );
+			Check( r.offendersFound == 6, "J(a): offendersFound still reports the TRUE fact (6) even "
+			                              "though nothing was clamped" );
+			Check( r.fixedCount == 0, "J(a): fixedCount is 0 -- nothing touched" );
+			Check( sess->ReadDocument() == before, "J(a) MONEY: document is BYTE-IDENTICAL -- the skip "
+			                                        "really did not write anything" );
+			Check( r.message.find( "mass_head" ) != std::string::npos &&
+			       r.message.find( "tight meld" ) != std::string::npos &&
+			       r.message.find( "target:\"mass_head\"" ) != std::string::npos,
+			       "J(a) MONEY: the message names the chunk, calls it a likely intended tight meld, "
+			       "and tells the caller the exact override (got `" + r.message + "`)" );
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) explicit target=: the SAME chunk, still clamped -- the
+	// user/model override the brief requires is preserved.
+	{
+		const std::string tmp = TempPath( "fixblend_j2.RISEscene" );
+		Job* pJob = LoadScene( MassClampCurlScene(), tmp );
+		Check( pJob != nullptr, "J(b): fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale( "mass_head" );
+			Check( r.ok && r.applied, "J(b) MONEY: an explicit target= on the SAME chunk clamps it" );
+			Check( r.offendersFound == 6, "J(b): all 6 counted in scope" );
+			Check( r.fixedCount == 6, "J(b) MONEY: all 6 actually clamped -- the override bypasses "
+			                          "the heuristic entirely" );
+			Check( sess->ReadDocument() != before, "J(b): the document actually changed" );
+
+			// Re-scan: silent (the verb's own guarantee, unaffected by item 2).
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool stillFires = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == Agent::AgentDiagnosticCode::DESIGN_SDF_BLEND_SCALE &&
+				    d.message.find( "mass_head" ) != std::string::npos ) stillFires = true;
+			Check( !stillFires, "J(b): re-scanning after the explicit clamp is silent" );
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+}
+
+static void TestMassClampCaveatCatEarStillAutoClamps()
+{
+	std::printf( "J: mass-clamp caveat -- the cat-ear class (2 of many joints flagged) "
+	             "still auto-clamps in the undirected sweep\n" );
+	const std::string tmp = TempPath( "fixblend_j3.RISEscene" );
+	Job* pJob = LoadScene( CatEarAmongManyScene(), tmp );
+	Check( pJob != nullptr, "J(c): fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const Agent::AgentSession::AgentFixBlendScaleResult r = sess->FixBlendScale();
+	Check( r.ok && r.applied, "J(c) MONEY: 2-of-10 flagged is UNDER the mass-clamp threshold -- "
+	                          "the undirected sweep clamps it exactly as before item 2" );
+	Check( r.offendersFound == 2, "J(c): exactly the 2 flagged ears counted" );
+	Check( r.fixedCount == 2, "J(c) MONEY: both flagged ears actually clamped" );
+	Check( r.message.find( "tight meld" ) == std::string::npos,
+	       "J(c): the mass-clamp caveat sentence never appears -- this chunk never tripped the heuristic" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
 // I.  Review round P2-1: a NaN dimension must never reach a written
 // token, and must not poison an ordinary offender sharing the document.
 //----------------------------------------------------------------------
@@ -963,6 +1125,8 @@ int main()
 	TestFinishElementInlineFinding();
 	TestSwapCaseMultiPass();
 	TestNanGuard();
+	TestMassClampCaveatSkipsIntendedMeld();
+	TestMassClampCaveatCatEarStillAutoClamps();
 	std::printf( "\n=== AgentFixBlendScaleTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

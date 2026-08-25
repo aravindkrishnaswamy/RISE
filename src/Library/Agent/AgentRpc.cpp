@@ -1944,6 +1944,26 @@ namespace RISE
 						if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 						sp.hasBaseVersion = ( b == 1 );
 					}
+					// 1b: OPTIONAL `occurrence` -- which occurrence of a
+					// REPEATABLE `param` (skeleton_geometry's `joint`,
+					// sdf_geometry's `part`) to edit, 0-based, document
+					// order.  Absent -> occurrence 0 with the legacy
+					// (non-occurrence-addressed) resolution, byte-identical
+					// to every propose_patch call before this field existed.
+					if( const JsonValue* occ = params.find( "occurrence" ) ) {
+						if( !occ->isNumber() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'occurrence' must be a number" );
+						const double ov = occ->asNumber();
+						// Bounded well under INT_MAX (no realistic chunk has
+						// anywhere near this many repeated-param lines) so
+						// the static_cast below can never overflow `int`.
+						if( !RISE::IsFiniteDouble( ov ) ||
+						    !( ov >= 0.0 && ov <= 1000000.0 && ov == std::floor( ov ) ) )
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'occurrence' must be a non-negative integer" );
+						sp.occurrence    = static_cast<int>( ov );
+						sp.hasOccurrence = true;
+					}
 					const AgentPatchResult pr = s->ProposePatch( sp );
 					// Secure-MCP slice 6: a queue-full refusal is a distinct
 					// top-level JSON-RPC error, not the normal success-
@@ -2042,6 +2062,27 @@ namespace RISE
 									"Invalid params: 'patches[%zu].kind' must be a string", i );
 								return MakeError( idValue, kInvalidParams, buf );
 							}
+						}
+						// 1b: per-element `occurrence`, same validation and
+						// meaning as propose_patch's own -- see that parse
+						// site's comment.
+						if( const JsonValue* occ = item.find( "occurrence" ) ) {
+							if( !occ->isNumber() ) {
+								char buf[128];
+								std::snprintf( buf, sizeof( buf ),
+									"Invalid params: 'patches[%zu].occurrence' must be a number", i );
+								return MakeError( idValue, kInvalidParams, buf );
+							}
+							const double ov = occ->asNumber();
+							if( !RISE::IsFiniteDouble( ov ) ||
+							    !( ov >= 0.0 && ov <= 1000000.0 && ov == std::floor( ov ) ) ) {
+								char buf[160];
+								std::snprintf( buf, sizeof( buf ),
+									"Invalid params: 'patches[%zu].occurrence' must be a non-negative integer", i );
+								return MakeError( idValue, kInvalidParams, buf );
+							}
+							sp.occurrence    = static_cast<int>( ov );
+							sp.hasOccurrence = true;
 						}
 						patches.push_back( sp );
 					}

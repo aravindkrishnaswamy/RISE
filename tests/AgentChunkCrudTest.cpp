@@ -2693,6 +2693,124 @@ static void TestActionablePatchDiagnostics()
 }
 
 //----------------------------------------------------------------------
+// 1b (2026-08-25, the joint-level re-posing gap): propose_patch's
+// `occurrence` field.  Before this, EVERY patch on a REPEATABLE param
+// (skeleton_geometry's `joint`, sdf_geometry's `part`) silently targeted
+// occurrence 0 no matter which one the caller meant -- reproduced by a
+// model trying to re-pose one specific joint of a curled quadruped and
+// hitting "entity/param not found or the edit would not derive" on every
+// one of 5 attempts.  Fixture: a skeleton_geometry chain of 4 joints
+// (root/a/b/c), each with a DISTINCT, easy-to-grep radius.
+//----------------------------------------------------------------------
+static const char* const kSkeletonPatchScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"skeleton_geometry\n{\n\tname occ_skel\n"
+	"\tjoint root none 0 0 0 0.101\n"
+	"\tjoint a root 0 1 0 0.102\n"
+	"\tjoint b a 0 2 0 0.103\n"
+	"\tjoint c b 0 3 0 0.104\n"
+	"}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"standard_object\n{\n\tname obj_skel\n\tgeometry occ_skel\n\tmaterial mat_diffuse\n}\n";
+
+static void TestProposePatchOccurrence()
+{
+	std::printf( "1b: propose_patch `occurrence` -- addressing one line of a repeatable param...\n" );
+
+	// (a) occurrence 2 ("b", 0-based: root=0, a=1, b=2, c=3) edits JOINT B
+	// and nothing else -- the joint patch attempt the fox scaffold needed
+	// and could not do before this field existed.
+	{
+		const std::string tmp = TempPath( "agentcrud_occ_a.RISEscene" );
+		Job* pJob = LoadScene( kSkeletonPatchScene, tmp );
+		Check( pJob != nullptr, "1b(a) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentSetPatch p;
+			p.target        = "occ_skel";
+			p.kind          = "skeleton_geometry";
+			p.param         = "joint";
+			p.value         = "b a 0 2 0 0.999";
+			p.hasOccurrence = true;
+			p.occurrence    = 2;
+			const Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( r.applied && r.status == "applied", "1b(a) occurrence-addressed patch applies" );
+			const std::string doc = sess->ReadDocument();
+			Check( doc.find( "joint b a 0 2 0 0.999" ) != std::string::npos,
+			       "1b(a) joint b's radius changed to the new value" );
+			Check( doc.find( "joint root none 0 0 0 0.101" ) != std::string::npos,
+			       "1b(a) joint root (occurrence 0) is UNTOUCHED" );
+			Check( doc.find( "joint a root 0 1 0 0.102" ) != std::string::npos,
+			       "1b(a) joint a is UNTOUCHED" );
+			Check( doc.find( "joint c b 0 3 0 0.104" ) != std::string::npos,
+			       "1b(a) joint c is UNTOUCHED" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) back-compat: OMITTING `occurrence` (hasOccurrence stays false,
+	// the pre-1b default) still targets occurrence 0 -- BYTE-IDENTICAL to
+	// every propose_patch call written before this field existed.
+	{
+		const std::string tmp = TempPath( "agentcrud_occ_b.RISEscene" );
+		Job* pJob = LoadScene( kSkeletonPatchScene, tmp );
+		Check( pJob != nullptr, "1b(b) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentSetPatch p;
+			p.target = "occ_skel";
+			p.kind   = "skeleton_geometry";
+			p.param  = "joint";
+			p.value  = "root none 0 0 0 0.555";
+			// hasOccurrence left false (default) -- legacy call shape.
+			const Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( r.applied && r.status == "applied", "1b(b) legacy (no occurrence) patch applies" );
+			const std::string doc = sess->ReadDocument();
+			Check( doc.find( "joint root none 0 0 0 0.555" ) != std::string::npos,
+			       "1b(b) with no occurrence given, occurrence 0 (root) is what changed" );
+			Check( doc.find( "joint a root 0 1 0 0.102" ) != std::string::npos,
+			       "1b(b) joint a is UNTOUCHED" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) out-of-range occurrence: refused, document byte-identical --
+	// the header doc's "caller is responsible for bounding occ... an
+	// out-of-range occ makes the edit a no-op / plain rejection" contract.
+	{
+		const std::string tmp = TempPath( "agentcrud_occ_c.RISEscene" );
+		Job* pJob = LoadScene( kSkeletonPatchScene, tmp );
+		Check( pJob != nullptr, "1b(c) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			Agent::AgentSetPatch p;
+			p.target        = "occ_skel";
+			p.kind          = "skeleton_geometry";
+			p.param         = "joint";
+			p.value         = "c b 0 3 0 0.222";
+			p.hasOccurrence = true;
+			p.occurrence    = 99;
+			const Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( !r.applied && r.status == "rejected", "1b(c) an out-of-range occurrence is REJECTED" );
+			Check( sess->ReadDocument() == before, "1b(c) document is byte-identical after the refusal" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
 // E1: post-arc enforcement (docs/agentic-redesign/75-expressive-surface-
 // arc.md sec 7 / 76-...-log.md sec 3's mechanism law -- blocking facts
 // act, a Warning gets skimmed): the LUMINAIRE_NULL_GEOMETRY Warning
@@ -19623,6 +19741,7 @@ int main()
 	TestUnresolvedReferenceWarning();
 	TestRejectedInsertDiagnostics();
 	TestActionablePatchDiagnostics();
+	TestProposePatchOccurrence();
 	TestNonSamplingEmitterGate();
 	TestRasterizerAllowlistGate();
 	TestActionableRemoveDiagnostics();

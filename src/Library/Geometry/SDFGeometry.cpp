@@ -961,10 +961,19 @@ Scalar SDFGeometry::Map( const Point3& p ) const
 		return d;
 	}
 
+	return EvaluateParts( m_parts, p );
+}
+
+//! Blend-domain-control slice (2026-08-25): see SDFGeometry.h's own doc for
+//! why this is a public static -- Map() forwards here so the two can never
+//! drift.  Byte-identical to the fold this replaced (verified: the whole
+//! existing SDF test suite, unchanged, still passes).
+Scalar SDFGeometry::EvaluateParts( const std::vector<Part>& parts, const Point3& p )
+{
 	Scalar d = Scalar(1e30);
-	for( size_t i = 0; i < m_parts.size(); ++i )
+	for( size_t i = 0; i < parts.size(); ++i )
 	{
-		const Part& pt = m_parts[i];
+		const Part& pt = parts[i];
 		const Scalar dp = partEval( pt, p );
 		switch( pt.op )
 		{

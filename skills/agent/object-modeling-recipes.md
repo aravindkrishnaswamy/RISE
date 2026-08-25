@@ -96,6 +96,90 @@ an unusual limb count, or a graph the scaffold's fixed topology cannot
 express -- and always reach for it to EDIT what the scaffold produced:
 the emitted chunk is ordinary `skeleton_geometry` text, not a black box.
 
+**POSING what the scaffold gave you is a PROCEDURE, not a shape to pick
+off a list.** There is no `pose` parameter -- a curled-asleep animal,
+a sitting dog, a rearing horse are all the SAME mechanism (joint-by-joint
+edits to the standing skeleton), not a fixed enum of presets a scaffold
+could enumerate for you. This is the actual loop, in order, every time:
+
+1. **Start from the scaffold's standing output** (`insert_geometry_scaffold
+   family:quadruped`), or your own hand-authored `skeleton_geometry` --
+   either way you now have a `joint` graph you can read back with
+   `read_document`.
+2. **Edit joints ONE AT A TIME, or in small batches, with `propose_patch`'s
+   `occurrence`.** `skeleton_geometry`'s `joint` lines are a REPEATABLE
+   param -- `param:"joint"` alone always means occurrence 0 (the FIRST
+   joint), no matter which one you mean. Pass `occurrence` (0-based,
+   the same order `read_document` lists the `joint` lines in: the 5th
+   line is `occurrence:4`) to address the specific joint you are posing --
+   e.g. bending a hind leg means patching `BL_lower`'s occurrence with a
+   new `y`/`z`, not re-authoring the whole chunk. Read the current line's
+   text first (from `read_document`) so your replacement value keeps every
+   token you are not changing.
+3. **After each small batch, LOOK -- don't pose blind.** `reopen_element`
+   (re-enter the element's window; free, never gated, legal from any
+   phase) -> your `propose_patch` edits -> `finish_element` (closes the
+   element and hands you an isolate render: a draft/form panel and a
+   lit-material panel, side by side) -> if the silhouette is not yet
+   right, `reopen_element` the SAME name again and keep going. Both verbs
+   are free and ungated specifically so this cycle is cheap; use it after
+   every batch, not once at the end.
+4. **Where the pose puts two joint-graph-UNRELATED parts close together on
+   purpose -- a curled tail against the flank, a tucked muzzle near a
+   haunch -- give the bone(s) nearest that seam a tight per-joint `blend`
+   override** (the `joint` line's optional 8th token: `<name> <parent>
+   <x> <y> <z> <radius> <aspect> <blend>`; requires `aspect` to be spelled
+   too, purely positional grammar). This is NOT the same knob as the
+   chunk's own `blend` parameter -- it replaces that multiplier for JUST
+   the one bone arriving at that joint, near-0 for a near-hard seam, left
+   absent (inherits the chunk default) everywhere else. Why this works:
+   `Map()`'s smin fold is sequential over EVERY part in the chunk, so
+   any two parts that end up spatially close will blend UNLESS the LATER
+   one's own k is small -- a pose-induced touch (nose near tail) is
+   exactly the case a fixed chunk-wide `blend` cannot express, because
+   turning it down everywhere flattens the spine/limb continuity you
+   still want. Tighten only the bone(s) actually at the seam.
+5. **`fix_blend_scale` is for GENUINE accidental over-blends, not for
+   melds you meant.** An undirected call (`target` omitted) now SKIPS a
+   chunk whose smin joints are MOSTLY flagged -- a curled pose or any
+   other deliberately tight organic mass reads that way on purpose, and
+   mass-clamping it would flatten exactly the overlap you built. If you
+   genuinely do want that one chunk clamped anyway, pass `target:"<name>"`
+   explicitly -- that always clamps, no matter how many joints it flags.
+
+**Worked example -- a curled-asleep fox, expressed as the procedure above**
+(not as a shape to copy verbatim; the numbers are illustrative, the STEPS
+are the point):
+
+- Step 1: `insert_geometry_scaffold {"family":"quadruped","name":"fox","size":1.2,"build":"lean"}`.
+  `read_document` shows joints `hips`, `spine_mid`, `chest`, `neck`, `head`,
+  `muzzle`, `ear_l`, `ear_r`, `tail1..3`, and the four legs
+  (`FL/FR/BL/BR_upper/lower/paw`), all standing.
+- Step 2, in small batches (`reopen_element`/`finish_element` around each,
+  per step 3): (a) patch `hips`, `spine_mid`, `chest` by occurrence,
+  curving their `x`/`z` into an arc so the spine reads as a C, not a
+  straight line; (b) patch `neck`/`head`/`muzzle` so the head follows the
+  SAME arc and comes to rest near (not on top of) the hip/tail region;
+  (c) patch each leg's `upper`/`lower`/`paw` occurrences so the paws tuck
+  in under the curled mass instead of standing; (d) patch `tail1..3` so
+  the tail continues the spine's own curl outward, wrapping alongside the
+  body toward the muzzle with a real gap, not touching it.
+- Step 4: the muzzle now sits close to the flank/hip region on purpose --
+  give `muzzle`'s joint line (the bone arriving at it, from `head`) a
+  tight `blend` override (e.g. `muzzle head <x> <y> <z> <radius> 1 0.02`)
+  so it reads as tucked-in-close, not fused. Do the SAME for whichever
+  tail segment ends up nearest the head/flank once the wrap is posed --
+  read back where it actually landed before picking which joint needs it.
+- Step 5: `fix_blend_scale` (no `target`) on the finished chunk -- with
+  most of its own joints now legitimately close together, expect it to
+  report the mass-clamp caveat and skip the chunk, which is the CORRECT
+  outcome here (the tight overlap is the curl, not a mistake). Only pass
+  `target` if a specific joint's blend genuinely looks wrong on the
+  isolate render, not because the sweep flagged it.
+- Verify by LOOKING (step 3, one more time) from a high 3/4 angle --
+  curled poses read best from above-and-to-the-side, where the spine's
+  own arc is visible.
+
 **A BRANCHING body (a creature, not a single profile) has its own
 chunk now: `skeleton_geometry`.**  Hand-chaining `roundcone` parts this
 way is still the right tool for a shape neither the lathe nor the joint
@@ -106,8 +190,10 @@ shared joint -- a hip branching into two legs and a tail, a hand's
 finger tree -- is a GRAPH, not a chain, and hand-authoring it as
 `sdf_geometry` `part` lines means re-deriving each bone's position,
 length, and orientation by hand.  `skeleton_geometry` takes the graph
-directly: one `joint <name> <parent|none> <x> <y> <z> <radius> [aspect]`
-line per joint (a bone is implied between every joint and its parent), and
+directly: one `joint <name> <parent|none> <x> <y> <z> <radius> [aspect]
+[blend]` line per joint (a bone is implied between every joint and its
+parent; `blend` overrides the chunk's own `blend` for just that bone --
+see "POSING" above for when to reach for it), and
 it expands into the same `roundcone`-chain-joined-by-smin `sdf_geometry`
 this section teaches, so everything below about profile-reading and
 flat-bottom cuts still applies to how each individual bone is shaped --

@@ -1662,6 +1662,149 @@ void TestRoundTrip()
 	remove( path.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// 7. BLEND-DOMAIN CONTROL (blend-domain-control slice, 2026-08-25): the
+//    optional 8th `joint` token, a PER-JOINT `blend` override -- replaces
+//    the chunk-level `blend` for just the bone/sphere that ARRIVES at
+//    that joint.  Grammar-level parse + k-value checks, a rejection, and
+//    the CORE claim: a region-aware override keeps two spatially-close-
+//    but-graph-unrelated parts from smin-BRIDGING, on the REAL derived
+//    geometry (not a hand reconstruction), via SDFGeometry::EvaluateParts.
+//////////////////////////////////////////////////////////////////////
+
+//! (a) The 8-token line parses, and the emitted bone's `k` uses the
+//! OVERRIDE, not the chunk's `blend` -- read directly off the real
+//! derived SDFGeometry::GetParts(), not re-derived by hand.
+void TestBlendOverrideKValue()
+{
+	std::cout << "Test: blend-domain-control -- the 8th token overrides k for just that bone" << std::endl;
+
+	std::vector<std::string> joints;
+	joints.push_back( "root none 0 0 0 0.5 1" );        // 7 tokens: aspect spelled, no override
+	joints.push_back( "tip root 0 2 0 0.4 1 0.02" );     // 8 tokens: aspect 1, blend override 0.02
+
+	IJobPriv* job = nullptr;
+	if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, "job created" ); return; }
+	const bool ok = ParseBodyInto( "blendoverride_k", SkeletonChunk( "ovr", joints, "0.35" ), *job );
+	Check( ok, "blend override: an 8-token joint line parses" );
+	const IGeometry* actualIface = ( ok && job->GetGeometries() ) ? job->GetGeometries()->GetItem( "ovr" ) : 0;
+	const SDFGeometry* actual = dynamic_cast<const SDFGeometry*>( actualIface );
+	Check( actual != 0, "blend override: geometry retrievable as SDFGeometry" );
+	if( actual ) {
+		const std::vector<SDFGeometry::Part>& parts = actual->GetParts();
+		Check( parts.size() == 1, "blend override: one bone, one roundcone part" );
+		if( parts.size() == 1 ) {
+			// k = override(0.02) * min(0.5, 0.4) = 0.008 -- NOT the chunk's
+			// blend(0.35) * 0.4 = 0.14 the un-overridden bone would carry.
+			const double want = 0.02 * std::min( 0.5, 0.4 );
+			Check( IsClose( (double)parts[0].k, want, 1e-9 ),
+			       "blend override: the bone's k uses the PER-JOINT override, not the chunk's blend" );
+			Check( !IsClose( (double)parts[0].k, 0.35 * 0.4, 1e-9 ),
+			       "blend override: (sanity) the chunk blend would have given a materially different k" );
+		}
+	}
+	safe_release( job );
+}
+
+//! (b) A negative override is refused -- same `>= 0` rule as the
+//! chunk-level `blend`, and for the identical reason (0 is a legal,
+//! INTENDED hard-union value; negative is meaningless).
+void TestBlendOverrideRejectsNegative()
+{
+	std::cout << "Test: blend-domain-control -- a negative override is REJECTED" << std::endl;
+	std::vector<std::string> joints;
+	joints.push_back( "root none 0 0 0 0.5 1" );
+	joints.push_back( "tip root 0 2 0 0.4 1 -0.1" );
+	const bool ok = ParseBody( "blendoverride_neg", SkeletonChunk( "ovrneg", joints, "0.35" ) );
+	Check( !ok, "blend override: a negative override is refused at derive" );
+}
+
+//! (c) THE CORE CLAIM, closed-form: two ISOLATED joints (no parent, no
+//! children -- each its own `sphere` part, graph-UNRELATED to each
+//! other) positioned with a real 0.02 gap between their surfaces.  The
+//! probe point is the EXACT MIDPOINT of that gap -- by construction
+//! equidistant from both surfaces (a == b), so SDFGeometry::Map's own
+//! closed form applies exactly as section 3's TestBlendSemantics uses it:
+//! smin(a,a,k) = a - k/4.  `muzzle` is declared FIRST (part 0, which the
+//! sequential fold always reduces to a plain union regardless of its own
+//! k -- see the P2 comment ScanSdfGeometryBlendScaleOffenders_ carries
+//! for the identical fact), so `flank`'s OWN k (the SECOND, and here
+//! ONLY, smin fold step) is what governs whether the midpoint bridges.
+//! Two runs of the REAL parser + REAL SDFGeometry::GetParts(), differing
+//! in ONE joint's 8th token: the chunk's default blend(0.35) bridges the
+//! gap (midpoint reads INSIDE the surface -- the fox-donut fusion); a
+//! tight override(0.02) on `flank` keeps the midpoint OUTSIDE (a real,
+//! if thin, gap) -- both values pinned to the exact closed form, not
+//! just a sign check.
+void TestBlendOverrideKeepsRegionsDistinct()
+{
+	std::cout << "Test: blend-domain-control -- a 0.02 gap between graph-unrelated parts "
+	             "stays distinct WITH the override, bridges WITHOUT it (closed-form)" << std::endl;
+
+	const double rMuzzle = 0.05, rFlank = 0.30, gap = 0.02;
+	const double centerDist = rMuzzle + rFlank + gap;   // 0.37
+	// Surface-to-surface midpoint, on the Z axis from the muzzle center:
+	// muzzle's own SDF there is (mid - rMuzzle); by construction this
+	// equals flank's own SDF there too (mid - flank's own inward distance).
+	const double midZ = rMuzzle + gap / 2.0;             // 0.06
+	const Point3 probe( 0, 0, midZ );
+	const double aAtProbe = midZ - rMuzzle;              // 0.01
+	{
+		const double bAtProbe = ( centerDist - midZ ) - rFlank;
+		Check( IsClose( aAtProbe, bAtProbe, 1e-9 ),
+		       "region-aware fixture: the probe point is genuinely equidistant from both surfaces "
+		       "(the closed form's own precondition)" );
+	}
+
+	auto runOne = [&]( const char* tag, double flankBlend, bool hasOverride ) -> double {
+		std::vector<std::string> joints;
+		joints.push_back( "muzzle none 0 0 0 " + std::to_string( rMuzzle ) );
+		char flankLine[128];
+		if( hasOverride )
+			std::snprintf( flankLine, sizeof(flankLine), "flank none 0 0 %g %g 1 %g",
+				centerDist, rFlank, flankBlend );
+		else
+			std::snprintf( flankLine, sizeof(flankLine), "flank none 0 0 %g %g", centerDist, rFlank );
+		joints.push_back( flankLine );
+
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, std::string(tag)+": job created" ); return 1e30; }
+		const bool ok = ParseBodyInto( tag, SkeletonChunk( tag, joints, "0.35" ), *job );
+		Check( ok, std::string(tag) + ": fixture parses" );
+		const IGeometry* iface = ( ok && job->GetGeometries() ) ? job->GetGeometries()->GetItem( tag ) : 0;
+		const SDFGeometry* geo = dynamic_cast<const SDFGeometry*>( iface );
+		Check( geo != 0, std::string(tag) + ": geometry retrievable as SDFGeometry" );
+		double result = 1e30;
+		if( geo ) {
+			const std::vector<SDFGeometry::Part>& parts = geo->GetParts();
+			Check( parts.size() == 2, std::string(tag) + ": two isolated-joint sphere parts" );
+			result = (double)SDFGeometry::EvaluateParts( parts, probe );
+		}
+		safe_release( job );
+		return result;
+	};
+
+	// WITHOUT an override: flank's own k = chunk blend(0.35) * rFlank(0.30) = 0.105.
+	const double kNoOverride = 0.35 * rFlank;
+	const double wantNoOverride = aAtProbe - kNoOverride / 4.0;   // 0.01 - 0.02625 = -0.01625
+	const double gotNoOverride = runOne( "regionbridge", 0.0, false );
+	Check( IsClose( gotNoOverride, wantNoOverride, 1e-6 ),
+	       "region-aware fixture: WITHOUT an override, Map(midpoint) matches the closed form exactly" );
+	Check( gotNoOverride < 0.0,
+	       "region-aware fixture: WITHOUT an override the midpoint is INSIDE the surface -- "
+	       "the two graph-unrelated parts BRIDGE (the fox-donut fusion, reproduced)" );
+
+	// WITH a tight override on `flank`: k = 0.02 * rFlank(0.30) = 0.006.
+	const double kOverride = 0.02 * rFlank;
+	const double wantOverride = aAtProbe - kOverride / 4.0;   // 0.01 - 0.0015 = 0.0085
+	const double gotOverride = runOne( "regiondistinct", 0.02, true );
+	Check( IsClose( gotOverride, wantOverride, 1e-6 ),
+	       "region-aware fixture: WITH the override, Map(midpoint) matches the closed form exactly" );
+	Check( gotOverride > 0.0,
+	       "region-aware fixture: WITH the override the midpoint stays OUTSIDE both surfaces -- "
+	       "the deliberate 0.02 gap READS AS a gap, not a fused mass" );
+}
+
 } // anonymous namespace
 
 int main()
@@ -1675,6 +1818,9 @@ int main()
 	TestNoRedundantJointSphere();
 	TestIsolatedJoint();
 	TestBranchingJoint();
+	TestBlendOverrideKValue();
+	TestBlendOverrideRejectsNegative();
+	TestBlendOverrideKeepsRegionsDistinct();
 	TestAspectBackCompat();
 	TestAspectAxisAndMapping();
 	TestAspectBlendConservative();

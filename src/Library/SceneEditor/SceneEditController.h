@@ -631,12 +631,24 @@ namespace RISE
 		//! it -- the agent should retry after the gesture completes
 		//! (retriable=true marks this as the transient reject a wire
 		//! client may resubmit verbatim).
+		//! `occ`/`occAddressed` (1b, 2026-08-25): THREAD the SAME occurrence
+		//! addressing ApplyAgentParamEditInner_ has carried since doc 88 S4b
+		//! (see that method's own doc for the full contract) out to the AGENT
+		//! surface -- until now only the GUI property panel's occurrence-
+		//! addressed rows could reach a non-first occurrence of a repeatable
+		//! param (skeleton_geometry's `joint`, sdf_geometry's `part`); every
+		//! agent patch was hardcoded to occ=0, so a model trying to re-pose
+		//! one specific joint among 23 always rewrote joint #1 instead (or
+		//! failed to derive when the replacement text did not fit there).
+		//! Both default to the pre-1b meaning (0, false) so every existing
+		//! caller is BYTE-IDENTICAL with no change at any call site.
 		AgentCommitResult ApplyAgentParamEdit(
 			const String& entityName,
 			const String& entityKind,
 			const String& param,
 			const String& value,
-			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			int occ = 0, bool occAddressed = false );
 
 		//! Model-B F5 slice S2: route an agent CHUNK INSERT through the SAME
 		//! render-thread-SAFE critical section as ApplyAgentParamEdit (mTxnOpen
