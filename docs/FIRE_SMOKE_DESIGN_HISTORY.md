@@ -3938,8 +3938,8 @@ it was already tried and refuted here.
   `5.5690890514272363e-4 s`.  No floor-aware analytic corrector is added.
 
   The earlier `323 ms` value is retained only as an uncalibrated pilot.  The
-  same-binary controlled serial wall p95 is `239.496167 ms`; production-parallel
-  p95 is `157.703416 ms`, a `34.152008370138134%` reduction.  A versioned,
+  same-binary controlled serial wall p95 is `230.814416 ms`; production-parallel
+  p95 is `152.84999999999999 ms`, a `33.777966450761035%` reduction.  A versioned,
   order-sensitive, field-tagged/length-delimited live-state digest preserves
   the legacy checkpoint digest; independent digest fields and owner validation
   run in parallel.  Dual-static/force/cell preparation and the independent
@@ -3949,10 +3949,11 @@ it was already tried and refuted here.
   guarded by exact-247 serial/parallel payload equivalence.
 
   The corrected device quantity is the queue-DAG span, not a sum of overlapping
-  command durations.  Final accepted p95 is `121.42204167321324/157.703416 ms`
-  device-span/wall, with paired residual p95 `37.036624315074448 ms`, and the
+  command durations.  Final accepted p95 is `119.62524999398738/152.84999999999999 ms`
+  device-span/wall, with paired residual p95 `35.136583422683174 ms`, and the
   tier-10 x 25 s projection is
-  `1.5140354357379344/1.9664350629478431 h`.  This clears the earlier two-hour
+  `1.4916308851678779/1.9059168596042195 h`.  The verbatim normalized replay
+  lines are retained beside and SHA-bound by the certificate. This clears the earlier two-hour
   stop class but misses the approximately `1.3 h` target; the residual remains
   named critical-path work, and source maps will add device time. Durable evidence is
   `r164_drain_aware_retry_acceptance/drain_aware_retry_acceptance.v1`; golden

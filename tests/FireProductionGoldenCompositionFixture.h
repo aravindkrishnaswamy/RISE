@@ -2082,6 +2082,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(longShadow&&!disabledClosure){
 			const std::uint64_t baselinePayload=
 				RISE::FireProductionAcceptedManifoldPayloadDigest(production);
+			const bool baselinePlateauPassed=production.manifoldPlateauPassed;
+			const bool baselineAcceptedToken=production.HasAcceptedManifoldToken();
+			const bool baselineNextStepAvailable=production.manifoldNextTimeStepAvailable;
+			const double baselineSuggestedStep=production.suggestedManifoldTimeStepS;
 			std::array<double,5> serialDevice={{}},serialWall={{}},parallelDevice={{}},parallelWall={{}};
 			auto measureSchedulingMode=[&](const char* mode,std::array<double,5>& device,
 				std::array<double,5>& wall){
@@ -2096,7 +2100,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					wall[sample]=std::chrono::duration<double,std::milli>(
 						std::chrono::steady_clock::now()-trialStart).count();
 					device[sample]=trial.deviceMakespanMS;
-					if(RISE::FireProductionAcceptedManifoldPayloadDigest(trial)!=baselinePayload||
+					if(trialAccepted!=productionSucceeded||
+						trial.manifoldPlateauPassed!=baselinePlateauPassed||
+						trial.HasAcceptedManifoldToken()!=baselineAcceptedToken||
+						trial.manifoldNextTimeStepAvailable!=baselineNextStepAvailable||
+						trial.suggestedManifoldTimeStepS!=baselineSuggestedStep||
+						RISE::FireProductionAcceptedManifoldPayloadDigest(trial)!=baselinePayload||
 						trial.maximumPredictedAdvectiveManifoldAnomaly!=
 							production.maximumPredictedAdvectiveManifoldAnomaly||
 						trial.maximumManifoldGeneration!=production.maximumManifoldGeneration||
@@ -2260,25 +2269,34 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					equalTimeReferenceScheduleDigest==
 						"1c7944ddde6e673330ccf115c388b0a424027cfcb86e0b8bf8d503f22d7c531d"&&
 					DigestFile(checkpointPath)==checkpointDigest;
-				const bool retryAllowed=FireProductionCalibration::DrainAwarePlateauRetryAllowed(
+				unsigned int nextRetryCandidate=0u;
+				const bool retryAllowed=
+					FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(
 					effectiveManifoldRetryCandidate,production.manifoldPlateauPassed,
-					static_cast<double>(production.representedTimeStepS),followingManifoldStep);
+					static_cast<double>(production.representedTimeStepS),followingManifoldStep,
+					nextRetryCandidate);
+				const bool retryDispositionValid=!productionSucceeded&&
+					production.manifoldNextTimeStepAvailable&&!production.manifoldPlateauPassed&&
+					!production.HasAcceptedManifoldToken();
+				unsigned int laterCandidateNext=0u;
+				const bool laterCandidateControllerRED=
+					FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(1u,false,
+						0.00055692793102934957,0.00055690890514272363,
+						laterCandidateNext)&&laterCandidateNext==2u;
 				if(effectiveManifoldRetryCandidate==0u)std::fprintf(stderr,
 					"DRAIN_AWARE_RETRY_GATE exact=%d retry_allowed=%d attempt_succeeded=%d "
 					"ordinary_refused=%d diagnostics=%d\n",exactPredictorRefusal?1:0,
 					retryAllowed?1:0,productionSucceeded?1:0,ordinaryAdvanceRefused?1:0,
 					production.manifoldNextTimeStepAvailable?1:0);
-				if(exactPredictorRefusal&&retryAllowed){
+				if(exactPredictorRefusal&&retryAllowed&&laterCandidateControllerRED){
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY refused_candidate=%u "
 						"refused_dt=%.17g field_max=%.17g allowance=%.17g suggested_dt=%.17g "
 						"next_candidate=%u cap=%u ordinary_advance_refused=1 attempt_diagnostics=1\n",
 						effectiveManifoldRetryCandidate,
 						static_cast<double>(production.representedTimeStepS),fieldMaximum,
 						PlateauHeadroomAllowance,followingManifoldStep,
-						effectiveManifoldRetryCandidate+1u,
+						nextRetryCandidate,
 						FireProductionCalibration::ManifoldPlateauRetryCap);
-					return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
-						effectiveManifoldRetryCandidate+1u,followingManifoldStep);
 				}
 				const bool retryAccepted=effectiveManifoldRetryCandidate>0u&&productionSucceeded&&
 					followingStepDerived&&
@@ -2317,6 +2335,16 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						static_cast<double>(production.representedTimeStepS),fieldMaximum,
 						PlateauHeadroomAllowance,followingManifoldStep,checkpointDigest);
 					return 206;
+				}
+				if(retryAllowed&&retryDispositionValid&&laterCandidateControllerRED){
+					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=%u "
+						"refused_dt=%.17g suggested_dt=%.17g next_candidate=%u cap=%u\n",
+						effectiveManifoldRetryCandidate,
+						static_cast<double>(production.representedTimeStepS),followingManifoldStep,
+						nextRetryCandidate,
+						FireProductionCalibration::ManifoldPlateauRetryCap);
+					return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
+						nextRetryCandidate,followingManifoldStep);
 				}
 				return 212;
 			}

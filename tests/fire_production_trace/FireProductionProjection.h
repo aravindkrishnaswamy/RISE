@@ -232,8 +232,10 @@ namespace RISEFireProductionTrace
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
 
-	//! Performs the sole terminal staging of a retained restoration state after
-	//! every resident corrector has consumed it.
+	//! Performs the sole terminal staging of an immutable retained restoration
+	//! state. Publication and an in-step corrector may consume that state
+	//! concurrently; both consumers complete before the owner mutates or
+	//! releases any retained buffer.
 	bool PublishFireProductionMetalRestorationResidentState(
 		const FireProductionProjectionRequest& request,
 		const FireProductionMetalProjectionResidentState& state,

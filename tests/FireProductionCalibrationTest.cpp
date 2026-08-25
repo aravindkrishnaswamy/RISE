@@ -58,6 +58,7 @@ namespace
 
 int main()
 {
+	unsigned int retryCandidate=0u;
 	Check(FireProductionCalibration::DrainAwarePlateauRetryAllowed(0u,false,
 		0.00055762444389984012,0.00055692791475544124)&&
 		FireProductionCalibration::DrainAwarePlateauRetryAllowed(1u,false,
@@ -70,7 +71,20 @@ int main()
 			FireProductionCalibration::ManifoldPlateauRetryCap-1u,false,
 			0.00055762444389984012,0.00055692791475544124)&&
 		!FireProductionCalibration::DrainAwarePlateauRetryAllowed(0u,false,
-			0.00055762444389984012,0.00055762444389984012),
+			0.00055762444389984012,0.00055762444389984012)&&
+		FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(0u,false,
+			0.00055762444389984012,0.00055692791475544124,retryCandidate)&&
+		retryCandidate==1u&&
+		FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(1u,false,
+			0.00055692793102934957,0.00055690890514272363,retryCandidate)&&
+		retryCandidate==2u&&
+		FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(
+			FireProductionCalibration::ManifoldPlateauRetryCap-2u,false,2.0,1.0,
+			retryCandidate)&&retryCandidate==
+			FireProductionCalibration::ManifoldPlateauRetryCap-1u&&
+		!FireProductionCalibration::NextDrainAwarePlateauRetryCandidate(
+			FireProductionCalibration::ManifoldPlateauRetryCap-1u,false,2.0,1.0,
+			retryCandidate),
 		"drain-aware plateau retry is a strict reduction bounded by the existing cap");
 	auto floatFromBits=[](const std::uint32_t bits){float value=0.0f;
 		std::memcpy(&value,&bits,sizeof(value));return value;};
@@ -638,7 +652,7 @@ int main()
 			"4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
-		"fe892f2c13a485e74a14f636bd57b00aa9e89dc7c665d714da8371191f1ca926"&&
+		"9691348b8fdb77388be25381aca43a6091144c75c8434cf1245d4a48514b0183"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
 		"4903c314519715f0cf61ade04c615cb8a6f999d34e2b6513ff42dbec0bc98bbe"&&
@@ -656,7 +670,7 @@ int main()
 		"804077bacc6a7048e40a1fa9d66962a55257566e598ecb9137f7c99bbc8f3e08"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"096352ea7fa36ad263ee1cd9acba819ac899d53b90b380bbb747bb4aa3d6fa52"&&
+			"5dec6e129db84697b8698398253716fd35e72118351144ecf84f9db8c4d160b2"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			subdominanceFixture.begin(),subdominanceFixture.end()))==
 		"73aadc1787fcb9bdb3908d7200a368473fe8a53f9dc632b14bf972ea2a98fed4"&&
@@ -674,10 +688,10 @@ int main()
 		"f34c24143d12f60d429964f16301f3b70518f80a62a7e7f1e676169f5eee7800"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-			"d1c740b0838f168903237efa76491c8543eda5989606d923fa774179111b6d35"&&
+			"93e391ce59368cde2632174545a44ed26e6f21eba0027803b4f0f262e8d7cd06"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-			"0834143851d06b0370e4b69a26c167db538367492462c34cb3c57e1e7470c6f9"&&
+			"9a3b80e94c3bc51095f02c7fbc3541684f134c9338edbbf7fe124a674299506b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64Generator.begin(),fp64Generator.end()))==
 		"1c4853f28771cf4a159e4bda1d837e5f371003e902568db9dec1a4ec7b0ede53"&&
@@ -1283,7 +1297,7 @@ int main()
 			"4c23b91b99e415d950a84c9176bb884b3ddaf6c1c55294cdff0031a0195ff2b4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
-		"fe892f2c13a485e74a14f636bd57b00aa9e89dc7c665d714da8371191f1ca926"&&
+		"9691348b8fdb77388be25381aca43a6091144c75c8434cf1245d4a48514b0183"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionTestSource.begin(),projectionTestSource.end()))==
 			"8d97d9f5112f4b6dcefedd4781d7b857e160cfbb47737d875c102540e10a4177"&&
@@ -1380,7 +1394,7 @@ int main()
 		"4903c314519715f0cf61ade04c615cb8a6f999d34e2b6513ff42dbec0bc98bbe"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
-		"fe892f2c13a485e74a14f636bd57b00aa9e89dc7c665d714da8371191f1ca926"&&
+		"9691348b8fdb77388be25381aca43a6091144c75c8434cf1245d4a48514b0183"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
@@ -1494,10 +1508,13 @@ int main()
 	const std::string drainAwareRetryEvidence=ReadText(
 		"rendered/fire_production_calibration/r164_drain_aware_retry_acceptance/"
 		"drain_aware_retry_acceptance.v1");
+	const std::string drainAwareRetryRawMeasurement=ReadText(
+		"rendered/fire_production_calibration/r164_drain_aware_retry_acceptance/"
+		"drain_aware_retry_measurement.raw.v1");
 	Check(!drainAwareRetryEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(drainAwareRetryEvidence.begin(),
 			drainAwareRetryEvidence.end()))==
-		"e6354c3b47cee6b8b0b793cf6c0a43293b675159d7757765a42a155ae71cf0eb"&&
+		"d9b82bda7307a919c402e202e55219631d93f25fd778f844cb441fb1c6e8123c"&&
 		drainAwareRetryEvidence.find("candidate_0_refusal_reproduced true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_represented_dt "
@@ -1508,21 +1525,32 @@ int main()
 			"0.0000075101852416992188")!=std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_accepted_token true")!=
 			std::string::npos&&
-		drainAwareRetryEvidence.find("accepted_path_final_wall_p95_ms 157.703416")!=
+		drainAwareRetryEvidence.find("accepted_path_final_wall_p95_ms 152.84999999999999")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("final_tier10_wall_projection_hours "
-			"1.9664350629478431")!=std::string::npos&&
+			"1.9059168596042195")!=std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_0_ordinary_advance_refused true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("device_metric "
 			"queue_DAG_span_not_overlapping_work_sum")!=std::string::npos&&
-		drainAwareRetryEvidence.find("controlled_serial_wall_p95_ms 239.496167")!=
+		drainAwareRetryEvidence.find("controlled_serial_wall_p95_ms 230.814416")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("accepted_path_final_paired_host_residual_p95_ms "
-			"37.036624315074448")!=std::string::npos&&
+			"35.136583422683174")!=std::string::npos&&
+		!drainAwareRetryRawMeasurement.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			drainAwareRetryRawMeasurement.begin(),drainAwareRetryRawMeasurement.end()))==
+			"41a39a309d67a2738260cac76e17900015f52c8307bcf8a4ef2af427284c6d30"&&
+		drainAwareRetryEvidence.find("raw_measurement_trace_sha256 "
+			"41a39a309d67a2738260cac76e17900015f52c8307bcf8a4ef2af427284c6d30")!=
+			std::string::npos&&
+		drainAwareRetryRawMeasurement.find("DRAIN_AWARE_PLATEAU_RETRY_CONTINUE "
+			"refused_candidate=0")!=std::string::npos&&
+		drainAwareRetryRawMeasurement.find("DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED "
+			"candidate=1")!=std::string::npos&&
 		drainAwareRetryEvidence.find("wall_target_met false")!=std::string::npos&&
 		drainAwareRetryEvidence.find("r136_retained_trace_digest "
-			"6f4cbd853d41529dbd3e9b18fc35f412433d714867d55990e9f6beef1f9b1c46")!=
+			"a43f0a871d0ea2954d44eb5c759b6e417e2aed7d6b32b5807b843c0eb1c1fc84")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("retry_acceptance_exact_exit 206")!=
 			std::string::npos&&
@@ -1543,7 +1571,7 @@ int main()
 			"24c18bdc613b24497f9af03aed723f67a8c1b7c3df0faab1c4b01856eb4a9573"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
-			"fe892f2c13a485e74a14f636bd57b00aa9e89dc7c665d714da8371191f1ca926"&&
+			"9691348b8fdb77388be25381aca43a6091144c75c8434cf1245d4a48514b0183"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
 			"4903c314519715f0cf61ade04c615cb8a6f999d34e2b6513ff42dbec0bc98bbe"&&
@@ -1552,28 +1580,28 @@ int main()
 			"7f9bf4b42a020251c17b090130dc348d81a6d39c3462272294db0afa74e4c96a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"8b23bb494b5234d3652fdc6157bb7f6255f6135814baaad62af20ba3d4356efc"&&
+			"57fd397c889fdc3af935014b5effad533baf8e73cffbdfe1b23d996b6d73c7e7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"80b8f22d4ac72efca5b6afbc97b481df7657c9cac5849785ea711233ba64ef61"&&
+			"70ecfae51bea53904f24d4053e3a8abb2b6d4b79df34f78ae933092e6a3c4504"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"096352ea7fa36ad263ee1cd9acba819ac899d53b90b380bbb747bb4aa3d6fa52"&&
+			"5dec6e129db84697b8698398253716fd35e72118351144ecf84f9db8c4d160b2"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 			"18b82f2ec14f37bc8cc3f615f99b4447f312e6f7a40ea0f643e90e2c4de2b731"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-			"d1c740b0838f168903237efa76491c8543eda5989606d923fa774179111b6d35"&&
+			"93e391ce59368cde2632174545a44ed26e6f21eba0027803b4f0f262e8d7cd06"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-			"0834143851d06b0370e4b69a26c167db538367492462c34cb3c57e1e7470c6f9"&&
+			"9a3b80e94c3bc51095f02c7fbc3541684f134c9338edbbf7fe124a674299506b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"41b49158ad8b6b1886cf56d11da0c480ee26ec25fe6f4681d0aa587265ff7af7"&&
+			"219c1232932997a4758c0543ba781c3e26aa1da937f4459ca6a8100b1d845acd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			timestepVelocityBenchmarkOptions.begin(),timestepVelocityBenchmarkOptions.end()))==
 			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&

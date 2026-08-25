@@ -3810,8 +3810,8 @@ Host profiling is performed on the accepted candidate under
 `render_thread_reserve_count 0`.  The earlier `323 ms` observation was an
 uncalibrated pilot and is not used as the speedup denominator.  The controlled
 same-binary serial baseline samples are
-`231.896875,232.038084,236.671167,239.496167,234.463416 ms`; production-parallel
-samples are `155.835042,152.817333,157.703416,156.162333,154.594292 ms`.
+`230.814416,228.568917,229.079792,227.540083,227.738208 ms`; production-parallel
+samples are `152.694,152.783916,150.836416,152.85,149.951125 ms`.
 The optimization preserves field-tagged and length-delimited complete-payload
 authority while computing independent field digests in parallel, overlaps
 dual-static/force/cell preparation, and overlaps the independent corrector and
@@ -3821,11 +3821,12 @@ changes; exact-247 complete-payload equivalence is the invariant.
 
 After overlap, the device metric is the earliest-GPU-start to latest-GPU-end
 queue-DAG span, not the invalid sum of overlapping command durations.  Final
-accepted p95 is `121.42204167321324 ms` device span and `157.703416 ms` wall;
-the paired residual p95 is `37.036624315074448 ms`.  For 25 s at the operating
-step, the projections are `1.5140354357379344 h` device-span and
-`1.9664350629478431 h` wall.  The controlled wall reduction is
-`34.152008370138134%`.  This clears the prior two-hour stop class but does not
+accepted p95 is `119.62524999398738 ms` device span and `152.84999999999999 ms` wall;
+the paired residual p95 is `35.136583422683174 ms`.  For 25 s at the operating
+step, the projections are `1.4916308851678779 h` device-span and
+`1.9059168596042195 h` wall.  The controlled wall reduction is
+`33.777966450761035%`.  The raw replay lines are retained and SHA-bound beside
+the certificate. This clears the prior two-hour stop class but does not
 meet the approximately `1.3 h` target, so the residual remains named work
 toward device-bound execution.  Source maps are expected to increase device
 time.  No performance number changes the physics acceptance.  Durable evidence is

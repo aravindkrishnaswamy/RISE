@@ -774,6 +774,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'accepted_token=0' "$closure_limited_log" &&
 		grep -Fq 'DRAIN_AWARE_RETRY_GATE exact=1 retry_allowed=1 attempt_succeeded=0 ordinary_refused=1 diagnostics=1' "$closure_limited_log" &&
 		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY refused_candidate=0 refused_dt=0.00055762444389984012 field_max=0.023458600044250488 allowance=0.0234375 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20 ordinary_advance_refused=1 attempt_diagnostics=1' "$closure_limited_log" &&
+		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=0 refused_dt=0.00055762444389984012 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20' "$closure_limited_log" &&
 		grep -Fq 'HOST_RESIDUAL_SAMPLES candidate=0' "$closure_limited_log" &&
 		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION candidate=1 dt=0.00055692793102934957 reference_substeps=8 reference_substep_dt=6.9615991378668696e-05' "$closure_limited_log" &&
 		grep -Fq 'schedule=0db10079074f5006eff7b2f9e27b2b6f5fc2c2017d1d333c29264e113c03b08b terminal_target=cf67f48c2e6320404d7af6794c87966c4c199b3c652fdb5b62d849c691068bae predictor_G=0.019709885120391846 G=0.023429989814758301 field_max=0.023429989814758301' "$closure_limited_log" &&
