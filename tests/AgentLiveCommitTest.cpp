@@ -3231,7 +3231,7 @@ static void TestReplaceGeometryScaffoldConflictIsSuccessEnvelope()
 		//------------------------------------------------------------------
 		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
 			sess->ReplaceGeometryScaffold( "obj", "blended_vessel", "conflictA", 1.0, 0.5, 1.0,
-			                               std::string(), 0.0, std::string(), &staleBase );
+			                               std::string(), 0.0, std::string(), std::string(), &staleBase );
 		std::cout << "    [C++] ok=" << sr.ok << " status=\"" << sr.status << "\" retriable=" << sr.retriable
 		          << " message=\"" << sr.message << "\"" << std::endl;
 		Check( sr.ok, "MONEY RED-PROVE: a stale-baseHeadVersion conflict reports ok=true -- it used to report "

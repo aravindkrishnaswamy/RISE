@@ -74,6 +74,28 @@ between two segments into a continuous curve, so the silhouette flows
 where a hard `union` (or a cylinder stack) would step.  Pick `k` around
 a third of the local radius; larger `k` = softer shoulder.
 
+**A FOUR-LEGGED creature body: start from
+`insert_geometry_scaffold family:quadruped`, don't author the joint
+graph from scratch.**  It
+emits ONE `skeleton_geometry` chunk with a properly-proportioned generic
+quadruped skeleton -- spine, neck, head, muzzle, two ears, a tapering
+tail, and four legs (upper/lower/paw) -- ready to rename, reposition,
+and re-radius joint by joint.  `build` (`lean` / `average` / `stocky`)
+picks a stance; `size` scales the whole animal; `name` seeds
+deterministic per-instance variety the same way `insert_material_scaffold`
+does, so two calls with the same name+size+build are byte-identical and
+a different name still reads as a DIFFERENT animal.  One call:
+`insert_geometry_scaffold {"family":"quadruped","name":"fox","size":1.2,
+"build":"lean"}`.  This is the fast, safe path for the common case (a
+generic mammal body) -- it never needs a `detail`/`aspect` argument, and
+its proportions (including the ear-to-head ratio) are already swept
+clean against the SAME blend-scale law below.  Reach for hand-authored
+`skeleton_geometry` (the rest of this section) when the scaffold's
+generic anatomy is the wrong STARTING shape -- a non-mammal body plan,
+an unusual limb count, or a graph the scaffold's fixed topology cannot
+express -- and always reach for it to EDIT what the scaffold produced:
+the emitted chunk is ordinary `skeleton_geometry` text, not a black box.
+
 **A BRANCHING body (a creature, not a single profile) has its own
 chunk now: `skeleton_geometry`.**  Hand-chaining `roundcone` parts this
 way is still the right tool for a shape neither the lathe nor the joint

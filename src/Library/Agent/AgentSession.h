@@ -46,6 +46,7 @@
 
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: RISE::Cst::CstHeadVersion (the (uuid,revision) optimistic-concurrency identity)
 #include "../Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: RISE::Implementation::ViewportRenderMode (AgentRenderTarget::ViewMode's payload -- needs the complete enum for AgentRenderParams::viewMode's default member initializer)
+#include "../Geometry/SDFGeometry.h"   // Creature scaffold slice: RISE::Implementation::SDFGeometry::Part, for ForTest_ScanDerivedSdfParts's signature
 
 namespace RISE
 {
@@ -3020,6 +3021,16 @@ namespace RISE
 			//! a standard_object; see InsertGeometryScaffold's doc for
 			//! why).  See docs/agentic-redesign/75-expressive-surface-arc.md
 			//! slice E3 for the design.
+			//! Creature scaffold slice (2026-08-25): Quadruped added, a
+			//! SEVENTH family and the first to emit a `skeleton_geometry`
+			//! chunk rather than a raw `sdf_geometry`/other primitive --
+			//! see BuildQuadrupedSkeleton's own comment for why (the
+			//! measured, twice-proven "mechanized verbs convert, prose
+			//! doesn't" law: condition J's own creature-steer ADVICE was
+			//! read and ignored on the SAME session that then converted
+			//! fix_blend_scale on first opportunity).  Takes `build`
+			//! (a 2-3-preset stance knob) INSTEAD of `detail`/`aspect` --
+			//! see InsertGeometryScaffold's header doc for the param table.
 			enum class GeometryScaffoldFamily
 			{
 				DisplacedSlab,
@@ -3028,6 +3039,7 @@ namespace RISE
 				SdfColumn,
 				BlendedChain,
 				VolumeBank,
+				Quadruped,
 			};
 
 			//! The structured result of InsertGeometryScaffold.  Same
@@ -3249,6 +3261,41 @@ namespace RISE
 			//!     `standard_object` needs a matching hand-edit to the
 			//!     medium chunk's `bbox_min`/`bbox_max`, or the density
 			//!     field will no longer align with the container.
+			//!   - quadruped (creature scaffold slice): a generic
+			//!     four-legged animal skeleton -- spine (hips -> mid ->
+			//!     chest), neck, head, muzzle, two ears, a tail chain,
+			//!     and four legs (upper/lower/paw).  REQUIRES `family`,
+			//!     `name`, `size` (>0, overall scale).  `detail`/`aspect`
+			//!     are NOT required (silently ignored if given -- unlike
+			//!     every other family, this one has no honest use for
+			//!     either: there is no displacement/tessellation/profile-
+			//!     complexity knob a joint graph could apply `detail` to,
+			//!     and no single elongation axis `aspect` could apply to
+			//!     a body that already has a hips-to-chest length AND a
+			//!     stand height AND a tail length).  `points`/`taper`/
+			//!     `tone` are likewise ignored.  Takes ONE family-specific
+			//!     param `build` (OPTIONAL, default "average"): "lean" /
+			//!     "average" / "stocky", a small stance preset that
+			//!     rescales leg length/girth and body girth together --
+			//!     an unrecognized value is refused, naming the three
+			//!     legal ones.  `family:"creature"` is accepted as an
+			//!     alias for `family:"quadruped"` (both resolve to the
+			//!     identical generator; the result's own `family` field
+			//!     echoes back whichever spelling was passed).  Emits ONE
+			//!     `skeleton_geometry` chunk (NOT `sdf_geometry` -- see
+			//!     BuildQuadrupedSkeleton's own comment for why this is
+			//!     the family's whole point: a skeleton's blend radius is
+			//!     `blend * min(parent radius, child radius)` PER BONE,
+			//!     so it cannot fall into the fixed-world-unit-k trap
+			//!     condition J's DESIGN_SDF_BLEND_SCALE advisory exists
+			//!     to catch -- structurally, not by calibration).  Every
+			//!     preset/size/name combination is swept against the
+			//!     SAME shared scan that advisory uses (on the fully
+			//!     expanded bones, via SDFGeometry::GetParts() on a real
+			//!     derived Job -- not the document-level scan, which is
+			//!     blind to skeleton_geometry by design) and asserted
+			//!     offender-free and proportion-caveat-free; see
+			//!     tests/AgentQuadrupedScaffoldTest.cpp's sweep case.
 			//!
 			//! Internal graph constants (noise phase/frequency, profile-
 			//! point phase, path bow, smin blend radii, segment counts,
@@ -3291,6 +3338,14 @@ namespace RISE
 			                                                    const std::string& points = std::string(),
 			                                                    double taper = 0.0,
 			                                                    const std::string& tone = std::string(),
+			                                                    //! Creature scaffold slice: tail-appended,
+			                                                    //! quadruped-only -- "" resolves to "average"
+			                                                    //! (see that family's own doc above for the
+			                                                    //! three legal values).  Every OTHER family
+			                                                    //! ignores it, matching the established
+			                                                    //! per-family "unused params silently
+			                                                    //! ignored" convention.
+			                                                    const std::string& build = std::string(),
 			                                                    const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
 			//! R2 (2026-08-10, replace_geometry_scaffold): expand `family` into
@@ -3416,7 +3471,51 @@ namespace RISE
 			                                                     const std::string& points = std::string(),
 			                                                     double taper = 0.0,
 			                                                     const std::string& tone = std::string(),
+			                                                     //! Creature scaffold slice: same tail-append,
+			                                                     //! same quadruped-only meaning as
+			                                                     //! InsertGeometryScaffold's own `build`.
+			                                                     const std::string& build = std::string(),
 			                                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Creature scaffold slice: ONE offender as ForTest_
+			//! ScanDerivedSdfParts reports it -- a public-header-safe
+			//! copy of the two fields tests/AgentQuadrupedScaffoldTest.cpp
+			//! needs (the internal SDFBlendScaleOffender_ struct stays
+			//! anonymous-namespace-local to AgentSession.cpp, matching
+			//! every other scan-internal type in this file).
+			struct AgentBlendScaleProbeOffender
+			{
+				std::string formattedLine;
+				bool        proportionCaveat = false;
+			};
+
+			//! TEST HOOK (creature scaffold slice, 2026-08-25): runs the
+			//! IDENTICAL shared blend-scale scan
+			//! (ScanSdfGeometryBlendScaleOffenders_ -- the SAME function
+			//! condition J's note/diagnostic clauses and fix_blend_scale
+			//! all read) against an ALREADY-DERIVED part list, e.g. a
+			//! skeleton_geometry chunk's own expanded bones
+			//! (SDFGeometry::GetParts() on a real derived Job).  This is
+			//! the ONLY way to check a skeleton's OWN generated bones
+			//! against that math: the document-level scan
+			//! (ComputeDesignNoteConditionsFromDoc_, which condition J and
+			//! validate() both read) is STRUCTURALLY BLIND to
+			//! skeleton_geometry by design -- it only sees the chunk's
+			//! ROLE at the CST layer, before derive expands it -- so
+			//! calling ValidateText on a document containing a generated
+			//! skeleton_geometry chunk would trivially report zero
+			//! offenders regardless of whether the skeleton's actual
+			//! proportions are sound.  Returns every offender found
+			//! (empty = clean).  NOT part of the wire surface; exists
+			//! solely for BuildQuadrupedSkeleton's own quality sweep (see
+			//! that function's header doc) so the scaffold's generated
+			//! geometry is verified against the SAME math a human
+			//! reading condition J's advisory would apply by hand,
+			//! without a second, driftable copy of that math living in
+			//! the test file.
+			static std::vector<AgentBlendScaleProbeOffender> ForTest_ScanDerivedSdfParts(
+				const std::string& geoName,
+				const std::vector<RISE::Implementation::SDFGeometry::Part>& parts );
 
 			//----------------------------------------------------------------
 			// G2 (2026-08-10): the PART-PLAN GATE.

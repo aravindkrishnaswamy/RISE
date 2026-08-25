@@ -502,17 +502,20 @@ static void TestOpenAIRequestShape()
 			const JsonValue& params = fn.get( "parameters" );
 			Check( params.isObject(), "insert_geometry_scaffold OpenAI tool carries a parameters object" );
 			const JsonValue& required = params.get( "required" );
-			// Arc-75 slice E3: required params now differ BY FAMILY
-			// (blended_chain needs points/taper instead of aspect;
-			// volume_bank needs aspect PLUS tone) -- JSON Schema's flat
-			// top-level "required" can only name what EVERY family needs
-			// (family/name/size/detail), so it shrank from 5 to 4; the
-			// per-family requirement is enforced as a blocking error by
-			// AgentRpc.cpp's handler, not by this schema array (see
-			// AgentSession::InsertGeometryScaffold's header doc).
-			Check( required.isArray() && required.size() == 4,
-			       "insert_geometry_scaffold declares the four family-universal params required "
-			       "(family/name/size/detail; aspect/points/taper/tone are family-conditional, "
+			// Arc-75 slice E3, creature scaffold slice: required params
+			// now differ BY FAMILY (blended_chain needs points/taper
+			// instead of aspect; volume_bank needs aspect PLUS tone;
+			// quadruped needs NEITHER detail NOR aspect) -- JSON Schema's
+			// flat top-level "required" can only name what EVERY family
+			// needs (family/name/size -- `detail` dropped out of the
+			// universal set once quadruped shipped without it), so it is
+			// 3, down from 4; the per-family requirement is enforced as a
+			// blocking error by AgentRpc.cpp's handler, not by this
+			// schema array (see AgentSession::InsertGeometryScaffold's
+			// header doc).
+			Check( required.isArray() && required.size() == 3,
+			       "insert_geometry_scaffold declares the three family-universal params required "
+			       "(family/name/size; detail/aspect/points/taper/tone/build are family-conditional, "
 			       "enforced by the handler, not this schema)" );
 		}
 		if( fn.get( "name" ).asString() == "replace_geometry_scaffold" ) {
@@ -520,11 +523,11 @@ static void TestOpenAIRequestShape()
 			const JsonValue& params = fn.get( "parameters" );
 			Check( params.isObject(), "replace_geometry_scaffold OpenAI tool carries a parameters object" );
 			const JsonValue& required = params.get( "required" );
-			// R2 (2026-08-10): the SAME four family-universal params as the
-			// insert form, PLUS `target` -- the one param that is universal
-			// here and absent there.
-			Check( required.isArray() && required.size() == 5,
-			       "replace_geometry_scaffold declares target + the four family-universal params required" );
+			// R2 (2026-08-10), creature scaffold slice: the SAME three
+			// family-universal params as the insert form, PLUS `target`
+			// -- the one param that is universal here and absent there.
+			Check( required.isArray() && required.size() == 4,
+			       "replace_geometry_scaffold declares target + the three family-universal params required" );
 			bool sawTargetRequired = false;
 			for( std::size_t r = 0; r < required.size(); ++r )
 				if( required.at( r ).asString() == "target" ) sawTargetRequired = true;

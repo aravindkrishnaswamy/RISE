@@ -3540,7 +3540,8 @@ namespace RISE
 					if( !familyVal || !familyVal->isString() ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
-							"sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank" );
+							"sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank, quadruped "
+							"(alias: creature)" );
 					}
 					const std::string familyStr = familyVal->asString();
 					// P3 fix-round: validate `family` against the known list
@@ -3552,7 +3553,7 @@ namespace RISE
 					// branch below.
 					static const char* const kKnownGeometryScaffoldFamilies[] = {
 						"displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
-						"blended_chain", "volume_bank",
+						"blended_chain", "volume_bank", "quadruped", "creature",
 					};
 					bool familyKnown = false;
 					for( const char* f : kKnownGeometryScaffoldFamilies ) {
@@ -3561,10 +3562,16 @@ namespace RISE
 					if( !familyKnown ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: unknown family `" + familyStr + "` -- valid families are: "
-							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank" );
+							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank, "
+							"quadruped (alias: creature)" );
 					}
-					const bool isChain = ( familyStr == "blended_chain" );
-					const bool isBank  = ( familyStr == "volume_bank" );
+					const bool isChain     = ( familyStr == "blended_chain" );
+					const bool isBank      = ( familyStr == "volume_bank" );
+					// Creature scaffold slice: quadruped needs neither
+					// `detail` nor `aspect` (see AgentSession::
+					// InsertGeometryScaffold's header doc for why) -- takes
+					// `build` instead, parsed below.
+					const bool isQuadruped = ( familyStr == "quadruped" || familyStr == "creature" );
 
 					const JsonValue* nameVal = params.find( "name" );
 					if( !nameVal || !nameVal->isString() ) {
@@ -3574,15 +3581,20 @@ namespace RISE
 					if( !sizeVal || !sizeVal->isNumber() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'size' (number, > 0) is required" );
 					}
-					const JsonValue* detailVal = params.find( "detail" );
-					if( !detailVal || !detailVal->isNumber() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+					double detailNum = 0.0;
+					if( !isQuadruped ) {
+						const JsonValue* detailVal = params.find( "detail" );
+						if( !detailVal || !detailVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+						}
+						detailNum = detailVal->asNumber();
 					}
 
-					double aspectNum = 1.0;   // placeholder for blended_chain, which ignores it
+					double aspectNum = 1.0;   // placeholder for blended_chain/quadruped, which ignore it
 					std::string pointsStr;
 					double taperNum = 0.0;
 					std::string toneStr;
+					std::string buildStr;
 
 					if( isChain ) {
 						const JsonValue* pointsVal = params.find( "points" );
@@ -3598,6 +3610,14 @@ namespace RISE
 								"Invalid params: 'taper' (number, 0..1) is required for family blended_chain" );
 						}
 						taperNum = taperVal->asNumber();
+					} else if( isQuadruped ) {
+						const JsonValue* buildVal = params.find( "build" );
+						if( buildVal ) {
+							if( !buildVal->isString() ) {
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'build' must be a string" );
+							}
+							buildStr = buildVal->asString();
+						}
 					} else {
 						const JsonValue* aspectVal = params.find( "aspect" );
 						if( !aspectVal || !aspectVal->isNumber() ) {
@@ -3621,8 +3641,8 @@ namespace RISE
 
 					const AgentSession::AgentGeometryScaffoldResult sr = s->InsertGeometryScaffold(
 						familyStr, nameVal->asString(),
-						sizeVal->asNumber(), detailVal->asNumber(), aspectNum,
-						pointsStr, taperNum, toneStr,
+						sizeVal->asNumber(), detailNum, aspectNum,
+						pointsStr, taperNum, toneStr, buildStr,
 						( b == 1 ) ? &base : nullptr );
 
 					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
@@ -3724,7 +3744,7 @@ namespace RISE
 					if( !familyVal || !familyVal->isString() ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
-							"sweep_rail, blended_vessel, sdf_column, blended_chain" );
+							"sweep_rail, blended_vessel, sdf_column, blended_chain, quadruped (alias: creature)" );
 					}
 					const std::string familyStr = familyVal->asString();
 					// Same rule as insert_geometry_scaffold's own P3 fix: resolve
@@ -3737,7 +3757,7 @@ namespace RISE
 					// for a typo it did not make).
 					static const char* const kKnownGeometryScaffoldFamiliesR2[] = {
 						"displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
-						"blended_chain", "volume_bank",
+						"blended_chain", "volume_bank", "quadruped", "creature",
 					};
 					bool familyKnownR2 = false;
 					for( const char* f : kKnownGeometryScaffoldFamiliesR2 ) {
@@ -3746,12 +3766,13 @@ namespace RISE
 					if( !familyKnownR2 ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: unknown family `" + familyStr + "` -- valid families are: "
-							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain "
-							"(volume_bank emits its own standard_object and cannot rebind an existing one -- "
-							"use insert_geometry_scaffold for it)" );
+							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, quadruped "
+							"(alias: creature) (volume_bank emits its own standard_object and cannot rebind an "
+							"existing one -- use insert_geometry_scaffold for it)" );
 					}
-					const bool isChainR2 = ( familyStr == "blended_chain" );
-					const bool isBankR2  = ( familyStr == "volume_bank" );
+					const bool isChainR2     = ( familyStr == "blended_chain" );
+					const bool isBankR2      = ( familyStr == "volume_bank" );
+					const bool isQuadrupedR2 = ( familyStr == "quadruped" || familyStr == "creature" );
 
 					const JsonValue* nameVal = params.find( "name" );
 					if( !nameVal || !nameVal->isString() ) {
@@ -3761,15 +3782,20 @@ namespace RISE
 					if( !sizeVal || !sizeVal->isNumber() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'size' (number, > 0) is required" );
 					}
-					const JsonValue* detailVal = params.find( "detail" );
-					if( !detailVal || !detailVal->isNumber() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+					double detailNumR2 = 0.0;
+					if( !isQuadrupedR2 ) {
+						const JsonValue* detailVal = params.find( "detail" );
+						if( !detailVal || !detailVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+						}
+						detailNumR2 = detailVal->asNumber();
 					}
 
-					double aspectNumR2 = 1.0;   // placeholder for blended_chain, which ignores it
+					double aspectNumR2 = 1.0;   // placeholder for blended_chain/quadruped, which ignore it
 					std::string pointsStrR2;
 					double taperNumR2 = 0.0;
 					std::string toneStrR2;
+					std::string buildStrR2;
 
 					if( isChainR2 ) {
 						const JsonValue* pointsVal = params.find( "points" );
@@ -3785,6 +3811,14 @@ namespace RISE
 								"Invalid params: 'taper' (number, 0..1) is required for family blended_chain" );
 						}
 						taperNumR2 = taperVal->asNumber();
+					} else if( isQuadrupedR2 ) {
+						const JsonValue* buildVal = params.find( "build" );
+						if( buildVal ) {
+							if( !buildVal->isString() ) {
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'build' must be a string" );
+							}
+							buildStrR2 = buildVal->asString();
+						}
 					} else {
 						const JsonValue* aspectVal = params.find( "aspect" );
 						if( !aspectVal || !aspectVal->isNumber() ) {
@@ -3807,8 +3841,8 @@ namespace RISE
 
 					const AgentSession::AgentGeometryScaffoldResult sr = s->ReplaceGeometryScaffold(
 						targetVal->asString(), familyStr, nameVal->asString(),
-						sizeVal->asNumber(), detailVal->asNumber(), aspectNumR2,
-						pointsStrR2, taperNumR2, toneStrR2,
+						sizeVal->asNumber(), detailNumR2, aspectNumR2,
+						pointsStrR2, taperNumR2, toneStrR2, buildStrR2,
 						( b == 1 ) ? &base : nullptr );
 
 					// R2 fix-round (P1): `sr.ok` now means "reached a commit-stage disposition" (see

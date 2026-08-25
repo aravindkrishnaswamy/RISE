@@ -1522,17 +1522,18 @@ namespace RISE
 				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "family", StringProp(
-						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank." ) );
+						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, "
+						"volume_bank, quadruped (alias: creature)." ) );
 					props.set( "name", StringProp(
 						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
 						"chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail." ) );
 					props.set( "size", NumberProp( "Overall scale, > 0 (for blended_chain: base radius at the FIRST point)." ) );
 					props.set( "detail", NumberProp(
 						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / "
-						"node density / density-field swirl, per family." ) );
+						"node density / density-field swirl, per family.  NOT used by quadruped (omit it there)." ) );
 					props.set( "aspect", NumberProp(
 						"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for "
-						"every family EXCEPT blended_chain." ) );
+						"every family EXCEPT blended_chain and quadruped (omit it for those two)." ) );
 					props.set( "points", StringProp(
 						"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \"x y z\" triplets, e.g. "
 						"\"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the spine path; the first/last node lands exactly on "
@@ -1541,17 +1542,24 @@ namespace RISE
 						"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last." ) );
 					props.set( "tone", StringProp(
 						"volume_bank ONLY, REQUIRED: \"r g b\", each 0..1 -- the medium's scatter tint." ) );
+					props.set( "build", StringProp(
+						"quadruped ONLY, optional (default \"average\"): \"lean\" / \"average\" / \"stocky\" -- a "
+						"stance preset that rescales leg length/girth and body girth together." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "family" ); required.push_back( "name" ); required.push_back( "size" );
-					required.push_back( "detail" );
+					// `detail` is NOT in the unconditional required set --
+					// like `aspect`/`points`/`taper`/`tone`, whether it is
+					// actually needed DIFFERS BY FAMILY (see the
+					// description's own per-family table); quadruped is
+					// the first family that needs it not at all.
 					// insert_geometry_scaffold is Commit-only, the SAME
 					// posture as insert_material_scaffold (see
 					// kGeometryScaffoldProposeRefusedNote's doc).
 					const std::string desc = ( readOnly ? kAutonomyReadNote
 					                          : proposeOnly ? kGeometryScaffoldProposeRefusedNote
 					                          : std::string() ) + std::string(
-						"Expand ONE of six geometry-family templates into a small chunk graph added to the scene "
+						"Expand ONE of SEVEN geometry-family templates into a small chunk graph added to the scene "
 						"in one call. Families: \"displaced_slab\" (a box tessellated + bumped by a perlin2d "
 						"noise source via displaced_geometry), \"sweep_rail\" (a compact closed polygon profile "
 						"swept along a short bowed path with a taper, via sweep_geometry), \"blended_vessel\" "
@@ -1560,30 +1568,38 @@ namespace RISE
 						"silhouette, via sdf_geometry), \"blended_chain\" (a smin-blended chain of spheres swept "
 						"along a path YOU author with `points` -- a continuous, tapered limb/branch/tendril), "
 						"\"volume_bank\" (an elongated atmospheric volume -- container + near-invisible "
-						"dielectric shell + a swirling painter-driven heterogeneous medium, fully wired). The "
-						"FIRST FIVE families emit GEOMETRY ONLY -- YOU wire the standard_object (and any "
-						"material) yourself, referencing the returned `geometry.name`. volume_bank is the SOLE "
-						"exception -- it ALSO emits a dielectric material, a medium, and a standard_object (a "
-						"bare volume graph does nothing until an object binds it, and the medium's density-field "
-						"bbox must match that object's placement -- the returned `message` on success carries "
-						"the one wiring caveat this implies if you reposition it). Families cover common forms; "
-						"anything else is hand-authored alongside using the ordinary geometry chunks -- this "
-						"tool composes with hand authoring, it does not replace it. REQUIRED params DIFFER BY "
-						"FAMILY, no defaults -- a missing one for the resolved family is a blocking error naming "
-						"it: `family`/`name` always; displaced_slab/sweep_rail/blended_vessel/sdf_column ALSO "
-						"need `size`/`detail`/`aspect`; blended_chain ALSO needs `points`/`size`/`taper`/`detail` "
-						"(NO `aspect`); volume_bank ALSO needs `size`/`aspect`/`detail`/`tone` (NO `points`/"
-						"`taper`). Internal graph constants are jittered deterministically from `name`: the SAME "
-						"name (and other params) reproduces byte-identical chunks, a DIFFERENT name visibly "
-						"differs. Every generated chunk is an ORDINARY, EDITABLE document chunk named "
-						"tmpl_<name>_<role> -- read_document shows them, and propose_patch/remove_chunk work on "
-						"them exactly like any hand-authored chunk. Applied IN ORDER through the SAME batch "
-						"machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT). Returns "
-						"{applied,total,results:[...]} -- the EXACT insert_chunk per-element shape -- plus "
-						"`geometry` ({name,kind} of the one geometry chunk to bind into a "
-						"standard_object.geometry slot) and, for volume_bank only, `material`/`medium`/`object` "
-						"({name,kind} each) plus a factual `message`. Check every element's own status. A "
-						"missing/invalid param, an unrecognized family, or a NAME COLLISION refuses the WHOLE "
+						"dielectric shell + a swirling painter-driven heterogeneous medium, fully wired), "
+						"\"quadruped\" (alias \"creature\": a generic four-legged animal SKELETON via "
+						"skeleton_geometry -- spine, neck, head, muzzle, two proportioned ears, a tapering tail, "
+						"and four upper/lower/paw legs, ~18-24 joints, ready to rename/reposition/re-radius. THE "
+						"START-FROM-RIGHT ANSWER for a creature body: skeleton_geometry's blend radius is "
+						"per-bone and self-scaling, so it structurally cannot fall into the fixed-k trap the "
+						"DESIGN_SDF_BLEND_SCALE advisory catches on hand-authored sdf_geometry -- reach for this "
+						"family FIRST for any mammal-like body, and hand-author skeleton_geometry directly only "
+						"when the generic topology is the wrong starting shape). The FIRST SIX families emit "
+						"GEOMETRY ONLY -- YOU wire the standard_object (and any material) yourself, referencing "
+						"the returned `geometry.name`. volume_bank is the SOLE exception -- it ALSO emits a "
+						"dielectric material, a medium, and a standard_object (a bare volume graph does nothing "
+						"until an object binds it, and the medium's density-field bbox must match that object's "
+						"placement -- the returned `message` on success carries the one wiring caveat this "
+						"implies if you reposition it). Families cover common forms; anything else is "
+						"hand-authored alongside using the ordinary geometry chunks -- this tool composes with "
+						"hand authoring, it does not replace it. REQUIRED params DIFFER BY FAMILY, no defaults "
+						"-- a missing one for the resolved family is a blocking error naming it: `family`/`name`/"
+						"`size` always; displaced_slab/sweep_rail/blended_vessel/sdf_column ALSO need `detail`/"
+						"`aspect`; blended_chain ALSO needs `points`/`taper`/`detail` (NO `aspect`); volume_bank "
+						"ALSO needs `aspect`/`detail`/`tone` (NO `points`/`taper`); quadruped needs NEITHER "
+						"`detail` NOR `aspect` -- only the optional `build` (default \"average\"). Internal graph "
+						"constants are jittered deterministically from `name`: the SAME name (and other params) "
+						"reproduces byte-identical chunks, a DIFFERENT name visibly differs. Every generated "
+						"chunk is an ORDINARY, EDITABLE document chunk named tmpl_<name>_<role> -- read_document "
+						"shows them, and propose_patch/remove_chunk work on them exactly like any hand-authored "
+						"chunk. Applied IN ORDER through the SAME batch machinery insert_chunks uses (SEQUENTIAL, "
+						"BEST-EFFORT). Returns {applied,total,results:[...]} -- the EXACT insert_chunk "
+						"per-element shape -- plus `geometry` ({name,kind} of the one geometry chunk to bind "
+						"into a standard_object.geometry slot) and, for volume_bank only, `material`/`medium`/"
+						"`object` ({name,kind} each) plus a factual `message`. Check every element's own status. "
+						"A missing/invalid param, an unrecognized family, or a NAME COLLISION refuses the WHOLE "
 						"call before any chunk is generated (document unchanged) -- reported as a tool error, "
 						"not a partial result. Always pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "insert_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
@@ -1596,28 +1612,34 @@ namespace RISE
 						"The NAME of the standard_object whose geometry to replace -- the OBJECT, not the "
 						"geometry chunk." ) );
 					props.set( "family", StringProp(
-						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain. "
-						"(volume_bank is NOT available here -- it emits its own standard_object.)" ) );
+						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, "
+						"quadruped (alias: creature). (volume_bank is NOT available here -- it emits its own "
+						"standard_object.)" ) );
 					props.set( "name", StringProp(
 						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
 						"chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail." ) );
 					props.set( "size", NumberProp( "Overall scale, > 0 (for blended_chain: base radius at the FIRST point)." ) );
 					props.set( "detail", NumberProp(
 						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / "
-						"node density, per family." ) );
+						"node density, per family.  NOT used by quadruped (omit it there)." ) );
 					props.set( "aspect", NumberProp(
 						"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for "
-						"every family EXCEPT blended_chain." ) );
+						"every family EXCEPT blended_chain and quadruped (omit it for those two)." ) );
 					props.set( "points", StringProp(
 						"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \"x y z\" triplets, e.g. "
 						"\"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the spine path; the first/last node lands exactly on "
 						"the first/last triplet." ) );
 					props.set( "taper", NumberProp(
 						"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last." ) );
+					props.set( "build", StringProp(
+						"quadruped ONLY, optional (default \"average\"): \"lean\" / \"average\" / \"stocky\"." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "target" ); required.push_back( "family" ); required.push_back( "name" );
-					required.push_back( "size" ); required.push_back( "detail" );
+					required.push_back( "size" );
+					// `detail` is NOT unconditionally required -- see
+					// insert_geometry_scaffold's own identical note; quadruped
+					// needs neither `detail` nor `aspect`.
 					// replace_geometry_scaffold is Commit-only, the SAME posture
 					// as its two scaffold siblings (see
 					// kReplaceGeometryScaffoldProposeRefusedNote's doc) -- and,
@@ -1635,7 +1657,8 @@ namespace RISE
 						"that use it). The object's position, orientation, scale, material and every other "
 						"parameter are PRESERVED byte-for-byte; only `geometry` changes, so placement stays put "
 						"across a form change. Families and their per-family required params are IDENTICAL to "
-						"insert_geometry_scaffold's, with ONE exception: \"volume_bank\" is not available here "
+						"insert_geometry_scaffold's (including \"quadruped\"/\"creature\", the self-scaling "
+						"skeleton_geometry family), with ONE exception: \"volume_bank\" is not available here "
 						"(it emits its own standard_object -- use insert_geometry_scaffold for it). The old "
 						"geometry chunk is REMOVED when nothing else references it; when something does, it is "
 						"RETAINED and the referrers are named in the result. Chunks left unreferenced one hop "

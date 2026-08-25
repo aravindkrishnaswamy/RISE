@@ -1030,6 +1030,26 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 		Check( pLathe != std::string::npos && pFall != std::string::npos && pLathe < pFall,
 		       "S3c: the turned-forms section leads with lathe_geometry and only then the roundcone fallback" );
 	}
+	// Creature scaffold slice (2026-08-25): the "mechanized verbs
+	// convert, prose doesn't" law applied one level up -- the creature-
+	// body guidance must LEAD with the callable verb
+	// (insert_geometry_scaffold family:quadruped), with a worked call
+	// example, BEFORE the hand-authored skeleton_geometry grammar
+	// section -- the SAME "prescription comes first" staleness check
+	// the turned-forms section above gets, for the identical reason.
+	{
+		const size_t pScaffold  = omr.find( "insert_geometry_scaffold family:quadruped" );
+		const size_t pBranching = omr.find( "A BRANCHING body" );
+		Check( pScaffold != std::string::npos,
+		       "S3c: object-modeling-recipes names insert_geometry_scaffold family:quadruped for a creature body" );
+		Check( pBranching != std::string::npos,
+		       "S3c: ...and still documents the hand-authored skeleton_geometry grammar" );
+		Check( pScaffold != std::string::npos && pBranching != std::string::npos && pScaffold < pBranching,
+		       "S3c MONEY: the creature-body guidance LEADS with the callable verb, before the "
+		       "hand-authoring section" );
+	}
+	Check( omr.find( "\"family\":\"quadruped\"" ) != std::string::npos,
+	       "S3c: ...with a worked insert_geometry_scaffold call example" );
 	// The superellipsoid teaching (85 C6): one part spans ellipsoid ->
 	// cushion/torso (e1,e2 in 0.4-0.7) -> box -> cylinder -> octahedron,
 	// which is what a model should reach for instead of composing a

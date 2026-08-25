@@ -5672,7 +5672,7 @@ static void TestGeometryScaffoldFamilies()
 		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
 
 		const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->InsertGeometryScaffold(
-			fc.family, "geoA", 1.4, 0.6, 1.3, std::string(), 0.0, std::string(), &v0 );
+			fc.family, "geoA", 1.4, 0.6, 1.3, std::string(), 0.0, std::string(), std::string(), &v0 );
 
 		Check( sr.ok, std::string( "GS1(" ) + fc.family + ") call itself is well-formed (ok==true): " + sr.message );
 		Check( sr.chunkResults.size() == fc.expectedChunkCount,
@@ -6017,7 +6017,7 @@ static void TestGeometryScaffoldBadFamily()
 	Check( !sr.ok, "GS4 an unknown family refuses the call (ok==false)" );
 	Check( sr.chunkResults.empty(), "GS4 no chunks were generated for an unknown family" );
 	const char* families[] = { "displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
-	                           "blended_chain", "volume_bank" };
+	                           "blended_chain", "volume_bank", "quadruped" };
 	for( const char* f : families ) {
 		Check( sr.message.find( f ) != std::string::npos,
 		       std::string( "GS4 the error message lists valid family `" ) + f + "`" );
@@ -7115,7 +7115,7 @@ static void TestReplaceGeometryScaffoldFamilies()
 		const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->ReplaceGeometryScaffold(
 			"obj_sph", rc.family, "formA", isChain ? 0.25 : 1.2, 0.6, 1.3,
 			isChain ? std::string( "0 0 0; 0.4 0.9 0.1; 0.9 1.4 -0.2" ) : std::string(),
-			isChain ? 0.6 : 0.0, std::string(), &v0 );
+			isChain ? 0.6 : 0.0, std::string(), std::string(), &v0 );
 
 		Check( sr.ok, std::string( "RG1(" ) + rc.family + ") call succeeded: " + sr.message );
 		if( !sr.ok ) { pJob->release(); std::remove( tmp.c_str() ); continue; }
@@ -7594,7 +7594,7 @@ static void TestReplaceGeometryScaffoldAtomicRefusals()
 	// draws; it is not folded into the same `ok==false` bucket as the pre-flight refusals above.
 	const Agent::AgentSession::AgentGeometryScaffoldResult stale =
 		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "staleA", 1.0, 0.4, 1.0,
-		                               std::string(), 0.0, std::string(), &v0 );
+		                               std::string(), 0.0, std::string(), std::string(), &v0 );
 	Check( stale.ok, "RG7 MONEY RED-PROVE: a stale baseHeadVersion conflict reports ok=true" );
 	Check( stale.status == "conflict", "RG7 MONEY RED-PROVE: status is \"conflict\"" );
 	Check( !stale.retriable, "RG7 a conflict does not set retriable" );

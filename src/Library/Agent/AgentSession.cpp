@@ -5927,7 +5927,8 @@ namespace RISE
 					"part's radius or half-thickness, or less -- fix_blend_scale applies the safe k for "
 					"every flagged joint in one call. skeleton_geometry is exempt -- its blend self-scales "
 					"by the joint radius, so a creature or other organic body is usually better served "
-					"building the joint graph there than chaining raw smin parts.";
+					"building the joint graph there than chaining raw smin parts -- "
+					"insert_geometry_scaffold family:quadruped starts you with one, already proportioned.";
 			}
 
 			//! GPT slice item 4: condition K's clause.  SHARED by the note
@@ -10080,6 +10081,17 @@ namespace RISE
 				if( family == "sdf_column" )      { out = AgentSession::GeometryScaffoldFamily::SdfColumn;      return true; }
 				if( family == "blended_chain" )   { out = AgentSession::GeometryScaffoldFamily::BlendedChain;   return true; }
 				if( family == "volume_bank" )     { out = AgentSession::GeometryScaffoldFamily::VolumeBank;     return true; }
+				// Creature scaffold slice: "quadruped" is the primary
+				// spelling (it names what the skeleton actually IS --
+				// four legs); "creature" is a cheap alias for the more
+				// generic word a model reaching for "I need an animal
+				// body" is more likely to type first.  Both resolve to
+				// the identical enum value and generator -- there is no
+				// behavioural difference, only which word a caller used.
+				if( family == "quadruped" || family == "creature" ) {
+					out = AgentSession::GeometryScaffoldFamily::Quadruped;
+					return true;
+				}
 				return false;
 			}
 
@@ -10299,6 +10311,42 @@ namespace RISE
 				for( const std::string& pl : partLines ) params.push_back( { "part", pl } );
 				params.push_back( { "maxsteps", std::to_string( maxsteps ) } );
 				return ScaffoldChunkText( "sdf_geometry", params );
+			}
+
+			//! Creature scaffold slice: one `skeleton_geometry` `joint`
+			//! line's VALUE -- `<name> <parent|none> <x> <y> <z> <radius>
+			//! [aspect]` (SkeletonGeometryAsciiChunkParser::Describe /
+			//! Finalize, ChunkParserRegistry.cpp).  `aspect` is ALWAYS
+			//! written explicitly (never the 6-token short form), even at
+			//! the default 1.0 -- deterministic scaffold text should say
+			//! what it means rather than lean on a parser default a
+			//! reader has to already know.
+			std::string ScaffoldSkeletonJointLine( const std::string& jname, const std::string& parent,
+			                                       double x, double y, double z, double radius, double aspect )
+			{
+				return jname + " " + parent + " " + ScaffoldVec3( x, y, z ) + " " +
+				       ScaffoldFmt( radius ) + " " + ScaffoldFmt( aspect );
+			}
+
+			//! Creature scaffold slice: the whole `skeleton_geometry` chunk
+			//! -- `name`, every `joint` line in declaration order (the
+			//! grammar's own declare-before-use rule, so this list order
+			//! IS the parent-must-precede-child constraint, not merely a
+			//! style choice), then `blend`.  `maxsteps`/`epsilon`/
+			//! `sampling_detail` are left at the chunk's own defaults
+			//! (256/0/64) -- BuildQuadrupedSkeleton's own comment explains
+			//! why 256 (the same default every OTHER sdf-family scaffold
+			//! in this file already uses) is generous enough for a
+			//! ~20-joint skeleton.
+			std::string ScaffoldSkeletonGeometryText( const std::string& name,
+			                                          const std::vector<std::string>& jointLines,
+			                                          double blend )
+			{
+				std::vector<std::pair<std::string,std::string>> params;
+				params.push_back( { "name", name } );
+				for( const std::string& jl : jointLines ) params.push_back( { "joint", jl } );
+				params.push_back( { "blend", ScaffoldFmt( blend ) } );
+				return ScaffoldChunkText( "skeleton_geometry", params );
 			}
 
 			//! One generated chunk: its kind (for the collision precheck),
@@ -10853,6 +10901,210 @@ namespace RISE
 				return out;
 			}
 
+			//! Creature scaffold slice (2026-08-25): the "start from right"
+			//! answer to the twice-proven "mechanized verbs convert, prose
+			//! doesn't" law -- condition J's own recipe-side ADVICE
+			//! (skeleton_geometry over raw sdf smin chains for a creature
+			//! body) was read and IGNORED on the same trajectory that
+			//! converted fix_blend_scale, a callable verb, on first
+			//! opportunity.  This is the same fix applied one level
+			//! earlier: instead of asking a model to author a correctly-
+			//! proportioned joint graph from scratch, hand it one that
+			//! already IS correctly proportioned, ready to edit.
+			//!
+			//! WHY skeleton_geometry SPECIFICALLY (not sdf_geometry
+			//! roundcone parts, which every other sdf-family scaffold in
+			//! this file uses): a skeleton's blend radius is `blend *
+			//! min(parent radius, child radius)` computed PER BONE
+			//! (SkeletonGeometryAsciiChunkParser::Finalize,
+			//! ChunkParserRegistry.cpp) -- it cannot fall into the
+			//! fixed-world-unit-k trap DESIGN_SDF_BLEND_SCALE (condition
+			//! J) exists to catch, STRUCTURALLY, because there is no
+			//! world-unit k anywhere in the chunk to get wrong: every
+			//! bone's blend is relative to ITS OWN two radii by
+			//! construction.  This is also why condition J's own document-
+			//! level scan is blind to skeleton_geometry (it only sees the
+			//! chunk role at the CST layer, before derive expands it) --
+			//! the exemption and the structural fix are the same fact
+			//! stated twice.  `blend` is fixed LOW (0.16-0.20, well under
+			//! the scan's own ~1/3 fire threshold) so that even the
+			//! DERIVED bones, evaluated by the identical shared scan a
+			//! human would apply by hand, stay clear with margin -- see
+			//! tests/AgentQuadrupedScaffoldTest.cpp's sweep case, which
+			//! runs exactly that check across the whole preset/size/name
+			//! space via SDFGeometry::GetParts() on a real derived Job.
+			//!
+			//! ANATOMY (target ~20 joints, matching the brief's 18-24
+			//! range): a spine chain (hips -> spine_mid -> chest, hips
+			//! the root), neck + head + muzzle, two ears (radius >= 1/5
+			//! of the head's -- the SAME proportion gate
+			//! fix_blend_scale's own caveat enforces, respected here by
+			//! construction rather than left to chance), a 3-segment
+			//! tapering tail off the hips, and four legs (upper/lower/
+			//! paw) -- two off the chest, two off the hips.  EVERY joint
+			//! but the root either has children (no sphere of its own --
+			//! its incoming bone's tip cap covers it) or is a LEAF with a
+			//! parent (same -- see the struct-level doc's "a bone's end
+			//! caps ARE its two joints"), so this topology emits exactly
+			//! one roundcone PART PER BONE and zero extra spheres --
+			//! parts = joints - 1 (the root).
+			//!
+			//! `build` selects a STANCE preset (lean/average/stocky) that
+			//! rescales leg length+girth and body girth TOGETHER (a lean
+			//! animal is not just "the same body on longer legs" -- it is
+			//! narrower too); on top of the preset, the SAME per-`name`
+			//! deterministic jitter idiom BuildBlendedVessel uses
+			//! (ScaffoldJitterRange, no RNG, no clock) gives two
+			//! differently-named quadrupeds of the SAME preset visible
+			//! individual variety, while two calls with the SAME name and
+			//! params stay byte-identical (pinned by this test file's own
+			//! determinism case).
+			GeoScaffoldGraph BuildQuadrupedSkeleton( const std::string& name, double size, const std::string& build )
+			{
+				GeoScaffoldGraph out;
+				const std::string nSkel = "tmpl_" + name + "_skel";
+
+				// ---- Stance preset: leg length/girth and body girth move
+				// TOGETHER, matching how a real lean vs stocky animal
+				// differs (not merely "taller legs on the same barrel").
+				double legLenMul = 1.00, girthMul = 1.00, bodyLenMul = 1.00;
+				if( build == "lean" )        { legLenMul = 1.15; girthMul = 0.85; bodyLenMul = 1.08; }
+				else if( build == "stocky" ) { legLenMul = 0.85; girthMul = 1.20; bodyLenMul = 0.92; }
+				// "" / "average" / anything else already refused upstream
+				// (ScaffoldValidateAndBuildGeometry) -- this function only
+				// ever sees one of the three legal spellings, "average"
+				// falling through to the 1.00/1.00/1.00 baseline above.
+
+				// ---- Per-name jitter multipliers (+-8%, deliberately
+				// narrow -- individual variety within a preset, not a
+				// second preset system).  One shared salt per AXIS of
+				// variation (not per joint) keeps a jittered instance
+				// still reading as ONE coherently-built animal rather
+				// than a bag of independently-randomized limbs.
+				const double jStand  = ScaffoldJitterRange( name, "quad_jstand",  0.93, 1.07 );
+				const double jGirth  = ScaffoldJitterRange( name, "quad_jgirth",  0.93, 1.07 );
+				const double jBody   = ScaffoldJitterRange( name, "quad_jbody",   0.94, 1.06 );
+				const double jTail   = ScaffoldJitterRange( name, "quad_jtail",   0.85, 1.15 );
+				const double jNeck   = ScaffoldJitterRange( name, "quad_jneck",   0.90, 1.10 );
+
+				// ---- Headline dimensions, all proportional to `size`.
+				const double standH    = size * 0.40 * legLenMul * jStand;      // hip/chest height off the ground
+				const double halfBody  = size * 0.28 * bodyLenMul * jBody;      // half hips-to-chest spine span
+				const double archY     = size * 0.03 * jBody;                  // spine's own slight upward arch at mid-back
+
+				// ---- Torso radii.  All three within a tight band of each
+				// other (ratio well under kSizeMismatchGate's 3.0), so
+				// the spine chain reads as one continuous mass, never a
+				// small-into-large join.
+				const double hipsR     = size * 0.130 * girthMul * jGirth;
+				const double spineMidR = size * 0.115 * girthMul * jGirth * ScaffoldJitterRange( name, "quad_smidr", 0.95, 1.05 );
+				const double chestR    = size * 0.140 * girthMul * jGirth * ScaffoldJitterRange( name, "quad_chestr", 0.98, 1.08 );
+
+				// ---- Neck, head, muzzle.  muzzle/head and head/neck both
+				// stay comfortably under the 3.0 mismatch ratio.
+				const double neckLen  = size * 0.18 * bodyLenMul * jNeck;
+				const double neckR    = size * 0.075 * girthMul * jGirth;
+				const double headLen  = size * 0.14 * jNeck;
+				const double headR    = size * 0.095 * girthMul * jGirth * ScaffoldJitterRange( name, "quad_headr", 0.95, 1.08 );
+				const double muzzleLen = size * 0.10 * jNeck;
+				const double muzzleR   = headR * ScaffoldJitterRange( name, "quad_muzzler", 0.55, 0.65 );
+
+				// ---- Ears.  The proportion gate: >= 1/5 of the head
+				// radius (fix_blend_scale's own kProportionCaveatGate),
+				// targeted at 0.24-0.32 for a comfortable margin above
+				// the 0.20 line rather than skimming it.
+				const double earLen    = size * 0.075 * jNeck;
+				const double earR      = headR * ScaffoldJitterRange( name, "quad_earr", 0.24, 0.32 );
+				const double earSpread = headR * ScaffoldJitterRange( name, "quad_earspread", 0.55, 0.75 );
+				const double earBack   = headR * ScaffoldJitterRange( name, "quad_earback", 0.05, 0.20 );
+
+				// ---- Tail: 3 tapering segments off the hips.
+				const double tailLen1 = size * 0.16 * bodyLenMul * jTail;
+				const double tailLen2 = size * 0.14 * bodyLenMul * jTail;
+				const double tailLen3 = size * 0.12 * bodyLenMul * jTail;
+				const double tailR0   = hipsR * 0.42;
+				const double tailR1   = tailR0 * ScaffoldJitterRange( name, "quad_tailr1", 0.68, 0.80 );
+				const double tailR2   = tailR1 * ScaffoldJitterRange( name, "quad_tailr2", 0.62, 0.76 );
+				const double tailDrop = size * 0.02 * jTail;   // slight downward sag per segment
+
+				// ---- Legs: upper/lower/paw, front (off chest) and back
+				// (off hips).  upperFrac+lowerFrac stop short of 1.0 (the
+				// remaining 0.20 is the paw segment) and the paw joint's
+				// own `y` is then set to EXACTLY 0.0 below, not derived
+				// from a third fraction -- ground contact stated directly
+				// rather than left to a chain of multiplications to land
+				// on it, so every paw sits on y=0 regardless of preset/
+				// jitter with no accumulated floating-point drift.  Back
+				// legs are proportionally a touch thicker (haunches) than
+				// front, a real quadruped's usual asymmetry.
+				const double upperFrac = 0.42, lowerFrac = 0.38;
+				const double legUpperR_F = size * 0.068 * girthMul * jGirth;
+				const double legLowerR_F = legUpperR_F * ScaffoldJitterRange( name, "quad_flowr", 0.72, 0.82 );
+				const double legPawR_F   = legLowerR_F * ScaffoldJitterRange( name, "quad_fpawr", 0.68, 0.80 );
+				const double legUpperR_B = legUpperR_F * ScaffoldJitterRange( name, "quad_bupmul", 1.08, 1.20 );
+				const double legLowerR_B = legUpperR_B * ScaffoldJitterRange( name, "quad_blowr", 0.72, 0.82 );
+				const double legPawR_B   = legLowerR_B * ScaffoldJitterRange( name, "quad_bpawr", 0.68, 0.80 );
+				const double xLegFront = chestR * 0.85;
+				const double xLegBack  = hipsR  * 0.85;
+
+				// ---- Assemble the joint graph.  DECLARE-BEFORE-USE order
+				// (the grammar's own rule): every parent line precedes
+				// every line naming it.
+				struct J { std::string name, parent; double x, y, z, r, aspect; };
+				std::vector<J> js;
+				js.push_back( { "hips",      "none",      0.0,  standH,             -halfBody,          hipsR,     1.0 } );
+				js.push_back( { "spine_mid", "hips",      0.0,  standH + archY,      0.0,                spineMidR, 1.0 } );
+				js.push_back( { "chest",     "spine_mid", 0.0,  standH,              halfBody,           chestR,    1.0 } );
+				js.push_back( { "neck",      "chest",     0.0,  standH + neckLen*0.55, halfBody + neckLen*0.75, neckR, 1.0 } );
+				js.push_back( { "head",      "neck",      0.0,  standH + neckLen*0.55 + headLen*0.35, halfBody + neckLen*0.75 + headLen*0.85, headR, 1.0 } );
+				const J& headJ = js.back();
+				js.push_back( { "muzzle",    "head",      0.0,  headJ.y - muzzleLen*0.10, headJ.z + muzzleLen, muzzleR, 1.0 } );
+				js.push_back( { "ear_l",     "head",     -earSpread, headJ.y + earLen*0.85, headJ.z - earBack, earR, 1.0 } );
+				js.push_back( { "ear_r",     "head",      earSpread, headJ.y + earLen*0.85, headJ.z - earBack, earR, 1.0 } );
+
+				js.push_back( { "tail1", "hips",  0.0, standH - tailDrop,       -halfBody - tailLen1,                          tailR0, 1.0 } );
+				const J& t1 = js.back();
+				js.push_back( { "tail2", "tail1", 0.0, t1.y - tailDrop,         t1.z - tailLen2,                               tailR1, 1.0 } );
+				const J& t2 = js.back();
+				js.push_back( { "tail3", "tail2", 0.0, t2.y - tailDrop,         t2.z - tailLen3,                               tailR2, 1.0 } );
+
+				// Front-left / front-right, off chest; back-left / back-
+				// right, off hips.  `aspect` (0.7) flattens each leg
+				// slightly side-to-side, per the object-modeling-recipes
+				// skill's own "a thigh is aspect ~0.6-0.7" guidance --
+				// applied to the LOWER segment (the one arriving at each
+				// joint via its own incoming bone; see the struct-level
+				// "A JOINT'S ASPECT SHAPES THE BONE THAT ARRIVES AT IT"
+				// rule) so the shin/forearm reads as a strap, not a pipe.
+				js.push_back( { "FL_upper", "chest", -xLegFront, standH - standH*upperFrac,                     halfBody, legUpperR_F, 1.0 } );
+				js.push_back( { "FL_lower", "FL_upper", -xLegFront, standH - standH*(upperFrac+lowerFrac),      halfBody, legLowerR_F, 0.75 } );
+				js.push_back( { "FL_paw",   "FL_lower", -xLegFront, 0.0,                                        halfBody, legPawR_F,   1.0 } );
+				js.push_back( { "FR_upper", "chest",     xLegFront, standH - standH*upperFrac,                  halfBody, legUpperR_F, 1.0 } );
+				js.push_back( { "FR_lower", "FR_upper",  xLegFront, standH - standH*(upperFrac+lowerFrac),      halfBody, legLowerR_F, 0.75 } );
+				js.push_back( { "FR_paw",   "FR_lower",  xLegFront, 0.0,                                        halfBody, legPawR_F,   1.0 } );
+				js.push_back( { "BL_upper", "hips",     -xLegBack,  standH - standH*upperFrac,                 -halfBody, legUpperR_B, 1.0 } );
+				js.push_back( { "BL_lower", "BL_upper", -xLegBack,  standH - standH*(upperFrac+lowerFrac),     -halfBody, legLowerR_B, 0.75 } );
+				js.push_back( { "BL_paw",   "BL_lower", -xLegBack,  0.0,                                       -halfBody, legPawR_B,   1.0 } );
+				js.push_back( { "BR_upper", "hips",      xLegBack,  standH - standH*upperFrac,                 -halfBody, legUpperR_B, 1.0 } );
+				js.push_back( { "BR_lower", "BR_upper",  xLegBack,  standH - standH*(upperFrac+lowerFrac),     -halfBody, legLowerR_B, 0.75 } );
+				js.push_back( { "BR_paw",   "BR_lower",  xLegBack,  0.0,                                       -halfBody, legPawR_B,   1.0 } );
+
+				std::vector<std::string> jointLines;
+				jointLines.reserve( js.size() );
+				for( const J& j : js )
+					jointLines.push_back( ScaffoldSkeletonJointLine( j.name, j.parent, j.x, j.y, j.z, j.r, j.aspect ) );
+
+				// Fixed low (well under the scan's own ~1/3 fire
+				// threshold), narrowly jittered -- see this function's
+				// own header doc for why LOW is the whole safety margin.
+				const double blend = ScaffoldJitterRange( name, "quad_blend", 0.16, 0.20 );
+
+				out.chunks.push_back( { "skeleton_geometry", nSkel, ScaffoldSkeletonGeometryText( nSkel, jointLines, blend ) } );
+				out.geometryName = nSkel;
+				out.geometryKind = "skeleton_geometry";
+				return out;
+			}
+
 			GeoScaffoldGraph BuildGeometryScaffoldGraph( AgentSession::GeometryScaffoldFamily family, const std::string& name,
 			                                             double size, double detail, double aspect )
 			{
@@ -10862,15 +11114,18 @@ namespace RISE
 					case AgentSession::GeometryScaffoldFamily::SweepRail:     return BuildSweepRail( name, size, detail, aspect );
 					case AgentSession::GeometryScaffoldFamily::BlendedVessel: return BuildBlendedVessel( name, size, detail, aspect );
 					case AgentSession::GeometryScaffoldFamily::SdfColumn:     return BuildSdfColumn( name, size, detail, aspect );
-					// BlendedChain/VolumeBank take a DIFFERENT param shape
-					// (points/taper, tone) and are dispatched directly by
-					// InsertGeometryScaffold via BuildBlendedChain/
-					// BuildVolumeBank -- never routed through this function.
-					// Cases kept here (rather than a `default:`) so this
-					// switch stays EXHAUSTIVE and -Wswitch still catches a
-					// future family added to the enum but forgotten here.
+					// BlendedChain/VolumeBank/Quadruped each take a DIFFERENT
+					// param shape (points/taper; aspect+tone; build) and are
+					// dispatched directly by ScaffoldValidateAndBuildGeometry
+					// via BuildBlendedChain/BuildVolumeBank/
+					// BuildQuadrupedSkeleton -- never routed through this
+					// function.  Cases kept here (rather than a `default:`)
+					// so this switch stays EXHAUSTIVE and -Wswitch still
+					// catches a future family added to the enum but
+					// forgotten here.
 					case AgentSession::GeometryScaffoldFamily::BlendedChain:  return GeoScaffoldGraph();
 					case AgentSession::GeometryScaffoldFamily::VolumeBank:    return GeoScaffoldGraph();
+					case AgentSession::GeometryScaffoldFamily::Quadruped:     return GeoScaffoldGraph();
 				}
 				return GeoScaffoldGraph();
 			}
@@ -10893,6 +11148,7 @@ namespace RISE
 			                                       const std::string& family, const std::string& name,
 			                                       double size, double detail, double aspect,
 			                                       const std::string& points, double taper, const std::string& tone,
+			                                       const std::string& build,
 			                                       AgentSession::GeometryScaffoldFamily& outFam,
 			                                       GeoScaffoldGraph& outGraph, std::string& outMessage )
 			{
@@ -10901,7 +11157,7 @@ namespace RISE
 				if( !ScaffoldParseGeometryFamily( family, outFam ) ) {
 					outMessage = v + " refused: unknown family `" + family +
 						"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column, "
-						"blended_chain, volume_bank";
+						"blended_chain, volume_bank, quadruped (alias: creature)";
 					return false;
 				}
 				if( !ScaffoldNameIsValid( name ) ) {
@@ -10914,18 +11170,28 @@ namespace RISE
 					outMessage = v + " refused: `size` must be a finite number > 0";
 					return false;
 				}
-				if( !std::isfinite( detail ) || detail < 0.0 || detail > 1.0 ) {
-					outMessage = v + " refused: `detail` must be a finite number in [0,1]";
-					return false;
+				// Creature scaffold slice: quadruped has no honest use for
+				// `detail` (see InsertGeometryScaffold's header doc for
+				// why) -- exempted from the otherwise-universal check,
+				// exactly the way blended_chain is already exempted from
+				// the `aspect` check just below.
+				if( outFam != AgentSession::GeometryScaffoldFamily::Quadruped ) {
+					if( !std::isfinite( detail ) || detail < 0.0 || detail > 1.0 ) {
+						outMessage = v + " refused: `detail` must be a finite number in [0,1]";
+						return false;
+					}
 				}
 
-				// Per-family param shape (E3): blended_chain takes `points`/
-				// `taper` INSTEAD of `aspect`; volume_bank takes `aspect` PLUS
-				// `tone`; the original four take only `aspect`.  See
-				// InsertGeometryScaffold's header doc for the full per-family
-				// param table.
+				// Per-family param shape (E3, creature scaffold slice):
+				// blended_chain takes `points`/`taper` INSTEAD of `aspect`;
+				// volume_bank takes `aspect` PLUS `tone`; quadruped takes
+				// NEITHER `detail` (checked above) NOR `aspect` -- only
+				// `build`; the original four take only `aspect`.  See
+				// InsertGeometryScaffold's header doc for the full
+				// per-family param table.
 				std::vector<std::array<double,3>> parsedPoints;
 				double toneR = 0.0, toneG = 0.0, toneB = 0.0;
+				std::string buildPreset = "average";
 
 				if( outFam == AgentSession::GeometryScaffoldFamily::BlendedChain ) {
 					std::string perr;
@@ -10946,6 +11212,15 @@ namespace RISE
 						outMessage = v + " refused: `tone` must be \"r g b\", each 0..1 -- got `" + tone + "`";
 						return false;
 					}
+				} else if( outFam == AgentSession::GeometryScaffoldFamily::Quadruped ) {
+					if( !build.empty() ) {
+						if( build != "average" && build != "lean" && build != "stocky" ) {
+							outMessage = v + " refused: `build` must be one of lean, average, stocky -- got `" +
+								build + "`";
+							return false;
+						}
+						buildPreset = build;
+					}
 				} else {
 					if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
 						outMessage = v + " refused: `aspect` must be a finite number > 0";
@@ -10957,6 +11232,8 @@ namespace RISE
 					outGraph = BuildBlendedChain( name, parsedPoints, size, taper, detail );
 				} else if( outFam == AgentSession::GeometryScaffoldFamily::VolumeBank ) {
 					outGraph = BuildVolumeBank( name, size, detail, aspect, toneR, toneG, toneB );
+				} else if( outFam == AgentSession::GeometryScaffoldFamily::Quadruped ) {
+					outGraph = BuildQuadrupedSkeleton( name, size, buildPreset );
 				} else {
 					outGraph = BuildGeometryScaffoldGraph( outFam, name, size, detail, aspect );
 				}
@@ -11060,7 +11337,7 @@ namespace RISE
 
 		AgentSession::AgentGeometryScaffoldResult AgentSession::InsertGeometryScaffold(
 			const std::string& family, const std::string& name, double size, double detail, double aspect,
-			const std::string& points, double taper, const std::string& tone,
+			const std::string& points, double taper, const std::string& tone, const std::string& build,
 			const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			AgentGeometryScaffoldResult out;
@@ -11118,7 +11395,7 @@ namespace RISE
 			{
 				std::string err;
 				if( !ScaffoldValidateAndBuildGeometry( "insert_geometry_scaffold", family, name,
-				                                       size, detail, aspect, points, taper, tone,
+				                                       size, detail, aspect, points, taper, tone, build,
 				                                       fam, graph, err ) ) {
 					out.ok      = false;
 					out.message = err;
@@ -11179,7 +11456,7 @@ namespace RISE
 		AgentSession::AgentGeometryScaffoldResult AgentSession::ReplaceGeometryScaffold(
 			const std::string& target, const std::string& family, const std::string& name,
 			double size, double detail, double aspect,
-			const std::string& points, double taper, const std::string& tone,
+			const std::string& points, double taper, const std::string& tone, const std::string& build,
 			const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
@@ -11289,7 +11566,7 @@ namespace RISE
 			{
 				std::string err;
 				if( !ScaffoldValidateAndBuildGeometry( "replace_geometry_scaffold", family, name,
-				                                       size, detail, aspect, points, taper, tone,
+				                                       size, detail, aspect, points, taper, tone, build,
 				                                       fam, graph, err ) ) {
 					out.message = err;
 					return out;
@@ -11792,6 +12069,26 @@ namespace RISE
 			AppendOrphanSentence_( m, out.reportedOrphans,
 				"this verb removes only the geometry chunk it unbound, never deeper" );
 			out.message = m;
+			return out;
+		}
+
+		//! TEST HOOK (creature scaffold slice) -- see the header's own
+		//! doc.  A thin, public-header-safe forward to the anonymous-
+		//! namespace-local ScanSdfGeometryBlendScaleOffenders_ (defined
+		//! far above, alongside condition J's other blend-scale
+		//! infrastructure) -- copies out only the two fields a test
+		//! needs, never exposing SDFBlendScaleOffender_ itself.
+		std::vector<AgentSession::AgentBlendScaleProbeOffender> AgentSession::ForTest_ScanDerivedSdfParts(
+			const std::string& geoName,
+			const std::vector<RISE::Implementation::SDFGeometry::Part>& parts )
+		{
+			std::vector<AgentBlendScaleProbeOffender> out;
+			for( const SDFBlendScaleOffender_& off : ScanSdfGeometryBlendScaleOffenders_( geoName, parts ) ) {
+				AgentBlendScaleProbeOffender o;
+				o.formattedLine     = off.formattedLine;
+				o.proportionCaveat  = off.proportionCaveat;
+				out.push_back( o );
+			}
 			return out;
 		}
 

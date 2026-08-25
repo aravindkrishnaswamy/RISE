@@ -127,6 +127,22 @@ namespace RISE
 			             const unsigned int maxSteps, const Scalar surfaceEpsilonFraction,
 			             const unsigned int samplingDetail = 64 );
 
+			//! Creature scaffold slice (2026-08-25): the FULLY DERIVED part
+			//! list this object was built from -- cx/cy/cz rotation columns,
+			//! minScale, invScale and every other RecomputePartDerived field
+			//! already resolved, exactly as ParsePartLines/MakePart left
+			//! them.  Read-only; empty for the heightfield-mode constructor
+			//! (no parts).  Exists so a caller that only has a DERIVED Job
+			//! (a skeleton_geometry chunk's own expansion is never written
+			//! back to the CST text -- see SkeletonGeometryAsciiChunkParser's
+			//! own doc, "this text is never saved to disk or shown to an
+			//! author") can still recover the EXACT engine-computed parts a
+			//! chunk expanded to, e.g. to run the shared blend-scale scan
+			//! (ScanSdfGeometryBlendScaleOffenders_ in AgentSession.cpp)
+			//! against a skeleton's real bones instead of re-deriving the
+			//! expansion by hand in a second, driftable copy.
+			const std::vector<Part>& GetParts() const { return m_parts; }
+
 		protected:
 			virtual ~SDFGeometry();
 

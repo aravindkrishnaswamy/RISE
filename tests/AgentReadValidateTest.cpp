@@ -1913,6 +1913,11 @@ static void RunSDFBlendScaleScanTest()
 			Check( d->message.find( "smin joint" ) != std::string::npos &&
 			       d->message.find( "wider than about a third" ) != std::string::npos,
 			       "...stating the blend-scale law" );
+			// Creature scaffold slice: the clause now names the CALLABLE
+			// verb for a creature body, not just the chunk kind -- the
+			// twice-proven "mechanized verbs convert, prose doesn't" law.
+			Check( d->message.find( "insert_geometry_scaffold family:quadruped" ) != std::string::npos,
+			       "...MONEY: naming insert_geometry_scaffold family:quadruped alongside skeleton_geometry" );
 		}
 	}
 	{
