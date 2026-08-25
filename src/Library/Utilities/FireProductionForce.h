@@ -277,9 +277,11 @@ namespace RISE
 		std::vector<float> divergenceTargetPerS;
 		std::vector<float> restorationDivergenceTargetPerS;
 		std::vector<double> beginningManifoldDeviationPerCell;
+		std::uint32_t physicalOpenProjectionVCycleCount;
 		bool enforceManifoldPlateau;
 
-		FireProductionResidentStepRequest() : enforceManifoldPlateau(true) {}
+		FireProductionResidentStepRequest() : physicalOpenProjectionVCycleCount(17u),
+			enforceManifoldPlateau(true) {}
 	};
 
 	class FireProductionAcceptedManifoldObservation;
@@ -514,6 +516,14 @@ namespace RISE
 		FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
 		bool HasAcceptedManifoldToken() const { return acceptedManifoldToken_.Available(); }
+		//! The timestep predictor owns the advective dose measured before the
+		//! anomaly corrector.  The terminal-minus-beginning diagnostic also moves
+		//! an already-bounded plateau and is therefore not a per-step dose once
+		//! closure is active.
+		double ManifoldLimiterGeneration() const {
+			return advectiveAnomalyClosurePassCount!=0u?
+				maximumPredictedAdvectiveManifoldAnomaly:maximumManifoldGeneration;
+		}
 		//! Revalidates the producer-owned token against every mutable diagnostic and
 		//! payload byte before an owner may classify the attempt as accepted.
 		bool AcceptedManifoldTokenMatchesCurrentPayload() const;

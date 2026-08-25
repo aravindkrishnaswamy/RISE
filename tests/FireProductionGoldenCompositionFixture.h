@@ -1,6 +1,8 @@
 int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpointPath,
 	const std::filesystem::path& snapshotDirectory,
-	const unsigned int manifoldRetryCandidate=0u,const double manifoldRetryStepS=0.0)
+	const unsigned int manifoldRetryCandidate=0u,const double manifoldRetryStepS=0.0,
+	const std::size_t manifoldRetrySlice=0u,
+	const std::vector<std::tuple<std::size_t,unsigned int,double>>& manifoldRetrySchedule={})
 {
 	auto setFixtureEnvironment=[](const char* name,const char* value){
 #if defined(_WIN32)
@@ -16,15 +18,21 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		return unsetenv(name)==0;
 #endif
 	};
-	auto continueDrainAwareRetry=[&](const unsigned int candidate,const double step){
+	auto continueDrainAwareRetry=[&](const unsigned int candidate,const double step,
+		const std::size_t retrySlice){
+		auto nextSchedule=manifoldRetrySchedule;
+		const auto existing=std::find_if(nextSchedule.begin(),nextSchedule.end(),
+			[&](const auto& value){return std::get<0>(value)==retrySlice;});
+		if(existing==nextSchedule.end())nextSchedule.emplace_back(retrySlice,candidate,step);
+		else *existing=std::make_tuple(retrySlice,candidate,step);
 		return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
-			candidate,step);
+			candidate,step,retrySlice,nextSchedule);
 	};
 	auto continueAfterDrainAwareRefusal=[&](const unsigned int candidate,
 		const RISE::FireProductionResidentStepResult& attempted,
 		RISE::FireProductionResidentStepResult* releaseAttempted,
 		RISE::FireProductionResidentStepRequest* releaseRequest,
-		MethaneRunCheckpoint* releaseBeginning){
+		MethaneRunCheckpoint* releaseBeginning,const std::size_t retrySlice){
 		unsigned int nextCandidate=0u;double nextStep=0.0;
 		if(RISE::ClassifyFireProductionResidentStepAttempt(candidate,attempted,
 			nextCandidate,nextStep)!=
@@ -33,7 +41,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(releaseAttempted)*releaseAttempted=RISE::FireProductionResidentStepResult();
 		if(releaseRequest)*releaseRequest=RISE::FireProductionResidentStepRequest();
 		if(releaseBeginning)*releaseBeginning=MethaneRunCheckpoint();
-		return continueDrainAwareRetry(nextCandidate,nextStep);
+		return continueDrainAwareRetry(nextCandidate,nextStep,retrySlice);
 	};
 	static const char* checkpointDigest=
 		"1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947";
@@ -64,7 +72,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		refused.manifoldPlateauPassed=false;
 		refused.manifoldNextTimeStepAvailable=true;
 		refused.suggestedManifoldTimeStepS=0x1p-12;
-		return continueAfterDrainAwareRefusal(1u,refused,&refused,nullptr,nullptr);
+		return continueAfterDrainAwareRefusal(1u,refused,&refused,nullptr,nullptr,0u);
 	}
 	const std::array<std::uint64_t,8> stepBits={{
 		4543432537948766955ull,4544197666642132584ull,4544654590867399846ull,
@@ -141,6 +149,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	const char* hostResidualProbeValue=std::getenv("RISE_FIRE_HOST_RESIDUAL_PROBE");
 	if(hostResidualProbeValue&&std::strcmp(hostResidualProbeValue,"1")!=0)return 208;
 	const bool hostResidualProbe=hostResidualProbeValue!=nullptr;
+	const char* acceptedLongShadowValue=std::getenv(
+		"RISE_FIRE_ACCEPTED_LONG_SHADOW");
+	if(acceptedLongShadowValue&&std::strcmp(acceptedLongShadowValue,"1")!=0)return 205;
+	const bool acceptedLongShadow=acceptedLongShadowValue!=nullptr;
 	const char* contractionProbeValue=std::getenv(
 		"RISE_FIRE_EQUAL_TIME_CONTRACTION_PROBE");
 	if(contractionProbeValue&&std::strcmp(contractionProbeValue,"1")!=0)return 216;
@@ -149,7 +161,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAuditPresent&&plateauProbe)||
 		(timestepVelocityAuditPresent&&manifoldProbe)||
 		(timestepVelocityAuditPresent&&stageBudgetProbe)||
-		(hostResidualProbe&&!longShadow)||
+		(hostResidualProbe&&!longShadow)||(acceptedLongShadow&&(!longShadow||hostResidualProbe))||
 		(longShadow&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe))||
 		(contractionProbe&&(plateauProbe||manifoldProbe||stageBudgetProbe||
@@ -175,9 +187,23 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	static const std::size_t LongShadowSteps=FireProductionCalibration::LongShadowSteps;
 	static const std::size_t LongShadowWindow=FireProductionCalibration::LongShadowWindow;
 	std::vector<double> longShadowFieldMaximum;
+	std::vector<double> longShadowPredictorGeneration;
+	std::vector<double> longShadowAcceptedStepS;
+	std::vector<unsigned int> longShadowAcceptedCandidate;
 	RISECBOR64::Bytes longShadowTrace;
 	MethaneRunCheckpoint longShadowState;
-	for(std::size_t slice=0u;slice<(contractionProbe?1u:(longShadow?LongShadowSteps:8u));++slice){
+	std::vector<ConservativeVector> longShadowReferenceConservative;
+	PeriodicMACField longShadowReferenceMomentum;
+	double longShadowFinalStepS=0.0;
+	std::size_t longShadowPhysicalValidationCount=0u;
+	std::size_t longShadowRestorationValidationCount=0u;
+	std::uint32_t longShadowPhysicalOpenVCycleCount=19u;
+	const std::size_t requestedLongShadowSteps=acceptedLongShadow?3u:LongShadowSteps;
+	std::vector<unsigned int> longShadowManifoldRefusalCount(requestedLongShadowSteps,0u);
+	std::vector<double> longShadowFirstRefusedField(requestedLongShadowSteps,
+		std::numeric_limits<double>::quiet_NaN());
+	for(std::size_t slice=0u;slice<(contractionProbe?1u:
+		(longShadow?requestedLongShadowSteps:8u));++slice){
 		const std::filesystem::path beginningPath=slice==0u?checkpointPath:
 			snapshotDirectory/(std::string("step_0")+std::to_string(slice)+".checkpoint");
 		MethaneRunCheckpoint beginning;
@@ -190,6 +216,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(
 			beginning.acceptedSteps!=3479u+slice){std::fprintf(stderr,
 			"production golden composition beginning %zu failed: %s\n",slice,error.c_str());return 113;}
+		unsigned int sliceRetryCandidate=0u;
+		double sliceRetryStepS=0.0;
+		const auto scheduledRetry=std::find_if(manifoldRetrySchedule.begin(),
+			manifoldRetrySchedule.end(),[&](const auto& value){return std::get<0>(value)==slice;});
+		if(scheduledRetry!=manifoldRetrySchedule.end()){
+			sliceRetryCandidate=std::get<1>(*scheduledRetry);
+			sliceRetryStepS=std::get<2>(*scheduledRetry);
+		}else if(!acceptedLongShadow||slice==manifoldRetrySlice){
+			sliceRetryCandidate=manifoldRetryCandidate;
+			sliceRetryStepS=manifoldRetryStepS;
+		}
+		bool sliceAccepted=false;
+		while(!sliceAccepted){
 		PeriodicMACShape shape;shape.nx=beginning.dimensions[0];shape.ny=beginning.dimensions[1];
 		shape.nz=beginning.dimensions[2];shape.cellWidthM=beginning.cellWidthM;
 		const char* closureMode=std::getenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
@@ -197,21 +236,28 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::strcmp(closureMode,"limited")==0;
 		const bool disabledClosure=longShadow&&closureMode&&
 			std::strcmp(closureMode,"disabled")==0;
-		const unsigned int effectiveManifoldRetryCandidate=manifoldRetryCandidate;
-		const double effectiveManifoldRetryStepS=manifoldRetryStepS;
+		if(acceptedLongShadow&&!limitedClosure)return 205;
+		const unsigned int effectiveManifoldRetryCandidate=sliceRetryCandidate;
+		const double effectiveManifoldRetryStepS=sliceRetryStepS;
 		if(hostResidualProbe&&slice==0u)std::fprintf(stderr,
 			"HOST_RESIDUAL_PROFILE candidate=%u step=%.17g\n",
 			effectiveManifoldRetryCandidate,effectiveManifoldRetryStepS);
 		double limitedStep=0.0;
 		if(limitedClosure){
-			if(effectiveManifoldRetryCandidate==0u){
-				if(!RISE::DeriveFireProductionInitialManifoldTimeStep(
-					0.00057953997747972608,0.024358630180358887,limitedStep,&error))return 250;
-			}else{
+			if(effectiveManifoldRetryCandidate>0u){
 				if(effectiveManifoldRetryCandidate>=RISE::FireStepRejectionRetryCap||
 					!(effectiveManifoldRetryStepS>0.0)||
 					!std::isfinite(effectiveManifoldRetryStepS))return 250;
 				limitedStep=effectiveManifoldRetryStepS;
+			}else if(acceptedLongShadow&&slice>0u){
+				const RISE::FireProductionAcceptedManifoldObservation& observation=
+					beginning.productionManifoldObservation;
+				if(!observation.Available()||!RISE::DeriveFireProductionManifoldTimeStep(
+					observation.TimeStepS(),observation.MaximumGeneration(),
+					observation.RestorationDrainFraction(),limitedStep,&error))return 250;
+			}else{
+				if(!RISE::DeriveFireProductionInitialManifoldTimeStep(
+					0.00057953997747972608,0.024358630180358887,limitedStep,&error))return 250;
 			}
 		}else if(effectiveManifoldRetryCandidate!=0u||effectiveManifoldRetryStepS!=0.0)
 			return 250;
@@ -225,6 +271,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(beginning.states.size()!=cells)return 114;
 		std::vector<ConservativeVector> conservative(cells);
 		for(std::size_t cell=0u;cell<cells;++cell)conservative[cell]=ToConservativeVector(beginning.states[cell]);
+		if(acceptedLongShadow&&slice==0u&&longShadowReferenceConservative.empty()){
+			longShadowReferenceConservative=conservative;
+			longShadowReferenceMomentum=beginning.momentum;
+		}
 		for(std::size_t component=0u;component<8u;++component)
 			for(std::size_t cell=0u;cell<cells;++cell)minimumBeginningDensity=
 				std::min(minimumBeginningDensity,conservative[cell][component]);
@@ -336,6 +386,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		std::string equalTimeTerminalTargetDigest,equalTimeSerialTerminalTargetDigest;
 		std::vector<float> equalTimeTerminalTarget,equalTimeSerialTerminalTarget;
 		double equalTimeTerminalTargetTime=0.0,equalTimeSerialTerminalTargetTime=0.0;
+		std::size_t equalTimeReferenceSubstepCount=0u;
 		auto advanceReference=[&](unsigned int workerCount,
 			ConservativeAdvance3DResult& composed,std::string& scheduleDigest,
 			std::vector<float>& terminalTarget,std::string& terminalTargetDigest,
@@ -355,20 +406,24 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				}
 				return advanced;
 			}
-			constexpr std::size_t ReferenceSubstepCount=8u;
-			const double referenceStep=dt/static_cast<double>(ReferenceSubstepCount);
-			const std::vector<double> schedule(ReferenceSubstepCount,referenceStep);
-			if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,schedule,dt,dt,
-				"precomposition","precomposition")){
-				error="equal-time reference schedule does not reach the production endpoint";
-				return false;
-			}
-			std::vector<ConservativeVector> referenceState=conservative;
-			PeriodicMACField referenceMomentum=beginning.momentum;
-			RISECBOR64::Bytes scheduleTrace;
-			double referenceTime=0.0;
-			std::vector<float> penultimateTarget;
-			for(std::size_t substep=0u;substep<ReferenceSubstepCount;++substep){
+			std::size_t referenceSubstepCount=8u;
+			for(;;){
+				const double referenceStep=dt/static_cast<double>(referenceSubstepCount);
+				const std::vector<double> schedule(referenceSubstepCount,referenceStep);
+				if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,schedule,dt,dt,
+					"precomposition","precomposition")){
+					error="equal-time reference schedule does not reach the production endpoint";
+					return false;
+				}
+				std::vector<ConservativeVector> referenceState=acceptedLongShadow?
+					longShadowReferenceConservative:conservative;
+				PeriodicMACField referenceMomentum=acceptedLongShadow?
+					longShadowReferenceMomentum:beginning.momentum;
+				RISECBOR64::Bytes scheduleTrace;
+				double referenceTime=0.0;
+				std::vector<float> penultimateTarget;
+				bool converged=true;
+				for(std::size_t substep=0u;substep<referenceSubstepCount;++substep){
 				ConservativeAdvance3DConfig referenceConfig=shadowConfig;
 				referenceConfig.transport.deltaTimeS=referenceStep;
 				referenceConfig.workerCount=workerCount;
@@ -377,7 +432,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					referenceConfig,fuel,fuel,transport,advanced,&error)){
 					error=std::string("equal-time reference substep ")+
 						std::to_string(substep)+": "+error;
-					return false;
+					converged=false;break;
 				}
 				referenceTime+=referenceStep;
 				FireProductionDyadicCalibration::AppendDouble(scheduleTrace,referenceStep);
@@ -389,8 +444,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				std::vector<float> publishedTarget(advanced.divergenceHeunPerS.size());
 				for(std::size_t cell=0u;cell<publishedTarget.size();++cell)
 					publishedTarget[cell]=static_cast<float>(advanced.divergenceHeunPerS[cell]);
-				if(substep+2u==ReferenceSubstepCount)penultimateTarget=publishedTarget;
-				if(substep+1u==ReferenceSubstepCount){
+				if(substep+2u==referenceSubstepCount)penultimateTarget=publishedTarget;
+				if(substep+1u==referenceSubstepCount){
 					terminalTarget=std::move(publishedTarget);
 					terminalTargetDigest=publishedTargetDigest(terminalTarget);
 					terminalTargetTime=referenceTime;
@@ -398,21 +453,31 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				referenceState=advanced.conservative;
 				referenceMomentum=advanced.momentumKGPerM2S;
 				composed=std::move(advanced);
+				}
+				if(!converged){
+					if(!acceptedLongShadow||referenceSubstepCount>=64u)return false;
+					std::fprintf(stderr,"EQUAL_TIME_REFERENCE_RETRY slice=%zu failed_substeps=%zu "
+						"next_substeps=%zu error=%s\n",slice,referenceSubstepCount,
+						referenceSubstepCount*2u,error.c_str());
+					referenceSubstepCount*=2u;error.clear();terminalTarget.clear();
+					terminalTargetDigest.clear();terminalTargetTime=0.0;continue;
+				}
+				if(referenceTime!=dt||!FireProductionCalibration::EqualTimeReferenceSchedule(
+					dt,schedule,referenceTime,terminalTargetTime,terminalTargetDigest,
+					terminalTargetDigest)){
+					error="equal-time reference endpoint drifted from production";
+					return false;
+				}
+				if(penultimateTarget.empty()||FireProductionCalibration::EqualTimeReferenceSchedule(
+					dt,schedule,referenceTime,terminalTargetTime,terminalTargetDigest,
+					publishedTargetDigest(penultimateTarget))){
+					error="equal-time reference accepted its penultimate target at the endpoint";
+					return false;
+				}
+				equalTimeReferenceSubstepCount=referenceSubstepCount;
+				scheduleDigest=RISECBOR64::SHA256Hex(scheduleTrace);
+				return true;
 			}
-			if(referenceTime!=dt||!FireProductionCalibration::EqualTimeReferenceSchedule(
-				dt,schedule,referenceTime,terminalTargetTime,terminalTargetDigest,
-				terminalTargetDigest)){
-				error="equal-time reference endpoint drifted from production";
-				return false;
-			}
-			if(penultimateTarget.empty()||FireProductionCalibration::EqualTimeReferenceSchedule(
-				dt,schedule,referenceTime,terminalTargetTime,terminalTargetDigest,
-				publishedTargetDigest(penultimateTarget))){
-				error="equal-time reference accepted its penultimate target at the endpoint";
-				return false;
-			}
-			scheduleDigest=RISECBOR64::SHA256Hex(scheduleTrace);
-			return true;
 		};
 		error.clear();
 		if(!advanceReference(16u,oracle,equalTimeReferenceScheduleDigest,
@@ -421,19 +486,23 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::fprintf(stderr,"production golden parallel reference %zu failed: %s\n",
 				slice,error.c_str());return 115;
 		}
-		error.clear();
-		if(!advanceReference(1u,oracleSerial,equalTimeReferenceSerialDigest,
-			equalTimeSerialTerminalTarget,equalTimeSerialTerminalTargetDigest,
-			equalTimeSerialTerminalTargetTime)){std::fprintf(stderr,
-			"production golden serial reference %zu failed: %s\n",slice,error.c_str());return 116;}
-		if(limitedClosure&&(equalTimeReferenceScheduleDigest!=equalTimeReferenceSerialDigest||
-			equalTimeTerminalTargetDigest!=equalTimeSerialTerminalTargetDigest||
-			equalTimeTerminalTarget!=equalTimeSerialTerminalTarget||
-			equalTimeTerminalTargetTime!=equalTimeSerialTerminalTargetTime))
-			return 128;
-		if(oracle.maximumPreProjectionDivergenceResidualPerS!=
-			oracleSerial.maximumPreProjectionDivergenceResidualPerS)return 128;
+		if(!acceptedLongShadow){
+			error.clear();
+			if(!advanceReference(1u,oracleSerial,equalTimeReferenceSerialDigest,
+				equalTimeSerialTerminalTarget,equalTimeSerialTerminalTargetDigest,
+				equalTimeSerialTerminalTargetTime)){std::fprintf(stderr,
+				"production golden serial reference %zu failed: %s\n",slice,error.c_str());return 116;}
+			if(limitedClosure&&(equalTimeReferenceScheduleDigest!=equalTimeReferenceSerialDigest||
+				equalTimeTerminalTargetDigest!=equalTimeSerialTerminalTargetDigest||
+				equalTimeTerminalTarget!=equalTimeSerialTerminalTarget||
+				equalTimeTerminalTargetTime!=equalTimeSerialTerminalTargetTime))
+				return 128;
+			if(oracle.maximumPreProjectionDivergenceResidualPerS!=
+				oracleSerial.maximumPreProjectionDivergenceResidualPerS)return 128;
+		}
 		RISE::FireProductionResidentStepRequest request;
+		if(acceptedLongShadow)request.physicalOpenProjectionVCycleCount=
+			longShadowPhysicalOpenVCycleCount;
 		request.force.shape.nx=shape.nx;request.force.shape.ny=shape.ny;
 		request.force.shape.nz=shape.nz;request.force.shape.cellWidthM=static_cast<float>(shape.cellWidthM);
 		request.force.timeStepS=static_cast<float>(dt);
@@ -536,9 +605,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
 		}
 		if(limitedClosure){
-			constexpr std::size_t ReferenceSubstepCount=8u;
-			const std::vector<double> referenceSchedule(ReferenceSubstepCount,
-				dt/static_cast<double>(ReferenceSubstepCount));
+			const std::vector<double> referenceSchedule(equalTimeReferenceSubstepCount,
+				dt/static_cast<double>(equalTimeReferenceSubstepCount));
 			if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,referenceSchedule,dt,
 				equalTimeTerminalTargetTime,equalTimeTerminalTargetDigest,
 				publishedTargetDigest(request.divergenceTargetPerS)))return 129;
@@ -2106,7 +2174,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		// The equal-time target and its digests are sealed above.  The two full
 		// binary64 reference payloads are no longer inputs to a limited production
 		// attempt; release them before allocating the 1.63-GiB resident Metal owner.
+		std::vector<ConservativeVector> acceptedReferenceConservative;
+		PeriodicMACField acceptedReferenceMomentum;
 		if(limitedClosure){
+			if(acceptedLongShadow){
+				acceptedReferenceConservative=std::move(oracle.conservative);
+				acceptedReferenceMomentum=std::move(oracle.momentumKGPerM2S);
+			}
 			oracle=ConservativeAdvance3DResult();oracleSerial=ConservativeAdvance3DResult();
 			std::vector<float>().swap(equalTimeTerminalTarget);
 			std::vector<float>().swap(equalTimeSerialTerminalTarget);
@@ -2114,18 +2188,50 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::vector<MethaneSourcePacket>().swap(zeroPackets);
 		}
 		RISE::FireProductionResidentStepResult production;
-		const auto productionWallStart=std::chrono::steady_clock::now();
-		const bool productionSucceeded=longShadow?
-			RISE::AttemptFireProductionResidentStepMetal(request,production,&error):
-			RISE::AdvanceFireProductionResidentStepMetal(request,production,&error);
-		const double productionWallMS=std::chrono::duration<double,std::milli>(
-			std::chrono::steady_clock::now()-productionWallStart).count();
+		bool productionSucceeded=false;
+		double productionWallMS=0.0;
+		for(;;){
+			const auto productionWallStart=std::chrono::steady_clock::now();
+			productionSucceeded=longShadow?
+				RISE::AttemptFireProductionResidentStepMetal(request,production,&error):
+				RISE::AdvanceFireProductionResidentStepMetal(request,production,&error);
+			productionWallMS=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-productionWallStart).count();
+			// Attempt returns false for a manifold refusal while preserving the
+			// tokenless diagnostic payload.  Physical validation is independent and
+			// must be brought into band before the owner classifies that ordinary
+			// refusal; the boolean alone cannot distinguish it from a fatal/default
+			// result.
+			if(!acceptedLongShadow||production.physicalProjection.validationPassed||
+				production.residentProjectionInvocationCount!=2u)break;
+			const double pre=production.physicalProjection.maximumPreProjectionResidualPerS;
+			const double post=production.physicalProjection.maximumPostProjectionResidualPerS;
+			const double band=production.physicalProjection.validationBandPerS;
+			const std::uint32_t cycles=production.physicalProjection.executedVCycleCount;
+			if(production.HasAcceptedManifoldToken()||!production.projection.validationPassed||
+				cycles!=request.physicalOpenProjectionVCycleCount||cycles<1u||cycles>=64u||
+				!std::isfinite(pre)||!std::isfinite(post)||!std::isfinite(band)||
+				!(pre>post)||!(post>0.0)||!(band>0.0)||!(post>band))return 120;
+			const double contraction=std::pow(post/pre,1.0/static_cast<double>(cycles));
+			if(!std::isfinite(contraction)||!(contraction>0.0)||!(contraction<1.0))return 120;
+			const double requiredReal=std::ceil(std::log(band/pre)/std::log(contraction));
+			if(!std::isfinite(requiredReal)||requiredReal<=static_cast<double>(cycles)||
+				requiredReal>64.0)return 120;
+			const std::uint32_t required=static_cast<std::uint32_t>(requiredReal);
+			std::fprintf(stderr,"PHYSICAL_PROJECTION_RETRY step=%zu refused_cycles=%u "
+				"pre=%.17g post=%.17g band=%.17g contraction=%.17g next_cycles=%u cap=64 "
+				"accepted_token=0\n",slice,cycles,pre,post,band,contraction,required);
+			request.physicalOpenProjectionVCycleCount=required;
+			longShadowPhysicalOpenVCycleCount=required;
+			production=RISE::FireProductionResidentStepResult();
+			error.clear();
+		}
 		if(!productionSucceeded&&!(longShadow&&production.manifoldNextTimeStepAvailable&&
 			!production.manifoldPlateauPassed&&!production.HasAcceptedManifoldToken())){
 			std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
 		double closureDeviceP95MS=0.0,closureWallP95MS=0.0;
-		if(longShadow&&!disabledClosure){
+		if(longShadow&&!disabledClosure&&hostResidualProbe){
 			const std::uint64_t baselinePayload=
 				RISE::FireProductionAcceptedManifoldPayloadDigest(production);
 			const bool baselinePlateauPassed=production.manifoldPlateauPassed;
@@ -2205,11 +2311,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.restorationDivergenceTargetPerS.end(),[](const float a,const float b){
 				return std::fabs(a)<std::fabs(b);});
 		std::fprintf(stderr,"golden projection slice=%zu physical_valid=%d physical_pre=%.9g "
-			"physical_post=%.9g restoration_valid=%d restoration_pre=%.9g "
+			"physical_post=%.9g physical_band=%.9g "
+			"physical_cycles=%u restoration_valid=%d restoration_pre=%.9g "
 			"restoration_post=%.9g restoration_target_max=%.9g restoration_band=%.9g\n",
 			slice,production.physicalProjection.validationPassed?1:0,
 			production.physicalProjection.maximumPreProjectionResidualPerS,
 			production.physicalProjection.maximumPostProjectionResidualPerS,
+			production.physicalProjection.validationBandPerS,
+			production.physicalProjection.executedVCycleCount,
 			production.projection.validationPassed?1:0,
 			production.projection.maximumPreProjectionResidualPerS,
 			production.projection.maximumPostProjectionResidualPerS,
@@ -2248,7 +2357,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				const double wallProjectionHours=projectedSteps*closureWallP95MS/3600000.0;
 				const double followingManifoldStep=production.suggestedManifoldTimeStepS;
 				const bool followingStepDerived=production.manifoldNextTimeStepAvailable;
-				std::fprintf(stderr,"EQUAL_TIME_LIMITED_PRODUCTION candidate=%u dt=%.17g reference_substeps=8 "
+				std::fprintf(stderr,"EQUAL_TIME_LIMITED_PRODUCTION candidate=%u dt=%.17g reference_substeps=%zu "
 					"reference_substep_dt=%.17g reference_end=%.17g target_time=%.17g "
 					"schedule=%s terminal_target=%s predictor_G=%.17g G=%.17g field_max=%.17g "
 					"initial_audit_dt=%.17g initial_audit_G=%.17g initial_selected_dt=%.17g "
@@ -2259,7 +2368,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					"tier10_wall_hours=%.17g passes=%u cell_submaps=%u dual_submaps=%u "
 					"source_commits=%u scalar_reads=%u accepted_token=%d golden=%s\n",
 					effectiveManifoldRetryCandidate,
-					static_cast<double>(production.representedTimeStepS),dt/8.0,dt,dt,
+					static_cast<double>(production.representedTimeStepS),
+					equalTimeReferenceSubstepCount,
+					dt/static_cast<double>(equalTimeReferenceSubstepCount),dt,dt,
 					equalTimeReferenceScheduleDigest.c_str(),
 					equalTimeTerminalTargetDigest.c_str(),
 					production.maximumPredictedAdvectiveManifoldAnomaly,
@@ -2305,11 +2416,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					production.sourceCommandCommitCount==2u&&
 					production.manifoldScalarDeviceToHostTransferCount==2u&&
 					production.interstageFullGridTransferCount==0u&&
-					std::isfinite(closureDeviceP95MS)&&closureDeviceP95MS>=75.0&&
-					closureDeviceP95MS<=150.0&&std::isfinite(closureWallP95MS)&&
-					closureWallP95MS>=100.0&&closureWallP95MS<=200.0&&
-					deviceProjectionHours>=0.8&&deviceProjectionHours<=1.9&&
-					wallProjectionHours>=1.0&&wallProjectionHours<=2.5&&
+					(hostResidualProbe?(std::isfinite(closureDeviceP95MS)&&
+						closureDeviceP95MS>=75.0&&closureDeviceP95MS<=150.0&&
+						std::isfinite(closureWallP95MS)&&closureWallP95MS>=100.0&&
+						closureWallP95MS<=200.0&&deviceProjectionHours>=0.8&&
+						deviceProjectionHours<=1.9&&wallProjectionHours>=1.0&&
+						wallProjectionHours<=2.5):
+						(closureDeviceP95MS==0.0&&closureWallP95MS==0.0&&
+						deviceProjectionHours==0.0&&wallProjectionHours==0.0))&&
 					equalTimeTerminalTargetDigest==
 						"522347125277cf97fe0c58fb4db86e906892ef81182f280b95a92ac35d68f833"&&
 					equalTimeReferenceScheduleDigest==
@@ -2404,11 +2518,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					production.sourceCommandCommitCount==2u&&
 					production.manifoldScalarDeviceToHostTransferCount==2u&&
 					production.interstageFullGridTransferCount==0u&&
-					std::isfinite(closureDeviceP95MS)&&closureDeviceP95MS>=75.0&&
-					closureDeviceP95MS<=150.0&&std::isfinite(closureWallP95MS)&&
-					closureWallP95MS>=100.0&&closureWallP95MS<=175.0&&
-					deviceProjectionHours>=0.8&&deviceProjectionHours<=1.9&&
-					wallProjectionHours>=1.0&&wallProjectionHours<=2.0&&
+					(hostResidualProbe?(std::isfinite(closureDeviceP95MS)&&
+						closureDeviceP95MS>=75.0&&closureDeviceP95MS<=150.0&&
+						std::isfinite(closureWallP95MS)&&closureWallP95MS>=100.0&&
+						closureWallP95MS<=175.0&&deviceProjectionHours>=0.8&&
+						deviceProjectionHours<=1.9&&wallProjectionHours>=1.0&&
+						wallProjectionHours<=2.0):
+						(closureDeviceP95MS==0.0&&closureWallP95MS==0.0&&
+						deviceProjectionHours==0.0&&wallProjectionHours==0.0))&&
 					DigestFile(checkpointPath)==checkpointDigest;
 				if(retryAccepted){
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED candidate=%u "
@@ -2420,13 +2537,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				if(controllerAccepted&&productionSucceeded&&
 					laterAcceptanceIndexIndependent&&mutatedAcceptedPayloadRejected&&
 					capAcceptedPayloadRejected&&overflowAcceptedPayloadRejected&&
-					(effectiveManifoldRetryCandidate!=1u||retryAccepted)){
+					(acceptedLongShadow||effectiveManifoldRetryCandidate!=1u||retryAccepted)){
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED_GENERIC candidate=%u "
 						"dt=%.17g accepted_token=1\n",effectiveManifoldRetryCandidate,
 						static_cast<double>(production.representedTimeStepS));
-					return 206;
+					if(!acceptedLongShadow)return 206;
 				}
 				if(retryAllowed&&retryDispositionValid){
+					if(acceptedLongShadow){
+						if(longShadowManifoldRefusalCount[slice]==0u)
+							longShadowFirstRefusedField[slice]=fieldMaximum;
+						++longShadowManifoldRefusalCount[slice];
+					}
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=%u "
 						"refused_dt=%.17g suggested_dt=%.17g next_candidate=%u cap=%u\n",
 						effectiveManifoldRetryCandidate,
@@ -2437,10 +2559,21 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					// resident payload and request alive while the next 1.63-GiB owner is
 					// allocated.  The next attempt reloads the shared golden beginning and
 					// rebuilds its independently sealed equal-time target.
+					if(acceptedLongShadow){
+						sliceRetryCandidate=nextRetryCandidate;
+						sliceRetryStepS=followingManifoldStep;
+						production=RISE::FireProductionResidentStepResult();
+						request=RISE::FireProductionResidentStepRequest();
+						error.clear();
+						continue;
+					}
 					return continueAfterDrainAwareRefusal(effectiveManifoldRetryCandidate,
-						production,&production,&request,&beginning);
+						production,&production,&request,&beginning,slice);
 				}
-				return 212;
+				if(!controllerAccepted||!productionSucceeded||
+					!laterAcceptanceIndexIndependent||!mutatedAcceptedPayloadRejected||
+					!capAcceptedPayloadRejected||!overflowAcceptedPayloadRejected||
+					(!acceptedLongShadow&&effectiveManifoldRetryCandidate==1u&&!retryAccepted))return 212;
 			}
 			if(!production.manifoldPlateauPassed){
 				const bool acceptedTokenMinted=production.HasAcceptedManifoldToken();
@@ -2493,6 +2626,16 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				!std::isfinite(fieldMaximum)||fieldMaximum<0.0||
 				fieldMaximum>LowMachValidityCeiling)return 250;
 			longShadowFieldMaximum.push_back(fieldMaximum);
+			longShadowPredictorGeneration.push_back(
+				production.maximumPredictedAdvectiveManifoldAnomaly);
+			longShadowAcceptedStepS.push_back(
+				static_cast<double>(production.representedTimeStepS));
+			longShadowAcceptedCandidate.push_back(effectiveManifoldRetryCandidate);
+			longShadowFinalStepS=static_cast<double>(production.representedTimeStepS);
+			if(production.physicalProjection.validationPassed)
+				++longShadowPhysicalValidationCount;
+			if(production.projection.validationPassed)
+				++longShadowRestorationValidationCount;
 			std::fprintf(stderr,"GOLDEN_LONG_SHADOW_ACCEPT_CANDIDATE step=%zu dt=%.17g "
 				"predictor_G=%.17g G=%.17g field_max=%.17g delivered_drain=%.17g "
 				"passes=%u cell_submaps=%u source_commits=%u scalar_reads=%u device_ms=%.17g "
@@ -2529,7 +2672,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			++beginning.acceptedSteps;
 			beginning.values.acceptedTimeStepHistoryS.push_back(representedStep);
 			beginning.productionManifoldObservation=acceptedObservation;
+			if(acceptedLongShadow){
+				longShadowReferenceConservative=std::move(acceptedReferenceConservative);
+				longShadowReferenceMomentum=std::move(acceptedReferenceMomentum);
+			}
 			longShadowState=std::move(beginning);
+			sliceAccepted=true;
 			continue;
 		}
 		::FireProductionCalibration::ResidentStep64Result production64;
@@ -2713,8 +2861,63 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			reductionRatios[slice],
 			maximumOracleThreadScalar,maximumOracleThreadVelocity,
 			production.projection.validationPassed?1:0);
+		sliceAccepted=true;
+		}
 	}
 	if(longShadow){
+		if(acceptedLongShadow){
+			if(longShadowFieldMaximum.size()!=3u||
+				longShadowPredictorGeneration.size()!=3u||longShadowAcceptedStepS.size()!=3u||
+				longShadowAcceptedCandidate.size()!=3u)return 211;
+			constexpr double R164AcceptedDeviceP95MS=117.86270828451961;
+			constexpr double R164AcceptedWallP95MS=151.894375;
+			const double projectedSteps=25.0/longShadowAcceptedStepS.back();
+			const double projectedDeviceHours=
+				projectedSteps*R164AcceptedDeviceP95MS/3600000.0;
+			const double projectedWallHours=
+				projectedSteps*R164AcceptedWallP95MS/3600000.0;
+			std::fprintf(stderr,"ACCEPTED_OPERATING_POINT_AUDIT steps=%zu "
+				"candidate0=%u dt0=%.17g field0=%.17g refusals0=%u "
+				"candidate1=%u dt1=%.17g field1=%.17g refusals1=%u "
+				"candidate2=%u dt2=%.17g predictor_G2=%.17g field2=%.17g "
+				"first_refused_field2=%.17g refusals2=%u device_hours=%.17g "
+				"wall_hours=%.17g physical_validations=%zu restoration_validations=%zu "
+				"trace=%s final_state=%s golden=%s\n",
+				longShadowFieldMaximum.size(),longShadowAcceptedCandidate[0],
+				longShadowAcceptedStepS[0],longShadowFieldMaximum[0],
+				longShadowManifoldRefusalCount[0],longShadowAcceptedCandidate[1],
+				longShadowAcceptedStepS[1],longShadowFieldMaximum[1],
+				longShadowManifoldRefusalCount[1],longShadowAcceptedCandidate[2],
+				longShadowAcceptedStepS[2],longShadowPredictorGeneration[2],
+				longShadowFieldMaximum[2],longShadowFirstRefusedField[2],
+				longShadowManifoldRefusalCount[2],projectedDeviceHours,projectedWallHours,
+				longShadowPhysicalValidationCount,longShadowRestorationValidationCount,
+				RISECBOR64::SHA256Hex(longShadowTrace).c_str(),
+				FireProductionDyadicCalibration::AnalyticStateDigest(longShadowState).c_str(),
+				DigestFile(checkpointPath).c_str());
+			const bool exact=longShadowFieldMaximum.size()==3u&&
+				longShadowPredictorGeneration.size()==3u&&longShadowAcceptedStepS.size()==3u&&
+				longShadowAcceptedCandidate.size()==3u&&
+				longShadowAcceptedCandidate[0]==1u&&longShadowAcceptedCandidate[1]==2u&&
+				longShadowAcceptedCandidate[2]==6u&&
+				longShadowAcceptedStepS[0]==0.0005569194327108562&&
+				longShadowAcceptedStepS[1]==0.00058853777591139078&&
+				longShadowAcceptedStepS[2]==0.00017358525656163692&&
+				longShadowPredictorGeneration[2]==0.013353902846574783&&
+				longShadowFieldMaximum[0]==0.023430228233337402&&
+				longShadowFieldMaximum[1]==0.023434340953826904&&
+				longShadowFieldMaximum[2]==0.023434281349182129&&
+				longShadowFirstRefusedField[2]==0.062683582305908203&&
+				longShadowManifoldRefusalCount[0]==1u&&
+				longShadowManifoldRefusalCount[1]==2u&&
+				longShadowManifoldRefusalCount[2]==6u&&
+				projectedDeviceHours==4.715210530929954&&
+				projectedWallHours==6.076679952577442&&
+				longShadowPhysicalValidationCount==3u&&
+				longShadowRestorationValidationCount==3u&&
+				DigestFile(checkpointPath)==checkpointDigest;
+			return exact?210:211;
+		}
 		const std::size_t first=longShadowFieldMaximum.size()-2u*LongShadowWindow;
 		const double priorMaximum=*std::max_element(longShadowFieldMaximum.begin()+first,
 			longShadowFieldMaximum.begin()+first+LongShadowWindow);
@@ -2724,12 +2927,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			longShadowFieldMaximum);
 		std::fprintf(stderr,"GOLDEN_LONG_SHADOW steps=%zu dt=%.17g prior32_max=%.17g "
 			"terminal32_max=%.17g final=%.17g low_mach_ceiling=%.17g nonsecular=%d "
-			"trace=%s final_state=%s\n",longShadowFieldMaximum.size(),
-			0.0016462659696117043,priorMaximum,terminalMaximum,
+			"physical_validations=%zu restoration_validations=%zu trace=%s final_state=%s\n",
+			longShadowFieldMaximum.size(),longShadowFinalStepS,priorMaximum,terminalMaximum,
 			longShadowFieldMaximum.back(),0x1p-5,passed?1:0,
+			longShadowPhysicalValidationCount,longShadowRestorationValidationCount,
 			RISECBOR64::SHA256Hex(longShadowTrace).c_str(),
 			FireProductionDyadicCalibration::AnalyticStateDigest(longShadowState).c_str());
-		return passed&&DigestFile(checkpointPath)==checkpointDigest?248:252;
+		return passed&&longShadowPhysicalValidationCount==LongShadowSteps&&
+			longShadowRestorationValidationCount==LongShadowSteps&&
+			DigestFile(checkpointPath)==checkpointDigest?248:252;
 	}
 	std::fprintf(stderr,"golden resident aggregate scalar_abs=%.17g scalar_rel=%.17g "
 		"velocity_abs=%.17g ledger_rel=%.17g envelope=%.17g probe_overshoot=%.17g "

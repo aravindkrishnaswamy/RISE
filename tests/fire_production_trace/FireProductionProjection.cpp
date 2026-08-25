@@ -553,7 +553,9 @@ namespace RISEFireProductionTrace
 		if( shape.nx<4u||shape.ny<4u||shape.nz<4u||shape.nx>1024u||shape.ny>1024u||
 			shape.nz>1024u||!std::isfinite(shape.cellWidthM)||!(shape.cellWidthM>0.0f)||
 			!std::isfinite(request.timeStepS)||!(request.timeStepS>0.0f)||
-			!std::isfinite(request.ambientDensityKGPerM3)||!(request.ambientDensityKGPerM3>0.0f) )
+			!std::isfinite(request.ambientDensityKGPerM3)||!(request.ambientDensityKGPerM3>0.0f)||
+			request.residentPhysicalOpenVCycleCount<1u||
+			request.residentPhysicalOpenVCycleCount>64u )
 			return Fail(error,"production projection shape or schedule is invalid");
 		if( shape.nx>std::numeric_limits<std::size_t>::max()/shape.ny||
 			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz )
@@ -747,7 +749,8 @@ namespace RISEFireProductionTrace
 			hierarchy.push_back(std::move(coarse));
 		}
 		const unsigned int cycleCount=HasOpenBoundary(request.boundary)?
-			(execution==CPUProjectionResidentPhysical?17u:16u):12u;
+			(execution==CPUProjectionResidentPhysical?
+				request.residentPhysicalOpenVCycleCount:16u):12u;
 		{
 			FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
 			for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
@@ -882,6 +885,8 @@ namespace RISEFireProductionTrace
 		if( execution==CPUProjectionRestoration ) for( const FireProductionRoundoffTrace::TraceFloat value:
 			request.divergenceTargetPerS ) maximumRestorationTarget=
 				std::max(maximumRestorationTarget,std::fabs(value));
+		result.validationBandPerS=execution==CPUProjectionRestoration?
+			0.005f*maximumRestorationTarget:0.005f*maximumVelocity/length;
 		const bool validBand=execution==CPUProjectionRestoration?
 			FireProductionRestorationProjectionResidualWithinBand(
 				result.maximumPostProjectionResidualPerS,maximumRestorationTarget,

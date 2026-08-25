@@ -49,8 +49,10 @@ namespace RISEFireProductionTrace
 		std::vector<FireProductionRoundoffTrace::TraceFloat> gasDensityKGPerM3;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> provisionalMomentumKGPerM2S;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> divergenceTargetPerS;
+		std::uint32_t residentPhysicalOpenVCycleCount;
 
-		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f)
+		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f),
+			residentPhysicalOpenVCycleCount(17u)
 		{
 			boundary.fill(FireProductionProjectionWall);
 		}
@@ -65,6 +67,7 @@ namespace RISEFireProductionTrace
 		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
 		FireProductionRoundoffTrace::TraceFloat maximumPreProjectionResidualPerS;
 		FireProductionRoundoffTrace::TraceFloat maximumPostProjectionResidualPerS;
+		FireProductionRoundoffTrace::TraceFloat validationBandPerS;
 		FireProductionRoundoffTrace::TraceFloat maximumOpenComplementarityDiscrepancyMPerS;
 		FireProductionRoundoffTrace::TraceFloat removedFineRightHandSideMean;
 		std::uint32_t executedVCycleCount;
@@ -82,7 +85,7 @@ namespace RISEFireProductionTrace
 		double deviceEndTimeS;
 
 		FireProductionProjectionResult() : maximumPreProjectionResidualPerS(0.0f),
-			maximumPostProjectionResidualPerS(0.0f),
+			maximumPostProjectionResidualPerS(0.0f),validationBandPerS(0.0f),
 			maximumOpenComplementarityDiscrepancyMPerS(0.0f),
 			removedFineRightHandSideMean(0.0f),executedVCycleCount(0u),
 			executedJacobiSweepCount(0u),residentUploadStagingCount(0u),

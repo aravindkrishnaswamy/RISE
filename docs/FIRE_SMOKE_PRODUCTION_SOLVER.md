@@ -3845,6 +3845,62 @@ time.  No performance number changes the physics acceptance.  Durable evidence i
 `rendered/fire_production_calibration/r164_drain_aware_retry_acceptance/`
 `drain_aware_retry_acceptance.v1`; the golden checkpoint is unchanged.
 
+### 7.55y Validation operating-point audit and long-shadow refusal (r165)
+
+The owner accepted r164's single-slice operating point
+`5.5692793102934957e-4 s` and its `1.4696534042399729/1.89400098260743 h`
+device-span/wall projection for the validation campaign.  Performance was
+decoupled from the milestone ladder: the approximately one-hour design target
+was deferred to one device-critical-path campaign after thermo/source maps,
+and the paired `34.631833361461759 ms` host residual remained backlog.
+
+The apparent `89.8 -> 117.9 ms` device-p95 growth is not retry machinery
+charged to each accepted step.  The earlier value was
+`FireProductionResidentStepResult::deviceElapsedMS`, a sum of active command
+durations that omitted submission/idle gaps between command buffers.  r164
+corrected the metric to `deviceMakespanMS`, the earliest GPU start through the
+latest GPU end over the complete queue DAG.  Candidate zero and candidate one
+measure the same per-attempt topology and have comparable makespans; the
+accepted candidate is not carrying candidate zero's device interval.  The
+growth is therefore measurement-window composition, not per-step retry cost.
+
+The 104-step shadow was then started exactly as ordered: step zero reproduced
+the predictive refusal and drain-aware acceptance, and later candidates were
+derived from the preceding accepted observation's represented step, measured
+G, and delivered drain.  The campaign stopped after the third accepted step,
+the earliest decisive checkpoint.  Accepted steps 0 and 1 were
+`5.569194327108562e-4 s` (candidate 1) and `5.8853777591139078e-4 s`
+(candidate 2).  On step 2, the prior observation proposed
+`5.756302853114903e-4 s`; that candidate produced field
+`0.062683582305908203`, above even the hard `2^-5` ceiling, and was refused
+without a token.  Six ordinary drain-aware refusals were required before
+candidate 6 accepted at `1.7358525656163692e-4 s`, with predictor G
+`0.013353902846574783`, field `0.023434281349182129`, and drain
+`0.9997073451033196`.  Both projections validated on all three published
+steps.
+
+This is not a performance-gate reversal.  It falsifies the antecedent that
+r164's one-slice timestep was the trajectory operating point.  Applying the
+same controlled r164 p95 basis (`117.86270828451961/151.894375 ms`) at the
+first state-dependent accepted point gives `4.7152105309299541/`
+`6.0766799525774422 h` device-span/wall.  Therefore the 104-step non-secular
+claim, B_fp32, guard supersession, readmission, source maps, and first light
+remain unexecuted.  The exact three-step audit returns 210 and binds trace
+`b3ac96c...4bf12`, terminal state `9e68d844...38fda`, the complete retry
+curve, both validation counts, and the immutable golden SHA.
+
+The audit also caught two implementation defects before certification.  The
+accepted observation had been publishing terminal-minus-beginning manifold
+field as the next-step G even after closure; that quantity includes motion of
+an already bounded plateau and caused a false timestep death spiral.  The
+limiter now consumes the closure's measured pre-corrector advective anomaly
+dose.  Separately, a manifold refusal that also missed physical-projection
+validation was classified from the boolean return before the populated
+diagnostic result could request a derived physical-cycle retry.  The owner now
+validates the physical solve first and then classifies the preserved tokenless
+manifold refusal.  Neither repair rescues the cost premise: the exact audit
+above is after both repairs.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

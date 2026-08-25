@@ -46,8 +46,10 @@ namespace RISE
 		std::vector<float> gasDensityKGPerM3;
 		std::array<std::vector<float>,3> provisionalMomentumKGPerM2S;
 		std::vector<float> divergenceTargetPerS;
+		std::uint32_t residentPhysicalOpenVCycleCount;
 
-		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f)
+		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f),
+			residentPhysicalOpenVCycleCount(17u)
 		{
 			boundary.fill(FireProductionProjectionWall);
 		}
@@ -62,6 +64,7 @@ namespace RISE
 		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
 		float maximumPreProjectionResidualPerS;
 		float maximumPostProjectionResidualPerS;
+		float validationBandPerS;
 		float maximumOpenComplementarityDiscrepancyMPerS;
 		float removedFineRightHandSideMean;
 		std::uint32_t executedVCycleCount;
@@ -79,7 +82,7 @@ namespace RISE
 		double deviceEndTimeS;
 
 		FireProductionProjectionResult() : maximumPreProjectionResidualPerS(0.0f),
-			maximumPostProjectionResidualPerS(0.0f),
+			maximumPostProjectionResidualPerS(0.0f),validationBandPerS(0.0f),
 			maximumOpenComplementarityDiscrepancyMPerS(0.0f),
 			removedFineRightHandSideMean(0.0f),executedVCycleCount(0u),
 			executedJacobiSweepCount(0u),residentUploadStagingCount(0u),

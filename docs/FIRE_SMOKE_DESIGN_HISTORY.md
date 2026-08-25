@@ -3968,3 +3968,50 @@ it was already tried and refuted here.
   `r164_drain_aware_retry_acceptance/drain_aware_retry_acceptance.v1`; golden
   remains byte-identical.  The 104-step shadow and later milestones await the
   fresh r164 contract-boundary review.
+- **r165 validation operating point and long-shadow activation
+  (2026-08-25):** the owner decouples the performance rung from the milestone
+  ladder.  The accepted `5.5692793102934957e-4 s` operating point projects to
+  `1.4696534042399729/1.89400098260743 h` device-span/wall for tier-10 x 25 s;
+  that cost is accepted for validation.  The approximately one-hour design
+  target moves to one device-critical-path campaign after thermo/source maps
+  land, and the paired `34.631833361461759 ms` host residual remains backlog.
+  The apparent `89.8 -> 117.9 ms` device-p95 growth is a metric-window
+  correction: the earlier value summed active command durations, while r164
+  measures the complete earliest-start to latest-end queue-DAG span including
+  inter-command gaps.  Candidate-zero and candidate-one spans are comparable,
+  so the refused retry is not accumulated into each accepted step.
+
+  The 104-step campaign starts from the immutable golden state, uses the
+  accepted candidate-zero-to-one transition once, and thereafter derives each
+  candidate from the prior accepted `(dt,G,r)` observation.  Timing replays are
+  excluded from the shadow.  Both projection validations, all 104 EOS
+  deviations, the non-secular classifier result, trace digest, final state
+  digest, and final represented step are the pre-registered evidence.  The
+  subsequent contract/readmission/source/preview milestones remain ordered and
+  cannot be claimed from this entry until their measurements complete.
+
+  Execution falsified the single-slice operating-point premise before the
+  non-secular window could be formed.  The first two accepted steps were
+  candidates 1 and 2 at `5.569194327108562e-4` and
+  `5.8853777591139078e-4 s`.  The third step's observation-derived candidate
+  (`5.756302853114903e-4 s`) reached field `0.062683582305908203`, above the
+  hard `2^-5` ceiling, and was refused tokenlessly.  The bounded owner needed
+  candidates 0 through 6 before accepting `1.7358525656163692e-4 s` at field
+  `0.023434281349182129`.  Both projections validated on all three published
+  steps.  Re-projecting with the same controlled r164 p95 gives
+  `4.7152105309299541/6.0766799525774422 h` device/wall.  Thus the owner's
+  accepted `1.47/1.89 h` calibration-slice cost does not describe the live
+  trajectory; the 104-step shadow stops before certification, and every later
+  rung remains unclaimed.
+
+  The audit first repaired two false mechanisms.  For a closed step, the
+  limiter observation is now the measured pre-corrector advective anomaly
+  dose, not terminal-minus-beginning manifold field (which also measures
+  motion of the existing plateau and produced a false death spiral).  The
+  owner also retries a populated simultaneous physical-validation/manifold
+  refusal before classifying its preserved tokenless plateau diagnostics.
+  Exact exit 210 binds the repaired three-step trajectory, refusal counts,
+  trace `b3ac96c...4bf12`, final state `9e68d844...38fda`, and unchanged
+  golden checkpoint.  This is a checkpoint finding, not a revival of the
+  decoupled one-hour performance gate: the blocked prerequisite is the claimed
+  validation operating point and therefore the 104-step physics evidence.

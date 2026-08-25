@@ -2859,6 +2859,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				projectionRequest.gasDensityKGPerM3=request.force.cellGasDensityKGPerM3;
 				projectionRequest.provisionalMomentumKGPerM2S=request.dualTransport.beginningMomentum;
 				projectionRequest.divergenceTargetPerS=request.divergenceTargetPerS;
+				projectionRequest.residentPhysicalOpenVCycleCount=
+					request.physicalOpenProjectionVCycleCount;
 				FireProductionMetalProjectionResidentInput projectionInput;
 				projectionInput.gasDensityKGPerM3=projectedDensity;
 				projectionInput.provisionalMomentumKGPerM2S.fill(dual.packedMomentum);
@@ -3137,10 +3139,18 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					plateauValidation.deliveredDrainFraction;
 				computed.restorationResidualBandPerS=
 					plateauValidation.maximumPostResidualPerS;
+				const double limiterGeneration=computed.ManifoldLimiterGeneration();
+				// A refused step reduces against the realized field that actually missed
+				// headroom.  Once accepted, the next-step predictor publishes the
+				// pre-corrector advective dose; terminal-minus-beginning motion is not a
+				// dose on an evolving bounded plateau.  The retained r164 timing probe
+				// preserves its historical one-step diagnostic value.
+				const double suggestedGeneration=(!plateauPassed||hostResidualProbeEnabled)?
+					maximumTerminalDeviation:limiterGeneration;
 				double suggestedManifoldTimeStepS=0.0;
 				computed.manifoldNextTimeStepAvailable=enforcePlateau&&
 					DeriveFireProductionManifoldTimeStep(
-						static_cast<double>(request.force.timeStepS),maximumManifoldGeneration,
+						static_cast<double>(request.force.timeStepS),suggestedGeneration,
 						plateauValidation.deliveredDrainFraction,suggestedManifoldTimeStepS,0);
 				computed.suggestedManifoldTimeStepS=computed.manifoldNextTimeStepAvailable?
 					suggestedManifoldTimeStepS:0.0;
@@ -3171,7 +3181,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					computed.acceptedManifoldToken_.available_=true;
 					computed.acceptedManifoldToken_.representedTimeStepS_=
 						static_cast<double>(request.force.timeStepS);
-					computed.acceptedManifoldToken_.maximumGeneration_=maximumManifoldGeneration;
+					computed.acceptedManifoldToken_.maximumGeneration_=limiterGeneration;
 					computed.acceptedManifoldToken_.maximumAcceptedDeviation_=maximumTerminalDeviation;
 					computed.acceptedManifoldToken_.requiredDrainFraction_=
 						plateauValidation.requiredDrainFraction;

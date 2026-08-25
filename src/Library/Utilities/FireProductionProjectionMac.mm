@@ -509,11 +509,13 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			ProjectionResidentRestorationStateOnly
 		};
 
-		bool ProjectionCycleCount( ProjectionExecutionKind execution,bool hasOpenBoundary,
-			unsigned int& cycleCount,std::string* error )
+		bool ProjectionCycleCount( const FireProductionProjectionRequest& request,
+			ProjectionExecutionKind execution,bool hasOpenBoundary,unsigned int& cycleCount,
+			std::string* error )
 		{
 			cycleCount=hasOpenBoundary?
-				(execution==ProjectionResidentStateOnly?17u:16u):12u;
+				(execution==ProjectionResidentStateOnly?
+					request.residentPhysicalOpenVCycleCount:16u):12u;
 			const char* activation=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 			const char* restorationTest=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
 			if( execution==ProjectionResidentTerminal&&hasOpenBoundary&&activation&&
@@ -722,7 +724,7 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				request.boundary.end(),[](const FireProductionProjectionBoundary boundary){
 					return boundary==FireProductionProjectionPressureOpen;});
 			unsigned int cycleCount=0u;
-			if( !ProjectionCycleCount(execution,hasOpenBoundary,cycleCount,error) ) return false;
+			if( !ProjectionCycleCount(request,execution,hasOpenBoundary,cycleCount,error) ) return false;
 			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes) )
 				return false;
 			if( residentInput ) for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -1283,6 +1285,8 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				float maximumRestorationTarget=0.0f;
 				if( restoration ) for( const float value:request.divergenceTargetPerS )
 					maximumRestorationTarget=std::max(maximumRestorationTarget,std::fabs(value));
+				result.validationBandPerS=restoration?0.005f*maximumRestorationTarget:
+					0.005f*maximumVelocity/length;
 				const bool validBand=restoration?
 					FireProductionRestorationProjectionResidualWithinBand(
 						result.maximumPostProjectionResidualPerS,maximumRestorationTarget,

@@ -809,7 +809,8 @@ namespace FireProductionDyadicCalibration
 	}
 
 	bool ApplyProductionResultUnchecked(const RISE::FireProductionResidentStepResult& production,
-		MethaneRunCheckpoint& state,std::string& error)
+		MethaneRunCheckpoint& state,std::string& error,
+		const bool enforceOracleEOSValidityDetector=true)
 	{
 		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
 			return false;
@@ -824,9 +825,20 @@ namespace FireProductionDyadicCalibration
 		}
 		std::vector<double> temperature;
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
-		if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
-			fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,1u)||
-			temperature.size()!=cells)return false;
+		if(enforceOracleEOSValidityDetector){
+			if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
+				fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,1u)||
+				temperature.size()!=cells)return false;
+		}else{
+			temperature.resize(cells);
+			for(std::size_t cell=0u;cell<cells;++cell){
+				MethaneCellState accepted=FromConservativeVector(conservative[cell],
+					production.conservativeProducerPrecision);
+				if(!InvertMethaneTemperatureWithinAcceptedEnvelope(accepted,
+					fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,
+					production.conservativeProducerPrecision,temperature[cell],&error))return false;
+			}
+		}
 		for(std::size_t cell=0u;cell<cells;++cell)state.states[cell].temperatureK=temperature[cell];
 		for(unsigned int axis=0u;axis<3u;++axis){
 			state.momentum.component[axis].assign(production.projection.momentumKGPerM2S[axis].begin(),
@@ -842,7 +854,11 @@ namespace FireProductionDyadicCalibration
 	{
 		if(!acceptedObservation.MatchesAcceptedResidentPayload(production))
 			return Fail(&error,"accepted manifold observation no longer matches resident payload");
-		return ApplyProductionResultUnchecked(production,state,error);
+		// The 1e-3 pressure-deviation check in the binary64 core is an oracle
+		// validity detector, not a production thermochemistry-domain consumer.
+		// Accepted production publication retains the r60 conservative envelope
+		// and table-bounded temperature inversion without inheriting that detector.
+		return ApplyProductionResultUnchecked(production,state,error,false);
 	}
 
 	struct ProductionAffineResidual

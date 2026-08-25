@@ -1,0 +1,24 @@
+schema fire_production_accepted_operating_point_audit_raw_v1
+milestone r165
+command RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_ACCEPTED_LONG_SHADOW=1 RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited RISE_OPTIONS_FILE=rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options FireSequenceTest --fire-production-golden-composition rendered/fire_methane_capstone/tier10.run.checkpoint REPO_ROOT
+exit 210
+golden_checkpoint_sha256 1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947
+step0_refusal candidate=0 dt=0.00055762444389984012 field=0.023458957672119141 suggested=0.00055691943198942959 accepted_token=0
+step0_accept candidate=1 dt=0.0005569194327108562 predictor_G=0.019709646701812744 G=0.023430228233337402 field=0.023430228233337402 drain=0.99964850077117484 physical_valid=1 restoration_valid=1 accepted_token=1
+step1_refusal0 candidate=0 dt=0.0006620215717703104 field=0.026267111301422119 suggested=0.00059056008885591672 accepted_token=0
+step1_refusal1 candidate=1 dt=0.00059056008467450738 field=0.023512423038482666 suggested=0.00058853774751841141 accepted_token=0
+step1_accept candidate=2 dt=0.00058853777591139078 predictor_G=0.02395731583237648 G=0.046864505857229233 field=0.023434340953826904 drain=0.99976093386452825 physical_valid=1 restoration_valid=1 accepted_token=1
+step2_refusal0 candidate=0 dt=0.0005756302853114903 predictor_G=0.043754596263170242 G=0.081901557743549347 field=0.062683582305908203 suggested=0.00021517042986326552 accepted_token=0
+step2_refusal1 candidate=1 dt=0.00021517042478080839 field=0.027602434158325195 suggested=0.00018265024727185238 accepted_token=0
+step2_refusal2 candidate=2 dt=0.000182650241185911 field=0.024345278739929199 suggested=0.00017578847124300286 accepted_token=0
+step2_refusal3 candidate=3 dt=0.00017578847473487258 field=0.023656010627746582 suggested=0.00017411353675250214 accepted_token=0
+step2_refusal4 candidate=4 dt=0.00017411353474017233 field=0.023487567901611328 suggested=0.00017369138261442998 accepted_token=0
+step2_refusal5 candidate=5 dt=0.0001736913836793974 field=0.023445010185241699 suggested=0.00017358525357492495 accepted_token=0
+step2_accept candidate=6 dt=0.00017358525656163692 predictor_G=0.013353902846574783 G=0.042652256786823273 field=0.023434281349182129 drain=0.9997073451033196 physical_valid=1 restoration_valid=1 accepted_token=1 device_ms_observation=103.27849979512393 wall_ms_observation=179.02891700000001
+projection_basis r164_controlled_accepted_p95
+projection_basis_device_ms 117.86270828451961
+projection_basis_wall_ms 151.894375
+tier10_device_hours 4.7152105309299541
+tier10_wall_hours 6.0766799525774422
+trace_sha256 b3ac96c48a809df9726e02f795e05ef54142c60e513c1724a4d813b7ac54bf12
+final_state_sha256 9e68d844aca93239b71cf6a59b668065714e1cb3e12b1421b7365a41eb038fda

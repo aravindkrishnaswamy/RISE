@@ -48,8 +48,10 @@ namespace RISEFireProductionFP64
 		std::vector<double> gasDensityKGPerM3;
 		std::array<std::vector<double>,3> provisionalMomentumKGPerM2S;
 		std::vector<double> divergenceTargetPerS;
+		std::uint32_t residentPhysicalOpenVCycleCount;
 
-		FireProductionProjectionRequest() : timeStepS(0.0),ambientDensityKGPerM3(0.0)
+		FireProductionProjectionRequest() : timeStepS(0.0),ambientDensityKGPerM3(0.0),
+			residentPhysicalOpenVCycleCount(17u)
 		{
 			boundary.fill(FireProductionProjectionWall);
 		}
@@ -64,6 +66,7 @@ namespace RISEFireProductionFP64
 		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
 		double maximumPreProjectionResidualPerS;
 		double maximumPostProjectionResidualPerS;
+		double validationBandPerS;
 		double maximumOpenComplementarityDiscrepancyMPerS;
 		double removedFineRightHandSideMean;
 		std::uint32_t executedVCycleCount;
@@ -81,7 +84,7 @@ namespace RISEFireProductionFP64
 		double deviceEndTimeS;
 
 		FireProductionProjectionResult() : maximumPreProjectionResidualPerS(0.0),
-			maximumPostProjectionResidualPerS(0.0),
+			maximumPostProjectionResidualPerS(0.0),validationBandPerS(0.0),
 			maximumOpenComplementarityDiscrepancyMPerS(0.0),
 			removedFineRightHandSideMean(0.0),executedVCycleCount(0u),
 			executedJacobiSweepCount(0u),residentUploadStagingCount(0u),
