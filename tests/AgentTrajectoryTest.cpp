@@ -1068,6 +1068,172 @@ static void TestDocumentSnapshotPolicy()
 }
 
 //----------------------------------------------------------------------
+// GPT SLICE ITEM 3 (2026-08-24): E10, the response-body dedup.  OpenAI's
+// stateful Responses API echoes the full `tools`/`instructions` request
+// context back inside EVERY response body, byte-identical turn to turn --
+// measured 68-78% of a recorded multi-turn trajectory file.  The recorder
+// dedupes those two top-level keys against the last DIFFERENT value seen
+// this session; ExpandTrajectoryResponseBody is the exact inverse, for a
+// reader (AgentEvalRunner's replay path) that needs the complete body back.
+//----------------------------------------------------------------------
+
+//! A realistic-shaped response body: a big `tools` array, a long
+//! `instructions` string, and a small per-turn `output` -- the SAME
+//! three-field shape the real OpenAI Responses API trajectories measured
+//! for this fix carry.  `outputTag` varies the ONE field that should
+//! NEVER be deduped (it differs every real turn).
+static std::string MakeGptStyleBody( const std::string& toolsJson, const std::string& instructionsText,
+                                     const std::string& outputTag )
+{
+	// A JsonValue round-trip for the STRING escaping only (instructionsText
+	// arrives as plain text here, same as a real caller would pass through
+	// AgentChatCodecs before this ever reaches the recorder).
+	JsonValue instr = JsonValue::MakeString( instructionsText );
+	JsonValue outputArr = JsonValue::MakeArray();
+	outputArr.push_back( JsonValue::MakeString( outputTag ) );
+	JsonValue root = JsonValue::MakeObject();
+	// `tools` is embedded as raw JSON text (already an array literal) --
+	// ParseObjOr-style construction, matching how a real provider body
+	// arrives as one already-serialized JSON document.
+	std::string s = "{\"id\":\"resp_x\",\"tools\":" + toolsJson + ",\"instructions\":" +
+		JsonSerialize( instr ) + ",\"output\":" + JsonSerialize( outputArr ) + "}";
+	return s;
+}
+
+static void TestResponseBodyDedup()
+{
+	std::printf( "E10: response_body tools/instructions dedup...\n" );
+
+	static const char* const kToolsJson =
+		"[{\"type\":\"function\",\"name\":\"propose_patch\",\"description\":\"d1\"},"
+		"{\"type\":\"function\",\"name\":\"render\",\"description\":\"d2\"}]";
+	static const char* const kInstructions = "You are an agent. Follow the RISE scene grammar exactly.";
+
+	std::shared_ptr<std::vector<std::string> > lines = std::make_shared<std::vector<std::string> >();
+	std::function<void(const std::string&)> sink =
+		[lines]( const std::string& l ) { lines->push_back( l ); };
+	ChatTrajectoryConfig cfg;
+	cfg.traceId = "trace-dedup";
+	cfg.clock = MakeCounterClock( 1000 );
+	ChatTrajectoryRecorder rec( sink, cfg );
+
+	TrajectorySessionRecord sess;
+	sess.provider = "openai";
+	rec.EmitSession( sess );
+
+	const std::vector<std::string> originalBodies = {
+		MakeGptStyleBody( kToolsJson, kInstructions, "turn1" ),
+		MakeGptStyleBody( kToolsJson, kInstructions, "turn2" ),
+		MakeGptStyleBody( kToolsJson, kInstructions, "turn3" ),
+	};
+	for( const std::string& b : originalBodies ) {
+		TrajectoryLlmRecord r;
+		r.requestModel = "gpt-5.6";
+		r.responseBody = b;
+		rec.EmitLlm( r );
+	}
+
+	Check( lines->size() == 4, "session + 3 llm records emitted" );
+	if( lines->size() != 4 ) return;
+
+	std::vector<JsonValue> j;
+	for( std::size_t i = 1; i < lines->size(); ++i ) j.push_back( Parse( ( *lines )[i] ) );   // skip the session record
+	const std::vector<std::string> storedBodies = {
+		j[0].get( "response_body" ).asString(),
+		j[1].get( "response_body" ).asString(),
+		j[2].get( "response_body" ).asString(),
+	};
+
+	// (1) RED-PROVE-ABLE MONEY ASSERTION: the FIRST record carries the
+	// full tools array and instructions text verbatim (nothing to dedupe
+	// against yet); records 2 and 3 do NOT -- the big duplicated content
+	// is genuinely gone from the stored bytes, not just hidden behind a
+	// flag.
+	Check( storedBodies[0].find( "propose_patch" ) != std::string::npos &&
+	       storedBodies[0].find( kInstructions ) != std::string::npos,
+	       "E10 record 1 (nothing to dedupe against yet) carries tools+instructions in full" );
+	Check( storedBodies[1].find( "propose_patch" ) == std::string::npos &&
+	       storedBodies[1].find( kInstructions ) == std::string::npos,
+	       "E10 MONEY ASSERTION: record 2's stored bytes do NOT contain the duplicated tools/"
+	       "instructions content at all" );
+	Check( storedBodies[2].find( "propose_patch" ) == std::string::npos &&
+	       storedBodies[2].find( kInstructions ) == std::string::npos,
+	       "E10 record 3 likewise" );
+	Check( storedBodies[1].find( "__RISE_TRAJECTORY_DEDUP_REF__" ) != std::string::npos &&
+	       storedBodies[2].find( "__RISE_TRAJECTORY_DEDUP_REF__" ) != std::string::npos,
+	       "E10 ...replaced by the dedup marker" );
+
+	// (2) THE PER-TURN CONTENT SURVIVES UNTOUCHED: `output` (the ONE field
+	// that genuinely differs every real turn) is byte-present in every
+	// record, deduped or not.
+	Check( storedBodies[0].find( "turn1" ) != std::string::npos &&
+	       storedBodies[1].find( "turn2" ) != std::string::npos &&
+	       storedBodies[2].find( "turn3" ) != std::string::npos,
+	       "E10 the per-turn `output` field is untouched in every record" );
+
+	// (3) THE MEASURED REDUCTION on this fixture (small, but the same
+	// shape as the real 68-78% measured on live trajectories -- see
+	// ChatTrajectory.h's kTrajectoryDedupRefMarker doc for those numbers).
+	const std::size_t origTotal = originalBodies[0].size() + originalBodies[1].size() + originalBodies[2].size();
+	const std::size_t dedupTotal = storedBodies[0].size() + storedBodies[1].size() + storedBodies[2].size();
+	Check( dedupTotal < origTotal, "E10 the deduped total is smaller than the original total" );
+	std::printf( "  [info] E10 fixture: %zu -> %zu bytes (%.1f%% reduction)\n",
+	             origTotal, dedupTotal, 100.0 * ( 1.0 - static_cast<double>( dedupTotal ) / static_cast<double>( origTotal ) ) );
+
+	// (4) ROUND-TRIP: ExpandTrajectoryResponseBody, walked IN ORDER with
+	// ONE shared state (mirroring AgentEvalRunner's replay reader),
+	// reconstructs a body that PARSES to the SAME tools/instructions/
+	// output content as the original -- zero information loss.
+	TrajectoryDedupExpandState state;
+	for( std::size_t i = 0; i < storedBodies.size(); ++i ) {
+		const std::string expanded = ExpandTrajectoryResponseBody( storedBodies[i], state );
+		JsonValue origParsed = Parse( originalBodies[i] );
+		JsonValue expParsed  = Parse( expanded );
+		Check( JsonSerialize( expParsed.get( "tools" ) ) == JsonSerialize( origParsed.get( "tools" ) ),
+		       "E10 ROUND-TRIP record " + std::to_string( i ) + ": expanded tools == original tools" );
+		Check( expParsed.get( "instructions" ).asString() == origParsed.get( "instructions" ).asString(),
+		       "E10 ROUND-TRIP record " + std::to_string( i ) + ": expanded instructions == original" );
+		Check( JsonSerialize( expParsed.get( "output" ) ) == JsonSerialize( origParsed.get( "output" ) ),
+		       "E10 ROUND-TRIP record " + std::to_string( i ) + ": output preserved" );
+	}
+
+	// (5) A DIFFERENT tools value breaks the chain and becomes the new
+	// baseline -- no false-positive dedup against an unrelated value.
+	{
+		static const char* const kDifferentTools =
+			"[{\"type\":\"function\",\"name\":\"validate\",\"description\":\"d3\"}]";
+		TrajectoryLlmRecord r;
+		r.responseBody = MakeGptStyleBody( kDifferentTools, kInstructions, "turn4" );
+		rec.EmitLlm( r );
+		const JsonValue j4 = Parse( lines->back() );
+		const std::string body4 = j4.get( "response_body" ).asString();
+		Check( body4.find( "validate" ) != std::string::npos,
+		       "E10 a genuinely DIFFERENT tools value is stored in full, not dedupe-suppressed" );
+		Check( body4.find( kInstructions ) == std::string::npos &&
+		       body4.find( "__RISE_TRAJECTORY_DEDUP_REF__" ) != std::string::npos,
+		       "E10 ...while instructions (unchanged) still dedupes against the earlier baseline" );
+	}
+
+	// (6) SESSION BOUNDARY: a fresh EmitSession resets the dedup
+	// baseline -- the same tools/instructions immediately after are
+	// stored IN FULL again, not deduped against the prior session.
+	{
+		TrajectorySessionRecord sess2;
+		sess2.provider = "openai";
+		rec.EmitSession( sess2 );
+		TrajectoryLlmRecord r;
+		r.responseBody = MakeGptStyleBody( kToolsJson, kInstructions, "turn5" );
+		rec.EmitLlm( r );
+		const JsonValue j5 = Parse( lines->back() );
+		const std::string body5 = j5.get( "response_body" ).asString();
+		Check( body5.find( "propose_patch" ) != std::string::npos &&
+		       body5.find( kInstructions ) != std::string::npos,
+		       "E10 SESSION BOUNDARY: a fresh session's first llm record is stored in full, even "
+		       "though it repeats the PRIOR session's exact tools/instructions" );
+	}
+}
+
+//----------------------------------------------------------------------
 // Review-round P2: "recording never disrupts the chat" must hold for ANY
 // sink -- a throwing sink is swallowed and recording is disabled for the
 // rest of the session (the sink is dropped after the first throw).
@@ -1111,6 +1277,7 @@ int main()
 	TestRotation();
 	TestAuxiliaryHttpRound();
 	TestDocumentSnapshotPolicy();
+	TestResponseBodyDedup();
 	RunThrowingSinkTest();
 	std::printf( "=== AgentTrajectoryTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

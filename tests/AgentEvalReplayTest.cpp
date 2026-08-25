@@ -195,6 +195,14 @@ static std::vector<std::string> ToolNameSequence( const std::vector<JsonValue>& 
 	return out;
 }
 
+static JsonValue Parse( const std::string& s )
+{
+	JsonValue v;
+	std::string err;
+	if( !JsonParse( s, v, err ) ) return JsonValue::MakeNull();
+	return v;
+}
+
 static bool WriteFile( const std::string& path, const std::string& text )
 {
 	std::error_code ec;
@@ -623,6 +631,94 @@ static void TestReplaySourceLoad()
 		Check( src2.Provider() == "anthropic" && src2.Total() == 2,
 		       "the single-provider trajectory yields anthropic + 2 bodies" );
 	}
+}
+
+//----------------------------------------------------------------------
+// GPT slice item 3 (2026-08-24): a RECORDED trajectory can carry
+// ChatTrajectory.h's response-body dedup (OpenAI's Responses API echoes
+// `tools`/`instructions` byte-identical on every round; the recorder
+// replaces a repeat with a marker -- see kTrajectoryDedupRefMarker's doc).
+// AgentEvalReplaySource::LoadFromFile must hand back the MATERIALIZED
+// (expanded) body, never the marker, or a replayed run would feed a
+// truncated response into the real codec parser.
+//----------------------------------------------------------------------
+static void TestReplaySourceExpandsDedupedBody()
+{
+	std::printf( "T3b: AgentEvalReplaySource expands a deduped response_body...\n" );
+
+	static const char* const kToolsJson =
+		"[{\"type\":\"function\",\"name\":\"propose_patch\"},{\"type\":\"function\",\"name\":\"render\"}]";
+	static const char* const kInstructions = "You are an agent.";
+
+	// Record 1: full tools+instructions, output "turn1" -- the baseline.
+	JsonValue body1 = JsonValue::MakeObject();
+	{
+		JsonValue tools;
+		std::string perr;
+		JsonParse( kToolsJson, tools, perr );
+		body1.set( "tools", tools );
+		body1.set( "instructions", JsonValue::MakeString( kInstructions ) );
+		JsonValue out = JsonValue::MakeArray();
+		out.push_back( JsonValue::MakeString( "turn1" ) );
+		body1.set( "output", out );
+	}
+	// Record 2: the SAME tools/instructions, deduped to the marker by
+	// hand here (this is exactly the shape ChatTrajectoryRecorder::
+	// EmitLlm produces -- AgentTrajectoryTest.cpp's E10 covers the
+	// recorder side; this test covers the READ side specifically).
+	JsonValue body2 = JsonValue::MakeObject();
+	{
+		body2.set( "tools", JsonValue::MakeString( "__RISE_TRAJECTORY_DEDUP_REF__" ) );
+		body2.set( "instructions", JsonValue::MakeString( "__RISE_TRAJECTORY_DEDUP_REF__" ) );
+		JsonValue out = JsonValue::MakeArray();
+		out.push_back( JsonValue::MakeString( "turn2" ) );
+		body2.set( "output", out );
+	}
+
+	const std::string dir = ScratchRunDir( "t3b_dedup" );
+	const std::string path = dir + "/deduped_trajectory.jsonl";
+	JsonValue sessionLine = JsonValue::MakeObject();
+	sessionLine.set( "run_type", JsonValue::MakeString( "session" ) );
+	sessionLine.set( "provider", JsonValue::MakeString( "openai" ) );
+	sessionLine.set( "gen_ai.request.model", JsonValue::MakeString( "gpt-5.6" ) );
+	JsonValue llm1 = JsonValue::MakeObject();
+	llm1.set( "run_type", JsonValue::MakeString( "llm" ) );
+	llm1.set( "response_body", JsonValue::MakeString( JsonSerialize( body1 ) ) );
+	JsonValue llm2 = JsonValue::MakeObject();
+	llm2.set( "run_type", JsonValue::MakeString( "llm" ) );
+	llm2.set( "response_body", JsonValue::MakeString( JsonSerialize( body2 ) ) );
+	WriteFile( path,
+		JsonSerialize( sessionLine ) + "\n" + JsonSerialize( llm1 ) + "\n" + JsonSerialize( llm2 ) + "\n" );
+
+	AgentEvalReplaySource src;
+	std::string err;
+	Check( AgentEvalReplaySource::LoadFromFile( path, src, err ),
+	       "the deduped trajectory loads (" + err + ")" );
+	Check( src.Provider() == "openai" && src.Total() == 2, "openai provider, 2 bodies" );
+
+	std::string got1, got2;
+	Check( src.NextBody( got1 ), "record 1 hands back a body" );
+	Check( src.NextBody( got2 ), "record 2 hands back a body" );
+
+	const JsonValue p1 = Parse( got1 );
+	Check( p1.get( "tools" ).isArray() && JsonSerialize( p1.get( "tools" ) ).find( "propose_patch" ) != std::string::npos,
+	       "record 1 (never deduped) carries the real tools array" );
+
+	const JsonValue p2 = Parse( got2 );
+	// MONEY ASSERTION: record 2's handed-back body has the MARKER
+	// MATERIALIZED, not left as a bare string -- a codec parsing this as
+	// a real OpenAI response must see the SAME tools array record 1 saw,
+	// never the 30-byte sentinel.
+	Check( p2.get( "tools" ).isArray(),
+	       "T3b MONEY ASSERTION: record 2's `tools` is a REAL array after LoadFromFile, not the "
+	       "dedup marker string" );
+	Check( JsonSerialize( p2.get( "tools" ) ) == JsonSerialize( p1.get( "tools" ) ),
+	       "...and it is BYTE-EQUAL to record 1's tools (the same real value, materialized)" );
+	Check( p2.get( "instructions" ).asString() == kInstructions,
+	       "...and `instructions` is likewise materialized back to the real text" );
+	// The per-turn content that was NEVER deduped survives untouched.
+	Check( JsonSerialize( p2.get( "output" ) ).find( "turn2" ) != std::string::npos,
+	       "...while record 2's OWN per-turn output is exactly what was recorded (not record 1's)" );
 }
 
 //----------------------------------------------------------------------
@@ -1445,6 +1541,7 @@ int main()
 	TestLoadSeedScenarios();
 	TestLoadScenarioGates();
 	TestReplaySourceLoad();
+	TestReplaySourceExpandsDedupedBody();
 	TestParamEditScenario();
 	TestTwoToolObserveScenario();
 	TestErrorPathScenario();

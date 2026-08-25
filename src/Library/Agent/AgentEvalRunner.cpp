@@ -23,6 +23,7 @@
 #include "AgentSession.h"
 #include "AgentRpc.h"
 #include "AgentDiagnostic.h"
+#include "ChatTrajectory.h"   // GPT slice item 3: ExpandTrajectoryResponseBody -- materialize a deduped response_body before replay
 #include "Base64.h"   // image-reconstruction Wave 1: Base64Encode for reference-image attachments
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
@@ -349,6 +350,18 @@ namespace RISE
 			if( first.has( "run_type" ) ) {
 				std::string provider;
 				std::vector<std::string> bodies;
+				// GPT slice item 3 (2026-08-24): the recorder may have
+				// deduped `response_body`'s `tools`/`instructions` against
+				// this SAME session's earlier llm records (Chat
+				// Trajectory.h's kTrajectoryDedupRefMarker) -- materialize
+				// each body back to its ORIGINAL, complete form before it
+				// is fed to a provider codec below, so replay sees exactly
+				// what the recorder actually captured, dedup or not
+				// (ExpandTrajectoryResponseBody is a no-op on a body that
+				// was never deduped in the first place).  Reset at each
+				// `session` record -- the SAME boundary the recorder's own
+				// dedup baseline resets at.
+				Agent::TrajectoryDedupExpandState dedupState;
 				for( std::size_t i = 0; i < lines.size(); ++i ) {
 					JsonValue j;
 					std::string lerr;
@@ -380,9 +393,11 @@ namespace RISE
 							      "one provider-segment at a time (split it at the session boundary)";
 							return false;
 						}
+						dedupState = Agent::TrajectoryDedupExpandState();
 					}
 					else if( runType == "llm" ) {
-						bodies.push_back( j.get( "response_body" ).asString() );
+						bodies.push_back( Agent::ExpandTrajectoryResponseBody(
+							j.get( "response_body" ).asString(), dedupState ) );
 					}
 				}
 				if( provider.empty() ) {

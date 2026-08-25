@@ -104,6 +104,88 @@ namespace RISE
 			}
 
 			JsonValue Num( double d ) { return JsonValue::MakeNumber( d ); }
+
+			//! GPT slice item 3 (2026-08-24): see ChatTrajectory.h's
+			//! kTrajectoryDedupRefMarker doc for WHY this is a hand-rolled
+			//! span scanner rather than a JsonValue round-trip.  A single
+			//! forward pass over `text` starting at `objStart` (which must
+			//! be the offset of the object's own `{`), tracking bracket
+			//! depth and string-escape state, looking for a TOP-LEVEL
+			//! member named `key`.  Returns false (and leaves the out
+			//! params untouched) when `key` is not found as a top-level
+			//! member of THIS object, or when `text` is malformed/
+			//! truncated from `objStart` -- callers treat false as "leave
+			//! it alone", never as "guess".
+			bool FindTopLevelJsonValueSpan_( const std::string& text, std::size_t objStart,
+			                                 const std::string& key,
+			                                 std::size_t& outValStart, std::size_t& outValEnd )
+			{
+				if( objStart >= text.size() || text[objStart] != '{' ) return false;
+				const std::string quotedKey = "\"" + key + "\"";
+				const std::size_t n = text.size();
+				std::size_t i = objStart + 1;
+				while( i < n ) {
+					while( i < n && ( text[i] == ' ' || text[i] == '\t' || text[i] == '\n' ||
+					                   text[i] == '\r' || text[i] == ',' ) ) ++i;
+					if( i >= n || text[i] == '}' ) break;   // end of this object
+					if( text[i] != '"' ) return false;      // malformed: expected a key string
+					const std::size_t keyStart = i;
+					++i;
+					while( i < n && text[i] != '"' ) { if( text[i] == '\\' && i + 1 < n ) ++i; ++i; }
+					if( i >= n ) return false;
+					const std::size_t keyEnd = i + 1;   // one past the closing quote
+					++i;
+					while( i < n && ( text[i] == ' ' || text[i] == '\t' ||
+					                   text[i] == '\n' || text[i] == '\r' ) ) ++i;
+					if( i >= n || text[i] != ':' ) return false;
+					++i;
+					while( i < n && ( text[i] == ' ' || text[i] == '\t' ||
+					                   text[i] == '\n' || text[i] == '\r' ) ) ++i;
+					if( i >= n ) return false;
+					const std::size_t valStart = i;
+					std::size_t valEnd;
+					if( text[i] == '{' || text[i] == '[' ) {
+						const char open = text[i], close = ( open == '{' ) ? '}' : ']';
+						int depth = 0;
+						bool inStr = false;
+						std::size_t j = i;
+						for( ; j < n; ++j ) {
+							const char c = text[j];
+							if( inStr ) {
+								if( c == '\\' && j + 1 < n ) { ++j; continue; }
+								if( c == '"' ) inStr = false;
+								continue;
+							}
+							if( c == '"' ) { inStr = true; continue; }
+							if( c == open ) ++depth;
+							else if( c == close ) { --depth; if( depth == 0 ) { ++j; break; } }
+						}
+						if( depth != 0 ) return false;   // malformed / truncated
+						valEnd = j;
+					} else if( text[i] == '"' ) {
+						std::size_t j = i + 1;
+						while( j < n && text[j] != '"' ) { if( text[j] == '\\' && j + 1 < n ) ++j; ++j; }
+						if( j >= n ) return false;
+						valEnd = j + 1;
+					} else {
+						// A bare literal: true/false/null/a number.  Ends at
+						// the next structural character.
+						std::size_t j = i;
+						while( j < n && text[j] != ',' && text[j] != '}' && text[j] != ']' &&
+						       text[j] != ' ' && text[j] != '\t' && text[j] != '\n' && text[j] != '\r' ) ++j;
+						if( j == i ) return false;   // no literal characters at all: malformed
+						valEnd = j;
+					}
+					if( ( keyEnd - keyStart ) == quotedKey.size() &&
+					    text.compare( keyStart, keyEnd - keyStart, quotedKey ) == 0 ) {
+						outValStart = valStart;
+						outValEnd   = valEnd;
+						return true;
+					}
+					i = valEnd;
+				}
+				return false;
+			}
 		}
 
 		std::string SerializeTrajectoryRecord( const TrajectorySessionRecord& r,
@@ -243,6 +325,40 @@ namespace RISE
 		}
 
 		//==============================================================
+		// GPT slice item 3 (2026-08-24): the trajectory-file dedup.  See
+		// ChatTrajectory.h's kTrajectoryDedupRefMarker doc for the design.
+		//==============================================================
+
+		//! One key's expand-in-place step, shared by both keys below.
+		//! Returns `body` unchanged if `key` is not a top-level member.
+		static std::string ExpandOneDedupKey_( const std::string& body, const char* key,
+		                                       std::string& cache, bool& have )
+		{
+			std::size_t vs, ve;
+			if( !FindTopLevelJsonValueSpan_( body, 0, key, vs, ve ) ) return body;
+			const std::string spanText = body.substr( vs, ve - vs );
+			static const std::string kMarkerLiteral =
+				std::string( "\"" ) + kTrajectoryDedupRefMarker + "\"";
+			if( spanText == kMarkerLiteral ) {
+				if( !have ) return body;   // no prior real value recorded: leave the marker (never guess)
+				return body.substr( 0, vs ) + cache + body.substr( ve );
+			}
+			cache = spanText;
+			have  = true;
+			return body;
+		}
+
+		std::string ExpandTrajectoryResponseBody( const std::string& bodyJson,
+		                                          TrajectoryDedupExpandState& state )
+		{
+			if( bodyJson.empty() || bodyJson[0] != '{' ) return bodyJson;
+			std::string out = bodyJson;
+			out = ExpandOneDedupKey_( out, "tools", state.toolsSpan, state.haveTools );
+			out = ExpandOneDedupKey_( out, "instructions", state.instructionsSpan, state.haveInstructions );
+			return out;
+		}
+
+		//==============================================================
 		// Redaction (unconditional).
 		//==============================================================
 		std::string RedactTrajectoryLine( const std::string& line )
@@ -279,7 +395,9 @@ namespace RISE
 			mTotalReasoningOutputTokens( 0 ),
 			mNReasoningClampedTurns( 0 ),
 			mTotalCacheReadInputTokens( 0 ),
-			mTotalLatencyMs( 0 )
+			mTotalLatencyMs( 0 ),
+			mHaveLastResponseTools( false ),
+			mHaveLastResponseInstructions( false )
 		{
 		}
 
@@ -319,6 +437,16 @@ namespace RISE
 			TrajectorySessionRecord r = in;
 			mStartedAtMs = ( r.startedAtMs != 0 ) ? r.startedAtMs : Now();
 			r.startedAtMs = mStartedAtMs;
+			// GPT slice item 3: a fresh `session` record is a fresh dedup
+			// baseline -- a mid-file provider switch (SetProvider resets
+			// the transcript and rolls a fresh session, per AgentEval
+			// Runner's own review-round-P2 comment on exactly this shape)
+			// must not let the NEW session's first llm record dedupe
+			// against the OLD session's tools/instructions.
+			mHaveLastResponseTools = false;
+			mLastResponseToolsSpan.clear();
+			mHaveLastResponseInstructions = false;
+			mLastResponseInstructionsSpan.clear();
 			return Emit( SerializeTrajectoryRecord( r, mTraceId, NextDottedOrder() ) );
 		}
 
@@ -328,8 +456,43 @@ namespace RISE
 			return Emit( SerializeTrajectoryRecord( r, mTraceId, NextDottedOrder() ) );
 		}
 
-		std::string ChatTrajectoryRecorder::EmitLlm( const TrajectoryLlmRecord& r )
+		std::string ChatTrajectoryRecorder::DedupeResponseBody_( const std::string& bodyJson )
 		{
+			if( bodyJson.empty() || bodyJson[0] != '{' ) return bodyJson;
+			std::string out = bodyJson;
+			for( int pass = 0; pass < 2; ++pass ) {
+				const char* key = ( pass == 0 ) ? "tools" : "instructions";
+				std::string& cache = ( pass == 0 ) ? mLastResponseToolsSpan : mLastResponseInstructionsSpan;
+				bool&        have  = ( pass == 0 ) ? mHaveLastResponseTools : mHaveLastResponseInstructions;
+				std::size_t vs, ve;
+				if( !FindTopLevelJsonValueSpan_( out, 0, key, vs, ve ) ) continue;
+				const std::string spanText = out.substr( vs, ve - vs );
+				if( have && cache == spanText ) {
+					const std::string marker =
+						std::string( "\"" ) + kTrajectoryDedupRefMarker + "\"";
+					out = out.substr( 0, vs ) + marker + out.substr( ve );
+				} else {
+					cache = spanText;
+					have  = true;
+				}
+			}
+			return out;
+		}
+
+		std::string ChatTrajectoryRecorder::EmitLlm( const TrajectoryLlmRecord& in )
+		{
+			// GPT slice item 3 (2026-08-24): dedupe `response_body`'s
+			// `tools`/`instructions` against this recorder's running
+			// baseline BEFORE anything below touches `r.responseBody` --
+			// applies uniformly to both the auxiliary and main-turn paths
+			// (an auxiliary round's tools legitimately differ from the
+			// main conversation's, in which case this just becomes the
+			// new baseline; a matching one dedupes the same as a main-
+			// turn record would).  See ChatTrajectory.h's
+			// kTrajectoryDedupRefMarker doc for the full design.
+			TrajectoryLlmRecord r = in;
+			r.responseBody = DedupeResponseBody_( r.responseBody );
+
 			// A purpose-tagged (auxiliary) round is recorded in FULL on its
 			// own line -- the accumulators below feed ONLY the summary's
 			// rollup, which is documented (and consumed by the eval

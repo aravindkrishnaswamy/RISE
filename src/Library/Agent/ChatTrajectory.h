@@ -276,6 +276,78 @@ namespace RISE
 			long long                sceneHeadVersion = -1;
 		};
 
+		//! GPT slice item 3 (2026-08-24): the WRITE-side dedup this recorder
+		//! applies to `response_body`, and its inverse for any reader that
+		//! needs the ORIGINAL, complete body back (AgentEvalRunner's
+		//! replay path today).
+		//!
+		//! THE MEASUREMENT: OpenAI's stateful Responses API echoes the
+		//! FULL `tools` and `instructions` request context back inside
+		//! EVERY response body, byte-identical turn to turn (a live
+		//! 33-round trajectory: exactly ONE distinct value for each
+		//! across the whole session).  That is 68-78% of the recorded
+		//! file on the trajectories measured (evals/runs/imagine_s7_
+		//! population_gpt/.../imagine_undersea_mermaid.trajectory.jsonl:
+		//! 5.18MB -> 1.19MB, 77.0%; an older 41-round trajectory pre-
+		//! dating the ALREADY-FIXED request-side duplication:
+		//! 12.03MB -> 2.67MB, 77.8%).  Gemini/Anthropic responses do not
+		//! echo the request back, so this is OpenAI-Responses-API-
+		//! specific in practice, but the mechanism keys off the JSON
+		//! shape (a top-level `tools`/`instructions` member), not the
+		//! provider name, so it degrades to a no-op rather than a wrong
+		//! answer on any other shape.
+		//!
+		//! WHY A BYTE-SPAN REPLACE, NOT A JSON ROUND-TRIP: `response_
+		//! body`'s own doc comment is explicit -- "rides as a STRING so
+		//! it round-trips byte-for-byte (the replay payload must not be
+		//! re-serialized)".  Parsing the whole body through JsonValue
+		//! and re-serializing would reformat EVERY record it touches
+		//! (key order, number formatting, whitespace), not just the
+		//! elided span -- a strictly bigger, unjustified fidelity loss
+		//! for a fix that only needs to touch two keys.  FindTopLevel
+		//! JsonValueSpan_ (ChatTrajectory.cpp, anonymous namespace) is a
+		//! hand-rolled, depth- and string-escape-aware scanner that
+		//! finds the exact byte span of ONE top-level key's value and
+		//! nothing else; the surrounding bytes are untouched.
+		//!
+		//! THE MARKER: kTrajectoryDedupRefMarker, a JSON STRING literal
+		//! chosen to be vanishingly unlikely to collide with a genuine
+		//! `tools`/`instructions` value (which are always an array or a
+		//! long free-text string, never this exact short sentinel).  A
+		//! naive consumer that doesn't know about dedup and tries to
+		//! iterate a deduped `tools` as an array gets a TYPE MISMATCH,
+		//! not silently wrong data -- fail loud, not quiet, is the
+		//! fallback for any reader this fix did not get updated.
+		static const char* const kTrajectoryDedupRefMarker = "__RISE_TRAJECTORY_DEDUP_REF__";
+
+		//! Per-session cache an EXPANDING reader owns while walking a
+		//! session's `llm` records IN DOCUMENT ORDER.  Reset (default-
+		//! construct a fresh one) at each `session` record boundary --
+		//! the SAME boundary DedupeResponseBody_'s own per-recorder
+		//! cache resets at (a mid-file provider switch starts a fresh
+		//! session and a fresh baseline on both the write and read
+		//! sides).
+		struct TrajectoryDedupExpandState
+		{
+			std::string toolsSpan;
+			bool        haveTools = false;
+			std::string instructionsSpan;
+			bool        haveInstructions = false;
+		};
+
+		//! Expand-side of the dedup: materializes ANY kTrajectoryDedupRef
+		//! Marker occupying `tools`/`instructions` in `bodyJson` (an `llm`
+		//! record's `response_body`) back to the last REAL value `state`
+		//! has seen, and updates `state` from any real (non-marker) value
+		//! this call observes.  Call once per `llm` record, IN ORDER,
+		//! reusing the SAME `state` across a session.  A body that is not
+		//! a JSON object, or carries neither key, is returned unchanged.
+		//! Idempotent on an ALREADY-EXPANDED body (no marker left to
+		//! find, so nothing to replace) -- safe to call on writer-side
+		//! output that was never deduped in the first place.
+		std::string ExpandTrajectoryResponseBody( const std::string& bodyJson,
+		                                          TrajectoryDedupExpandState& state );
+
 		class ChatTrajectoryRecorder
 		{
 		public:
@@ -330,6 +402,26 @@ namespace RISE
 			int       mNReasoningClampedTurns;
 			long long mTotalCacheReadInputTokens;
 			int64_t   mTotalLatencyMs;
+
+			//! GPT slice item 3: the WRITE-side twin of
+			//! TrajectoryDedupExpandState, reset in EmitSession (a fresh
+			//! session -- or a mid-file provider switch -- starts a fresh
+			//! baseline; deduping against a PRIOR session's tools/
+			//! instructions would let an expanding reader stop at a
+			//! session boundary and materialize the WRONG session's value).
+			std::string mLastResponseToolsSpan;
+			bool        mHaveLastResponseTools;
+			std::string mLastResponseInstructionsSpan;
+			bool        mHaveLastResponseInstructions;
+
+			//! GPT slice item 3: dedupe `bodyJson`'s top-level `tools`/
+			//! `instructions` members against mLastResponseToolsSpan/
+			//! mLastResponseInstructionsSpan; see kTrajectoryDedupRefMarker's
+			//! doc for the full design.  Returns bodyJson UNCHANGED when
+			//! neither key is present, or when this is the first time this
+			//! session sees a real value for a key (nothing to dedupe
+			//! against yet).
+			std::string DedupeResponseBody_( const std::string& bodyJson );
 		};
 
 		//----------------------------------------------------------------
