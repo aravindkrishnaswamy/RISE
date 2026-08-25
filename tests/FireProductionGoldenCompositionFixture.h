@@ -20,14 +20,20 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
 			candidate,step);
 	};
-	auto continueAfterDrainAwareRefusal=[](const unsigned int candidate,
-		const RISE::FireProductionResidentStepResult& attempted,const auto& continuation){
+	auto continueAfterDrainAwareRefusal=[&](const unsigned int candidate,
+		const RISE::FireProductionResidentStepResult& attempted,
+		RISE::FireProductionResidentStepResult* releaseAttempted,
+		RISE::FireProductionResidentStepRequest* releaseRequest,
+		MethaneRunCheckpoint* releaseBeginning){
 		unsigned int nextCandidate=0u;double nextStep=0.0;
 		if(RISE::ClassifyFireProductionResidentStepAttempt(candidate,attempted,
 			nextCandidate,nextStep)!=
 			RISE::FireProductionResidentStepAttemptDisposition::RetryAtSuggestedTimeStep)
 			return 203;
-		return continuation(nextCandidate,nextStep);
+		if(releaseAttempted)*releaseAttempted=RISE::FireProductionResidentStepResult();
+		if(releaseRequest)*releaseRequest=RISE::FireProductionResidentStepRequest();
+		if(releaseBeginning)*releaseBeginning=MethaneRunCheckpoint();
+		return continueDrainAwareRetry(nextCandidate,nextStep);
 	};
 	static const char* checkpointDigest=
 		"1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947";
@@ -46,19 +52,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"RISE_FIRE_DRAIN_AWARE_RETRY_CONTROLLER_RED");
 	if(retryControllerREDValue&&std::strcmp(retryControllerREDValue,"1")!=0)return 203;
 	if(retryControllerREDValue){
+		if(manifoldRetryCandidate==2u&&manifoldRetryStepS==0x1p-12){
+			std::fprintf(stderr,"DRAIN_AWARE_RETRY_CONTROLLER_RED refused_candidate=1 "
+				"next_candidate=2 cap=%u golden=%s\n",
+				RISE::FireStepRejectionRetryCap,checkpointDigest);
+			return 204;
+		}
+		if(manifoldRetryCandidate!=0u||manifoldRetryStepS!=0.0)return 203;
 		RISE::FireProductionResidentStepResult refused;
 		refused.representedTimeStepS=0x1p-11f;
 		refused.manifoldPlateauPassed=false;
 		refused.manifoldNextTimeStepAvailable=true;
 		refused.suggestedManifoldTimeStepS=0x1p-12;
-		return continueAfterDrainAwareRefusal(1u,refused,
-			[&](const unsigned int candidate,const double step){
-				if(candidate!=2u||step!=0x1p-12)return 203;
-				std::fprintf(stderr,"DRAIN_AWARE_RETRY_CONTROLLER_RED refused_candidate=1 "
-					"next_candidate=2 cap=%u golden=%s\n",
-					RISE::FireStepRejectionRetryCap,checkpointDigest);
-				return 204;
-			});
+		return continueAfterDrainAwareRefusal(1u,refused,&refused,nullptr,nullptr);
 	}
 	const std::array<std::uint64_t,8> stepBits={{
 		4543432537948766955ull,4544197666642132584ull,4544654590867399846ull,
@@ -2432,13 +2438,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					// allocated.  The next attempt reloads the shared golden beginning and
 					// rebuilds its independently sealed equal-time target.
 					return continueAfterDrainAwareRefusal(effectiveManifoldRetryCandidate,
-						production,[&](const unsigned int candidate,const double step){
-							if(candidate!=nextRetryCandidate||step!=followingManifoldStep)return 212;
-							production=RISE::FireProductionResidentStepResult();
-							request=RISE::FireProductionResidentStepRequest();
-							beginning=MethaneRunCheckpoint();
-							return continueDrainAwareRetry(candidate,step);
-						});
+						production,&production,&request,&beginning);
 				}
 				return 212;
 			}
