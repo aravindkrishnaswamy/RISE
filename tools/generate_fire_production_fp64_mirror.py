@@ -76,6 +76,12 @@ def transform(text: str, name: str, suffix: str) -> str:
         if text.count(token_accessor) != 1:
             raise RuntimeError("accepted manifold token accessor seam changed")
         text = text.replace(token_accessor, "")
+        token_match = """\n\t\t//! Revalidates the producer-owned token against every mutable diagnostic and
+\t\t//! payload byte before an owner may classify the attempt as accepted.
+\t\tbool AcceptedManifoldTokenMatchesCurrentPayload() const;"""
+        if text.count(token_match) != 1:
+            raise RuntimeError("accepted manifold token match seam changed")
+        text = text.replace(token_match, "")
         disposition_begin = text.find(
             "\n\tenum class FireProductionResidentStepAttemptDisposition")
         disposition_end = text.find("\n\t//! Single owner predicate", disposition_begin)
@@ -91,11 +97,13 @@ def transform(text: str, name: str, suffix: str) -> str:
         # This owner-only publication seam consumes a completed binary32
         # resident result.  It is outside the same-scheme arithmetic mirror
         # and has no binary64 producer analogue.
+        token_match_begin = text.find(
+            "\n\tbool FireProductionResidentStepResult::AcceptedManifoldTokenMatchesCurrentPayload() const")
         begin = text.find("\n\tbool PublishFireProductionAcceptedManifoldObservation(")
         end = text.find("\n\tbool EvaluateFireProductionVremanEddyViscosity(", begin)
-        if begin < 0 or end < 0:
+        if token_match_begin < 0 or begin < 0 or end < 0:
             raise RuntimeError("accepted manifold publication seam changed")
-        text = text[:begin] + text[end:]
+        text = text[:token_match_begin] + text[end:]
     text = text.replace("namespace RISE", "namespace RISEFireProductionFP64")
     text = text.replace(
         '#include "FireSimulationRecords.h"',

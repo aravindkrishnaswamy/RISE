@@ -351,6 +351,40 @@ namespace RISE
 			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
 	}
 
+	bool FireProductionResidentStepResult::AcceptedManifoldTokenMatchesCurrentPayload() const
+	{
+		FireProductionRestorationPlateauValidation recomputed;
+		const bool plateauDiagnosticsValid=FireProductionRestorationPlateauWithinBand(
+			maximumManifoldGeneration,projection.maximumPreProjectionResidualPerS,
+			projection.maximumPostProjectionResidualPerS,recomputed);
+		const FireProductionAcceptedManifoldToken& token=acceptedManifoldToken_;
+		return token.available_&&FireProductionResidentStepEligibleForAcceptedManifoldToken(*this)&&
+			std::isfinite(representedTimeStepS)&&representedTimeStepS>0.0f&&
+			std::isfinite(maximumManifoldGeneration)&&maximumManifoldGeneration>=0.0&&
+			std::isfinite(maximumAcceptedManifoldDeviation)&&
+			maximumAcceptedManifoldDeviation>=0.0&&
+			maximumAcceptedManifoldDeviation<=ManifoldLowMachValidityCeiling&&
+			plateauDiagnosticsValid&&recomputed.mechanismPassed&&
+			requiredRestorationDrainFraction==recomputed.requiredDrainFraction&&
+			deliveredRestorationDrainFraction==recomputed.deliveredDrainFraction&&
+			restorationResidualBandPerS==recomputed.maximumPostResidualPerS&&
+			token.representedTimeStepS_==static_cast<double>(representedTimeStepS)&&
+			token.maximumGeneration_==maximumManifoldGeneration&&
+			token.maximumAcceptedDeviation_==maximumAcceptedManifoldDeviation&&
+			token.requiredDrainFraction_==requiredRestorationDrainFraction&&
+			token.deliveredDrainFraction_==deliveredRestorationDrainFraction&&
+			token.maximumPostResidualPerS_==restorationResidualBandPerS&&
+			token.physicalMaximumPreResidualPerS_==
+				physicalProjection.maximumPreProjectionResidualPerS&&
+			token.physicalMaximumPostResidualPerS_==
+				physicalProjection.maximumPostProjectionResidualPerS&&
+			token.payloadDigest_==FireProductionAcceptedManifoldPayloadDigest(*this)&&
+			token.acceptedStateDigestVersion_==2u&&
+			token.acceptedStateDigest_==FireProductionAcceptedStatePayloadDigestFast(
+				acceptedShape,conservativeValues,projection.momentumKGPerM2S,
+				projection.velocityMPerS);
+	}
+
 	bool PublishFireProductionAcceptedManifoldObservation(
 		const double acceptedStepS,
 		FireProductionResidentStepResult& acceptedStep,
@@ -364,8 +398,7 @@ namespace RISE
 			acceptedStep.projection.maximumPreProjectionResidualPerS,
 			acceptedStep.projection.maximumPostProjectionResidualPerS,recomputed);
 		const FireProductionAcceptedManifoldToken& token=acceptedStep.acceptedManifoldToken_;
-		if(!token.available_||
-			!FireProductionResidentStepEligibleForAcceptedManifoldToken(acceptedStep)||
+		if(!acceptedStep.AcceptedManifoldTokenMatchesCurrentPayload()||
 			!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
 			!std::isfinite(acceptedStep.representedTimeStepS)||
 			acceptedStep.representedTimeStepS<=0.0f||

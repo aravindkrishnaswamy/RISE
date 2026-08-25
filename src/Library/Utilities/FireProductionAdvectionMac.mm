@@ -2406,6 +2406,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		result=FireProductionResidentStepResult();
 		bool plateauRefused=false;
 		try {
+			auto markPhase=[&](const char* phase){if(structuredError)*structuredError=phase;};
 			const char* manifoldProbeActivation=std::getenv(
 				"RISE_FIRE_MANIFOLD_TIMESTEP_PROBE");
 			if( manifoldProbeActivation&&std::strcmp(manifoldProbeActivation,"1")!=0 ) {
@@ -2637,9 +2638,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			timestepVelocityAuditValidatedMS=timestepVelocityAuditMS();
 			FireProductionMetalDualMomentumStaticState dualStatic;
 			timestepVelocityAuditDualStaticMS=timestepVelocityAuditValidatedMS;
+			markPhase("production resident step failed while acquiring Metal context");
 			MetalRemapContext& context=Context();
 			if( !context.Valid() ) return false;
 			@autoreleasepool {
+				markPhase("production resident step failed while allocating resident buffers");
 				const std::size_t cellValueBytes=9u*cells*sizeof(float);
 				const std::size_t packedFaceBytes=allFaces*sizeof(float);
 				std::vector<float> packedFaceSource(allFaces,0.0f);
@@ -2710,6 +2713,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				if( closeAdvectiveAnomaly&&!recordOwner(manifoldPredictorReduction) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) if(
 					!recordOwner(velocityStage[axis])||!recordOwner(velocityPrivate[axis]) ) return false;
+				markPhase("production resident step failed while uploading resident inputs");
 				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
 				id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;if( !blit ) return false;
 				[blit copyFromBuffer:cellStage sourceOffset:0 toBuffer:cellPrivate destinationOffset:0 size:cellValueBytes];
@@ -2734,6 +2738,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				std::array<bool,3> preparationSucceeded={{false,false,false}};
 				std::array<std::string,3> preparationError;
 				std::array<double,3> preparationWallMS={{0.0,0.0,0.0}};
+				markPhase("production resident step failed while preparing independent resident stages");
 				auto prepareIndependent=[&](const unsigned int task) {
 					const auto start=std::chrono::steady_clock::now();
 					if(task==0u)preparationSucceeded[task]=
@@ -2767,6 +2772,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
 				dualInput.packedMomentum=force.packedMomentumKGPerM2S;
 				dualInput.faceByteOffset=force.faceByteOffset;
+				markPhase("production resident step failed during dual-momentum remap");
 				FireProductionMetalDualMomentumResidentResult dual;
 				if( !RemapFireProductionDualMomentumMetalResident(request.dualTransport,dualStatic,
 					dualInput,dual,structuredError) ) return false;
@@ -2781,6 +2787,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					length:sizeof(packedFaceCount) options:MTLResourceStorageModeShared];
 				if( !recordOwner(projectedDensity)||!recordOwner(sourceGridParameter)||
 					!recordOwner(sourceFaceParameter) ) return false;
+				markPhase("production resident step failed while applying resident sources");
 				const std::uint64_t beginningCommits=MetalCommandCommitCount;
 				const std::uint64_t beginningReads=MetalHostBufferReadCount;
 				id<MTLCommandBuffer> sourceCommand=TrackedMetalCommandBuffer(context.queue);
@@ -2811,6 +2818,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					anomalyCorrectorSourceDeviceStartTimeS=0.0,
 					anomalyCorrectorSourceDeviceEndTimeS=0.0;
 				if( closeAdvectiveAnomaly ) {
+					markPhase("production resident step failed during advective-anomaly prediction");
 					std::memset([manifoldPredictorReduction contents],0,3u*sizeof(std::uint32_t));
 					id<MTLCommandBuffer> predictorCommand=TrackedMetalCommandBuffer(context.queue);
 					id<MTLComputeCommandEncoder> predictorEncoder=
@@ -2874,6 +2882,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					timestepVelocityAuditRestorationMS=timestepVelocityAuditPhysicalMS;
 				} else {
 					FireProductionMetalProjectionResidentState physicalState;
+					markPhase("production resident step failed during physical projection");
 					if( !ProjectFireProductionMetalResidentState(projectionRequest,projectionInput,
 						physicalState,physicalProjection,structuredError) ) return false;
 					timestepVelocityAuditPhysicalMS=timestepVelocityAuditMS();
@@ -2939,6 +2948,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
 					timestepVelocityAuditRestorationMS=timestepVelocityAuditMS();
 				}
+				markPhase("production resident step failed while publishing resident terminal state");
 				const std::size_t manifoldReductionOffset=cellValueBytes+2u*packedFaceBytes;
 				const std::size_t manifoldReductionBytes=3u*sizeof(std::uint32_t);
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:
@@ -3010,6 +3020,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					return false;
 				}
 				timestepVelocityAuditTerminalValidationMS=timestepVelocityAuditMS();
+				markPhase("production resident step failed while validating resident terminal state");
 				const bool enforcePlateau=request.enforceManifoldPlateau&&
 					!restorationRemoved&&!plateauEvidenceEnabled;
 				float maximumManifoldGenerationFloat=0.0f,maximumTerminalDeviationFloat=0.0f;

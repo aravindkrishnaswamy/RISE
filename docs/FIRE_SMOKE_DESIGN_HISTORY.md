@@ -3937,12 +3937,15 @@ it was already tried and refuted here.
   accepted token.  Its next limiter prediction is
   `5.5690890514272363e-4 s`.  No floor-aware analytic corrector is added.
   The accepted/retry/rejected disposition and shared cap are production-owned;
-  every candidate can advance or accept. The equal-time campaign owner only
+  every in-range candidate can advance or accept. Candidate range is checked
+  before increment, and acceptance revalidates the producer token against the
+  current complete payload, closing overflow and post-attempt mutation aliases.
+  The equal-time campaign owner only
   regenerates the sealed target at the production-selected retry duration.
 
   The earlier `323 ms` value is retained only as an uncalibrated pilot.  The
-  same-binary controlled serial wall p95 is `230.814416 ms`; production-parallel
-  p95 is `152.84999999999999 ms`, a `33.777966450761035%` reduction.  A versioned,
+  same-binary controlled serial wall p95 is `229.521625 ms`; production-parallel
+  p95 is `151.894375 ms`, a `33.821322936346412%` reduction.  A versioned,
   order-sensitive, field-tagged/length-delimited live-state digest preserves
   the legacy checkpoint digest; independent digest fields and owner validation
   run in parallel.  Dual-static/force/cell preparation and the independent
@@ -3952,10 +3955,10 @@ it was already tried and refuted here.
   guarded by exact-247 serial/parallel payload equivalence.
 
   The corrected device quantity is the queue-DAG span, not a sum of overlapping
-  command durations.  Final accepted p95 is `119.62524999398738/152.84999999999999 ms`
-  device-span/wall, with paired residual p95 `35.136583422683174 ms`, and the
+  command durations.  Final accepted p95 is `117.86270828451961/151.894375 ms`
+  device-span/wall, with paired residual p95 `34.631833361461759 ms`, and the
   tier-10 x 25 s projection is
-  `1.4916308851678779/1.9059168596042195 h`.  The verbatim normalized replay
+  `1.4696534042399729/1.89400098260743 h`.  The verbatim normalized replay
   lines are retained beside and SHA-bound by the certificate. This clears the earlier two-hour
   stop class but misses the approximately `1.3 h` target; the residual remains
   named critical-path work, and source maps will add device time. Durable evidence is

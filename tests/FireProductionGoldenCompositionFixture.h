@@ -2066,6 +2066,16 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				coldDeliveredDrain,burningEvidence.generationField/coldEvidence.generationField);
 			return exact?253:254;
 		}
+		// The equal-time target and its digests are sealed above.  The two full
+		// binary64 reference payloads are no longer inputs to a limited production
+		// attempt; release them before allocating the 1.63-GiB resident Metal owner.
+		if(limitedClosure){
+			oracle=ConservativeAdvance3DResult();oracleSerial=ConservativeAdvance3DResult();
+			std::vector<float>().swap(equalTimeTerminalTarget);
+			std::vector<float>().swap(equalTimeSerialTerminalTarget);
+			std::vector<ConservativeVector>().swap(conservative);
+			std::vector<MethaneSourcePacket>().swap(zeroPackets);
+		}
 		RISE::FireProductionResidentStepResult production;
 		const auto productionWallStart=std::chrono::steady_clock::now();
 		const bool productionSucceeded=longShadow?
@@ -2296,8 +2306,38 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				}
 				const bool controllerAccepted=attemptDisposition==
 					RISE::FireProductionResidentStepAttemptDisposition::Accepted;
+				bool laterAcceptanceIndexIndependent=true,mutatedAcceptedPayloadRejected=true,
+					capAcceptedPayloadRejected=true,overflowAcceptedPayloadRejected=true;
+				if(controllerAccepted&&productionSucceeded){
+					unsigned int redCandidate=0u;double redStep=0.0;
+					laterAcceptanceIndexIndependent=
+						RISE::ClassifyFireProductionResidentStepAttempt(2u,production,
+							redCandidate,redStep)==
+						RISE::FireProductionResidentStepAttemptDisposition::Accepted;
+					capAcceptedPayloadRejected=RISE::ClassifyFireProductionResidentStepAttempt(
+						RISE::FireStepRejectionRetryCap,production,redCandidate,redStep)==
+						RISE::FireProductionResidentStepAttemptDisposition::Rejected;
+					overflowAcceptedPayloadRejected=
+						RISE::ClassifyFireProductionResidentStepAttempt(
+							std::numeric_limits<unsigned int>::max(),production,
+							redCandidate,redStep)==
+						RISE::FireProductionResidentStepAttemptDisposition::Rejected;
+					RISE::FireProductionResidentStepResult mutated=production;
+					if(mutated.conservativeValues.empty())mutatedAcceptedPayloadRejected=false;
+					else{
+						std::uint32_t bits=0u;std::memcpy(&bits,&mutated.conservativeValues[0],
+							sizeof(bits));++bits;std::memcpy(&mutated.conservativeValues[0],&bits,
+							sizeof(bits));
+						mutatedAcceptedPayloadRejected=
+							RISE::ClassifyFireProductionResidentStepAttempt(
+								effectiveManifoldRetryCandidate,mutated,redCandidate,redStep)==
+							RISE::FireProductionResidentStepAttemptDisposition::Rejected;
+					}
+				}
 				const bool retryAccepted=effectiveManifoldRetryCandidate>0u&&productionSucceeded&&
 					controllerAccepted&&
+					laterAcceptanceIndexIndependent&&mutatedAcceptedPayloadRejected&&
+					capAcceptedPayloadRejected&&overflowAcceptedPayloadRejected&&
 					followingStepDerived&&
 					production.manifoldPlateauPassed&&production.HasAcceptedManifoldToken()&&
 					effectiveManifoldRetryCandidate==1u&&
@@ -2333,9 +2373,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						"accepted_token=1 golden=%s\n",effectiveManifoldRetryCandidate,
 						static_cast<double>(production.representedTimeStepS),fieldMaximum,
 						PlateauHeadroomAllowance,followingManifoldStep,checkpointDigest);
-					return 206;
 				}
-				if(controllerAccepted&&productionSucceeded){
+				if(controllerAccepted&&productionSucceeded&&
+					laterAcceptanceIndexIndependent&&mutatedAcceptedPayloadRejected&&
+					capAcceptedPayloadRejected&&overflowAcceptedPayloadRejected&&
+					(effectiveManifoldRetryCandidate!=1u||retryAccepted)){
 					std::fprintf(stderr,"DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED_GENERIC candidate=%u "
 						"dt=%.17g accepted_token=1\n",effectiveManifoldRetryCandidate,
 						static_cast<double>(production.representedTimeStepS));
@@ -2348,6 +2390,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						static_cast<double>(production.representedTimeStepS),followingManifoldStep,
 						nextRetryCandidate,
 						RISE::FireStepRejectionRetryCap);
+					// Recursive evaluation otherwise keeps the refused candidate's full
+					// resident payload and request alive while the next 1.63-GiB owner is
+					// allocated.  The next attempt reloads the shared golden beginning and
+					// rebuilds its independently sealed equal-time target.
+					production=RISE::FireProductionResidentStepResult();
+					request=RISE::FireProductionResidentStepRequest();
+					beginning=MethaneRunCheckpoint();
 					return RunProductionGoldenCompositionFixture(checkpointPath,snapshotDirectory,
 						nextRetryCandidate,followingManifoldStep);
 				}

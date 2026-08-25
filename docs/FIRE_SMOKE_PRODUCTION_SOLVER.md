@@ -3790,7 +3790,10 @@ strictly smaller drain-aware suggestion and only inside the same shared
 `ClassifyFireProductionResidentStepAttempt` is the production-owned
 accepted/retry/rejected disposition: it advances every refused candidate index,
 rejects the cap boundary, and accepts an authorized plateau pass at any
-candidate. The equal-time protocol owner remains responsible for rebuilding the
+candidate. Candidate range is checked before acceptance or increment, and an
+accepted disposition revalidates the producer token against the current
+diagnostics and complete payload, so unsigned wrap and post-attempt mutation
+both reject. The equal-time protocol owner remains responsible for rebuilding the
 independently sealed target before invoking the next attempt.
 This is more informed than blind halving and does not alter the hard ceiling or
 headroom allowance.  The r162 wording that step 1 is “already legal” meant
@@ -3815,8 +3818,8 @@ Host profiling is performed on the accepted candidate under
 `render_thread_reserve_count 0`.  The earlier `323 ms` observation was an
 uncalibrated pilot and is not used as the speedup denominator.  The controlled
 same-binary serial baseline samples are
-`230.814416,228.568917,229.079792,227.540083,227.738208 ms`; production-parallel
-samples are `152.694,152.783916,150.836416,152.85,149.951125 ms`.
+`229.521625,229.379792,228.151208,228.878583,226.056917 ms`; production-parallel
+samples are `149.6125,150.65625,151.756666,151.894375,151.023333 ms`.
 The optimization preserves field-tagged and length-delimited complete-payload
 authority while computing independent field digests in parallel, overlaps
 dual-static/force/cell preparation, and overlaps the independent corrector and
@@ -3826,11 +3829,11 @@ changes; exact-247 complete-payload equivalence is the invariant.
 
 After overlap, the device metric is the earliest-GPU-start to latest-GPU-end
 queue-DAG span, not the invalid sum of overlapping command durations.  Final
-accepted p95 is `119.62524999398738 ms` device span and `152.84999999999999 ms` wall;
-the paired residual p95 is `35.136583422683174 ms`.  For 25 s at the operating
-step, the projections are `1.4916308851678779 h` device-span and
-`1.9059168596042195 h` wall.  The controlled wall reduction is
-`33.777966450761035%`.  The raw replay lines are retained and SHA-bound beside
+accepted p95 is `117.86270828451961 ms` device span and `151.894375 ms` wall;
+the paired residual p95 is `34.631833361461759 ms`.  For 25 s at the operating
+step, the projections are `1.4696534042399729 h` device-span and
+`1.89400098260743 h` wall.  The controlled wall reduction is
+`33.821322936346412%`.  The raw replay lines are retained and SHA-bound beside
 the certificate. This clears the prior two-hour stop class but does not
 meet the approximately `1.3 h` target, so the residual remains named work
 toward device-bound execution.  Source maps are expected to increase device

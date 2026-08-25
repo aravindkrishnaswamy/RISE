@@ -448,6 +448,7 @@ namespace RISE
 		std::uint64_t payloadDigest_;
 		std::uint64_t acceptedStateDigest_;
 		unsigned int acceptedStateDigestVersion_;
+		friend struct FireProductionResidentStepResult;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
@@ -513,6 +514,9 @@ namespace RISE
 		FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
 		bool HasAcceptedManifoldToken() const { return acceptedManifoldToken_.Available(); }
+		//! Revalidates the producer-owned token against every mutable diagnostic and
+		//! payload byte before an owner may classify the attempt as accepted.
+		bool AcceptedManifoldTokenMatchesCurrentPayload() const;
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
@@ -564,11 +568,15 @@ namespace RISE
 			unsigned int& nextCandidateIndex,double& nextTimeStepS)
 	{
 		nextCandidateIndex=0u;nextTimeStepS=0.0;
-		if(attempted.manifoldPlateauPassed&&attempted.HasAcceptedManifoldToken())
+		if(candidateIndex>=FireStepRejectionRetryCap)
+			return FireProductionResidentStepAttemptDisposition::Rejected;
+		if(attempted.manifoldPlateauPassed&&
+			attempted.AcceptedManifoldTokenMatchesCurrentPayload())
 			return FireProductionResidentStepAttemptDisposition::Accepted;
 		const double represented=static_cast<double>(attempted.representedTimeStepS);
 		if(!attempted.manifoldPlateauPassed&&!attempted.HasAcceptedManifoldToken()&&
-			attempted.manifoldNextTimeStepAvailable&&candidateIndex+1u<
+			attempted.manifoldNextTimeStepAvailable&&candidateIndex<
+			FireStepRejectionRetryCap-1u&&candidateIndex+1u<
 			FireStepRejectionRetryCap&&represented>0.0&&std::isfinite(represented)&&
 			attempted.suggestedManifoldTimeStepS>0.0&&
 			std::isfinite(attempted.suggestedManifoldTimeStepS)&&
