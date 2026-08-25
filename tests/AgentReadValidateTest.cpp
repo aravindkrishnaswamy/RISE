@@ -2093,6 +2093,99 @@ static void RunSDFBlendScaleScanTest()
 	}
 }
 
+//----------------------------------------------------------------------
+// GPT slice item 4 (2026-08-24): DESIGN_ENV_REFLECTION, the env-
+// reflection advisory -- a low-roughness metallic pbr_metallic_
+// roughness_material bound to an object, coexisting with a strongly
+// saturated (HSV saturation >= 0.5) env dome bound as the rasterizer's
+// radiance_map.  Deliberately narrow (see the diagnostic code's own doc
+// comment): only a flat uniformcolor_painter dome, only pbr_metallic_
+// roughness_material with LITERAL metallic/roughness.
+//----------------------------------------------------------------------
+static void RunEnvReflectionScanTest()
+{
+	std::printf( "[design-note] GPT slice item 4: DESIGN_ENV_REFLECTION\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	// Shared scaffolding: a rasterizer binding `dome_pnt` as radiance_map,
+	// a sphere geometry, and a `metal_obj` bound to a
+	// pbr_metallic_roughness_material -- everything held fixed except the
+	// dome colour / metallic / roughness / binding under test.
+	auto Doc = []( const std::string& domeColor, const std::string& metallic,
+	              const std::string& roughness, bool bindMaterial ) {
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n"
+			"\tradiance_map dome_pnt\n}\n\n"
+			"uniformcolor_painter\n{\n\tname dome_pnt\n\tcolor " + domeColor + "\n}\n\n"
+			"uniformcolor_painter\n{\n\tname base_pnt\n\tcolor 0.02 0.02 0.02\n}\n\n"
+			"pbr_metallic_roughness_material\n{\n\tname metal_mat\n\tbase_color base_pnt\n"
+			"\tmetallic " + metallic + "\n\troughness " + roughness + "\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.5\n}\n\n";
+		if( bindMaterial )
+			s += "standard_object\n{\n\tname metal_obj\n\tgeometry sph\n\tmaterial metal_mat\n}\n";
+		return s;
+	};
+
+	{
+		// RED-PROVE: a strongly saturated dusk-blue dome (0.05 0.02 0.5,
+		// saturation 0.96) + a near-mirror metal (metallic 1.0,
+		// roughness 0.05) bound to an object.
+		const std::string doc = Doc( "0.05 0.02 0.5", "1.0", "0.05", /*bindMaterial=*/true );
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( doc );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_ENV_REFLECTION" );
+		Check( d != nullptr,
+		       "RED-PROVE: a saturated dusk-blue dome + a bound near-mirror metal fires "
+		       "DESIGN_ENV_REFLECTION" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "metal_mat" ) != std::string::npos, "...naming the material" );
+			Check( d->message.find( "dome_pnt" ) != std::string::npos, "...naming the dome painter" );
+			Check( d->message.find( "this is fine, ignore" ) != std::string::npos ||
+			       d->message.find( "fine -- ignore" ) != std::string::npos,
+			       "...self-disarming (a saturated dome can be the deliberate look)" );
+		}
+	}
+	{
+		// GREEN-PROVE: a pale, barely-saturated sky-blue dome (0.55 0.65
+		// 0.7, saturation ~0.214) -- same metal -- stays silent.
+		const std::string doc = Doc( "0.55 0.65 0.7", "1.0", "0.05", /*bindMaterial=*/true );
+		Check( !hasCode( AgentSession::ValidateText( doc ), "DESIGN_ENV_REFLECTION" ),
+		       "GREEN-PROVE: a pale, barely-saturated sky dome (saturation ~0.21) stays silent" );
+	}
+	{
+		// GREEN-PROVE: the SAME saturated dome, but the material is NOT
+		// metallic (metallic 0.0, ordinary dielectric) -- stays silent.
+		const std::string doc = Doc( "0.05 0.02 0.5", "0.0", "0.05", /*bindMaterial=*/true );
+		Check( !hasCode( AgentSession::ValidateText( doc ), "DESIGN_ENV_REFLECTION" ),
+		       "GREEN-PROVE: a saturated dome with a NON-metallic material (metallic 0.0) stays "
+		       "silent" );
+	}
+	{
+		// GREEN-PROVE: the SAME saturated dome + metal, but roughness is
+		// too high to read as a near-mirror (0.6) -- stays silent.
+		const std::string doc = Doc( "0.05 0.02 0.5", "1.0", "0.6", /*bindMaterial=*/true );
+		Check( !hasCode( AgentSession::ValidateText( doc ), "DESIGN_ENV_REFLECTION" ),
+		       "GREEN-PROVE: a saturated dome with a HIGH-roughness metal (0.6) stays silent" );
+	}
+	{
+		// GREEN-PROVE: the SAME saturated dome + qualifying metal, but it
+		// is never bound to any standard_object -- stays silent
+		// (materialObjectCounts gate).
+		const std::string doc = Doc( "0.05 0.02 0.5", "1.0", "0.05", /*bindMaterial=*/false );
+		Check( !hasCode( AgentSession::ValidateText( doc ), "DESIGN_ENV_REFLECTION" ),
+		       "GREEN-PROVE: a qualifying material that is never BOUND to an object stays silent" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -2473,22 +2566,31 @@ int main()
 			const JsonValue nullText = call( rpc, 102, "{\"text\":null}" );
 			Check( !nullText.has( "error" ) && nullText.get( "result" ).get( "headVersion" ).isObject(),
 			       "validate {text:null} reads as the no-argument head form" );
-			// ... but an EMPTY STRING does NOT.  PRESENCE of a string selects
-			// the text form; only OMISSION (or null) selects the head.  The
-			// empty candidate is answered HONESTLY -- EMPTY_DOCUMENT, not a
-			// clean verdict, and not a silent redirect to the head.
+			// ... and, as of the GPT-tolerance fix (2026-08-24), so does an
+			// EXPLICIT EMPTY STRING.  This REVERSES an earlier decision (see
+			// git history) that deliberately routed `{"text":""}` to the text
+			// form and reported EMPTY_DOCUMENT -- sound for a caller who
+			// TYPED an empty string on purpose, but the GPT wire transport's
+			// SDK convention fills every unset optional string with "" rather
+			// than omitting it, so a GPT-backed session could not express
+			// "no text" at all: it retried this exact call three times
+			// verbatim against a live, non-empty head, each time told its
+			// (unintended) empty candidate was empty.  Whitespace-only and
+			// comments-only strings are UNCHANGED below -- only the literal
+			// `""` is reinterpreted, which is the one shape that convention
+			// produces.
 			const JsonValue emptyText = call( rpc, 109, "{\"text\":\"\"}" );
 			Check( !emptyText.has( "error" ) &&
-			       emptyText.get( "result" ).get( "validated" ).asString() == "text",
-			       "validate {text:\"\"} takes the TEXT form -- presence of a string selects "
-			       "it, so an empty candidate is never silently rerouted to the head" );
-			Check( !emptyText.get( "result" ).has( "headVersion" ),
-			       "validate {text:\"\"} stamps NO headVersion (it validated a candidate)" );
-			Check( errorCount( emptyText ) == 1 &&
-			       emptyText.get( "result" ).get( "diagnostics" ).at( 0 ).get( "code" ).asString()
-			           == "EMPTY_DOCUMENT",
-			       "validate {text:\"\"} reports EMPTY_DOCUMENT -- never a 'clean' verdict on "
-			       "a non-document" );
+			       emptyText.get( "result" ).get( "validated" ).asString() == "head",
+			       "validate {text:\"\"} now takes the HEAD form -- an explicit empty string reads "
+			       "as absent, same as omission or null" );
+			Check( emptyText.get( "result" ).get( "headVersion" ).isObject(),
+			       "validate {text:\"\"} stamps a headVersion (it validated the live head, not a "
+			       "candidate)" );
+			Check( emptyText.get( "result" ).get( "diagnostics" ).size() ==
+			       noArg.get( "result" ).get( "diagnostics" ).size(),
+			       "validate {text:\"\"} reports the SAME diagnostics as validate {} -- byte-identical "
+			       "head form, not a distinct EMPTY_DOCUMENT verdict" );
 			// The SAME answer for every degenerate shape: whitespace-only and
 			// comments-only both round-trip and both derive with zero
 			// diagnostics, so emptiness is judged on chunk COUNT, not bytes.
@@ -2743,6 +2845,7 @@ int main()
 	RunAdoptionPolishScanTest();
 	RunMaterialsRealismScanTest();
 	RunSDFBlendScaleScanTest();
+	RunEnvReflectionScanTest();
 	RunUnboundMaterialAndFlatAlbedoScanTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );

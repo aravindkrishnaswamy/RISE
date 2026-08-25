@@ -290,6 +290,26 @@ namespace RISE
 			//! disarming, same bounded-list formatting as its siblings, no
 			//! volume gate (fires on the first offending joint).
 			static const char* const DESIGN_SDF_BLEND_SCALE = "DESIGN_SDF_BLEND_SCALE";
+			//! GPT slice item 4 (2026-08-24), THE ENV-REFLECTION ADVISORY:
+			//! a low-roughness (< 0.3) metallic (>= 0.7 literal `metallic`)
+			//! pbr_metallic_roughness_material, bound to at least one
+			//! object, coexisting with a strongly saturated (HSV
+			//! saturation >= kEnvReflectionSaturationGate, 0.5) env dome
+			//! bound as the rasterizer's `radiance_map` -- the "blue-blob
+			//! lamp" failure: dark painted metal mirrored a saturated dusk
+			//! dome into unrecognizability.  Deliberately narrow scope
+			//! (never a false positive from a case it cannot read): only a
+			//! FLAT `uniformcolor_painter` dome (an image/gradient/
+			//! procedural dome has no static "the colour" this scan can
+			//! read without deriving the scene) and only pbr_metallic_
+			//! roughness_material's `metallic`/`roughness` (the one kind
+			//! with an unambiguous 0..1 conductor fraction) with BOTH
+			//! bound to LITERAL numbers (a painter-bound, spatially
+			//! varying value is not a fact this static scan can read).
+			//! Severity::Info, self-disarming (a saturated dome CAN be the
+			//! deliberate look, unlike condition J's geometric-scale
+			//! fact), same bounded-list formatting as its siblings.
+			static const char* const DESIGN_ENV_REFLECTION = "DESIGN_ENV_REFLECTION";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

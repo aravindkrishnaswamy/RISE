@@ -1172,6 +1172,25 @@ namespace RISE
 			//! finds neither measured deficit, or the render did not
 			//! qualify for the scan at all.
 			std::string                note;
+			//! GPT slice item 1 (2026-08-24): the COVERAGE-DELTA advisory --
+			//! populated on the FIRST qualifying render (ApplyVisibilityCensus_'s
+			//! own gate: ok, renderMode production/draft, not isolate) AFTER a
+			//! propose_patch/propose_patches call APPLIED a framing-relevant
+			//! pinhole_camera/thinlens_camera parameter following a successful
+			//! `frame_scene` call this session (AgentSession::
+			//! mCameraFramingPatchedSinceBaseline).  Names, bounded, any object
+			//! that was ONSCREEN in frame_scene's own "after" measurement and is
+			//! NOT onscreen in THIS render's inventory -- the SAME inventory
+			//! ApplyVisibilityCensus_ already computes for `inventoryText`
+			//! below, read a second time rather than re-measured.  EMPTY (and
+			//! omitted from the wire result, same convention as `note`) when
+			//! nothing qualifies, OR when it did qualify but nothing dropped out
+			//! of frame -- a camera patch that keeps coverage gets no note.
+			//! This is a ONE-SHOT advisory: it fires once per triggering patch,
+			//! then the flag that arms it is cleared, whether or not anything
+			//! actually dropped -- a second render off the same patch (no new
+			//! camera edit in between) carries nothing.
+			std::string                coverageDeltaNote;
 			//! R1b (2026-08-09): honest facts about the agent-surface caps --
 			//! see AgentRenderParams::fromAgentSurface's doc.  Both default
 			//! false/0 and stay that way for EVERY render that didn't actually
@@ -9271,6 +9290,39 @@ namespace RISE
 			//! the camera arm, for mLightSceneRan's reason exactly.
 			bool mFrameSceneRan = false;
 
+			//! GPT slice item 1 (2026-08-24): the COVERAGE-DELTA note's
+			//! baseline -- the set of object names that were ONSCREEN in
+			//! FrameScene's own "after" measurement (the SAME
+			//! AgentSceneInventoryResult it already computes -- see
+			//! FrameScene's "THE AFTER MEASUREMENT" block; this is stamped
+			//! from THAT SAME `inv`, never a second identity pass).  Reused
+			//! rather than invented: this workstream exists because a later
+			//! camera patch can crop an object frame_scene had framed in,
+			//! and the model kept claiming success (trajectory
+			//! 20260824T224346Z: frame_scene covered the cat, a later
+			//! fov-42 patch cropped it, the render response said nothing,
+			//! and the model reported success anyway).
+			std::set<std::string> mFrameSceneBaselineCovered;
+			//! True once mFrameSceneBaselineCovered has been stamped by a
+			//! successful FrameScene "after" measurement.  Distinct from
+			//! mFrameSceneRan: that flag lifts unrelated camera-arm gates
+			//! the moment the call REACHES the provider, even on a
+			//! provider failure with nothing applied; this one requires
+			//! the after-measurement to have actually SUCCEEDED, which is
+			//! the one thing the coverage delta below is allowed to trust.
+			bool mFrameSceneHasCoverageBaseline = false;
+			//! True from the moment a propose_patch/propose_patches call
+			//! APPLIES a framing-relevant pinhole_camera/thinlens_camera
+			//! parameter (see CameraFramingParamNames_) while
+			//! mFrameSceneHasCoverageBaseline is true, until the NEXT
+			//! qualifying render (ApplyVisibilityCensus_'s own gate --
+			//! production/draft, ok, not isolate) reports on it and clears
+			//! this flag -- ONE note per triggering patch, not one on
+			//! every render thereafter.  A patch that does not apply
+			//! (staged, rejected, conflict) never sets this: the camera
+			//! has not actually moved in the live document.
+			bool mCameraFramingPatchedSinceBaseline = false;
+
 			//----------------------------------------------------------------
 			// ARC 83 SLICE 6 POSTSCRIPT (2026-08-14): frame_scene now runs
 			// AFTER populate_scene.  The owner's dragon+wizard run (journal
@@ -9361,6 +9413,72 @@ namespace RISE
 			//! it is gating.  An unresolvable target is NOT a camera -- under-
 			//! refusing is the correct direction of error for a phase rule.
 			bool PatchTargetIsCamera_( const std::string& target, const std::string& kind ) const;
+
+			//! GPT slice item 1 (2026-08-24): PatchTargetIsCamera_'s resolver,
+			//! but returning the RESOLVED chunk keyword instead of a bool --
+			//! the coverage-delta hook needs to know WHICH camera kind a
+			//! bare-`target` or `kind:"camera"` patch actually landed on,
+			//! since the framing-relevant parameter SET differs by kind
+			//! (pinhole's `fov` vs thinlens's `focal_length`/`sensor_size`).
+			//! Same two routes as PatchTargetIsCamera_, same resolver
+			//! (RISE::Cst::DocFindByNameAnyRole) -- so this cannot resolve
+			//! differently from the edit it is describing.  Returns "" when
+			//! `kind` already names a specific non-generic keyword (the
+			//! caller already knows it) or when nothing resolves to a
+			//! camera at all.
+			std::string ResolveCameraPatchKind_( const std::string& target, const std::string& kind ) const;
+
+			//! GPT slice item 1: ProposePatch's real body, renamed so the
+			//! public entry point can wrap it with
+			//! NoteCameraFramingPatchIfQualifying_ without threading that
+			//! call through every one of this function's early-return
+			//! branches (bans, confirmations, phase refusals, the several
+			//! chunk-resolution routes) -- the wrapper sees the ONE
+			//! `AgentPatchResult` every route eventually produces, so it
+			//! cannot miss a route or double-count one.  Byte-identical
+			//! behaviour to before this split; see ProposePatch's own doc
+			//! comment for everything this does.
+			AgentPatchResult ProposePatchImpl_( const AgentSetPatch& patch );
+
+			//! GPT slice item 1: the coverage-delta note's camera-patch
+			//! detector, called after EVERY ProposePatch call (applied or
+			//! not) via the ProposePatch wrapper.  A no-op unless ALL of:
+			//! the patch actually APPLIED (a staged/rejected/conflicted
+			//! patch never moved the live camera), a coverage baseline
+			//! exists (mFrameSceneHasCoverageBaseline -- frame_scene ran
+			//! and its after-measurement succeeded), the patch resolves to
+			//! pinhole_camera or thinlens_camera specifically (scope: the
+			//! two kinds FrameScene itself ever produces), and `patch.param`
+			//! is one of that kind's framing-relevant parameters (location /
+			//! lookat / up / orientation / pitch / roll / yaw / theta / phi /
+			//! target_orientation, plus `fov` for pinhole or `focal_length` /
+			//! `sensor_size` for thinlens -- see CameraFramingParamNames_).
+			//! Sets mCameraFramingPatchedSinceBaseline; never clears it --
+			//! only ApplyVisibilityCensus_'s own render-side consumption
+			//! does that, so several qualifying patches in a row before the
+			//! next render still yield exactly one note off the CURRENT
+			//! state, not one per patch.
+			void NoteCameraFramingPatchIfQualifying_( const AgentSetPatch& patch, bool applied );
+
+			//! GPT slice item 1: the framing-relevant parameter names for
+			//! ONE camera kind, cross-checked against that kind's REAL
+			//! descriptor (DescriptorForKeyword) so a future rename of any
+			//! of these can only ever narrow this set, never silently keep
+			//! comparing against a name the parser no longer accepts.
+			//! Deliberately EXCLUDES exposure / scanning_rate / pixel_rate /
+			//! iso / fstop (pinhole) and every thinlens DOF/tilt-shift
+			//! parameter (aperture_*, focus_distance, tilt_*, shift_*) --
+			//! those change how the frame LOOKS, not WHAT IS IN IT, which is
+			//! the one fact this note is honest about measuring.
+			static const std::set<std::string>& CameraFramingParamNames_( const std::string& cameraKind );
+
+			//! GPT slice item 1: builds `rr.coverageDeltaNote` from the
+			//! ALREADY-COMPUTED inventory `inv` (ApplyVisibilityCensus_'s own
+			//! `inv` -- never a second identity pass) against
+			//! mFrameSceneBaselineCovered.  Called only when
+			//! mCameraFramingPatchedSinceBaseline is true; always clears
+			//! that flag (one-shot) regardless of whether anything dropped.
+			void ApplyCoverageDeltaNote_( const AgentSceneInventoryResult& inv, AgentRenderResult& rr );
 
 			//! Arc 83 slice 6: the scene's ACTIVE camera chunk, as the
 			//! retained CST holds it.  `outKeyword` is its chunk keyword,

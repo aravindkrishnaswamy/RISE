@@ -3337,6 +3337,17 @@ namespace RISE
 			//! above the real-defect floor.
 			static const double kSizeMismatchGate = 3.0;
 
+			//! GPT slice item 4 (2026-08-24, the env-reflection advisory):
+			//! HSV saturation ( (max-min)/max ) an env dome's flat colour
+			//! must clear before condition K's low-roughness-metallic
+			//! pairing fires.  0.5 -- calibrated by walking the in-tree
+			//! corpus's uniformcolor_painter-domed IBL scenes (see the
+			//! Fix's own commit message for the numbers): intentional,
+			//! moderately-warm/blue domes (a soft studio fill, a pale sky)
+			//! sit below this; the deliberately vivid "dusk"/saturated-hue
+			//! domes this note targets sit above it.
+			static const double kEnvReflectionSaturationGate = 0.5;
+
 			//! The blend-scale law's per-primitive "characteristic
 			//! dimension" -- the smallest local extent that a k comparable
 			//! to it would dissolve.  Reuses SDFGeometry::SDFPrim's OWN
@@ -3838,6 +3849,7 @@ namespace RISE
 				bool conditionH = false;   //!< doc 91: every colour-carrying material slot is a flat constant
 				bool conditionI = false;   //!< materials-realism item 4: briefed-vs-bound (glass/liquid-NAMED but opaque-bound) mismatch
 				bool conditionJ = false;   //!< the blend-scale law (db9a88a9): an sdf_geometry smin joint whose k dissolves the part it joins
+				bool conditionK = false;   //!< GPT slice item 4: a low-roughness metallic material coexists with a strongly saturated env dome
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -3950,6 +3962,18 @@ namespace RISE
 				//! it through !empty(); the clause formatter reads it
 				//! bounded (same FormatBoundedNameList_ convention).
 				std::vector<std::string> blendScaleOffenders;
+
+				//! GPT slice item 4: pbr_metallic_roughness_material names
+				//! with literal metallic>=0.7, roughness<0.3, bound to at
+				//! least one object, coexisting with a saturated env dome
+				//! bound as the rasterizer's radiance_map.  Condition K
+				//! reads it through !empty(); the clause formatter reads it
+				//! bounded.
+				std::vector<std::string> envReflectionMaterialNames;
+				//! The env dome painter's own name + measured saturation, for
+				//! the clause text.  Only meaningful when conditionK is true.
+				std::string envDomePainterName;
+				double      envDomeSaturation = 0.0;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -4380,6 +4404,16 @@ namespace RISE
 				                          std::map<std::string, std::string> params; };
 				std::vector<PendingMaterial_> pendingMaterials;
 
+				// -- Condition K accumulators (GPT slice item 4, 2026-08-24) --
+				// the env-reflection advisory: a low-roughness metallic
+				// material coexisting with a strongly saturated environment
+				// dome.  Collected during the SAME walk, resolved afterwards
+				// (the rasterizer's `radiance_map` binding and the painter it
+				// names can appear in any document order).
+				std::string  radianceMapPainterName;   // from the (one) rasterizer chunk that binds it
+				std::map<std::string, std::array<double, 3> > uniformColorPainters;   // name -> RGB
+				std::vector<std::string> metallicCandidateNames;   // pbr_metallic_roughness_material names: literal metallic>=0.7, roughness<0.3
+
 				// -- Condition C accumulators (88) -------------------------
 				// Keyed by the object's BINDING signature (every param except
 				// `name` and the five transform params), so two objects land in
@@ -4502,6 +4536,71 @@ namespace RISE
 								c.paramErodedChunkNames.push_back( nm->second );
 						}
 						continue;
+					}
+					// Condition K (GPT slice item 4): a flat-colour env dome --
+					// the ONE painter shape this scan can read a colour out of
+					// without deriving the scene (an image/gradient/procedural
+					// dome has no static "the colour" to read, so those are
+					// deliberately out of scope -- this condition simply never
+					// fires for them, never guesses).
+					if( role == "uniformcolor_painter" ) {
+						const std::string nm = ChunkParamString_( item, "name" );
+						const std::string colorStr = ChunkParamString_( item, "color" );
+						double rC = 0, gC = 0, bC = 0;
+						if( !nm.empty() && std::sscanf( colorStr.c_str(), "%lf %lf %lf", &rC, &gC, &bC ) == 3 )
+							uniformColorPainters[nm] = { rC, gC, bC };
+						// NOT `continue;` -- review-round catch: an EARLIER
+						// draft of this branch continued here, which skipped
+						// the generic `d->category == ChunkCategory::Painter`
+						// registration further down this loop
+						// (painterKinds[pname] = role) that condition H's
+						// flat-albedo classification depends on for EVERY
+						// uniformcolor_painter in the document, not just a
+						// radiance_map's dome.  Red-proved: restoring the
+						// `continue` here reproduces CONDITION H's two RED-
+						// PROVE/FIRING-PIN failures exactly.
+					}
+					// Condition K: which painter (if any) the scene's
+					// rasterizer binds as its `radiance_map` -- the env
+					// dome.  Only rasterizer-category chunks declare this
+					// param at all (RasterizerAcceptsRadianceMap_'s doc);
+					// asked of the descriptor so a non-rasterizer chunk that
+					// happens to share a param name can never be mistaken
+					// for one.  Assumes ONE rasterizer per document (the
+					// scene-format convention every other single-rasterizer
+					// read in this file already assumes); a later one wins,
+					// matching "last chunk of a kind wins" elsewhere.
+					{
+						const ChunkDescriptor* rd = DescriptorForKeyword( String( role.c_str() ) );
+						if( rd && rd->category == ChunkCategory::Rasterizer ) {
+							const std::string rm = ChunkParamString_( item, "radiance_map" );
+							if( !rm.empty() ) radianceMapPainterName = rm;
+						}
+					}
+					// Condition K: a LOW-ROUGHNESS METALLIC candidate --
+					// pbr_metallic_roughness_material is the one kind whose
+					// `metallic` is an unambiguous 0..1 conductor fraction;
+					// other kinds (ggx/ward/schlick/...) have no equivalent
+					// "how metallic" scalar to read, so they are out of
+					// scope here, same "never guess" rule as the painter
+					// case above.  Only a LITERAL numeric roughness/metallic
+					// qualifies -- a painter-bound (spatially varying) one
+					// is not a fact this static scan can read, so it is
+					// silently skipped rather than assumed constant.
+					if( role == "pbr_metallic_roughness_material" ) {
+						const std::string nm = ChunkParamString_( item, "name" );
+						const std::string metallicStr  = ChunkParamString_( item, "metallic" );
+						const std::string roughnessStr = ChunkParamString_( item, "roughness" );
+						if( !nm.empty() && LooksNumeric( metallicStr ) && LooksNumeric( roughnessStr ) ) {
+							const double metallicVal  = std::strtod( metallicStr.c_str(), nullptr );
+							const double roughnessVal = std::strtod( roughnessStr.c_str(), nullptr );
+							if( metallicVal >= 0.7 && roughnessVal < 0.3 )
+								metallicCandidateNames.push_back( nm );
+						}
+						// NOT `continue;` -- pbr_metallic_roughness_material
+						// still needs to reach the SAME material-census /
+						// pendingMaterials logic every other material kind
+						// does, further down this loop.
 					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
 					// form here for the same reason the other three do -- it
@@ -4930,6 +5029,34 @@ namespace RISE
 				// nothing to flag once, unlike the "many similar small
 				// nits" conditions C/D/E which need one to avoid noise).
 				c.conditionJ = !c.blendScaleOffenders.empty();
+
+				// Condition K (GPT slice item 4): resolve the rasterizer's
+				// radiance_map painter, measure its saturation, and pair
+				// it with any bound low-roughness metallic material.
+				// kEnvReflectionSaturationGate is calibrated against the
+				// corpus -- see its own doc comment for the numbers.
+				if( !radianceMapPainterName.empty() && !metallicCandidateNames.empty() ) {
+					const std::map<std::string, std::array<double, 3> >::const_iterator dome =
+						uniformColorPainters.find( radianceMapPainterName );
+					if( dome != uniformColorPainters.end() ) {
+						const double rD = dome->second[0], gD = dome->second[1], bD = dome->second[2];
+						const double maxC = std::max( rD, std::max( gD, bD ) );
+						const double minC = std::min( rD, std::min( gD, bD ) );
+						const double saturation = ( maxC > 0.0 ) ? ( maxC - minC ) / maxC : 0.0;
+						if( saturation >= kEnvReflectionSaturationGate ) {
+							for( const std::string& matName : metallicCandidateNames ) {
+								const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( matName );
+								if( oc != materialObjectCounts.end() && oc->second > 0 )
+									c.envReflectionMaterialNames.push_back( matName );
+							}
+							if( !c.envReflectionMaterialNames.empty() ) {
+								c.envDomePainterName = radianceMapPainterName;
+								c.envDomeSaturation  = saturation;
+							}
+						}
+					}
+				}
+				c.conditionK = !c.envReflectionMaterialNames.empty();
 
 				// (88 S5) Condition D's resolution pass -- ONE predicate, read by
 				// the note AND by AgentSession::VaryMaterial.
@@ -5390,6 +5517,26 @@ namespace RISE
 					"self-scales by the joint radius.";
 			}
 
+			//! GPT slice item 4: condition K's clause.  SHARED by the note
+			//! and the diagnostic, same discipline as every other clause
+			//! formatter here.
+			std::string FormatEnvReflectionClause_( const std::vector<std::string>& materialNames,
+			                                        const std::string& domePainterName,
+			                                        double saturation )
+			{
+				const bool plural = materialNames.size() != 1;
+				char satBuf[32];
+				std::snprintf( satBuf, sizeof( satBuf ), "%.2f", saturation );
+				return std::to_string( materialNames.size() ) + " low-roughness metallic material" +
+					( plural ? std::string( "s" ) : std::string() ) + " (" + FormatBoundedNameList_( materialNames ) +
+					") " + ( plural ? std::string( "mirror" ) : std::string( "mirrors" ) ) +
+					" the env dome `" + domePainterName + "` (saturation " + satBuf + ") into the shot -- a "
+					"strongly saturated dome reflected off a near-mirror surface can read as unrecognizable "
+					"colour rather than the material's own look. A neutral or less-saturated dome, or a "
+					"higher roughness on " + ( plural ? std::string( "these materials" ) : std::string( "this material" ) ) +
+					", keeps the reflection legible.";
+			}
+
 			//! RETURNS empty iff NO condition fires (the "omit the note
 			//! entirely when clean" convention -- see AgentSkillResult::note
 			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
@@ -5405,7 +5552,7 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI && !c.conditionJ ) return std::string();
+				    !c.conditionI && !c.conditionJ && !c.conditionK ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -5478,6 +5625,10 @@ namespace RISE
 				if( c.conditionJ ) {
 					note += " " + FormatSDFBlendScaleClause_( c.blendScaleOffenders );
 				}
+				if( c.conditionK ) {
+					note += " " + FormatEnvReflectionClause_( c.envReflectionMaterialNames,
+					                                          c.envDomePainterName, c.envDomeSaturation );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -5514,7 +5665,7 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI && !c.conditionJ ) return;
+				    !c.conditionI && !c.conditionJ && !c.conditionK ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -5648,6 +5799,20 @@ namespace RISE
 					// mechanics fact, not a styling judgement -- there is no
 					// "deliberately simple" reading of a dissolved ear.
 					d.message  = FormatSDFBlendScaleClause_( c.blendScaleOffenders );
+					out.push_back( d );
+				}
+				if( c.conditionK ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_ENV_REFLECTION;
+					// SHARED formatter -- cannot drift from the note's K
+					// clause.  kSelfDisarm APPENDED: unlike condition J, a
+					// saturated dome CAN be exactly what the user asked for
+					// (a deliberate dusk/sunset look), so this needs the
+					// same anti-churn escape conditions A/B/.../I carry.
+					d.message  = FormatEnvReflectionClause_( c.envReflectionMaterialNames,
+					                                        c.envDomePainterName, c.envDomeSaturation ) +
+						kSelfDisarm;
 					out.push_back( d );
 				}
 			}
@@ -5870,7 +6035,19 @@ namespace RISE
 			}
 		}
 
+		//! GPT slice item 1 (2026-08-24): thin wrapper -- see
+		//! ProposePatchImpl_'s doc comment for why the split exists.  This is
+		//! the ONLY place that calls NoteCameraFramingPatchIfQualifying_ for
+		//! the single-patch verb; ProposePatches (below) calls THIS wrapper
+		//! per element, so the batch form is covered for free.
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
+		{
+			AgentPatchResult r = ProposePatchImpl_( patch );
+			NoteCameraFramingPatchIfQualifying_( patch, r.applied );
+			return r;
+		}
+
+		AgentPatchResult AgentSession::ProposePatchImpl_( const AgentSetPatch& patch )
 		{
 			// Doc 90 slice R2 (2026-08-23): the revision ring's MUTATING-VERB
 			// capture point -- record the head this edit is about to move
@@ -12377,6 +12554,138 @@ namespace RISE
 			if( id == 0 ) return false;
 			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, id );
 			return it && IsCameraKeyword_( it->role );
+		}
+
+		std::string AgentSession::ResolveCameraPatchKind_( const std::string& target,
+		                                                   const std::string& kind ) const
+		{
+			// Route (1): the caller already named a SPECIFIC keyword -- use
+			// it verbatim, same as PatchTargetIsCamera_'s route (1), except
+			// the generic "camera" constraint resolves nothing on its own
+			// (it says "some camera", not which one) and falls through to
+			// route (2) same as an empty kind would.
+			if( IsCameraKeyword_( kind ) ) return kind;
+
+			// Route (2): the document, for a bare name -- OR, when
+			// `kind=="camera"`, the UNNAMED-SINGLETON FALLBACK an empty
+			// `target` takes at the real patch-resolution sites (`const bool
+			// uniqueFallback = ( kind == "camera" );`, repeated at every one
+			// of them -- ProposePatch's own resolution, RenameChunk's,
+			// InsertChunk's admissibility check, ...).  Matching that flag
+			// here is what makes `{kind:"camera", target:""}` -- the shape
+			// TestComposePhaseFirstCameraRefusal and this fix's own tests
+			// both use, and the shape an unnamed-camera scene's ordinary
+			// re-aim patch takes -- resolve to a kind here instead of
+			// silently never arming the note for the common case.
+			IJobPriv* job = mJob;
+			if( !job ) return std::string();
+			const RISE::Cst::Document* doc = job->GetCstDocument();
+			if( !doc ) return std::string();
+			const bool uniqueFallback = ( kind == "camera" );
+			if( target.empty() && !uniqueFallback ) return std::string();
+			int occ = 0;
+			const RISE::Cst::NodeId id =
+				RISE::Cst::DocFindByNameAnyRole( *doc, target, &occ, kind, uniqueFallback );
+			if( id == 0 ) return std::string();
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, id );
+			if( !it || !IsCameraKeyword_( it->role ) ) return std::string();
+			return it->role;
+		}
+
+		const std::set<std::string>& AgentSession::CameraFramingParamNames_( const std::string& cameraKind )
+		{
+			// Built ONCE per kind, first call -- these are the descriptor's
+			// OWN parameter names, never re-typed: the curated candidate
+			// list below picks which of AddCameraCommonParams' shared pose
+			// params (plus each kind's own field-of-view control) actually
+			// change WHAT IS IN FRAME, then keeps only the ones the real
+			// descriptor still declares -- so a future rename can only ever
+			// shrink this set, never leave it silently comparing against a
+			// name the parser no longer accepts.
+			static const std::set<std::string> kEmpty;
+			static std::map<std::string, std::set<std::string>> cache;
+			const std::map<std::string, std::set<std::string>>::const_iterator hit = cache.find( cameraKind );
+			if( hit != cache.end() ) return hit->second;
+
+			std::set<std::string> candidates = {
+				"location", "lookat", "up",
+				"orientation", "pitch", "roll", "yaw",
+				"theta", "phi", "target_orientation",
+			};
+			if( cameraKind == "pinhole_camera" || cameraKind == "onb_pinhole_camera" ) {
+				candidates.insert( "fov" );
+			} else if( cameraKind == "thinlens_camera" ) {
+				// Thinlens has no `fov` param -- focal_length/sensor_size
+				// derive its field of view instead (ChunkParserRegistry.cpp's
+				// thinlens_camera descriptor).  Deliberately EXCLUDES
+				// focus_distance/aperture_*/tilt_*/shift_* -- those are DOF
+				// and lens-correction controls that change how the frame
+				// looks, not what is in it.
+				candidates.insert( "focal_length" );
+				candidates.insert( "sensor_size" );
+			} else {
+				// Out of scope for this fix (fisheye_camera/orthographic_
+				// camera/a kind FrameScene never produces) -- no candidates,
+				// so NoteCameraFramingPatchIfQualifying_ never fires for one.
+				return cache.emplace( cameraKind, kEmpty ).first->second;
+			}
+
+			std::set<std::string> filtered;
+			const ChunkDescriptor* d = DescriptorForKeyword( String( cameraKind.c_str() ) );
+			if( d ) {
+				for( const std::string& name : candidates ) {
+					for( std::size_t i = 0; i < d->parameters.size(); ++i ) {
+						if( d->parameters[i].name == name ) { filtered.insert( name ); break; }
+					}
+				}
+			}
+			return cache.emplace( cameraKind, filtered ).first->second;
+		}
+
+		void AgentSession::NoteCameraFramingPatchIfQualifying_( const AgentSetPatch& patch, bool applied )
+		{
+			if( !applied ) return;                            // staged/rejected: the live camera did not move
+			if( !mFrameSceneHasCoverageBaseline ) return;      // nothing to compare a delta against
+			const std::string resolvedKind = ResolveCameraPatchKind_( patch.target, patch.kind );
+			if( resolvedKind != "pinhole_camera" && resolvedKind != "thinlens_camera" ) return;
+			const std::set<std::string>& framing = CameraFramingParamNames_( resolvedKind );
+			if( framing.find( patch.param ) == framing.end() ) return;
+			mCameraFramingPatchedSinceBaseline = true;
+		}
+
+		void AgentSession::ApplyCoverageDeltaNote_( const AgentSceneInventoryResult& inv, AgentRenderResult& rr )
+		{
+			// One-shot: this render is the ONE report a triggering patch
+			// gets, whether or not anything actually dropped out of frame.
+			mCameraFramingPatchedSinceBaseline = false;
+
+			std::vector<std::string> dropped;
+			std::set<std::string> stillOnScreen;
+			for( std::size_t i = 0; i < inv.entries.size(); ++i ) {
+				if( inv.entries[i].onScreen ) stillOnScreen.insert( inv.entries[i].name );
+			}
+			for( const std::string& name : mFrameSceneBaselineCovered ) {
+				if( stillOnScreen.find( name ) == stillOnScreen.end() ) dropped.push_back( name );
+			}
+			if( dropped.empty() ) return;   // coverage held -- no note (the pin: "keeps coverage -> no note")
+
+			std::sort( dropped.begin(), dropped.end() );
+			const bool plural = dropped.size() != 1;
+			const std::size_t cap = 3;
+			std::string list;
+			const std::size_t shown = ( dropped.size() > cap ) ? cap : dropped.size();
+			for( std::size_t i = 0; i < shown; ++i ) {
+				if( i ) list += ", ";
+				list += "`" + dropped[i] + "`";
+			}
+			if( shown < dropped.size() ) list += ", and " + std::to_string( dropped.size() - shown ) + " more";
+
+			rr.coverageDeltaNote =
+				"COVERAGE DELTA: this render's camera no longer covers " +
+				std::to_string( dropped.size() ) + " object" + ( plural ? std::string( "s" ) : std::string() ) +
+				" that frame_scene's own after-measurement had in frame (" + list + ") -- a camera patch applied "
+				"since then cropped " + ( plural ? std::string( "them" ) : std::string( "it" ) ) + " out. "
+				"If that was not the intent, re-check the camera's location/lookat/fov/orientation.";
 		}
 
 		std::string AgentSession::CheckFrameSceneBeforeCameraEdit_( const char* verb,
@@ -25779,6 +26088,15 @@ namespace RISE
 			rr.inventoryPassHeight  = inv.passHeight;
 			rr.inventoryText        = inv.text;
 			rr.inventoryNotAreaSampled = inv.notAreaSampled;
+
+			// GPT slice item 1 (2026-08-24): the coverage-delta note, off
+			// this SAME `inv` -- this function's own qualification rule
+			// (above) is EXACTLY the render this note is meant to ride, so
+			// no separate gate is needed.  A no-op unless a qualifying
+			// camera-framing patch is pending (mCameraFramingPatchedSince
+			// Baseline); see ApplyCoverageDeltaNote_'s own doc for the
+			// one-shot consumption.
+			if( mCameraFramingPatchedSinceBaseline ) ApplyCoverageDeltaNote_( inv, rr );
 		}
 
 		void AgentSession::ApplyTonalFact_( const AgentRenderParams& params, AgentRenderResult& rr )
@@ -29897,6 +30215,18 @@ namespace RISE
 						else if( f->second && !inv.entries[i].onScreen )
 							out.pushedOutOfFrame.push_back( inv.entries[i].name );
 					}
+					// GPT slice item 1 (2026-08-24): stamp the coverage-delta
+					// baseline off this SAME `inv` -- no second identity pass.
+					// A fresh FrameScene call re-stamps a fresh baseline and
+					// disarms any pending delta from a patch applied before
+					// it (this new framing supersedes whatever the last one
+					// measured).
+					mFrameSceneBaselineCovered.clear();
+					for( std::size_t i = 0; i < inv.entries.size(); ++i ) {
+						if( inv.entries[i].onScreen ) mFrameSceneBaselineCovered.insert( inv.entries[i].name );
+					}
+					mFrameSceneHasCoverageBaseline = true;
+					mCameraFramingPatchedSinceBaseline = false;
 				}
 			}
 

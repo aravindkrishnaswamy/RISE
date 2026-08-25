@@ -18983,6 +18983,233 @@ static void TestFrameSceneWireShape()
 	}
 }
 
+//----------------------------------------------------------------------
+// GPT SLICE ITEM 1 (2026-08-24): THE COVERAGE-DELTA NOTE.  When a
+// propose_patch/propose_patches call APPLIES a framing-relevant
+// pinhole_camera/thinlens_camera parameter AFTER frame_scene has run this
+// session, the NEXT qualifying render's result auto-attaches a note naming
+// any object frame_scene's own "after" measurement had onscreen that is no
+// longer onscreen.  The fix for the cropped-cat + false-claim failure
+// (trajectory 20260824T224346Z): frame_scene covered the cat, a later
+// fov-42 patch cropped it, and the render response carried nothing -- the
+// model reported success anyway.
+//----------------------------------------------------------------------
+
+//! Two spheres well apart on X, sized and positioned so a WIDE camera (fov
+//! 60 at z=6) covers both and a NARROW one (fov 10, same location) covers
+//! only the centred one -- verified by hand: at z=6, half-width = 6*tan(halfFov).
+//! Wide: 6*tan(30) = 3.46, comfortably clears side_obj's far edge (2.2+0.5=2.7).
+//! Narrow: 6*tan(5) = 0.52, clears center_obj's edge (0.3) and excludes
+//! side_obj's near edge (2.2-0.5=1.7) by a wide margin.
+static const char* const kCoverageDeltaScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam1\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_center\n\tradius 0.3\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_side\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname center_obj\n\tgeometry sph_center\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname side_obj\n\tgeometry sph_side\n\tmaterial mat\n\tposition 2.2 0 0\n}\n\n"
+	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0 0 1\n}\n";
+
+//! frame_scene's answer: pull back to z=6, widen to fov 60 -- covers BOTH
+//! objects, establishing the baseline the later crop patch violates.
+static const char* const kCoverageDeltaWideAnswer =
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n";
+
+static Agent::AgentRenderResult CoverageDeltaTestRender( Agent::AgentSession& sess )
+{
+	Agent::AgentRenderParams rp;
+	rp.width = 48; rp.height = 48; rp.samples = 2;
+	return sess.Render( rp );
+}
+
+//! GPT/1a: RED-PROVE -- the crop case.  frame_scene establishes a baseline
+//! covering both objects; a later `{kind:"camera"}` fov patch (the SAME
+//! unnamed-singleton resolution shape TestComposePhaseFirstCameraRefusal
+//! uses) crops side_obj out.  Also proves the note is ONE-SHOT.
+static void TestCoverageDeltaNoteAfterCameraPatch()
+{
+	std::printf( "GPT/1a: coverage-delta note after a camera patch that crops an object...\n" );
+	const std::string tmp = TempPath( "agentcrud_gpt1a.RISEscene" );
+	Job* pJob = LoadScene( kCoverageDeltaScene, tmp );
+	Check( pJob != nullptr, "GPT/1a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
+	sess->SetTextCompleter( MakeFakeCompleter( { kCoverageDeltaWideAnswer } ) );
+
+	const Agent::AgentSession::AgentFrameSceneResult fr = sess->FrameScene();
+	Check( fr.ok, "GPT/1a frame_scene succeeds (the wide framing)" );
+	Check( fr.coveredAfter >= 2,
+	       "GPT/1a the wide framing covers BOTH objects (got " + std::to_string( fr.coveredAfter ) + ")" );
+
+	{
+		Agent::AgentSetPatch p;
+		p.target = "cam1";
+		p.kind   = "camera";
+		p.param  = "fov";
+		p.value  = "10";
+		const Agent::AgentPatchResult pr = sess->ProposePatch( p );
+		Check( pr.applied, "GPT/1a the cropping patch applies" );
+
+		const Agent::AgentRenderResult rr = CoverageDeltaTestRender( *sess );
+		Check( rr.ok, "GPT/1a the render succeeds" );
+		Check( !rr.coverageDeltaNote.empty(),
+		       "GPT/1a MONEY ASSERTION: the render response carries a coverage-delta note -- the "
+		       "cropped-cat failure this fixes was silent here" );
+		Check( rr.coverageDeltaNote.find( "side_obj" ) != std::string::npos,
+		       "GPT/1a ...naming the object that dropped out of frame" );
+		Check( rr.coverageDeltaNote.find( "center_obj" ) == std::string::npos,
+		       "GPT/1a ...and NOT the object that is still in frame" );
+	}
+
+	// ONE-SHOT: a second render off the SAME patch (no new camera edit in
+	// between) carries nothing.
+	{
+		const Agent::AgentRenderResult rr2 = CoverageDeltaTestRender( *sess );
+		Check( rr2.ok && rr2.coverageDeltaNote.empty(),
+		       "GPT/1a the note is ONE-SHOT -- a second render off the same patch carries nothing" );
+	}
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! GPT/1b GREEN-PROVE (the brief's own pin): a camera patch that KEEPS
+//! coverage gets no note.
+static void TestNoCoverageDeltaNoteWhenCoverageHolds()
+{
+	std::printf( "GPT/1b: no coverage-delta note when the patch keeps coverage...\n" );
+	const std::string tmp = TempPath( "agentcrud_gpt1b.RISEscene" );
+	Job* pJob = LoadScene( kCoverageDeltaScene, tmp );
+	Check( pJob != nullptr, "GPT/1b fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
+	sess->SetTextCompleter( MakeFakeCompleter( { kCoverageDeltaWideAnswer } ) );
+
+	const Agent::AgentSession::AgentFrameSceneResult fr = sess->FrameScene();
+	Check( fr.ok && fr.coveredAfter >= 2, "GPT/1b frame_scene establishes the wide baseline" );
+
+	Agent::AgentSetPatch p;
+	p.target = "cam1";
+	p.kind   = "camera";
+	p.param  = "fov";
+	p.value  = "62";   // a trivial widen -- keeps both objects in frame
+	const Agent::AgentPatchResult pr = sess->ProposePatch( p );
+	Check( pr.applied, "GPT/1b the widening patch applies" );
+
+	const Agent::AgentRenderResult rr = CoverageDeltaTestRender( *sess );
+	Check( rr.ok, "GPT/1b the render succeeds" );
+	Check( rr.coverageDeltaNote.empty(),
+	       "GPT/1b MONEY ASSERTION: a camera patch that KEEPS coverage gets NO note (the brief's own "
+	       "pin: \"camera patch that keeps coverage -> no note\")" );
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! GPT/1c GREEN-PROVE, made GENUINELY FALSIFIABLE: a patch on a NON-
+//! FRAMING camera param (`exposure`) never arms the note.  A plain
+//! before/after render comparison here would be VACUOUS -- exposure does
+//! not move the camera, so no render after an exposure-only patch could
+//! ever show a coverage drop regardless of whether the filter is doing
+//! its job, which would let this test pass for the wrong reason (the
+//! exact class of failure this codebase's own conventions call out by
+//! name). So after the exposure patch, this BYPASSES ProposePatch
+//! entirely -- RemoveChunk + InsertChunk, the SAME two calls FrameScene's
+//! own "replace" path uses, neither of which is wrapped by
+//! NoteCameraFramingPatchIfQualifying_ -- to crop the camera WITHOUT
+//! going through the hook this fix adds. If the exposure patch had
+//! incorrectly armed mCameraFramingPatchedSinceBaseline, THIS render
+//! would still report the drop (the flag plus a genuine coverage change
+//! is all ApplyVisibilityCensus_'s gate needs); since it does not, the
+//! exposure patch really left the flag clear.
+static void TestNoCoverageDeltaNoteOnNonFramingParam()
+{
+	std::printf( "GPT/1c: a non-framing camera param never arms the coverage-delta note...\n" );
+	const std::string tmp = TempPath( "agentcrud_gpt1c.RISEscene" );
+	Job* pJob = LoadScene( kCoverageDeltaScene, tmp );
+	Check( pJob != nullptr, "GPT/1c fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
+	sess->SetTextCompleter( MakeFakeCompleter( { kCoverageDeltaWideAnswer } ) );
+
+	const Agent::AgentSession::AgentFrameSceneResult fr = sess->FrameScene();
+	Check( fr.ok, "GPT/1c frame_scene establishes the baseline" );
+
+	Agent::AgentSetPatch p;
+	p.target = "cam1";
+	p.kind   = "camera";
+	p.param  = "exposure";
+	p.value  = "0.01";
+	const Agent::AgentPatchResult pr = sess->ProposePatch( p );
+	Check( pr.applied, "GPT/1c the exposure patch applies" );
+
+	// The BYPASS: replace the (still wide, fov 60) camera with a cropped
+	// one via RemoveChunk + InsertChunk -- neither call runs through
+	// ProposePatch, so neither can set mCameraFramingPatchedSinceBaseline
+	// itself.  If the render below still stayed silent, the ONLY way that
+	// happens is if the exposure patch above never armed the flag either.
+	{
+		const Agent::AgentChunkResult rem = sess->RemoveChunk( "cam1", "pinhole_camera" );
+		Check( rem.applied, "GPT/1c bypass: the wide camera is removed directly (not via ProposePatch)" );
+		const Agent::AgentChunkResult ins = sess->InsertChunk(
+			"pinhole_camera\n{\n\tname cam1\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n" );
+		Check( ins.applied, "GPT/1c bypass: the cropped camera is inserted directly (not via ProposePatch)" );
+	}
+
+	const Agent::AgentRenderResult rr = CoverageDeltaTestRender( *sess );
+	Check( rr.ok, "GPT/1c the render succeeds" );
+	// Sanity: the bypass really did crop the frame -- the inventory shows
+	// side_obj no longer onscreen (0 px), so this render is exercising a
+	// genuinely changed picture, not a no-op that would look silent
+	// either way.
+	Check( rr.inventoryText.find( "side_obj" ) != std::string::npos,
+	       "GPT/1c sanity: side_obj still appears in the inventory (as a 0px entry)" );
+	Check( rr.coverageDeltaNote.empty(),
+	       "GPT/1c MONEY ASSERTION: a non-framing param (exposure) never arms the note -- proven "
+	       "genuinely, not vacuously: the SAME crop that fires GPT/1a's note stays silent here "
+	       "because it arrived through a route the exposure patch never touched" );
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! GPT/1d GREEN-PROVE: a camera patch BEFORE frame_scene has ever run (no
+//! baseline exists yet) never arms the note.  A PLAIN, ungated session --
+//! not A82ComposeSession -- so this isolates the coverage-delta mechanism
+//! from frame_scene's own, SEPARATE camera-arm phase gate (which only
+//! engages under the build-plan protocol A82ComposeSession sets up, and
+//! would otherwise refuse this patch for an unrelated reason).
+static void TestNoCoverageDeltaNoteWithoutFrameSceneBaseline()
+{
+	std::printf( "GPT/1d: no coverage-delta note without a frame_scene baseline...\n" );
+	const std::string tmp = TempPath( "agentcrud_gpt1d.RISEscene" );
+	Job* pJob = LoadScene( kCoverageDeltaScene, tmp );
+	Check( pJob != nullptr, "GPT/1d fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	// frame_scene deliberately never called.
+
+	Agent::AgentSetPatch p;
+	p.target = "cam1";
+	p.kind   = "camera";
+	p.param  = "fov";
+	p.value  = "10";
+	const Agent::AgentPatchResult pr = sess->ProposePatch( p );
+	Check( pr.applied, "GPT/1d the fov patch applies (no build-plan camera-arm gate is engaged on "
+	       "this plain session)" );
+
+	const Agent::AgentRenderResult rr = CoverageDeltaTestRender( *sess );
+	Check( rr.ok && rr.coverageDeltaNote.empty(),
+	       "GPT/1d no frame_scene baseline exists yet, so the note never arms" );
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
 //! A83Q (2026-08-14 postscript): THE ORDERING ARM -- frame_scene frames what
 //! the scene CONTAINS, so it is itself refused in COMPOSE while
 //! populate_scene has not yet reached the provider.  The owner's
@@ -19507,6 +19734,12 @@ int main()
 	TestFrameSceneCapabilityAndCap();
 	TestFramingExampleParses();
 	TestFrameSceneWireShape();
+
+	// GPT slice item 1 (2026-08-24): the coverage-delta note.
+	TestCoverageDeltaNoteAfterCameraPatch();
+	TestNoCoverageDeltaNoteWhenCoverageHolds();
+	TestNoCoverageDeltaNoteOnNonFramingParam();
+	TestNoCoverageDeltaNoteWithoutFrameSceneBaseline();
 
 	// Arc 83 slice 6 postscript (2026-08-14): frame_scene now runs AFTER
 	// populate_scene -- the seventh arm on the shared phase-refusal counter.

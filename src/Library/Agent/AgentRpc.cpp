@@ -711,6 +711,11 @@ namespace RISE
 				// objectmap/view-mode render).
 				if( !rr.note.empty() )
 					result.set( "note", JsonValue::MakeString( rr.note ) );
+				// GPT slice item 1 (2026-08-24): the coverage-delta advisory --
+				// same omit-when-empty convention as `note` above.  See
+				// AgentRenderResult::coverageDeltaNote's doc.
+				if( !rr.coverageDeltaNote.empty() )
+					result.set( "coverageDeltaNote", JsonValue::MakeString( rr.coverageDeltaNote ) );
 				// G1 (2026-08-10) `render{isolate:}`: the measured facts about
 				// an isolated render, under ONE nested key.  CONDITIONAL --
 				// present ONLY when isolation actually applied AND the render
@@ -1742,16 +1747,54 @@ namespace RISE
 							"Invalid params: 'text' must be a string when supplied "
 							"(omit it entirely to validate the current scene)" );
 					}
-					// PRESENCE of a string selects the text form; only
-					// OMISSION (or an explicit null) selects the head.  An
-					// empty candidate is a VALID candidate -- it just is not a
-					// valid scene, and ValidateText says so with an
-					// EMPTY_DOCUMENT diagnostic.  (Reading "" as ABSENT here
-					// instead was the wrong lever: it dodged the "clean verdict
-					// on a non-document" lie by silently validating something
-					// the caller did not ask about, and made `{"text":""}` fail
-					// outright when no scene is loaded.)
-					const bool haveText = ( text != nullptr && text->isString() );
+					// PRESENCE of a NON-EMPTY string selects the text form;
+					// OMISSION, an explicit null, OR an explicit empty string
+					// selects the head.
+					//
+					// This reverses an earlier decision (see git history) that
+					// deliberately made `{"text":""}` take the text form and
+					// report EMPTY_DOCUMENT.  That reasoning was sound for a
+					// caller that TYPED an empty string on purpose -- but the
+					// GPT wire transport's tool-calling SDK convention fills
+					// EVERY optional string parameter it isn't using with ""
+					// rather than omitting it, so a GPT-backed session cannot
+					// express "no text" at all: every `validate` call arrives
+					// as `{"text":""}`, taking the text form, and reporting
+					// EMPTY_DOCUMENT no matter what the live document holds --
+					// observed retrying the IDENTICAL call three times
+					// verbatim, apparently unable to tell "I asked for text
+					// validation and my empty string was rejected" from "I
+					// asked to validate the live head and it says EMPTY_
+					// DOCUMENT", because from that transport's side those two
+					// requests are byte-identical.
+					//
+					// There is no genuine caller-visible loss: an ACTUAL empty
+					// candidate has exactly one possible verdict either way
+					// (EMPTY_DOCUMENT), so a caller who really means "validate
+					// nothing" learns nothing this reroute would have told
+					// them that the head form does not already say just as
+					// well (EMPTY_DOCUMENT again, if the head itself is
+					// empty).  Whitespace-only and comments-only candidates
+					// are UNCHANGED -- they are non-empty STRINGS, so they
+					// still take the text form and still report EMPTY_
+					// DOCUMENT; only the literal `""` is reinterpreted, which
+					// is exactly the one shape a "fill unset optionals with
+					// empty string" SDK convention can produce.
+					//
+					// "" reads as absent ONLY when there is a LIVE DOCUMENT for
+					// it to be absent FROM -- a session with no scene loaded
+					// (or none at all) has nothing to fall back to, and the
+					// earlier decision's own worked example still applies
+					// there verbatim: routing an empty string to the no-head
+					// error path turns a valid, stateless `{"text":""}` call
+					// into a hard failure with no document in play to justify
+					// it.  So a headless/docless session keeps the pre-
+					// existing behaviour -- "" still takes the text form and
+					// reports EMPTY_DOCUMENT -- while a session WITH a live
+					// head gets the GPT-tolerance fix.
+					const bool emptyText  = ( text != nullptr && text->isString() && text->asString().empty() );
+					const bool hasHeadDoc = ( s != nullptr ) && s->ReadDocumentSnapshot().hasDocument;
+					const bool haveText   = ( text != nullptr && text->isString() && !( emptyText && hasHeadDoc ) );
 					// ONE renderer for both forms, so the two result shapes
 					// cannot drift apart field by field.
 					auto diagnosticsArray = []( const std::vector<AgentDiagnostic>& diags ) {
