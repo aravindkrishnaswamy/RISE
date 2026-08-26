@@ -3975,21 +3975,30 @@ int main()
 	setenv("RISE_FIRE_GOLDEN_LONG_SHADOW","1",1);
 	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST","disabled",1);
 	const bool zeroAnomalyProbePassed=zeroAnomalyVolumeBuilt&&
-		AdvanceFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyProbe,&error);
+		AttemptFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyProbe,&error);
 	if( zeroAnomalyProbePassed ) zeroAnomalyStep.beginningManifoldDeviationPerCell.assign(
 		zeroAnomalyCells,zeroAnomalyProbe.maximumAcceptedManifoldDeviation);
 	const bool zeroAnomalySinglePassed=zeroAnomalyProbePassed&&
-		AdvanceFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalySinglePass,&error);
+		AttemptFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalySinglePass,&error);
 	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
 	const bool zeroAnomalyClosurePassed=zeroAnomalySinglePassed&&
-		AdvanceFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyClosure,&error);
+		AttemptFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyClosure,&error);
 	unsetenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
-	Check(zeroAnomalyClosurePassed&&
+	const bool zeroAnomalyClosureNoOp=zeroAnomalyClosurePassed&&
 		zeroAnomalyClosure.maximumPredictedAdvectiveManifoldAnomaly==0.0&&
 		zeroAnomalyClosure.advectiveAnomalyClosurePassCount==1u&&
 		zeroAnomalyClosure.cellSubmapCount==5u&&
 		FireProductionAcceptedManifoldPayloadDigest(zeroAnomalySinglePass)==
-			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure),
+			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure);
+	if(!zeroAnomalyClosureNoOp)std::fprintf(stderr,"zero-anomaly detail probe=%d single=%d "
+		"closure=%d predicted=%.17g passes=%u submaps=%u digest=%llu/%llu error=%s\n",
+		zeroAnomalyProbePassed?1:0,zeroAnomalySinglePassed?1:0,
+		zeroAnomalyClosurePassed?1:0,zeroAnomalyClosure.maximumPredictedAdvectiveManifoldAnomaly,
+		zeroAnomalyClosure.advectiveAnomalyClosurePassCount,zeroAnomalyClosure.cellSubmapCount,
+		static_cast<unsigned long long>(FireProductionAcceptedManifoldPayloadDigest(
+			zeroAnomalySinglePass)),static_cast<unsigned long long>(
+			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure)),error.c_str());
+	Check(zeroAnomalyClosureNoOp,
 		"zero-anomaly closure skips the corrector and is byte-identical to the single-pass payload");
 	FireProductionResidentStepResult callerAuthoredObservationStep=composedGPU;
 	callerAuthoredObservationStep.maximumManifoldGeneration=1.0e-9;

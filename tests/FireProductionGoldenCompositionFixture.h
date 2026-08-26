@@ -2242,6 +2242,61 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			!production.manifoldPlateauPassed&&!production.HasAcceptedManifoldToken())){
 			std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
+		if(physicalRetryRED){
+			std::fprintf(stderr,"PHYSICAL_PROJECTION_RETRY_RED initial_cycles=12 "
+				"retry_count=%zu final_cycles=%u physical_valid=%d manifold_refused=%d "
+				"accepted_token=%d golden=%s\n",longShadowPhysicalRetryCount,
+				longShadowPhysicalRetryFinalCount,
+				production.physicalProjection.validationPassed?1:0,
+				(!productionSucceeded&&production.manifoldNextTimeStepAvailable&&
+					!production.manifoldPlateauPassed)?1:0,
+				production.HasAcceptedManifoldToken()?1:0,checkpointDigest);
+			return effectiveManifoldRetryCandidate==0u&&
+				longShadowPhysicalRetryCount>0u&&longShadowPhysicalRetryFinalCount>12u&&
+				production.physicalProjection.validationPassed&&
+				production.projection.validationPassed&&!productionSucceeded&&
+				production.manifoldNextTimeStepAvailable&&!production.manifoldPlateauPassed&&
+				!production.HasAcceptedManifoldToken()&&
+				DigestFile(checkpointPath)==checkpointDigest?209:202;
+		}
+		if(limitedClosure&&effectiveManifoldRetryCandidate>0u&&productionSucceeded&&
+			production.manifoldPlateauPassed&&!production.HasAcceptedManifoldToken()){
+			unsigned int ignoredCandidate=0u;double ignoredStep=0.0;
+			const double fieldMaximum=production.maximumAcceptedManifoldDeviation;
+			const bool exactMaterialAuthorityRefusal=effectiveManifoldRetryCandidate==1u&&
+				RISE::ClassifyFireProductionResidentStepAttempt(
+					effectiveManifoldRetryCandidate,production,ignoredCandidate,ignoredStep)==
+					RISE::FireProductionResidentStepAttemptDisposition::Rejected&&
+				static_cast<double>(production.representedTimeStepS)==
+					0.00055692793102934957&&
+				production.maximumPredictedAdvectiveManifoldAnomaly==
+					0.019709885120391846&&
+				production.maximumManifoldGeneration==0.023429989814758301&&
+				fieldMaximum==0.023429989814758301&&
+				equalTimeReferenceScheduleDigest==
+					"0db10079074f5006eff7b2f9e27b2b6f5fc2c2017d1d333c29264e113c03b08b"&&
+				equalTimeTerminalTargetDigest==
+					"cf67f48c2e6320404d7af6794c87966c4c199b3c652fdb5b62d849c691068bae"&&
+				fieldMaximum<=0.0234375&&fieldMaximum<0.03125&&
+				production.physicalProjection.validationPassed&&
+				production.projection.validationPassed&&
+				production.advectiveAnomalyClosurePassCount==2u&&
+				production.cellSubmapCount==10u&&production.dualSubmapCount==15u&&
+				production.sourceCommandCommitCount==2u&&
+				production.manifoldScalarDeviceToHostTransferCount==2u&&
+				production.interstageFullGridTransferCount==0u&&
+				DigestFile(checkpointPath)==checkpointDigest;
+			std::fprintf(stderr,"MATERIAL_MANIFOLD_AUTHORITY_REFUSAL candidate=%u "
+				"dt=%.17g schedule=%s terminal_target=%s G_eulerian=%.17g "
+				"field_max=%.17g plateau_passed=1 "
+				"accepted_token=0 ordinary_disposition=rejected golden=%s\n",
+				effectiveManifoldRetryCandidate,
+				static_cast<double>(production.representedTimeStepS),
+				equalTimeReferenceScheduleDigest.c_str(),
+				equalTimeTerminalTargetDigest.c_str(),
+				production.maximumManifoldGeneration,fieldMaximum,checkpointDigest);
+			return exactMaterialAuthorityRefusal?214:212;
+		}
 		double closureDeviceP95MS=0.0,closureWallP95MS=0.0;
 		if(longShadow&&!disabledClosure&&hostResidualProbe){
 			const std::uint64_t baselinePayload=
@@ -2369,6 +2424,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				const double wallProjectionHours=projectedSteps*closureWallP95MS/3600000.0;
 				const double followingManifoldStep=production.suggestedManifoldTimeStepS;
 				const bool followingStepDerived=production.manifoldNextTimeStepAvailable;
+				const char* timingStatus=hostResidualProbe?"measured":"unmeasured";
+				char deviceP95Text[64]="unmeasured",wallP95Text[64]="unmeasured";
+				char deviceHoursText[64]="invalid",wallHoursText[64]="invalid";
+				if(hostResidualProbe){
+					std::snprintf(deviceP95Text,sizeof(deviceP95Text),"%.17g",closureDeviceP95MS);
+					std::snprintf(wallP95Text,sizeof(wallP95Text),"%.17g",closureWallP95MS);
+					std::snprintf(deviceHoursText,sizeof(deviceHoursText),"%.17g",deviceProjectionHours);
+					std::snprintf(wallHoursText,sizeof(wallHoursText),"%.17g",wallProjectionHours);
+				}
 				std::fprintf(stderr,"EQUAL_TIME_LIMITED_PRODUCTION candidate=%u dt=%.17g reference_substeps=%zu "
 					"reference_substep_dt=%.17g reference_end=%.17g target_time=%.17g "
 					"schedule=%s terminal_target=%s predictor_G=%.17g G=%.17g field_max=%.17g "
@@ -2376,8 +2440,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					"initial_calibration=%d "
 					"headroom_allowance=%.17g low_mach_ceiling=%.17g headroom_met=%d "
 					"delivered_drain=%.17g next_dt_manifold=%.17g limiter_binding=1 "
-					"device_p95_ms=%.17g wall_p95_ms=%.17g tier10_device_hours=%.17g "
-					"tier10_wall_hours=%.17g passes=%u cell_submaps=%u dual_submaps=%u "
+					"timing_status=%s device_p95_ms=%s wall_p95_ms=%s "
+					"tier10_device_hours=%s tier10_wall_hours=%s "
+					"passes=%u cell_submaps=%u dual_submaps=%u "
 					"source_commits=%u scalar_reads=%u accepted_token=%d golden=%s\n",
 					effectiveManifoldRetryCandidate,
 					static_cast<double>(production.representedTimeStepS),
@@ -2390,31 +2455,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					0.00057953997747972608,0.024358630180358887,limitedStep,1,
 					PlateauHeadroomAllowance,LowMachValidityCeiling,
 					fieldMaximum<=PlateauHeadroomAllowance?1:0,
-					production.deliveredRestorationDrainFraction,followingManifoldStep,
-					closureDeviceP95MS,closureWallP95MS,deviceProjectionHours,
-					wallProjectionHours,production.advectiveAnomalyClosurePassCount,
+					production.deliveredRestorationDrainFraction,followingManifoldStep,timingStatus,
+					deviceP95Text,wallP95Text,deviceHoursText,wallHoursText,
+					production.advectiveAnomalyClosurePassCount,
 					production.cellSubmapCount,production.dualSubmapCount,
 					production.sourceCommandCommitCount,
 					production.manifoldScalarDeviceToHostTransferCount,
 					production.HasAcceptedManifoldToken()?1:0,
 					DigestFile(checkpointPath).c_str());
-				if(physicalRetryRED){
-					std::fprintf(stderr,"PHYSICAL_PROJECTION_RETRY_RED initial_cycles=12 "
-						"retry_count=%zu final_cycles=%u physical_valid=%d manifold_refused=%d "
-						"accepted_token=%d golden=%s\n",longShadowPhysicalRetryCount,
-						longShadowPhysicalRetryFinalCount,
-						production.physicalProjection.validationPassed?1:0,
-						(!productionSucceeded&&production.manifoldNextTimeStepAvailable&&
-							!production.manifoldPlateauPassed)?1:0,
-						production.HasAcceptedManifoldToken()?1:0,checkpointDigest);
-					return effectiveManifoldRetryCandidate==0u&&
-						longShadowPhysicalRetryCount>0u&&longShadowPhysicalRetryFinalCount>12u&&
-						production.physicalProjection.validationPassed&&
-						production.projection.validationPassed&&!productionSucceeded&&
-						production.manifoldNextTimeStepAvailable&&!production.manifoldPlateauPassed&&
-						!production.HasAcceptedManifoldToken()&&
-						DigestFile(checkpointPath)==checkpointDigest?209:202;
-				}
 				bool ordinaryAdvanceRefused=false;
 				if(effectiveManifoldRetryCandidate==0u){
 					RISE::FireProductionResidentStepResult ordinaryResult;

@@ -3997,16 +3997,19 @@ it was already tried and refuted here.
   `0.023434281349182129`.  Fresh review then invalidated the operating-point
   inference: the alleged advective dose was the Eulerian cellwise
   terminal-minus-beginning deviation and therefore included translation of an
-  already nonuniform plateau.  Accepted-state authority returns to the prior
-  conservative generation diagnostic until a material/transported baseline is
-  derived.
+  already nonuniform plateau.  That observable now has authority only when the
+  beginning deviation field is bit-exact zero or the complete transport
+  velocity is bit-exact at rest.  A moving nonuniform plateau remains tokenless
+  until a material/transported baseline is derived, and ordinary application
+  rejects it atomically even when the plateau and both projections pass.
 
   The `4.7152/6.0767 h` projection is withdrawn as well: it omitted the six
   refused attempts and used a prior single-attempt p95.  The measured final
-  accepted attempt alone implies `4.131755301914921/7.162223294085453 h`
-  lower bounds, not a complete retry-aware projection, and the raw record did
-  not bind each attempt's equal-time schedule/terminal target.  The observation
-  remains pinned as calibrating evidence only.
+  accepted attempt alone gives the conditional linear extrapolation
+  `4.131755301914921/7.162223294085453 h`, not a lower bound or a complete
+  retry-aware projection, and the raw record did not bind each attempt's
+  equal-time schedule/terminal target.  The observation remains pinned as
+  calibrating evidence only.
 
   A separate ownership repair is certified.  Exact exit 209 starts the
   physical open solve at 12 V-cycles, derives retries 12 -> 13 -> 14 from the

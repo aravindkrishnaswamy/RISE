@@ -58,6 +58,19 @@ namespace
 
 int main()
 {
+	std::array<std::vector<float>,3> zeroTransportVelocity;
+	for(std::vector<float>& axis:zeroTransportVelocity)axis.assign(2u,0.0f);
+	std::array<std::vector<float>,3> movingTransportVelocity=zeroTransportVelocity;
+	movingTransportVelocity[1][0]=1.0f;
+	Check(RISE::FireProductionEulerianGenerationHasMaterialAuthority(
+			std::vector<double>{0.0,0.0,0.0},movingTransportVelocity)&&
+		RISE::FireProductionEulerianGenerationHasMaterialAuthority(
+			std::vector<double>{0.0,0.125,0.0},zeroTransportVelocity)&&
+		!RISE::FireProductionEulerianGenerationHasMaterialAuthority(
+			std::vector<double>{0.0,0.125,0.0},movingTransportVelocity)&&
+		!RISE::FireProductionEulerianGenerationHasMaterialAuthority(
+			std::vector<double>(),zeroTransportVelocity),
+		"Eulerian generation is material only from zero beginning or exact rest");
 	unsigned int retryCandidate=0u;
 	double retryStep=0.0;
 	RISE::FireProductionResidentStepResult syntheticRetry;
@@ -1339,7 +1352,7 @@ int main()
 	Check(!drainAwareRetryEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(drainAwareRetryEvidence.begin(),
 			drainAwareRetryEvidence.end()))==
-		"cd55b3174e79ce712c87125aa1b8e6fe98d66d7c266915d0dc8cad0f0632894f"&&
+		"d00948b4025960eef1fc209dac62bdca9b909bd670441213dc45d80c38fe08a9"&&
 		drainAwareRetryEvidence.find("candidate_0_refusal_reproduced true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_represented_dt "
@@ -1391,7 +1404,7 @@ int main()
 			std::string::npos&&
 		drainAwareRetryEvidence.find("wall_target_met false")!=std::string::npos&&
 		drainAwareRetryEvidence.find("r136_retained_trace_digest "
-			"afe1d1c13dee2911027de433f8074a1097bcf36ba71355bdb21562915ab95caf")!=
+			"16bba8260bb71a7bc28e5af174efd970b189fa6404d252d755fe5bcd9d0baaf6")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("retry_acceptance_exact_exit 206")!=
 			std::string::npos&&
@@ -1414,15 +1427,14 @@ int main()
 			"be63f6fcd99666a1d2c611f4d06e6f082e9b3b4223216334a0dea9b2e2684d05"&&
 		goldenCompositionFixture.find("DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED")!=
 			std::string::npos&&
-		goldenCompositionFixture.find("return 206")!=std::string::npos&&
+		drainAwareRetryRawMeasurement.find("accepted_token=1")!=std::string::npos&&
 		productionSolverTest.find("r164 host-residual activation outside the limited "
 			"predictor path fails before Metal work")!=std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r164_drain_aware_retry")!=
 			std::string::npos&&
-		unixTestDriver.find("closure_limited_rc\" -eq 206")!=std::string::npos&&
-		unixTestDriver.find("PASS (exact exit=206, drain-aware retry acceptance)")!=
+		drainAwareRetryEvidence.find("retry_acceptance_exact_exit 206")!=
 			std::string::npos,
-		"r164 binds the drain-aware refusal retry, accepted plateau, and host profile");
+		"r164 historical bytes bind the drain-aware refusal retry, accepted plateau, and host profile");
 	const std::string operatingPointAudit=ReadText(
 		"rendered/fire_production_calibration/r165_accepted_long_shadow/"
 		"accepted_long_shadow_protocol.v1");
@@ -1432,10 +1444,10 @@ int main()
 	Check(!operatingPointAudit.empty()&&!operatingPointRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			operatingPointAudit.begin(),operatingPointAudit.end()))==
-			"d2f6cc698bbdc941b89b0f81816e2cce3aa449ed7147471537f1fdebcf403c8d"&&
+			"8d3c059efcafb9d7a2bda46a10bd30e8cb39825c060e578e2cf4abd4aa817400"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			operatingPointRaw.begin(),operatingPointRaw.end()))==
-			"c17ca88e405192f0f713333a06e131372840ed22f24014bccdf706f9b88b455a"&&
+			"72be807e6529adc9d56883fe47c82132d6bc9f2ac3f265738c31145ca5f9472b"&&
 		operatingPointAudit.find("status review_invalidated_before_long_shadow")!=
 			std::string::npos&&
 		operatingPointAudit.find("step2_first_candidate_field 0.062683582305908203")!=
@@ -1447,7 +1459,21 @@ int main()
 			std::string::npos&&
 		operatingPointAudit.find("equal_time_per_attempt_schedule_bound false")!=
 			std::string::npos&&
-		operatingPointAudit.find("limiter_observable_authority withdrawn")!=
+		operatingPointAudit.find("limiter_observable_authority "
+			"exact_zero_beginning_or_exact_transport_rest_only")!=
+			std::string::npos&&
+		operatingPointAudit.find("ordinary_advance_without_material_authority "
+			"atomically_refused")!=std::string::npos&&
+		operatingPointAudit.find("accepted_attempt_extrapolation_is_lower_bound false")!=
+			std::string::npos&&
+		operatingPointAudit.find("material_authority_refusal_exact_exit 214")!=
+			std::string::npos&&
+		operatingPointAudit.find("material_authority_refusal_replayed true")!=
+			std::string::npos&&
+		operatingPointAudit.find("material_authority_refusal_accepted_token false")!=
+			std::string::npos&&
+		operatingPointAudit.find("current_r136_trace_digest "
+			"fc67b2530ac93b03a244563ca731b1450a585d83110fee4edd0743453c8cd735")!=
 			std::string::npos&&
 		operatingPointAudit.find("physical_projection_retry_path 12_to_13_to_14")!=
 			std::string::npos&&
@@ -1462,15 +1488,17 @@ int main()
 			std::string::npos&&
 		operatingPointRaw.find("retry_attempt_costs_measured false")!=
 			std::string::npos&&
+		operatingPointRaw.find("accepted_attempt_extrapolation_is_lower_bound false")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-			"a1c1787f59adb602ff09105b1c69a7e69e9f4040a3bbbaf50444fb257b8705b8"&&
+			"755807952d9e3137103f0b0dfe155d145215cf6c5edf2f7e19f5bcbaca57eab0"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-			"d05d0cb4a7f276dd72b1028ea1328d3f411e52973dcfe47829449f1246354cb7"&&
+			"eef794a21e1b904567cda373d3aeb724b70db7a66b861828cb5a4382cd044daa"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"46ece0cb5f60aea130f32f024987223d6da8d88d9dbb98e221dfad30ef708e73"&&
+			"350f56363227bb5958047f118716fe9da8da353240c4e3905544fc5cfab6a895"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
 			"e657a44dd08b0b26c7674800ff0e15a28b996d1373f7f80cd57359fcd9475e42"&&
@@ -1482,25 +1510,25 @@ int main()
 			"bff3315513f88b51f5967c179dbd2995eaa9ab1ccb35a78d2ae223ae6a5f4871"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"1a2686868c8cdb9477295ebb8eeb3fba4f0ef0a12ab079545684ef82c5ea50f1"&&
+			"1743883ee9abc565de937fb71ccc3c7632746f19eddd6b4c1f1469d995a9f1fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"c743fd638fd9e3078f3a9140d5fb51e0607ffc5b49ba911cba713c45aebfc7ac"&&
+			"48a028fe3f7e1a7a1bce194cb7853a760bb0445f16e79cc4c22068b6e32b01b1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
+			"3ad0aa01eff0da32d9b3288baf810193058665c1ad0782945ce3fb75df68e9af"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 			"57feb2f93dd1af43afbd286a85b106a91d68d853bdd16865bc5b52919d933d1d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-			"ce0979cbb4252848b748780c8d500fdf560e51436873750c825186df48aa57dd"&&
+			"8993c8f7ab4e45934d83405499502d66214171b2ba99d3bb1ed47f9aa31c5a1a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-			"f4619bca0e8475081ce6cea7d3ecb49f52a1c4a521d372c0cbda6fd19b8fa527"&&
+			"79d4a499bccd54ec362787899962001bb4fd6f95452eb43d5e8365e508523f1a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"8d5cbe245141a4023fdd80e878d8b45c71da5fa9888fb10b28c055dee84acf9a"&&
+			"8ec329ffa9f436d4b39ea4d87758677a7fbe78e84159be9985347eef01668aeb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			mirrorAdapter.begin(),mirrorAdapter.end()))==
 			"50d3ebd37bd7fa193d967cacf5c8ce40038dd20ffffcbaddd2e54594a21e5bd7"&&
@@ -1508,6 +1536,11 @@ int main()
 			traceAdapterSource.begin(),traceAdapterSource.end()))==
 			"07164177f6d0c43c71a1a59511b7455d6738ff56bd9b0347899eb872a04d93ed"&&
 		goldenCompositionFixture.find("PHYSICAL_PROJECTION_RETRY_RED")!=
+			std::string::npos&&
+		goldenCompositionFixture.find("MATERIAL_MANIFOLD_AUTHORITY_REFUSAL")!=
+			std::string::npos&&
+		unixTestDriver.find("closure_limited_rc\" -eq 214")!=std::string::npos&&
+		unixTestDriver.find("PASS (exact exit=214, material manifold authority refusal)")!=
 			std::string::npos&&unixTestDriver.find(
 			"PASS (exact exit=209, physical-projection retry)")!=std::string::npos,
 		"r165 withdraws the invalid trajectory claim and binds the projection retry");

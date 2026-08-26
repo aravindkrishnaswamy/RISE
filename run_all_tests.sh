@@ -704,8 +704,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
-# r164 retains r162's contraction and stale-CFL controls, then requires the
-# predictive candidate to refuse and the drain-aware backstop retry to accept.
+# r165 retains r162's contraction and stale-CFL controls, then replays r164's
+# drain-aware retry.  The plateau-passing retry must now refuse accepted-state
+# authority because terminal-minus-beginning is Eulerian on a nonzero plateau.
 if [ "$(uname -s)" = "Darwin" ]; then
 	closure_name="FireSequenceTest.r164_drain_aware_retry"
 	closure_path="$BIN_DIR/FireSequenceTest"
@@ -737,7 +738,6 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT" >"$closure_contraction_log" 2>&1 || closure_contraction_rc=$?
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
 			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
-			RISE_FIRE_HOST_RESIDUAL_PROBE=1 \
 			RISE_OPTIONS_FILE="$closure_options" \
 			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_path" \
 			--fire-production-golden-composition \
@@ -759,7 +759,6 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT" >"$closure_contraction_log" 2>&1 || closure_contraction_rc=$?
 		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
 			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
-			RISE_FIRE_HOST_RESIDUAL_PROBE=1 \
 			RISE_OPTIONS_FILE="$closure_options" \
 			"$closure_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
@@ -770,7 +769,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT" >"$closure_controller_log" 2>&1 || closure_controller_rc=$?
 	fi
 	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_contraction_rc" -eq 217 ] &&
-		[ "$closure_limited_rc" -eq 206 ] && [ "$closure_controller_rc" -eq 204 ] &&
+		[ "$closure_limited_rc" -eq 214 ] && [ "$closure_controller_rc" -eq 204 ] &&
 		grep -Fq 'DRAIN_AWARE_RETRY_CONTROLLER_RED refused_candidate=1 next_candidate=2 cap=20 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_controller_log" &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
@@ -788,21 +787,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		grep -Fq 'DRAIN_AWARE_RETRY_GATE exact=1 retry_allowed=1 attempt_succeeded=0 ordinary_refused=1 diagnostics=1' "$closure_limited_log" &&
 		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY refused_candidate=0 refused_dt=0.00055762444389984012 field_max=0.023458600044250488 allowance=0.0234375 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20 ordinary_advance_refused=1 attempt_diagnostics=1' "$closure_limited_log" &&
 		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=0 refused_dt=0.00055762444389984012 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20' "$closure_limited_log" &&
-		grep -Fq 'HOST_RESIDUAL_SAMPLES candidate=0' "$closure_limited_log" &&
-		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION candidate=1 dt=0.00055692793102934957 reference_substeps=8 reference_substep_dt=6.9615991378668696e-05' "$closure_limited_log" &&
-		grep -Fq 'schedule=0db10079074f5006eff7b2f9e27b2b6f5fc2c2017d1d333c29264e113c03b08b terminal_target=cf67f48c2e6320404d7af6794c87966c4c199b3c652fdb5b62d849c691068bae predictor_G=0.019709885120391846 G=0.023429989814758301 field_max=0.023429989814758301' "$closure_limited_log" &&
-		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=1' "$closure_limited_log" &&
-		grep -Fq 'next_dt_manifold=0.00055690890514272363 limiter_binding=1' "$closure_limited_log" &&
-		grep -Fq 'tier10_wall_hours=' "$closure_limited_log" &&
-		grep -Fq 'HOST_RESIDUAL_SAMPLES candidate=1' "$closure_limited_log" &&
-		grep -Fq 'parallel_host_residual_p95=' "$closure_limited_log" &&
-		grep -Fq 'accepted_token=1' "$closure_limited_log" &&
-		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_ACCEPTED candidate=1 dt=0.00055692793102934957 field_max=0.023429989814758301 allowance=0.0234375 next_dt=0.00055690890514272363 accepted_token=1' "$closure_limited_log" &&
+		grep -Fq 'MATERIAL_MANIFOLD_AUTHORITY_REFUSAL candidate=1 dt=0.00055692793102934957 schedule=0db10079074f5006eff7b2f9e27b2b6f5fc2c2017d1d333c29264e113c03b08b terminal_target=cf67f48c2e6320404d7af6794c87966c4c199b3c652fdb5b62d849c691068bae G_eulerian=0.023429989814758301 field_max=0.023429989814758301 plateau_passed=1 accepted_token=0 ordinary_disposition=rejected' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
-		echo 'PASS (exact exit=206, drain-aware retry acceptance)'
+		echo 'PASS (exact exit=214, material manifold authority refusal)'
 		rm -f "$closure_cfl_log" "$closure_contraction_log" "$closure_limited_log" "$closure_controller_log"
 	else
-		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 206)"
+		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 214)"
 		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
 			"$closure_limited_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))

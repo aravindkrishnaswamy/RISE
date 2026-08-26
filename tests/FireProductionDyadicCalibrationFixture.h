@@ -1481,7 +1481,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="afe1d1c13dee2911027de433f8074a1097bcf36ba71355bdb21562915ab95caf"||
+			traceDigest!="fc67b2530ac93b03a244563ca731b1450a585d83110fee4edd0743453c8cd735"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||

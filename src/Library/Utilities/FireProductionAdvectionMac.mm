@@ -3156,7 +3156,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 				computed.acceptedShape=request.force.shape;
 				timestepVelocityAuditMetadataMS=timestepVelocityAuditMS();
-				if( enforcePlateau&&
+				const bool materialGenerationAuthority=
+					FireProductionEulerianGenerationHasMaterialAuthority(
+						request.beginningManifoldDeviationPerCell,
+						request.cellTransport.frozenVelocityMPerS);
+				if( enforcePlateau&&materialGenerationAuthority&&
 					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
 					std::array<std::uint64_t,2> authorityDigests={{0u,0u}};
 					auto deriveAuthorityDigest=[&](const std::size_t digestIndex){
@@ -3277,6 +3281,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		result=FireProductionResidentStepResult();
 		FireProductionResidentStepResult attempted;
 		if(!AttemptFireProductionResidentStepMetal(request,attempted,structuredError))return false;
+		if(request.enforceManifoldPlateau&&attempted.manifoldPlateauPassed&&
+			!attempted.AcceptedManifoldTokenMatchesCurrentPayload()){
+			result=FireProductionResidentStepResult();
+			if(structuredError)*structuredError=
+				"production resident step lacks material manifold generation authority";
+			return false;
+		}
 		result=std::move(attempted);return true;
 	}
 

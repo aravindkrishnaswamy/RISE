@@ -469,6 +469,9 @@ namespace RISEFireProductionTrace
 	//! not mint authority; both projection validations are structural inputs.
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
 		const FireProductionResidentStepResult& );
+	bool FireProductionEulerianGenerationHasMaterialAuthority(
+		const std::vector<double>& beginningManifoldDeviationPerCell,
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& frozenTransportVelocityMPerS );
 
 	//! Canonical bytes that an accepted production step applies to the next
 	//! checkpoint state.  Checkpoint persistence must reproduce this digest;

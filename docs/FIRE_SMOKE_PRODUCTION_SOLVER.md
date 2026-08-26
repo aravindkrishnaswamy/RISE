@@ -3861,18 +3861,21 @@ The value called the pre-corrector advective dose is computed cellwise as
 `abs(terminalDeviation-beginningDeviation)`.  It is Eulerian: translating an
 already nonuniform bounded plateau produces a nonzero value even without new
 donor-mixing anomaly.  It therefore cannot mint the next accepted timestep
-observation until a material/transported baseline is defined.  Production has
-been returned to the earlier conservative `maximumManifoldGeneration`
-authority; the three-step sequence is calibrating evidence, not a certified
-trajectory.
+observation until a material/transported baseline is defined.  The owner now
+permits that Eulerian observable to mint authority only when the beginning
+deviation field is bit-exact zero or the complete transport velocity is
+bit-exact at rest, where translation contributes identically zero.  A moving
+nonuniform plateau is tokenless even when both projections and the field
+ceiling pass; ordinary `Advance` rejects it atomically.  The
+three-step sequence is calibrating evidence, not a certified trajectory.
 
 The earlier `4.7152/6.0767 h` extrapolation is also withdrawn.  It multiplied
 only the final accepted step by r164's single-attempt p95 and omitted the six
-refused attempts.  Even the measured final accepted attempt alone gives lower
-bounds of `4.131755301914921/7.162223294085453 h` device/wall; total retry cost
-was not recorded.  Per-attempt equal-time schedule and terminal-target digests
-were likewise absent from that raw transcript.  No tier-10 cost is claimed
-from it.
+refused attempts.  The measured final attempt gives the purely conditional
+linear extrapolation `4.131755301914921/7.162223294085453 h` device/wall.  It
+is not a lower bound: future timesteps and attempt costs vary, total retry cost
+was not recorded, and per-attempt equal-time schedule and terminal-target
+digests were absent from that raw transcript.  No tier-10 cost is claimed.
 
 The independent physical-projection ownership defect is closed and retained.
 A one-step RED begins at 12 open-boundary V-cycles, refuses at 12 and 13,

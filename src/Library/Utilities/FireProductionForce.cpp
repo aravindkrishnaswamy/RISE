@@ -351,6 +351,26 @@ namespace RISE
 			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
 	}
 
+	bool FireProductionEulerianGenerationHasMaterialAuthority(
+		const std::vector<double>& beginningManifoldDeviationPerCell,
+		const std::array<std::vector<float>,3>& frozenTransportVelocityMPerS )
+	{
+		// terminal-beginning is a material-generation observable only when the
+		// beginning field is identically zero or transport is identically at rest.
+		// Once a nonuniform plateau moves, translation contributes to the Eulerian
+		// difference and a transported baseline is required for timestep authority.
+		if(beginningManifoldDeviationPerCell.empty())return false;
+		if(std::all_of(
+			beginningManifoldDeviationPerCell.begin(),
+			beginningManifoldDeviationPerCell.end(),
+			[](const double value){return value==0.0;}))return true;
+		for(const std::vector<float>& axis:frozenTransportVelocityMPerS){
+			if(axis.empty()||!std::all_of(axis.begin(),axis.end(),
+				[](const float value){return value==0.0f;}))return false;
+		}
+		return true;
+	}
+
 	bool FireProductionResidentStepResult::AcceptedManifoldTokenMatchesCurrentPayload() const
 	{
 		FireProductionRestorationPlateauValidation recomputed;
