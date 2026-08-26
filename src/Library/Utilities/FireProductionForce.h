@@ -396,8 +396,10 @@ namespace RISE
 		FireProductionAcceptedManifoldToken() : available_(false),representedTimeStepS_(0.0),
 			maximumGeneration_(0.0),maximumAcceptedDeviation_(0.0),requiredDrainFraction_(0.0),
 			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0),
+			acceptedDeviationP95_(0.0),acceptedDeviationP50_(0.0),
 			physicalMaximumPreResidualPerS_(0.0f),physicalMaximumPostResidualPerS_(0.0f),
-			payloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u) {}
+			payloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u),
+			generationAuthoritative_(false) {}
 		FireProductionAcceptedManifoldToken(const FireProductionAcceptedManifoldToken&) :
 			FireProductionAcceptedManifoldToken() {}
 		FireProductionAcceptedManifoldToken& operator=(
@@ -409,10 +411,13 @@ namespace RISE
 			requiredDrainFraction_(other.requiredDrainFraction_),
 			deliveredDrainFraction_(other.deliveredDrainFraction_),
 			maximumPostResidualPerS_(other.maximumPostResidualPerS_),
+			acceptedDeviationP95_(other.acceptedDeviationP95_),
+			acceptedDeviationP50_(other.acceptedDeviationP50_),
 			physicalMaximumPreResidualPerS_(other.physicalMaximumPreResidualPerS_),
 			physicalMaximumPostResidualPerS_(other.physicalMaximumPostResidualPerS_),
 			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_),
-			acceptedStateDigestVersion_(other.acceptedStateDigestVersion_) {
+			acceptedStateDigestVersion_(other.acceptedStateDigestVersion_),
+			generationAuthoritative_(other.generationAuthoritative_) {
 			other.Clear(); }
 		FireProductionAcceptedManifoldToken& operator=(
 			FireProductionAcceptedManifoldToken&& other) noexcept {
@@ -423,11 +428,14 @@ namespace RISE
 				requiredDrainFraction_=other.requiredDrainFraction_;
 				deliveredDrainFraction_=other.deliveredDrainFraction_;
 				maximumPostResidualPerS_=other.maximumPostResidualPerS_;
+				acceptedDeviationP95_=other.acceptedDeviationP95_;
+				acceptedDeviationP50_=other.acceptedDeviationP50_;
 				physicalMaximumPreResidualPerS_=other.physicalMaximumPreResidualPerS_;
 				physicalMaximumPostResidualPerS_=other.physicalMaximumPostResidualPerS_;
 				payloadDigest_=other.payloadDigest_;
 				acceptedStateDigest_=other.acceptedStateDigest_;
-				acceptedStateDigestVersion_=other.acceptedStateDigestVersion_;other.Clear();}
+				acceptedStateDigestVersion_=other.acceptedStateDigestVersion_;
+				generationAuthoritative_=other.generationAuthoritative_;other.Clear();}
 			return *this;
 		}
 		bool Available() const { return available_; }
@@ -436,8 +444,10 @@ namespace RISE
 		void Clear() { available_=false;representedTimeStepS_=0.0;maximumGeneration_=0.0;
 			maximumAcceptedDeviation_=0.0;requiredDrainFraction_=0.0;
 			deliveredDrainFraction_=0.0;maximumPostResidualPerS_=0.0;
+			acceptedDeviationP95_=0.0;acceptedDeviationP50_=0.0;
 			physicalMaximumPreResidualPerS_=0.0f;physicalMaximumPostResidualPerS_=0.0f;
-			payloadDigest_=0u;acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u; }
+			payloadDigest_=0u;acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u;
+			generationAuthoritative_=false; }
 		bool available_;
 		double representedTimeStepS_;
 		double maximumGeneration_;
@@ -445,11 +455,14 @@ namespace RISE
 		double requiredDrainFraction_;
 		double deliveredDrainFraction_;
 		double maximumPostResidualPerS_;
+		double acceptedDeviationP95_;
+		double acceptedDeviationP50_;
 		float physicalMaximumPreResidualPerS_;
 		float physicalMaximumPostResidualPerS_;
 		std::uint64_t payloadDigest_;
 		std::uint64_t acceptedStateDigest_;
 		unsigned int acceptedStateDigestVersion_;
+		bool generationAuthoritative_;
 		friend struct FireProductionResidentStepResult;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
@@ -501,6 +514,9 @@ namespace RISE
 		float representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
+		double acceptedManifoldDeviationP95;
+		double acceptedManifoldDeviationP50;
+		bool manifoldGenerationAuthoritative;
 		double maximumPredictedAdvectiveManifoldAnomaly;
 		std::uint32_t manifoldMapCellCount;
 		std::uint32_t manifoldScalarDeviceToHostTransferCount;
@@ -526,7 +542,9 @@ namespace RISE
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
 			deviceElapsedMS(0.0),deviceMakespanMS(0.0),
 			representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
-			maximumAcceptedManifoldDeviation(0.0),maximumPredictedAdvectiveManifoldAnomaly(0.0),
+			maximumAcceptedManifoldDeviation(0.0),acceptedManifoldDeviationP95(0.0),
+			acceptedManifoldDeviationP50(0.0),manifoldGenerationAuthoritative(false),
+			maximumPredictedAdvectiveManifoldAnomaly(0.0),
 			manifoldMapCellCount(0u),
 			manifoldScalarDeviceToHostTransferCount(0u),manifoldFullGridDeviceToHostTransferCount(0u),
 			advectiveAnomalyClosurePassCount(0u),

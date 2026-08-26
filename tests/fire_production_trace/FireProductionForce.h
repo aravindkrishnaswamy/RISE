@@ -423,6 +423,9 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat representedTimeStepS;
 		double maximumManifoldGeneration;
 		double maximumAcceptedManifoldDeviation;
+		double acceptedManifoldDeviationP95;
+		double acceptedManifoldDeviationP50;
+		bool manifoldGenerationAuthoritative;
 		double maximumPredictedAdvectiveManifoldAnomaly;
 		std::uint32_t manifoldMapCellCount;
 		std::uint32_t manifoldScalarDeviceToHostTransferCount;
@@ -444,7 +447,9 @@ namespace RISEFireProductionTrace
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
 			deviceElapsedMS(0.0),deviceMakespanMS(0.0),
 			representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
-			maximumAcceptedManifoldDeviation(0.0),maximumPredictedAdvectiveManifoldAnomaly(0.0),
+			maximumAcceptedManifoldDeviation(0.0),acceptedManifoldDeviationP95(0.0),
+			acceptedManifoldDeviationP50(0.0),manifoldGenerationAuthoritative(false),
+			maximumPredictedAdvectiveManifoldAnomaly(0.0),
 			manifoldMapCellCount(0u),
 			manifoldScalarDeviceToHostTransferCount(0u),manifoldFullGridDeviceToHostTransferCount(0u),
 			advectiveAnomalyClosurePassCount(0u),

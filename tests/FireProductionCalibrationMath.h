@@ -52,6 +52,13 @@ namespace FireProductionCalibration
 			std::isfinite(terminalTrend)&&terminalTrend<=0.0&&terminal<=0x1p-5;
 	}
 
+	inline bool LongShadowDistributionNonsecular(const std::vector<double>& maximum,
+		const std::vector<double>& p95,const std::vector<double>& p50)
+	{
+		return LongShadowNonsecular(maximum)&&LongShadowNonsecular(p95)&&
+			LongShadowNonsecular(p50);
+	}
+
 	inline double NextUp(const double value)
 	{
 		return std::nextafter(value,std::numeric_limits<double>::infinity());

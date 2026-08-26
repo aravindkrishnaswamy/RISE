@@ -384,6 +384,10 @@ namespace RISE
 			std::isfinite(maximumAcceptedManifoldDeviation)&&
 			maximumAcceptedManifoldDeviation>=0.0&&
 			maximumAcceptedManifoldDeviation<=ManifoldLowMachValidityCeiling&&
+			std::isfinite(acceptedManifoldDeviationP50)&&acceptedManifoldDeviationP50>=0.0&&
+			std::isfinite(acceptedManifoldDeviationP95)&&
+			acceptedManifoldDeviationP95>=acceptedManifoldDeviationP50&&
+			maximumAcceptedManifoldDeviation>=acceptedManifoldDeviationP95&&
 			plateauDiagnosticsValid&&recomputed.mechanismPassed&&
 			requiredRestorationDrainFraction==recomputed.requiredDrainFraction&&
 			deliveredRestorationDrainFraction==recomputed.deliveredDrainFraction&&
@@ -391,6 +395,9 @@ namespace RISE
 			token.representedTimeStepS_==static_cast<double>(representedTimeStepS)&&
 			token.maximumGeneration_==maximumManifoldGeneration&&
 			token.maximumAcceptedDeviation_==maximumAcceptedManifoldDeviation&&
+			token.acceptedDeviationP95_==acceptedManifoldDeviationP95&&
+			token.acceptedDeviationP50_==acceptedManifoldDeviationP50&&
+			token.generationAuthoritative_==manifoldGenerationAuthoritative&&
 			token.requiredDrainFraction_==requiredRestorationDrainFraction&&
 			token.deliveredDrainFraction_==deliveredRestorationDrainFraction&&
 			token.maximumPostResidualPerS_==restorationResidualBandPerS&&
@@ -435,6 +442,13 @@ namespace RISE
 			acceptedStep.maximumAcceptedManifoldDeviation<0.0||
 			acceptedStep.maximumAcceptedManifoldDeviation>
 				ManifoldLowMachValidityCeiling||
+			!std::isfinite(acceptedStep.acceptedManifoldDeviationP50)||
+			acceptedStep.acceptedManifoldDeviationP50<0.0||
+			!std::isfinite(acceptedStep.acceptedManifoldDeviationP95)||
+			acceptedStep.acceptedManifoldDeviationP95<
+				acceptedStep.acceptedManifoldDeviationP50||
+			acceptedStep.maximumAcceptedManifoldDeviation<
+				acceptedStep.acceptedManifoldDeviationP95||
 			!plateauDiagnosticsValid||!recomputed.mechanismPassed||
 			acceptedStep.requiredRestorationDrainFraction!=recomputed.requiredDrainFraction||
 			acceptedStep.deliveredRestorationDrainFraction!=recomputed.deliveredDrainFraction||
@@ -443,6 +457,9 @@ namespace RISE
 		if(token.representedTimeStepS_!=acceptedStepS||
 			token.maximumGeneration_!=acceptedStep.maximumManifoldGeneration||
 			token.maximumAcceptedDeviation_!=acceptedStep.maximumAcceptedManifoldDeviation||
+			token.acceptedDeviationP95_!=acceptedStep.acceptedManifoldDeviationP95||
+			token.acceptedDeviationP50_!=acceptedStep.acceptedManifoldDeviationP50||
+			token.generationAuthoritative_!=acceptedStep.manifoldGenerationAuthoritative||
 			token.requiredDrainFraction_!=acceptedStep.requiredRestorationDrainFraction||
 			token.deliveredDrainFraction_!=acceptedStep.deliveredRestorationDrainFraction||
 			token.maximumPostResidualPerS_!=acceptedStep.restorationResidualBandPerS||
@@ -459,7 +476,12 @@ namespace RISE
 			return Fail(error,"production accepted manifold token does not match diagnostics");
 		result.available_=true;
 		result.timeStepS_=acceptedStepS;
-		result.maximumGeneration_=acceptedStep.maximumManifoldGeneration;
+		// Moving, nonuniform fields may publish accepted-state authority, but the
+		// Eulerian terminal-minus-beginning maximum must not constrain the next
+		// step.  Only the zero-beginning/stationary cases sealed by the producer
+		// retain that narrower generation authority.
+		result.maximumGeneration_=token.generationAuthoritative_?
+			acceptedStep.maximumManifoldGeneration:0.0;
 		result.restorationDrainFraction_=acceptedStep.deliveredRestorationDrainFraction;
 		result.acceptedStateDigest_=token.acceptedStateDigest_;
 		result.acceptedStateDigestVersion_=token.acceptedStateDigestVersion_;
@@ -696,7 +718,9 @@ namespace RISE
 		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/22u ) return false;
 		const std::uint64_t extraValues=22u*cells+3u*allFaces;
 		const std::uint64_t rawTarget=cells*sizeof(float),alignment=UINT64_C(16384);
-		const std::uint64_t manifoldAllocationAllowance=6u*alignment;
+		// Six existing manifold allocations plus the exact two-stage binary32
+		// quantile scratch (three 65,536-bin uint histograms and six control words).
+		const std::uint64_t manifoldAllocationAllowance=55u*alignment;
 		if( rawTarget>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
 		const std::uint64_t targetAllocation=(rawTarget+alignment-1u)&~(alignment-1u);
 		if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(float)||

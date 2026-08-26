@@ -600,7 +600,9 @@ namespace RISEFireProductionFP64
 		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/22u ) return false;
 		const std::uint64_t extraValues=22u*cells+3u*allFaces;
 		const std::uint64_t rawTarget=cells*sizeof(double),alignment=UINT64_C(16384);
-		const std::uint64_t manifoldAllocationAllowance=6u*alignment;
+		// Six existing manifold allocations plus the exact two-stage binary32
+		// quantile scratch (three 65,536-bin uint histograms and six control words).
+		const std::uint64_t manifoldAllocationAllowance=55u*alignment;
 		if( rawTarget>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
 		const std::uint64_t targetAllocation=(rawTarget+alignment-1u)&~(alignment-1u);
 		if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(double)||

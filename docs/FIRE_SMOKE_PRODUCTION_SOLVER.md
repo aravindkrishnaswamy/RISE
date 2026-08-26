@@ -3891,6 +3891,51 @@ narrowly: no material advective-generation observable has yet been derived for
 the evolving plateau, and the equal-time/cost record for the invalidated run
 was incomplete.
 
+### 7.55z Motion-invariant distribution shadow (r166)
+
+The shadow does not construct a transported copy of the EOS-deviation field.
+That proposal would introduce a new advected quantity, limiter path, and
+working-set obligation merely to distinguish translation from growth.  Spatial
+quantiles already have that invariance: advection of a fixed discrete pattern
+permutes its distribution while leaving maximum, p95, and p50 unchanged.
+
+The terminal manifold kernel therefore emits three device-reduced scalars per
+accepted step: `max(abs(V-1))`, nearest-rank p95, and lower-median p50.  The
+maximum is the existing atomic maximum.  The quantiles are exact over the
+nonnegative Binary32 field: a 65,536-bin high-word histogram selects each
+rank's high word, a second pair of low-word histograms resolves the remaining
+16 bits, and a final single-thread device reduction publishes the exact float
+bits.  No full-grid readback is introduced.  The working-set certificate owns
+the three histograms and control words.
+
+Accepted-state authority and timestep-generation authority are distinct.  A
+moving nonuniform field may mint the sealed accepted-state token after the
+allowance, hard ceiling, and both projections validate.  Its Eulerian
+terminal-minus-beginning `G` is diagnostic only and the accepted observation
+publishes `G=0`, so it cannot activate the manifold timestep term.  Exact-zero
+beginning and exact-stationary transport fixtures retain the original G
+authority.  Ordinary plateau refusal and its drain-aware retry remain the
+automatic backstop.
+
+For the 104-step campaign, the r160 classifier runs separately on max, p95,
+and p50; all three must be non-secular and remain below `2^-5`.  A synthetic
+p95 ramp under a flat maximum is the binding RED, while a translated fixed
+distribution is the binding GREEN.  Per-step allowance/ceiling enforcement
+and both projection validations are unchanged.  Performance remains outside
+this rung: the legacy 45 ms remap check is deferred to the single complete-step
+campaign after thermo/source maps.
+
+The first campaign did not certify or reject non-secularity.  It accepted
+seven production steps, then the equal-time Binary64 reference failed to
+instantiate the slice-7 terminal target.  Refining the schedule from 8 to 16,
+32, and 64 substeps did not close R1; the 64-substep attempt failed at substep
+8 with residual 0.0191989 versus tolerance 0.000479545.  Because production
+must consume the terminal target at the identical end time, no production
+attempt for slice 7 is admissible and the 104-value trajectories are
+incomplete.  r166 is therefore an exact reference-schedule capacity refusal,
+not a plateau classification.  B_fp32 and all downstream milestones remain
+unrun.
+
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 
 Temporal refinement uses the r112 smooth tier-6 beginning and the same fixed

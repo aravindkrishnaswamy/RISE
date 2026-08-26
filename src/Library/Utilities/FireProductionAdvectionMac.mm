@@ -161,6 +161,12 @@ namespace RISE
 			7u*MetalThermochemistrySpeciesStride;
 		constexpr std::size_t MetalManifoldCertificateValues=
 			MetalThermochemistrySpeciesValues+64u;
+		constexpr std::size_t MetalManifoldQuantileBins=65536u;
+		constexpr std::size_t MetalManifoldQuantileControlWords=6u;
+		constexpr std::size_t MetalManifoldQuantileScratchWords=
+			3u*MetalManifoldQuantileBins+MetalManifoldQuantileControlWords;
+		constexpr std::size_t MetalManifoldQuantileControlOffset=
+			3u*MetalManifoldQuantileBins*sizeof(std::uint32_t);
 
 		bool PackMetalMethaneThermochemistry(
 			std::array<float,MetalManifoldCertificateValues>& packed,
@@ -780,7 +786,8 @@ inline bool methane_volume_ratio(device const float* state,device const float* t
 kernel void measure_methane_manifold(device const float* beginningDeviation [[buffer(0)]],
  device const float* terminal [[buffer(1)]],device const float* thermo [[buffer(2)]],
  device float2* deviationMap [[buffer(3)]],device atomic_uint* reduction [[buffer(4)]],
- constant ManifoldParams& p [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ constant ManifoldParams& p [[buffer(5)]],device atomic_uint* highHistogram [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){
  if(gid>=p.cells)return;float terminalRatio=0.0f;
  if(!methane_state_admissible(terminal,thermo,p,gid)||
   !methane_volume_ratio(terminal,thermo,p,gid,terminalRatio)){
@@ -791,6 +798,37 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
  float generation=abs(terminalDeviation-beginning),field=abs(terminalDeviation);
  atomic_fetch_max_explicit(reduction,as_type<uint>(generation),memory_order_relaxed);
  atomic_fetch_max_explicit(reduction+1u,as_type<uint>(field),memory_order_relaxed);
+ atomic_fetch_add_explicit(highHistogram+(as_type<uint>(field)>>16u),1u,memory_order_relaxed);
+}
+kernel void select_methane_manifold_high_bins(device atomic_uint* histogram [[buffer(0)]],
+ device uint* control [[buffer(1)]],constant ManifoldParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid!=0u)return;
+ uint ranks[2]={p.cells==0u?0u:(p.cells-1u)/2u,
+  p.cells==0u?0u:((95u*p.cells+99u)/100u)-1u};
+ for(uint quantile=0u;quantile<2u;++quantile){uint prefix=0u;
+  for(uint bin=0u;bin<65536u;++bin){uint count=atomic_load_explicit(
+    histogram+bin,memory_order_relaxed);
+   if(ranks[quantile]<prefix+count){control[2u*quantile]=bin;
+    control[2u*quantile+1u]=ranks[quantile]-prefix;break;}prefix+=count;}}
+}
+kernel void histogram_methane_manifold_low_bins(device const float2* deviationMap [[buffer(0)]],
+ device const uint* control [[buffer(1)]],device atomic_uint* lowHistograms [[buffer(2)]],
+ constant ManifoldParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.cells)return;uint bits=as_type<uint>(abs(deviationMap[gid].y));uint high=bits>>16u;
+ if(high==control[0])atomic_fetch_add_explicit(lowHistograms+(bits&65535u),1u,
+  memory_order_relaxed);
+ if(high==control[2])atomic_fetch_add_explicit(lowHistograms+65536u+(bits&65535u),1u,
+  memory_order_relaxed);
+}
+kernel void select_methane_manifold_low_bins(device atomic_uint* lowHistograms [[buffer(0)]],
+ device uint* control [[buffer(1)]],uint gid [[thread_position_in_grid]]){
+ if(gid!=0u)return;
+ for(uint quantile=0u;quantile<2u;++quantile){uint prefix=0u,target=control[2u*quantile+1u];
+  for(uint bin=0u;bin<65536u;++bin){uint count=atomic_load_explicit(
+    lowHistograms+quantile*65536u+bin,memory_order_relaxed);
+   if(target<prefix+count){control[4u+quantile]=(control[2u*quantile]<<16u)|bin;break;}
+   prefix+=count;}}
 }
 kernel void fold_methane_advective_anomaly_target(device const float2* deviationMap [[buffer(0)]],
  device float* restorationTarget [[buffer(1)]],constant float& inverseTimeStep [[buffer(2)]],
@@ -823,6 +861,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			id<MTLComputePipelineState> extractGasDensity;
 			id<MTLComputePipelineState> addFaceSources;
 			id<MTLComputePipelineState> measureMethaneManifold;
+			id<MTLComputePipelineState> selectMethaneManifoldHighBins;
+			id<MTLComputePipelineState> histogramMethaneManifoldLowBins;
+			id<MTLComputePipelineState> selectMethaneManifoldLowBins;
 			id<MTLComputePipelineState> foldMethaneAdvectiveAnomalyTarget;
 			std::string error;
 
@@ -832,7 +873,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil),
 				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil),
 				addCellSources(nil),extractGasDensity(nil),addFaceSources(nil),
-				measureMethaneManifold(nil),foldMethaneAdvectiveAnomalyTarget(nil)
+				measureMethaneManifold(nil),selectMethaneManifoldHighBins(nil),
+				histogramMethaneManifoldLowBins(nil),selectMethaneManifoldLowBins(nil),
+				foldMethaneAdvectiveAnomalyTarget(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -868,6 +911,12 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					extractGasDensity=makePipeline("extract_gas_density");
 					addFaceSources=makePipeline("add_face_sources");
 					measureMethaneManifold=makePipeline("measure_methane_manifold");
+					selectMethaneManifoldHighBins=makePipeline(
+						"select_methane_manifold_high_bins");
+					histogramMethaneManifoldLowBins=makePipeline(
+						"histogram_methane_manifold_low_bins");
+					selectMethaneManifoldLowBins=makePipeline(
+						"select_methane_manifold_low_bins");
 					foldMethaneAdvectiveAnomalyTarget=
 						makePipeline("fold_methane_advective_anomaly_target");
 					if( !reconstruct||!scan||!flux||!update||!gatherValues||
@@ -876,7 +925,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						!publishPeriodicDualSeam||!gatherDualLineValues||
 						!scatterDualLineValues||!prescribeDualComponentWalls||
 						!addCellSources||!extractGasDensity||!addFaceSources||
-						!measureMethaneManifold||!foldMethaneAdvectiveAnomalyTarget ) {
+						!measureMethaneManifold||!selectMethaneManifoldHighBins||
+						!histogramMethaneManifoldLowBins||!selectMethaneManifoldLowBins||
+						!foldMethaneAdvectiveAnomalyTarget ) {
 						error=MetalError("production fire remap pipeline creation failed",metalError);
 						return;
 					}
@@ -892,7 +943,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
 					publishPeriodicDualSeam&&gatherDualLineValues&&scatterDualLineValues&&
 				prescribeDualComponentWalls&&addCellSources&&extractGasDensity&&addFaceSources&&
-				measureMethaneManifold&&foldMethaneAdvectiveAnomalyTarget&&
+				measureMethaneManifold&&selectMethaneManifoldHighBins&&
+				histogramMethaneManifoldLowBins&&selectMethaneManifoldLowBins&&
+				foldMethaneAdvectiveAnomalyTarget&&
 					error.empty();
 			}
 		};
@@ -2685,12 +2738,17 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				id<MTLBuffer> manifoldPredictorReduction=closeAdvectiveAnomaly?
 					[context.device newBufferWithLength:3u*sizeof(std::uint32_t)
 						options:MTLResourceStorageModeShared]:nil;
+				id<MTLBuffer> manifoldQuantileScratch=measureManifold?
+					[context.device newBufferWithLength:
+						MetalManifoldQuantileScratchWords*sizeof(std::uint32_t)
+						options:MTLResourceStorageModeShared]:nil;
 				if( !cellStage||!cellPrivate||!ambientStage||!ambientPrivate||!cellSourceStage||
 					!cellSourcePrivate||!faceSourceStage||!faceSourcePrivate||!targetStage||!targetPrivate||
 					!restorationTargetStage||!restorationTargetPrivate||
 					(measureManifold&&(!manifoldThermochemistry||!manifoldBeginningDeviation||
 						!manifoldParametersBuffer||!manifoldMap))||
-					(closeAdvectiveAnomaly&&!manifoldPredictorReduction) )
+					(closeAdvectiveAnomaly&&!manifoldPredictorReduction)||
+					(measureManifold&&!manifoldQuantileScratch) )
 					return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
@@ -2711,6 +2769,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					!recordOwner(manifoldBeginningDeviation)||
 					!recordOwner(manifoldParametersBuffer)||!recordOwner(manifoldMap)) ) return false;
 				if( closeAdvectiveAnomaly&&!recordOwner(manifoldPredictorReduction) ) return false;
+				if( measureManifold&&!recordOwner(manifoldQuantileScratch) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) if(
 					!recordOwner(velocityStage[axis])||!recordOwner(velocityPrivate[axis]) ) return false;
 				markPhase("production resident step failed while uploading resident inputs");
@@ -2830,6 +2889,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					[predictorEncoder setBuffer:manifoldMap offset:0 atIndex:3];
 					[predictorEncoder setBuffer:manifoldPredictorReduction offset:0 atIndex:4];
 					[predictorEncoder setBuffer:manifoldParametersBuffer offset:0 atIndex:5];
+					[predictorEncoder setBuffer:manifoldQuantileScratch offset:0 atIndex:6];
 					Dispatch(predictorEncoder,context.measureMethaneManifold,cells);
 					[predictorEncoder endEncoding];
 					predictorEncoder=[predictorCommand computeCommandEncoder];
@@ -2961,6 +3021,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				if( measureManifold ) {
 					std::memset(static_cast<unsigned char*>([terminal contents])+
 						manifoldReductionOffset,0,manifoldReductionBytes);
+					std::memset([manifoldQuantileScratch contents],0,
+						MetalManifoldQuantileScratchWords*sizeof(std::uint32_t));
 					encoder=[terminalCommand computeCommandEncoder];if( !encoder ) return false;
 					[encoder setBuffer:manifoldBeginningDeviation offset:0 atIndex:0];
 					[encoder setBuffer:cell.conservativeValues offset:0 atIndex:1];
@@ -2968,7 +3030,29 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					[encoder setBuffer:manifoldMap offset:0 atIndex:3];
 					[encoder setBuffer:terminal offset:manifoldReductionOffset atIndex:4];
 					[encoder setBuffer:manifoldParametersBuffer offset:0 atIndex:5];
+					[encoder setBuffer:manifoldQuantileScratch offset:0 atIndex:6];
 					Dispatch(encoder,context.measureMethaneManifold,cells);[encoder endEncoding];
+					encoder=[terminalCommand computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:manifoldQuantileScratch offset:0 atIndex:0];
+					[encoder setBuffer:manifoldQuantileScratch
+						offset:MetalManifoldQuantileControlOffset atIndex:1];
+					[encoder setBuffer:manifoldParametersBuffer offset:0 atIndex:2];
+					Dispatch(encoder,context.selectMethaneManifoldHighBins,1u);[encoder endEncoding];
+					encoder=[terminalCommand computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:manifoldMap offset:0 atIndex:0];
+					[encoder setBuffer:manifoldQuantileScratch
+						offset:MetalManifoldQuantileControlOffset atIndex:1];
+					[encoder setBuffer:manifoldQuantileScratch
+						offset:MetalManifoldQuantileBins*sizeof(std::uint32_t) atIndex:2];
+					[encoder setBuffer:manifoldParametersBuffer offset:0 atIndex:3];
+					Dispatch(encoder,context.histogramMethaneManifoldLowBins,cells);
+					[encoder endEncoding];
+					encoder=[terminalCommand computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:manifoldQuantileScratch
+						offset:MetalManifoldQuantileBins*sizeof(std::uint32_t) atIndex:0];
+					[encoder setBuffer:manifoldQuantileScratch
+						offset:MetalManifoldQuantileControlOffset atIndex:1];
+					Dispatch(encoder,context.selectMethaneManifoldLowBins,1u);[encoder endEncoding];
 				}
 				blit=[terminalCommand blitCommandEncoder];if( !blit ) return false;
 				[blit copyFromBuffer:cell.conservativeValues sourceOffset:0 toBuffer:terminal
@@ -3026,16 +3110,27 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const bool enforcePlateau=request.enforceManifoldPlateau&&
 					!restorationRemoved&&!plateauEvidenceEnabled;
 				float maximumManifoldGenerationFloat=0.0f,maximumTerminalDeviationFloat=0.0f;
+				float terminalDeviationP50Float=0.0f,terminalDeviationP95Float=0.0f;
 				if( measureManifold&&manifoldReduction ) {
 					std::memcpy(&maximumManifoldGenerationFloat,manifoldReduction,sizeof(float));
 					std::memcpy(&maximumTerminalDeviationFloat,manifoldReduction+1u,sizeof(float));
+					const std::uint32_t* quantileControl=reinterpret_cast<const std::uint32_t*>(
+						static_cast<const unsigned char*>([manifoldQuantileScratch contents])+
+						MetalManifoldQuantileControlOffset);
+					std::memcpy(&terminalDeviationP50Float,quantileControl+4u,sizeof(float));
+					std::memcpy(&terminalDeviationP95Float,quantileControl+5u,sizeof(float));
 				}
 				const double maximumManifoldGeneration=maximumManifoldGenerationFloat;
 				const double maximumTerminalDeviation=maximumTerminalDeviationFloat;
+				const double terminalDeviationP50=terminalDeviationP50Float;
+				const double terminalDeviationP95=terminalDeviationP95Float;
 				FireProductionRestorationPlateauValidation plateauValidation;
 				if( enforcePlateau&&(!manifoldReduction||manifoldReduction[2u]!=0u||
 					!std::isfinite(maximumManifoldGeneration)||
 					!std::isfinite(maximumTerminalDeviation)||
+					!std::isfinite(terminalDeviationP50)||!std::isfinite(terminalDeviationP95)||
+					terminalDeviationP50<0.0||terminalDeviationP95<terminalDeviationP50||
+					maximumTerminalDeviation<terminalDeviationP95||
 					!FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
 						projection.maximumPreProjectionResidualPerS,
 						projection.maximumPostProjectionResidualPerS,plateauValidation)) ) return false;
@@ -3121,6 +3216,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.representedTimeStepS=request.force.timeStepS;
 				computed.maximumManifoldGeneration=maximumManifoldGeneration;
 				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
+				computed.acceptedManifoldDeviationP95=terminalDeviationP95;
+				computed.acceptedManifoldDeviationP50=terminalDeviationP50;
 				computed.maximumPredictedAdvectiveManifoldAnomaly=
 					maximumPredictedAdvectiveAnomalyFloat;
 				computed.manifoldMapCellCount=measureManifold?
@@ -3160,7 +3257,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					FireProductionEulerianGenerationHasMaterialAuthority(
 						request.beginningManifoldDeviationPerCell,
 						request.cellTransport.frozenVelocityMPerS);
-				if( enforcePlateau&&materialGenerationAuthority&&
+				computed.manifoldGenerationAuthoritative=materialGenerationAuthority;
+				if( enforcePlateau&&
 					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
 					std::array<std::uint64_t,2> authorityDigests={{0u,0u}};
 					auto deriveAuthorityDigest=[&](const std::size_t digestIndex){
@@ -3179,6 +3277,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						static_cast<double>(request.force.timeStepS);
 					computed.acceptedManifoldToken_.maximumGeneration_=maximumManifoldGeneration;
 					computed.acceptedManifoldToken_.maximumAcceptedDeviation_=maximumTerminalDeviation;
+					computed.acceptedManifoldToken_.acceptedDeviationP95_=terminalDeviationP95;
+					computed.acceptedManifoldToken_.acceptedDeviationP50_=terminalDeviationP50;
 					computed.acceptedManifoldToken_.requiredDrainFraction_=
 						plateauValidation.requiredDrainFraction;
 					computed.acceptedManifoldToken_.deliveredDrainFraction_=
@@ -3192,6 +3292,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					computed.acceptedManifoldToken_.payloadDigest_=authorityDigests[0u];
 					computed.acceptedManifoldToken_.acceptedStateDigest_=authorityDigests[1u];
 					computed.acceptedManifoldToken_.acceptedStateDigestVersion_=2u;
+					computed.acceptedManifoldToken_.generationAuthoritative_=
+						materialGenerationAuthority;
 				}
 				timestepVelocityAuditAuthorityMS=timestepVelocityAuditMS();
 				if( computed.cellSubmapCount!=(anomalyCorrectorExecuted?10u:5u)||

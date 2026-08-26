@@ -704,9 +704,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
-# r165 retains r162's contraction and stale-CFL controls, then replays r164's
-# drain-aware retry.  The plateau-passing retry must now refuse accepted-state
-# authority because terminal-minus-beginning is Eulerian on a nonzero plateau.
+# r166 retains r162's contraction and stale-CFL controls, then replays r164's
+# drain-aware retry.  The plateau-passing retry mints accepted-state authority,
+# while its motion-contaminated Eulerian G remains unavailable to the selector.
 if [ "$(uname -s)" = "Darwin" ]; then
 	closure_name="FireSequenceTest.r164_drain_aware_retry"
 	closure_path="$BIN_DIR/FireSequenceTest"
@@ -769,30 +769,33 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$REPO_ROOT" >"$closure_controller_log" 2>&1 || closure_controller_rc=$?
 	fi
 	if [ "$closure_cfl_rc" -eq 252 ] && [ "$closure_contraction_rc" -eq 217 ] &&
-		[ "$closure_limited_rc" -eq 214 ] && [ "$closure_controller_rc" -eq 204 ] &&
+		[ "$closure_limited_rc" -eq 206 ] && [ "$closure_controller_rc" -eq 204 ] &&
 		grep -Fq 'DRAIN_AWARE_RETRY_CONTROLLER_RED refused_candidate=1 next_candidate=2 cap=20 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_controller_log" &&
 		grep -Fq 'dt=0.0016462659696117043 G=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'field_max=0.066569089889526367' "$closure_cfl_log" &&
 		grep -Fq 'passes=2 cell_submaps=10 dual_submaps=15 source_commits=2 scalar_reads=2' "$closure_cfl_log" &&
-		grep -Fq 'certified_bytes=1919317208 actual_bytes=1630052936' "$closure_cfl_log" &&
+		grep -Fq 'certified_bytes=1920120024 actual_bytes=1630855752' "$closure_cfl_log" &&
 		grep -Fq 'tier10_device_hours=' "$closure_cfl_log" &&
 		grep -Fq 'accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_cfl_log" &&
 		grep -Fq 'largest_converged_dt=7.244249718496576e-05 largest_converged_level=3 monotone=1 trace=900a7acc56a0c9c51d07788753132d59269bdb591aee699960a3c62b448a051c' "$closure_contraction_log" &&
 		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION candidate=0 dt=0.00055762444389984012 reference_substeps=8 reference_substep_dt=6.9703055487480015e-05' "$closure_limited_log" &&
-		grep -Fq 'schedule=1c7944ddde6e673330ccf115c388b0a424027cfcb86e0b8bf8d503f22d7c531d terminal_target=522347125277cf97fe0c58fb4db86e906892ef81182f280b95a92ac35d68f833 predictor_G=0.019734203815460205 G=0.023458600044250488 field_max=0.023458600044250488' "$closure_limited_log" &&
+		grep -Fq 'schedule=1c7944ddde6e673330ccf115c388b0a424027cfcb86e0b8bf8d503f22d7c531d terminal_target=522347125277cf97fe0c58fb4db86e906892ef81182f280b95a92ac35d68f833 predictor_G=0.019734203815460205 G=0.023458957672119141 field_max=0.023458957672119141' "$closure_limited_log" &&
 		grep -Fq 'initial_audit_dt=0.00057953997747972608 initial_audit_G=0.024358630180358887 initial_selected_dt=0.0005576244690940563 initial_calibration=1' "$closure_limited_log" &&
 		grep -Fq 'headroom_allowance=0.0234375 low_mach_ceiling=0.03125 headroom_met=0' "$closure_limited_log" &&
-		grep -Fq 'next_dt_manifold=0.00055692791475544124 limiter_binding=1' "$closure_limited_log" &&
+		grep -Fq 'next_dt_manifold=0.00055691943198942959 limiter_binding=1' "$closure_limited_log" &&
 		grep -Fq 'accepted_token=0' "$closure_limited_log" &&
 		grep -Fq 'DRAIN_AWARE_RETRY_GATE exact=1 retry_allowed=1 attempt_succeeded=0 ordinary_refused=1 diagnostics=1' "$closure_limited_log" &&
-		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY refused_candidate=0 refused_dt=0.00055762444389984012 field_max=0.023458600044250488 allowance=0.0234375 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20 ordinary_advance_refused=1 attempt_diagnostics=1' "$closure_limited_log" &&
-		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=0 refused_dt=0.00055762444389984012 suggested_dt=0.00055692791475544124 next_candidate=1 cap=20' "$closure_limited_log" &&
-		grep -Fq 'MATERIAL_MANIFOLD_AUTHORITY_REFUSAL candidate=1 dt=0.00055692793102934957 schedule=0db10079074f5006eff7b2f9e27b2b6f5fc2c2017d1d333c29264e113c03b08b terminal_target=cf67f48c2e6320404d7af6794c87966c4c199b3c652fdb5b62d849c691068bae G_eulerian=0.023429989814758301 field_max=0.023429989814758301 plateau_passed=1 accepted_token=0 ordinary_disposition=rejected' "$closure_limited_log" &&
+		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY refused_candidate=0 refused_dt=0.00055762444389984012 field_max=0.023458957672119141 allowance=0.0234375 suggested_dt=0.00055691943198942959 next_candidate=1 cap=20 ordinary_advance_refused=1 attempt_diagnostics=1' "$closure_limited_log" &&
+		grep -Fq 'DRAIN_AWARE_PLATEAU_RETRY_CONTINUE refused_candidate=0 refused_dt=0.00055762444389984012 suggested_dt=0.00055691943198942959 next_candidate=1 cap=20' "$closure_limited_log" &&
+		grep -Fq 'EQUAL_TIME_LIMITED_PRODUCTION candidate=1 dt=0.0005569194327108562' "$closure_limited_log" &&
+		grep -Fq 'schedule=1640f2922f8030fe5fe6f983e3c3cae90eb1324bff0b927dde4439df52ed3e3c terminal_target=673d3fc35e9b56e3d04499f37c82aaee9330a8d62ae84f25f49deb7854a9c95a predictor_G=0.019709646701812744 G=0.023430228233337402 field_max=0.023430228233337402' "$closure_limited_log" &&
+		grep -Fq 'G_material_authority=0' "$closure_limited_log" &&
+		grep -Fq 'accepted_token=1 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$closure_limited_log"; then
-		echo 'PASS (exact exit=214, material manifold authority refusal)'
+		echo 'PASS (exact exit=206, accepted state with Eulerian G withheld)'
 		rm -f "$closure_cfl_log" "$closure_contraction_log" "$closure_limited_log" "$closure_controller_log"
 	else
-		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 214)"
+		echo "FAIL (CFL_exit=$closure_cfl_rc expected 252; contraction_exit=$closure_contraction_rc expected 217; limited_exit=$closure_limited_rc expected 206)"
 		printf '%s\t%d\t%s\n' "$closure_name" "$closure_limited_rc" \
 			"$closure_limited_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
@@ -840,6 +843,54 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		echo "FAIL (exit=$projection_retry_rc expected 209)"
 		printf '%s\t%d\t%s\n' "$projection_retry_name" "$projection_retry_rc" \
 			"$projection_retry_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
+# r166 exercises the motion-invariant distribution observables, then retains
+# the exact slice-7 equal-time reference-schedule refusal.  Seven production
+# steps are accepted; no 104-step plateau verdict is claimed.
+if [ "$(uname -s)" = "Darwin" ]; then
+	distribution_shadow_name="FireSequenceTest.r166_distribution_long_shadow"
+	distribution_shadow_path="$BIN_DIR/FireSequenceTest"
+	distribution_shadow_log="$LOG_DIR/$distribution_shadow_name.log"
+	distribution_shadow_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	printf '[ evidence ] %-46s ... ' "$distribution_shadow_name"
+	distribution_shadow_rc=0
+	if [ ! -x "$distribution_shadow_path" ]; then
+		distribution_shadow_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_ACCEPTED_LONG_SHADOW=1 \
+			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
+			RISE_OPTIONS_FILE="$distribution_shadow_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$distribution_shadow_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$distribution_shadow_log" 2>&1 || distribution_shadow_rc=$?
+	else
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_ACCEPTED_LONG_SHADOW=1 \
+			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
+			RISE_OPTIONS_FILE="$distribution_shadow_options" \
+			"$distribution_shadow_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$distribution_shadow_log" 2>&1 || distribution_shadow_rc=$?
+	fi
+	if [ "$distribution_shadow_rc" -eq 115 ] &&
+		[ "$(grep -Fc 'GOLDEN_LONG_SHADOW_ACCEPT_CANDIDATE step=' "$distribution_shadow_log")" -eq 7 ] &&
+		grep -Fq 'GOLDEN_LONG_SHADOW_ACCEPT_CANDIDATE step=0 dt=0.0005569194327108562 predictor_G=0.019709646701812744 G=0.023430228233337402 field_max=0.023430228233337402 field_p95=5.245208740234375e-06 field_p50=7.152557373046875e-07' "$distribution_shadow_log" &&
+		grep -Fq 'GOLDEN_LONG_SHADOW_ACCEPT_CANDIDATE step=1 dt=0.0005569194327108562 predictor_G=0.02268320694565773 G=0.045641358941793442 field_max=0.022211194038391113 field_p95=0.00015151500701904297 field_p50=1.9073486328125e-06' "$distribution_shadow_log" &&
+		grep -Fq 'GOLDEN_LONG_SHADOW_ACCEPT_CANDIDATE step=6 dt=3.7466904814209556e-06 predictor_G=0.013319537974894047 G=0.034910492599010468 field_max=0.020704150199890137 field_p95=2.6166439056396484e-05 field_p50=1.7881393432617188e-06' "$distribution_shadow_log" &&
+		grep -Fq 'EQUAL_TIME_REFERENCE_RETRY slice=7 failed_substeps=8 next_substeps=16' "$distribution_shadow_log" &&
+		grep -Fq 'EQUAL_TIME_REFERENCE_RETRY slice=7 failed_substeps=16 next_substeps=32' "$distribution_shadow_log" &&
+		grep -Fq 'EQUAL_TIME_REFERENCE_RETRY slice=7 failed_substeps=32 next_substeps=64' "$distribution_shadow_log" &&
+		grep -Fq 'production golden parallel reference 7 failed: equal-time reference substep 8: R1: fire solver open conservative Picard stage did not converge: first=6.94718 last=0.0191989 minimum=0.000270212 target=0.0191989 mass=0.0131144 coefficient=7.04504e-05 active_set=0 tolerance=0.000479545' "$distribution_shadow_log" &&
+		! grep -Fq 'GOLDEN_LONG_SHADOW steps=104' "$distribution_shadow_log"; then
+		echo 'PASS (exact exit=115, slice-7 equal-time reference schedule refusal)'
+		rm -f "$distribution_shadow_log"
+	else
+		echo "FAIL (exit=$distribution_shadow_rc expected 115)"
+		printf '%s\t%d\t%s\n' "$distribution_shadow_name" "$distribution_shadow_rc" \
+			"$distribution_shadow_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
 fi

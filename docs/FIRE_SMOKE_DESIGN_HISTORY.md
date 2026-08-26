@@ -4018,3 +4018,39 @@ it was already tried and refuted here.
   non-default request-owned 19-cycle schedule.  The 104-step shadow and every
   later rung remain unclaimed; the blocker is the missing material anomaly
   observable, not a newly established trajectory cost.
+- **r166 distribution-invariant long shadow (2026-08-26):** the attempted
+  transported/material baseline is rejected.  It would add a new advected
+  field solely to answer a stability question that order statistics answer
+  without new state or transport machinery.  The Eulerian per-cell
+  `abs(terminal-beginning)` observable keeps exactly its narrower authority:
+  it may constrain a following timestep only when the beginning deviation is
+  bit-exact zero or the transport velocity is bit-exact stationary.  A moving
+  accepted state remains payload-authenticated, but publishes zero for that
+  unauthoritative timestep operand.
+
+  Long-shadow boundedness is evaluated on the spatial distribution of
+  `abs(EOS volume ratio - 1)`.  Every accepted step records maximum, p95, and
+  p50.  Maximum retains the existing atomic reduction; p95 and p50 are exact
+  Binary32 order statistics selected on Metal by a two-stage 16-bit radix
+  histogram.  Only the three scalars cross the diagnostic boundary; the
+  deviation field remains resident.  The r160 non-secular classifier is
+  applied independently to all three 104-value trajectories, and both
+  projections plus the per-step allowance/ceiling gates remain mandatory.
+  A flat maximum with secular p95 growth is RED, including the prior-window
+  outlier-masking case already covered by r160.  A translated fixed
+  distribution is GREEN because all three order statistics are unchanged.
+
+  The performance rung remains decoupled.  The legacy 45 ms remap check is not
+  reinterpreted as a prerequisite for this physics campaign; retirement or
+  re-pinning belongs to the post-source-map device-critical-path campaign.
+
+  The first on-device campaign accepted seven production steps and exercised
+  the three distribution reductions, but it did not reach the 104-step
+  classifier.  At slice 7 the equal-time Binary64 target generator failed its
+  R1 solve at 8, 16, 32, and 64 reference substeps.  The final 64-substep
+  attempt stopped at substep 8 with residual 0.0191989 against tolerance
+  0.000479545.  This is an equal-time reference-schedule capacity stop, not a
+  secular-plateau verdict: the three trajectory classifiers were not run, and
+  B_fp32 plus every later rung remain blocked.  The durable r166 artifact and
+  raw transcript bind the seven accepted max/p95/p50 observations and the
+  complete 8 -> 16 -> 32 -> 64 failure sequence.

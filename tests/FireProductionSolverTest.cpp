@@ -4058,6 +4058,9 @@ int main()
 			rejected.representedTimeStepS==0.0f&&
 			rejected.maximumManifoldGeneration==0.0&&
 			rejected.maximumAcceptedManifoldDeviation==0.0&&
+			rejected.acceptedManifoldDeviationP95==0.0&&
+			rejected.acceptedManifoldDeviationP50==0.0&&
+			!rejected.manifoldGenerationAuthoritative&&
 			rejected.maximumPredictedAdvectiveManifoldAnomaly==0.0&&
 			rejected.manifoldMapCellCount==0u&&
 			rejected.manifoldScalarDeviceToHostTransferCount==0u&&
@@ -4224,8 +4227,8 @@ int main()
 			fullStepAdmissionBoundary,fullStepUnderBytes)&&
 		FireProductionResidentStepWorkingSetBytes(fullStepOverShape,
 			fullStepAdmissionBoundary,fullStepOverBytes)&&
-		fullStepUnderBytes==UINT64_C(2139633128)&&
-		fullStepOverBytes==UINT64_C(2149131896);
+		fullStepUnderBytes==UINT64_C(2140435944)&&
+		fullStepOverBytes==UINT64_C(2149934712);
 	auto makeEmptyFullStepAdmission=[&](const FireProductionProjectionShape& admissionShape) {
 		FireProductionResidentStepRequest admission;
 		admission.force.shape=admissionShape;admission.force.timeStepS=0.01f;
@@ -4392,7 +4395,7 @@ int main()
 			tier10ResidentStepResult.projection.validationPassed&&
 			tier10ResidentStepResult.physicalProjection.executedVCycleCount==12u&&
 			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
-			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1917482200)&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1918285016)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1338301072)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
