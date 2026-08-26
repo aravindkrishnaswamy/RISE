@@ -3990,28 +3990,28 @@ it was already tried and refuted here.
   subsequent contract/readmission/source/preview milestones remain ordered and
   cannot be claimed from this entry until their measurements complete.
 
-  Execution falsified the single-slice operating-point premise before the
-  non-secular window could be formed.  The first two accepted steps were
-  candidates 1 and 2 at `5.569194327108562e-4` and
-  `5.8853777591139078e-4 s`.  The third step's observation-derived candidate
-  (`5.756302853114903e-4 s`) reached field `0.062683582305908203`, above the
-  hard `2^-5` ceiling, and was refused tokenlessly.  The bounded owner needed
-  candidates 0 through 6 before accepting `1.7358525656163692e-4 s` at field
-  `0.023434281349182129`.  Both projections validated on all three published
-  steps.  Re-projecting with the same controlled r164 p95 gives
-  `4.7152105309299541/6.0766799525774422 h` device/wall.  Thus the owner's
-  accepted `1.47/1.89 h` calibration-slice cost does not describe the live
-  trajectory; the 104-step shadow stops before certification, and every later
-  rung remains unclaimed.
+  Execution produced three accepted diagnostic states before the non-secular
+  window could be formed.  The third candidate began at
+  `5.756302853114903e-4 s`, reached field `0.062683582305908203`, and needed
+  six tokenless refusals before a `1.7358525656163692e-4 s` attempt reached
+  `0.023434281349182129`.  Fresh review then invalidated the operating-point
+  inference: the alleged advective dose was the Eulerian cellwise
+  terminal-minus-beginning deviation and therefore included translation of an
+  already nonuniform plateau.  Accepted-state authority returns to the prior
+  conservative generation diagnostic until a material/transported baseline is
+  derived.
 
-  The audit first repaired two false mechanisms.  For a closed step, the
-  limiter observation is now the measured pre-corrector advective anomaly
-  dose, not terminal-minus-beginning manifold field (which also measures
-  motion of the existing plateau and produced a false death spiral).  The
-  owner also retries a populated simultaneous physical-validation/manifold
-  refusal before classifying its preserved tokenless plateau diagnostics.
-  Exact exit 210 binds the repaired three-step trajectory, refusal counts,
-  trace `b3ac96c...4bf12`, final state `9e68d844...38fda`, and unchanged
-  golden checkpoint.  This is a checkpoint finding, not a revival of the
-  decoupled one-hour performance gate: the blocked prerequisite is the claimed
-  validation operating point and therefore the 104-step physics evidence.
+  The `4.7152/6.0767 h` projection is withdrawn as well: it omitted the six
+  refused attempts and used a prior single-attempt p95.  The measured final
+  accepted attempt alone implies `4.131755301914921/7.162223294085453 h`
+  lower bounds, not a complete retry-aware projection, and the raw record did
+  not bind each attempt's equal-time schedule/terminal target.  The observation
+  remains pinned as calibrating evidence only.
+
+  A separate ownership repair is certified.  Exact exit 209 starts the
+  physical open solve at 12 V-cycles, derives retries 12 -> 13 -> 14 from the
+  measured contraction, validates at 14, and only then classifies the preserved
+  tokenless manifold refusal.  The fp64 mirror and roundoff trace also carry a
+  non-default request-owned 19-cycle schedule.  The 104-step shadow and every
+  later rung remain unclaimed; the blocker is the missing material anomaly
+  observable, not a newly established trajectory cost.

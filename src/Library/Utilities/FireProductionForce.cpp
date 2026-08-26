@@ -358,7 +358,6 @@ namespace RISE
 			maximumManifoldGeneration,projection.maximumPreProjectionResidualPerS,
 			projection.maximumPostProjectionResidualPerS,recomputed);
 		const FireProductionAcceptedManifoldToken& token=acceptedManifoldToken_;
-		const double limiterGeneration=ManifoldLimiterGeneration();
 		return token.available_&&FireProductionResidentStepEligibleForAcceptedManifoldToken(*this)&&
 			std::isfinite(representedTimeStepS)&&representedTimeStepS>0.0f&&
 			std::isfinite(maximumManifoldGeneration)&&maximumManifoldGeneration>=0.0&&
@@ -370,8 +369,7 @@ namespace RISE
 			deliveredRestorationDrainFraction==recomputed.deliveredDrainFraction&&
 			restorationResidualBandPerS==recomputed.maximumPostResidualPerS&&
 			token.representedTimeStepS_==static_cast<double>(representedTimeStepS)&&
-			std::isfinite(limiterGeneration)&&limiterGeneration>=0.0&&
-			token.maximumGeneration_==limiterGeneration&&
+			token.maximumGeneration_==maximumManifoldGeneration&&
 			token.maximumAcceptedDeviation_==maximumAcceptedManifoldDeviation&&
 			token.requiredDrainFraction_==requiredRestorationDrainFraction&&
 			token.deliveredDrainFraction_==deliveredRestorationDrainFraction&&
@@ -400,7 +398,6 @@ namespace RISE
 			acceptedStep.projection.maximumPreProjectionResidualPerS,
 			acceptedStep.projection.maximumPostProjectionResidualPerS,recomputed);
 		const FireProductionAcceptedManifoldToken& token=acceptedStep.acceptedManifoldToken_;
-		const double limiterGeneration=acceptedStep.ManifoldLimiterGeneration();
 		if(!acceptedStep.AcceptedManifoldTokenMatchesCurrentPayload()||
 			!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
 			!std::isfinite(acceptedStep.representedTimeStepS)||
@@ -424,8 +421,7 @@ namespace RISE
 			acceptedStep.restorationResidualBandPerS!=recomputed.maximumPostResidualPerS)
 			return Fail(error,"production accepted manifold observation is invalid");
 		if(token.representedTimeStepS_!=acceptedStepS||
-			!std::isfinite(limiterGeneration)||limiterGeneration<0.0||
-			token.maximumGeneration_!=limiterGeneration||
+			token.maximumGeneration_!=acceptedStep.maximumManifoldGeneration||
 			token.maximumAcceptedDeviation_!=acceptedStep.maximumAcceptedManifoldDeviation||
 			token.requiredDrainFraction_!=acceptedStep.requiredRestorationDrainFraction||
 			token.deliveredDrainFraction_!=acceptedStep.deliveredRestorationDrainFraction||
@@ -443,7 +439,7 @@ namespace RISE
 			return Fail(error,"production accepted manifold token does not match diagnostics");
 		result.available_=true;
 		result.timeStepS_=acceptedStepS;
-		result.maximumGeneration_=limiterGeneration;
+		result.maximumGeneration_=acceptedStep.maximumManifoldGeneration;
 		result.restorationDrainFraction_=acceptedStep.deliveredRestorationDrainFraction;
 		result.acceptedStateDigest_=token.acceptedStateDigest_;
 		result.acceptedStateDigestVersion_=token.acceptedStateDigestVersion_;

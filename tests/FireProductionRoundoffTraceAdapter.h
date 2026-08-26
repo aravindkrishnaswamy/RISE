@@ -473,6 +473,8 @@ namespace FireProductionRoundoffAdapter
 		Trace::FireProductionProjectionRequest projection;
 		projection.shape=force.shape;projection.timeStepS=force.timeStepS;
 		projection.ambientDensityKGPerM3=force.ambientDensityKGPerM3;
+		projection.residentPhysicalOpenVCycleCount=
+			request.physicalOpenProjectionVCycleCount;
 		projection.gasDensityKGPerM3=gas;
 		projection.provisionalMomentumKGPerM2S=computed.dual.momentum;
 		projection.divergenceTargetPerS=Promote(request.divergenceTargetPerS);

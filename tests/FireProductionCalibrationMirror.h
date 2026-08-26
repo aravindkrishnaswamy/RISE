@@ -122,6 +122,8 @@ namespace FireProductionCalibration
 		FP64::FireProductionProjectionRequest projection;
 		projection.shape=force.shape;projection.timeStepS=force.timeStepS;
 		projection.ambientDensityKGPerM3=force.ambientDensityKGPerM3;
+		projection.residentPhysicalOpenVCycleCount=
+			request.physicalOpenProjectionVCycleCount;
 		for(unsigned int side=0u;side<6u;++side)projection.boundary[side]=force.boundary[side];
 		projection.gasDensityKGPerM3.resize(cells);
 		for(std::size_t cellIndex=0u;cellIndex<cells;++cellIndex){

@@ -436,14 +436,6 @@ namespace RISEFireProductionFP64
 		bool manifoldPlateauPassed;
 		RISE::FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
-		//! The timestep predictor owns the advective dose measured before the
-		//! anomaly corrector.  The terminal-minus-beginning diagnostic also moves
-		//! an already-bounded plateau and is therefore not a per-step dose once
-		//! closure is active.
-		double ManifoldLimiterGeneration() const {
-			return advectiveAnomalyClosurePassCount!=0u?
-				maximumPredictedAdvectiveManifoldAnomaly:maximumManifoldGeneration;
-		}
 
 		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),

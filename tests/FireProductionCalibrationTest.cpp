@@ -409,9 +409,9 @@ int main()
 		subdominanceMeasurement.find("measurement_fixture_sha256 "
 			"f727861af3b0e70bddca2a97b81c2e854bdf09d45c63c6c800e1846f994dd582")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			mirrorAdapter.begin(),mirrorAdapter.end()))==
-		"bb541a79454136422ec19c8d2c091d85a09d9051756105b23746ddae6a731128"&&
+		subdominanceMeasurement.find("mirror_adapter_sha256 "
+			"bb541a79454136422ec19c8d2c091d85a09d9051756105b23746ddae6a731128")!=
+			std::string::npos&&
 		subdominanceMeasurement.find("fp64_source_manifest_sha256 "
 			"22a352d220eaf035e2b94537d976545208dda1912a10ae21da9eac15c6fd0922")!=
 			std::string::npos&&
@@ -1339,7 +1339,7 @@ int main()
 	Check(!drainAwareRetryEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(drainAwareRetryEvidence.begin(),
 			drainAwareRetryEvidence.end()))==
-		"d00948b4025960eef1fc209dac62bdca9b909bd670441213dc45d80c38fe08a9"&&
+		"cd55b3174e79ce712c87125aa1b8e6fe98d66d7c266915d0dc8cad0f0632894f"&&
 		drainAwareRetryEvidence.find("candidate_0_refusal_reproduced true")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("candidate_1_represented_dt "
@@ -1391,7 +1391,7 @@ int main()
 			std::string::npos&&
 		drainAwareRetryEvidence.find("wall_target_met false")!=std::string::npos&&
 		drainAwareRetryEvidence.find("r136_retained_trace_digest "
-			"16bba8260bb71a7bc28e5af174efd970b189fa6404d252d755fe5bcd9d0baaf6")!=
+			"afe1d1c13dee2911027de433f8074a1097bcf36ba71355bdb21562915ab95caf")!=
 			std::string::npos&&
 		drainAwareRetryEvidence.find("retry_acceptance_exact_exit 206")!=
 			std::string::npos&&
@@ -1432,35 +1432,45 @@ int main()
 	Check(!operatingPointAudit.empty()&&!operatingPointRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			operatingPointAudit.begin(),operatingPointAudit.end()))==
-			"5c6e8ee4521f711008e3c3e46d93241a6b16c58109e59ae66f385902f0749d8a"&&
+			"d2f6cc698bbdc941b89b0f81816e2cce3aa449ed7147471537f1fdebcf403c8d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			operatingPointRaw.begin(),operatingPointRaw.end()))==
-			"b8078f56c04d70b789ec6bcaf65d3c11d9d6e253023aeff6cd92b21a1efd4707"&&
-		operatingPointAudit.find("status fail_closed_before_long_shadow")!=
+			"c17ca88e405192f0f713333a06e131372840ed22f24014bccdf706f9b88b455a"&&
+		operatingPointAudit.find("status review_invalidated_before_long_shadow")!=
 			std::string::npos&&
 		operatingPointAudit.find("step2_first_candidate_field 0.062683582305908203")!=
 			std::string::npos&&
 		operatingPointAudit.find("step2_accepted_candidate 6")!=std::string::npos&&
 		operatingPointAudit.find("step2_accepted_dt_s 0.00017358525656163692")!=
 			std::string::npos&&
-		operatingPointAudit.find("revised_tier10_device_hours 4.7152105309299541")!=
+		operatingPointAudit.find("tier10_cost_projection_valid false")!=
 			std::string::npos&&
-		operatingPointAudit.find("revised_tier10_wall_hours 6.0766799525774422")!=
+		operatingPointAudit.find("equal_time_per_attempt_schedule_bound false")!=
+			std::string::npos&&
+		operatingPointAudit.find("limiter_observable_authority withdrawn")!=
+			std::string::npos&&
+		operatingPointAudit.find("physical_projection_retry_path 12_to_13_to_14")!=
+			std::string::npos&&
+		operatingPointAudit.find("retained_exact_exit 209")!=
 			std::string::npos&&
 		operatingPointAudit.find("long_shadow_accepted false")!=std::string::npos&&
 		operatingPointAudit.find("subsequent_milestones_executed false")!=
 			std::string::npos&&
 		operatingPointRaw.find("step2_refusal5 candidate=5")!=std::string::npos&&
 		operatingPointRaw.find("step2_accept candidate=6")!=std::string::npos&&
+		operatingPointRaw.find("status invalidated_calibrating_observation")!=
+			std::string::npos&&
+		operatingPointRaw.find("retry_attempt_costs_measured false")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-			"980e9f6d5d0b565956064c76bd69fc781221c71845ca9db065c21ed3601d50ec"&&
+			"a1c1787f59adb602ff09105b1c69a7e69e9f4040a3bbbaf50444fb257b8705b8"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-			"1a8829ac6c4094a46025beaf85b4971ebf4e81b72ca9ebf88a3fcc2eccb64f97"&&
+			"d05d0cb4a7f276dd72b1028ea1328d3f411e52973dcfe47829449f1246354cb7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"8358da1cfd266c0eb90140532370d381a4162e49cc567911380f25692b7b1352"&&
+			"46ece0cb5f60aea130f32f024987223d6da8d88d9dbb98e221dfad30ef708e73"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
 			"e657a44dd08b0b26c7674800ff0e15a28b996d1373f7f80cd57359fcd9475e42"&&
@@ -1472,29 +1482,35 @@ int main()
 			"bff3315513f88b51f5967c179dbd2995eaa9ab1ccb35a78d2ae223ae6a5f4871"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"dec09130a0652ae12b2d03de37451956aa41219ae6b0cc9e4c4849c47f0e5b36"&&
+			"1a2686868c8cdb9477295ebb8eeb3fba4f0ef0a12ab079545684ef82c5ea50f1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"c361b0076241c7bf665f8d4b359c9bc2139ac45f48587889b0d008f8d75ca22f"&&
+			"c743fd638fd9e3078f3a9140d5fb51e0607ffc5b49ba911cba713c45aebfc7ac"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-			"4b70181579668a1d11d7cc977c7a83f374de563a0648d204654acb2aef4a03a4"&&
+			"bfeecf41506b9c78cdd4d6d6ba51c5d1130406ac541a05ea4cd2c730fbb3290d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 			"57feb2f93dd1af43afbd286a85b106a91d68d853bdd16865bc5b52919d933d1d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-			"13082a65ef214e452480c19cedb400220ef339f629cb907166f78333a1a46e6f"&&
+			"ce0979cbb4252848b748780c8d500fdf560e51436873750c825186df48aa57dd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-			"dac357fd04d37902fdc07b674411e03490fcfd30df22b143726f21c0164fabdc"&&
+			"f4619bca0e8475081ce6cea7d3ecb49f52a1c4a521d372c0cbda6fd19b8fa527"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"fe58b87c4fe8b604bb82c596b0f57d7039344e6bffd9540275c0779ff8bac74f"&&
-		goldenCompositionFixture.find("ACCEPTED_OPERATING_POINT_AUDIT")!=
+			"8d5cbe245141a4023fdd80e878d8b45c71da5fa9888fb10b28c055dee84acf9a"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			mirrorAdapter.begin(),mirrorAdapter.end()))==
+			"50d3ebd37bd7fa193d967cacf5c8ce40038dd20ffffcbaddd2e54594a21e5bd7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			traceAdapterSource.begin(),traceAdapterSource.end()))==
+			"07164177f6d0c43c71a1a59511b7455d6738ff56bd9b0347899eb872a04d93ed"&&
+		goldenCompositionFixture.find("PHYSICAL_PROJECTION_RETRY_RED")!=
 			std::string::npos&&unixTestDriver.find(
-			"PASS (exact exit=210, operating-point refusal)")!=std::string::npos,
-		"r165 binds the repaired three-step operating-point refusal and cost finding");
+			"PASS (exact exit=209, physical-projection retry)")!=std::string::npos,
+		"r165 withdraws the invalid trajectory claim and binds the projection retry");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
@@ -2913,6 +2929,53 @@ int main()
 		step64.projection.executedVCycleCount==12u&&
 		step64.projection.maximumPostProjectionResidualPerS==0.0,
 		"binary64 mirror composes force, five cell maps, fifteen dual maps, sources, and one P2");
+	RISE::FireProductionResidentStepRequest nonDefaultCycleStep=step;
+	nonDefaultCycleStep.physicalOpenProjectionVCycleCount=19u;
+	nonDefaultCycleStep.force.shape.nx=5u;nonDefaultCycleStep.force.shape.ny=5u;
+	nonDefaultCycleStep.force.shape.nz=5u;
+	nonDefaultCycleStep.cellTransport.shape=nonDefaultCycleStep.force.shape;
+	nonDefaultCycleStep.dualTransport.shape=nonDefaultCycleStep.force.shape;
+	nonDefaultCycleStep.force.boundary[0]=RISE::FireProductionProjectionPressureOpen;
+	nonDefaultCycleStep.force.boundary[1]=RISE::FireProductionProjectionPressureOpen;
+	nonDefaultCycleStep.cellTransport.boundary[0]=RISE::FireProductionProjectionPressureOpen;
+	nonDefaultCycleStep.cellTransport.boundary[1]=RISE::FireProductionProjectionPressureOpen;
+	nonDefaultCycleStep.dualTransport.boundary[0]=RISE::FireProductionProjectionPressureOpen;
+	nonDefaultCycleStep.dualTransport.boundary[1]=RISE::FireProductionProjectionPressureOpen;
+	const std::size_t nonDefaultCells=nonDefaultCycleStep.force.shape.CellCount();
+	nonDefaultCycleStep.force.cellGasDensityKGPerM3.assign(nonDefaultCells,1.0f);
+	nonDefaultCycleStep.force.molecularKinematicViscosityM2PerS.assign(nonDefaultCells,0.0f);
+	nonDefaultCycleStep.cellTransport.conservativeValues.assign(9u*nonDefaultCells,0.0f);
+	for(std::size_t cell=0u;cell<nonDefaultCells;++cell){
+		nonDefaultCycleStep.cellTransport.conservativeValues[nonDefaultCells+cell]=1.0f;
+		nonDefaultCycleStep.cellTransport.conservativeValues[8u*nonDefaultCells+cell]=300000.0f;
+	}
+	nonDefaultCycleStep.cellSourceIncrement.assign(9u*nonDefaultCells,0.0f);
+	nonDefaultCycleStep.divergenceTargetPerS.assign(nonDefaultCells,0.0f);
+	nonDefaultCycleStep.restorationDivergenceTargetPerS.assign(nonDefaultCells,0.0f);
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(
+			nonDefaultCycleStep.force.shape,axis);
+		nonDefaultCycleStep.force.faceDensityKGPerM3[axis].assign(faces,1.0f);
+		nonDefaultCycleStep.force.beginningMomentumKGPerM2S[axis].assign(faces,0.0f);
+		nonDefaultCycleStep.cellTransport.frozenVelocityMPerS[axis].assign(faces,0.0f);
+		nonDefaultCycleStep.dualTransport.beginningFaceDensity[axis].assign(faces,1.0f);
+		nonDefaultCycleStep.dualTransport.beginningMomentum[axis].assign(faces,0.0f);
+		nonDefaultCycleStep.dualTransport.frozenVelocityMPerS[axis].assign(faces,0.0f);
+		nonDefaultCycleStep.momentumSourceIncrement[axis].assign(faces,0.0f);
+	}
+	FireProductionCalibration::ResidentStep64Result nonDefaultCycleStep64;
+	const bool nonDefaultCycleMirrorOK=FireProductionCalibration::AdvanceResidentStep64(
+		nonDefaultCycleStep,0.0,nonDefaultCycleStep64,&error);
+	if(!nonDefaultCycleMirrorOK||nonDefaultCycleStep64.physicalProjection.executedVCycleCount!=19u||
+		nonDefaultCycleStep64.projection.executedVCycleCount!=16u)
+		std::fprintf(stderr,"non-default mirror detail ok=%d physical=%u restoration=%u error=%s\n",
+			nonDefaultCycleMirrorOK?1:0,
+			nonDefaultCycleStep64.physicalProjection.executedVCycleCount,
+			nonDefaultCycleStep64.projection.executedVCycleCount,error.c_str());
+	Check(nonDefaultCycleMirrorOK&&
+		nonDefaultCycleStep64.physicalProjection.executedVCycleCount==19u&&
+		nonDefaultCycleStep64.projection.executedVCycleCount==16u,
+		"binary64 mirror propagates the request-owned non-default physical V-cycle count");
 	FireProductionRoundoffAdapter::ResidentStepTraceResult tracedStep;
 	const bool tracedStepOK=FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
 		step,0.0f,tracedStep,&error);
@@ -2938,6 +3001,19 @@ int main()
 		tracedStep.physicalProjection.maximumPostProjectionResidualPerS.Rounded()==0.0f&&
 		tracedStep.projection.maximumPostProjectionResidualPerS.Rounded()==0.0f,
 		"roundoff adapter seals the complete force-transport-source-two-projection graph before measurement");
+	FireProductionRoundoffAdapter::ResidentStepTraceResult nonDefaultCycleTracedStep;
+	const bool nonDefaultCycleTraceOK=FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
+		nonDefaultCycleStep,0.0f,nonDefaultCycleTracedStep,&error);
+	if(!nonDefaultCycleTraceOK||nonDefaultCycleTracedStep.physicalProjection.executedVCycleCount!=19u||
+		nonDefaultCycleTracedStep.projection.executedVCycleCount!=16u)
+		std::fprintf(stderr,"non-default trace detail ok=%d physical=%u restoration=%u error=%s\n",
+			nonDefaultCycleTraceOK?1:0,
+			nonDefaultCycleTracedStep.physicalProjection.executedVCycleCount,
+			nonDefaultCycleTracedStep.projection.executedVCycleCount,error.c_str());
+	Check(nonDefaultCycleTraceOK&&
+		nonDefaultCycleTracedStep.physicalProjection.executedVCycleCount==19u&&
+		nonDefaultCycleTracedStep.projection.executedVCycleCount==16u,
+		"roundoff adapter propagates the request-owned non-default physical V-cycle count");
 	if(!(tracedStepOK&&tracedStepStages&&tracedStepBytes))
 		std::fprintf(stderr,"roundoff full-step detail ok=%d stages=%d bytes=%d count=%zu error=%s\n",
 			tracedStepOK?1:0,tracedStepStages?1:0,tracedStepBytes?1:0,

@@ -3847,59 +3847,46 @@ time.  No performance number changes the physics acceptance.  Durable evidence i
 
 ### 7.55y Validation operating-point audit and long-shadow refusal (r165)
 
-The owner accepted r164's single-slice operating point
-`5.5692793102934957e-4 s` and its `1.4696534042399729/1.89400098260743 h`
-device-span/wall projection for the validation campaign.  Performance was
-decoupled from the milestone ladder: the approximately one-hour design target
-was deferred to one device-critical-path campaign after thermo/source maps,
-and the paired `34.631833361461759 ms` host residual remained backlog.
+The owner accepted r164's one-slice cost for starting validation, with the
+approximately one-hour device target deferred until thermo/source maps.  r165
+then began the ordered 104-step shadow and stopped after three accepted steps.
+Those raw observations remain useful: the third candidate began at
+`5.756302853114903e-4 s`, reached field `0.062683582305908203`, and required
+six tokenless refusals before an attempt at `1.7358525656163692e-4 s` reached
+field `0.023434281349182129`.  Both projections validated on the three
+published diagnostic states.
 
-The apparent `89.8 -> 117.9 ms` device-p95 growth is not retry machinery
-charged to each accepted step.  The earlier value was
-`FireProductionResidentStepResult::deviceElapsedMS`, a sum of active command
-durations that omitted submission/idle gaps between command buffers.  r164
-corrected the metric to `deviceMakespanMS`, the earliest GPU start through the
-latest GPU end over the complete queue DAG.  Candidate zero and candidate one
-measure the same per-attempt topology and have comparable makespans; the
-accepted candidate is not carrying candidate zero's device interval.  The
-growth is therefore measurement-window composition, not per-step retry cost.
+Fresh contract review invalidated the attempted operating-point conclusion.
+The value called the pre-corrector advective dose is computed cellwise as
+`abs(terminalDeviation-beginningDeviation)`.  It is Eulerian: translating an
+already nonuniform bounded plateau produces a nonzero value even without new
+donor-mixing anomaly.  It therefore cannot mint the next accepted timestep
+observation until a material/transported baseline is defined.  Production has
+been returned to the earlier conservative `maximumManifoldGeneration`
+authority; the three-step sequence is calibrating evidence, not a certified
+trajectory.
 
-The 104-step shadow was then started exactly as ordered: step zero reproduced
-the predictive refusal and drain-aware acceptance, and later candidates were
-derived from the preceding accepted observation's represented step, measured
-G, and delivered drain.  The campaign stopped after the third accepted step,
-the earliest decisive checkpoint.  Accepted steps 0 and 1 were
-`5.569194327108562e-4 s` (candidate 1) and `5.8853777591139078e-4 s`
-(candidate 2).  On step 2, the prior observation proposed
-`5.756302853114903e-4 s`; that candidate produced field
-`0.062683582305908203`, above even the hard `2^-5` ceiling, and was refused
-without a token.  Six ordinary drain-aware refusals were required before
-candidate 6 accepted at `1.7358525656163692e-4 s`, with predictor G
-`0.013353902846574783`, field `0.023434281349182129`, and drain
-`0.9997073451033196`.  Both projections validated on all three published
-steps.
+The earlier `4.7152/6.0767 h` extrapolation is also withdrawn.  It multiplied
+only the final accepted step by r164's single-attempt p95 and omitted the six
+refused attempts.  Even the measured final accepted attempt alone gives lower
+bounds of `4.131755301914921/7.162223294085453 h` device/wall; total retry cost
+was not recorded.  Per-attempt equal-time schedule and terminal-target digests
+were likewise absent from that raw transcript.  No tier-10 cost is claimed
+from it.
 
-This is not a performance-gate reversal.  It falsifies the antecedent that
-r164's one-slice timestep was the trajectory operating point.  Applying the
-same controlled r164 p95 basis (`117.86270828451961/151.894375 ms`) at the
-first state-dependent accepted point gives `4.7152105309299541/`
-`6.0766799525774422 h` device-span/wall.  Therefore the 104-step non-secular
-claim, B_fp32, guard supersession, readmission, source maps, and first light
-remain unexecuted.  The exact three-step audit returns 210 and binds trace
-`b3ac96c...4bf12`, terminal state `9e68d844...38fda`, the complete retry
-curve, both validation counts, and the immutable golden SHA.
+The independent physical-projection ownership defect is closed and retained.
+A one-step RED begins at 12 open-boundary V-cycles, refuses at 12 and 13,
+derives 13 and then 14 from the measured contraction, and validates at 14
+before classifying the preserved tokenless manifold refusal.  Exact exit 209
+binds both transitions and the unchanged golden SHA.  The fp64 mirror and
+roundoff trace adapters also propagate a request-owned non-default 19-cycle
+physical schedule instead of silently falling back to 17.
 
-The audit also caught two implementation defects before certification.  The
-accepted observation had been publishing terminal-minus-beginning manifold
-field as the next-step G even after closure; that quantity includes motion of
-an already bounded plateau and caused a false timestep death spiral.  The
-limiter now consumes the closure's measured pre-corrector advective anomaly
-dose.  Separately, a manifold refusal that also missed physical-projection
-validation was classified from the boolean return before the populated
-diagnostic result could request a derived physical-cycle retry.  The owner now
-validates the physical solve first and then classifies the preserved tokenless
-manifold refusal.  Neither repair rescues the cost premise: the exact audit
-above is after both repairs.
+The 104-step non-secular shadow, B_fp32, guard supersession, readmission,
+source maps, and first light remain unexecuted.  Their blocker is now stated
+narrowly: no material advective-generation observable has yet been derived for
+the evolving plateau, and the equal-time/cost record for the invalidated run
+was incomplete.
 
 ### 7.56 Tier-6 temporal-refinement protocol (r139, pre-evidence)
 

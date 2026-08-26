@@ -809,47 +809,47 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
-# r165 begins the ordered 104-step shadow, but retains the earliest decisive
-# checkpoint as an exact fail-closed audit.  The third accepted trajectory
-# state invalidates the r164 one-slice operating-point/cost premise, so no
-# later long-shadow or contract milestone may be claimed.
+# r165 retains the derived physical-projection retry before any trajectory
+# claim.  The separate three-step diagnostic exposed an unresolved Eulerian
+# anomaly observable and is kept only as calibrating evidence, not replayed as
+# an accepted-state or cost contract.
 if [ "$(uname -s)" = "Darwin" ]; then
-	operating_name="FireSequenceTest.r165_operating_point_audit"
-	operating_path="$BIN_DIR/FireSequenceTest"
-	operating_log="$LOG_DIR/$operating_name.log"
-	operating_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
-	printf '[ evidence ] %-46s ... ' "$operating_name"
-	operating_rc=0
-	if [ ! -x "$operating_path" ]; then
-		operating_rc=127
+	projection_retry_name="FireSequenceTest.r165_physical_projection_retry"
+	projection_retry_path="$BIN_DIR/FireSequenceTest"
+	projection_retry_log="$LOG_DIR/$projection_retry_name.log"
+	projection_retry_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	printf '[ evidence ] %-46s ... ' "$projection_retry_name"
+	projection_retry_rc=0
+	if [ ! -x "$projection_retry_path" ]; then
+		projection_retry_rc=127
 	elif [ -n "$timeout_bin" ]; then
-		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_ACCEPTED_LONG_SHADOW=1 \
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_PHYSICAL_PROJECTION_RETRY_RED=1 \
 			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
-			RISE_OPTIONS_FILE="$operating_options" \
-			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$operating_path" \
+			RISE_OPTIONS_FILE="$projection_retry_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$projection_retry_path" \
 			--fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
-			"$REPO_ROOT" >"$operating_log" 2>&1 || operating_rc=$?
+			"$REPO_ROOT" >"$projection_retry_log" 2>&1 || projection_retry_rc=$?
 	else
-		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_ACCEPTED_LONG_SHADOW=1 \
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 RISE_FIRE_PHYSICAL_PROJECTION_RETRY_RED=1 \
 			RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST=limited \
-			RISE_OPTIONS_FILE="$operating_options" \
-			"$operating_path" --fire-production-golden-composition \
+			RISE_OPTIONS_FILE="$projection_retry_options" \
+			"$projection_retry_path" --fire-production-golden-composition \
 			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
-			"$REPO_ROOT" >"$operating_log" 2>&1 || operating_rc=$?
+			"$REPO_ROOT" >"$projection_retry_log" 2>&1 || projection_retry_rc=$?
 	fi
-	if [ "$operating_rc" -eq 210 ] &&
-		grep -Fq 'candidate=0 dt=0.0005756302853114903' "$operating_log" &&
-		grep -Fq 'field_max=0.062683582305908203' "$operating_log" &&
-		grep -Fq 'candidate=6 dt=0.00017358525656163692' "$operating_log" &&
-		grep -Fq 'field_max=0.023434281349182129' "$operating_log" &&
-		grep -Fq 'ACCEPTED_OPERATING_POINT_AUDIT steps=3 candidate0=1 dt0=0.0005569194327108562 field0=0.023430228233337402 refusals0=1 candidate1=2 dt1=0.00058853777591139078 field1=0.023434340953826904 refusals1=2 candidate2=6 dt2=0.00017358525656163692 predictor_G2=0.013353902846574783 field2=0.023434281349182129 first_refused_field2=0.062683582305908203 refusals2=6 device_hours=4.7152105309299541 wall_hours=6.0766799525774422 physical_validations=3 restoration_validations=3 trace=b3ac96c48a809df9726e02f795e05ef54142c60e513c1724a4d813b7ac54bf12 final_state=9e68d844aca93239b71cf6a59b668065714e1cb3e12b1421b7365a41eb038fda golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$operating_log"; then
-		echo 'PASS (exact exit=210, operating-point refusal)'
-		rm -f "$operating_log"
+	if [ "$projection_retry_rc" -eq 209 ] &&
+		grep -Fq 'PHYSICAL_PROJECTION_RETRY step=0 refused_cycles=12' "$projection_retry_log" &&
+		grep -Fq 'next_cycles=13 cap=64 accepted_token=0' "$projection_retry_log" &&
+		grep -Fq 'PHYSICAL_PROJECTION_RETRY step=0 refused_cycles=13' "$projection_retry_log" &&
+		grep -Fq 'next_cycles=14 cap=64 accepted_token=0' "$projection_retry_log" &&
+		grep -Fq 'PHYSICAL_PROJECTION_RETRY_RED initial_cycles=12 retry_count=2 final_cycles=14 physical_valid=1 manifold_refused=1 accepted_token=0 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$projection_retry_log"; then
+		echo 'PASS (exact exit=209, physical-projection retry)'
+		rm -f "$projection_retry_log"
 	else
-		echo "FAIL (exit=$operating_rc expected 210)"
-		printf '%s\t%d\t%s\n' "$operating_name" "$operating_rc" \
-			"$operating_log" >> "$RUN_FAIL_TSV"
+		echo "FAIL (exit=$projection_retry_rc expected 209)"
+		printf '%s\t%d\t%s\n' "$projection_retry_name" "$projection_retry_rc" \
+			"$projection_retry_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
 fi

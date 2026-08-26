@@ -3986,20 +3986,11 @@ int main()
 	unsetenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
 	Check(zeroAnomalyClosurePassed&&
 		zeroAnomalyClosure.maximumPredictedAdvectiveManifoldAnomaly==0.0&&
-		zeroAnomalyClosure.ManifoldLimiterGeneration()==0.0&&
 		zeroAnomalyClosure.advectiveAnomalyClosurePassCount==1u&&
 		zeroAnomalyClosure.cellSubmapCount==5u&&
 		FireProductionAcceptedManifoldPayloadDigest(zeroAnomalySinglePass)==
 			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure),
 		"zero-anomaly closure skips the corrector and is byte-identical to the single-pass payload");
-	FireProductionResidentStepResult limiterObservable;
-	limiterObservable.maximumManifoldGeneration=0.045;
-	limiterObservable.maximumPredictedAdvectiveManifoldAnomaly=0.022;
-	Check(limiterObservable.ManifoldLimiterGeneration()==0.045,
-		"single-pass manifold prediction retains terminal-minus-beginning generation");
-	limiterObservable.advectiveAnomalyClosurePassCount=2u;
-	Check(limiterObservable.ManifoldLimiterGeneration()==0.022,
-		"two-pass manifold prediction uses the measured advective dose, not plateau motion");
 	FireProductionResidentStepResult callerAuthoredObservationStep=composedGPU;
 	callerAuthoredObservationStep.maximumManifoldGeneration=1.0e-9;
 	callerAuthoredObservationStep.maximumAcceptedManifoldDeviation=0.0;
