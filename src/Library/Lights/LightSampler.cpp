@@ -1478,6 +1478,69 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		return result;
 	}
 
+	// ================================================================
+	// FULL-SPHERE NEE (see IMaterial::ScattersFullSphere).
+	// ================================================================
+	// Every `cosSurface` / `cosEnv` below is the SIGNED cosine between
+	// the shadow direction and the shading normal, and every gate that
+	// consumes it rejects `<= 0`.  That is correct for an ordinary BRDF,
+	// whose `value()` is zero below the horizon anyway -- the rejected
+	// directions carry no transport, so NEE loses nothing by skipping
+	// them and the BSDF-sampling strategy has nothing to partner with.
+	//
+	// It is WRONG for a BSDF with support over the full sphere (Chiang
+	// hair: the TT / TTs lobes exit the FAR side of the fibre).  There
+	// the below-horizon half carries real transport, NEE never samples
+	// it, and yet the BSDF-sampling side still multiplies its hits there
+	// by `w_bsdf = p_b^2 / (p_b^2 + p_l^2) < 1` -- because that side's
+	// MIS partner computation (PathTracingIntegrator's emitter-hit and
+	// env-escape blocks) has no shading-surface cosine gate of its own
+	// and cannot tell that NEE declined to fire.  The two strategies
+	// therefore sum to `w_bsdf < 1` instead of 1 over the entire
+	// transmissive hemisphere, and the estimator reads systematically
+	// UNDER by exactly the missing `w_nee`.
+	//
+	// MIS PARTITION, DERIVED.  For a direction `wi` below the horizon
+	// with the capability ON:
+	//   * env NEE now has density `p_l(wi) = envPdf(wi)`.  The
+	//     EnvironmentSampler's importance map covers the whole sphere,
+	//     so `p_l > 0` there -- the strategy was always ABLE to reach
+	//     these directions; only this gate stopped it.
+	//   * BSDF sampling has density `p_b(wi) = pMaterial->Pdf(wi)`,
+	//     which for hair is normalized over the SPHERE (HairSPF), so
+	//     `p_b > 0` there too.
+	//   * NEE applies `w_nee = PowerHeuristic(p_l, p_b)` here, and the
+	//     BSDF-escape block applies `w_bsdf = PowerHeuristic(p_b, p_l)`
+	//     at the same `wi` with the same two densities -- identical
+	//     arguments, so `w_nee + w_bsdf == 1` exactly.  The partition
+	//     closes on the full sphere.
+	//   * The light-table area-light row is the same argument with
+	//     `p_l = pdfAlias * d^2 / (A * cosLight)`; its partner is
+	//     PathTracingIntegrator's `p_nee = pdfSelect * d^2/(A*cosLight)`
+	//     from `CachedPdfSelectLuminary`, which likewise applies no
+	//     shading-surface cosine gate.
+	//   * The delta-position light row (point / spot / omni) has NO MIS
+	//     partner at all -- a delta light cannot be BSDF-sampled, so NEE
+	//     carries it at `w = 1` on both hemispheres.  Relaxing that gate
+	//     adds the previously-missing below-horizon direct lighting at
+	//     full weight; there is no partition to violate.  This is the
+	//     row that closes the point-lit backlit-hair PT-vs-BDPT gap
+	//     (BDPT's s == 1 row already uses `fabs` at the eye vertex --
+	//     BDPTIntegrator.cpp's `absCosEye` and BDPTUtilities.h's
+	//     `GeometricTerm`/`GeometricTermSurfaceMedium`, all three
+	//     unconditionally `fabs` -- which is precisely why BDPT could
+	//     reach this transport and PT could not).
+	//
+	// SAFETY.  The capability defaults FALSE, and where it is FALSE
+	// every expression below is TEXTUALLY the pre-change one: the local
+	// `cosXxx` is initialized from `cosXxxSigned` with no arithmetic
+	// applied, so non-full-sphere materials are bit-identical, not
+	// merely numerically close.  Granting the capability to a material
+	// whose `value()` does NOT transmit would be a real bias (NEE would
+	// light its back faces at full weight), which is why this is opt-in
+	// per material rather than a blanket `fabs`.
+	const bool bFullSphere = ( pMaterial != 0 && pMaterial->ScattersFullSphere() );
+
 	const ILightManager* pLightMgr = pPreparedScene->GetLights();
 
 	// ----------------------------------------------------------------
@@ -1654,8 +1717,14 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			const Point3 lightPos = entry.pLight->position();
 			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-			const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
 				Vector3Ops::Dot( vToLight, ri.vNormal );
+			// FULL-SPHERE NEE site 1 of 3 (RGB): delta-position light.
+			// No MIS partner exists for a delta light, so the relaxed
+			// gate simply restores the below-horizon direct term at
+			// w = 1.  See the derivation at the top of this function.
+			const Scalar cosSurface = bFullSphere ?
+				std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
 
 			if( !isVolumeScatter && cosSurface <= 0 ) break;
 
@@ -1713,8 +1782,20 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// must integrate over the full sphere, not just a hemisphere.
 			// cosSurface is forced to 1.0 to cancel the multiplication below
 			// and skip hemisphere rejection.
-			const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
 				Vector3Ops::Dot( vToLight, ri.vNormal );
+			// FULL-SPHERE NEE site 2 of 3 (RGB): mesh area light.  The
+			// |cos| feeds THREE consumers below, and all three need it:
+			// the `cosSurface > 0` gate (else the row never fires), the
+			// light-sample RR `estimate` (a NEGATIVE estimate would make
+			// pSurvive negative and terminate every below-horizon draw),
+			// and `contrib` itself (the transported cosine factor).
+			// `cosLight` is the EMITTER-side cosine and is deliberately
+			// NOT touched -- a one-sided emitter genuinely emits nothing
+			// backwards, which is a property of the light, not of the
+			// receiving BSDF.
+			const Scalar cosSurface = bFullSphere ?
+				std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
 			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
 			// Optimal MIS training: count every NEE attempt including
@@ -1854,8 +1935,15 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		Scalar envPdf;
 		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
 
-		const Scalar cosEnv = isVolumeScatter ? Scalar(1.0) :
+		const Scalar cosEnvSigned = isVolumeScatter ? Scalar(1.0) :
 			Vector3Ops::Dot( envDir, ri.vNormal );
+		// FULL-SPHERE NEE site 3 of 3 (RGB): environment map.  This is
+		// the site the hair white-furnace measures directly -- with the
+		// gate on, a sigma_a == 0 groom reads ~0.988 instead of 1.0
+		// (~0.883 once the medulla lobes broaden the below-horizon
+		// share); with it relaxed both read ~1.002.
+		const Scalar cosEnv = bFullSphere ?
+			std::fabs( cosEnvSigned ) : cosEnvSigned;
 
 		// Optimal MIS training: count every env NEE attempt that produced
 		// a valid sample (envPdf > 0), including below-hemisphere samples
@@ -1958,6 +2046,15 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	{
 		return result;
 	}
+
+	// FULL-SPHERE NEE -- spectral twin.  Read the RGB
+	// EvaluateDirectLighting's block comment for the derivation; the
+	// three sites below mirror its three one-for-one, with
+	// `PdfNM` standing in for `Pdf` in the MIS partition argument.
+	// Kept as a separate local (rather than hoisted to a member or a
+	// helper) so the two functions stay independently readable, which
+	// is the convention the rest of this RGB/NM pair already follows.
+	const bool bFullSphere = ( pMaterial != 0 && pMaterial->ScattersFullSphere() );
 
 	// ----------------------------------------------------------------
 	// Step 1: Deterministic evaluation of lights with zero exitance
@@ -2110,8 +2207,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			const Point3 lightPos = entry.pLight->position();
 			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-			const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
 				Vector3Ops::Dot( vToLight, ri.vNormal );
+			// FULL-SPHERE NEE site 1 of 3 (NM): delta-position light.
+			const Scalar cosSurface = bFullSphere ?
+				std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
 
 			if( !isVolumeScatter && cosSurface <= 0 ) break;
 
@@ -2161,8 +2261,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
 		const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-		const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+		const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
 			Vector3Ops::Dot( vToLight, ri.vNormal );
+		// FULL-SPHERE NEE site 2 of 3 (NM): mesh area light.  Same three
+		// consumers as the RGB twin -- the `cosSurface <= 0` bail below,
+		// the RR `estimate`, and `contrib`.  `cosLight` stays signed.
+		const Scalar cosSurface = bFullSphere ?
+			std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
 		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
 		// Optimal MIS training: count every spectral NEE attempt
@@ -2281,8 +2386,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		Scalar envPdf;
 		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
 
-		const Scalar cosEnv = isVolumeScatter ? Scalar(1.0) :
+		const Scalar cosEnvSigned = isVolumeScatter ? Scalar(1.0) :
 			Vector3Ops::Dot( envDir, ri.vNormal );
+		// FULL-SPHERE NEE site 3 of 3 (NM): environment map.
+		const Scalar cosEnv = bFullSphere ?
+			std::fabs( cosEnvSigned ) : cosEnvSigned;
 
 		// Optimal MIS training: count every spectral env NEE attempt that
 		// produced a valid sample (envPdf > 0), including below-hemisphere

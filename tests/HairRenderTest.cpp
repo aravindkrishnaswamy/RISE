@@ -60,6 +60,13 @@
 //       Chiang model as implemented is not exactly reciprocal, so
 //       BDPT -- whose MIS weights assume reciprocity -- is expected to
 //       agree with PT well but not to MC-exactness).
+//    4b. Point-lit BACKLIT groom: the full-sphere NEE guard.  A groom
+//       lit only from behind is lit entirely through its fibres -- the
+//       TT / TTs transport that lives BELOW the shading normal, which
+//       `LightSampler` refused to sample until
+//       `IMaterial::ScattersFullSphere()` existed.  Asserts on PT's own
+//       per-unit-power reading rather than on a PT/BDPT ratio, because
+//       in this configuration BDPT is the unconverged side.
 //
 //  MEASUREMENT BASELINE.  Every number quoted below was measured on
 //    this machine AFTER the env-MIS fix in
@@ -72,6 +79,17 @@
 //    furnace, +4.0 % on this file's groom furnace.  If you are
 //    bisecting a pre-fix commit, expect every furnace number here to
 //    read HIGH by roughly that much.
+//
+//  SECOND BASELINE SHIFT -- the full-sphere NEE fix.  Every furnace and
+//    backlit number below was re-measured after
+//    `IMaterial::ScattersFullSphere()` made LightSampler's three
+//    surface-cosine gates capability-aware, so hair's transmissive
+//    hemisphere is reachable by next-event estimation (see
+//    LightSampler::EvaluateDirectLighting's FULL-SPHERE NEE block and
+//    HairBSDF.h section 5).  Bisecting ACROSS that commit, expect the
+//    furnaces to read ~1.3 % LOW (RGB 0.988, hwss=false 0.993), the
+//    medulla furnace ~12 % low (0.883), and the backlit groom 6-8x low.
+//    Each section below carries its own before/after table.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -283,6 +301,47 @@ static std::string GroomInEnvCommon(
 	return ss.str();
 }
 
+// POINT-LIT twin of GroomInEnvCommon: the SAME groom, framing and
+// material tier, with the uniform environment replaced by a single
+// `omni_light` placed BEHIND the groom (negative Z; the camera is at
+// +3.2 Z looking at the origin).  Every camera-visible strand is then
+// lit only through the fibre -- the TT / TTs transmissive transport
+// that lives entirely BELOW the shading normal.
+//
+// This is the configuration test 4b measures, and it is the sharpest
+// probe of the full-sphere NEE capability in the suite: with the
+// capability off, `LightSampler`'s light-table row bails on
+// `cosSurface <= 0` and PT cannot light these strands AT ALL, while
+// BDPT's s == 1 row (which uses `fabs` at the eye vertex) can -- so
+// the two integrators disagree by a factor, not a percentage.
+//
+// The callers pair this with a rasterizer string built by the
+// `*NoEnv` helpers below; mixing it with the env-lit rasterizers
+// would add an environment back and defeat the point.
+static std::string GroomWithBackLightCommon(
+	const char* tierParam, double tierValue,
+	unsigned int width, unsigned int height,
+	unsigned int count, unsigned int segments,
+	unsigned int seed,
+	double lightPower )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+		"omni_light\n{\n\tname backlight\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower "
+			<< lightPower << "\n}\n\n"
+		"scalar_painter\n{\n\tname pnt_tier\n\tvalue " << tierValue << "\n}\n\n"
+		"hair_material\n{\n\tname mat_hair\n\t" << tierParam << " pnt_tier\n}\n\n"
+		"sphere_geometry\n{\n\tname scalp\n\tradius 1.0\n}\n\n"
+		"hair_geometry\n{\n\tname groom\n\tbase_geometry scalp\n\tcount " << count
+		<< "\n\tsegments " << segments << "\n\tlength 0.24\n\twidth_root 0.035\n\twidth_tip 0.012"
+		<< "\n\tbase_detail 22\n\tseed " << seed << "\n}\n\n"
+		"standard_object\n{\n\tname groom_obj\n\tgeometry groom\n\tmaterial mat_hair\n\tposition 0 0 0\n}\n\n";
+	return ss.str();
+}
+
 // `maxGlossyBounce` == 0 means "leave it at the rasterizer default
 // (UINT_MAX)".  Hair lobes are all tagged eRayReflection
 // (docs/HAIR_FUR_DESIGN.md section 6.1 / HairBSDF.h section 5), so
@@ -296,13 +355,14 @@ static std::string GroomInEnvCommon(
 // enough variance-reduction technique for a MEAN-level sanity check,
 // not a correctness change.
 //
-// EVERY scene in this file is env-lit.  There is deliberately no
-// "omit the radiance_map lines" switch: an earlier revision carried a
-// `useEnv` parameter documented as "test 4 lights via an explicit
-// light source instead", but no caller ever passed false and the
-// point-lit configuration it described does not work -- see test 4's
-// LIGHTING NOTE for the measured reason it was dropped rather than
-// wired up.
+// These two helpers always emit `radiance_map`, and their `*NoEnv`
+// twins below always omit it, rather than either taking a `useEnv`
+// flag: a scene is either env-lit (tests 1-4) or point-lit (test 4b),
+// and keeping that a choice of helper rather than a boolean makes each
+// call site say which at a glance.  An earlier revision did carry a
+// `useEnv` parameter, but no caller ever passed false because the
+// point-lit configuration it was meant for could not be asserted on
+// until the full-sphere NEE fix -- see test 4b.
 static std::string RasterizerPTRgb( unsigned int samples, unsigned int rrMinDepth, unsigned int maxGlossyBounce = 0, double indirectClamp = 0.0 )
 {
 	std::ostringstream ss;
@@ -353,6 +413,40 @@ static std::string RasterizerBDPTRgb( unsigned int samples, unsigned int maxEyeD
 }
 
 
+// No-environment twins of the two rasterizer helpers above, for the
+// point-lit scenes.  Identical in every other respect -- same
+// `oidn_denoise FALSE`, same clamp plumbing -- so a PT-vs-BDPT
+// comparison built from them differs from test 4's only in the light.
+static std::string RasterizerPTRgbNoEnv( unsigned int samples, unsigned int rrMinDepth, double indirectClamp = 0.0 )
+{
+	std::ostringstream ss;
+	ss <<
+		"pathtracing_pel_rasterizer\n{\n"
+		"\tsamples " << samples << "\n"
+		"\trr_min_depth " << rrMinDepth << "\n"
+		"\toidn_denoise FALSE\n";
+	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
+	ss <<
+		"}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
+static std::string RasterizerBDPTRgbNoEnv( unsigned int samples, unsigned int maxEyeDepth, unsigned int maxLightDepth, double indirectClamp = 0.0 )
+{
+	std::ostringstream ss;
+	ss <<
+		"bdpt_pel_rasterizer\n{\n"
+		"\tsamples " << samples << "\n"
+		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
+		"\toidn_denoise FALSE\n";
+	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
+	ss <<
+		"}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
 static std::string AssembleScene( const std::string& common, const std::string& rasterizer )
 {
 	return std::string( "RISE ASCII SCENE 7\n" ) + common + rasterizer;
@@ -398,67 +492,77 @@ static std::string AssembleScene( const std::string& common, const std::string& 
 // own albedo-0.5 env-only quad (closed form 0.5) moves from 0.5885 to
 // 0.4999.
 //
-// WHAT IS MEASURED NOW (this machine, post-fix).  READ THESE AS FOUR
-// SAMPLES (n = 4 repeat runs of this binary), NOT as measured bounds.
-// An earlier revision of this comment presented the min and max of
-// these quadruples as if they bracketed the achievable range; they do
-// not.  RISE's sampler is deterministic per pixel at a fixed sample
-// count, so most of the spread here is thread scheduling rather than
-// four fresh seeds, and n = 4 under-samples the tails either way.
-// Concretely: a LATER run of this same binary read 0.947221 for
-// spectral hwss=true, outside the [0.94678, 0.94718] these four span
-// (and test 4's PT / BDPT luminances landed outside their own
-// quadruples in that same run).  Every tolerance below is therefore
-// sized off these values with explicit headroom, never off their
-// min/max as if it were a bound:
+// THE SECOND DEFECT THIS TEST FOUND, AND ITS FIX.  An earlier revision
+// of this comment recorded a residual 0.5-1.2 % DEFICIT here as
+// understood-but-unfixed, and named its cause exactly: LightSampler's
+// env-NEE block gated on `cosEnv > 0`, so a full-sphere BSDF (hair's
+// TT / TTs lobes transmit THROUGH the fibre) got no NEE strategy at
+// all for the below-normal half of the sphere, while the BSDF-sampling
+// side still applied its `w_bsdf < 1` there -- the two strategies
+// summed to less than 1 over that whole half.  That gate is now
+// capability-aware (`IMaterial::ScattersFullSphere()`, overridden TRUE
+// by HairMaterial; see LightSampler::EvaluateDirectLighting's
+// FULL-SPHERE NEE block for the MIS-partition derivation) and the
+// deficit is CLOSED.
 //
-//     RGB PT, samples=384        0.98834 / 0.98859 / 0.98867 / 0.98859
-//     spectral hwss=false, 256   0.99489 / 0.99452 / 0.99078 / 0.99374
-//     spectral hwss=true,  256   0.94718 / 0.94678 / 0.94714 / 0.94685
+// WHAT IS MEASURED NOW.  READ THESE AS SAMPLES (repeat runs of this
+// binary), NOT as measured bounds -- RISE's film accumulation is
+// thread-order dependent, so no two runs of the same scene agree bit
+// for bit (verified directly: EnvLightBalanceTest's own printed means
+// differ in the 5th decimal between back-to-back runs), and n = 4
+// under-samples the tails.  An earlier revision presented such
+// quadruples as if their min/max bracketed the achievable range; they
+// do not.  Every tolerance below is sized off these values with
+// explicit headroom, never off their min/max as if it were a bound.
 //
-// RGB and hwss=false sit roughly 0.5-1.2 % UNDER 1.0 in these runs.  That residual is
-// itself understood and is NOT hair-specific either: LightSampler's
-// env-NEE block gates on `cosEnv > 0`, so a full-sphere BSDF (hair's
-// TT lobe transmits THROUGH the fibre) gets no NEE strategy at all for
-// the below-normal half of the sphere, while the BSDF-sampling side
-// still applies its w_bsdf < 1 there -- the two strategies sum to less
-// than 1 for those directions.  Confirmed by construction: relaxing
-// that single gate to `fabs(cosEnv)` (which is a no-op for ordinary
-// BRDFs, whose `value()` returns 0 below the hemisphere -- the
-// Lambertian controls stay at 1.0001) moves this furnace from 0.98863
-// to 1.00181.  That fix is NOT applied: it needs a per-IBSDF audit of
-// below-hemisphere `value()` behaviour plus the matching light-table
-// gate, which is a separate workstream from slice E.
+// Each cell is n = 4, measured on this machine, and the "gate on"
+// column is the SAME build with `HairMaterial::ScattersFullSphere()`
+// forced to `false` -- an in-place A/B, everything else identical:
 //
-// TOLERANCES.  `kFurnaceTol` (RGB + hwss=false) is 3 %: it clears the
-// worst measured deficit (1.17 %) by 1.83pp, and still fails on the
-// 2-3 % scale of a genuinely lost residual lobe (docs/HAIR_FUR_DESIGN.md
-// phase-0's description of what this test guards) -- and, importantly,
-// it now fails on the +4.0 % over-count above if that regresses.  The
-// 8 % band the earlier revision used would have passed it.
+//                              gate on (before)        capability (now)
+//   RGB PT, samples=384        0.98836 0.98898         1.00125 1.00156
+//                              0.98867 0.98852         1.00164 1.00174
+//   spectral hwss=false, 256   0.99294 0.99518         1.00596 1.00649
+//                              0.99204 0.99386         1.00741 1.00825
+//   spectral hwss=true,  256   0.94806 0.94784         0.96018 0.96020
+//                              0.94768 0.94737         0.95955 0.95957
 //
-// hwss=true gets its OWN, asymmetric band, because its 5.3 % deficit
-// is a different, pre-existing problem that this test must name rather
-// than absorb.  It is the HWSS spectral-bundle bias recorded in
+// i.e. RGB moves from 1.15 % UNDER to 0.16 % OVER, hwss=false from
+// 0.65 % under to 0.70 % over, and hwss=true's deficit shrinks from
+// 5.2 % to 4.0 %.  The RGB / hwss=false residual is now a small
+// OVER-count of the same order as the deficit it replaced, which is
+// what an MIS partition that closes to within MC noise looks like.
+//
+// TOLERANCES.  `kFurnaceTol` (RGB + hwss=false) TIGHTENS from 3 % to
+// 2 %: the worst post-fix deviation is +0.83 % (hwss=false), so 2 %
+// leaves 1.2pp of headroom while still failing on the 2-3 % scale of a
+// genuinely lost residual lobe (docs/HAIR_FUR_DESIGN.md phase-0's
+// description of what this test guards) AND on the +4.0 % env-MIS
+// over-count if that ever regresses.  It was 3 % only to clear the
+// 1.17 % NEE-partition deficit that no longer exists.
+//
+// hwss=true keeps its OWN, asymmetric band, because its remaining
+// deficit is a different, pre-existing problem this test must name
+// rather than absorb.  It is the HWSS spectral-bundle bias recorded in
 // CLAUDE.md's env-IBL arc ("hwss=true env-only is already 18 % under
 // PT at the disc-area baseline"): same direction, hair-independent,
-// and demonstrably untouched by the env-MIS fix above (the HWSS loop
-// in PathTracingIntegrator.cpp tests the global radiance map FIRST and
-// so never had the branch-order bug -- which is precisely why
-// hwss=true read 0.947 both before AND after the fix, while hwss=false
-// moved 1.046 -> 0.993).  So:
-//   * `kFurnaceHwssUnderTol` 9 % -- 3.7pp of headroom over the
-//     measured 5.28-5.32 % deficit, pending the spectral-bundle work.
+// and demonstrably NOT the NEE-partition defect -- the full-sphere fix
+// moved it by only 1.2pp (5.2 % -> 4.0 %) while it moved RGB by
+// 1.3pp and fully closed it.  So:
+//   * `kFurnaceHwssUnderTol` TIGHTENS from 9 % to 7 % -- 3.0pp of
+//     headroom over the measured 4.04 % deficit, pending the
+//     spectral-bundle work.
 //   * `kFurnaceHwssOverTol` 2 % -- an OVER-unity reading is never
 //     legitimate for a sigma_a == 0 furnace, so the upper half of the
-//     band stays tight regardless.
+//     band stays tight regardless.  UNCHANGED: hwss=true reads 0.960,
+//     nowhere near it.
 // When the spectral-bundle bias is fixed, hwss=true should join the
-// other two near 0.99-1.00 and this pair should collapse back to
+// other two near 1.00 and this pair should collapse back to
 // `kFurnaceTol`.
 //////////////////////////////////////////////////////////////////////
 static const double kFurnaceTarget       = 1.0;
-static const double kFurnaceTol          = 0.03;	// RGB + hwss=false, see rationale above
-static const double kFurnaceHwssUnderTol = 0.09;	// hwss=true lower bound (known spectral-bundle deficit)
+static const double kFurnaceTol          = 0.02;	// RGB + hwss=false, see rationale above
+static const double kFurnaceHwssUnderTol = 0.07;	// hwss=true lower bound (known spectral-bundle deficit)
 static const double kFurnaceHwssOverTol  = 0.02;	// hwss=true upper bound (over-unity is never legitimate)
 
 static void TestFurnace()
@@ -527,67 +631,60 @@ static void TestFurnace()
 //     shows up here as a dimmer render, an over-weighted one as a
 //     brighter one, against the SAME target and tolerance test 1 uses.
 //
-//     IT DOES NOT SHARE TEST 1's TOLERANCE, and the reason is measured,
-//     not assumed.  A medulla-on groom reads 0.883 where the
-//     medulla-free one reads 0.988 -- an 11.6 % gap that is NOT an
-//     energy leak in the model: HairBSDFTest group 16 integrates this
-//     very configuration's sphere integral at 0.999994.  It is the
-//     SAME env-NEE partition defect documented at length above test 1
-//     (LightSampler gates env-NEE on `cosEnv > 0`, so a full-sphere
-//     BSDF gets no NEE strategy at all below the shading normal while
-//     the BSDF-sampling side still applies its w_bsdf < 1 there), just
-//     hit far harder: the medulla-scattered lobes are broad and
-//     diffuse by construction, so they push much more energy into the
-//     below-normal hemisphere than the narrow unscattered TT lobe
-//     does, and the un-partitioned half is correspondingly larger.
+//     IT NOW SHARES TEST 1's TOLERANCE, AND THAT IS THE HEADLINE.
+//     It did not always.  A medulla-on groom used to read 0.883 where
+//     the medulla-free one read 0.988 -- an 11.6 % gap that was NEVER
+//     an energy leak in the model (HairBSDFTest group 16 integrates
+//     this very configuration's sphere integral at 0.999994).  It was
+//     the env-NEE partition defect documented at length above test 1:
+//     LightSampler gated env-NEE on `cosEnv > 0`, so a full-sphere
+//     BSDF got no NEE strategy at all below the shading normal while
+//     the BSDF-sampling side still applied its `w_bsdf < 1` there --
+//     hit far harder here, because the medulla-scattered lobes are
+//     broad and diffuse by construction and push much more energy into
+//     the below-normal hemisphere than the narrow unscattered TT lobe
+//     does, so the un-partitioned half was correspondingly larger.
 //
-//     PROVEN, not inferred.  Relaxing that single gate to
-//     `fabs(cosEnv)` in LightSampler (the same one-line experiment
-//     test 1's comment describes, applied and reverted while writing
-//     this test) moves BOTH furnaces to the same place:
+//     That defect is FIXED (`IMaterial::ScattersFullSphere()`; see
+//     LightSampler::EvaluateDirectLighting's FULL-SPHERE NEE block),
+//     and the prediction the earlier revision of this comment made --
+//     that both furnaces would land in the same place -- is confirmed
+//     by measurement.  n = 4 repeat runs each, same build, the "before"
+//     column taken with `ScattersFullSphere()` forced to `false`:
 //
-//         medulla-free   0.98839  ->  1.00171
-//         medulla kappa=0.7  0.88298  ->  1.00192
+//                        gate on (before)          capability (now)
+//       medulla-free     0.98836  0.98898          1.00125  1.00156
+//                        0.98867  0.98852          1.00164  1.00174
+//       medulla k=0.7    0.88303  0.88290          1.00215  1.00151
+//                        0.88396  0.88184          1.00152  1.00138
 //
-//     i.e. with the integrator defect removed the two agree to 0.02 %,
-//     which is exactly the "energy-preserving redistribution" claim.
-//     The fix is not applied here for the reason test 1 gives (it needs
-//     a per-IBSDF audit of below-hemisphere `value()` plus the matching
-//     light-table gate -- a separate workstream).
+//     The two now agree to 0.03 %, which is exactly the
+//     "energy-preserving redistribution" claim: the medulla splits TT
+//     into TT + TTs without creating or destroying energy, and with the
+//     integrator able to reach both halves the render says so.
 //
-//     SO THE BAND IS ASYMMETRIC, like hwss=true's:
-//       * lower bound 15 % -- 3.3pp of headroom over the measured
-//         11.7 % deficit, which still fails on the ~2-3 % scale of a
-//         genuinely lost lobe on top of it.  Run-to-run spread on this
-//         cell is ~3e-4 (40x40 at 384 spp over a 4000-strand groom), so
-//         that headroom is ~100 sigma, not a noise allowance;
-//       * upper bound 3 % -- over-unity is never legitimate in a
-//         sigma_a == 0 furnace no matter what the NEE partition does,
-//         so that half stays as tight as test 1's.
-//
-//     AND A THIRD, UPPER-SIDE PIN THAT IS THE WHOLE POINT.  With only
-//     the band above, this test would pass if `medulla_ratio 0.7` never
-//     reached the model at all -- a parser drop, a painter-resolution
-//     failure, an unset `Resolve` latch -- because the medulla-FREE
-//     reading (0.988) sits comfortably inside [0.85, 1.03].  That is
-//     precisely the plumbing failure the section header claims this
-//     test exists to catch, so it is asserted explicitly:
-//     `kMedullaFurnaceMustBeBelow` (0.95) sits ~7pp above the
-//     medulla-on 0.883 and ~200 sigma below the medulla-free 0.988.
-//
-//     ! ALL THREE BOUNDS ARE COUPLED TO THE env-NEE DEFECT.  When that
-//     gate is fixed the medulla-on reading joins test 1 near 1.00 and
-//     BOTH the 15 % lower bound and this 0.95 upper pin must go --
-//     replaced by `kFurnaceTol` around 1.0, with the
-//     "did the parameter reach the model" question left to
-//     HairMaterialChunkTest's medulla group, which answers it without
-//     depending on any integrator behaviour at all.
-//     Measured (samples=384): 0.882983 / 0.882646.
-//////////////////////////////////////////////////////////////////////
-static const double kMedullaFurnaceUnderTol   = 0.15;
-static const double kMedullaFurnaceOverTol    = 0.03;
-static const double kMedullaFurnaceMustBeBelow = 0.95;
-
+//     SO THIS TEST'S OWN BOUNDS COLLAPSE INTO TEST 1's, exactly as the
+//     earlier revision instructed.  Gone, in this commit:
+//       * `kMedullaFurnaceUnderTol` (0.15) -- it existed only to clear
+//         the 11.7 % partition deficit, which is now 0.2 % OVER unity;
+//       * `kMedullaFurnaceOverTol` (0.03) -- subsumed by kFurnaceTol's
+//         tighter 0.02, which is now the assertion on both sides;
+//       * `kMedullaFurnaceMustBeBelow` (0.95) -- the "did medulla_ratio
+//         actually reach the model" pin.  It CANNOT survive: post-fix
+//         the medulla-on and medulla-free readings are 0.03 % apart, so
+//         NO render-level luminance assertion can distinguish them.
+//         That is not lost coverage -- it is the same question answered
+//         by HairMaterialChunkTest's medulla group, whose money
+//         assertions ("medulla_ratio 0 is BIT-IDENTICAL to omitting the
+//         slots" and "medulla_ratio 0.7 actually reaches the model and
+//         changes it") test the parser / painter-resolution plumbing
+//         directly, without depending on any integrator behaviour at
+//         all.  What THIS test still adds, and the unit test cannot,
+//         is that the new lobes' sampled directions survive geometry
+//         generation and the h / tangent plumbing and that a full PT
+//         integration through a real groom neither loses nor duplicates
+//         their energy -- which is precisely what a shared
+//         `|reading - 1| <= kFurnaceTol` band asserts.
 static void TestMedullaFurnace()
 {
 	std::cout << "=== 1b. Fur medulla white furnace (kappa = 0.7) ===" << std::endl;
@@ -603,17 +700,11 @@ static void TestMedullaFurnace()
 	Check( s.valid, "medulla furnace: render produced output" );
 	if( s.valid ) {
 		std::cout << "  medulla RGB luminance = " << s.luminance
-			<< "  (expected ~0.883 -- the env-NEE partition defect, amplified by the broad "
-			   "scattered lobes; see this section's comment)" << std::endl;
-		Check( s.luminance >= kFurnaceTarget - kMedullaFurnaceUnderTol,
-			"medulla furnace: deficit no worse than the known env-NEE partition defect" );
-		Check( s.luminance <= kFurnaceTarget + kMedullaFurnaceOverTol,
-			"medulla furnace: MONEY ASSERTION -- no energy is CREATED by the lobe split "
-			"(the one direction the integrator defect cannot excuse)" );
-		Check( s.luminance <= kMedullaFurnaceMustBeBelow,
-			"medulla furnace: MONEY ASSERTION -- the medulla actually REACHED the model "
-			"(a silently-dropped medulla_ratio would read at the medulla-free 0.988 and pass "
-			"the band above)" );
+			<< " (target " << kFurnaceTarget
+			<< " -- same band as test 1; was ~0.883 before the full-sphere NEE fix)" << std::endl;
+		Check( std::fabs( s.luminance - kFurnaceTarget ) <= kFurnaceTol,
+			"medulla furnace: MONEY ASSERTION -- the medulla-scattered lobes REDISTRIBUTE "
+			"energy without creating or destroying it (same band as the medulla-free furnace)" );
 	}
 }
 
@@ -641,6 +732,16 @@ static void TestMedullaFurnace()
 // pre-fix numbers).  This section's residual and the furnace's
 // hwss=true deficit are the SAME pre-existing spectral-bundle bias
 // seen two ways.
+//
+// UNMOVED BY THE FULL-SPHERE NEE FIX, and measured to be so -- worth
+// recording, because that fix DID move the furnace's hwss=true number
+// (0.9478 -> 0.9595).  Here, n = 3-4 runs each: capability off
+// 5.93 % / 6.04 % / 5.84 %, capability on 5.64 % / 5.72 % / 5.73 % /
+// 5.88 %.  On this absorbing groom the fix raises hwss=false and
+// hwss=true by nearly the same factor, so their RATIO barely changes --
+// consistent with the residual being the spectral-bundle bias rather
+// than anything about the NEE partition, which is why this tolerance is
+// left at 12 %.
 //////////////////////////////////////////////////////////////////////
 static const double kHwssTol = 0.12;
 
@@ -723,26 +824,20 @@ static void TestMelaninLadder()
 // non-reciprocity with the documented env+BDPT MIS-partition bias,
 // CLAUDE.md "Env-IBL deficit") and that the test lit via an explicit
 // light source instead -- while the code below shipped env lighting.
-// The code was right and the comment was wrong; here is what a
-// point-lit variant actually does, measured on this machine.
+// The code was right and the comment was wrong.
 //
-// A discrete `omni_light` version of this exact scene (same groom,
-// same 256 spp / 32x32, no `radiance_map`) renders PT and BDPT
-// 4.3x APART -- PT 0.0132 vs BDPT 0.0575 at one light power, PT 0.0773
-// vs BDPT 0.3305 at another, i.e. the ratio is scale-invariant, so it
-// is a systematic bias and not fireflies.  Root cause: LightSampler's
-// light-table NEE breaks out on `cosSurface <= 0`, so PT cannot light
-// a hair fibre from BEHIND -- and hair's TT lobe, which carries most
-// of its energy, is exactly that transport.  BDPT's light subpath has
-// no such gate and reaches those vertices.  Relaxing that one gate to
-// `fabs(...)` as a diagnostic moves PT 0.0773 -> 0.1451 and closes
-// roughly half the gap (4.3x -> 2.3x); the rest is not yet
-// characterised.  Fixing it properly is a full-sphere-NEE workstream
-// (per-IBSDF below-hemisphere audit + the matching env-NEE gate --
-// see the furnace section's note on the same defect), not something
-// this test can wire around.  Until then a point-lit PT-vs-BDPT
-// comparison has no tolerance at which it is both passing and
-// meaningful, so this test stays on the env.
+// A point-lit variant of this scene USED to be impossible to assert
+// on: PT and BDPT rendered it 4.3x apart, because LightSampler's
+// light-table NEE bailed on `cosSurface <= 0` and PT could not light a
+// hair fibre from BEHIND -- exactly where hair's TT lobe carries most
+// of its energy -- while BDPT's light subpath had no such gate.  That
+// defect is now FIXED (`IMaterial::ScattersFullSphere()`), and the
+// point-lit configuration has its own test: see test 4b, which
+// measures PT recovering 8.1-8.2x of that transport.  This test stays
+// env-lit because the two configurations probe DIFFERENT rows of the
+// same estimator -- env-NEE (an MIS partition that has to close) here,
+// the delta-light row (w = 1, pure missing transport) there -- and
+// both are worth keeping.
 //
 // The env-lit configuration, by contrast, is stable and is what is
 // measured below.  About the "~8% to ~48% run to run" swing an earlier
@@ -782,9 +877,17 @@ static void TestMelaninLadder()
 // for machine-to-machine RNG differences while still catching a genuine
 // regression (order 30%+, matching the unclamped runs' own worst
 // excursions and the collapse sizes recorded elsewhere in CLAUDE.md's
-// BDPT/VCM regression history).  It also stays well inside the 4.3x
-// the point-lit configuration above would produce, so this tolerance
-// cannot be satisfied by accident.
+// BDPT/VCM regression history).
+//
+// UNCHANGED BY THE FULL-SPHERE NEE FIX, and measured to be so.  This
+// test's groom is env-lit and mostly ABOVE-horizon, so the fix moves it
+// only slightly: n = 4 post-fix runs read PT 0.28942 / 0.28967 /
+// 0.28971 / 0.28982 against BDPT 0.29722 / 0.29665 / 0.29680 / 0.29696,
+// a relative difference of 2.70% / 2.41% / 2.45% / 2.46% -- versus
+// 2.61% / 2.69% / 2.84% on the same build with
+// `HairMaterial::ScattersFullSphere()` forced to `false`.  The 10%
+// tolerance is left alone: it was never sized off the NEE partition,
+// and the residual it covers is the non-reciprocity caveat above.
 //////////////////////////////////////////////////////////////////////
 static const double kPtBdptTol = 0.10;
 
@@ -812,6 +915,175 @@ static void TestPtVsBdpt()
 	Check( relDiff <= kPtBdptTol, "PT-vs-BDPT: mean luminance within the documented loose tolerance" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// 4b. POINT-LIT BACKLIT -- the full-sphere NEE regression guard.
+// Same groom, framing and material tier as test 4, with the uniform
+// environment replaced by a single `omni_light` BEHIND the groom.
+// Every camera-visible strand is then lit only THROUGH the fibre: the
+// TT / TTs transmissive transport, which lives entirely below the
+// shading normal.
+//
+// WHY THIS TEST EXISTS, AND WHY IT DID NOT BEFORE.  Test 4's LIGHTING
+// NOTE recorded this exact configuration as UNTESTABLE, and named the
+// reason: `LightSampler`'s light-table row bailed on
+// `cosSurface <= 0`, so PT could not light a strand from behind AT
+// ALL, while BDPT's s == 1 row -- which uses `fabs` at the eye vertex
+// (BDPTIntegrator's `absCosEye`, BDPTUtilities' `GeometricTerm` and
+// `GeometricTermSurfaceMedium`, all three unconditional) -- reached
+// the same transport with no gate.  `IMaterial::ScattersFullSphere()`
+// now lets `LightSampler` use |cos| for hair
+// (LightSampler::EvaluateDirectLighting's FULL-SPHERE NEE block), and
+// this configuration becomes measurable.
+//
+// THE DELTA-LIGHT ROW HAS NO MIS PARTNER, which is why it closes so
+// cleanly: a point light cannot be BSDF-sampled, so NEE carries it at
+// w = 1 on both hemispheres.  Nothing had to be re-partitioned here --
+// the below-horizon direct term was simply absent and is now present.
+//
+// MEASURED, capability ON vs the same build with
+// `HairMaterial::ScattersFullSphere()` forced to `false` (an in-place
+// A/B; everything else identical).  PT, unclamped, 256 spp, 32x32,
+// 2000 strands, mean image luminance DIVIDED BY light power:
+//
+//                        capability OFF          capability ON
+//     power 4.0     0.000122 0.000135        0.000997 0.000877
+//                   0.000134 0.000145        0.000923
+//     power 1.0     0.000115 0.000112        0.000936 0.000926
+//                   0.000125 0.000118        0.000921
+//
+// i.e. PT recovers 6.4-8.2x of the transport.  Both readings should be
+// -- and are -- INDEPENDENT of light power, because a delta light's NEE
+// row carries w = 1 and is exactly linear in emitted power; the ON
+// column drifts 0.2-6.5 % between the two powers, which is MC spread at
+// 256 spp on a 32x32 film.
+//
+// (The 4.3x figure test 4's note used to quote was measured with
+// `indirect_clamp 1.5` active, which on this scene at power 40 removes
+// ~60 % of PT's post-fix energy.  Unclamped, the missing transport is
+// 8x, not 4.3x -- the clamp was masking half of it.)
+//
+// WHY THIS IS NOT WRITTEN AS A PT-vs-BDPT RATIO TEST, WHICH IS WHAT
+// TEST 4's NOTE WOULD HAVE PREDICTED.  Post-fix, PT is the STABLE side
+// here and BDPT is not.  Measured on this scene at `indirect_clamp
+// 1.5`, BDPT's luminance PER UNIT POWER across light powers
+// 40 / 8 / 2 / 0.5 reads 0.000629 / 0.00131 / 0.00196 / 0.00273 -- a
+// 4.3x swing, where PT's stays flat to 4 % -- and UNCLAMPED BDPT gave
+// 0.912, 0.148 and 0.203 on three near-identical configurations of the
+// same scene.  That is heavy-tailed connection variance through hair's
+// narrow lobes: the same phenomenon test 4's TUNING NOTE documents,
+// far worse here because the ONLY light is a point source behind
+// narrow transmissive fibres, so essentially every BDPT connection
+// threads a low-probability path.  BDPT's 256-spp mean is therefore
+// NOT a converged reference in this configuration, and a ratio against
+// it cannot be tightened no matter how correct PT is.
+//
+// (Note what that means for the residual: the 1.75x BDPT/PT this test
+// still records is NOT a remaining transport gap in PT.  It is
+// dominated by where `indirect_clamp 1.5` cuts BDPT's heavy tail --
+// which is why it moves with light power while PT's reading does not.
+// PT's own scale-invariance across an 4x power range, and its
+// agreement with BDPT to 2.4-2.7 % on the ENV-lit twin in test 4, are
+// the evidence that PT is now complete.)
+//
+// So the assertions below are anchored on PT's own reading, with the
+// BDPT ratio kept only as a catastrophic-regression net.
+//
+// BOUNDS (all sized off n = 3-4 repeat runs, both A/B columns):
+//   * `kBacklitPtPerPowerMin` / `Max` bracket PT's per-unit-power
+//     luminance, and BOTH power readings must land inside.  The min
+//     (5.0e-4) sits 1.75x below the lowest measured ON reading
+//     (8.77e-4) and 3.4x ABOVE the highest OFF reading (1.45e-4), so
+//     it fails hard the moment the gate regresses and has real
+//     headroom in the passing direction.  The max (2.0e-3) is 2.0x
+//     above the highest ON reading and catches an OVER-count -- e.g. a
+//     future unconditional `fabs` that double-counts, or a lost `w`.
+//   * The two readings' relative drift is PRINTED but deliberately NOT
+//     asserted.  A delta light's NEE row is exactly linear in emitted
+//     power, so drift "should" be zero -- but at 256 spp on a 32x32
+//     film it measured 0.002 / 0.053 / 0.065 / 0.119 across four ON
+//     runs, and the capability-OFF column drifts 0.056-0.227, so no
+//     bound both passes ON reliably and fails OFF.  It would be a flaky
+//     assertion pretending to be an invariant.  The min/max band above
+//     is the real guard, and it independently catches the failure mode
+//     drift was meant to cover: `indirect_clamp 1.5` at power 40 pulls
+//     the per-unit-power reading down to 3.65e-4, BELOW the 5.0e-4
+//     floor.  (A milder clamp would not be caught by either; the drift
+//     print is there for a human reading the log.)  Raising the sample
+//     count enough to bound drift is not worth this suite's wall time.
+//   * `kBacklitBdptRatioMax` 3.0 -- measured 1.72 / 1.75 / 1.77 at
+//     power 40 with the clamp on both sides; the capability-off build
+//     reads 15.50 / 15.83 / 16.25 on the identical pair.  1.7x
+//     headroom in the passing direction, 5x separation from the
+//     failing one.  Loose on purpose, per the BDPT-variance paragraph.
+//////////////////////////////////////////////////////////////////////
+static const double kBacklitPtPerPowerMin = 5.0e-4;
+static const double kBacklitPtPerPowerMax = 2.0e-3;
+static const double kBacklitBdptRatioMax  = 3.0;
+
+static void TestBacklitFullSphereNEE()
+{
+	std::cout << "=== 4b. Point-lit backlit groom (full-sphere NEE guard) ===" << std::endl;
+
+	const unsigned int W = 32, H = 32, COUNT = 2000, SEG = 6, SEED = 3;
+
+	// --- PT, unclamped, at two light powers -------------------------
+	const double pwA = 4.0, pwB = 1.0;
+
+	const ImageStats ptA = RenderAndComputeStats(
+		AssembleScene( GroomWithBackLightCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED, pwA ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "backlit_pt_p4" );
+	const ImageStats ptB = RenderAndComputeStats(
+		AssembleScene( GroomWithBackLightCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED, pwB ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "backlit_pt_p1" );
+
+	Check( ptA.valid && ptB.valid, "backlit: both PT renders produced output" );
+	if( !ptA.valid || !ptB.valid ) return;
+
+	const double perPowerA = ptA.luminance / pwA;
+	const double perPowerB = ptB.luminance / pwB;
+	std::cout << "  PT per-unit-power: power " << pwA << " -> " << perPowerA
+		<< " ; power " << pwB << " -> " << perPowerB << std::endl;
+
+	// MONEY ASSERTION.  PT must actually light these strands.  With the
+	// hemisphere gate in place this reads 1.2e-4 -- not merely "dim
+	// because the groom is backlit", but missing the entire
+	// below-horizon direct term.
+	Check( perPowerA >= kBacklitPtPerPowerMin && perPowerB >= kBacklitPtPerPowerMin,
+		"backlit: MONEY ASSERTION -- PT lights the groom from BEHIND at BOTH powers "
+		"(a hemisphere-gated NEE reads 6-8x lower here)" );
+	Check( perPowerA <= kBacklitPtPerPowerMax && perPowerB <= kBacklitPtPerPowerMax,
+		"backlit: MONEY ASSERTION -- and does not OVER-count that term" );
+
+	// Printed, not asserted -- see the section comment's bounds list for
+	// why (too noisy at 256 spp to bound without flakiness; the band above
+	// is the guard).  A drift that grows well past ~0.12 is worth a human
+	// look: this row is exactly linear in emitted power by construction.
+	const double scaleDrift =
+		std::fabs( perPowerA - perPowerB ) / std::fmax( perPowerB, 1e-12 );
+	std::cout << "  PT scale drift across powers = " << scaleDrift
+		<< " (diagnostic only)" << std::endl;
+
+	// --- BDPT sanity net, clamped on both sides ---------------------
+	// Loose by construction: BDPT is the high-variance side here, see
+	// the section comment.  This exists to catch a catastrophic
+	// regression, not to measure agreement.
+	const double pwC = 40.0;
+	const std::string commonC = GroomWithBackLightCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED, pwC );
+	const ImageStats ptC = RenderAndComputeStats(
+		AssembleScene( commonC, RasterizerPTRgbNoEnv( 256, 8, 1.5 ) ), "backlit_pt_c" );
+	const ImageStats bdptC = RenderAndComputeStats(
+		AssembleScene( commonC, RasterizerBDPTRgbNoEnv( 256, 4, 4, 1.5 ) ), "backlit_bdpt_c" );
+
+	Check( ptC.valid && bdptC.valid, "backlit: clamped PT and BDPT renders produced output" );
+	if( !ptC.valid || !bdptC.valid ) return;
+
+	const double ratio = bdptC.luminance / std::fmax( ptC.luminance, 1e-12 );
+	std::cout << "  clamped PT = " << ptC.luminance << "  BDPT = " << bdptC.luminance
+		<< "  BDPT/PT = " << ratio << std::endl;
+	Check( ratio <= kBacklitBdptRatioMax,
+		"backlit: BDPT/PT within the loose net (15.5-16.3x with the hemisphere gate in place)" );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "HairRenderTest -- render-level Chiang hair BCSDF + hair_geometry regression suite" << std::endl;
@@ -821,6 +1093,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestHwssInvariant();
 	TestMelaninLadder();
 	TestPtVsBdpt();
+	TestBacklitFullSphereNEE();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

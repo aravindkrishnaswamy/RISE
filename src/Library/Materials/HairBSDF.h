@@ -97,7 +97,12 @@
 //      ScatteredRay::kray / krayNM  ==  f_RISE * |wi . N| / pdf
 //      IBSDF::value(wi, ri)         ==  f_RISE                       (NEE
 //          multiplies it by |dot(wi, ri.vNormal)| and divides by the
-//          light pdf -- LightSampler.cpp:1675-1679, :1776, :1885)
+//          light pdf -- LightSampler::EvaluateDirectLighting's three
+//          `cosSurface` / `cosEnv` sites, which take the ABSOLUTE value
+//          for a material that reports IMaterial::ScattersFullSphere();
+//          HairMaterial does.  That capability is REQUIRED for this
+//          identity to hold on the transmissive half -- see section 5's
+//          "NEE REACHES THE TRANSMISSIVE HALF" entry.)
 //
 //  NOTE THE COSINE.  |wi . N| is the SHADING cosine (PBRT's
 //  AbsCosTheta in the shading frame).  It is NOT cos(theta_i): the
@@ -347,12 +352,50 @@
 //    lobes too.  Tagging TT `eRayRefraction` would have burned
 //    `max_transmission_bounce`, which authors legitimately cap low for
 //    glass interiors.
-//  * NEE CANNOT REACH THE TRANSMISSIVE HALF.  `LightSampler` rejects
-//    shadow directions with `dot(wToLight, vNormal) <= 0`, so the TT
-//    lobe is unreachable by next-event estimation and its MIS partner
-//    weight is consequently too small.  That is an integrator-level
-//    limitation, not a material one; it is out of scope for this slice
-//    and is recorded in docs/HAIR_FUR_DESIGN.md's risk register.
+//  * NEE REACHES THE TRANSMISSIVE HALF -- RESOLVED.  This entry used to
+//    read "NEE CANNOT REACH THE TRANSMISSIVE HALF": `LightSampler`
+//    rejected every shadow direction with `dot(wToLight, vNormal) <= 0`,
+//    so the TT / TTs lobes were unreachable by next-event estimation
+//    while the BSDF-sampling side still applied its `w_bsdf < 1` there,
+//    leaving the two strategies summing to less than 1 over the whole
+//    transmissive hemisphere.  The MECHANISM that closes it is
+//    `IMaterial::ScattersFullSphere()` -- a per-material, default-FALSE
+//    capability that `HairMaterial` overrides TRUE, and that
+//    `LightSampler::EvaluateDirectLighting{,NM}` consults at each of its
+//    three surface-cosine sites (delta light, mesh area light,
+//    environment map) to use `|cos|` instead of the signed cosine.  The
+//    MIS-partition derivation lives in the FULL-SPHERE NEE block comment
+//    at the top of `EvaluateDirectLighting`; the short version is that
+//    the env-NEE and light-table partner densities on the BSDF-sampling
+//    side (PathTracingIntegrator's env-escape and emitter-hit blocks)
+//    never had a shading-surface cosine gate of their own, so the
+//    partition closes exactly once NEE is allowed to fire.
+//
+//    Measured, A/B on one build with the capability forced off vs on
+//    (tests/HairRenderTest.cpp carries the full tables): sigma_a = 0 env
+//    furnace 0.9885 -> 1.0016; the same furnace with `medulla_ratio 0.7`
+//    0.8830 -> 1.0015 (the medulla lobes are broad, so far more of their
+//    energy lands below the horizon); and a point-lit BACKLIT groom --
+//    where essentially all transport is below-horizon -- recovers 6-8x,
+//    with PT going from 15.5-16.3x under BDPT to 1.75x.
+//
+//    NON-full-sphere materials are BIT-IDENTICAL: where the capability
+//    is false, each site's expression reduces textually to the
+//    pre-change one.  EnvLightBalanceTest (all Lambertian) stays 116/116.
+//
+//    KNOWN REMAINING SIBLING, NOT FIXED HERE.  `DirectionalLight::
+//    ComputeDirectLighting{,NM}` carries the same `fDot <= 0` gate and
+//    is reached through `EvaluateDirectLighting`'s Step-1
+//    zero-exitance pass, so a groom lit by a `directional_light` still
+//    cannot be lit from behind.  It is NOT capability-gatable in place:
+//    `ILight::ComputeDirectLighting` takes a
+//    `RayIntersectionGeometric`, which -- unlike `RayIntersection` --
+//    carries no material pointer, so closing it means widening an
+//    `ILight` vtable signature across four light classes and their two
+//    callers.  Out of scope for this slice; recorded in
+//    docs/HAIR_FUR_DESIGN.md's risk register with that shape.
+//    (`AmbientLight` needs nothing: it evaluates `brdf.value` along the
+//    normal with no cosine gate at all.)
 //  * LEGACY COSINE-OMITTING `value` CONSUMERS.  Section 2's constraint
 //    -- value == fsum / |wi . N| -- is only safe for a caller that
 //    multiplies |wi . N| back.  Recounted honestly: three legacy shader
@@ -385,8 +428,9 @@
 //    `hair_furnace.RISEscene` (sigma_a=0 energy-conservation gate),
 //    `hair_melanin_ladder.RISEscene` (three grooms differing only in
 //    eumelanin), `hair_backlit_tt.RISEscene` (light behind the groom,
-//    exercising the TT rim and the documented NEE-transmissive-
-//    hemisphere limitation below), and `hair_styled.RISEscene`
+//    exercising the TT rim, and now the regression scene behind
+//    HairRenderTest's test 4b full-sphere-NEE guard), and
+//    `hair_styled.RISEscene`
 //    (comb/clump/curl/frizz through the parser).  Phase 3 added
 //    `fur_medulla.RISEscene` -- three backlit grooms differing ONLY in
 //    `medulla_ratio` (0 / 0.5 / 0.9), the human-readable companion to

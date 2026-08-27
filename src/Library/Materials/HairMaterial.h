@@ -76,6 +76,23 @@ namespace RISE
 
 			/// \return NULL -- hair does not emit.
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			/// \return TRUE.  A fibre scatters over the FULL sphere: the TT /
+			///         TTs lobes exit the FAR side of the strand by
+			///         construction, so `HairBRDF::value()` is legitimately
+			///         nonzero for `dot(wi, N) < 0` and `HairSPF::Pdf()` is
+			///         normalized over the sphere (HairBSDF.h section 5, "NO
+			///         GEOMETRIC-HORIZON GATE").  This is the one material in
+			///         the tree for which that is true today, and it is what
+			///         lets `LightSampler` reach the transmissive half with
+			///         next-event estimation -- without it, PT cannot light a
+			///         strand from behind at all and its MIS partition does
+			///         not close (see IMaterial::ScattersFullSphere).
+			//! (No `override` keyword: every sibling accessor in this class
+			//! omits it, and clang's `-Winconsistent-missing-override` -- on
+			//! under `-Wall` -- fires on the others the moment one method
+			//! here carries it.)
+			inline bool ScattersFullSphere() const { return true; }
 		};
 	}
 }

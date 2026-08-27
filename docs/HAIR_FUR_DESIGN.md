@@ -90,15 +90,41 @@ recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (
   additive-in-variance longitudinal broadening rather than a separately tabulated longitudinal
   profile.
 
-**Phase-3 residual (named, not fixed):** a medulla-on white furnace renders at **0.883** where
-the medulla-free one renders at 0.988 — *not* a model energy leak (the BCSDF's own sphere
-integral is 0.999994). It is the pre-existing env-NEE partition defect documented above
-`HairRenderTest`'s test 1 (`LightSampler` gates env-NEE on `cosEnv > 0`, so a full-sphere BSDF
-gets no NEE strategy below the shading normal), hit harder because the scattered lobes are broad
-by construction. Proven by experiment, not inferred: relaxing that one gate to `fabs(cosEnv)`
-moves the medulla-free furnace 0.98839 → 1.00171 **and** the medulla furnace 0.88298 → 1.00192,
-i.e. the two agree to 0.02 % once the integrator defect is removed. Fixing it needs a per-`IBSDF`
-audit of below-hemisphere `value()` plus the matching light-table gate — a separate workstream.
+**Phase-3 residual — RESOLVED.** A medulla-on white furnace used to render at **0.883** where
+the medulla-free one rendered at 0.988 — *not* a model energy leak (the BCSDF's own sphere
+integral is 0.999994), but the env-NEE partition defect: `LightSampler` gated env-NEE on
+`cosEnv > 0`, so a full-sphere BSDF got no NEE strategy below the shading normal while the
+BSDF-sampling side still applied its `w_bsdf < 1` there. It hit the medulla case harder because
+the scattered lobes are broad by construction and push more energy below the horizon.
+
+It is now closed by **`IMaterial::ScattersFullSphere()`** — a per-material, default-`false`
+capability that `HairMaterial` overrides `true`, and that
+`LightSampler::EvaluateDirectLighting{,NM}` consults at each of its three surface-cosine sites
+(delta light, mesh area light, environment map) to use `|cos|` in place of the signed cosine.
+Non-full-sphere materials are bit-identical by construction (each site reduces textually to the
+pre-change expression when the capability is false); `EnvLightBalanceTest` stays 116/116. The
+MIS-partition derivation is the `FULL-SPHERE NEE` block comment at the top of
+`EvaluateDirectLighting`; the short version is that the BSDF-side partner densities
+(`PathTracingIntegrator`'s env-escape and emitter-hit blocks) never had a shading-surface cosine
+gate of their own, so the partition closes exactly once NEE is allowed to fire.
+
+Measured A/B on one build, capability forced off vs on (n = 3–4 each):
+
+| scene | gate on (before) | capability (now) |
+|---|---|---|
+| σ_a = 0 env furnace, RGB | 0.9884–0.9890 | 1.0013–1.0017 |
+| same, spectral hwss=false | 0.9920–0.9952 | 1.0060–1.0083 |
+| same, spectral hwss=true | 0.9474–0.9481 | 0.9596–0.9602 |
+| σ_a = 0 furnace, `medulla_ratio 0.7` | 0.8818–0.8840 | 1.0014–1.0022 |
+| point-lit **backlit** groom, PT per unit power | 1.12e-4 – 1.45e-4 | 8.77e-4 – 9.97e-4 |
+| same, BDPT/PT ratio | 15.5–16.3× | 1.72–1.77× |
+
+i.e. the medulla-on and medulla-free furnaces now agree to 0.03 %, which is exactly the
+"energy-preserving redistribution" claim. `HairRenderTest`'s medulla bounds collapsed into test
+1's shared `kFurnaceTol` (now tightened 3 % → 2 %), and the point-lit configuration — previously
+recorded as untestable — became test 4b. The residual 1.75× BDPT/PT on the backlit scene is **not**
+a PT gap: BDPT's estimator is not converged there (its per-unit-power reading swings 4.3× across
+light powers where PT's is flat to 4 %), so it is clamp-cut heavy-tailed connection variance.
 
 **Phase-2 residuals (named, deferred):**
 - The Blender add-on is **bridge-only** (it emits no `.RISEscene` text). Texture-driven
@@ -113,9 +139,19 @@ audit of below-hemisphere `value()` plus the matching light-table gate — a sep
   is refused only at derive) needs a `ChunkCategory` split — documented in `IJob.h`.
 
 **Standing residuals carried forward (not blocking Phase 1, tracked for Phase 2+):**
-- NEE cannot reach hair's transmissive hemisphere (`LightSampler` rejects
-  `dot(wToLight, vNormal) <= 0`; TT-lobe energy from a delta/point light is only reachable via
-  BSDF sampling) — §4/§6.2, `HairBSDF.h` section 5.
+- ~~NEE cannot reach hair's transmissive hemisphere~~ — **RESOLVED** via
+  `IMaterial::ScattersFullSphere()`; see the Phase-3 residual entry above and `HairBSDF.h`
+  section 5's "NEE REACHES THE TRANSMISSIVE HALF".
+- **Directional lights still cannot light hair from behind** (the one sibling site the fix above
+  did not reach). `DirectionalLight::ComputeDirectLighting{,NM}` carries the same `fDot <= 0`
+  gate and runs in `EvaluateDirectLighting`'s Step-1 zero-exitance pass, outside the
+  capability-gated sites. It is not gatable in place: `ILight::ComputeDirectLighting` takes a
+  `RayIntersectionGeometric`, which (unlike `RayIntersection`) carries no material pointer, so
+  closing it means widening an `ILight` vtable signature across four light classes
+  (`AmbientLight` needs no change — it applies no cosine at all) and their two callers
+  (`LightSampler` Step 1, `BDPTIntegrator`'s s == 1 zero-exitance row). Mechanical but
+  interface-visible; deferred rather than folded into the LightSampler slice. Point, spot, mesh
+  area and environment lights are all covered.
 - `NormalMap`/`BumpMap` modifiers unconditionally rebuild the ONB from the perturbed normal alone,
   discarding any incoming fibre tangent — hair is incompatible with `bump_map`/`normal_map` until
   those two modifiers are fixed the way `GlintModifier` already is (§4.1).

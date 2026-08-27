@@ -206,6 +206,36 @@ namespace RISE
 			const IORStack& ior_stack
 			) const;
 
+		/// \return TRUE if this material's BSDF has support over the FULL
+		///         SPHERE of directions about the shading normal -- i.e. its
+		///         `value()` / `valueNM()` are legitimately nonzero for
+		///         directions with `dot(wi, N) < 0`, and its `Pdf()` is
+		///         normalized over the sphere rather than the hemisphere.
+		///
+		/// Default FALSE, which is the correct answer for every ordinary
+		/// BRDF (Lambertian, GGX, Cook-Torrance, ...): those return 0 below
+		/// the geometric horizon, so next-event estimation may reject
+		/// below-horizon shadow directions without losing any transport.
+		///
+		/// A material that returns TRUE tells `LightSampler` to evaluate NEE
+		/// on BOTH hemispheres, using `|cos|` in place of the signed surface
+		/// cosine.  This is REQUIRED for correctness on such a material, not
+		/// an optimization: the BSDF-sampling side of the MIS partition
+		/// applies its `w_bsdf < 1` to below-horizon directions whether or
+		/// not NEE reaches them, so a hemisphere-gated NEE leaves the two
+		/// strategies summing to `w_bsdf < 1` there and the estimator reads
+		/// systematically UNDER.  Measured on Chiang hair before the gate was
+		/// made capability-aware: 0.5-1.2 % under on a sigma_a = 0 env
+		/// furnace, 11.7 % under with medulla-scattered lobes, and 4.3x under
+		/// BDPT on a point-lit backlit groom (whose TT transport is entirely
+		/// below-horizon).  See LightSampler.cpp's FULL-SPHERE NEE comments.
+		///
+		/// Overriding this TRUE on a material whose `value()` does NOT
+		/// actually transmit would be a real bias, not just wasted samples:
+		/// NEE would light back-faces at full weight.  Only override it when
+		/// the BSDF genuinely scatters through.
+		virtual bool ScattersFullSphere() const { return false; }
+
 		//! Rescales this material's emission.  Default is a no-op that
 		//! REJECTS the change (returns false) so non-emissive materials
 		//! safely decline — only luminaire materials (e.g.

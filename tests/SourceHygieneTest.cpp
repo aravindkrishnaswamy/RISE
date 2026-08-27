@@ -4530,6 +4530,125 @@ int main()
 		       "no unregistered file enumerates the read_viewport reason values" );
 	}
 
+	// ---- Full-sphere NEE: the bit-identity guard --------------------------
+	// `IMaterial::ScattersFullSphere()` lets a material (today: only
+	// HairMaterial) ask LightSampler's NEE to evaluate the transmissive
+	// hemisphere, using |cos| in place of the signed surface cosine.  The
+	// whole safety argument for that change is that materials which do NOT
+	// claim the capability are BIT-IDENTICAL, not merely close -- and that
+	// argument is TEXTUAL, not numerical: each site is written
+	//
+	//     const Scalar cosX = bFullSphere ? std::fabs( cosXSigned ) : cosXSigned;
+	//
+	// so with `bFullSphere == false` the value is a plain copy and no
+	// arithmetic runs at all.  A render-level golden CANNOT check this --
+	// RISE's film accumulation is thread-order dependent, so two runs of the
+	// same scene differ in the 5th decimal (verified directly against
+	// EnvLightBalanceTest's own printed means) -- so the guard has to be
+	// structural, and this is it.
+	//
+	// WHAT WOULD BREAK WITHOUT IT.  Someone "simplifies" a site to an
+	// unconditional `std::fabs(...)`, every ordinary BRDF starts getting NEE
+	// samples below its own horizon, and the only symptom is wasted shadow
+	// rays -- until it lands on a material whose value() is wrongly nonzero
+	// there, where it becomes real bias.  EnvLightBalanceTest would not
+	// catch it (Lambertian value() returns 0 below the horizon, so the extra
+	// samples contribute nothing); nothing else would either.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path lsPath = repoRoot / "src" / "Library" / "Lights" / "LightSampler.cpp";
+
+		std::ifstream in( lsPath );
+		const std::string src( ( std::istreambuf_iterator<char>( in ) ),
+		                         std::istreambuf_iterator<char>() );
+		Check( !src.empty(), "full-sphere NEE: LightSampler.cpp readable" );
+
+		// Exactly six guarded sites: {delta light, mesh area light, env map}
+		// x {RGB, NM}.  Counting them pins the audit -- a seventh cosine gate
+		// added later without the guard, or one of these six silently
+		// dropped, changes this number.
+		// Matched against a whitespace-collapsed copy so a reindent or a
+		// line re-wrap does not fail the suite spuriously -- the FORM is what
+		// is being pinned, not the layout.
+		std::string flat;
+		flat.reserve( src.size() );
+		{
+			bool inSpace = false;
+			for( char c : src ) {
+				const bool isSpace = ( c == ' ' || c == '\t' || c == '\n' || c == '\r' );
+				if( isSpace ) { inSpace = true; continue; }
+				if( inSpace && !flat.empty() ) { flat.push_back( ' ' ); }
+				inSpace = false;
+				flat.push_back( c );
+			}
+		}
+
+		const char* kGuarded[] = {
+			"bFullSphere ? std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;",
+			"bFullSphere ? std::fabs( cosEnvSigned ) : cosEnvSigned;",
+		};
+		int guardedSites = 0;
+		for( const char* pat : kGuarded ) {
+			size_t at = 0;
+			const std::string needle( pat );
+			while( ( at = flat.find( needle, at ) ) != std::string::npos ) {
+				++guardedSites;
+				at += needle.size();
+			}
+		}
+
+		// The complement: no site may apply `fabs` to a surface/env cosine
+		// UNCONDITIONALLY.  This is the mutation the guard exists to stop, and
+		// it is invisible to every behavioural test in the tree.
+		const bool unguardedFabs =
+			flat.find( "std::fabs( cosSurfaceSigned );" ) != std::string::npos ||
+			flat.find( "std::fabs( cosEnvSigned );" ) != std::string::npos ||
+			flat.find( "std::fabs( Vector3Ops::Dot( vToLight, ri.vNormal ) )" ) != std::string::npos ||
+			flat.find( "std::fabs( Vector3Ops::Dot( envDir, ri.vNormal ) )" ) != std::string::npos;
+		Check( !unguardedFabs,
+		       "full-sphere NEE: no LightSampler site takes |cos| of the surface/env cosine "
+		       "UNCONDITIONALLY (that would change behaviour for every ordinary BRDF)" );
+		Check( guardedSites == 6,
+		       "full-sphere NEE: all six cosine sites (delta / area / env, RGB + NM) use the "
+		       "guarded `bFullSphere ? std::fabs(X) : X` form -- an unguarded `fabs` would "
+		       "change behaviour for EVERY material, not just full-sphere ones" );
+		if( guardedSites != 6 ) {
+			std::cout << "  full-sphere NEE: found " << guardedSites
+			          << " guarded sites in LightSampler.cpp, expected 6" << std::endl;
+		}
+
+		// And the capability itself stays scarce.  Granting it to a material
+		// whose value() does NOT transmit is a real bias (NEE would light its
+		// back faces at full weight), so it must be a deliberate, reviewed
+		// act -- not something that spreads by copy-paste.  Today exactly one
+		// material claims it.
+		std::vector<std::string> claimers;
+		const fs::path matDir = repoRoot / "src" / "Library" / "Materials";
+		if( fs::exists( matDir ) ) {
+			for( const auto& e : fs::directory_iterator( matDir ) ) {
+				if( !e.is_regular_file() ) { continue; }
+				const fs::path& f = e.path();
+				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
+				std::ifstream mi( f );
+				const std::string body( ( std::istreambuf_iterator<char>( mi ) ),
+				                          std::istreambuf_iterator<char>() );
+				if( body.find( "ScattersFullSphere() const { return true; }" )
+				    != std::string::npos ) {
+					claimers.push_back( f.filename().string() );
+				}
+			}
+		}
+		std::sort( claimers.begin(), claimers.end() );
+		for( const std::string& c : claimers ) {
+			std::cout << "  full-sphere material: " << c << std::endl;
+		}
+		Check( claimers.size() == 1 && claimers[0] == "HairMaterial.h",
+		       "full-sphere NEE: HairMaterial is the ONLY material claiming "
+		       "ScattersFullSphere() -- adding another is a deliberate act that must update "
+		       "this expectation in the same commit (see IMaterial::ScattersFullSphere's doc "
+		       "for what claiming it wrongly costs)" );
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;
