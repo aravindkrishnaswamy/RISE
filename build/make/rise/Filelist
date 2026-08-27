@@ -228,6 +228,7 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/EllipsoidGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/Geometry.cpp							\
 	$(PATHLIBRARY)Geometry/GeometryUtilities.cpp				\
+	$(PATHLIBRARY)Geometry/HairGeometry.cpp						\
 	$(PATHLIBRARY)Geometry/InfinitePlaneGeometry.cpp			\
 	$(PATHLIBRARY)Geometry/SphereGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/SDFGeometry.cpp						\

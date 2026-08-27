@@ -177,6 +177,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Geometry/EllipsoidGeometry.cpp"
     "${RISE_LIB}/Geometry/Geometry.cpp"
     "${RISE_LIB}/Geometry/GeometryUtilities.cpp"
+    "${RISE_LIB}/Geometry/HairGeometry.cpp"
     "${RISE_LIB}/Geometry/InfinitePlaneGeometry.cpp"
     "${RISE_LIB}/Geometry/SDFGeometry.cpp"
     "${RISE_LIB}/Geometry/SphereGeometry.cpp"

@@ -860,14 +860,17 @@
 		F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
 		7619E4529A2D5B78D9A0FD68 /* HairBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */; };
+		A1C4E7041B3D5F8092A6C404 /* HairGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */; };
 		F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545B2F84597B009AF16D /* GGXBRDF.h */; };
 		F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545D2F84597B009AF16D /* GGXMaterial.h */; };
 		F24C54642F84597B009AF16D /* GGXSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545E2F84597B009AF16D /* GGXSPF.h */; };
 		32DDFFE9E09C94250DA5F2C8 /* HairBSDF.h in Headers */ = {isa = PBXBuildFile; fileRef = 9B1936B0DA6BD983BD655075 /* HairBSDF.h */; };
+		A1C4E7051B3D5F8092A6C405 /* HairGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = A1C4E7021B3D5F8092A6C402 /* HairGeometry.h */; };
 		482B2F4486E04902978C23B9 /* HairMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 9B9A7F508556212A9B0A2B8C /* HairMaterial.h */; };
 		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
 		423B3D03E22FB684BB66FF45 /* HairBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */; };
+		A1C4E7031B3D5F8092A6C403 /* HairGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */; };
 		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
 		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
 		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
@@ -1968,6 +1971,8 @@
 		457B359DA029B1CE5FC98767 /* MappingPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MappingPainter.h; sourceTree = "<group>"; };
 		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
 		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
+		A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HairGeometry.cpp; sourceTree = "<group>"; };
+		A1C4E7021B3D5F8092A6C402 /* HairGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HairGeometry.h; sourceTree = "<group>"; };
 		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
 		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
 		6A10E004000000000000C0DE /* ProceduralDescriptors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProceduralDescriptors.h; sourceTree = "<group>"; };
@@ -3311,6 +3316,8 @@
 				F27F0836069C428F0069C9E5 /* GeometryUtilities.h */,
 				F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */,
 				F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */,
+				A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */,
+				A1C4E7021B3D5F8092A6C402 /* HairGeometry.h */,
 				5DF0E011000000000000C0DE /* SDFGeometry.cpp */,
 				5DF0E012000000000000C0DE /* SDFGeometry.h */,
 				F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */,
@@ -4495,6 +4502,7 @@
 				F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */,
 				F24C54642F84597B009AF16D /* GGXSPF.h in Headers */,
 				32DDFFE9E09C94250DA5F2C8 /* HairBSDF.h in Headers */,
+				A1C4E7051B3D5F8092A6C405 /* HairGeometry.h in Headers */,
 				482B2F4486E04902978C23B9 /* HairMaterial.h in Headers */,
 				B7A4ED17F0DE4E61A0A3D001 /* SheenBRDF.h in Headers */,
 				B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */,
@@ -5406,6 +5414,7 @@
 				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				423B3D03E22FB684BB66FF45 /* HairBSDF.cpp in Sources */,
+				A1C4E7031B3D5F8092A6C403 /* HairGeometry.cpp in Sources */,
 				B7A4ED1AF0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */,
 				B7A4ED1BF0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */,
 				B7A4ED1CF0DE4E61A0A3D001 /* SheenBRDF.h in Sources */,
@@ -6379,6 +6388,7 @@
 				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				7619E4529A2D5B78D9A0FD68 /* HairBSDF.cpp in Sources */,
+				A1C4E7041B3D5F8092A6C404 /* HairGeometry.cpp in Sources */,
 				B7A4ED15F0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */,
 				B7A4ED16F0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */,
 				F24B74272F52A632008304C4 /* Constants.h in Sources */,
