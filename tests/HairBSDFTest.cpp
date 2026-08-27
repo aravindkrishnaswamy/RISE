@@ -1554,10 +1554,12 @@ static void RunAbsorptionPathLength()
 //  `else` and fell through to a rotated angle -- is invisible to anything
 //  that does not isolate that lobe.
 //
-//  This calls the PRODUCTION `ApplyLobeTilt` directly through the
-//  `TestApplyLobeTilt` hook (which resolves the SAME 2k-alpha recurrence
-//  `Resolve()` does, so it cannot silently diverge from what render time
-//  feeds the function) and checks each branch's output angle against an
+//  This calls the PRODUCTION `ApplyLobeTilt` through the `TestApplyLobeTilt`
+//  hook, which routes through the REAL `Resolve()` -- the material's bound
+//  alpha painter feeds `Resolve()`'s actual 2k-alpha recurrence, exactly as
+//  render time does -- so this guards the FULL recurrence assembly (every
+//  index) plus ApplyLobeTilt's branches, not just ApplyLobeTilt in
+//  isolation.  Each branch's output angle is checked against an
 //  INDEPENDENTLY evaluated std::sin/std::cos of the composite angle --
 //  NOT the code's own recurrence -- so a sign-flipped or mis-indexed
 //  2k-alpha table cannot cancel out against the expectation.
@@ -1581,16 +1583,24 @@ static void RunApplyLobeTiltWhiteBox()
     // `TestApAndPathLength`'s static_assert on its `ap[4]` extent.
     const int kPMaxTest = 3;
 
-    // Any painter set works -- TestApplyLobeTilt never touches them.
+    // sigma_a / beta_m / beta_n / ior are irrelevant -- TestApplyLobeTilt's
+    // only path through `Resolve()`-derived state is `sin2kAlpha` /
+    // `cos2kAlpha`, which come solely from the alpha painter below.  Alpha
+    // IS load-bearing now: it is bound to `alphaDeg` through a real
+    // material, so `Resolve()` -- not this test -- produces the recurrence
+    // under check.  `ri` is likewise a real hit; its h/theta/phi are
+    // irrelevant to a uniform alpha painter, but Resolve() needs a valid
+    // RayIntersectionGeometric to run.
     ScalarRef sigmaA( new UniformScalarPainter( 0.4 ) );
     ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
     ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
-    ScalarRef alphaP( new UniformScalarPainter( 6.0 ) );
+    const double alphaDeg = 6.0;
+    ScalarRef alphaP( new UniformScalarPainter( alphaDeg ) );
     ScalarRef ior( new UniformScalarPainter( 1.55 ) );
     const HairPainters hp = MakeSigmaAPainters( *sigmaA, *betaM, *betaN, *alphaP, *ior );
     HairBRDF* brdf = new HairBRDF( hp ); brdf->addref();
+    const RayIntersectionGeometric ri = MakeFibreHit( 0.3, 1.1, 0.0 );
 
-    const double alphaDeg = 6.0;
     const double aRad     = alphaDeg * PI / 180.0;
     const double thetaOMags[3] = { 0.2, 0.5, 1.2 };
 
@@ -1613,7 +1623,7 @@ static void RunApplyLobeTiltWhiteBox()
             for( int p = 0; p <= kPMaxTest; p++ )
             {
                 Scalar sinOut = 0, cosOut = 0;
-                brdf->TestApplyLobeTilt( p, alphaDeg, sinThetaO, cosThetaO, sinOut, cosOut );
+                brdf->TestApplyLobeTilt( ri, p, sinThetaO, cosThetaO, sinOut, cosOut );
 
                 char lab[192];
                 if( p == kPMaxTest ) {

@@ -919,23 +919,20 @@ void HairBRDF::TestApAndPathLength(
 }
 
 void HairBRDF::TestApplyLobeTilt(
-	const int p, const Scalar alphaDeg,
+	const RayIntersectionGeometric& ri, const int p,
 	const Scalar sinThetaO, const Scalar cosThetaO,
 	Scalar& sinOut, Scalar& cosOut
 	) const
 {
-	// Resolve the 2k-alpha recurrence EXACTLY as `Resolve()` does, so this
-	// hook cannot silently diverge from what production feeds
-	// `ApplyLobeTilt` at render time.
-	Scalar sin2kAlpha[3], cos2kAlpha[3];
-	const Scalar aRad = alphaDeg * ( PI / 180.0 );
-	sin2kAlpha[0] = sin( aRad );
-	cos2kAlpha[0] = SafeSqrt( 1 - Sqr( sin2kAlpha[0] ) );
-	for( int i = 1; i < kPMax; i++ ) {
-		sin2kAlpha[i] = 2 * cos2kAlpha[i-1] * sin2kAlpha[i-1];
-		cos2kAlpha[i] = Sqr( cos2kAlpha[i-1] ) - Sqr( sin2kAlpha[i-1] );
-	}
-	ApplyLobeTilt( p, sin2kAlpha, cos2kAlpha, sinThetaO, cosThetaO, sinOut, cosOut );
+	// Route through the REAL `Resolve()` -- the same per-hit resolution
+	// the renderer calls -- so `sin2kAlpha` / `cos2kAlpha` come from this
+	// material's actual bound alpha painter and the actual recurrence,
+	// not a private re-derivation.  A corruption anywhere in that chain
+	// (painter -> Resolve() -> sin2kAlpha/cos2kAlpha -> ApplyLobeTilt) is
+	// therefore visible here, matching `TestApAndPathLength` above.
+	Resolved R;
+	Resolve( ri, R );
+	ApplyLobeTilt( p, R.sin2kAlpha, R.cos2kAlpha, sinThetaO, cosThetaO, sinOut, cosOut );
 }
 
 //////////////////////////////////////////////////////////////////////

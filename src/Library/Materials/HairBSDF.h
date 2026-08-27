@@ -506,22 +506,29 @@ namespace RISE
 				Scalar& absorbLen
 				) const;
 
-			//! TEST HOOK -- not called by the renderer.  Resolves the
-			//! 2k-alpha cuticle-tilt recurrence EXACTLY as `Resolve()`
-			//! does from `alphaDeg`, then calls the real `ApplyLobeTilt`
-			//! (the SAME function both the evaluation and sampling sides
-			//! call -- HairBSDF.cpp's `LobeWeights` / `HairSPF::DoScatter`).
-			//! Exists because groups 10/11 in HairBSDFTest.cpp only ever
-			//! exercise `ApplyLobeTilt` through the p == 0 (R) branch and
-			//! only through mixture-level energy/estimator checks, which
-			//! are measure-preserving under a tilt-sign flip on any lobe
-			//! and structurally cannot see a corruption isolated to the
-			//! p == 1 (TT), p == 2 (TRT), or residual-identity branch.
-			//! This white-box hook lets a test pin all four branches'
-			//! angle formula and sign directly.
+			//! TEST HOOK -- not called by the renderer.  Calls the REAL
+			//! `Resolve()` (the same per-hit resolution the renderer uses,
+			//! which reads `alpha` off this material's bound alpha
+			//! painter and runs the actual 2k-alpha cuticle-tilt
+			//! recurrence), then calls the real `ApplyLobeTilt` (the SAME
+			//! function both the evaluation and sampling sides call --
+			//! HairBSDF.cpp's `LobeWeights` / `HairSPF::DoScatter`) with
+			//! `Resolve()`'s own `sin2kAlpha` / `cos2kAlpha`.  A corruption
+			//! ANYWHERE in the painter -> Resolve() -> sin2kAlpha /
+			//! cos2kAlpha -> ApplyLobeTilt chain is therefore visible to
+			//! this hook, not just a corruption inside ApplyLobeTilt
+			//! itself.  Exists because groups 10/11 in HairBSDFTest.cpp
+			//! only ever exercise `ApplyLobeTilt` through the p == 0 (R)
+			//! branch and only through mixture-level energy/estimator
+			//! checks, which are measure-preserving under a tilt-sign flip
+			//! on any lobe and structurally cannot see a corruption
+			//! isolated to the p == 1 (TT), p == 2 (TRT), or
+			//! residual-identity branch.  This white-box hook lets a test
+			//! pin all four branches' angle formula and sign directly,
+			//! against the full recurrence assembly.
 			void TestApplyLobeTilt(
+				const RayIntersectionGeometric& ri,
 				const int p,
-				const Scalar alphaDeg,
 				const Scalar sinThetaO,
 				const Scalar cosThetaO,
 				Scalar& sinOut,
