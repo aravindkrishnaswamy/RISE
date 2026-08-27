@@ -762,6 +762,22 @@ namespace
 		{ "dielectric_material",   "tau",        "1.0" },
 		{ "translucent_material",  "ext",        "1.0" },
 		{ "generic_human_tissue_material", "g",  "0.0" },
+
+		// hair_material: a ONE-OF FORM SELECTION the descriptor cannot
+		// express, same shape as scalar_painter's twelve forms above --
+		// `color` / `sigma_a` / `eumelanin` / `pheomelanin` all default to
+		// the `none` sentinel (tier not bound), and Job::AddHairMaterial
+		// requires EXACTLY ONE of the three tiers (color / sigma_a /
+		// melanin) to end up bound; none of the four params is marked
+		// `required`, so NodeRequirements() sees nothing missing and a
+		// bare create would derive-fail with the tier-exclusivity
+		// diagnostic.  Seed the Tier-1 melanin path (the physically-based,
+		// recommended default per the descriptor's own text) with
+		// `eumelanin 1.3` -- ~= brown-black hair, the standard Chiang
+		// et al. 2016 mid-brown default -- rather than a synthetic `color`
+		// or `sigma_a`, so an agent-inserted hair material renders
+		// sensibly out of the box.
+		{ "hair_material",         "eumelanin", "1.3" },
 	};
 
 	//! Requirements the descriptor's `required` flag does not carry, so
