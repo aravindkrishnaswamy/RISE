@@ -808,7 +808,9 @@ static const char* kLightMesh =
 // scheduling dependent — see below).
 //
 // REPRODUCIBILITY, MEASURED (256/512, 4 consecutive runs, this machine):
-//   - RGB (Pel) rasterizers: BIT-IDENTICAL run to run for PT; BDPT and
+//   - RGB (Pel) rasterizers: bit-identical run to run for PT on the
+//     env-only and submerged topologies; <= 0.01 % movement on the
+//     mixed-light ones (E/F); BDPT and
 //     VCM move <= 0.06 % on the mean, <= 0.5 % on p99.
 //   - SPECTRAL rasterizers: NOT reproducible.  PT mean moves up to
 //     1.05 %, BDPT/VCM mean-ratio up to 2.0 %, p99-ratio up to 5.3 %,
@@ -1486,7 +1488,7 @@ static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 //   luminance    0.49306 and 0.49385         -> (-1.39 %, -1.23 %)
 // The errors partly cancel in luminance, which is why the luminance
 // check carries the tight band (5 %) and the per-channel check a
-// looser one (8 %, a bound on the round-trip rather than an assertion
+// looser one (10 %, a bound on the round-trip rather than an assertion
 // about transport).  Either would have caught the F1 +17.7 %.
 //
 // PT REFERENCE IS ALWAYS hwss=false (the converged, unbiased ground

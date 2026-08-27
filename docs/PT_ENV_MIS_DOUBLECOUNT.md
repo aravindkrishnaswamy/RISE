@@ -101,7 +101,7 @@ excess = ln(17) / 16 = 0.177076
 
 Measured pre-fix: `0.17722` (furnace), matching to four significant
 figures. At albedo 0.5 the same derivation predicts `0.588538`; measured
-pre-fix `0.58848 / 0.58948 / 0.58857` across three runs of
+pre-fix `0.58848 / 0.58948 / 0.58857` per channel (R/G/B) in
 `EnvLightBalanceTest`'s env-only Lambertian topology (expected closed-form
 mean `0.5` exactly). Post-fix the furnace reads `1.000668`; the albedo-0.5
 topology reads `0.49994 / 0.50076 / 0.49997`
@@ -134,8 +134,8 @@ against it. Red-proving the fix (reverting it and rebuilding) reproduces
 the predicted `+0.5 * (1 - e^-tau) * E[Tr_escape] ≈ +16%` excess: RGB
 `+15.73%`, spectral hwss=false `+16.39%`, spectral hwss=true `+10.90%`
 ([tests/VolumeEnvFurnaceTest.cpp:107-118](../tests/VolumeEnvFurnaceTest.cpp)).
-All nine of that file's checks fail with the fix reverted and pass with it
-in place.
+Six of that file's nine checks fail with the fix reverted; all nine pass
+with it in place.
 
 ## 3. The fixes
 
@@ -182,7 +182,8 @@ uniform-env topologies; it asserted that BDPT and VCM agree with PT to
 within a tolerance family. Once F1/F2 corrected PT, the suite's own
 reference moved, and BDPT/VCM — genuinely unchanged — fell outside bands
 that had only ever passed because the PT they were compared against was
-`+14` to `+22%` too bright.
+`+14` to `+17.7%` too bright (the ln(17)/16 excess applies only to the
+once-bounced env term, so `+17.7%` is the attainable maximum).
 
 F3 restructures the suite into three kinds of check
 ([tests/EnvLightBalanceTest.cpp:28-65](../tests/EnvLightBalanceTest.cpp)):
@@ -205,7 +206,7 @@ F3 restructures the suite into three kinds of check
    them. Measured, against the corrected (truth-referenced) PT: env-only
    Lambertian BDPT `+28.5%`, VCM `+24.3%`; env+mesh BDPT `+13.6%`, VCM
    `+50.0%` — the single largest bias in the suite
-   ([tests/HairRenderTest.cpp:898-911](../tests/HairRenderTest.cpp) carries
+   ([tests/EnvLightBalanceTest.cpp:898-911](../tests/EnvLightBalanceTest.cpp) carries
    the topology-F commentary tying this number to
    [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)).
 3. **Firefly caps**, replacing the old "within 1.5× of PT max": `max <=
@@ -214,8 +215,8 @@ F3 restructures the suite into three kinds of check
    ([tests/EnvLightBalanceTest.cpp:426-441](../tests/EnvLightBalanceTest.cpp)).
 
 Net: **116 checks** (up from 101), 6 consecutive clean runs measured, worst
-band utilisation 0.756. RGB rows are bit-identical run-to-run on the
-measuring machine; spectral rasterizers are not (see residual ledger,
+band utilisation 0.756. RGB rows are bit-identical run-to-run on the env-only and submerged
+topologies and move <= 0.01% on the mixed-light ones; spectral rasterizers are not (see residual ledger,
 item 6).
 
 ## 5. Implications for prior conclusions

@@ -20,6 +20,9 @@ recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (
 - `27b33aed` — Slice C2: geometry-supplied fibre tangent honoured in `Object`/`CSGObject` ONB.
 - `bddb2307` — Slice D: painter-driven groom generator + `hair_geometry` chunk.
 - `fb092712` — Slice D review-round fixes (UV-derived comb frame, stream keying, suite gaps).
+- Slice E's furnace test found (and the follow-on arc fixed) a PT env-MIS double-count
+  affecting every PT render with a global radiance map — see
+  [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md).
 - Slice E (this closeout) — render-level regression scenes (`scenes/Tests/Hair/`),
   `tests/HairRenderTest.cpp`, and this docs closeout.
 
@@ -33,9 +36,6 @@ recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (
 - Windows (VS2022), Android (NDK/Gradle), and Xcode build-project files were updated with every
   new source file across all slices but have not been compiled this arc — only the Linux/macOS
   `make` build and its test suite have been gated.
-- The render-level furnace test (`tests/HairRenderTest.cpp::TestFurnace`) found and led to the
-  fix of a PT env-MIS double-count affecting every PT render with a global radiance map — see
-  [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md).
 
 ---
 
