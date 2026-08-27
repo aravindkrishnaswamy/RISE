@@ -181,6 +181,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
 	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
+	$(PATHLIBRARY)Materials/HairBSDF.cpp										\
 	$(PATHLIBRARY)Materials/SheenBRDF.cpp									\
 	$(PATHLIBRARY)Materials/SheenSPF.cpp									\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\

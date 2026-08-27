@@ -684,6 +684,9 @@
     <ClCompile Include="..\..\..\src\Library\Objects\SnapshotLeafClone.cpp">
       <Filter>Object</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HairBSDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
@@ -2925,6 +2928,12 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HairBSDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMaterial.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CharlieSheen.h">
