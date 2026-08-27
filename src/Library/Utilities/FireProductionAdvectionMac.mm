@@ -17,6 +17,7 @@
 #include "../Interfaces/IOptions.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -2503,6 +2504,36 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			}
 			const bool anomalyClosureTestDisabled=anomalyClosureTestActivation&&
 				std::strcmp(anomalyClosureTestActivation,"disabled")==0;
+			const char* anomalyConvergenceProbeActivation=std::getenv(
+				"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
+			if( anomalyConvergenceProbeActivation&&
+				std::strcmp(anomalyConvergenceProbeActivation,"1")!=0 ) {
+				if( structuredError ) *structuredError=
+					"production advective anomaly convergence probe activation is invalid";
+				return false;
+			}
+			const char* anomalyConvergencePassValue=std::getenv(
+				"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES");
+			unsigned long parsedAnomalyConvergencePasses=0u;
+			if( anomalyConvergencePassValue ) {
+				char* end=0;errno=0;
+				parsedAnomalyConvergencePasses=std::strtoul(
+					anomalyConvergencePassValue,&end,10);
+				if( !anomalyConvergenceProbeActivation||errno!=0||!end||*end!='\0'||
+					parsedAnomalyConvergencePasses<1u||parsedAnomalyConvergencePasses>8u||
+					std::to_string(parsedAnomalyConvergencePasses)!=
+						anomalyConvergencePassValue ) {
+					if( structuredError ) *structuredError=
+						"production advective anomaly convergence pass count is invalid";
+					return false;
+				}
+			} else if( anomalyConvergenceProbeActivation ) {
+				if( structuredError ) *structuredError=
+					"production advective anomaly convergence pass count is missing";
+				return false;
+			}
+			const std::uint32_t anomalyClosurePassLimit=anomalyConvergenceProbeActivation?
+				static_cast<std::uint32_t>(parsedAnomalyConvergencePasses):2u;
 			const char* hostResidualProbeActivation=std::getenv(
 				"RISE_FIRE_HOST_RESIDUAL_PROBE");
 			if( hostResidualProbeActivation&&(!goldenLongShadowActivation||
@@ -2872,14 +2903,21 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					MetalHostBufferReadCount-beginningReads!=0u ) return false;
 				timestepVelocityAuditSourceMS=timestepVelocityAuditMS();
 				float maximumPredictedAdvectiveAnomalyFloat=0.0f;
+				std::uint32_t anomalyPredictorMeasurementCount=0u;
 				double anomalyPredictorDeviceMS=0.0,anomalyCorrectorSourceDeviceMS=0.0,
 					anomalyPredictorDeviceStartTimeS=0.0,anomalyPredictorDeviceEndTimeS=0.0,
 					anomalyCorrectorSourceDeviceStartTimeS=0.0,
 					anomalyCorrectorSourceDeviceEndTimeS=0.0;
-				if( closeAdvectiveAnomaly ) {
+				auto predictAdvectiveAnomaly=[&](){
 					markPhase("production resident step failed during advective-anomaly prediction");
 					std::memset([manifoldPredictorReduction contents],0,3u*sizeof(std::uint32_t));
 					id<MTLCommandBuffer> predictorCommand=TrackedMetalCommandBuffer(context.queue);
+					id<MTLBlitCommandEncoder> predictorBlit=
+						predictorCommand?[predictorCommand blitCommandEncoder]:nil;
+					if( !predictorBlit ) return false;
+					[predictorBlit copyFromBuffer:restorationTargetStage sourceOffset:0
+						toBuffer:restorationTargetPrivate destinationOffset:0 size:cells*sizeof(float)];
+					[predictorBlit endEncoding];
 					id<MTLComputeCommandEncoder> predictorEncoder=
 						predictorCommand?[predictorCommand computeCommandEncoder]:nil;
 					if( !predictorEncoder ) return false;
@@ -2902,16 +2940,21 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					[predictorEncoder endEncoding];
 					CommitTrackedMetalCommand(predictorCommand);[predictorCommand waitUntilCompleted];
 					if( [predictorCommand status]!=MTLCommandBufferStatusCompleted ) return false;
-					anomalyPredictorDeviceMS=
+					anomalyPredictorDeviceMS+=
 						([predictorCommand GPUEndTime]-[predictorCommand GPUStartTime])*1000.0;
-					anomalyPredictorDeviceStartTimeS=[predictorCommand GPUStartTime];
-					anomalyPredictorDeviceEndTimeS=[predictorCommand GPUEndTime];
+					const double predictorStart=[predictorCommand GPUStartTime];
+					const double predictorEnd=[predictorCommand GPUEndTime];
+					anomalyPredictorDeviceStartTimeS=anomalyPredictorDeviceStartTimeS>0.0?
+						std::min(anomalyPredictorDeviceStartTimeS,predictorStart):predictorStart;
+					anomalyPredictorDeviceEndTimeS=
+						std::max(anomalyPredictorDeviceEndTimeS,predictorEnd);
 					const std::uint32_t* predictorReduction=static_cast<const std::uint32_t*>(
 						ReadTrackedMetalBuffer(manifoldPredictorReduction));
+					++anomalyPredictorMeasurementCount;
 					if( !predictorReduction||predictorReduction[2u]!=0u ) return false;
 					std::memcpy(&maximumPredictedAdvectiveAnomalyFloat,predictorReduction,sizeof(float));
-					if( !std::isfinite(maximumPredictedAdvectiveAnomalyFloat) ) return false;
-				}
+					return std::isfinite(maximumPredictedAdvectiveAnomalyFloat);
+				};
 				FireProductionProjectionRequest projectionRequest;
 				projectionRequest.shape=shape;projectionRequest.timeStepS=request.force.timeStepS;
 				projectionRequest.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
@@ -2932,11 +2975,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const bool restorationFullTarget=restorationTest&&
 					std::strcmp(restorationTest,"full-target")==0;
 				FireProductionProjectionResult physicalProjection,projection;
-				FireProductionMetalProjectionResidentState restorationState;
-				bool anomalyCorrectorExecuted=false;
+				std::uint32_t executedAnomalyClosurePasses=1u;
 				double anomalyCorrectorCellDeviceMS=0.0,
 					anomalyCorrectorCellDeviceStartTimeS=0.0,
-					anomalyCorrectorCellDeviceEndTimeS=0.0;
+					anomalyCorrectorCellDeviceEndTimeS=0.0,
+					anomalyRestorationDeviceMS=0.0,
+					anomalyRestorationDeviceStartTimeS=0.0,
+					anomalyRestorationDeviceEndTimeS=0.0;
 				if( restorationRemoved ) {
 					if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,
 						projection,structuredError) ) return false;
@@ -2957,10 +3002,21 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					restorationInput.provisionalMomentumByteOffset=physicalState.momentumByteOffset;
 					restorationInput.divergenceTargetPerS=restorationFullTarget?
 						targetPrivate:restorationTargetPrivate;
-					if( closeAdvectiveAnomaly&&maximumPredictedAdvectiveAnomalyFloat>0.0f ) {
+					for(std::uint32_t pass=1u;closeAdvectiveAnomaly&&
+						pass<anomalyClosurePassLimit;++pass){
+						if(!predictAdvectiveAnomaly())return false;
+						if(maximumPredictedAdvectiveAnomalyFloat==0.0f)break;
+						FireProductionMetalProjectionResidentState restorationState;
 						if( !ProjectFireProductionMetalRestorationResidentState(restorationRequest,
 							restorationInput,restorationTargetPrivate,restorationState,projection,
 							structuredError) ) return false;
+						anomalyRestorationDeviceMS+=projection.deviceElapsedMS;
+						anomalyRestorationDeviceStartTimeS=
+							anomalyRestorationDeviceStartTimeS>0.0?
+							std::min(anomalyRestorationDeviceStartTimeS,
+								projection.deviceStartTimeS):projection.deviceStartTimeS;
+						anomalyRestorationDeviceEndTimeS=
+							std::max(anomalyRestorationDeviceEndTimeS,projection.deviceEndTimeS);
 						FireProductionMetalCellPalindromeResidentInput correctorInput;
 						correctorInput.conservativeValues=cellPrivate;
 						correctorInput.frozenVelocityMPerS=restorationState.velocityMPerS;
@@ -2972,9 +3028,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 							if(task==0u){
 								if(!RemapFireProductionCellPalindromeMetalResident(request.cellTransport,
 									correctorInput,corrector,&correctorError[task]))return;
-								anomalyCorrectorCellDeviceMS=corrector.deviceElapsedMS;
-								anomalyCorrectorCellDeviceStartTimeS=corrector.deviceStartTimeS;
-								anomalyCorrectorCellDeviceEndTimeS=corrector.deviceEndTimeS;
+								anomalyCorrectorCellDeviceMS+=corrector.deviceElapsedMS;
+								anomalyCorrectorCellDeviceStartTimeS=
+									anomalyCorrectorCellDeviceStartTimeS>0.0?
+									std::min(anomalyCorrectorCellDeviceStartTimeS,
+										corrector.deviceStartTimeS):corrector.deviceStartTimeS;
+								anomalyCorrectorCellDeviceEndTimeS=
+									std::max(anomalyCorrectorCellDeviceEndTimeS,corrector.deviceEndTimeS);
 								id<MTLCommandBuffer> correctorSource=TrackedMetalCommandBuffer(context.queue);
 								id<MTLComputeCommandEncoder> correctorEncoder=
 									correctorSource?[correctorSource computeCommandEncoder]:nil;
@@ -2988,10 +3048,16 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 								[correctorSource waitUntilCompleted];
 								if([correctorSource status]!=MTLCommandBufferStatusCompleted){
 									correctorError[task]="production anomaly corrector source failed";return;}
-								anomalyCorrectorSourceDeviceMS=([correctorSource GPUEndTime]-
+								anomalyCorrectorSourceDeviceMS+=([correctorSource GPUEndTime]-
 									[correctorSource GPUStartTime])*1000.0;
-								anomalyCorrectorSourceDeviceStartTimeS=[correctorSource GPUStartTime];
-								anomalyCorrectorSourceDeviceEndTimeS=[correctorSource GPUEndTime];
+								const double correctorSourceStart=[correctorSource GPUStartTime];
+								const double correctorSourceEnd=[correctorSource GPUEndTime];
+								anomalyCorrectorSourceDeviceStartTimeS=
+									anomalyCorrectorSourceDeviceStartTimeS>0.0?
+									std::min(anomalyCorrectorSourceDeviceStartTimeS,
+										correctorSourceStart):correctorSourceStart;
+								anomalyCorrectorSourceDeviceEndTimeS=
+									std::max(anomalyCorrectorSourceDeviceEndTimeS,correctorSourceEnd);
 								correctorSucceeded[task]=true;
 							}else correctorSucceeded[task]=
 								PublishFireProductionMetalRestorationResidentState(restorationRequest,
@@ -3005,9 +3071,16 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 								if(structuredError)*structuredError=correctorError[task];
 								return false;
 							}
-						++sourceCommits;cell=std::move(corrector);anomalyCorrectorExecuted=true;
-					} else if( !ProjectFireProductionMetalRestorationResident(restorationRequest,
+						++sourceCommits;cell=std::move(corrector);++executedAnomalyClosurePasses;
+					}
+					if(executedAnomalyClosurePasses==1u&&
+						!ProjectFireProductionMetalRestorationResident(restorationRequest,
 						restorationInput,restorationTargetPrivate,projection,structuredError) ) return false;
+					if(executedAnomalyClosurePasses==1u){
+						anomalyRestorationDeviceMS=projection.deviceElapsedMS;
+						anomalyRestorationDeviceStartTimeS=projection.deviceStartTimeS;
+						anomalyRestorationDeviceEndTimeS=projection.deviceEndTimeS;
+					}
 					timestepVelocityAuditRestorationMS=timestepVelocityAuditMS();
 				}
 				markPhase("production resident step failed while publishing resident terminal state");
@@ -3153,13 +3226,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.physicalProjection=std::move(physicalProjection);
 				computed.projection=std::move(projection);computed.forceSchedule=force.schedule;
 				computed.forceDiagnostics=force.diagnostics;computed.cellSubmapCount=
-					cell.executedSubmapCount+(anomalyCorrectorExecuted?5u:0u);
+					5u*executedAnomalyClosurePasses;
 				computed.dualSubmapCount=dual.executedSubmapCount;computed.sourceCommandCommitCount=
 					static_cast<std::uint32_t>(sourceCommits);
 				computed.residentProjectionInvocationCount=
 					restorationRemoved?computed.projection.residentProjectionInvocationCount:
 					computed.physicalProjection.residentProjectionInvocationCount+
-						computed.projection.residentProjectionInvocationCount;
+						std::max(1u,executedAnomalyClosurePasses-1u);
 				computed.interstageFullGridTransferCount=
 					force.diagnostics.substepLoopDeviceToHostTransferCount+
 					cell.interstageFullGridTransferCount+dual.interstageFullGridTransferCount+
@@ -3169,22 +3242,22 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.terminalStagingCount=
 					(restorationRemoved?computed.projection.residentTerminalStagingCount:
 						computed.physicalProjection.residentTerminalStagingCount+
-							computed.projection.residentTerminalStagingCount)+1u;
+							std::max(1u,executedAnomalyClosurePasses-1u))+1u;
 				computed.combinedCertifiedWorkingSetBytes=certified;
 				computed.combinedActualMetalAllocationBytes=ownerActualMetalBytes+
 					force.diagnostics.actualMetalAllocationBytes+
 					cell.actualMetalAllocationBytes+
-					(anomalyCorrectorExecuted?predictorCellActualMetalBytes:0u)+
+					(executedAnomalyClosurePasses>1u?predictorCellActualMetalBytes:0u)+
 					dual.actualMetalAllocationBytes+
 					(restorationRemoved?computed.projection.residentActualMetalAllocationBytes:
 						computed.physicalProjection.residentActualMetalAllocationBytes+
 							computed.projection.residentActualMetalAllocationBytes);
 				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+
-					predictorCellDeviceMS+(anomalyCorrectorExecuted?anomalyCorrectorCellDeviceMS:0.0)+
+					predictorCellDeviceMS+anomalyCorrectorCellDeviceMS+
 					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
 					anomalyPredictorDeviceMS+anomalyCorrectorSourceDeviceMS+
 					(restorationRemoved?computed.projection.deviceElapsedMS:
-						computed.physicalProjection.deviceElapsedMS+computed.projection.deviceElapsedMS)+
+						computed.physicalProjection.deviceElapsedMS+anomalyRestorationDeviceMS)+
 					([terminalCommand GPUEndTime]-[terminalCommand GPUStartTime])*1000.0;
 				double deviceStartTimeS=[upload GPUStartTime],deviceEndTimeS=[terminalCommand GPUEndTime];
 				auto includeDeviceWindow=[&](const double beginning,const double end) {
@@ -3199,18 +3272,19 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					includeDeviceWindow(predictorCellDeviceStartTimeS,predictorCellDeviceEndTimeS)&&
 					includeDeviceWindow(dual.deviceStartTimeS,dual.deviceEndTimeS)&&
 					includeDeviceWindow([sourceCommand GPUStartTime],[sourceCommand GPUEndTime])&&
-					includeDeviceWindow(computed.projection.deviceStartTimeS,
-						computed.projection.deviceEndTimeS)&&
+					includeDeviceWindow(restorationRemoved?computed.projection.deviceStartTimeS:
+						anomalyRestorationDeviceStartTimeS,
+						restorationRemoved?computed.projection.deviceEndTimeS:
+						anomalyRestorationDeviceEndTimeS)&&
 					(restorationRemoved||includeDeviceWindow(computed.physicalProjection.deviceStartTimeS,
 						computed.physicalProjection.deviceEndTimeS))&&
-					(!closeAdvectiveAnomaly||
+					(!closeAdvectiveAnomaly||executedAnomalyClosurePasses==1u||
 						(includeDeviceWindow(anomalyPredictorDeviceStartTimeS,
 							anomalyPredictorDeviceEndTimeS)&&
-						 (!anomalyCorrectorExecuted||
 						  (includeDeviceWindow(anomalyCorrectorCellDeviceStartTimeS,
 							anomalyCorrectorCellDeviceEndTimeS)&&
 						   includeDeviceWindow(anomalyCorrectorSourceDeviceStartTimeS,
-							anomalyCorrectorSourceDeviceEndTimeS)))));
+							anomalyCorrectorSourceDeviceEndTimeS))));
 				if(!completeDeviceWindow)return false;
 				computed.deviceMakespanMS=(deviceEndTimeS-deviceStartTimeS)*1000.0;
 				computed.representedTimeStepS=request.force.timeStepS;
@@ -3223,10 +3297,10 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.manifoldMapCellCount=measureManifold?
 					static_cast<std::uint32_t>(cells):0u;
 				computed.manifoldScalarDeviceToHostTransferCount=measureManifold?
-					(closeAdvectiveAnomaly?2u:1u):0u;
+					(1u+anomalyPredictorMeasurementCount):0u;
 				computed.manifoldFullGridDeviceToHostTransferCount=0u;
 				computed.advectiveAnomalyClosurePassCount=closeAdvectiveAnomaly?
-					(anomalyCorrectorExecuted?2u:1u):0u;
+					executedAnomalyClosurePasses:0u;
 				computed.manifoldStageGeneration[0]=maximumManifoldGeneration;
 				computed.manifoldStageGeneration[1]=0.0;
 				computed.manifoldStageGeneration[2]=0.0;
@@ -3258,7 +3332,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						request.beginningManifoldDeviationPerCell,
 						request.cellTransport.frozenVelocityMPerS);
 				computed.manifoldGenerationAuthoritative=materialGenerationAuthority;
-				if( enforcePlateau&&
+				if( enforcePlateau&&!anomalyConvergenceProbeActivation&&
 					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
 					std::array<std::uint64_t,2> authorityDigests={{0u,0u}};
 					auto deriveAuthorityDigest=[&](const std::size_t digestIndex){
@@ -3296,15 +3370,17 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						materialGenerationAuthority;
 				}
 				timestepVelocityAuditAuthorityMS=timestepVelocityAuditMS();
-				if( computed.cellSubmapCount!=(anomalyCorrectorExecuted?10u:5u)||
+				if( computed.cellSubmapCount!=5u*executedAnomalyClosurePasses||
 					computed.dualSubmapCount!=15u||
-					computed.sourceCommandCommitCount!=(anomalyCorrectorExecuted?2u:1u)||
-					computed.residentProjectionInvocationCount!=(restorationRemoved?1u:2u)||
+					computed.sourceCommandCommitCount!=executedAnomalyClosurePasses||
+					computed.residentProjectionInvocationCount!=(restorationRemoved?1u:
+						1u+std::max(1u,executedAnomalyClosurePasses-1u))||
 					computed.interstageFullGridTransferCount!=0u||
-					MetalHostBufferReadCount-beginningReads!=(closeAdvectiveAnomaly?2u:1u)||
+					MetalHostBufferReadCount-beginningReads!=
+						1u+anomalyPredictorMeasurementCount||
 					(measureManifold&&(computed.manifoldMapCellCount!=cells||
 						computed.manifoldScalarDeviceToHostTransferCount!=
-							(closeAdvectiveAnomaly?2u:1u)||
+							1u+anomalyPredictorMeasurementCount||
 						computed.manifoldFullGridDeviceToHostTransferCount!=0u||
 						computed.manifoldStageGeneration[0]!=computed.maximumManifoldGeneration||
 						computed.manifoldStageGeneration[1]!=0.0||

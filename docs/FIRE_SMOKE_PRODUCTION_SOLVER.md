@@ -3962,6 +3962,55 @@ The complete pre-evidence manifest is
 It records no temporal result and dispatches no Metal.  Golden SHA remains
 `1b944176...4947`.
 
+### 7.56a Closure-convergence architecture finding (r167)
+
+r166 completes the empirical generation model as
+`G = dose(delta_t) + feedback(deviation)`.  Across its six evolved pairs, a
+least-squares regression of the next Eulerian `G` on the preceding field
+maximum gives slope `0.7925875134206254`, intercept
+`0.0225796196872328`, and Pearson correlation `0.7129565317645592`.
+This confirms a substantial near-unit feedback branch without overstating it
+as an exact unit-gain law.  The same interpretation explains the seven-step
+hover while represented delta-t collapsed by `148.6430318897442x`, and is
+consistent with r145's measured retained fraction `0.9902699302058174`.
+The operating-point ruling was therefore wrong: seeding the trajectory at the
+plateau allowance placed it directly in the feedback basin, while the
+subdominance scale should have defined acceptance.
+
+The deciding experiment fixes the immutable golden beginning and the audited
+CFL step `0.0016462659696117043 s`, then executes one through eight closure
+passes.  Each pass count is an exact pre-Metal identity and the topology is
+bound as five cell submaps, one source commit, and one scalar measurement per
+pass.  The first pass uses the ordinary restoration target; each later pass
+remeasures the advective anomaly, rebuilds that target from the inherited
+target, reruns restoration from the same physical projection, and remaps the
+original beginning with the corrected velocity.  The fp64 mirror consumes the
+same sealed divergence target and executes those same remap/projection
+operators.  Its inherited golden payload retains Binary32 admissibility while
+all subsequent arithmetic and reported volume ratios are binary64.
+The r167 evidence directory binds both the raw transcript and a log-scale SVG
+of the complete fp32/fp64 curve.
+
+The subdominance-derived diagnostic tolerance is
+`0.00065 * 2^-3 = 8.125e-5`.  The curve does not converge geometrically.  Its
+best point is pass 2 (`G32=0.06656908988952637`,
+`G64=0.06656946601494673`); pass 3 grows, and pass 8 reaches
+`0.16477346420288086/0.16477412949642256`.  fp32 and fp64 agree within
+`5.7e-6` relative at the sampled points, so this is not an fp32 floor.  It is
+an oscillatory/divergent fixed-point topology more than 2,027x above the
+derived tolerance.  No multi-pass acceptance rule is adopted, no hover state
+is accepted under a replacement policy, and the limiter remains unchanged.
+The next design action is the pre-registered hover-policy/reconstruction-class
+decision using this curve, not another closure iteration or tolerance change.
+
+One warmup plus five paired Metal measurements make the cost record explicit.
+Pass 2 costs `122.15441651642323/141.788333 ms` device-span/wall p95;
+pass 8 costs `417.5576251000166/438.83425 ms`.  Their conditional CFL
+tier-10 x 25 s projections are `0.5152840274903517/0.5981057857990776 h`
+and `1.761383508732288/1.8511347046572506 h`, respectively.  These are
+diagnostic costs, not accepted-production projections.  The long shadow and
+every later milestone remain blocked by the architecture finding.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

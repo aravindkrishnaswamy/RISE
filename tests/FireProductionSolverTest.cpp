@@ -3983,13 +3983,26 @@ int main()
 	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST");
 	const bool zeroAnomalyClosurePassed=zeroAnomalySinglePassed&&
 		AttemptFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyClosure,&error);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE","1",1);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES","8",1);
+	FireProductionResidentStepResult zeroAnomalyConvergence;
+	const bool zeroAnomalyConvergencePassed=zeroAnomalyClosurePassed&&
+		AttemptFireProductionResidentStepMetal(zeroAnomalyStep,zeroAnomalyConvergence,&error);
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES");
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
 	unsetenv("RISE_FIRE_GOLDEN_LONG_SHADOW");
 	const bool zeroAnomalyClosureNoOp=zeroAnomalyClosurePassed&&
 		zeroAnomalyClosure.maximumPredictedAdvectiveManifoldAnomaly==0.0&&
 		zeroAnomalyClosure.advectiveAnomalyClosurePassCount==1u&&
 		zeroAnomalyClosure.cellSubmapCount==5u&&
 		FireProductionAcceptedManifoldPayloadDigest(zeroAnomalySinglePass)==
-			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure);
+			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure)&&
+		zeroAnomalyConvergencePassed&&
+		zeroAnomalyConvergence.advectiveAnomalyClosurePassCount==1u&&
+		zeroAnomalyConvergence.cellSubmapCount==5u&&
+		!zeroAnomalyConvergence.HasAcceptedManifoldToken()&&
+		FireProductionAcceptedManifoldPayloadDigest(zeroAnomalySinglePass)==
+			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyConvergence);
 	if(!zeroAnomalyClosureNoOp)std::fprintf(stderr,"zero-anomaly detail probe=%d single=%d "
 		"closure=%d predicted=%.17g passes=%u submaps=%u digest=%llu/%llu error=%s\n",
 		zeroAnomalyProbePassed?1:0,zeroAnomalySinglePassed?1:0,
@@ -3999,7 +4012,33 @@ int main()
 			zeroAnomalySinglePass)),static_cast<unsigned long long>(
 			FireProductionAcceptedManifoldPayloadDigest(zeroAnomalyClosure)),error.c_str());
 	Check(zeroAnomalyClosureNoOp,
-		"zero-anomaly closure skips the corrector and is byte-identical to the single-pass payload");
+		"zero-anomaly closure, including an eight-pass diagnostic request, stops after one "
+		"pass and is byte-identical to the single-pass payload");
+	const std::uint64_t convergenceMalformedBeginningCommands=
+		FireProductionResidentStepMetalCommandCommitCount();
+	FireProductionResidentStepResult malformedConvergence;
+	malformedConvergence.conservativeValues.push_back(1.0f);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE","1",1);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES","9",1);
+	error.clear();
+	const bool malformedConvergenceRejected=!AttemptFireProductionResidentStepMetal(
+		zeroAnomalyStep,malformedConvergence,&error);
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES");
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
+	FireProductionResidentStepResult aliasedConvergence;
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE","1",1);
+	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES","08",1);
+	error.clear();
+	const bool aliasedConvergenceRejected=!AttemptFireProductionResidentStepMetal(
+		zeroAnomalyStep,aliasedConvergence,&error);
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES");
+	unsetenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
+	Check(malformedConvergenceRejected&&malformedConvergence.conservativeValues.empty()&&
+		aliasedConvergenceRejected&&aliasedConvergence.conservativeValues.empty()&&
+		error=="production advective anomaly convergence pass count is invalid"&&
+		FireProductionResidentStepMetalCommandCommitCount()==
+			convergenceMalformedBeginningCommands,
+		"out-of-range and noncanonical closure-convergence pass identities fail before Metal work");
 	FireProductionResidentStepResult callerAuthoredObservationStep=composedGPU;
 	callerAuthoredObservationStep.maximumManifoldGeneration=1.0e-9;
 	callerAuthoredObservationStep.maximumAcceptedManifoldDeviation=0.0;

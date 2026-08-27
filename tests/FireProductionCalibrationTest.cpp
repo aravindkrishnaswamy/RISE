@@ -1272,7 +1272,7 @@ int main()
 		advectionMetal.find(
 			"restorationTarget[gid]+=(deviation.y-deviation.x)*inverseTimeStep")!=
 			std::string::npos&&
-		advectionMetal.find("maximumPredictedAdvectiveAnomalyFloat>0.0f")!=
+		advectionMetal.find("maximumPredictedAdvectiveAnomalyFloat==0.0f")!=
 			std::string::npos&&
 		advectionMetal.find("ProjectFireProductionMetalRestorationResidentState")!=
 			std::string::npos&&
@@ -1298,7 +1298,7 @@ int main()
 			"r161 malformed closure activation fails before Metal work")!=
 			std::string::npos&&
 		productionSolverTest.find(
-			"zero-anomaly closure skips the corrector and is byte-identical")!=
+			"zero-anomaly closure, including an eight-pass diagnostic request, stops after one")!=
 			std::string::npos,
 		"r161 historical evidence and resident two-pass closure remain byte-bound");
 	const std::string equalTimeEvidence=ReadText(
@@ -1615,21 +1615,21 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
 			"10d94716ff885183b913f5e6450195382904e5b5722398ea5b892d43d4adba47"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			advectionMetal.begin(),advectionMetal.end()))==
-			"519eeb31230264ed02342d224a3377c83ef1d4bdda50d9f137351a02142e0b29"&&
+		distributionShadowEvidence.find("advection_metal_sha256 "
+			"519eeb31230264ed02342d224a3377c83ef1d4bdda50d9f137351a02142e0b29")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"9ed32df78e065cf85ca6a1fc3bfbd2c7db3e42aa7db658436ff360234ead0ac6"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"4400b56ea50ccc6cf838aaf4551910045368174e3392405025c11162ef88cd20"&&
+		distributionShadowEvidence.find("golden_fixture_sha256 "
+			"4400b56ea50ccc6cf838aaf4551910045368174e3392405025c11162ef88cd20")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"d2bc33fb05a885198923ca95165e1729ce7a711fd0d043673bf67df1ca7c3acb"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			productionSolverTest.begin(),productionSolverTest.end()))==
-			"52d0456993a5c942a281783c16d1d39ba0c0f04216ff78d9eed8b45aa58af15c"&&
+		distributionShadowEvidence.find("solver_test_sha256 "
+			"52d0456993a5c942a281783c16d1d39ba0c0f04216ff78d9eed8b45aa58af15c")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 			"57feb2f93dd1af43afbd286a85b106a91d68d853bdd16865bc5b52919d933d1d"&&
@@ -1639,9 +1639,9 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
 			"6a2ac2a166c517749f5a3cd43a7413bf0abab51394737ede32d8a768dc24f7d4"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"61978e1a4df3b84c7dfb90e05f743337928e246dc0c39f795755f4a41772f1a2"&&
+		distributionShadowEvidence.find("unix_test_driver_sha256 "
+			"61978e1a4df3b84c7dfb90e05f743337928e246dc0c39f795755f4a41772f1a2")!=
+			std::string::npos&&
 		advectionMetal.find("select_methane_manifold_high_bins")!=std::string::npos&&
 		advectionMetal.find("histogram_methane_manifold_low_bins")!=std::string::npos&&
 		advectionMetal.find("select_methane_manifold_low_bins")!=std::string::npos&&
@@ -1652,6 +1652,106 @@ int main()
 			"PASS (exact exit=115, slice-7 equal-time reference schedule refusal)")!=
 			std::string::npos,
 		"r166 binds device distribution reductions and the slice-7 equal-time schedule stop");
+	const std::string closureConvergenceEvidence=ReadText(
+		"rendered/fire_production_calibration/r167_anomaly_closure_convergence/"
+		"anomaly_closure_convergence_stop.v1");
+	const std::string closureConvergenceRaw=ReadText(
+		"rendered/fire_production_calibration/r167_anomaly_closure_convergence/"
+		"anomaly_closure_convergence.raw.v1");
+	const std::string closureConvergencePlot=ReadText(
+		"rendered/fire_production_calibration/r167_anomaly_closure_convergence/"
+		"anomaly_closure_convergence_curve.svg");
+	Check(!closureConvergenceEvidence.empty()&&!closureConvergenceRaw.empty()&&
+		!closureConvergencePlot.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			closureConvergenceEvidence.begin(),closureConvergenceEvidence.end()))==
+			"5ff3d9db69b84794bc53078c63545dcc12c0d0b77a0da243e2d5bced4eab0ca8"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			closureConvergenceRaw.begin(),closureConvergenceRaw.end()))==
+			"9ffb55057dbb07bfb9d8c27bb442b97a08dea757b3e15894e37952a6207f37f0"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			closureConvergencePlot.begin(),closureConvergencePlot.end()))==
+			"2e2f8f07f7260230ac507be072d40c1cbe3812e6d27266a609acda4f5d29cdab"&&
+		closureConvergenceEvidence.find("curve_plot_sha256 "
+			"2e2f8f07f7260230ac507be072d40c1cbe3812e6d27266a609acda4f5d29cdab")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find("current_r136_trace_digest "
+			"fc67b2530ac93b03a244563ca731b1450a585d83110fee4edd0743453c8cd735")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find("current_r136_exact_exit 237")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find("current_r136_metal_measurement 0")!=
+			std::string::npos&&
+		closureConvergencePlot.find("Golden CFL anomaly-closure convergence")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find(
+			"owner_model G_equals_dose_of_dt_plus_feedback_of_deviation")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find(
+			"r166_feedback_slope 0.79258751342062539")!=std::string::npos&&
+		closureConvergenceEvidence.find(
+			"derived_convergence_tolerance 8.1249999999999996e-05")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find(
+			"fp32_fp64_interpretation scheme_curve_not_precision_floor")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find(
+			"curve_class oscillatory_noncontractive_then_divergent")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find("multi_pass_closure_adopted false")!=
+			std::string::npos&&
+		closureConvergenceEvidence.find("retained_exact_exit 201")!=
+			std::string::npos&&
+		CountText(closureConvergenceRaw,"ANOMALY_CLOSURE_CONVERGENCE pass=")==8u&&
+		closureConvergenceRaw.find(
+			"ANOMALY_CLOSURE_CONVERGENCE pass=1 tolerance=8.1249999999999996e-05 "
+			"G32=0.085895776748657227 field32=0.085895776748657227 "
+			"G64=0.085895672361020692")!=std::string::npos&&
+		closureConvergenceRaw.find(
+			"ANOMALY_CLOSURE_CONVERGENCE pass=2 tolerance=8.1249999999999996e-05 "
+			"G32=0.066569089889526367 field32=0.066569089889526367 "
+			"G64=0.066569466014946732")!=std::string::npos&&
+		closureConvergenceRaw.find(
+			"ANOMALY_CLOSURE_CONVERGENCE pass=8 tolerance=8.1249999999999996e-05 "
+			"G32=0.16477346420288086 field32=0.16477346420288086 "
+			"G64=0.16477412949642256")!=std::string::npos&&
+		closureConvergenceRaw.find(
+			"ANOMALY_CLOSURE_FEEDBACK_GAIN pairs=6 slope=0.79258751342062539 "
+			"intercept=0.022579619687232797 pearson=0.7129565317645592")!=
+			std::string::npos&&
+		closureConvergenceRaw.find(
+			"ANOMALY_CLOSURE_CONVERGENCE_VERDICT tolerance=8.1249999999999996e-05 "
+			"G32_pass8=0.16477346420288086 G64_pass8=0.16477412949642256 "
+			"converged=0 stalled_above_1e-3=1")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+			"3d68816d42c7f1704f0426df03ac0ffe626aa5d4183695dcd63645ef8feaba38"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			mirrorAdapter.begin(),mirrorAdapter.end()))==
+			"0dbe115c059c4e4567b072040046917b1250b2d1873d942258b381d79b6f1de9"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"89d6086bbe798f8504dc3677a63f5eb2ebfdeb942230eb133f30d723af1b7a4f"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			productionSolverTest.begin(),productionSolverTest.end()))==
+			"36d7518668de7b73ab40f52d853699bf485a44ce9610e31a40e1d09da797d5c0"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"d9f7b95681bd2c6da4542f17af3d8935f471e1203b5657a302d54e64a9ef12c6"&&
+		advectionMetal.find("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES")!=
+			std::string::npos&&
+		goldenCompositionFixture.find(
+			"ANOMALY_CLOSURE_CONVERGENCE_VERDICT tolerance=")!=
+			std::string::npos&&
+		productionSolverTest.find(
+			"zero-anomaly closure, including an eight-pass diagnostic request, stops after one")!=
+			std::string::npos&&
+		unixTestDriver.find("closure_convergence_rc\" -eq 201")!=
+			std::string::npos&&
+		unixTestDriver.find(
+			"PASS (exact exit=201, fp32/fp64 closure architecture stop)")!=
+			std::string::npos,
+		"r167 binds the fp32/fp64 closure curve, free r166 gain fit, and architecture stop");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(

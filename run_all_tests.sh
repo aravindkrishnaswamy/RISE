@@ -895,6 +895,50 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r167 retains the deciding fixed-pass closure curve.  Exact 201 means both
+# arithmetic classes remain above 1e-3 after pass 8; no production acceptance
+# policy is installed from this diagnostic.
+if [ "$(uname -s)" = "Darwin" ]; then
+	closure_convergence_name="FireSequenceTest.r167_anomaly_closure_convergence"
+	closure_convergence_path="$BIN_DIR/FireSequenceTest"
+	closure_convergence_log="$LOG_DIR/$closure_convergence_name.log"
+	closure_convergence_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	printf '[ evidence ] %-46s ... ' "$closure_convergence_name"
+	closure_convergence_rc=0
+	if [ ! -x "$closure_convergence_path" ]; then
+		closure_convergence_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE=1 \
+			RISE_OPTIONS_FILE="$closure_convergence_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$closure_convergence_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_convergence_log" 2>&1 || closure_convergence_rc=$?
+	else
+		RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE=1 \
+			RISE_OPTIONS_FILE="$closure_convergence_options" \
+			"$closure_convergence_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$closure_convergence_log" 2>&1 || closure_convergence_rc=$?
+	fi
+	if [ "$closure_convergence_rc" -eq 201 ] &&
+		[ "$(grep -Fc 'ANOMALY_CLOSURE_CONVERGENCE pass=' "$closure_convergence_log")" -eq 8 ] &&
+		grep -Fq 'pass=1 tolerance=8.1249999999999996e-05 G32=0.085895776748657227 field32=0.085895776748657227 G64=0.085895672361020692 field64=0.085895672361034014' "$closure_convergence_log" &&
+		grep -Fq 'pass=2 tolerance=8.1249999999999996e-05 G32=0.066569089889526367 field32=0.066569089889526367 G64=0.066569466014946732 field64=0.066569466023368884' "$closure_convergence_log" &&
+		grep -Fq 'pass=8 tolerance=8.1249999999999996e-05 G32=0.16477346420288086 field32=0.16477346420288086 G64=0.16477412949642256 field64=0.16477412939898373' "$closure_convergence_log" &&
+		grep -Fq 'cell_submaps=40 source_commits=8 scalar_reads=8 projections=8 token=0' "$closure_convergence_log" &&
+		grep -Fq 'ANOMALY_CLOSURE_FEEDBACK_GAIN pairs=6 slope=0.79258751342062539 intercept=0.022579619687232797 pearson=0.7129565317645592 raw=4979ab6b85cbd72fb4a807f8f8d10d6a67991bbd8543cfa15f46767cb1c113ed' "$closure_convergence_log" &&
+		grep -Fq 'ANOMALY_CLOSURE_CONVERGENCE_VERDICT tolerance=8.1249999999999996e-05 G32_pass8=0.16477346420288086 G64_pass8=0.16477412949642256 converged=0 stalled_above_1e-3=1 CFL_dt=0.0016462659696117043' "$closure_convergence_log"; then
+		echo 'PASS (exact exit=201, fp32/fp64 closure architecture stop)'
+		rm -f "$closure_convergence_log"
+	else
+		echo "FAIL (exit=$closure_convergence_rc expected 201)"
+		printf '%s\t%d\t%s\n' "$closure_convergence_name" "$closure_convergence_rc" \
+			"$closure_convergence_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

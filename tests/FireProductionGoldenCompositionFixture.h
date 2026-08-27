@@ -161,6 +161,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"RISE_FIRE_EQUAL_TIME_CONTRACTION_PROBE");
 	if(contractionProbeValue&&std::strcmp(contractionProbeValue,"1")!=0)return 216;
 	const bool contractionProbe=contractionProbeValue!=nullptr;
+	const char* closureConvergenceValue=std::getenv(
+		"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
+	if(closureConvergenceValue&&std::strcmp(closureConvergenceValue,"1")!=0)return 200;
+	const bool closureConvergence=closureConvergenceValue!=nullptr;
 	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
 		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAuditPresent&&plateauProbe)||
 		(timestepVelocityAuditPresent&&manifoldProbe)||
@@ -170,7 +174,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		(longShadow&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe))||
 		(contractionProbe&&(plateauProbe||manifoldProbe||stageBudgetProbe||
-			timestepVelocityAuditPresent)))return 224;
+			timestepVelocityAuditPresent))||
+		(closureConvergence&&(plateauProbe||manifoldProbe||stageBudgetProbe||
+			timestepVelocityAuditPresent||longShadow||contractionProbe)))return 224;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
 	for(std::size_t component=0u;component<9u;++component)
@@ -211,7 +217,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	std::vector<unsigned int> longShadowManifoldRefusalCount(requestedLongShadowSteps,0u);
 	std::vector<double> longShadowFirstRefusedField(requestedLongShadowSteps,
 		std::numeric_limits<double>::quiet_NaN());
-	for(std::size_t slice=0u;slice<(contractionProbe?1u:
+	for(std::size_t slice=0u;slice<((contractionProbe||closureConvergence)?1u:
 		(longShadow?requestedLongShadowSteps:8u));++slice){
 		const std::filesystem::path beginningPath=slice==0u?checkpointPath:
 			snapshotDirectory/(std::string("step_0")+std::to_string(slice)+".checkpoint");
@@ -630,6 +636,141 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,referenceSchedule,dt,
 				equalTimeTerminalTargetTime,equalTimeTerminalTargetDigest,
 				publishedTargetDigest(request.divergenceTargetPerS)))return 129;
+		}
+		if(closureConvergence){
+			if(slice!=0u)return 200;
+			constexpr float representedCFLStep=0.0016462659696117043f;
+			constexpr double physicalDynamicPressureScale=0.00065;
+			constexpr double subdominanceMargin=0x1p-3;
+			constexpr double convergenceTolerance=
+				physicalDynamicPressureScale*subdominanceMargin;
+			request.force.timeStepS=representedCFLStep;
+			request.cellTransport.timeStepS=representedCFLStep;
+			request.dualTransport.timeStepS=representedCFLStep;
+			request.enforceManifoldPlateau=true;
+			ConservativeAdvance3DConfig cflConfig=shadowConfig;
+			cflConfig.transport.deltaTimeS=representedCFLStep;cflConfig.workerCount=16u;
+			ConservativeAdvance3DResult cflOracle;
+			if(!AdvanceConservative3D(shape,conservative,beginning.momentum,zeroPackets,
+				cflConfig,fuel,fuel,transport,cflOracle,&error)){
+				std::fprintf(stderr,"ANOMALY_CLOSURE_CONVERGENCE target failed: %s\n",
+					error.c_str());return 200;
+			}
+			for(std::size_t cell=0u;cell<cells;++cell){
+				request.divergenceTargetPerS[cell]=static_cast<float>(
+					cflOracle.divergenceHeunPerS[cell]);
+				request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
+					request.beginningManifoldDeviationPerCell[cell]/
+					static_cast<double>(representedCFLStep));
+			}
+			std::array<double,8> generation32={{}},generation64={{}},field32={{}},field64={{}},
+				deviceP95={{}},wallP95={{}};
+			for(std::uint32_t pass=1u;pass<=8u;++pass){
+				const std::string passText=std::to_string(pass);
+				if(!setFixtureEnvironment("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES",
+					passText.c_str()))return 200;
+				std::array<double,5> device={{}},wall={{}};
+				std::uint64_t baselinePayload=0u;bool baselineAvailable=false;
+				RISE::FireProductionResidentStepResult measured;
+				for(std::size_t trial=0u;trial<=wall.size();++trial){
+					const auto start=std::chrono::steady_clock::now();
+					RISE::FireProductionResidentStepResult current;
+					const bool succeeded=RISE::AttemptFireProductionResidentStepMetal(
+						request,current,&error);
+					const auto end=std::chrono::steady_clock::now();
+					if(!succeeded&&!(current.manifoldNextTimeStepAvailable&&
+						!current.manifoldPlateauPassed&&!current.HasAcceptedManifoldToken())){
+						std::fprintf(stderr,"ANOMALY_CLOSURE_CONVERGENCE fp32 pass=%u failed: %s\n",
+							pass,error.c_str());return 200;
+					}
+					const std::uint64_t payload=
+						RISE::FireProductionAcceptedManifoldPayloadDigest(current);
+					if(!baselineAvailable){baselinePayload=payload;measured=current;
+						baselineAvailable=true;}
+					else if(payload!=baselinePayload||
+						current.maximumManifoldGeneration!=measured.maximumManifoldGeneration||
+						current.maximumAcceptedManifoldDeviation!=
+							measured.maximumAcceptedManifoldDeviation||
+						current.advectiveAnomalyClosurePassCount!=pass||
+						current.cellSubmapCount!=5u*pass||
+						current.sourceCommandCommitCount!=pass||
+						current.manifoldScalarDeviceToHostTransferCount!=pass||
+						current.residentProjectionInvocationCount!=std::max(2u,pass)||
+						current.interstageFullGridTransferCount!=0u||
+						current.HasAcceptedManifoldToken())return 200;
+					if(trial>0u){
+						wall[trial-1u]=std::chrono::duration<double,std::milli>(end-start).count();
+						device[trial-1u]=current.deviceMakespanMS;
+					}
+				}
+				std::sort(device.begin(),device.end());std::sort(wall.begin(),wall.end());
+				generation32[pass-1u]=measured.maximumManifoldGeneration;
+				field32[pass-1u]=measured.maximumAcceptedManifoldDeviation;
+				deviceP95[pass-1u]=device.back();wallP95[pass-1u]=wall.back();
+				FireProductionCalibration::ClosureConvergence64Result mirrored;
+				if(!FireProductionCalibration::AdvanceResidentStep64Closure(request,
+					measured.forceDiagnostics.outwardLambdaPerS,fuel,pass,mirrored,&error)||
+					mirrored.executedPassCount!=pass){
+					std::fprintf(stderr,"ANOMALY_CLOSURE_CONVERGENCE fp64 pass=%u failed: %s\n",
+						pass,error.c_str());return 200;
+				}
+				generation64[pass-1u]=mirrored.maximumGeneration;
+				field64[pass-1u]=mirrored.maximumDeviation;
+				std::fprintf(stderr,"ANOMALY_CLOSURE_CONVERGENCE pass=%u tolerance=%.17g "
+					"G32=%.17g field32=%.17g G64=%.17g field64=%.17g "
+					"ratio32=%.17g ratio64=%.17g device_p95_ms=%.17g wall_p95_ms=%.17g "
+					"cell_submaps=%u source_commits=%u scalar_reads=%u projections=%u token=%d\n",
+					pass,convergenceTolerance,generation32[pass-1u],field32[pass-1u],
+					generation64[pass-1u],field64[pass-1u],
+					pass>1u?generation32[pass-1u]/generation32[pass-2u]:0.0,
+					pass>1u?generation64[pass-1u]/generation64[pass-2u]:0.0,
+					deviceP95[pass-1u],wallP95[pass-1u],measured.cellSubmapCount,
+					measured.sourceCommandCommitCount,
+					measured.manifoldScalarDeviceToHostTransferCount,
+					measured.residentProjectionInvocationCount,
+					measured.HasAcceptedManifoldToken()?1:0);
+			}
+			if(!clearFixtureEnvironment("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES"))
+				return 200;
+			std::ifstream raw(snapshotDirectory/
+				"rendered/fire_production_calibration/r166_distribution_long_shadow/"
+				"accepted_long_shadow.raw.v1");
+			std::vector<double> transcriptGeneration,transcriptField;std::string line;
+			while(std::getline(raw,line)){
+				std::size_t step=0u;double stepS=0.0,predictor=0.0,generation=0.0,field=0.0;
+				if(std::sscanf(line.c_str(),"GOLDEN_LONG_SHADOW_ACCEPT_CANDIDATE step=%zu "
+					"dt=%lf predictor_G=%lf G=%lf field_max=%lf",&step,&stepS,&predictor,
+					&generation,&field)==5){transcriptGeneration.push_back(generation);
+					transcriptField.push_back(field);}
+			}
+			if(transcriptGeneration.size()!=7u||transcriptField.size()!=7u)return 200;
+			double meanBeginning=0.0,meanGeneration=0.0;
+			for(std::size_t pair=0u;pair<6u;++pair){meanBeginning+=transcriptField[pair];
+				meanGeneration+=transcriptGeneration[pair+1u];}
+			meanBeginning/=6.0;meanGeneration/=6.0;
+			double covariance=0.0,beginningVariance=0.0,generationVariance=0.0;
+			for(std::size_t pair=0u;pair<6u;++pair){
+				const double dx=transcriptField[pair]-meanBeginning;
+				const double dy=transcriptGeneration[pair+1u]-meanGeneration;
+				covariance+=dx*dy;beginningVariance+=dx*dx;generationVariance+=dy*dy;
+			}
+			const double gain=covariance/beginningVariance;
+			const double intercept=meanGeneration-gain*meanBeginning;
+			const double correlation=covariance/std::sqrt(beginningVariance*generationVariance);
+			std::fprintf(stderr,"ANOMALY_CLOSURE_FEEDBACK_GAIN pairs=6 slope=%.17g "
+				"intercept=%.17g pearson=%.17g raw=%s golden=%s\n",gain,intercept,
+				correlation,DigestFile(snapshotDirectory/
+					"rendered/fire_production_calibration/r166_distribution_long_shadow/"
+					"accepted_long_shadow.raw.v1").c_str(),checkpointDigest);
+			const bool converged=generation32.back()<=convergenceTolerance&&
+				generation64.back()<=convergenceTolerance;
+			const bool stalled=generation32.back()>0.001&&generation64.back()>0.001;
+			std::fprintf(stderr,"ANOMALY_CLOSURE_CONVERGENCE_VERDICT tolerance=%.17g "
+				"G32_pass8=%.17g G64_pass8=%.17g converged=%d stalled_above_1e-3=%d "
+				"CFL_dt=%.17g golden=%s\n",convergenceTolerance,generation32.back(),
+				generation64.back(),converged?1:0,stalled?1:0,
+				static_cast<double>(representedCFLStep),checkpointDigest);
+			return stalled?201:(converged?198:200);
 		}
 		if(timestepVelocityAuditMalformed){
 			const std::uint64_t beginningCommandCount=

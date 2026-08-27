@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="560" viewBox="0 0 800 560">
+  <rect width="800" height="560" fill="#ffffff"/>
+  <text x="400" y="25" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="bold">Golden CFL anomaly-closure convergence</text>
+  <text x="400" y="47" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#444">same scheme, fixed pass count; logarithmic G axis</text>
+
+  <line x1="90" y1="40" x2="90" y2="500" stroke="#222"/>
+  <line x1="90" y1="500" x2="710" y2="500" stroke="#222"/>
+  <g font-family="sans-serif" font-size="11" fill="#333">
+    <line x1="85" y1="40" x2="710" y2="40" stroke="#e2e2e2"/><text x="78" y="44" text-anchor="end">1</text>
+    <line x1="85" y1="132" x2="710" y2="132" stroke="#e2e2e2"/><text x="78" y="136" text-anchor="end">10⁻¹</text>
+    <line x1="85" y1="224" x2="710" y2="224" stroke="#e2e2e2"/><text x="78" y="228" text-anchor="end">10⁻²</text>
+    <line x1="85" y1="316" x2="710" y2="316" stroke="#d45500" stroke-dasharray="6 4"/><text x="78" y="320" text-anchor="end">10⁻³</text>
+    <line x1="85" y1="408" x2="710" y2="408" stroke="#e2e2e2"/><text x="78" y="412" text-anchor="end">10⁻⁴</text>
+    <line x1="85" y1="500" x2="710" y2="500" stroke="#e2e2e2"/><text x="78" y="504" text-anchor="end">10⁻⁵</text>
+    <text x="400" y="542" text-anchor="middle">closure pass count</text>
+    <text x="18" y="270" text-anchor="middle" transform="rotate(-90 18 270)">maximum |EOS-volume anomaly|, G</text>
+  </g>
+
+  <line x1="90" y1="416.3" x2="710" y2="416.3" stroke="#5b2c83" stroke-width="2" stroke-dasharray="3 4"/>
+  <text x="704" y="410" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5b2c83">derived tolerance 8.125×10⁻⁵</text>
+  <text x="704" y="309" text-anchor="end" font-family="sans-serif" font-size="11" fill="#d45500">architecture-stop threshold 10⁻³</text>
+
+  <polyline points="90,138.1 178.6,148.3 267.1,146.8 355.7,137.2 444.3,141.2 532.9,123.4 621.4,126.5 710,112.0" fill="none" stroke="#0067b1" stroke-width="3"/>
+  <polyline points="90,138.1 178.6,148.3 267.1,146.8 355.7,137.2 444.3,141.2 532.9,123.4 621.4,126.5 710,112.0" fill="none" stroke="#e77500" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <g fill="#0067b1" stroke="#ffffff" stroke-width="1">
+    <circle cx="90" cy="138.1" r="4"><title>pass 1 fp32: 0.085895776748657227</title></circle>
+    <circle cx="178.6" cy="148.3" r="4"><title>pass 2 fp32: 0.066569089889526367</title></circle>
+    <circle cx="267.1" cy="146.8" r="4"><title>pass 3 fp32: 0.069052338600158691</title></circle>
+    <circle cx="355.7" cy="137.2" r="4"><title>pass 4 fp32: 0.08761894702911377</title></circle>
+    <circle cx="444.3" cy="141.2" r="4"><title>pass 5 fp32: 0.079395413398742676</title></circle>
+    <circle cx="532.9" cy="123.4" r="4"><title>pass 6 fp32: 0.12393832206726074</title></circle>
+    <circle cx="621.4" cy="126.5" r="4"><title>pass 7 fp32: 0.1147649884223938</title></circle>
+    <circle cx="710" cy="112.0" r="4"><title>pass 8 fp32: 0.16477346420288086</title></circle>
+  </g>
+  <g fill="#ffffff" stroke="#e77500" stroke-width="2">
+    <rect x="87" y="135.1" width="6" height="6"><title>pass 1 fp64: 0.085895672361020692</title></rect>
+    <rect x="175.6" y="145.3" width="6" height="6"><title>pass 2 fp64: 0.066569466014946732</title></rect>
+    <rect x="264.1" y="143.8" width="6" height="6"><title>pass 3 fp64: 0.069052315219549687</title></rect>
+    <rect x="352.7" y="134.2" width="6" height="6"><title>pass 4 fp64: 0.087619081586360115</title></rect>
+    <rect x="441.3" y="138.2" width="6" height="6"><title>pass 5 fp64: 0.07939565380808089</title></rect>
+    <rect x="529.9" y="120.4" width="6" height="6"><title>pass 6 fp64: 0.12393867104857959</title></rect>
+    <rect x="618.4" y="123.5" width="6" height="6"><title>pass 7 fp64: 0.11476539145259401</title></rect>
+    <rect x="707" y="109.0" width="6" height="6"><title>pass 8 fp64: 0.16477412949642256</title></rect>
+  </g>
+  <g font-family="sans-serif" font-size="11" fill="#333" text-anchor="middle">
+    <text x="90" y="519">1</text><text x="178.6" y="519">2</text><text x="267.1" y="519">3</text><text x="355.7" y="519">4</text>
+    <text x="444.3" y="519">5</text><text x="532.9" y="519">6</text><text x="621.4" y="519">7</text><text x="710" y="519">8</text>
+  </g>
+  <g font-family="sans-serif" font-size="12">
+    <line x1="105" y1="70" x2="135" y2="70" stroke="#0067b1" stroke-width="3"/><text x="142" y="74" fill="#222">fp32 Metal</text>
+    <line x1="240" y1="70" x2="270" y2="70" stroke="#e77500" stroke-width="2" stroke-dasharray="5 3"/><text x="277" y="74" fill="#222">fp64 mirror</text>
+    <text x="400" y="95" text-anchor="middle" fill="#9a3600">Best point is pass 2; subsequent passes oscillate and diverge in both arithmetic classes.</text>
+  </g>
+</svg>

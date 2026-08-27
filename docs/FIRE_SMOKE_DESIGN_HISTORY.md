@@ -4054,3 +4054,34 @@ it was already tried and refuted here.
   B_fp32 plus every later rung remain blocked.  The durable r166 artifact and
   raw transcript bind the seven accepted max/p95/p50 observations and the
   complete 8 -> 16 -> 32 -> 64 failure sequence.
+- **r167 closure-convergence ruling (2026-08-26):** r166 resolves the prior
+  dose-only model.  Production generation is modeled as
+  `dose(delta_t) + feedback(deviation)`.  The six evolved r166 pairs give
+  feedback slope `0.7925875134206254` and Pearson `0.7129565317645592`; the
+  seven accepted fields hover at percent scale while delta-t contracts
+  `148.6430318897442x`.  Together with r145's
+  `0.9902699302058174` retained fraction, this records the operating-point
+  error: initializing at the allowance seeded the near-unit feedback basin.
+  Subdominance, not plateau-at-allowance, should have governed acceptance.
+
+  The pre-registered deciding experiment runs the golden CFL request at fixed
+  closure counts 1 through 8 in both Metal Binary32 and the same-scheme
+  Binary64 mirror.  The identity-bearing tolerance is
+  `0.00065 * 2^-3 = 8.125e-5`.  The curve first falls from
+  `0.08589577674865723` to `0.06656908988952637`, then oscillates upward to
+  `0.16477346420288086` at pass 8.  The mirror follows it at
+  `0.08589567236102069`, `0.06656946601494673`, and
+  `0.16477412949642256`.  The close fp32/fp64 agreement rules out an fp32
+  floor; the multi-pass map itself is non-contractive and ends more than
+  2,027x above tolerance.  The artifact binds the raw values and their
+  log-scale SVG.  The zero-anomaly path remains byte-identical and
+  terminates after one pass, while malformed pass identity fails before Metal.
+
+  The geometric-convergence branch is therefore not selected.  No converged
+  closure acceptance, no CFL restoration, and no replacement token policy are
+  installed.  r167 is the genuine architecture stop required by the ruling;
+  the hover-policy/reconstruction alternative must now be designed against
+  the measured curve.  Pass-2 p95 is `122.15441651642323/141.788333 ms`
+  device/wall and pass-8 p95 is `417.5576251000166/438.83425 ms`; those are
+  diagnostic costs only.  The shadow, B_fp32, readmission, maps, and first
+  light remain blocked.
