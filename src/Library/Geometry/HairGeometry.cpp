@@ -100,18 +100,26 @@ namespace
 		Vector3	ex, ey, ez;
 		Scalar	dirLength;		///< |ray.Dir()|
 		Scalar	invDirLength;	///< 1 / |ray.Dir()|
+		bool	degenerate;		///< true if ray.Dir() was too near zero to normalise -- see IntersectSegment, which checks this and returns false immediately rather than relying on the z-range test to reject on its own
 
-		explicit RayFrame( const Ray& ray )
+		explicit RayFrame( const Ray& ray ) : degenerate( false )
 		{
 			o  = ray.origin;
 			Vector3 d = ray.Dir();
 			dirLength = Vector3Ops::Magnitude( d );
 			if( dirLength < NEARZERO ) {
-				// Degenerate ray.  Produce a valid frame; the caller's
-				// z-range test then rejects everything.
+				// Degenerate ray: fabricate a valid orthonormal frame so
+				// downstream arithmetic stays finite, and flag it.  An
+				// earlier version of this comment claimed the z-range
+				// test rejects everything on its own -- that was FALSE:
+				// with d == (0,0,0), ez defaults to (0,0,1) and the
+				// fabricated frame's z-window ([0, zMax]) still passes
+				// for any curve point at z ~ 0, so nothing was actually
+				// being rejected before this flag existed.
 				dirLength    = Scalar(1.0);
 				invDirLength = Scalar(1.0);
 				ez = Vector3( 0, 0, 1 );
+				degenerate   = true;
 			} else {
 				invDirLength = Scalar(1.0) / dirLength;
 				ez = d * invDirLength;
@@ -262,11 +270,26 @@ namespace
 		return false;
 	}
 
-	//! Bound on how far a cubic strays from its own chord over [a, b],
-	//! measured in the plane PERPENDICULAR to the ray (the x/y plane of
-	//! the ray frame) -- that is the only component the width test
-	//! resolves; a z-direction error only perturbs the reported `t` by a
-	//! comparable, and far smaller, amount.
+	//! Bound on how far a cubic strays from its own chord over [a, b], in
+	//! the FULL 3D sense (x, y, AND z).  This is called from two sites
+	//! with two different meanings for those axes:
+	//!   * BUILD time (HairGeometry's ctor, choosing the per-span
+	//!     sub-segment split): `c` is the span's OBJECT-SPACE
+	//!     coefficient set -- there is no ray yet, so x, y, z are
+	//!     ordinary spatial axes and all three can carry real curvature
+	//!     that the AABB split must resolve.
+	//!   * RUN time (IntersectSegment, choosing the adaptive recursion
+	//!     depth): `c` is the RAY-FRAME-projected coefficient set, so z
+	//!     is depth along the ray and the width test downstream only
+	//!     resolves x/y (perpendicular-to-ray) deviation directly.
+	//!     Including z here too is still correct -- folding in an extra
+	//!     nonnegative term into the L2 norm can only INCREASE the
+	//!     chosen split depth, never under-split -- and cheap.
+	//! An earlier version of this bound used x/y only, on the incorrect
+	//! premise that z was ray-space depth at BOTH call sites.  At the
+	//! build call site that premise is false: a span curving sharply in
+	//! object-space z alone was getting the shallowest split depth
+	//! regardless of how curved it actually was.
 	//!
 	//! For q(w) on [0,1], |q''(w)| = |2 q2 + 6 q3 w| attains its maximum
 	//! at an endpoint, and a curve deviates from its chord by at most
@@ -281,9 +304,9 @@ namespace
 		Vector3 q[4];
 		Reparametrise( c, a, b, q );
 
-		const Scalar ax = Scalar(2.0) * q[2].x,               ay = Scalar(2.0) * q[2].y;
-		const Scalar bx = ax + Scalar(6.0) * q[3].x,          by = ay + Scalar(6.0) * q[3].y;
-		const Scalar L  = std::max( sqrt( ax*ax + ay*ay ), sqrt( bx*bx + by*by ) );
+		const Scalar ax = Scalar(2.0) * q[2].x, ay = Scalar(2.0) * q[2].y, az = Scalar(2.0) * q[2].z;
+		const Scalar bx = ax + Scalar(6.0) * q[3].x, by = ay + Scalar(6.0) * q[3].y, bz = az + Scalar(6.0) * q[3].z;
+		const Scalar L  = std::max( sqrt( ax*ax + ay*ay + az*az ), sqrt( bx*bx + by*by + bz*bz ) );
 
 		if( !RISE::IsFiniteDouble( L ) ) return maxDepth;
 
@@ -445,7 +468,7 @@ HairGeometry::HairGeometry( const std::vector<StrandDesc>& strands ) :
 		cfg.binCount            = 32;
 		cfg.sahTraversalCost    = 1.0;
 		cfg.sahIntersectionCost = 1.0;
-		cfg.doubleSided         = true;		// a ribbon has no back side to cull
+		cfg.doubleSided         = true;		// set for parity with the mesh pattern (a ribbon has no back side to cull); INERT today -- grep confirms nothing in src/Library/Acceleration/ reads AccelerationConfig::doubleSided
 
 		pSegBVH = new BVH<HairSegmentRef>( *this, segs, bbox, cfg );
 		GlobalLog()->PrintNew( pSegBVH, __FILE__, __LINE__, "hair segment BVH" );
@@ -639,6 +662,9 @@ bool HairGeometry::IntersectSegment( const Ray& ray, const Scalar tMax, const MY
                                      Scalar& outT, Scalar& outU ) const
 {
 	const RayFrame frame( ray );
+	if( frame.degenerate ) {
+		return false;
+	}
 
 	Vector3 c[4];
 	EvalSpanCoefficients( elem.strand, elem.span, c );
@@ -649,6 +675,19 @@ bool HairGeometry::IntersectSegment( const Ray& ray, const Scalar tMax, const MY
 	const Scalar maxW = StrandMaxWidth( elem.strand );
 	ctx.halfMaxWidth = maxW * Scalar(0.5);
 
+	// NOTE: this zMin (exactly 0) and the final `t > NEARZERO` gate
+	// below are DELIBERATELY not the same value.  zMin bounds candidate
+	// SELECTION inside the recursive splitter -- a piece's whole
+	// Bernstein-hull box is rejected or accepted against it, so it has
+	// to be the mathematically correct z >= 0 half-space, not an
+	// epsilon-shifted one, or a piece straddling z = 0 could be dropped
+	// wrongly.  The final `t` gate exists purely to avoid
+	// self-intersection against the ray's own origin.  This two-gate
+	// mismatch is inherent to a ONE-CANDIDATE-PER-LEAF design (the
+	// recursive splitter can only report the single nearest z within a
+	// piece, so the self-intersection epsilon has to be re-applied at
+	// the end rather than folded into the box test) -- pbrt's Curve
+	// shares the identical structure for the same reason.
 	ctx.zMin = 0;
 	// tMax arrives as RISE_INFINITY on an unbounded closest-hit query;
 	// scaling that by |dir| would overflow, so clamp rather than
@@ -715,8 +754,23 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 		// points).  Fall back to the span's chord direction; if that is
 		// degenerate too, any unit vector keeps the outputs finite and
 		// the hit is a sub-pixel speck of a zero-length strand.
-		const Point3 e0 = EvaluateStrand( s, floor( u ),       nullptr );
-		const Point3 e1 = EvaluateStrand( s, floor( u ) + 1.0, nullptr );
+		//
+		// The chord is probed as (floor(u), floor(u)+1) EXCEPT at or past
+		// the strand's tip, where floor(u)+1 would exceed nSpans and
+		// EvaluateStrand's own clamp into [0, nSpans] would collapse both
+		// probes onto the SAME point -- always reporting a zero chord at
+		// the tip regardless of the strand's actual direction there.
+		// Probe backward, (floor(u)-1, floor(u)), in that case instead.
+		const Scalar nSpans = (Scalar)( numControlPointsOfStrand( s ) - 1 );
+		const Scalar u0 = floor( u );
+		Point3 e0, e1;
+		if( u0 + Scalar(1.0) > nSpans ) {
+			e0 = EvaluateStrand( s, std::max( Scalar(0.0), u0 - Scalar(1.0) ), nullptr );
+			e1 = EvaluateStrand( s, u0, nullptr );
+		} else {
+			e0 = EvaluateStrand( s, u0, nullptr );
+			e1 = EvaluateStrand( s, u0 + Scalar(1.0), nullptr );
+		}
 		T = Vector3Ops::mkVector3( e1, e0 );
 		if( Vector3Ops::SquaredModulus( T ) < NEARZERO ) {
 			T = Vector3( 0, 0, 1 );
@@ -748,9 +802,23 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 	} else {
 		A = Vector3Ops::Normalize( A );
 		Nflat = Vector3Ops::Normalize( Vector3Ops::Cross( A, T ) );
-		if( Vector3Ops::Dot( Nflat, D ) > 0 ) {
-			Nflat = -Nflat;		// the ribbon plane's normal faces the ray origin
-		}
+		// INVARIANT (construction-forced, not a runtime condition): Nflat
+		// already faces the ray origin here, i.e. dot(Nflat, D) < 0,
+		// ALWAYS -- no flip is needed.  Derivation: with
+		// A = (D x T)/|D x T| and Nflat = (A x T)/|A x T|, the vector
+		// triple product identity (X x Y) x Z = Y(X.Z) - X(Y.Z) gives
+		// (D x T) x T = T(D.T) - D(T.T) = -(D - (D.T)T) = -D_perp, where
+		// D_perp is D's component perpendicular to T.  Since T and D are
+		// unit, |D x T| = |D_perp| too, so Nflat = -D_perp / |D_perp|
+		// exactly (already unit, before Normalize() above, which is
+		// therefore a no-op up to floating point).  Then, using
+		// D = D_perp + (D.T)T and D_perp perp T:
+		//   dot(Nflat, D) = dot(-D_perp/|D_perp|, D_perp + (D.T)T)
+		//                 = -|D_perp|  <=  0
+		// with equality only at the |D_perp| == 0 degeneracy the branch
+		// above already special-cases.  A naive port of a pbrt-style
+		// "flip if facing away" step would therefore never fire here and
+		// was removed.
 
 		const Scalar sArcForWidth = ArcFractionAt( s, u );
 		const Scalar width = StrandWidthAt( s, sArcForWidth );
@@ -762,15 +830,29 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 		if( h >  1 ) h =  1;
 	}
 
-	// CYLINDER-mode shading normal: rotate the ribbon-plane normal about
-	// the fibre tangent by theta = h * 90 degrees, so the normal sweeps
-	// from -A at the far edge, through Nflat at the fibre centre, to +A
-	// at the near edge -- i.e. exactly the normal field of a cylinder of
-	// the same width, which is what the Chiang h-parameterisation
-	// expects.  A and Nflat are orthonormal and both perpendicular to T,
-	// so the result is automatically unit length.
-	const Scalar theta = h * PI_OV_TWO;
-	const Vector3 Ncyl = Nflat * cos( theta ) + A * sin( theta );
+	// CYLINDER-mode shading normal: the EXACT normal field of a cylinder
+	// of the same width, evaluated in the {A, Nflat} cross-section
+	// frame.  In that frame the unit circle is parameterised by the
+	// across-width coordinate h in [-1, 1] as (h, sqrt(1 - h^2)) -- h
+	// along A, sqrt(1-h^2) along Nflat -- and for a circle centred at
+	// the origin the outward normal AT a point IS that point, so
+	//     Ncyl = Nflat * sqrt(1 - h^2)  +  A * h.
+	// A and Nflat are orthonormal and both perpendicular to T, so the
+	// result is automatically unit length (h^2 + (1-h^2) = 1) and
+	// perpendicular to T, by construction.
+	//
+	// This DELIBERATELY departs from pbrt-v4's Curve cylinder mode,
+	// which instead sweeps the normal by an ANGLE theta = h * pi/2:
+	// Ncyl_pbrt = Nflat*cos(theta) + A*sin(theta).  That traces the same
+	// unit circle but at a non-uniform rate in h -- it agrees with the
+	// exact field only at h in {-1, 0, 1} and is off by up to ~18.9
+	// degrees at |h| ~= 0.77 (where cos(theta) departs furthest from
+	// sqrt(1-h^2)).  pbrt's own comment only promises "a cylindrical
+	// appearance", not the exact field; RISE already has h in hand as a
+	// linear cross-section coordinate, so computing the exact field
+	// costs one sqrt and no transcendentals, instead of a sin/cos pair.
+	const Scalar radial = sqrt( std::max( Scalar(0.0), Scalar(1.0) - h * h ) );
+	const Vector3 Ncyl = Nflat * radial + A * h;
 
 	ri.bHit   = true;
 	ri.range  = t;
@@ -833,7 +915,12 @@ void HairGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFr
 	// caller already found, so a strictly-smaller range is the proof
 	// that this groom won.
 	if( bComputeExitInfo && ri.bHit && ri.range < rangeBefore ) {
-		ri.ptExit       = ri.ptIntersection;
+		// ptExit is NOT written here: Object::IntersectRay recomputes it
+		// (and re-derives range2 in world space) from range2 alone --
+		// see Object.cpp's ptObjExit/ptExit block -- matching the
+		// CircularDiskGeometry precedent, which likewise writes only
+		// range2 / vNormal2 / vGeomNormal2 and leaves ptExit to the
+		// caller.
 		ri.vNormal2     = ri.vNormal;
 		ri.vGeomNormal2 = ri.vGeomNormal;
 		// range2 was already set to range by RayElementIntersection.

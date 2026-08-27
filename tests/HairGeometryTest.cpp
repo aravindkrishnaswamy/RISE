@@ -31,12 +31,20 @@
 //       numerically-differentiated curve tangent at the nearest curve
 //       parameter; the shading normal is unit, perpendicular to the
 //       tangent, and satisfies the CYLINDER rule exactly
-//       (dot(N_shading, N_geometric) == cos(h * pi/2), h = 2t-1);
+//       (dot(N_shading, N_geometric) == sqrt(1 - h^2), h = 2t-1 --
+//       this is a CHANGE-DETECTOR wired from the same h production
+//       reports, not an independent certification of the rule; see the
+//       check site for what it does and does not catch);
 //       the geometric normal faces the ray; `ptCoord1` decodes to the
 //       strand the hit is geometrically nearest to; and both
 //       `bShadingTangentFromGeometry` and `bHasShadingTangent` are set.
-//       Plus the WHITE-BOX check that the reflected phantom-endpoint
-//       convention makes a 2-control-point strand exactly straight.
+//       Plus the WHITE-BOX checks that the reflected phantom-endpoint
+//       convention makes a 2-control-point strand exactly straight,
+//       that bComputeExitInfo reports exit == entry on a real hit (and
+//       leaves the exit fields untouched when our hit is not closer
+//       than a prior one already in `ri`), and that IntersectRay still
+//       hits with both face flags false (the dielectric exit-probe
+//       case the class comment defends).
 //
 //    3. INTERSECTION-ONLY EQUIVALENCE.  `IntersectRay_IntersectionOnly`
 //       agrees with `IntersectRay` on hit/miss over the same ray set,
@@ -420,6 +428,16 @@ static RefHit RefIntersect( const std::vector<RefStrand>& strands, const Ray& ra
 //  Groom construction (shared by groups 1-4)
 // ============================================================
 
+//! MUTATION-FRAGILITY NOTE: a mutation campaign against this file's
+//! groom/ray counts (kNumStrands here, kNumRays below) was 10/10 caught
+//! at these values.  Two of the ten corruptions (an AABB-shrink bug and
+//! a coarsened runtime flatness target) were caught ONLY by the
+//! exact-identity gates (outsideFibre/earlyHit/wrongCrossing,
+//! badCylinderRule, etc.) firing on just 1-2 rays out of the full set --
+//! not by any statistical/percentage gate.  Do not reduce kNumRays or
+//! the strand count without re-running a mutation pass; a smaller
+//! sample could silently drop below the population needed to hit those
+//! 1-2-ray regressions.
 static const int kNumStrands = 50;
 
 //! Builds the test groom.  Strands vary in curvature (from nearly
@@ -724,7 +742,7 @@ static void RunDifferential( const HairGeometry& geom, const std::vector<RefStra
 
 	Check( st.refHits  > 1000, "reference intersector produced a meaningful hit population (>1000)" );
 	Check( st.prodHits > 1000, "production intersector produced a meaningful hit population (>1000)" );
-	Check( pctOut < 0.5, "hit/miss disagreement rate outside the silhouette band is under 0.5%" );
+	Check( st.disagreeOutBand == 0, "zero hit/miss disagreements outside the silhouette band" );
 	Check( st.outsideFibre  == 0, "every reported hit point lies inside the swept fibre" );
 	Check( st.earlyHit      == 0, "no hit is reported in front of where the fibre actually starts" );
 	Check( st.wrongCrossing == 0, "every hit is on the same fibre crossing the reference found" );
@@ -744,6 +762,7 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 	int badNormalUnit = 0, badCylinderRule = 0, badPerp = 0, badFacing = 0;
 	int badUV1 = 0, badFlags = 0, badArcPosition = 0;
 	double worstTangentDeg = 0, worstTangentNearDeg = 0, worstCylinder = 0, worstArcExcess = -1e300;
+	double worstArcExcessRatio = 0;	// worst (measured excess / derived quantisation threshold); see badArcPosition below
 
 	// Only sample a subset for the (expensive) nearest-point search.
 	const size_t stride = 20;
@@ -770,7 +789,14 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 		const int decoded = (int)floor( ri.ptCoord1.x * (double)kNumStrands );
 		if( decoded != sIdx || fabs( ri.ptCoord1.y - 0.5 ) > 1e-9 ) ++badUV1;
 
-		// -- tangent: unit, and aligned with the numerical curve derivative
+		// -- tangent unit length: CONSTRUCTION-FORCED (T is explicitly
+		//    Vector3Ops::Normalize()'d in RayElementIntersection before
+		//    it is reported), not an independent property under test.
+		//    What this catches is a refactor that decouples the frame
+		//    (e.g. drops that Normalize() call, or reports a raw
+		//    fallback vector on some path), not a numerical-accuracy
+		//    regression in the tangent's DIRECTION -- that is what the
+		//    two angle checks below are for.
 		const double tanLen = Vector3Ops::Magnitude( ri.vShadingTangent );
 		if( fabs( tanLen - 1.0 ) > 1e-9 ) ++badTangentUnit;
 
@@ -795,11 +821,24 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 			// (i) the curve point at that parameter must be within the
 			//     local half width of the reported hit position --
 			//     i.e. s really does name where the hit is.
+			//
+			//     The gate is an HONEST threshold derived from
+			//     production's own storage, not a magic 1e-6: `s` is
+			//     read back from `cpArcCum`, which HairGeometry stores
+			//     in FLOAT (see HairGeometry.h) while everything on this
+			//     reference side is double.  Float carries a relative
+			//     quantisation of ~2^-23 ~= 1.2e-7, which maps to an
+			//     ABSOLUTE position error of ~1.2e-7 * strandArcLength
+			//     along the curve; expressed, like `excess`, as a
+			//     fraction of the LOCAL half width, the honest bound is
+			//     1.2e-7 * strandArcLength / halfW.
 			const Point3 C = RefEval( rs, uFromS, 0 );
 			const double halfW  = RefWidth( rs, uFromS ) * 0.5;
 			const double excess = ( Point3Ops::Distance( C, H ) - halfW ) / std::max( halfW, 1e-12 );
+			const double sQuantThreshold = 1.2e-7 * rs.arcTotal / std::max( halfW, 1e-12 );
 			worstArcExcess = std::max( worstArcExcess, excess );
-			if( excess > 1e-6 ) ++badArcPosition;
+			worstArcExcessRatio = std::max( worstArcExcessRatio, excess / std::max( sQuantThreshold, 1e-300 ) );
+			if( excess > sQuantThreshold ) ++badArcPosition;
 
 			// (ii) the reported tangent must be the curve derivative
 			//      at that same parameter.
@@ -812,7 +851,13 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 			if( c < -1 ) c = -1;
 			const double deg = acos( c ) * 180.0 / 3.14159265358979323846;
 			worstTangentDeg = std::max( worstTangentDeg, deg );
-			if( deg > 0.5 ) ++badTangentAngle;
+			// Tightened from 0.5 deg: measured worst on this groom is
+			// 2.1e-5 deg, so 0.05 still leaves ~2400x headroom over the
+			// measured value while giving up ~10x of the original
+			// (unjustifiably loose) slack -- room for platform/compiler
+			// variance in the trig transcendentals without masking a
+			// real regression.
+			if( deg > 0.05 ) ++badTangentAngle;
 		}
 
 		// SECONDARY, loose cross-check against the parameter recovered
@@ -840,20 +885,40 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 		if( fabs( Vector3Ops::Magnitude( ri.vNormal ) - 1.0 ) > 1e-9 ) ++badNormalUnit;
 		if( fabs( Vector3Ops::Magnitude( ri.vGeomNormal ) - 1.0 ) > 1e-9 ) ++badNormalUnit;
 
-		// Cylinder rule, EXACT: dot(N_shading, N_geometric) == cos(h * pi/2).
+		// Cylinder rule: dot(N_shading, N_geometric) == sqrt(1 - h^2),
+		// h = 2t-1.  NOTE: this is a CHANGE-DETECTOR, not an independent
+		// certification -- `h` is read from the SAME ri.ptCoord.y that
+		// production computed h from in the first place, so this ties
+		// production's normal-construction arithmetic to its own
+		// h-reporting arithmetic rather than to an outside derivation.
+		// What it catches: a mutation of the cylinder-normal formula
+		// (verified -- reintroducing the pbrt angular-sweep form,
+		// theta=h*pi/2, drops the measured agreement to ~0.54 here) or
+		// a refactor that desyncs the two.  What it CANNOT catch: both
+		// sides being wrong in the same way (e.g. a shared sign error
+		// in how h itself is derived from the hit).
 		{
 			const double h = 2.0*ri.ptCoord.y - 1.0;
-			const double expected = cos( h * 3.14159265358979323846 * 0.5 );
+			const double expected = sqrt( std::max( 0.0, 1.0 - h*h ) );
 			const double got = Vector3Ops::Dot( ri.vNormal, ri.vGeomNormal );
 			worstCylinder = std::max( worstCylinder, fabs( got - expected ) );
 			if( fabs( got - expected ) > 1e-9 ) ++badCylinderRule;
 		}
 
-		// Both normals are perpendicular to the fibre tangent.
+		// Both normals are perpendicular to the fibre tangent:
+		// CONSTRUCTION-FORCED (A and Nflat are built via Cross(_, T)
+		// then Normalize() in RayElementIntersection), not an
+		// independent property under test.  Catches a refactor that
+		// decouples the frame, not a numerical-accuracy regression.
 		if( fabs( Vector3Ops::Dot( ri.vNormal,     ri.vShadingTangent ) ) > 1e-9 ) ++badPerp;
 		if( fabs( Vector3Ops::Dot( ri.vGeomNormal, ri.vShadingTangent ) ) > 1e-9 ) ++badPerp;
 
-		// The ribbon plane normal faces the ray origin.
+		// The ribbon plane normal faces the ray origin:
+		// CONSTRUCTION-FORCED (see the invariant derivation at the
+		// removed flip in HairGeometry.cpp's RayElementIntersection --
+		// dot(Nflat, D) = -|D_perp| <= 0 always, given the {A, Nflat}
+		// construction), not an independent property under test.
+		// Catches a refactor that decouples the frame.
 		if( !( Vector3Ops::Dot( ri.vGeomNormal, rays[i].Dir() ) < 0 ) ) ++badFacing;
 
 	}
@@ -864,19 +929,21 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 	std::cout << "  worst cylinder-rule error  : " << std::scientific << std::setprecision(3) << worstCylinder << std::endl;
 	std::cout << "  worst s-position excess    : " << worstArcExcess
 	          << "  (relative to the local half width; negative = strictly inside)" << std::defaultfloat << std::endl;
+	std::cout << "  worst s-position excess/thr: " << worstArcExcessRatio
+	          << "  (measured / derived float-quantisation threshold; <1 means inside the derived headroom)" << std::endl;
 
 	Check( hits > 50, "group 2 inspected a meaningful number of hits" );
 	Check( badRange == 0,        "every hit reports (s, t) inside [0,1]^2" );
 	Check( badFlags == 0,        "every hit sets bShadingTangentFromGeometry, bHasShadingTangent, bHasTexCoord1" );
 	Check( badUV1 == 0,          "ptCoord1 equals the root UV of the strand the hit is nearest to" );
 	Check( badTangentUnit == 0,  "the reported shading tangent is unit length" );
-	Check( badTangentAngle == 0, "the shading tangent is the curve derivative at the reported s (within 0.5 deg)" );
+	Check( badTangentAngle == 0, "the shading tangent is the curve derivative at the reported s (within 0.05 deg)" );
 	Check( badTangentNear == 0,  "the shading tangent also matches the nearest-point derivative (loose, 10 deg)" );
 	Check( badNormalUnit == 0,   "shading and geometric normals are unit length" );
 	Check( badCylinderRule == 0, "the shading normal follows the cylinder rule exactly" );
 	Check( badPerp == 0,         "both normals are perpendicular to the fibre tangent" );
 	Check( badFacing == 0,       "the geometric (ribbon-plane) normal faces the ray origin" );
-	Check( badArcPosition == 0,  "the curve point at the reported s is within a half width of the hit position" );
+	Check( badArcPosition == 0,  "the curve point at the reported s is within the derived float-quantisation threshold of the hit position" );
 
 	// -- WHITE BOX: the reflected phantom-endpoint convention must make
 	//    a 2-control-point strand exactly straight.
@@ -907,6 +974,80 @@ static void RunOutputValidity( const HairGeometry& geom, const std::vector<RefSt
 		std::cout << "  2-CP straightness error    : " << std::scientific << std::setprecision(3)
 		          << worst << std::defaultfloat << std::endl;
 		Check( worst < 1e-9, "a 2-control-point strand is exactly a straight line (phantom-endpoint convention)" );
+	}
+
+	// -- WHITE BOX: exit-info coverage.  A zero-thickness ribbon reports
+	//    exit == entry (see the class comment); bComputeExitInfo=true on
+	//    a real hit must reflect that, and must NOT touch the shared
+	//    `ri`'s exit fields when this groom's hit is not closer than
+	//    something already sitting in it.
+	{
+		int exitChecked = 0, badExitEq = 0, badExitGuard = 0;
+		for( size_t i = 0; i < rays.size(); i += stride )
+		{
+			RayIntersectionGeometric ri( rays[i], nullRasterizerState );
+			geom.IntersectRay( ri, true, true, true );
+			if( !ri.bHit ) continue;
+			++exitChecked;
+
+			if( ri.range2 != ri.range )            ++badExitEq;
+			if( ri.vNormal2.x != ri.vNormal.x || ri.vNormal2.y != ri.vNormal.y ||
+			    ri.vNormal2.z != ri.vNormal.z )     ++badExitEq;
+			if( ri.vGeomNormal2.x != ri.vGeomNormal.x || ri.vGeomNormal2.y != ri.vGeomNormal.y ||
+			    ri.vGeomNormal2.z != ri.vGeomNormal.z ) ++badExitEq;
+
+			// Guard case: simulate a prior, nearer hit already sitting in
+			// `ri` (as if some other object in the scene had already
+			// claimed it) before this groom is consulted.  Because the
+			// groom's own IntersectSegment is handed ri.range as its
+			// tMax, and this sentinel range is nearer than the real hit,
+			// the groom must find nothing and must leave every sentinel
+			// field untouched.
+			RayIntersectionGeometric guard( rays[i], nullRasterizerState );
+			guard.bHit   = true;
+			guard.range  = ri.range * Scalar(0.5);
+			guard.range2 = guard.range;
+			const Vector3 sentinelNormal( Scalar(0.123), Scalar(0.456), Scalar(0.789) );
+			guard.vNormal2     = sentinelNormal;
+			guard.vGeomNormal2 = sentinelNormal;
+			const Scalar sentinelRange2 = guard.range2;
+
+			geom.IntersectRay( guard, true, true, true );
+
+			if( guard.range2 != sentinelRange2 ) ++badExitGuard;
+			if( guard.vNormal2.x != sentinelNormal.x || guard.vNormal2.y != sentinelNormal.y ||
+			    guard.vNormal2.z != sentinelNormal.z ) ++badExitGuard;
+			if( guard.vGeomNormal2.x != sentinelNormal.x || guard.vGeomNormal2.y != sentinelNormal.y ||
+			    guard.vGeomNormal2.z != sentinelNormal.z ) ++badExitGuard;
+		}
+		std::cout << "  exit-info hits checked      : " << exitChecked << std::endl;
+		Check( exitChecked > 50, "exit-info coverage inspected a meaningful number of hits" );
+		Check( badExitEq    == 0, "bComputeExitInfo reports exit == entry (range2 / vNormal2 / vGeomNormal2)" );
+		Check( badExitGuard == 0, "exit fields are untouched when our hit is not closer than a prior one already in `ri`" );
+	}
+
+	// -- WHITE BOX: face-flag coverage.  The class comment defends
+	//    ignoring bHitFrontFaces/bHitBackFaces entirely so that fur
+	//    stays visible to a dielectric refraction walk's exit-side
+	//    probe (which issues bHitFrontFaces=false, bHitBackFaces=false).
+	//    Confirm IntersectRay still finds the SAME crossing with both
+	//    flags false.
+	{
+		int checked = 0, mismatched = 0;
+		for( size_t i = 0; i < rays.size(); i += stride )
+		{
+			RayIntersectionGeometric baseline( rays[i], nullRasterizerState );
+			geom.IntersectRay( baseline, true, true, false );
+			if( !baseline.bHit ) continue;
+			++checked;
+
+			RayIntersectionGeometric flagged( rays[i], nullRasterizerState );
+			geom.IntersectRay( flagged, false, false, false );
+			if( !flagged.bHit || flagged.range != baseline.range ) ++mismatched;
+		}
+		std::cout << "  face-flag-false hits checked : " << checked << std::endl;
+		Check( checked > 50, "face-flag coverage inspected a meaningful number of hits" );
+		Check( mismatched == 0, "IntersectRay(false, false, ...) still finds the same crossing (face flags ignored)" );
 	}
 }
 
@@ -989,9 +1130,33 @@ static void RunBounds( const HairGeometry& geom, const std::vector<Ray>& rays )
 	std::cout << "  hits outside box           : " << outsideBox << std::endl;
 	std::cout << "  hits outside sphere        : " << outsideSphere << std::endl;
 
+	// Derive an honest upper bound on the box volume from BuildGroom's
+	// OWN construction constants (mirrored here -- keep these in sync
+	// if BuildGroom's literals change) instead of an arbitrary "1000"
+	// that would pass even if GenerateBoundingBox were padding by a
+	// wildly wrong amount:
+	//   x, y control points = rx/ry (range [-1,1]) + a curl offset of
+	//                         magnitude <= 0.35 (curl<=1, |f*cos/sin|<=1)
+	//   z control points    = len*f, len in [0.8, 2.0], f in [0,1]
+	//                         (>= 0 by construction)
+	//   padding              = max half width; rootWidth <= 0.06 => <= 0.03
+	// Each per-axis bound is already loose on its own (no single strand
+	// hits all three per-axis maxima simultaneously, let alone the
+	// union over 50 strands at different phases); a further explicit 2x
+	// factor is kept on top as a safety margin.
+	const double kBuildRxRyRange  = 1.0;
+	const double kBuildCurlOffset = 0.35;
+	const double kBuildLenMax     = 2.0;
+	const double kBuildWidthMax   = 0.06;
+	const double halfWidthMax = kBuildWidthMax * 0.5;
+	const double xyHalfExtent = kBuildRxRyRange + kBuildCurlOffset + halfWidthMax;
+	const double zExtent      = kBuildLenMax + halfWidthMax;
+	const double volBound     = 2.0 * ( 2.0 * xyHalfExtent ) * ( 2.0 * xyHalfExtent ) * zExtent;
+	std::cout << "  derived volume bound        : " << volBound << std::endl;
+
 	Check( outsideBox    == 0, "every reported hit point lies inside GenerateBoundingBox" );
 	Check( outsideSphere == 0, "every reported hit point lies inside GenerateBoundingSphere" );
-	Check( vol > 0 && vol < 1000.0, "the groom bounding box is neither degenerate nor absurdly loose" );
+	Check( vol > 0 && vol < volBound, "the groom bounding box is neither degenerate nor looser than BuildGroom's own extents predict (2x margin)" );
 }
 
 // ============================================================

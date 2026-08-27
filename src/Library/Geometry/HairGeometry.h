@@ -21,7 +21,12 @@
 //  frame rather than pbrt's permute+shear, RISE `Scalar`/`Vector3`
 //  math, RISE's `RayIntersectionGeometric` outputs); no pbrt code is
 //  reproduced.  Deviations from pbrt are called out inline where they
-//  matter.
+//  matter.  One property IS shared with pbrt rather than deviated
+//  from: the reported hit is the CLOSEST APPROACH within a flattened
+//  piece, not the ray's true entry into the fibre -- see the
+//  `IntersectSegment` doc comment below for the two consequences this
+//  has for callers (an off-surface ptIntersection, and a shadow ray's
+//  potential to under-occlude).
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -60,10 +65,11 @@ namespace RISE
 		//    * span    : uint16_t  -> at most 65,535 spans per strand,
 		//                i.e. at most 65,536 CONTROL POINTS per strand.
 		//                CHECKED: a longer strand is rejected.
-		//    * subIndex: uint8_t   -> at most 255 sub-segments per span,
-		//                which bounds the build-time split depth at 7.
-		//                `kMaxBuildSplitDepth` is 3 (8 sub-segments), so
-		//                the field is never the binding constraint.
+		//    * subIndex: uint8_t   -> at most 256 sub-segments per span
+		//                (subIndex 0..255), which bounds the build-time
+		//                split depth at 8.  `kMaxBuildSplitDepth` is 3
+		//                (8 sub-segments), so the field is never the
+		//                binding constraint -- moot at that cap.
 		//    * subDepth: uint8_t   -> the split depth itself, 0..3.
 		//
 		//////////////////////////////////////////////////////////////
@@ -368,9 +374,29 @@ namespace RISE
 
 			//! The single shared intersection kernel.  `outT` receives
 			//! the ray parameter and `outU` the strand-global curve
-			//! parameter of the closest qualifying crossing of this
-			//! sub-segment strictly inside (NEARZERO, tMax).  Returns
-			//! false if there is none.
+			//! parameter of the CLOSEST QUALIFYING APPROACH within this
+			//! sub-segment strictly inside (NEARZERO, tMax) -- NOT the
+			//! ray's true geometric entry into the swept fibre.  Each
+			//! recursion base case (TestFlatPiece, in the .cpp) reports
+			//! the point on its piece nearest the ray axis, which can
+			//! land as much as halfWidth / sin(theta) further along the
+			//! ray than where the ray actually crosses the fibre's
+			//! silhouette boundary (theta = angle between the ray and
+			//! the fibre tangent; grazing incidence is worst-cased).
+			//! This matches pbrt's Curve intersector, which has the
+			//! identical property for the identical reason (closest
+			//! approach within a flattened piece, not true entry).
+			//!
+			//! Two consequences follow from this: (1) the reported
+			//! ptIntersection does not sit exactly on the fibre's
+			//! silhouette surface, so a self-intersection epsilon tuned
+			//! against an exact-surface primitive may need re-checking
+			//! here; (2) IntersectionOnly (shadow rays) can
+			//! UNDER-OCCLUDE -- a shadow ray whose dHowFar lands
+			//! strictly between the true entry and this reported
+			//! closest-approach point is told "no occluder" even though
+			//! the ray geometrically enters the fibre before dHowFar.
+			//! Returns false if there is no qualifying approach.
 			bool IntersectSegment( const Ray& ray, const Scalar tMax, const MYOBJ elem,
 			                       Scalar& outT, Scalar& outU ) const;
 
