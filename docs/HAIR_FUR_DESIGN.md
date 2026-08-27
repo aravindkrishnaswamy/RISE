@@ -269,7 +269,7 @@ Contract items (from [MATERIALS.md](MATERIALS.md) §9 and the interface headers)
 - `HairBRDF::value/valueNM(wi, ri)` — full Chiang evaluation at arbitrary direction pairs
   (needed by PT's NEE as well as BDPT/VCM connections). Direction convention per
   `PathVertexEval.h:18-26`.
-- `HairBRDF::albedo(ri)` — closed-form directional-hemispherical reflectance estimate so the
+- `HairBRDF::albedo(ri)` — closed-form multiple-scattering-averaged reflectance estimate so the
   OIDN albedo AOV is noise-free (required by the checklist; consumed at
   `PathTracingIntegrator.cpp:2703-2710`). Use the color-tier's target reflectance (Tier 3: C
   itself; Tiers 1–2: the inverse of the §3.2 mapping evaluated from σ_a) — cheap and stable.
@@ -288,7 +288,7 @@ Contract items (from [MATERIALS.md](MATERIALS.md) §9 and the interface headers)
 A hair BSDF is expressed in the **fiber frame**: u = fiber tangent, with θ measured from the
 normal plane. RISE's existing anisotropic BRDFs (Ward, Ashikhmin-Shirley, GGX) read their frame
 from `ri.onb.u()/v()` — but for meshes and patches that ONB is built by `CreateFromW(normal)`
-with an **arbitrary** tangent (`TriangleMeshGeometry.cpp:663` et al.), which is useless as a
+with an **arbitrary** tangent (`Object.cpp:656` et al.), which is useless as a
 fiber direction.
 
 **Nothing in the tree today can deliver a geometry-defined tangent, and this is real work the
@@ -301,8 +301,11 @@ world-space shading normal — unconditionally, with a world-Y fallback when wor
 the normal — and handing that to `CreateFromWU(n, t)`. It never consults the geometry. That is
 exactly what its one current setter (`SDFGeometry` heightfield mode) wants: a *shared, stable*
 base tangent so an anisotropic `tangent_rotation` rotates from the same place on an SDF as on the
-`cartesian_disk` mesh. It is *not* a curve tangent, and a hair render driven by it would give
-every strand on the model the same world-X-derived fiber axis.
+`cartesian_disk` mesh. It is *not* a curve tangent — the projection is recomputed per hit from
+that hit's own world-space shading normal, so it is not literally *one* global axis across a
+model, but it is unrelated to (and has no way to recover) the curve's actual tangent, and a hair
+render driven by it would still look wrong: every point on a given normal-orientation reads the
+same world-X-derived axis regardless of which strand or where along it the hit lands.
 
 The separate `vTangent` / `bitangentSign` / `bHasTangent` triple
 (`RayIntersectionGeometric.h:224-235`) *is* a real interpolated per-vertex tangent in world
@@ -325,6 +328,25 @@ So `hair_geometry` must land one of two plumbing changes:
 Either way this is **not** a no-op: an `Object::IntersectRay` change is required. Until it lands,
 `HairBSDF` reads whatever `ri.onb.u()` happens to be (see the fiber-frame note at the top of
 `HairBSDF.h`), which is correct-but-arbitrary — fine for the unit tests, wrong for a render.
+
+**Two more sites this slice owes, found during the round-2 hair BSDF review:**
+
+- **`CSGObject::IntersectRay` carries a byte-duplicate of the same tangent branch**
+  (`CSGObject.cpp:1015-1024`, added for the P2 heightfield-under-CSG fix) — whichever of (a) / (b)
+  above lands must land there too, or a hair fiber wrapped in a CSG composite silently falls back
+  to the arbitrary `CreateFromW` tangent while a standalone instance of the same geometry gets the
+  real one.
+- **The normal-map / bump-map modifiers discard any tangent that reaches them.** Even after (a) or
+  (b) supplies a real fiber tangent in `ri.onb.u()`, `NormalMap::Modify` (`NormalMap.cpp:172`) and
+  `BumpMap::Modify` (`BumpMap.cpp:69`) both rebuild the ONB with the unconditional
+  `ri.onb.CreateFromW(ri.vNormal)` after perturbing the normal, which drops whatever tangent was
+  there and replaces it with an arbitrary one derived from the (perturbed) normal alone.
+  `GlintModifier` already gets this right — it rebuilds via `CreateFromWU`, projecting the OLD
+  tangent into the new normal's plane, specifically to keep `bShadingTangentFromGeometry` /
+  `tangent_rotation` consumers coherent across a perturbation (`GlintModifier.cpp:230-246`). Bump
+  or normal-mapped hair needs the same treatment — either fix both modifiers to preserve the
+  incoming tangent the `GlintModifier` way, or document that hair fibers are incompatible with
+  `bump_map` / `normal_map` until that lands.
 
 The near-field offset **h**, by contrast, needs no new plumbing at all: `hair_geometry` defines
 `ri.ptCoord = (s, t)` with s = normalized arc-length root→tip and t ∈ [0,1] across the ribbon
@@ -427,7 +449,9 @@ holding all strands of one groom in shared arrays:
   `UniformRandomPoint`/`GetArea` unsupported with `CanBeAreaLight() = false` (`IGeometry.h:207`)
   — emissive fur is out of scope; `CanTessellate() = false` (hair must not be eligible as a
   `displaced_geometry` base or glTF-export victim); supplies the curve tangent through whichever
-  of §4.1's two options is taken, which includes the accompanying `Object::IntersectRay` change.
+  of §4.1's two options is taken, which includes the accompanying `Object::IntersectRay` change
+  AND the identical change to `CSGObject::IntersectRay`'s byte-duplicate tangent branch
+  (`CSGObject.cpp:1015-1024`, §4.1).
 
 ### 5.3 Generation and grooming — the authoring surface
 

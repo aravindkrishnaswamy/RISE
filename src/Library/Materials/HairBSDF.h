@@ -60,7 +60,16 @@
 //  normal-map modifier.  Closing the gap is the `hair_geometry` slice's
 //  job (see docs/HAIR_FUR_DESIGN.md section 4.1 for the two options);
 //  this file only reads `ri.onb.u()` and will pick up whatever that
-//  slice lands.
+//  slice lands -- PROVIDED nothing downstream rebuilds the ONB from the
+//  normal alone afterward.  Today something does: `NormalMap::Modify`
+//  (NormalMap.cpp:172) and `BumpMap::Modify` (BumpMap.cpp:69) both call
+//  the unconditional `ri.onb.CreateFromW(ri.vNormal)` after perturbing
+//  the normal, discarding whatever tangent was in `ri.onb.u()` --
+//  including a future hair fibre tangent.  `GlintModifier` is the one
+//  modifier in the tree that gets this right (`CreateFromWU`, projecting
+//  the OLD tangent into the new normal's plane).  See
+//  docs/HAIR_FUR_DESIGN.md section 4.1 for the fix or documented-
+//  incompatibility decision this owes.
 //
 //  ------------------------------------------------------------------
 //  2.  THE kray / pdf CONVENTION  (the load-bearing reconciliation)
@@ -168,12 +177,13 @@
 //       parameterisation.
 //       ! THE PBRT MATCH IS GREEN-ONLY.  R and B are then whatever the
 //       measured OMLC curve says, and they do NOT reproduce PBRT's other
-//       two constants (which are a colour-matching PROJECTION of the same
-//       data, a different quantity): measured at 600 / 450 nm, eumelanin
-//       is +23.5 % / -5.6 % and pheomelanin +24.2 % / +1.7 % against
-//       PBRT.  Spectral fidelity to the measurement is the deliberate
-//       choice; a PBRT cross-render matches in G and runs slightly warm
-//       in R.  Numbers and rationale at kEumelaninSigmaAAt550 in the .cpp.
+//       two constants (a differently-derived RGB triple, not the same
+//       quantity read at a different wavelength): measured at
+//       600 / 450 nm, eumelanin is +23.5 % / -5.6 % and pheomelanin
+//       +24.2 % / +1.7 % against PBRT.  Spectral fidelity to the
+//       measurement is the deliberate choice; a PBRT cross-render
+//       matches in G and runs slightly warm in R.  Numbers and rationale
+//       at kEumelaninSigmaAAt550 in the .cpp.
 //    2. `sigma_a` directly (IScalarPainter): power users, measured data.
 //    3. `color` (IPainter, Albedo kind): Chiang's inversion of the
 //       multiple-scattering-averaged reflectance,
@@ -214,9 +224,10 @@
 //    and is recorded in docs/HAIR_FUR_DESIGN.md's risk register.
 //  * LEGACY COSINE-OMITTING `value` CONSUMERS.  Section 2's constraint
 //    -- value == fsum / |wi . N| -- is only safe for a caller that
-//    multiplies |wi . N| back.  Three legacy shader ops do not:
-//      - AmbientOcclusionShaderOp.cpp:139, :151 and
-//        FinalGatherShaderOp.cpp:215, :508 accumulate
+//    multiplies |wi . N| back.  Recounted honestly: three legacy shader
+//    ops, SEVEN call sites total, do not:
+//      - AmbientOcclusionShaderOp.cpp:139, :151, and :245 (the valueNM
+//        twin) and FinalGatherShaderOp.cpp:215, :508 accumulate
 //        `radiance * pBRDF->value(dir, ri)` with NO cosine, which on
 //        hair is an unbounded-variance estimator (the 1/|wi . N| is
 //        left uncancelled and diverges as wi approaches the
@@ -321,7 +332,11 @@ namespace RISE
 		//! HairBSDF.cpp's anonymous namespace can name it.
 		struct HairResolvedParams
 		{
-			Scalar	h;					//!< near-field offset, [-1, 1]
+			Scalar	h;					//!< near-field offset, clamped to
+										//!< [-0.9995, +0.9995] (kHEdge in
+										//!< HairBSDF.cpp) -- never the raw
+										//!< [-1, 1], see the file header,
+										//!< section 1
 			Scalar	betaM, betaN;		//!< clamped to [kMinBeta, kMaxBeta]
 			Scalar	etaRef;				//!< achromatic reference IOR (drives ALL sampling)
 			Scalar	v[4];				//!< longitudinal variances, p = 0..3
@@ -371,8 +386,13 @@ namespace RISE
 			Scalar SigmaAProxy( const RayIntersectionGeometric& ri,
 			                    const Scalar betaN ) const;
 
-			//! Closed-form directional-hemispherical reflectance implied
-			//! by this hit's colour tier, PLUS the achromatic R-lobe
+			//! Closed-form multiple-scattering-averaged reflectance
+			//! implied by this hit's colour tier (NOT the directional-
+			//! hemispherical reflectance of this BCSDF itself -- see the
+			//! note above `RunInversionRoundTrip` in HairBSDFTest.cpp,
+			//! group 6, which measures the single-scatter furnace
+			//! throughput at the inverted sigma_a and finds it does NOT
+			//! equal the target C), PLUS the achromatic R-lobe
 			//! surface term -- tier 3 starts from the painter's colour,
 			//! tiers 1-2 invert C = exp( -sqrt(sigma_a) * D(beta_n) ),
 			//! and both are then composited as C + (1 - C) * F_avg with
@@ -462,8 +482,9 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			//! Closed-form directional-hemispherical reflectance for the
-			//! OIDN albedo AOV -- noise-free by construction.
+			//! Closed-form multiple-scattering-averaged reflectance (see
+			//! `ReflectanceRGB`) for the OIDN albedo AOV -- noise-free by
+			//! construction.
 			RISEPel albedo(
 				const RayIntersectionGeometric& ri
 				) const;
@@ -483,6 +504,28 @@ namespace RISE
 				const Scalar sigmaA,
 				Scalar ap[4],
 				Scalar& absorbLen
+				) const;
+
+			//! TEST HOOK -- not called by the renderer.  Resolves the
+			//! 2k-alpha cuticle-tilt recurrence EXACTLY as `Resolve()`
+			//! does from `alphaDeg`, then calls the real `ApplyLobeTilt`
+			//! (the SAME function both the evaluation and sampling sides
+			//! call -- HairBSDF.cpp's `LobeWeights` / `HairSPF::DoScatter`).
+			//! Exists because groups 10/11 in HairBSDFTest.cpp only ever
+			//! exercise `ApplyLobeTilt` through the p == 0 (R) branch and
+			//! only through mixture-level energy/estimator checks, which
+			//! are measure-preserving under a tilt-sign flip on any lobe
+			//! and structurally cannot see a corruption isolated to the
+			//! p == 1 (TT), p == 2 (TRT), or residual-identity branch.
+			//! This white-box hook lets a test pin all four branches'
+			//! angle formula and sign directly.
+			void TestApplyLobeTilt(
+				const int p,
+				const Scalar alphaDeg,
+				const Scalar sinThetaO,
+				const Scalar cosThetaO,
+				Scalar& sinOut,
+				Scalar& cosOut
 				) const;
 		};
 

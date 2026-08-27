@@ -3,7 +3,7 @@
 //  HairBSDFTest.cpp - Validation of the Chiang et al. 2016 near-field
 //    hair BCSDF (src/Library/Materials/HairBSDF.{h,cpp}).
 //
-//  Twelve groups of tests:
+//  Fourteen groups of tests:
 //
 //    1. WHITE FURNACE (the energy-conservation regression guard).
 //       With sigma_a == 0 the bare Chiang lobe sum must integrate to
@@ -15,10 +15,12 @@
 //             `value(wi) * |cos(wi, N)|` over the sphere, which is the
 //             ONLY one of the two that actually tests the M_p / N_p
 //             normalisation (see the note above RunFurnace).
-//       1b repeats both at the PARAMETER CORNERS: the beta floor
-//       (0.05, the only cell that reaches LogBesselI0's asymptotic
-//       branch), the beta ceiling (1.0), the post-clamp fibre edge
-//       (h = +/- 0.9995), and near-grazing theta_o (88 degrees).
+//       1b repeats both at the PARAMETER CORNERS: the beta floor (0.05,
+//       the DEEPEST cell in LogBesselI0's asymptotic branch -- a reaches
+//       ~2.7e3; the interior grid above already reaches ~41-610, so the
+//       branch itself is exercised well before this corner), the beta
+//       ceiling (1.0), the post-clamp fibre edge (h = +/- 0.9995), and
+//       near-grazing theta_o (88 degrees).
 //
 //    2. SAMPLE <-> PDF CONSISTENCY.  Every sampled direction must
 //       report a strictly positive `Pdf`, and that `Pdf` must equal the
@@ -115,6 +117,19 @@ static const int    kSPFSamples      = 200000;
 //! longitudinal lobe at beta_m = 0.1 has an angular width of ~0.08 rad,
 //! so 900 theta cells put ~23 samples across it -- comfortably inside
 //! the midpoint rule's asymptotic regime.
+//!
+//! The beta = kMinBeta (0.05) corner cells (group 1b) are the tight
+//! case: the TT lobe there is ~0.019 rad wide, i.e. only ~5.5 of these
+//! quadrature cells land across it.  That is NOT independently justified
+//! to be enough -- it is justified by the MEASURED group-1b results
+//! themselves, which is what the corner cells exist to check: every
+//! beta = 0.05 "INTEGRAL value*cos" quadrature comes in within ~0.2% of
+//! 1 (worst observed 0.99824), an order of magnitude inside the 2%
+//! (`kFurnaceQuadTol`) gate.  If a future change to the model or to
+//! these corner cells' geometry ever pushes that discretisation error
+//! close to 2%, the fix is to raise `kQuadTheta`/`kQuadPhi` for the
+//! corner cells specifically and re-measure -- not to widen the
+//! tolerance.
 static const int    kQuadTheta       = 900;
 static const int    kQuadPhi         = 900;
 //! Tolerance on the energy integrals.  The SPF-side furnace is exact by
@@ -476,10 +491,12 @@ static void RunFurnace()
 //
 //  The main grid above samples the interior of the parameter space.
 //  These are the edges, where the model is most likely to fall over:
-//    * beta = kMinBeta (0.05), the FLOOR.  This is the only cell that
-//      exercises `LogBesselI0`'s large-argument asymptote at all: the
-//      TT variance there is ~3.7e-4, so a = cos.cos/v reaches ~2.7e3 and
-//      the direct sinh(1/v)/I0(a) form would overflow.
+//    * beta = kMinBeta (0.05), the FLOOR.  This is the DEEPEST cell in
+//      `LogBesselI0`'s large-argument asymptotic branch, not the only one
+//      that reaches it: the TT variance here is ~3.7e-4, so a = cos.cos/v
+//      reaches ~2.7e3 (the direct sinh(1/v)/I0(a) form would overflow),
+//      while the INTERIOR grid above (RunFurnace, beta down to 0.1)
+//      already reaches a ~41-610 and is well inside the same branch.
 //    * beta = kMaxBeta (1.0), the CEILING, where the pow(b, 20) / pow(b,
 //      22) terms in the beta -> variance / beta -> s remaps are at full
 //      strength.
@@ -1223,10 +1240,16 @@ static void RunColorTierMisconfig()
 //  are evaluated at two probe directions off the R-lobe specular peak:
 //      P_phi   -- ON the longitudinal peak, 0.3 rad off in AZIMUTH
 //      P_theta -- ON the azimuthal peak,    0.4 rad off LONGITUDINALLY
-//  A must dominate at P_phi (its broad N_p still reaches 0.3 rad while
-//  B's near-delta one has died); B must dominate at P_theta (its broad
-//  M_p still reaches 0.4 rad while A's has died).  Transposing the two
-//  parameters anywhere in the model flips both verdicts.
+//  A must dominate at P_phi for TWO compounding reasons, not one: it sits
+//  exactly ON its own (narrow, beta_m 0.05) M_p peak, which is TALLER
+//  there than B's broad M_p is at ITS peak (a narrower lobe normalised to
+//  the same area is taller at its centre); AND its N_p is broad
+//  (beta_n 0.8), so it still carries real weight 0.3 rad off-centre where
+//  B's near-delta N_p (beta_n 0.05) has already died.  B must dominate at
+//  P_theta by the mirrored pair: taller N_p at its own (narrow,
+//  beta_n 0.05) peak, AND a broad M_p (beta_m 0.8) that still survives
+//  0.4 rad off-peak where A's near-delta M_p has died.  Transposing the
+//  two parameters anywhere in the model flips both verdicts.
 //
 //  sigma_a is set very high so only the p = 0 lobe carries energy and
 //  the geometry of the comparison is unambiguous; alpha is 0 so the
@@ -1306,11 +1329,20 @@ static void RunRoughnessAxisDiscriminator()
 //  margin.  A sign flip swaps the two.
 //
 //  THE alpha == 0 CONTROL IS NOT AN EQUALITY.  M_p is a von-Mises-like
-//  lobe on the sphere, not a Gaussian in the flat angle theta: its
-//  I0(cos.cos/v) prefactor makes the probe closer to the pole measurably
-//  WEAKER even when both are equidistant from the peak.  Measured here
-//  the untilted ratio is ~0.77, i.e. BELOW 1 and favouring the - probe.
-//  That is the baseline the tilt has to overturn, and it makes the
+//  lobe on the sphere, not a Gaussian in the flat angle theta, so the two
+//  equidistant-from-peak probes are not equal even untilted.  For small v
+//  the asymptotic form gives LogI0(a) ~= a - 0.5*log(2*pi*a), so
+//      M_p  ~  exp( cos(theta_i + theta_o) / v ) / sqrt(cos_i * cos_o),
+//  and with theta_o common to both probes the cos(theta_i+theta_o) factor
+//  is IDENTICAL for the +/- pair here (it is an even function of the
+//  probes' shared +/-4*alpha offset) -- the entire asymmetry comes from
+//  the 1/sqrt(cos_i) prefactor, which is LARGER (i.e. STRONGER, not
+//  weaker) for the SMALLER cos_i, i.e. for the probe CLOSER to the pole.
+//  Here that is the - probe (theta_i = -theta_o - 4*alpha, further from
+//  theta_i = 0 than the + probe).  Predicted ratio
+//  sqrt(cos(0.91888) / cos(0.08112)) ~= 0.780, measured ~0.771 -- close
+//  enough to confirm the mechanism.  That is the baseline the tilt has to
+//  overturn, and it makes the
 //  tilted ratio (~5.6) a strictly stronger statement, not a weaker one.
 // ============================================================
 
@@ -1365,11 +1397,17 @@ static void RunCuticleTiltDirection()
                "tilted peak beats the -2*alpha (sign-flipped) angle" );
 
     // REGRESSION PIN.  One fixed (theta_o, alpha, h, beta) tuple, tight
-    // tolerance.  This guards the 2k-alpha RECURRENCE itself -- the
-    // double-angle step that turns sin(alpha) into sin(2 alpha) and
-    // sin(4 alpha).  The ordering checks above only pin the sign; a
-    // recurrence that produced sin(alpha) where sin(2 alpha) belongs
-    // would keep every ordering and still shift the highlight.
+    // tolerance.  This guards the 2k-alpha RECURRENCE's FIRST step -- the
+    // double-angle step that turns sin(alpha) into sin(2 alpha) -- which
+    // is all the R lobe (p == 0, exercised here via `sigmaOpaque` killing
+    // every other order) ever reads.  It does NOT reach the SECOND step
+    // (sin(4 alpha), recurrence index 2, consumed only by the TRT lobe's
+    // p == 2 branch); that index is what the `ApplyLobeTilt` white-box
+    // group (13, RunApplyLobeTiltWhiteBox) pins directly, since nothing
+    // in an energy/estimator/peak test built on the R lobe can reach it.
+    // The ordering checks above only pin the sign; a recurrence that
+    // produced sin(alpha) where sin(2 alpha) belongs would keep every
+    // ordering here and still shift the highlight.
     const double kTiltPin = 0.1467911904;
     Check( Near( atPeak, kTiltPin, 1e-6 ),
            "tilt regression pin: fsum at (theta_o=0.5, alpha=6deg, h=0, beta=0.3)",
@@ -1386,10 +1424,11 @@ static void RunCuticleTiltDirection()
 }
 
 // ============================================================
-//  12.  Absorption path length -- a CLOSED-FORM check
+//  12.  Absorption path length -- one CLOSED-FORM cell, one CHANGE-DETECTOR
 //
 //  Every other absorption assertion in this file is a self-consistency
-//  identity or a monotonicity trend.  This one pins the actual formula.
+//  identity or a monotonicity trend.  The AXIAL cell here pins the actual
+//  formula from first principles and is the genuinely closed-form check:
 //
 //  At h = 0 the ray crosses the fibre through its axis: gamma_o = 0,
 //  sin(gamma_t) = h / eta' = 0, so cos(gamma_t) = 1.  At theta_o = 0 the
@@ -1401,11 +1440,15 @@ static void RunCuticleTiltDirection()
 //      A_0 = F,   A_1 = (1 - F)^2 exp(-2 sigma_a)
 //  and F the normal-incidence dielectric Fresnel ((eta-1)/(eta+1))^2.
 //  Nothing here is read back out of the model: F, L and A_1 are all
-//  written out longhand from the physics.
+//  written out longhand from the physics, independent of MakeGeom.
 //
-//  A second, oblique cell (theta_o = 0.6, h = 0.5) re-derives
-//  L = 2 cos(gamma_t)/cos(theta_t) from Snell longhand, so the test also
-//  covers the gamma_t / eta' geometry rather than only the h = 0 axis.
+//  The OBLIQUE cell (theta_o = 0.6, h = 0.5) is NOT closed-form in the
+//  same sense: `wantL` is `MakeGeom`'s own sinThetaT / etap / sinGammaT
+//  expressions, retyped longhand in the test rather than derived from an
+//  independent physical argument.  It is a CHANGE-DETECTOR against that
+//  formula (real coverage -- it pins the gamma_t / eta' geometry the
+//  axial cell can't reach, and would catch a sign or index slip in
+//  MakeGeom), not a from-first-principles proof the axial cell is.
 // ============================================================
 
 static void RunAbsorptionPathLength()
@@ -1499,6 +1542,207 @@ static void RunAbsorptionPathLength()
 }
 
 // ============================================================
+//  13.  ApplyLobeTilt WHITE-BOX (test-only hook)
+//
+//  Groups 10 and 11 only ever exercise `ApplyLobeTilt` through the p == 0
+//  (R) branch, and only through mixture-level energy / estimator / peak
+//  checks that are measure preserving under a tilt-SIGN flip and cannot
+//  see a corruption isolated to a single branch.  In particular: a p == 1
+//  or p == 2 sign flip is invisible to every furnace / pdf / estimator
+//  check in this file (rotation is measure preserving), and a corrupted
+//  residual-lobe (p == kPMax) IDENTITY branch -- e.g. one that forgot the
+//  `else` and fell through to a rotated angle -- is invisible to anything
+//  that does not isolate that lobe.
+//
+//  This calls the PRODUCTION `ApplyLobeTilt` directly through the
+//  `TestApplyLobeTilt` hook (which resolves the SAME 2k-alpha recurrence
+//  `Resolve()` does, so it cannot silently diverge from what render time
+//  feeds the function) and checks each branch's output angle against an
+//  INDEPENDENTLY evaluated std::sin/std::cos of the composite angle --
+//  NOT the code's own recurrence -- so a sign-flipped or mis-indexed
+//  2k-alpha table cannot cancel out against the expectation.
+//
+//  VERIFIED CONVENTION (round-2 analysis of ApplyLobeTilt): the code
+//  applies sin/cos of (theta_o - 2*alpha) at p == 0, (theta_o + alpha) at
+//  p == 1, (theta_o + 4*alpha) at p == 2, and the untilted identity at
+//  p == kPMax -- each followed by the unconditional pole-reflection
+//  `cos = fabs(cos)`.  The expectations below are written from that
+//  independently-verified convention, not read back out of the function
+//  under test.
+// ============================================================
+
+static void RunApplyLobeTiltWhiteBox()
+{
+    std::cout << "=== 13. ApplyLobeTilt white-box (sign + recurrence index) ===" << std::endl;
+
+    // Mirrors HairBSDF.cpp's file-local `kPMax` (R=0, TT=1, TRT=2,
+    // residual=3).  Not includable from here (it is anonymous-namespace
+    // scoped in the .cpp); kept in step by the same discipline as
+    // `TestApAndPathLength`'s static_assert on its `ap[4]` extent.
+    const int kPMaxTest = 3;
+
+    // Any painter set works -- TestApplyLobeTilt never touches them.
+    ScalarRef sigmaA( new UniformScalarPainter( 0.4 ) );
+    ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
+    ScalarRef alphaP( new UniformScalarPainter( 6.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+    const HairPainters hp = MakeSigmaAPainters( *sigmaA, *betaM, *betaN, *alphaP, *ior );
+    HairBRDF* brdf = new HairBRDF( hp ); brdf->addref();
+
+    const double alphaDeg = 6.0;
+    const double aRad     = alphaDeg * PI / 180.0;
+    const double thetaOMags[3] = { 0.2, 0.5, 1.2 };
+
+    for( int ti = 0; ti < 3; ti++ )
+    {
+        for( int sgn = 0; sgn < 2; sgn++ )
+        {
+            const double thetaO    = ( sgn == 0 ) ? thetaOMags[ti] : -thetaOMags[ti];
+            const double sinThetaO = sin( thetaO );
+            const double cosThetaO = cos( thetaO );
+
+            // Composite angle per branch, from the VERIFIED convention
+            // above -- p indexes { R, TT, TRT }; index 3 is the residual.
+            const double composite[3] = {
+                thetaO - 2.0 * aRad,
+                thetaO + aRad,
+                thetaO + 4.0 * aRad
+            };
+
+            for( int p = 0; p <= kPMaxTest; p++ )
+            {
+                Scalar sinOut = 0, cosOut = 0;
+                brdf->TestApplyLobeTilt( p, alphaDeg, sinThetaO, cosThetaO, sinOut, cosOut );
+
+                char lab[192];
+                if( p == kPMaxTest ) {
+                    // Residual-lobe identity branch: exact to machine
+                    // precision (no trig re-derivation needed, and none
+                    // of thetaOMags reach the pole so fabs() is a no-op
+                    // here -- see the p == 2, thetaO == 1.2 case below for
+                    // the one that actually exercises the reflection).
+                    snprintf( lab, sizeof(lab),
+                        "ApplyLobeTilt p=kPMax identity sin thetaO=%+.2f", thetaO );
+                    Check( Near( sinOut, sinThetaO, 1e-15 ), lab, sinOut, sinThetaO );
+                    snprintf( lab, sizeof(lab),
+                        "ApplyLobeTilt p=kPMax identity cos thetaO=%+.2f", thetaO );
+                    Check( Near( cosOut, cosThetaO, 1e-15 ), lab, cosOut, cosThetaO );
+                    continue;
+                }
+
+                const double wantSin = sin( composite[p] );
+                // The pole-reflection rule, applied to the INDEPENDENTLY
+                // computed expectation -- exercised for real at
+                // p == 2, thetaO == +/-1.2 (composite == 1.619, past
+                // +/- pi/2).
+                const double wantCos = fabs( cos( composite[p] ) );
+
+                snprintf( lab, sizeof(lab),
+                    "ApplyLobeTilt p=%d thetaO=%+.2f sin", p, thetaO );
+                Check( Near( sinOut, wantSin, 1e-9 ), lab, sinOut, wantSin );
+                snprintf( lab, sizeof(lab),
+                    "ApplyLobeTilt p=%d thetaO=%+.2f cos", p, thetaO );
+                Check( Near( cosOut, wantCos, 1e-9 ), lab, cosOut, wantCos );
+            }
+        }
+    }
+
+    // The pole-reflection case really is exercised: pin it explicitly so
+    // a future change to thetaOMags cannot silently drop coverage of it.
+    CheckTrue( 1.2 + 4.0 * aRad > PI_OV_TWO,
+               "sanity: thetaO=1.2, p=2 composite angle exceeds pi/2 (reflection case is live)" );
+
+    brdf->release();
+}
+
+// ============================================================
+//  14.  kHEdge CLAMP -- the UV-less trap stays CHROMATIC
+//
+//  HairBSDF.h section 1 documents the trap: geometry with no UV channel
+//  leaves `ptCoord == (0, 0)`, which resolves the near-field offset h to
+//  the fibre EDGE (raw h == -1) at every hit.  At h == -1 EXACTLY,
+//  cos(gamma_o) == 0, the Fresnel argument collapses to 0, F == 1, and
+//  EVERY transmissive order (TT, TRT, residual) goes to exactly zero --
+//  the model degenerates to a colourless white mirror, discarding the
+//  melanin colour entirely.  `kHEdge` (0.9995) keeps `Resolve()` from
+//  ever reaching that exact point, trading a physically irrelevant
+//  sliver of h range for real, if heavily Fresnel-suppressed, colour.
+//
+//  This is checked, not merely asserted: a strongly-coloured melanin
+//  material (eumelanin ~1.3, so R/G/B sigma_a differ substantially) is
+//  evaluated at raw h == -1 (`ptCoord == (0.5, 0)`, exactly the documented
+//  trap) over a coarse directional sweep, and the test requires that AT
+//  LEAST ONE sampled direction stays clearly CHROMATIC (max/min channel
+//  ratio > 1.2).  Channel ratio is the right invariant here, not absolute
+//  magnitude: ap[p>=1] = (...) * T_channel with the achromatic Fresnel
+//  factor common to every channel, so the RATIO between channels is
+//  driven purely by sigma_a(lambda) and survives even when F is close to
+//  (but, thanks to the clamp, provably not exactly) 1.
+// ============================================================
+
+static void RunKHEdgeClampChromatic()
+{
+    std::cout << "=== 14. kHEdge clamp keeps the UV-less trap chromatic ===" << std::endl;
+
+    ScalarRef eumelanin( new UniformScalarPainter( 1.3 ) );
+    ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
+    ScalarRef alphaP( new UniformScalarPainter( 2.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+
+    HairPainters hp;
+    hp.eumelanin = eumelanin.get();
+    hp.beta_m = betaM.get(); hp.beta_n = betaN.get();
+    hp.alpha  = alphaP.get(); hp.ior    = ior.get();
+
+    HairBRDF* brdf = new HairBRDF( hp ); brdf->addref();
+
+    // h = -1.0 raw -> MakeFibreHit's ptCoord = (0.5, 0.5*(h+1)) = (0.5, 0)
+    // -- exactly the documented UV-less trap, with no need to poke
+    // RayIntersectionGeometric fields directly.
+    const RayIntersectionGeometric ri = MakeFibreHit( 0.3, 0.9, -1.0 );
+
+    const int kThetaSteps = 48;
+    const int kPhiSteps   = 48;
+    double bestRatio = 0;
+    double bestTheta = 0, bestPhi = 0;
+    RISEPel bestC( 0, 0, 0 );
+
+    for( int i = 0; i < kThetaSteps; i++ )
+    {
+        const double theta = -PI_OV_TWO + ( i + 0.5 ) * ( PI / kThetaSteps );
+        for( int j = 0; j < kPhiSteps; j++ )
+        {
+            const double phi = ( j + 0.5 ) * ( TWO_PI / kPhiSteps );
+            const Vector3 wi = FibreDir( ri, theta, phi );
+            const RISEPel c = brdf->value( wi, ri );
+
+            const double lo = r_min( r_min( c[0], c[1] ), c[2] );
+            const double hi = r_max( r_max( c[0], c[1] ), c[2] );
+            if( lo <= 1e-30 ) { continue; }        // avoid a divide near zero
+
+            const double ratio = hi / lo;
+            if( ratio > bestRatio ) {
+                bestRatio = ratio;
+                bestTheta = theta; bestPhi = phi;
+                bestC = c;
+            }
+        }
+    }
+
+    CheckTrue( bestRatio > 1.2,
+               "kHEdge clamp: UV-less trap (h raw = -1) still shows a chromatic direction (max/min > 1.2)" );
+
+    std::cout << "  best ratio=" << std::setprecision(6) << bestRatio
+              << "  at theta=" << bestTheta << " phi=" << bestPhi
+              << "  value=(" << bestC[0] << ", " << bestC[1] << ", " << bestC[2] << ")"
+              << std::endl;
+
+    brdf->release();
+}
+
+// ============================================================
 //  main
 // ============================================================
 
@@ -1537,6 +1781,10 @@ int main()
     RunCuticleTiltDirection();
     std::cout << std::endl;
     RunAbsorptionPathLength();
+    std::cout << std::endl;
+    RunApplyLobeTiltWhiteBox();
+    std::cout << std::endl;
+    RunKHEdgeClampChromatic();
     std::cout << std::endl;
 
     g_stubObject->release();

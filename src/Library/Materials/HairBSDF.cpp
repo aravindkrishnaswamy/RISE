@@ -56,9 +56,8 @@ namespace
 	//! SCOPE OF THE PBRT MATCH -- exactly one anchor, not three.  We
 	//! reproduce PBRT's GREEN coefficient exactly and then let the
 	//! measured OMLC curve shape carry R and B.  PBRT's other two
-	//! constants are an RGB PROJECTION of the same spectroscopy through
-	//! a colour-matching integral, which is not the same thing as the
-	//! curve's value at a representative wavelength, so they do NOT
+	//! constants are a DIFFERENTLY-DERIVED RGB triple, not the same
+	//! quantity read at a representative wavelength, so they do NOT
 	//! agree.  Measured against `kRGBWavelengthsNM` (600 / 550 / 450):
 	//!
 	//!     eumelanin    R +23.5 %  (0.518 vs PBRT 0.419)
@@ -67,9 +66,9 @@ namespace
 	//!                  B  +1.7 %  (1.067 vs PBRT 1.050)
 	//!
 	//! The deviation is deliberate: spectral fidelity to the measured
-	//! OMLC curve wins over matching a projection constant, and it is
-	//! what keeps the RGB and NM paths driven by ONE curve.  A PBRT
-	//! cross-render is therefore an apples-to-apples test in G only;
+	//! OMLC curve wins over matching PBRT's differently-derived constant,
+	//! and it is what keeps the RGB and NM paths driven by ONE curve.  A
+	//! PBRT cross-render is therefore an apples-to-apples test in G only;
 	//! expect a slightly warmer R and a marginally deeper B.
 	//!
 	//! Also note the pheomelanin table itself has a small NON-MONOTONIC
@@ -133,9 +132,19 @@ namespace
 			// NOTE this DEVIATES from PBRT, which writes the same line as
 			// `x + 0.5 * (-log(2 pi) + log(1/x) + 1/(8x))` and thereby
 			// halves the 1/(8x) correction (a known slip in that source).
-			// The difference is ~1/(16x) in the log, i.e. ~2e-5 relative
-			// at the smallest x this branch sees (x ~ 1/v ~ 2700 at
-			// beta_m = 0.05); correct is free, so we take it.
+			// This branch's SMALLEST argument is x = 12 -- that is where
+			// it is entered, by definition of the `x > 12` gate -- not
+			// ~2700: a = cosThetaI*cosThetaO/v ranges over [0, ~1/v], and
+			// the INTERIOR grid (beta_m down to 0.1) already reaches
+			// a ~41-610, well inside this branch; ~2700 is only the
+			// DEEPEST corner cell (beta_m = kMinBeta = 0.05), not the
+			// smallest argument the branch sees.  At x = 12 this fixed
+			// 1/(16x) term is ~0.5% of the log; for context, the
+			// truncated 10-term series `BesselI0` uses BELOW this branch
+			// is itself ~2% LOW at x = 12, so the seam at x = 12 carries
+			// a ~2% step either way -- taking the correct constant here
+			// makes the ASYMPTOTIC SIDE of that seam accurate, it does
+			// not make the seam itself smaller.
 			return x - 0.5 * log( TWO_PI * x ) + 1 / ( 8 * x );
 		}
 		return log( BesselI0( x ) );
@@ -716,10 +725,14 @@ void HairScatteringBase::ReflectanceRGB(
 	//
 	// F_avg is approximated by the NORMAL-INCIDENCE dielectric Fresnel
 	// (eta-1)^2/(eta+1)^2 (0.0465 at eta = 1.55).  The true
-	// hemispherical average for eta = 1.55 is ~0.09; the normal-incidence
-	// value understates it, which is the safe direction for a denoiser
-	// prior (it never claims more energy than the fibre reflects) and it
-	// is closed-form with no fit constants.  Composited as
+	// hemispherical average for eta = 1.55 is ~0.09, so the normal-
+	// incidence value understates it -- NOT the safe direction for a
+	// denoiser prior (OIDN divides the noisy radiance BY this albedo, so
+	// understating it INCREASES the pre-divided signal, the opposite of
+	// conservative).  The real defense is that a constant, achromatic
+	// offset is smooth and closed-form with no fit constants, which is
+	// what the denoiser prior actually needs -- not that it is a
+	// numerically safe bound.  Composited as
 	// C + (1 - C) * F: the surface reflects F, and the remainder is what
 	// the absorption model already accounts for.
 	// Same guard as Resolve: an IOR of 1 or below is not a dielectric.
@@ -903,6 +916,26 @@ void HairBRDF::TestApAndPathLength(
 
 	absorbLen = G.absorbLen;
 	ComputeAp( G.cosThetaO, R.etaRef, R.h, exp( -sigmaA * G.absorbLen ), ap );
+}
+
+void HairBRDF::TestApplyLobeTilt(
+	const int p, const Scalar alphaDeg,
+	const Scalar sinThetaO, const Scalar cosThetaO,
+	Scalar& sinOut, Scalar& cosOut
+	) const
+{
+	// Resolve the 2k-alpha recurrence EXACTLY as `Resolve()` does, so this
+	// hook cannot silently diverge from what production feeds
+	// `ApplyLobeTilt` at render time.
+	Scalar sin2kAlpha[3], cos2kAlpha[3];
+	const Scalar aRad = alphaDeg * ( PI / 180.0 );
+	sin2kAlpha[0] = sin( aRad );
+	cos2kAlpha[0] = SafeSqrt( 1 - Sqr( sin2kAlpha[0] ) );
+	for( int i = 1; i < kPMax; i++ ) {
+		sin2kAlpha[i] = 2 * cos2kAlpha[i-1] * sin2kAlpha[i-1];
+		cos2kAlpha[i] = Sqr( cos2kAlpha[i-1] ) - Sqr( sin2kAlpha[i-1] );
+	}
+	ApplyLobeTilt( p, sin2kAlpha, cos2kAlpha, sinThetaO, cosThetaO, sinOut, cosOut );
 }
 
 //////////////////////////////////////////////////////////////////////
