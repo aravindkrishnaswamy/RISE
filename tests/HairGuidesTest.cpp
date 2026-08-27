@@ -15,18 +15,31 @@
 //
 //  THE ARITHMETIC IS CHECKED AGAINST A CLOSED FORM, NOT AGAINST ITSELF.
 //  Every positional assertion below recomputes the expected control
-//  point in the test from the documented rule (resample the guide by
+//  point in the test from the documented RULE (resample the guide by
 //  arc-length fraction, express it in the base surface's frame at the
 //  guide's root, replay it in the strand's frame at the strand's root,
-//  scale by the strand's length) using arithmetic written independently
-//  of the generator's.  The base fixtures are chosen to make that
-//  tractable: the unit quad's UV-derived frame is exactly the world axes
-//  {X, Y, Z}, so on it the transport is a pure translate and the
-//  expected point is one line of algebra.  Group 6 then uses a SECOND,
-//  differently-oriented face precisely so the rotation the flat fixture
-//  cannot see is exercised on its own.
+//  scale by the strand's length).  Precisely what "independent" means
+//  here, stated honestly: the RULE itself -- arc-length fraction,
+//  linear interpolation between the two bracketing points -- is
+//  deliberately the SAME rule the generator implements, because that
+//  rule is the spec (docs/HAIR_FUR_DESIGN.md section 5.3), not a detail
+//  either side is free to reinvent.  What must NOT be shared is the
+//  CODE PATH that locates the bracketing span: `GuideLocalWorld` below
+//  finds it via `std::upper_bound` over a cumulative arc-length table
+//  (a binary search), while HairGenerator.cpp's `PrepareGuides` finds it
+//  by walking a `seg` cursor forward one breakpoint at a time (a linear
+//  scan).  Two structurally different searches over the same table can
+//  only land on the same interpolated point if the underlying rule is
+//  actually implemented correctly on both sides -- a shared off-by-one
+//  in a common "advance while" idiom would no longer pass both, because
+//  there is no such idiom left to share.  The base fixtures are chosen
+//  to make the arithmetic itself tractable: the unit quad's UV-derived
+//  frame is exactly the world axes {X, Y, Z}, so on it the transport is
+//  a pure translate and the expected point is one line of algebra.
+//  Group 6 then uses a SECOND, differently-oriented face precisely so
+//  the rotation the flat fixture cannot see is exercised on its own.
 //
-//  The six groups:
+//  The seven groups:
 //
 //    1. ONE GUIDE, EXACTLY REPRODUCED.  A single bent guide, and every
 //       strand in the groom is that guide -- translated to its own root
@@ -41,7 +54,11 @@
 //       shapes.  The test computes the inverse-distance weights itself
 //       from the guide roots and asserts every control point against
 //       the weighted blend; strands near one guide are dominated by it
-//       (weight > 0.9), and the blend is monotone along the base.
+//       (weight > 0.9), and the blend weight is separately RECOVERED
+//       from the generated control points via a 2-unknown linear solve
+//       against the guides' own tip shapes, and checked to agree with
+//       the same inverse-distance formula (not merely re-asserted from
+//       it).
 //
 //    3. STREAM ISOLATION.  Frizz applied to a guided groom displaces
 //       every control point by the SAME jitter vector as frizz applied
@@ -71,12 +88,27 @@
 //       direction.  This is the assertion that separates a real frame-
 //       to-frame transport from a world-space copy.
 //
+//    7. COVERAGE: THE K-CLAMP AND THE COINCIDENT BRANCH.  Five guides on
+//       one base exercise `SelectGuides`' eviction arm -- for every
+//       strand, its actual control points are checked against the blend
+//       of its own nearest THREE guides (whichever three that is; the
+//       other two must contribute EXACTLY zero, not just "very little").
+//       A second, separate probe builds a fresh single-strand groom, reads
+//       its actual (RNG-placed) root position, then authors a three-guide
+//       set where one guide's root is exactly that position -- bit-for-
+//       bit, not merely close -- forcing the `best[0] <= kGuideCoincidentEps`
+//       branch, and checks the strand collapses to that one guide's shape
+//       alone (weight 1, the other two at 0).
+//
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include <cmath>
 #include <cstdio>
@@ -142,10 +174,18 @@ private:
 
 //! Control points are stored as FLOAT in HairGeometry (a documented,
 //! argued exception to Scalar=double), so a closed-form expectation
-//! computed in double agrees only to float precision.  Every fixture
-//! here works at unit scale, where float carries ~7 digits, so 1e-5 is
-//! four orders of margin over the storage error and still tight enough
-//! that any real formula difference fails.
+//! computed in double agrees only to float precision.  MOST fixtures
+//! here work at unit scale, where float's ~7 significant digits give a
+//! storage error around 1e-7 and 1e-5 sits a comfortable few orders
+//! above it.  Group 6's two-facing fixture (`MakeTwoFacings`) is the
+//! exception the earlier version of this comment missed: face B sits at
+//! x in [10, 11], and a FIXED digit count means the ABSOLUTE storage
+//! error scales with magnitude -- around 1e-6 there, not 1e-7.  At that
+//! scale `kPosTol`'s real margin over the storage error is roughly 5x,
+//! not the four orders of magnitude the unit-scale fixtures get -- still
+//! comfortably tighter than any real formula difference (which shows up
+//! at O(0.1), not O(1e-6)), but worth stating accurately rather than
+//! implying one generous margin holds everywhere this constant is used.
 const double kPosTol = 1e-5;
 
 bool Near( const Point3& a, const Point3& b, const double tol = kPosTol )
@@ -323,9 +363,11 @@ bool GroomsIdentical( const HairGeometry& a, const HairGeometry& b )
 
 //! The guide's offset from its own root at arc-length fraction `t`,
 //! divided by the guide's total arc length -- the dimensionless shape
-//! the descriptor documents.  Straightforward walk of the polyline; the
-//! generator's version precomputes a table and shares a resampler with
-//! nothing, so agreeing here is a real cross-check.
+//! the descriptor documents.  Locates the bracketing span via
+//! `std::upper_bound` (binary search) over the cumulative arc-length
+//! table, NOT via the generator's linear "advance while" cursor -- see
+//! the file header for exactly what independence claim that does and
+//! does not support.
 Vector3 GuideLocalWorld( const Guide& g, const double t )
 {
 	std::vector<double> s( g.pts.size(), 0.0 );
@@ -337,8 +379,16 @@ Vector3 GuideLocalWorld( const Guide& g, const double t )
 	}
 	const double L = s.back();
 	const double target = t * L;
-	std::size_t seg = 0;
-	while( seg + 2 < g.pts.size() && s[seg+1] < target ) { ++seg; }
+
+	// First breakpoint STRICTLY past `target`; the bracketing span is the
+	// one just before it.  Clamp at both ends so `seg`/`seg+1` are always
+	// a valid pair of indices, including for `target` landing exactly on
+	// a breakpoint (upper_bound skips past equal elements) or at the two
+	// extremes (t = 0 or t = 1).
+	const std::vector<double>::const_iterator hi = std::upper_bound( s.begin(), s.end(), target );
+	std::size_t seg = ( hi == s.begin() ) ? 0 : (std::size_t)( ( hi - s.begin() ) - 1 );
+	if( seg + 1 >= s.size() ) { seg = ( s.size() >= 2 ) ? s.size() - 2 : 0; }
+
 	const double span = s[seg+1] - s[seg];
 	double f = ( span > 0 ) ? ( ( target - s[seg] ) / span ) : 0.0;
 	if( f < 0 ) f = 0;
@@ -365,6 +415,55 @@ void ExpectedWeights( const Point3& root, const std::vector<Guide>& gs, std::vec
 		sum += w[i];
 	}
 	for( std::size_t i = 0; i < gs.size(); ++i ) { w[i] /= sum; }
+}
+
+//! Nearest-`k` selection + normalised inverse-distance weights over a
+//! guide set LARGER than k, for Group 7's eviction coverage.  Mirrors
+//! `SelectGuides`'s (HairGenerator.cpp) insertion-into-a-k-slot-array
+//! tie-break rule exactly -- ties keep the LOWER guide index, because
+//! guides are scanned in ascending index order and a candidate only
+//! displaces an existing slot on a STRICT `<` -- so this reproduces the
+//! same selection the generator makes, not merely an equivalent one.
+//! Returns the number of guides actually selected and fills `idxOut` /
+//! `wgtOut` for exactly that many, `idxOut` sorted by ascending distance
+//! (as the generator's array is), not by guide index.
+unsigned int SelectNearestKWeights( const Point3& root, const std::vector<Guide>& gs, const std::size_t k,
+                                     std::vector<unsigned int>& idxOut, std::vector<double>& wgtOut )
+{
+	std::vector<double>       best;
+	std::vector<unsigned int> idx;
+	for( std::size_t g = 0; g < gs.size(); ++g ) {
+		const double dx = root.x - gs[g].pts[0].x;
+		const double dy = root.y - gs[g].pts[0].y;
+		const double dz = root.z - gs[g].pts[0].z;
+		const double d = std::sqrt( dx*dx + dy*dy + dz*dz );
+		if( best.size() < k ) {
+			best.push_back( d );
+			idx.push_back( (unsigned int)g );
+			std::size_t j = best.size() - 1;
+			while( j > 0 && best[j] < best[j-1] ) {
+				std::swap( best[j], best[j-1] ); std::swap( idx[j], idx[j-1] ); --j;
+			}
+		} else if( d < best[k-1] ) {
+			best[k-1] = d; idx[k-1] = (unsigned int)g;
+			std::size_t j = k - 1;
+			while( j > 0 && best[j] < best[j-1] ) {
+				std::swap( best[j], best[j-1] ); std::swap( idx[j], idx[j-1] ); --j;
+			}
+		}
+	}
+
+	idxOut = idx;
+	wgtOut.assign( idx.size(), 0.0 );
+	if( idx.empty() ) { return 0; }
+	if( best[0] <= 1e-12 ) {
+		wgtOut[0] = 1.0;
+		return (unsigned int)idx.size();
+	}
+	double sum = 0;
+	for( std::size_t i = 0; i < idx.size(); ++i ) { wgtOut[i] = 1.0 / best[i]; sum += wgtOut[i]; }
+	for( std::size_t i = 0; i < idx.size(); ++i ) { wgtOut[i] /= sum; }
+	return (unsigned int)idx.size();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -576,28 +675,61 @@ static void RunTwoGuides()
 	Check( nearA > 0 && nearB > 0,
 	       "both ends of the base carry strands dominated (weight > 0.9) by their own nearest guide" );
 
-	// Monotonicity: sort a coarse sample of strands by root x and check
-	// the A-weight only ever falls.  This is the property that makes the
-	// blend read as a gradient rather than as a partition.
+	// RECOVERED-WEIGHT CHECK (P2-A review round 1, item 6 -- replaces a
+	// vacuous self-referential monotonicity assertion).  The earlier
+	// version sorted `ExpectedWeights`'s OWN 1/d formula by root.x and
+	// asserted it falls monotonically: that is a theorem about the
+	// test's reference function, true by construction no matter what the
+	// generator actually did, so it could never fail.
+	//
+	// This instead SOLVES FOR the blend weight the generator actually
+	// used, purely from the generated control points and the two guides'
+	// own local shapes -- no `ExpectedWeights` formula assumed going in.
+	// Two guides means the model
+	//     (tip - root) / length = w0 * eA(1) + w1 * eB(1)
+	// is 3 equations (x, y, z) in 2 unknowns (w0, w1): an overdetermined
+	// linear system, solved here via its normal equations.  Evaluated at
+	// t=1 (the tip) deliberately: both guides rise identically for the
+	// first 2/3 of their arc length before leaning apart, so any t on
+	// that SHARED leg makes eA(t) and eB(t) parallel and the 2x2 system
+	// singular by construction, not by bad luck.
 	{
-		std::vector<std::pair<double,double> > byX;	// (root.x, weight of A)
-		for( unsigned int s = 0; s < g->numStrands(); ++s ) {
+		const Vector3 eA = GuideLocalWorld( gs[0], 1.0 );
+		const Vector3 eB = GuideLocalWorld( gs[1], 1.0 );
+		const double a11 = eA.x*eA.x + eA.y*eA.y + eA.z*eA.z;
+		const double a12 = eA.x*eB.x + eA.y*eB.y + eA.z*eB.z;
+		const double a22 = eB.x*eB.x + eB.y*eB.y + eB.z*eB.z;
+		const double det = a11*a22 - a12*a12;
+
+		unsigned int nSolved = 0, nBad = 0;
+		double worstWeightErr = 0, worstSumErr = 0;
+		for( unsigned int s = 0; det > 1e-9 && s < g->numStrands(); ++s ) {
 			const Point3 root = g->ControlPoint( s, 0 );
-			// Restrict to the guides' own row so the distance is a
-			// function of x alone; otherwise y contributes too and
-			// "monotone in x" is not the claim being made.
-			if( std::fabs( root.y - 0.5 ) > 0.02 ) { continue; }
-			std::vector<double> w;
-			ExpectedWeights( root, gs, w );
-			byX.push_back( std::make_pair( (double)root.x, w[0] ) );
+			const Point3 tip  = g->ControlPoint( s, nCP - 1 );
+			const Vector3 d( ( tip.x - root.x ) / 0.5, ( tip.y - root.y ) / 0.5, ( tip.z - root.z ) / 0.5 );
+			const double b1 = eA.x*d.x + eA.y*d.y + eA.z*d.z;
+			const double b2 = eB.x*d.x + eB.y*d.y + eB.z*d.z;
+			const double w0 = ( b1*a22 - b2*a12 ) / det;
+			const double w1 = ( a11*b2 - a12*b1 ) / det;
+			++nSolved;
+
+			std::vector<double> want;
+			ExpectedWeights( root, gs, want );
+			const double weightErr = std::fabs( w0 - want[0] );
+			const double sumErr    = std::fabs( ( w0 + w1 ) - 1.0 );
+			if( weightErr > worstWeightErr ) worstWeightErr = weightErr;
+			if( sumErr > worstSumErr ) worstSumErr = sumErr;
+			if( weightErr > 1e-3 || sumErr > 1e-3 ) { ++nBad; }
 		}
-		std::sort( byX.begin(), byX.end() );
-		bool monotone = true;
-		for( std::size_t i = 1; i < byX.size(); ++i ) {
-			if( byX[i].second > byX[i-1].second + 1e-12 ) { monotone = false; break; }
-		}
-		Check( byX.size() >= 3 && monotone,
-		       "the A-weight falls monotonically as a strand's root moves from guide A toward guide B" );
+		std::cout << "  weight recovered for       : " << nSolved << " / " << g->numStrands() << " strands" << std::endl;
+		std::cout << "  worst recovered-weight err : " << worstWeightErr << std::endl;
+		std::cout << "  worst recovered w0+w1-1 err: " << worstSumErr << std::endl;
+		Check( det > 1e-9, "the two guides' tip shapes are non-parallel, so the recovery system is non-singular" );
+		Check( nSolved > 0, "the recovery system was actually solved for at least some strands" );
+		Check( nBad == 0,
+		       "MONEY: the blend weight RECOVERED FROM THE GENERATED CONTROL POINTS (a 2-unknown linear solve "
+		       "against the guides' own shapes, not the test's 1/d formula) matches the normalised inverse-distance "
+		       "weight, and the recovered w0+w1 comes back to 1" );
 	}
 }
 
@@ -909,6 +1041,137 @@ static void RunTransport()
 	}
 }
 
+// ============================================================
+//  7. Coverage: the K-clamp and the coincident branch
+// ============================================================
+
+static void RunCoverage()
+{
+	std::cout << "=== 7. Coverage: K-clamp eviction + coincident root ===" << std::endl;
+
+	// ---- 7a. Five guides on the unit quad -- MORE than `kNearestGuides`
+	//      (3) -- so every strand's own nearest-three selection is
+	//      actually a SELECTION, not the whole set.  Each strand's shape
+	//      is checked against the blend of its OWN nearest three (found
+	//      independently by `SelectNearestKWeights`); the other two must
+	//      contribute EXACTLY zero.
+	{
+		Owned<ITriangleMeshGeometryIndexed> base( MakeUnitQuad() );
+		if( !base ) { Check( false, "unit-quad base built (7a)" ); return; }
+
+		std::vector<Guide> gs( 5 );
+		// Five roots spread along y=0.5 at x = 0.1, 0.3, 0.5, 0.7, 0.9,
+		// each leaning a DIFFERENT amount in +X after the shared 1-unit
+		// rise, so a wrong nearest-three subset produces a visibly
+		// different blend rather than one that happens to agree anyway.
+		for( unsigned int i = 0; i < 5; ++i ) {
+			const double x = 0.1 + 0.2 * i;
+			gs[i].pts.push_back( Point3( x, 0.5, 0.0 ) );
+			gs[i].pts.push_back( Point3( x, 0.5, 1.0 ) );
+			gs[i].pts.push_back( Point3( x + 0.05 * ( i + 1 ), 0.5, 1.0 ) );
+		}
+		FlatGuides flat( gs );
+
+		HairGroomRecipe r = PlainRecipe( base.get(), 400 );
+		flat.Bind( r );
+		Owned<HairGeometry> g( BuildAndRealize( r ) );
+		if( !g || g->numStrands() == 0 ) { Check( false, "the five-guide groom grew strands" ); return; }
+
+		const unsigned int nCP = g->numControlPointsOfStrand( 0 );
+		unsigned int bad = 0, checkedStrands = 0;
+		double worst = 0;
+		std::set<unsigned int> triplesSeen;	// packed idx[0..2] (each 0-4) -- proves >1 subset occurred
+		for( unsigned int s = 0; s < g->numStrands(); ++s ) {
+			const Point3 root = g->ControlPoint( s, 0 );
+			std::vector<unsigned int> idx;
+			std::vector<double> w;
+			const unsigned int n = SelectNearestKWeights( root, gs, 3, idx, w );
+			if( n != 3 ) { continue; }		// five guides are bound; should never clamp below 3
+			++checkedStrands;
+			triplesSeen.insert( idx[0] * 100 + idx[1] * 10 + idx[2] );
+
+			for( unsigned int k = 0; k < nCP; ++k ) {
+				const double t = (double)k / (double)( nCP - 1 );
+				Vector3 e( 0, 0, 0 );
+				for( unsigned int i = 0; i < 3; ++i ) {
+					const Vector3 ei = GuideLocalWorld( gs[ idx[i] ], t );
+					e.x += w[i] * ei.x; e.y += w[i] * ei.y; e.z += w[i] * ei.z;
+				}
+				const Point3 want( root.x + 0.5 * e.x, root.y + 0.5 * e.y, root.z + 0.5 * e.z );
+				const Point3 got = g->ControlPoint( s, k );
+				const double err = std::fabs( got.x - want.x ) + std::fabs( got.y - want.y ) + std::fabs( got.z - want.z );
+				if( err > worst ) worst = err;
+				if( !Near( got, want ) ) { ++bad; }
+			}
+		}
+		std::cout << "  strands checked / distinct nearest-3 subsets : " << checkedStrands << " / " << triplesSeen.size() << std::endl;
+		std::cout << "  worst nearest-3-of-5 blend error             : " << worst << std::endl;
+		Check( checkedStrands > 0, "at least some strands were checked against their own nearest-three subset" );
+		Check( triplesSeen.size() > 1,
+		       "more than one nearest-three guide subset actually occurred across the groom (the eviction arm is "
+		       "exercised, not vacuously satisfied by one fixed triple)" );
+		Check( bad == 0,
+		       "MONEY: every strand's shape equals the blend of its OWN nearest three guides of five bound -- the "
+		       "other two contribute EXACTLY zero (SelectGuides' K clamp / eviction arm)" );
+	}
+
+	// ---- 7b. The coincident branch.  A fresh single-strand probe groom
+	//      supplies an ACTUAL (RNG-placed) root position; a guide is then
+	//      authored with its root at exactly that position -- bit-for-
+	//      bit, read back rather than computed -- alongside two decoys
+	//      placed CLOSER than they would need to be to matter, so a bug
+	//      that fell through to the ordinary blend instead of the
+	//      `best[0] <= kGuideCoincidentEps` short-circuit would visibly
+	//      pull the strand toward them.
+	{
+		Owned<ITriangleMeshGeometryIndexed> base( MakeUnitQuad() );
+		if( !base ) { Check( false, "unit-quad base built (7b)" ); return; }
+
+		HairGroomRecipe probe = PlainRecipe( base.get(), 1 );
+		Owned<HairGeometry> solo( BuildAndRealize( probe ) );
+		if( !solo || solo->numStrands() == 0 ) { Check( false, "the single-strand probe groom grew a strand" ); return; }
+		const Point3 pinnedRoot = solo->ControlPoint( 0, 0 );
+
+		std::vector<Guide> gs( 3 );
+		gs[0].pts.push_back( pinnedRoot );
+		gs[0].pts.push_back( Point3( pinnedRoot.x, pinnedRoot.y, pinnedRoot.z + 1.0 ) );
+		gs[0].pts.push_back( Point3( pinnedRoot.x + 0.3, pinnedRoot.y, pinnedRoot.z + 1.0 ) );
+		gs[1].pts.push_back( Point3( pinnedRoot.x + 0.02, pinnedRoot.y, pinnedRoot.z ) );
+		gs[1].pts.push_back( Point3( pinnedRoot.x + 0.02, pinnedRoot.y, pinnedRoot.z + 1.0 ) );
+		gs[1].pts.push_back( Point3( pinnedRoot.x - 0.5,  pinnedRoot.y, pinnedRoot.z + 1.0 ) );
+		gs[2].pts.push_back( Point3( pinnedRoot.x - 0.02, pinnedRoot.y, pinnedRoot.z ) );
+		gs[2].pts.push_back( Point3( pinnedRoot.x - 0.02, pinnedRoot.y, pinnedRoot.z + 1.0 ) );
+		gs[2].pts.push_back( Point3( pinnedRoot.x,        pinnedRoot.y + 0.5, pinnedRoot.z + 1.0 ) );
+		FlatGuides flat( gs );
+
+		HairGroomRecipe r = PlainRecipe( base.get(), 1 );
+		flat.Bind( r );
+		Owned<HairGeometry> pinned( BuildAndRealize( r ) );
+		if( !pinned || pinned->numStrands() == 0 ) { Check( false, "the pinned-root probe groom grew a strand" ); return; }
+
+		const Point3 root = pinned->ControlPoint( 0, 0 );
+		Check( root.x == pinnedRoot.x && root.y == pinnedRoot.y && root.z == pinnedRoot.z,
+		       "the probe strand's root is unchanged by binding guides (same base/seed/count as the unguided probe)" );
+
+		const unsigned int nCP = pinned->numControlPointsOfStrand( 0 );
+		unsigned int bad = 0;
+		double worst = 0;
+		for( unsigned int k = 0; k < nCP; ++k ) {
+			const double t = (double)k / (double)( nCP - 1 );
+			const Vector3 e = GuideLocalWorld( gs[0], t );		// weight 1 on guide 0 alone
+			const Point3 want( root.x + 0.5 * e.x, root.y + 0.5 * e.y, root.z + 0.5 * e.z );
+			const Point3 got = pinned->ControlPoint( 0, k );
+			const double err = std::fabs( got.x - want.x ) + std::fabs( got.y - want.y ) + std::fabs( got.z - want.z );
+			if( err > worst ) worst = err;
+			if( !Near( got, want ) ) { ++bad; }
+		}
+		std::cout << "  worst coincident-branch error : " << worst << std::endl;
+		Check( bad == 0,
+		       "MONEY: a strand rooted exactly on a guide's root pins to weight 1 on THAT guide alone -- the two "
+		       "closer-than-necessary decoys contribute EXACTLY zero (SelectGuides' coincident short-circuit)" );
+	}
+}
+
 int main()
 {
 	std::cout << "===================================================" << std::endl;
@@ -921,6 +1184,7 @@ int main()
 	RunChunk();
 	RunDeterminism();
 	RunTransport();
+	RunCoverage();
 
 	std::cout << "---------------------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << ", failures: " << g_failures << std::endl;

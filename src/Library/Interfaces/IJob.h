@@ -4141,12 +4141,30 @@ namespace RISE
 		//! Guides are pure DATA (open polylines), not scene entities: they
 		//! intersect nothing, render nothing, and are never bound to an
 		//! object.  They live in a Job-side name table rather than a
-		//! manager, following the `AddMedium*` family (media are likewise
-		//! named, non-renderable, and manager-less) -- a whole new
-		//! IManager and ChunkCategory would ripple through the editor,
-		//! agent and suggestion surfaces for an entity that only ever
-		//! feeds `AddHairGeometry`'s `guides` field.  The set is COPIED
-		//! here; the caller keeps its arrays.
+		//! manager, following the `AddMedium*` family's manager-less
+		//! `mediaMap` -- but ONLY that half of the precedent.  Media got
+		//! their OWN `ChunkCategory::Medium`, with its own enumeration
+		//! hooks across the editor/agent/suggestion surfaces (SceneGrammar's
+		//! category-name switch, SceneEditController's `Cat::Medium`,
+		//! CstIntrospection, AgentSession's schema + build-count switches).
+		//! `hair_guides` did NOT get that: it deliberately reuses
+		//! `ChunkCategory::Geometry` (declared alongside `hair_geometry` in
+		//! ChunkParserRegistry.cpp), a storage-only precedent that avoids a
+		//! new category's ripple but is NOT full parity with the media
+		//! precedent it's named after.  Known consequences: (1) any
+		//! jump-to-definition / category-scoped lookup keyed off
+		//! `ChunkCategory::Geometry` alone cannot distinguish a `hair_guides`
+		//! set from a real, renderable geometry chunk; (2) `guides`-typed
+		//! chunks are legal candidates for an ORDINARY Geometry-pipe slot
+		//! (e.g. `standard_object.geometry`) unless that specific parameter
+		//! also carries the `guides`-side keyword allowlist -- the reverse
+		//! direction from `hair_geometry`'s `guides` field is governed by
+		//! `ChunkCategory` alone (ConnectionLegality.cpp's `OwnPipe`, which
+		//! classifies every `ChunkCategory::Geometry` chunk as pipe
+		//! `Geometry` regardless of keyword), so this residual gap survives
+		//! even after ConnectionLegality.cpp's `guides` parameter hoists its
+		//! own `keywordAllowlist` check ahead of the per-pipe switch.  The
+		//! set is COPIED here; the caller keeps its arrays.
 		//!
 		//! Validated here (`ValidateHairGuides`): at least one guide, at
 		//! least two points per guide, all finite, each with a strictly

@@ -161,13 +161,11 @@ namespace RISE
 			const std::string& candidateKeyword,
 			ChunkCategory candidateCategory )
 		{
-			if( !pd.semantics.keywordAllowlist.empty() && !InAllowlist( pd.semantics.keywordAllowlist, candidateKeyword ) ) {
-				return { false, Fmt(
-					"%s: parameter `%s` only accepts one of {%s} (got `%s`) -- see the parameter's "
-					"documented special case.",
-					targetKeyword.c_str(), paramName.c_str(),
-					JoinAllowlist( pd.semantics.keywordAllowlist ).c_str(), candidateKeyword.c_str() ) };
-			}
+			// `pd.semantics.keywordAllowlist` is now enforced up front in
+			// CheckConnectionByKeyword, for EVERY pipe (not just Color) -- see
+			// the comment there.  By the time control reaches here the
+			// candidate has already cleared the allowlist gate, so there is
+			// nothing left to check on that front.
 			if( ConnectionLegality::IsColorCapable( candidateKeyword, candidateCategory ) ) {
 				return { true, std::string() };
 			}
@@ -242,6 +240,28 @@ namespace RISE
 			return { false, Fmt(
 				"%s: parameter `%s` is not a Reference-kind parameter -- nothing can be wired into it",
 				targetKeyword.c_str(), paramName.c_str() ) };
+		}
+
+		// A `keywordAllowlist` is a per-PARAMETER special case (e.g.
+		// `hair_geometry`'s `guides` field, which resolves against the Job's
+		// `hair_guides` table rather than the geometry manager and so must
+		// accept ONLY `hair_guides` chunks, even though both share
+		// `ChunkCategory::Geometry`).  It is enforced HERE, ahead of the
+		// per-pipe switch below, so it applies uniformly to every pipe --
+		// not just Color, whose own resolver used to be the only one that
+		// consulted it (a `ParameterPipe::Other` parameter like `guides`
+		// fell through to the generic `CategoryAllowed` check and never saw
+		// the allowlist at all).  NOTE this only constrains what wires INTO
+		// this parameter; it says nothing about the reverse direction (this
+		// parameter's candidate keyword wired into some OTHER chunk's
+		// same-category slot) -- see IJob.h's `hair_guides` comment for that
+		// residual gap.
+		if( !pd->semantics.keywordAllowlist.empty() && !InAllowlist( pd->semantics.keywordAllowlist, candidateKeyword ) ) {
+			return { false, Fmt(
+				"%s: parameter `%s` only accepts one of {%s} (got `%s`) -- see the parameter's "
+				"documented special case.",
+				targetKeyword.c_str(), paramName.c_str(),
+				JoinAllowlist( pd->semantics.keywordAllowlist ).c_str(), candidateKeyword.c_str() ) };
 		}
 
 		// Every TYPED pipe below does its OWN precise legality check

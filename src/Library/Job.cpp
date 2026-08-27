@@ -5343,9 +5343,20 @@ bool Job::AddHairGeometry( const char* name, const HairGroomDescriptor& desc )
 
 	IGeometry* pBase = pGeomManager->GetItem( desc.baseGeometry );
 	if( !pBase ) {
+		// A `hair_guides` set shares ChunkCategory::Geometry with real,
+		// renderable geometry (IJob.h's AddHairGuides doc explains why --
+		// a storage-only precedent, not a distinct category), so an author
+		// who typed a guide set's name into `base_geometry` instead of
+		// `guides` gets a bare "not found" here with no clue why: it DID
+		// get declared, just into a different table.  Probe `hairGuidesMap`
+		// and say so directly when that's what happened.
+		const bool isGuideSet = hairGuidesMap.find( desc.baseGeometry ) != hairGuidesMap.end();
 		GlobalLog()->PrintEx( eLog_Error,
-			"Job::AddHairGeometry:: `%s`: base geometry `%s` not found (declare it first)",
-			who, desc.baseGeometry );
+			"Job::AddHairGeometry:: `%s`: base geometry `%s` not found (declare it first)%s",
+			who, desc.baseGeometry,
+			isGuideSet
+				? " -- note: that name is a hair_guides set; guides bind to `guides`, not `base_geometry`"
+				: "" );
 		return false;
 	}
 

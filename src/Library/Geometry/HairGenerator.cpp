@@ -474,11 +474,15 @@ namespace
 	//! runs ONCE per groom, not once per strand.
 	//!
 	//! Returns false only if the base surface cannot frame a guide at all
-	//! (every candidate triangle degenerate), which the caller reports as
-	//! a generation failure rather than silently growing an unguided groom
-	//! from a recipe that asked for guides.
+	//! (every candidate triangle is zero-area/non-finite, or the nearest
+	//! well-formed ones all fail `ComputeSurfaceFrame`), which the caller
+	//! reports as a generation failure rather than silently growing an
+	//! unguided groom from a recipe that asked for guides.  Logs the
+	//! specific failing guide's index and reason itself (via `who`) --
+	//! the caller cannot say which guide failed or why.
 	bool PrepareGuides(
 		const HairGroomRecipe&        recipe,
+		const char*                   who,
 		const unsigned int            segments,
 		const IndexTriangleListType&  tris,
 		const VerticesListType&       verts,
@@ -510,24 +514,42 @@ namespace
 			if( !( total > 0 ) ) {
 				// ValidateHairGuides refuses this at parse time; the guard
 				// is here for the direct-API caller that skipped it.
+				GlobalLog()->PrintEx( eLog_Error,
+					"%s:: guide %u has zero arc length -- it needs a direction to align and a length to "
+					"normalise by", who, g );
 				return false;
 			}
 
 			// -- the guide's own frame: the base surface, at the closest
-			//    point of the closest triangle to the guide's root.
-			std::size_t bestTri = 0;
-			Scalar bestD2 = 0;
-			Scalar bw0 = 1, bw1 = 0, bw2 = 0;
-			bool haveBest = false;
+			//    point of the closest WELL-FORMED triangle to the guide's
+			//    root.  "Well-formed" mirrors step 2's area gate (the
+			//    `totalArea` loop above, ~line 945): a zero-area / NaN
+			//    triangle carries no meaningful normal or tangent, so it is
+			//    excluded from consideration outright rather than merely
+			//    losing a distance tie-break.  Candidates are then tried in
+			//    ascending distance order -- if the nearest well-formed
+			//    triangle still cannot yield a frame (`ComputeSurfaceFrame`
+			//    can fail independently of area, e.g. a degenerate UV
+			//    triangle), fall through to the next-nearest rather than
+			//    failing the whole guide on the first attempt.
+			struct FrameCandidate { Scalar d2; std::size_t tri; Scalar w0, w1, w2; };
+			std::vector<FrameCandidate> cands;
+			cands.reserve( tris.size() );
 			for( std::size_t t = 0; t < tris.size(); ++t ) {
 				const IndexedTriangle& tri = tris[t];
-				Scalar w0 = 0, w1 = 0, w2 = 0;
-				ClosestPointBaryOnTriangle( q[0],
-					verts[ tri.iVertices[0] ], verts[ tri.iVertices[1] ], verts[ tri.iVertices[2] ],
-					w0, w1, w2 );
 				const Point3& a = verts[ tri.iVertices[0] ];
 				const Point3& b = verts[ tri.iVertices[1] ];
 				const Point3& c = verts[ tri.iVertices[2] ];
+
+				const Vector3 ae0 = Vector3Ops::mkVector3( b, a );
+				const Vector3 ae1 = Vector3Ops::mkVector3( c, a );
+				const double area = 0.5 * (double)Vector3Ops::Magnitude( Vector3Ops::Cross( ae0, ae1 ) );
+				if( !RISE::IsFiniteDouble( area ) || area <= 0.0 ) {
+					continue;			// degenerate triangle -- no frame to be had here
+				}
+
+				Scalar w0 = 0, w1 = 0, w2 = 0;
+				ClosestPointBaryOnTriangle( q[0], a, b, c, w0, w1, w2 );
 				const Point3 cpt( a.x * w0 + b.x * w1 + c.x * w2,
 				                  a.y * w0 + b.y * w1 + c.y * w2,
 				                  a.z * w0 + b.z * w1 + c.z * w2 );
@@ -535,17 +557,31 @@ namespace
 				if( !RISE::IsFiniteDouble( d2 ) ) {
 					continue;
 				}
-				// Strictly-less keeps the FIRST triangle of a tie, so the
-				// frame a guide gets does not depend on triangle order
-				// beyond the tessellator's own determinism.
-				if( !haveBest || d2 < bestD2 ) {
-					haveBest = true; bestD2 = d2; bestTri = t; bw0 = w0; bw1 = w1; bw2 = w2;
-				}
+				FrameCandidate fc; fc.d2 = d2; fc.tri = t; fc.w0 = w0; fc.w1 = w1; fc.w2 = w2;
+				cands.push_back( fc );
 			}
+			// Stable sort keeps the FIRST triangle of a tie (in tessellation
+			// order) at the front, so the frame a guide gets does not depend
+			// on triangle order beyond the tessellator's own determinism.
+			std::stable_sort( cands.begin(), cands.end(),
+				[]( const FrameCandidate& lhs, const FrameCandidate& rhs ) { return lhs.d2 < rhs.d2; } );
 
 			SurfaceFrame gf;
-			if( !haveBest || !ComputeSurfaceFrame( tris[bestTri], bw0, bw1, bw2,
-			                                       verts, norms, coords, haveNormals, haveCoords, gf ) ) {
+			bool framed = false;
+			for( std::size_t ci = 0; ci < cands.size(); ++ci ) {
+				if( ComputeSurfaceFrame( tris[ cands[ci].tri ], cands[ci].w0, cands[ci].w1, cands[ci].w2,
+				                         verts, norms, coords, haveNormals, haveCoords, gf ) ) {
+					framed = true;
+					break;
+				}
+			}
+			if( !framed ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"%s:: guide %u could not be framed against the base surface -- %s", who, g,
+					cands.empty()
+						? "every base triangle is zero-area or non-finite"
+						: "every base triangle near its root is degenerate in a way area alone does not catch "
+						  "(no valid normal or tangent)" );
 				return false;
 			}
 			const Vector3 gBitangent = Vector3Ops::Cross( gf.normal, gf.tangent );
@@ -961,10 +997,11 @@ bool RISE::Implementation::GenerateHairStrands(
 	//      adds per control point and no resampling at all.
 	std::vector<PreparedGuide> guides;
 	if( recipe.numGuides > 0 && recipe.guidePoints && recipe.guidePointCounts ) {
-		if( !PrepareGuides( recipe, p.segments, tris, verts, norms, coords, haveNormals, haveCoords, guides ) ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"%s:: could not frame the bound guide set against the base surface -- every candidate base "
-				"triangle is degenerate, or a guide has zero length", who );
+		// PrepareGuides logs the specific failing guide's index and reason
+		// itself (it's the only place that knows which guide and why); no
+		// wrapper message here -- one that named "every" candidate triangle
+		// without actually knowing which guide failed would be misleading.
+		if( !PrepareGuides( recipe, who, p.segments, tris, verts, norms, coords, haveNormals, haveCoords, guides ) ) {
 			return false;
 		}
 	}
