@@ -11,8 +11,17 @@ import bpy
 from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Vector
 
+from . import hair_file_writer
+from .hair_material_math import melanin_to_eumelanin_pheomelanin, offset_radians_to_alpha_degrees
+
 
 GEOMETRY_TYPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
+# NOTE: Blender's modern hair/fur system uses object type "CURVES"
+# (bpy.types.Curves data), distinct from the legacy NURBS/Bezier
+# "CURVE" type already in GEOMETRY_TYPES above.  CURVES objects are
+# NOT added to GEOMETRY_TYPES -- `to_mesh()` (the whole GEOMETRY_TYPES
+# path) doesn't apply to a strand groom, so they're handled by their
+# own branch in export_scene() / _export_hair_object() below.
 
 PAINTER_UNIFORM = 0
 PAINTER_TEXTURE_PNG = 1
@@ -296,6 +305,56 @@ class MediumData:
 
 
 @dataclass
+class HairMaterialData:
+    """Mirrors the `hair_material` scene chunk (Chiang et al. 2016)
+    parameter set -- see ChunkParserRegistry.cpp's
+    HairMaterialAsciiChunkParser -- one-to-one, in terms of the
+    exporter's own painter-reference model.  `tier` names which ONE of
+    the three colour tiers is bound (`hair_material` itself enforces
+    "exactly one"): "melanin" (eumelanin/pheomelanin painters set),
+    "sigma_a" (sigma_a painter set), or "color" (color painter set).
+
+    Not yet consumed by `bridge.py` / `rise_blender_bridge.{h,cpp}` --
+    the live-render ctypes ABI (v8) has no hair fields.  This dataclass
+    is the export-side half of hair-material translation, staged and
+    ready for when the native bridge adds them; see
+    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the full
+    status.
+    """
+
+    name: str
+    tier: str
+    eumelanin_painter_name: str | None = None
+    pheomelanin_painter_name: str | None = None
+    sigma_a_painter_name: str | None = None
+    color_painter_name: str | None = None
+    beta_m_painter_name: str | None = None
+    beta_n_painter_name: str | None = None
+    alpha_painter_name: str | None = None
+    ior_painter_name: str | None = None
+
+
+@dataclass
+class HairObjectData:
+    """One hair/fur groom exported from a Blender Curves object: a
+    binary `.hair` file (Cem Yuksel format, written by
+    `hair_file_writer.write_hair_file`) staged to disk, plus the
+    object/transform/material binding a `hair_geometry { file ... }` +
+    `standard_object` pair would need on the RISE side.  See
+    `HairMaterialData`'s docstring for the same "not yet consumed by
+    the live-render bridge" caveat.
+    """
+
+    name: str
+    file_path: str
+    material_name: str
+    transform: list[float]
+    width_root_scale: float = 1.0
+    width_tip_scale: float = 1.0
+    source_object_name: str = ""
+
+
+@dataclass
 class SceneData:
     camera: CameraData
     painters: list[PainterData]
@@ -314,6 +373,9 @@ class SceneData:
     world_radiance_orientation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     world_radiance_is_background: bool = True
     warnings: list[str] = field(default_factory=list)
+    # Hair/fur grooms -- see HairObjectData / HairMaterialData above.
+    hair_objects: list[HairObjectData] = field(default_factory=list)
+    hair_materials: list[HairMaterialData] = field(default_factory=list)
 
 
 @dataclass
@@ -356,6 +418,9 @@ class _ExportState:
         # round-trip them through a temp file because RISE's painter
         # loaders only accept filepaths.
         self.image_path_cache: dict[int, str] = {}
+        self.hair_objects: list[HairObjectData] = []
+        self.hair_materials: list[HairMaterialData] = []
+        self.hair_material_map: dict[int | None, str] = {}
 
 
 def _warn_once(state: _ExportState, message: str):
@@ -1992,6 +2057,456 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     return binding
 
 
+# ---------------------------------------------------------------------------
+# Hair / fur export (Blender Curves objects -> Cem Yuksel .hair files +
+# hair_material translation).  See docs/BLENDER_MATERIAL_TRANSLATION.md's
+# hair section for the full design writeup; this block is deliberately
+# self-contained (its own painter-resolution + classification logic)
+# rather than woven into `_material_payload` above, because a hair
+# material's inputs (Melanin / Absorption Coefficient / Offset / ...)
+# have nothing in common with a Principled BSDF's, and hair has NO bake
+# fallback at all (baking is meaningless for curve geometry) -- so the
+# "force complex -> bake" escape hatch the mesh path relies on doesn't
+# exist here; an unsupported hair graph is refused outright, with a
+# warning, in favour of a physically-reasonable default groom colour.
+# ---------------------------------------------------------------------------
+
+_HAIR_BSDF_BLIDNAME = "ShaderNodeBsdfHairPrincipled"
+
+# ShaderNodeBsdfHairPrincipled.parametrization enum identifiers.
+_HAIR_PARAM_COLOR = "COLOR"
+_HAIR_PARAM_MELANIN = "MELANIN"
+_HAIR_PARAM_ABSORPTION = "ABSORPTION_COEFFICIENT"
+
+# Inputs that encode PER-STRAND random variation.  RISE's hair_material
+# is one BCSDF instance for the whole groom (no per-strand attribute
+# plumbing), so these have no representation at all -- warn once and
+# ignore, rather than silently dropping the variation with no trace.
+_HAIR_UNSUPPORTED_RANDOM_SOCKETS = ("Random Color", "Random Roughness", "Random")
+
+_HAIR_EXPORT_DIR_NAME = "rise_blender_hair"
+
+
+def _hair_staging_dir() -> str:
+    """Directory `.hair` files are written into -- same convention as
+    `_unpack_image_to_disk`'s `_PACKED_UNPACK_DIR_NAME` (a named
+    subdirectory of Blender's own temp dir, created on demand)."""
+    out_dir = os.path.join(bpy.app.tempdir or tempfile.gettempdir(), _HAIR_EXPORT_DIR_NAME)
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+
+def _warn_legacy_particle_hair(original_object, state: _ExportState):
+    """Legacy (pre-Curves) particle-hair systems -- `ParticleSettings.
+    type == 'HAIR'` -- are NOT exported.  Getting their rendered strand
+    geometry requires either the deprecated per-particle `co_hair()`
+    API (removed from newer Blender versions' render-time access) or
+    driving `bpy.ops.object.modifier_convert` / the "Convert Hair to
+    New System" operator to materialise a real Curves object first --
+    an `bpy.ops` call, which `material_bake.py`'s own docstring
+    documents as hazardous to invoke from inside a render callback
+    (context-override requirements, hidden-object refusals, teardown
+    crashes -- see that module's "Workflow" section).  Converting mid-
+    export would import that same risk into every render.  The
+    supported path is therefore: the ARTIST converts once, up front,
+    via Blender's own UI (Particle properties > Convert, or Object >
+    Convert > Curves) -- after which the result is a normal Curves
+    object and exports through `_export_hair_object` like any other
+    groom.  This function only makes sure the artist isn't left
+    guessing why their particle hair didn't render: one warning per
+    object, via the same `_warn_once` idiom every other unsupported-
+    feature notice in this module uses."""
+
+    for psys in getattr(original_object, "particle_systems", []) or []:
+        settings = getattr(psys, "settings", None)
+        if settings is not None and getattr(settings, "type", None) == "HAIR":
+            _warn_once(
+                state,
+                f"RISE does not export legacy particle-hair systems ('{psys.name}' on "
+                f"'{original_object.name_full}'). Convert it to a Curves object first "
+                "(Particle properties → Convert, or Object → Convert → Curves) "
+                "and RISE will export the resulting groom like any other Curves object.",
+            )
+
+
+def _extract_curves_arrays(curves_data):
+    """BPY-GLUE, MANUALLY VALIDATED ONLY -- no bpy in this repo's test
+    environment, so this function (and it alone, of the hair-export
+    pipeline) has no unit-test coverage; see
+    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the
+    honesty note on this.  Pulls raw per-point arrays out of a
+    ``bpy.types.Curves`` datablock via ``foreach_get``, matching the
+    mesh export's bulk-read convention (`_mesh_buckets` above), then
+    hands them to the bpy-free `hair_file_writer.
+    build_hair_strands_from_curve_arrays` for the actual translation
+    logic (which IS unit-tested).
+
+    Returns ``(positions_flat, curve_offsets, radii_flat_or_None)`` --
+    see that function's docstring for the exact shapes.
+    """
+    num_points = len(curves_data.points)
+    num_curves = len(curves_data.curves)
+    if num_points == 0 or num_curves == 0:
+        return [], [0], None
+
+    positions = array.array("f", [0.0]) * (num_points * 3)
+    curves_data.points.foreach_get("position", positions)
+
+    first_point = array.array("i", [0]) * num_curves
+    curves_data.curves.foreach_get("first_point_index", first_point)
+    offsets = list(first_point) + [num_points]
+
+    # `radius` is a first-class per-point attribute on every Curves
+    # datablock (used by Blender's own hair rendering for fibre
+    # thickness) -- present iff the artist (or a "Set Curve Radius"
+    # geometry-nodes setup) ever touched it.  Absent radius data is
+    # normal (e.g. curves authored purely by a hand-drawn Curves
+    # sketch) -- fall back to None -> no thickness array in the .hair
+    # file -> RISE's own human-hair default at import.
+    radii = None
+    radius_attr = curves_data.attributes.get("radius") if hasattr(curves_data, "attributes") else None
+    if radius_attr is not None:
+        raw = array.array("f", [0.0]) * num_points
+        curves_data.points.foreach_get("radius", raw)
+        radii = raw.tolist()
+
+    return positions.tolist(), offsets, radii
+
+
+def _export_hair_object(object_instance, original_object, state: _ExportState):
+    """Export one Blender Curves object as a RISE hair groom: write its
+    strands to a Cem Yuksel `.hair` file in the add-on's staging
+    directory, resolve its material into a HairMaterialData, and
+    record the binding in `state.hair_objects`.  Warns (via
+    `_warn_once`) and returns without adding anything on any failure
+    -- a groom that can't be exported is a skipped object, not an
+    aborted render."""
+
+    eval_object = object_instance.object
+    curves_data = getattr(eval_object, "data", None) if eval_object is not None else None
+    if curves_data is None:
+        return
+
+    try:
+        positions, offsets, radii = _extract_curves_arrays(curves_data)
+    except Exception as exc:  # pragma: no cover -- bpy glue, defensive
+        _warn_once(state, f"RISE could not read hair curves data from '{original_object.name_full}': {exc}.")
+        return
+
+    strands = hair_file_writer.build_hair_strands_from_curve_arrays(positions, offsets, radii)
+    if not strands:
+        _warn_once(
+            state,
+            f"RISE skipped '{original_object.name_full}': its hair curves have no strand with >= 2 points.",
+        )
+        return
+
+    out_dir = _hair_staging_dir()
+    safe_stem = _safe_name(original_object.name_full)
+    file_path = os.path.join(out_dir, f"{safe_stem}_{id(original_object):x}.hair")
+    try:
+        hair_file_writer.write_hair_file(
+            file_path,
+            strands,
+            info=f"RISE Blender export: {original_object.name_full}"[:88],
+        )
+    except (OSError, hair_file_writer.HairFileError) as exc:
+        _warn_once(state, f"RISE could not write the .hair file for '{original_object.name_full}': {exc}.")
+        return
+
+    material = eval_object.active_material
+    hair_material_name = _hair_material_payload(material, state)
+
+    state.hair_objects.append(
+        HairObjectData(
+            name=_unique_name(state, "hairobj", original_object.name_full),
+            file_path=file_path,
+            material_name=hair_material_name,
+            transform=_flatten_matrix(object_instance.matrix_world.copy()),
+            source_object_name=original_object.name_full,
+        )
+    )
+
+
+def _find_hair_bsdf_through_surface(output_node):
+    """Sibling of `material_bake._find_principled_through_surface`,
+    looking for `ShaderNodeBsdfHairPrincipled` instead of the regular
+    Principled BSDF.  Traverses `NodeReroute` only -- any other node
+    between the hair BSDF and Material Output.Surface (a Mix Shader
+    blending hair with something else, an Add Shader, a second BSDF)
+    is unsupported: hair has no bake fallback to fall back to, so the
+    caller refuses the whole material rather than guessing which
+    shader "is" the hair."""
+
+    if output_node is None:
+        return None
+    surface_socket = output_node.inputs.get("Surface")
+    if surface_socket is None or not surface_socket.is_linked:
+        return None
+
+    visited: set[int] = set()
+    cursor = surface_socket.links[0].from_node
+    depth = 0
+    while depth < 16:
+        depth += 1
+        node_id = id(cursor)
+        if node_id in visited:
+            return None
+        visited.add(node_id)
+        if cursor.bl_idname == _HAIR_BSDF_BLIDNAME:
+            return cursor
+        if cursor.bl_idname == "NodeReroute":
+            inp = cursor.inputs[0] if cursor.inputs else None
+            if inp is None or not inp.is_linked:
+                return None
+            cursor = inp.links[0].from_node
+            continue
+        return None
+    return None
+
+
+def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool:
+    """Walk every node feeding the hair BSDF's inputs; refuse (return
+    False, with one warning naming the offending node) if any of them
+    falls outside `material_bake.SUPPORTED_UPSTREAM_NODES` -- the SAME
+    set the regular mesh-material classifier uses to decide "simple".
+    There is no hair-specific node support beyond what that set
+    already covers (a Value node, an Image Texture, a Color Ramp, ...
+    all translate the same way regardless of which slot they land in);
+    the only difference from the mesh path is that failing here has no
+    bake escape hatch, so it is a hard refusal instead of a fallback
+    to a different (slower, but always-correct) translation strategy.
+    """
+
+    from . import material_bake as _material_bake
+
+    supported = _material_bake.SUPPORTED_UPSTREAM_NODES
+
+    stack = []
+    for socket in node.inputs:
+        if socket.is_linked:
+            stack.append((socket.links[0].from_node, 0))
+
+    visited: set[int] = set()
+    while stack:
+        current, depth = stack.pop()
+        if depth > 16:
+            _warn_once(
+                state,
+                f"RISE refuses hair material '{material_name}': an input chain exceeds 16 nodes. "
+                "Using the default hair material.",
+            )
+            return False
+        node_id = id(current)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+
+        bl = current.bl_idname
+        if bl not in supported:
+            _warn_once(
+                state,
+                f"RISE refuses hair material '{material_name}': unsupported node '{bl}' feeds the "
+                "Principled Hair BSDF (hair has no bake fallback). Using the default hair material.",
+            )
+            return False
+
+        for socket in current.inputs:
+            if socket.is_linked:
+                stack.append((socket.links[0].from_node, depth + 1))
+
+    return True
+
+
+def _default_hair_material(state: _ExportState) -> str:
+    """A plausible brown-black groom (melanin tier, eumelanin ~= 1.3
+    per the `hair_material` chunk's own description of that value) --
+    used whenever a hair-curves object's material can't be translated:
+    no material assigned, no node graph, no Principled Hair BSDF
+    reaching the surface, or an unsupported upstream graph."""
+
+    cache = state.hair_material_map
+    sentinel = "__default_hair__"
+    cached = cache.get(sentinel)
+    if cached is not None:
+        return cached
+
+    eumelanin = _add_uniform_painter(state, "hair_default_eumelanin", (1.3, 1.3, 1.3))
+    pheomelanin = _add_uniform_painter(state, "hair_default_pheomelanin", (0.0, 0.0, 0.0))
+    beta_m = _add_uniform_painter(state, "hair_default_beta_m", (0.3, 0.3, 0.3))
+    beta_n = _add_uniform_painter(state, "hair_default_beta_n", (0.3, 0.3, 0.3))
+    alpha = _add_uniform_painter(state, "hair_default_alpha", (2.0, 2.0, 2.0))
+    ior = _add_uniform_painter(state, "hair_default_ior", (1.55, 1.55, 1.55))
+
+    payload = HairMaterialData(
+        name=_unique_name(state, "hairmat", "default"),
+        tier="melanin",
+        eumelanin_painter_name=eumelanin,
+        pheomelanin_painter_name=pheomelanin,
+        beta_m_painter_name=beta_m,
+        beta_n_painter_name=beta_n,
+        alpha_painter_name=alpha,
+        ior_painter_name=ior,
+    )
+    state.hair_materials.append(payload)
+    cache[sentinel] = payload.name
+    return payload.name
+
+
+def _hair_material_payload(material, state: _ExportState) -> str:
+    """Resolve the material bound to a hair-curves object into a
+    HairMaterialData, returning its name.  Mirrors `_material_payload`
+    structurally (pointer-keyed cache, one entry per distinct
+    material) but is otherwise independent -- see this section's
+    banner comment for why."""
+
+    cache = state.hair_material_map
+    key = _pointer_key(material)
+    if key in cache:
+        return cache[key]
+
+    def _fallback() -> str:
+        name = _default_hair_material(state)
+        cache[key] = name
+        return name
+
+    if material is None:
+        return _fallback()
+
+    if not getattr(material, "use_nodes", False) or material.node_tree is None:
+        _warn_once(
+            state,
+            f"RISE hair export needs a node-based Principled Hair BSDF material; "
+            f"'{material.name_full}' has no node tree. Using the default hair material.",
+        )
+        return _fallback()
+
+    output_node = _find_material_output(material)
+    node = _find_hair_bsdf_through_surface(output_node)
+    if node is None:
+        _warn_once(
+            state,
+            f"RISE hair export needs a Principled Hair BSDF reaching Material Output.Surface on "
+            f"'{material.name_full}' (Mix Shader / other BSDF chains ahead of it are not supported "
+            "for hair -- there is no bake fallback). Using the default hair material.",
+        )
+        return _fallback()
+
+    material_name = material.name_full
+
+    if not _hair_graph_supported(node, material_name, state):
+        return _fallback()
+
+    for socket_name in _HAIR_UNSUPPORTED_RANDOM_SOCKETS:
+        socket = _node_input(node, socket_name)
+        if socket is not None and (socket.is_linked or abs(float(socket.default_value)) > 1e-6):
+            _warn_once(
+                state,
+                f"RISE ignores Principled Hair BSDF '{socket_name}' on '{material_name}' -- "
+                "per-strand randomisation is not representable by RISE's hair_material (one "
+                "BCSDF instance shades the whole groom).",
+            )
+
+    # Shared across all three parametrizations.
+    beta_m = _scalar_or_texture_painter(
+        state, f"{material_name}_beta_m",
+        _socket_default_float(node, "Roughness", 0.3),
+        _maybe_resolve_socket_texture(node, "Roughness", None, colorspace_is_data=True),
+    )
+    beta_n = _scalar_or_texture_painter(
+        state, f"{material_name}_beta_n",
+        _socket_default_float(node, "Radial Roughness", 0.3),
+        _maybe_resolve_socket_texture(node, "Radial Roughness", None, colorspace_is_data=True),
+    )
+    ior = _scalar_or_texture_painter(
+        state, f"{material_name}_ior",
+        _socket_default_float(node, "IOR", 1.55),
+        _maybe_resolve_socket_texture(node, "IOR", None, colorspace_is_data=True),
+    )
+
+    offset_socket = _node_input(node, "Offset")
+    if offset_socket is not None and offset_socket.is_linked:
+        _warn_once(
+            state,
+            f"RISE reads Principled Hair BSDF 'Offset' on '{material_name}' as a constant; "
+            "a linked Offset is not supported.",
+        )
+    offset_radians = _socket_default_float(node, "Offset", 0.034906585)  # Blender default: 2 degrees
+    alpha_degrees = offset_radians_to_alpha_degrees(offset_radians)
+    alpha = _add_uniform_painter(state, f"{material_name}_alpha", (alpha_degrees, alpha_degrees, alpha_degrees))
+
+    parametrization = getattr(node, "parametrization", _HAIR_PARAM_MELANIN)
+
+    if parametrization == _HAIR_PARAM_COLOR:
+        color_texture = _maybe_resolve_socket_texture(node, "Color", None, colorspace_is_data=False)
+        color_default = _socket_default_color(node, "Color", (0.03, 0.02, 0.015))
+        color_painter = _color_or_texture_painter(state, f"{material_name}_hair_color", color_default, color_texture)
+        payload = HairMaterialData(
+            name=_unique_name(state, "hairmat", material_name),
+            tier="color",
+            color_painter_name=color_painter,
+            beta_m_painter_name=beta_m,
+            beta_n_painter_name=beta_n,
+            alpha_painter_name=alpha,
+            ior_painter_name=ior,
+        )
+
+    elif parametrization == _HAIR_PARAM_ABSORPTION:
+        sigma_socket = _node_input(node, "Absorption Coefficient")
+        if sigma_socket is not None and sigma_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Hair BSDF 'Absorption Coefficient' on '{material_name}' as a "
+                "constant colour; a texture-driven input is read at its socket default only.",
+            )
+        sigma_default = _socket_default_color(node, "Absorption Coefficient", (0.245, 0.46, 1.6))
+        sigma_painter = _add_uniform_painter(state, f"{material_name}_sigma_a", sigma_default)
+        payload = HairMaterialData(
+            name=_unique_name(state, "hairmat", material_name),
+            tier="sigma_a",
+            sigma_a_painter_name=sigma_painter,
+            beta_m_painter_name=beta_m,
+            beta_n_painter_name=beta_n,
+            alpha_painter_name=alpha,
+            ior_painter_name=ior,
+        )
+
+    else:  # MELANIN -- the default parametrization, and Blender's own default.
+        melanin_socket = _node_input(node, "Melanin")
+        redness_socket = _node_input(node, "Melanin Redness")
+        if (melanin_socket is not None and melanin_socket.is_linked) or (
+            redness_socket is not None and redness_socket.is_linked
+        ):
+            _warn_once(
+                state,
+                f"RISE reads Principled Hair BSDF 'Melanin'/'Melanin Redness' on '{material_name}' as "
+                "constants; linked inputs are read at their socket defaults only.",
+            )
+        melanin = _socket_default_float(node, "Melanin", 0.8)
+        redness = _socket_default_float(node, "Melanin Redness", 0.0)
+        eumelanin_value, pheomelanin_value = melanin_to_eumelanin_pheomelanin(melanin, redness)
+        eumelanin_painter = _add_uniform_painter(
+            state, f"{material_name}_eumelanin", (eumelanin_value, eumelanin_value, eumelanin_value)
+        )
+        pheomelanin_painter = _add_uniform_painter(
+            state, f"{material_name}_pheomelanin", (pheomelanin_value, pheomelanin_value, pheomelanin_value)
+        )
+        payload = HairMaterialData(
+            name=_unique_name(state, "hairmat", material_name),
+            tier="melanin",
+            eumelanin_painter_name=eumelanin_painter,
+            pheomelanin_painter_name=pheomelanin_painter,
+            beta_m_painter_name=beta_m,
+            beta_n_painter_name=beta_n,
+            alpha_painter_name=alpha,
+            ior_painter_name=ior,
+        )
+
+    state.hair_materials.append(payload)
+    cache[key] = payload.name
+    return payload.name
+
+
 def _flatten_matrix(matrix_world) -> list[float]:
     return [float(value) for row in matrix_world for value in row]
 
@@ -3279,6 +3794,8 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
             if eval_object is None:
                 continue
 
+            _warn_legacy_particle_hair(original_object, state)
+
             mesh_buckets = _mesh_buckets(eval_object, state)
             if not mesh_buckets:
                 continue
@@ -3290,6 +3807,8 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                     "transform": _flatten_matrix(object_instance.matrix_world.copy()),
                 }
             )
+        elif original_object.type == "CURVES":
+            _export_hair_object(object_instance, original_object, state)
         elif original_object.type == "LIGHT":
             light_data = _light_payload(object_instance.object, object_instance.matrix_world.copy(), state)
             if light_data is not None:
@@ -3351,6 +3870,24 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         world_color = _float_color3(scene.world.color)
         world_strength = 1.0
 
+    if state.hair_objects:
+        # The live-render ctypes bridge (rise_blender_bridge.{h,cpp},
+        # ABI v8) has no hair fields yet -- `bridge.py` never marshals
+        # `scene_data.hair_objects` / `hair_materials` into the
+        # `_Scene` it hands the native library, so today's render
+        # simply won't show these grooms.  The .hair file(s) and the
+        # material translation ARE fully computed and staged on disk
+        # (see the object name in each warning below), ready for when
+        # a future native-bridge slice adds the corresponding fields
+        # and this warning's premise goes away.
+        _warn_once(
+            state,
+            f"RISE exported {len(state.hair_objects)} hair groom(s) to .hair files, but this "
+            "Blender bridge build (ABI v8) doesn't send hair to the native renderer yet -- "
+            "grooms won't appear in the render until a future bridge update adds hair support. "
+            "The .hair file(s) are staged and ready for when it does.",
+        )
+
     scene_data = SceneData(
         camera=camera,
         painters=state.painters,
@@ -3369,6 +3906,8 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         world_radiance_orientation=world_radiance_orientation,
         world_radiance_is_background=world_radiance_is_background,
         warnings=state.warnings,
+        hair_objects=state.hair_objects,
+        hair_materials=state.hair_materials,
     )
 
     return scene_data, render_settings

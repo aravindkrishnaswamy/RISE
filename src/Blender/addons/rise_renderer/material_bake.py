@@ -96,6 +96,16 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
     "ShaderNodeNormalMap",
 })
 
+# Public alias for cross-module reuse.  exporter.py's hair-material
+# upstream-graph classifier (`_hair_graph_supported`) walks the nodes
+# feeding a Principled Hair BSDF against this SAME set -- a hair
+# material has no bake fallback (baking is meaningless for curves), so
+# "not simple" there means "refuse with a warning" rather than "fall
+# back to a bake pass".  Keep in sync with `_SIMPLE_TRAVERSABLE_NODES`
+# (this literally IS that set -- there is no hair-specific node
+# support beyond what the regular translator already handles).
+SUPPORTED_UPSTREAM_NODES = _SIMPLE_TRAVERSABLE_NODES
+
 # Nodes that force the bake fallback — see docs/BLENDER_MATERIAL_TRANSLATION.md
 # "Force-bake list".  Anything not in _SIMPLE_TRAVERSABLE_NODES is implicitly
 # force-bake; this set is for documentation / fast-path diagnostics.

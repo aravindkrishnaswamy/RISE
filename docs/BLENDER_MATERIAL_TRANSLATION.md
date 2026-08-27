@@ -294,6 +294,195 @@ expressive (3D rotation, 3D location).  The bridge translates the
 Mapping into a per-painter `xform_translate` / `xform_rotate` /
 `xform_scale` triple on the procedural's input.
 
+## Hair / fur export
+
+Slice P2-C of the hair/fur arc (`docs/HAIR_FUR_DESIGN.md`).  Two
+independent pieces: exporting a Blender **Curves** object's strand
+geometry, and translating a **Principled Hair BSDF** material.  Both
+are implemented in `src/Blender/addons/rise_renderer/exporter.py`; the
+bpy-free math (the `.hair` binary writer and the melanin conversion
+formula) lives in two sibling modules so it can be unit-tested without
+a running Blender — see [Testing](#testing) below.
+
+### Object path: Curves → `.hair` file
+
+A Blender object of type `CURVES` (the modern hair/fur curves system —
+**not** the legacy NURBS/Bezier `CURVE` type already handled by the
+regular mesh path) is exported as:
+
+1. A binary `.hair` file (the Cem Yuksel format `HairFileLoader.h`
+   reads — see that header's own comment for the authoritative byte
+   layout), written to a staging directory under Blender's own temp
+   dir (`<bpy.app.tempdir>/rise_blender_hair/`), the same convention
+   `_unpack_image_to_disk` already uses for packed images.  One file
+   per Curves object, named `<safe object name>_<id>.hair`.
+2. A `HairObjectData` record (`exporter.py`) carrying the file path,
+   the resolved material binding, and the object's world transform —
+   the export-side equivalent of a `hair_geometry { file ... }` chunk
+   bound to a `standard_object`, in the shape this bridge's own
+   `SceneData` model uses for everything else (see
+   [Native-bridge status](#native-bridge-status) below for why it
+   stops there today).
+
+**Points and thickness.**  Point positions come from the Curves
+datablock's own `position` attribute (local/object space, exactly like
+mesh vertices — the object's world transform is applied separately, so
+placement works the same way as every other geometry type here).
+Thickness comes from the `radius` point attribute when present:
+`hair_geometry`'s file-mode thickness (and `HairFileLoader.h`'s own
+reading of the ambiguous published spec) is a **FULL WIDTH**, while
+Blender's curve `radius` is, as the name says, a radius — so the
+writer multiplies by 2.  When a Curves object carries no `radius`
+attribute at all, the `.hair` file is written with no thickness array;
+RISE's own loader then falls back to its human-hair default width
+(with a warning), exactly as it does for any other `.hair` file that
+omits thickness.  `width_root` / `width_tip` are left at their default
+`1.0` (verbatim) on the RISE side — the radius→width conversion above
+already produces the real thickness, so no additional multiplier is
+needed.
+
+**Legacy particle-hair systems (`ParticleSettings.type == 'HAIR'`) are
+NOT exported.**  Getting their render-time strand geometry needs
+either a removed API (`co_hair()`) or a `bpy.ops.object.
+modifier_convert` / "Convert Hair to New System" call — an `bpy.ops`
+invocation, which this add-on's own bake pipeline
+(`material_bake.py`'s "Workflow" docstring) already documents as
+hazardous to run from inside a render callback (context-override
+requirements, hidden-object refusals, teardown crashes).  Converting a
+particle system mid-export would import that same risk into every
+render that happens to contain one.  Instead, the exporter emits one
+warning per object (the established `_warn_once` idiom every other
+unsupported-feature notice in this file uses) pointing the artist at
+Blender's own conversion operator (Particle properties → Convert, or
+Object → Convert → Curves) — after which the result is a normal
+Curves object and exports through the path above like any other
+groom.
+
+### Material path: Principled Hair BSDF → `hair_material`
+
+A material whose Material Output.Surface is (transitively through
+`NodeReroute`s only) a single `ShaderNodeBsdfHairPrincipled` becomes a
+`HairMaterialData` via **direct mapping** — there is no bake path for
+hair at all (baking is meaningless for curve geometry: there is no UV
+unwrap to bake against). Consequently, where the mesh classifier falls
+back to a full-scene bake on anything unsupported, the hair classifier
+**refuses the whole material** (falls back to a plausible default
+brown-black groom, with a warning) when:
+
+- the Surface chain isn't a single Hair BSDF (a Mix Shader / Add
+  Shader / any other node between it and the output), or
+- any node feeding one of the Hair BSDF's inputs is outside the same
+  node set the mesh path's classifier uses (`material_bake.
+  SUPPORTED_UPSTREAM_NODES`, exported publicly from `_SIMPLE_
+  TRAVERSABLE_NODES` for this reuse — there is no hair-specific node
+  support beyond what the regular translator already handles: an
+  Image Texture, a Value node, a Color Ramp, etc. all translate the
+  same way regardless of which slot they land in).
+
+Parameter mapping, once a Hair BSDF is found and its upstream graph is
+supported:
+
+| Blender input | RISE `hair_material` field | Notes |
+|----------------|------------------------------|-------|
+| `Roughness` | `beta_m` | Direct value; texture-driven via the same `_scalar_or_texture_painter` path as Principled roughness |
+| `Radial Roughness` | `beta_n` | Same |
+| `IOR` | `ior` | Same |
+| `Offset` (radians) | `alpha` (**degrees**) | Converted via `hair_material_math.offset_radians_to_alpha_degrees` (`math.degrees`). Blender's own default, 2°, is stored as ~0.0349066 rad. Linked inputs are read at their socket default only (warned). |
+| `Random Color` / `Random Roughness` / `Random` | *(unsupported)* | RISE's `hair_material` is one BCSDF instance for the whole groom — there is no per-strand attribute plumbing to carry per-strand randomisation. Warned and ignored. |
+
+The three **parametrizations** (`ShaderNodeBsdfHairPrincipled.
+parametrization`) each bind a different `hair_material` tier — exactly
+one tier may be bound, matching the chunk's own "exactly one of
+`color`/`sigma_a`/`eumelanin`+`pheomelanin`" rule:
+
+- **`COLOR`** ("Direct coloring") — the `Color` input maps straight to
+  `hair_material`'s Tier 3 `color`, with full texture support (Image
+  Texture / Color Ramp / etc. chains, same as any other colour slot).
+- **`ABSORPTION_COEFFICIENT`** — the `Absorption Coefficient` input
+  (an RGB triple) maps to Tier 2 `sigma_a`.  Read as a constant colour
+  at the socket's default value; a linked input is not walked for a
+  texture (warned) — sigma_a is authored numerically far more often
+  than painted.
+- **`MELANIN`** (Blender's own default parametrization) — maps to
+  Tier 1 `eumelanin` / `pheomelanin`.  Blender's `Melanin` (`m`, in
+  [0, 1]) and `Melanin Redness` (`r`, in [0, 1]) don't correspond
+  directly to RISE's two melanin concentrations; they're converted via
+  `hair_material_math.melanin_to_eumelanin_pheomelanin`:
+
+  ```
+  melanin_qty = -log(max(1 - m, 1e-4))
+  eumelanin   = melanin_qty * (1 - r)
+  pheomelanin = melanin_qty * r
+  ```
+
+  This matches Cycles' own internal conversion in
+  `bsdf_hair_principled.h`: the artist-facing `[0, 1]` melanin slider
+  isn't itself a physical concentration (Chiang et al. 2016's
+  parametrization has no upper bound on melanin), so Cycles first
+  log-remaps it into an unbounded absorption-scale quantity, then
+  splits that quantity between the two pigments by redness.  The
+  `1e-4` floor keeps `m = 1.0` finite (`melanin_qty` caps at
+  `-log(1e-4) ≈ 9.21` instead of diverging).  Both inputs are clamped
+  to `[0, 1]` before conversion, so an out-of-range value from an
+  upstream node edit can't produce a negative or superlinear result.
+  Linked `Melanin` / `Melanin Redness` sockets are read at their
+  default value only (warned) — same reasoning as `Absorption
+  Coefficient` above.
+
+A hair-curves object with no material, a non-node material, or a
+material that gets refused by the rules above falls back to a
+plausible **default groom**: melanin tier, `eumelanin = 1.3` (brown-
+black, per the chunk's own parameter description), `pheomelanin = 0`,
+and RISE's own `beta_m`/`beta_n`/`alpha`/`ior` defaults
+(`0.3`/`0.3`/`2.0`/`1.55`).
+
+### Limitations
+
+- **No per-strand colour or transparency.**  `HairFileLoader.h` reads
+  and discards both (RISE has no per-vertex strand opacity or
+  albedo) — fibre colour always comes from the bound `hair_material`.
+- **Root UVs are always `(0, 0)`.**  The `.hair` format carries no
+  per-strand surface parameterization, so a `hair_material` driven by
+  a painter over the root UV (a scalp-space tint map, say) would not
+  vary across the groom — not that this matters yet, since neither
+  `eumelanin`/`pheomelanin` texture-driving nor a scalp-varying `color`
+  painter position is wired up on the export side (see the mapping
+  table above: only `Color` supports a texture chain at all).
+- **Thickness is `2 × Blender radius`.**  See the object-path section
+  above.
+- **Legacy particle-hair systems are not exported.**  See the
+  object-path section above — convert to Curves first.
+
+### Native-bridge status
+
+**None of this is sent to the live-render bridge yet.**
+`src/Blender/native/rise_blender_bridge.{h,cpp}` (this add-on's ctypes
+ABI, currently version 8 — see `bridge.py`'s `_EXPECTED_API_VERSION`)
+has no hair fields: no `_HairObject` / `_HairMaterial` struct, no
+`hair_objects` / `hair_materials` arrays on `_Scene`.  That native
+surface is out of scope for this slice (it's C++, owned separately —
+see `docs/HAIR_FUR_DESIGN.md`'s phase plan).  Concretely, today:
+
+- `exporter.export_scene()` fully computes `SceneData.hair_objects`
+  and `SceneData.hair_materials`, and **does** write real `.hair`
+  files to disk with correct strand/thickness data — the object and
+  material translation logic described above is complete and real,
+  not a stub.
+- `bridge.py`'s `_marshal_*` functions (the code that packs
+  `SceneData` into the ctypes structs the native library actually
+  reads) were deliberately **not** touched — inventing ctypes struct
+  layouts for an ABI that doesn't exist yet on the C++ side would be
+  worse than not shipping them at all (a silent, unverifiable
+  contract with nothing to check it against).
+- When a scene has any hair objects, `export_scene()` emits one
+  warning (surfaced through Blender's own report/info bar, same as
+  every other exporter warning) explaining that the groom(s) were
+  staged but won't render yet, naming the staging directory.
+- Wiring this in is future work: extend `rise_blender_bridge.{h,cpp}`
+  with hair struct(s), bump `RISE_BLENDER_API_VERSION` /
+  `_EXPECTED_API_VERSION` together, then mirror the new fields into
+  `bridge.py`'s ctypes structures and `_marshal_*` functions.
+
 ## Testing
 
 End-to-end material parity is regression-checked via:
@@ -303,3 +492,36 @@ End-to-end material parity is regression-checked via:
   Cycles / EEVEE are by-hand for now.  A bake-cache snapshot test
   would be a natural addition (compare current bake to a stored
   reference).
+
+### Hair export unit tests
+
+`src/Blender/addons/rise_renderer/test_hair_export.py` is the first
+Python-level test harness in this add-on (there was none before —
+checked for `test`/`pytest` under `src/Blender` before adding it).  It
+covers exactly the two modules that don't import `bpy`
+(`hair_file_writer.py`, `hair_material_math.py`) — the bpy-dependent
+glue (`_extract_curves_arrays`, the node-graph walking in
+`_hair_material_payload` / `_hair_graph_supported` /
+`_find_hair_bsdf_through_surface`) has no bpy available in this
+repo's test environment and stays **manually validated only** (build
+the native bridge, load a scene with a Curves object + a Principled
+Hair BSDF material in an actual Blender, render, and inspect the
+warnings/output — there is no automated coverage for that half).
+
+Run directly:
+
+```sh
+python3 src/Blender/addons/rise_renderer/test_hair_export.py
+```
+
+The suite includes: a hand-computed byte-offset check against the
+128-byte `.hair` header layout, a roundtrip test against an
+independent minimal reader written into the test file itself (not
+shared code with the writer, so it actually exercises the byte
+layout), ragged strand-length coverage, the radius→full-width
+thickness conversion, `write_hair_file`'s error paths (empty groom,
+single-point strand, mismatched/inconsistent thickness arrays), the
+melanin/redness→eumelanin/pheomelanin conversion (zero/one bounds,
+out-of-range clamping, the `1e-4` floor staying finite, non-negativity
+across a value grid), and the offset-radians-to-alpha-degrees
+conversion (including Blender's own 2° default).
