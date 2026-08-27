@@ -267,7 +267,9 @@ namespace
 		"piecewise_linear_function2d\n{\nname arch_func2d\n}\n"
 		"expression_painter\n{\nname arch_exprpainter\nexpr 0.5\n}\n"
 		"png_painter\n{\nname arch_png\nfile textures/wood.png\n}\n"
-		"pinhole_camera\n{\nname arch_cam\n}\n";
+		"pinhole_camera\n{\nname arch_cam\n}\n"
+		"sphere_geometry\n{\nname arch_base\n}\n"
+		"hair_guides\n{\nname arch_guides\nguide 0 0 0 0 0 1\n}\n";
 
 	std::string FormatValue( const std::string& tmpl, const std::string& candidate )
 	{
@@ -316,6 +318,7 @@ namespace
 	bool TargetExists( IJobPriv& job, const std::string& targetKeyword, ChunkCategory targetCategory )
 	{
 		if( targetCategory == ChunkCategory::Material ) return job.GetMaterials()->GetItem( "t" ) != nullptr;
+		if( targetCategory == ChunkCategory::Geometry )  return job.GetGeometries()->GetItem( "t" ) != nullptr;
 		if( targetKeyword == "scalar_painter" )          return job.GetScalarPainters()->GetItem( "t" ) != nullptr;
 		return job.GetPainters()->GetItem( "t" ) != nullptr;
 	}
@@ -650,6 +653,62 @@ int main()
 				FmtDiag( kUndeclaredParameterFmt, "not_a_real_param", "lambertian_material" ),
 				"3g: diagnostic matches DispatchChunkParameters's own message verbatim -- via the shared "
 				"kUndeclaredParameterFmt constant" );
+		}
+
+		// 3h. hair_geometry.guides: a `ParameterPipe::Other` parameter
+		// carrying a `keywordAllowlist` ({"hair_guides"}).  Not folded
+		// into the PART 2 corpus (kRows) because `guides` needs a whole
+		// companion trio (`base_geometry` + `count` + `length`) to derive
+		// at all -- same reasoning as the `gen` exclusion documented on
+		// kRows above (see the comment there, :104-113): a param whose
+		// legality can't be exercised through the single-param BuildScene
+		// harness gets its own explicit spot check instead.
+		//
+		// THIS IS THE ALLOWLIST-HOIST REGRESSION TARGET.  Before the hoist
+		// (ConnectionLegality.cpp's CheckConnectionByKeyword, the comment
+		// starting "A `keywordAllowlist` is a per-PARAMETER special
+		// case"), `keywordAllowlist` was consulted only inside
+		// CheckColorPipe -- so an Other-pipe parameter like `guides` fell
+		// straight through to the generic CategoryAllowed check, which
+		// only compares ChunkCategory.  `sphere_geometry` and
+		// `hair_guides` are BOTH ChunkCategory::Geometry, so a
+		// sphere_geometry name would have been accepted into `guides`:
+		// same category, entirely wrong keyword.  The hoisted check
+		// catches it because it runs ahead of, and independently of, the
+		// per-pipe switch.
+		{
+			Check( ConnectionLegality::CheckConnectionByKeyword(
+				"hair_geometry", "guides", "hair_guides", ChunkCategory::Geometry ).legal,
+				"3h: hair_geometry.guides accepts a hair_guides name" );
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"hair_geometry", "guides", "uniformcolor_painter", ChunkCategory::Painter ).legal,
+				"3h: hair_geometry.guides rejects a Painter (wrong category entirely)" );
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"hair_geometry", "guides", "sphere_geometry", ChunkCategory::Geometry ).legal,
+				"3h MONEY: hair_geometry.guides rejects a sphere_geometry -- SAME category as "
+				"hair_guides, wrong keyword; exactly the case the allowlist hoist exists to catch" );
+
+			// Cross-check against the real parser.  `guides` needs a legal
+			// grow-mode hair_geometry around it (base_geometry + count +
+			// length), so those three are pinned to known-good archetypes
+			// and only the candidate bound to `guides` varies -- same "pin
+			// the sibling fields" discipline as 3b / 3e.
+			std::vector<std::pair<std::string, std::string> > params;
+			params.push_back( std::make_pair( std::string( "base_geometry" ), std::string( "arch_base" ) ) );
+			params.push_back( std::make_pair( std::string( "count" ),         std::string( "10" ) ) );
+			params.push_back( std::make_pair( std::string( "length" ),        std::string( "0.05" ) ) );
+			params.push_back( std::make_pair( std::string( "guides" ),        std::string( "arch_guides" ) ) );
+			Check( DeriveTargetOK( BuildSceneMulti( "hair_geometry", params ), "hair_geometry", ChunkCategory::Geometry ),
+				"3h: the real parser accepts a hair_guides name in `guides`" );
+
+			params.back().second = "arch_color";
+			Check( !DeriveTargetOK( BuildSceneMulti( "hair_geometry", params ), "hair_geometry", ChunkCategory::Geometry ),
+				"3h: the real parser rejects a colour painter name in `guides`" );
+
+			params.back().second = "arch_base";	// sphere_geometry: same category as hair_guides, wrong keyword
+			Check( !DeriveTargetOK( BuildSceneMulti( "hair_geometry", params ), "hair_geometry", ChunkCategory::Geometry ),
+				"3h MONEY: the real parser also rejects a sphere_geometry name in `guides` (Job::AddHairGeometry "
+				"resolves `guides` against the Job-side hair_guides table, which a sphere_geometry name is never in)" );
 		}
 	}
 

@@ -119,9 +119,25 @@ namespace RISE
 		//!
 		//! Both are "you did not mean this" guards rather than working
 		//! points, the same shape as `kMaxHairStrandCount`
-		//! (HairGenerator.h) and the path_instances budget caps: 4M
-		//! strands is ~27x a full human scalp, and 64M control points is
-		//! already ~1.5 GB once expanded into `StrandDesc`s.
+		//! (HairGenerator.h) and the path_instances budget caps.  4M
+		//! strands is ~27x a full human scalp.  64M control points is NOT
+		//! bounded by the ~1.5 GB `StrandDesc` transient this loader
+		//! builds -- that is a one-time intermediate, freed once
+		//! `HairGeometry` is constructed from it.  The figure that
+		//! actually matters is what `HairGeometry::Build` expands it
+		//! INTO: one `HairSegmentRef` per control-point span, further
+		//! split up to `kMaxBuildSplitDepth` (3, i.e. up to 8x) for
+		//! curvature, plus that span population's own BVH nodes --
+		//! together ~6 GB peak at this cap, which is the number this cap
+		//! is actually guarding.
+		//!
+		//! NOTE THE ASYMMETRY WITH `kMaxHairStrandCount` (2M,
+		//! HairGenerator.h, grow mode): a GROWN strand pays generation
+		//! compute per candidate root in addition to the same downstream
+		//! `HairSegmentRef` / BVH expansion, so its cap sits lower; an
+		//! IMPORTED strand is already-realized data paying only the
+		//! downstream cost, so this loader's cap can sit higher for a
+		//! comparable downstream budget.
 		const unsigned int kMaxHairFileStrands = 4000000;
 		const unsigned int kMaxHairFilePoints  = 64000000;
 
@@ -144,12 +160,17 @@ namespace RISE
 			float			defaultThickness;		//!< header field; used when the thickness array is absent
 			float			defaultTransparency;	//!< header field; retained for diagnostics only
 			float			defaultColor[3];		//!< header field; retained for diagnostics only
-			std::string		info;					//!< the header's 88-byte ASCII info block, NUL-trimmed
+			std::string		info;					//!< the header's 88-byte ASCII info block, NUL-trimmed and sanitized to printable ASCII
+			std::string		sourceFile;				//!< the filename `LoadHairFile` was given, retained so `BuildStrandsFromHairFile`'s diagnostics can still name it; empty if this struct was built by hand rather than by `LoadHairFile`
 
 			//! POINTS (not segments) per strand -- ALWAYS populated,
 			//! whether the file carried a segments array or only the
-			//! header default.  `numStrands` entries, each >= 2,
-			//! summing to exactly `numPoints`.
+			//! header default.  `numStrands` entries, summing to exactly
+			//! `numPoints`.  Normally each entry is >= 2 (a real curve);
+			//! an entry of exactly 1 records a segments-array 0-entry (a
+			//! degenerate single-point "strand" -- see `LoadHairFile`),
+			//! which `BuildStrandsFromHairFile` drops per-strand rather
+			//! than refusing the whole file.
 			std::vector<unsigned int>	pointsPerStrand;
 
 			//! x y z per point, every strand concatenated in file order.
@@ -181,15 +202,22 @@ namespace RISE
 		//! file-backed chunk in RISE resolves its `file` parameter.
 		//!
 		//! REFUSES THE WHOLE FILE (returns false, logs ONE diagnostic
-		//! naming what was wrong) on: an unopenable file, a file shorter
-		//! than the 128-byte header, a bad magic, a missing points-array
-		//! flag, an unknown (reserved) flag bit -- which would make the
-		//! array layout unknowable -- a zero strand or point count,
-		//! counts over the caps above, a segment/point-count arithmetic
-		//! mismatch, a strand with fewer than 2 points, or a file whose
-		//! actual byte length is shorter than the header says the arrays
-		//! need.  A file LONGER than its arrays require loads, with a
-		//! warning naming the surplus.
+		//! naming what was wrong) on: an unopenable file, a file whose
+		//! length could not even be determined (seek/tell failure), a
+		//! file shorter than the 128-byte header, a bad magic, a missing
+		//! points-array flag, an unknown (reserved) flag bit -- which
+		//! would make the array layout unknowable -- a zero strand or
+		//! point count, counts over the caps above, a segment/point-count
+		//! arithmetic mismatch, a no-segments-array file whose header
+		//! default segment count is 0 (nothing marks where one strand
+		//! ends), a no-segments-array file whose default per-strand point
+		//! count exceeds `HairGeometry::kMaxControlPointsPerStrand` (the
+		//! segments-ARRAY path is already safe here -- a `uint16` segment
+		//! count tops out at exactly that cap), or a file whose actual
+		//! byte length is shorter than the header says the arrays need.
+		//! A file LONGER than its arrays require loads, with a warning
+		//! naming the surplus.  A per-strand SEGMENTS-ARRAY entry of 0 is
+		//! NOT a whole-file refusal -- see the per-strand note below.
 		//!
 		//! NON-FINITE DATA IS NOT REFUSED HERE.  A NaN / infinity in the
 		//! points or thickness array is a per-STRAND defect, so it is
@@ -197,10 +225,27 @@ namespace RISE
 		//! and counts it) rather than costing the whole file.  A
 		//! non-finite HEADER DEFAULT thickness is refused here, because
 		//! it would poison every strand in a file with no thickness
-		//! array.
+		//! array.  A segments-array entry of 0 (a "strand" with a single
+		//! point) is likewise not refused here: `pointsPerStrand` records
+		//! it as 1 point, matching the format's own segments+1 formula,
+		//! and `BuildStrandsFromHairFile` drops that one strand and
+		//! counts it, exactly like a non-finite point.
 		//!
 		//! `who` names the authoring chunk in every diagnostic (may be
-		//! null).
+		//! null).  The filename is also retained on the returned
+		//! `HairFileData` (`sourceFile`) so `BuildStrandsFromHairFile`,
+		//! called later from a different call site, can still name the
+		//! file in its own diagnostics.
+		//!
+		//! A 32-BIT BUILD RESIDUAL: the caps above bound the DECLARED
+		//! counts, not the actual `resize()`/`reserve()` calls they drive
+		//! -- on a 32-bit host, an allocation request near the caps can
+		//! still throw `std::bad_alloc` if the process's address space is
+		//! already fragmented or otherwise short, since 64M points x 12
+		//! bytes alone is 768 MB.  That is not handled here (RISE has no
+		//! general OOM-recovery policy); it is called out so a 32-bit
+		//! crash on a large-but-within-cap file is not mistaken for a
+		//! parser bug.
 		/// \return TRUE if successful, FALSE otherwise
 		bool LoadHairFile(
 			const char*		filename,	///< [in] Path to the .hair file, resolved via the media-path locator
@@ -224,15 +269,31 @@ namespace RISE
 		//! meaningful to act on.
 		//!
 		//! PER-STRAND REJECTION, NOT WHOLE-FILE FAILURE, for a strand
-		//! whose points are not all finite, or whose resolved root/tip
-		//! width is not finite and strictly positive: that strand is
-		//! dropped and counted, and one summary warning names the total.
+		//! with fewer than 2 points (a segments-array 0-entry -- see
+		//! `LoadHairFile`), a strand whose points are not all finite, or
+		//! a strand whose resolved root/tip width is not finite and
+		//! strictly positive: that strand is dropped and counted, and one
+		//! summary warning names the total (broken down by reason).
 		//! Returns false only when the result would be an EMPTY groom
 		//! (every strand rejected, or nothing to convert), which is a
-		//! failure the author has to see.
+		//! failure the author has to see.  A strand whose declared point
+		//! RANGE runs past `numPoints` stays a fatal, whole-file failure
+		//! -- unlike the counted defects above, it means the parsed
+		//! `pointsPerStrand` / `numPoints` bookkeeping itself cannot be
+		//! trusted, so no other strand's offset can be either.
+		//!
+		//! A CALLER-CONSTRUCTED `HairFileData` (this function is public
+		//! and takes a plain struct, not only one produced by
+		//! `LoadHairFile`) whose `hasThicknessArray` is true but whose
+		//! `thickness` size does not match `numPoints` is refused
+		//! up front, by name, rather than falling through to the
+		//! per-strand width path -- which would silently reject every
+		//! strand and report it as a width failure, hiding the real,
+		//! whole-input defect.
 		//!
 		//! `who` names the authoring chunk in every diagnostic (may be
-		//! null).
+		//! null).  Diagnostics also name the source file, via
+		//! `data.sourceFile` when `LoadHairFile` populated it.
 		/// \return TRUE if successful, FALSE otherwise
 		bool BuildStrandsFromHairFile(
 			const HairFileData&						data,			///< [in] A file parsed by LoadHairFile

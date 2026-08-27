@@ -522,16 +522,29 @@ namespace
 
 			// -- the guide's own frame: the base surface, at the closest
 			//    point of the closest WELL-FORMED triangle to the guide's
-			//    root.  "Well-formed" mirrors step 2's area gate (the
-			//    `totalArea` loop above, ~line 945): a zero-area / NaN
-			//    triangle carries no meaningful normal or tangent, so it is
-			//    excluded from consideration outright rather than merely
-			//    losing a distance tie-break.  Candidates are then tried in
+			//    root.  "Well-formed" mirrors the area gate in step 2's
+			//    placement loop -- the one that builds `cumArea` /
+			//    `totalArea` above: a zero-area / NaN triangle carries no
+			//    meaningful normal or tangent, so it is excluded from
+			//    consideration outright rather than merely losing a
+			//    distance tie-break.  Candidates are then tried in
 			//    ascending distance order -- if the nearest well-formed
 			//    triangle still cannot yield a frame (`ComputeSurfaceFrame`
 			//    can fail independently of area, e.g. a degenerate UV
 			//    triangle), fall through to the next-nearest rather than
 			//    failing the whole guide on the first attempt.
+			//
+			//    KNOWN LIMITATION: the gate excludes purely on AREA, with
+			//    no allowance for a triangle that is degenerate by that
+			//    measure yet still carries usable normal/tangent
+			//    information (e.g. from its vertex data rather than its
+			//    own face geometry).  On a mesh with this kind of
+			//    degenerate-but-normal-bearing geometry near a guide's
+			//    root, that nearest triangle is skipped and the guide ends
+			//    up framed against a measurably FARTHER well-formed
+			//    triangle instead -- correct in that the frame is never
+			//    built from garbage, but not necessarily the frame an
+			//    author eyeballing "the nearest surface" would expect.
 			struct FrameCandidate { Scalar d2; std::size_t tri; Scalar w0, w1, w2; };
 			std::vector<FrameCandidate> cands;
 			cands.reserve( tris.size() );

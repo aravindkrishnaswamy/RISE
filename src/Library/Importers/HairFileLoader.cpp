@@ -60,6 +60,30 @@ namespace
 		return s;
 	}
 
+	//! The header's 88-byte info block is free-form ASCII from an
+	//! untrusted file, and it is about to be printed straight into the
+	//! log -- so it is sanitized to printable ASCII BEFORE that happens
+	//! (and before it is stored on `HairFileData`, since diagnostics are
+	//! its only consumer anyway).  Bytes outside the printable range
+	//! (control characters, embedded newlines, high/non-ASCII bytes) are
+	//! dropped rather than replaced: an info block has no positional
+	//! meaning to preserve, and a dropped byte cannot smuggle a
+	//! terminal escape sequence or a fake log line into the output the
+	//! way a replaced-with-placeholder byte still could if the
+	//! placeholder itself were ever widened.
+	std::string SanitizeInfo( const char* p, const size_t n )
+	{
+		std::string out;
+		out.reserve( n );
+		for( size_t i = 0; i < n; ++i ) {
+			const unsigned char c = (unsigned char)p[i];
+			if( c >= 0x20 && c < 0x7F ) {
+				out.push_back( (char)c );
+			}
+		}
+		return out;
+	}
+
 	//! Run-time host-endianness probe.  The `.hair` format is defined
 	//! little-endian; every RISE target is little-endian, so this is
 	//! true everywhere the renderer currently builds and the swap
@@ -151,6 +175,8 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		return false;
 	}
 
+	out.sourceFile = filename;
+
 	const std::string label = Who( who, filename );
 
 	// Media-path resolution, the same one every other file-backed chunk
@@ -169,6 +195,13 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 	}
 
 	const long long fileLen = FileLength64( f );
+	if( fileLen < 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"%s: could not determine file length (seek/tell failed)",
+			label.c_str() );
+		fclose( f );
+		return false;
+	}
 	if( fileLen < (long long)kHeaderBytes ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: not a .hair file -- %lld bytes is shorter than the format's 128-byte header",
@@ -208,7 +241,7 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		const char* p = reinterpret_cast<const char*>( hdr + 40 );
 		size_t n = 0;
 		while( n < 88 && p[n] != '\0' ) { ++n; }
-		out.info.assign( p, n );
+		out.info = SanitizeInfo( p, n );
 	}
 
 	out.hasSegmentsArray     = ( out.arrayFlags & kFlagSegments     ) != 0;
@@ -320,13 +353,18 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 			SwapEach16( &segs[0], out.numStrands );
 		}
 		unsigned long long total = 0;
+		unsigned int nZeroSegmentStrands = 0;
 		for( unsigned int i = 0; i < out.numStrands; ++i ) {
+			// A strand with 0 segments is 1 lone point -- not a curve.
+			// That is a per-STRAND defect (BuildStrandsFromHairFile drops
+			// it and counts it, same as a non-finite point), not a
+			// whole-file one, so it is not refused here.  The point count
+			// this strand contributes to `total` still has to match the
+			// format's own segments+1 formula (1, when segs[i] is 0) so
+			// the sum-vs-header-declared-point-count check below stays
+			// meaningful.
 			if( segs[i] == 0 ) {
-				GlobalLog()->PrintEx( eLog_Error,
-					"%s: strand %u declares 0 segments -- a strand needs at least one segment (2 points)",
-					label.c_str(), i );
-				fclose( f );
-				return false;
+				++nZeroSegmentStrands;
 			}
 			out.pointsPerStrand[i] = (unsigned int)segs[i] + 1u;
 			total += out.pointsPerStrand[i];
@@ -337,6 +375,12 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 				label.c_str(), total, out.numPoints );
 			fclose( f );
 			return false;
+		}
+		if( nZeroSegmentStrands > 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"%s: %u of %u strands declare 0 segments (a lone point, not a curve) -- each will be dropped "
+				"when the strands are built",
+				label.c_str(), nZeroSegmentStrands, out.numStrands );
 		}
 	} else {
 		if( out.defaultSegments == 0 ) {
@@ -353,6 +397,24 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 				"%s: no segments array, so every strand carries the header's default %u segments (%llu points), "
 				"but %u strands x %llu != the declared %u points -- corrupt file",
 				label.c_str(), out.defaultSegments, perStrand, out.numStrands, perStrand, out.numPoints );
+			fclose( f );
+			return false;
+		}
+		// The segments-ARRAY path is safe from this by construction (a
+		// per-strand `uint16` segment count tops out at 65535 segments,
+		// i.e. exactly `HairGeometry::kMaxControlPointsPerStrand` points).
+		// The header's default segment count has no such bound -- it is a
+		// plain `uint32` -- so a hostile or corrupt header could otherwise
+		// talk every strand into a control-point count `HairGeometry`
+		// would reject only after this loader had already built and
+		// handed it a multi-strand `StrandDesc` vector.  Caught here,
+		// before that allocation, with a named diagnostic.
+		if( perStrand > (unsigned long long)HairGeometry::kMaxControlPointsPerStrand ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"%s: no segments array, so every strand carries the header's default %u segments (%llu points "
+				"per strand), which exceeds the %u-control-point-per-strand cap (HairSegmentRef::span is a "
+				"16-bit index)",
+				label.c_str(), out.defaultSegments, perStrand, HairGeometry::kMaxControlPointsPerStrand );
 			fclose( f );
 			return false;
 		}
@@ -425,21 +487,42 @@ bool BuildStrandsFromHairFile(
 {
 	out.clear();
 
-	const char* label = ( who && who[0] ) ? who : "(unnamed)";
+	// Threads the source filename through every diagnostic below, the
+	// same as `LoadHairFile` -- `data.sourceFile` is populated when this
+	// `HairFileData` came from `LoadHairFile` (every real call site) and
+	// empty when a caller built the struct by hand (some unit tests),
+	// in which case `Who()` falls back to "(null)" for the file half.
+	const std::string label = Who( who, data.sourceFile.empty() ? nullptr : data.sourceFile.c_str() );
 
 	if( !RISE::IsFiniteDouble( widthRootScale ) || !RISE::IsFiniteDouble( widthTipScale ) ||
 	    !( widthRootScale > 0 ) || !( widthTipScale > 0 ) ) {
 		GlobalLog()->PrintEx( eLog_Error,
-			"HairFileLoader:: `%s`: width_root / width_tip are MULTIPLIERS on the file's own thickness in file "
+			"%s: width_root / width_tip are MULTIPLIERS on the file's own thickness in file "
 			"mode and must be finite and > 0 (got %g / %g)",
-			label, widthRootScale, widthTipScale );
+			label.c_str(), widthRootScale, widthTipScale );
 		return false;
 	}
 	if( data.numStrands == 0 || data.pointsPerStrand.size() != data.numStrands ||
 	    data.points.size() != (size_t)data.numPoints * 3 ) {
 		GlobalLog()->PrintEx( eLog_Error,
-			"HairFileLoader:: `%s`: nothing to convert -- the parsed file is empty or internally inconsistent",
-			label );
+			"%s: nothing to convert -- the parsed file is empty or internally inconsistent",
+			label.c_str() );
+		return false;
+	}
+	// A caller-constructed `HairFileData` (this function is public and
+	// takes a plain struct, not exclusively one produced by
+	// `LoadHairFile`) can claim `hasThicknessArray` without the array
+	// actually being the right size.  Refused HERE, by name, rather than
+	// falling through to the per-strand width path below: that path
+	// would see `data.thickness.size() != data.numPoints`, silently use
+	// the header default for every strand, and -- if that default is
+	// also unusable -- report every single strand as a WIDTH failure,
+	// which points an author at the wrong bug entirely.
+	if( data.hasThicknessArray && data.thickness.size() != (size_t)data.numPoints ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"%s: internally inconsistent input -- `hasThicknessArray` is true but the thickness array has "
+			"%zu entries, not the %u `numPoints` says it should",
+			label.c_str(), data.thickness.size(), data.numPoints );
 		return false;
 	}
 
@@ -457,16 +540,17 @@ bool BuildStrandsFromHairFile(
 	double defaultTip  = (double)data.defaultThickness;
 	if( !data.hasThicknessArray && !( defaultRoot > 0 ) ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"HairFileLoader:: `%s`: the file carries no thickness array and its header default thickness is %g "
+			"%s: the file carries no thickness array and its header default thickness is %g "
 			"(not > 0), so there is no width in the file at all -- falling back to RISE's human-hair defaults "
 			"(%g root / %g tip scene units), which `width_root` / `width_tip` then scale",
-			label, (double)data.defaultThickness, kFallbackRootWidth, kFallbackTipWidth );
+			label.c_str(), (double)data.defaultThickness, kFallbackRootWidth, kFallbackTipWidth );
 		defaultRoot = kFallbackRootWidth;
 		defaultTip  = kFallbackTipWidth;
 	}
 
 	out.reserve( data.numStrands );
 
+	unsigned int rejectedTooFewPoints   = 0;
 	unsigned int rejectedNonFinitePoint = 0;
 	unsigned int rejectedWidth          = 0;
 	size_t       cursor                 = 0;	// index of the strand's first POINT
@@ -475,17 +559,30 @@ bool BuildStrandsFromHairFile(
 	{
 		const unsigned int nCP = data.pointsPerStrand[s];
 
-		// LoadHairFile guarantees the counts sum to numPoints and that
-		// each is >= 2, but this function is public and takes a plain
-		// struct -- so it re-checks rather than trusting a caller-built
-		// one to be well formed.
-		if( nCP < 2 || cursor + nCP > (size_t)data.numPoints ) {
+		// A strand whose declared point RANGE runs past `numPoints` means
+		// the parsed `pointsPerStrand` / `numPoints` bookkeeping itself
+		// cannot be trusted -- so no other strand's offset can be either.
+		// That stays a fatal, whole-conversion failure.
+		if( cursor + nCP > (size_t)data.numPoints ) {
 			GlobalLog()->PrintEx( eLog_Error,
-				"HairFileLoader:: `%s`: strand %u has an out-of-range point range (%u points at offset %u of %u) "
+				"%s: strand %u has an out-of-range point range (%u points at offset %u of %u) "
 				"-- the parsed file is internally inconsistent",
-				label, s, nCP, (unsigned)cursor, data.numPoints );
+				label.c_str(), s, nCP, (unsigned)cursor, data.numPoints );
 			out.clear();
 			return false;
+		}
+
+		// A strand with fewer than 2 points (a segments-array 0-entry --
+		// see LoadHairFile -- or, for a caller-built struct, any other
+		// source of the same defect) cannot form a curve.  Unlike the
+		// out-of-range case above this says nothing about any OTHER
+		// strand's bookkeeping, so it is a per-strand drop like the
+		// non-finite-point and bad-width cases below, not a whole-file
+		// failure.
+		if( nCP < 2 ) {
+			++rejectedTooFewPoints;
+			cursor += nCP;
+			continue;
 		}
 
 		// Both rejection tests run BEFORE anything is appended, so a
@@ -539,18 +636,18 @@ bool BuildStrandsFromHairFile(
 		cursor += nCP;
 	}
 
-	if( rejectedNonFinitePoint || rejectedWidth ) {
+	if( rejectedTooFewPoints || rejectedNonFinitePoint || rejectedWidth ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"HairFileLoader:: `%s`: dropped %u of %u strands (%u with a non-finite control point, %u whose "
-			"root/tip width did not resolve finite and > 0)",
-			label, rejectedNonFinitePoint + rejectedWidth, data.numStrands,
-			rejectedNonFinitePoint, rejectedWidth );
+			"%s: dropped %u of %u strands (%u with fewer than 2 points, %u with a non-finite control point, "
+			"%u whose root/tip width did not resolve finite and > 0)",
+			label.c_str(), rejectedTooFewPoints + rejectedNonFinitePoint + rejectedWidth, data.numStrands,
+			rejectedTooFewPoints, rejectedNonFinitePoint, rejectedWidth );
 	}
 
 	if( out.empty() ) {
 		GlobalLog()->PrintEx( eLog_Error,
-			"HairFileLoader:: `%s`: every one of the %u strands was rejected -- the groom would be empty",
-			label, data.numStrands );
+			"%s: every one of the %u strands was rejected -- the groom would be empty",
+			label.c_str(), data.numStrands );
 		return false;
 	}
 

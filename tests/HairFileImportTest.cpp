@@ -86,6 +86,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -111,6 +112,7 @@
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Geometry/HairGeometry.h"
 #include "../src/Library/Importers/HairFileLoader.h"
+#include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 #include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
@@ -379,6 +381,42 @@ bool ParseBodyCapturing( const std::string& tag, const std::string& body, IJobPr
 	return ok;
 }
 
+//! Same stdout-capture idiom as `ParseBodyCapturing`, generalized to any
+//! callable -- used by group 3 to pin WHICH diagnostic `LoadHairFile`
+//! actually printed for each malformed fixture, the same "message-
+//! substring" discipline group 6 already applies to the chunk-parser
+//! path. `GlobalLog`'s default sink is a stdout stream printer (see
+//! Utilities/Log/Log.cpp), so this captures exactly what an author
+//! watching the console would see.
+template<class F>
+std::string CaptureStdout( const std::string& tag, F fn )
+{
+	char pid[32];
+	std::snprintf( pid, sizeof(pid), "%d", (int)::getpid() );
+	static int counter = 0;
+	std::ostringstream nameSs;
+	nameSs << TempDir() << "rise_hairfileimp_cap_" << tag << "_" << pid << "_" << ( counter++ ) << ".txt";
+	const std::string capPath = nameSs.str();
+
+	std::fflush( stdout );
+	const int savedFd = RISE_TEST_DUP( RISE_TEST_FILENO( stdout ) );
+	FILE* capFile = std::fopen( capPath.c_str(), "w" );
+	if( capFile ) RISE_TEST_DUP2( RISE_TEST_FILENO( capFile ), RISE_TEST_FILENO( stdout ) );
+
+	fn();
+
+	std::fflush( stdout );
+	if( savedFd >= 0 ) { RISE_TEST_DUP2( savedFd, RISE_TEST_FILENO( stdout ) ); RISE_TEST_CLOSE( savedFd ); }
+	if( capFile ) std::fclose( capFile );
+
+	std::string capturedOutput;
+	std::ifstream ifs( capPath.c_str() );
+	if( ifs.is_open() ) { std::ostringstream oss; oss << ifs.rdbuf(); capturedOutput = oss.str(); }
+	remove( capPath.c_str() );
+
+	return capturedOutput;
+}
+
 } // namespace
 
 // ============================================================
@@ -544,86 +582,112 @@ static void RunRefusals()
 {
 	std::cout << "=== 3. Refusals ===" << std::endl;
 
-	struct Case { const char* tag; HairFileSpec spec; };
-	std::vector<std::pair<std::string, HairFileSpec> > cases;
+	// Each case names WHICH diagnostic it expects, and the loop below
+	// asserts the substring is actually present in what `LoadHairFile`
+	// printed -- not just that it refused SOMETHING.  Every substring
+	// below is unique enough among these fifteen cases to pin the
+	// intended branch (group-6's message-substring discipline, applied
+	// here to the loader's own refusals rather than the chunk parser's).
+	struct RefusalCase { std::string tag; HairFileSpec spec; std::string mustSay; };
+	std::vector<RefusalCase> cases;
 
 	{	// bad magic
-		HairFileSpec s; s.strands = CanonicalStrands(); s.badMagic = true;
-		cases.push_back( std::make_pair( std::string( "bad_magic" ), s ) );
+		RefusalCase c; c.tag = "bad_magic"; c.spec.strands = CanonicalStrands(); c.spec.badMagic = true;
+		c.mustSay = "bad magic";
+		cases.push_back( c );
 	}
 	{	// a 100-byte stub: shorter than the 128-byte header, so the
 		//   header read itself must be refused before it happens.  The
 		//   canonical fixture is 458 bytes (128 header + 10 segments +
 		//   240 points + 80 thickness).
-		HairFileSpec s; s.strands = CanonicalStrands(); s.truncateBytes = 358;
-		cases.push_back( std::make_pair( std::string( "header_stub_100_bytes" ), s ) );
+		RefusalCase c; c.tag = "header_stub_100_bytes"; c.spec.strands = CanonicalStrands(); c.spec.truncateBytes = 358;
+		c.mustSay = "shorter than the format's 128-byte header";
+		cases.push_back( c );
 	}
 	{	// a completely empty file
-		HairFileSpec s; s.strands = CanonicalStrands(); s.truncateBytes = 100000;
-		cases.push_back( std::make_pair( std::string( "empty_file" ), s ) );
+		RefusalCase c; c.tag = "empty_file"; c.spec.strands = CanonicalStrands(); c.spec.truncateBytes = 100000;
+		c.mustSay = "shorter than the format's 128-byte header";
+		cases.push_back( c );
 	}
 	{	// arrays truncated: the header describes more than the file has
-		HairFileSpec s; s.strands = CanonicalStrands(); s.truncateBytes = 40;
-		cases.push_back( std::make_pair( std::string( "truncated_arrays" ), s ) );
+		RefusalCase c; c.tag = "truncated_arrays"; c.spec.strands = CanonicalStrands(); c.spec.truncateBytes = 40;
+		c.mustSay = "TRUNCATED";
+		cases.push_back( c );
 	}
 	{	// points flag clear
-		HairFileSpec s; s.strands = CanonicalStrands(); s.clearPointsFlag = true;
-		cases.push_back( std::make_pair( std::string( "no_points_flag" ), s ) );
+		RefusalCase c; c.tag = "no_points_flag"; c.spec.strands = CanonicalStrands(); c.spec.clearPointsFlag = true;
+		c.mustSay = "declares no POINTS array";
+		cases.push_back( c );
 	}
 	{	// a reserved flag bit -- layout after it is unknowable
-		HairFileSpec s; s.strands = CanonicalStrands(); s.extraFlagBits = ( 1u << 7 );
-		cases.push_back( std::make_pair( std::string( "reserved_flag" ), s ) );
+		RefusalCase c; c.tag = "reserved_flag"; c.spec.strands = CanonicalStrands(); c.spec.extraFlagBits = ( 1u << 7 );
+		c.mustSay = "reserved flag bits";
+		cases.push_back( c );
 	}
 	{	// zero strands
-		HairFileSpec s; s.strands = CanonicalStrands(); s.forceStrandCount = 0;
-		cases.push_back( std::make_pair( std::string( "zero_strands" ), s ) );
+		RefusalCase c; c.tag = "zero_strands"; c.spec.strands = CanonicalStrands(); c.spec.forceStrandCount = 0;
+		c.mustSay = "must be non-zero";
+		cases.push_back( c );
 	}
 	{	// zero points
-		HairFileSpec s; s.strands = CanonicalStrands(); s.forcePointCount = 0;
-		cases.push_back( std::make_pair( std::string( "zero_points" ), s ) );
+		RefusalCase c; c.tag = "zero_points"; c.spec.strands = CanonicalStrands(); c.spec.forcePointCount = 0;
+		c.mustSay = "must be non-zero";
+		cases.push_back( c );
 	}
 	{	// strand count over the cap -- refused on the HEADER, before any
 		//   allocation, so the fixture stays 392 bytes
-		HairFileSpec s; s.strands = CanonicalStrands();
-		s.forceStrandCount = (long long)kMaxHairFileStrands + 1;
-		cases.push_back( std::make_pair( std::string( "over_strand_cap" ), s ) );
+		RefusalCase c; c.tag = "over_strand_cap"; c.spec.strands = CanonicalStrands();
+		c.spec.forceStrandCount = (long long)kMaxHairFileStrands + 1;
+		c.mustSay = "strands exceeds the";
+		cases.push_back( c );
 	}
 	{	// point count over the cap, likewise
-		HairFileSpec s; s.strands = CanonicalStrands();
-		s.forcePointCount = (long long)kMaxHairFilePoints + 1;
-		cases.push_back( std::make_pair( std::string( "over_point_cap" ), s ) );
+		RefusalCase c; c.tag = "over_point_cap"; c.spec.strands = CanonicalStrands();
+		c.spec.forcePointCount = (long long)kMaxHairFilePoints + 1;
+		c.mustSay = "points exceeds the";
+		cases.push_back( c );
 	}
 	{	// segments array that does not sum to the declared point count
-		HairFileSpec s; s.strands = CanonicalStrands(); s.forceSegmentOfStrand0 = 9;
-		cases.push_back( std::make_pair( std::string( "segment_sum_mismatch" ), s ) );
-	}
-	{	// a strand declaring zero segments (one point) -- not a curve
-		HairFileSpec s; s.strands = CanonicalStrands(); s.forceSegmentOfStrand0 = 0;
-		cases.push_back( std::make_pair( std::string( "zero_segment_strand" ), s ) );
+		RefusalCase c; c.tag = "segment_sum_mismatch"; c.spec.strands = CanonicalStrands(); c.spec.forceSegmentOfStrand0 = 9;
+		c.mustSay = "the segments array accounts for";
+		cases.push_back( c );
 	}
 	{	// no segments array and no usable default
-		HairFileSpec s; s.strands = CanonicalStrands();
-		s.writeSegments = false; s.defaultSegments = 0;
-		cases.push_back( std::make_pair( std::string( "no_segments_no_default" ), s ) );
+		RefusalCase c; c.tag = "no_segments_no_default"; c.spec.strands = CanonicalStrands();
+		c.spec.writeSegments = false; c.spec.defaultSegments = 0;
+		c.mustSay = "default segment count is 0";
+		cases.push_back( c );
 	}
 	{	// no segments array, default that does not divide the point count
-		HairFileSpec s; s.strands = CanonicalStrands();
-		s.writeSegments = false; s.defaultSegments = 7;
-		cases.push_back( std::make_pair( std::string( "default_segments_mismatch" ), s ) );
+		RefusalCase c; c.tag = "default_segments_mismatch"; c.spec.strands = CanonicalStrands();
+		c.spec.writeSegments = false; c.spec.defaultSegments = 7;
+		c.mustSay = "no segments array, so every strand carries the header's default";
+		cases.push_back( c );
 	}
 	{	// non-finite header default thickness (poisons every strand when
 		//   there is no thickness array)
-		HairFileSpec s; s.strands = CanonicalStrands();
-		s.writeThickness = false;
-		s.defaultThickness = std::numeric_limits<float>::quiet_NaN();
-		cases.push_back( std::make_pair( std::string( "nan_default_thickness" ), s ) );
+		RefusalCase c; c.tag = "nan_default_thickness"; c.spec.strands = CanonicalStrands();
+		c.spec.writeThickness = false;
+		c.spec.defaultThickness = std::numeric_limits<float>::quiet_NaN();
+		c.mustSay = "default thickness is not finite";
+		cases.push_back( c );
 	}
+	// NOTE: a strand declaring 0 segments (a lone point) used to be a
+	// refusal case here.  It is no longer one -- see group 4's
+	// "zero-segment strand" fixture below, and the header/loader
+	// comments: a segments-array 0-entry is now a per-strand DROP
+	// (BuildStrandsFromHairFile), not a whole-file refusal.
 
 	for( size_t i = 0; i < cases.size(); ++i ) {
-		const std::string path = MakeHairFile( cases[i].first, cases[i].second );
+		const std::string path = MakeHairFile( cases[i].tag, cases[i].spec );
 		HairFileData d;
-		const bool ok = LoadHairFile( path.c_str(), d, cases[i].first.c_str() );
-		Check( !ok, std::string( "REFUSED: " ) + cases[i].first );
+		bool ok = true;
+		const std::string captured = CaptureStdout( cases[i].tag, [&]() {
+			ok = LoadHairFile( path.c_str(), d, cases[i].tag.c_str() );
+		} );
+		Check( !ok, std::string( "REFUSED: " ) + cases[i].tag );
+		Check( captured.find( cases[i].mustSay ) != std::string::npos,
+		       "  ...and the diagnostic for " + cases[i].tag + " names `" + cases[i].mustSay + "`" );
 		remove( path.c_str() );
 	}
 
@@ -735,6 +799,52 @@ static void RunStrandConstruction()
 			       strands[1].controlPoints.size() == 2 &&
 			       strands[2].controlPoints.size() == 6,
 			       "the survivors are exactly strands 0, 3 and 4 (their point counts identify them)" );
+		}
+		remove( path.c_str() );
+	}
+
+	// -- a strand declaring 0 segments (a lone point) is a per-strand
+	//    DROP now, not a whole-file refusal (group 3's "zero_segment_-
+	//    strand" case used to live there; see the header/loader comments
+	//    for why it moved).  A single-point TestStrand naturally writes 0
+	//    segments (the writer derives segs = points - 1), so no
+	//    `forceSegmentOfStrand0` override is needed -- the fixture is
+	//    self-consistent by construction, exactly the kind of file a
+	//    real degenerate groom export would produce.
+	{
+		HairFileSpec spec;
+		spec.strands = CanonicalStrands();
+		TestStrand lone;
+		lone.pts.push_back( 9.0f ); lone.pts.push_back( 9.0f ); lone.pts.push_back( 9.0f );
+		lone.thickness.push_back( 0.01f );
+		spec.strands.push_back( lone );	// strand 5: one point, 0 segments
+		const std::string path = MakeHairFile( "zerosegdrop", spec );
+
+		HairFileData d;
+		bool loadOk = false;
+		const std::string loadCaptured = CaptureStdout( "zerosegdrop_load", [&]() {
+			loadOk = LoadHairFile( path.c_str(), d, "zerosegdrop" );
+		} );
+		Check( loadOk, "MONEY: a file with one 0-segment strand among good ones still LOADS -- a per-strand "
+		               "defect, not a whole-file refusal" );
+		if( loadOk ) {
+			Check( d.numStrands == 6 && d.pointsPerStrand.size() == 6,
+			       "the degenerate strand is still counted and recorded" );
+			Check( d.pointsPerStrand[5] == 1,
+			       "the degenerate strand's recorded point count is exactly 1 (segments+1 with 0 segments)" );
+			Check( loadCaptured.find( "0 segments" ) != std::string::npos,
+			       "LoadHairFile warns about the 0-segment strand (counted, not silent)" );
+
+			std::vector<HairGeometry::StrandDesc> strands;
+			bool buildOk = false;
+			const std::string buildCaptured = CaptureStdout( "zerosegdrop_build", [&]() {
+				buildOk = BuildStrandsFromHairFile( d, 1.0, 1.0, strands, "zerosegdrop" );
+			} );
+			Check( buildOk && strands.size() == 5,
+			       "MONEY: BuildStrandsFromHairFile drops the 0-segment strand and counts it; the other five "
+			       "convert" );
+			Check( buildCaptured.find( "fewer than 2 points" ) != std::string::npos,
+			       "the drop is named in BuildStrandsFromHairFile's summary warning (\"counted\", not silent)" );
 		}
 		remove( path.c_str() );
 	}
@@ -869,6 +979,51 @@ static void RunGeometry()
 static void RunChunk()
 {
 	std::cout << "=== 6. The hair_geometry `file` mode chunk ===" << std::endl;
+
+	// -- DRIFT GUARD.  ChunkParserRegistry.cpp's `HairGeometryAsciiChunk-
+	//    Parser::GrowOnlyParameters()` is the list of parameters `file`
+	//    mode REFUSES; it is a private static list, not something this
+	//    test can call directly, so this walks the REAL registered
+	//    descriptor instead and asserts every declared parameter name is
+	//    either one of the four file-mode-accepted names or on a mirror
+	//    of that grow-only list kept HERE.  If someone adds a new
+	//    `hair_geometry` parameter and forgets to add it to
+	//    GrowOnlyParameters() in the real parser, this still passes (the
+	//    new name would silently fall through file mode's refusal loop);
+	//    if they add it to the test's mirror but not the real list, or
+	//    change one without the other, THIS assertion is what forces the
+	//    developer to update both -- it fails, naming the offending
+	//    parameter, if the live descriptor and the mirror below ever
+	//    disagree on the FULL set (declared-but-not-in-either-list is the
+	//    case that actually protects against; a genuine list disagreement
+	//    would need `HairGeometryAsciiChunkParser::GrowOnlyParameters()`
+	//    read back too, which this test cannot do).
+	{
+		static const char* const kGrowOnlyMirror[] = {
+			"base_geometry", "count", "length", "segments", "seed", "base_detail",
+			"density", "length_painter", "comb", "guides",
+			"gravity", "frizz", "clump", "clump_size", "curl_radius", "curl_step"
+		};
+		static const char* const kFileModeAccepted[] = { "name", "file", "width_root", "width_tip" };
+
+		const ChunkDescriptor* d = DescriptorForKeyword( String( "hair_geometry" ) );
+		Check( d != nullptr, "the hair_geometry descriptor is registered" );
+		if( d ) {
+			for( size_t i = 0; i < d->parameters.size(); ++i ) {
+				const std::string pname = d->parameters[i].name;
+				bool known = false;
+				for( size_t g = 0; g < sizeof( kGrowOnlyMirror ) / sizeof( kGrowOnlyMirror[0] ) && !known; ++g ) {
+					if( pname == kGrowOnlyMirror[g] ) known = true;
+				}
+				for( size_t g = 0; g < sizeof( kFileModeAccepted ) / sizeof( kFileModeAccepted[0] ) && !known; ++g ) {
+					if( pname == kFileModeAccepted[g] ) known = true;
+				}
+				Check( known, "DRIFT GUARD: hair_geometry.`" + pname + "` is declared on the descriptor but is "
+				       "neither in this test's grow-only mirror nor in the four file-mode-accepted names -- "
+				       "classify it in both ChunkParserRegistry.cpp's GrowOnlyParameters() and here" );
+			}
+		}
+	}
 
 	HairFileSpec spec;
 	spec.strands = CanonicalStrands();
