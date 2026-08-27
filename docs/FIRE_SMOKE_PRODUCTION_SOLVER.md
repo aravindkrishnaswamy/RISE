@@ -4011,6 +4011,101 @@ and `1.761383508732288/1.8511347046572506 h`, respectively.  These are
 diagnostic costs, not accepted-production projections.  The long shadow and
 every later milestone remain blocked by the architecture finding.
 
+### 7.56b Monitored-manifold production charter (r168)
+
+r167 closes the enforcement experiment rather than extending it.  The closure
+map is non-contractive in both Binary32 and Binary64; r162 independently puts
+the steep-state oracle target generator inside an approximately `1e-4 s`
+contraction class; and the r166/r167 regression measures feedback slope
+`0.7925875134206254` across the hover corridor.  Those are three views of the
+same cost: forcing absolute `P0` consistency makes production inherit
+oracle-scale iteration or oracle-scale timesteps.  That is precisely the work
+the two-tier architecture assigns to the reference, not to the production
+step.
+
+The r160 consumer audit supplies the functional boundary.  The Binary32
+admissibility consumer needs the r60 component/energy and affine-row envelope;
+temperature inversion needs the certified table bracket; molecular transport
+needs accepted temperature/composition; remap and sources need the
+conservative ledger; and projection needs density plus the sealed tangent
+divergence target.  None consumes an absolute pressure-deviation/P0-consistency
+limit.  The checkpoint stores authenticated accepted state, while the manifold
+map is an observer.  No production-domain precondition is weakened when
+absolute manifold deviation moves from acceptance to monitored fidelity.
+
+The default resident request now measures the terminal absolute-deviation
+distribution on Metal and publishes exact Binary32 maximum, p95, and p50.
+Crossings of the historical 25%-headroom allowance and `2^-5` low-Mach marker
+are identity-bearing events in the run transcript, but do not stall or alter
+the step.  Absolute-reference restoration, advective-anomaly closure, and the
+manifold timestep limiter are disabled by default and retained behind the
+explicit enforcement/instrumentation request.  Monitored accepted observations
+publish zero manifold timestep authority, so the ordinary selector remains the
+CFL/buoyancy/diffusion/growth selector.  `S_div` is unchanged: the physical
+projection still consumes the complete sealed tangent expansion target.
+
+The fail-closed boundary is narrower and stronger for being explicit.
+Conservation ledgers, r60 Binary32 affine feasibility, physical-projection
+validation, CFL selection, nonfinite detection, and accepted-state
+admissibility remain atomic rejection gates.  A monitored result receives an
+accepted-state token only after those gates, one physical projection, the
+complete payload digest, and all three finite ordered distribution scalars are
+revalidated.  The old enforced path remains executable evidence; turning off
+monitoring while requesting enforcement fails before Metal.
+
+The one-step CFL GREEN deliberately crosses both diagnostic markers:
+`max=G_eulerian=0.08589577674865723`, `p95=0.0007141828536987305`, and
+`p50=1.1920928955078125e-7` at represented
+`dt=0.0016462659696117043 s`.  It validates the physical projection, executes
+zero restoration passes, emits one scalar read, authenticates and applies the
+state, and leaves the limiter unavailable.  Exact exit `195` is the retained
+behavioral boundary.  Equal-time oracle comparison remains a separate
+short-horizon contract fixture; its reference-generator time is never charged
+to the monitored production-step timing.
+
+Long-horizon validation returns to the original statistical charter.  The
+completed 104-step CFL shadow SHA-binds the max/p95/p50 trajectories, threshold
+events, projection-validation count, production device/wall samples, final
+state, and golden beginning.  It makes no non-secular pre-commitment: growth,
+saturation, or decay is attribution evidence.  A separately accumulated oracle
+state is never permitted to become a stale production target.  Instead, each
+accepted production beginning owns an instantaneous tangent target built from
+the same bounded temperature inversion, molecular transport, open-boundary
+flux, and full thermal-expansion `S_div` kernels.  This target is not an oracle
+step or a fidelity reference; equal-time oracle composition remains exclusive
+to the short-horizon contract.  The synthetic policy RED proves that disabling
+the oracle's absolute-pressure detector admits a pressure-only monitored target
+while a certified-affine-row mutation still refuses.
+
+All 104 physical projections validated; restoration ran zero times and every
+accepted result minted and applied an authenticated token.  The distribution
+is strongly localized: max peaks at `1.423297643661499` and ends at
+`0.8262996673583984`, while p95 peaks at `0.0011827945709228516` and ends at
+`0.00028055906295776367`, and p50 peaks at
+`0.00002574920654296875` and ends at `9.238719940185547e-6`.  Both historical
+markers cross on every step; those 104+104 events are diagnostics, not stalls.
+The trajectory and every per-step target/schedule digest are sealed by trace
+`d468729944d82973293ff2afa3f8248be10be3f16f875f77e292805702500d8c`;
+the final accepted state is
+`5382e567f20be2d7cc15f5ec731441f66b81c90a4153a304cc7fdb58d3ca07ee`.
+
+The CFL/buoyancy/diffusion/growth selector is re-evaluated at every accepted
+beginning.  It starts at `0.0016462659696117043 s`, averages
+`0.0007690361974779919 s`, and ends at `0.00006441490404540673 s` as the
+physical maximum velocity reaches `219.97698974609375 m/s`.  Consequently the
+measured `91.62970818579197/179.505958 ms` device/wall p95 projects to
+`0.8274219341607761/1.6209499069950497 h` for tier-10 x 25 s; the hoped-for
+`0.4-0.6 h` wall class is not met.  Performance remains decoupled from this
+milestone, but the physical-CFL collapse is now the named cost attribution,
+not hidden host overhead.
+
+Equal-time golden slices,
+Binary32/Binary64 subdominance, empirical rows, filtered fields, and tier-10
+prefix integrals remain the fidelity contract.  If those later contracts fail
+and the monitored trajectory attributes the failure to manifold drift, the
+enforcement question reopens against those numbers; that conditional is not a
+hidden production stall.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

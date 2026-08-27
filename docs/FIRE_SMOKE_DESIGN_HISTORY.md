@@ -4085,3 +4085,75 @@ it was already tried and refuted here.
   device/wall and pass-8 p95 is `417.5576251000166/438.83425 ms`; those are
   diagnostic costs only.  The shadow, B_fp32, readmission, maps, and first
   light remain blocked.
+- **r168 monitored-manifold production charter (2026-08-27):** the enforcement
+  campaign is complete.  r167 proves the closure map non-contractive in both
+  precisions; r162 locates the steep-state oracle generator in an approximately
+  `1e-4 s` contraction class; r166/r167 measure feedback slope
+  `0.7925875134206254`; and r160 enumerates every production consumer without
+  finding an absolute P0-consistency/domain requirement.  Together these show
+  that enforcing the absolute manifold makes production pay oracle-scale
+  timestep or iteration cost, defeating the chartered two-tier split.
+
+  Production therefore returns to monitored-manifold policy.  Every accepted
+  step records device-reduced max/p95/p50 absolute EOS deviation and the
+  allowance/`2^-5` threshold-crossing events.  Those are SHA-bound fidelity
+  diagnostics and never stalls.  Absolute-reference restoration, anomaly
+  closure, and the manifold timestep limiter default off but remain executable
+  instrumentation.  The tangent `S_div` physics is unchanged.  A monitored
+  accepted observation carries authenticated state/payload authority but zero
+  manifold timestep authority, so CFL/buoyancy/diffusion/growth continue to
+  own production selection.
+
+  Conservation ledgers, r60 Binary32 affine feasibility, projection
+  validation, CFL, nonfinite detection, and admissibility are not demoted.
+  They remain atomic rejection gates and are independently revalidated before
+  a token is issued or a result is applied.  Requesting enforcement without
+  diagnostic monitoring fails before Metal.  The Binary64 mirror and roundoff
+  trace follow the same one-projection default, rather than silently comparing
+  against the retired restoration topology.
+
+  The retained one-step GREEN runs at represented CFL
+  `0.0016462659696117043 s` and deliberately measures
+  `max=0.08589577674865723`, `p95=0.0007141828536987305`, and
+  `p50=1.1920928955078125e-7`: both legacy markers cross, yet the physical
+  projection validates, restoration count is zero, the state is authenticated
+  and applied, and exact exit `195` records acceptance.  Equal-time oracle
+  work remains a short-horizon contract fixture and is excluded from
+  production timing.
+
+  The completed 104-step shadow has no secular/plateau pass condition.  Every
+  physical projection validates, restoration runs zero times, and all 104
+  accepted states are authenticated and applied.  The absolute-deviation max
+  peaks at `1.423297643661499` and ends at `0.8262996673583984`; p95 peaks at
+  `0.0011827945709228516` and ends at `0.00028055906295776367`; p50 peaks at
+  `2.574920654296875e-5` and ends at `9.238719940185547e-6`.  Both historical
+  markers cross on all 104 steps and remain diagnostics.  The complete
+  trajectory trace is
+  `d468729944d82973293ff2afa3f8248be10be3f16f875f77e292805702500d8c`.
+
+  Contact with the first evolved Binary32 state exposed one last inheritance:
+  `AdvanceConservative3D` still applied the oracle's absolute-P0 detector while
+  forming a production target, and its coupled Picard step did not contract
+  through `dt/64`.  The shadow therefore owns an instantaneous tangent target
+  from each accepted production beginning, using the existing certified
+  temperature inversion, molecular transport, boundary flux, and full
+  thermal-expansion `S_div` kernels without advancing an oracle state.  This is
+  not an equal-time fidelity reference; the equal-time oracle remains unchanged
+  for short horizons.  A pressure-only RED distinguishes the demoted oracle
+  detector, while an affine-row RED proves r60 remains fail-closed.
+
+  CFL/buoyancy/diffusion/growth selection is rerun at each accepted beginning.
+  It starts at `0.0016462659696117043 s`, averages
+  `0.0007690361974779919 s`, and ends at `6.441490404540673e-5 s` as physical
+  maximum velocity reaches `219.97698974609375 m/s`.  Device/wall p95 are
+  `91.62970818579197/179.505958 ms`, projecting to
+  `0.8274219341607761/1.6209499069950497 h` for tier-10 x 25 s.  The requested
+  `0.4-0.6 h` wall expectation is not met; performance remains decoupled, with
+  the physical-CFL collapse recorded as the controlling cost.
+
+  Long-horizon fidelity remains the original statistical
+  contract: empirical rows, filtered fields, and tier-10 prefix integrals.
+  Failure there may reopen enforcement only when the monitored trajectory
+  attributes that measured failure to manifold drift.  The ladder resumes
+  with short-horizon equal-time B_fp32/subdominance, readmission, thermo/source
+  maps, and first light after this shadow is sealed.

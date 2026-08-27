@@ -338,20 +338,43 @@ namespace RISEFireProductionTrace
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
 		const FireProductionResidentStepResult& value )
 	{
-		return value.physicalProjection.validationPassed&&value.projection.validationPassed&&
-			value.manifoldPlateauPassed&&
-			value.conservativeProducerPrecision==RISE::FireStateProducerPrecision::Binary32&&
-			value.residentProjectionInvocationCount==2u&&
+		if(!value.manifoldDiagnosticsMonitored||!value.projection.validationPassed||
+			!value.manifoldPlateauPassed||!std::isfinite(value.maximumManifoldGeneration))
+			return false;
+		const bool common=value.conservativeProducerPrecision==
+			RISE::FireStateProducerPrecision::Binary32&&
 			value.interstageFullGridTransferCount==0u&&
 			value.manifoldMapCellCount==value.acceptedShape.CellCount()&&
-			value.manifoldScalarDeviceToHostTransferCount==2u&&
 			value.manifoldFullGridDeviceToHostTransferCount==0u&&
+			std::isfinite(value.maximumAcceptedManifoldDeviation)&&
+			value.maximumAcceptedManifoldDeviation>=0.0&&
+			std::isfinite(value.acceptedManifoldDeviationP95)&&
+			std::isfinite(value.acceptedManifoldDeviationP50)&&
+			value.acceptedManifoldDeviationP50>=0.0&&
+			value.acceptedManifoldDeviationP95>=value.acceptedManifoldDeviationP50&&
+			value.maximumAcceptedManifoldDeviation>=value.acceptedManifoldDeviationP95&&
+			value.manifoldAllowanceExceeded==
+				(value.maximumAcceptedManifoldDeviation>ManifoldPlateauAllowance)&&
+			value.manifoldCeilingExceeded==
+				(value.maximumAcceptedManifoldDeviation>ManifoldLowMachValidityCeiling)&&
 			std::isfinite(value.maximumPredictedAdvectiveManifoldAnomaly)&&
 			value.maximumPredictedAdvectiveManifoldAnomaly>=0.0&&
-			(value.advectiveAnomalyClosurePassCount==1u||
-				value.advectiveAnomalyClosurePassCount==2u)&&
 			value.manifoldStageGeneration[0]==value.maximumManifoldGeneration&&
 			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
+		if(!common)return false;
+		if(value.manifoldPlateauEnforced)return value.physicalProjection.validationPassed&&
+			value.residentProjectionInvocationCount==2u&&
+			value.manifoldScalarDeviceToHostTransferCount==2u&&
+			(value.advectiveAnomalyClosurePassCount==1u||
+				value.advectiveAnomalyClosurePassCount==2u)&&
+			!value.manifoldAllowanceExceeded&&!value.manifoldCeilingExceeded;
+		return value.residentProjectionInvocationCount==1u&&
+			value.manifoldScalarDeviceToHostTransferCount==1u&&
+			value.advectiveAnomalyClosurePassCount==0u&&
+			value.requiredRestorationDrainFraction==0.0&&
+			value.deliveredRestorationDrainFraction==0.0&&
+			value.restorationResidualBandPerS==0.0&&
+			!value.manifoldNextTimeStepAvailable&&value.suggestedManifoldTimeStepS==0.0;
 	}
 
 	bool FireProductionEulerianGenerationHasMaterialAuthority(

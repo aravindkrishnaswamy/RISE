@@ -58,6 +58,40 @@ namespace
 
 int main()
 {
+	const RISE::FireProductionResidentStepRequest monitoredDefaultRequest;
+	Check(monitoredDefaultRequest.monitorManifoldDiagnostics&&
+		!monitoredDefaultRequest.enforceManifoldPlateau,
+		"production defaults to monitored manifold diagnostics with restoration disabled");
+	RISE::FireProductionResidentStepResult monitoredEligibility;
+	monitoredEligibility.acceptedShape.nx=1u;monitoredEligibility.acceptedShape.ny=1u;
+	monitoredEligibility.acceptedShape.nz=1u;monitoredEligibility.acceptedShape.cellWidthM=1.0f;
+	monitoredEligibility.conservativeProducerPrecision=
+		RISE::FireStateProducerPrecision::Binary32;
+	monitoredEligibility.projection.validationPassed=true;
+	monitoredEligibility.manifoldDiagnosticsMonitored=true;
+	monitoredEligibility.manifoldPlateauPassed=true;
+	monitoredEligibility.residentProjectionInvocationCount=1u;
+	monitoredEligibility.manifoldMapCellCount=1u;
+	monitoredEligibility.manifoldScalarDeviceToHostTransferCount=1u;
+	monitoredEligibility.maximumManifoldGeneration=0.085895776748657227;
+	monitoredEligibility.manifoldStageGeneration[0]=
+		monitoredEligibility.maximumManifoldGeneration;
+	monitoredEligibility.maximumAcceptedManifoldDeviation=0.085895776748657227;
+	monitoredEligibility.acceptedManifoldDeviationP95=0.00071418285369873047;
+	monitoredEligibility.acceptedManifoldDeviationP50=1.1920928955078125e-07;
+	monitoredEligibility.manifoldAllowanceExceeded=true;
+	monitoredEligibility.manifoldCeilingExceeded=true;
+	Check(FireProductionResidentStepEligibleForAcceptedManifoldToken(monitoredEligibility),
+		"monitored threshold crossings remain eligible after conservation and projection gates");
+	RISE::FireProductionResidentStepResult malformedDistribution=monitoredEligibility;
+	malformedDistribution.acceptedManifoldDeviationP95=
+		malformedDistribution.maximumAcceptedManifoldDeviation+1.0;
+	Check(!FireProductionResidentStepEligibleForAcceptedManifoldToken(malformedDistribution),
+		"monitored token eligibility rejects a malformed deviation distribution");
+	RISE::FireProductionResidentStepResult forgedCrossing=monitoredEligibility;
+	forgedCrossing.manifoldCeilingExceeded=false;
+	Check(!FireProductionResidentStepEligibleForAcceptedManifoldToken(forgedCrossing),
+		"monitored token eligibility binds threshold-crossing identity");
 	std::array<std::vector<float>,3> zeroTransportVelocity;
 	for(std::vector<float>& axis:zeroTransportVelocity)axis.assign(2u,0.0f);
 	std::array<std::vector<float>,3> movingTransportVelocity=zeroTransportVelocity;
@@ -1611,10 +1645,10 @@ int main()
 		distributionShadowRaw.find("GOLDEN_LONG_SHADOW steps=104")==std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
-			"f31be06b6b0c7fb96dc4293a037839f2db1a2895d4c93e3748036ec004b9c7df"&&
+			"5dc6f5a264e16cd3b030154065b2776124cebba4fe48d7aedb69ec9d8316771c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
-			"10d94716ff885183b913f5e6450195382904e5b5722398ea5b892d43d4adba47"&&
+			"835b09cda3904790aa1cfcc237daa5694d85f33bfff5cbd453fb3f7f3713a7ee"&&
 		distributionShadowEvidence.find("advection_metal_sha256 "
 			"519eeb31230264ed02342d224a3377c83ef1d4bdda50d9f137351a02142e0b29")!=
 			std::string::npos&&
@@ -1626,19 +1660,19 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"d2bc33fb05a885198923ca95165e1729ce7a711fd0d043673bf67df1ca7c3acb"&&
+			"ca00922ed3135b8431fc411dc62f84ecfd86f8782ade3e26b732189ca85892cc"&&
 		distributionShadowEvidence.find("solver_test_sha256 "
 			"52d0456993a5c942a281783c16d1d39ba0c0f04216ff78d9eed8b45aa58af15c")!=
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"57feb2f93dd1af43afbd286a85b106a91d68d853bdd16865bc5b52919d933d1d"&&
+			"c1d00d301408d68d8289f16cab2aee11474d410babbedeb3079344b7b8486388"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-			"77ab26c94a6381e5431147ff071c334a7278da8e09e23ebd7e0123f95c582dba"&&
+			"c523624259a82931b9e5659879fa1910b2a61cc6997daa2076ee64884bfe0f36"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			traceSourceManifest.begin(),traceSourceManifest.end()))==
-			"6a2ac2a166c517749f5a3cd43a7413bf0abab51394737ede32d8a768dc24f7d4"&&
+			"672fba481099fca464d6bb6dc535e9e31de9c3ca0aac9bde7f54cc857792cce6"&&
 		distributionShadowEvidence.find("unix_test_driver_sha256 "
 			"61978e1a4df3b84c7dfb90e05f743337928e246dc0c39f795755f4a41772f1a2")!=
 			std::string::npos&&
@@ -1725,19 +1759,19 @@ int main()
 			"converged=0 stalled_above_1e-3=1")!=std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"3d68816d42c7f1704f0426df03ac0ffe626aa5d4183695dcd63645ef8feaba38"&&
+			"665f2d389c7c0f1d7f51efb242b37f23a593295d9cd11a90581a99cba39f84ac"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			mirrorAdapter.begin(),mirrorAdapter.end()))==
-			"0dbe115c059c4e4567b072040046917b1250b2d1873d942258b381d79b6f1de9"&&
+			"77f72a9132d529b1d09e9bbf9a4e8c984f0bcb148d8682a1a5e4340fd3a2db22"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"89d6086bbe798f8504dc3677a63f5eb2ebfdeb942230eb133f30d723af1b7a4f"&&
+			"387b6dc930afc92a7d5480ab7b6b55b8024dedd7cc17a796214368406ee58b6c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-			"36d7518668de7b73ab40f52d853699bf485a44ce9610e31a40e1d09da797d5c0"&&
+			"e355cd70ec04c016ab3ade7e8f72cf2b7894feb17ec61ad17d5ca5964805e754"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"d9f7b95681bd2c6da4542f17af3d8935f471e1203b5657a302d54e64a9ef12c6"&&
+			"01a4f7d8ed826337426750648741b57943655e24af4cee37478cdd1f2fb1cf57"&&
 		advectionMetal.find("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES")!=
 			std::string::npos&&
 		goldenCompositionFixture.find(
@@ -1752,6 +1786,129 @@ int main()
 			"PASS (exact exit=201, fp32/fp64 closure architecture stop)")!=
 			std::string::npos,
 		"r167 binds the fp32/fp64 closure curve, free r166 gain fit, and architecture stop");
+	const std::string monitoredShadowEvidence=ReadText(
+		"rendered/fire_production_calibration/r168_monitored_manifold_shadow/"
+		"monitored_manifold_shadow.v1");
+	const std::string monitoredShadowRaw=ReadText(
+		"rendered/fire_production_calibration/r168_monitored_manifold_shadow/"
+		"monitored_shadow.raw.log");
+	Check(!monitoredShadowEvidence.empty()&&!monitoredShadowRaw.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			monitoredShadowEvidence.begin(),monitoredShadowEvidence.end()))==
+			"8ab3a87bdf77437d2ea56d7da05b5e732c831eacb434cee8315cd1397fdbfb15"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			monitoredShadowRaw.begin(),monitoredShadowRaw.end()))==
+			"e6d74d5796787e24a4df02d686069a68fbef5b7b749c93993ee1cb4b0e2f8faf"&&
+		monitoredShadowEvidence.find(
+			"owner_ruling production_returns_to_monitored_manifold_charter")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find(
+			"two_tier_conclusion absolute_manifold_enforcement_costs_oracle_scale_timesteps_or_iterations")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find(
+			"ordinary_policy monitor_distribution_do_not_restore_limit_or_refuse")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find(
+			"manifold_class fidelity_contract_diagnostic")!=std::string::npos&&
+		monitoredShadowEvidence.find("accepted_shadow_steps 104")!=std::string::npos&&
+		monitoredShadowEvidence.find(
+			"field_max_peak 1.423297643661499")!=std::string::npos&&
+		monitoredShadowEvidence.find(
+			"field_p95_peak 0.0011827945709228516")!=std::string::npos&&
+		monitoredShadowEvidence.find(
+			"field_p50_peak 2.574920654296875e-05")!=std::string::npos&&
+		monitoredShadowEvidence.find("allowance_crossing_steps 104")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("legacy_low_mach_crossing_steps 104")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("physical_projection_validations 104")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("restoration_projection_validations 0")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("accepted_state_tokens 104")!=std::string::npos&&
+		monitoredShadowEvidence.find("current_r136_exact_exit 237")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find(
+			"current_r136_trace_digest cae3e4e13d11aa036c637b1d88cd269d9fbf73e4a322164bb24a2ab7fa49ffac")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("current_r136_proof_gaps 0xff")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("current_r136_metal_measurement 0")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find(
+			"tier10_25s_wall_projection_hours 1.6209499069950497")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find(
+			"requested_0.4_to_0.6_wall_hour_expectation_met false")!=
+			std::string::npos&&
+		CountText(monitoredShadowRaw,"MONITORED_MANIFOLD_SHADOW_STEP step=")==104u&&
+		monitoredShadowRaw.find(
+			"MONITORED_TARGET_POLICY absolute_reference_pressure_gate=0 "
+			"producer_precision=2 strict_pressure_detector_refused=1 affine_RED_refused=1")!=
+			std::string::npos&&
+		monitoredShadowRaw.find(
+			"MONITORED_MANIFOLD_SHADOW_STEP step=0 dt=0.0016462659696117043 "
+			"G_eulerian=0.085895776748657227 field_max=0.085895776748657227 "
+			"field_p95=0.00071418285369873047 field_p50=1.1920928955078125e-07 "
+			"allowance_crossed=1 ceiling_crossed=1 projection_valid=1 "
+			"restoration_passes=0 scalar_reads=1 selector=advective_CFL")!=
+			std::string::npos&&
+		monitoredShadowRaw.find(
+			"MONITORED_MANIFOLD_SHADOW_COMPLETE steps=104 first_dt=0.0016462659696117043 "
+			"final_dt=6.4414904045406729e-05")!=std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			forceHeader.begin(),forceHeader.end()))==
+			"5dc6f5a264e16cd3b030154065b2776124cebba4fe48d7aedb69ec9d8316771c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			forceSource.begin(),forceSource.end()))==
+			"835b09cda3904790aa1cfcc237daa5694d85f33bfff5cbd453fb3f7f3713a7ee"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+			"665f2d389c7c0f1d7f51efb242b37f23a593295d9cd11a90581a99cba39f84ac"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
+			"d82a613bc230363ba2459fc27e31d5d1e29ffa0eb0a1b220e49687a148099f48"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
+			"6119e3a1bd00acf47113a8eb59df156a4adfceedb53f31c3b93f12aa4db7394c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"387b6dc930afc92a7d5480ab7b6b55b8024dedd7cc17a796214368406ee58b6c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			dyadicFixture.begin(),dyadicFixture.end()))==
+			"ca00922ed3135b8431fc411dc62f84ecfd86f8782ade3e26b732189ca85892cc"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			productionSolverTest.begin(),productionSolverTest.end()))==
+			"e355cd70ec04c016ab3ade7e8f72cf2b7894feb17ec61ad17d5ca5964805e754"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			sequenceTest.begin(),sequenceTest.end()))==
+			"c1d00d301408d68d8289f16cab2aee11474d410babbedeb3079344b7b8486388"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			mirrorAdapter.begin(),mirrorAdapter.end()))==
+			"77f72a9132d529b1d09e9bbf9a4e8c984f0bcb148d8682a1a5e4340fd3a2db22"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			traceAdapterSource.begin(),traceAdapterSource.end()))==
+			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
+			"c523624259a82931b9e5659879fa1910b2a61cc6997daa2076ee64884bfe0f36"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			traceSourceManifest.begin(),traceSourceManifest.end()))==
+			"672fba481099fca464d6bb6dc535e9e31de9c3ca0aac9bde7f54cc857792cce6"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"01a4f7d8ed826337426750648741b57943655e24af4cee37478cdd1f2fb1cf57"&&
+		forceHeader.find("monitorManifoldDiagnostics(true),enforceManifoldPlateau(false)")!=
+			std::string::npos&&
+		fireSimulator3DAdvance.find("MonitoredProductionTangentDivergenceTarget3D")!=
+			std::string::npos&&
+		unixTestDriver.find("monitored_shadow_rc\" -eq 195")!=std::string::npos&&
+		unixTestDriver.find("MONITORED_TARGET_POLICY absolute_reference_pressure_gate=0")!=
+			std::string::npos&&
+		unixTestDriver.find(
+			"PASS (exact exit=195, monitored threshold crossing accepted)")!=
+			std::string::npos,
+		"r168 binds monitored-manifold policy, 104-step distribution evidence, and physics gates");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
@@ -3163,6 +3320,8 @@ int main()
 	step.cellSourceIncrement.assign(9u*64u,0.0f);
 	step.divergenceTargetPerS.assign(64u,0.0f);
 	step.restorationDivergenceTargetPerS.assign(64u,0.0f);
+	step.monitorManifoldDiagnostics=true;
+	step.enforceManifoldPlateau=true;
 	FireProductionCalibration::ResidentStep64Result step64;
 	Check(FireProductionCalibration::AdvanceResidentStep64(step,0.0,step64,&error)&&
 		step64.force.schedule.substepCount==1u&&step64.cell.executedSubmapCount==5u&&
@@ -3217,6 +3376,14 @@ int main()
 		nonDefaultCycleStep64.physicalProjection.executedVCycleCount==19u&&
 		nonDefaultCycleStep64.projection.executedVCycleCount==16u,
 		"binary64 mirror propagates the request-owned non-default physical V-cycle count");
+	RISE::FireProductionResidentStepRequest monitoredStep=nonDefaultCycleStep;
+	monitoredStep.enforceManifoldPlateau=false;
+	FireProductionCalibration::ResidentStep64Result monitoredStep64;
+	Check(FireProductionCalibration::AdvanceResidentStep64(
+		monitoredStep,0.0,monitoredStep64,&error)&&
+		monitoredStep64.projection.executedVCycleCount==19u&&
+		monitoredStep64.conservativeValues==nonDefaultCycleStep64.conservativeValues,
+		"binary64 mirror executes the monitored one-projection topology without changing exact-zero payloads");
 	FireProductionRoundoffAdapter::ResidentStepTraceResult tracedStep;
 	const bool tracedStepOK=FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
 		step,0.0f,tracedStep,&error);
@@ -3255,6 +3422,13 @@ int main()
 		nonDefaultCycleTracedStep.physicalProjection.executedVCycleCount==19u&&
 		nonDefaultCycleTracedStep.projection.executedVCycleCount==16u,
 		"roundoff adapter propagates the request-owned non-default physical V-cycle count");
+	FireProductionRoundoffAdapter::ResidentStepTraceResult monitoredTrace;
+	Check(FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
+		monitoredStep,0.0f,monitoredTrace,&error)&&
+		monitoredTrace.projection.executedVCycleCount==19u&&
+		monitoredTrace.conservativeValues.size()==
+			nonDefaultCycleTracedStep.conservativeValues.size(),
+		"roundoff trace executes the same monitored one-projection topology as production");
 	if(!(tracedStepOK&&tracedStepStages&&tracedStepBytes))
 		std::fprintf(stderr,"roundoff full-step detail ok=%d stages=%d bytes=%d count=%zu error=%s\n",
 			tracedStepOK?1:0,tracedStepStages?1:0,tracedStepBytes?1:0,

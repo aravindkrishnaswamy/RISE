@@ -488,6 +488,10 @@ namespace FireProductionRoundoffAdapter
 			SealProjectionOutputs(computed.physicalProjection);
 		}
 		AppendStages(computed,counters);
+		if(!request.enforceManifoldPlateau){
+			computed.projection=std::move(computed.physicalProjection);
+			result=std::move(computed);return true;
+		}
 		projection.provisionalMomentumKGPerM2S=computed.physicalProjection.momentumKGPerM2S;
 		projection.divergenceTargetPerS=Promote(request.restorationDivergenceTargetPerS);
 		{

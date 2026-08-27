@@ -2004,6 +2004,72 @@
 			bool activeSetDiscontinuousClass=false;
 		};
 
+		// Long-horizon monitored production owns an instantaneous tangent target.
+		// This is intentionally not an oracle step: it evaluates the same bounded
+		// temperature inversion, molecular transport, boundary fluxes, and full
+		// thermal-expansion S_div physics at the accepted production state without
+		// asking the coupled flow reference to converge at production's timestep.
+		// Short-horizon fidelity comparisons continue to use AdvanceConservative3D.
+		inline bool MonitoredProductionTangentDivergenceTarget3D(
+			const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& state,
+			const OpenMACField3D& velocity,
+			const std::vector<ConservativeVector>& sourceDelta,
+			const ConservativeAdvance3DConfig& config,
+			const FireSimulationMethaneRecord& fuel,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			std::vector<double>& result,
+			std::string* error=0
+			)
+		{
+			const std::size_t count=shape.CellCount();
+			if(config.periodicBoundaries||
+				state.size()!=count||sourceDelta.size()!=count||config.workerCount==0u)
+				return Fail(error,"fire solver monitored tangent-target policy is malformed");
+			std::vector<double> temperature;
+			if(!InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
+				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
+				config.transport.producerPrecision,temperature,error,config.workerCount,false))
+				return false;
+			OpenMACProjection3DResult kinematics;
+			kinematics.velocityMPerS=velocity;
+			for(unsigned int side=0u;side<6u;++side){
+				const unsigned int axis=side/2u;
+				const bool positive=(side&1u)!=0u;
+				const std::size_t firstExtent=axis==0u?shape.ny:shape.nx;
+				const std::size_t secondExtent=axis==2u?shape.ny:shape.nz;
+				kinematics.inflow[side].assign(firstExtent*secondExtent,false);
+				for(std::size_t second=0u;second<secondExtent;++second)
+					for(std::size_t first=0u;first<firstExtent;++first){
+						const std::size_t x=axis==0u?(positive?shape.nx:0u):first;
+						const std::size_t y=axis==1u?(positive?shape.ny:0u):
+							(axis==0u?first:second);
+						const std::size_t z=axis==2u?(positive?shape.nz:0u):second;
+						const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
+						if(face>=velocity.component[axis].size())return Fail(error,
+							"fire solver monitored tangent velocity shape is invalid");
+						const double outward=(positive?1.0:-1.0)*velocity.component[axis][face];
+						kinematics.inflow[side][first+firstExtent*second]=
+							OpenScalarInflow3D(outward,false,
+								config.openBoundary.velocityToleranceMPerS);
+					}
+			}
+			std::vector<double> diffusivity,conductivity,viscosity;
+			if(!BuildOpenStageTransport3D(shape,state,temperature,velocity,
+				config.openBoundary,config.dns,thermochemistry,transport,
+				config.transport.producerPrecision,diffusivity,conductivity,viscosity,
+				error,config.workerCount))return false;
+			OpenFluxPair3D flux;
+			if(!BuildOpenFluxPair3D(shape,state,temperature,kinematics,diffusivity,
+				conductivity,config.openBoundary,config.transport.ambientTemperatureK,
+				config.injectedTemperatureK,fuel,thermochemistry,flux,error,
+				config.workerCount))return false;
+			return OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
+				sourceDelta,config.transport.deltaTimeS,thermochemistry,
+				config.transport.producerPrecision,result,error,config.workerCount);
+		}
+
 		inline bool SolveConservativeStage3D(
 			const PeriodicMACShape& shape,
 			const std::vector<ConservativeVector>& state,

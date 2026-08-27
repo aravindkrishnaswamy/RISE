@@ -92,6 +92,7 @@ namespace FireProductionDyadicCalibration
 			// production trajectory.  The SHA-bound golden owner supplies and gates
 			// the r143 beginning-manifold metadata.
 			request.enforceManifoldPlateau=false;
+			request.monitorManifoldDiagnostics=false;
 			RISE::FireProductionResidentStepResult production32;
 			if(!RISE::AdvanceFireProductionResidentStepMetal(request,production32,&error)){
 				std::fprintf(stderr,"subdominance Metal slice=%zu failed: %s\n",step,

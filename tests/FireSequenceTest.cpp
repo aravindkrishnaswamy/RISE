@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <iomanip>
 #include <sstream>
 #include <string>

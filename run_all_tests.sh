@@ -939,6 +939,52 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r168: the production default monitors manifold distribution diagnostics but
+# does not restore, limit, or refuse on threshold crossings.  Keep the full
+# 104-step transcript as SHA-bound evidence; this one-step replay binds the
+# executable policy/token/projection boundary in the ordinary Darwin suite.
+if [ "$(uname -s)" = "Darwin" ]; then
+	monitored_shadow_name="FireSequenceTest.r168_monitored_manifold_smoke"
+	monitored_shadow_path="$BIN_DIR/FireSequenceTest"
+	monitored_shadow_log="$LOG_DIR/$monitored_shadow_name.log"
+	monitored_shadow_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	printf '[ evidence ] %-46s ... ' "$monitored_shadow_name"
+	monitored_shadow_rc=0
+	if [ ! -x "$monitored_shadow_path" ]; then
+		monitored_shadow_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+			RISE_FIRE_MONITORED_MANIFOLD_SHADOW=1 \
+			RISE_FIRE_MONITORED_MANIFOLD_SHADOW_SMOKE=1 \
+			RISE_OPTIONS_FILE="$monitored_shadow_options" \
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$monitored_shadow_path" \
+			--fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$monitored_shadow_log" 2>&1 || monitored_shadow_rc=$?
+	else
+		RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+			RISE_FIRE_MONITORED_MANIFOLD_SHADOW=1 \
+			RISE_FIRE_MONITORED_MANIFOLD_SHADOW_SMOKE=1 \
+			RISE_OPTIONS_FILE="$monitored_shadow_options" \
+			"$monitored_shadow_path" --fire-production-golden-composition \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$REPO_ROOT" >"$monitored_shadow_log" 2>&1 || monitored_shadow_rc=$?
+	fi
+	if [ "$monitored_shadow_rc" -eq 195 ] &&
+		grep -Fq 'MONITORED_TARGET_POLICY absolute_reference_pressure_gate=0 producer_precision=2 strict_pressure_detector_refused=1 affine_RED_refused=1' "$monitored_shadow_log" &&
+		grep -Fq 'dt=0.0016462659696117043 G_eulerian=0.085895776748657227 field_max=0.085895776748657227 field_p95=0.00071418285369873047 field_p50=1.1920928955078125e-07 allowance_crossed=1 ceiling_crossed=1 projection_valid=1 restoration_passes=0 scalar_reads=1' "$monitored_shadow_log" &&
+		grep -Fq 'MONITORED_MANIFOLD_SHADOW_SMOKE dt=0.0016462659696117043 field_max=0.085895776748657227 field_p95=0.00071418285369873047 field_p50=1.1920928955078125e-07 allowance_crossed=1 ceiling_crossed=1 projection_valid=1 restoration_passes=0 accepted=1' "$monitored_shadow_log" &&
+		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$monitored_shadow_log"; then
+		echo 'PASS (exact exit=195, monitored threshold crossing accepted)'
+		rm -f "$monitored_shadow_log"
+	else
+		echo "FAIL (exit=$monitored_shadow_rc expected 195)"
+		printf '%s\t%d\t%s\n' "$monitored_shadow_name" "$monitored_shadow_rc" \
+			"$monitored_shadow_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

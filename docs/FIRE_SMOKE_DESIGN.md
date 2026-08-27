@@ -1909,6 +1909,46 @@ The most notorious practical trap in fire LES; specified accordingly:
   from the recompute must reproduce the invariant ~1.03×10⁻³
   stationary-contrast signature.
 
+  **Monitored-manifold production charter (r168 — supersedes r69/r70 as
+  ordinary production acceptance policy, retains both as instrumentation).**
+  The enforcement campaign measured the closure map as non-contractive in
+  Binary32 and Binary64, the reference generator's steep-state contraction
+  class near 10^-4 s, and a `0.7925875134206254` feedback slope across the
+  evolved hover corridor.  Absolute P0 enforcement therefore makes the fast
+  step inherit oracle-scale iterations or timesteps; it is not an admissible
+  default for the two-tier architecture.  The production consumer audit also
+  found no absolute P0-consistency precondition: r60 feasibility, certified
+  temperature inversion, molecular transport, conservative remap/source
+  ledgers, and projection consume their own accepted quantities, while the
+  manifold map is a fidelity observer.
+
+  Pin: ordinary production retains the complete tangent `S_div` target and
+  one validating physical projection, and device-reduces the accepted
+  absolute-deviation distribution to max/p95/p50.  Allowance and `2^-5`
+  crossings are SHA-bound events, never rejection conditions.  The r69
+  absolute-reference restoration, r70 anomaly closure, and manifold timestep
+  limiter default off and remain executable diagnostics.  Conservation,
+  r60's Binary32 affine envelope, projection validation, CFL, nonfinite
+  detection, and accepted-state admissibility remain atomic fail-closed gates;
+  this ruling demotes no conservation-class condition.  Short-horizon
+  equal-time oracle and fp32/fp64 subdominance gates retain their exact
+  contract.  Long-horizon fidelity returns to empirical rows, filtered fields,
+  and prefix integrals, with the monitored trajectory providing attribution if
+  a measured contract failure later reopens enforcement.  The ordinary
+  CFL/buoyancy/diffusion/growth selector is still re-evaluated at every
+  accepted beginning; monitored policy removes only the manifold candidate.
+  The r168 104-step golden shadow is the binding first campaign: 104/104
+  physical projections validate with zero restoration passes.  Its max/p95/p50
+  peaks are `1.423297643661499`, `0.0011827945709228516`, and
+  `2.574920654296875e-5`; all threshold crossings are recorded and none stalls.
+  Long-horizon `S_div` is generated as an instantaneous production-owned
+  tangent target from the accepted state using the certified temperature,
+  transport, boundary-flux, and expansion kernels.  It is not substituted for
+  the equal-time oracle, which remains the short-horizon fidelity reference.
+  The state-dependent CFL falls from `0.0016462659696117043 s` to
+  `6.441490404540673e-5 s`; the measured wall projection is
+  `1.6209499069950497 h`, so the `0.4-0.6 h` expectation is explicitly unmet.
+
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:
   low/high face-flux candidates that **differ only in advection** (donor vs

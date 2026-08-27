@@ -280,10 +280,11 @@ namespace RISEFireProductionFP64
 		std::vector<double> restorationDivergenceTargetPerS;
 		std::vector<double> beginningManifoldDeviationPerCell;
 		std::uint32_t physicalOpenProjectionVCycleCount;
+		bool monitorManifoldDiagnostics;
 		bool enforceManifoldPlateau;
 
 		FireProductionResidentStepRequest() : physicalOpenProjectionVCycleCount(17u),
-			enforceManifoldPlateau(true) {}
+			monitorManifoldDiagnostics(true),enforceManifoldPlateau(false) {}
 	};
 
 	class FireProductionAcceptedManifoldObservation;
@@ -436,6 +437,10 @@ namespace RISEFireProductionFP64
 		double restorationResidualBandPerS;
 		double suggestedManifoldTimeStepS;
 		bool manifoldNextTimeStepAvailable;
+		bool manifoldDiagnosticsMonitored;
+		bool manifoldPlateauEnforced;
+		bool manifoldAllowanceExceeded;
+		bool manifoldCeilingExceeded;
 		bool manifoldPlateauPassed;
 		RISE::FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
@@ -455,6 +460,8 @@ namespace RISEFireProductionFP64
 			manifoldStageGeneration{{0.0,0.0,0.0}},requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			suggestedManifoldTimeStepS(0.0),manifoldNextTimeStepAvailable(false),
+			manifoldDiagnosticsMonitored(false),manifoldPlateauEnforced(false),
+			manifoldAllowanceExceeded(false),manifoldCeilingExceeded(false),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(RISE::FireStateProducerPrecision::Unknown) {}
 
@@ -553,10 +560,10 @@ namespace RISEFireProductionFP64
 		return avalanche(digest^fieldTag^UINT64_C(0xd64b291e3fa5708c));
 	}
 
-	//! Full resident P3 shadow step: frozen force, cell and dual transport,
-	//! explicit source operands, one physical P2 projection, and one deadbeat
-	//! manifold-restoration projection. Full-grid host access is limited to the
-	//! terminal step-boundary oracle tap after restoration.
+	//! Full resident P3 step. Production defaults to one physical P2 projection
+	//! plus terminal manifold diagnostics. Absolute-reference restoration and
+	//! its timestep limiter remain opt-in instrumentation through
+	//! enforceManifoldPlateau.
 	bool AdvanceFireProductionResidentStepMetal(
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,

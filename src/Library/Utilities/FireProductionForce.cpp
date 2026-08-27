@@ -335,20 +335,43 @@ namespace RISE
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
 		const FireProductionResidentStepResult& value )
 	{
-		return value.physicalProjection.validationPassed&&value.projection.validationPassed&&
-			value.manifoldPlateauPassed&&
-			value.conservativeProducerPrecision==FireStateProducerPrecision::Binary32&&
-			value.residentProjectionInvocationCount==2u&&
+		if(!value.manifoldDiagnosticsMonitored||!value.projection.validationPassed||
+			!value.manifoldPlateauPassed||!std::isfinite(value.maximumManifoldGeneration))
+			return false;
+		const bool common=value.conservativeProducerPrecision==
+			FireStateProducerPrecision::Binary32&&
 			value.interstageFullGridTransferCount==0u&&
 			value.manifoldMapCellCount==value.acceptedShape.CellCount()&&
-			value.manifoldScalarDeviceToHostTransferCount==2u&&
 			value.manifoldFullGridDeviceToHostTransferCount==0u&&
+			std::isfinite(value.maximumAcceptedManifoldDeviation)&&
+			value.maximumAcceptedManifoldDeviation>=0.0&&
+			std::isfinite(value.acceptedManifoldDeviationP95)&&
+			std::isfinite(value.acceptedManifoldDeviationP50)&&
+			value.acceptedManifoldDeviationP50>=0.0&&
+			value.acceptedManifoldDeviationP95>=value.acceptedManifoldDeviationP50&&
+			value.maximumAcceptedManifoldDeviation>=value.acceptedManifoldDeviationP95&&
+			value.manifoldAllowanceExceeded==
+				(value.maximumAcceptedManifoldDeviation>ManifoldPlateauAllowance)&&
+			value.manifoldCeilingExceeded==
+				(value.maximumAcceptedManifoldDeviation>ManifoldLowMachValidityCeiling)&&
 			std::isfinite(value.maximumPredictedAdvectiveManifoldAnomaly)&&
 			value.maximumPredictedAdvectiveManifoldAnomaly>=0.0&&
-			(value.advectiveAnomalyClosurePassCount==1u||
-				value.advectiveAnomalyClosurePassCount==2u)&&
 			value.manifoldStageGeneration[0]==value.maximumManifoldGeneration&&
 			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
+		if(!common)return false;
+		if(value.manifoldPlateauEnforced)return value.physicalProjection.validationPassed&&
+			value.residentProjectionInvocationCount==2u&&
+			value.manifoldScalarDeviceToHostTransferCount==2u&&
+			(value.advectiveAnomalyClosurePassCount==1u||
+				value.advectiveAnomalyClosurePassCount==2u)&&
+			!value.manifoldAllowanceExceeded&&!value.manifoldCeilingExceeded;
+		return value.residentProjectionInvocationCount==1u&&
+			value.manifoldScalarDeviceToHostTransferCount==1u&&
+			value.advectiveAnomalyClosurePassCount==0u&&
+			value.requiredRestorationDrainFraction==0.0&&
+			value.deliveredRestorationDrainFraction==0.0&&
+			value.restorationResidualBandPerS==0.0&&
+			!value.manifoldNextTimeStepAvailable&&value.suggestedManifoldTimeStepS==0.0;
 	}
 
 	bool FireProductionEulerianGenerationHasMaterialAuthority(
@@ -374,37 +397,46 @@ namespace RISE
 	bool FireProductionResidentStepResult::AcceptedManifoldTokenMatchesCurrentPayload() const
 	{
 		FireProductionRestorationPlateauValidation recomputed;
-		const bool plateauDiagnosticsValid=FireProductionRestorationPlateauWithinBand(
-			maximumManifoldGeneration,projection.maximumPreProjectionResidualPerS,
-			projection.maximumPostProjectionResidualPerS,recomputed);
+		const bool plateauDiagnosticsValid=!manifoldPlateauEnforced||
+			FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
+				projection.maximumPreProjectionResidualPerS,
+				projection.maximumPostProjectionResidualPerS,recomputed);
 		const FireProductionAcceptedManifoldToken& token=acceptedManifoldToken_;
+		const FireProductionProjectionResult& authorityProjection=manifoldPlateauEnforced?
+			physicalProjection:projection;
 		return token.available_&&FireProductionResidentStepEligibleForAcceptedManifoldToken(*this)&&
 			std::isfinite(representedTimeStepS)&&representedTimeStepS>0.0f&&
 			std::isfinite(maximumManifoldGeneration)&&maximumManifoldGeneration>=0.0&&
 			std::isfinite(maximumAcceptedManifoldDeviation)&&
 			maximumAcceptedManifoldDeviation>=0.0&&
-			maximumAcceptedManifoldDeviation<=ManifoldLowMachValidityCeiling&&
 			std::isfinite(acceptedManifoldDeviationP50)&&acceptedManifoldDeviationP50>=0.0&&
 			std::isfinite(acceptedManifoldDeviationP95)&&
 			acceptedManifoldDeviationP95>=acceptedManifoldDeviationP50&&
 			maximumAcceptedManifoldDeviation>=acceptedManifoldDeviationP95&&
-			plateauDiagnosticsValid&&recomputed.mechanismPassed&&
-			requiredRestorationDrainFraction==recomputed.requiredDrainFraction&&
-			deliveredRestorationDrainFraction==recomputed.deliveredDrainFraction&&
-			restorationResidualBandPerS==recomputed.maximumPostResidualPerS&&
+			manifoldAllowanceExceeded==
+				(maximumAcceptedManifoldDeviation>ManifoldPlateauAllowance)&&
+			manifoldCeilingExceeded==
+				(maximumAcceptedManifoldDeviation>ManifoldLowMachValidityCeiling)&&
+			plateauDiagnosticsValid&&(!manifoldPlateauEnforced||
+				(recomputed.mechanismPassed&&
+				 requiredRestorationDrainFraction==recomputed.requiredDrainFraction&&
+				 deliveredRestorationDrainFraction==recomputed.deliveredDrainFraction&&
+				 restorationResidualBandPerS==recomputed.maximumPostResidualPerS&&
+				 !manifoldAllowanceExceeded&&!manifoldCeilingExceeded))&&
 			token.representedTimeStepS_==static_cast<double>(representedTimeStepS)&&
 			token.maximumGeneration_==maximumManifoldGeneration&&
 			token.maximumAcceptedDeviation_==maximumAcceptedManifoldDeviation&&
 			token.acceptedDeviationP95_==acceptedManifoldDeviationP95&&
 			token.acceptedDeviationP50_==acceptedManifoldDeviationP50&&
 			token.generationAuthoritative_==manifoldGenerationAuthoritative&&
+			token.plateauEnforced_==manifoldPlateauEnforced&&
 			token.requiredDrainFraction_==requiredRestorationDrainFraction&&
 			token.deliveredDrainFraction_==deliveredRestorationDrainFraction&&
 			token.maximumPostResidualPerS_==restorationResidualBandPerS&&
 			token.physicalMaximumPreResidualPerS_==
-				physicalProjection.maximumPreProjectionResidualPerS&&
+				authorityProjection.maximumPreProjectionResidualPerS&&
 			token.physicalMaximumPostResidualPerS_==
-				physicalProjection.maximumPostProjectionResidualPerS&&
+				authorityProjection.maximumPostProjectionResidualPerS&&
 			token.payloadDigest_==FireProductionAcceptedManifoldPayloadDigest(*this)&&
 			token.acceptedStateDigestVersion_==2u&&
 			token.acceptedStateDigest_==FireProductionAcceptedStatePayloadDigestFast(
@@ -419,11 +451,6 @@ namespace RISE
 		std::string* error )
 	{
 		result=FireProductionAcceptedManifoldObservation();
-		FireProductionRestorationPlateauValidation recomputed;
-		const bool plateauDiagnosticsValid=FireProductionRestorationPlateauWithinBand(
-			acceptedStep.maximumManifoldGeneration,
-			acceptedStep.projection.maximumPreProjectionResidualPerS,
-			acceptedStep.projection.maximumPostProjectionResidualPerS,recomputed);
 		const FireProductionAcceptedManifoldToken& token=acceptedStep.acceptedManifoldToken_;
 		if(!acceptedStep.AcceptedManifoldTokenMatchesCurrentPayload()||
 			!std::isfinite(acceptedStepS)||acceptedStepS<=0.0||
@@ -431,42 +458,28 @@ namespace RISE
 			acceptedStep.representedTimeStepS<=0.0f||
 			acceptedStepS!=static_cast<double>(acceptedStep.representedTimeStepS)||
 			acceptedStep.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32||
-			!acceptedStep.physicalProjection.validationPassed||
 			!acceptedStep.projection.validationPassed||
-			acceptedStep.residentProjectionInvocationCount!=2u||
 			acceptedStep.interstageFullGridTransferCount!=0u||
 			!acceptedStep.manifoldPlateauPassed||
-			!std::isfinite(acceptedStep.maximumManifoldGeneration)||
-			acceptedStep.maximumManifoldGeneration<0.0||
-			!std::isfinite(acceptedStep.maximumAcceptedManifoldDeviation)||
-			acceptedStep.maximumAcceptedManifoldDeviation<0.0||
-			acceptedStep.maximumAcceptedManifoldDeviation>
-				ManifoldLowMachValidityCeiling||
-			!std::isfinite(acceptedStep.acceptedManifoldDeviationP50)||
-			acceptedStep.acceptedManifoldDeviationP50<0.0||
-			!std::isfinite(acceptedStep.acceptedManifoldDeviationP95)||
-			acceptedStep.acceptedManifoldDeviationP95<
-				acceptedStep.acceptedManifoldDeviationP50||
-			acceptedStep.maximumAcceptedManifoldDeviation<
-				acceptedStep.acceptedManifoldDeviationP95||
-			!plateauDiagnosticsValid||!recomputed.mechanismPassed||
-			acceptedStep.requiredRestorationDrainFraction!=recomputed.requiredDrainFraction||
-			acceptedStep.deliveredRestorationDrainFraction!=recomputed.deliveredDrainFraction||
-			acceptedStep.restorationResidualBandPerS!=recomputed.maximumPostResidualPerS)
+			!acceptedStep.manifoldDiagnosticsMonitored)
 			return Fail(error,"production accepted manifold observation is invalid");
+		const FireProductionProjectionResult& authorityProjection=
+			acceptedStep.manifoldPlateauEnforced?acceptedStep.physicalProjection:
+			acceptedStep.projection;
 		if(token.representedTimeStepS_!=acceptedStepS||
 			token.maximumGeneration_!=acceptedStep.maximumManifoldGeneration||
 			token.maximumAcceptedDeviation_!=acceptedStep.maximumAcceptedManifoldDeviation||
 			token.acceptedDeviationP95_!=acceptedStep.acceptedManifoldDeviationP95||
 			token.acceptedDeviationP50_!=acceptedStep.acceptedManifoldDeviationP50||
 			token.generationAuthoritative_!=acceptedStep.manifoldGenerationAuthoritative||
+			token.plateauEnforced_!=acceptedStep.manifoldPlateauEnforced||
 			token.requiredDrainFraction_!=acceptedStep.requiredRestorationDrainFraction||
 			token.deliveredDrainFraction_!=acceptedStep.deliveredRestorationDrainFraction||
 			token.maximumPostResidualPerS_!=acceptedStep.restorationResidualBandPerS||
 			token.physicalMaximumPreResidualPerS_!=
-				acceptedStep.physicalProjection.maximumPreProjectionResidualPerS||
+				authorityProjection.maximumPreProjectionResidualPerS||
 			token.physicalMaximumPostResidualPerS_!=
-				acceptedStep.physicalProjection.maximumPostProjectionResidualPerS||
+				authorityProjection.maximumPostProjectionResidualPerS||
 			token.payloadDigest_!=FireProductionAcceptedManifoldPayloadDigest(acceptedStep)||
 			token.acceptedStateDigestVersion_!=2u||
 			token.acceptedStateDigest_!=FireProductionAcceptedStatePayloadDigestFast(
@@ -480,9 +493,10 @@ namespace RISE
 		// Eulerian terminal-minus-beginning maximum must not constrain the next
 		// step.  Only the zero-beginning/stationary cases sealed by the producer
 		// retain that narrower generation authority.
-		result.maximumGeneration_=token.generationAuthoritative_?
+		result.maximumGeneration_=token.plateauEnforced_&&token.generationAuthoritative_?
 			acceptedStep.maximumManifoldGeneration:0.0;
-		result.restorationDrainFraction_=acceptedStep.deliveredRestorationDrainFraction;
+		result.restorationDrainFraction_=token.plateauEnforced_?
+			acceptedStep.deliveredRestorationDrainFraction:0.0;
 		result.acceptedStateDigest_=token.acceptedStateDigest_;
 		result.acceptedStateDigestVersion_=token.acceptedStateDigestVersion_;
 		result.residentPayloadDigest_=token.payloadDigest_;

@@ -58,8 +58,8 @@ def transform(text: str, name: str, suffix: str) -> str:
         if disposition_begin < 0 or disposition_end < 0:
             raise RuntimeError("production retry disposition seam changed")
         text = text[:disposition_begin] + text[disposition_end:]
-        begin = text.find("\n\t//! Publishes the only manifold metadata")
-        end = text.find("\n\t//! Full resident P3 shadow step:", begin)
+        begin = text.find("\n\t//! Publishes authenticated accepted-state metadata")
+        end = text.find("\n\t//! Full resident P3 step.", begin)
         if begin < 0 or end < 0:
             raise RuntimeError("accepted manifold publication declaration seam changed")
         text = text[:begin] + text[end:]

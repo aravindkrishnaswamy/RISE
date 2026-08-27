@@ -3881,6 +3881,7 @@ int main()
 	composedStep.beginningManifoldDeviationPerCell.assign(
 		composedStep.force.shape.CellCount(),0.0);
 	composedStep.enforceManifoldPlateau=false;
+	composedStep.monitorManifoldDiagnostics=false;
 	const bool composedMetal=AdvanceFireProductionResidentStepMetal(
 		composedStep,composedGPU,&error);
 	const bool composedMetalRepeat=composedMetal&&AdvanceFireProductionResidentStepMetal(
@@ -3971,6 +3972,7 @@ int main()
 	zeroAnomalyStep.beginningManifoldDeviationPerCell.assign(zeroAnomalyCells,
 		std::fabs(zeroAnomalyVolume-1.0));
 	zeroAnomalyStep.enforceManifoldPlateau=true;
+	zeroAnomalyStep.monitorManifoldDiagnostics=true;
 	FireProductionResidentStepResult zeroAnomalyProbe,zeroAnomalySinglePass,zeroAnomalyClosure;
 	setenv("RISE_FIRE_GOLDEN_LONG_SHADOW","1",1);
 	setenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST","disabled",1);
@@ -4076,7 +4078,9 @@ int main()
 		seeded.requiredRestorationDrainFraction=1.0;
 		seeded.deliveredRestorationDrainFraction=1.0;
 		seeded.restorationResidualBandPerS=1.0;seeded.suggestedManifoldTimeStepS=0.5;
-		seeded.manifoldNextTimeStepAvailable=true;seeded.manifoldPlateauPassed=true;
+		seeded.manifoldNextTimeStepAvailable=true;seeded.manifoldDiagnosticsMonitored=true;
+		seeded.manifoldPlateauEnforced=true;seeded.manifoldAllowanceExceeded=true;
+		seeded.manifoldCeilingExceeded=true;seeded.manifoldPlateauPassed=true;
 		seeded.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 	};
 		auto fullStepResultIsDefault=[&](const FireProductionResidentStepResult& rejected) {
@@ -4112,7 +4116,10 @@ int main()
 			rejected.deliveredRestorationDrainFraction==0.0&&
 			rejected.restorationResidualBandPerS==0.0&&
 			rejected.suggestedManifoldTimeStepS==0.0&&
-			!rejected.manifoldNextTimeStepAvailable&&!rejected.manifoldPlateauPassed&&
+			!rejected.manifoldNextTimeStepAvailable&&
+			!rejected.manifoldDiagnosticsMonitored&&!rejected.manifoldPlateauEnforced&&
+			!rejected.manifoldAllowanceExceeded&&!rejected.manifoldCeilingExceeded&&
+			!rejected.manifoldPlateauPassed&&
 			!rejected.HasAcceptedManifoldToken()&&
 			rejected.conservativeProducerPrecision==FireStateProducerPrecision::Unknown;
 	};
@@ -4127,6 +4134,18 @@ int main()
 	Check(malformedManifoldProbeRejected&&fullStepResultIsDefault(rejectedFullStep)&&
 		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeMalformedManifoldProbe,
 		"r143 malformed diagnostic activation fails before Metal work and publishes no result");
+	FireProductionResidentStepRequest invalidEnforcementPolicy=composedStep;
+	invalidEnforcementPolicy.monitorManifoldDiagnostics=false;
+	invalidEnforcementPolicy.enforceManifoldPlateau=true;
+	seedFullStepResult(rejectedFullStep);error.clear();
+	const std::uint64_t commitsBeforeInvalidEnforcement=
+		FireProductionResidentStepMetalCommandCommitCount();
+	const bool invalidEnforcementRejected=!AdvanceFireProductionResidentStepMetal(
+		invalidEnforcementPolicy,rejectedFullStep,&error);
+	Check(invalidEnforcementRejected&&fullStepResultIsDefault(rejectedFullStep)&&
+		error=="production manifold enforcement requires diagnostic monitoring"&&
+		FireProductionResidentStepMetalCommandCommitCount()==commitsBeforeInvalidEnforcement,
+		"manifold restoration cannot be enabled without monitored diagnostics");
 	seedFullStepResult(rejectedFullStep);error.clear();
 	const std::uint64_t commitsBeforeMalformedStageBudgetProbe=
 		FireProductionResidentStepMetalCommandCommitCount();
@@ -4415,6 +4434,7 @@ int main()
 	tier10FullStep.restorationDivergenceTargetPerS.assign(
 		tier10ResidentForce.shape.CellCount(),0.0f);
 	tier10FullStep.enforceManifoldPlateau=false;
+	tier10FullStep.monitorManifoldDiagnostics=false;
 	std::vector<double> residentStepDeviceMS,residentStepWallMS;
 	FireProductionResidentStepResult tier10ResidentStepResult;
 	for( unsigned int trial=0u;trial<3u;++trial ) {

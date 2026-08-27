@@ -1017,6 +1017,11 @@ namespace FireProductionDyadicCalibration
 			state.values.characteristicDiameterM/Gravity);
 		RISE::FireProductionResidentStepRequest request;
 		if(!BuildProductionRequest(state,sealed[0],flowThrough/512.0,request,error))return 234;
+		// r136 is a frozen two-projection instrumentation proof.  The production
+		// default changed to monitored one-projection operation in r168, so bind
+		// the historical topology explicitly instead of inheriting that default.
+		request.monitorManifoldDiagnostics=true;
+		request.enforceManifoldPlateau=true;
 		FireProductionRoundoffAdapter::ResidentStepTraceResult trace;
 		FireProductionRoundoffWalker::BranchWitness independentBranch;
 		const bool independentBranchStopped=FireProductionRoundoffWalker::
@@ -1481,7 +1486,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="93c12abf214faf4d1d8d78bfb790a15c9e3a8ec596385238184f04cf3bcb8a16"||
+			traceDigest!="cae3e4e13d11aa036c637b1d88cd269d9fbf73e4a322164bb24a2ab7fa49ffac"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||

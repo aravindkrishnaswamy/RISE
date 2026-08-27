@@ -138,6 +138,10 @@ namespace FireProductionCalibration
 		projection.divergenceTargetPerS=Promote(request.divergenceTargetPerS);
 		if(!FP64::ProjectFireProductionResidentPhysicalCPU(projection,
 			computed.physicalProjection,error))return false;
+		if(!request.enforceManifoldPlateau){
+			computed.projection=std::move(computed.physicalProjection);
+			result=std::move(computed);return true;
+		}
 		projection.provisionalMomentumKGPerM2S=computed.physicalProjection.momentumKGPerM2S;
 		projection.divergenceTargetPerS=Promote(request.restorationDivergenceTargetPerS);
 		if(!FP64::ProjectFireProductionRestorationCPU(projection,computed.projection,error))return false;

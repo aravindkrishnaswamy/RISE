@@ -1539,7 +1539,8 @@ namespace RISE
 			const FireStateProducerPrecision producerPrecision,
 			std::vector<double>& temperatureK,
 			std::string* error = 0,
-			const unsigned int workerCount = 1u
+			const unsigned int workerCount = 1u,
+			const bool enforceAbsoluteReferencePressureGate = true
 			)
 		{
 			FireProfileIncrement(FireProfile().invertTCalls);
@@ -1573,9 +1574,10 @@ namespace RISE
 				}
 				state.temperatureK = candidate[cell];
 				double equationOfStateResidual = 0.0;
-				if( !EquationOfStateResidual(state,thermochemistry,producerPrecision,
-					equationOfStateResidual,&inversionError) ||
-					equationOfStateResidual > 1.0e-3 ) {
+				if( enforceAbsoluteReferencePressureGate &&
+					(!EquationOfStateResidual(state,thermochemistry,producerPrecision,
+						equationOfStateResidual,&inversionError) ||
+					 equationOfStateResidual > 1.0e-3) ) {
 					std::ostringstream message;
 					message << "fire solver cell " << cell
 						<< " violates the accepted-state EOS gate: residual="

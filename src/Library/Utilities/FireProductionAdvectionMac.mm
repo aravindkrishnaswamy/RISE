@@ -2612,8 +2612,15 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				return false;
 			}
 			const std::size_t cells=shape.CellCount();
-			const bool measureManifold=request.enforceManifoldPlateau&&!plateauEvidenceEnabled;
-			const bool closeAdvectiveAnomaly=measureManifold&&!anomalyClosureTestDisabled&&
+			if(request.enforceManifoldPlateau&&!request.monitorManifoldDiagnostics){
+				if(structuredError)*structuredError=
+					"production manifold enforcement requires diagnostic monitoring";
+				return false;
+			}
+			const bool measureManifold=request.monitorManifoldDiagnostics&&
+				!plateauEvidenceEnabled;
+			const bool closeAdvectiveAnomaly=request.enforceManifoldPlateau&&measureManifold&&
+				!anomalyClosureTestDisabled&&
 				!manifoldProbeActivation&&!manifoldStageBudgetActivation&&
 				!timestepVelocityAuditActivation;
 			if( measureManifold&&request.beginningManifoldDeviationPerCell.size()!=cells ) {
@@ -2659,7 +2666,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						request.cellTransport,&taskError);
 					else taskError="production resident step payload shape is invalid";
 				} else if( task==2u ) {
-					if( request.enforceManifoldPlateau&&!plateauEvidenceEnabled )
+					if( measureManifold )
 						for( const double value:request.beginningManifoldDeviationPerCell )
 							if( !std::isfinite(value) ) { valid=false;break; }
 					if( !valid ) taskError=
@@ -2970,8 +2977,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				projectionInput.provisionalMomentumByteOffset=dual.faceByteOffset;
 				projectionInput.divergenceTargetPerS=targetPrivate;
 				const char* restorationTest=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
-				const bool restorationRemoved=restorationTest&&
-					std::strcmp(restorationTest,"removed")==0;
+				const bool restorationRemoved=!request.enforceManifoldPlateau||
+					(restorationTest&&std::strcmp(restorationTest,"removed")==0);
 				const bool restorationFullTarget=restorationTest&&
 					std::strcmp(restorationTest,"full-target")==0;
 				FireProductionProjectionResult physicalProjection,projection;
@@ -3198,15 +3205,15 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const double terminalDeviationP50=terminalDeviationP50Float;
 				const double terminalDeviationP95=terminalDeviationP95Float;
 				FireProductionRestorationPlateauValidation plateauValidation;
-				if( enforcePlateau&&(!manifoldReduction||manifoldReduction[2u]!=0u||
+				if( measureManifold&&(!manifoldReduction||manifoldReduction[2u]!=0u||
 					!std::isfinite(maximumManifoldGeneration)||
 					!std::isfinite(maximumTerminalDeviation)||
 					!std::isfinite(terminalDeviationP50)||!std::isfinite(terminalDeviationP95)||
 					terminalDeviationP50<0.0||terminalDeviationP95<terminalDeviationP50||
 					maximumTerminalDeviation<terminalDeviationP95||
-					!FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
+					(enforcePlateau&&!FireProductionRestorationPlateauWithinBand(maximumManifoldGeneration,
 						projection.maximumPreProjectionResidualPerS,
-						projection.maximumPostProjectionResidualPerS,plateauValidation)) ) return false;
+						projection.maximumPostProjectionResidualPerS,plateauValidation))) ) return false;
 				constexpr double lowMachValidityCeiling=0x1p-5;
 				constexpr double lowMachPlateauAllowance=(1.0-0x1p-2)*
 					lowMachValidityCeiling;
@@ -3317,7 +3324,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						plateauValidation.deliveredDrainFraction,suggestedManifoldTimeStepS,0);
 				computed.suggestedManifoldTimeStepS=computed.manifoldNextTimeStepAvailable?
 					suggestedManifoldTimeStepS:0.0;
-				computed.manifoldPlateauPassed=enforcePlateau&&plateauPassed;
+				computed.manifoldDiagnosticsMonitored=measureManifold;
+				computed.manifoldPlateauEnforced=enforcePlateau;
+				computed.manifoldAllowanceExceeded=measureManifold&&
+					maximumTerminalDeviation>lowMachPlateauAllowance;
+				computed.manifoldCeilingExceeded=measureManifold&&
+					maximumTerminalDeviation>lowMachValidityCeiling;
+				computed.manifoldPlateauPassed=measureManifold&&plateauPassed;
 				plateauRefused=enforcePlateau&&!plateauPassed&&
 					!manifoldProbeActivation&&!manifoldStageBudgetActivation;
 				if( enforcePlateau )
@@ -3332,7 +3345,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						request.beginningManifoldDeviationPerCell,
 						request.cellTransport.frozenVelocityMPerS);
 				computed.manifoldGenerationAuthoritative=materialGenerationAuthority;
-				if( enforcePlateau&&!anomalyConvergenceProbeActivation&&
+				if( measureManifold&&!anomalyConvergenceProbeActivation&&
 					FireProductionResidentStepEligibleForAcceptedManifoldToken(computed) ) {
 					std::array<std::uint64_t,2> authorityDigests={{0u,0u}};
 					auto deriveAuthorityDigest=[&](const std::size_t digestIndex){
@@ -3359,15 +3372,18 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						plateauValidation.deliveredDrainFraction;
 					computed.acceptedManifoldToken_.maximumPostResidualPerS_=
 						plateauValidation.maximumPostResidualPerS;
+					const FireProductionProjectionResult& authorityProjection=enforcePlateau?
+						computed.physicalProjection:computed.projection;
 					computed.acceptedManifoldToken_.physicalMaximumPreResidualPerS_=
-						computed.physicalProjection.maximumPreProjectionResidualPerS;
+						authorityProjection.maximumPreProjectionResidualPerS;
 					computed.acceptedManifoldToken_.physicalMaximumPostResidualPerS_=
-						computed.physicalProjection.maximumPostProjectionResidualPerS;
+						authorityProjection.maximumPostProjectionResidualPerS;
 					computed.acceptedManifoldToken_.payloadDigest_=authorityDigests[0u];
 					computed.acceptedManifoldToken_.acceptedStateDigest_=authorityDigests[1u];
 					computed.acceptedManifoldToken_.acceptedStateDigestVersion_=2u;
 					computed.acceptedManifoldToken_.generationAuthoritative_=
 						materialGenerationAuthority;
+					computed.acceptedManifoldToken_.plateauEnforced_=enforcePlateau;
 				}
 				timestepVelocityAuditAuthorityMS=timestepVelocityAuditMS();
 				if( computed.cellSubmapCount!=5u*executedAnomalyClosurePasses||
@@ -3459,7 +3475,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		result=FireProductionResidentStepResult();
 		FireProductionResidentStepResult attempted;
 		if(!AttemptFireProductionResidentStepMetal(request,attempted,structuredError))return false;
-		if(request.enforceManifoldPlateau&&attempted.manifoldPlateauPassed&&
+		if(request.monitorManifoldDiagnostics&&attempted.manifoldPlateauPassed&&
 			!attempted.AcceptedManifoldTokenMatchesCurrentPayload()){
 			result=FireProductionResidentStepResult();
 			if(structuredError)*structuredError=

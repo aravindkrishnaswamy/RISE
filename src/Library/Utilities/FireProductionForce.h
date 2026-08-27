@@ -278,10 +278,11 @@ namespace RISE
 		std::vector<float> restorationDivergenceTargetPerS;
 		std::vector<double> beginningManifoldDeviationPerCell;
 		std::uint32_t physicalOpenProjectionVCycleCount;
+		bool monitorManifoldDiagnostics;
 		bool enforceManifoldPlateau;
 
 		FireProductionResidentStepRequest() : physicalOpenProjectionVCycleCount(17u),
-			enforceManifoldPlateau(true) {}
+			monitorManifoldDiagnostics(true),enforceManifoldPlateau(false) {}
 	};
 
 	class FireProductionAcceptedManifoldObservation;
@@ -389,7 +390,8 @@ namespace RISE
 		double& correctedTargetPerS,std::string* error=0 );
 
 	//! Opaque proof that the resident owner, rather than a caller rewriting the
-	//! public diagnostics, accepted the manifold mechanism and field gates.
+	//! public diagnostics, accepted the policy-selected projection/admissibility
+	//! gates and measured the terminal manifold distribution.
 	class FireProductionAcceptedManifoldToken
 	{
 	public:
@@ -399,7 +401,7 @@ namespace RISE
 			acceptedDeviationP95_(0.0),acceptedDeviationP50_(0.0),
 			physicalMaximumPreResidualPerS_(0.0f),physicalMaximumPostResidualPerS_(0.0f),
 			payloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u),
-			generationAuthoritative_(false) {}
+			generationAuthoritative_(false),plateauEnforced_(false) {}
 		FireProductionAcceptedManifoldToken(const FireProductionAcceptedManifoldToken&) :
 			FireProductionAcceptedManifoldToken() {}
 		FireProductionAcceptedManifoldToken& operator=(
@@ -417,7 +419,8 @@ namespace RISE
 			physicalMaximumPostResidualPerS_(other.physicalMaximumPostResidualPerS_),
 			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_),
 			acceptedStateDigestVersion_(other.acceptedStateDigestVersion_),
-			generationAuthoritative_(other.generationAuthoritative_) {
+			generationAuthoritative_(other.generationAuthoritative_),
+			plateauEnforced_(other.plateauEnforced_) {
 			other.Clear(); }
 		FireProductionAcceptedManifoldToken& operator=(
 			FireProductionAcceptedManifoldToken&& other) noexcept {
@@ -435,7 +438,8 @@ namespace RISE
 				payloadDigest_=other.payloadDigest_;
 				acceptedStateDigest_=other.acceptedStateDigest_;
 				acceptedStateDigestVersion_=other.acceptedStateDigestVersion_;
-				generationAuthoritative_=other.generationAuthoritative_;other.Clear();}
+				generationAuthoritative_=other.generationAuthoritative_;
+				plateauEnforced_=other.plateauEnforced_;other.Clear();}
 			return *this;
 		}
 		bool Available() const { return available_; }
@@ -447,7 +451,7 @@ namespace RISE
 			acceptedDeviationP95_=0.0;acceptedDeviationP50_=0.0;
 			physicalMaximumPreResidualPerS_=0.0f;physicalMaximumPostResidualPerS_=0.0f;
 			payloadDigest_=0u;acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u;
-			generationAuthoritative_=false; }
+			generationAuthoritative_=false;plateauEnforced_=false; }
 		bool available_;
 		double representedTimeStepS_;
 		double maximumGeneration_;
@@ -463,6 +467,7 @@ namespace RISE
 		std::uint64_t acceptedStateDigest_;
 		unsigned int acceptedStateDigestVersion_;
 		bool generationAuthoritative_;
+		bool plateauEnforced_;
 		friend struct FireProductionResidentStepResult;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
@@ -528,6 +533,10 @@ namespace RISE
 		double restorationResidualBandPerS;
 		double suggestedManifoldTimeStepS;
 		bool manifoldNextTimeStepAvailable;
+		bool manifoldDiagnosticsMonitored;
+		bool manifoldPlateauEnforced;
+		bool manifoldAllowanceExceeded;
+		bool manifoldCeilingExceeded;
 		bool manifoldPlateauPassed;
 		FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
@@ -551,6 +560,8 @@ namespace RISE
 			manifoldStageGeneration{{0.0,0.0,0.0}},requiredRestorationDrainFraction(0.0),
 			deliveredRestorationDrainFraction(0.0),restorationResidualBandPerS(0.0),
 			suggestedManifoldTimeStepS(0.0),manifoldNextTimeStepAvailable(false),
+			manifoldDiagnosticsMonitored(false),manifoldPlateauEnforced(false),
+			manifoldAllowanceExceeded(false),manifoldCeilingExceeded(false),
 			manifoldPlateauPassed(false),
 			conservativeProducerPrecision(FireStateProducerPrecision::Unknown) {}
 
@@ -691,9 +702,9 @@ namespace RISE
 		return avalanche(digest^fieldTag^UINT64_C(0xd64b291e3fa5708c));
 	}
 
-	//! Publishes the only manifold metadata that may constrain the next
-	//! production step. Rejected, diagnostic-only, or non-binary32 steps cannot
-	//! create an accepted observation.
+	//! Publishes authenticated accepted-state metadata. Enforced instrumentation
+	//! may also publish a limiter operand; monitored production always publishes
+	//! zero manifold timestep authority.
 	inline std::uint64_t FireProductionAcceptedManifoldPayloadDigest(
 		const FireProductionResidentStepResult& value )
 	{
@@ -773,10 +784,10 @@ namespace RISE
 		FireProductionAcceptedManifoldObservation& result,
 		std::string* error=0 );
 
-	//! Full resident P3 shadow step: frozen force, cell and dual transport,
-	//! explicit source operands, one physical P2 projection, and one deadbeat
-	//! manifold-restoration projection. Full-grid host access is limited to the
-	//! terminal step-boundary oracle tap after restoration.
+	//! Full resident P3 step. Production defaults to one physical P2 projection
+	//! plus terminal manifold diagnostics. Absolute-reference restoration and
+	//! its timestep limiter remain opt-in instrumentation through
+	//! enforceManifoldPlateau.
 	bool AdvanceFireProductionResidentStepMetal(
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,
