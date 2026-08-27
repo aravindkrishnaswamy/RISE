@@ -226,16 +226,28 @@
 //        Phong exponent; at the common `pN == 0` that term is 1, so
 //        the surface cosine is missing entirely and 1/|wi . N| blows
 //        up the same way.
-//    ALL FOUR ARE UNREACHABLE TODAY -- nothing can bind a hair material
-//    until the parser/registration slice lands.  The decision (clamp
-//    the reciprocal, gate hair out of these ops, or fix the ops to
-//    carry the cosine) is OWED BY THAT SLICE and must not ship without
-//    one.
-//  * NO REGRESSION SCENE YET.  MATERIALS.md section 9 requires a
-//    `scenes/Tests/` scene per new BSDF.  That is BLOCKED on the
-//    registration slice, not an oversight: a scene file cannot name a
-//    material the parser does not accept.  HairBSDFTest.cpp carries the
-//    numeric coverage in the meantime.
+//    Slice B (registration) DECISION: documented limitation.  Legacy
+//    AO/FinalGather/AreaLight shader-ops pair badly with hair_material
+//    (unbounded variance / missing-cosine blowup); NOT clamping
+//    `value()` -- a clamp would bias every OTHER consumer (PT's NEE,
+//    every BDPT/VCM connection strategy) just to protect three
+//    deprecated opt-in paths that were never the target integrators for
+//    hair (docs/HAIR_FUR_DESIGN.md section 6.1: PT is the target).
+//    Authors should avoid binding hair_material under ao_shaderop /
+//    final_gather_shaderop / arealight_shaderop; gating hair out of
+//    those ops at the shader-op level, if it becomes a real complaint,
+//    is future work, not part of this slice.
+//  * REGRESSION SCENE -- PARTIALLY UNBLOCKED as of Slice B (registration:
+//    RISE_API_CreateHairMaterial / Job::AddHairMaterial / the
+//    `hair_material` chunk parser).  `scenes/Tests/ChunkCoverage/
+//    cc_hair_material.RISEscene` exists and parses + registers a
+//    material bound to a sphere.  MATERIALS.md section 9's real
+//    per-BSDF regression scene (visible strand-level renders exercising
+//    the lobes at grazing/backlit angles) still needs actual fibre
+//    geometry to bind to and remains BLOCKED on `hair_geometry`
+//    (docs/HAIR_FUR_DESIGN.md section 5).  HairBSDFTest.cpp carries the
+//    numeric coverage and HairMaterialChunkTest.cpp the registration
+//    coverage in the meantime.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: August 26, 2026

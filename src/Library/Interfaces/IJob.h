@@ -1169,6 +1169,28 @@ namespace RISE
 			const double scale											///< [in] Value to scale radiant exitance by
 			) = 0;
 
+		//! Adds a hair material (Chiang et al. 2016 near-field hair/fur
+		//! BCSDF; docs/HAIR_FUR_DESIGN.md).  Exactly ONE colour tier must
+		//! be bound: `color` (Tier 3, artist reflectance), `sigma_a`
+		//! (Tier 2, direct absorption), or `eumelanin` / `pheomelanin`
+		//! (Tier 1, melanin concentration -- either or both count as the
+		//! SINGLE melanin tier).  Pass "none" for a tier that is not
+		//! bound (the default for `color` / `sigma_a` / `eumelanin` /
+		//! `pheomelanin`).  Zero or two-or-more tiers bound is a
+		//! parse-time error naming all three options.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* color,											///< [in] Tier 3: artist reflectance painter; "none" = not bound
+			const char* sigma_a,										///< [in] Tier 2: direct absorption (scalar_painter or inline `r g b` / scalar); "none" = not bound
+			const char* eumelanin,										///< [in] Tier 1a: eumelanin concentration (scalar); "none" = not bound
+			const char* pheomelanin,									///< [in] Tier 1b: pheomelanin concentration (scalar); "none" = not bound
+			const char* beta_m = "0.3",									///< [in] Longitudinal roughness (scalar)
+			const char* beta_n = "0.3",									///< [in] Azimuthal roughness (scalar)
+			const char* alpha = "2.0",									///< [in] Cuticle scale tilt, degrees (scalar)
+			const char* ior = "1.55"									///< [in] Fibre index of refraction (scalar)
+			) = 0;
+
 
 		//
 		// Adds geometry

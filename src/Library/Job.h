@@ -1450,6 +1450,21 @@ namespace RISE
 			const double scale											///< [in] Value to scale radiant exitance by
 			);
 
+		//! Creates a hair material.  See IJob::AddHairMaterial for the
+		//! colour-tier exclusivity contract.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddHairMaterial(
+			const char* name,
+			const char* color,
+			const char* sigma_a,
+			const char* eumelanin,
+			const char* pheomelanin,
+			const char* beta_m = "0.3",
+			const char* beta_n = "0.3",
+			const char* alpha = "2.0",
+			const char* ior = "1.55"
+			);
+
 
 		//
 		// Adds geometry

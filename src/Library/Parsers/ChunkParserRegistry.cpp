@@ -4300,6 +4300,63 @@ namespace RISE
 				}
 			};
 
+			// hair_material -- Chiang et al. 2016 near-field hair/fur BCSDF
+			// (docs/HAIR_FUR_DESIGN.md).  Registers `HairMaterial`
+			// (src/Library/Materials/HairMaterial.h), a real evaluable-anywhere
+			// IBSDF + ISPF pair.  The descriptor's `color` / `sigma_a` /
+			// `eumelanin` / `pheomelanin` defaults are all "none" (tier not
+			// bound); Job::AddHairMaterial enforces that EXACTLY one of the
+			// three tiers (melanin counts as one, whether one or both of
+			// eumelanin/pheomelanin are set) ends up bound, with a diagnostic
+			// naming all three options otherwise.
+			struct HairMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string color       = bag.GetString( "color",       "none" );
+					std::string sigma_a     = bag.GetString( "sigma_a",     "none" );
+					std::string eumelanin   = bag.GetString( "eumelanin",   "none" );
+					std::string pheomelanin = bag.GetString( "pheomelanin", "none" );
+					std::string beta_m      = bag.GetString( "beta_m",      "0.3" );
+					std::string beta_n      = bag.GetString( "beta_n",      "0.3" );
+					std::string alpha       = bag.GetString( "alpha",       "2.0" );
+					std::string ior         = bag.GetString( "ior",         "1.55" );
+
+					return pJob.AddHairMaterial( name.c_str(), color.c_str(), sigma_a.c_str(),
+						eumelanin.c_str(), pheomelanin.c_str(), beta_m.c_str(), beta_n.c_str(),
+						alpha.c_str(), ior.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hair_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Chiang et al. 2016 near-field hair/fur BCSDF (docs/HAIR_FUR_DESIGN.md).  "
+							"Exactly ONE colour tier must be bound: `color` (Tier 3, artist reflectance -- "
+							"inverted per Chiang's sigma_a = (ln C / D(beta_n))^2), `sigma_a` (Tier 2, direct "
+							"per-wavelength absorption -- power users / measured data), or `eumelanin` / "
+							"`pheomelanin` (Tier 1, melanin concentration -- physically-based, recommended "
+							"default; either or both may be set, counting as the SINGLE melanin tier).  "
+							"Zero tiers or two-or-more tiers bound is a parse-time error.  Hair lobes are "
+							"never delta (SMS never sees hair) and are all tagged eRayReflection.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "color";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 3: artist reflectance colour painter.  \"none\" (default) = tier not bound."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "sigma_a";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 2: direct absorption coefficient per unit fibre diameter, per RGB channel (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar).  \"none\" (default) = tier not bound."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "eumelanin";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 1: eumelanin concentration (physical SCALAR, single value, >= 0; ~1.3 ~= brown-black hair).  \"none\" (default) = not bound; combines with `pheomelanin` as ONE tier."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "pheomelanin"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 1: pheomelanin concentration (physical SCALAR, single value, >= 0; redheads).  \"none\" (default) = not bound; combines with `eumelanin` as ONE tier."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "beta_m";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Longitudinal roughness (physical SCALAR, single value; clamped to [0.05, 1] at evaluation)."; p.defaultValueHint = "0.3"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "beta_n";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Azimuthal roughness (physical SCALAR, single value; clamped to [0.05, 1] at evaluation)."; p.defaultValueHint = "0.3"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "alpha";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Cuticle scale tilt, in DEGREES (physical SCALAR, single value)."; p.defaultValueHint = "2.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fibre index of refraction (physical SCALAR, single value)."; p.defaultValueHint = "1.55"; p.semantics.pipe = ParameterPipe::Scalar; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 
 			//////////////////////////////////////////
 			// Scene-level options (top-of-file scope)
@@ -12576,6 +12633,7 @@ namespace RISE
 		add( "sheen_material",                        new SheenMaterialAsciiChunkParser() );
 		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
 		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
+		add( "hair_material",                         new HairMaterialAsciiChunkParser() );
 
 		// Cameras
 		add( "scene_options",                         new SceneOptionsAsciiChunkParser() );

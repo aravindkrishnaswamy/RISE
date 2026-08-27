@@ -1,0 +1,34 @@
+RISE ASCII SCENE 7
+# Coverage: hair_material (Chiang et al. 2016 near-field hair/fur BCSDF).
+
+film
+{
+	width		64
+	height		64
+}
+
+scalar_painter
+{
+	name		cc_eumelanin
+	value		1.3
+}
+
+hair_material
+{
+	name		cc_hair
+	eumelanin	cc_eumelanin
+}
+
+sphere_geometry
+{
+	name		cc_sph
+	radius		1.0
+}
+
+standard_object
+{
+	name		cc_obj
+	geometry	cc_sph
+	material	cc_hair
+	position	0 0 0
+}

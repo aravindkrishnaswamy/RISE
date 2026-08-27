@@ -4887,6 +4887,128 @@ bool Job::AddPhongLuminaireMaterial(
 	return ok;
 }
 
+//! Creates a hair material (Chiang et al. 2016 near-field hair/fur
+//! BCSDF; docs/HAIR_FUR_DESIGN.md).  Exactly ONE colour tier must be
+//! bound -- `color`, `sigma_a`, or the melanin pair (`eumelanin` /
+//! `pheomelanin`, which count as a SINGLE tier) -- checked here at
+//! parse time.  This is IN ADDITION TO, not a replacement for,
+//! HairScatteringBase's own mid-brown fallback (HairBSDF.h section 4):
+//! that fallback stays as defense-in-depth for any future caller that
+//! bypasses this chunk-level gate.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddHairMaterial(
+	const char* name,											///< [in] Name of the material
+	const char* color,											///< [in] Tier 3: artist reflectance; "none" = not bound
+	const char* sigma_a,										///< [in] Tier 2: direct absorption; "none" = not bound
+	const char* eumelanin,										///< [in] Tier 1a: eumelanin concentration; "none" = not bound
+	const char* pheomelanin,									///< [in] Tier 1b: pheomelanin concentration; "none" = not bound
+	const char* beta_m,										///< [in] Longitudinal roughness
+	const char* beta_n,										///< [in] Azimuthal roughness
+	const char* alpha,											///< [in] Cuticle scale tilt, degrees
+	const char* ior											///< [in] Fibre index of refraction
+	)
+{
+	const bool wantColor       = ( color       && std::string( color )       != "none" );
+	const bool wantSigmaA      = ( sigma_a     && std::string( sigma_a )     != "none" );
+	const bool wantEumelanin   = ( eumelanin   && std::string( eumelanin )   != "none" );
+	const bool wantPheomelanin = ( pheomelanin && std::string( pheomelanin ) != "none" );
+	const bool wantMelanin     = ( wantEumelanin || wantPheomelanin );
+
+	// Tier exclusivity, at PARSE time (docs/HAIR_FUR_DESIGN.md section
+	// 3.1): the melanin pair counts as ONE tier regardless of whether
+	// one or both of eumelanin/pheomelanin are bound.
+	const int tierCount = ( wantColor ? 1 : 0 ) + ( wantSigmaA ? 1 : 0 ) + ( wantMelanin ? 1 : 0 );
+	if( tierCount != 1 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"hair_material `%s`: exactly one colour tier must be supplied -- bind ONE of "
+			"`color` (Tier 3, artist reflectance), `sigma_a` (Tier 2, direct absorption), "
+			"or `eumelanin`/`pheomelanin` (Tier 1, melanin concentration -- either or both "
+			"count as ONE tier); got %d bound (color=%s, sigma_a=%s, eumelanin=%s, pheomelanin=%s).",
+			name ? name : "noname", tierCount,
+			wantColor ? "yes" : "no", wantSigmaA ? "yes" : "no",
+			wantEumelanin ? "yes" : "no", wantPheomelanin ? "yes" : "no" );
+		return false;
+	}
+
+	IPainter* pColor = 0;
+	if( wantColor ) {
+		pColor = pPntManager->GetItem( color );
+		if( !pColor ) {
+			GlobalLog()->PrintEx( eLog_Error, "hair_material `%s`: `color` painter `%s` not found", name, color );
+			return false;
+		}
+	}
+
+	// sigma_a is a genuine per-channel RGB triple (HairScatteringBase::
+	// SigmaARGB reads all three components), so it resolves WITHOUT
+	// requireSingle -- matching the absorption/scattering slots on
+	// subsurfacescattering_material / randomwalk_sss_material.
+	IScalarPainter* pSigmaA = 0;
+	if( wantSigmaA ) {
+		pSigmaA = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "sigma_a", sigma_a );
+		if( !pSigmaA ) {
+			return false;
+		}
+	}
+
+	// eumelanin / pheomelanin / beta_m / beta_n / alpha / ior all read
+	// ONLY `.v[0]` (HairBSDF.cpp's HairScatteringBase::Resolve /
+	// SigmaARGB / SigmaANM) -- requireSingle=true so a per-channel
+	// scalar_painter or an inline RGB triple bound here gets the
+	// targeted diagnostic instead of silently dropping G/B, matching
+	// the `ior` slot on subsurfacescattering_material / randomwalk_sss_material.
+	IScalarPainter* pEumelanin = 0;
+	if( wantEumelanin ) {
+		pEumelanin = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "eumelanin", eumelanin, /*requireSingle*/ true );
+		if( !pEumelanin ) {
+			safe_release( pSigmaA );
+			return false;
+		}
+	}
+
+	IScalarPainter* pPheomelanin = 0;
+	if( wantPheomelanin ) {
+		pPheomelanin = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "pheomelanin", pheomelanin, /*requireSingle*/ true );
+		if( !pPheomelanin ) {
+			safe_release( pSigmaA );
+			safe_release( pEumelanin );
+			return false;
+		}
+	}
+
+	IScalarPainter* pBetaM = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "beta_m", beta_m, /*requireSingle*/ true );
+	IScalarPainter* pBetaN = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "beta_n", beta_n, /*requireSingle*/ true );
+	IScalarPainter* pAlpha = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "alpha",  alpha,  /*requireSingle*/ true );
+	IScalarPainter* pIOR   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "ior",    ior,    /*requireSingle*/ true );
+
+	if( !pBetaM || !pBetaN || !pAlpha || !pIOR ) {
+		safe_release( pSigmaA );
+		safe_release( pEumelanin );
+		safe_release( pPheomelanin );
+		safe_release( pBetaM );
+		safe_release( pBetaN );
+		safe_release( pAlpha );
+		safe_release( pIOR );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateHairMaterial( &pMaterial, pEumelanin, pPheomelanin, pSigmaA, pColor, *pBetaM, *pBetaN, *pAlpha, *pIOR );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+
+	safe_release( pMaterial );
+	safe_release( pSigmaA );
+	safe_release( pEumelanin );
+	safe_release( pPheomelanin );
+	safe_release( pBetaM );
+	safe_release( pBetaN );
+	safe_release( pAlpha );
+	safe_release( pIOR );
+
+	return ok;
+}
+
 
 //
 // Adds geometry

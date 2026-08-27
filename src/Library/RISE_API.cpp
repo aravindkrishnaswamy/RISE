@@ -4006,6 +4006,7 @@ namespace RISE
 #include "Materials/OrenNayarMaterial.h"
 #include "Materials/SchlickMaterial.h"
 #include "Materials/DataDrivenMaterial.h"
+#include "Materials/HairMaterial.h"
 
 namespace RISE
 {
@@ -4776,6 +4777,39 @@ namespace RISE
 
 		(*ppi) = new PhongLuminaireMaterial( radEx, scale, N, mat );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "phong luminaire material" );
+		return true;
+	}
+
+	//! Creates a hair material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairMaterial(
+								IMaterial** ppi,
+								const IScalarPainter* eumelanin,
+								const IScalarPainter* pheomelanin,
+								const IScalarPainter* sigma_a,
+								const IPainter* color,
+								const IScalarPainter& beta_m,
+								const IScalarPainter& beta_n,
+								const IScalarPainter& alpha,
+								const IScalarPainter& ior
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		HairPainters painters;
+		painters.eumelanin   = eumelanin;
+		painters.pheomelanin = pheomelanin;
+		painters.sigma_a     = sigma_a;
+		painters.color       = color;
+		painters.beta_m      = &beta_m;
+		painters.beta_n      = &beta_n;
+		painters.alpha       = &alpha;
+		painters.ior         = &ior;
+
+		(*ppi) = new HairMaterial( painters );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "hair material" );
 		return true;
 	}
 

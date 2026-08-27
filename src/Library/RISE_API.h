@@ -1112,6 +1112,27 @@ namespace RISE
 								const Scalar scale				///< [in] Value to scale radiant exitance by
 								);
 
+	//! Creates a hair material (Chiang et al. 2016 near-field hair/fur
+	//! BCSDF; docs/HAIR_FUR_DESIGN.md).  Exactly one of `eumelanin` /
+	//! `pheomelanin` (either or both -- they count as ONE tier),
+	//! `sigma_a`, or `color` should be non-NULL; the caller (Job /
+	//! the chunk parser) enforces the exclusivity diagnostic before
+	//! reaching here.  `beta_m` / `beta_n` / `alpha` / `ior` are all
+	//! physical scalars carried by `IScalarPainter` -- see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairMaterial(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IScalarPainter* eumelanin,	///< [in] Tier 1a: eumelanin concentration; NULL = tier not bound
+								const IScalarPainter* pheomelanin,	///< [in] Tier 1b: pheomelanin concentration; NULL = tier not bound
+								const IScalarPainter* sigma_a,		///< [in] Tier 2: direct absorption; NULL = tier not bound
+								const IPainter* color,				///< [in] Tier 3: artist reflectance; NULL = tier not bound
+								const IScalarPainter& beta_m,		///< [in] Longitudinal roughness (physical scalar)
+								const IScalarPainter& beta_n,		///< [in] Azimuthal roughness (physical scalar)
+								const IScalarPainter& alpha,		///< [in] Cuticle scale tilt, degrees (physical scalar)
+								const IScalarPainter& ior			///< [in] Fibre index of refraction (physical scalar)
+								);
+
 
 
 	//////////////////////////////////////////////////////////
