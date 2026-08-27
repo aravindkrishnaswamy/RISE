@@ -4,11 +4,32 @@
 //    fur strands) held in shared flat arrays with an embedded segment
 //    BVH.  Candidate E of docs/HAIR_FUR_DESIGN.md section 5.2.
 //
-//  Slice C1 scope: the runtime primitive and its intersector only.
-//  Strands are supplied DIRECTLY as explicit control-point data (see
-//  `StrandDesc`).  The scene-language chunk (`hair_geometry`) and the
-//  procedural groom generator are LATER slices; nothing here parses or
-//  generates anything.
+//  TWO CONSTRUCTION MODES.
+//
+//    * EXPLICIT-STRAND (slice C1).  Strands are supplied DIRECTLY as
+//      control-point data (see `StrandDesc`); the groom is built in the
+//      constructor and `Realize()` is a no-op.  This is what the tests
+//      and any direct C++ consumer use.
+//
+//    * DEFERRED GROOM (slice D).  The constructor takes a
+//      `HairGroomRecipe` -- a base geometry, a few painters, numeric
+//      parameters and a seed -- addrefs it, and builds NOTHING.
+//      `Realize()` then runs `GenerateHairStrands` (HairGenerator.h)
+//      and feeds the result through the identical build path.  This is
+//      what the `hair_geometry` scene chunk produces.  Deferral is not
+//      an optimisation here, it is a requirement: generation needs the
+//      RESOLVED base geometry (which may itself be deferred) and can be
+//      expensive, and the const hot path must never build anything.
+//      Same contract DisplacedGeometry uses (IGeometry.h's Realize()).
+//
+//      A deferred groom that has NOT been realized is a valid, EMPTY
+//      groom: it intersects nothing, reports a degenerate bounding box
+//      at the object-space origin, and never crashes.  Direct
+//      (non-pipeline) consumers -- unit tests, tools -- MUST call
+//      Realize() before use, exactly as DisplacedGeometry requires.
+//      Re-Realize() is idempotent (the second call returns immediately);
+//      a groom regenerated from scratch on a later frame reproduces
+//      byte-identically from the seed.
 //
 //  ATTRIBUTION.  The intersection strategy -- transform the segment
 //  into a ray-centric frame, recursively split until the piece is
@@ -41,7 +62,11 @@
 #include "Geometry.h"
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
+#include "../Interfaces/ProceduralDescriptors.h"
+#include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace RISE
@@ -229,7 +254,38 @@ namespace RISE
 			//! yields a valid, empty groom that intersects nothing.
 			HairGeometry( const std::vector<StrandDesc>& strands );
 
+			//! DEFERRED-GROOM construction (slice D).  Stores the recipe
+			//! -- taking its OWN addref on the base geometry and every
+			//! bound painter, so the caller keeps and releases its own
+			//! references -- and builds nothing.  `Realize()` runs the
+			//! generation.  `chunkName` is carried purely so every
+			//! diagnostic points at the author's own scene chunk.
+			//!
+			//! The recipe is NOT validated here; call
+			//! `ValidateHairGroomRecipe` (HairGenerator.h) at PARSE time
+			//! so an author gets the error where they wrote the mistake.
+			//! `IsValid()` re-checks the cheap half of that.
+			HairGeometry( const HairGroomRecipe& recipe, const char* chunkName );
+
 			// ---- IGeometry -------------------------------------------------
+
+			//! Deferred-groom entry point.  A no-op in explicit-strand
+			//! mode and on any second call.  Runs the generator, then
+			//! the identical build path the explicit constructor uses.
+			//! A failed generation leaves the groom empty (it intersects
+			//! nothing) rather than throwing or leaving it half-built.
+			void Realize() const override;
+
+			//! TRUE iff this groom will ever be able to produce strands:
+			//! always true in explicit-strand mode, and in deferred mode
+			//! the cheap recipe check (base geometry present and
+			//! tessellatable) that can be made without generating
+			//! anything.  Mirrors DisplacedGeometry::IsValid().
+			bool IsValid() const;
+
+			//! Diagnostic / test accessor: has Realize() run?  Always
+			//! true in explicit-strand mode.
+			bool IsRealized() const { return bRealized.load( std::memory_order_acquire ); }
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
@@ -337,13 +393,30 @@ namespace RISE
 			virtual ~HairGeometry();
 
 		private:
+			//! ---- MUTABILITY, and why it is legitimate here
+			//!
+			//! Every storage member below is `mutable` because
+			//! `Realize()` is const (IGeometry's contract) and must be
+			//! able to materialise the groom.  This is the same
+			//! lazy-build-cache pattern DisplacedGeometry uses for its
+			//! `mutable m_pMesh` and ObjectManager for its `mutable
+			//! pBVH`: the built arrays are a pure function of the
+			//! recipe, realization is single-threaded (asserted in
+			//! debug) and serialized by `realizeMutex`, and the
+			//! observable surface after realization is exactly what the
+			//! recipe always described.  Nothing on the const hot path
+			//! ever writes them.
+			//!
+			//! In EXPLICIT-STRAND mode they are written once, from the
+			//! constructor, and `bRealized` starts true.
+
 			//! Control points, strand-major, 3 floats each.  See the
 			//! float-storage rationale in the class comment.
-			std::vector<float>		cps;
+			mutable std::vector<float>		cps;
 			//! First control point index (in CP units) of each strand;
 			//! size numStrands+1, so strand s owns
 			//! [strandCPBegin[s], strandCPBegin[s+1]).
-			std::vector<uint32_t>	strandCPBegin;
+			mutable std::vector<uint32_t>	strandCPBegin;
 			//! Cumulative polyline arc length from the strand root to
 			//! each control point; one float per control point, same
 			//! indexing as `cps`.  Sampled `kArcSamplesPerSpan` times
@@ -352,16 +425,40 @@ namespace RISE
 			//! span boundaries, and accurate inside to the degree the
 			//! span is close to constant-speed.  This is the only
 			//! approximation in the reported `s`.
-			std::vector<float>		cpArcCum;
-			std::vector<float>		strandRootWidth;
-			std::vector<float>		strandTipWidth;
-			std::vector<float>		strandRootU;
-			std::vector<float>		strandRootV;
+			mutable std::vector<float>		cpArcCum;
+			mutable std::vector<float>		strandRootWidth;
+			mutable std::vector<float>		strandTipWidth;
+			mutable std::vector<float>		strandRootU;
+			mutable std::vector<float>		strandRootV;
 
-			BVH<HairSegmentRef>*	pSegBVH;
-			BoundingBox				bbox;
-			unsigned int			nSegments;
-			unsigned int			nRejectedStrands;
+			mutable BVH<HairSegmentRef>*	pSegBVH;
+			mutable BoundingBox				bbox;
+			mutable unsigned int			nSegments;
+			mutable unsigned int			nRejectedStrands;
+
+			//! ---- deferred-groom state (null / true in explicit mode)
+
+			//! The recipe, heap-owned, non-null ONLY in deferred-groom
+			//! mode.  Owns an addref on the base geometry and on every
+			//! bound painter; released in the destructor.
+			HairGroomRecipe*		pRecipe;
+			//! Names the author's scene chunk in generation diagnostics.
+			std::string				groomName;
+			//! Set true after a successful (or failed-but-attempted)
+			//! Realize(), and at construction in explicit-strand mode.
+			mutable std::atomic<bool>	bRealized;
+			//! Serializes the actual generation so a GUI viewport
+			//! render's AttachScene cannot race a UI-thread
+			//! PrepareForRendering into a double generation of the same
+			//! instance -- the identical guard DisplacedGeometry keeps.
+			//! Uncontended in normal use; the hot path never takes it.
+			mutable std::mutex		realizeMutex;
+
+			//! The SHARED build path: validate, pack, arc-length,
+			//! sub-segment split, BVH.  Called from the explicit-strand
+			//! constructor and from Realize().  `const` because it
+			//! writes only the mutable storage above.
+			void BuildFromStrands( const std::vector<StrandDesc>& strands ) const;
 
 			//! Samples per span used to build `cpArcCum`.
 			static const unsigned int kArcSamplesPerSpan = 16;

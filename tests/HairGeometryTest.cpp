@@ -1138,7 +1138,14 @@ static void RunBounds( const HairGeometry& geom, const std::vector<Ray>& rays )
 	//   x, y control points = rx/ry (range [-1,1]) + a curl offset of
 	//                         magnitude <= 0.35 (curl<=1, |f*cos/sin|<=1)
 	//   z control points    = len*f, len in [0.8, 2.0], f in [0,1]
-	//                         (>= 0 by construction)
+	//                         (>= 0 by construction), so z spans [0, 2.0]
+	//                         and the padded z EXTENT is 2.0 + TWO half
+	//                         widths -- SegmentBoundingBox pads BOTH
+	//                         ends, and unlike x/y (where the [-1,1]
+	//                         range is already expressed as a half
+	//                         extent that gets doubled below) the z term
+	//                         is a full extent, so its padding has to be
+	//                         counted twice here explicitly
 	//   padding              = max half width; rootWidth <= 0.06 => <= 0.03
 	// Each per-axis bound is already loose on its own (no single strand
 	// hits all three per-axis maxima simultaneously, let alone the
@@ -1150,7 +1157,7 @@ static void RunBounds( const HairGeometry& geom, const std::vector<Ray>& rays )
 	const double kBuildWidthMax   = 0.06;
 	const double halfWidthMax = kBuildWidthMax * 0.5;
 	const double xyHalfExtent = kBuildRxRyRange + kBuildCurlOffset + halfWidthMax;
-	const double zExtent      = kBuildLenMax + halfWidthMax;
+	const double zExtent      = kBuildLenMax + 2.0 * halfWidthMax;
 	const double volBound     = 2.0 * ( 2.0 * xyHalfExtent ) * ( 2.0 * xyHalfExtent ) * zExtent;
 	std::cout << "  derived volume bound        : " << volBound << std::endl;
 
@@ -1285,6 +1292,88 @@ static void RunDegenerates()
 		g->UniformRandomPoint( &p1, &n1, &c1, Point3( 0.3, 0.7, 0.1 ) );
 		g->UniformRandomPoint( &p2, &n2, &c2, Point3( 0.3, 0.7, 0.1 ) );
 		Check( Point3Ops::Distance( p1, p2 ) == 0, "UniformRandomPoint is deterministic for the same prand" );
+	}
+
+	// -- COINCIDENT TAIL CONTROL POINTS: the reported tangent must
+	//    still point ROOT -> TIP.
+	//
+	//    Under the reflected-phantom convention the derivative at the
+	//    tip (global u == nSpans) is EXACTLY CP[n-1] - CP[n-2] (drop the
+	//    phantom P[n] = 2P[n-1] - P[n-2] into the Catmull-Rom basis and
+	//    the endpoint tangent collapses to that difference).  So a
+	//    strand whose last two control points coincide has BOTH a zero
+	//    derivative AND a zero local chord at its tip -- the intersector's
+	//    backward chord probe cannot rescue it on its own, and the code
+	//    falls through to the whole-strand root->tip chord.  This test
+	//    pins that last resort: it is what keeps the fibre tangent
+	//    ORIENTED, which the Chiang BCSDF's azimuthal frame and the ONB's
+	//    u-axis both depend on.
+	//
+	//    The strand is deliberately laid along +X so that the final
+	//    arbitrary-axis fallback -- Vector3(0,0,1) -- would FAIL this
+	//    assertion rather than pass it by coincidence.
+	//
+	//    Driven through the public TreeElementProcessor entry point
+	//    against ONE named sub-segment rather than through IntersectRay:
+	//    a strand with coincident tail control points necessarily loops
+	//    back over itself near the tip (the last span becomes a small
+	//    out-and-back excursion along its own start tangent), so several
+	//    spans occupy the same point in space at the same ray depth and
+	//    a whole-groom query would tie between them.  Naming the last
+	//    sub-segment removes the tie without weakening what is tested.
+	{
+		std::vector<HairGeometry::StrandDesc> d( 1 );
+		d[0].controlPoints.push_back( Point3( 0, 0, 0 ) );
+		d[0].controlPoints.push_back( Point3( 1, 0, 0 ) );
+		d[0].controlPoints.push_back( Point3( 2, 0, 0 ) );
+		d[0].controlPoints.push_back( Point3( 2, 0, 0 ) );		// coincident with the previous
+		d[0].rootWidth = 0.05; d[0].tipWidth = 0.05;
+
+		Ref<HairGeometry> g( new HairGeometry( d ) );
+		Check( g->numStrands() == 1, "a strand with coincident tail control points is still accepted" );
+
+		// The derivative really is zero at the tip -- assert the premise
+		// so this test cannot silently stop exercising the fallback.
+		Vector3 dPdu( 1, 1, 1 );
+		g->EvaluateStrand( 0, 3.0, &dPdu );
+		Check( Vector3Ops::SquaredModulus( dPdu ) < NEARZERO,
+		       "coincident tail control points really do give dP/du == 0 at u == nSpans (test premise)" );
+
+		// ... and the BACKWARD chord probe -- P(nSpans) - P(nSpans-1) --
+		// is degenerate too, which is precisely why the whole-strand
+		// chord has to exist.  Asserting it here means this test cannot
+		// pass by accidentally exercising the backward probe instead.
+		Check( Point3Ops::Distance( g->EvaluateStrand( 0, 2.0, 0 ),
+		                            g->EvaluateStrand( 0, 3.0, 0 ) ) < 1e-12,
+		       "the backward chord probe is ALSO degenerate here (test premise)" );
+
+		// The final sub-segment of the final span, at the deepest build
+		// split the class allows, so the piece tested is the one whose
+		// clamped end IS the tip.
+		HairSegmentRef elem;
+		elem.strand   = 0;
+		elem.span     = 2;
+		elem.subDepth = (uint8_t)HairGeometry::kMaxBuildSplitDepth;
+		elem.subIndex = (uint8_t)( ( 1u << HairGeometry::kMaxBuildSplitDepth ) - 1u );
+
+		// A ray crossing the x-axis just SHORT of the tip: the closest
+		// approach on that last piece clamps to its far end, i.e. to
+		// global u == nSpans exactly, which is the case under test.
+		const Ray probe( Point3( 1.99, 0, -10 ), Vector3( 0, 0, 1 ) );
+		RayIntersectionGeometric ri( probe, nullRasterizerState );
+		g->RayElementIntersection( ri, elem, true, true );
+
+		Check( ri.bHit, "the tip sub-segment is hit by the probe ray" );
+		if( ri.bHit ) {
+			const Vector3 T = ri.vShadingTangent;
+			Check( fabs( Vector3Ops::Magnitude( T ) - 1.0 ) < 1e-9,
+			       "the tip tangent is still unit length with coincident tail control points" );
+			// MONEY ASSERTION: root -> tip is +X here.  A fallback to the
+			// arbitrary (0,0,1) axis scores 0 on this dot product.
+			Check( Vector3Ops::Dot( T, Vector3( 1, 0, 0 ) ) > 0.99,
+			       "MONEY: with a zero derivative AND a zero local chord at the tip, the reported "
+			       "tangent still points ROOT -> TIP (whole-strand chord fallback)" );
+		}
 	}
 }
 

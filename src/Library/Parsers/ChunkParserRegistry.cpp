@@ -7784,6 +7784,102 @@ namespace RISE
 				}
 			};
 
+			// `hair_geometry` (slice D, docs/HAIR_FUR_DESIGN.md section
+			// 5.3) -- a painter-driven GROOM: strands generated on the
+			// surface of another named geometry.  The chunk is a RECIPE,
+			// not a strand list: generation runs later, once,
+			// single-threaded, inside IGeometry::Realize(), so a groom
+			// bound to no rendered object is never generated at all.
+			//
+			// GROW-ON-A-SURFACE ONLY in this slice.  Explicit strand
+			// authoring (`strand { point ... }`) is deliberately NOT
+			// accepted -- the design sketches it, but a scene-language
+			// strand list is a separate authoring surface with its own
+			// grammar questions (guide sets, per-strand widths, closed
+			// paths) and it would ship half-answered here.  The C++
+			// construction path (HairGeometry's explicit-strand
+			// constructor) already exists for tools and tests.
+			struct HairGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name          = bag.GetString( "name",          "noname" );
+					std::string base_geometry  = bag.GetString( "base_geometry", "" );
+
+					if( base_geometry.empty() ) {
+						GlobalLog()->Print( eLog_Error, "hair_geometry:: `base_geometry` is required -- hair grows on a surface" );
+						return false;
+					}
+					if( !bag.Has( "count" ) ) {
+						GlobalLog()->Print( eLog_Error, "hair_geometry:: `count` is required (the strand budget)" );
+						return false;
+					}
+					if( !bag.Has( "length" ) ) {
+						GlobalLog()->Print( eLog_Error, "hair_geometry:: `length` is required (nominal strand length in scene units)" );
+						return false;
+					}
+
+					std::string density        = bag.GetString( "density",        "none" );
+					std::string length_painter = bag.GetString( "length_painter", "none" );
+					std::string comb           = bag.GetString( "comb",           "none" );
+
+					HairGroomDescriptor desc;
+					desc.baseGeometry  = base_geometry.c_str();
+					desc.density       = density.c_str();
+					desc.lengthPainter = length_painter.c_str();
+					desc.comb          = comb.c_str();
+
+					desc.p.count       = bag.GetUInt(   "count" );
+					desc.p.segments    = bag.GetUInt(   "segments",    8 );
+					desc.p.seed        = bag.GetUInt(   "seed",        1 );
+					desc.p.baseDetail  = bag.GetUInt(   "base_detail", 32 );
+					desc.p.length      = bag.GetDouble( "length" );
+					desc.p.widthRoot   = bag.GetDouble( "width_root",  0.0001 );
+					desc.p.widthTip    = bag.GetDouble( "width_tip",   0.00003 );
+					desc.p.gravity     = bag.GetDouble( "gravity",     0.0 );
+					desc.p.frizz       = bag.GetDouble( "frizz",       0.0 );
+					desc.p.clump       = bag.GetDouble( "clump",       0.0 );
+					desc.p.clumpSize   = bag.GetDouble( "clump_size",  0.0 );
+					desc.p.curlRadius  = bag.GetDouble( "curl_radius", 0.0 );
+					desc.p.curlStep    = bag.GetDouble( "curl_step",   0.0 );
+
+					return pJob.AddHairGeometry( name.c_str(), desc );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hair_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A HAIR / FUR GROOM: many thin curve strands GROWN on the surface of another named geometry, held in one primitive with its own segment BVH (docs/HAIR_FUR_DESIGN.md section 5.2E / 5.3).  Bind it to a `standard_object` with a `hair_material` for Chiang-model fibre shading.  "
+							"THE CHUNK IS A RECIPE, NOT A STRAND LIST: nothing is generated at parse time.  The base is tessellated and roots are AREA-WEIGHT sampled on it during the render's realize pass, so a groom nothing renders costs nothing, and everything below is deterministic from `seed` -- the same scene always produces the same groom, on every machine and every frame.  Explicit per-strand authoring is not accepted here; this chunk is grow-on-a-surface only.  "
+							"AUTHORING IN ONE LINE: `count` roots at `length` long along the surface normal, then style them with the optional fields -- `gravity` droops, `comb` combs, `clump`/`clump_size` gather, `curl_radius`/`curl_step` curl, `frizz` roughens.  Each is inert at its default, so start with count/length/width and add one at a time.  "
+							"UNITS ARE SCENE UNITS throughout (metres by default, see `scene_options scene_unit`): the width defaults are real human-hair numbers (0.1 mm root, 0.03 mm tip), so a groom authored on a scene-scale head needs no width tuning, and one on a stylised 1-unit sphere will want widths raised until the strands are visible at all.  "
+							"NOT AN AREA LIGHT and NOT TESSELLATABLE: a groom cannot emit (emissive fur is out of scope) and cannot be a `displaced_geometry` base -- both refuse it with a diagnostic rather than approximating.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.required = true; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_geometry";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to grow the hair ON.  It must be TESSELLATABLE (any analytic primitive, mesh, sdf_geometry, lathe/sweep/skin, or a displaced_geometry -- displace a scalp, then grow on the displaced surface).  An infinite plane, or another hair_geometry, is refused"; }
+						{ auto& p = P(); p.name = "count";          p.kind = ValueKind::UInt;      p.required = true; p.description = "Strand budget, BEFORE the density mask.  The `density` painter only ever removes candidates, so the realised strand count is <= this.  Capped at 2000000 with an error (a groom that large is gigabytes of control points); a full human scalp is ~100000-150000, convincing fur is ~50000+ per patch, and a few thousand is enough to judge a look"; }
+						{ auto& p = P(); p.name = "length";         p.kind = ValueKind::Double;    p.required = true; p.description = "Nominal strand length in SCENE UNITS, multiplied per-strand by `length_painter`.  Must be > 0"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "segments";       p.kind = ValueKind::UInt;      p.description = "Control points per strand (>= 2).  2 is a perfectly straight quill; a curl or a strong comb needs 8-16 to read as a smooth curve rather than a polyline.  Cost is linear in this"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "width_root";     p.kind = ValueKind::Double;    p.description = "FULL fibre width (not radius) at the root, in scene units.  The default is real human hair (0.1 mm)"; p.defaultValueHint = "0.0001"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "width_tip";      p.kind = ValueKind::Double;    p.description = "FULL fibre width at the tip; linearly interpolated from the root in arc-length fraction.  Tapering to about a third of the root width is what reads as hair rather than as wire"; p.defaultValueHint = "0.00003"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "seed";           p.kind = ValueKind::UInt;      p.description = "Seeds every random draw (root placement, density rejection, frizz, curl phase).  Change it to re-roll the same groom recipe into a different arrangement; keep it fixed and the groom is identical on every machine and every frame"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "base_detail";    p.kind = ValueKind::UInt;      p.description = "Tessellation detail requested from the base geometry.  Roots are sampled on THAT mesh, so this quantises where hair can grow and how faithfully the interpolated normals follow the real surface -- raise it for a curved base whose hair looks faceted at the silhouette"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "density";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.description = "Optional [0,1] REJECTION MASK evaluated at each candidate root over the base surface's UV (physical SCALAR: a scalar_painter name or an inline numeric).  1 = keep every candidate here, 0 = bare skin.  This is where a bald patch, a hairline, an eyebrow shape or a fur pattern comes from -- any of the procedural painters (perlin, voronoi, expression, an image) works"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "length_painter"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.description = "Optional per-root MULTIPLIER on `length` (physical SCALAR).  Short around the ears, long on top; a value of 0 drops the strand entirely"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "comb";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Optional COMB DIRECTION FIELD -- a colour painter whose RGB encodes a TANGENT-SPACE direction with the normal-map convention d = 2*rgb - 1, in the frame {surface tangent, bitangent, normal}.  Neutral grey (0.5 0.5 0.5) is exactly no comb.  Only the part TANGENT to the surface is used (a comb must not push hair into the scalp), and the vector's MAGNITUDE is the push expressed as a fraction of the strand's own length -- so `1 0.5 0.5` (d = (1,0,0)) sweeps the tip a full strand-length along the surface tangent.  The bend is weighted t^2 along the strand, so the root always leaves along the normal"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "gravity";        p.kind = ValueKind::Double;    p.description = "Downward (world -Y) droop at the TIP, as a fraction of the strand's own length; weighted t^2 so the root stays normal-aligned.  0 = no droop, 1 = the tip falls a full strand-length.  This is a styling knob, not a simulation -- it does not know about collisions"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "frizz";          p.kind = ValueKind::Double;    p.description = "Per-control-point random jitter, as a fraction of the strand's own control-point spacing, weighted LINEARLY along the strand.  Small values (0.05-0.3) break up the machine-perfect look; large values shred the strand into noise.  Deterministic from `seed`, per strand, so editing an unrelated parameter does not re-roll it"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "clump";          p.kind = ValueKind::Double;    p.description = "Clump attraction strength in [0,1]: how far a strand's TIP is pulled toward its clump centre's tip (weighted t^2, so roots never move).  Needs `clump_size` > 0 to do anything.  This is what turns an even fur coat into wet-looking or styled locks"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "clump_size";     p.kind = ValueKind::Double;    p.description = "Clump CELL SIZE in scene units.  Roots are quantised onto a grid of this side and each occupied cell's first strand becomes that cell's clump centre; 0 disables clumping entirely.  Cell-shaped clumps are a Phase-1 simplification of a true nearest-centre-within-radius search -- two strands either side of a cell boundary join different clumps"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "curl_radius";    p.kind = ValueKind::Double;    p.description = "Helix radius in scene units, superposed on the strand in the root's tangent frame and weighted t^2 so the curl opens out of the follicle instead of lifting the root off the surface.  0 = straight.  Requires `curl_step` > 0; each strand gets its own random starting phase so curls do not line up into a corduroy pattern"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "curl_step";      p.kind = ValueKind::Double;    p.description = "Helix PITCH: arc length per full turn, in scene units.  Small relative to `length` = tight ringlets, large = a lazy wave.  Must be > 0 whenever `curl_radius` is > 0 (a helix with no pitch is not a curve)"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			//////////////////////////////////////////
 			// Modifiers
 			//////////////////////////////////////////
@@ -12676,6 +12772,7 @@ namespace RISE
 		add( "skin_geometry",                         new SkinGeometryAsciiChunkParser() );
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
+		add( "hair_geometry",                         new HairGeometryAsciiChunkParser() );
 
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );

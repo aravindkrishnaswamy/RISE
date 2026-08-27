@@ -5300,6 +5300,105 @@ bool Job::AddSkinGeometry( const char* name, const SkinDescriptor& desc )
 	return ok;
 }
 
+//! Creates a painter-driven hair groom (docs/HAIR_FUR_DESIGN.md
+//! section 5.3).  Resolves the four references and hands the resolved
+//! recipe to the construction API, which validates it and builds a
+//! HairGeometry in deferred-groom mode.
+//!
+//! PAINTER PIPE ROUTING, and why it is not uniform across the three
+//! slots (docs/ISCALARPAINTER_REFACTOR.md):
+//!   * `density` and `length_painter` are PHYSICAL SCALARS -- a [0,1]
+//!     mask and a length multiplier.  Neither is a colour, so both go
+//!     through IScalarPainter and never touch the JH spectral uplift.
+//!     They are read as `.v[0]`, so `requireSingle` is set: a
+//!     per-channel painter bound there gets the established targeted
+//!     diagnostic instead of silently dropping G and B.
+//!   * `comb` is a genuine COLOUR-typed painter, because its three
+//!     channels carry a DIRECTION (the normal-map convention
+//!     d = 2*rgb - 1).  It resolves against the IPainter manager so the
+//!     whole existing procedural-painter zoo -- perlin, voronoi,
+//!     domain-warp, an image of a hand-painted comb map -- works as a
+//!     comb field with no new painter code.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddHairGeometry( const char* name, const HairGroomDescriptor& desc )
+{
+	const char* who = name ? name : "(unnamed)";
+
+	// The scene-language "not bound" spellings, in one place.
+	auto bound = []( const char* s ) -> bool {
+		return s && s[0] && strcmp( s, "none" ) != 0;
+	};
+
+	if( !bound( desc.baseGeometry ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddHairGeometry:: `%s`: `base_geometry` is required -- hair grows on a surface", who );
+		return false;
+	}
+
+	IGeometry* pBase = pGeomManager->GetItem( desc.baseGeometry );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddHairGeometry:: `%s`: base geometry `%s` not found (declare it first)",
+			who, desc.baseGeometry );
+		return false;
+	}
+
+	IScalarPainter* pDensity = 0;
+	if( bound( desc.density ) ) {
+		pDensity = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_geometry", who, "density", desc.density, /*requireSingle*/ true );
+		if( !pDensity ) {
+			return false;
+		}
+	}
+
+	IScalarPainter* pLength = 0;
+	if( bound( desc.lengthPainter ) ) {
+		pLength = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_geometry", who, "length_painter", desc.lengthPainter, /*requireSingle*/ true );
+		if( !pLength ) {
+			safe_release( pDensity );
+			return false;
+		}
+	}
+
+	IPainter* pComb = 0;
+	if( bound( desc.comb ) ) {
+		pComb = pPntManager->GetItem( desc.comb );
+		if( !pComb ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHairGeometry:: `%s`: `comb` painter `%s` not found", who, desc.comb );
+			safe_release( pDensity );
+			safe_release( pLength );
+			return false;
+		}
+	}
+
+	HairGroomRecipe recipe;
+	recipe.pBase        = pBase;
+	recipe.pDensity     = pDensity;
+	recipe.pLengthScale = pLength;
+	recipe.pComb        = pComb;
+	recipe.p            = desc.p;
+
+	IGeometry* pGeometry = 0;
+	const bool built = RISE_API_CreateHairGeometryGroom( &pGeometry, recipe, who );
+
+	// ResolveOrDiagnoseScalar hands back an OWNED reference (unlike
+	// GetItem, which is borrowed -- hence no release for pBase / pComb),
+	// and HairGeometry's constructor took its own addref on everything
+	// it kept, so ours go back regardless of the outcome.
+	safe_release( pDensity );
+	safe_release( pLength );
+
+	if( !built || !pGeometry ) {
+		// The factory logged the specific parameter that failed.
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
 bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
 {
 	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );

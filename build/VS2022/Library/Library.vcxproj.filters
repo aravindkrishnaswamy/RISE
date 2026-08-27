@@ -603,6 +603,9 @@
     <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
       <Filter>Cst</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\HairGenerator.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\HairGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
@@ -1819,6 +1822,9 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Polygon.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\HairGenerator.h">
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\HairGeometry.h">

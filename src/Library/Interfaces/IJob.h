@@ -4104,6 +4104,28 @@ namespace RISE
 									const char* axis				///< [in] "x", "y", "z", or null/""/"none" to clear
 									) = 0;
 
+		//! Creates a HAIR GROOM: a runtime curve primitive whose strands
+		//! are GENERATED, at Realize() time, on the surface of another
+		//! named geometry, steered by up to three painters and a seed
+		//! (docs/HAIR_FUR_DESIGN.md section 5.3).  This is the
+		//! `hair_geometry` scene chunk's Job-level entry point.
+		//!
+		//! The four names in `desc` are resolved here: `baseGeometry`
+		//! against the geometry manager (REQUIRED, and it must be
+		//! tessellatable), `density` and `lengthPainter` against the
+		//! SCALAR painter manager (they are physical scalars, not
+		//! colours -- IScalarPainter, so no JH uplift), and `comb`
+		//! against the COLOUR painter manager (its RGB encodes a
+		//! direction).  An unbound optional is NULL, "" or "none".
+		//!
+		//! Appended after SetObjectMirror per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairGeometry(
+									const char* name,				///< [in] Name of the geometry
+									const HairGroomDescriptor& desc	///< [in] Base + painters + numeric groom parameters
+									) = 0;
+
 	};
 
 

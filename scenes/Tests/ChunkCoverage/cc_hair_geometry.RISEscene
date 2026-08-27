@@ -1,0 +1,77 @@
+RISE ASCII SCENE 7
+# Coverage: hair_geometry (painter-driven groom on a base surface).
+# A small 500-strand groom on a sphere, bound to a hair_material, with
+# every optional styling field exercised at least once so a descriptor /
+# Finalize name mismatch cannot hide.
+
+film
+{
+	width		64
+	height		64
+}
+
+sphere_geometry
+{
+	name		cc_scalp
+	radius		1.0
+}
+
+scalar_painter
+{
+	name		cc_density
+	value		0.8
+}
+
+scalar_painter
+{
+	name		cc_lengthscale
+	value		0.9
+}
+
+uniformcolor_painter
+{
+	name		cc_comb
+	color		0.8 0.5 0.5
+}
+
+hair_geometry
+{
+	name		cc_groom
+	base_geometry	cc_scalp
+	count		500
+	segments	8
+	length		0.15
+	width_root	0.004
+	width_tip	0.001
+	seed		11
+	base_detail	16
+	density		cc_density
+	length_painter	cc_lengthscale
+	comb		cc_comb
+	gravity		0.2
+	frizz		0.1
+	clump		0.5
+	clump_size	0.05
+	curl_radius	0.01
+	curl_step	0.06
+}
+
+scalar_painter
+{
+	name		cc_eumelanin
+	value		1.3
+}
+
+hair_material
+{
+	name		cc_hair
+	eumelanin	cc_eumelanin
+}
+
+standard_object
+{
+	name		cc_obj
+	geometry	cc_groom
+	material	cc_hair
+	position	0 0 0
+}

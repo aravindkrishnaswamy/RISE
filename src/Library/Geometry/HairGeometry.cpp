@@ -16,11 +16,16 @@
 
 #include "pch.h"
 #include "HairGeometry.h"
+#include "HairGenerator.h"
 #include "../Interfaces/ILog.h"
+#include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../Interfaces/IReadBuffer.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/RenderParallelScope.h"
+#include <cassert>
 #include <cmath>
 #include <algorithm>
 
@@ -328,8 +333,102 @@ HairGeometry::HairGeometry( const std::vector<StrandDesc>& strands ) :
   pSegBVH( 0 ),
   bbox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) ),
   nSegments( 0 ),
-  nRejectedStrands( 0 )
+  nRejectedStrands( 0 ),
+  pRecipe( 0 ),
+  groomName( "hair_geometry" ),
+  bRealized( true )		// explicit-strand mode is built right here; Realize() is a no-op
 {
+	BuildFromStrands( strands );
+}
+
+//! DEFERRED-GROOM construction.  Stores the recipe and builds nothing;
+//! see the header for why generation cannot happen here.
+HairGeometry::HairGeometry( const HairGroomRecipe& recipe, const char* chunkName ) :
+  pSegBVH( 0 ),
+  bbox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) ),
+  nSegments( 0 ),
+  nRejectedStrands( 0 ),
+  pRecipe( new HairGroomRecipe( recipe ) ),
+  groomName( chunkName ? chunkName : "hair_geometry" ),
+  bRealized( false )
+{
+	// Our OWN references, independent of the caller's -- the caller
+	// still releases whatever it resolved (the DisplacedGeometry
+	// convention).
+	if( pRecipe->pBase )        { pRecipe->pBase->addref(); }
+	if( pRecipe->pDensity )     { pRecipe->pDensity->addref(); }
+	if( pRecipe->pLengthScale ) { pRecipe->pLengthScale->addref(); }
+	if( pRecipe->pComb )        { pRecipe->pComb->addref(); }
+
+	// A never-realized groom must still be a valid, empty, non-crashing
+	// primitive: strandCPBegin's "one more than the strand count"
+	// invariant has to hold from construction, not from realization.
+	strandCPBegin.push_back( 0 );
+}
+
+bool HairGeometry::IsValid() const
+{
+	if( !pRecipe ) {
+		return true;			// explicit-strand mode: already built
+	}
+	return pRecipe->pBase != 0 && pRecipe->pBase->CanTessellate();
+}
+
+void HairGeometry::Realize() const
+{
+	// Fast path: already realized (or explicit-strand mode).  Acquire so
+	// a groom another thread built under the lock is fully visible.  The
+	// freeze assert lives BELOW this early return, so an idempotent
+	// no-op does not false-trip merely because a render is active.
+	if( bRealized.load( std::memory_order_acquire ) ) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> realizeLock( realizeMutex );
+	if( bRealized.load( std::memory_order_relaxed ) ) {
+		return;
+	}
+
+	// DEBUG freeze guard: generation must run single-threaded BEFORE the
+	// parallel rasterize (the scene is immutable during it).  Compiles
+	// out in release.  Same assert DisplacedGeometry::Realize carries.
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"HairGeometry::Realize() during the parallel render — realize in RayCaster::AttachScene before the rasterize pass" );
+
+	if( pRecipe ) {
+		std::vector<StrandDesc> strands;
+		if( GenerateHairStrands( *pRecipe, groomName.c_str(), strands ) ) {
+			BuildFromStrands( strands );
+		} else {
+			// Generation refused (null / non-tessellatable / zero-area
+			// base).  It already logged why.  Leave the groom EMPTY --
+			// a valid primitive that intersects nothing -- rather than
+			// half-built.  Marked realized below regardless, so a
+			// broken recipe is diagnosed once, not once per query.
+			BuildFromStrands( std::vector<StrandDesc>() );
+		}
+	}
+
+	// Release, pairing the fast-path acquire.
+	bRealized.store( true, std::memory_order_release );
+}
+
+void HairGeometry::BuildFromStrands( const std::vector<StrandDesc>& strands ) const
+{
+	// Idempotent: a rebuild starts from a clean slate rather than
+	// appending to whatever a previous build left behind.
+	safe_release( pSegBVH );
+	cps.clear();
+	strandCPBegin.clear();
+	cpArcCum.clear();
+	strandRootWidth.clear();
+	strandTipWidth.clear();
+	strandRootU.clear();
+	strandRootV.clear();
+	bbox = BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
+	nSegments = 0;
+	nRejectedStrands = 0;
+
 	strandCPBegin.push_back( 0 );
 
 	BoundingBox accum( Point3(  RISE_INFINITY,  RISE_INFINITY,  RISE_INFINITY ),
@@ -481,15 +580,32 @@ HairGeometry::HairGeometry( const std::vector<StrandDesc>& strands ) :
 		// RayBoxIntersection.  A zero-extent box is missed by virtually
 		// every ray and, on the measure-zero ray that does graze it,
 		// IntersectRay below still reports nothing.
-		GlobalLog()->PrintEx( eLog_Warning,
-			"HairGeometry:: groom is empty (%u strands supplied, %u rejected) -- it will intersect nothing",
-			(unsigned)strands.size(), nRejectedStrands );
+		// In DEFERRED-GROOM mode with nothing supplied, the generator has
+		// already said why (masked out / degenerate base / refused), so
+		// repeating "groom is empty" here would be noise.  Every other
+		// path -- explicit-strand construction, or a generation that DID
+		// produce strands but had them all rejected below -- gets the
+		// warning.
+		if( !pRecipe || !strands.empty() ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"HairGeometry:: groom is empty (%u strands supplied, %u rejected) -- it will intersect nothing",
+				(unsigned)strands.size(), nRejectedStrands );
+		}
 	}
 }
 
 HairGeometry::~HairGeometry()
 {
 	safe_release( pSegBVH );
+
+	if( pRecipe ) {
+		if( pRecipe->pBase )        { pRecipe->pBase->release(); }
+		if( pRecipe->pDensity )     { pRecipe->pDensity->release(); }
+		if( pRecipe->pLengthScale ) { pRecipe->pLengthScale->release(); }
+		if( pRecipe->pComb )        { pRecipe->pComb->release(); }
+		delete pRecipe;
+		pRecipe = 0;
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -773,7 +889,26 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 		}
 		T = Vector3Ops::mkVector3( e1, e0 );
 		if( Vector3Ops::SquaredModulus( T ) < NEARZERO ) {
-			T = Vector3( 0, 0, 1 );
+			// The LOCAL chord is degenerate too.  This is not exotic:
+			// the derivative at the tip (u == nSpans) is exactly
+			// CP[n-1] - CP[n-2] under the reflected-phantom convention
+			// (substitute the phantom into the Catmull-Rom basis), so a
+			// strand whose last two control points COINCIDE has a zero
+			// derivative AND a zero local chord at its tip -- the
+			// backward probe above cannot rescue that case on its own.
+			// Fall back to the WHOLE-STRAND chord, root to tip, which is
+			// non-degenerate for any strand that has any extent at all
+			// and is guaranteed to point root -> tip (the property every
+			// consumer of the fibre tangent actually depends on: the
+			// Chiang BCSDF's azimuthal frame and the ONB's u-axis are
+			// both orientation-sensitive).  Only a strand that is
+			// geometrically a single point falls through to an arbitrary
+			// axis, and such a strand is a sub-pixel speck.
+			const unsigned int nCP = numControlPointsOfStrand( s );
+			T = Vector3Ops::mkVector3( ControlPoint( s, nCP - 1 ), ControlPoint( s, 0 ) );
+			if( Vector3Ops::SquaredModulus( T ) < NEARZERO ) {
+				T = Vector3( 0, 0, 1 );
+			}
 		}
 	}
 	T = Vector3Ops::Normalize( T );

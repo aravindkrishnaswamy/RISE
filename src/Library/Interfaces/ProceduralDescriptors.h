@@ -21,6 +21,8 @@
 namespace RISE
 {
 	class IGeometry;
+	class IPainter;
+	class IScalarPainter;
 
 	//! General profile-sweep parameters: an arbitrary CLOSED 2D profile
 	//! polygon swept along an arbitrary 3D Catmull-Rom path with
@@ -219,6 +221,84 @@ namespace RISE
 			railAPoints( 0 ), numRailAPoints( 0 ),
 			railBPoints( 0 ), numRailBPoints( 0 ),
 			nLen( 32 ), nAcross( 8 ), billow( 0.0 )
+		{
+		}
+	};
+
+	//! The NUMERIC half of a `hair_geometry` groom recipe -- everything
+	//! that is a plain number rather than a reference to another scene
+	//! chunk.  Shared verbatim by `HairGroomDescriptor` (the by-NAME form
+	//! IJob takes) and `HairGroomRecipe` (the resolved-POINTER form
+	//! RISE_API and the generator take), so the two cannot drift.
+	//!
+	//! LENGTH UNITS.  `length`, `widthRoot`, `widthTip`, `clumpSize` and
+	//! `curlRadius` / `curlStep` are all in SCENE UNITS (metres in a
+	//! default scene, per `scene_options scene_unit`).  The defaults are
+	//! human-scalp numbers: 0.1 mm at the root tapering to 0.03 mm at the
+	//! tip.
+	struct HairGroomParams
+	{
+		unsigned int count;			//!< strand budget, PRE-density-mask (the density painter only ever REMOVES candidates, so the realised strand count is <= this)
+		unsigned int segments;		//!< control points per strand (>= 2; 2 is a perfectly straight quill)
+		unsigned int seed;			//!< every random draw in the generator derives from this; the same recipe + seed always yields byte-identical strands
+		unsigned int baseDetail;	//!< tessellation detail handed to the base geometry's TessellateToMesh (roots are sampled on THAT mesh, so a coarse value quantises where hair can grow)
+		double length;				//!< nominal strand length in scene units, scaled per-strand by the `length_painter`
+		double widthRoot;			//!< FULL fibre width (not radius) at the root
+		double widthTip;			//!< FULL fibre width at the tip; linearly interpolated in arc-length fraction between the two
+		double gravity;				//!< downward (world -Y) droop at the tip as a fraction of the strand's own length; 0 = no droop.  Quadratic in the tip fraction, so the root stays normal-aligned
+		double frizz;				//!< per-control-point random jitter amplitude as a fraction of the strand's own inter-control-point spacing; 0 = perfectly smooth
+		double clump;				//!< clump attraction strength in [0,1]: how far a strand's tip is pulled toward its clump centre's tip.  0 = no clumping (also disabled when clumpSize <= 0)
+		double clumpSize;			//!< clump cell size in SCENE UNITS -- strands whose roots share a cell of this side clump together.  0 = no clumping
+		double curlRadius;			//!< helix radius in scene units; 0 = no curl
+		double curlStep;			//!< helix pitch (arc length per full turn) in scene units; must be > 0 for curl to apply
+
+		HairGroomParams() :
+			count( 0 ), segments( 8 ), seed( 1 ), baseDetail( 32 ),
+			length( 0.0 ), widthRoot( 0.0001 ), widthTip( 0.00003 ),
+			gravity( 0.0 ), frizz( 0.0 ),
+			clump( 0.0 ), clumpSize( 0.0 ),
+			curlRadius( 0.0 ), curlStep( 0.0 )
+		{
+		}
+	};
+
+	//! A `hair_geometry` groom recipe in BY-NAME form: what the scene
+	//! chunk parsed, before any manager lookup.  `IJob::AddHairGeometry`
+	//! resolves the four names into the pointers of `HairGroomRecipe`.
+	//! An unbound optional reference is spelled NULL, "" or "none".
+	struct HairGroomDescriptor
+	{
+		const char* baseGeometry;	//!< REQUIRED: name of a previously-registered geometry to grow hair on.  It must be tessellatable
+		const char* density;		//!< optional IScalarPainter name: [0,1] rejection mask evaluated at each candidate root
+		const char* lengthPainter;	//!< optional IScalarPainter name: per-root multiplier on `length`
+		const char* comb;			//!< optional IPainter name: RGB-encoded tangent-space comb direction at each root
+		HairGroomParams p;
+
+		HairGroomDescriptor() :
+			baseGeometry( 0 ), density( 0 ), lengthPainter( 0 ), comb( 0 ), p()
+		{
+		}
+	};
+
+	//! A `hair_geometry` groom recipe in RESOLVED form: the pointers the
+	//! generator actually evaluates.  `HairGeometry`'s deferred-groom
+	//! constructor takes one of these, addrefs every non-null pointer,
+	//! and holds it until `Realize()` runs the generation.
+	//!
+	//! Ownership: the CALLER's references are its own -- the constructor
+	//! takes its OWN addref on each pointer, so the caller still releases
+	//! whatever it resolved.  Same convention as every other RISE
+	//! composite (DisplacedGeometry's base + displacement).
+	struct HairGroomRecipe
+	{
+		IGeometry*            pBase;		//!< REQUIRED, non-null, and CanTessellate()
+		const IScalarPainter* pDensity;		//!< optional
+		const IScalarPainter* pLengthScale;	//!< optional
+		const IPainter*       pComb;		//!< optional
+		HairGroomParams       p;
+
+		HairGroomRecipe() :
+			pBase( 0 ), pDensity( 0 ), pLengthScale( 0 ), pComb( 0 ), p()
 		{
 		}
 	};

@@ -1692,6 +1692,12 @@ namespace RISE
 					const SkinDescriptor& desc				///< [in] Rails + tessellation + billow parameters
 					);
 
+		//! Creates a painter-driven hair groom on a named base geometry (see IJob)
+		bool AddHairGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const HairGroomDescriptor& desc			///< [in] Base + painters + numeric groom parameters
+					);
+
 		//! Creates along-path instances of a named template geometry (see IJob)
 		bool AddPathInstancesGeometry(
 					const char* name,						///< [in] Name of the geometry

@@ -392,6 +392,7 @@ namespace RISE
 #include "Geometry/BilinearPatchGeometry.h"
 #include "Geometry/DisplacedGeometry.h"
 #include "Geometry/SDFGeometry.h"
+#include "Geometry/HairGenerator.h"			// HairGroomRecipe validation + HairGeometry's deferred-groom ctor
 #include "Interfaces/ProceduralDescriptors.h"	// SweepDescriptor / PathInstancesDescriptor for the procedural mesh factories
 #include "Geometry/GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for the procedural mesh factories
 #include "Geometry/TriangleMeshGeometry.h"
@@ -733,6 +734,33 @@ namespace RISE
 			*ppi = 0;
 			return false;
 		}
+
+		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateHairGeometryGroom(
+						IGeometry**             ppi,
+						const HairGroomRecipe&  recipe,
+						const char*             chunkName
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Every check that does NOT require tessellating the base runs
+		// here, at construction (= parse time for a scene), so an author
+		// sees the error against their own chunk rather than a silent
+		// empty groom at render time.  ValidateHairGroomRecipe logs one
+		// diagnostic naming the offending parameter.
+		if( !ValidateHairGroomRecipe( recipe, chunkName ) ) {
+			return false;
+		}
+
+		HairGeometry* pGeom = new HairGeometry( recipe, chunkName );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "hair geometry (deferred groom)" );
 
 		*ppi = pGeom;
 		return true;

@@ -562,6 +562,32 @@ namespace RISE
 						const SkinDescriptor&          desc	///< [in] Rails + tessellation + billow parameters
 						);
 
+	//! Creates a HAIR GROOM: a `HairGeometry` curve primitive in
+	//! DEFERRED-GROOM mode (docs/HAIR_FUR_DESIGN.md section 5.3).  The
+	//! recipe -- a base geometry to grow on, up to three painters, and a
+	//! seed -- is stored and addref'd here; the actual strand generation
+	//! runs later in `IGeometry::Realize()`, once, single-threaded,
+	//! before the parallel rasterize.  This is the construction boundary
+	//! for hair geometry; `IJob::AddHairGeometry` and the `hair_geometry`
+	//! scene chunk both route through here.
+	//!
+	//! The recipe is VALIDATED here (ValidateHairGroomRecipe): a null or
+	//! non-tessellatable base, a zero / over-cap `count`, fewer than two
+	//! `segments`, a non-positive `length` / width, or a `curl_radius`
+	//! without a `curl_step` all fail with a named diagnostic and no
+	//! geometry -- at PARSE time, where the author can act on it, rather
+	//! than at realize time.  Failures that can only be seen by actually
+	//! tessellating (a base that meshes to zero area) surface at
+	//! Realize() and leave an empty, harmless groom.
+	//!
+	//! The caller keeps its own references to everything in the recipe.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairGeometryGroom(
+						IGeometry**             ppi,		///< [out] Pointer to receive the geometry
+						const HairGroomRecipe&  recipe,		///< [in] Base geometry + painters + numeric parameters + seed
+						const char*             chunkName	///< [in] Name of the authoring chunk, used in diagnostics (may be null)
+						);
+
 	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
 	//! through the universal TessellateToMesh contract) stamped along a 3D
 	//! Catmull-Rom path at arc-length pitch with optional slant and scale.
