@@ -324,6 +324,23 @@ regular mesh path) is exported as:
    [Native-bridge status](#native-bridge-status) below for why it
    stops there today).
 
+**Staged files are not cleaned up.**  Every export writes a fresh
+`.hair` file (`<safe object name>_<id(original_object):x>.hair`) into
+the staging directory; nothing in this add-on ever deletes an old one.
+This mirrors `_unpack_image_to_disk`'s own practice for its packed-
+image temp dir (`rise_blender_unpack/`) — that function also never
+prunes stale files, it only re-uses a cache hit within one session.
+Re-exporting the same groom across renders in one Blender session
+reuses the same filename (`id()` is stable for the life of the Python
+object), but a fresh Blender session — or a depsgraph re-evaluation
+that hands back a new evaluated-object instance — mints a new `id()`
+and therefore a new file, so both staging directories grow unbounded
+over a long working session.  Not a correctness issue (each file is
+self-contained and harmless to leave behind), but worth knowing before
+assuming the temp dir stays small; an artist can safely clear
+`<bpy.app.tempdir>/rise_blender_hair/` (and `rise_blender_unpack/`) by
+hand between sessions.
+
 **Points and thickness.**  Point positions come from the Curves
 datablock's own `position` attribute (local/object space, exactly like
 mesh vertices — the object's world transform is applied separately, so
@@ -388,7 +405,7 @@ supported:
 | `Radial Roughness` | `beta_n` | Same |
 | `IOR` | `ior` | Same |
 | `Offset` (radians) | `alpha` (**degrees**) | Converted via `hair_material_math.offset_radians_to_alpha_degrees` (`math.degrees`). Blender's own default, 2°, is stored as ~0.0349066 rad. Linked inputs are read at their socket default only (warned). |
-| `Random Color` / `Random Roughness` / `Random` | *(unsupported)* | RISE's `hair_material` is one BCSDF instance for the whole groom — there is no per-strand attribute plumbing to carry per-strand randomisation. Warned and ignored. |
+| `Random Color` / `Random Roughness` / `Random` | *(unsupported)* | RISE's `hair_material` is one BCSDF instance for the whole groom — there is no per-strand attribute plumbing to carry per-strand randomisation. Warned and ignored — including the standard Cycles wiring for these (a `ShaderNodeHairInfo` node feeding them), which is exempted from the upstream-graph support check specifically so it degrades to this warn-and-ignore instead of refusing the whole material. |
 
 The three **parametrizations** (`ShaderNodeBsdfHairPrincipled.
 parametrization`) each bind a different `hair_material` tier — exactly
@@ -398,7 +415,7 @@ one tier may be bound, matching the chunk's own "exactly one of
 - **`COLOR`** ("Direct coloring") — the `Color` input maps straight to
   `hair_material`'s Tier 3 `color`, with full texture support (Image
   Texture / Color Ramp / etc. chains, same as any other colour slot).
-- **`ABSORPTION_COEFFICIENT`** — the `Absorption Coefficient` input
+- **`ABSORPTION`** ("Absorption coefficient") — the `Absorption Coefficient` input
   (an RGB triple) maps to Tier 2 `sigma_a`.  Read as a constant colour
   at the socket's default value; a linked input is not walked for a
   texture (warned) — sigma_a is authored numerically far more often
@@ -428,6 +445,32 @@ one tier may be bound, matching the chunk's own "exactly one of
   Linked `Melanin` / `Melanin Redness` sockets are read at their
   default value only (warned) — same reasoning as `Absorption
   Coefficient` above.
+
+  **Units disclosure — the remap matches Cycles exactly, the resulting
+  absorption does not.**  `melanin_to_eumelanin_pheomelanin` converts
+  Blender's `Melanin`/`Melanin Redness` sliders into the same
+  eumelanin/pheomelanin *concentration* pair Cycles would compute
+  (confirmed: identical formula, identical `1e-4` floor). But the
+  downstream *concentration → sigma_a* coefficient sets differ between
+  the two renderers:
+
+  | pigment | Cycles (`bsdf_hair_principled.h`) | RISE (OMLC, G-anchored) |
+  |---------|-----------------------------------|--------------------------|
+  | eumelanin | (0.506, 0.841, 1.653) | (0.518, 0.697, 1.293) |
+  | pheomelanin | (0.343, 0.733, 1.924) | (0.232, 0.400, 1.067) |
+
+  (RISE's triples are implemented in `src/Library/Materials/HairBSDF.cpp`
+  from the in-tree OMLC extinction tables.) At equal concentrations
+  this makes RISE absorb roughly **17% less green light for
+  eumelanin** (0.697 / 0.841) and roughly **45% less for pheomelanin**
+  (0.400 / 0.733) than Cycles — a groom that matches a Cycles reference
+  by eye will render slightly lighter / less saturated in RISE at the
+  same `Melanin` / `Melanin Redness` values. A per-pigment rescale for
+  Blender-parity (`eumelanin *= 0.841/0.697`, `pheomelanin *=
+  0.733/0.400`) is a known, straightforward fix, deliberately **not**
+  applied — it's left as an open decision for the native-bridge slice
+  (Blender-visual-parity vs. RISE's-own-physical-anchoring as the
+  intended contract).
 
 A hair-curves object with no material, a non-node material, or a
 material that gets refused by the rules above falls back to a

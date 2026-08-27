@@ -63,6 +63,37 @@ def melanin_to_eumelanin_pheomelanin(melanin: float, redness: float) -> tuple[fl
         redness of 0 sets pheomelanin to exactly 0.0, which is fine —
         `hair_material`'s Finalize only requires that at least one of
         the pair be bound, not both).
+
+    UNITS DISCLOSURE — the *remap* (this function) matches Cycles
+    exactly, but the *concentration -> sigma_a* coefficient sets that
+    consume these outputs downstream do NOT match between renderers,
+    so the same ``(eumelanin, pheomelanin)`` pair does not produce the
+    same absorption in RISE as in Cycles:
+
+        pigment      Cycles (bsdf_hair_principled.h)   RISE (OMLC, G-anchored)
+        -----------  --------------------------------  -----------------------
+        eumelanin    (0.506, 0.841, 1.653)              (0.518, 0.697, 1.293)
+        pheomelanin  (0.343, 0.733, 1.924)               (0.232, 0.400, 1.067)
+
+    Both are per-unit-concentration sigma_a triples (R, G, B); RISE's
+    are implemented in `src/Library/Materials/HairBSDF.cpp` from the
+    in-tree OMLC extinction tables, anchored so the green channel at
+    550 nm matches the OMLC curve shape.  At EQUAL concentrations this
+    makes RISE absorb roughly 17% less green light for eumelanin
+    (0.697 / 0.841) and roughly 45% less for pheomelanin (0.400 /
+    0.733) than Cycles would for the same slider values — i.e. a groom
+    that matches a Cycles reference by eye will read slightly lighter
+    / less saturated in RISE at the same Melanin / Melanin Redness
+    values.
+
+    A per-pigment rescale to restore Blender-parity is a known,
+    straightforward option (multiply `eumelanin` by 0.841/0.697 and
+    `pheomelanin` by 0.733/0.400 before returning) but is DELIBERATELY
+    NOT applied here, pending the native-bridge slice's decision on
+    whether Blender-visual-parity or RISE's-own-physical-anchoring is
+    the intended contract for this conversion — see
+    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the same
+    disclosure.
     """
 
     m = min(max(float(melanin), 0.0), 1.0)

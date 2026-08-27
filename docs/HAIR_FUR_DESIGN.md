@@ -1,7 +1,8 @@
 # Hair / Fur System Design — Scattering Model, Strand Geometry, and Phased Plan
 
-**Status:** PHASE 1 IMPLEMENTED (2026-08-27) — §7 Phase 1 complete through render validation;
-Phases 2-4 remain proposed.
+**Status:** PHASES 1 AND 2 IMPLEMENTED (2026-08-27) — §7 Phase 1 complete through render
+validation; Phase 2 (guides + `.hair` import + Blender export) shipped; Phases 3-4 (fur medulla,
+LOD/perf) remain proposed.
 **Date:** 2026-08-25 (design); Phase 1 landed 2026-08-26/27.
 **Nature:** Decision document + phased execution plan, in the mold of
 [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey → scored candidates →
@@ -25,6 +26,32 @@ recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (
   [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md).
 - Slice E (this closeout) — render-level regression scenes (`scenes/Tests/Hair/`),
   `tests/HairRenderTest.cpp`, and this docs closeout.
+
+**Phase 2 slice history (2026-08-27), oldest to newest:**
+- `4fe62ea7` + `f6014776` — P2-A: `hair_guides` chunk + K-nearest guide interpolation
+  (inverse-distance weights, rigid root-frame transport; non-guided path proven byte-identical),
+  plus the connection-legality allowlist hoist (a `keywordAllowlist` now binds on every pipe).
+- `b9f03515` + `7d91efe3` — P2-B: Cem Yuksel `.hair` importer (`HairFileLoader`) wired as
+  `hair_geometry` file mode (mutually exclusive with grow mode, all grow params refused with
+  named diagnostics; thickness = full width, `width_root`/`width_tip` become multipliers;
+  per-strand defect drops with counted summaries).
+- `0a288966` — P2-C: Blender add-on exports hair Curves objects as staged `.hair` files +
+  file-mode chunks, and maps `ShaderNodeBsdfHairPrincipled` (all three parametrizations,
+  melanin per Cycles' `-log(1-m)` convention) to `hair_material` —
+  [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md) §Hair.
+
+**Phase-2 residuals (named, deferred):**
+- The Blender add-on is **bridge-only** (it emits no `.RISEscene` text), and the native bridge
+  (ABI v8) has no hair fields — so P2-C's hair export is mapping + staging infrastructure:
+  `.hair` files are written and `SceneData.hair_objects`/`hair_materials` populated, but nothing
+  consumes them yet and a one-time warning says so. End-to-end Blender hair rendering requires
+  the bridge ABI v9 hair slice (P2-D).
+- Imported/exported grooms carry **root UV (0,0)** — scalp-space painters do not vary across
+  a `.hair` groom (the format has no UVs).
+- Legacy Blender **particle-hair** systems are not exported (convert to Curves in Blender;
+  the exporter warns).
+- The reverse-direction editor legality gap (a `hair_guides` node wired into a *geometry* port
+  is refused only at derive) needs a `ChunkCategory` split — documented in `IJob.h`.
 
 **Standing residuals carried forward (not blocking Phase 1, tracked for Phase 2+):**
 - NEE cannot reach hair's transmissive hemisphere (`LightSampler` rejects

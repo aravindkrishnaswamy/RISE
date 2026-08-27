@@ -811,13 +811,22 @@ static void RunStrandConstruction()
 	//    `forceSegmentOfStrand0` override is needed -- the fixture is
 	//    self-consistent by construction, exactly the kind of file a
 	//    real degenerate groom export would produce.
+	//
+	//    The lone strand is inserted at index 2 (NOT appended last): a
+	//    missing point-cursor advance after a 0-segment strand can only
+	//    corrupt strands read AFTER it, so putting it last left nothing
+	//    downstream to catch exactly that bug class.  Placing it in the
+	//    middle makes the three surviving strands read after it into
+	//    witnesses -- their point counts and control-point counts are
+	//    checked below and would come back wrong if the loader/builder
+	//    failed to advance past the degenerate strand correctly.
 	{
 		HairFileSpec spec;
 		spec.strands = CanonicalStrands();
 		TestStrand lone;
 		lone.pts.push_back( 9.0f ); lone.pts.push_back( 9.0f ); lone.pts.push_back( 9.0f );
 		lone.thickness.push_back( 0.01f );
-		spec.strands.push_back( lone );	// strand 5: one point, 0 segments
+		spec.strands.insert( spec.strands.begin() + 2, lone );	// strand 2: one point, 0 segments
 		const std::string path = MakeHairFile( "zerosegdrop", spec );
 
 		HairFileData d;
@@ -830,8 +839,14 @@ static void RunStrandConstruction()
 		if( loadOk ) {
 			Check( d.numStrands == 6 && d.pointsPerStrand.size() == 6,
 			       "the degenerate strand is still counted and recorded" );
-			Check( d.pointsPerStrand[5] == 1,
+			Check( d.pointsPerStrand[2] == 1,
 			       "the degenerate strand's recorded point count is exactly 1 (segments+1 with 0 segments)" );
+			Check( d.pointsPerStrand[0] == 4 && d.pointsPerStrand[1] == 3 &&
+			       d.pointsPerStrand[3] == 5 && d.pointsPerStrand[4] == 2 &&
+			       d.pointsPerStrand[5] == 6,
+			       "MONEY: the three strands read AFTER the degenerate one (indices 3, 4, 5) still report "
+			       "their correct point counts -- catches a missing point-cursor advance for a 0-segment "
+			       "strand, which a fixture with the degenerate strand last couldn't detect" );
 			Check( loadCaptured.find( "0 segments" ) != std::string::npos,
 			       "LoadHairFile warns about the 0-segment strand (counted, not silent)" );
 
@@ -843,6 +858,13 @@ static void RunStrandConstruction()
 			Check( buildOk && strands.size() == 5,
 			       "MONEY: BuildStrandsFromHairFile drops the 0-segment strand and counts it; the other five "
 			       "convert" );
+			if( buildOk && strands.size() == 5 ) {
+				Check( strands[0].controlPoints.size() == 4 && strands[1].controlPoints.size() == 3 &&
+				       strands[2].controlPoints.size() == 5 && strands[3].controlPoints.size() == 2 &&
+				       strands[4].controlPoints.size() == 6,
+				       "the five survivors keep their original relative order and control-point counts "
+				       "(4, 3, 5, 2, 6) once the degenerate strand at index 2 is dropped" );
+			}
 			Check( buildCaptured.find( "fewer than 2 points" ) != std::string::npos,
 			       "the drop is named in BuildStrandsFromHairFile's summary warning (\"counted\", not silent)" );
 		}

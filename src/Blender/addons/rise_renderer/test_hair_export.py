@@ -125,6 +125,29 @@ def _read_hair_file(path):
     }
 
 
+class HairFileWriterFlagBitValueTest(unittest.TestCase):
+    """Pin the five flag-bit VALUES to literal integers.
+
+    Every other test in this file references bits via the symbolic
+    `hfw.FLAG_*` names (e.g. `hfw.FLAG_THICKNESS`), which is the right
+    style for readability but means those tests would still pass even
+    if the constants themselves got transposed (e.g. FLAG_POINTS and
+    FLAG_THICKNESS swapped in `hair_file_writer.py`) -- every assertion
+    would silently move in lockstep with the bug, since both the
+    writer and the reader in this test module import the same symbol.
+    This test is the one place that pins the actual on-disk bit
+    layout, per `HairFileLoader.h` / `hair_file_writer.py`'s own
+    module docstring, against hardcoded literals -- it must never
+    change these values."""
+
+    def test_flag_bit_values(self):
+        self.assertEqual(hfw.FLAG_SEGMENTS, 1)
+        self.assertEqual(hfw.FLAG_POINTS, 2)
+        self.assertEqual(hfw.FLAG_THICKNESS, 4)
+        self.assertEqual(hfw.FLAG_TRANSPARENCY, 8)
+        self.assertEqual(hfw.FLAG_COLOR, 16)
+
+
 class HairFileWriterByteLayoutTest(unittest.TestCase):
     """Hand-computed offset asserts against the 128-byte header, per
     HairFileLoader.h's documented layout."""

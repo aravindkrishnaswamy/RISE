@@ -339,10 +339,14 @@ class HairObjectData:
     """One hair/fur groom exported from a Blender Curves object: a
     binary `.hair` file (Cem Yuksel format, written by
     `hair_file_writer.write_hair_file`) staged to disk, plus the
-    object/transform/material binding a `hair_geometry { file ... }` +
-    `standard_object` pair would need on the RISE side.  See
-    `HairMaterialData`'s docstring for the same "not yet consumed by
-    the live-render bridge" caveat.
+    object/transform/material binding data a future native-bridge
+    slice will use to construct a `hair_geometry { file ... }` +
+    `standard_object` pair on the RISE side -- that construction does
+    NOT exist yet (see `HairMaterialData`'s docstring and
+    [Native-bridge status] in docs/BLENDER_MATERIAL_TRANSLATION.md's
+    hair section for the same "not yet consumed by the live-render
+    bridge" caveat).  This dataclass is only the export-side staging
+    record.
     """
 
     name: str
@@ -420,7 +424,10 @@ class _ExportState:
         self.image_path_cache: dict[int, str] = {}
         self.hair_objects: list[HairObjectData] = []
         self.hair_materials: list[HairMaterialData] = []
-        self.hair_material_map: dict[int | None, str] = {}
+        # Keyed by `_pointer_key(material)` (int | None) for real
+        # materials, plus the string sentinel `"__default_hair__"` that
+        # `_default_hair_material` caches its shared fallback under.
+        self.hair_material_map: dict[int | str | None, str] = {}
 
 
 def _warn_once(state: _ExportState, message: str):
@@ -2074,9 +2081,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
 _HAIR_BSDF_BLIDNAME = "ShaderNodeBsdfHairPrincipled"
 
 # ShaderNodeBsdfHairPrincipled.parametrization enum identifiers.
+# These are Blender's RNA enum IDENTIFIERS, not the UI labels shown in
+# the dropdown ("Absorption Coefficient", "Melanin Concentration",
+# "Direct Coloring") -- the identifiers are the short forms "COLOR" /
+# "MELANIN" / "ABSORPTION".
 _HAIR_PARAM_COLOR = "COLOR"
 _HAIR_PARAM_MELANIN = "MELANIN"
-_HAIR_PARAM_ABSORPTION = "ABSORPTION_COEFFICIENT"
+_HAIR_PARAM_ABSORPTION = "ABSORPTION"
 
 # Inputs that encode PER-STRAND random variation.  RISE's hair_material
 # is one BCSDF instance for the whole groom (no per-strand attribute
@@ -2087,12 +2098,22 @@ _HAIR_UNSUPPORTED_RANDOM_SOCKETS = ("Random Color", "Random Roughness", "Random"
 _HAIR_EXPORT_DIR_NAME = "rise_blender_hair"
 
 
-def _hair_staging_dir() -> str:
+def _hair_staging_dir() -> str | None:
     """Directory `.hair` files are written into -- same convention as
     `_unpack_image_to_disk`'s `_PACKED_UNPACK_DIR_NAME` (a named
-    subdirectory of Blender's own temp dir, created on demand)."""
+    subdirectory of Blender's own temp dir, created on demand).
+
+    Mirrors `_unpack_image_to_disk`'s contract: returns `None` on an
+    `OSError` (read-only temp dir, permissions, out of space, ...)
+    rather than letting the exception propagate, so a filesystem
+    hiccup skips the affected groom instead of aborting the whole
+    export.  Callers must check for `None`.
+    """
     out_dir = os.path.join(bpy.app.tempdir or tempfile.gettempdir(), _HAIR_EXPORT_DIR_NAME)
-    os.makedirs(out_dir, exist_ok=True)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        return None
     return out_dir
 
 
@@ -2202,6 +2223,13 @@ def _export_hair_object(object_instance, original_object, state: _ExportState):
         return
 
     out_dir = _hair_staging_dir()
+    if out_dir is None:
+        _warn_once(
+            state,
+            "RISE could not create its hair staging directory; skipping hair object "
+            f"'{original_object.name_full}'.",
+        )
+        return
     safe_stem = _safe_name(original_object.name_full)
     file_path = os.path.join(out_dir, f"{safe_stem}_{id(original_object):x}.hair")
     try:
@@ -2276,6 +2304,23 @@ def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool
     the only difference from the mesh path is that failing here has no
     bake escape hatch, so it is a hard refusal instead of a fallback
     to a different (slower, but always-correct) translation strategy.
+
+    Socket-scoped exemption: the three `_HAIR_UNSUPPORTED_RANDOM_
+    SOCKETS` inputs are never read into the translated payload at all
+    -- `_hair_material_payload` only checks whether they're linked (to
+    emit its own "ignored" warning below), it never walks their
+    upstream graph.  Whatever feeds them is therefore irrelevant to
+    correctness, so this walk doesn't enter those sockets in the first
+    place.  This is what makes the standard Cycles wiring (Hair Info ->
+    "Random Color" / "Random Roughness") -- `ShaderNodeHairInfo` isn't
+    in `SUPPORTED_UPSTREAM_NODES` -- degrade to the doc-promised warn-
+    and-ignore instead of refusing the whole material: without this
+    exemption the walk would reach `ShaderNodeHairInfo` from a socket
+    whose value is discarded anyway and refuse a material that
+    translates just fine.  A node that ALSO feeds a real (non-ignored)
+    socket is still fully validated via that other socket's entry in
+    the loop below -- this only exempts subgraphs that terminate
+    exclusively inside the three ignored sockets.
     """
 
     from . import material_bake as _material_bake
@@ -2284,6 +2329,8 @@ def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool
 
     stack = []
     for socket in node.inputs:
+        if socket.name in _HAIR_UNSUPPORTED_RANDOM_SOCKETS:
+            continue
         if socket.is_linked:
             stack.append((socket.links[0].from_node, 0))
 
@@ -2471,7 +2518,8 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             ior_painter_name=ior,
         )
 
-    else:  # MELANIN -- the default parametrization, and Blender's own default.
+    elif parametrization == _HAIR_PARAM_MELANIN:
+        # The default parametrization, and Blender's own default.
         melanin_socket = _node_input(node, "Melanin")
         redness_socket = _node_input(node, "Melanin Redness")
         if (melanin_socket is not None and melanin_socket.is_linked) or (
@@ -2501,6 +2549,22 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             alpha_painter_name=alpha,
             ior_painter_name=ior,
         )
+
+    else:
+        # A parametrization value we don't recognise -- e.g. a future
+        # Blender version adds a fourth option.  The old `else: #
+        # MELANIN` catch-all silently mis-bound anything unrecognised
+        # to the melanin tier at whatever stale melanin/redness
+        # defaults happened to be read; that's a silent mistranslation
+        # of a real artist-authored value.  Degrade loudly instead:
+        # warn once, fall back to the default groom, exactly like every
+        # other "can't translate this" branch in this function.
+        _warn_once(
+            state,
+            f"RISE does not recognise Principled Hair BSDF parametrization "
+            f"'{parametrization}' on '{material_name}'. Using the default hair material.",
+        )
+        return _fallback()
 
     state.hair_materials.append(payload)
     cache[key] = payload.name
@@ -3880,12 +3944,24 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         # (see the object name in each warning below), ready for when
         # a future native-bridge slice adds the corresponding fields
         # and this warning's premise goes away.
+        #
+        # Name the actual staging directory here (not just "on disk")
+        # so the artist can go look at the .hair files themselves --
+        # the directory is already guaranteed to exist at this point
+        # (every object in `state.hair_objects` only got there via a
+        # successful `_hair_staging_dir()` call in `_export_hair_object`),
+        # but re-derive it defensively rather than threading a path
+        # through `_ExportState`.
+        staging_dir = _hair_staging_dir()
+        staging_note = (
+            f"staged in '{staging_dir}'" if staging_dir is not None else "staged on disk"
+        )
         _warn_once(
             state,
             f"RISE exported {len(state.hair_objects)} hair groom(s) to .hair files, but this "
             "Blender bridge build (ABI v8) doesn't send hair to the native renderer yet -- "
             "grooms won't appear in the render until a future bridge update adds hair support. "
-            "The .hair file(s) are staged and ready for when it does.",
+            f"The .hair file(s) are {staging_note} and ready for when it does.",
         )
 
     scene_data = SceneData(
