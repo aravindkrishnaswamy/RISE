@@ -11,6 +11,16 @@
 > not evidence of MLT coverage. The three live baseline harnesses now use the
 > real `FeatureBased/MLT/mlt_veach_egg.RISEscene` for Gate F.
 
+> **2026-08-27 recalibration:** [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)
+> found and fixed a PT env-MIS double-count (BSDF-sampled env escapes added
+> at full weight on top of an already-weighted env-NEE sample, `+17.7%` on
+> env-only Lambertian). Every PT-relative env percentage in the Session
+> reports below (e.g. "VCM env+mesh = 122% of PT") was measured against
+> that inflated PT reference; the truth-referenced figure for VCM env+mesh
+> is `+50.0%` over closed-form, not `+22%` over PT. The sessions' bisects
+> and architectural diagnosis are unaffected — only absolute percentages
+> quoted against PT need this lens.
+
 ---
 
 ## TL;DR

@@ -128,7 +128,8 @@ do not execute old phase lists blindly.
   [INTEGRATOR_BUGFIX_FINDINGS.md](INTEGRATOR_BUGFIX_FINDINGS.md),
   [PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md),
   [CAUSTIC_PHOTONMAP_NORMALIZATION.md](CAUSTIC_PHOTONMAP_NORMALIZATION.md),
-  and [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
+  [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md),
+  and [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)
 
 The SMS, guilloché, physical-pipeline, pre-Phase-1, GUI, and agentic-redesign
 clusters contain additional detailed execution records. The audit identifies

@@ -11,6 +11,15 @@ proven INNOCENT (saving the wrong-tree time), and where the remaining
 22 %-over residual on VCM env+mesh actually lives (env-S0 ↔ env-NEE
 MIS partition violation, characterised quantitatively below).
 
+> **2026-08-27 recalibration:** [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)
+> found and fixed a PT env-MIS double-count that had inflated the PT
+> reference every ratio in this document is measured against — the
+> "22 % over" / "9 % over" figures above were computed against that
+> inflated PT and understate the true bias (corrected, truth-referenced:
+> VCM env+mesh +50.0 %, env-only +24.3 %). The architectural diagnosis
+> below (env-S0 ↔ env-NEE partition violation) is unaffected; only the
+> magnitude quoted against PT needs this lens.
+
 ---
 
 ## TL;DR
