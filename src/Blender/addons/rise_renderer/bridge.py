@@ -3,10 +3,23 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 8
+_EXPECTED_API_VERSION = 9
+
+# Hair colour tiers -- must match `enum rise_blender_hair_tier` in
+# rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
+# string form; this maps it onto the ABI's int.
+HAIR_TIER_MELANIN = 0
+HAIR_TIER_SIGMA_A = 1
+HAIR_TIER_COLOR = 2
+
+_HAIR_TIER_BY_NAME = {
+    "melanin": HAIR_TIER_MELANIN,
+    "sigma_a": HAIR_TIER_SIGMA_A,
+    "color": HAIR_TIER_COLOR,
+}
 
 
 class BridgeError(RuntimeError):
@@ -32,6 +45,10 @@ class RenderImage:
     is_auto: bool = False
     resolved_integrator: str = ""
     resolve_reason: str = ""
+    # ABI v9: non-fatal diagnostics from a render that still produced an
+    # image (e.g. one groom whose .hair file went missing).  engine.py
+    # reports these as Blender WARNINGs, alongside the exporter's own.
+    warnings: list[str] = field(default_factory=list)
 
 
 class _Camera(ctypes.Structure):
@@ -183,6 +200,44 @@ class _Medium(ctypes.Structure):
     ]
 
 
+class _HairMaterial(ctypes.Structure):
+    # Must match `rise_blender_hair_material` in rise_blender_bridge.h,
+    # field for field and in order.  Note the deliberate asymmetry with
+    # _Material: only the `color` tier is a painter NAME (it is a real
+    # IPainter slot on the RISE side); every other hair parameter is an
+    # IScalarPainter slot, which no bridge-registered painter can
+    # satisfy, so the numbers travel directly and the native side
+    # formats them as inline literals.  See the header's comment.
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("tier", ctypes.c_int),
+        ("color_painter_name", ctypes.c_char_p),
+        ("sigma_a", ctypes.c_float * 3),
+        ("eumelanin", ctypes.c_float),
+        ("pheomelanin", ctypes.c_float),
+        ("apply_melanin_parity_rescale", ctypes.c_int),
+        ("beta_m", ctypes.c_float),
+        ("beta_n", ctypes.c_float),
+        ("alpha_degrees", ctypes.c_float),
+        ("ior", ctypes.c_float),
+    ]
+
+
+class _HairObject(ctypes.Structure):
+    # Must match `rise_blender_hair_object` in rise_blender_bridge.h.
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("file_path", ctypes.c_char_p),
+        ("material_name", ctypes.c_char_p),
+        ("transform", ctypes.c_float * 16),
+        ("width_root_scale", ctypes.c_float),
+        ("width_tip_scale", ctypes.c_float),
+        ("casts_shadows", ctypes.c_int),
+        ("receives_shadows", ctypes.c_int),
+        ("visible", ctypes.c_int),
+    ]
+
+
 class _RenderSettings(ctypes.Structure):
     _fields_ = [
         ("width", ctypes.c_uint32),
@@ -286,6 +341,12 @@ class _Scene(ctypes.Structure):
         ("world_radiance_scale", ctypes.c_float),
         ("world_radiance_orientation", ctypes.c_float * 3),
         ("world_radiance_is_background", ctypes.c_int),
+        # ABI v9 — hair/fur grooms, appended at the end of the struct
+        # so every field above keeps its v8 offset.
+        ("hair_materials", ctypes.POINTER(_HairMaterial)),
+        ("hair_objects", ctypes.POINTER(_HairObject)),
+        ("num_hair_materials", ctypes.c_uint32),
+        ("num_hair_objects", ctypes.c_uint32),
     ]
 
 
@@ -307,6 +368,9 @@ class _RenderResult(ctypes.Structure):
         ("is_auto", ctypes.c_int),
         ("resolved_integrator", ctypes.c_char * 16),
         ("resolve_reason", ctypes.c_char * 256),
+        # ABI v9 — newline-separated non-fatal warnings from a render
+        # that still succeeded.
+        ("warnings", ctypes.c_char * 2048),
     ]
 
 
@@ -455,6 +519,14 @@ class _SceneHandle:
         self.objects = self._marshal_array(scene.objects, _Object, self._marshal_object)
         self.lights = self._marshal_array(scene.lights, _Light, self._marshal_light)
         self.mediums = self._marshal_array(scene.mediums, _Medium, self._marshal_medium)
+        # ABI v9 — hair/fur.  `getattr` with an empty default keeps this
+        # tolerant of a SceneData built by an older exporter module
+        # during a live add-on reload, matching the pattern the v5/v6/v7
+        # field additions above use.
+        hair_materials = list(getattr(scene, "hair_materials", ()) or ())
+        hair_objects = list(getattr(scene, "hair_objects", ()) or ())
+        self.hair_materials = self._marshal_array(hair_materials, _HairMaterial, self._marshal_hair_material)
+        self.hair_objects = self._marshal_array(hair_objects, _HairObject, self._marshal_hair_object)
         self.settings = self._marshal_settings(settings)
 
         self.scene = _Scene()
@@ -482,6 +554,10 @@ class _SceneHandle:
         radiance_orientation = getattr(scene, "world_radiance_orientation", (0.0, 0.0, 0.0))
         self.scene.world_radiance_orientation = (ctypes.c_float * 3)(*radiance_orientation)
         self.scene.world_radiance_is_background = int(getattr(scene, "world_radiance_is_background", 1))
+        self.scene.hair_materials = self.hair_materials
+        self.scene.hair_objects = self.hair_objects
+        self.scene.num_hair_materials = len(hair_materials)
+        self.scene.num_hair_objects = len(hair_objects)
 
     def _cstring(self, value: str | None):
         if value is None:
@@ -657,6 +733,50 @@ class _SceneHandle:
         payload.bbox_max = (ctypes.c_float * 3)(*medium.bbox_max)
         return payload
 
+    def _marshal_hair_material(self, material):
+        payload = _HairMaterial()
+        payload.name = self._cstring(material.name)
+        tier_name = str(getattr(material, "tier", "melanin")).lower()
+        if tier_name not in _HAIR_TIER_BY_NAME:
+            # An unknown tier string can only come from an exporter /
+            # bridge version skew.  Send it through as an out-of-range
+            # int rather than guessing a tier: the native side then
+            # skips that one material with a named warning instead of
+            # silently rendering the wrong colour model.
+            payload.tier = -1
+        else:
+            payload.tier = _HAIR_TIER_BY_NAME[tier_name]
+        payload.color_painter_name = self._cstring(getattr(material, "color_painter_name", None))
+        payload.sigma_a = (ctypes.c_float * 3)(*getattr(material, "sigma_a", (0.0, 0.0, 0.0)))
+        payload.eumelanin = float(getattr(material, "eumelanin", 0.0))
+        payload.pheomelanin = float(getattr(material, "pheomelanin", 0.0))
+        # Blender-visual-parity rescale of the two melanin
+        # concentrations, applied natively.  ON unless the material
+        # explicitly opts out -- see the constant block in
+        # rise_blender_bridge.cpp and the hair section of
+        # docs/BLENDER_MATERIAL_TRANSLATION.md.
+        payload.apply_melanin_parity_rescale = int(
+            bool(getattr(material, "apply_melanin_parity_rescale", True))
+        )
+        payload.beta_m = float(getattr(material, "beta_m", 0.3))
+        payload.beta_n = float(getattr(material, "beta_n", 0.3))
+        payload.alpha_degrees = float(getattr(material, "alpha_degrees", 2.0))
+        payload.ior = float(getattr(material, "ior", 1.55))
+        return payload
+
+    def _marshal_hair_object(self, obj):
+        payload = _HairObject()
+        payload.name = self._cstring(obj.name)
+        payload.file_path = self._cstring(obj.file_path)
+        payload.material_name = self._cstring(obj.material_name)
+        payload.transform = (ctypes.c_float * 16)(*obj.transform)
+        payload.width_root_scale = float(getattr(obj, "width_root_scale", 1.0))
+        payload.width_tip_scale = float(getattr(obj, "width_tip_scale", 1.0))
+        payload.casts_shadows = int(getattr(obj, "casts_shadows", True))
+        payload.receives_shadows = int(getattr(obj, "receives_shadows", True))
+        payload.visible = int(getattr(obj, "visible", True))
+        return payload
+
     def _marshal_settings(self, settings):
         payload = _RenderSettings()
         payload.width = int(settings.width)
@@ -735,6 +855,21 @@ class _SceneHandle:
         return payload
 
 
+def _decode_bridge_warnings(result) -> list[str]:
+    """Split the ABI v9 `warnings` buffer into individual messages.
+
+    The native side packs non-fatal diagnostics newline-separated into a
+    fixed buffer (empty when there's nothing to report).  Kept a
+    module-level function, not a closure, so the marshalling tests can
+    exercise it against a hand-built `_RenderResult`."""
+
+    raw = getattr(result, "warnings", b"")
+    if not raw:
+        return []
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    return [line for line in (part.strip() for part in text.split("\n")) if line]
+
+
 def render_scene(scene, settings, bridge_path: str | None = None, progress=None, image_update=None) -> RenderImage:
     library = _load_library(bridge_path)
     handle = _SceneHandle(scene, settings)
@@ -786,9 +921,11 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
         raise BridgeError(message)
 
     try:
+        warnings = _decode_bridge_warnings(result)
+
         value_count = int(result.width) * int(result.height) * 4
         if value_count == 0:
-            return RenderImage(width=0, height=0, rgba=[])
+            return RenderImage(width=0, height=0, rgba=[], warnings=warnings)
 
         array_type = ctypes.c_float * value_count
         rgba = list(ctypes.cast(result.rgba, ctypes.POINTER(array_type)).contents)
@@ -797,6 +934,7 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
             is_auto=bool(result.is_auto),
             resolved_integrator=result.resolved_integrator.decode("utf-8", "replace"),
             resolve_reason=result.resolve_reason.decode("utf-8", "replace"),
+            warnings=warnings,
         )
     finally:
         library.rise_blender_free_render_result(ctypes.byref(result))

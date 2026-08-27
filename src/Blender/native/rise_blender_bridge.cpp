@@ -1237,6 +1237,331 @@ namespace
 		return true;
 	}
 
+	//
+	// Hair / fur (ABI v9).  See rise_blender_hair_material /
+	// rise_blender_hair_object in the header for the struct contract,
+	// and docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the
+	// Blender-side translation these two consume.
+	//
+	// EVERYTHING IN THIS BLOCK IS NON-FATAL.  Unlike add_material /
+	// add_mesh / add_object above -- which write into `error_message`
+	// and abort the whole render -- a hair failure records a warning
+	// and skips exactly one groom.  A `.hair` path that went stale
+	// between the export and the render (a cleared temp dir, a
+	// half-written file) is a routine, recoverable condition; killing a
+	// frame the other 400 objects rendered fine over it would be the
+	// wrong trade.  The warnings reach the artist through
+	// rise_blender_render_result.warnings.
+	//
+
+	// Blender-parity rescale for the two melanin concentrations.
+	//
+	// Cycles and RISE both take (eumelanin, pheomelanin) CONCENTRATIONS
+	// and multiply them by a per-pigment sigma_a triple, but the triples
+	// differ (docs/BLENDER_MATERIAL_TRANSLATION.md, "Units disclosure"):
+	//
+	//     pigment      Cycles                  RISE (OMLC, G-anchored)
+	//     eumelanin    (0.506, 0.841, 1.653)   (0.518, 0.697, 1.293)
+	//     pheomelanin  (0.343, 0.733, 1.924)   (0.232, 0.400, 1.067)
+	//
+	// At equal concentration RISE absorbs ~17 % less green for eumelanin
+	// and ~45 % less for pheomelanin, so the same Melanin / Melanin
+	// Redness sliders read lighter and less saturated here than in a
+	// Cycles reference.  These two ratios are the green-channel
+	// correction that puts the two renderers back on top of each other.
+	//
+	// GREEN IS THE ANCHOR, and that is the whole approximation: one
+	// scalar per pigment cannot match all three channels (the R and B
+	// ratios differ -- eumelanin R is 0.977, B is 1.278), so the rescale
+	// restores luminance-level parity, not a per-channel match.  Green
+	// carries most of the luminance and is the channel RISE's own
+	// triples are anchored on, which is why it is the one chosen.
+	//
+	// DEFAULT ON, decided in this slice (P2-D): the add-on's job is to
+	// render the artist's Blender scene, and an artist who dialled a
+	// groom in against Cycles' viewport expects that groom back.  The
+	// physical-anchoring alternative would silently re-light their
+	// asset.  Per-material and switchable: clear
+	// `apply_melanin_parity_rescale` to get RISE's own OMLC-anchored
+	// absorption instead.  A future .RISEscene export path would NOT
+	// apply it -- a scene file is authored in RISE's own units.
+	const double kEumelaninBlenderParityScale   = 0.841 / 0.697;	// ~1.2066
+	const double kPheomelaninBlenderParityScale = 0.733 / 0.400;	// ~1.8325
+
+	void record_warning( std::vector<std::string>& warnings, const std::string& message )
+	{
+		warnings.push_back( message );
+		// Also into the RISE log, so a headless / non-Blender caller
+		// that ignores the result struct's warnings still sees it.
+		RISE::GlobalLog()->PrintEx( RISE::eLog_Warning, "%s", message.c_str() );
+	}
+
+	std::string quoted_name( const char* name )
+	{
+		return std::string( "'" ) + ( name && name[0] ? name : "(unnamed)" ) + "'";
+	}
+
+	// Format a float as an inline numeric literal for one of
+	// `AddHairMaterial`'s IScalarPainter slots.  %.9g round-trips every
+	// float exactly, and Job's own parser (ResolveScalarPainterArg)
+	// reads it back with strtod.
+	std::string scalar_literal( const float value )
+	{
+		char buffer[64];
+		std::snprintf( buffer, sizeof( buffer ), "%.9g", double( value ) );
+		return std::string( buffer );
+	}
+
+	std::string rgb_literal( const float value[3] )
+	{
+		char buffer[192];
+		std::snprintf( buffer, sizeof( buffer ), "%.9g %.9g %.9g",
+			double( value[0] ), double( value[1] ), double( value[2] ) );
+		return std::string( buffer );
+	}
+
+	// Pack the accumulated non-fatal warnings into the fixed result
+	// buffer: newline separated, NUL terminated, and truncated with a
+	// visible note rather than silently cut mid-sentence.  Factored out
+	// of rise_blender_render_scene so it is reachable from a test
+	// without driving a whole render.
+	void pack_warnings( const std::vector<std::string>& warnings, char* out, const size_t capacity )
+	{
+		if( !out || capacity == 0 ) {
+			return;
+		}
+
+		std::string joined;
+		for( size_t i = 0; i < warnings.size(); ++i ) {
+			if( !joined.empty() ) {
+				joined += '\n';
+			}
+			joined += warnings[i];
+		}
+
+		const char* truncation_note = "\n(further warnings omitted; see the RISE log)";
+		const size_t note_length = std::strlen( truncation_note );
+		if( joined.size() >= capacity ) {
+			// capacity-1 usable bytes, minus room for the note.  A
+			// buffer too small to hold even the note degrades to a plain
+			// snprintf truncation below.
+			if( capacity > note_length + 1 ) {
+				joined.resize( capacity - 1 - note_length );
+				joined += truncation_note;
+			}
+		}
+
+		std::snprintf( out, capacity, "%s", joined.c_str() );
+	}
+
+	bool add_hair_material(
+		RISE::IJobPriv& job,
+		const rise_blender_hair_material& material,
+		std::vector<std::string>& warnings
+	)
+	{
+		if( !material.name || !material.name[0] ) {
+			record_warning( warnings, "RISE skipped a hair material with no name." );
+			return false;
+		}
+
+		const std::string who = quoted_name( material.name );
+
+		// Non-finite values would reach AddHairMaterial as the literal
+		// spellings "inf" / "nan", which its resolver rejects at the
+		// string layer with a diagnostic that doesn't name Blender.
+		// Catch them here so the artist gets a message about their
+		// material instead.
+		if( !std::isfinite( material.beta_m ) || !std::isfinite( material.beta_n ) ||
+			!std::isfinite( material.alpha_degrees ) || !std::isfinite( material.ior ) )
+		{
+			record_warning( warnings,
+				"RISE skipped hair material " + who +
+				": one of beta_m / beta_n / alpha / ior is not a finite number." );
+			return false;
+		}
+
+		std::string color       = "none";
+		std::string sigma_a     = "none";
+		std::string eumelanin   = "none";
+		std::string pheomelanin = "none";
+
+		switch( material.tier )
+		{
+		case RISE_BLENDER_HAIR_TIER_MELANIN:
+		{
+			if( !std::isfinite( material.eumelanin ) || !std::isfinite( material.pheomelanin ) ||
+				material.eumelanin < 0.0f || material.pheomelanin < 0.0f )
+			{
+				record_warning( warnings,
+					"RISE skipped hair material " + who +
+					": eumelanin / pheomelanin must be finite and non-negative concentrations." );
+				return false;
+			}
+
+			double eu = double( material.eumelanin );
+			double ph = double( material.pheomelanin );
+			if( material.apply_melanin_parity_rescale ) {
+				eu *= kEumelaninBlenderParityScale;
+				ph *= kPheomelaninBlenderParityScale;
+			}
+			eumelanin   = scalar_literal( float( eu ) );
+			pheomelanin = scalar_literal( float( ph ) );
+			break;
+		}
+
+		case RISE_BLENDER_HAIR_TIER_SIGMA_A:
+		{
+			if( !std::isfinite( material.sigma_a[0] ) || !std::isfinite( material.sigma_a[1] ) ||
+				!std::isfinite( material.sigma_a[2] ) )
+			{
+				record_warning( warnings,
+					"RISE skipped hair material " + who + ": sigma_a is not a finite RGB triple." );
+				return false;
+			}
+			sigma_a = rgb_literal( material.sigma_a );
+			break;
+		}
+
+		case RISE_BLENDER_HAIR_TIER_COLOR:
+		{
+			if( !material.color_painter_name || !material.color_painter_name[0] ) {
+				record_warning( warnings,
+					"RISE skipped hair material " + who +
+					": the colour tier is selected but no colour painter is bound." );
+				return false;
+			}
+			color = material.color_painter_name;
+			break;
+		}
+
+		default:
+			record_warning( warnings,
+				"RISE skipped hair material " + who + ": unrecognised colour tier." );
+			return false;
+		}
+
+		const std::string beta_m = scalar_literal( material.beta_m );
+		const std::string beta_n = scalar_literal( material.beta_n );
+		const std::string alpha  = scalar_literal( material.alpha_degrees );
+		const std::string ior    = scalar_literal( material.ior );
+
+		if( !job.AddHairMaterial(
+			material.name,
+			color.c_str(),
+			sigma_a.c_str(),
+			eumelanin.c_str(),
+			pheomelanin.c_str(),
+			beta_m.c_str(),
+			beta_n.c_str(),
+			alpha.c_str(),
+			ior.c_str() ) )
+		{
+			// AddHairMaterial logged the specific reason (unknown
+			// painter, tier-count violation, unparseable literal).
+			record_warning( warnings,
+				"RISE could not create hair material " + who +
+				"; the groom(s) using it will not render (see the RISE log for the reason)." );
+			return false;
+		}
+
+		return true;
+	}
+
+	bool add_hair_object(
+		RISE::IJobPriv& job,
+		const rise_blender_hair_object& object,
+		std::vector<std::string>& warnings
+	)
+	{
+		if( !object.name || !object.name[0] ) {
+			record_warning( warnings, "RISE skipped a hair object with no name." );
+			return false;
+		}
+
+		const std::string who = quoted_name( object.name );
+
+		if( !object.file_path || !object.file_path[0] ) {
+			record_warning( warnings, "RISE skipped hair object " + who + ": no .hair file path." );
+			return false;
+		}
+
+		if( !object.material_name || !object.material_name[0] ) {
+			record_warning( warnings, "RISE skipped hair object " + who + ": no hair material bound." );
+			return false;
+		}
+
+		if( !std::isfinite( object.width_root_scale ) || object.width_root_scale <= 0.0f ||
+			!std::isfinite( object.width_tip_scale ) || object.width_tip_scale <= 0.0f )
+		{
+			record_warning( warnings,
+				"RISE skipped hair object " + who +
+				": the width multipliers must be finite and greater than zero." );
+			return false;
+		}
+
+		// Check the material BEFORE importing the file.  Two reasons:
+		// a groom whose material failed cannot be placed anyway, and a
+		// production `.hair` file is megabytes -- there is no sense
+		// paying that read to then fail at AddObject and leave an
+		// orphaned geometry registered under a name nothing references.
+		if( !job.GetMaterials() || !job.GetMaterials()->GetItem( object.material_name ) ) {
+			record_warning( warnings,
+				"RISE skipped hair object " + who + ": its hair material '" +
+				object.material_name + "' was not created (see the earlier warning for why)." );
+			return false;
+		}
+
+		// The geometry is an internal registration, one per groom -- the
+		// ABI carries no geometry name because a `.hair` file is written
+		// per Curves object by the exporter, so there is nothing to
+		// share.  Suffixed rather than reusing the object's own name
+		// because objects and geometries live in different managers but
+		// the same author-visible namespace in diagnostics.
+		const std::string geometry_name = std::string( object.name ) + "::hairgeom";
+
+		RISE::HairFileGroomDescriptor descriptor;
+		descriptor.file = object.file_path;
+		descriptor.widthRootScale = double( object.width_root_scale );
+		descriptor.widthTipScale = double( object.width_tip_scale );
+
+		if( !job.AddHairGeometryFromFile( geometry_name.c_str(), descriptor ) ) {
+			// HairFileLoader logged the specific reason: missing file,
+			// bad magic, truncated arrays, counts over its caps, every
+			// strand rejected.
+			record_warning( warnings,
+				"RISE could not import the .hair file for " + who + " ('" + object.file_path +
+				"'); that groom will not render (see the RISE log for the reason)." );
+			return false;
+		}
+
+		// Bind through the SAME object path a mesh takes -- transform
+		// convention, visibility and shadow flags included -- rather
+		// than a parallel implementation that could drift from it.
+		rise_blender_object bound;
+		std::memset( &bound, 0, sizeof( bound ) );
+		bound.name = object.name;
+		bound.geometry_name = geometry_name.c_str();
+		bound.material_name = object.material_name;
+		std::memcpy( bound.transform, object.transform, sizeof( bound.transform ) );
+		bound.casts_shadows = object.casts_shadows;
+		bound.receives_shadows = object.receives_shadows;
+		bound.visible = object.visible;
+		bound.modifier_name = 0;
+		bound.interior_medium_name = 0;
+
+		char object_error[512];
+		object_error[0] = 0;
+		if( !add_object( job, bound, object_error, sizeof( object_error ) ) ) {
+			record_warning( warnings,
+				"RISE could not place hair object " + who + " (material '" + object.material_name +
+				"'): " + ( object_error[0] ? object_error : "unknown error" ) + "." );
+			return false;
+		}
+
+		return true;
+	}
+
 	bool add_light(
 		RISE::IJobPriv& job,
 		const rise_blender_light& light,
@@ -2095,6 +2420,7 @@ extern "C" int rise_blender_render_scene(
 		result->rgba = 0;
 		result->width = 0;
 		result->height = 0;
+		result->warnings[0] = 0;
 	}
 
 	if( !scene || !scene->camera || !settings || !result ) {
@@ -2167,6 +2493,19 @@ extern "C" int rise_blender_render_scene(
 		}
 	}
 
+	// Hair / fur grooms (ABI v9).  Materials first -- a hair object
+	// names one.  Both loops are non-fatal: a failure skips that groom
+	// and records a warning for the result struct (see the hair block
+	// in the anonymous namespace above for why).
+	std::vector<std::string> warnings;
+	for( uint32_t i = 0; i < scene->num_hair_materials; ++i ) {
+		(void)add_hair_material( *job, scene->hair_materials[i], warnings );
+	}
+
+	for( uint32_t i = 0; i < scene->num_hair_objects; ++i ) {
+		(void)add_hair_object( *job, scene->hair_objects[i], warnings );
+	}
+
 	if( !create_and_assign_media( *job, *scene, *settings, volume_cache_guard, error_message, error_message_size ) ) {
 		RISE::safe_release( job );
 		return 0;
@@ -2230,6 +2569,10 @@ extern "C" int rise_blender_render_scene(
 	// auto_rasterizer, report the concrete integrator it resolved to + the reason
 	// for the Blender UI's "Auto -> X" surfacing.  Queried while the rasterizer is
 	// still alive (before the job is released).
+	// Non-fatal diagnostics (ABI v9).  Populated only on the success
+	// path: a failed render reports through `error_message` instead.
+	pack_warnings( warnings, result->warnings, sizeof( result->warnings ) );
+
 	result->is_auto = 0;
 	result->resolved_integrator[0] = '\0';
 	result->resolve_reason[0] = '\0';

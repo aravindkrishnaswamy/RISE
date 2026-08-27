@@ -86,14 +86,24 @@ def melanin_to_eumelanin_pheomelanin(melanin: float, redness: float) -> tuple[fl
     / less saturated in RISE at the same Melanin / Melanin Redness
     values.
 
-    A per-pigment rescale to restore Blender-parity is a known,
-    straightforward option (multiply `eumelanin` by 0.841/0.697 and
-    `pheomelanin` by 0.733/0.400 before returning) but is DELIBERATELY
-    NOT applied here, pending the native-bridge slice's decision on
-    whether Blender-visual-parity or RISE's-own-physical-anchoring is
-    the intended contract for this conversion — see
-    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the same
-    disclosure.
+    The per-pigment rescale that restores Blender parity (multiply
+    ``eumelanin`` by 0.841/0.697 and ``pheomelanin`` by 0.733/0.400)
+    IS applied, and is on by default — but in the NATIVE BRIDGE, not
+    here.  ``add_hair_material`` in
+    ``src/Blender/native/rise_blender_bridge.cpp`` owns it
+    (``kEumelaninBlenderParityScale`` / ``kPheomelaninBlenderParityScale``),
+    switchable per material via the ABI's
+    ``apply_melanin_parity_rescale``.
+
+    It lives there rather than here because the rescale is a
+    LIVE-BLENDER-SESSION concern: its whole purpose is to make a groom
+    look the way the artist dialled it in against Cycles' viewport.  A
+    ``.RISEscene`` written out of this add-on would be authored in
+    RISE's own units and should NOT carry it.  Keeping this function
+    the pure Cycles remap keeps that distinction available to both
+    consumers.  See docs/BLENDER_MATERIAL_TRANSLATION.md's hair section
+    for the decision and its limits (it is a green-channel anchor, not
+    a per-channel match).
     """
 
     m = min(max(float(melanin), 0.0), 1.0)

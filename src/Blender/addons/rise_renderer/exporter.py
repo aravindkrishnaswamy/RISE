@@ -314,12 +314,24 @@ class HairMaterialData:
     "exactly one"): "melanin" (eumelanin/pheomelanin painters set),
     "sigma_a" (sigma_a painter set), or "color" (color painter set).
 
-    Not yet consumed by `bridge.py` / `rise_blender_bridge.{h,cpp}` --
-    the live-render ctypes ABI (v8) has no hair fields.  This dataclass
-    is the export-side half of hair-material translation, staged and
-    ready for when the native bridge adds them; see
-    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the full
-    status.
+    TWO REPRESENTATIONS, AND WHY.  Every parameter appears twice: as a
+    painter NAME (the `*_painter_name` fields, registered in
+    `state.painters`) and, for everything except `color`, as a plain
+    NUMBER.  The live-render bridge (ABI v9) consumes the NUMBERS; only
+    `color` travels as a painter reference.  That is not redundancy for
+    its own sake -- `hair_material`'s `sigma_a` / `eumelanin` /
+    `pheomelanin` / `beta_m` / `beta_n` / `alpha` / `ior` are
+    `IScalarPainter` slots (docs/ISCALARPAINTER_REFACTOR.md), `IJob` has
+    no entry point that registers a scalar painter under a name, and
+    `Job::AddHairMaterial` rejects an `IPainter` name bound to one of
+    them outright.  Inline numeric literals ARE accepted there, so
+    numbers are what the bridge carries.  `color` is a genuine
+    `IPainter` slot and keeps full texture support.
+
+    Consequence worth stating plainly: a texture-driven Roughness /
+    Radial Roughness / IOR reaches the renderer as its constant socket
+    value (warned at export time).  See
+    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section.
     """
 
     name: str
@@ -332,6 +344,18 @@ class HairMaterialData:
     beta_n_painter_name: str | None = None
     alpha_painter_name: str | None = None
     ior_painter_name: str | None = None
+    # Numeric form -- what `bridge.py` marshals into the native ABI.
+    eumelanin: float = 0.0
+    pheomelanin: float = 0.0
+    sigma_a: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    beta_m: float = 0.3
+    beta_n: float = 0.3
+    alpha_degrees: float = 2.0
+    ior: float = 1.55
+    # Melanin tier only.  When true (the default) the native bridge
+    # rescales the two concentrations for Blender visual parity; clear
+    # it to get RISE's own OMLC-anchored absorption instead.
+    apply_melanin_parity_rescale: bool = True
 
 
 @dataclass
@@ -339,14 +363,12 @@ class HairObjectData:
     """One hair/fur groom exported from a Blender Curves object: a
     binary `.hair` file (Cem Yuksel format, written by
     `hair_file_writer.write_hair_file`) staged to disk, plus the
-    object/transform/material binding data a future native-bridge
-    slice will use to construct a `hair_geometry { file ... }` +
-    `standard_object` pair on the RISE side -- that construction does
-    NOT exist yet (see `HairMaterialData`'s docstring and
-    [Native-bridge status] in docs/BLENDER_MATERIAL_TRANSLATION.md's
-    hair section for the same "not yet consumed by the live-render
-    bridge" caveat).  This dataclass is only the export-side staging
-    record.
+    object/transform/material binding the bridge turns into an
+    `AddHairGeometryFromFile` + `AddObject` pair on the RISE side (ABI
+    v9 -- `rise_blender_hair_object`).  The geometry itself is
+    registered natively under `<name>::hairgeom`; nothing here names it,
+    because a `.hair` file is written per Curves object and so there is
+    no groom to share.
     """
 
     name: str
@@ -2394,6 +2416,17 @@ def _default_hair_material(state: _ExportState) -> str:
         beta_n_painter_name=beta_n,
         alpha_painter_name=alpha,
         ior_painter_name=ior,
+        eumelanin=1.3,
+        pheomelanin=0.0,
+        beta_m=0.3,
+        beta_n=0.3,
+        alpha_degrees=2.0,
+        ior=1.55,
+        # This groom is RISE's own default, not a translation of an
+        # artist's Cycles material -- there is no Blender appearance to
+        # match, so the parity rescale would only darken a value the
+        # `hair_material` chunk itself documents as brown-black.
+        apply_melanin_parity_rescale=False,
     )
     state.hair_materials.append(payload)
     cache[sentinel] = payload.name
@@ -2454,22 +2487,31 @@ def _hair_material_payload(material, state: _ExportState) -> str:
                 "BCSDF instance shades the whole groom).",
             )
 
-    # Shared across all three parametrizations.
-    beta_m = _scalar_or_texture_painter(
-        state, f"{material_name}_beta_m",
-        _socket_default_float(node, "Roughness", 0.3),
-        _maybe_resolve_socket_texture(node, "Roughness", None, colorspace_is_data=True),
-    )
-    beta_n = _scalar_or_texture_painter(
-        state, f"{material_name}_beta_n",
-        _socket_default_float(node, "Radial Roughness", 0.3),
-        _maybe_resolve_socket_texture(node, "Radial Roughness", None, colorspace_is_data=True),
-    )
-    ior = _scalar_or_texture_painter(
-        state, f"{material_name}_ior",
-        _socket_default_float(node, "IOR", 1.55),
-        _maybe_resolve_socket_texture(node, "IOR", None, colorspace_is_data=True),
-    )
+    # Shared across all three parametrizations.  Each is captured BOTH
+    # as a painter (texture chain honoured) and as its constant socket
+    # value: the live-render bridge can only carry the number, because
+    # these are IScalarPainter slots and no bridge-registered painter
+    # can satisfy one -- see HairMaterialData's docstring.
+    beta_m_value = _socket_default_float(node, "Roughness", 0.3)
+    beta_m_texture = _maybe_resolve_socket_texture(node, "Roughness", None, colorspace_is_data=True)
+    beta_m = _scalar_or_texture_painter(state, f"{material_name}_beta_m", beta_m_value, beta_m_texture)
+
+    beta_n_value = _socket_default_float(node, "Radial Roughness", 0.3)
+    beta_n_texture = _maybe_resolve_socket_texture(node, "Radial Roughness", None, colorspace_is_data=True)
+    beta_n = _scalar_or_texture_painter(state, f"{material_name}_beta_n", beta_n_value, beta_n_texture)
+
+    ior_value = _socket_default_float(node, "IOR", 1.55)
+    ior_texture = _maybe_resolve_socket_texture(node, "IOR", None, colorspace_is_data=True)
+    ior = _scalar_or_texture_painter(state, f"{material_name}_ior", ior_value, ior_texture)
+
+    if beta_m_texture or beta_n_texture or ior_texture:
+        _warn_once(
+            state,
+            f"RISE renders Principled Hair BSDF 'Roughness'/'Radial Roughness'/'IOR' on "
+            f"'{material_name}' at their constant values -- a texture-driven hair roughness or "
+            "IOR cannot be sent to the renderer (they are physical-scalar slots, and the "
+            "Blender bridge can only pass numbers to those).",
+        )
 
     offset_socket = _node_input(node, "Offset")
     if offset_socket is not None and offset_socket.is_linked:
@@ -2496,6 +2538,10 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             beta_n_painter_name=beta_n,
             alpha_painter_name=alpha,
             ior_painter_name=ior,
+            beta_m=beta_m_value,
+            beta_n=beta_n_value,
+            alpha_degrees=alpha_degrees,
+            ior=ior_value,
         )
 
     elif parametrization == _HAIR_PARAM_ABSORPTION:
@@ -2516,6 +2562,11 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             beta_n_painter_name=beta_n,
             alpha_painter_name=alpha,
             ior_painter_name=ior,
+            sigma_a=tuple(float(channel) for channel in sigma_default),
+            beta_m=beta_m_value,
+            beta_n=beta_n_value,
+            alpha_degrees=alpha_degrees,
+            ior=ior_value,
         )
 
     elif parametrization == _HAIR_PARAM_MELANIN:
@@ -2548,6 +2599,16 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             beta_n_painter_name=beta_n,
             alpha_painter_name=alpha,
             ior_painter_name=ior,
+            eumelanin=eumelanin_value,
+            pheomelanin=pheomelanin_value,
+            beta_m=beta_m_value,
+            beta_n=beta_n_value,
+            alpha_degrees=alpha_degrees,
+            ior=ior_value,
+            # A real translation of an artist's Cycles material: match
+            # what they dialled in.  The native bridge applies the
+            # per-pigment rescale (see rise_blender_bridge.cpp).
+            apply_melanin_parity_rescale=True,
         )
 
     else:
@@ -3933,36 +3994,6 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
             )
         world_color = _float_color3(scene.world.color)
         world_strength = 1.0
-
-    if state.hair_objects:
-        # The live-render ctypes bridge (rise_blender_bridge.{h,cpp},
-        # ABI v8) has no hair fields yet -- `bridge.py` never marshals
-        # `scene_data.hair_objects` / `hair_materials` into the
-        # `_Scene` it hands the native library, so today's render
-        # simply won't show these grooms.  The .hair file(s) and the
-        # material translation ARE fully computed and staged on disk
-        # (see the object name in each warning below), ready for when
-        # a future native-bridge slice adds the corresponding fields
-        # and this warning's premise goes away.
-        #
-        # Name the actual staging directory here (not just "on disk")
-        # so the artist can go look at the .hair files themselves --
-        # the directory is already guaranteed to exist at this point
-        # (every object in `state.hair_objects` only got there via a
-        # successful `_hair_staging_dir()` call in `_export_hair_object`),
-        # but re-derive it defensively rather than threading a path
-        # through `_ExportState`.
-        staging_dir = _hair_staging_dir()
-        staging_note = (
-            f"staged in '{staging_dir}'" if staging_dir is not None else "staged on disk"
-        )
-        _warn_once(
-            state,
-            f"RISE exported {len(state.hair_objects)} hair groom(s) to .hair files, but this "
-            "Blender bridge build (ABI v8) doesn't send hair to the native renderer yet -- "
-            "grooms won't appear in the render until a future bridge update adds hair support. "
-            f"The .hair file(s) are {staging_note} and ready for when it does.",
-        )
 
     scene_data = SceneData(
         camera=camera,

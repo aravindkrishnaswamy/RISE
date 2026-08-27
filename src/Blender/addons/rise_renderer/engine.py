@@ -274,6 +274,13 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
             self.error_set(error)
             return
 
+        # ABI v9 — non-fatal diagnostics from the native side (a groom
+        # whose .hair file went missing, a hair material RISE refused).
+        # Same channel the exporter's own warnings use, so the artist
+        # sees one list regardless of which half produced the message.
+        for warning in getattr(image, "warnings", ()) or ():
+            self.report({"WARNING"}, warning)
+
         self._set_pass_rect(
             layer,
             self._flip_full_image_rows(image.rgba, image.width, image.height),

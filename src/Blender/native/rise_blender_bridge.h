@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 8
+#define RISE_BLENDER_API_VERSION 9
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,6 +66,19 @@ enum rise_blender_material_model {
 	RISE_BLENDER_MATERIAL_GGX = 1,
 	RISE_BLENDER_MATERIAL_DIELECTRIC = 2,
 	RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+};
+
+// Which of `hair_material`'s three mutually-exclusive colour tiers a
+// hair material binds (ABI v9).  RISE's `hair_material` chunk requires
+// EXACTLY ONE, and `IJob::AddHairMaterial` enforces that at call time
+// by taking "none" for every unbound tier -- so this tag selects which
+// of the fields below the bridge reads and which it passes as "none".
+// Mirrors the exporter's `HairMaterialData.tier` string
+// ("melanin" / "sigma_a" / "color").
+enum rise_blender_hair_tier {
+	RISE_BLENDER_HAIR_TIER_MELANIN = 0,	// eumelanin + pheomelanin concentrations (Tier 1)
+	RISE_BLENDER_HAIR_TIER_SIGMA_A = 1,	// direct absorption RGB (Tier 2)
+	RISE_BLENDER_HAIR_TIER_COLOR   = 2	// artist reflectance painter (Tier 3)
 };
 
 enum rise_blender_pixel_filter {
@@ -312,6 +325,74 @@ typedef struct rise_blender_medium {
 	float bbox_max[3];
 } rise_blender_medium;
 
+// A Chiang et al. 2016 hair BCSDF (`hair_material`), ABI v9.
+//
+// WHY THE SCALAR SLOTS ARE NUMBERS AND `color` IS A PAINTER NAME.
+// Every other material struct here references painters BY NAME, because
+// `IJob` has an entry point that registers an `IPainter` under a name
+// (`Add*Painter`) and the material factories resolve those names.  Hair
+// is split: `color` really is an `IPainter` slot, so it keeps the usual
+// painter-name reference and full texture support.  But `sigma_a`,
+// `eumelanin`, `pheomelanin`, `beta_m`, `beta_n`, `alpha` and `ior` are
+// `IScalarPainter` slots (the physical-scalar pipe -- no JH spectral
+// uplift; see docs/ISCALARPAINTER_REFACTOR.md), and there is NO IJob
+// entry point that registers a scalar painter under a name.  Passing a
+// bridge-registered `IPainter` name into one of them is not "close
+// enough": `Job::AddHairMaterial` diagnoses it as "bound to an IPainter
+// chunk" and fails the material.  What those slots DO accept is an
+// inline numeric literal, so the bridge carries the numbers and formats
+// them at the call.  Cost, stated plainly: a texture-driven Roughness /
+// Radial Roughness / IOR on the Blender side reaches the renderer as
+// its constant socket value (the exporter warns when it drops one).
+typedef struct rise_blender_hair_material {
+	const char* name;
+	int tier;						// rise_blender_hair_tier -- selects which colour fields below are read
+	// TIER_COLOR only.  A painter registered in rise_blender_scene.painters.
+	const char* color_painter_name;
+	// TIER_SIGMA_A only.  Per-channel absorption; passed as an inline "r g b".
+	float sigma_a[3];
+	// TIER_MELANIN only.  Concentrations, NOT Blender's [0,1] Melanin
+	// slider -- the add-on already applies Cycles' own log remap
+	// (hair_material_math.melanin_to_eumelanin_pheomelanin).
+	float eumelanin;
+	float pheomelanin;
+	// TIER_MELANIN only.  Non-zero applies the bridge's per-pigment
+	// Blender-parity rescale to the two concentrations above; see
+	// kEumelaninBlenderParityScale in rise_blender_bridge.cpp and the
+	// coefficient table in docs/BLENDER_MATERIAL_TRANSLATION.md's hair
+	// section.  The add-on marshals this as 1 (parity is the default).
+	int apply_melanin_parity_rescale;
+	// Shared across all three tiers.  `alpha_degrees` is the cuticle
+	// scale tilt in DEGREES (Blender's Offset socket is radians; the
+	// exporter converts).
+	float beta_m;
+	float beta_n;
+	float alpha_degrees;
+	float ior;
+} rise_blender_hair_material;
+
+// One imported groom: a `.hair` file (Cem Yuksel format) plus the same
+// object/transform/material binding a mesh object gets.  The bridge
+// registers the geometry via IJob::AddHairGeometryFromFile and then
+// creates the object through the identical AddObject + transform path
+// `rise_blender_object` takes -- see add_hair_object().
+//
+// NON-FATAL BY DESIGN: a missing / unreadable / corrupt `.hair` file,
+// an unresolvable material, or a non-positive width multiplier skips
+// that ONE groom, reports through rise_blender_render_result.warnings,
+// and lets the rest of the frame render.
+typedef struct rise_blender_hair_object {
+	const char* name;
+	const char* file_path;		// path to the .hair file, resolved against $RISE_MEDIA_PATH by the loader
+	const char* material_name;	// names an entry in rise_blender_scene.hair_materials
+	float transform[16];		// row-major, same convention as rise_blender_object.transform
+	float width_root_scale;		// MULTIPLIER on the file's thickness at each strand's first point; must be > 0
+	float width_tip_scale;		// MULTIPLIER at each strand's last point; must be > 0
+	int casts_shadows;
+	int receives_shadows;
+	int visible;
+} rise_blender_hair_object;
+
 typedef struct rise_blender_render_settings {
 	uint32_t width;
 	uint32_t height;
@@ -451,6 +532,13 @@ typedef struct rise_blender_scene {
 	float world_radiance_scale;
 	float world_radiance_orientation[3];    // radians
 	int world_radiance_is_background;
+	// Hair / fur grooms (ABI v9).  APPENDED at the end of the struct on
+	// purpose: every field above keeps its v8 offset.  Materials are
+	// added before objects (an object names one of them).
+	const rise_blender_hair_material* hair_materials;
+	const rise_blender_hair_object* hair_objects;
+	uint32_t num_hair_materials;
+	uint32_t num_hair_objects;
 } rise_blender_scene;
 
 typedef struct rise_blender_capabilities {
@@ -471,6 +559,19 @@ typedef struct rise_blender_render_result {
 	int is_auto;
 	char resolved_integrator[16];
 	char resolve_reason[256];
+	// NON-FATAL diagnostics from a render that otherwise SUCCEEDED
+	// (ABI v9).  Newline-separated, always NUL-terminated, empty when
+	// there is nothing to say.  Before v9 the bridge had exactly one
+	// reporting channel -- `error_message`, read only when
+	// rise_blender_render_scene returns 0 -- so anything that could not
+	// justify killing the whole render had nowhere to go but the RISE
+	// log file.  Hair needs the other half of that: one groom with a
+	// bad `.hair` path must not abort a frame the rest of the scene
+	// rendered fine.  bridge.py surfaces these as Blender WARNING
+	// reports, the same place exporter warnings land.  Truncated (with
+	// a trailing note) rather than grown; this is a report channel, not
+	// a log.
+	char warnings[2048];
 } rise_blender_render_result;
 
 typedef int (*rise_blender_progress_callback)(void* user_data, float progress, const char* title);

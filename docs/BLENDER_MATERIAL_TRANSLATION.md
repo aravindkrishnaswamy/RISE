@@ -401,7 +401,7 @@ supported:
 
 | Blender input | RISE `hair_material` field | Notes |
 |----------------|------------------------------|-------|
-| `Roughness` | `beta_m` | Direct value; texture-driven via the same `_scalar_or_texture_painter` path as Principled roughness |
+| `Roughness` | `beta_m` | Direct value. A texture chain is resolved into a painter on the export side, but the **live render uses the constant socket value** — see "Scalars travel as numbers" below. Warned when a texture is dropped. |
 | `Radial Roughness` | `beta_n` | Same |
 | `IOR` | `ior` | Same |
 | `Offset` (radians) | `alpha` (**degrees**) | Converted via `hair_material_math.offset_radians_to_alpha_degrees` (`math.degrees`). Blender's own default, 2°, is stored as ~0.0349066 rad. Linked inputs are read at their socket default only (warned). |
@@ -464,13 +464,43 @@ one tier may be bound, matching the chunk's own "exactly one of
   this makes RISE absorb roughly **17% less green light for
   eumelanin** (0.697 / 0.841) and roughly **45% less for pheomelanin**
   (0.400 / 0.733) than Cycles — a groom that matches a Cycles reference
-  by eye will render slightly lighter / less saturated in RISE at the
-  same `Melanin` / `Melanin Redness` values. A per-pigment rescale for
-  Blender-parity (`eumelanin *= 0.841/0.697`, `pheomelanin *=
-  0.733/0.400`) is a known, straightforward fix, deliberately **not**
-  applied — it's left as an open decision for the native-bridge slice
-  (Blender-visual-parity vs. RISE's-own-physical-anchoring as the
-  intended contract).
+  by eye would render slightly lighter / less saturated in RISE at the
+  same `Melanin` / `Melanin Redness` values.
+
+  **Resolved in slice P2-D: the native bridge applies a per-pigment
+  parity rescale, and it is ON by default.**  The open
+  Blender-visual-parity-vs-RISE's-own-physical-anchoring question is
+  decided in favour of parity, because the add-on's job is to render
+  the artist's Blender scene: a groom dialled in against Cycles'
+  viewport should come back looking like that groom.  Concretely,
+  `add_hair_material` in `src/Blender/native/rise_blender_bridge.cpp`
+  multiplies the two concentrations by
+  `kEumelaninBlenderParityScale = 0.841/0.697 ≈ 1.2066` and
+  `kPheomelaninBlenderParityScale = 0.733/0.400 ≈ 1.8325` before
+  handing them to `IJob::AddHairMaterial`.
+
+  Three things worth being precise about:
+
+  - **Green is the anchor, and that is the whole approximation.** One
+    scalar per pigment cannot match all three channels (eumelanin's R
+    ratio is 0.977 and its B ratio 1.278), so this restores
+    luminance-level parity, not a per-channel match. Green carries most
+    of the luminance and is the channel RISE's own triples are anchored
+    on.
+  - **It is per-material and switchable.** The ABI carries
+    `apply_melanin_parity_rescale` on every hair material
+    (`HairMaterialData.apply_melanin_parity_rescale` on the Python
+    side); set it false for RISE's own OMLC-anchored absorption. The
+    exporter sets it **true** for a translated Principled Hair BSDF and
+    **false** for the fallback default groom — that groom is RISE's own
+    value, not a translation of anything an artist authored, so there
+    is no Blender appearance to match.
+  - **A `.RISEscene` export path would not apply it.** A scene file is
+    authored in RISE's own units; the rescale exists to bridge a live
+    Blender session, and lives in the bridge for exactly that reason.
+    `hair_material_math.melanin_to_eumelanin_pheomelanin` therefore
+    still returns unrescaled concentrations — it is the Cycles remap
+    and nothing else.
 
 A hair-curves object with no material, a non-node material, or a
 material that gets refused by the rules above falls back to a
@@ -498,33 +528,64 @@ and RISE's own `beta_m`/`beta_n`/`alpha`/`ior` defaults
 
 ### Native-bridge status
 
-**None of this is sent to the live-render bridge yet.**
-`src/Blender/native/rise_blender_bridge.{h,cpp}` (this add-on's ctypes
-ABI, currently version 8 — see `bridge.py`'s `_EXPECTED_API_VERSION`)
-has no hair fields: no `_HairObject` / `_HairMaterial` struct, no
-`hair_objects` / `hair_materials` arrays on `_Scene`.  That native
-surface is out of scope for this slice (it's C++, owned separately —
-see `docs/HAIR_FUR_DESIGN.md`'s phase plan).  Concretely, today:
+**Hair renders live, as of ABI v9 (slice P2-D).**
+`src/Blender/native/rise_blender_bridge.{h,cpp}` carries
+`rise_blender_hair_material` and `rise_blender_hair_object`, and
+`rise_blender_scene` carries the two arrays plus their counts (appended
+at the end of the struct, so every v8 field keeps its offset).
+`bridge.py` mirrors both structs and marshals `SceneData.hair_objects`
+/ `SceneData.hair_materials` into them; its `_EXPECTED_API_VERSION` is
+bumped to 9 in lockstep with `RISE_BLENDER_API_VERSION`, and the
+existing hard-mismatch behaviour is unchanged (a stale add-on against a
+newer bridge, or the reverse, raises `BridgeError` telling you to
+rebuild — it does not attempt a partial load).
 
-- `exporter.export_scene()` fully computes `SceneData.hair_objects`
-  and `SceneData.hair_materials`, and **does** write real `.hair`
-  files to disk with correct strand/thickness data — the object and
-  material translation logic described above is complete and real,
-  not a stub.
-- `bridge.py`'s `_marshal_*` functions (the code that packs
-  `SceneData` into the ctypes structs the native library actually
-  reads) were deliberately **not** touched — inventing ctypes struct
-  layouts for an ABI that doesn't exist yet on the C++ side would be
-  worse than not shipping them at all (a silent, unverifiable
-  contract with nothing to check it against).
-- When a scene has any hair objects, `export_scene()` emits one
-  warning (surfaced through Blender's own report/info bar, same as
-  every other exporter warning) explaining that the groom(s) were
-  staged but won't render yet, naming the staging directory.
-- Wiring this in is future work: extend `rise_blender_bridge.{h,cpp}`
-  with hair struct(s), bump `RISE_BLENDER_API_VERSION` /
-  `_EXPECTED_API_VERSION` together, then mirror the new fields into
-  `bridge.py`'s ctypes structures and `_marshal_*` functions.
+On the native side each hair material becomes an
+`IJob::AddHairMaterial` call (tier tag → the one bound colour tier,
+"none" for the other two) and each groom becomes
+`IJob::AddHairGeometryFromFile` registering under
+`<object name>::hairgeom`, followed by the **same** `AddObject` +
+transform path a mesh object takes.
+
+**Scalars travel as numbers, `color` travels as a painter.** Every
+other material struct in this ABI references painters by name, and hair
+is the exception. `hair_material`'s `sigma_a`, `eumelanin`,
+`pheomelanin`, `beta_m`, `beta_n`, `alpha` and `ior` are
+`IScalarPainter` slots (`docs/ISCALARPAINTER_REFACTOR.md` — the
+physical-scalar pipe, no JH spectral uplift), and there is **no `IJob`
+entry point that registers a scalar painter under a name**. Passing a
+bridge-registered `IPainter` name into one is not close enough:
+`Job::AddHairMaterial` diagnoses it as "bound to an IPainter chunk" and
+fails the material outright. What those slots *do* accept is an inline
+numeric literal, so the ABI carries the numbers and the bridge formats
+them (`%.9g`, which round-trips a float exactly) at the call. `color`
+is a genuine `IPainter` slot and keeps its painter reference and full
+texture support. The consequence, stated plainly: **a texture-driven
+Roughness / Radial Roughness / IOR reaches the renderer as its constant
+socket value**, and the exporter warns when it drops one.
+
+**Hair failures are non-fatal, and there is now a channel for saying
+so.** Before v9 the bridge had exactly one reporting path —
+`error_message`, read only when `rise_blender_render_scene` returns 0 —
+so anything that could not justify aborting the whole render had
+nowhere to go but `RISE_Log.txt`. A `.hair` path that went stale
+between export and render (a cleared temp dir, a half-written file) is
+routine and recoverable; killing a frame the rest of the scene rendered
+fine over it would be the wrong trade. So `rise_blender_render_result`
+gained a `warnings[2048]` buffer (newline-separated, truncated with a
+visible note), `bridge.py` decodes it into `RenderImage.warnings`, and
+`engine.py` reports each as a Blender `WARNING` — the same place the
+exporter's own warnings land. Each of these skips exactly one groom or
+material and names it:
+
+- a missing, unreadable, corrupt or truncated `.hair` file;
+- a non-positive `width_root_scale` / `width_tip_scale` (checked before
+  the file is read at all);
+- a hair material RISE refused, and any groom bound to it (the material
+  is looked up *before* the file is imported, so a groom that cannot be
+  placed never leaves an orphaned geometry registered);
+- a non-finite or negative parameter, an unrecognised colour tier, a
+  colour tier with no painter bound, or a nameless struct.
 
 ## Testing
 
@@ -541,15 +602,44 @@ End-to-end material parity is regression-checked via:
 `src/Blender/addons/rise_renderer/test_hair_export.py` is the first
 Python-level test harness in this add-on (there was none before —
 checked for `test`/`pytest` under `src/Blender` before adding it).  It
-covers exactly the two modules that don't import `bpy`
-(`hair_file_writer.py`, `hair_material_math.py`) — the bpy-dependent
-glue (`_extract_curves_arrays`, the node-graph walking in
-`_hair_material_payload` / `_hair_graph_supported` /
-`_find_hair_bsdf_through_surface`) has no bpy available in this
-repo's test environment and stays **manually validated only** (build
+covers the three modules that don't import `bpy`:
+`hair_file_writer.py`, `hair_material_math.py`, and (since P2-D)
+`bridge.py` — which is bpy-free and does not load the native library
+at import time, so its ctypes declarations and `_marshal_*` functions
+are exercisable with a plain `python3`.
+
+**What still has no automated coverage, stated honestly.**  The
+bpy-dependent glue — `_extract_curves_arrays` and the node-graph
+walking in `_hair_material_payload` / `_hair_graph_supported` /
+`_find_hair_bsdf_through_surface` — has no bpy available in this
+repo's test environment and stays **manually validated only**: build
 the native bridge, load a scene with a Curves object + a Principled
 Hair BSDF material in an actual Blender, render, and inspect the
-warnings/output — there is no automated coverage for that half).
+warnings/output.  Neither is the actual ctypes call into the built
+library covered (that needs the dylib on disk *and* a full render).
+What sits between those two gaps — the struct layouts, the
+marshalling, and the native translation — is covered on both sides:
+
+- Python: `BridgeAbiLayoutTest` parses `rise_blender_bridge.h` and
+  compares every field of `_HairMaterial`, `_HairObject`, `_Scene` and
+  `_RenderResult` against it by name, order and type, plus the version
+  constant and the tier-tag enum.  This is the drift guard that has no
+  compiler behind it: a field added to the header without the matching
+  ctypes entry does not fail to build, it silently misaligns
+  everything after it.  `BridgeHairMarshallingTest` and
+  `BridgeWarningDecodeTest` cover the three tiers, the parity-rescale
+  flag, the unknown-tier fallback, the string keepalive, and the
+  warning-buffer decode.
+- C++: `tests/BlenderBridgeHairTest.cpp` compiles the bridge into its
+  own translation unit (see that file's banner for why) and drives the
+  real `add_hair_material` / `add_hair_object` / `pack_warnings`: each
+  colour tier reaching a real `HairBRDF` with a distinct reflectance,
+  the melanin parity rescale checked against its own definition in
+  both directions and both pigments, a `.hair` file written by the
+  test becoming a placed groom, and every non-fatal failure path
+  (missing / corrupt file, bad width, unresolved material, unknown
+  tier, non-finite and negative parameters) skipping one groom and
+  naming it.
 
 Run directly:
 

@@ -35,17 +35,19 @@ recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (
   `hair_geometry` file mode (mutually exclusive with grow mode, all grow params refused with
   named diagnostics; thickness = full width, `width_root`/`width_tip` become multipliers;
   per-strand defect drops with counted summaries).
-- `0a288966` — P2-C: Blender add-on exports hair Curves objects as staged `.hair` files +
-  file-mode chunks, and maps `ShaderNodeBsdfHairPrincipled` (all three parametrizations,
-  melanin per Cycles' `-log(1-m)` convention) to `hair_material` —
+- `0a288966` + `b63e94ed` — P2-C: Blender add-on exports hair Curves objects as staged `.hair`
+  files and maps `ShaderNodeBsdfHairPrincipled` (all three parametrizations, melanin per Cycles'
+  `-log(1-m)` convention) to `hair_material` —
   [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md) §Hair.
+- P2-D: bridge ABI v9 — staged grooms and translated hair materials flow into the live
+  in-Blender session (append-only structs, non-fatal per-groom warning channel, melanin
+  Blender-parity rescale applied bridge-side, default on, green-anchored).
 
 **Phase-2 residuals (named, deferred):**
-- The Blender add-on is **bridge-only** (it emits no `.RISEscene` text), and the native bridge
-  (ABI v8) has no hair fields — so P2-C's hair export is mapping + staging infrastructure:
-  `.hair` files are written and `SceneData.hair_objects`/`hair_materials` populated, but nothing
-  consumes them yet and a one-time warning says so. End-to-end Blender hair rendering requires
-  the bridge ABI v9 hair slice (P2-D).
+- The Blender add-on is **bridge-only** (it emits no `.RISEscene` text). Texture-driven
+  scalar hair params (roughness/radial roughness/IOR) flatten to constants across the bridge
+  with a warning — no IJob entry point registers named scalar painters; lifting that needs an
+  `AddScalarPainter`-style bridge surface.
 - Imported/exported grooms carry **root UV (0,0)** — scalp-space painters do not vary across
   a `.hair` groom (the format has no UVs).
 - Legacy Blender **particle-hair** systems are not exported (convert to Curves in Blender;

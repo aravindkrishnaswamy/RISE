@@ -29,8 +29,10 @@ and importing its bpy-free sibling modules by file path.  See the
 
 from __future__ import annotations
 
+import ctypes
 import math
 import os
+import re
 import struct
 import sys
 import unittest
@@ -45,6 +47,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import hair_file_writer as hfw  # noqa: E402
 import hair_material_math as hmm  # noqa: E402
+
+# `bridge.py` is bpy-free too (ctypes / os / sys / dataclasses only) and
+# does NOT load the native library at import time -- `_load_library` is
+# only called from `render_scene` / `get_capabilities`.  So the ctypes
+# struct declarations and the `_SceneHandle._marshal_*` functions can be
+# exercised here with a plain `python3`, no Blender and no built dylib.
+# What CANNOT be covered without a live Blender is unchanged: reading a
+# Curves datablock and walking a Principled Hair BSDF node graph
+# (`exporter.py`), and the actual ctypes call into the native library.
+import bridge  # noqa: E402
+
+_BRIDGE_HEADER = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "native", "rise_blender_bridge.h"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +485,302 @@ class OffsetConversionTest(unittest.TestCase):
     def test_negative_offset(self):
         degrees = hmm.offset_radians_to_alpha_degrees(-math.radians(3.0))
         self.assertAlmostEqual(degrees, -3.0, places=6)
+
+
+# ---------------------------------------------------------------------------
+# Bridge (ABI v9) — the ctypes mirror of the native hair structs, and the
+# marshalling that fills them.
+#
+# The drift risk these guard is specific and has no compiler behind it:
+# `bridge.py` re-declares C structs by hand, and a field added to the .h
+# without the matching ctypes entry does not fail to build — it silently
+# misaligns every field after it, and the native side reads garbage.  So
+# the layout tests below parse the actual header and compare it, field by
+# field and type by type, with the Python declaration.
+# ---------------------------------------------------------------------------
+
+
+def _parse_c_struct_fields(source, struct_name):
+    """Field (name, canonical-type) pairs of one `typedef struct` in the
+    bridge header, in declaration order.  Deliberately a small, strict
+    parser rather than a general C one: it understands exactly the shapes
+    the bridge ABI uses (scalar, pointer, fixed array) and raises on
+    anything else, so a future field in an unfamiliar shape fails loudly
+    here instead of being skipped silently."""
+
+    match = re.search(
+        r"typedef struct " + struct_name + r"\s*\{(.*?)\}\s*" + struct_name + r"\s*;",
+        source,
+        re.S,
+    )
+    if match is None:
+        raise AssertionError(f"struct {struct_name} not found in {_BRIDGE_HEADER}")
+
+    body = match.group(1)
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)          # block comments
+    body = re.sub(r"//[^\n]*", "", body)                        # line comments
+
+    fields = []
+    for statement in body.split(";"):
+        statement = " ".join(statement.split())
+        if not statement:
+            continue
+        array_match = re.match(r"^(.*?)([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(\d+)\s*\]$", statement)
+        if array_match:
+            type_text = " ".join(array_match.group(1).split())
+            fields.append((array_match.group(2), f"{type_text}[{array_match.group(3)}]"))
+            continue
+        scalar_match = re.match(r"^(.*?[\s\*])([A-Za-z_][A-Za-z0-9_]*)$", statement)
+        if scalar_match is None:
+            raise AssertionError(f"unparsed field in {struct_name}: {statement!r}")
+        type_text = " ".join(scalar_match.group(1).split())
+        fields.append((scalar_match.group(2), type_text))
+    return fields
+
+
+_CTYPE_TO_C = {
+    ctypes.c_char_p: "const char*",
+    ctypes.c_int: "int",
+    ctypes.c_float: "float",
+    ctypes.c_uint32: "uint32_t",
+    ctypes.c_double: "double",
+}
+
+_POINTER_TO_C = {
+    bridge._Camera: "const rise_blender_camera*",
+    bridge._Painter: "const rise_blender_painter*",
+    bridge._Modifier: "const rise_blender_modifier*",
+    bridge._Material: "const rise_blender_material*",
+    bridge._Mesh: "const rise_blender_mesh*",
+    bridge._Object: "const rise_blender_object*",
+    bridge._Light: "const rise_blender_light*",
+    bridge._Medium: "const rise_blender_medium*",
+    bridge._HairMaterial: "const rise_blender_hair_material*",
+    bridge._HairObject: "const rise_blender_hair_object*",
+    # The result image buffer -- the one non-const pointer in the ABI.
+    ctypes.c_float: "float*",
+    ctypes.c_uint32: "const uint32_t*",
+}
+
+
+def _canonical_ctype(ctype):
+    if ctype in _CTYPE_TO_C:
+        return _CTYPE_TO_C[ctype]
+    element = getattr(ctype, "_type_", None)
+    length = getattr(ctype, "_length_", None)
+    if element is not None and length is not None:
+        if element is ctypes.c_float:
+            return f"float[{length}]"
+        if element is ctypes.c_char:
+            return f"char[{length}]"
+        raise AssertionError(f"unmapped array element type {element}")
+    if element is not None and length is None:
+        # A POINTER(...) type.
+        if element in _POINTER_TO_C:
+            return _POINTER_TO_C[element]
+        raise AssertionError(f"unmapped pointer target {element}")
+    raise AssertionError(f"unmapped ctype {ctype}")
+
+
+class BridgeAbiLayoutTest(unittest.TestCase):
+    """`bridge.py`'s ctypes declarations against the C header they mirror."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_BRIDGE_HEADER, "r", encoding="utf-8") as handle:
+            cls.source = handle.read()
+
+    def _assert_matches(self, python_struct, c_name):
+        expected = _parse_c_struct_fields(self.source, c_name)
+        actual = [(name, _canonical_ctype(ctype)) for name, ctype in python_struct._fields_]
+        self.assertEqual(actual, expected, f"{python_struct.__name__} drifted from {c_name}")
+
+    def test_expected_api_version_matches_the_header(self):
+        match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 9)
+
+    def test_hair_material_struct_matches(self):
+        self._assert_matches(bridge._HairMaterial, "rise_blender_hair_material")
+
+    def test_hair_object_struct_matches(self):
+        self._assert_matches(bridge._HairObject, "rise_blender_hair_object")
+
+    def test_scene_struct_matches(self):
+        # The whole scene struct, not just the v9 tail: an insertion
+        # anywhere above the hair fields would shift them.
+        self._assert_matches(bridge._Scene, "rise_blender_scene")
+
+    def test_render_result_struct_matches(self):
+        self._assert_matches(bridge._RenderResult, "rise_blender_render_result")
+
+    def test_tier_tags_match_the_header_enum(self):
+        for name, value in (
+            ("RISE_BLENDER_HAIR_TIER_MELANIN", bridge.HAIR_TIER_MELANIN),
+            ("RISE_BLENDER_HAIR_TIER_SIGMA_A", bridge.HAIR_TIER_SIGMA_A),
+            ("RISE_BLENDER_HAIR_TIER_COLOR", bridge.HAIR_TIER_COLOR),
+        ):
+            match = re.search(name + r"\s*=\s*(\d+)", self.source)
+            self.assertIsNotNone(match, f"{name} missing from the header")
+            self.assertEqual(int(match.group(1)), value, f"{name} tag drifted")
+
+
+class _StubHairMaterial:
+    """The subset of `exporter.HairMaterialData` the bridge marshals.
+    Deliberately a stand-in rather than the real dataclass: importing
+    `exporter` pulls in bpy."""
+
+    def __init__(self, **kwargs):
+        self.name = "hairmat"
+        self.tier = "melanin"
+        self.color_painter_name = None
+        self.sigma_a = (0.0, 0.0, 0.0)
+        self.eumelanin = 0.0
+        self.pheomelanin = 0.0
+        self.beta_m = 0.3
+        self.beta_n = 0.3
+        self.alpha_degrees = 2.0
+        self.ior = 1.55
+        self.apply_melanin_parity_rescale = True
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _StubHairObject:
+    def __init__(self, **kwargs):
+        self.name = "hairobj"
+        self.file_path = "/tmp/groom.hair"
+        self.material_name = "hairmat"
+        self.transform = [1.0 if i % 5 == 0 else 0.0 for i in range(16)]
+        self.width_root_scale = 1.0
+        self.width_tip_scale = 1.0
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+def _handle():
+    """A `_SceneHandle` with only its keepalive list initialised.  The
+    real `__init__` marshals an entire scene (camera, settings, meshes);
+    the hair marshallers need nothing but the string keepalive, so this
+    exercises them without inventing a whole stub scene."""
+
+    handle = bridge._SceneHandle.__new__(bridge._SceneHandle)
+    handle.keepalive = []
+    return handle
+
+
+class BridgeHairMarshallingTest(unittest.TestCase):
+    def test_melanin_tier(self):
+        payload = _handle()._marshal_hair_material(
+            _StubHairMaterial(name="brown", tier="melanin", eumelanin=1.3, pheomelanin=0.25)
+        )
+        self.assertEqual(payload.name, b"brown")
+        self.assertEqual(payload.tier, bridge.HAIR_TIER_MELANIN)
+        self.assertAlmostEqual(payload.eumelanin, 1.3, places=6)
+        self.assertAlmostEqual(payload.pheomelanin, 0.25, places=6)
+        # Parity is the shipped default; the native side does the actual
+        # rescale (see rise_blender_bridge.cpp's constants).
+        self.assertEqual(payload.apply_melanin_parity_rescale, 1)
+
+    def test_parity_rescale_can_be_switched_off(self):
+        payload = _handle()._marshal_hair_material(
+            _StubHairMaterial(apply_melanin_parity_rescale=False)
+        )
+        self.assertEqual(payload.apply_melanin_parity_rescale, 0)
+
+    def test_sigma_a_tier(self):
+        payload = _handle()._marshal_hair_material(
+            _StubHairMaterial(tier="sigma_a", sigma_a=(0.245, 0.46, 1.6))
+        )
+        self.assertEqual(payload.tier, bridge.HAIR_TIER_SIGMA_A)
+        self.assertAlmostEqual(payload.sigma_a[0], 0.245, places=6)
+        self.assertAlmostEqual(payload.sigma_a[1], 0.46, places=6)
+        self.assertAlmostEqual(payload.sigma_a[2], 1.6, places=6)
+
+    def test_color_tier_carries_a_painter_name(self):
+        payload = _handle()._marshal_hair_material(
+            _StubHairMaterial(tier="color", color_painter_name="tint")
+        )
+        self.assertEqual(payload.tier, bridge.HAIR_TIER_COLOR)
+        self.assertEqual(payload.color_painter_name, b"tint")
+
+    def test_unknown_tier_is_sent_as_an_invalid_tag(self):
+        # Version skew between the add-on and a stale/newer exporter.
+        # -1 is not a valid tier, so the native side skips that material
+        # with a named warning instead of guessing one.
+        payload = _handle()._marshal_hair_material(_StubHairMaterial(tier="teal"))
+        self.assertEqual(payload.tier, -1)
+
+    def test_shared_parameters(self):
+        payload = _handle()._marshal_hair_material(
+            _StubHairMaterial(beta_m=0.2, beta_n=0.4, alpha_degrees=3.5, ior=1.6)
+        )
+        self.assertAlmostEqual(payload.beta_m, 0.2, places=6)
+        self.assertAlmostEqual(payload.beta_n, 0.4, places=6)
+        self.assertAlmostEqual(payload.alpha_degrees, 3.5, places=6)
+        self.assertAlmostEqual(payload.ior, 1.6, places=6)
+
+    def test_hair_object(self):
+        transform = [float(i) for i in range(16)]
+        payload = _handle()._marshal_hair_object(
+            _StubHairObject(
+                name="fur",
+                file_path="/tmp/fur.hair",
+                material_name="brown",
+                transform=transform,
+                width_root_scale=2.0,
+                width_tip_scale=0.5,
+            )
+        )
+        self.assertEqual(payload.name, b"fur")
+        self.assertEqual(payload.file_path, b"/tmp/fur.hair")
+        self.assertEqual(payload.material_name, b"brown")
+        self.assertEqual(list(payload.transform), transform)
+        self.assertAlmostEqual(payload.width_root_scale, 2.0, places=6)
+        self.assertAlmostEqual(payload.width_tip_scale, 0.5, places=6)
+        # The exporter's HairObjectData carries no visibility/shadow
+        # fields yet; the marshaller must default them to "on" rather
+        # than to zero, or every groom would render invisible.
+        self.assertEqual(payload.visible, 1)
+        self.assertEqual(payload.casts_shadows, 1)
+        self.assertEqual(payload.receives_shadows, 1)
+
+    def test_marshalled_strings_stay_alive(self):
+        # The ctypes payloads hold raw `char*` into buffers the handle
+        # must keep referenced; a dropped keepalive is a use-after-free
+        # the native side reads as a corrupted name.
+        handle = _handle()
+        handle._marshal_hair_object(_StubHairObject())
+        self.assertGreaterEqual(len(handle.keepalive), 3)
+
+
+class BridgeWarningDecodeTest(unittest.TestCase):
+    """The ABI v9 non-fatal warning channel, Python side."""
+
+    def _result(self, raw):
+        result = bridge._RenderResult()
+        result.warnings = raw
+        return result
+
+    def test_empty_buffer_is_no_warnings(self):
+        self.assertEqual(bridge._decode_bridge_warnings(self._result(b"")), [])
+
+    def test_single_warning(self):
+        decoded = bridge._decode_bridge_warnings(self._result(b"RISE skipped hair object 'fur'."))
+        self.assertEqual(decoded, ["RISE skipped hair object 'fur'."])
+
+    def test_newline_separated_warnings_split(self):
+        decoded = bridge._decode_bridge_warnings(self._result(b"first\nsecond\nthird"))
+        self.assertEqual(decoded, ["first", "second", "third"])
+
+    def test_blank_lines_are_dropped(self):
+        decoded = bridge._decode_bridge_warnings(self._result(b"first\n\n  \nsecond\n"))
+        self.assertEqual(decoded, ["first", "second"])
+
+    def test_undecodable_bytes_do_not_raise(self):
+        decoded = bridge._decode_bridge_warnings(self._result(b"bad \xff byte"))
+        self.assertEqual(len(decoded), 1)
 
 
 if __name__ == "__main__":
