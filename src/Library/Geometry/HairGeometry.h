@@ -459,6 +459,13 @@ namespace RISE
 			//! mode.  Owns an addref on the base geometry and on every
 			//! bound painter; released in the destructor.
 			HairGroomRecipe*		pRecipe;
+			//! Our OWN copy of the deferred recipe's guide arrays (the
+			//! recipe's `guidePoints` / `guidePointCounts` point HERE
+			//! after construction).  Empty in explicit-strand mode and
+			//! for a groom with no guides bound.  See the deferred
+			//! constructor for why a copy rather than a borrow.
+			std::vector<double>			guidePointsOwned;
+			std::vector<unsigned int>	guideCountsOwned;
 			//! Names the author's scene chunk in generation diagnostics.
 			std::string				groomName;
 			//! Set true after a successful (or failed-but-attempted)

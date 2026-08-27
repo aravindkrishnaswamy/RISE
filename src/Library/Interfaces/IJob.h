@@ -4134,6 +4134,32 @@ namespace RISE
 			const char* ior = "1.55"									///< [in] Fibre index of refraction (scalar)
 			) = 0;
 
+		//! Registers an AUTHORED GUIDE-STRAND SET under `name` -- the
+		//! `hair_guides` scene chunk's Job-level entry point (Phase 2,
+		//! docs/HAIR_FUR_DESIGN.md section 5.3).
+		//!
+		//! Guides are pure DATA (open polylines), not scene entities: they
+		//! intersect nothing, render nothing, and are never bound to an
+		//! object.  They live in a Job-side name table rather than a
+		//! manager, following the `AddMedium*` family (media are likewise
+		//! named, non-renderable, and manager-less) -- a whole new
+		//! IManager and ChunkCategory would ripple through the editor,
+		//! agent and suggestion surfaces for an entity that only ever
+		//! feeds `AddHairGeometry`'s `guides` field.  The set is COPIED
+		//! here; the caller keeps its arrays.
+		//!
+		//! Validated here (`ValidateHairGuides`): at least one guide, at
+		//! least two points per guide, all finite, each with a strictly
+		//! positive total arc length, and both counts inside their caps.
+		//!
+		//! Appended after AddHairMaterial per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairGuides(
+									const char* name,					///< [in] Name of the guide set
+									const HairGuidesDescriptor& desc	///< [in] The authored guide polylines
+									) = 0;
+
 	};
 
 

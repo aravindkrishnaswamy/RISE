@@ -19,6 +19,7 @@
 #include "Managers/GenericManager.h" // D35 record-during-derive sinks (media bypass the GenericManager chokepoint, so hook mediaMap here)
 #include "Objects/CSGObject.h"     // workstream #3: CSG re-point (dynamic_cast<CSGObject*> + SetOperation/CsgOpFromChar)
 #include "Geometry/SDFGeometry.h"
+#include "Geometry/HairGenerator.h"	// ValidateHairGuides (AddHairGuides shares the generator's checks)
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES
@@ -615,6 +616,11 @@ void Job::DestroyContainers()
 		}
 		mediaMap.clear();
 	}
+
+	// Drop the named hair guide sets.  Plain data (no refcount), and no
+	// live groom can be holding a borrow: `HairGeometry`'s deferred
+	// constructor deep-copies whatever guide arrays it was handed.
+	hairGuidesMap.clear();
 }
 
 //
@@ -5379,6 +5385,27 @@ bool Job::AddHairGeometry( const char* name, const HairGroomDescriptor& desc )
 	recipe.pComb        = pComb;
 	recipe.p            = desc.p;
 
+	// `guides` resolves against the Job-side guide table (a `hair_guides`
+	// chunk), not against any manager -- see IJob::AddHairGuides.  The
+	// recipe BORROWS the stored arrays; HairGeometry's constructor deep-
+	// copies them, so the borrow does not outlive this call.
+	if( bound( desc.guides ) ) {
+		std::map<String, HairGuideStore>::const_iterator gi = hairGuidesMap.find( desc.guides );
+		if( gi == hairGuidesMap.end() ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHairGeometry:: `%s`: `guides` set `%s` not found -- declare a `hair_guides` chunk "
+				"of that name BEFORE this one", who, desc.guides );
+			safe_release( pDensity );
+			safe_release( pLength );
+			return false;
+		}
+		recipe.guidePoints      = &gi->second.points[0];
+		recipe.guidePointCounts = &gi->second.counts[0];
+		recipe.numGuides        = (unsigned int)gi->second.counts.size();
+		// D35: RESOLVED guide set (hairGuidesMap bypasses GenericManager)
+		if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &gi->second ) );
+	}
+
 	IGeometry* pGeometry = 0;
 	const bool built = RISE_API_CreateHairGeometryGroom( &pGeometry, recipe, who );
 
@@ -5397,6 +5424,47 @@ bool Job::AddHairGeometry( const char* name, const HairGroomDescriptor& desc )
 	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
 	return ok;
+}
+
+bool Job::AddHairGuides( const char* name, const HairGuidesDescriptor& desc )
+{
+	const char* who = name ? name : "(unnamed)";
+
+	if( !name || !name[0] ) {
+		GlobalLog()->Print( eLog_Error, "Job::AddHairGuides:: a guide set needs a `name`" );
+		return false;
+	}
+
+	// Same "unique within their kind" contract the manager-backed adders
+	// get from GenericManager::AddItem, spelled out here because this
+	// table -- like mediaMap -- bypasses that chokepoint.
+	if( hairGuidesMap.find( name ) != hairGuidesMap.end() ) {
+		DiagDuplicateName( "hair guide set", name );
+		return false;
+	}
+
+	// Validated with the SAME function the generator's recipe check calls,
+	// so an author gets the identical diagnostic whether they arrived
+	// through the chunk or through the direct RISE_API recipe.
+	if( !ValidateHairGuides( desc, who ) ) {
+		return false;
+	}
+
+	std::size_t totalPoints = 0;
+	for( unsigned int g = 0; g < desc.numGuides; ++g ) {
+		totalPoints += desc.pointCounts[g];
+	}
+
+	HairGuideStore store;
+	store.counts.assign( desc.pointCounts, desc.pointCounts + desc.numGuides );
+	store.points.assign( desc.points, desc.points + totalPoints * 3 );
+	hairGuidesMap[name] = store;
+
+	// D35: PRODUCED guide set (hairGuidesMap bypasses GenericManager).
+	// std::map node stability is what makes this address a durable key.
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( &hairGuidesMap[name] ) );
+
+	return true;
 }
 
 bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )

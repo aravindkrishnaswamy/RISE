@@ -7791,14 +7791,13 @@ namespace RISE
 			// single-threaded, inside IGeometry::Realize(), so a groom
 			// bound to no rendered object is never generated at all.
 			//
-			// GROW-ON-A-SURFACE ONLY in this slice.  Explicit strand
-			// authoring (`strand { point ... }`) is deliberately NOT
-			// accepted -- the design sketches it, but a scene-language
-			// strand list is a separate authoring surface with its own
-			// grammar questions (guide sets, per-strand widths, closed
-			// paths) and it would ship half-answered here.  The C++
-			// construction path (HairGeometry's explicit-strand
-			// constructor) already exists for tools and tests.
+			// GROW-ON-A-SURFACE ONLY: this chunk never accepts a strand
+			// POSITION.  Explicit per-strand authoring lives in the
+			// separate `hair_guides` chunk (below), which authors SHAPE
+			// -- polylines the generator interpolates onto its own
+			// area-sampled roots.  Authoring an individual rendered
+			// strand's position remains a C++-only path (HairGeometry's
+			// explicit-strand constructor, for tools and tests).
 			struct HairGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -7822,12 +7821,14 @@ namespace RISE
 					std::string density        = bag.GetString( "density",        "none" );
 					std::string length_painter = bag.GetString( "length_painter", "none" );
 					std::string comb           = bag.GetString( "comb",           "none" );
+					std::string guides         = bag.GetString( "guides",         "none" );
 
 					HairGroomDescriptor desc;
 					desc.baseGeometry  = base_geometry.c_str();
 					desc.density       = density.c_str();
 					desc.lengthPainter = length_painter.c_str();
 					desc.comb          = comb.c_str();
+					desc.guides        = guides.c_str();
 
 					desc.p.count       = bag.GetUInt(   "count" );
 					desc.p.segments    = bag.GetUInt(   "segments",    8 );
@@ -7876,6 +7877,100 @@ namespace RISE
 						{ auto& p = P(); p.name = "clump_size";     p.kind = ValueKind::Double;    p.description = "Clump CELL SIZE in scene units.  Roots are quantised onto a grid of this side and each occupied cell's first strand becomes that cell's clump centre; 0 disables clumping entirely.  Cell-shaped clumps are a Phase-1 simplification of a true nearest-centre-within-radius search -- two strands either side of a cell boundary join different clumps"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "curl_radius";    p.kind = ValueKind::Double;    p.description = "Helix radius in scene units, superposed on the strand in the root's tangent frame and weighted t^2 so the curl opens out of the follicle instead of lifting the root off the surface.  0 = straight.  Requires `curl_step` > 0; each strand gets its own random starting phase so curls do not line up into a corduroy pattern"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "curl_step";      p.kind = ValueKind::Double;    p.description = "Helix PITCH: arc length per full turn, in scene units.  Small relative to `length` = tight ringlets, large = a lazy wave.  Must be > 0 whenever `curl_radius` is > 0 (a helix with no pitch is not a curve)"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "guides";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.semantics.pipe = ParameterPipe::Other; p.semantics.keywordAllowlist = {"hair_guides"}; p.semantics.note = "Resolves against the Job's `hair_guides` table, not the geometry manager -- guides are data, not a scene entity"; p.description = "Optional named `hair_guides` set.  BOUND, IT REPLACES THE STRAIGHT-ALONG-THE-NORMAL GROWTH and nothing else: every strand's SHAPE is interpolated from its THREE NEAREST guides (nearest by root-to-guide-root distance; weights are inverse distance, normalised; K drops to the guide count when the set has fewer than three, so a ONE-guide set means every strand copies that guide).  "
+								"GUIDES ARE SHAPES, NOT ROOTS.  `count`, `density` and the base surface still decide where hair grows and how much of it; a guide never places a strand, and a guide's own point count never decides `segments` -- each guide is resampled by ARC-LENGTH FRACTION onto this groom's control-point count.  Nor does a guide's own SIZE carry over: the interpolated shape is normalised by the guide's arc length and re-scaled by `length` / `length_painter`, so lengthening a guide restyles the groom without lengthening it.  "
+								"THE TRANSPORT IS RIGID.  A guide is read in the base surface's frame at the point of the base CLOSEST TO THE GUIDE'S ROOT -- the same {tangent, bitangent, normal} frame a strand uses -- and replayed in the strand's own frame at the strand's own root.  So a guide swept `back along the scalp's UV` stays swept back everywhere it is used, around a curved base as much as a flat one; author guides ON or NEAR the surface they groom, because that projection is what attaches them.  A guide that is perfectly straight along its root normal reproduces the unguided groom exactly.  "
+								"STYLING STILL COMPOSES: `comb`, `gravity`, `curl_radius`/`curl_step`, `frizz` and `clump` all apply ON TOP of the interpolated shape, and no random draw is spent on the interpolation -- a guided groom and an unguided one at the same `seed` share their roots and their jitter exactly, so binding or unbinding `guides` restyles without re-rolling.  An unknown name is an error, not a silent fall-back to straight growth"; p.defaultValueHint = "none"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// `hair_guides` (Phase 2, docs/HAIR_FUR_DESIGN.md section 5.3)
+			// -- an AUTHORED GUIDE-STRAND SET, and the one place in the
+			// hair system where explicit per-strand points are accepted.
+			//
+			// FLAT GRAMMAR, ONE GUIDE PER LINE.  The design sketches a
+			// nested `strand { point ... }` block, but the scene language
+			// binds parameters only at brace depth 1 (Cst.cpp's chunk
+			// scan) -- a nested block survives a round-trip as opaque
+			// tokens and never reaches a descriptor at all.  Repeating a
+			// whole polyline on one `guide` line is the shape the language
+			// already has for exactly this (skin_geometry's `rail_a` /
+			// `rail_b`, sweep_geometry's `point`), so guides use it rather
+			// than growing the grammar a nesting level for one chunk.
+			struct HairGuidesAsciiChunkParser : public IAsciiChunkParser
+			{
+				static bool Reject( const std::string& msg )
+				{
+					GlobalLog()->PrintEx( eLog_Error, "hair_guides:: %s", msg.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", "noname" );
+
+					const std::vector<std::string>& lines = bag.GetRepeatable( "guide" );
+					if( lines.empty() ) {
+						return Reject( "`" + name + "`: needs at least one repeatable `guide <x> <y> <z> <x> <y> <z> ...` line" );
+					}
+
+					std::vector<double>       points;
+					std::vector<unsigned int> counts;
+					counts.reserve( lines.size() );
+
+					for( std::size_t i = 0; i < lines.size(); ++i ) {
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( lines[i].c_str(), &nTok ) ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							return Reject( "`" + name + "`: guide " + buf + " (`" + lines[i] +
+								"`) must be finite numbers only (no trailing garbage, no nan/inf)" );
+						}
+						if( nTok % 3 != 0 || nTok < 6 ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							char cnt[32];
+							std::snprintf( cnt, sizeof(cnt), "%d", nTok );
+							return Reject( std::string( "`" ) + name + "`: guide " + buf + " has " + cnt +
+								" numbers -- a guide is a whole polyline on one line, `<x> <y> <z>` per point, "
+								"and needs at least 2 points (6 numbers)" );
+						}
+
+						// Re-scan the line for the values themselves; the
+						// gate above already proved every token parses.
+						const char* s = lines[i].c_str();
+						for( int t = 0; t < nTok; ++t ) {
+							char* end = 0;
+							const double v = std::strtod( s, &end );
+							points.push_back( v );
+							s = end;
+						}
+						counts.push_back( (unsigned int)( nTok / 3 ) );
+					}
+
+					HairGuidesDescriptor d;
+					d.points      = &points[0];
+					d.pointCounts = &counts[0];
+					d.numGuides   = (unsigned int)counts.size();
+					return pJob.AddHairGuides( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hair_guides"; cd.category = ChunkCategory::Geometry;
+						cd.description = "AN AUTHORED GUIDE-STRAND SET for `hair_geometry` (docs/HAIR_FUR_DESIGN.md section 5.3).  A handful of hand-placed strands that state the STYLE -- the sweep of a fringe, the lie of a coat, the flick of a tail -- which the groom then interpolates across its thousands of generated strands.  This is the chunk to reach for when `comb` / `gravity` / `curl` cannot say what you mean: those are FIELDS, uniform in their own terms, whereas a guide states one exact curve at one exact place.  "
+							"IT IS DATA, NOT A SHAPE.  A guide set renders nothing, intersects nothing and is never bound to a `standard_object`; its only consumer is a `hair_geometry`'s `guides` field, and a set nothing references costs nothing.  "
+							"AUTHOR GUIDES ON OR NEAR THE SURFACE THEY GROOM.  Each guide is attached to the base by projecting its ROOT (its first point) onto the base surface, and it is read in the surface's frame there -- that projection is what lets the same guide mean `swept back along the scalp` at every strand it later steers, including around curvature.  A guide floating far off the surface still attaches (to the nearest point), it just says less about what you meant.  "
+							"SCALE AND SHAPE ARE SEPARATE: a guide's own length is normalised away (the groom's `length` / `length_painter` set the real length), so guides may be authored at whatever size is convenient to type.  Point counts likewise -- a guide is resampled by arc-length fraction onto the groom's `segments`, so a 3-point guide and a 30-point guide both work and neither changes the strand's control-point count.  "
+							"HOW MANY: tens to a few hundred, placed where the style CHANGES (crown, part, nape, ear).  Three guides already give a groom a real haircut; a hundred give it a hairstyle.  Capped at 4096, because every strand scans the whole set for its nearest three.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name, referenced by a `hair_geometry`'s `guides` field"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "guide"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "ONE WHOLE GUIDE on one line: `<x> <y> <z>` per point, root FIRST and tip LAST, at least 2 points (6 numbers) and at most 4096.  Repeatable -- one line per guide.  Points are in the same space as the base geometry.  The root is what gets projected onto the base to attach the guide, so put it on (or just above) the surface; every later point is free to go wherever the style does.  A guide whose points all coincide is refused: it has no direction to align and no length to normalise by.  Adding a mid-strand point is how a guide gets a kink -- the polyline is resampled by ARC LENGTH, so the spacing you author is the spacing that survives"; }
 						return cd;
 					}();
 					return d;
@@ -12775,6 +12870,7 @@ namespace RISE
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
 		add( "hair_geometry",                         new HairGeometryAsciiChunkParser() );
+		add( "hair_guides",                           new HairGuidesAsciiChunkParser() );
 
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );

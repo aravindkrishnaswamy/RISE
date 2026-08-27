@@ -360,6 +360,36 @@ HairGeometry::HairGeometry( const HairGroomRecipe& recipe, const char* chunkName
 	if( pRecipe->pLengthScale ) { pRecipe->pLengthScale->addref(); }
 	if( pRecipe->pComb )        { pRecipe->pComb->addref(); }
 
+	// The guide arrays are NOT refcounted -- they are borrowed memory
+	// (a Job-side map entry, a caller's vector).  Deep-copy them and
+	// repoint the stored recipe at our copy, which is the same "our own,
+	// independent of the caller's" contract the addrefs above give the
+	// pointers: `Realize()` may run arbitrarily long after the caller
+	// that built the recipe has gone.  A truncated / half-set guide
+	// recipe is dropped here rather than stored, so the generator can
+	// never index past the end of what we actually hold.
+	guidePointsOwned.clear();
+	guideCountsOwned.clear();
+	if( pRecipe->numGuides > 0 && pRecipe->guidePoints && pRecipe->guidePointCounts ) {
+		std::size_t totalPoints = 0;
+		for( unsigned int g = 0; g < pRecipe->numGuides; ++g ) {
+			totalPoints += pRecipe->guidePointCounts[g];
+		}
+		guideCountsOwned.assign( pRecipe->guidePointCounts, pRecipe->guidePointCounts + pRecipe->numGuides );
+		guidePointsOwned.assign( pRecipe->guidePoints, pRecipe->guidePoints + totalPoints * 3 );
+	}
+	if( guideCountsOwned.empty() || guidePointsOwned.empty() ) {
+		guidePointsOwned.clear();
+		guideCountsOwned.clear();
+		pRecipe->guidePoints      = 0;
+		pRecipe->guidePointCounts = 0;
+		pRecipe->numGuides        = 0;
+	} else {
+		pRecipe->guidePoints      = &guidePointsOwned[0];
+		pRecipe->guidePointCounts = &guideCountsOwned[0];
+		pRecipe->numGuides        = (unsigned int)guideCountsOwned.size();
+	}
+
 	// A never-realized groom must still be a valid, empty, non-crashing
 	// primitive: strandCPBegin's "one more than the strand count"
 	// invariant has to hold from construction, not from realization.

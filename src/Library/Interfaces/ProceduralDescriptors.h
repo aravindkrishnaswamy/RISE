@@ -262,9 +262,36 @@ namespace RISE
 		}
 	};
 
+	//! An AUTHORED GUIDE-STRAND SET -- the `hair_guides` scene chunk in
+	//! flat, STL-free form (Phase 2, docs/HAIR_FUR_DESIGN.md section 5.3).
+	//!
+	//! A guide is a plain open polyline in the SAME space the base
+	//! geometry lives in.  Guides carry SHAPE ONLY: they never place a
+	//! strand (`count` + the density mask still own placement) and their
+	//! own point counts never decide a strand's `segments` -- each guide is
+	//! resampled by ARC-LENGTH FRACTION onto whatever control-point count
+	//! the groom asked for.
+	//!
+	//! STORAGE IS FLAT so this header stays dependency-free (the
+	//! SkinDescriptor convention): every guide's (x, y, z) triples are
+	//! concatenated into `points`, and `pointCounts[i]` says how many
+	//! POINTS (not doubles) guide `i` contributes.  The caller owns both
+	//! arrays; `IJob::AddHairGuides` copies out of them.
+	struct HairGuidesDescriptor
+	{
+		const double*       points;			//!< x0 y0 z0 x1 y1 z1 ... -- EVERY guide's points concatenated, in guide order
+		const unsigned int* pointCounts;	//!< pointCounts[i] = number of POINTS in guide i (each >= 2); the array has `numGuides` entries and must sum to points/3
+		unsigned int        numGuides;		//!< number of guides (>= 1)
+
+		HairGuidesDescriptor() :
+			points( 0 ), pointCounts( 0 ), numGuides( 0 )
+		{
+		}
+	};
+
 	//! A `hair_geometry` groom recipe in BY-NAME form: what the scene
 	//! chunk parsed, before any manager lookup.  `IJob::AddHairGeometry`
-	//! resolves the four names into the pointers of `HairGroomRecipe`.
+	//! resolves the five names into the pointers of `HairGroomRecipe`.
 	//! An unbound optional reference is spelled NULL, "" or "none".
 	struct HairGroomDescriptor
 	{
@@ -272,10 +299,11 @@ namespace RISE
 		const char* density;		//!< optional IScalarPainter name: [0,1] rejection mask evaluated at each candidate root
 		const char* lengthPainter;	//!< optional IScalarPainter name: per-root multiplier on `length`
 		const char* comb;			//!< optional IPainter name: RGB-encoded tangent-space comb direction at each root
+		const char* guides;			//!< optional `hair_guides` name: the strand SHAPE is interpolated from the 3 nearest guides instead of growing straight along the normal
 		HairGroomParams p;
 
 		HairGroomDescriptor() :
-			baseGeometry( 0 ), density( 0 ), lengthPainter( 0 ), comb( 0 ), p()
+			baseGeometry( 0 ), density( 0 ), lengthPainter( 0 ), comb( 0 ), guides( 0 ), p()
 		{
 		}
 	};
@@ -297,8 +325,22 @@ namespace RISE
 		const IPainter*       pComb;		//!< optional
 		HairGroomParams       p;
 
+		//! Optional GUIDE SET, in the flat form of `HairGuidesDescriptor`
+		//! (all three fields are set together or all left null/zero).
+		//!
+		//! UNLIKE THE POINTERS ABOVE, THESE ARE NOT REFCOUNTED -- they are
+		//! borrowed arrays.  `HairGeometry`'s deferred-groom constructor
+		//! therefore takes its own DEEP COPY of both arrays and repoints
+		//! its stored recipe at that copy, exactly as the pointers above
+		//! get their own addref: a groom must not outlive-dangle on
+		//! whatever vector the caller happened to build the recipe from.
+		const double*         guidePoints;		//!< x y z triples, every guide concatenated
+		const unsigned int*   guidePointCounts;	//!< POINTS per guide; `numGuides` entries
+		unsigned int          numGuides;		//!< 0 = no guides bound (grow straight along the normal)
+
 		HairGroomRecipe() :
-			pBase( 0 ), pDensity( 0 ), pLengthScale( 0 ), pComb( 0 ), p()
+			pBase( 0 ), pDensity( 0 ), pLengthScale( 0 ), pComb( 0 ), p(),
+			guidePoints( 0 ), guidePointCounts( 0 ), numGuides( 0 )
 		{
 		}
 	};

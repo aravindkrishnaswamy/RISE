@@ -50,9 +50,13 @@
 //  geometry currently tessellates to, which is correct for a static base
 //  and for a base whose shape is fixed at load, but there is no
 //  correspondence machinery that would keep a given follicle attached to
-//  a given surface point across a deforming base.  Explicit strand
-//  authoring in the scene language is likewise deferred -- this
-//  generator is grow-on-a-surface only.
+//  a given surface point across a deforming base.
+//
+//  PLACEMENT IS ALWAYS GROW-ON-A-SURFACE.  A groom's roots always come
+//  from the area-weighted sampler; there is no way to author a strand's
+//  POSITION in the scene language.  What CAN be authored explicitly is a
+//  strand's SHAPE -- a `hair_guides` set (Phase 2), whose polylines are
+//  interpolated onto the generated roots.  Guides never place anything.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -82,12 +86,38 @@ namespace RISE
 		//! diagnostic at construction, before any generation work.
 		const unsigned int kMaxHairStrandCount = 2000000;
 
+		//! Hard caps on an authored guide set.  Both are "you did not mean
+		//! this" guards rather than working points: `hair_guides` is the
+		//! HAND / AGENT authoring surface, where tens to a few hundred
+		//! guides is the intended scale, and guide selection is a LINEAR
+		//! scan over the set per strand (kNearestGuides below) -- so a
+		//! five-figure guide count would cost more than the groom.  A bulk
+		//! interchange importer (which is where a five-figure guide set
+		//! would legitimately come from) is a later slice and will want a
+		//! spatial index before it raises these.
+		const unsigned int kMaxHairGuideStrands       = 4096;
+		const unsigned int kMaxHairGuidePointsPerGuide = 4096;
+
+		//! How many guides a strand's shape is interpolated from.  Clamped
+		//! DOWN to the guide count when the set is smaller (one guide is a
+		//! perfectly legal set -- every strand then reproduces it).
+		const unsigned int kNearestGuides = 3;
+
 		//! Cheap, PARSE-TIME validation of a groom recipe: exactly the
 		//! checks that can be made without tessellating anything.
 		//! Returns false and logs ONE diagnostic naming the offending
 		//! parameter and its value.  `chunkName` is only used to make
 		//! that diagnostic point at the author's own chunk.
 		bool ValidateHairGroomRecipe( const HairGroomRecipe& recipe, const char* chunkName );
+
+		//! Cheap, PARSE-TIME validation of an authored guide set: counts,
+		//! caps, finiteness, and the one geometric requirement a guide has
+		//! to meet to carry a SHAPE at all -- a strictly positive total arc
+		//! length (a guide whose points all coincide is a point, and has
+		//! neither a direction to align nor a length to normalise by).
+		//! Returns false and logs ONE diagnostic naming the offending guide
+		//! by INDEX.  `chunkName` names the author's own chunk.
+		bool ValidateHairGuides( const HairGuidesDescriptor& guides, const char* chunkName );
 
 		//! Runs the generation.  Appends to `out` (which is expected to
 		//! be empty) one `StrandDesc` per SURVIVING root -- candidates

@@ -295,6 +295,23 @@ namespace RISE
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
 
+		//! Named `hair_guides` sets, flattened exactly as
+		//! HairGuidesDescriptor carries them (all guides' xyz triples
+		//! concatenated, plus a per-guide POINT count).  Job-side rather
+		//! than manager-backed for the reason IJob::AddHairGuides records:
+		//! a guide set is data a `hair_geometry` reads, never a scene
+		//! entity, so it follows the manager-less `mediaMap` precedent.
+		//! std::map's node stability is load-bearing -- the CST derive's
+		//! production/resolution sinks key the dependency graph on the
+		//! address of the entry, which must not move as later guide sets
+		//! are added.
+		struct HairGuideStore
+		{
+			std::vector<double>			points;
+			std::vector<unsigned int>	counts;
+		};
+		std::map<String, HairGuideStore>			hairGuidesMap;			// Named hair guide-strand sets
+
 		// Materials registered via a composing factory
 		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)
 		// rather than a direct `Add*Material` call.  The interactive
@@ -1696,6 +1713,12 @@ namespace RISE
 		bool AddHairGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const HairGroomDescriptor& desc			///< [in] Base + painters + numeric groom parameters
+					);
+
+		//! Registers an authored hair guide-strand set (see IJob)
+		bool AddHairGuides(
+					const char* name,						///< [in] Name of the guide set
+					const HairGuidesDescriptor& desc		///< [in] The authored guide polylines
 					);
 
 		//! Creates along-path instances of a named template geometry (see IJob)
