@@ -860,6 +860,8 @@
 		F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
 		7619E4529A2D5B78D9A0FD68 /* HairBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */; };
+		89CD382B6157CFD6F4FC2514 /* HairMedullaProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */; };
+		046B040BB516720F221A5B97 /* HairMedullaProfile_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */; };
 		A1C4E7141B3D5F8092A6C414 /* HairGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7111B3D5F8092A6C411 /* HairGenerator.cpp */; };
 		A1C4E7041B3D5F8092A6C404 /* HairGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */; };
 		F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545B2F84597B009AF16D /* GGXBRDF.h */; };
@@ -869,9 +871,12 @@
 		A1C4E7151B3D5F8092A6C415 /* HairGenerator.h in Headers */ = {isa = PBXBuildFile; fileRef = A1C4E7121B3D5F8092A6C412 /* HairGenerator.h */; };
 		A1C4E7051B3D5F8092A6C405 /* HairGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = A1C4E7021B3D5F8092A6C402 /* HairGeometry.h */; };
 		482B2F4486E04902978C23B9 /* HairMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 9B9A7F508556212A9B0A2B8C /* HairMaterial.h */; };
+		DD8A2D786DCB523875609E5D /* HairMedullaProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = DB0830BB91E0F22339555B4E /* HairMedullaProfile.h */; };
 		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
 		423B3D03E22FB684BB66FF45 /* HairBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */; };
+		DFF4A759A6190D449F96FDDA /* HairMedullaProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */; };
+		A08DE0C48F21E900A2672F48 /* HairMedullaProfile_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */; };
 		A1C4E7131B3D5F8092A6C413 /* HairGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7111B3D5F8092A6C411 /* HairGenerator.cpp */; };
 		A1C4E7031B3D5F8092A6C403 /* HairGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */; };
 		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
@@ -2127,6 +2132,9 @@
 		9B1936B0DA6BD983BD655075 /* HairBSDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HairBSDF.h; sourceTree = "<group>"; };
 		8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HairBSDF.cpp; sourceTree = "<group>"; };
 		9B9A7F508556212A9B0A2B8C /* HairMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HairMaterial.h; sourceTree = "<group>"; };
+		DB0830BB91E0F22339555B4E /* HairMedullaProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HairMedullaProfile.h; sourceTree = "<group>"; };
+		76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HairMedullaProfile.cpp; sourceTree = "<group>"; };
+		4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HairMedullaProfile_LUTData.cpp; sourceTree = "<group>"; };
 		F24C54672F859F87009AF16D /* RandomWalkSSS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSS.h; sourceTree = "<group>"; };
 		F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RandomWalkSSS.cpp; sourceTree = "<group>"; };
 		F24C548A2F87D990009AF16D /* MajorantGrid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MajorantGrid.h; sourceTree = "<group>"; };
@@ -3533,6 +3541,9 @@
 				9B1936B0DA6BD983BD655075 /* HairBSDF.h */,
 				8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */,
 				9B9A7F508556212A9B0A2B8C /* HairMaterial.h */,
+				DB0830BB91E0F22339555B4E /* HairMedullaProfile.h */,
+				76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */,
+				4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */,
 				F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */,
 				F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */,
 				F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */,
@@ -4517,6 +4528,7 @@
 				F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */,
 				F24C54642F84597B009AF16D /* GGXSPF.h in Headers */,
 				32DDFFE9E09C94250DA5F2C8 /* HairBSDF.h in Headers */,
+				DD8A2D786DCB523875609E5D /* HairMedullaProfile.h in Headers */,
 				A1C4E7151B3D5F8092A6C415 /* HairGenerator.h in Headers */,
 				A1C4E7051B3D5F8092A6C405 /* HairGeometry.h in Headers */,
 				482B2F4486E04902978C23B9 /* HairMaterial.h in Headers */,
@@ -5432,6 +5444,8 @@
 				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				423B3D03E22FB684BB66FF45 /* HairBSDF.cpp in Sources */,
+				DFF4A759A6190D449F96FDDA /* HairMedullaProfile.cpp in Sources */,
+				A08DE0C48F21E900A2672F48 /* HairMedullaProfile_LUTData.cpp in Sources */,
 				A1C4E7131B3D5F8092A6C413 /* HairGenerator.cpp in Sources */,
 				A1C4E7031B3D5F8092A6C403 /* HairGeometry.cpp in Sources */,
 				B7A4ED1AF0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */,
@@ -6409,6 +6423,8 @@
 				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				7619E4529A2D5B78D9A0FD68 /* HairBSDF.cpp in Sources */,
+				89CD382B6157CFD6F4FC2514 /* HairMedullaProfile.cpp in Sources */,
+				046B040BB516720F221A5B97 /* HairMedullaProfile_LUTData.cpp in Sources */,
 				A1C4E7141B3D5F8092A6C414 /* HairGenerator.cpp in Sources */,
 				A1C4E7041B3D5F8092A6C404 /* HairGeometry.cpp in Sources */,
 				B7A4ED15F0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */,

@@ -178,6 +178,123 @@
 //  docs/HAIR_FUR_DESIGN.md section 3.3.
 //
 //  ------------------------------------------------------------------
+//  3b.  THE MEDULLA  (Yan et al. 2017; Phase 3, OFF by default)
+//  ------------------------------------------------------------------
+//
+//  Animal fur is not a solid cortex cylinder: it carries a large,
+//  strongly SCATTERING core -- the medulla -- of radius ratio
+//  kappa = r_medulla / r_fibre (up to ~0.9 in rabbit; ~0 in human
+//  hair).  Light that crosses the medulla is diffused, which is what
+//  gives fur its soft, saturated look; a Chiang-only fur render reads
+//  as "thin shiny hair" in close-up.  Yan, Tseng, Jensen & Ramamoorthi
+//  add two SCATTERED lobes -- TTs and TRTs -- driven by precomputed
+//  medulla scattering profiles.
+//
+//  Three optional `IScalarPainter` slots turn it on:
+//
+//      medulla_ratio    kappa in [0, 0.95].  0 (the DEFAULT) = off.
+//      medulla_scatter  sigma_m >= 0, the medulla scattering
+//                       coefficient in per-fibre-diameter units --
+//                       the same units `sigma_a` uses.
+//      medulla_g        Henyey-Greenstein anisotropy in (-1, 1).
+//
+//  All three are read ACHROMATICALLY (`GetValuesAt(ri).v[0]`, never
+//  `GetValueAtNM`), exactly like `beta_m` / `alpha` / `ior`, because
+//  section 3's wavelength-independent-pdf contract depends on it.
+//
+//  ! kappa == 0 IS A HARD SHORT CIRCUIT, NOT A LIMIT.  `Resolve`
+//  latches `medullaActive`, and every downstream loop, array and
+//  branch is bounded by it, so a medulla-off hit executes the
+//  pre-Phase-3 arithmetic instruction for instruction -- not "the same
+//  thing plus some zeros".  HairBSDFTest group 15 pins that two ways:
+//  15a against literals captured from the Phase-2 build, 15b against
+//  a sibling material inside the same binary.
+//
+//  THE ENERGY BOOKKEEPING (why the furnace gate is structural).  The
+//  medulla does not add energy; it SPLITS what the TT and TRT orders
+//  already carried.  With `q = exp(-tau * sqrt(1 - b^2))` the
+//  probability that one medulla crossing is ballistic (tau = the
+//  medulla's diametral optical depth, b = the chord's impact parameter
+//  in medulla radii -- see HairMedullaProfile.h):
+//
+//      A_TT   = (1-f)^2 T   * q        A_TTs  = (1-f)^2 T   * (1-q)
+//      A_TRT  = (1-f)^2 T^2 f * q^2    A_TRTs = (1-f)^2 T^2 f * (1-q^2)
+//
+//  (TT crosses the medulla once, TRT twice.)  Each pair sums to the
+//  pre-Phase-3 A_p, so `sum_p A_p` -- the quantity the white furnace
+//  measures and the quantity section 3's bound leans on -- is
+//  unchanged TO ROUNDING.  (Exactly, in the reals; in IEEE, `a*q` and
+//  `a*(1-q)` are each rounded and `1-q` is itself rounded, so the sum
+//  is `a * (1 + O(eps))`.  HairBSDFTest group 17 accordingly asserts
+//  the identity at 1e-12, and group 18's `kray <= 1 + 1e-9` budgets
+//  for the same rounding.)  Both scattered lobes are then given a longitudinal
+//  M_p and an azimuthal N_p that each integrate to 1, so the sphere
+//  integral is unchanged too.
+//
+//  THE SECTION-3 PROXY BOUND STILL HOLDS, and for the same reason.
+//  Under section 3's own proviso -- a NON-DISPERSIVE `ior`, which is
+//  what that bound is stated for -- `q` is the same number at every
+//  wavelength, so every one of the six A_p above is still a product of
+//  a T-independent factor with a strictly INCREASING function of T:
+//  (1-q) and (1-q^2) are non-negative constants under that ordering.
+//  Hence A_lambda[p] <= A_proxy[p] termwise for T_proxy >= T_lambda,
+//  exactly as before, and `sum_p A_proxy[p]` is the same telescoping
+//  sum that equals 1 at T = 1 and falls monotonically below it.  kray
+//  therefore remains provably in [0, 1]: the medulla split needed NO
+//  clamp and NO amendment beyond this paragraph.
+//
+//  ! DO NOT read "the medulla painters are read achromatically" as the
+//  reason.  It is necessary but NOT sufficient.  `q` also depends on
+//  eta, through gamma_t: `MakeMedulla` derives both the impact
+//  parameter b = sin(gamma_t)/kappa and the optical depth
+//  tau = sigma_m * 2 kappa / cos(theta_t) from the `Geom` its caller
+//  built, and `EvalFsum` builds that `Geom` with the SPECTRAL eta when
+//  the `ior` painter disperses.  A dispersive `ior` therefore makes q
+//  per-wavelength -- exactly as it already makes `ap[0]` (the Fresnel
+//  term) per-wavelength -- and falls under the SAME variance-not-bias
+//  caveat section 3 already records for that case, not under a new
+//  one.  The achromatic read of the three medulla painters is what
+//  keeps `Pdf` reconstructible inside `EvaluateKrayNM`; it is not what
+//  makes the bound true.
+//
+//  COST.  A medulla-ON hit pays one trilinear profile interpolation
+//  (8 cells x 33 floats) per BSDF evaluation, plus two extra lobes in
+//  every dot product.  The SAMPLING path pays neither unless it
+//  actually draws a scattered lobe -- the profile is materialised
+//  lazily there.  Measured on the 128x128 furnace groom at samples=64,
+//  three runs each: 952 / 955 / 957 ms at kappa = 0 versus
+//  1298 / 1293 / 1305 ms at kappa = 0.7 -- ~1.36x, comfortably inside
+//  the paper's own "2-3x Chiang" estimate.
+//  A medulla-OFF hit pays ONE predicted branch and nothing else.
+//
+//  WHAT IS SIMPLIFIED versus Yan 2017 -- the honest list lives in
+//  tools/HairMedullaProfileGen.cpp's header (normal-incidence
+//  simulation with runtime path stretching; non-absorbing medulla with
+//  the cortex sigma_a applied across the whole chord; no cortex
+//  re-refraction of the scattered part; histogram smoothing).  Two
+//  more belong here, because they are runtime choices rather than bake
+//  choices:
+//    * THE RESIDUAL LOBE (p == kPMax, everything above TRT) is NOT
+//      split.  Yan has no such bucket at all -- it is Chiang's
+//      energy-conservation term -- and splitting it would need a
+//      medulla crossing count that the lumped order does not have.
+//      It keeps its full pre-Phase-3 attenuation.  The error that
+//      leaves is small and bounded: at h = 0, theta_o = 0, eta = 1.55,
+//      sigma_a = 0 the residual is 0.00206 of a total of 1, i.e.
+//      0.2 %, and it falls to 0 at grazing where f -> 1.
+//    * TRTs REUSES THE SINGLE-CROSSING PROFILE.  Its energy is
+//      correctly `1 - q^2` (scattered on either crossing), but its
+//      shape is looked up at the one-crossing tau.  At small tau the
+//      dominant event really is a single scatter on one crossing; at
+//      large tau both crossings have already converged to the same
+//      diffusive profile.  The error lives in the middle.
+//    * LONGITUDINAL BROADENING IS ADDITIVE IN VARIANCE.  A scattered
+//      lobe uses M_p at `v[parent] + var_medulla` (the Gaussian-
+//      convolution approximation), rather than a separately tabulated
+//      longitudinal profile.  M_p is normalised at every v, so this
+//      cannot leak energy.
+//
+//  ------------------------------------------------------------------
 //  4.  COLOUR TIERS  (exactly one is active)
 //  ------------------------------------------------------------------
 //
@@ -270,7 +387,10 @@
 //    eumelanin), `hair_backlit_tt.RISEscene` (light behind the groom,
 //    exercising the TT rim and the documented NEE-transmissive-
 //    hemisphere limitation below), and `hair_styled.RISEscene`
-//    (comb/clump/curl/frizz through the parser).  `tests/
+//    (comb/clump/curl/frizz through the parser).  Phase 3 added
+//    `fur_medulla.RISEscene` -- three backlit grooms differing ONLY in
+//    `medulla_ratio` (0 / 0.5 / 0.9), the human-readable companion to
+//    HairBSDFTest groups 16-19.  `tests/
 //    HairRenderTest.cpp` renders the equivalent recipes in-process and
 //    asserts on the resulting images (white furnace, HWSS invariant,
 //    melanin-ladder monotonicity, and a loose-tolerance PT-vs-BDPT
@@ -324,9 +444,18 @@ namespace RISE
 			const IScalarPainter*	alpha;			//!< cuticle scale tilt, DEGREES (2 is the usual default)
 			const IScalarPainter*	ior;			//!< fibre IOR (1.55 is the usual default)
 
+			//! Yan 2017 medulla (section 3b).  OPTIONAL -- unlike the
+			//! four slots above, a null pointer here is a supported
+			//! configuration meaning "no medulla", bit-identical to
+			//! binding `medulla_ratio` to 0.
+			const IScalarPainter*	medulla_ratio;	//!< kappa, clamped to [0, 0.95]; 0 = OFF (the default)
+			const IScalarPainter*	medulla_scatter;//!< sigma_m >= 0, per fibre diameter
+			const IScalarPainter*	medulla_g;		//!< HG anisotropy, clamped to (-1, 1)
+
 			HairPainters() :
 			  eumelanin( 0 ), pheomelanin( 0 ), sigma_a( 0 ), color( 0 ),
-			  beta_m( 0 ), beta_n( 0 ), alpha( 0 ), ior( 0 )
+			  beta_m( 0 ), beta_n( 0 ), alpha( 0 ), ior( 0 ),
+			  medulla_ratio( 0 ), medulla_scatter( 0 ), medulla_g( 0 )
 			{}
 
 			//! Number of colour tiers that have at least one slot bound.
@@ -362,6 +491,18 @@ namespace RISE
 			Scalar	s;					//!< azimuthal logistic scale
 			Scalar	sin2kAlpha[3];		//!< cuticle-tilt rotation recurrence
 			Scalar	cos2kAlpha[3];
+
+			//! Yan 2017 medulla (section 3b).  `medullaActive` is the
+			//! LATCH the whole Phase-3 extension hangs off: false makes
+			//! every array, loop bound and branch below revert to the
+			//! pre-Phase-3 shape, which is what makes kappa == 0
+			//! bit-identical rather than merely numerically close.  The
+			//! other three are meaningless (and left at 0) when it is
+			//! false.
+			bool	medullaActive;
+			Scalar	kappa;				//!< medulla radius ratio, (0, 0.95]
+			Scalar	sigmaM;				//!< medulla scattering coefficient, > 0
+			Scalar	gHG;				//!< medulla phase-function anisotropy, (-1, 1)
 		};
 
 		//! Shared painter ownership + per-hit parameter resolution for
@@ -455,6 +596,19 @@ namespace RISE
 			const IScalarPainter*	pBetaN;
 			const IScalarPainter*	pAlpha;
 			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pMedullaRatio;		//!< may be NULL -- see HairPainters
+			const IScalarPainter*	pMedullaScatter;	//!< may be NULL
+			const IScalarPainter*	pMedullaG;			//!< may be NULL
+
+			//! Ceiling on `medulla_ratio`.  A medulla that reaches the
+			//! cuticle leaves no cortex annulus for the R / TRT Fresnel
+			//! geometry to live in; Yan's measured fits top out near
+			//! 0.9 (rabbit).
+			static const Scalar		kMaxMedullaRatio;
+			//! Used when `medulla_ratio` is bound but its companions
+			//! are not.
+			static const Scalar		kDefaultMedullaScatter;
+			static const Scalar		kDefaultMedullaG;
 
 			//! `HairPainters::ActiveColorTierCount() == 1`, decided ONCE
 			//! at construction.  False makes every colour resolution
@@ -523,6 +677,41 @@ namespace RISE
 				const Scalar sigmaA,
 				Scalar ap[4],
 				Scalar& absorbLen
+				) const;
+
+			//! TEST HOOK -- not called by the renderer, and deliberately
+			//! not part of `IBSDF`.  The medulla twin of
+			//! `TestApAndPathLength`: exposes the SIX-entry attenuation
+			//! vector after the Yan 2017 split, plus the split factors
+			//! and the medulla geometry that produced it.
+			//!
+			//! It exists because the medulla's central correctness claim
+			//! -- that the split CONSERVES each parent order's energy
+			//! exactly (HairBSDF.h section 3b) -- is invisible to every
+			//! mixture-level test in HairBSDFTest: the furnace and the
+			//! estimator cross-check both measure the SUM, which the
+			//! split leaves unchanged by construction, so they would
+			//! stay green even if the two halves were swapped, mis-
+			//! weighted, or both attached to the wrong parent.  This
+			//! hook lets a test read ap[1] / ap[TTs] / ap[2] / ap[TRTs]
+			//! individually and pin the bookkeeping term by term.
+			//!
+			//! `ap` receives 6 entries: the four Chiang orders (with
+			//! p == 1 and p == 2 already scaled DOWN by the ballistic
+			//! survival) followed by TTs and TRTs.  `nLobes` reports 4
+			//! when the medulla is inactive at this hit -- in which case
+			//! only the first four entries are written.  Uses the
+			//! achromatic reference IOR, matching `EvalPdf`.
+			void TestMedullaAp(
+				const RayIntersectionGeometric& ri,
+				const Scalar sigmaA,
+				Scalar ap[6],
+				int& nLobes,
+				Scalar& q1,
+				Scalar& q2,
+				Scalar& medullaB,
+				Scalar& medullaTau,
+				Scalar& medullaLongVariance
 				) const;
 
 			//! TEST HOOK -- not called by the renderer.  Calls the REAL

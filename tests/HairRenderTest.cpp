@@ -254,11 +254,18 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 // `count`/`segments` control groom density/cost; `width`/`height` the
 // film.  Returns everything EXCEPT the rasterizer + file output chunk
 // so callers can append whichever rasterizer they need.
+//
+// `medullaLines` is appended verbatim inside the `hair_material`
+// chunk.  Empty (the default) means the medulla slots are never
+// mentioned, which is exactly the pre-Phase-3 configuration every
+// existing test in this file assumes -- so their scene text, and
+// therefore their numbers, are untouched by Phase 3.
 static std::string GroomInEnvCommon(
 	const char* tierParam, double tierValue,
 	unsigned int width, unsigned int height,
 	unsigned int count, unsigned int segments,
-	unsigned int seed )
+	unsigned int seed,
+	const char* medullaLines = "" )
 {
 	std::ostringstream ss;
 	ss <<
@@ -267,7 +274,7 @@ static std::string GroomInEnvCommon(
 		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
 		"scalar_painter\n{\n\tname pnt_tier\n\tvalue " << tierValue << "\n}\n\n"
-		"hair_material\n{\n\tname mat_hair\n\t" << tierParam << " pnt_tier\n}\n\n"
+		"hair_material\n{\n\tname mat_hair\n\t" << tierParam << " pnt_tier\n" << medullaLines << "}\n\n"
 		"sphere_geometry\n{\n\tname scalp\n\tradius 1.0\n}\n\n"
 		"hair_geometry\n{\n\tname groom\n\tbase_geometry scalp\n\tcount " << count
 		<< "\n\tsegments " << segments << "\n\tlength 0.24\n\twidth_root 0.035\n\twidth_tip 0.012"
@@ -501,6 +508,116 @@ static void TestFurnace()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 1b. FUR MEDULLA FURNACE (Yan et al. 2017, docs/HAIR_FUR_DESIGN.md
+//     Phase 3).  The same white-furnace measurement as test 1, with
+//     `medulla_ratio 0.7` / `medulla_scatter 2.0` -- i.e. with the two
+//     extra scattered lobes carrying most of the transmitted energy
+//     (at that tau the ballistic survival of one medulla crossing is
+//     only ~0.12, so roughly 88 % of TT leaves through the TTs lobe).
+//
+//     WHY IT IS WORTH A WHOLE RENDER.  HairBSDFTest group 16 already
+//     integrates the BCSDF's own sphere integral at a much larger
+//     (kappa, sigma_m, g) grid and to a far tighter tolerance, so this
+//     is NOT the primary energy gate.  What it adds is everything the
+//     unit test cannot see: that the medulla parameters survive the
+//     ASCII parser and Job's painter resolution, that the new lobes'
+//     sampled directions survive geometry generation and the h /
+//     tangent plumbing, and that a full PT integration through a real
+//     groom does not lose or duplicate their energy.  A dropped lobe
+//     shows up here as a dimmer render, an over-weighted one as a
+//     brighter one, against the SAME target and tolerance test 1 uses.
+//
+//     IT DOES NOT SHARE TEST 1's TOLERANCE, and the reason is measured,
+//     not assumed.  A medulla-on groom reads 0.883 where the
+//     medulla-free one reads 0.988 -- an 11.6 % gap that is NOT an
+//     energy leak in the model: HairBSDFTest group 16 integrates this
+//     very configuration's sphere integral at 0.999994.  It is the
+//     SAME env-NEE partition defect documented at length above test 1
+//     (LightSampler gates env-NEE on `cosEnv > 0`, so a full-sphere
+//     BSDF gets no NEE strategy at all below the shading normal while
+//     the BSDF-sampling side still applies its w_bsdf < 1 there), just
+//     hit far harder: the medulla-scattered lobes are broad and
+//     diffuse by construction, so they push much more energy into the
+//     below-normal hemisphere than the narrow unscattered TT lobe
+//     does, and the un-partitioned half is correspondingly larger.
+//
+//     PROVEN, not inferred.  Relaxing that single gate to
+//     `fabs(cosEnv)` in LightSampler (the same one-line experiment
+//     test 1's comment describes, applied and reverted while writing
+//     this test) moves BOTH furnaces to the same place:
+//
+//         medulla-free   0.98839  ->  1.00171
+//         medulla kappa=0.7  0.88298  ->  1.00192
+//
+//     i.e. with the integrator defect removed the two agree to 0.02 %,
+//     which is exactly the "energy-preserving redistribution" claim.
+//     The fix is not applied here for the reason test 1 gives (it needs
+//     a per-IBSDF audit of below-hemisphere `value()` plus the matching
+//     light-table gate -- a separate workstream).
+//
+//     SO THE BAND IS ASYMMETRIC, like hwss=true's:
+//       * lower bound 15 % -- 3.3pp of headroom over the measured
+//         11.7 % deficit, which still fails on the ~2-3 % scale of a
+//         genuinely lost lobe on top of it.  Run-to-run spread on this
+//         cell is ~3e-4 (40x40 at 384 spp over a 4000-strand groom), so
+//         that headroom is ~100 sigma, not a noise allowance;
+//       * upper bound 3 % -- over-unity is never legitimate in a
+//         sigma_a == 0 furnace no matter what the NEE partition does,
+//         so that half stays as tight as test 1's.
+//
+//     AND A THIRD, UPPER-SIDE PIN THAT IS THE WHOLE POINT.  With only
+//     the band above, this test would pass if `medulla_ratio 0.7` never
+//     reached the model at all -- a parser drop, a painter-resolution
+//     failure, an unset `Resolve` latch -- because the medulla-FREE
+//     reading (0.988) sits comfortably inside [0.85, 1.03].  That is
+//     precisely the plumbing failure the section header claims this
+//     test exists to catch, so it is asserted explicitly:
+//     `kMedullaFurnaceMustBeBelow` (0.95) sits ~7pp above the
+//     medulla-on 0.883 and ~200 sigma below the medulla-free 0.988.
+//
+//     ! ALL THREE BOUNDS ARE COUPLED TO THE env-NEE DEFECT.  When that
+//     gate is fixed the medulla-on reading joins test 1 near 1.00 and
+//     BOTH the 15 % lower bound and this 0.95 upper pin must go --
+//     replaced by `kFurnaceTol` around 1.0, with the
+//     "did the parameter reach the model" question left to
+//     HairMaterialChunkTest's medulla group, which answers it without
+//     depending on any integrator behaviour at all.
+//     Measured (samples=384): 0.882983 / 0.882646.
+//////////////////////////////////////////////////////////////////////
+static const double kMedullaFurnaceUnderTol   = 0.15;
+static const double kMedullaFurnaceOverTol    = 0.03;
+static const double kMedullaFurnaceMustBeBelow = 0.95;
+
+static void TestMedullaFurnace()
+{
+	std::cout << "=== 1b. Fur medulla white furnace (kappa = 0.7) ===" << std::endl;
+
+	const unsigned int W = 40, H = 40, COUNT = 4000, SEG = 6, SEED = 5;
+	const char* kMedulla =
+		"\tmedulla_ratio 0.7\n\tmedulla_scatter 2.0\n\tmedulla_g 0.4\n";
+
+	const std::string common = GroomInEnvCommon( "sigma_a", 0.0, W, H, COUNT, SEG, SEED, kMedulla );
+
+	const ImageStats s = RenderAndComputeStats(
+		AssembleScene( common, RasterizerPTRgb( 384, 8 ) ), "furnace_medulla_rgb" );
+	Check( s.valid, "medulla furnace: render produced output" );
+	if( s.valid ) {
+		std::cout << "  medulla RGB luminance = " << s.luminance
+			<< "  (expected ~0.883 -- the env-NEE partition defect, amplified by the broad "
+			   "scattered lobes; see this section's comment)" << std::endl;
+		Check( s.luminance >= kFurnaceTarget - kMedullaFurnaceUnderTol,
+			"medulla furnace: deficit no worse than the known env-NEE partition defect" );
+		Check( s.luminance <= kFurnaceTarget + kMedullaFurnaceOverTol,
+			"medulla furnace: MONEY ASSERTION -- no energy is CREATED by the lobe split "
+			"(the one direction the integrator defect cannot excuse)" );
+		Check( s.luminance <= kMedullaFurnaceMustBeBelow,
+			"medulla furnace: MONEY ASSERTION -- the medulla actually REACHED the model "
+			"(a silently-dropped medulla_ratio would read at the medulla-free 0.988 and pass "
+			"the band above)" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // 2. HWSS invariant -- melanin groom, spectral PT, hwss=true vs
 // hwss=false must agree within MC noise.  This is the same
 // reference-free invariant the env-IBL integrator arc used
@@ -700,6 +817,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	std::cout << "HairRenderTest -- render-level Chiang hair BCSDF + hair_geometry regression suite" << std::endl;
 
 	TestFurnace();
+	TestMedullaFurnace();
 	TestHwssInvariant();
 	TestMelaninLadder();
 	TestPtVsBdpt();

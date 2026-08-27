@@ -4322,10 +4322,14 @@ namespace RISE
 					std::string beta_n      = bag.GetString( "beta_n",      "0.3" );
 					std::string alpha       = bag.GetString( "alpha",       "2.0" );
 					std::string ior         = bag.GetString( "ior",         "1.55" );
+					std::string medRatio    = bag.GetString( "medulla_ratio",   "0" );
+					std::string medScatter  = bag.GetString( "medulla_scatter", "0.5" );
+					std::string medG        = bag.GetString( "medulla_g",       "0.4" );
 
 					return pJob.AddHairMaterial( name.c_str(), color.c_str(), sigma_a.c_str(),
 						eumelanin.c_str(), pheomelanin.c_str(), beta_m.c_str(), beta_n.c_str(),
-						alpha.c_str(), ior.c_str() );
+						alpha.c_str(), ior.c_str(),
+						medRatio.c_str(), medScatter.c_str(), medG.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4339,7 +4343,10 @@ namespace RISE
 							"`pheomelanin` (Tier 1, melanin concentration -- physically-based, recommended "
 							"default; either or both may be set, counting as the SINGLE melanin tier).  "
 							"Zero tiers or two-or-more tiers bound is a parse-time error.  Hair lobes are "
-							"never delta (SMS never sees hair) and are all tagged eRayReflection.";
+							"never delta (SMS never sees hair) and are all tagged eRayReflection.  "
+							"For ANIMAL FUR, `medulla_ratio` > 0 additionally enables the Yan et al. 2017 "
+							"scattering medulla (two extra lobes, TTs and TRTs); it is 0 by default, which "
+							"is the correct value for human hair and reproduces the plain Chiang model.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "color";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 3: artist reflectance colour painter.  \"none\" (default) = tier not bound."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
@@ -4350,6 +4357,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "beta_n";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Azimuthal roughness (physical SCALAR, single value; clamped to [0.05, 1] at evaluation)."; p.defaultValueHint = "0.3"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "alpha";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Cuticle scale tilt, in DEGREES (physical SCALAR, single value)."; p.defaultValueHint = "2.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fibre index of refraction (physical SCALAR, single value)."; p.defaultValueHint = "1.55"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "medulla_ratio";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "ANIMAL FUR: Yan et al. 2017 medulla radius ratio kappa = r_medulla / r_fibre (physical SCALAR, single value; clamped to [0, 0.95], so a negative value reads as 0).  0 -- the DEFAULT -- disables the medulla entirely and reproduces the plain Chiang model bit for bit; human hair wants 0, animal fur wants ~0.5-0.9.  Turning it on splits the TT and TRT lobes into unscattered and medulla-scattered halves, which is what makes fur read soft and saturated instead of thin and shiny.  Cycles has no medulla analogue, so the Blender bridge never sets this."; p.defaultValueHint = "0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "medulla_scatter"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "ANIMAL FUR: medulla scattering coefficient sigma_m, in the same per-fibre-diameter units as `sigma_a` (physical SCALAR, single value).  A value of 0 -- or any negative value -- disables the medulla just as `medulla_ratio` 0 does; it is not diagnosed, so check the sign if fur renders like plain hair.  Ignored entirely when `medulla_ratio` is 0."; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "medulla_g";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "ANIMAL FUR: Henyey-Greenstein anisotropy of the medulla phase function (physical SCALAR, single value, in (-1, 1); the baked profile table spans +/- 0.8 and clamps).  Positive = forward scattering.  Ignored when `medulla_ratio` is 0."; p.defaultValueHint = "0.4"; p.semantics.pipe = ParameterPipe::Scalar; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();

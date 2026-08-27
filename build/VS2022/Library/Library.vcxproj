@@ -228,6 +228,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HairBSDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.cpp" />
@@ -1107,6 +1109,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HairBSDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HairMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMedullaProfile.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h" />

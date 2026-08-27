@@ -134,6 +134,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/GGXBRDF.cpp"
     "${RISE_LIB}/Materials/GGXSPF.cpp"
     "${RISE_LIB}/Materials/HairBSDF.cpp"
+    "${RISE_LIB}/Materials/HairMedullaProfile.cpp"
+    "${RISE_LIB}/Materials/HairMedullaProfile_LUTData.cpp"
     "${RISE_LIB}/Materials/SheenBRDF.cpp"
     "${RISE_LIB}/Materials/SheenSPF.cpp"
     "${RISE_LIB}/Materials/GenericHumanTissueSPF.cpp"

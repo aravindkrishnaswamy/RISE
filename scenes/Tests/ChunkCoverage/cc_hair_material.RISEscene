@@ -13,10 +13,23 @@ scalar_painter
 	value		1.3
 }
 
+scalar_painter
+{
+	name		cc_medulla_ratio
+	value		0.7
+}
+
+# The three medulla parameters are exercised two ways here, so the
+# coverage fixture pins BOTH binding styles the descriptor allows: a
+# named scalar_painter reference (medulla_ratio) and an inline numeric
+# literal (medulla_scatter / medulla_g).
 hair_material
 {
 	name		cc_hair
 	eumelanin	cc_eumelanin
+	medulla_ratio	cc_medulla_ratio
+	medulla_scatter	1.5
+	medulla_g	0.35
 }
 
 sphere_geometry

@@ -696,6 +696,12 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HairBSDF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile_LUTData.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
@@ -2952,6 +2958,9 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HairMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMedullaProfile.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CharlieSheen.h">

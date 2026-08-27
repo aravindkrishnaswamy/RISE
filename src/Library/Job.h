@@ -1479,7 +1479,10 @@ namespace RISE
 			const char* beta_m = "0.3",
 			const char* beta_n = "0.3",
 			const char* alpha = "2.0",
-			const char* ior = "1.55"
+			const char* ior = "1.55",
+			const char* medulla_ratio = "0",
+			const char* medulla_scatter = "0.5",
+			const char* medulla_g = "0.4"
 			);
 
 

@@ -100,6 +100,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/HairBSDF.h"
+#include "../src/Library/Materials/HairMedullaProfile.h"
 #include "../src/Library/Materials/HairMaterial.h"
 
 #include "TestStubObject.h"
@@ -299,9 +300,18 @@ static HairPainters MakeSigmaAPainters(
 //  can fail on a normalisation bug.
 // ============================================================
 
+//! `nTheta` / `nPhi` default to the group-1 resolution.  The medulla
+//! groups (16 and 18) pass a coarser one: they sweep a large PARAMETER
+//! grid rather than the roughness corners, their beta_m never goes
+//! below 0.05, and 450^2 still puts ~20 theta cells across the
+//! narrowest lobe those groups reach -- measured worst case there is
+//! 6.6e-4 off 1, two orders inside the 2 % gate.  Group 1 keeps 900^2.
 static double QuadratureBSDFEnergy(
-    const HairBRDF& brdf, const RayIntersectionGeometric& ri, const int channel )
+    const HairBRDF& brdf, const RayIntersectionGeometric& ri, const int channel,
+    const int nTheta = kQuadTheta, const int nPhi = kQuadPhi )
 {
+    const int kQuadTheta = nTheta;
+    const int kQuadPhi   = nPhi;
     const double dTheta = PI / kQuadTheta;
     const double dPhi   = TWO_PI / kQuadPhi;
     double sum = 0;
@@ -1753,6 +1763,959 @@ static void RunKHEdgeClampChromatic()
 }
 
 // ============================================================
+//  15.  MEDULLA-OFF BIT-IDENTITY  (Phase 3's non-negotiable gate)
+//
+//  Phase 3 (Yan 2017 medulla) added three parameters and two extra
+//  lobes to this BCSDF.  The contract with every Phase-1 / Phase-2
+//  scene is that `medulla_ratio == 0` -- the default -- takes the
+//  EXACT pre-Phase-3 code path and reproduces the shipped numbers
+//  BIT for BIT, not to a tolerance.
+//
+//  Two independent gates, because they fail on different bugs:
+//
+//   15a  GOLDEN.  A fixed grid of `value` / `valueNM` / `Pdf` /
+//        `Scatter` / `ScatterNM` outputs compared against literals
+//        CAPTURED FROM THE PHASE-2 BUILD AT COMMIT e819bbee (macOS /
+//        AppleClang, optimised, `make -C build/make/rise` Deployment
+//        flags).  This is the only gate that can see a change to the
+//        SHARED (non-medulla) code -- a reordered accumulation, a
+//        different `Resolve`, a lost sampler dimension.
+//
+//        ! THE COMPARISON IS TOOLCHAIN-CONDITIONAL, ON PURPOSE.  These
+//        values flow through `exp` / `log` / `pow` / `atan2` / `sin` /
+//        `cos`, whose results legitimately differ between Apple libm,
+//        glibc and the MSVC CRT by more than one ULP -- before FMA
+//        contraction is even considered -- and there is ONE golden
+//        file, so a re-capture on any other platform would break this
+//        one.  So:
+//          * on the CAPTURE toolchain (Apple clang, optimised) the
+//            comparison is `==`, exact, no tolerance.  That is where
+//            the bit-identity promise HairBSDF.h section 3b makes was
+//            established (0 differences over a 35,700-value grid) and
+//            it is held to the letter;
+//          * everywhere else it is a 1e-14 RELATIVE bound -- the
+//            threshold this file's own investigation identified as
+//            "floating-point reassociation, not a model change", and
+//            the same order of magnitude tests/ThinFilmProductionTest
+//            uses against its high-precision reference.  A real
+//            regression in the shared code moves these numbers by
+//            percent, not by 1e-14.
+//        The exact-mismatch COUNT is printed either way, so a
+//        tolerance-path run still reports how far the platform drifts.
+//        Group 15b below is exact on EVERY platform and is what
+//        actually pins "kappa == 0 short-circuits"; 15a's job is the
+//        stronger, narrower claim that the shared code is untouched.
+//
+//        To RE-CAPTURE (only on the capture toolchain, and only for a
+//        consciously-reviewed intentional change): set
+//        HAIR_MEDULLA_GOLDEN_CAPTURE to 1, rebuild, run the binary,
+//        paste the emitted block over tests/HairMedullaGolden.inl, set
+//        the macro back to 0 -- and say so in the commit.
+//
+//   15b  IN-BINARY IDENTITY (portable -- no literals).  A material
+//        with NO medulla painters bound at all (byte-for-byte the
+//        Phase-2 painter set) must agree bit-for-bit with a material
+//        whose `medulla_ratio` painter is bound to 0.0, and with one
+//        whose `medulla_scatter` is bound to 0.0 at a LARGE
+//        medulla_ratio.  This one cannot rot across compilers and is
+//        the gate that actually pins "kappa == 0 short-circuits".
+// ============================================================
+
+//! Set to 1, rebuild, run, and paste the emitted block over
+//! `tests/HairMedullaGolden.inl` to re-capture the group-15a literals.
+//! Only meaningful on the capture toolchain -- see the group-15 header.
+#define HAIR_MEDULLA_GOLDEN_CAPTURE 0
+
+//! True on the toolchain the group-15a literals were captured with:
+//! Apple clang, optimised.  A Debug (unoptimised) build changes
+//! inlining and therefore FMA contraction, which is exactly the class
+//! of difference the tolerance path exists to absorb, so it takes the
+//! tolerance path too.
+#if defined(__APPLE__) && defined(__clang__) && defined(__OPTIMIZE__)
+static const bool kGoldenExactPlatform = true;
+#else
+static const bool kGoldenExactPlatform = false;
+#endif
+
+//! Relative bound used on every OTHER toolchain.  See the group-15
+//! header for why this specific number.
+static const double kGoldenRelTol = 1e-14;
+
+namespace
+{
+    struct GoldenCase
+    {
+        double thetaO, phiO, h;
+        double betaM, betaN, alphaDeg, ior;
+        double sigmaA;      //!< tier 2 when >= 0
+        double eumelanin;   //!< tier 1 when > 0 (and sigmaA < 0)
+    };
+
+    const GoldenCase kGoldenCases[6] = {
+        {  0.00, 0.0,  0.0,     0.30, 0.30,  2.0, 1.55,  0.00, -1 },
+        {  0.35, 1.1,  0.4,     0.30, 0.30,  2.0, 1.55,  0.40, -1 },
+        { -1.20, 4.3, -0.4,     0.10, 0.70,  3.5, 1.60,  -1.0, 1.3 },
+        {  1.50, 5.9,  0.95,    0.80, 0.15,  0.0, 1.45,  0.05, -1 },
+        {  0.90, 2.7, -0.9995,  0.05, 1.00,  5.0, 1.70,  1.00, -1 },
+        {  0.05, 0.0,  0.4,     1.00, 0.05, -3.0, 1.55,  0.20, -1 },
+    };
+
+    const double kGoldenWiTheta[3] = {  0.3, -0.5, 1.0 };
+    const double kGoldenWiPhi[3]   = {  1.0,  3.0, 4.5 };
+
+    //! 6 cases x ( 3 dirs x (3 value + valueNM + Pdf) + 2 Scatter x 7
+    //! + 1 ScatterNM x 5 ) = 6 x 34.
+    const int kGoldenPerCase = 34;
+    const int kGoldenCount   = 6 * kGoldenPerCase;
+}
+
+//! Fills `out` (kGoldenPerCase entries) for one case.  Shared by the
+//! capture and the compare paths so the two can never drift.
+static void GoldenEvaluateCase( const GoldenCase& gc, double* out )
+{
+    ScalarRef sigmaP( new UniformScalarPainter( gc.sigmaA >= 0 ? gc.sigmaA : 0.0 ) );
+    ScalarRef euP   ( new UniformScalarPainter( gc.eumelanin > 0 ? gc.eumelanin : 0.0 ) );
+    ScalarRef betaMP( new UniformScalarPainter( gc.betaM ) );
+    ScalarRef betaNP( new UniformScalarPainter( gc.betaN ) );
+    ScalarRef alphaP( new UniformScalarPainter( gc.alphaDeg ) );
+    ScalarRef iorP  ( new UniformScalarPainter( gc.ior ) );
+
+    HairPainters hp;
+    if( gc.sigmaA >= 0 ) { hp.sigma_a = sigmaP.get(); } else { hp.eumelanin = euP.get(); }
+    hp.beta_m = betaMP.get(); hp.beta_n = betaNP.get();
+    hp.alpha  = alphaP.get(); hp.ior    = iorP.get();
+
+    HairBRDF* brdf = new HairBRDF( hp ); brdf->addref();
+    HairSPF*  spf  = new HairSPF( hp );  spf->addref();
+
+    const RayIntersectionGeometric ri = MakeFibreHit( gc.thetaO, gc.phiO, gc.h );
+    const IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    int n = 0;
+    for( int d = 0; d < 3; d++ ) {
+        const Vector3 wi = FibreDir( ri, kGoldenWiTheta[d], kGoldenWiPhi[d] );
+        const RISEPel v = brdf->value( wi, ri );
+        out[n++] = v[0]; out[n++] = v[1]; out[n++] = v[2];
+        out[n++] = brdf->valueNM( wi, ri, 550.0 );
+        out[n++] = spf->Pdf( ri, wi, iorStack );
+    }
+
+    {
+        RandomNumberGenerator rng( kRNGSeed );
+        IndependentSampler sampler( rng );
+        for( int s = 0; s < 2; s++ ) {
+            ScatteredRayContainer sc;
+            spf->Scatter( ri, sampler, sc, iorStack );
+            if( sc.Count() == 0 ) {
+                for( int q = 0; q < 7; q++ ) { out[n++] = -1; }
+            } else {
+                const ScatteredRay& r = sc[0];
+                out[n++] = r.ray.Dir().x; out[n++] = r.ray.Dir().y; out[n++] = r.ray.Dir().z;
+                out[n++] = r.pdf;
+                out[n++] = r.kray[0]; out[n++] = r.kray[1]; out[n++] = r.kray[2];
+            }
+        }
+    }
+    {
+        RandomNumberGenerator rng( kRNGSeed + 1u );
+        IndependentSampler sampler( rng );
+        ScatteredRayContainer sc;
+        spf->ScatterNM( ri, sampler, 550.0, sc, iorStack );
+        if( sc.Count() == 0 ) {
+            for( int q = 0; q < 5; q++ ) { out[n++] = -1; }
+        } else {
+            const ScatteredRay& r = sc[0];
+            out[n++] = r.ray.Dir().x; out[n++] = r.ray.Dir().y; out[n++] = r.ray.Dir().z;
+            out[n++] = r.pdf; out[n++] = r.krayNM;
+        }
+    }
+
+    brdf->release();
+    spf->release();
+}
+
+#if HAIR_MEDULLA_GOLDEN_CAPTURE
+static const double kMedullaGolden[1] = { 0 };
+#else
+#include "HairMedullaGolden.inl"
+#endif
+
+static void RunMedullaOffBitIdentity()
+{
+    std::cout << "=== 15a. medulla-off GOLDEN bit-identity (vs commit e819bbee) ===" << std::endl;
+
+    std::vector<double> got( (size_t)kGoldenCount, 0.0 );
+    for( int c = 0; c < 6; c++ ) {
+        GoldenEvaluateCase( kGoldenCases[c], &got[(size_t)( c * kGoldenPerCase )] );
+    }
+
+#if HAIR_MEDULLA_GOLDEN_CAPTURE
+    printf( "static const double kMedullaGolden[kGoldenCount] = {\n" );
+    for( int i = 0; i < kGoldenCount; i++ ) {
+        printf( "    %.17g,\n", got[(size_t)i] );
+    }
+    printf( "};\n" );
+    CheckTrue( false, "golden CAPTURE mode is on -- paste the block above and set "
+                      "HAIR_MEDULLA_GOLDEN_CAPTURE back to 0" );
+#else
+    int mismatches = 0;
+    int firstBad = -1;
+    int overTol = 0;
+    double worstRel = 0;
+    for( int i = 0; i < kGoldenCount; i++ ) {
+        if( got[(size_t)i] != kMedullaGolden[i] ) {
+            mismatches++;
+            if( firstBad < 0 ) { firstBad = i; }
+            const double scale = fabs( kMedullaGolden[i] ) > 1e-300 ? fabs( kMedullaGolden[i] ) : 1.0;
+            const double rel = fabs( got[(size_t)i] - kMedullaGolden[i] ) / scale;
+            if( rel > worstRel ) { worstRel = rel; }
+            if( rel > kGoldenRelTol ) { overTol++; }
+        }
+    }
+    if( mismatches ) {
+        std::cout << "  first mismatch at index " << firstBad
+                  << " (case " << ( firstBad / kGoldenPerCase )
+                  << ", slot " << ( firstBad % kGoldenPerCase ) << "): got "
+                  << std::setprecision(17) << got[(size_t)firstBad]
+                  << ", golden " << kMedullaGolden[firstBad]
+                  << " ; worst relative difference over all "
+                  << mismatches << " mismatches = " << std::setprecision(6) << worstRel << std::endl;
+    }
+
+    // The exact count is ALWAYS reported, so a tolerance-path platform
+    // still tells you how far it drifts from the capture toolchain.
+    std::cout << "  exact (bitwise) mismatches: " << mismatches << " of " << kGoldenCount
+              << "; worst relative difference " << std::setprecision(4) << worstRel
+              << ( kGoldenExactPlatform
+                     ? "  [capture toolchain -- asserting EXACT equality]"
+                     : "  [non-capture toolchain -- asserting a 1e-14 relative bound; "
+                       "see the group-15 header]" )
+              << std::endl;
+
+    if( kGoldenExactPlatform ) {
+        Check( mismatches == 0,
+               "MONEY ASSERTION -- medulla-off output is BIT-IDENTICAL to the Phase-2 golden capture",
+               mismatches, 0 );
+    } else {
+        Check( overTol == 0,
+               "MONEY ASSERTION -- medulla-off output matches the Phase-2 golden capture to 1e-14 "
+               "relative (this toolchain did not produce the literals; see the group-15 header)",
+               overTol, 0 );
+    }
+#endif
+}
+
+//! 15b -- the portable half.  No literals: three painter sets that
+//! must all resolve to the same (medulla-inactive) model.
+static void RunMedullaOffInBinaryIdentity()
+{
+    std::cout << "=== 15b. medulla-off in-binary identity (no medulla painters == kappa 0 == sigma_m 0) ===" << std::endl;
+
+    ScalarRef sigmaP( new UniformScalarPainter( 0.35 ) );
+    ScalarRef betaMP( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaNP( new UniformScalarPainter( 0.4 ) );
+    ScalarRef alphaP( new UniformScalarPainter( 2.0 ) );
+    ScalarRef iorP  ( new UniformScalarPainter( 1.55 ) );
+    ScalarRef zeroP ( new UniformScalarPainter( 0.0 ) );
+    ScalarRef bigKap( new UniformScalarPainter( 0.8 ) );
+    ScalarRef gP    ( new UniformScalarPainter( 0.4 ) );
+    ScalarRef scatP ( new UniformScalarPainter( 2.0 ) );
+
+    HairPainters base;
+    base.sigma_a = sigmaP.get();
+    base.beta_m = betaMP.get(); base.beta_n = betaNP.get();
+    base.alpha  = alphaP.get(); base.ior    = iorP.get();
+
+    // (a) the Phase-2 painter set, verbatim -- no medulla slots bound.
+    HairPainters unbound = base;
+
+    // (b) medulla plumbed but kappa == 0.
+    HairPainters kappaZero = base;
+    kappaZero.medulla_ratio   = zeroP.get();
+    kappaZero.medulla_scatter = scatP.get();
+    kappaZero.medulla_g       = gP.get();
+
+    // (c) a FAT medulla that scatters nothing.
+    HairPainters scatterZero = base;
+    scatterZero.medulla_ratio   = bigKap.get();
+    scatterZero.medulla_scatter = zeroP.get();
+    scatterZero.medulla_g       = gP.get();
+
+    HairBRDF* brdfA = new HairBRDF( unbound );     brdfA->addref();
+    HairBRDF* brdfB = new HairBRDF( kappaZero );   brdfB->addref();
+    HairBRDF* brdfC = new HairBRDF( scatterZero ); brdfC->addref();
+    HairSPF*  spfA  = new HairSPF( unbound );      spfA->addref();
+    HairSPF*  spfB  = new HairSPF( kappaZero );    spfB->addref();
+    HairSPF*  spfC  = new HairSPF( scatterZero );  spfC->addref();
+
+    const IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    const double thetas[5] = { 0.0, 0.6, -0.9, 1.4, -0.2 };
+    const double hs[4]     = { 0.0, 0.55, -0.75, 0.99 };
+
+    int diffB = 0, diffC = 0;
+    for( int i = 0; i < 5; i++ )
+    for( int k = 0; k < 4; k++ )
+    {
+        const RayIntersectionGeometric ri = MakeFibreHit( thetas[i], 1.3, hs[k] );
+
+        for( int d = 0; d < 12; d++ )
+        {
+            const double t = -PI_OV_TWO + ( d + 0.5 ) * ( PI / 12 );
+            const Vector3 wi = FibreDir( ri, t, 0.3 + d * 0.5 );
+
+            const RISEPel a = brdfA->value( wi, ri );
+            const RISEPel b = brdfB->value( wi, ri );
+            const RISEPel c = brdfC->value( wi, ri );
+            for( unsigned int ch = 0; ch < 3; ch++ ) {
+                if( a[ch] != b[ch] ) { diffB++; }
+                if( a[ch] != c[ch] ) { diffC++; }
+            }
+            if( brdfA->valueNM( wi, ri, 610.0 ) != brdfB->valueNM( wi, ri, 610.0 ) ) { diffB++; }
+            if( brdfA->valueNM( wi, ri, 610.0 ) != brdfC->valueNM( wi, ri, 610.0 ) ) { diffC++; }
+            if( spfA->Pdf( ri, wi, iorStack ) != spfB->Pdf( ri, wi, iorStack ) ) { diffB++; }
+            if( spfA->Pdf( ri, wi, iorStack ) != spfC->Pdf( ri, wi, iorStack ) ) { diffC++; }
+        }
+
+        // The SAMPLER path too -- a medulla lobe that consumed an extra
+        // sampler dimension at kappa == 0 would desynchronise the stream
+        // and show up here and nowhere else.
+        RandomNumberGenerator rngA( kRNGSeed ), rngB( kRNGSeed ), rngC( kRNGSeed );
+        IndependentSampler sA( rngA ), sB( rngB ), sC( rngC );
+        for( int s = 0; s < 64; s++ ) {
+            ScatteredRayContainer ca, cb, cc;
+            spfA->Scatter( ri, sA, ca, iorStack );
+            spfB->Scatter( ri, sB, cb, iorStack );
+            spfC->Scatter( ri, sC, cc, iorStack );
+            if( ca.Count() != cb.Count() ) { diffB++; continue; }
+            if( ca.Count() != cc.Count() ) { diffC++; continue; }
+            if( ca.Count() == 0 ) { continue; }
+            if( ca[0].ray.Dir().x != cb[0].ray.Dir().x ||
+                ca[0].ray.Dir().y != cb[0].ray.Dir().y ||
+                ca[0].ray.Dir().z != cb[0].ray.Dir().z ||
+                ca[0].pdf != cb[0].pdf ||
+                ca[0].kray[0] != cb[0].kray[0] ||
+                ca[0].kray[1] != cb[0].kray[1] ||
+                ca[0].kray[2] != cb[0].kray[2] ) { diffB++; }
+            if( ca[0].ray.Dir().x != cc[0].ray.Dir().x ||
+                ca[0].ray.Dir().y != cc[0].ray.Dir().y ||
+                ca[0].ray.Dir().z != cc[0].ray.Dir().z ||
+                ca[0].pdf != cc[0].pdf ||
+                ca[0].kray[0] != cc[0].kray[0] ||
+                ca[0].kray[1] != cc[0].kray[1] ||
+                ca[0].kray[2] != cc[0].kray[2] ) { diffC++; }
+        }
+    }
+
+    Check( diffB == 0, "MONEY ASSERTION -- medulla_ratio = 0 is bit-identical to no medulla painters at all",
+           diffB, 0 );
+    Check( diffC == 0, "MONEY ASSERTION -- medulla_scatter = 0 (at kappa = 0.8) is bit-identical to no medulla painters at all",
+           diffC, 0 );
+
+    brdfA->release(); brdfB->release(); brdfC->release();
+    spfA->release();  spfB->release();  spfC->release();
+}
+
+// ============================================================
+//  16-19.  THE YAN 2017 MEDULLA  (Phase 3, medulla ON)
+//
+//  Group 15 pinned that turning the medulla OFF changes nothing.
+//  These four pin that turning it ON is physically defensible.
+//
+//   16  MEDULLA FURNACE.  The white-furnace gate of group 1, repeated
+//       across a (kappa, sigma_m, g) grid including kappa = 0.9.  The
+//       split is designed to be energy-preserving BY CONSTRUCTION
+//       (HairBSDF.h section 3b), so this is a regression guard on that
+//       design, not a hope: it fails the moment a scattered lobe's
+//       M_p or N_p stops integrating to 1, which is exactly what a
+//       mis-normalised profile table or a broken piecewise-linear
+//       interpolation would do.  Energy must also never EXCEED 1.
+//
+//   17  SPLIT BOOKKEEPING (the white-box half).  Group 16 measures the
+//       SUM, which the split leaves unchanged by construction -- it
+//       would stay green with the two halves swapped, mis-weighted, or
+//       attached to the wrong parent order.  This group reads the
+//       per-lobe A_p vector through `TestMedullaAp` and asserts the
+//       actual claims: A_TT + A_TTs reproduces the medulla-free A_TT
+//       to the last bit, likewise TRT; A_TTs / A_TRTs rise
+//       monotonically with sigma_m and vanish as sigma_m -> 0; the
+//       unscattered TT correspondingly dims; and the residual lobe is
+//       untouched.
+//
+//   18  SAMPLE <-> PDF AND THE ESTIMATOR, medulla on.  The scattered
+//       lobes are sampled from a tabulated piecewise-linear density;
+//       this checks the sampler and `Pdf` agree, that `PdfNM`
+//       integrates to 1 over the sphere with the new lobes in the
+//       mixture, and that E[value*cos/pdf] still matches an
+//       independent quadrature at a NON-zero sigma_a.
+//
+//   19  THE TABLE ITSELF.  Normalisation at grid nodes and between
+//       them, continuity across cell boundaries, and a direct
+//       Sample-draws-from-Eval check.
+// ============================================================
+
+//! The medulla painter set: tier-2 colour plus the three medulla slots.
+struct MedullaRig
+{
+    ScalarRef sigmaA, betaM, betaN, alpha, ior, kappa, scatter, g;
+    HairPainters painters;
+
+    MedullaRig( double sigmaAV, double kappaV, double scatterV, double gV,
+                double betaMV = 0.3, double betaNV = 0.3 )
+      : sigmaA ( new UniformScalarPainter( sigmaAV ) ),
+        betaM  ( new UniformScalarPainter( betaMV ) ),
+        betaN  ( new UniformScalarPainter( betaNV ) ),
+        alpha  ( new UniformScalarPainter( 2.0 ) ),
+        ior    ( new UniformScalarPainter( 1.55 ) ),
+        kappa  ( new UniformScalarPainter( kappaV ) ),
+        scatter( new UniformScalarPainter( scatterV ) ),
+        g      ( new UniformScalarPainter( gV ) )
+    {
+        painters.sigma_a         = sigmaA.get();
+        painters.beta_m          = betaM.get();
+        painters.beta_n          = betaN.get();
+        painters.alpha           = alpha.get();
+        painters.ior             = ior.get();
+        painters.medulla_ratio   = kappa.get();
+        painters.medulla_scatter = scatter.get();
+        painters.medulla_g       = g.get();
+    }
+};
+
+static void RunMedullaFurnace()
+{
+    std::cout << "=== 16. Medulla white furnace (sigma_a = 0, kappa > 0) ===" << std::endl;
+
+    const double kappas[3]  = { 0.3, 0.6, 0.9 };
+    const double scatters[3]= { 0.2, 1.0, 5.0 };
+    const double gs[3]      = { -0.6, 0.0, 0.6 };
+
+    // Fewer geometry cells than group 1 -- the parameter grid is the
+    // new axis here and the (theta_o, h) behaviour is already covered.
+    const double thetas[2] = { 0.0, 0.7 };
+    const double hs[2]     = { 0.0, 0.6 };
+
+    double worstQuad = 0, worstSPF = 0;
+    double maxEnergy = 0;
+
+    for( int a = 0; a < 3; a++ )
+    for( int b = 0; b < 3; b++ )
+    for( int c = 0; c < 3; c++ )
+    {
+        MedullaRig rig( 0.0, kappas[a], scatters[b], gs[c] );
+
+        HairBRDF* brdf = new HairBRDF( rig.painters ); brdf->addref();
+        HairSPF*  spf  = new HairSPF( rig.painters );  spf->addref();
+        const IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        for( int i = 0; i < 2; i++ )
+        for( int k = 0; k < 2; k++ )
+        {
+            const RayIntersectionGeometric ri = MakeFibreHit( thetas[i], 0.9, hs[k] );
+
+            const double quad = QuadratureBSDFEnergy( *brdf, ri, 1, 450, 450 );
+            if( fabs( quad - 1.0 ) > worstQuad ) { worstQuad = fabs( quad - 1.0 ); }
+            if( quad > maxEnergy ) { maxEnergy = quad; }
+            CheckTrue( Near( quad, 1.0, kFurnaceQuadTol ),
+                       "medulla furnace: INTEGRAL value*cos over the sphere == 1" );
+            CheckTrue( quad <= 1.0 + kFurnaceQuadTol,
+                       "medulla furnace: energy never EXCEEDS 1" );
+
+            const SPFStats st = RunSPFSamples( *spf, ri, iorStack, false, 0, 1, 20000 );
+            if( fabs( st.meanKray - 1.0 ) > worstSPF ) { worstSPF = fabs( st.meanKray - 1.0 ); }
+            CheckTrue( Near( st.meanKray, 1.0, 1e-9 ),
+                       "medulla furnace: mean kray over SPF samples == 1" );
+            CheckTrue( st.nullScatters == 0,
+                       "medulla furnace: every Scatter call produced a ray" );
+            CheckTrue( st.pdfMismatches == 0,
+                       "medulla furnace: sampled pdf agrees with Pdf()" );
+        }
+
+        brdf->release();
+        spf->release();
+    }
+
+    std::cout << "  worst |quadrature - 1| = " << std::setprecision(6) << worstQuad
+              << " (tol " << kFurnaceQuadTol << "), worst |mean kray - 1| = " << worstSPF
+              << ", max energy seen = " << maxEnergy << std::endl;
+}
+
+static void RunMedullaSplitBookkeeping()
+{
+    std::cout << "=== 17. Medulla split bookkeeping (per-lobe A_p) ===" << std::endl;
+
+    const double kSigmaA = 0.35;
+    const double kKappa  = 0.7;
+
+    // The medulla-FREE reference: the same material with no medulla
+    // painters bound at all.
+    ScalarRef sigA ( new UniformScalarPainter( kSigmaA ) );
+    ScalarRef bM   ( new UniformScalarPainter( 0.3 ) );
+    ScalarRef bN   ( new UniformScalarPainter( 0.3 ) );
+    ScalarRef al   ( new UniformScalarPainter( 2.0 ) );
+    ScalarRef io   ( new UniformScalarPainter( 1.55 ) );
+    HairPainters plain;
+    plain.sigma_a = sigA.get(); plain.beta_m = bM.get(); plain.beta_n = bN.get();
+    plain.alpha = al.get();     plain.ior = io.get();
+    HairBRDF* plainBRDF = new HairBRDF( plain ); plainBRDF->addref();
+
+    const double hs[3] = { 0.0, 0.35, 0.9 };
+    const double sigmaMs[5] = { 0.0, 0.05, 0.3, 1.5, 8.0 };
+
+    for( int k = 0; k < 3; k++ )
+    {
+        const RayIntersectionGeometric ri = MakeFibreHit( 0.25, 1.4, hs[k] );
+
+        double refAp[4], refLen;
+        plainBRDF->TestApAndPathLength( ri, kSigmaA, refAp, refLen );
+
+        double prevTTs = -1, prevTRTs = -1, prevTT = 1e30;
+
+        for( int s = 0; s < 5; s++ )
+        {
+            MedullaRig rig( kSigmaA, kKappa, sigmaMs[s], 0.4 );
+            HairBRDF* brdf = new HairBRDF( rig.painters ); brdf->addref();
+
+            double ap[6]; int nLobes = 0;
+            double q1 = 0, q2 = 0, mb = 0, mtau = 0, mvar = 0;
+            brdf->TestMedullaAp( ri, kSigmaA, ap, nLobes, q1, q2, mb, mtau, mvar );
+
+            if( sigmaMs[s] <= 0 ) {
+                // sigma_m == 0 must latch the medulla OFF entirely.
+                Check( nLobes == 4, "split: sigma_m = 0 reports 4 lobes (medulla latched off)",
+                       nLobes, 4 );
+                for( int p = 0; p < 4; p++ ) {
+                    CheckTrue( ap[p] == refAp[p],
+                               "split: sigma_m = 0 reproduces the medulla-free A_p exactly" );
+                }
+                brdf->release();
+                continue;
+            }
+
+            Check( nLobes == 6, "split: sigma_m > 0 reports 6 lobes", nLobes, 6 );
+
+            // --- THE MONEY ASSERTION: energy bookkeeping ------------
+            // Each parent order's two halves must reconstruct the
+            // medulla-free attenuation.  Not a tolerance check on a
+            // Monte-Carlo mean -- an algebraic identity, held to
+            // rounding.
+            CheckTrue( Near( ap[1] + ap[4], refAp[1], 1e-12 ),
+                       "split: MONEY ASSERTION -- A_TT + A_TTs reproduces the medulla-free A_TT" );
+            CheckTrue( Near( ap[2] + ap[5], refAp[2], 1e-12 ),
+                       "split: MONEY ASSERTION -- A_TRT + A_TRTs reproduces the medulla-free A_TRT" );
+            CheckTrue( ap[0] == refAp[0],
+                       "split: the R lobe (no medulla crossing) is untouched" );
+            CheckTrue( ap[3] == refAp[3],
+                       "split: the residual lobe is deliberately NOT split" );
+
+            double total = 0, refTotal = 0;
+            for( int p = 0; p < 6; p++ ) { total += ap[p]; }
+            for( int p = 0; p < 4; p++ ) { refTotal += refAp[p]; }
+            CheckTrue( Near( total, refTotal, 1e-12 ),
+                       "split: total apparent energy is unchanged by the medulla" );
+
+            // --- direction of the redistribution --------------------
+            CheckTrue( ap[4] > prevTTs,  "split: A_TTs grows with sigma_m" );
+            CheckTrue( ap[5] > prevTRTs, "split: A_TRTs grows with sigma_m" );
+            CheckTrue( ap[1] < prevTT,   "split: the unscattered A_TT dims as sigma_m grows" );
+            prevTTs = ap[4]; prevTRTs = ap[5]; prevTT = ap[1];
+
+            // --- THE SPLIT FACTOR ITSELF, against closed forms ------
+            // The bookkeeping identity above holds for ANY x in
+            // ap[1]*x + ap[1]*(1-x), so on its own it would stay green
+            // with TRTs weighted 1-q instead of 1-q^2, with the
+            // sqrt(1-b^2) chord factor dropped from q, with tau missing
+            // its 1/cos(theta_t) inclination stretch, or with b missing
+            // its /kappa.  Every one of those is a silent physical
+            // error.  So the geometry is re-derived here from
+            // (theta_o, h, eta, kappa, sigma_m) alone -- independently
+            // of HairBSDF's own Geom/Medulla code -- and pinned.
+            const double sinThetaO = sin( 0.25 );
+            const double cosThetaO = cos( 0.25 );
+            const double eta       = 1.55;
+            const double sinThetaT = sinThetaO / eta;
+            const double cosThetaT = sqrt( 1.0 - sinThetaT * sinThetaT );
+            const double etap      = sqrt( eta * eta - sinThetaO * sinThetaO ) / cosThetaO;
+            const double sinGammaT = hs[k] / etap;
+            const double bExpect   = sinGammaT / kKappa;
+            const double tauExpect = sigmaMs[s] * 2.0 * kKappa / cosThetaT;
+            const double q1Expect  = exp( -tauExpect * sqrt( 1.0 - bExpect * bExpect ) );
+
+            CheckTrue( Near( mb, bExpect, 1e-12 ),
+                       "split: MONEY ASSERTION -- b == sin(gamma_t) / kappa (the /kappa is present)" );
+            CheckTrue( Near( mtau, tauExpect, 1e-12 ),
+                       "split: MONEY ASSERTION -- tau == sigma_m * 2 kappa / cos(theta_t) "
+                       "(the inclination stretch is present)" );
+            CheckTrue( Near( q1, q1Expect, 1e-12 ),
+                       "split: MONEY ASSERTION -- q == exp(-tau * sqrt(1 - b^2)) (the chord factor "
+                       "is present)" );
+            CheckTrue( Near( q2, q1 * q1, 1e-15 ),
+                       "split: MONEY ASSERTION -- TRT's survival is q SQUARED (two crossings), "
+                       "not q" );
+            CheckTrue( Near( ap[4], refAp[1] * ( 1 - q1 ), 1e-12 ),
+                       "split: MONEY ASSERTION -- A_TTs == A_TT_free * (1 - q)" );
+            CheckTrue( Near( ap[5], refAp[2] * ( 1 - q1 * q1 ), 1e-12 ),
+                       "split: MONEY ASSERTION -- A_TRTs == A_TRT_free * (1 - q^2)" );
+            CheckTrue( fabs( mb ) < 1.0,
+                       "split: the chord's medulla impact parameter is inside the medulla" );
+
+            // The variance the REAL BSDF path reports must be the one
+            // the table holds for this hit's cell -- closing the loop
+            // between group 19's table-level offset check and the
+            // renderer's own read.
+            {
+                RISE::Implementation::HairMedullaProfile prof;
+                RISE::Implementation::HairMedullaLookup( mb, mtau, 0.4, prof );
+                CheckTrue( Near( mvar, prof.longVariance, 1e-12 ),
+                           "split: the longitudinal variance the BSDF path reports IS the table's "
+                           "value for this hit's (b, tau, g) cell" );
+            }
+
+            if( k == 0 && s == 3 ) {
+                std::cout << "    h=0 sigma_m=" << sigmaMs[s]
+                          << ": q1=" << std::setprecision(6) << q1 << " tau=" << mtau
+                          << " b=" << mb << " longVar=" << mvar
+                          << "  A=(" << ap[0] << "," << ap[1] << "," << ap[2] << ","
+                          << ap[3] << " | " << ap[4] << "," << ap[5] << ")" << std::endl;
+            }
+
+            brdf->release();
+        }
+
+        // sigma_m -> 0 limit: the scattered lobes must vanish.
+        MedullaRig tiny( kSigmaA, kKappa, 1e-7, 0.4 );
+        HairBRDF* tinyBRDF = new HairBRDF( tiny.painters ); tinyBRDF->addref();
+        double ap[6]; int n = 0; double q1, q2, mb, mtau, mvar;
+        tinyBRDF->TestMedullaAp( ri, kSigmaA, ap, n, q1, q2, mb, mtau, mvar );
+        CheckTrue( ap[4] < 1e-6 && ap[5] < 1e-6,
+                   "split: the scattered lobes vanish as sigma_m -> 0" );
+        CheckTrue( Near( ap[1], refAp[1], 1e-6 ),
+                   "split: the unscattered TT converges to the medulla-free A_TT as sigma_m -> 0" );
+        tinyBRDF->release();
+    }
+
+    plainBRDF->release();
+}
+
+static void RunMedullaEstimator()
+{
+    std::cout << "=== 18. Medulla sample<->pdf, pdf integral, estimator ===" << std::endl;
+
+    struct Cell { double kappa, scatter, g, sigmaA, betaM, betaN, thetaO, h; };
+    const Cell cells[5] = {
+        { 0.70, 1.0, 0.40, 0.35, 0.30, 0.30,  0.20,  0.00 },
+        { 0.90, 5.0, 0.00, 0.60, 0.30, 0.30, -0.60,  0.45 },
+        { 0.30, 0.3,-0.60, 0.15, 0.10, 0.70,  1.10, -0.80 },
+        { 0.85, 2.0, 0.80, 1.00, 0.80, 0.15,  0.00,  0.95 },
+        { 0.50, 1.0, 0.40, 0.05, 0.05, 1.00,  0.90, -0.35 },
+    };
+
+    for( int c = 0; c < 5; c++ )
+    {
+        const Cell& C = cells[c];
+        MedullaRig rig( C.sigmaA, C.kappa, C.scatter, C.g, C.betaM, C.betaN );
+
+        HairBRDF* brdf = new HairBRDF( rig.painters ); brdf->addref();
+        HairSPF*  spf  = new HairSPF( rig.painters );  spf->addref();
+        const IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        const RayIntersectionGeometric ri = MakeFibreHit( C.thetaO, 2.2, C.h );
+
+        // (a) PdfNM integrates to 1 with the two extra lobes present.
+        const double pdfInt = QuadraturePdfNM( *spf, ri, iorStack, 550.0 );
+        CheckTrue( Near( pdfInt, 1.0, kFurnaceQuadTol ),
+                   "medulla: PdfNM integrates to 1 over the sphere" );
+
+        // (b) sampler <-> Pdf wiring.
+        const SPFStats st = RunSPFSamples( *spf, ri, iorStack, false, 0, 1, 60000 );
+        CheckTrue( st.pdfMismatches == 0, "medulla: sampled pdf agrees with Pdf()" );
+        CheckTrue( st.nullScatters == 0,  "medulla: every Scatter call produced a ray" );
+
+        // (c) estimator cross-check at NON-zero sigma_a: the SPF mean
+        //     of kray must equal the independent quadrature of
+        //     INTEGRAL value*cos.  This is the check that would catch
+        //     a scattered lobe whose Sample and Eval disagree -- the
+        //     furnace cannot, because at sigma_a = 0 kray is
+        //     identically 1.
+        const double quad = QuadratureBSDFEnergy( *brdf, ri, 1, 450, 450 );
+        CheckTrue( Near( st.meanKray, quad, kEstimatorTol ),
+                   "medulla: MONEY ASSERTION -- E[kray] over SPF samples == quadrature of "
+                   "INTEGRAL value*cos" );
+        CheckTrue( st.meanKray <= 1.0 + 1e-9,
+                   "medulla: kray stays inside the section-3 [0,1] proxy bound" );
+
+        std::cout << "    cell " << c << ": pdfInt=" << std::setprecision(6) << pdfInt
+                  << "  E[kray]=" << st.meanKray << "  quad=" << quad
+                  << "  (rel " << fabs( st.meanKray - quad ) / ( quad > 0 ? quad : 1 ) << ")"
+                  << std::endl;
+
+        brdf->release();
+        spf->release();
+    }
+}
+
+static void RunMedullaTable()
+{
+    std::cout << "=== 19. Medulla profile table (normalisation, continuity, sampling) ===" << std::endl;
+
+    using RISE::Implementation::HairMedullaProfile;
+    using RISE::Implementation::HairMedullaLookup;
+
+    Check( (int)kHairMedullaNumFloats ==
+               (int)( kHairMedullaNumB * kHairMedullaNumTau * kHairMedullaNumG *
+                      ( kHairMedullaPhiBins + 1 ) ),
+           "table: the baked float count matches the baked extents",
+           (double)kHairMedullaNumFloats,
+           (double)( kHairMedullaNumB * kHairMedullaNumTau * kHairMedullaNumG *
+                     ( kHairMedullaPhiBins + 1 ) ) );
+    CheckTrue( kHairMedullaPhiBins <= (unsigned int)HairMedullaProfile::kMaxBins,
+               "table: the baked bin count fits the fixed-capacity runtime struct" );
+
+    // --- (a) normalisation, at grid nodes AND between them -----------
+    double worstNorm = 0;
+    for( int ib = 0; ib < 9; ib++ )
+    for( int it = 0; it < 9; it++ )
+    for( int ig = 0; ig < 5; ig++ )
+    {
+        // Deliberately off-node fractions (x.5 steps) as well as nodes.
+        const double b   = -1.0 + ib * 0.25;
+        const double tau = kHairMedullaTauMin *
+                           pow( kHairMedullaTauMax / kHairMedullaTauMin, it / 8.0 );
+        const double g   = -0.9 + ig * 0.45;
+
+        HairMedullaProfile prof;
+        HairMedullaLookup( b, tau, g, prof );
+        CheckTrue( prof.nBins == kHairMedullaPhiBins, "table: lookup returns a full profile" );
+
+        // Fine trapezoid over the circle of the PUBLIC Eval.
+        const int N = 2048;
+        double sum = 0;
+        double minV = 1e30;
+        for( int i = 0; i < N; i++ ) {
+            const double dphi = -PI + ( i + 0.5 ) * ( TWO_PI / N );
+            const double v = prof.Eval( dphi );
+            if( v < minV ) { minV = v; }
+            sum += v;
+        }
+        sum *= TWO_PI / N;
+        if( fabs( sum - 1.0 ) > worstNorm ) { worstNorm = fabs( sum - 1.0 ); }
+        CheckTrue( Near( sum, 1.0, 1e-6 ), "table: the interpolated profile integrates to 1" );
+        CheckTrue( minV > 0, "table: the profile is strictly positive everywhere "
+                             "(a zero would be an unsampleable direction with nonzero energy)" );
+    }
+    std::cout << "    worst |INTEGRAL profile - 1| over the (b, tau, g) sweep = "
+              << std::setprecision(4) << worstNorm << std::endl;
+
+    // --- (b) continuity across a cell boundary -----------------------
+    // Trilinear interpolation is C0, so stepping a hair across a node
+    // must move the density by ~nothing.  A stencil that read the
+    // wrong cell, or an off-by-one in the index clamp, shows up as a
+    // jump here and essentially nowhere else.
+    double worstJump = 0;
+    for( int ib = 1; ib < (int)kHairMedullaNumB - 1; ib++ )
+    {
+        const double bNode = (double)ib / (double)( kHairMedullaNumB - 1 );
+        const double eps = 1e-7;
+        HairMedullaProfile lo, hi;
+        HairMedullaLookup( bNode - eps, 1.0, 0.4, lo );
+        HairMedullaLookup( bNode + eps, 1.0, 0.4, hi );
+        for( int i = 0; i < 64; i++ ) {
+            const double dphi = -PI + ( i + 0.5 ) * ( TWO_PI / 64 );
+            const double d = fabs( lo.Eval( dphi ) - hi.Eval( dphi ) );
+            if( d > worstJump ) { worstJump = d; }
+        }
+    }
+    for( int it = 1; it < (int)kHairMedullaNumTau - 1; it++ )
+    {
+        const double tNode = kHairMedullaTauMin *
+            pow( kHairMedullaTauMax / kHairMedullaTauMin,
+                 (double)it / (double)( kHairMedullaNumTau - 1 ) );
+        HairMedullaProfile lo, hi;
+        HairMedullaLookup( 0.3, tNode * ( 1 - 1e-7 ), 0.4, lo );
+        HairMedullaLookup( 0.3, tNode * ( 1 + 1e-7 ), 0.4, hi );
+        for( int i = 0; i < 64; i++ ) {
+            const double dphi = -PI + ( i + 0.5 ) * ( TWO_PI / 64 );
+            const double d = fabs( lo.Eval( dphi ) - hi.Eval( dphi ) );
+            if( d > worstJump ) { worstJump = d; }
+        }
+    }
+    CheckTrue( worstJump < 1e-5,
+               "table: MONEY ASSERTION -- the interpolation is continuous across cell boundaries" );
+    std::cout << "    worst density jump across a (b or tau) cell boundary = " << worstJump << std::endl;
+
+    // --- (c) mirror symmetry ----------------------------------------
+    // ! WEAK BY CONSTRUCTION, and recorded as such.  `pos.Eval(dphi)`
+    // vs `neg.Eval(-dphi)` is an algebraic identity of the single
+    // `if( mirrored ) dphi = -dphi;` line, independent of what the
+    // table holds -- it catches that line being deleted and little
+    // else.  In particular it does NOT check that the runtime's sign
+    // convention for b matches the BAKE's; that is pinned instead by
+    // group 17's closed-form `b == sin(gamma_t) / kappa` assertion
+    // plus the (d) draw test below, which is run in BOTH orientations.
+    {
+        HairMedullaProfile pos, neg;
+        HairMedullaLookup(  0.55, 2.0, 0.4, pos );
+        HairMedullaLookup( -0.55, 2.0, 0.4, neg );
+        double worst = 0;
+        for( int i = 0; i < 128; i++ ) {
+            const double dphi = -PI + ( i + 0.5 ) * ( TWO_PI / 128 );
+            worst = r_max( worst, fabs( pos.Eval( dphi ) - neg.Eval( -dphi ) ) );
+        }
+        CheckTrue( worst < 1e-12,
+                   "table: a negative impact parameter gives the MIRRORED profile" );
+    }
+
+    // --- (c2) THE LONGITUDINAL VARIANCE ------------------------------
+    // The 33rd float of every cell.  It is structurally invisible to
+    // every other check in this file and to every render gate: `Mp` is
+    // normalised at EVERY v, so reading the wrong float -- say
+    // `cell[bins - 1]`, an azimuthal density, instead of `cell[bins]` --
+    // leaves the furnace, the pdf integral and the estimator
+    // cross-check all green and only changes how fur LOOKS.  So the
+    // offset is pinned directly, against an index formula written out
+    // here rather than borrowed from the runtime.
+    {
+        const unsigned int perCell = kHairMedullaPhiBins + 1u;
+
+        // Land exactly on grid nodes so interpolation is the identity.
+        const unsigned int ib = 3, it = 6, ig = 3;
+        const double bNode   = (double)ib / (double)( kHairMedullaNumB - 1 );
+        const double tauNode = kHairMedullaTauMin *
+            pow( (double)kHairMedullaTauMax / (double)kHairMedullaTauMin,
+                 (double)it / (double)( kHairMedullaNumTau - 1 ) );
+        const double gNode   = -(double)kHairMedullaGMax +
+            2.0 * (double)kHairMedullaGMax * (double)ig / (double)( kHairMedullaNumG - 1 );
+
+        const size_t base = ( ( (size_t)ib * kHairMedullaNumTau + it ) * kHairMedullaNumG + ig ) * perCell;
+        const double rawVariance = (double)kHairMedullaProfileData[base + kHairMedullaPhiBins];
+        const double rawLastBin  = (double)kHairMedullaProfileData[base + kHairMedullaPhiBins - 1];
+
+        HairMedullaProfile prof;
+        HairMedullaLookup( bNode, tauNode, gNode, prof );
+
+        CheckTrue( Near( prof.longVariance, rawVariance, 1e-6 ),
+                   "table: MONEY ASSERTION -- longVariance reads cell[bins], the 33rd float, "
+                   "not a neighbouring azimuthal density" );
+        // The guard is only meaningful if the two floats actually
+        // differ; assert that too, so a future table cannot make this
+        // check vacuous without saying so.
+        CheckTrue( fabs( rawVariance - rawLastBin ) > 0.01,
+                   "table: the variance float and its neighbouring bin are far enough apart for "
+                   "the offset check above to bite" );
+        CheckTrue( prof.longVariance > 0, "table: longVariance is positive at an interior node" );
+
+        // Physical bounds and direction.  The isotropic (thick-medulla)
+        // limit of E[theta^2] for an exit direction uniform on the
+        // sphere is INTEGRAL_0^1 asin(u)^2 du = 0.46740; the bake's
+        // global maximum is 0.46977, so anything materially above that
+        // is a unit or an indexing error, not physics.
+        double prev = -1;
+        bool risesWithTau = true;
+        double maxVar = 0;
+        for( int t = 0; t < 10; t++ ) {
+            const double tau = kHairMedullaTauMin *
+                pow( (double)kHairMedullaTauMax / (double)kHairMedullaTauMin, t / 9.0 );
+            HairMedullaProfile pf;
+            HairMedullaLookup( 0.0, tau, 0.0, pf );
+            if( pf.longVariance > maxVar ) { maxVar = pf.longVariance; }
+            // Isotropic medulla: one scatter already randomises theta,
+            // so the variance starts near the isotropic value and drifts
+            // only mildly.  The invariant worth asserting is the BOUND,
+            // not monotonicity -- see the printout.
+            if( t > 0 && pf.longVariance < prev - 0.2 ) { risesWithTau = false; }
+            prev = pf.longVariance;
+        }
+        CheckTrue( maxVar < 0.55,
+                   "table: longVariance never exceeds the isotropic-exit limit (~0.467) by more "
+                   "than sampling noise" );
+        CheckTrue( risesWithTau,
+                   "table: longVariance does not collapse as tau grows" );
+        std::cout << "    longVariance at node (b,tau,g)=(" << bNode << "," << tauNode << ","
+                  << gNode << ") = " << std::setprecision(6) << prof.longVariance
+                  << " (raw " << rawVariance << ", neighbouring bin " << rawLastBin
+                  << "); max over the tau sweep = " << maxVar << std::endl;
+    }
+
+    // --- (d) Sample really does draw from Eval -----------------------
+    // Histogram a large number of Sample() draws and compare each bin's
+    // empirical density against Eval at the bin centre.  This is the
+    // check that the piecewise-linear inversion (a quadratic solve per
+    // segment, plus the wrap-around segment at +/- pi) is right; a
+    // subtly wrong inverse leaves the pdf integrating to 1 and the
+    // furnace green while quietly biasing every fur render.
+    // Three cells: a thin forward-scattering one, its MIRRORED twin
+    // (negative b -- the only direct exercise of the mirror path's
+    // Sample half), and a thick diffusive one.
+    {
+        const double cellB[3]   = {  0.35, -0.35,  0.55 };
+        const double cellTau[3] = {  1.70,  1.70, 12.00 };
+        const double cellG[3]   = {  0.40,  0.40,  0.00 };
+        const char*  cellTag[3] = { "thin", "thin MIRRORED", "thick" };
+
+        for( int c = 0; c < 3; c++ )
+        {
+            HairMedullaProfile prof;
+            HairMedullaLookup( cellB[c], cellTau[c], cellG[c], prof );
+
+            const int kBins = 32;
+            const int kDraws = 400000;
+            std::vector<int> hist( (size_t)kBins, 0 );
+            RandomNumberGenerator rng( kRNGSeed );
+            for( int i = 0; i < kDraws; i++ ) {
+                const double x = prof.Sample( rng.CanonicalRandom() );
+                int bin = (int)floor( ( x + PI ) / TWO_PI * kBins );
+                if( bin < 0 ) { bin = 0; }
+                if( bin >= kBins ) { bin = kBins - 1; }
+                hist[(size_t)bin]++;
+            }
+
+            // The gate is a BINOMIAL one, not a fixed percentage.  A
+            // thick cell's forward bins carry ~0.4 % of the mass, so a
+            // flat relative tolerance is simultaneously far too loose
+            // for the fat bins and too tight for the thin ones -- the
+            // first version of this test used 3 % and the thick cell
+            // failed at 3.1 %, which was 1.3 sigma of pure sampling
+            // noise.  Each bin's count is Binomial(N, mass), so the
+            // right yardstick is sigma = sqrt(mass (1-mass) / N).  Five
+            // sigma over 3 cells x 32 bins is a ~5e-5 false-alarm rate
+            // (and the seed is fixed anyway), while a genuine inversion
+            // bug displaces mass by tens of percent -- hundreds of
+            // sigma.
+            const double binW = TWO_PI / kBins;
+            double worstSigma = 0;
+            double worstRelAtWorst = 0;
+            int worstBin = -1;
+            for( int i = 0; i < kBins; i++ ) {
+                // Reference: the analytic mass of the bin, from Eval,
+                // integrated finely (the density is piecewise linear, so
+                // this is exact up to the sub-sampling).
+                double mass = 0;
+                const int sub = 64;
+                for( int j = 0; j < sub; j++ ) {
+                    mass += prof.Eval( -PI + i * binW + ( j + 0.5 ) * ( binW / sub ) );
+                }
+                mass *= binW / sub;
+
+                const double got = (double)hist[(size_t)i] / kDraws;
+                const double sd = sqrt( r_max( mass * ( 1 - mass ), 1e-12 ) / (double)kDraws );
+                const double dev = fabs( got - mass ) / sd;
+                if( dev > worstSigma ) {
+                    worstSigma = dev;
+                    worstBin = i;
+                    worstRelAtWorst = fabs( got - mass ) / ( mass > 1e-9 ? mass : 1.0 );
+                }
+            }
+            CheckTrue( worstSigma < 5.0,
+                       std::string( "table: MONEY ASSERTION -- Sample() draws from exactly the "
+                                    "density Eval reports (" ) + cellTag[c] + " cell)" );
+            std::cout << "    worst Sample-vs-Eval bin deviation, " << cellTag[c] << " cell = "
+                      << std::setprecision(4) << worstSigma << " sigma (" << worstRelAtWorst
+                      << " relative, bin " << worstBin << ", " << kDraws << " draws)" << std::endl;
+        }
+    }
+}
+
+// ============================================================
 //  main
 // ============================================================
 
@@ -1795,6 +2758,18 @@ int main()
     RunApplyLobeTiltWhiteBox();
     std::cout << std::endl;
     RunKHEdgeClampChromatic();
+    std::cout << std::endl;
+    RunMedullaOffBitIdentity();
+    std::cout << std::endl;
+    RunMedullaOffInBinaryIdentity();
+    std::cout << std::endl;
+    RunMedullaFurnace();
+    std::cout << std::endl;
+    RunMedullaSplitBookkeeping();
+    std::cout << std::endl;
+    RunMedullaEstimator();
+    std::cout << std::endl;
+    RunMedullaTable();
     std::cout << std::endl;
 
     g_stubObject->release();

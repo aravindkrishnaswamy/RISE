@@ -1,0 +1,216 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           fur_medulla.RISEscene                                                                   #
+#   Description:    ANIMAL FUR -- the Yan et al. 2017 scattering MEDULLA (docs/HAIR_FUR_DESIGN.md           #
+#                    section 2.4 + section 7 Phase 3).  Three grooms, identical in every respect except     #
+#                    `medulla_ratio`, side by side under the same light:                                    #
+#                                                                                                           #
+#                      LEFT    medulla_ratio 0     -- no medulla.  This is Phase 1/2 behaviour, bit for     #
+#                                                     bit; it is the correct setting for HUMAN HAIR and     #
+#                                                     is what every pre-Phase-3 scene gets by default.      #
+#                      CENTRE  medulla_ratio 0.5   -- a moderate medulla, e.g. a coarse guard hair.         #
+#                      RIGHT   medulla_ratio 0.9   -- a fat medulla, the rabbit/undercoat end of Yan's      #
+#                                                     measured fits, and the ceiling the model clamps       #
+#                                                     near (0.95).                                          #
+#                                                                                                           #
+#                    WHAT TO LOOK FOR.  The medulla does NOT add energy -- it SPLITS what the TT and TRT    #
+#                    orders already carried into an unscattered half and a diffused, medulla-scattered      #
+#                    half (HairBSDF.h section 3b).  What changes left to right is the SHARPNESS of the      #
+#                    transmitted light: the left groom shows crisp, individually-resolved backlit           #
+#                    strands, and by the right one that has spread into a soft, saturated glow -- which     #
+#                    is exactly the difference between "thin shiny hair" and real fur in close-up.          #
+#                                                                                                           #
+#                    DO NOT read per-groom BRIGHTNESS as the energy check.  It legitimately moves here      #
+#                    (measured mean 8-bit luminance over each third at the committed settings: 6.9 / 9.6    #
+#                    / 7.0 left-to-right, with 1717 / 2742 / 2185 pixels above the 12/255 "lit" floor),     #
+#                    because in a BACKLIT view the medulla redirects transmitted light TOWARD or AWAY       #
+#                    from one particular camera -- a redistribution over the sphere is not a constant       #
+#                    over any one direction.  The energy invariant is a SPHERE integral, and it is          #
+#                    asserted numerically by HairBSDFTest group 16 and HairRenderTest 1b, not by eye here.  #
+#                                                                                                           #
+#                    RELATIONSHIP TO THE OTHER GATES.  HairBSDFTest groups 16-19 own the numeric proof      #
+#                    (sphere integral == 1 across a (kappa, sigma_m, g) grid, the per-lobe split            #
+#                    bookkeeping, sampler/pdf consistency, and the profile table itself), and               #
+#                    HairRenderTest's "1b. Fur medulla white furnace" owns the render-level energy          #
+#                    assertion.  THIS file is the human-renderable, CST-golden-covered companion: it is     #
+#                    what a reviewer opens to see whether the feature LOOKS right, and it is what keeps     #
+#                    the three new chunk parameters inside the parser's golden coverage.                    #
+#                                                                                                           #
+#                    NOTE the strong backlight.  The medulla only ever touches TRANSMITTED light (R, the    #
+#                    surface highlight, never crosses the fibre interior and is untouched by design), so    #
+#                    a purely front-lit setup would show almost no difference between the three grooms.     #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      August 27, 2026                                                                         #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+film
+{
+	width			384
+	height			160
+}
+
+pinhole_camera
+{
+	location		0 0 5.0
+	lookat			0 0 0
+	up			0 1 0
+	fov			34.0
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			96
+	rr_min_depth		10
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/fur_medulla
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# One shared colour tier for all three grooms -- a warm mid-brown, so
+# the saturation shift the medulla produces is visible rather than
+# hidden under black absorption.
+##################################################
+scalar_painter
+{
+	name			pnt_eumel
+	value			0.55
+}
+
+scalar_painter
+{
+	name			pnt_pheomel
+	value			0.35
+}
+
+##################################################
+# The three materials.  EVERYTHING except medulla_ratio is identical,
+# including medulla_scatter and medulla_g -- which are inert on
+# mat_fur_none because medulla_ratio 0 latches the whole extension off
+# (and is the DEFAULT, so it could equally have been omitted; it is
+# spelled out here to make the comparison explicit).
+#
+# medulla_scatter is in the same per-fibre-diameter units as sigma_a;
+# 2.0 puts the ballistic survival of one medulla crossing well below
+# 1/2, so most of the transmitted light really does take the scattered
+# route.  medulla_g 0.4 is forward-scattering, in the ballpark of
+# Yan's measured fur fits.
+##################################################
+hair_material
+{
+	name			mat_fur_none
+	eumelanin		pnt_eumel
+	pheomelanin		pnt_pheomel
+	medulla_ratio		0
+	medulla_scatter		2.0
+	medulla_g		0.4
+}
+
+hair_material
+{
+	name			mat_fur_mid
+	eumelanin		pnt_eumel
+	pheomelanin		pnt_pheomel
+	medulla_ratio		0.5
+	medulla_scatter		2.0
+	medulla_g		0.4
+}
+
+hair_material
+{
+	name			mat_fur_fat
+	eumelanin		pnt_eumel
+	pheomelanin		pnt_pheomel
+	medulla_ratio		0.9
+	medulla_scatter		2.0
+	medulla_g		0.4
+}
+
+##################################################
+# ONE groom, INSTANCED three times.  That is what makes this a
+# controlled comparison: all three `standard_object`s point at the same
+# `hair_geometry`, so the strand sets are not merely generated from the
+# same seed -- they are literally the same strands, and every visible
+# difference between the thirds is the MATERIAL's.  (It also generates
+# 5000 strands instead of 15000.)
+##################################################
+sphere_geometry
+{
+	name			scalp
+	radius			0.62
+}
+
+hair_geometry
+{
+	name			groom
+	base_geometry		scalp
+	count			5000
+	segments		6
+	length			0.20
+	width_root		0.022
+	width_tip		0.008
+	base_detail		24
+	seed			31
+}
+
+standard_object
+{
+	name			obj_none
+	geometry		groom
+	material		mat_fur_none
+	position		-1.7 0 0
+}
+
+standard_object
+{
+	name			obj_mid
+	geometry		groom
+	material		mat_fur_mid
+	position		0 0 0
+}
+
+standard_object
+{
+	name			obj_fat
+	geometry		groom
+	material		mat_fur_fat
+	position		1.7 0 0
+}
+
+##################################################
+# Lighting: a strong BACKLIGHT behind the grooms (negative Z, so its
+# `direction` -- the vector FROM the surface TOWARD the light, per
+# docs/SCENE_CONVENTIONS.md -- has a negative Z), which is what drives
+# the TT / TTs transmission the medulla actually changes, plus a weak
+# front fill so the silhouettes read at all.
+##################################################
+directional_light
+{
+	name			backlight
+	power			26.0
+	color			1.0 0.97 0.90
+	direction		0.2 0.35 -1.0
+}
+
+omni_light
+{
+	name			fill
+	power			34
+	color			0.80 0.85 1.0
+	position		2.0 1.5 4.5
+}

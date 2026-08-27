@@ -4131,7 +4131,10 @@ namespace RISE
 			const char* beta_m = "0.3",									///< [in] Longitudinal roughness (scalar)
 			const char* beta_n = "0.3",									///< [in] Azimuthal roughness (scalar)
 			const char* alpha = "2.0",									///< [in] Cuticle scale tilt, degrees (scalar)
-			const char* ior = "1.55"									///< [in] Fibre index of refraction (scalar)
+			const char* ior = "1.55",									///< [in] Fibre index of refraction (scalar)
+			const char* medulla_ratio = "0",							///< [in] Yan 2017 medulla radius ratio kappa; "0" (default) = no medulla
+			const char* medulla_scatter = "0.5",						///< [in] Medulla scattering coefficient sigma_m, per fibre diameter
+			const char* medulla_g = "0.4"								///< [in] Medulla Henyey-Greenstein anisotropy
 			) = 0;
 
 		//! Registers an AUTHORED GUIDE-STRAND SET under `name` -- the

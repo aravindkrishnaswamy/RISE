@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "HairBSDF.h"
+#include "HairMedullaProfile.h"
 #include "BioSpecSkinData.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Interfaces/ILog.h"
@@ -38,6 +39,25 @@ namespace
 	//! every order above 2 -- it is what makes the model pass the white
 	//! furnace test at any roughness.
 	const int		kPMax = 3;
+
+	//! The two Yan 2017 medulla-scattered lobes, appended AFTER the
+	//! four Chiang orders so every pre-Phase-3 index keeps its meaning
+	//! (HairBSDF.h section 3b).  `kLobeTTs` carries what the medulla
+	//! scattered out of TT (p = 1), `kLobeTRTs` out of TRT (p = 2).
+	const int		kLobeTTs  = kPMax + 1;		// 4
+	const int		kLobeTRTs = kPMax + 2;		// 5
+	//! Array extent for every per-lobe vector.  The RUNTIME loop bound
+	//! is `kPMax + 1` when the medulla is off and this when it is on --
+	//! never this unconditionally, or a medulla-off hit would stop
+	//! being bit-identical to the pre-Phase-3 build.
+	const int		kNumLobes = kPMax + 3;		// 6
+
+	//! Upper bound on the longitudinal variance the medulla may ADD to
+	//! a scattered lobe's M_p.  The baked table's largest cell is
+	//! ~0.47 rad^2, so this never binds on the shipped data; it exists
+	//! so a corrupt or regenerated table cannot push M_p into a regime
+	//! where its series evaluation misbehaves.
+	const Scalar	kMaxMedullaLongVariance = 4.0;
 
 	//! Representative wavelengths the RGB path evaluates spectral
 	//! quantities (the melanin curves) at.  RISE has no canonical
@@ -240,6 +260,7 @@ namespace
 		Scalar	phiO;
 		Scalar	gammaO;
 		Scalar	cosThetaT;
+		Scalar	sinGammaT;		//!< kept for the medulla geometry only
 		Scalar	cosGammaT, gammaT;
 		Scalar	absorbLen;		//!< optical path length through the fibre, 2 cos(gamma_t) / cos(theta_t)
 	};
@@ -271,10 +292,158 @@ namespace
 			? SafeSqrt( Sqr( eta ) - Sqr( g.sinThetaO ) ) / g.cosThetaO
 			: eta;
 		const Scalar sinGammaT = ( etap > 1e-9 ) ? Clamp( h / etap, -1.0, 1.0 ) : Scalar( 0 );
+		g.sinGammaT = sinGammaT;
 		g.cosGammaT = SafeSqrt( 1 - Sqr( sinGammaT ) );
 		g.gammaT    = SafeASin( sinGammaT );
 
 		g.absorbLen = ( g.cosThetaT > 1e-9 ) ? 2 * g.cosGammaT / g.cosThetaT : Scalar( 0 );
+	}
+
+	//! The medulla geometry for one hit, plus the interpolated
+	//! scattering profile.  Built ONCE per Geom and shared by the
+	//! attenuation split, the lobe weights and the sampler, so the
+	//! three can never disagree about which cell they read.
+	//!
+	//! `active == false` means "this ray never enters the medulla" --
+	//! either the model is off, or the refracted chord passes outside
+	//! the medulla radius.  It leaves `q1 == q2 == 1`, so the
+	//! attenuation split degenerates to "all of it stays unscattered"
+	//! and the two extra lobes carry exactly zero energy.
+	//! Deliberately SMALL -- six scalars and a flag, no profile.  The
+	//! interpolated profile is ~33 doubles and is materialised
+	//! separately, by `LoadMedullaProfile`, only where it is actually
+	//! read: the evaluation path always needs it, but the SAMPLING path
+	//! needs it only on the hits that actually draw a scattered lobe.
+	//! Keeping it out of this struct keeps `DoScatter`'s stack frame the
+	//! size it was before Phase 3 -- not merely a performance nicety: a
+	//! fat frame there perturbed the compiler's inlining of `EvalPdf`
+	//! and cost 1 ULP on part of the group-15a golden set.
+	struct Medulla
+	{
+		bool				active;
+		Scalar				b;			//!< signed impact parameter, in medulla radii
+		Scalar				tau;		//!< diametral optical depth
+		Scalar				g;			//!< HG anisotropy
+		Scalar				q1;			//!< ballistic survival of ONE medulla crossing
+		Scalar				q2;			//!< ... of two (TRT), == q1 * q1
+	};
+
+	void MakeMedulla( const HairResolvedParams& R, const Geom& G, Medulla& M )
+	{
+		M.active = false;
+		M.b = 0;
+		M.tau = 0;
+		M.g = 0;
+		M.q1 = 1;
+		M.q2 = 1;
+
+		if( !R.medullaActive ) {
+			return;
+		}
+
+		// Impact parameter of the REFRACTED chord relative to the
+		// medulla.  The perpendicular distance from the fibre axis to
+		// the chord is |sin gamma_t| (in fibre radii), so in MEDULLA
+		// radii it is sin(gamma_t) / kappa.  |b| >= 1 means the chord
+		// runs entirely outside the medulla -- no crossing at all.
+		//
+		// The sign is carried through: a chord passing one side of the
+		// medulla axis produces the mirror image of the azimuthal
+		// profile the other side produces, and HairMedullaLookup folds
+		// that into its `mirrored` flag.
+		const Scalar b = G.sinGammaT / R.kappa;
+		if( !( fabs( b ) < 1.0 ) || !( G.cosThetaT > 1e-9 ) ) {
+			return;
+		}
+
+		// The DIAMETRAL optical depth: sigma_m across 2*kappa fibre
+		// radii, stretched by the ray's inclination inside the fibre.
+		// (The actual chord's depth is this times sqrt(1 - b^2), which
+		// is exactly what the ballistic survival below uses and exactly
+		// what the bake's own tau means -- HairMedullaProfile.h.)
+		const Scalar tau = R.sigmaM * 2 * R.kappa / G.cosThetaT;
+		if( !( tau > 0 ) || !RISE::IsFiniteDouble( tau ) ) {
+			return;
+		}
+
+		const Scalar q = exp( -tau * SafeSqrt( 1 - Sqr( b ) ) );
+		if( !RISE::IsFiniteDouble( q ) ) {
+			return;
+		}
+		M.q1 = Clamp( q, 0.0, 1.0 );
+		M.q2 = M.q1 * M.q1;
+		// A regenerated table whose bin count outgrew the fixed-capacity
+		// runtime struct cannot be interpolated, and a medulla that
+		// SPLITS energy away from TT/TRT but then has no profile to
+		// scatter it into would LOSE that energy silently.  Refuse to
+		// activate at all in that case: the model degrades to the exact
+		// pre-Phase-3 lobe set, which is a visible loss of the feature
+		// rather than an invisible loss of light.  (Group 19 asserts the
+		// shipped table satisfies this, so it is defence in depth.)
+		if( kHairMedullaPhiBins == 0 ||
+		    kHairMedullaPhiBins > (unsigned int)RISE::Implementation::HairMedullaProfile::kMaxBins ) {
+			M.q1 = 1;
+			M.q2 = 1;
+			return;
+		}
+
+		M.b = b;
+		M.tau = tau;
+		M.g = R.gHG;
+		M.active = true;
+	}
+
+	//! Materialise the interpolated azimuthal profile for a medulla
+	//! `MakeMedulla` reported active.  An inactive medulla -- or a
+	//! regenerated table whose bin count outgrew the fixed-capacity
+	//! struct -- yields `nBins == 0`, which every consumer reads as
+	//! "no scattered lobes".
+	void LoadMedullaProfile( const Medulla& M, RISE::Implementation::HairMedullaProfile& prof )
+	{
+		if( !M.active ) {
+			prof.nBins = 0;
+			prof.longVariance = 0;
+			prof.mirrored = false;
+			return;
+		}
+		RISE::Implementation::HairMedullaLookup( M.b, M.tau, M.g, prof );
+	}
+
+	//! `sum_p w[p] * ap[p]` -- the mixture dot product both `EvalFsum`
+	//! and `EvalPdf` are built on.
+	//!
+	//! ! THE SHAPE OF THIS LOOP IS LOAD BEARING.  The first four terms
+	//! are accumulated by a loop with a COMPILE-TIME bound, exactly as
+	//! the pre-Phase-3 code wrote it, and the two medulla terms are
+	//! appended afterwards.  Folding all six into one runtime-bounded
+	//! loop is algebraically identical but lets the compiler contract
+	//! the multiply-adds differently, which cost 1 ULP on 35 of the 204
+	//! group-15a goldens when it was first written that way.  Keep the
+	//! two halves separate.
+	inline Scalar DotLobes( const Scalar w[kNumLobes], const Scalar ap[kNumLobes],
+	                        const bool bMedulla )
+	{
+		Scalar sum = 0;
+		for( int p = 0; p <= kPMax; p++ ) {
+			sum += w[p] * ap[p];
+		}
+		if( bMedulla ) {
+			sum += w[kLobeTTs]  * ap[kLobeTTs];
+			sum += w[kLobeTRTs] * ap[kLobeTRTs];
+		}
+		return sum;
+	}
+
+	//! The longitudinal variance a medulla-scattered lobe uses:
+	//! its parent order's variance, broadened by the tabulated
+	//! exit-angle variance (Gaussian-convolution approximation;
+	//! HairBSDF.h section 3b).
+	inline Scalar MedullaLobeVariance(
+		const HairResolvedParams& R,
+		const RISE::Implementation::HairMedullaProfile& prof, const int parentP )
+	{
+		const Scalar add = Clamp( prof.longVariance, 0.0, kMaxMedullaLongVariance );
+		return R.v[parentP] + add;
 	}
 
 	//! Ideal azimuthal exit angle for scattering order p.
@@ -311,8 +480,48 @@ namespace
 		for( int p = 2; p < kPMax; p++ ) {
 			ap[p] = ap[p - 1] * T * f;
 		}
+		// MEASURE-ZERO HOLE, recorded so it is not re-derived: this
+		// guard can fire for the achromatic PROXY absorption and not
+		// for a wavelength (T_proxy >= T_lambda => denom_proxy <=
+		// denom_lambda), giving apPDF[kPMax] == 0 with ap_lambda[kPMax]
+		// > 0 -- a direction with BSDF value but no sampling density.
+		// It needs f ~ 1 AND sigma_proxy ~ 0 simultaneously, where the
+		// leaked term is ~(1-f)^2/denom ~ 1e-12 of the lobe.  Not worth
+		// a fix; worth knowing it was looked at.
 		const Scalar denom = 1 - T * f;
 		ap[kPMax] = ( denom > 1e-12 ) ? ap[kPMax - 1] * f * T / denom : Scalar( 0 );
+	}
+
+	//! `ComputeAp` plus the Yan 2017 medulla SPLIT (HairBSDF.h section
+	//! 3b).  When `bMedulla` is false this is `ComputeAp` and nothing
+	//! else -- not "ComputeAp then multiply by ones" -- which is what
+	//! keeps a medulla-off hit bit-identical.
+	//!
+	//! The split conserves energy EXACTLY: ap[1] + ap[kLobeTTs] and
+	//! ap[2] + ap[kLobeTRTs] each reproduce the value ComputeAp wrote,
+	//! so `sum_p ap[p]` is unchanged and both the furnace gate and the
+	//! section-3 proxy bound carry over untouched.  (The bound needs
+	//! `q` to be wavelength-independent, which holds under exactly the
+	//! same non-dispersive-`ior` proviso section 3 already states -- q
+	//! depends on eta through gamma_t, NOT only on the achromatically-
+	//! read medulla painters.  HairBSDF.h section 3b spells this out.)
+	void ComputeApWithMedulla(
+		const Scalar cosThetaO, const Scalar eta, const Scalar h, const Scalar T,
+		const Medulla& M, const bool bMedulla, Scalar ap[kNumLobes]
+		)
+	{
+		ComputeAp( cosThetaO, eta, h, T, ap );
+		if( !bMedulla ) {
+			return;
+		}
+		// Order matters: ap[2] was derived FROM the unsplit ap[1], so
+		// the scattered halves must be taken before either is scaled.
+		ap[kLobeTTs]  = ap[1] * ( 1 - M.q1 );
+		ap[kLobeTRTs] = ap[2] * ( 1 - M.q2 );
+		ap[1] *= M.q1;
+		ap[2] *= M.q2;
+		// ap[kPMax] -- the residual bucket for every order above TRT --
+		// is deliberately left whole; see HairBSDF.h section 3b.
 	}
 
 	//! The ACHROMATIC lobe-selection PMF -- the sole reason `Pdf` is
@@ -321,7 +530,14 @@ namespace
 	//!
 	//! Returns false when every order has zero apparent energy (the
 	//! caller must then produce no sample / zero density).
-	bool ComputeApPDF(
+	//! ! THE VERBATIM PRE-PHASE-3 BODY.  `ComputeApPDF` below is its
+	//! medulla-aware twin and must stay term-for-term equivalent when
+	//! `bMedulla` is false -- including the sanitise-then-sum ordering,
+	//! the `!(sum > 0)` gate and the divide loop.  Mirror ANY change
+	//! into it.  The duplication is deliberate; see the note above
+	//! `HairScatteringBase::EvalPdf` for the 1-ULP measurement that
+	//! forced it.
+	bool ComputeApPDFBase(
 		const Geom& G, const Scalar eta, const Scalar h,
 		const Scalar sigmaProxy, Scalar apPDF[kPMax + 1]
 		)
@@ -341,6 +557,59 @@ namespace
 		}
 		for( int p = 0; p <= kPMax; p++ ) {
 			apPDF[p] = ap[p] / sum;
+		}
+		return true;
+	}
+
+	//! The medulla-on twin of `ComputeApPDFBase` -- keep the two in
+	//! lockstep (see the warning on that one).
+	//!
+	//! FUTURE CLEANUP, deliberately not taken here: a
+	//! `template< bool kMedulla >` on this function plus `EvalFsum` /
+	//! `EvalPdf` would give the medulla-off instantiation the same
+	//! 4-entry arrays and compile-time loop bounds the pre-Phase-3 code
+	//! had, from ONE source body -- removing the hand-policed mirror.
+	//! It is not done in this slice because the whole point of the
+	//! duplication is that the codegen here is measurably fragile, and
+	//! re-deriving bit-identity through a template instantiation is a
+	//! change that deserves its own verification pass rather than
+	//! riding along with the feature.
+	bool ComputeApPDF(
+		const Geom& G, const Medulla& M, const bool bMedulla,
+		const Scalar eta, const Scalar h,
+		const Scalar sigmaProxy, Scalar apPDF[kNumLobes]
+		)
+	{
+		Scalar ap[kNumLobes];
+		ComputeApWithMedulla( G.cosThetaO, eta, h, exp( -sigmaProxy * G.absorbLen ),
+		                      M, bMedulla, ap );
+
+		// Compile-time-bounded base loop plus an appended medulla tail
+		// -- same reason as DotLobes above.
+		Scalar sum = 0;
+		for( int p = 0; p <= kPMax; p++ ) {
+			if( !( ap[p] > 0 ) || !RISE::IsFiniteDouble( ap[p] ) ) {
+				ap[p] = 0;
+			}
+			sum += ap[p];
+		}
+		if( bMedulla ) {
+			for( int p = kLobeTTs; p <= kLobeTRTs; p++ ) {
+				if( !( ap[p] > 0 ) || !RISE::IsFiniteDouble( ap[p] ) ) {
+					ap[p] = 0;
+				}
+				sum += ap[p];
+			}
+		}
+		if( !( sum > 0 ) ) {
+			return false;
+		}
+		for( int p = 0; p <= kPMax; p++ ) {
+			apPDF[p] = ap[p] / sum;
+		}
+		if( bMedulla ) {
+			apPDF[kLobeTTs]  = ap[kLobeTTs]  / sum;
+			apPDF[kLobeTRTs] = ap[kLobeTRTs] / sum;
 		}
 		return true;
 	}
@@ -393,7 +662,7 @@ namespace
 	//! vector with an attenuation vector -- fsum = dot(w, ap) and
 	//! pdf = dot(w, apPDF).  That identity is what makes Scatter / Pdf /
 	//! value consistent term-for-term.
-	void LobeWeights(
+	void LobeWeightsBase(
 		const HairResolvedParams& R, const Geom& G,
 		const Scalar sinThetaI, const Scalar cosThetaI, const Scalar phi,
 		Scalar w[kPMax + 1]
@@ -409,6 +678,45 @@ namespace
 		}
 		w[kPMax] = Mp( cosThetaI, G.cosThetaO, sinThetaI, G.sinThetaO, R.v[kPMax] ) *
 		           ( 1.0 / TWO_PI );
+	}
+
+	//! `LobeWeightsBase` plus the two Yan 2017 scattered lobes.  Only
+	//! ever reached when the medulla is ON -- the off path calls the
+	//! base directly; see the note above `HairScatteringBase::EvalPdf`.
+	void LobeWeights(
+		const HairResolvedParams& R, const Geom& G,
+		const RISE::Implementation::HairMedullaProfile& prof,
+		const Scalar sinThetaI, const Scalar cosThetaI, const Scalar phi,
+		Scalar w[kNumLobes]
+		)
+	{
+		LobeWeightsBase( R, G, sinThetaI, cosThetaI, phi, w );
+
+		// --- the two medulla-scattered lobes (HairBSDF.h section 3b) --
+		// Each sits on its PARENT order's cuticle tilt and exit
+		// azimuth, with the longitudinal lobe broadened and the
+		// azimuthal lobe replaced outright by the tabulated medulla
+		// profile.  Both factors are normalised, so each lobe's
+		// sphere integral is 1 and the furnace gate is untouched.
+		w[kLobeTTs]  = 0;
+		w[kLobeTRTs] = 0;
+		if( prof.nBins == 0 ) {
+			return;
+		}
+		for( int k = 0; k < 2; k++ ) {
+			const int lobe   = k ? kLobeTRTs : kLobeTTs;
+			const int parent = k ? 2 : 1;
+
+			Scalar sinThetapO, cosThetapO;
+			ApplyLobeTilt( parent, R.sin2kAlpha, R.cos2kAlpha,
+			               G.sinThetaO, G.cosThetaO, sinThetapO, cosThetapO );
+
+			const Scalar mp = Mp( cosThetaI, cosThetapO, sinThetaI, sinThetapO,
+			                      MedullaLobeVariance( R, prof, parent ) );
+			const Scalar np = prof.Eval( phi - PhiForP( parent, G.gammaO, G.gammaT ) );
+			const Scalar v = mp * np;
+			w[lobe] = ( v > 0 && RISE::IsFiniteDouble( v ) ) ? v : Scalar( 0 );
+		}
 	}
 
 	//! Chiang's fit of the multiple-scattering reflectance denominator.
@@ -503,6 +811,10 @@ namespace
 const Scalar HairScatteringBase::kMinBeta = 0.05;
 const Scalar HairScatteringBase::kMaxBeta = 1.0;
 
+const Scalar HairScatteringBase::kMaxMedullaRatio        = 0.95;
+const Scalar HairScatteringBase::kDefaultMedullaScatter  = 0.5;
+const Scalar HairScatteringBase::kDefaultMedullaG        = 0.4;
+
 HairScatteringBase::HairScatteringBase( const HairPainters& p ) :
   pEumelanin( p.eumelanin ),
   pPheomelanin( p.pheomelanin ),
@@ -512,6 +824,9 @@ HairScatteringBase::HairScatteringBase( const HairPainters& p ) :
   pBetaN( p.beta_n ),
   pAlpha( p.alpha ),
   pIOR( p.ior ),
+  pMedullaRatio( p.medulla_ratio ),
+  pMedullaScatter( p.medulla_scatter ),
+  pMedullaG( p.medulla_g ),
   bColorTierValid( p.ActiveColorTierCount() == 1 )
 {
 	if( !bColorTierValid ) {
@@ -532,6 +847,11 @@ HairScatteringBase::HairScatteringBase( const HairPainters& p ) :
 	if( pBetaN )       { pBetaN->addref(); }
 	if( pAlpha )       { pAlpha->addref(); }
 	if( pIOR )         { pIOR->addref(); }
+	// The three medulla slots are OPTIONAL -- a null pointer is the
+	// (default) "no medulla" configuration, not an error.
+	if( pMedullaRatio )   { pMedullaRatio->addref(); }
+	if( pMedullaScatter ) { pMedullaScatter->addref(); }
+	if( pMedullaG )       { pMedullaG->addref(); }
 }
 
 HairScatteringBase::~HairScatteringBase()
@@ -544,6 +864,9 @@ HairScatteringBase::~HairScatteringBase()
 	safe_release( pBetaN );
 	safe_release( pAlpha );
 	safe_release( pIOR );
+	safe_release( pMedullaRatio );
+	safe_release( pMedullaScatter );
+	safe_release( pMedullaG );
 }
 
 void HairScatteringBase::Resolve( const RayIntersectionGeometric& ri, Resolved& R ) const
@@ -599,6 +922,55 @@ void HairScatteringBase::Resolve( const RayIntersectionGeometric& ri, Resolved& 
 	for( int i = 1; i < kPMax; i++ ) {
 		R.sin2kAlpha[i] = 2 * R.cos2kAlpha[i-1] * R.sin2kAlpha[i-1];
 		R.cos2kAlpha[i] = Sqr( R.cos2kAlpha[i-1] ) - Sqr( R.sin2kAlpha[i-1] );
+	}
+
+	// --- Yan 2017 medulla (HairBSDF.h section 3b) --------------------
+	// Everything above this line is the pre-Phase-3 resolution, byte
+	// for byte.  Everything below only WRITES the new fields, so a
+	// medulla-off hit reaches the model with exactly the parameters it
+	// reached it with before Phase 3 existed.
+	//
+	// All three slots are read ACHROMATICALLY (`.v[0]`), never through
+	// GetValueAtNM: section 3's wavelength-independent-pdf contract --
+	// and with it the [0, 1] kray bound -- requires the medulla split
+	// factor `q` to be the same number for every wavelength.
+	R.medullaActive = false;
+	R.kappa  = 0;
+	R.sigmaM = 0;
+	R.gHG    = 0;
+
+	if( pMedullaRatio ) {
+		const Scalar kappa = Clamp( pMedullaRatio->GetValuesAt( ri ).v[0], 0.0, kMaxMedullaRatio );
+		if( kappa > 0 ) {
+			const Scalar sigmaM = pMedullaScatter
+				? pMedullaScatter->GetValuesAt( ri ).v[0]
+				: kDefaultMedullaScatter;
+			if( sigmaM > 0 && RISE::IsFiniteDouble( sigmaM ) ) {
+				R.medullaActive = true;
+				R.kappa  = kappa;
+				R.sigmaM = sigmaM;
+				// A |g| of exactly 1 is a delta phase function, which
+				// the tabulated profile cannot represent.
+				//
+				// ! THE FINITENESS TEST IS NOT OPTIONAL, and `Clamp`
+				// does not do it: `NaN < lo` and `NaN > hi` are both
+				// false, so a NaN would pass straight through, poison
+				// every stencil weight in `BuildStencil`, and make the
+				// interpolated profile NaN.  `Eval` then returns 0, so
+				// the two scattered lobes' WEIGHTS vanish while their
+				// ATTENUATIONS (already taken out of TT/TRT by q) do
+				// not -- silent energy loss rather than a visible NaN.
+				//
+				// ! ALSO NOTE THE TWO CLAMPS.  This one is the physical
+				// validity range; the TABLE separately clamps to
+				// +/- kHairMedullaGMax (0.8) in `BuildStencil`, so an
+				// author writing `medulla_g 0.95` gets the 0.8 profile.
+				// The chunk descriptor says so; this is where it
+				// happens.
+				const Scalar g = pMedullaG ? pMedullaG->GetValuesAt( ri ).v[0] : kDefaultMedullaG;
+				R.gHG = RISE::IsFiniteDouble( g ) ? Clamp( g, -0.99, 0.99 ) : kDefaultMedullaG;
+			}
+		}
 	}
 }
 
@@ -776,17 +1148,55 @@ void HairScatteringBase::EvalFsum(
 	const Scalar cosThetaI = SafeSqrt( 1 - Sqr( sinThetaI ) );
 	const Scalar phiI = atan2( wiL[2], wiL[1] );
 
-	Scalar w[kPMax + 1];
-	LobeWeights( R, G, sinThetaI, cosThetaI, phiI - G.phiO, w );
+	// ---- MEDULLA OFF: the pre-Phase-3 body, verbatim -----------------
+	// Deliberately a FULL COPY rather than a special case of the medulla
+	// branch -- see the same note in `EvalPdf` below.  Any change here
+	// MUST be mirrored there.
+	if( !R.medullaActive ) {
+		Scalar w[kPMax + 1];
+		LobeWeightsBase( R, G, sinThetaI, cosThetaI, phiI - G.phiO, w );
+
+		if( bNM ) {
+			const Scalar sigma = SigmaANM( ri, R.betaN, nm );
+			Scalar ap[kPMax + 1];
+			ComputeAp( G.cosThetaO, eta, R.h, exp( -sigma * G.absorbLen ), ap );
+			Scalar sum = 0;
+			for( int p = 0; p <= kPMax; p++ ) {
+				sum += w[p] * ap[p];
+			}
+			out[0] = ( sum > 0 && RISE::IsFiniteDouble( sum ) ) ? sum : Scalar( 0 );
+			return;
+		}
+
+		Scalar sigma[3];
+		SigmaARGB( ri, R.betaN, sigma );
+		for( int c = 0; c < 3; c++ ) {
+			Scalar ap[kPMax + 1];
+			ComputeAp( G.cosThetaO, eta, R.h, exp( -sigma[c] * G.absorbLen ), ap );
+			Scalar sum = 0;
+			for( int p = 0; p <= kPMax; p++ ) {
+				sum += w[p] * ap[p];
+			}
+			out[c] = ( sum > 0 && RISE::IsFiniteDouble( sum ) ) ? sum : Scalar( 0 );
+		}
+		return;
+	}
+
+	// ---- MEDULLA ON --------------------------------------------------
+	Medulla M;
+	MakeMedulla( R, G, M );
+
+	RISE::Implementation::HairMedullaProfile prof;
+	LoadMedullaProfile( M, prof );
+
+	Scalar w[kNumLobes];
+	LobeWeights( R, G, prof, sinThetaI, cosThetaI, phiI - G.phiO, w );
 
 	if( bNM ) {
 		const Scalar sigma = SigmaANM( ri, R.betaN, nm );
-		Scalar ap[kPMax + 1];
-		ComputeAp( G.cosThetaO, eta, R.h, exp( -sigma * G.absorbLen ), ap );
-		Scalar sum = 0;
-		for( int p = 0; p <= kPMax; p++ ) {
-			sum += w[p] * ap[p];
-		}
+		Scalar ap[kNumLobes];
+		ComputeApWithMedulla( G.cosThetaO, eta, R.h, exp( -sigma * G.absorbLen ), M, true, ap );
+		const Scalar sum = DotLobes( w, ap, true );
 		out[0] = ( sum > 0 && RISE::IsFiniteDouble( sum ) ) ? sum : Scalar( 0 );
 		return;
 	}
@@ -794,12 +1204,9 @@ void HairScatteringBase::EvalFsum(
 	Scalar sigma[3];
 	SigmaARGB( ri, R.betaN, sigma );
 	for( int c = 0; c < 3; c++ ) {
-		Scalar ap[kPMax + 1];
-		ComputeAp( G.cosThetaO, eta, R.h, exp( -sigma[c] * G.absorbLen ), ap );
-		Scalar sum = 0;
-		for( int p = 0; p <= kPMax; p++ ) {
-			sum += w[p] * ap[p];
-		}
+		Scalar ap[kNumLobes];
+		ComputeApWithMedulla( G.cosThetaO, eta, R.h, exp( -sigma[c] * G.absorbLen ), M, true, ap );
+		const Scalar sum = DotLobes( w, ap, true );
 		out[c] = ( sum > 0 && RISE::IsFiniteDouble( sum ) ) ? sum : Scalar( 0 );
 	}
 }
@@ -822,11 +1229,45 @@ Scalar HairScatteringBase::EvalPdf(
 	const Scalar cosThetaI = SafeSqrt( 1 - Sqr( sinThetaI ) );
 	const Scalar phiI = atan2( wiL[2], wiL[1] );
 
-	Scalar w[kPMax + 1];
-	LobeWeights( R, G, sinThetaI, cosThetaI, phiI - G.phiO, w );
+	// ---- MEDULLA OFF: the pre-Phase-3 body, verbatim -----------------
+	// This branch is deliberately a FULL COPY rather than a special case
+	// of the one below, and the duplication is the point.  The two are
+	// algebraically identical, but merely widening the arrays from 4 to
+	// 6 entries and threading a `Medulla` through changed how the
+	// compiler contracted `w[p] * apPDF[p]` here -- 21 of the 204
+	// group-15a goldens moved by 1 ULP, which is precisely the promise
+	// HairBSDF.h section 3b makes and HairBSDFTest group 15a enforces.
+	// (`EvalFsum` happened to survive the shared form, but is written
+	// the same way anyway rather than relying on that luck.)
+	// Any change here MUST be mirrored into the medulla branch below.
+	if( !R.medullaActive ) {
+		Scalar w[kPMax + 1];
+		LobeWeightsBase( R, G, sinThetaI, cosThetaI, phiI - G.phiO, w );
 
-	Scalar apPDF[kPMax + 1];
-	if( !ComputeApPDF( G, R.etaRef, R.h, SigmaAProxy( ri, R.betaN ), apPDF ) ) {
+		Scalar apPDF[kPMax + 1];
+		if( !ComputeApPDFBase( G, R.etaRef, R.h, SigmaAProxy( ri, R.betaN ), apPDF ) ) {
+			return 0;
+		}
+
+		Scalar pdf = 0;
+		for( int p = 0; p <= kPMax; p++ ) {
+			pdf += w[p] * apPDF[p];
+		}
+		return ( pdf > 0 && RISE::IsFiniteDouble( pdf ) ) ? pdf : Scalar( 0 );
+	}
+
+	// ---- MEDULLA ON --------------------------------------------------
+	Medulla M;
+	MakeMedulla( R, G, M );
+
+	RISE::Implementation::HairMedullaProfile prof;
+	LoadMedullaProfile( M, prof );
+
+	Scalar w[kNumLobes];
+	LobeWeights( R, G, prof, sinThetaI, cosThetaI, phiI - G.phiO, w );
+
+	Scalar apPDF[kNumLobes];
+	if( !ComputeApPDF( G, M, true, R.etaRef, R.h, SigmaAProxy( ri, R.betaN ), apPDF ) ) {
 		return 0;
 	}
 
@@ -834,6 +1275,8 @@ Scalar HairScatteringBase::EvalPdf(
 	for( int p = 0; p <= kPMax; p++ ) {
 		pdf += w[p] * apPDF[p];
 	}
+	pdf += w[kLobeTTs]  * apPDF[kLobeTTs];
+	pdf += w[kLobeTRTs] * apPDF[kLobeTRTs];
 	return ( pdf > 0 && RISE::IsFiniteDouble( pdf ) ) ? pdf : Scalar( 0 );
 }
 
@@ -918,6 +1361,43 @@ void HairBRDF::TestApAndPathLength(
 	ComputeAp( G.cosThetaO, R.etaRef, R.h, exp( -sigmaA * G.absorbLen ), ap );
 }
 
+void HairBRDF::TestMedullaAp(
+	const RayIntersectionGeometric& ri, const Scalar sigmaA,
+	Scalar ap[6], int& nLobes,
+	Scalar& q1, Scalar& q2,
+	Scalar& medullaB, Scalar& medullaTau, Scalar& medullaLongVariance
+	) const
+{
+	static_assert( kNumLobes == 6,
+		"HairBRDF::TestMedullaAp's declared ap[6] must match kNumLobes" );
+
+	Resolved R;
+	Resolve( ri, R );
+
+	const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+	Scalar woL[3];
+	ToFibreFrame( wo, ri.onb, woL );
+
+	Geom G;
+	MakeGeom( R.h, R.etaRef, woL, G );
+
+	Medulla M;
+	MakeMedulla( R, G, M );
+
+	RISE::Implementation::HairMedullaProfile prof;
+	LoadMedullaProfile( M, prof );
+
+	nLobes = R.medullaActive ? kNumLobes : ( kPMax + 1 );
+	q1 = M.q1;
+	q2 = M.q2;
+	medullaB = M.b;
+	medullaTau = M.tau;
+	medullaLongVariance = prof.longVariance;
+
+	ComputeApWithMedulla( G.cosThetaO, R.etaRef, R.h, exp( -sigmaA * G.absorbLen ),
+	                      M, R.medullaActive, ap );
+}
+
 void HairBRDF::TestApplyLobeTilt(
 	const RayIntersectionGeometric& ri, const int p,
 	const Scalar sinThetaO, const Scalar cosThetaO,
@@ -987,9 +1467,25 @@ void HairSPF::DoScatter(
 	Geom G;
 	MakeGeom( R.h, R.etaRef, woL, G );
 
-	Scalar apPDF[kPMax + 1];
-	if( !ComputeApPDF( G, R.etaRef, R.h, SigmaAProxy( ri, R.betaN ), apPDF ) ) {
-		return;
+	// `Medulla` is six scalars, NOT the profile -- the profile is only
+	// materialised below, and only if a scattered lobe is actually
+	// drawn.  See the note on the struct.
+	Medulla M;
+	MakeMedulla( R, G, M );
+	const int nLobes = R.medullaActive ? kNumLobes : ( kPMax + 1 );
+
+	// The off path calls `ComputeApPDFBase` (the verbatim pre-Phase-3
+	// helper), NOT the medulla-capable wrapper -- same bit-identity
+	// discipline as `EvalPdf` / `EvalFsum` above.
+	Scalar apPDF[kNumLobes];
+	if( R.medullaActive ) {
+		if( !ComputeApPDF( G, M, true, R.etaRef, R.h, SigmaAProxy( ri, R.betaN ), apPDF ) ) {
+			return;
+		}
+	} else {
+		if( !ComputeApPDFBase( G, R.etaRef, R.h, SigmaAProxy( ri, R.betaN ), apPDF ) ) {
+			return;
+		}
 	}
 
 	// --- choose the scattering order p by its apparent energy --------
@@ -998,7 +1494,7 @@ void HairSPF::DoScatter(
 	int lastPositive = -1;
 	{
 		Scalar cdf = 0;
-		for( int i = 0; i <= kPMax; i++ ) {
+		for( int i = 0; i < nLobes; i++ ) {
 			if( !( apPDF[i] > 0 ) ) {
 				continue;
 			}
@@ -1027,15 +1523,30 @@ void HairSPF::DoScatter(
 
 	// --- tilt the outgoing longitudinal angle for this lobe ----------
 	// SAME helper the evaluation side uses, so the sign convention is
-	// structurally shared rather than duplicated.
+	// structurally shared rather than duplicated.  A medulla-scattered
+	// lobe borrows its PARENT order's tilt and variance (HairBSDF.h
+	// section 3b); for every pre-Phase-3 index `tiltP == p`, so this
+	// ternary is a no-op there.
+	const int tiltP = ( p <= kPMax ) ? p : ( ( p == kLobeTTs ) ? 1 : 2 );
+
+	// Only a scattered lobe needs the tabulated profile, so only a
+	// scattered lobe pays for the interpolation.
+	RISE::Implementation::HairMedullaProfile prof;
+	prof.nBins = 0;
+	prof.longVariance = 0;
+	prof.mirrored = false;
+	if( p > kPMax ) {
+		LoadMedullaProfile( M, prof );
+	}
+
 	Scalar sinThetapO, cosThetapO;
-	ApplyLobeTilt( p, R.sin2kAlpha, R.cos2kAlpha,
+	ApplyLobeTilt( tiltP, R.sin2kAlpha, R.cos2kAlpha,
 	               G.sinThetaO, G.cosThetaO, sinThetapO, cosThetapO );
 
 	// --- sample M_p exactly (d'Eon et al. 2013) ----------------------
 	const Scalar u0 = sampler.Get1D();
 	const Scalar u1 = sampler.Get1D();
-	const Scalar vp = R.v[p];
+	const Scalar vp = ( p <= kPMax ) ? R.v[p] : MedullaLobeVariance( R, prof, tiltP );
 	const Scalar cosThetaSample = 1 + vp * log( r_max( u0, Scalar( 1e-5 ) ) +
 	                                            ( 1 - u0 ) * exp( -2 / vp ) );
 	const Scalar sinThetaSample = SafeSqrt( 1 - Sqr( cosThetaSample ) );
@@ -1046,10 +1557,18 @@ void HairSPF::DoScatter(
 		-1.0, 1.0 );
 	const Scalar cosThetaI = SafeSqrt( 1 - Sqr( sinThetaI ) );
 
-	// --- sample N_p exactly (trimmed logistic, or uniform residual) --
+	// --- sample N_p exactly ------------------------------------------
+	//   p <  kPMax   trimmed logistic around the ideal exit angle
+	//   p == kPMax   uniform azimuth (the residual bucket)
+	//   p >  kPMax   the tabulated medulla profile around the PARENT
+	//                order's exit angle -- `Sample` draws from exactly
+	//                the density `Eval` reports, which is what keeps
+	//                the mixture's Scatter / Pdf / value consistent.
 	const Scalar dphi = ( p < kPMax )
 		? PhiForP( p, G.gammaO, G.gammaT ) + SampleTrimmedLogistic( uc, R.s, -PI, PI )
-		: TWO_PI * uc;
+		: ( ( p == kPMax )
+			? TWO_PI * uc
+			: PhiForP( tiltP, G.gammaO, G.gammaT ) + prof.Sample( uc ) );
 
 	const Scalar phiI = G.phiO + dphi;
 

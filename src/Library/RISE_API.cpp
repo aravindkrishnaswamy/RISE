@@ -4851,7 +4851,10 @@ namespace RISE
 								const IScalarPainter& beta_m,
 								const IScalarPainter& beta_n,
 								const IScalarPainter& alpha,
-								const IScalarPainter& ior
+								const IScalarPainter& ior,
+								const IScalarPainter* medulla_ratio,
+								const IScalarPainter* medulla_scatter,
+								const IScalarPainter* medulla_g
 								)
 	{
 		if( !ppi ) {
@@ -4867,6 +4870,12 @@ namespace RISE
 		painters.beta_n      = &beta_n;
 		painters.alpha       = &alpha;
 		painters.ior         = &ior;
+		// Optional -- a null slot (or a kappa painter that resolves to
+		// 0) is the "no medulla" configuration, which HairBSDF short-
+		// circuits to the pre-Phase-3 model.
+		painters.medulla_ratio   = medulla_ratio;
+		painters.medulla_scatter = medulla_scatter;
+		painters.medulla_g       = medulla_g;
 
 		(*ppi) = new HairMaterial( painters );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "hair material" );

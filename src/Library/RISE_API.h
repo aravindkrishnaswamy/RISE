@@ -1186,7 +1186,10 @@ namespace RISE
 								const IScalarPainter& beta_m,		///< [in] Longitudinal roughness (physical scalar)
 								const IScalarPainter& beta_n,		///< [in] Azimuthal roughness (physical scalar)
 								const IScalarPainter& alpha,		///< [in] Cuticle scale tilt, degrees (physical scalar)
-								const IScalarPainter& ior			///< [in] Fibre index of refraction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Fibre index of refraction (physical scalar)
+								const IScalarPainter* medulla_ratio,	///< [in] Yan 2017 medulla radius ratio kappa; NULL or 0 = no medulla
+								const IScalarPainter* medulla_scatter,	///< [in] Medulla scattering coefficient (physical scalar); NULL = default
+								const IScalarPainter* medulla_g			///< [in] Medulla HG anisotropy (physical scalar); NULL = default
 								);
 
 

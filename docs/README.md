@@ -79,9 +79,10 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 ## Active or Deferred Roadmaps
 
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): rendering backlog and acceptance criteria
-- [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md): Phases 1-2 shipped (Chiang BSDF +
+- [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md): Phases 1-3 shipped (Chiang BSDF +
   `hair_geometry` + groom generator + guides + `.hair` import + Blender
-  export); fur medulla / LOD deferred (Phases 3-4)
+  export + the Yan 2017 fur medulla, `medulla_ratio` > 0); LOD deferred
+  (Phase 4)
 - [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md): shipped Phase-1 camera
   infrastructure and future camera models
 - [GLTF_IMPORT.md](GLTF_IMPORT.md): shipped mesh/scene/PBR import and deferred

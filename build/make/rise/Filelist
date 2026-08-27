@@ -183,6 +183,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
 	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
 	$(PATHLIBRARY)Materials/HairBSDF.cpp										\
+	$(PATHLIBRARY)Materials/HairMedullaProfile.cpp							\
+	$(PATHLIBRARY)Materials/HairMedullaProfile_LUTData.cpp					\
 	$(PATHLIBRARY)Materials/SheenBRDF.cpp									\
 	$(PATHLIBRARY)Materials/SheenSPF.cpp									\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\

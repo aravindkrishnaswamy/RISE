@@ -4911,7 +4911,10 @@ bool Job::AddHairMaterial(
 	const char* beta_m,										///< [in] Longitudinal roughness
 	const char* beta_n,										///< [in] Azimuthal roughness
 	const char* alpha,											///< [in] Cuticle scale tilt, degrees
-	const char* ior											///< [in] Fibre index of refraction
+	const char* ior,											///< [in] Fibre index of refraction
+	const char* medulla_ratio,									///< [in] Yan 2017 medulla radius ratio kappa; "0" = no medulla
+	const char* medulla_scatter,								///< [in] Medulla scattering coefficient sigma_m
+	const char* medulla_g										///< [in] Medulla Henyey-Greenstein anisotropy
 	)
 {
 	const bool wantColor       = ( color       && std::string( color )       != "none" );
@@ -4987,7 +4990,20 @@ bool Job::AddHairMaterial(
 	IScalarPainter* pAlpha = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "alpha",  alpha,  /*requireSingle*/ true );
 	IScalarPainter* pIOR   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "ior",    ior,    /*requireSingle*/ true );
 
-	if( !pBetaM || !pBetaN || !pAlpha || !pIOR ) {
+	// The three Yan 2017 medulla slots (docs/HAIR_FUR_DESIGN.md Phase 3).
+	// Same requireSingle=true discipline as beta_m / alpha / ior --
+	// HairScatteringBase::Resolve reads only `.v[0]` from each, and reads
+	// them ACHROMATICALLY (never GetValueAtNM), because the sampling pdf
+	// must stay wavelength independent.  They are always bound here (the
+	// descriptor defaults to the inline literals "0" / "0.5" / "0.4"), and
+	// a kappa of 0 -- the default -- makes HairBSDF take the pre-Phase-3
+	// path bit for bit.
+	IScalarPainter* pMedullaRatio   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "medulla_ratio",   medulla_ratio,   /*requireSingle*/ true );
+	IScalarPainter* pMedullaScatter = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "medulla_scatter", medulla_scatter, /*requireSingle*/ true );
+	IScalarPainter* pMedullaG       = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "medulla_g",       medulla_g,       /*requireSingle*/ true );
+
+	if( !pBetaM || !pBetaN || !pAlpha || !pIOR ||
+	    !pMedullaRatio || !pMedullaScatter || !pMedullaG ) {
 		safe_release( pSigmaA );
 		safe_release( pEumelanin );
 		safe_release( pPheomelanin );
@@ -4995,11 +5011,33 @@ bool Job::AddHairMaterial(
 		safe_release( pBetaN );
 		safe_release( pAlpha );
 		safe_release( pIOR );
+		safe_release( pMedullaRatio );
+		safe_release( pMedullaScatter );
+		safe_release( pMedullaG );
 		return false;
 	}
 
+	// PERFORMANCE, not semantics: pass a NULL kappa slot when the scene
+	// left `medulla_ratio` at its "0" default.  `HairScatteringBase::
+	// Resolve` skips the whole medulla block on a null pointer, so a
+	// human-hair material pays exactly the pre-Phase-3 per-hit cost --
+	// no painter virtual call on every value / valueNM / Pdf / Scatter,
+	// and three fewer painter allocations per material.  The result is
+	// bit-identical either way (HairBSDFTest group 15b renders both
+	// configurations and compares with ==), which is why this can be a
+	// pure optimisation.
+	//
+	// The three painters are still RESOLVED above, unconditionally, so
+	// a misbound `medulla_scatter` / `medulla_g` still gets its
+	// diagnostic even on a material whose medulla is off --
+	// HairMaterialChunkTest's medulla group pins exactly that.
+	const bool bMedullaOffByDefault =
+		( medulla_ratio && std::string( medulla_ratio ) == "0" );
+
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateHairMaterial( &pMaterial, pEumelanin, pPheomelanin, pSigmaA, pColor, *pBetaM, *pBetaN, *pAlpha, *pIOR );
+	RISE_API_CreateHairMaterial( &pMaterial, pEumelanin, pPheomelanin, pSigmaA, pColor,
+		*pBetaM, *pBetaN, *pAlpha, *pIOR,
+		bMedullaOffByDefault ? 0 : pMedullaRatio, pMedullaScatter, pMedullaG );
 
 	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
@@ -5011,6 +5049,9 @@ bool Job::AddHairMaterial(
 	safe_release( pBetaN );
 	safe_release( pAlpha );
 	safe_release( pIOR );
+	safe_release( pMedullaRatio );
+	safe_release( pMedullaScatter );
+	safe_release( pMedullaG );
 
 	return ok;
 }

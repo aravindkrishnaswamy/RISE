@@ -175,7 +175,9 @@ std::string HairMaterialChunk( const char* name,
                                 const char* color = 0, const char* sigma_a = 0,
                                 const char* eumelanin = 0, const char* pheomelanin = 0,
                                 const char* beta_m = 0, const char* beta_n = 0,
-                                const char* alpha = 0, const char* ior = 0 )
+                                const char* alpha = 0, const char* ior = 0,
+                                const char* medulla_ratio = 0, const char* medulla_scatter = 0,
+                                const char* medulla_g = 0 )
 {
 	std::ostringstream oss;
 	oss << "hair_material\n{\n\tname\t" << name << "\n";
@@ -187,6 +189,9 @@ std::string HairMaterialChunk( const char* name,
 	if( beta_n )      oss << "\tbeta_n\t"      << beta_n      << "\n";
 	if( alpha )       oss << "\talpha\t"       << alpha       << "\n";
 	if( ior )         oss << "\tior\t"         << ior         << "\n";
+	if( medulla_ratio )   oss << "\tmedulla_ratio\t"   << medulla_ratio   << "\n";
+	if( medulla_scatter ) oss << "\tmedulla_scatter\t" << medulla_scatter << "\n";
+	if( medulla_g )       oss << "\tmedulla_g\t"       << medulla_g       << "\n";
 	oss << "}\n";
 	return oss.str();
 }
@@ -291,20 +296,24 @@ void TestEachTierParses()
 
 void TestDefaultsApplied()
 {
-	std::cout << "Test: omitted beta_m/beta_n/alpha/ior behave exactly like the documented 0.3/0.3/2.0/1.55 defaults" << std::endl;
+	std::cout << "Test: omitted beta_m/beta_n/alpha/ior/medulla_* behave exactly like the documented 0.3/0.3/2.0/1.55/0/0.5/0.4 defaults" << std::endl;
 
 	IJobPriv* job = nullptr;
 	if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, "job created" ); return; }
 
 	std::string body;
 	body += ScalarPainter( "eu_shared", 1.0 );
-	body += HairMaterialChunk( "m_implicit", 0, 0, "eu_shared" );	// omits beta_m/beta_n/alpha/ior
+	body += HairMaterialChunk( "m_implicit", 0, 0, "eu_shared" );	// omits beta_m/beta_n/alpha/ior/medulla_*
 	body += ScalarPainter( "bm_explicit", 0.3 );
 	body += ScalarPainter( "bn_explicit", 0.3 );
 	body += ScalarPainter( "al_explicit", 2.0 );
 	body += ScalarPainter( "ir_explicit", 1.55 );
+	body += ScalarPainter( "mr_explicit", 0.0 );
+	body += ScalarPainter( "ms_explicit", 0.5 );
+	body += ScalarPainter( "mg_explicit", 0.4 );
 	body += HairMaterialChunk( "m_explicit", 0, 0, "eu_shared", 0,
-	                           "bm_explicit", "bn_explicit", "al_explicit", "ir_explicit" );
+	                           "bm_explicit", "bn_explicit", "al_explicit", "ir_explicit",
+	                           "mr_explicit", "ms_explicit", "mg_explicit" );
 
 	const bool ok = ParseBodyInto( "defaults", body, *job );
 	Check( ok, "defaults: both fixtures parse" );
@@ -338,8 +347,8 @@ void TestDefaultsApplied()
 				if( aImplicit[(unsigned int)c] != aExplicit[(unsigned int)c] ) allMatch = false;
 			}
 		}
-		Check( allMatch, "defaults: MONEY ASSERTION -- omitted beta_m/beta_n/alpha/ior give BIT-IDENTICAL "
-		       "value()/albedo() to explicit 0.3/0.3/2.0/1.55 across several (theta,phi,h) cells" );
+		Check( allMatch, "defaults: MONEY ASSERTION -- omitted beta_m/beta_n/alpha/ior/medulla_* give BIT-IDENTICAL "
+		       "value()/albedo() to explicit 0.3/0.3/2.0/1.55/0/0.5/0.4 across several (theta,phi,h) cells" );
 	}
 
 	safe_release( job );
@@ -506,6 +515,120 @@ void TestUnknownAndIPainterBoundDiagnostics()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 7 -- the Yan 2017 medulla slots (docs/HAIR_FUR_DESIGN.md Phase 3).
+//
+// Three claims, in the order they can break:
+//   (a) the DEFAULT (medulla_ratio omitted, or bound to 0) leaves the
+//       model bit-identical to a material whose medulla slots are not
+//       mentioned at all -- the promise every pre-Phase-3 scene relies
+//       on, checked here at the CHUNK level rather than the C++ one
+//       (HairBSDFTest group 15 owns the C++ half);
+//   (b) medulla_ratio > 0 actually reaches the model and changes it;
+//   (c) the three new slots get the established scalar-slot
+//       diagnostics when misbound.
+//////////////////////////////////////////////////////////////////////
+
+void TestMedullaSlots()
+{
+	std::cout << "Test: the medulla slots default to off, reach the model when set, and diagnose misbindings" << std::endl;
+
+	// --- (a) + (b) ---------------------------------------------------
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, "medulla: job created" ); return; }
+
+		std::string body;
+		body += ScalarPainter( "eu_med", 1.0 );
+		body += HairMaterialChunk( "m_nomed", 0, 0, "eu_med" );				// no medulla lines at all
+		body += ScalarPainter( "kappa_zero", 0.0 );
+		body += HairMaterialChunk( "m_kappa0", 0, 0, "eu_med", 0, 0, 0, 0, 0,
+		                           "kappa_zero" );							// explicit kappa = 0
+		body += ScalarPainter( "kappa_fur", 0.7 );
+		body += ScalarPainter( "sigma_fur", 2.0 );
+		body += HairMaterialChunk( "m_fur", 0, 0, "eu_med", 0, 0, 0, 0, 0,
+		                           "kappa_fur", "sigma_fur", "0.5" );
+
+		const bool ok = ParseBodyInto( "medulla", body, *job );
+		Check( ok, "medulla: all three fixtures parse" );
+
+		const HairBRDF* noMed  = FetchHairBRDF( *job, "m_nomed" );
+		const HairBRDF* kappa0 = FetchHairBRDF( *job, "m_kappa0" );
+		const HairBRDF* fur    = FetchHairBRDF( *job, "m_fur" );
+		Check( noMed && kappa0 && fur, "medulla: all three HairBRDFs retrievable" );
+
+		if( noMed && kappa0 && fur ) {
+			const double cells[][3] = {
+				{ 0.2, 0.9, 0.0 }, { 0.5, 1.7, 0.3 }, { -0.3, 2.4, -0.4 }, { 0.05, 0.1, 0.6 },
+			};
+			bool zeroMatches = true;
+			bool furDiffersSomewhere = false;
+
+			for( std::size_t i = 0; i < sizeof(cells)/sizeof(cells[0]); ++i ) {
+				const RayIntersectionGeometric ri = MakeFibreHit( cells[i][0], cells[i][1], cells[i][2] );
+				for( int d = 0; d < 8; ++d ) {
+					const double t = -1.4 + d * 0.35;
+					const Vector3 wi = Vector3Ops::Normalize(
+						Vector3( sin(t), cos(t) * cos( 0.4 * d ), cos(t) * sin( 0.4 * d ) ) );
+					const RISEPel a = noMed->value( wi, ri );
+					const RISEPel b = kappa0->value( wi, ri );
+					const RISEPel c = fur->value( wi, ri );
+					for( unsigned int ch = 0; ch < 3; ++ch ) {
+						if( a[ch] != b[ch] ) { zeroMatches = false; }
+						if( a[ch] != c[ch] ) { furDiffersSomewhere = true; }
+					}
+				}
+			}
+
+			Check( zeroMatches,
+			       "medulla: MONEY ASSERTION -- medulla_ratio 0 (and omitting the slots entirely) is "
+			       "BIT-IDENTICAL to the pre-Phase-3 model" );
+			Check( furDiffersSomewhere,
+			       "medulla: MONEY ASSERTION -- medulla_ratio 0.7 actually reaches the model and "
+			       "changes value()" );
+		}
+
+		safe_release( job );
+	}
+
+	// --- (c) misbinding diagnostics ----------------------------------
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, "medulla: job created (diag)" ); return; }
+
+		std::string capturedOutput;
+		std::string body = ScalarPainter( "eu_d", 1.0 ) + UniformColorPainter( "legacy_med" ) +
+			HairMaterialChunk( "m_medbad", 0, 0, "eu_d", 0, 0, 0, 0, 0, "legacy_med" );
+		const bool ok = ParseBodyCapturing( "medulla_diag", body, *job, capturedOutput );
+
+		Check( !ok, "medulla: an IPainter-bound medulla_ratio is REJECTED" );
+		Check( capturedOutput.find( "hair_material" ) != std::string::npos &&
+		       capturedOutput.find( "`medulla_ratio`" ) != std::string::npos &&
+		       capturedOutput.find( "legacy_med" ) != std::string::npos,
+		       "medulla: the established \"bound to `IPainter` chunk\" diagnostic fires, naming "
+		       "`medulla_ratio` and `legacy_med`" );
+
+		safe_release( job );
+	}
+
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, "medulla: job created (diag2)" ); return; }
+
+		std::string capturedOutput;
+		std::string body = ScalarPainter( "eu_d2", 1.0 ) +
+			HairMaterialChunk( "m_medunknown", 0, 0, "eu_d2", 0, 0, 0, 0, 0, 0, "no_such_painter" );
+		const bool ok = ParseBodyCapturing( "medulla_diag2", body, *job, capturedOutput );
+
+		Check( !ok, "medulla: an unknown medulla_scatter name is REJECTED" );
+		Check( capturedOutput.find( "`medulla_scatter`" ) != std::string::npos &&
+		       capturedOutput.find( "no_such_painter" ) != std::string::npos,
+		       "medulla: the established unknown-name diagnostic fires, naming `medulla_scatter`" );
+
+		safe_release( job );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 
@@ -519,6 +642,7 @@ int main()
 	TestTwoTiersRejected();
 	TestNamedScalarPainterBindingChangesBehaviour();
 	TestUnknownAndIPainterBoundDiagnostics();
+	TestMedullaSlots();
 
 	std::cout << "=== Results: " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

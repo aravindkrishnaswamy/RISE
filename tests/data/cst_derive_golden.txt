@@ -169,6 +169,7 @@ scenes/Tests/Geometry/vertex_colors_quad_pt_spectral.RISEscene  d2cbbccc5b4442c5
 scenes/Tests/Geometry/vertex_colors_quad_vcm.RISEscene  4ec355fd84565a2016e14b78988b3ed1587727c83d356353b427dcb7775a2354  632  21
 scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene  d2cbbccc5b4442c5feab8f2851224ebb0bda02e658a126b61636928f59e3b116  632  21
 scenes/Tests/GlobalIllumination/cornellbox_fg.RISEscene  04634d1ec669bcc083b593e7605a8f2aff455db3c8ef18b0458545aaba666698  2129  47
+scenes/Tests/Hair/fur_medulla.RISEscene  086ea44565cbdd772e83b4d5b09a65792f87fa70552d15bd48cde0319d999ef0  1161  26
 scenes/Tests/Hair/hair_backlit_tt.RISEscene  a1c869052201b92e150213b1f9034591402b517ee8f68e516aee80d6a257729a  730  25
 scenes/Tests/Hair/hair_furnace.RISEscene  9288bb97f1633ec68e9c56939922cfe435bf53954f12a4a0cf32723e51a0c533  514  21
 scenes/Tests/Hair/hair_melanin_ladder.RISEscene  d164e4aedd33dc7359e428d713f5d47a2a23d053e859868cfd102fd000d855aa  883  27
