@@ -905,10 +905,31 @@ namespace
 		return segment;
 	}
 
+	// Record an escaping ray's environment radiance as a terminal
+	// "background" segment for the guiding field.
+	//
+	// CONVENTION (must match SetPTIGuidingDirectContribution, the surface
+	// emission recorder): `directContribution` carries the RAW, UNWEIGHTED
+	// radiance and `miWeight` carries the MIS weight that would be applied
+	// to it.  OpenPGL's own documentation for PGLPathSegmentData spells this
+	// out -- "The MIS weight which would be applied to directContribution
+	// (e.g., miWeight = bsdfPDF^2/(bsdfPDF^2+neePDF^2))" -- and the field
+	// trains on L, using miWeight only to reconstruct the estimator.
+	// Storing an already-weighted value here with miWeight = 1.0 (as this
+	// helper did when its only caller was unreachable) makes the field learn
+	// L * w instead of L, systematically under-training the bright env
+	// directions that env-NEE also samples -- exactly the directions guiding
+	// most needs to know about.
+	//
+	// NOTE, honestly: RISE has no guiding regression test that exercises an
+	// environment-lit scene, so this correction is argued from the OpenPGL
+	// contract and the sibling emission site rather than measured.  A
+	// guiding-vs-env test is out of scope here.
 	static inline void AddPTIGuidingBackgroundSegment(
 		PTIGuidingPathRecorder& recorder,
 		const Ray& ray,
-		const RISEPel& radiance
+		const RISEPel& radiance,
+		const Scalar miWeight
 		)
 	{
 		if( !recorder.active || !recorder.storage ) {
@@ -944,7 +965,7 @@ namespace
 		pglVec3f( segment->scatteringWeight, 0.0f, 0.0f, 0.0f );
 		pglVec3f( segment->transmittanceWeight, 1.0f, 1.0f, 1.0f );
 		SetPGLVec3FromRISEPel( segment->directContribution, radiance );
-		segment->miWeight = 1.0f;
+		segment->miWeight = static_cast<float>( miWeight );
 		pglVec3f( segment->scatteredContribution, 0.0f, 0.0f, 0.0f );
 		segment->russianRouletteSurvivalProbability = 1.0f;
 		segment->eta = 1.0f;
@@ -1974,6 +1995,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// so it is the sole estimator of that transport and must be
 				// added at full weight.
 				//
+				// CAVEAT on that per-object arm (slice-F2 review): LightSampler
+				// does not know about per-object maps.  At a vertex whose
+				// material carries its own radiance map, env-NEE still samples
+				// the GLOBAL map (when one exists) and still MIS-weights that
+				// sample against the BSDF pdf -- so the global-env NEE strategy
+				// sits there MIS-weighted with no full-weight partner, while
+				// this full-weight per-object arm has no partner of its own.
+				// Both halves of that mismatch are UNREACHABLE from the
+				// pathtracing_* rasterizers today (they pass the global map in
+				// as pRadianceMap, so pEnvForEscape is always the global map and
+				// the MIS arm always wins).  It goes live only if some caller
+				// ever passes a genuinely per-object map here, and fixing it
+				// properly means teaching LightSampler which map a shading point
+				// actually sees -- out of scope for this arc, recorded so the
+				// next reader does not mistake the arm for fully worked out.
+				//
 				// This used to be written `if( pRadianceMap ) { no MIS }
 				// else if( global ) { MIS }`.  Every production rasterizer
 				// passes the GLOBAL map in as `pRadianceMap`
@@ -1989,7 +2026,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// envPdf = 1/(4 pi) under the power-2 heuristic.  The HWSS
 				// loop never had this bug (it tests the global map first),
 				// which is exactly why hwss=true and hwss=false disagreed on
-				// the same furnace scene.
+				// the same furnace scene.  That ordering is right for MIS but
+				// wrong for map SELECTION, and its error is the mirror image of
+				// the one fixed here: when a global map exists, HWSS reads it
+				// and silently ignores a genuinely per-object map (over there,
+				// the `else if( pRadianceMap )` arm is the unreachable one).
+				// Also unreachable from pathtracing_* today, for the same
+				// reason -- noted so the HWSS block is not read as the finished
+				// reference for per-object maps.
 				//
 				// Independently corroborated on a second scene with its own
 				// closed form: EnvLightBalanceTest's "env-only Lambertian"
@@ -2001,10 +2045,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// its tolerances were calibrated against the inflated PT.
 				// With PT correct, BDPT (0.6422, +28.5 %) and VCM (0.6220,
 				// +24.4 %) -- both untouched by this fix, both genuinely over
-				// the closed form -- now fall outside those bands: 7 of its
-				// 101 checks fail where all 101 passed before.  Those are
-				// pre-existing BDPT/VCM env bias surfacing, not a regression
-				// from this change, and the suite's reference/tolerances need
+				// the closed form -- now fall outside those bands where all 101
+				// passed before.  The failing COUNT IS NOT FIXED: measured over
+				// nine consecutive runs of the suite on one machine it is 6, 7
+				// or 8 (i.e. 93-95 of 101 pass), modally 7.  Six failures are
+				// stable -- BDPT p99 on env-only Lambertian (RGB, spectral
+				// hwss=false, spectral hwss=true), BDPT p99 on env+omni, and
+				// VCM mean+p99 on env+mesh -- and TWO more sit right on the
+				// band edge and flip run to run: `BDPT mean within 30% of PT:
+				// env-only Lambertian` in the spectral hwss=false and hwss=true
+				// topologies, both landing just under/over that 30 % line.  (The
+				// suite's renders are not bit-reproducible: repeated runs of the
+				// SAME binary move PT means by ~1 %, so any exact count quoted
+				// for this suite is a sample, not a constant.)  These failures
+				// are pre-existing BDPT/VCM env bias surfacing, not a regression
+				// from this change, and the suite's reference / tolerances need
 				// re-deriving against the closed form rather than against PT.
 				//
 				// One further consequence of merging the two arms: the
@@ -2019,8 +2074,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					pRadianceMap ? pRadianceMap : scene.GetGlobalRadianceMap();
 				if( pEnvForEscape )
 				{
-					Value envRadiance = PTEvalRadianceMap<Tag>(
+					// `envRadiance` stays RAW (unweighted) all the way down; the MIS
+					// weight is kept beside it in `envMiWeight` and applied once at
+					// each consumer.  The guiding recorder needs the raw radiance and
+					// the weight as two SEPARATE fields (see
+					// AddPTIGuidingBackgroundSegment's CONVENTION note), so the weight
+					// is deliberately not folded into `envRadiance` the way it was
+					// before -- the arithmetic reaching `result` is unchanged.
+					const Value envRadiance = PTEvalRadianceMap<Tag>(
 						pEnvForEscape, currentRay, rast, tag );
+					Scalar envMiWeight = 1.0;
 
 					// MIS weight for BSDF-sampled environment hit
 					if( pEnvForEscape == scene.GetGlobalRadianceMap() && pLS && bsdfPdf > 0 )
@@ -2054,7 +2117,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									w_bsdf = PowerHeuristic( bsdfPdf, envPdf );
 								}
-								envRadiance = envRadiance * w_bsdf;
+								envMiWeight = w_bsdf;
 							}
 						}
 					}
@@ -2062,14 +2125,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// Continuation-ray env hit -- see suppressIndirectEnv's
 					// doc above for the exact depth==1 MIS-partner rule.
 					if( !suppressIndirectEnv && !soloSuppressEnv ) {
-						result = result + throughput * envRadiance;
+						result = result + throughput * ( envRadiance * envMiWeight );
 					}
 
 #ifdef RISE_ENABLE_OPENPGL
+					// Store the RAW radiance plus the MIS weight, matching the
+					// surface-emission recorder (SetPTIGuidingDirectContribution(
+					// .., rawEmission, emissionMiWeight )).  The gate tests the raw
+					// luminance for the same reason that site tests raw emission: a
+					// direction whose MIS weight happens to be near 0 still carries
+					// real radiance the field should learn.
 					if( guidingRecorder && guidingRecorder->active &&
 						PTGuidingLuminance( envRadiance ) > 0 )
 					{
-						AddPTIGuidingBackgroundSegment( *guidingRecorder, currentRay, PTGuidingPel( envRadiance ) );
+						AddPTIGuidingBackgroundSegment( *guidingRecorder, currentRay,
+							PTGuidingPel( envRadiance ), envMiWeight );
 					}
 #endif
 				}
@@ -3738,12 +3808,80 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// continues through the same medium and escapes — attenuate
 				// the env contribution by the transmittance along that
 				// escape segment (PBRT-v4 beta *= T_maj convention).
+				//
+				// MIS PARTNER RULE -- volume twin of the surface-escape block
+				// in IntegrateFromHitTemplated (read that block's doc first;
+				// this is the same bug in the camera-ray medium-scatter path).
+				// The NEE call a few lines above (PTEvaluateInScattering ->
+				// MediumTransport::EvaluateInScattering ->
+				// LightSampler::EvaluateDirectLighting with
+				// isVolumeScatter=true) runs the env-NEE strategy and
+				// MIS-weights it against the PHASE pdf: EvaluateDirectLighting's
+				// env block calls pMaterial->Pdf(), and pMaterial there is
+				// MediumTransport's MediumScatterMaterial, whose Pdf() forwards
+				// straight to IPhaseFunction::Pdf.  This phase-sampled env hit
+				// is that strategy's MIS partner and must carry the
+				// complementary weight.  It used to be added at weight 1, so the
+				// two env strategies summed to 1 + w_nee instead of 1.  For an
+				// isotropic phase function in a uniform environment
+				// envPdf == phasePdf == 1/(4 pi), so w_nee = 0.5 and the
+				// single-scatter env term was over-counted by 50 %.
+				//
+				// Argument-order note: the NEE side evaluates
+				// pPhase->Pdf( envDir, wo ) while this side has
+				// pPhase->Pdf( wo, wi ).  Both concrete phase functions
+				// (IsotropicPhaseFunction, HenyeyGreensteinPhaseFunction) depend
+				// on the two directions only through Dot(wi, wo), which is
+				// symmetric, so the two densities agree exactly and the MIS
+				// partition closes.
+				//
+				// Delta guard: RISE has no delta phase function -- both
+				// implementations return a finite density -- and `phasePdf >
+				// NEARZERO` was already required above to reach this point, so
+				// the `phasePdf > 0` test below is a formality kept for textual
+				// parallelism with the surface site (where `bsdfPdf > 0` really
+				// does select the "delta lobe keeps full weight" arm).
+				//
+				// Optimal-MIS TRAINING is deliberately not accumulated here.
+				// The surface site feeds `kTechniqueBSDF` using `bsdfTimesCos`,
+				// which has no tracked volume analogue at this site; adding one
+				// would change the alpha estimate for `optimal_mis TRUE` scenes
+				// beyond the scope of this fix.  The READY branch below is still
+				// mirrored, because omitting it would break partition-of-unity
+				// against LightSampler's env-NEE (which does switch to
+				// OptimalMIS2Weight for volume scatter points once alpha solves).
 				if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
 				 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
 					const Value TrEsc = PTEvalTransmittance<Tag>(
 						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
-					const Value volumeEnv = volThroughput * TrEsc *
-						PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
+					Value envRadiance = PTEvalRadianceMap<Tag>(
+						scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
+
+					// MIS weight for the phase-sampled environment hit.
+					if( pLS && phasePdf > 0 )
+					{
+						const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+						if( pES )
+						{
+							const Scalar envPdf = pES->Pdf( scatteredRay.Dir() );
+							if( envPdf > 0 )
+							{
+								Scalar w_phase;
+								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+								{
+									const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+									w_phase = MISWeights::OptimalMIS2Weight( phasePdf, envPdf, alpha );
+								}
+								else
+								{
+									w_phase = PowerHeuristic( phasePdf, envPdf );
+								}
+								envRadiance = envRadiance * w_phase;
+							}
+						}
+					}
+
+					const Value volumeEnv = volThroughput * TrEsc * envRadiance;
 					if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
 						if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
 					} else {
@@ -5057,14 +5195,52 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 						if( !ri2.geometric.bHit )
 						{
+						// MIS PARTNER RULE -- HWSS twin of the RGB/NM
+						// IntegrateRayTemplated volume escape; see that site's
+						// doc for the full derivation (phase-sampled env hit is
+						// env-NEE's MIS partner; MediumScatterMaterial::Pdf is
+						// the pdf the NEE side weighs against; the phase pdf is
+						// symmetric in its two arguments; no delta phase
+						// function exists; optimal-MIS training deliberately not
+						// accumulated).  envPdf is wavelength-independent
+						// (EnvironmentSampler::Pdf takes only a direction), so
+						// the same weight applies to every wavelength in the
+						// bundle -- it is recomputed per-wavelength here only to
+						// keep this block textually parallel with its RGB/NM
+						// sibling.
 						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
 							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
 							{
 								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
 									scatteredRay, RISE_INFINITY, swl.lambda[w] );
-								result[w] += volThroughput * TrEsc *
+								Scalar envRadiance =
 									scene.GetGlobalRadianceMap()->GetRadianceNM(
 										scatteredRay, rast, swl.lambda[w] );
+
+								if( pLS && phasePdf > 0 )
+								{
+									const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+									if( pES )
+									{
+										const Scalar envPdf = pES->Pdf( scatteredRay.Dir() );
+										if( envPdf > 0 )
+										{
+											Scalar w_phase;
+											if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+											{
+												const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+												w_phase = MISWeights::OptimalMIS2Weight( phasePdf, envPdf, alpha );
+											}
+											else
+											{
+												w_phase = PowerHeuristic( phasePdf, envPdf );
+											}
+											envRadiance *= w_phase;
+										}
+									}
+								}
+
+								result[w] += volThroughput * TrEsc * envRadiance;
 							}
 						}
 						else

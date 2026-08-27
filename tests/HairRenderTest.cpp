@@ -391,16 +391,25 @@ static std::string AssembleScene( const std::string& common, const std::string& 
 // own albedo-0.5 env-only quad (closed form 0.5) moves from 0.5885 to
 // 0.4999.
 //
-// WHAT IS MEASURED NOW (this machine, post-fix, four repeat runs of
-// this binary; RISE's sampler is deterministic per pixel at a fixed
-// sample count, so the residual spread below is thread scheduling, not
-// a fresh seed):
+// WHAT IS MEASURED NOW (this machine, post-fix).  READ THESE AS FOUR
+// SAMPLES (n = 4 repeat runs of this binary), NOT as measured bounds.
+// An earlier revision of this comment presented the min and max of
+// these quadruples as if they bracketed the achievable range; they do
+// not.  RISE's sampler is deterministic per pixel at a fixed sample
+// count, so most of the spread here is thread scheduling rather than
+// four fresh seeds, and n = 4 under-samples the tails either way.
+// Concretely: a LATER run of this same binary read 0.947221 for
+// spectral hwss=true, outside the [0.94678, 0.94718] these four span
+// (and test 4's PT / BDPT luminances landed outside their own
+// quadruples in that same run).  Every tolerance below is therefore
+// sized off these values with explicit headroom, never off their
+// min/max as if it were a bound:
 //
 //     RGB PT, samples=384        0.98834 / 0.98859 / 0.98867 / 0.98859
 //     spectral hwss=false, 256   0.99489 / 0.99452 / 0.99078 / 0.99374
 //     spectral hwss=true,  256   0.94718 / 0.94678 / 0.94714 / 0.94685
 //
-// RGB and hwss=false now sit 0.51-1.17 % UNDER 1.0.  That residual is
+// RGB and hwss=false sit roughly 0.5-1.2 % UNDER 1.0 in these runs.  That residual is
 // itself understood and is NOT hair-specific either: LightSampler's
 // env-NEE block gates on `cosEnv > 0`, so a full-sphere BSDF (hair's
 // TT lobe transmits THROUGH the fibre) gets no NEE strategy at all for
@@ -499,11 +508,13 @@ static void TestFurnace()
 // hwss=true == hwss=false as a reference-free invariant").
 //
 // Tolerance rationale: measured at samples=256 / 32x32 on a
-// eumelanin=1.3 groom across repeated runs, POST the env-MIS fix (see
-// the file header's MEASUREMENT BASELINE), across four repeat runs of
-// this binary hwss=false luminance sits at 0.16891-0.17158 and
-// hwss=true at 0.16044-0.16095 -- a relative difference of 4.71% /
-// 5.91% / 6.16% / 6.48%.  (Pre-fix the same pair read 0.170-0.172 vs
+// eumelanin=1.3 groom, POST the env-MIS fix (see the file header's
+// MEASUREMENT BASELINE).  Across n = 4 repeat runs of this binary --
+// four SAMPLES, not bounds; see the furnace section's note on why a
+// deterministic sampler makes repeat runs under-state the true spread
+// -- hwss=false luminance came in around 0.16891-0.17158 and hwss=true
+// around 0.16044-0.16095, a relative difference of 4.71% / 5.91% /
+// 6.16% / 6.48%.  (Pre-fix the same pair read 0.170-0.172 vs
 // 0.160-0.161, i.e. 5.8-6.9%: the fix moved the hwss=false side only,
 // exactly as expected since the HWSS loop never carried the
 // branch-order bug.)  12% leaves ~1.85x headroom over the worst
@@ -617,9 +628,15 @@ static void TestMelaninLadder()
 // meaningful, so this test stays on the env.
 //
 // The env-lit configuration, by contrast, is stable and is what is
-// measured below.  Note the "~8% to ~48% run to run" swing the earlier
-// comment attributed to env lighting was really the clamp being absent
-// -- see (a).
+// measured below.  About the "~8% to ~48% run to run" swing an earlier
+// revision of this comment recorded: an intermediate revision then
+// re-attributed that swing wholesale to the missing clamp.  That
+// re-attribution was never measured and is NOT asserted here.  What is
+// actually known is that TWO things were in play at once -- the env-MIS
+// partition bug (file header) inflating PT, and genuine heavy-tailed
+// BDPT connection variance that the clamp tames (see (a) below) -- and
+// no experiment separated their contributions.  Both were present;
+// neither has been quantified against the other.
 //
 // TUNING NOTE -- the clamp is load-bearing:
 //   (a) BDPT's light-subpath connections through hair's narrow lobes
@@ -635,7 +652,10 @@ static void TestMelaninLadder()
 //       one-sided thumb on the scale) tames it.
 //
 // Tolerance rationale: with the clamp, POST the env-MIS fix (file
-// header, MEASUREMENT BASELINE), four repeat runs of this binary gave
+// header, MEASUREMENT BASELINE), n = 4 repeat runs of this binary gave
+// -- again four SAMPLES, not bounds; a later run read PT 0.289152 and
+// BDPT 0.297799, outside BOTH quadruples below, at a relative
+// difference of 2.99% --
 //   PT   0.28903 / 0.28897 / 0.28851 / 0.28858
 //   BDPT 0.29693 / 0.29756 / 0.29724 / 0.29738
 // i.e. a relative difference of 2.73% / 2.97% / 3.02% / 3.05% -- the
