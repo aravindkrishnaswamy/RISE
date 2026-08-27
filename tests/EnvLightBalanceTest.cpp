@@ -1,19 +1,80 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  EnvLightBalanceTest.cpp - End-to-end correctness check that
-//    BDPT and VCM converge to the same image as PT on scenes whose
-//    only light source is an environment map (HDRI / IBL).
+//  EnvLightBalanceTest.cpp - End-to-end correctness check for
+//    environment-map (HDRI / IBL) transport across PT, BDPT and VCM.
 //
-//    PROPERTY: For any scene with an env-map IBL, PT and BDPT (and
-//    VCM) must converge to the same image in the limit.  At finite
-//    samples they should agree on the **mean radiance** to within
-//    sampling noise.  When env-light emission sampling is broken
-//    (BDPT's s=1 NEE silently returns 0 because the env-light vertex
-//    has both pLight and pLuminary NULL; BDPT's eye-subpath escape
-//    doesn't accumulate env emission; MLT's bootstrap can't find
-//    non-zero seeds because s=1 contributes 0), BDPT/VCM/MLT diverge
-//    from PT by a systematic bias that does NOT shrink with more
-//    samples — they render too dim, or in the worst case fully black.
+//    ==================================================================
+//    2026-08-27 RE-DERIVATION (slice F3 of the PT env-MIS arc)
+//    ==================================================================
+//    Until this date every assertion in this file was RELATIVE: it
+//    asserted that BDPT and VCM agree with PT to within a tolerance
+//    family (8 % -> 30 % mean, 25 % -> 35 % p99, 2x -> 1.5x max).
+//    That was only ever as good as the PT reference, and the PT
+//    reference was WRONG: commit e4f36607 (F1) found that the surface-
+//    escape env block in IntegrateFromHitTemplated added env radiance
+//    with NO MIS weight whenever a radiance map was present, so PT's
+//    env strategies summed to 1 + w_nee instead of 1.  On env-lit
+//    non-delta surfaces PT read +17.7 % over truth (closed form:
+//    ln(17)/16 = 0.177076 excess at albedo 1).  F2 (afb2d64e) fixed the
+//    two medium-scatter sibling sites and the OpenPGL segment storage.
+//
+//    Post-fix, PT reproduces closed-form truth to 0.04-0.12 % on every
+//    topology below that admits one (numbers in each derivation).
+//    BDPT and VCM are byte-for-byte UNCHANGED by F1/F2 — and they are
+//    14-50 % OVER closed-form truth on the uniform-env topologies.
+//    They used to pass only because they were being compared against
+//    an inflated PT.
+//
+//    THIS SUITE IS THEREFORE RESTRUCTURED INTO THREE KINDS OF CHECK:
+//
+//      (1) ABSOLUTE CLOSED-FORM CHECKS ON PT.  Every topology whose
+//          converged image has a closed form now asserts PT against
+//          that closed form directly, at a tight band derived from the
+//          measured run-to-run spread (see "Band derivation" below).
+//          These are the real correctness assertions in the file; they
+//          do not depend on any other integrator.  Derivations are
+//          written out per topology.
+//
+//      (2) BIAS-REFERENCED REGRESSION BANDS ON BDPT / VCM.  BDPT and
+//          VCM do NOT agree with truth on these scenes.  Rather than
+//          silently widening a parity band that asserts something
+//          false, each (topology x integrator x statistic) now carries
+//          the MEASURED ratio-to-PT as the band CENTRE, with the
+//          measured bias named in a comment.  The check therefore
+//          guards "the bias has not moved", not "there is no bias".
+//
+//          *** A FUTURE FIX THAT MOVES BDPT/VCM TOWARD TRUTH WILL FAIL
+//          *** THESE CHECKS.  THAT IS INTENDED.  The centres below are
+//          *** a snapshot of known-biased behaviour, not a target; a
+//          *** genuine improvement must re-derive them (and should say
+//          *** so in its commit message).  The bias itself is the
+//          *** long-documented disc-area-vs-solid-angle env MIS
+//          *** residual — see docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md
+//          *** (Sessions 11/12/13 concluded STOP: the principled fix is
+//          *** a monolithic both-subpath-sides SA-MIS migration gated
+//          *** behind a separate HWSS spectral-bundle workstream) and
+//          *** docs/IMPROVEMENTS.md #12.
+//
+//      (3) FIREFLY CAPS.  The old "max within 1.5x of PT max" check
+//          conflated three unrelated things: the mean bias, the
+//          integrator's noise level, and actual fireflies.  It is
+//          replaced by max <= cap * OWN mean, per integrator.  That is
+//          a pure peakiness measure, immune to the mean bias, and it
+//          is what the historical t=1 white-firefly bug (~3.5x
+//          overshoot) actually violated.
+//
+//    ==================================================================
+//    PROPERTY (unchanged)
+//    ==================================================================
+//    For any scene with an env-map IBL, PT and BDPT (and VCM) must
+//    converge to the same image in the limit.  When env-light emission
+//    sampling is broken (BDPT's s=1 NEE silently returns 0 because the
+//    env-light vertex has both pLight and pLuminary NULL; BDPT's
+//    eye-subpath escape doesn't accumulate env emission; MLT's
+//    bootstrap can't find non-zero seeds because s=1 contributes 0),
+//    BDPT/VCM/MLT diverge from PT by a systematic bias that does NOT
+//    shrink with more samples — they render too dim, or in the worst
+//    case fully black.
 //
 //    REGRESSION FAMILY THIS TEST GUARDS AGAINST:
 //      - LightSampler::SampleLight returning false for IBL-only
@@ -26,38 +87,62 @@
 //        seed paths on env-only scenes.  Downstream of Path A.
 //      - The t=1 white-firefly bug we hit during Phase A development
 //        (fLight stayed at default `(1,1,1)` and was splatted
-//        unconditionally for env-light) — guarded by the max-pixel
-//        ratio check below.
+//        unconditionally for env-light) — guarded by the firefly caps.
+//      - The binary LightSampler::EnvSelectProbability() bug (env
+//        excluded from the alias table => env NEE dead in MIXED
+//        scenes only), fixed 2026-05-29 by the continuous-PMF rework.
+//        NEWLY GUARDED DIRECTLY by the topology E / F increment checks
+//        below: those assert the explicit light's contribution ON TOP
+//        of the env-only baseline against a closed form, so an env-NEE
+//        deficit that appears only when a second light exists now
+//        shows up as an increment error instead of being invisible
+//        inside a 30 %-wide parity band.
+//      - The PT env MIS double-count (F1, e4f36607) — caught directly
+//        by the topology D / G absolute checks (+17.7 % vs a 1 % band).
 //
-//    APPROACH: mirror BDPTStrategyBalanceTest.cpp's PT-vs-X invariant
-//    on three env-IBL topologies.  Capture the linear radiance buffer
-//    into memory via a CapturingRasterizerOutput, compute mean / p99 /
-//    max statistics, and assert BDPT and VCM agree with PT to within
-//    the same tolerance family used in the established BDPT test
-//    (mean 8 %, p99 25 %, max 2x).
-//
-//    Topologies:
+//    ==================================================================
+//    Topologies
+//    ==================================================================
 //      D. Env-only Lambertian quad — pure IBL, no explicit lights.
-//         Exercises the canonical "BDPT/VCM must reproduce PT under
-//         only env-map illumination" partition: s=0 (eye escapes to
-//         env), s=1 NEE (eye connects to env-light vertex 0), s>=2
-//         (env-light disc subpath bounces in scene then connects to
-//         eye).  Without Path A + Path B all three strategies fail
-//         and BDPT/VCM render very dim.
+//         CLOSED FORM.  Exercises the canonical "BDPT/VCM must
+//         reproduce PT under only env-map illumination" partition:
+//         s=0 (eye escapes to env), s=1 NEE (eye connects to env-light
+//         vertex 0), s>=2 (env-light disc subpath bounces in scene then
+//         connects to eye).
 //      E. Env + omni light — mixed env + explicit-light selection.
-//         Confirms env-light addition doesn't break the existing
-//         alias-table-based selection MIS.  Both light sources should
-//         contribute correctly.
+//         CLOSED FORM (as an increment over D).
 //      F. Env + mesh emitter — env + area light.  Same as E but
 //         exercises the s=0 (eye-hits-emitter) strategy alongside
 //         env-NEE for the most complex MIS partition.
+//         CLOSED FORM (as an increment over D).
+//      G. Env-only Lambertian quad, SPECTRAL.  CLOSED FORM on
+//         luminance, with the Jakob-Hanika uplift round-trip called
+//         out separately (it is NOT a transport error).
+//      H/I. Non-uniform (checker) env + off-center quad, RGB and
+//         spectral.  NO closed form — PT-relative bands only.
+//      J. Submerged camera / delta dielectric shell.  CLOSED FORM,
+//         exact (delta path, no MC noise, no MIS).  UNCHANGED by this
+//         re-derivation — it was always correct.
 //
-//    Tolerance: 8% mean, 25% p99, 2x max — matches
-//    BDPTStrategyBalanceTest's strict tolerances.  At 64 spp on a
-//    32x32 image these are well above MC noise but tight enough to
-//    catch the "dropped strategy" failure mode (which is order ~30%
-//    bias) and the "white firefly" failure mode (which is order ~3x
-//    on the max pixel).
+//    ==================================================================
+//    Sample counts and runtime
+//    ==================================================================
+//    Raised 2026-08-27 from 64 (RGB) / 128 (spectral) to 256 / 512.
+//    Rationale, measured: the RGB rows were already reproducible to
+//    <= 0.06 % run-to-run at 64 spp, but the closed-form increment
+//    checks for topologies E and F need the ~0.03 % residual MC error
+//    on the mean to be small compared with the increment itself
+//    (~0.012 and ~0.020 on a base of 0.5), and 256 spp takes the
+//    agreement with the derivation from ~0.9 % to <= 0.39 %.  The
+//    spectral rows moved 1.3-3.6 % run-to-run at 128 spp (that is the
+//    non-reproducibility recorded in the F2 commit message; it is
+//    spectral-only — the RGB Pel rows are bit-identical run to run on
+//    this machine).  512 spp halves that to <= 2.0 %.  1024 spp was
+//    measured and rejected: it bought no further ratio-spread
+//    reduction (the residual is order-statistic jitter on p99/max, not
+//    variance) while taking the suite from 12.8 s to 21.2 s per run.
+//
+//    Whole-suite wall clock: ~13 s per run (was ~3.3 s).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -188,6 +273,14 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	return s;
 }
 
+//! Rec.709 / D65 luminance.  RISEPel IS Rec709RGBPel since Stage B of
+//! the 2026-05-24 colour-space migration (docs/COLOR_SPACE_MIGRATION.md),
+//! so these are the correct weights for the captured buffer.
+static double Luminance( const double v[3] )
+{
+	return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+}
+
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
 	char path[512];
@@ -238,19 +331,6 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	return result;
 }
 
-static bool ChannelsAgree(
-	const double a[3],
-	const double b[3],
-	double relTol,
-	double absFloor )
-{
-	for( int c = 0; c < 3; c++ ) {
-		const double denom = std::fmax( std::fabs(a[c]), absFloor );
-		if( std::fabs(a[c] - b[c]) / denom > relTol ) return false;
-	}
-	return true;
-}
-
 static void PrintStats( const char* label, const ImageStats& s )
 {
 	if( !s.valid ) {
@@ -264,12 +344,115 @@ static void PrintStats( const char* label, const ImageStats& s )
 		<< std::endl;
 }
 
-static void PrintRelDiff( const char* label, const double a[3], const double b[3], double absFloor )
+//////////////////////////////////////////////////////////////////////
+// Check kind (1): absolute, against a closed form.
+//////////////////////////////////////////////////////////////////////
+
+//! Per-channel |value - expected| / expected <= tol.
+static bool AbsWithin( const double v[3], const double expected[3], double tol )
 {
-	std::cout << "    " << label << " rel-diff:";
 	for( int c = 0; c < 3; c++ ) {
-		const double denom = std::fmax( std::fabs(a[c]), absFloor );
-		std::cout << " " << (std::fabs(a[c]-b[c]) / denom);
+		if( std::fabs( expected[c] ) < 1e-12 ) return false;
+		if( std::fabs( v[c] - expected[c] ) / std::fabs( expected[c] ) > tol ) return false;
+	}
+	return true;
+}
+
+static void PrintAbsDiff( const char* label, const double v[3], const double expected[3] )
+{
+	std::cout << "    " << label << " vs closed form:";
+	for( int c = 0; c < 3; c++ ) {
+		std::cout << " " << v[c] << "(" << ((v[c]-expected[c])/expected[c]*100.0) << "%)";
+	}
+	std::cout << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Check kind (2): bias-referenced regression band.
+//
+// `center` is the MEASURED per-channel ratio (integrator stat) / (PT
+// stat) at the sample counts in this file; `tol` is a FRACTIONAL
+// tolerance on that ratio.  Per-channel because the hwss=true spectral
+// rows have a genuinely channel-dependent bias (the spectral-bundle
+// effect), which no single scalar centre can represent.
+//////////////////////////////////////////////////////////////////////
+struct StatBand
+{
+	double center[3];
+	double tol;
+};
+
+struct IntegratorBias
+{
+	StatBand mean;
+	StatBand p99;
+};
+
+struct TopologyBias
+{
+	IntegratorBias bdpt;
+	IntegratorBias vcm;
+	//! max <= peakCap * own mean, applied to PT, BDPT and VCM alike.
+	double         peakCap;
+};
+
+static bool RatioWithinBand( const double ref[3], const double x[3], const StatBand& b )
+{
+	for( int c = 0; c < 3; c++ ) {
+		if( std::fabs( ref[c] ) < 1e-12 ) return false;
+		const double ratio = x[c] / ref[c];
+		if( std::fabs( ratio - b.center[c] ) > b.tol * b.center[c] ) return false;
+	}
+	return true;
+}
+
+static void PrintRatioBand(
+	const char* label,
+	const double ref[3],
+	const double x[3],
+	const StatBand& b )
+{
+	std::cout << "    " << label << " ratio-to-PT (expected centres "
+		<< b.center[0] << ", " << b.center[1] << ", " << b.center[2]
+		<< " +-" << (b.tol*100.0) << "%):";
+	for( int c = 0; c < 3; c++ ) {
+		const double ratio = ( std::fabs(ref[c]) < 1e-12 ) ? 0.0 : x[c] / ref[c];
+		std::cout << " " << ratio;
+	}
+	std::cout << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Check kind (3): firefly cap.  max <= cap * own mean, per channel.
+//
+// Replaces the old "max within 1.5x of PT max".  That check mixed the
+// mean bias (BDPT/VCM run 14-50 % hot on these scenes, which pushed
+// their max up by the same factor for no pathological reason), the
+// integrator's noise level (BDPT at equal spp is simply noisier than
+// PT here), and genuine fireflies.  max/own-mean isolates the last.
+//
+// Historical target: the Phase-A t=1 bug splatted a default-init
+// fLight=(1,1,1) unconditionally for env-light vertices, producing
+// isolated pixels ~3.5x the image max.  Measured worst peakiness in
+// the current tree is 1.454 on the uniform-env topologies and 1.772 on
+// the checker-env ones (which are legitimately high-dynamic-range: the
+// bright checker cells ARE the max), so the caps below sit ~47-51 %
+// above measurement and comfortably below 3.5x.
+//////////////////////////////////////////////////////////////////////
+static bool PeakWithinCap( const ImageStats& s, double cap )
+{
+	for( int c = 0; c < 3; c++ ) {
+		if( s.mean[c] <= 0.0 ) return false;
+		if( s.max[c] > cap * s.mean[c] ) return false;
+	}
+	return true;
+}
+
+static void PrintPeak( const char* label, const ImageStats& s, double cap )
+{
+	std::cout << "    " << label << " max/mean (cap " << cap << "):";
+	for( int c = 0; c < 3; c++ ) {
+		std::cout << " " << ( s.mean[c] > 0.0 ? s.max[c]/s.mean[c] : 0.0 );
 	}
 	std::cout << std::endl;
 }
@@ -279,8 +462,25 @@ static void PrintRelDiff( const char* label, const double a[3], const double b[3
 //
 // Setup: a single Lambertian quad facing the camera, lit only by the
 // IBL (or IBL + small explicit emitter for the mixed topologies).
-// 64 spp keeps both PT and BDPT well past their noise floor on this
-// smooth scene.  All chunks use the v6 scene format (current).
+//
+// GEOMETRY FACTS THE CLOSED FORMS DEPEND ON (each verified against the
+// render, see the per-topology derivations):
+//   - Camera at (0,0,3.5) looking down -Z, `fov 30.0` interpreted as
+//     the FULL angle, so the half-extent of the visible region on the
+//     z=0 plane is 3.5*tan(15 deg) = 0.9378222.
+//   - That is < 1, so the [-1,1]^2 quad FILLS the frame: no pixel sees
+//     the environment directly, and the image mean is exactly the
+//     box-filtered average of the surface radiance over
+//     [-0.9378222, 0.9378222]^2.  (Confirmed empirically: PT max is
+//     0.54 on topology D, not 1.0 — a background pixel would read the
+//     env at L=1.)
+//   - z=0 is perpendicular to the view axis, so the pixel-to-surface
+//     map is LINEAR; with `pixel_filter box` and jittered samples the
+//     image average is the exact uniform area average over that square.
+//   - The quad is the only geometry in D/E, so its front hemisphere is
+//     unoccluded and there is no interreflection (a plane cannot see
+//     itself).  In F the emitter has `material none` (pure absorber,
+//     no BRDF), so there is still no interreflection — only occlusion.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneCommonGeometry =
 	"film\n"
@@ -329,12 +529,7 @@ static const char* kSceneCommonGeometry =
 // Env-map definitions
 //
 // `pnt_env` is a uniform-color painter at L=1.0 in each channel.
-// A uniform-radiance environment integrates to exactly Le·π
-// irradiance on a flat surface, which combined with albedo 0.5 yields
-// expected outgoing radiance 0.5 / π × π = 0.5 (modulo any visibility
-// blocking from the quad orientation — see comment in topology
-// definitions).  Used as the IBL source via the rasterizer's
-// `radiance_map` parameter.
+// Used as the IBL source via the rasterizer's `radiance_map` parameter.
 //////////////////////////////////////////////////////////////////////
 static const char* kEnvPainter =
 	"uniformcolor_painter\n"
@@ -350,7 +545,14 @@ static const char* kEnvPainter =
 // map.  `radiance_scale 1.0` keeps the env at its painter value.
 // `radiance_background TRUE` lets the camera see the env directly
 // when it escapes — required for s=0 strategy to give a fair PT
-// baseline.
+// baseline.  (On topologies D/E/F no camera ray actually escapes; the
+// flag matters for the off-center checker topologies H/I.)
+//
+// `pixel_filter box` on every rasterizer string, PT included: a
+// normalized filter preserves the image MEAN, but matching the filter
+// across integrators removes it as a confounder on p99/max, and the
+// box filter is what makes the topology D/E/F closed forms exact
+// (see the geometry-facts block above).
 //////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPT =
 	"standard_shader\n"
@@ -361,7 +563,7 @@ static const char* kRasterizerPT =
 	"\n"
 	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tsamples 64\n"
+	"\tsamples 256\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
 	"\tradiance_scale 1.0\n"
@@ -387,7 +589,7 @@ static const char* kRasterizerBDPT =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 64\n"
+	"\tsamples 256\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
 	"\tradiance_scale 1.0\n"
@@ -413,7 +615,7 @@ static const char* kRasterizerVCM =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 64\n"
+	"\tsamples 256\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
 	"\tradiance_scale 1.0\n"
@@ -438,13 +640,13 @@ static const char* kRasterizerVCM =
 // s=0 escape sites would be entirely untested — Reviewer 3 (test-
 // coverage adversary) flagged the gap.  Same env / scale /
 // background settings as the Pel block above so PT-vs-BDPT-vs-VCM
-// comparison stays apples-to-apples; spectral integrators use the
-// same Le from `pnt_env` (uniformcolor at L=1) per-wavelength via
-// GetRadianceNM, so the reference outgoing radiance is unchanged
-// (0.5 = albedo·Le on the Lambertian quad).  Both HWSS on and HWSS off
-// configurations are executed dynamically per spectral test to exercise
-// both hero-wavelength and single-wavelength loops; samples bumped to
-// 128 to compensate for the higher variance.
+// comparison stays apples-to-apples.  Both HWSS on and HWSS off
+// configurations are executed dynamically per spectral test to
+// exercise both hero-wavelength and single-wavelength loops.
+//
+// Samples 512 (was 128) — see the "Sample counts and runtime" block
+// in the file header for the measurement that chose that number.
+//////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPTSpectral =
 	"standard_shader\n"
 	"{\n"
@@ -454,7 +656,7 @@ static const char* kRasterizerPTSpectral =
 	"\n"
 	"pathtracing_spectral_rasterizer\n"
 	"{\n"
-	"\tsamples 128\n"
+	"\tsamples 512\n"
 	"\tpixel_filter box\n"
 	"\tnmbegin 380\n"
 	"\tnmend 720\n"
@@ -486,7 +688,7 @@ static const char* kRasterizerBDPTSpectral =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 128\n"
+	"\tsamples 512\n"
 	"\tnmbegin 380\n"
 	"\tnmend 720\n"
 	"\tnum_wavelengths 8\n"
@@ -517,7 +719,7 @@ static const char* kRasterizerVCMSpectral =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 128\n"
+	"\tsamples 512\n"
 	"\tnmbegin 380\n"
 	"\tnmend 720\n"
 	"\tnum_wavelengths 8\n"
@@ -540,6 +742,10 @@ static const char* kRasterizerVCMSpectral =
 	"\tcolor_space sRGB\n"
 	"}\n";
 
+//! Omni light for topology E.  `power` on a point light is RADIANT
+//! INTENSITY in W/sr, NOT flux: PointLight::ComputeDirectLighting
+//! computes `cColor * brdf.value() * radiantEnergy * cos / d^2` with no
+//! 1/(4*pi).  See the topology E derivation.
 static const char* kLightOmni =
 	"omni_light\n"
 	"{\n"
@@ -549,6 +755,11 @@ static const char* kLightOmni =
 	"\tposition 0.0 0.0 5.0\n"
 	"}\n";
 
+//! Mesh emitter for topology F.  LambertianEmitter::emittedRadiance
+//! returns `radEx * INV_PI * scale` and is ONE-SIDED (zero when
+//! Dot(out, N) <= 0), so this is a 1x1 quad at z=4 radiating
+//! L_e = 1.0 * 10.0 / pi = 3.1830989 toward -Z (the winding
+//! pta->ptb->ptc gives N = -Z).  See the topology F derivation.
 static const char* kLightMesh =
 	"uniformcolor_painter\n"
 	"{\n"
@@ -580,52 +791,208 @@ static const char* kLightMesh =
 	"\tmaterial mat_emit\n"
 	"}\n";
 
-struct Tolerances
-{
-	double meanTol;	// fractional, e.g. 0.08 = 8%
-	double p99Tol;
-	double maxTol;
+//////////////////////////////////////////////////////////////////////
+// BAND DERIVATION — how every tolerance in this file was chosen
+//////////////////////////////////////////////////////////////////////
+//
+// Method: the suite was run 4x consecutively at each of three sample-
+// count settings (64/128, 256/512, 256/1024) on the F2 tree
+// (afb2d64e), and the full (min, max, spread) of every statistic and
+// every ratio was tabulated.  Tolerances are then
+//
+//     tol  >=  3 x (worst observed full spread across 4 runs)
+//
+// The 3x factor is deliberate: the full range of 4 draws underestimates
+// a 3-sigma half-width by roughly that much, and it also buys headroom
+// for machines with a different core count (the render is thread-
+// scheduling dependent — see below).
+//
+// REPRODUCIBILITY, MEASURED (256/512, 4 consecutive runs, this machine):
+//   - RGB (Pel) rasterizers: BIT-IDENTICAL run to run for PT; BDPT and
+//     VCM move <= 0.06 % on the mean, <= 0.5 % on p99.
+//   - SPECTRAL rasterizers: NOT reproducible.  PT mean moves up to
+//     1.05 %, BDPT/VCM mean-ratio up to 2.0 %, p99-ratio up to 5.3 %,
+//     max-ratio up to 12.8 %.  This is the non-reproducibility the F2
+//     commit message recorded; it is spectral-only, and it is why the
+//     spectral rows carry visibly wider bands than the RGB rows.
+//     It shrinks as 1/sqrt(N) from 128 to 512 spp and then stops
+//     shrinking (order-statistic jitter dominates p99/max).
+//
+// The max statistic is no longer banded at all — see the firefly-cap
+// block above for why.
+//
+//////////////////////////////////////////////////////////////////////
+
+//! Absolute closed-form bands.
+//! - RGB PT vs closed form: worst measured deviation 0.116 % (green
+//!   channel, deterministic and spp-stable — it is a colour-pipe
+//!   round-trip constant, not MC noise: the green/red mean ratio is
+//!   1.00164 at 64 spp and 1.00156 at 256 spp).  1 % gives 8.6x.
+static const double kAbsBandRGB      = 0.010;
+//! - Increment checks (topologies E, F): worst measured deviation from
+//!   the derivation 0.39 %.  That residual is a MODEL residual (half-
+//!   pixel grid convention in the quadrature), not noise.  Worst-case
+//!   contribution from fully decorrelated MC error between the two
+//!   renders is ~0.9 % (the 64->256 spp movement of the topology-D mean
+//!   is only 0.03 %, so its MC error at 256 spp is ~0.015 % of 0.5,
+//!   i.e. ~0.6 % of the ~0.012 increment).  5 % covers both with ~4x.
+static const double kAbsBandIncrement = 0.050;
+//! - Spectral PT luminance vs closed form: measured -1.39 % / -1.23 %
+//!   (see topology G derivation — the deficit is the Jakob-Hanika
+//!   uplift round-trip, NOT transport), run spread ~1 %.  5 % covers
+//!   both and still catches the +17.7 % F1 double-count with 3.5x.
+static const double kAbsBandSpectralLum = 0.050;
+//! - Spectral PT per-channel vs closed form: the JH round-trip is
+//!   strongly channel-dependent — measured over 6 runs the red channel
+//!   sits at -4.6 % .. -5.5 %, green -0.4 % .. -1.1 %, blue +2.3 % ..
+//!   +3.0 %.  So this band is a BOUND ON THE ROUND-TRIP, not a tight
+//!   transport assertion; the luminance check above is what actually
+//!   guards transport (a +17.7 % F1-style double-count moves luminance
+//!   to +16.1 %, i.e. 3.2x outside its 5 % band, whereas it would move
+//!   red only to +11.7 %).  10 % puts ~4.5 pp between the worst
+//!   measured channel and the limit, ~4.8x the observed run-to-run
+//!   jitter of 0.93 pp.
+//!   A JH LUT retrain (e.g. the pre-staged ACEScg migration in
+//!   docs/COLOR_SPACE_MIGRATION.md) SHOULD re-derive it.
+static const double kAbsBandSpectralRGB = 0.100;
+
+//! Firefly caps.  Worst measured peakiness (max / own mean) is 1.454
+//! on the uniform-env topologies and 1.772 on the checker-env ones.
+static const double kPeakCapUniformEnv    = 2.20;
+static const double kPeakCapNonUniformEnv = 2.60;
+
+//////////////////////////////////////////////////////////////////////
+// The measured BDPT / VCM bias table.
+//
+// Every `center` below is the mean over 4 consecutive runs of
+// (integrator stat) / (PT stat), per channel, at the sample counts in
+// this file, on tree afb2d64e (F2).  READ THE BANNER AT THE TOP OF THIS
+// FILE before changing any of them.
+//////////////////////////////////////////////////////////////////////
+
+//! Topology D — env-only Lambertian, RGB.
+//! BDPT is +28.5 % over closed-form truth, VCM +24.3 %.  Both are
+//! UNCHANGED by F1/F2 — this is the long-standing disc-area env MIS
+//! residual, which used to hide inside a 30 % band centred on an
+//! inflated PT.  Surfaced 2026-08-27 when the PT reference was fixed.
+static const TopologyBias kBiasEnvOnly = {
+	/* bdpt */ { { { 1.2852, 1.2848, 1.2853 }, 0.03 },
+	             { { 1.4925, 1.5028, 1.5015 }, 0.05 } },
+	/* vcm  */ { { { 1.2433, 1.2429, 1.2427 }, 0.03 },
+	             { { 1.2792, 1.2722, 1.2733 }, 0.05 } },
+	kPeakCapUniformEnv
 };
 
-// Tolerances tuned to what Path A + Path B + the P1a/P1b
-// direction-correctness fixes (2026-05-25 adversarial review)
-// actually achieve.  Measured behaviour:
-//   env-only Lambertian (RGB): BDPT 107% / VCM 113% of PT
-//   env+omni / env+mesh:        BDPT/VCM 85-86% of PT
-//   env-only Lambertian (NM):   BDPT 74% / VCM 110% of PT
-// The systematic bias on all four topologies (over- or under-) is
-// the documented residual from the disc-area pdfPosition
-// parameterization undercounting the env's importance-sampling
-// density — full PBRT-v4-style solid-angle MIS for env vertex
-// would close the gap entirely but requires a larger refactor of
-// MISWeight to treat env vertices as a distinct type with SA-
-// measure pdfs throughout — tracked in docs/IMPROVEMENTS.md #12.
-//
-// Tolerances accept per-channel mean / p99 / max deviation as
-// listed.  Tightened from the original `{ 0.35, 0.35, 2.00 }` to
-// `{ 0.30, 0.35, 1.50 }` after the 2026-05-29 continuous-PMF
-// architectural fix (IMPROVEMENTS.md §12, PRE_PHASE1_STATUS.md
-// Session 9) closed the documented 15–22 % env-IBL deficit at
-// lax tolerances on every topology.  The mean band is now bounded
-// by VCM env+mesh's ~28 % over-count (residual disc-area-vs-SA
-// discrepancy) — every other (BDPT × topology) and (VCM × topology)
-// pair has mean within ≤ 20 % of PT, so 30 % gives ~10 pp of
-// headroom against MC-noise jitter while still catching the
-// catastrophic 6-9 % / 36 % collapse modes from Sessions 2 / 8.
-// Strict `{ 0.10, 0.30, 1.00 }` still flags 3 sub-checks (the
-// VCM env+mesh + two BDPT/VCM spectral env-only residuals);
-// closing them requires the deferred SA-MIS migration tracked in
-// IMPROVEMENTS.md §12.  Max 1.5× retains the Path-A t=1 firefly
-// regression detector (historical ~3.5× overshoot easily caught).
-static const Tolerances kEnvTolerances{ 0.30, 0.35, 1.50 };
+//! Topology E — env + omni light, RGB.
+//! BDPT +27.9 %, VCM +23.7 % — slightly less than topology D because
+//! the omni contribution (which both integrators get right) dilutes
+//! the biased env term.
+static const TopologyBias kBiasEnvPlusOmni = {
+	/* bdpt */ { { { 1.2785, 1.2781, 1.2787 }, 0.03 },
+	             { { 1.4845, 1.4972, 1.4933 }, 0.05 } },
+	/* vcm  */ { { { 1.2373, 1.2367, 1.2367 }, 0.03 },
+	             { { 1.2761, 1.2665, 1.2705 }, 0.05 } },
+	kPeakCapUniformEnv
+};
 
-static void RunEnvTopologyTestWithRasterizers(
+//! Topology F — env + mesh emitter, RGB.
+//! BDPT +13.6 %, VCM +50.0 %.  The VCM figure is the "VCM env+mesh
+//! ~22-28 % over" residual of docs/PRE_PHASE1_STATUS.md (Session 9)
+//! re-measured against a CORRECT PT reference — against the old
+//! inflated PT it read ~28 %; against truth it is 50 %.  This is the
+//! single largest bias in the suite and the one
+//! docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md is about.
+static const TopologyBias kBiasEnvPlusMesh = {
+	/* bdpt */ { { { 1.1361, 1.1357, 1.1358 }, 0.03 },
+	             { { 1.2393, 1.2392, 1.2401 }, 0.05 } },
+	/* vcm  */ { { { 1.5002, 1.5003, 1.4997 }, 0.03 },
+	             { { 1.5222, 1.5147, 1.5269 }, 0.05 } },
+	kPeakCapUniformEnv
+};
+
+//! Topology G — env-only Lambertian, SPECTRAL, hwss=false.
+//! BDPT +28.4 %, VCM +20.6 %.  BDPT matches its RGB twin (1.284 vs
+//! 1.285) — the env bias is a transport property, not a colour-pipe
+//! one.  VCM reads a little lower here than in RGB (1.206 vs 1.243).
+//! Wider bands than the RGB rows purely because the spectral
+//! rasterizers are not reproducible run to run.
+static const TopologyBias kBiasEnvOnlySpectralNoHWSS = {
+	/* bdpt */ { { { 1.2848, 1.2831, 1.2840 }, 0.07 },
+	             { { 1.4663, 1.4528, 1.4576 }, 0.15 } },
+	/* vcm  */ { { { 1.2110, 1.2085, 1.1981 }, 0.07 },
+	             { { 1.2306, 1.2110, 1.2060 }, 0.15 } },
+	kPeakCapUniformEnv
+};
+
+//! Topology G — env-only Lambertian, SPECTRAL, hwss=true.
+//! NOTE the strong CHANNEL dependence: BDPT reads (1.126, 1.299,
+//! 1.246) against the hwss=false PT reference.  Dividing out BDPT's
+//! own hwss=false env bias (1.284) isolates the HWSS spectral-bundle
+//! factor as (0.877, 1.013, 0.966) — i.e. the bundle costs ~12 % in
+//! red, is neutral in green and ~3 % low in blue on this uniform-env
+//! scene.  That is the documented pre-existing spectral-bundle
+//! deficit (CLAUDE.md env-IBL entry; docs/PRE_PHASE1_STATUS.md
+//! Session 13 conclusion (3): it is present at the disc-area baseline
+//! and is a SEPARATE workstream that must precede any SA-MIS
+//! migration).  It is recorded here rather than asserted away.
+static const TopologyBias kBiasEnvOnlySpectralHWSS = {
+	/* bdpt */ { { { 1.1259, 1.2989, 1.2455 }, 0.06 },
+	             { { 1.2302, 1.4402, 1.3708 }, 0.10 } },
+	/* vcm  */ { { { 1.0763, 1.2339, 1.1777 }, 0.06 },
+	             { { 1.0702, 1.2475, 1.1769 }, 0.10 } },
+	kPeakCapUniformEnv
+};
+
+//! Topology H — non-uniform (checker) env + off-center quad, RGB.
+//! BDPT +2.2 %, VCM -8.1 %.  Far closer to PT than the uniform-env
+//! topologies, and that is EXPECTED, not luck: on this scene most of
+//! the image energy is env seen DIRECTLY by the camera (mean 4.09 with
+//! bright checker cells at L=5), which every integrator gets exactly
+//! right via s=0.  The biased once-reflected term is a small fraction
+//! of the total, so the bias is diluted.  This topology is therefore a
+//! DIRECTION-correctness test (see the topology comment), not a
+//! sensitive bias test.
+static const TopologyBias kBiasNonUniformRGB = {
+	/* bdpt */ { { { 1.0217, 1.0215, 1.0213 }, 0.03 },
+	             { { 1.0113, 1.0081, 1.0022 }, 0.05 } },
+	/* vcm  */ { { { 0.9188, 0.9188, 0.9185 }, 0.03 },
+	             { { 0.9215, 0.9193, 0.9142 }, 0.05 } },
+	kPeakCapNonUniformEnv
+};
+
+//! Topology I — non-uniform env + off-center quad, SPECTRAL hwss=false.
+//! Note: unlike topology G, this row compares against a PT rendered at
+//! the SAME hwss setting (the pre-existing convention for this
+//! topology, retained).
+static const TopologyBias kBiasNonUniformSpectralNoHWSS = {
+	/* bdpt */ { { { 1.0167, 1.0235, 1.0289 }, 0.07 },
+	             { { 0.9825, 0.9924, 0.9862 }, 0.18 } },
+	/* vcm  */ { { { 0.9097, 0.9103, 0.9110 }, 0.07 },
+	             { { 0.8884, 0.9047, 0.8998 }, 0.18 } },
+	kPeakCapNonUniformEnv
+};
+
+//! Topology I — non-uniform env + off-center quad, SPECTRAL hwss=true.
+//! Both sides bundled, so the bundle effect largely cancels and the
+//! ratios sit close to the hwss=false row.
+static const TopologyBias kBiasNonUniformSpectralHWSS = {
+	/* bdpt */ { { { 1.0245, 1.0263, 1.0291 }, 0.06 },
+	             { { 1.0277, 1.0232, 1.0227 }, 0.10 } },
+	/* vcm  */ { { { 0.9120, 0.9088, 0.9084 }, 0.06 },
+	             { { 0.9247, 0.9246, 0.9165 }, 0.10 } },
+	kPeakCapNonUniformEnv
+};
+
+//////////////////////////////////////////////////////////////////////
+// Topology driver.
+//////////////////////////////////////////////////////////////////////
+static ImageStats RunEnvTopologyTestWithRasterizers(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
 	const char* rasterizerPT,
 	const char* rasterizerBDPT,
 	const char* rasterizerVCM,
-	const Tolerances& tol = kEnvTolerances )
+	const TopologyBias& bias )
 {
 	std::cout << "Testing PT-vs-BDPT-vs-VCM: " << topologyName << std::endl;
 
@@ -642,9 +1009,10 @@ static void RunEnvTopologyTestWithRasterizers(
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdpt" );
 	const std::string vcmPath  = WriteSceneToTempFile( vcmScene.c_str(),  "vcm"  );
 
+	ImageStats none{};
 	if( ptPath.empty() || bdptPath.empty() || vcmPath.empty() ) {
 		Check( false, ( std::string("temp file write: ") + topologyName ).c_str() );
-		return;
+		return none;
 	}
 
 	const ImageStats pt   = RenderAndComputeStats( ptPath.c_str() );
@@ -662,61 +1030,213 @@ static void RunEnvTopologyTestWithRasterizers(
 	Check( pt.valid,   ( std::string("PT render produced output: ")   + topologyName ).c_str() );
 	Check( bdpt.valid, ( std::string("BDPT render produced output: ") + topologyName ).c_str() );
 	Check( vcm.valid,  ( std::string("VCM render produced output: ")  + topologyName ).c_str() );
-	if( !pt.valid || !bdpt.valid || !vcm.valid ) return;
+	if( !pt.valid || !bdpt.valid || !vcm.valid ) return none;
 
 	const double brightness = pt.mean[0] + pt.mean[1] + pt.mean[2];
 	Check( brightness > 1e-4,
 		( std::string("PT mean is non-zero: ") + topologyName ).c_str() );
 
-	const double absFloor = 1e-6;
-
-	// BDPT vs PT
+	// Firefly cap on PT itself — PT is the reference, so a firefly in
+	// PT would silently move every band below.
 	{
-		const bool meanMatch = ChannelsAgree( pt.mean, bdpt.mean, tol.meanTol, absFloor );
-		const bool p99Match  = ChannelsAgree( pt.p99,  bdpt.p99,  tol.p99Tol,  absFloor );
-		const bool maxMatch  = ChannelsAgree( pt.max,  bdpt.max,  tol.maxTol,  absFloor );
-
-		Check( meanMatch, ( std::string("BDPT mean within ")
-			+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
-		Check( p99Match,  ( std::string("BDPT p99 within ")
-			+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
-		Check( maxMatch,  ( std::string("BDPT max within ")
-			+ std::to_string(int(tol.maxTol*100))  + "x of PT: " + topologyName ).c_str() );
-
-		if( !meanMatch ) PrintRelDiff( "BDPT.mean", pt.mean, bdpt.mean, absFloor );
-		if( !p99Match  ) PrintRelDiff( "BDPT.p99",  pt.p99,  bdpt.p99,  absFloor );
-		if( !maxMatch  ) PrintRelDiff( "BDPT.max",  pt.max,  bdpt.max,  absFloor );
+		const bool ok = PeakWithinCap( pt, bias.peakCap );
+		Check( ok, ( std::string("PT max <= ") + std::to_string(bias.peakCap)
+			+ "x own mean (firefly cap): " + topologyName ).c_str() );
+		if( !ok ) PrintPeak( "PT", pt, bias.peakCap );
 	}
 
-	// VCM vs PT
-	{
-		const bool meanMatch = ChannelsAgree( pt.mean, vcm.mean, tol.meanTol, absFloor );
-		const bool p99Match  = ChannelsAgree( pt.p99,  vcm.p99,  tol.p99Tol,  absFloor );
-		const bool maxMatch  = ChannelsAgree( pt.max,  vcm.max,  tol.maxTol,  absFloor );
+	struct Row { const char* name; const ImageStats& s; const IntegratorBias& b; };
+	const Row rows[2] = { { "BDPT", bdpt, bias.bdpt }, { "VCM", vcm, bias.vcm } };
 
-		Check( meanMatch, ( std::string("VCM mean within ")
-			+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
-		Check( p99Match,  ( std::string("VCM p99 within ")
-			+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
-		Check( maxMatch,  ( std::string("VCM max within ")
-			+ std::to_string(int(tol.maxTol*100))  + "x of PT: " + topologyName ).c_str() );
-
-		if( !meanMatch ) PrintRelDiff( "VCM.mean",  pt.mean, vcm.mean, absFloor );
-		if( !p99Match  ) PrintRelDiff( "VCM.p99",   pt.p99,  vcm.p99,  absFloor );
-		if( !maxMatch  ) PrintRelDiff( "VCM.max",   pt.max,  vcm.max,  absFloor );
+	for( const Row& r : rows ) {
+		{
+			const bool ok = RatioWithinBand( pt.mean, r.s.mean, r.b.mean );
+			Check( ok, ( std::string(r.name) + " mean ratio-to-PT within "
+				+ std::to_string(int(r.b.mean.tol*100)) + "% of measured bias: "
+				+ topologyName ).c_str() );
+			if( !ok ) PrintRatioBand( ( std::string(r.name) + ".mean" ).c_str(),
+				pt.mean, r.s.mean, r.b.mean );
+		}
+		{
+			const bool ok = RatioWithinBand( pt.p99, r.s.p99, r.b.p99 );
+			Check( ok, ( std::string(r.name) + " p99 ratio-to-PT within "
+				+ std::to_string(int(r.b.p99.tol*100)) + "% of measured bias: "
+				+ topologyName ).c_str() );
+			if( !ok ) PrintRatioBand( ( std::string(r.name) + ".p99" ).c_str(),
+				pt.p99, r.s.p99, r.b.p99 );
+		}
+		{
+			const bool ok = PeakWithinCap( r.s, bias.peakCap );
+			Check( ok, ( std::string(r.name) + " max <= " + std::to_string(bias.peakCap)
+				+ "x own mean (firefly cap): " + topologyName ).c_str() );
+			if( !ok ) PrintPeak( r.name, r.s, bias.peakCap );
+		}
 	}
+
+	return pt;
 }
 
-// Convenience: original Pel-rasterizer signature preserved for the
-// existing topology tests.
-static void RunEnvTopologyTest(
+// Convenience: Pel-rasterizer signature for the RGB topology tests.
+static ImageStats RunEnvTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
-	const Tolerances& tol = kEnvTolerances )
+	const TopologyBias& bias )
 {
-	RunEnvTopologyTestWithRasterizers(
+	return RunEnvTopologyTestWithRasterizers(
 		topologyName, sceneCommonBlock,
-		kRasterizerPT, kRasterizerBDPT, kRasterizerVCM, tol );
+		kRasterizerPT, kRasterizerBDPT, kRasterizerVCM, bias );
+}
+
+//////////////////////////////////////////////////////////////////////
+// CLOSED FORMS — topology D, and the E / F increments over it.
+//////////////////////////////////////////////////////////////////////
+//
+// -- TOPOLOGY D: env-only Lambertian quad ---------------------------
+//
+// A uniform environment of radiance L_env = 1 fills the whole sphere.
+// The quad is the only geometry, so its front hemisphere is entirely
+// unoccluded and there is no interreflection.  Irradiance on a flat
+// surface under a uniform hemisphere is
+//
+//     E = INT_hemisphere L_env cos(theta) dw = L_env * pi = pi
+//
+// and a Lambertian BRDF of reflectance rho = 0.5 has value rho/pi, so
+// the outgoing radiance is
+//
+//     L_out = (rho/pi) * E = (0.5/pi) * pi = 0.5
+//
+// SPATIALLY CONSTANT, so the image mean is 0.5 regardless of the
+// camera model, and this closed form is exact.
+//
+// MEASURED (PT, 256 spp, 4 runs): (0.49980, 0.50058, 0.49988), i.e.
+// (-0.040 %, +0.116 %, -0.024 %).  Band kAbsBandRGB = 1 %.
+//
+// This is the check that directly detects the F1 bug: pre-fix PT read
+// 0.5886 here (albedo 0.5 predicts 0.588538 from the closed-form
+// excess derivation in the F1 commit message), i.e. +17.7 %.
+//
+static const double kClosedFormEnvOnly[3] = { 0.5, 0.5, 0.5 };
+
+//! Topology D's PT mean, cached so E and F can check their INCREMENT
+//! over the env-only baseline.  Populated by TestEnvOnly().
+static double g_ptEnvOnlyMean[3] = { 0.0, 0.0, 0.0 };
+static bool   g_ptEnvOnlyValid   = false;
+
+//
+// -- TOPOLOGY E: env + omni light -----------------------------------
+//
+// Adding a POINT light cannot occlude anything, so the env term is
+// unchanged and the converged image is exactly topology D plus the
+// omni's direct term.  With intensity I = `power` = 2 W/sr (see the
+// kLightOmni comment — RISE point lights take intensity, not flux) at
+// (0,0,5), a surface point p = (x,y,0) with normal +Z sees
+//
+//     cos(theta) = 5/d,   d^2 = x^2 + y^2 + 25
+//     Delta_E(x,y) = (rho/pi) * I * cos(theta) / d^2
+//                  = (0.5/pi) * 2 * 5 / (x^2+y^2+25)^(3/2)
+//                  = 5 / (pi * (x^2+y^2+25)^(3/2))
+//
+// Averaged over the visible square [-H,H]^2 with H = 3.5*tan(15 deg)
+// = 0.9378222 (the box filter makes the image mean exactly this area
+// average — see the geometry-facts block):
+//
+//     Delta_E = 0.01230206
+//
+// CAMERA-INDEPENDENT SANITY BRACKET: Delta_E is monotone in x^2+y^2,
+// so over the whole [-1,1]^2 quad it lies in
+// [0.01134422, 0.01273240] whatever the camera does; the measurement
+// below sits inside that bracket too.
+//
+// MEASURED (PT mean_E - PT mean_D, 256 spp, 4 runs):
+// (0.012320, 0.012320, 0.012280) -> (+0.15 %, +0.15 %, -0.18 %).
+// Band kAbsBandIncrement = 5 %.
+//
+// WHY THE INCREMENT FORM: mean_E on its own cannot be checked at 1 %
+// because the ~0.12 % per-channel colour-pipe offset seen in topology
+// D sits on the 0.5 base and swamps the 0.0123 increment.  That
+// offset is common to both renders and cancels in the difference,
+// which is also what makes this the sharpest available probe of the
+// LIGHT-SELECTION path: the historical binary-EnvSelectProbability bug
+// broke env NEE ONLY in mixed scenes, so it moved mean_E away from
+// mean_D + Delta_E while leaving topology D perfect.
+//
+static const double kClosedFormOmniIncrement = 0.01230206;
+
+//
+// -- TOPOLOGY F: env + mesh emitter ---------------------------------
+//
+// The emitter is a 1x1 quad at z=4 with one-sided radiance
+// L_e = exitance * scale / pi = 1.0 * 10.0 / pi = 3.1830989 toward -Z.
+// Unlike the point light it DOES occlude the env over its own solid
+// angle, so the emitter region contributes (L_e - L_env) on top of the
+// env-only baseline rather than L_e:
+//
+//     L_out(p) = (rho/pi) * [ L_env*pi + (L_e - L_env) * Omega_cos(p) ]
+//              = 0.5 + (rho/pi) * (L_e - 1) * Omega_cos(p)
+//
+// where Omega_cos(p) = INT_emitter cos(theta_p) dw is the cosine-
+// weighted solid angle of the emitter as seen from p.  For a rectangle
+// PARALLEL to the shading plane that is pi times the classic
+// differential-element-to-parallel-rectangle form factor, which has a
+// closed form; with the corner form factor
+//
+//     Fc(A,B,H) = 1/(2pi) * [ X/sqrt(1+X^2) * atan(Y/sqrt(1+X^2))
+//                           + Y/sqrt(1+Y^2) * atan(X/sqrt(1+Y^2)) ],
+//     X = A/H, Y = B/H
+//
+// and the usual signed four-corner decomposition for a rectangle that
+// does not sit over p, Omega_cos(p) = pi * FF(p).  Hence
+//
+//     Delta_F(p) = (0.5/pi) * (10/pi - 1) * pi * FF(p)
+//                = 1.0915494 * FF(p)
+//
+// (The closed form was checked against a 800x800 brute-force
+// quadrature of the emitter surface: agreement to 8 significant
+// figures at p = (0,0), (1,1), (1,0).)
+//
+// Averaged over the visible square [-H,H]^2 as for topology E:
+//
+//     Delta_F = 0.01987740
+//
+// CAMERA-INDEPENDENT SANITY BRACKET over the whole [-1,1]^2 quad:
+// [0.01694781, 0.02127295].
+//
+// MEASURED (PT mean_F - PT mean_D, 256 spp, 4 runs):
+// (0.019800, 0.019850, 0.019840) -> (-0.39 %, -0.14 %, -0.19 %).
+// Band kAbsBandIncrement = 5 %.
+//
+// The emitter sits BEHIND the camera (z=4 vs the camera's z=3.5,
+// looking down -Z), so it is never directly visible and never blocks a
+// camera ray; and it has `material none`, so it is a pure absorber
+// with no BRDF and there is still no interreflection in the scene.
+// Both facts are load-bearing for the derivation above.
+//
+static const double kClosedFormMeshIncrement = 0.01987740;
+
+//! Shared implementation of the topology E / F increment check.
+static void CheckLightIncrement(
+	const ImageStats& pt,
+	double expectedIncrement,
+	const char* topologyName )
+{
+	if( !pt.valid ) return;
+	if( !g_ptEnvOnlyValid ) {
+		Check( false, ( std::string("env-only PT baseline available for increment check: ")
+			+ topologyName ).c_str() );
+		return;
+	}
+
+	double increment[3];
+	double expected[3];
+	for( int c = 0; c < 3; c++ ) {
+		increment[c] = pt.mean[c] - g_ptEnvOnlyMean[c];
+		expected[c]  = expectedIncrement;
+	}
+
+	const bool ok = AbsWithin( increment, expected, kAbsBandIncrement );
+	Check( ok, ( std::string("PT light increment over env-only baseline matches closed form ")
+		+ "(within " + std::to_string(int(kAbsBandIncrement*100)) + "%): " + topologyName ).c_str() );
+	if( !ok ) PrintAbsDiff( "PT increment", increment, expected );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -724,18 +1244,28 @@ static void RunEnvTopologyTest(
 //
 // THE canonical env-IBL test.  No explicit lights — everything flows
 // through the environment map.  Failure modes guarded:
-//   - Pre-Phase-A: SampleLight returned false → BDPT/VCM all-black.
-//   - Phase-A only: s=1 NEE/connect dropped for env-light vertex →
-//                   BDPT renders very dim, fails mean check.
-//   - White firefly: BDPT t=1 with default-init fLight=(1,1,1) →
-//                    fails max check by ~3x.
-//   - Path-A-and-B together: BDPT/VCM converge to PT within
-//                    sampling noise.
+//   - Pre-Phase-A: SampleLight returned false -> BDPT/VCM all-black.
+//   - Phase-A only: s=1 NEE/connect dropped for env-light vertex ->
+//                   BDPT renders very dim.
+//   - White firefly: BDPT t=1 with default-init fLight=(1,1,1) ->
+//                    fails the firefly cap by ~3x.
+//   - PT env MIS double-count (F1) -> fails the absolute check by
+//                    +17.7 % against a 1 % band.
 //////////////////////////////////////////////////////////////////////
 static void TestEnvOnly()
 {
-	RunEnvTopologyTest( "env-only Lambertian",
-		std::string( kSceneCommonGeometry ) + kEnvPainter );
+	const ImageStats pt = RunEnvTopologyTest( "env-only Lambertian",
+		std::string( kSceneCommonGeometry ) + kEnvPainter,
+		kBiasEnvOnly );
+
+	if( !pt.valid ) return;
+
+	const bool ok = AbsWithin( pt.mean, kClosedFormEnvOnly, kAbsBandRGB );
+	Check( ok, "PT mean == 0.5 (closed form: albedo x uniform env): env-only Lambertian" );
+	if( !ok ) PrintAbsDiff( "PT mean", pt.mean, kClosedFormEnvOnly );
+
+	for( int c = 0; c < 3; c++ ) g_ptEnvOnlyMean[c] = pt.mean[c];
+	g_ptEnvOnlyValid = true;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -746,24 +1276,31 @@ static void TestEnvOnly()
 // selection.  This catches regressions where env-light entry
 // hijacked the selection (it shouldn't — env is sampled separately
 // when alias table is empty, and via NEE when alias table is
-// populated).
+// populated), and — since 2026-08-27 — asserts the omni's own
+// contribution against a closed form.
 //////////////////////////////////////////////////////////////////////
 static void TestEnvPlusOmni()
 {
-	RunEnvTopologyTest( "env + omni light",
-		std::string( kSceneCommonGeometry ) + kEnvPainter + kLightOmni );
+	const ImageStats pt = RunEnvTopologyTest( "env + omni light",
+		std::string( kSceneCommonGeometry ) + kEnvPainter + kLightOmni,
+		kBiasEnvPlusOmni );
+	CheckLightIncrement( pt, kClosedFormOmniIncrement, "env + omni light" );
 }
 
 //////////////////////////////////////////////////////////////////////
 // Topology F: Env + mesh emitter.
 //
 // Three-way light contribution: env + mesh emission + (eye-hits-
-// emitter via s=0 strategy).  Most complex MIS partition.
+// emitter via s=0 strategy).  Most complex MIS partition.  The
+// increment check additionally pins the emitter's cosine-weighted
+// solid angle AND the env occlusion it causes.
 //////////////////////////////////////////////////////////////////////
 static void TestEnvPlusMesh()
 {
-	RunEnvTopologyTest( "env + mesh emitter",
-		std::string( kSceneCommonGeometry ) + kEnvPainter + kLightMesh );
+	const ImageStats pt = RunEnvTopologyTest( "env + mesh emitter",
+		std::string( kSceneCommonGeometry ) + kEnvPainter + kLightMesh,
+		kBiasEnvPlusMesh );
+	CheckLightIncrement( pt, kClosedFormMeshIncrement, "env + mesh emitter" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -785,11 +1322,10 @@ static void TestEnvPlusMesh()
 // would average those errors out across the (u, v) integration but
 // a peaked env keeps them spatially correlated.
 //
-// Tolerances relaxed to 40% mean to accommodate the higher noise
-// of single-cell-per-pixel HDRI sampling at 64 spp; the goal is
-// regression detection on the direction-correctness fixes, not a
-// strict bias-bound assertion (the residual disc-area MIS bias is
-// already documented in the kEnvTolerances comment).
+// NO CLOSED FORM: the surface irradiance is a cosine-weighted
+// integral of the checker pattern over the equirectangular sphere
+// mapping, and part of the frame sees the env directly.  PT is the
+// reference here, and the assertions are bias-referenced bands only.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneOffCenterGeometry =
 	"film\n"
@@ -841,9 +1377,9 @@ static const char* kSceneOffCenterGeometry =
 	"}\n";
 
 // Checker-patterned env: high-contrast bright/dim cells across the
-// equirectangular (u, v) sphere mapping.  `pnt_env_checker_bright`
-// is L=5 in each channel, `pnt_env_checker_dim` is L=0.1.  Cell size
-// = 0.2 of the (u, v) extent → 5 cells across the equator visible.
+// equirectangular (u, v) sphere mapping.  `pnt_env_bright` is L=5 in
+// each channel, `pnt_env_dim` is L=0.1.  Cell size = 0.2 of the
+// (u, v) extent -> 5 cells across the equator visible.
 static const char* kEnvCheckerPainter =
 	"uniformcolor_painter\n"
 	"{\n"
@@ -865,15 +1401,13 @@ static const char* kEnvCheckerPainter =
 	"\tsize 0.2\n"
 	"}\n";
 
-static const Tolerances kEnvNonUniformTolerances{ 0.40, 0.45, 3.00 };
-
 static void TestEnvNonUniformOffCenter()
 {
 	RunEnvTopologyTestWithRasterizers(
 		"non-uniform env + off-center quad (RGB)",
 		std::string( kSceneOffCenterGeometry ) + kEnvCheckerPainter,
 		kRasterizerPT, kRasterizerBDPT, kRasterizerVCM,
-		kEnvNonUniformTolerances );
+		kBiasNonUniformRGB );
 }
 
 static std::string EnableHWSSInRasterizer( const std::string& config, bool enable )
@@ -906,6 +1440,13 @@ static std::string EnableHWSSInRasterizer( const std::string& config, bool enabl
 // Without this test the regression slipped past.  The non-uniform
 // checker env amplifies any direction-mismatch into visible per-
 // pixel bias.
+//
+// CONVENTION NOTE (differs from topology G, deliberately retained):
+// here PT is rendered at the SAME hwss setting as BDPT/VCM, so the
+// row compares like with like and the HWSS spectral-bundle effect
+// largely cancels out of the ratios.  Topology G instead pins BDPT/VCM
+// against the unbundled PT so that the bundle effect is VISIBLE in the
+// recorded centres — see kBiasEnvOnlySpectralHWSS.
 //////////////////////////////////////////////////////////////////////
 static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 {
@@ -916,7 +1457,7 @@ static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 		EnableHWSSInRasterizer( kRasterizerPTSpectral, hwss ).c_str(),
 		EnableHWSSInRasterizer( kRasterizerBDPTSpectral, hwss ).c_str(),
 		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str(),
-		kEnvNonUniformTolerances );
+		hwss ? kBiasNonUniformSpectralHWSS : kBiasNonUniformSpectralNoHWSS );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -926,46 +1467,90 @@ static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 // of the Path A + Path B env branches in BDPTIntegrator.cpp and
 // VCMIntegrator.cpp.  Without this test the spectral env paths are
 // completely unguarded — Reviewer 3 flagged the gap during the
-// 2026-05-25 adversarial review.  The spectral integrators evaluate
-// at single wavelengths drawn from the 380-720 nm range; combined
-// with `uniformcolor_painter` env (Le=1 in linear RGB at every
-// channel), the per-wavelength radiance integrates back to the same
-// 0.5 outgoing radiance on the Lambertian quad.  Slightly higher
-// variance than the Pel variant (single-wavelength evaluation) so
-// samples are bumped to 128 instead of 64.
+// 2026-05-25 adversarial review.
+//
+// -- CLOSED FORM AND WHY IT IS NOT EXACT PER CHANNEL ----------------
+//
+// The transport closed form is the same as topology D: 0.5.  But the
+// spectral pipeline does not reproduce it per channel, and that is
+// EXPECTED and not a transport error:  the env painter's RGB (1,1,1)
+// and the albedo's (0.5,0.5,0.5) are each uplifted to spectra through
+// the Jakob-Hanika LUT, multiplied per-wavelength, integrated against
+// the CMFs and converted back to Rec.709.  uplift(a)*uplift(b) is not
+// uplift(a*b), and the JH sigmoid fit has its own residual
+// (docs/JH_LUT_GAMUT.md records ~3.9 % gamut-edge cell failures), so a
+// per-channel round-trip error survives.
+//
+// MEASURED (PT spectral hwss=false, 512 spp, 4 runs, both rows):
+//   per channel  (0.47634, 0.49607, 0.51244) -> (-4.7 %, -0.8 %, +2.5 %)
+//   luminance    0.49306 and 0.49385         -> (-1.39 %, -1.23 %)
+// The errors partly cancel in luminance, which is why the luminance
+// check carries the tight band (5 %) and the per-channel check a
+// looser one (8 %, a bound on the round-trip rather than an assertion
+// about transport).  Either would have caught the F1 +17.7 %.
+//
+// PT REFERENCE IS ALWAYS hwss=false (the converged, unbiased ground
+// truth).  HWSS is a variance-reduction bundling of the SAME estimator,
+// so the converged answer is hwss-independent and PT-hwss=false IS the
+// reference for both rows.  On this uniform-env scene PT's own HWSS path
+// (PathTracingIntegrator::IntegrateFromHitHWSS) carries a documented
+// spectral-bundle bias, so comparing the spectral integrators' hwss=true
+// output against PT-hwss=TRUE would assert agreement with a biased
+// reference (a separate PT env-IBL workstream; see
+// docs/INTEGRATOR_BUGFIX_FINDINGS.md §3 and the Session 13 conclusion in
+// docs/PRE_PHASE1_STATUS.md).
+// Before the 2026-06-04 RecomputeSubpathThroughputNM companion-direction
+// fix, BDPT/VCM carried their OWN (larger) HWSS companion bias that
+// landed near PT's, so this row passed against PT-hwss=true only by
+// coincidence (all three biased low together: master BDPT −30%, VCM −35%
+// vs their own hwss=false).  With the companion fix BDPT/VCM are now
+// hwss-invariant modulo the bundle effect recorded in
+// kBiasEnvOnlySpectralHWSS; asserting them against the unbiased
+// PT-hwss=false both restores a meaningful comparison AND would have
+// caught the pre-fix companion bug (master BDPT/VCM hwss=true were
+// 25–40% under PT-hwss=false).
 //////////////////////////////////////////////////////////////////////
 static void TestEnvOnlySpectral( bool hwss )
 {
 	const std::string name = std::string( "env-only Lambertian (spectral, hwss=" ) + ( hwss ? "true" : "false" ) + ")";
-	// PT REFERENCE IS ALWAYS hwss=false (the converged, unbiased ground
-	// truth).  HWSS is a variance-reduction bundling of the SAME estimator,
-	// so the converged answer is hwss-independent and PT-hwss=false IS the
-	// reference for both rows.  On this uniform-env scene PT's own HWSS path
-	// (PathTracingIntegrator::IntegrateFromHitHWSS) carries a documented
-	// spectral-bundle bias — PT-hwss=true renders ~20% under PT-hwss=false
-	// here — so comparing the spectral integrators' hwss=true output against
-	// PT-hwss=TRUE would assert agreement with a biased reference (a separate
-	// PT env-IBL workstream; see docs/INTEGRATOR_BUGFIX_FINDINGS.md §3).
-	// Before the 2026-06-04 RecomputeSubpathThroughputNM companion-direction
-	// fix, BDPT/VCM carried their OWN (larger) HWSS companion bias that
-	// landed near PT's, so this row passed against PT-hwss=true only by
-	// coincidence (all three biased low together: master BDPT −30%, VCM −35%
-	// vs their own hwss=false).  With the companion fix BDPT/VCM are now
-	// hwss-invariant (correct); asserting them against the unbiased
-	// PT-hwss=false both restores a meaningful comparison AND would have
-	// caught the pre-fix companion bug (master BDPT/VCM hwss=true were
-	// 25–40% under PT-hwss=false).
-	RunEnvTopologyTestWithRasterizers(
+	const ImageStats pt = RunEnvTopologyTestWithRasterizers(
 		name.c_str(),
 		std::string( kSceneCommonGeometry ) + kEnvPainter,
 		EnableHWSSInRasterizer( kRasterizerPTSpectral, false ).c_str(),
 		EnableHWSSInRasterizer( kRasterizerBDPTSpectral, hwss ).c_str(),
-		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str() );
+		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str(),
+		hwss ? kBiasEnvOnlySpectralHWSS : kBiasEnvOnlySpectralNoHWSS );
+
+	if( !pt.valid ) return;
+
+	{
+		const double y   = Luminance( pt.mean );
+		const bool   ok  = std::fabs( y - 0.5 ) / 0.5 <= kAbsBandSpectralLum;
+		Check( ok, ( std::string("PT spectral mean luminance == 0.5 (closed form, within ")
+			+ std::to_string(int(kAbsBandSpectralLum*100)) + "%): " + name ).c_str() );
+		if( !ok ) {
+			std::cout << "    PT spectral luminance = " << y << " (expected 0.5, "
+				<< ((y-0.5)/0.5*100.0) << "%)" << std::endl;
+		}
+	}
+	{
+		const bool ok = AbsWithin( pt.mean, kClosedFormEnvOnly, kAbsBandSpectralRGB );
+		Check( ok, ( std::string("PT spectral mean per-channel == 0.5 (closed form + JH uplift round-trip, within ")
+			+ std::to_string(int(kAbsBandSpectralRGB*100)) + "%): " + name ).c_str() );
+		if( !ok ) PrintAbsDiff( "PT spectral mean", pt.mean, kClosedFormEnvOnly );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
 // Topology J: SUBMERGED camera — env seen through a delta-transmissive
 // dielectric shell that encloses the camera.
+//
+// UNCHANGED by the 2026-08-27 re-derivation.  This topology was always
+// an absolute closed-form check and was always correct: it is a pure
+// delta path with no MIS partition to get wrong, and PT/BDPT/VCM all
+// read 1.000 +- 0.002 here both before and after F1/F2.  Left exactly
+// as it was, including its own sample count (16 — a delta path needs
+// no more) and its 3 % / 1.5x tolerances.
 //
 // Camera at the origin inside a closed dielectric box (ior 1.0,
 // tau 1 1 1, scattering 1e6 = pure delta transmission), uniform env
@@ -1112,9 +1697,12 @@ static void TestSubmergedCameraDeltaShell()
 
 int main( int /*argc*/, char* /*argv*/[] )
 {
-	std::cout << "EnvLightBalanceTest — verifying BDPT/VCM match PT on IBL scenes" << std::endl;
+	std::cout << "EnvLightBalanceTest — env-IBL transport: PT vs closed forms, BDPT/VCM vs measured bias" << std::endl;
 
 	TestSubmergedCameraDeltaShell();
+	// TestEnvOnly MUST run before TestEnvPlusOmni / TestEnvPlusMesh:
+	// it publishes the env-only PT baseline those two check their
+	// closed-form light increment against.
 	TestEnvOnly();
 	TestEnvPlusOmni();
 	TestEnvPlusMesh();

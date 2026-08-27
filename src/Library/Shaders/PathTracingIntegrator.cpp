@@ -5202,12 +5202,15 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						// the pdf the NEE side weighs against; the phase pdf is
 						// symmetric in its two arguments; no delta phase
 						// function exists; optimal-MIS training deliberately not
-						// accumulated).  envPdf is wavelength-independent
-						// (EnvironmentSampler::Pdf takes only a direction), so
-						// the same weight applies to every wavelength in the
-						// bundle -- it is recomputed per-wavelength here only to
-						// keep this block textually parallel with its RGB/NM
-						// sibling.
+						// accumulated).  envPdf/phasePdf MUST be recomputed
+						// per-wavelength: pPhase->Sample above runs inside the
+						// per-wavelength loop, so each wavelength holds its OWN
+						// sampled direction, and EnvironmentSampler::Pdf of that
+						// direction generically differs across the bundle (any
+						// HG medium or non-uniform env map).  They coincide only
+						// in the isotropic-phase / uniform-env special case the
+						// VolumeEnvFurnaceTest scene exercises -- do NOT hoist
+						// this out of the loop as a "redundant" recomputation.
 						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
 							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
 							{
