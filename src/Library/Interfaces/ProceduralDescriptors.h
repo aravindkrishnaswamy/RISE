@@ -308,6 +308,36 @@ namespace RISE
 		}
 	};
 
+	//! An IMPORTED groom: the FILE half of the `hair_geometry` chunk
+	//! (Phase 2, docs/HAIR_FUR_DESIGN.md section 7).  Where
+	//! `HairGroomDescriptor` describes a groom to GENERATE, this one
+	//! names a groom already authored elsewhere -- a Cem Yuksel `.hair`
+	//! file exported from Blender / Houdini / XGen, or one of the
+	//! published research hair models -- whose strands are read verbatim.
+	//!
+	//! The two are mutually exclusive by construction: they are separate
+	//! descriptors reaching separate `IJob` entry points, and the
+	//! `hair_geometry` chunk refuses a document that authors both.
+	//!
+	//! WIDTHS ARE MULTIPLIERS HERE, NOT ABSOLUTE WIDTHS.  A `.hair`
+	//! file carries its own per-point thickness (or a header default),
+	//! which the loader reads as a FULL WIDTH -- the specification never
+	//! says whether it is a radius or a diameter, so no conversion factor
+	//! is invented on the author's behalf (HairFileLoader.h). These two
+	//! scale it: 1.0 is verbatim, 2.0 reads the file as a radius, 0.001
+	//! converts a millimetre-scale file to a metre-scale scene.
+	struct HairFileGroomDescriptor
+	{
+		const char* file;			//!< REQUIRED: path to a `.hair` file, resolved against $RISE_MEDIA_PATH
+		double      widthRootScale;	//!< multiplier on the file's thickness at each strand's FIRST point; must be finite and > 0
+		double      widthTipScale;	//!< multiplier on the file's thickness at each strand's LAST point; must be finite and > 0
+
+		HairFileGroomDescriptor() :
+			file( 0 ), widthRootScale( 1.0 ), widthTipScale( 1.0 )
+		{
+		}
+	};
+
 	//! A `hair_geometry` groom recipe in RESOLVED form: the pointers the
 	//! generator actually evaluates.  `HairGeometry`'s deferred-groom
 	//! constructor takes one of these, addrefs every non-null pointer,

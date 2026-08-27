@@ -1617,12 +1617,16 @@
 		F2CD000300000000000000C1 /* IAsciiChunkParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
 		F2D1A010069C42900069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
 		F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
+		F2D1B010069C42900069C9E5 /* HairFileLoader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1B001069C42900069C9E5 /* HairFileLoader.cpp */; };
+		F2D1B011069C42900069C9E5 /* HairFileLoader.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1B002069C42900069C9E5 /* HairFileLoader.h */; };
 		F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
 		F2D1A013069C42900069C9E5 /* UVTransformPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
 		F2D1A014069C42900069C9E5 /* TexCoord1Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
 		F2D1A015069C42900069C9E5 /* CharlieSheen.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
 		F2D1A020069C42910069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
 		F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
+		F2D1B020069C42910069C9E5 /* HairFileLoader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1B001069C42900069C9E5 /* HairFileLoader.cpp */; };
+		F2D1B021069C42910069C9E5 /* HairFileLoader.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1B002069C42900069C9E5 /* HairFileLoader.h */; };
 		F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
 		F2D1A023069C42910069C9E5 /* UVTransformPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
 		F2D1A024069C42910069C9E5 /* TexCoord1Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
@@ -2813,6 +2817,8 @@
 		F2CD000300000000000000A1 /* IAsciiChunkParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IAsciiChunkParser.h; sourceTree = "<group>"; };
 		F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GLTFSceneImporter.cpp; sourceTree = "<group>"; };
 		F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GLTFSceneImporter.h; sourceTree = "<group>"; };
+		F2D1B001069C42900069C9E5 /* HairFileLoader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HairFileLoader.cpp; sourceTree = "<group>"; };
+		F2D1B002069C42900069C9E5 /* HairFileLoader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HairFileLoader.h; sourceTree = "<group>"; };
 		F2D1A003069C42900069C9E5 /* ChannelPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChannelPainter.h; sourceTree = "<group>"; };
 		F2D1A004069C42900069C9E5 /* UVTransformPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UVTransformPainter.h; sourceTree = "<group>"; };
 		F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexCoord1Painter.h; sourceTree = "<group>"; };
@@ -4348,6 +4354,8 @@
 			children = (
 				F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */,
 				F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */,
+				F2D1B001069C42900069C9E5 /* HairFileLoader.cpp */,
+				F2D1B002069C42900069C9E5 /* HairFileLoader.h */,
 			);
 			path = Importers;
 			sourceTree = "<group>";
@@ -4527,6 +4535,7 @@
 				F27F0AB1069C42910069C9E5 /* TriangleMeshGeometrySpecializations.h in Headers */,
 				F27F0AB3069C42910069C9E5 /* TriangleMeshLoader3DS.h in Headers */,
 				F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */,
+				F2D1B021069C42910069C9E5 /* HairFileLoader.h in Headers */,
 				F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */,
 				F2D1A023069C42910069C9E5 /* UVTransformPainter.h in Headers */,
 				F2D1A024069C42910069C9E5 /* TexCoord1Painter.h in Headers */,
@@ -5263,6 +5272,7 @@
 				F27F0AAE069C42910069C9E5 /* TriangleMeshGeometryIndexed.cpp in Sources */,
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
 				F2D1A020069C42910069C9E5 /* GLTFSceneImporter.cpp in Sources */,
+				F2D1B020069C42910069C9E5 /* HairFileLoader.cpp in Sources */,
 				F27F0AB6069C42910069C9E5 /* TriangleMeshLoaderPLY.cpp in Sources */,
 				F27F0AB8069C42910069C9E5 /* TriangleMeshLoaderPSurf.cpp in Sources */,
 				F27F0ABA069C42910069C9E5 /* TriangleMeshLoaderRAW.cpp in Sources */,
@@ -5704,6 +5714,8 @@
 				F24B723B2F52A632008304C4 /* TriangleMeshLoader3DS.h in Sources */,
 				F2D1A010069C42900069C9E5 /* GLTFSceneImporter.cpp in Sources */,
 				F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */,
+				F2D1B010069C42900069C9E5 /* HairFileLoader.cpp in Sources */,
+				F2D1B011069C42900069C9E5 /* HairFileLoader.h in Sources */,
 				F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */,
 				F2D1A013069C42900069C9E5 /* UVTransformPainter.h in Sources */,
 				F2D1A014069C42900069C9E5 /* TexCoord1Painter.h in Sources */,

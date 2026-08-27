@@ -393,6 +393,7 @@ namespace RISE
 #include "Geometry/DisplacedGeometry.h"
 #include "Geometry/SDFGeometry.h"
 #include "Geometry/HairGenerator.h"			// HairGroomRecipe validation + HairGeometry's deferred-groom ctor
+#include "Importers/HairFileLoader.h"		// Cem Yuksel .hair import -- HairGeometry's explicit-strand ctor
 #include "Interfaces/ProceduralDescriptors.h"	// SweepDescriptor / PathInstancesDescriptor for the procedural mesh factories
 #include "Geometry/GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for the procedural mesh factories
 #include "Geometry/TriangleMeshGeometry.h"
@@ -761,6 +762,37 @@ namespace RISE
 
 		HairGeometry* pGeom = new HairGeometry( recipe, chunkName );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "hair geometry (deferred groom)" );
+
+		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateHairGeometryFromFile(
+						IGeometry**                     ppi,
+						const HairFileGroomDescriptor&  desc,
+						const char*                     chunkName
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Both stages log their own specific diagnostic (which file,
+		// which header field, how many strands were dropped and why), so
+		// there is nothing useful to add here -- just refuse.
+		HairFileData data;
+		if( !LoadHairFile( desc.file, data, chunkName ) ) {
+			return false;
+		}
+
+		std::vector<HairGeometry::StrandDesc> strands;
+		if( !BuildStrandsFromHairFile( data, desc.widthRootScale, desc.widthTipScale, strands, chunkName ) ) {
+			return false;
+		}
+
+		HairGeometry* pGeom = new HairGeometry( strands );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "hair geometry (imported .hair)" );
 
 		*ppi = pGeom;
 		return true;

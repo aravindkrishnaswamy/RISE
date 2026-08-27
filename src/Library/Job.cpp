@@ -5478,6 +5478,41 @@ bool Job::AddHairGuides( const char* name, const HairGuidesDescriptor& desc )
 	return true;
 }
 
+//! Adds an IMPORTED hair groom -- the `file` half of the
+//! `hair_geometry` chunk (Phase 2).  The whole of the work is in the
+//! factory (which reads and validates the file) and in
+//! `HairFileLoader`; this function's own job is the two things every
+//! `Add*` does: name the authoring chunk in the diagnostic, and
+//! register the result.
+//!
+//! Deliberately NOT sharing a body with `AddHairGeometry`: the two
+//! modes resolve nothing in common (that one looks up a base geometry
+//! and up to three painters against three managers; this one resolves
+//! a path against the media-path locator), so a shared body would be
+//! two disjoint branches under one name.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddHairGeometryFromFile( const char* name, const HairFileGroomDescriptor& desc )
+{
+	const char* who = name ? name : "(unnamed)";
+
+	if( !desc.file || !desc.file[0] || strcmp( desc.file, "none" ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddHairGeometryFromFile:: `%s`: `file` is required -- name a .hair file to import", who );
+		return false;
+	}
+
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateHairGeometryFromFile( &pGeometry, desc, who ) || !pGeometry ) {
+		// The loader logged the specific reason (bad magic, truncated,
+		// over a cap, every strand rejected...).
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
 bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
 {
 	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );

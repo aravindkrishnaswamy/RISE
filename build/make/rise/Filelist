@@ -139,6 +139,7 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/MandelbrotPainter.cpp				\
 	$(PATHLIBRARY)Painters/Painter.cpp							\
 	$(PATHLIBRARY)Importers/GLTFSceneImporter.cpp				\
+	$(PATHLIBRARY)Importers/HairFileLoader.cpp					\
 	$(PATHLIBRARY)Painters/Perlin2DPainter.cpp					\
 	$(PATHLIBRARY)Painters/ControlledSmoothness2DPainter.cpp	\
 	$(PATHLIBRARY)Painters/CompositeFunction2DPainter.cpp		\

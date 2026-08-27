@@ -588,6 +588,36 @@ namespace RISE
 						const char*             chunkName	///< [in] Name of the authoring chunk, used in diagnostics (may be null)
 						);
 
+	//! Creates an IMPORTED HAIR GROOM: a `HairGeometry` curve primitive
+	//! built from a Cem Yuksel `.hair` file (Phase 2,
+	//! docs/HAIR_FUR_DESIGN.md section 7).  The sibling of
+	//! `RISE_API_CreateHairGeometryGroom` -- same primitive, other
+	//! source: that one stores a RECIPE and generates strands at
+	//! `Realize()`, this one reads strands that already exist.
+	//!
+	//! THE FILE IS READ HERE, i.e. at PARSE time for a scene, matching
+	//! every other file-backed geometry in RISE (`risemesh_geometry`,
+	//! `plymesh_geometry`, `gltf_geometry` all load in their
+	//! `IJob::Add*` call).  There is nothing to defer: unlike a groom
+	//! recipe, an import needs no resolved base geometry and no
+	//! painters, so the deferral that `Realize()` exists for buys
+	//! nothing and would only move the author's error message from
+	//! their own chunk to the middle of a render.  The resulting
+	//! geometry is in explicit-strand mode, so its `Realize()` is a
+	//! no-op.
+	//!
+	//! Fails with a named diagnostic and no geometry on: a missing or
+	//! unreadable file, a bad magic / truncated / corrupt file, counts
+	//! over the loader's caps, non-positive width scales, or a file
+	//! whose every strand was rejected.  See HairFileLoader.h for what
+	//! of the format is honoured and what is read and dropped.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairGeometryFromFile(
+						IGeometry**                     ppi,		///< [out] Pointer to receive the geometry
+						const HairFileGroomDescriptor&  desc,		///< [in] File path + the two width multipliers
+						const char*                     chunkName	///< [in] Name of the authoring chunk, used in diagnostics (may be null)
+						);
+
 	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
 	//! through the universal TessellateToMesh contract) stamped along a 3D
 	//! Catmull-Rom path at arc-length pitch with optional slant and scale.

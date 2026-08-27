@@ -4178,6 +4178,47 @@ namespace RISE
 									const HairGuidesDescriptor& desc	///< [in] The authored guide polylines
 									) = 0;
 
+		//! Adds an IMPORTED hair groom: a `HairGeometry` built from the
+		//! strands of a Cem Yuksel `.hair` file, rather than from a
+		//! grow-on-a-surface recipe (Phase 2,
+		//! docs/HAIR_FUR_DESIGN.md section 7).  The `hair_geometry`
+		//! chunk's `file` mode routes here; its grow mode routes to
+		//! `AddHairGeometry`, and the chunk refuses a document that
+		//! authors both.
+		//!
+		//! WHY A SEPARATE ENTRY POINT rather than a `file` field on
+		//! `HairGroomDescriptor`: the two modes share not one input.  A
+		//! recipe resolves a base geometry and up to three painters and
+		//! generates at `Realize()`; an import resolves a path and reads
+		//! strands right here.  Folding them into one descriptor would
+		//! make every field of it conditionally meaningful, which is
+		//! exactly the shape that produces silently-ignored parameters.
+		//!
+		//! THE FILE IS READ IN THIS CALL (parse time for a scene),
+		//! matching `AddRISEMeshTriangleMeshGeometry` and every other
+		//! file-backed geometry: an import has nothing to wait for, and
+		//! reading here puts a bad path's diagnostic against the
+		//! author's own chunk instead of mid-render.  The resulting
+		//! geometry is in explicit-strand mode, so its `Realize()` is a
+		//! no-op.
+		//!
+		//! Fails with a named diagnostic on a missing / unreadable /
+		//! corrupt / truncated file, counts over the loader's caps,
+		//! non-positive width multipliers, or a file whose every strand
+		//! was rejected.  See HairFileLoader.h for what of the format is
+		//! honoured and what is read and dropped (per-point transparency
+		//! and colours have no home in RISE and are discarded with a
+		//! warning; the format carries no root UVs, so a UV-driven
+		//! material does not vary across an imported groom).
+		//!
+		//! Appended after AddHairGuides per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairGeometryFromFile(
+									const char* name,						///< [in] Name of the geometry
+									const HairFileGroomDescriptor& desc		///< [in] File path + the two width multipliers
+									) = 0;
+
 	};
 
 

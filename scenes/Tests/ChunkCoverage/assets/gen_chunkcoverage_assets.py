@@ -95,9 +95,54 @@ def gen_bdf():
     print("wrote tiny.bdf")
 
 
+def gen_hair():
+    """Minimal 4-strand Cem Yuksel .hair groom -> hair_geometry { file ... }.
+
+    Exercises the OPTIONAL-ARRAY-PRESENT path of the format (bits 0 and 2 set,
+    i.e. an explicit per-strand segments array and a per-point thickness array)
+    on top of the mandatory points array, so the corpus scene covers more of the
+    reader than a header-defaults-only file would.  The absent-array paths are
+    covered by the fixtures tests/HairFileImportTest.cpp writes itself.
+
+    Layout (HairFileLoader.h has the full table): 128-byte header, then
+    uint16 segments per strand, float3 per point, float thickness per point.
+    A strand with s segments has s+1 POINTS.
+
+    Four upright strands on a small patch of the XZ plane, growing +Y, 4 points
+    each, tapering 0.02 -> 0.008 in width.  392 bytes total.
+    """
+    strands = []
+    for i, (x, z) in enumerate([(0.0, 0.0), (0.3, 0.0), (0.0, 0.3), (0.3, 0.3)]):
+        lean = 0.05 * i
+        pts = [(x + lean * (t / 3.0) ** 2, 0.4 * t / 3.0, z) for t in range(4)]
+        strands.append(pts)
+
+    num_points = sum(len(s) for s in strands)
+    flags = (1 << 0) | (1 << 1) | (1 << 2)      # segments + points + thickness
+    hdr = b'HAIR'
+    hdr += struct.pack('<III', len(strands), num_points, flags)
+    hdr += struct.pack('<I', 3)                  # default segments (unused; array present)
+    hdr += struct.pack('<f', 0.02)               # default thickness (unused; array present)
+    hdr += struct.pack('<f', 0.0)                # default transparency
+    hdr += struct.pack('<fff', 1.0, 1.0, 1.0)    # default colour
+    info = b'RISE ChunkCoverage tiny groom'
+    hdr += info + b'\x00' * (88 - len(info))
+    assert len(hdr) == 128, len(hdr)
+
+    body = b''.join(struct.pack('<H', len(s) - 1) for s in strands)
+    body += b''.join(struct.pack('<fff', *p) for s in strands for p in s)
+    body += b''.join(struct.pack('<f', 0.02 + (0.008 - 0.02) * (k / 3.0))
+                     for s in strands for k in range(len(s)))
+
+    with open(os.path.join(HERE, 'tiny.hair'), 'wb') as f:
+        f.write(hdr + body)
+    print("wrote tiny.hair")
+
+
 if __name__ == '__main__':
     gen_exr()
     gen_tiff()
     gen_3ds()
     gen_bdf()
+    gen_hair()
     print("done")

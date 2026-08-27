@@ -624,6 +624,9 @@
     <ClCompile Include="..\..\..\src\Library\Importers\GLTFSceneImporter.cpp">
       <Filter>Importers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Importers\HairFileLoader.cpp">
+      <Filter>Importers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClCompile>
@@ -1888,6 +1891,9 @@
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Importers\GLTFSceneImporter.h">
+      <Filter>Importers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Importers\HairFileLoader.h">
       <Filter>Importers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ChannelPainter.h">

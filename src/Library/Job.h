@@ -1721,6 +1721,12 @@ namespace RISE
 					const HairGuidesDescriptor& desc		///< [in] The authored guide polylines
 					);
 
+		//! Creates a hair groom imported from a Cem Yuksel .hair file (see IJob)
+		bool AddHairGeometryFromFile(
+					const char* name,						///< [in] Name of the geometry
+					const HairFileGroomDescriptor& desc		///< [in] File path + the two width multipliers
+					);
+
 		//! Creates along-path instances of a named template geometry (see IJob)
 		bool AddPathInstancesGeometry(
 					const char* name,						///< [in] Name of the geometry
