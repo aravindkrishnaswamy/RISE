@@ -647,9 +647,41 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// to world-Y so the projection never degenerates.
 		if( ri.geometric.bShadingTangentFromGeometry ) {
 			const Vector3& n = ri.geometric.vNormal;
-			Vector3 t( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );	// (1,0,0) - n*dot(n,(1,0,0))
-			if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
-				t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+			Vector3 t;
+			bool bHaveSuppliedTangent = false;
+
+			// C2: a geometry that ALSO supplies a real fibre tangent (currently only
+			// HairGeometry, via bHasShadingTangent) gets it promoted to world space
+			// exactly like vTangent below -- the forward matrix, not inverse-
+			// transpose, because a tangent is a direction ALONG the surface, not a
+			// normal.  The WRITE-BACK into ri.geometric.vShadingTangent (not just a
+			// local variable) matters beyond this function: it is what lets
+			// CSGObject::IntersectRay's identical block treat the field as "one
+			// promotion short of world space" for a nested child, exactly the
+			// convention vTangent already establishes below -- without the
+			// write-back a hair fibre wrapped in CSG would silently lose one
+			// level of transform.  The promoted tangent is then projected into
+			// the (now world-space) shading-normal plane, mirroring the world-X
+			// projection this branch already does for the SDFGeometry
+			// heightfield case.  Degenerate (near-parallel to the normal) falls
+			// back to that legacy world-X projection below, so a pathological
+			// hit never produces a NaN ONB.
+			if( ri.geometric.bHasShadingTangent ) {
+				const Vector3 tWorld = Vector3Ops::Normalize(
+					Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vShadingTangent ) );
+				ri.geometric.vShadingTangent = tWorld;
+				const Vector3 tProj = tWorld - n * Vector3Ops::Dot( n, tWorld );
+				if( Vector3Ops::SquaredModulus( tProj ) >= NEARZERO ) {
+					t = tProj;
+					bHaveSuppliedTangent = true;
+				}
+			}
+
+			if( !bHaveSuppliedTangent ) {
+				t = Vector3( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );	// (1,0,0) - n*dot(n,(1,0,0))
+				if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
+					t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+				}
 			}
 			ri.geometric.onb.CreateFromWU( n, t );	// W = n (fixed); V = norm(W x t), U = V x W (double-cross => U = t projected into the W-plane)
 		} else {

@@ -312,32 +312,26 @@ The separate `vTangent` / `bitangentSign` / `bHasTangent` triple
 space — but it is populated only by glTF-loaded triangle meshes carrying a TANGENT array, and it
 is consumed by the normal-map modifier, not by the ONB build.
 
-So `hair_geometry` must land one of two plumbing changes:
+`hair_geometry` landed option **(a) — IMPLEMENTED (Slice C2):** a `vShadingTangent` member sits
+alongside `bShadingTangentFromGeometry` (paired with `bHasShadingTangent`,
+`RayIntersectionGeometric.h`); `HairGeometry` writes the object-space curve tangent at the hit
+(`HairGeometry.cpp`, the `RayElementIntersection` hit block); and `Object::IntersectRay`
+(`Object.cpp`, the `bShadingTangentFromGeometry` branch) transforms it object→world with the same
+forward-matrix idiom `vTangent` uses (a tangent transforms like a position, not inverse-transpose),
+projects it into the world-space shading-normal plane, and hands it to `CreateFromWU` — falling
+back to the legacy world-X projection when the supplied tangent is degenerate (near-parallel to
+the normal) or simply absent (`bHasShadingTangent == false`, the `SDFGeometry` heightfield case),
+so that path stays byte-identical to before this slice. `CSGObject::IntersectRay`'s byte-duplicate
+branch got the identical treatment, plus a companion fix: `AdoptCsgSurfacePayload` (the per-surface
+boundary-reattribution helper) now copies `vShadingTangent` / `bHasShadingTangent` alongside
+`bShadingTangentFromGeometry`, closing a latent mixed-surface-payload gap the same helper already
+guards against for `vTangent` / `bHasTangent`. `HairBSDF` now reads a real, geometry-derived fiber
+tangent from `ri.onb.u()` for any hair hit that reaches it directly or through a CSG composite.
 
-- **(a) Extend the flag's contract.** Add a `vShadingTangent` member alongside
-  `bShadingTangentFromGeometry`, have the geometry write the curve tangent at the hit, and make
-  the `Object::IntersectRay` branch prefer that member over the world-X projection when it is
-  set (keeping the projection as the fallback so `SDFGeometry`'s existing behavior is
-  byte-identical). Cleanest fit for the flag's *name*; costs one `RayIntersectionGeometric`
-  field.
-- **(b) Reuse `vTangent` / `bHasTangent`.** Let curve primitives populate the existing tangent
-  pair and have the ONB build honor `bHasTangent`. No record growth, but it widens a field whose
-  current contract is "glTF per-vertex tangent for normal mapping," and the ONB build would then
-  need to be ordered against the normal-map modifier.
+**One site remains open, found during the round-2 hair BSDF review — still owed:**
 
-Either way this is **not** a no-op: an `Object::IntersectRay` change is required. Until it lands,
-`HairBSDF` reads whatever `ri.onb.u()` happens to be (see the fiber-frame note at the top of
-`HairBSDF.h`), which is correct-but-arbitrary — fine for the unit tests, wrong for a render.
-
-**Two more sites this slice owes, found during the round-2 hair BSDF review:**
-
-- **`CSGObject::IntersectRay` carries a byte-duplicate of the same tangent branch**
-  (`CSGObject.cpp:1015-1024`, added for the P2 heightfield-under-CSG fix) — whichever of (a) / (b)
-  above lands must land there too, or a hair fiber wrapped in a CSG composite silently falls back
-  to the arbitrary `CreateFromW` tangent while a standalone instance of the same geometry gets the
-  real one.
-- **The normal-map / bump-map modifiers discard any tangent that reaches them.** Even after (a) or
-  (b) supplies a real fiber tangent in `ri.onb.u()`, `NormalMap::Modify` (`NormalMap.cpp:172`) and
+- **The normal-map / bump-map modifiers discard any tangent that reaches them.** Even with a real
+  fiber tangent now landing in `ri.onb.u()`, `NormalMap::Modify` (`NormalMap.cpp:172`) and
   `BumpMap::Modify` (`BumpMap.cpp:69`) both rebuild the ONB with the unconditional
   `ri.onb.CreateFromW(ri.vNormal)` after perturbing the normal, which drops whatever tangent was
   there and replaces it with an arbitrary one derived from the (perturbed) normal alone.

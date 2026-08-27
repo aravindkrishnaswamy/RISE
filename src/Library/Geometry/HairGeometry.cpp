@@ -874,9 +874,10 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 	ri.bHasShadingTangent = true;
 
 	// `onb` is deliberately NOT written -- matching every other RISE
-	// geometry (sphere, cylinder, mesh).  Object::IntersectRay builds
-	// it from the world-space normal after transforming, and honouring
-	// vShadingTangent there is the follow-up slice.
+	// geometry (sphere, cylinder, mesh).  Object::IntersectRay (and
+	// CSGObject::IntersectRay, for a CSG-composed fibre) builds it from
+	// the world-space normal after transforming, honouring
+	// vShadingTangent as the fibre tangent for the ONB's u-axis.
 }
 
 void HairGeometry::RayElementIntersection( RayIntersection& ri, const MYOBJ elem,

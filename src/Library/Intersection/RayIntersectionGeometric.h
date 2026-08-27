@@ -250,21 +250,20 @@ namespace RISE
 		bool						bShadingTangentFromGeometry;
 
 		//! Written by curve geometry (HairGeometry) alongside
-		//! bShadingTangentFromGeometry=true: the world-space fiber
-		//! tangent at the hit.  Consumed by Object::IntersectRay /
-		//! CSGObject::IntersectRay in a follow-up slice; until that
-		//! lands the field is written but unread, and
-		//! bShadingTangentFromGeometry alone still yields the legacy
-		//! world-X projection.
-		//!
-		//! MECHANICAL NOTE for that follow-up slice: like `vNormal` and
-		//! `vTangent`, a geometry writes this in OBJECT space -- it is
-		//! `Object::IntersectRay` that lifts hit data to world space.
-		//! So the consumer owes the object->world transform at the same
-		//! site (forward matrix, like `vTangent` at Object.cpp:676 --
-		//! a tangent transforms like a position, NOT inverse-transpose)
-		//! before feeding it to `CreateFromWU`.  The two spaces coincide
-		//! only under an identity object transform.
+		//! bShadingTangentFromGeometry=true: the OBJECT-space fiber
+		//! tangent at the hit -- like `vNormal` and `vTangent`, a
+		//! geometry writes this in its own object space; it is
+		//! `Object::IntersectRay` (and, for a CSG-composed hair fibre,
+		//! `CSGObject::IntersectRay`) that lifts it to world space
+		//! (forward matrix, like `vTangent` -- a tangent transforms like
+		//! a position, NOT inverse-transpose), projects it into the
+		//! world-space shading-normal plane, and builds the ONB from it
+		//! (falling back to the legacy world-X projection if the
+		//! supplied tangent is degenerate, i.e. near-parallel to the
+		//! normal).  A geometry that sets `bShadingTangentFromGeometry`
+		//! WITHOUT also setting `bHasShadingTangent` (the SDFGeometry
+		//! heightfield case) still gets the legacy world-X projection,
+		//! byte-identical to before this field existed.
 		Vector3						vShadingTangent;
 		bool						bHasShadingTangent;
 

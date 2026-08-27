@@ -282,6 +282,16 @@ namespace
 		dst.bitangentSign = src.bitangentSign;
 		dst.bHasTangent = src.bHasTangent;
 		dst.bShadingTangentFromGeometry = src.bShadingTangentFromGeometry;
+		// C2: same per-surface payload category as vTangent/bHasTangent just
+		// above -- a geometry-supplied fibre tangent (HairGeometry) belongs to
+		// whichever operand's surface is actually being reported.  Without
+		// this, a boundary branch that re-adopts bShadingTangentFromGeometry
+		// from `src` while `dst` keeps stale vShadingTangent/bHasShadingTangent
+		// from whichever operand it was whole-record-copied from would pair a
+		// "true" flag with the WRONG (or absent) supplied tangent -- exactly
+		// the mixed-surface contamination this function exists to prevent.
+		dst.vShadingTangent = src.vShadingTangent;
+		dst.bHasShadingTangent = src.bHasShadingTangent;
 
 		// Wireframe view-mode edge info is per-surface payload too (GUI
 		// render modes P1): the closest-edge point belongs to the SAME
@@ -1014,9 +1024,42 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// projection never degenerates.
 		if( ri.geometric.bShadingTangentFromGeometry ) {
 			const Vector3& n = ri.geometric.vNormal;
-			Vector3 t( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );	// (1,0,0) - n*dot(n,(1,0,0))
-			if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
-				t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+			Vector3 t;
+			bool bHaveSuppliedTangent = false;
+
+			// C2 (mirrors Object::IntersectRay's identical block): a geometry that
+			// ALSO supplies a real fibre tangent (currently only HairGeometry, via
+			// bHasShadingTangent) gets it promoted one more level to THIS CSG
+			// object's world/parent space -- forward matrix, not inverse-transpose,
+			// same reasoning as vTangent below (a tangent is a direction ALONG the
+			// surface, not a normal).  If the tangent arrived via a nested child
+			// Object::IntersectRay it is already promoted one level (exactly like
+			// vTangent), so this transform brings it the rest of the way.  The
+			// result is projected into the (now world-space) shading-normal plane,
+			// mirroring the world-X projection this branch already does.
+			// Degenerate (near-parallel to the normal) falls back to that legacy
+			// world-X projection below, so a pathological hit never produces a NaN
+			// ONB.
+			if( ri.geometric.bHasShadingTangent ) {
+				const Vector3 tWorld = Vector3Ops::Normalize(
+					Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vShadingTangent ) );
+				// Write-back (not just a local variable), mirroring
+				// Object::IntersectRay's identical write-back: a CSG nested one
+				// level deeper (CSG-of-CSG) needs THIS level's promotion applied
+				// to the field itself, not just consumed locally for the onb.
+				ri.geometric.vShadingTangent = tWorld;
+				const Vector3 tProj = tWorld - n * Vector3Ops::Dot( n, tWorld );
+				if( Vector3Ops::SquaredModulus( tProj ) >= NEARZERO ) {
+					t = tProj;
+					bHaveSuppliedTangent = true;
+				}
+			}
+
+			if( !bHaveSuppliedTangent ) {
+				t = Vector3( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );	// (1,0,0) - n*dot(n,(1,0,0))
+				if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
+					t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+				}
 			}
 			ri.geometric.onb.CreateFromWU( n, t );	// W = n (fixed); V = norm(W x t), U = V x W
 		} else {
