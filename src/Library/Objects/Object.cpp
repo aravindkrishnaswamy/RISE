@@ -666,14 +666,47 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			// heightfield case.  Degenerate (near-parallel to the normal) falls
 			// back to that legacy world-X projection below, so a pathological
 			// hit never produces a NaN ONB.
+			//
+			// Two DISTINCT degeneracies here, handled at two different scopes:
+			//   - tWorld itself near-zero (SquaredModulus < NEARZERO): the
+			//     TRANSFORM was singular along the tangent's object-space
+			//     direction (e.g. a zero/near-zero scale axis) -- the
+			//     promoted tangent is garbage, not just locally unusable.
+			//     A "valid" flag paired with a zero vector is a trap for
+			//     any consumer downstream of this function, including a
+			//     nested CSG parent that would otherwise promote that
+			//     garbage one level further -- so clear bHasShadingTangent
+			//     and skip the write-back entirely, leaving
+			//     vShadingTangent untouched (stale, but the cleared flag
+			//     means nobody reads it).
+			//   - only tProj near-zero (tWorld valid but parallel to the
+			//     now-world-space normal): this level's ONB alone can't
+			//     use it, but the promoted value is still correct and
+			//     must be written back so a nested CSG parent (which
+			//     applies ITS OWN transform and may un-degenerate it)
+			//     sees the real promoted tangent, not the fallback.
 			if( ri.geometric.bHasShadingTangent ) {
 				const Vector3 tWorld = Vector3Ops::Normalize(
 					Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vShadingTangent ) );
-				ri.geometric.vShadingTangent = tWorld;
-				const Vector3 tProj = tWorld - n * Vector3Ops::Dot( n, tWorld );
-				if( Vector3Ops::SquaredModulus( tProj ) >= NEARZERO ) {
-					t = tProj;
-					bHaveSuppliedTangent = true;
+				if( Vector3Ops::SquaredModulus( tWorld ) < NEARZERO ) {
+					ri.geometric.bHasShadingTangent = false;
+				} else {
+					// Write back the UNPROJECTED promoted value, not tProj: the
+					// CSG nesting invariant composes raw (un-projected) transforms
+					// one level at a time -- projecting into THIS level's shading-
+					// normal plane is a purely local ONB concern, done below from
+					// the local `t`/`tProj`, not something a nested parent should
+					// inherit.
+					ri.geometric.vShadingTangent = tWorld;
+					const Vector3 tProj = tWorld - n * Vector3Ops::Dot( n, tWorld );
+					if( Vector3Ops::SquaredModulus( tProj ) >= NEARZERO ) {
+						t = tProj;
+						bHaveSuppliedTangent = true;
+					}
+					// else: tWorld is valid but parallel to the normal here --
+					// the write-back above still stands (a nested CSG parent's
+					// own transform may un-degenerate it), only THIS level falls
+					// back to the legacy world-X projection below.
 				}
 			}
 

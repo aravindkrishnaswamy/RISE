@@ -291,14 +291,14 @@ from `ri.onb.u()/v()` — but for meshes and patches that ONB is built by `Creat
 with an **arbitrary** tangent (`Object.cpp:656` et al.), which is useless as a
 fiber direction.
 
-**Nothing in the tree today can deliver a geometry-defined tangent, and this is real work the
-`hair_geometry` slice owns.** The near-miss is
-`RayIntersectionGeometric::bShadingTangentFromGeometry` (`RayIntersectionGeometric.h:237-250`).
-Read it carefully: it is a request for a **coherent** tangent, not for a **geometry-supplied**
-one, and it has **no companion tangent field** for a geometry to write. `Object::IntersectRay`
-(`Object.cpp:641-655`) honors it by projecting **world-X** into the plane perpendicular to the
-world-space shading normal — unconditionally, with a world-Y fallback when world-X is parallel to
-the normal — and handing that to `CreateFromWU(n, t)`. It never consults the geometry. That is
+**[IMPLEMENTED — slice C1/C2, 2026-08-26/27.]** The historical gap this section described is
+closed: `RayIntersectionGeometric` now carries a companion `vShadingTangent` +
+`bHasShadingTangent` pair that `HairGeometry` writes in **object space** at each hit, and
+`Object::IntersectRay` / `CSGObject::IntersectRay` promote it via the forward matrix (one level
+per nesting, written back in place — the `vTangent` convention), project into the shading-normal
+plane, and hand it to `CreateFromWU(n, t)`; a singular transform clears the flag and falls back.
+When the pair is absent, the legacy behavior below is preserved bit-for-bit:
+`bShadingTangentFromGeometry` alone yields the projected **world-X** axis (world-Y fallback). That is
 exactly what its one current setter (`SDFGeometry` heightfield mode) wants: a *shared, stable*
 base tangent so an anisotropic `tangent_rotation` rotates from the same place on an SDF as on the
 `cartesian_disk` mesh. It is *not* a curve tangent — the projection is recomputed per hit from

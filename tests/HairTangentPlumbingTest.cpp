@@ -43,13 +43,18 @@
 //       ONB.
 //    5. TestCsgPassThroughHonoursSuppliedTangent -- the
 //       StubTangentGeometry (real, non-degenerate tangent) as CSG
-//       operand A, a never-hit operand B, and a rotation +
-//       translation + stretch on the CSG object itself.  Exercises
-//       CSGObject::IntersectRay's byte-duplicate ONB block AND the
-//       vShadingTangent write-back fix (the field must already carry
-//       operand A's own Object-level promotion by the time the CSG's
-//       own tail block reads and further transforms it -- exactly
-//       the vTangent convention CSGObject.cpp documents).
+//       operand A UNDER ITS OWN REAL (non-identity) rotation+stretch,
+//       a never-hit operand B, and a rotation + translation + stretch
+//       on the CSG object itself.  Exercises CSGObject::IntersectRay's
+//       byte-duplicate ONB block AND the vShadingTangent write-back
+//       fix (the field must already carry operand A's own Object-
+//       level promotion by the time the CSG's own tail block reads
+//       and further transforms it -- exactly the vTangent convention
+//       CSGObject.cpp documents).  Operand A's transform is
+//       deliberately non-identity (C2 round-1 review, P1): with an
+//       identity operand transform, A's own write-back is a no-op and
+//       this test cannot distinguish a correct write-back from a
+//       deleted one.
 //    6. TestCsgAdoptSurfacePayloadCopiesSuppliedTangent -- a
 //       CSG_INTERSECTION "outside both, A enters first, B enters
 //       while inside A" boundary (mirrors CsgSurfacePayloadTest's
@@ -63,6 +68,24 @@
 //       bHasShadingTangent, so a boundary correctly flagged
 //       "geometry-supplied" could still read A's stale (or absent)
 //       tangent.  Regression guard for that fix.
+//    7. TestCsgOfCsgComposesThreeLevelPromotion -- an inner CSGObject
+//       (its own real, non-identity transform, wrapping the tangent-
+//       bearing stub under YET ANOTHER real transform) as operand A of
+//       an outer CSGObject with a third, different real transform.
+//       (C2 round-1 review, P1(b)): the scenario CSGObject.cpp's own
+//       write-back comment names by name ("a CSG nested one level
+//       deeper needs THIS level's promotion applied to the field
+//       itself") and that Test 5/6 alone cannot reach -- the middle
+//       (inner CSG) level's write-back must fire for the outer CSG's
+//       promotion to be correct.
+//    8. TestObjectSingularTransformClearsSuppliedTangent -- an operand
+//       stretch of (0,1,1) collapses the tangent's axis to exactly the
+//       zero vector (C2 round-1 review, P3(5)).  Object::IntersectRay
+//       must recognise the PROMOTED tangent itself (not just its
+//       projection into the normal plane) as degenerate, clear
+//       bHasShadingTangent, and fall back cleanly -- a "valid" flag
+//       paired with a zero vector would otherwise be silently written
+//       back and trap a further-nested CSG parent.
 //
 //  Given a HairGeometry hit, cases 1/2 do not need the degenerate
 //  fallback (see case 4's derivation of why it is geometrically
@@ -102,14 +125,16 @@ static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; 
 
 namespace
 {
-	const Scalar kEps = 1e-6;
-
-	bool Close( Scalar a, Scalar b, Scalar eps = kEps )
+	// No default tolerance: every call site below states its own eps
+	// explicitly (P3 review -- money assertions want a tight 1e-9,
+	// distinct from the looser 1e-6 a couple of sanity checks still
+	// use), so a shared default would go unused and warn.
+	bool Close( Scalar a, Scalar b, Scalar eps )
 	{
 		return std::fabs( a - b ) < eps;
 	}
 
-	bool VecClose( const Vector3& a, const Vector3& b, Scalar eps = kEps )
+	bool VecClose( const Vector3& a, const Vector3& b, Scalar eps )
 	{
 		return Close( a.x, b.x, eps ) && Close( a.y, b.y, eps ) && Close( a.z, b.z, eps );
 	}
@@ -319,7 +344,7 @@ static void TestObjectHairThroughTransform()
 	// the bHasTangent block) -- NOT the world-X projection.
 	const Vector3 expectedTangent = Vector3Ops::Normalize( Vector3Ops::Transform( M, objTangent ) );
 
-	Check( Vector3Ops::Dot( ri.geometric.onb.u(), expectedTangent ) > 0.999,
+	Check( VecClose( ri.geometric.onb.u(), expectedTangent, 1e-9 ),
 		"Test1: MONEY ASSERTION -- onb.u() aligns with the world-transformed curve tangent" );
 
 	// Sanity: this really discriminates against the legacy world-X
@@ -364,7 +389,7 @@ static void TestObjectHairIdentity()
 
 	Check( ri.geometric.bHit, "Test2: ray hits the strand" );
 	Check( ri.geometric.bHasShadingTangent, "Test2: bHasShadingTangent set" );
-	Check( Vector3Ops::Dot( ri.geometric.onb.u(), objTangent ) > 0.999,
+	Check( VecClose( ri.geometric.onb.u(), objTangent, 1e-9 ),
 		"Test2: identity transform -- onb.u() matches the object-space tangent directly" );
 	CheckOrthonormalRightHanded( ri.geometric.onb, "Test2" );
 
@@ -400,7 +425,7 @@ static void TestObjectLegacyGuardNoSuppliedTangent()
 
 	// Known closed-form legacy result for an exact +Z normal: world-X
 	// projected into the normal plane is world-X itself.
-	Check( VecClose( ri.geometric.onb.u(), Vector3( 1, 0, 0 ) ),
+	Check( VecClose( ri.geometric.onb.u(), Vector3( 1, 0, 0 ), 1e-9 ),
 		"Test3: onb.u() is the legacy world-X projection, byte-identical to before this slice" );
 
 	o->release();
@@ -438,7 +463,7 @@ static void TestObjectDegenerateSuppliedTangentFallsBack()
 
 	// Falls back to the SAME legacy world-X projection Test 3 pins:
 	// n = (0,0,1) here too, so onb.u() should land on world-X.
-	Check( VecClose( ri.geometric.onb.u(), Vector3( 1, 0, 0 ) ),
+	Check( VecClose( ri.geometric.onb.u(), Vector3( 1, 0, 0 ), 1e-9 ),
 		"Test4: degenerate supplied tangent falls back to the legacy world-X projection" );
 
 	CheckOrthonormalRightHanded( ri.geometric.onb, "Test4" );
@@ -450,11 +475,16 @@ static void TestObjectDegenerateSuppliedTangentFallsBack()
 // Test 5: CSGObject's byte-duplicate ONB block, exercised via the
 //         simple pass-through path (never-hit second operand,
 //         mirrors CsgSurfacePayloadTest's Test 10 pattern) PLUS the
-//         vShadingTangent write-back fix -- operand A's own
-//         Object::IntersectRay must leave vShadingTangent promoted
-//         to ITS parent frame (identity here) so the CSG's own tail
-//         block, under a REAL rotation+translation+stretch, finishes
-//         the promotion to true world space.
+//         vShadingTangent write-back fix -- operand A itself carries
+//         a REAL (non-identity) rotation+stretch, so operand A's own
+//         Object::IntersectRay must ACTUALLY promote and write back
+//         vShadingTangent into ITS parent (the CSG's local) frame for
+//         the CSG's own tail block to then finish the promotion to
+//         true world space.  With an identity operand transform this
+//         write-back is a no-op and the test cannot tell a correct
+//         write-back from a deleted one (P1, C2 round-1 review) --
+//         the non-identity operand transform is what makes the
+//         write-back load-bearing for this test.
 // ============================================================
 static void TestCsgPassThroughHonoursSuppliedTangent()
 {
@@ -468,7 +498,16 @@ static void TestCsgPassThroughHonoursSuppliedTangent()
 		objTangent, /*tEnter=*/1.0, /*tExit=*/1000.0 );
 	Object* opA = new Object( gA );
 	safe_release( gA );
-	opA->FinalizeTransformations();		// identity -- operand's own promotion is a no-op
+	// Real, non-identity operand transform (P1 fix): orthogonality
+	// between the stub's object-space normal and tangent survives ANY
+	// invertible linear map (same proof as the file header's Test 4
+	// derivation, applied one level earlier), so this introduces no
+	// degeneracy -- it only makes operand A's own promotion, and its
+	// write-back into vShadingTangent, actually do something.
+	opA->SetOrientation( Vector3( 0.5, -0.3, 0.8 ) );
+	opA->SetStretch( Vector3( 3.0, 1.0, 0.5 ) );
+	opA->FinalizeTransformations();
+	const Matrix4 Mopa = opA->GetFinalTransformMatrix();
 
 	// Far-away, never-hit second operand (same trick as
 	// CsgSurfacePayloadTest's Test 8/9/10).
@@ -489,11 +528,13 @@ static void TestCsgPassThroughHonoursSuppliedTangent()
 
 	const Matrix4 M = csg->GetFinalTransformMatrix();
 
-	// Ray in the CSG's local frame is (origin (0,0,-1), dir +Z) to hit
-	// A's synthetic plane at local t=1 (object space (0,0,0)); forward-
-	// transform through the CSG's own matrix to get the equivalent
-	// world ray (CSGObject::IntersectRay inverse-transforms internally,
-	// same convention as Object::IntersectRay).
+	// Ray in the CSG's local frame is (origin (0,0,-1), dir +Z).  The
+	// stub geometry (see its class comment) reports a hit at a fixed
+	// local ray-parameter range regardless of the actual ray, so this
+	// still lands on A's synthetic plane through operand A's now-real
+	// transform; forward-transform through the CSG's own matrix to get
+	// the equivalent world ray (CSGObject::IntersectRay inverse-
+	// transforms internally, same convention as Object::IntersectRay).
 	const Point3 localOrigin( 0, 0, -1 );
 	const Vector3 localDir( 0, 0, 1 );
 	const Point3 worldOrigin = Point3Ops::Transform( M, localOrigin );
@@ -507,9 +548,17 @@ static void TestCsgPassThroughHonoursSuppliedTangent()
 	Check( ri.geometric.bShadingTangentFromGeometry, "Test5: bShadingTangentFromGeometry set" );
 	Check( ri.geometric.bHasShadingTangent, "Test5: bHasShadingTangent set" );
 
-	const Vector3 expectedTangent = Vector3Ops::Normalize( Vector3Ops::Transform( M, objTangent ) );
-	Check( Vector3Ops::Dot( ri.geometric.onb.u(), expectedTangent ) > 0.999,
-		"Test5: MONEY ASSERTION -- CSG composite onb.u() aligns with the CSG-transformed fiber tangent" );
+	// Ground truth composed INDEPENDENTLY from the two known matrices,
+	// one level at a time -- operand A's own promotion, then the CSG's.
+	// Normalize commutes with a linear map up to a positive scalar (the
+	// normalizing divisor), so composing with an intermediate
+	// normalize (as the production code does at each level) or without
+	// one (as here) gives the identical final DIRECTION -- one final
+	// normalize is sufficient ground truth.
+	const Vector3 expectedTangent = Vector3Ops::Normalize(
+		Vector3Ops::Transform( M, Vector3Ops::Transform( Mopa, objTangent ) ) );
+	Check( VecClose( ri.geometric.onb.u(), expectedTangent, 1e-9 ),
+		"Test5: MONEY ASSERTION -- CSG composite onb.u() aligns with the doubly-promoted (A then CSG) fiber tangent" );
 	Check( VecClose( ri.geometric.onb.w(), ri.geometric.vNormal, 1e-9 ),
 		"Test5: onb.w() equals the reported world shading normal" );
 
@@ -577,17 +626,168 @@ static void TestCsgAdoptSurfacePayloadCopiesSuppliedTangent()
 	Check( ri.geometric.bShadingTangentFromGeometry, "Test6: bShadingTangentFromGeometry adopted from B" );
 	Check( ri.geometric.bHasShadingTangent,
 		"Test6: MONEY ASSERTION -- bHasShadingTangent adopted from B (previously stayed A's stale FALSE)" );
-	Check( VecClose( ri.geometric.vShadingTangent, objTangentB ),
+	Check( VecClose( ri.geometric.vShadingTangent, objTangentB, 1e-9 ),
 		"Test6: MONEY ASSERTION -- vShadingTangent adopted from B, not stale/absent" );
 
 	// And the composite's own ONB actually used it (identity CSG
 	// transform, so world == object space here).
-	Check( Vector3Ops::Dot( ri.geometric.onb.u(), objTangentB ) > 0.999,
+	Check( VecClose( ri.geometric.onb.u(), objTangentB, 1e-9 ),
 		"Test6: composite onb.u() reflects B's adopted tangent" );
 
 	safe_release( csg );
 	safe_release( opA );
 	safe_release( opB );
+}
+
+// ============================================================
+// Test 7: CSG-of-CSG (P1, C2 round-1 review) -- an inner CSGObject
+//         with a REAL non-identity transform is operand A of an
+//         outer CSGObject with a DIFFERENT non-identity transform.
+//         This is the scenario CSGObject.cpp's own write-back
+//         comment names explicitly ("a CSG nested one level deeper
+//         needs THIS level's promotion applied to the field itself")
+//         and that Test 5/6 cannot reach (both use an identity CSG-
+//         or-operand transform on the level whose write-back would
+//         otherwise be dead).  Three promotions must compose:
+//         innermost Object -> inner CSG -> outer CSG.
+// ============================================================
+static void TestCsgOfCsgComposesThreeLevelPromotion()
+{
+	std::cout << "CSGObject: CSG-of-CSG composes a three-level fiber tangent promotion..." << std::endl;
+
+	const Vector3 objNormal( 0, 0, 1 );
+	const Vector3 objTangent( 1, 0, 0 );	// perpendicular to objNormal
+
+	// Level 0: the tangent-bearing stub, wrapped in an Object with its
+	// own real transform.
+	StubTangentGeometry* gLeaf = new StubTangentGeometry(
+		objNormal, /*bShadingTangentFromGeometry=*/true, /*bHasShadingTangent=*/true,
+		objTangent, /*tEnter=*/1.0, /*tExit=*/1000.0 );
+	Object* opLeaf = new Object( gLeaf );
+	safe_release( gLeaf );
+	opLeaf->SetOrientation( Vector3( 0.6, 0.1, -0.4 ) );
+	opLeaf->SetStretch( Vector3( 1.4, 2.2, 0.7 ) );
+	opLeaf->FinalizeTransformations();
+	const Matrix4 Mleaf = opLeaf->GetFinalTransformMatrix();
+
+	// Never-hit far operand for the INNER CSG.
+	SphereGeometry* gInnerB = new SphereGeometry( 1.0 );
+	Object* opInnerB = new Object( gInnerB );
+	safe_release( gInnerB );
+	opInnerB->SetPosition( Point3( 100000, 100000, 100000 ) );
+	opInnerB->FinalizeTransformations();
+
+	// Level 1: inner CSG, its own real (different) transform.
+	CSGObject* innerCsg = new CSGObject( CSG_UNION );
+	Check( innerCsg->AssignObjects( opLeaf, opInnerB ), "Test7: inner composite takes A(stub)/B(far sphere) operands" );
+	innerCsg->SetOrientation( Vector3( -0.2, 0.9, 0.3 ) );
+	innerCsg->SetStretch( Vector3( 0.8, 1.6, 2.5 ) );
+	innerCsg->FinalizeTransformations();
+	const Matrix4 Minner = innerCsg->GetFinalTransformMatrix();
+
+	// Never-hit far operand for the OUTER CSG.
+	SphereGeometry* gOuterB = new SphereGeometry( 1.0 );
+	Object* opOuterB = new Object( gOuterB );
+	safe_release( gOuterB );
+	opOuterB->SetPosition( Point3( -100000, -100000, -100000 ) );
+	opOuterB->FinalizeTransformations();
+
+	// Level 2: outer CSG, wrapping the inner CSG as operand A, with yet
+	// another real (different again) transform.
+	CSGObject* outerCsg = new CSGObject( CSG_UNION );
+	Check( outerCsg->AssignObjects( innerCsg, opOuterB ), "Test7: outer composite takes A(inner CSG)/B(far sphere) operands" );
+	outerCsg->SetOrientation( Vector3( 1.1, -0.5, 0.2 ) );
+	outerCsg->TranslateObject( Vector3( 4, -6, 2 ) );
+	outerCsg->SetStretch( Vector3( 2.1, 0.9, 1.3 ) );
+	outerCsg->FinalizeTransformations();
+	const Matrix4 Mouter = outerCsg->GetFinalTransformMatrix();
+
+	// Ray in the OUTER CSG's local frame; the stub reports a hit at a
+	// fixed local ray-parameter range regardless of the actual ray (see
+	// StubTangentGeometry's class comment), so this reaches the leaf
+	// through both nested transforms.  Forward-transform through the
+	// outer CSG's own matrix to get the equivalent world ray.
+	const Point3 localOrigin( 0, 0, -1 );
+	const Vector3 localDir( 0, 0, 1 );
+	const Point3 worldOrigin = Point3Ops::Transform( Mouter, localOrigin );
+	const Vector3 worldDir = Vector3Ops::Normalize( Vector3Ops::Transform( Mouter, localDir ) );
+
+	Ray r( worldOrigin, worldDir );
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( outerCsg, r, ri );
+
+	Check( ri.geometric.bHit, "Test7: ray hits the CSG-of-CSG composite" );
+	Check( ri.geometric.bShadingTangentFromGeometry, "Test7: bShadingTangentFromGeometry set" );
+	Check( ri.geometric.bHasShadingTangent, "Test7: bHasShadingTangent set" );
+
+	// Ground truth: three promotions composed INDEPENDENTLY from the
+	// three known matrices, one final normalize (see Test 5's comment
+	// for why an intermediate normalize per level doesn't change the
+	// final direction).
+	const Vector3 expectedTangent = Vector3Ops::Normalize(
+		Vector3Ops::Transform( Mouter, Vector3Ops::Transform( Minner, Vector3Ops::Transform( Mleaf, objTangent ) ) ) );
+	Check( VecClose( ri.geometric.onb.u(), expectedTangent, 1e-9 ),
+		"Test7: MONEY ASSERTION -- onb.u() aligns with the three-level (leaf, inner CSG, outer CSG) composed tangent" );
+	Check( VecClose( ri.geometric.onb.w(), ri.geometric.vNormal, 1e-9 ),
+		"Test7: onb.w() equals the reported world shading normal" );
+
+	CheckOrthonormalRightHanded( ri.geometric.onb, "Test7" );
+
+	safe_release( outerCsg );
+	safe_release( innerCsg );
+	safe_release( opLeaf );
+	safe_release( opInnerB );
+	safe_release( opOuterB );
+}
+
+// ============================================================
+// Test 8: singular operand transform (P3.5) -- a stretch that
+//         collapses one axis to zero (0,1,1) zeroes out the promoted
+//         tangent entirely (objTangent is along the collapsed X axis)
+//         wherever the tangent isn't perpendicular to the collapsed
+//         axis.  Object::IntersectRay must recognise the promoted
+//         tangent itself (not just its projection) as degenerate,
+//         clear bHasShadingTangent, and fall back to a clean
+//         (non-NaN) legacy ONB -- a "valid" flag paired with a zero
+//         vector would otherwise be a trap for CSGObject's own
+//         nesting promotion.
+// ============================================================
+static void TestObjectSingularTransformClearsSuppliedTangent()
+{
+	std::cout << "Object: singular operand transform clears bHasShadingTangent, no NaN..." << std::endl;
+
+	const Vector3 objNormal( 0, 0, 1 );
+	const Vector3 objTangent( 1, 0, 0 );	// perpendicular to objNormal; lies EXACTLY along the axis about to be collapsed
+
+	StubTangentGeometry* g = new StubTangentGeometry(
+		objNormal, /*bShadingTangentFromGeometry=*/true, /*bHasShadingTangent=*/true,
+		objTangent, 1.0, 1.0 );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->SetStretch( Vector3( 0, 1, 1 ) );	// collapses the X axis -- objTangent maps to the zero vector
+	o->FinalizeTransformations();
+
+	Ray r( Point3( 0, 0, -1 ), Vector3( 0, 0, 1 ) );
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( o, r, ri );
+
+	Check( ri.geometric.bHit, "Test8: ray hits the stub" );
+	Check( !ri.geometric.bHasShadingTangent,
+		"Test8: MONEY ASSERTION -- bHasShadingTangent cleared after a singular-transform collapse" );
+
+	Check( VecFinite( ri.geometric.onb.u() ), "Test8: onb.u() is finite (no NaN)" );
+	Check( VecFinite( ri.geometric.onb.v() ), "Test8: onb.v() is finite (no NaN)" );
+	Check( VecFinite( ri.geometric.onb.w() ), "Test8: onb.w() is finite (no NaN)" );
+
+	// The collapsed transform still maps the +Z object normal to +Z
+	// world normal (unaffected axis), so this lands on the SAME known
+	// legacy world-X fallback Tests 3/4 pin.
+	Check( VecClose( ri.geometric.onb.u(), Vector3( 1, 0, 0 ), 1e-9 ),
+		"Test8: falls back cleanly to the legacy world-X projection" );
+
+	CheckOrthonormalRightHanded( ri.geometric.onb, "Test8" );
+
+	o->release();
 }
 
 // ============================================================
@@ -603,6 +803,8 @@ int main()
 	TestObjectDegenerateSuppliedTangentFallsBack();
 	TestCsgPassThroughHonoursSuppliedTangent();
 	TestCsgAdoptSurfacePayloadCopiesSuppliedTangent();
+	TestCsgOfCsgComposesThreeLevelPromotion();
+	TestObjectSingularTransformClearsSuppliedTangent();
 
 	std::cout << std::endl << g_pass << " passed, " << g_fail << " failed." << std::endl;
 	return g_fail == 0 ? 0 : 1;

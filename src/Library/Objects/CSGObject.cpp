@@ -1040,18 +1040,37 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			// Degenerate (near-parallel to the normal) falls back to that legacy
 			// world-X projection below, so a pathological hit never produces a NaN
 			// ONB.
+			//
+			// Two DISTINCT degeneracies (mirrors Object::IntersectRay's identical
+			// split): tWorld itself near-zero means THIS level's transform was
+			// singular along the tangent's incoming direction -- the promoted
+			// value is garbage, not just locally unusable, so clear
+			// bHasShadingTangent and skip the write-back rather than hand a
+			// further-nested CSG parent a "valid" zero vector.  Only tProj
+			// near-zero (tWorld valid, parallel to the normal) still writes
+			// tWorld back -- a parent's own transform may un-degenerate it --
+			// and falls back to the legacy world-X projection for THIS level's
+			// ONB alone.
 			if( ri.geometric.bHasShadingTangent ) {
 				const Vector3 tWorld = Vector3Ops::Normalize(
 					Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vShadingTangent ) );
-				// Write-back (not just a local variable), mirroring
-				// Object::IntersectRay's identical write-back: a CSG nested one
-				// level deeper (CSG-of-CSG) needs THIS level's promotion applied
-				// to the field itself, not just consumed locally for the onb.
-				ri.geometric.vShadingTangent = tWorld;
-				const Vector3 tProj = tWorld - n * Vector3Ops::Dot( n, tWorld );
-				if( Vector3Ops::SquaredModulus( tProj ) >= NEARZERO ) {
-					t = tProj;
-					bHaveSuppliedTangent = true;
+				if( Vector3Ops::SquaredModulus( tWorld ) < NEARZERO ) {
+					ri.geometric.bHasShadingTangent = false;
+				} else {
+					// Write-back (not just a local variable), mirroring
+					// Object::IntersectRay's identical write-back: a CSG nested one
+					// level deeper (CSG-of-CSG) needs THIS level's promotion applied
+					// to the field itself, not just consumed locally for the onb.
+					// Written UNPROJECTED -- the nesting invariant composes raw
+					// transforms one level at a time; the projection below into
+					// THIS level's shading-normal plane is a purely local ONB
+					// concern.
+					ri.geometric.vShadingTangent = tWorld;
+					const Vector3 tProj = tWorld - n * Vector3Ops::Dot( n, tWorld );
+					if( Vector3Ops::SquaredModulus( tProj ) >= NEARZERO ) {
+						t = tProj;
+						bHaveSuppliedTangent = true;
+					}
 				}
 			}
 

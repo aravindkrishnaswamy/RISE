@@ -260,10 +260,23 @@ namespace RISE
 		//! world-space shading-normal plane, and builds the ONB from it
 		//! (falling back to the legacy world-X projection if the
 		//! supplied tangent is degenerate, i.e. near-parallel to the
-		//! normal).  A geometry that sets `bShadingTangentFromGeometry`
-		//! WITHOUT also setting `bHasShadingTangent` (the SDFGeometry
-		//! heightfield case) still gets the legacy world-X projection,
-		//! byte-identical to before this field existed.
+		//! normal).  Same convention as `vTangent` above: each level
+		//! OVERWRITES this field IN PLACE with its own promoted value
+		//! (one promotion per level of nesting) rather than leaving the
+		//! object-space original untouched, so a CSG-of-CSG composite
+		//! sees the field arrive one promotion short of world space at
+		//! each level and finishes the job itself -- exactly the
+		//! invariant `vTangent`'s write-back establishes.  A singular
+		//! transform (the promoted tangent itself collapses to
+		//! near-zero, not merely its projection) clears
+		//! `bHasShadingTangent` and skips the write-back instead of
+		//! leaving a "valid" flag paired with a garbage vector.  A
+		//! geometry that sets `bShadingTangentFromGeometry` WITHOUT also
+		//! setting `bHasShadingTangent` (the SDFGeometry heightfield
+		//! case) still gets the legacy world-X projection, byte-identical
+		//! to before this field existed.  Consumers downstream of
+		//! intersection (e.g. `HairBSDF`) therefore always see this field
+		//! in world space, never object space.
 		Vector3						vShadingTangent;
 		bool						bHasShadingTangent;
 

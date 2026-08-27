@@ -49,19 +49,33 @@
 //  only to geometry that generates a v coordinate.
 //
 //  The fibre TANGENT must be a real, coherent, geometry-supplied
-//  direction for a hair render to look right, and TODAY NOTHING
-//  SUPPLIES ONE.  `bShadingTangentFromGeometry` is a request for a
-//  COHERENT tangent, not for a geometry-defined one: `Object::IntersectRay`
-//  (Object.cpp:641-655) honours it by projecting WORLD-X into the plane
-//  perpendicular to the shading normal, unconditionally -- the flag has
-//  no companion tangent field for a geometry to write.  The separate
-//  `vTangent` / `bHasTangent` pair (RayIntersectionGeometric.h:224-235)
-//  IS a real per-vertex tangent, but it is glTF-only and consumed by the
-//  normal-map modifier.  Closing the gap is the `hair_geometry` slice's
-//  job (see docs/HAIR_FUR_DESIGN.md section 4.1 for the two options);
-//  this file only reads `ri.onb.u()` and will pick up whatever that
-//  slice lands -- PROVIDED nothing downstream rebuilds the ONB from the
-//  normal alone afterward.  Today something does: `NormalMap::Modify`
+//  direction for a hair render to look right, and `hair_geometry`
+//  (HairGeometry) supplies exactly that: alongside
+//  `bShadingTangentFromGeometry=true` it also sets `bHasShadingTangent`
+//  and writes the OBJECT-space fibre tangent into `vShadingTangent`
+//  (RayIntersectionGeometric.h).  `Object::IntersectRay` (Object.cpp,
+//  the `bShadingTangentFromGeometry` branch) and, for a CSG-composed
+//  hair fibre, `CSGObject::IntersectRay`'s byte-duplicate block each
+//  promote it one level -- forward matrix, like `vTangent`, NOT
+//  inverse-transpose, because a tangent is a direction ALONG the
+//  surface, not a normal -- and WRITE THE PROMOTED VALUE BACK into
+//  `vShadingTangent` in place, so a further-nested CSG parent sees the
+//  field one promotion short of world space and finishes the job
+//  itself.  Once in world space it is projected into the shading-
+//  normal plane and handed to `CreateFromWU` to build the ONB.  The
+//  legacy world-X-projection path (`bShadingTangentFromGeometry=true`
+//  WITHOUT `bHasShadingTangent`, still used by SDFGeometry's
+//  heightfield mode) remains the fallback: reached whenever no
+//  geometry supplies a tangent, and whenever a supplied tangent turns
+//  out degenerate (near-parallel to the normal, or collapsed to
+//  near-zero by a singular transform).  The separate `vTangent` /
+//  `bHasTangent` pair (RayIntersectionGeometric.h) is a DIFFERENT
+//  per-vertex tangent, glTF-only and consumed by the normal-map
+//  modifier -- unrelated to the fibre tangent described here.  This
+//  file only reads `ri.onb.u()`, so it picks up whatever the fibre-
+//  tangent plumbing above produced -- PROVIDED nothing downstream
+//  rebuilds the ONB from the normal alone afterward.  Today something
+//  does: `NormalMap::Modify`
 //  (NormalMap.cpp:172) and `BumpMap::Modify` (BumpMap.cpp:69) both call
 //  the unconditional `ri.onb.CreateFromW(ri.vNormal)` after perturbing
 //  the normal, discarding whatever tangent was in `ri.onb.u()` --
