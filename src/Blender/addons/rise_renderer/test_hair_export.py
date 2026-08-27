@@ -590,10 +590,32 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         with open(_BRIDGE_HEADER, "r", encoding="utf-8") as handle:
             cls.source = handle.read()
 
+    @staticmethod
+    def _drop_pointer_const(fields):
+        # ctypes has no notion of const -- POINTER(c_float) is the same
+        # Python type whether the C field is `float*` or `const float*`
+        # -- and `_POINTER_TO_C` maps each pointee ctype to a single
+        # canonical string (picked to match whichever struct needed it
+        # first; see its "one non-const pointer in the ABI" comment).
+        # `rise_blender_mesh.vertices/normals/uvs` are `const float*`
+        # while `rise_blender_render_result.rgba` is a plain `float*`,
+        # so comparing the literal header text against that one fixed
+        # string would fail one of them no matter which way it's
+        # mapped, on a qualifier that carries no ABI/layout meaning.
+        # Strip it from both sides so the comparison is exact on what
+        # actually determines memory layout (field order, scalar width,
+        # pointer-vs-array-vs-scalar) without going stale over an
+        # unrelated const annotation.
+        return [(name, type_text.replace("const ", "")) for name, type_text in fields]
+
     def _assert_matches(self, python_struct, c_name):
         expected = _parse_c_struct_fields(self.source, c_name)
         actual = [(name, _canonical_ctype(ctype)) for name, ctype in python_struct._fields_]
-        self.assertEqual(actual, expected, f"{python_struct.__name__} drifted from {c_name}")
+        self.assertEqual(
+            self._drop_pointer_const(actual),
+            self._drop_pointer_const(expected),
+            f"{python_struct.__name__} drifted from {c_name}",
+        )
 
     def test_expected_api_version_matches_the_header(self):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
@@ -614,6 +636,23 @@ class BridgeAbiLayoutTest(unittest.TestCase):
 
     def test_render_result_struct_matches(self):
         self._assert_matches(bridge._RenderResult, "rise_blender_render_result")
+
+    def test_all_pointer_target_structs_match(self):
+        """Every ctypes.Structure named as a POINTER(...) target in
+        `_POINTER_TO_C`, not just the four hand-picked structs checked
+        by name above.  Without this, a struct newly added to
+        `_POINTER_TO_C` (e.g. `bridge._Medium` for
+        `rise_blender_medium`) passes `_canonical_ctype` resolution --
+        that dict only needs to exist for pointer-field decoding -- with
+        no test ever comparing its `_fields_` against the header, so a
+        drift in that struct's layout would go undetected."""
+        for python_struct, c_type in _POINTER_TO_C.items():
+            if not (isinstance(python_struct, type) and issubclass(python_struct, ctypes.Structure)):
+                continue  # ctypes.c_float / ctypes.c_uint32: the result-buffer pointer, not a struct.
+            match = re.match(r"^const (\w+)\s*\*$", c_type)
+            self.assertIsNotNone(match, f"unparsed pointer C type {c_type!r} for {python_struct.__name__}")
+            with self.subTest(struct=python_struct.__name__):
+                self._assert_matches(python_struct, match.group(1))
 
     def test_tier_tags_match_the_header_enum(self):
         for name, value in (

@@ -32,7 +32,13 @@
 //  test binary carries the bridge's `extern "C"` entry points it never
 //  calls.  The benefit is that the thing under test is the thing that
 //  ships -- a re-implementation of the tier mapping in a test would
-//  agree with itself forever while the bridge drifted.
+//  agree with itself forever while the bridge drifted.  That "thing
+//  that ships" claim is configuration-approximate, not exact: the
+//  dylib's own Makefile (src/Blender/native/Makefile) builds this
+//  translation unit with `-std=c++17` and, when an OpenVDB install is
+//  found, `-DRISE_BLENDER_ENABLE_OPENVDB`, while this test TU builds it
+//  with `-std=gnu++17` and no OpenVDB define -- every VDB-gated region
+//  is media-only, so hair is unaffected either way.
 //
 //  The five groups:
 //
@@ -732,6 +738,23 @@ void TestFailuresAreNonFatalAndNamed()
 		Check( !ok, "a negative melanin concentration is refused" );
 		Check( warnings.size() == 1 && WarningsMention( warnings, "bad_conc" ),
 			"the negative-concentration warning names the material" );
+	}
+
+	// --- a negative sigma_a channel (would amplify energy) ---------
+	{
+		warnings.clear();
+		rise_blender_hair_material negativeSigma;
+		std::memset( &negativeSigma, 0, sizeof( negativeSigma ) );
+		negativeSigma.name = "bad_sigma_a";
+		negativeSigma.tier = RISE_BLENDER_HAIR_TIER_SIGMA_A;
+		negativeSigma.sigma_a[0] = 0.245f; negativeSigma.sigma_a[1] = -0.01f; negativeSigma.sigma_a[2] = 1.6f;
+		negativeSigma.beta_m = 0.3f; negativeSigma.beta_n = 0.3f; negativeSigma.alpha_degrees = 2.0f; negativeSigma.ior = 1.55f;
+		const bool ok = Quietly( [&]() { return add_hair_material( *job, negativeSigma, warnings ); } );
+		Check( !ok, "a negative sigma_a channel is refused" );
+		Check( warnings.size() == 1 && WarningsMention( warnings, "bad_sigma_a" ),
+			"the negative-sigma_a warning names the material" );
+		Check( (*job).GetMaterials()->GetItem( "bad_sigma_a" ) == 0,
+			"no material is registered for a negative sigma_a channel" );
 	}
 
 	{

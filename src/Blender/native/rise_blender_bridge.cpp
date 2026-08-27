@@ -1346,6 +1346,13 @@ namespace
 			// buffer too small to hold even the note degrades to a plain
 			// snprintf truncation below.
 			if( capacity > note_length + 1 ) {
+				// Note: this resize() is a byte-count cut and can land
+				// mid-codepoint if a warning contains multi-byte UTF-8
+				// (e.g. a Blender object/material name with non-ASCII
+				// characters) right at the boundary.  Not fixed up here:
+				// the Python side decodes with errors="replace"
+				// (bridge.py's `_decode_bridge_warnings`), which turns a
+				// split sequence into a single U+FFFD instead of raising.
 				joined.resize( capacity - 1 - note_length );
 				joined += truncation_note;
 			}
@@ -1417,6 +1424,13 @@ namespace
 			{
 				record_warning( warnings,
 					"RISE skipped hair material " + who + ": sigma_a is not a finite RGB triple." );
+				return false;
+			}
+			if( material.sigma_a[0] < 0.0f || material.sigma_a[1] < 0.0f || material.sigma_a[2] < 0.0f )
+			{
+				record_warning( warnings,
+					"RISE skipped hair material " + who +
+					": sigma_a must be non-negative absorption coefficients (a negative value would amplify energy)." );
 				return false;
 			}
 			sigma_a = rgb_literal( material.sigma_a );
@@ -1553,6 +1567,10 @@ namespace
 		char object_error[512];
 		object_error[0] = 0;
 		if( !add_object( job, bound, object_error, sizeof( object_error ) ) ) {
+			// The geometry above registered successfully; add_object
+			// failing (e.g. a duplicate object name) must not leave it
+			// behind under a name nothing references.
+			job.RemoveGeometry( geometry_name.c_str() );
 			record_warning( warnings,
 				"RISE could not place hair object " + who + " (material '" + object.material_name +
 				"'): " + ( object_error[0] ? object_error : "unknown error" ) + "." );
