@@ -30,12 +30,26 @@
 //       same), clamped to [0,1], and used as a REJECTION probability.
 //       `count` is therefore a budget, not a guarantee.
 //
+//    3b. THE ROOT TANGENT FRAME.  `comb` and `curl` are both expressed
+//       in a frame {tangent, bitangent, normal} anchored at the root, so
+//       that frame has to be CONTINUOUS ACROSS THE SURFACE or a constant
+//       comb field reads as per-triangle noise.  The tangent is
+//       therefore derived from the base's UV PARAMETERIZATION (dP/du),
+//       which is continuous wherever the UV map is and is invariant to
+//       how finely the base tessellates.  A base with no UVs (or a
+//       UV-degenerate triangle) falls back to the triangle's first edge,
+//       which IS per-triangle -- documented as such in the chunk
+//       descriptor, because on such a base a comb field cannot be made
+//       coherent at all.
+//
 //    4. GROWTH.  `segments` control points from the root along the
 //       interpolated surface normal, total length `length` times the
 //       optional `length_painter` at the root, then four independent
 //       displacements per control point:
 //         comb    -- a constant world-space lateral push, direction and
-//                    magnitude decoded from the `comb` IPainter's RGB
+//                    magnitude decoded from the `comb` IPainter's RGB as
+//                    a FLOW MAP (see the decode site: tangential
+//                    components only, blue ignored)
 //         gravity -- a world -Y push
 //         curl    -- a helix superposed in the root's tangent frame
 //         frizz   -- a per-control-point random jitter
@@ -341,20 +355,24 @@ namespace
 			}
 		}
 
-		// The pull reads the centre strands' ORIGINAL control points, so
-		// the result cannot depend on whether a centre was itself
-		// processed first.  (A centre is never pulled, so in fact no
-		// centre is ever modified -- the copy below is belt-and-braces
-		// against a future scheme where centres do move.)
-		const std::vector<HairGeometry::StrandDesc> original( strands );
-
+		// The pull reads each centre strand IN PLACE, which is exactly
+		// correct here and NOT a shortcut: the write loop below skips
+		// every strand without a centre, and a centre never has one
+		// (`hasCentre` is only set for the non-first strand of a cell),
+		// so no strand this loop reads is ever a strand this loop
+		// writes.  The result is therefore independent of iteration
+		// order without needing a snapshot -- and a whole-groom deep
+		// copy is not a cheap thing to take for reassurance: it doubles
+		// peak groom memory at the exact moment the groom is largest.
+		// A future scheme in which centres DO move would have to
+		// reintroduce a snapshot (of the centre strands only).
 		const Scalar clumpClamped = ( clump > Scalar(1) ) ? Scalar(1) : clump;
 
 		for( size_t i = 0; i < strands.size(); ++i ) {
 			if( !hasCentre[i] ) {
 				continue;
 			}
-			const HairGeometry::StrandDesc& c = original[ centreIndex[i] ];
+			const HairGeometry::StrandDesc& c = strands[ centreIndex[i] ];
 			HairGeometry::StrandDesc& s = strands[i];
 
 			const size_t n = s.controlPoints.size();
@@ -455,14 +473,29 @@ bool RISE::Implementation::GenerateHairStrands(
 	out.clear();
 	out.reserve( p.count );
 
-	HairRNG placementRng( MixSeed( p.seed, 0x524F4F54u /* 'ROOT' */ ) );
-
 	unsigned int nMaskedOut   = 0;
 	unsigned int nZeroLength  = 0;
 	unsigned int nDegenerate  = 0;
 
 	for( unsigned int si = 0; si < p.count; ++si )
 	{
+		// PLACEMENT STREAM, KEYED PER CANDIDATE.  One shared stream
+		// walked across the whole loop would make every candidate's
+		// placement depend on how many draws the candidates BEFORE it
+		// happened to consume -- and that count is not constant: binding
+		// a `density` painter adds a fourth draw per candidate, and a
+		// candidate dropped on a degenerate triangle skips its remaining
+		// draws entirely.  Either edit would then re-roll the position of
+		// every LATER strand, so painting a bald patch on one ear would
+		// silently rearrange the hair on the other.  Keying on (seed,
+		// candidate ordinal) instead makes each candidate's draws depend
+		// on nothing but its own ordinal: adding or editing `density`
+		// leaves every SURVIVING strand's root, and its jitter, bit-
+		// identical.  The tag folded into the key keeps this stream
+		// disjoint from the per-strand jitter stream below, which is
+		// keyed on the same ordinal.
+		HairRNG placementRng( MixSeed( p.seed ^ 0x524F4F54u /* 'ROOT' */, si ) );
+
 		// -- pick a triangle with probability proportional to its area.
 		const double r = placementRng.Canonical() * totalArea;
 		size_t ti = (size_t)( std::lower_bound( cumArea.begin(), cumArea.end(), r ) - cumArea.begin() );
@@ -511,29 +544,68 @@ bool RISE::Implementation::GenerateHairStrands(
 			continue;
 		}
 
-		// -- a real surface tangent: the triangle's first edge, made
-		//    perpendicular to the normal.  Deterministic and genuinely
-		//    tangent to the surface (unlike an arbitrary helper axis),
-		//    which is what makes the comb field's tangent-space
-		//    encoding and the curl helix reproducible.
-		Vector3 tRaw = e0 - root.normal * Vector3Ops::Dot( e0, root.normal );
-		if( !SafeNormalize( tRaw, root.tangent ) ) {
-			// Edge parallel to the normal (only possible for a
-			// degenerate triangle): fall back to any perpendicular.
-			const Vector3 helper = ( fabs( root.normal.x ) < Scalar(0.8) ) ? Vector3( 1, 0, 0 ) : Vector3( 0, 1, 0 );
-			if( !SafeNormalize( Vector3Ops::Cross( helper, root.normal ), root.tangent ) ) {
-				++nDegenerate;
-				continue;
-			}
-		}
-
+		// -- the root's UV, and the root TANGENT derived from the same
+		//    three texture coordinates.  The two are one block because
+		//    they are one question -- what does the base's
+		//    parameterization do here -- asked at value and at first
+		//    derivative.
+		//
+		//    THE TANGENT COMES FROM THE UV PARAMETERIZATION.
+		//    Solving the standard tangent-space system for dP/du --
+		//    given the two edge vectors e0, e1 and their UV deltas
+		//    (du1,dv1), (du2,dv2),
+		//        dP/du = ( e0*dv2 - e1*dv1 ) / ( du1*dv2 - du2*dv1 )
+		//    -- and orthogonalising against the shading normal gives a
+		//    tangent field that is CONTINUOUS wherever the UV map is,
+		//    and that does not move when `base_detail` changes the
+		//    triangulation underneath it.  Both properties are what the
+		//    comb field needs: a constant comb painter must sweep the
+		//    whole surface ONE way, and a hand-painted comb map must
+		//    mean at render time what it meant when it was painted.
+		//
+		//    The obvious alternative -- orthogonalise the triangle's
+		//    FIRST EDGE against the normal -- is per-triangle: two
+		//    triangles of the same quad disagree by up to ~60 degrees,
+		//    so a constant comb map combs in a per-triangle
+		//    checkerboard and re-rotates whenever the tessellation
+		//    changes.  It survives only as the FALLBACK for a base that
+		//    carries no UVs at all, or whose UV triangle is degenerate
+		//    (|det| below): there is no parameterization there to derive
+		//    from, so an incoherent-but-deterministic tangent is the
+		//    best available answer, and the chunk descriptor says so.
 		root.uv = Point2( 0, 0 );
+		bool haveTangent = false;
 		if( haveCoords ) {
 			const Point2& c0 = coords[ tri.iCoords[0] ];
 			const Point2& c1 = coords[ tri.iCoords[1] ];
 			const Point2& c2 = coords[ tri.iCoords[2] ];
 			root.uv = Point2( c0.x * w0 + c1.x * w1 + c2.x * w2,
 			                  c0.y * w0 + c1.y * w1 + c2.y * w2 );
+
+			const Scalar du1 = c1.x - c0.x, dv1 = c1.y - c0.y;
+			const Scalar du2 = c2.x - c0.x, dv2 = c2.y - c0.y;
+			const Scalar det = du1 * dv2 - du2 * dv1;
+			// The threshold is a "is there a parameterization here at
+			// all" test, not a quality bar: the result is normalised, so
+			// a small-but-nonzero det costs no accuracy -- it only has
+			// to stay clear of an overflowing reciprocal.
+			if( RISE::IsFiniteDouble( det ) && fabs( det ) > Scalar(1e-20) ) {
+				const Vector3 dPdu = ( e0 * dv2 - e1 * dv1 ) * ( Scalar(1) / det );
+				Vector3 tUV = dPdu - root.normal * Vector3Ops::Dot( dPdu, root.normal );
+				haveTangent = SafeNormalize( tUV, root.tangent );
+			}
+		}
+		if( !haveTangent ) {
+			Vector3 tRaw = e0 - root.normal * Vector3Ops::Dot( e0, root.normal );
+			if( !SafeNormalize( tRaw, root.tangent ) ) {
+				// Edge parallel to the normal (only possible for a
+				// degenerate triangle): fall back to any perpendicular.
+				const Vector3 helper = ( fabs( root.normal.x ) < Scalar(0.8) ) ? Vector3( 1, 0, 0 ) : Vector3( 0, 1, 0 );
+				if( !SafeNormalize( Vector3Ops::Cross( helper, root.normal ), root.tangent ) ) {
+					++nDegenerate;
+					continue;
+				}
+			}
 		}
 
 		// -- the synthetic hit every root-side painter is evaluated at.
@@ -566,16 +638,25 @@ bool RISE::Implementation::GenerateHairStrands(
 		}
 
 		// -- comb: the IPainter's RGB decoded as a TANGENT-SPACE
-		//    direction with the normal-map convention  d = 2*rgb - 1,
-		//    then rotated into world by the root frame
-		//    {tangent, bitangent, normal}.  A neutral 0.5 0.5 0.5
-		//    painter is therefore exactly "no comb", and the vector's
-		//    MAGNITUDE is the comb strength expressed as a fraction of
-		//    the strand's own length (so 1.0 0.5 0.5 -- d = (1,0,0) --
-		//    pushes the tip a full strand-length along +tangent).  Only
-		//    the component TANGENT to the surface is kept: a comb field
-		//    must not push a strand into or out of the scalp, which is
-		//    what the growth direction is already for.
+		//    direction by  d = 2*rgb - 1, then rotated into world by the
+		//    root frame {tangent, bitangent, normal}.  A neutral
+		//    0.5 0.5 0.5 painter is therefore exactly "no comb", and the
+		//    vector's MAGNITUDE is the comb strength expressed as a
+		//    fraction of the strand's own length (so 1.0 0.5 0.5 --
+		//    d = (1,0,0) -- pushes the tip a full strand-length along
+		//    +tangent).
+		//
+		//    THIS IS A FLOW MAP, NOT A NORMAL MAP.  The encoding borrows
+		//    the normal map's 2*rgb-1 remap and nothing else: only the
+		//    TANGENTIAL part of d survives (a comb must not push a
+		//    strand into or out of the scalp -- growing along the normal
+		//    is what the growth direction is already for), so the BLUE
+		//    channel is projected straight back out and has no effect
+		//    whatsoever.  The practical consequence, which surprises
+		//    people who reach for a normal map here: a normal map's
+		//    "flat" pixel 0.5 0.5 1.0 decodes to d = (0,0,1), which is
+		//    pure normal and therefore ZERO comb -- flat blue is not
+		//    "comb straight up", it is "do not comb".
 		root.comb = Vector3( 0, 0, 0 );
 		if( recipe.pComb ) {
 			const RISEPel rgb = recipe.pComb->GetColor( rootRi );

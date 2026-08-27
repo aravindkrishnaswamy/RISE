@@ -5107,9 +5107,14 @@ namespace RISE
 					// argument: a wing, fin or sail is a skin_geometry, and a
 					// scene that already built its membranes with one must
 					// not be told it has none of the rich forms.
+					// hair_geometry (doc HAIR_FUR_DESIGN.md slice D) joins on
+					// the same argument once more: fur, hair, grass and moss
+					// are a groom, and a scene that grew one has reached for
+					// exactly the kind of form this note exists to ask for.
 					if( role == "sdf_geometry" || role == "sweep_geometry" ||
 					    role == "lathe_geometry" || role == "skeleton_geometry" ||
-					    role == "skin_geometry" || role == "displaced_geometry" ) {
+					    role == "skin_geometry" || role == "hair_geometry" ||
+					    role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
 						++c.geometryCensus[role];
 						// Fix 2 (2026-08-24): the blend-scale law, scoped to
@@ -6003,10 +6008,11 @@ namespace RISE
 				if( c.conditionB ) {
 					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/skin_geometry/displaced_geometry "
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/skin_geometry/hair_geometry/displaced_geometry "
 						"forms (a profile of revolution -- vase, bottle, goblet, turned leg -- is one "
 						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; a surface "
 						"stretched between two curves -- wing, fin, sail, leaf, awning -- is one skin_geometry; "
+						"fur, hair, grass or moss grown on a surface is one hair_geometry; "
 						"read_skill {\"name\":\"object-modeling-recipes\"}).";
 				}
 				if( c.conditionC ) {
@@ -6101,10 +6107,11 @@ namespace RISE
 					d.code     = AgentDiagnosticCode::DESIGN_NO_ADVANCED_GEOMETRY;
 					d.message  = "geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/skin_geometry/displaced_geometry "
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/skin_geometry/hair_geometry/displaced_geometry "
 						"forms (a profile of revolution -- vase, bottle, goblet, turned leg -- is one "
 						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; a surface "
 						"stretched between two curves -- wing, fin, sail, leaf, awning -- is one skin_geometry; "
+						"fur, hair, grass or moss grown on a surface is one hair_geometry; "
 						"read_skill {\"name\":\"object-modeling-recipes\"}).";
 					d.message += kSelfDisarm;
 					out.push_back( d );

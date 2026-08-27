@@ -27,9 +27,15 @@
 //      at the object-space origin, and never crashes.  Direct
 //      (non-pipeline) consumers -- unit tests, tools -- MUST call
 //      Realize() before use, exactly as DisplacedGeometry requires.
-//      Re-Realize() is idempotent (the second call returns immediately);
-//      a groom regenerated from scratch on a later frame reproduces
-//      byte-identically from the seed.
+//      Re-Realize() is idempotent (the second call returns immediately)
+//      -- and idempotent is ALL it is today: nothing in the engine ever
+//      clears `bRealized`, so a groom is generated exactly once in the
+//      lifetime of the object and the "regenerated on a later frame"
+//      path does not exist yet.  It is written the way it is (pure
+//      function of the recipe and seed) so that a future
+//      animation-following slice can add the reset and get frame-to-
+//      frame stability for free; following a deforming base is out of
+//      scope for Phase 1 (HairGenerator.h, "WHAT IS NOT HERE").
 //
 //  ATTRIBUTION.  The intersection strategy -- transform the segment
 //  into a ray-centric frame, recursively split until the piece is
@@ -280,7 +286,18 @@ namespace RISE
 			//! always true in explicit-strand mode, and in deferred mode
 			//! the cheap recipe check (base geometry present and
 			//! tessellatable) that can be made without generating
-			//! anything.  Mirrors DisplacedGeometry::IsValid().
+			//! anything.
+			//!
+			//! DIAGNOSTIC / TEST ACCESSOR ONLY -- it has NO production
+			//! caller, and the parity with DisplacedGeometry::IsValid()
+			//! is in shape, not in role: that one IS consulted, whereas
+			//! a bad groom recipe is refused at PARSE time by
+			//! `ValidateHairGroomRecipe` (HairGenerator.h), which reports
+			//! a named diagnostic instead of a bare bool.  Kept because
+			//! it is the only way a direct C++ consumer can ask the
+			//! question without triggering generation; do not add a
+			//! render-path caller without deciding which of the two is
+			//! the authority.
 			bool IsValid() const;
 
 			//! Diagnostic / test accessor: has Realize() run?  Always

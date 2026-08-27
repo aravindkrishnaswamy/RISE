@@ -18,13 +18,31 @@
 //
 //  DETERMINISM IS A CONTRACT, NOT AN ACCIDENT.  Every random draw comes
 //  from a self-contained integer PRNG seeded from `recipe.p.seed` (see
-//  the .cpp), never from `GlobalRNG()`.  The same recipe and seed
-//  therefore produce byte-identical strand arrays on every run, every
-//  platform, and every re-`Realize()` -- which is what makes an animated
-//  groom stable frame to frame.  Per-strand jitter draws from a stream
-//  keyed on (seed, strand index) rather than from one global sequence,
-//  so a strand's frizz does not change when an EARLIER strand is
-//  rejected by the density mask.
+//  the .cpp), never from `GlobalRNG()`.  Two claims, and they are not
+//  the same strength:
+//
+//    * THE RANDOM STREAM is bit-identical everywhere.  The generator is
+//      fixed-width integer arithmetic only, so the same recipe and seed
+//      draw the same numbers in the same order on every run, every
+//      re-`Realize()`, every build and every platform.  That is the
+//      property `GlobalRNG()` (a compile-time-configurable Mersenne
+//      Twister) could not give.
+//
+//    * THE GROOM ITSELF is byte-identical for the same binary on the
+//      same platform, which is what makes a re-`Realize()` and a
+//      re-render reproduce frame to frame.  ACROSS platforms it is
+//      identical only to floating-point tolerance: the growth arithmetic
+//      is `Scalar` math through `sin`/`cos`/`sqrt`, so a different
+//      libm, a different FMA contraction, or macOS's `-ffast-math`
+//      against Linux's strict IEEE can move a control point in the last
+//      couple of ULPs.  Do NOT hash a groom across platforms and expect
+//      a match; compare it against a tolerance.
+//
+//  Per-strand jitter and per-candidate placement each draw from their
+//  own stream keyed on (seed, candidate ordinal) rather than from one
+//  sequence walked across the whole groom, so neither a strand rejected
+//  by the density mask nor a candidate dropped on a degenerate triangle
+//  reshuffles anything that comes after it.
 //
 //  WHAT IS NOT HERE.  Animation-following (a groom that tracks a
 //  deforming base mesh) is out of scope for Phase 1: a re-Realize()

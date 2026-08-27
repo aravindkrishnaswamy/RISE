@@ -10,7 +10,7 @@
 //  and it does not test the BCSDF (HairBSDFTest.cpp) or the material
 //  chunk (HairMaterialChunkTest.cpp).
 //
-//  The eight groups, and the specific regression each one buys:
+//  The nine groups, and the specific regression each one buys:
 //
 //    1. DETERMINISM.  Two grooms built from the same recipe and seed
 //       are bit-identical in every control point, width and root UV;
@@ -24,8 +24,12 @@
 //       against a binomial tolerance.  A per-triangle-uniform sampler
 //       would put 50/50 here and fail by ~50 standard deviations.
 //
-//    3. DENSITY MASK.  A step-function density painter over the base UV
-//       leaves EXACTLY zero roots on its masked half -- not "few".
+//    3. DENSITY MASK, AND STREAM KEYING.  A step-function density
+//       painter over the base UV leaves EXACTLY zero roots on its masked
+//       half -- not "few".  And the strands it does NOT remove are
+//       BIT-IDENTICAL to the same groom grown with no density painter at
+//       all: placement is keyed per candidate, so painting a bald patch
+//       on one ear cannot silently rearrange the hair on the other.
 //
 //    4. LENGTH PAINTER + WIDTH LERP.  A 0.5 length painter halves the
 //       measured arc length of every strand (checked on the UNBENT
@@ -37,12 +41,20 @@
 //       same seed.  (The test reproduces the DOCUMENTED cell rule --
 //       first strand in a cell of side `clump_size` is that cell's
 //       centre -- so it also pins that rule, not just "tips moved".)
+//       Then, on a base of THREE well-separated islands, the exact
+//       per-cell lerp target is pinned: a clumped tip lands exactly
+//       `clump` of the way to its OWN cell centre's tip and nowhere
+//       near any other island's, which is what separates the documented
+//       spatial partition from an index-strided one that would drag
+//       strands across the whole surface.
 //
-//    6. FRIZZ / CURL.  Non-zero parameters move control points off the
-//       straight-growth baseline; zero parameters reproduce the
-//       baseline EXACTLY (which is the harder half: it pins that the
-//       effects are skipped cleanly rather than applied at zero
-//       amplitude through a path that perturbs the random stream).
+//    6. FRIZZ / CURL / GRAVITY, AND STREAM ISOLATION.  Non-zero
+//       parameters move control points off the straight-growth
+//       baseline; each strand's jitter is INDEPENDENT of its
+//       neighbours'; and adding gravity to a frizzed groom displaces
+//       every control point by exactly the documented gravity term and
+//       nothing else -- the effects compose without perturbing each
+//       other's random stream.
 //
 //    7. THE REALIZE CONTRACT.  A deferred groom before Realize() is
 //       defined and EMPTY -- no strands, no hits, no crash; after
@@ -52,7 +64,21 @@
 //    8. THE CHUNK.  A minimal `hair_geometry` chunk parses and
 //       registers a geometry; a missing `base_geometry`, an unknown
 //       base name, and each out-of-range numeric are all REJECTED with
-//       a diagnostic naming the offending parameter.
+//       a diagnostic naming the offending parameter.  And four fields
+//       (`segments`, `seed`, `gravity`, `frizz`) are pinned
+//       BEHAVIOURALLY through the chunk -- two scenes differing in one
+//       line, measured in the resulting groom.  Parsing alone only
+//       proves the DESCRIPTOR declares a parameter; it cannot catch a
+//       Finalize that drops it or reads the neighbouring one.
+//
+//    9. COMB AND THE ROOT TANGENT FRAME.  A constant comb painter
+//       sweeps every strand the SAME way and by the documented amount
+//       (a fraction of strand length, weighted t^2), across a base
+//       whose two triangles have different first edges -- which is the
+//       assertion that separates a UV-derived tangent frame from the
+//       per-triangle one, and that catches a sign flip in the decode.
+//       Red combs along +dP/du, green along the bitangent, and pure
+//       blue does nothing at all (it is a flow map, not a normal map).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -62,6 +88,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
+#include <utility>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -153,6 +181,25 @@ public:
 	bool HasPerChannelVariation() const override { return false; }
 };
 
+//! Density mask that keeps a NAMED half of the base UV domain, so the
+//! stream-keying test can mask out a chosen region and check that the
+//! survivors elsewhere did not move.
+class UVBandScalarPainter :
+	public virtual IScalarPainter,
+	public virtual Reference
+{
+protected:
+	const Scalar cut;
+	virtual ~UVBandScalarPainter() {}
+public:
+	explicit UVBandScalarPainter( Scalar cutU ) : cut( cutU ) {}
+	ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+	{
+		return ScalarTriple( ri.ptCoord.x < cut ? Scalar(0) : Scalar(1) );
+	}
+	bool HasPerChannelVariation() const override { return false; }
+};
+
 //! Constant scalar, for the length-multiplier slot.
 class ConstScalarPainter :
 	public virtual IScalarPainter,
@@ -167,6 +214,18 @@ public:
 	bool HasPerChannelVariation() const override { return false; }
 };
 
+//! A constant RGB colour painter for the `comb` slot.  This is the
+//! SHIPPING UniformColorPainter rather than a test-local stub, because
+//! the comb decode reads `GetColor` and the point of the test is that
+//! the value an author writes in a `uniformcolor_painter` chunk means
+//! what the descriptor says it means.
+IPainter* MakeConstColorPainter( const double r, const double g, const double b )
+{
+	IPainter* p = 0;
+	if( !RISE_API_CreateUniformColorPainter( &p, RISEPel( r, g, b ) ) ) { return 0; }
+	return p;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Base-geometry fixtures
 //////////////////////////////////////////////////////////////////////
@@ -175,6 +234,13 @@ public:
 //! UV == (x, y).  Making the UV equal the position is what lets the
 //! density test assert on ROOT POSITIONS while the painter is really
 //! reading UVs.
+//!
+//! It is also the fixture the COMB test needs, because its two
+//! triangles have DELIBERATELY DIFFERENT FIRST EDGES: (0,0)->(1,0) for
+//! the lower one and (0,0)->(1,1) for the upper.  An edge-derived
+//! tangent frame therefore differs by 45 degrees between them while a
+//! UV-derived one (dP/du = (1,0,0) on both, since UV == position) does
+//! not -- which is exactly the difference group 9 measures.
 ITriangleMeshGeometryIndexed* MakeUnitQuad()
 {
 	ITriangleMeshGeometryIndexed* m = 0;
@@ -236,9 +302,76 @@ ITriangleMeshGeometryIndexed* MakeNineToOne()
 	return m;
 }
 
+//! THREE well-separated square islands in the z = 0 plane (side
+//! `side`, origins `gap` apart along +x), normals +Z, per-island UV.
+//! The clump test grows on this so that a clump cell of side gap/2
+//! contains exactly one island: a strand's own clump centre is then a
+//! near neighbour and every OTHER group's centre is `gap` away, which
+//! is what makes "did it converge on the right centre" a question with
+//! two visibly different answers.
+ITriangleMeshGeometryIndexed* MakeThreeIslands( const double side, const double gap )
+{
+	ITriangleMeshGeometryIndexed* m = 0;
+	if( !RISE_API_CreateTriangleMeshGeometryIndexed( &m, true, false ) || !m ) {
+		return 0;
+	}
+	m->BeginIndexedTriangles();
+	for( int i = 0; i < 3; ++i ) {
+		const double x0 = (double)i * gap;
+		m->AddVertex( Point3( x0,        0,    0 ) );
+		m->AddVertex( Point3( x0 + side, 0,    0 ) );
+		m->AddVertex( Point3( x0 + side, side, 0 ) );
+		m->AddVertex( Point3( x0,        side, 0 ) );
+		for( int k = 0; k < 4; ++k ) { m->AddNormal( Vector3( 0, 0, 1 ) ); }
+		m->AddTexCoord( Point2( 0, 0 ) );
+		m->AddTexCoord( Point2( 1, 0 ) );
+		m->AddTexCoord( Point2( 1, 1 ) );
+		m->AddTexCoord( Point2( 0, 1 ) );
+
+		const int v = i * 4;
+		IndexedTriangle t;
+		t.iVertices[0] = v+0; t.iVertices[1] = v+1; t.iVertices[2] = v+2;
+		t.iNormals[0]  = v+0; t.iNormals[1]  = v+1; t.iNormals[2]  = v+2;
+		t.iCoords[0]   = v+0; t.iCoords[1]   = v+1; t.iCoords[2]   = v+2;
+		m->AddIndexedTriangle( t );
+		t.iVertices[0] = v+0; t.iVertices[1] = v+2; t.iVertices[2] = v+3;
+		t.iNormals[0]  = v+0; t.iNormals[1]  = v+2; t.iNormals[2]  = v+3;
+		t.iCoords[0]   = v+0; t.iCoords[1]   = v+2; t.iCoords[2]   = v+3;
+		m->AddIndexedTriangle( t );
+	}
+	m->DoneIndexedTriangles();
+	return m;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Groom helpers
 //////////////////////////////////////////////////////////////////////
+
+//! The PRODUCTION cell key, mirrored: a 3-integer tuple with
+//! lexicographic ordering, exactly what HairGenerator.cpp's `CellKey`
+//! is.  Deliberately NOT a hash-combine of the three coordinates into
+//! one integer -- that is what this test used to do, and it can collide
+//! two genuinely different cells into one, which would silently weaken
+//! every assertion built on the partition.
+struct TestCellKey
+{
+	long long x, y, z;
+	bool operator<( const TestCellKey& o ) const
+	{
+		if( x != o.x ) return x < o.x;
+		if( y != o.y ) return y < o.y;
+		return z < o.z;
+	}
+};
+
+TestCellKey MakeTestCellKey( const Point3& p, const double cell )
+{
+	TestCellKey k;
+	k.x = (long long)floor( (double)p.x / cell );
+	k.y = (long long)floor( (double)p.y / cell );
+	k.z = (long long)floor( (double)p.z / cell );
+	return k;
+}
 
 //! The plain, unstyled recipe every group starts from: straight quills
 //! along the surface normal, no painters, nothing enabled.
@@ -473,7 +606,7 @@ static void RunRootPlacement()
 
 static void RunDensityMask()
 {
-	std::cout << "=== 3. Density mask ===" << std::endl;
+	std::cout << "=== 3. Density mask and stream keying ===" << std::endl;
 
 	Owned<ITriangleMeshGeometryIndexed> base( MakeUnitQuad() );
 	Owned<UVStepScalarPainter> density( new UVStepScalarPainter() );
@@ -500,6 +633,62 @@ static void RunDensityMask()
 	Check( g->numStrands() > 0, "the unmasked half still grows hair" );
 	Check( fabs( (double)g->numStrands() - 0.5*(double)N ) < 5.0*sd,
 	       "`count` is a PRE-mask budget: about half the candidates survive a half-masked painter" );
+
+	// -- STREAM KEYING.  Editing `density` must not re-roll the strands
+	//    it does not remove.  This is the property that makes grooming
+	//    iterative: an author paints a bald patch over one ear, and the
+	//    hair on the other ear must not move.  It only holds because
+	//    each candidate's placement draws come from a stream keyed on
+	//    its OWN ordinal; a single stream walked across the loop would
+	//    make every strand's position depend on how many draws the
+	//    candidates before it happened to consume, and binding a density
+	//    painter at all changes that count (three draws per candidate
+	//    become four).
+	HairGroomRecipe rNone = PlainRecipe( base.get(), N );		// no density painter
+	Owned<HairGeometry> none( BuildAndRealize( rNone ) );
+
+	Owned<ConstScalarPainter> ones( new ConstScalarPainter( 1.0 ) );
+	HairGroomRecipe rOnes = PlainRecipe( base.get(), N );
+	rOnes.pDensity = ones.get();								// bound, but rejects nothing
+	Owned<HairGeometry> neutral( BuildAndRealize( rOnes ) );
+
+	if( !none || !neutral ) { Check( false, "unmasked and neutral-density grooms built" ); return; }
+
+	Check( none->numStrands() == N, "the unmasked groom keeps every candidate" );
+	Check( GroomsIdentical( *none, *neutral ),
+	       "MONEY: BINDING a density painter that rejects nothing changes nothing -- "
+	       "not one strand moves, though it consumes an extra draw per candidate" );
+
+	// Every survivor of the MASKED groom must be bit-identical to its
+	// counterpart in the unmasked one.  Matched by root position, which
+	// is unique per candidate and compares exactly (identical bits, not
+	// nearby values, is the whole claim).
+	std::map<std::pair<double,double>, unsigned int> byRoot;
+	for( unsigned int s = 0; s < none->numStrands(); ++s ) {
+		const Point3 root = none->ControlPoint( s, 0 );
+		byRoot[ std::make_pair( (double)root.x, (double)root.y ) ] = s;
+	}
+	unsigned int matched = 0, unmatched = 0, drifted = 0;
+	for( unsigned int s = 0; s < g->numStrands(); ++s ) {
+		const Point3 root = g->ControlPoint( s, 0 );
+		std::map<std::pair<double,double>, unsigned int>::const_iterator it =
+			byRoot.find( std::make_pair( (double)root.x, (double)root.y ) );
+		if( it == byRoot.end() ) { ++unmatched; continue; }
+		++matched;
+		const unsigned int t = it->second;
+		if( g->numControlPointsOfStrand( s ) != none->numControlPointsOfStrand( t ) ) { ++drifted; continue; }
+		for( unsigned int k = 0; k < g->numControlPointsOfStrand( s ); ++k ) {
+			const Point3 a = g->ControlPoint( s, k );
+			const Point3 b = none->ControlPoint( t, k );
+			if( !( a.x == b.x && a.y == b.y && a.z == b.z ) ) { ++drifted; break; }
+		}
+	}
+	std::cout << "  survivors matched / drifted: " << matched << " / " << drifted << std::endl;
+	Check( unmatched == 0,
+	       "every strand the mask kept exists at the identical root in the unmasked groom" );
+	Check( matched > 0 && drifted == 0,
+	       "MONEY: masking out half the candidates leaves the OTHER half BIT-IDENTICAL "
+	       "(placement is keyed per candidate, so a density edit is local)" );
 }
 
 // ============================================================
@@ -596,16 +785,12 @@ static void RunClumping()
 	// side `clump_size`; each occupied cell's LOWEST-INDEX strand is
 	// that cell's centre.  Roots are identical in both grooms (clumping
 	// never moves a root), so one assignment serves both.
-	std::map<long long, unsigned int> centreOfCell;
+	std::map<TestCellKey, unsigned int> centreOfCell;
 	std::vector<unsigned int> centre( off->numStrands(), 0 );
 	std::vector<bool> hasCentre( off->numStrands(), false );
 	for( unsigned int s = 0; s < off->numStrands(); ++s ) {
-		const Point3 root = off->ControlPoint( s, 0 );
-		const long long cx = (long long)floor( (double)root.x / (double)kCell );
-		const long long cy = (long long)floor( (double)root.y / (double)kCell );
-		const long long cz = (long long)floor( (double)root.z / (double)kCell );
-		const long long key = ( cx * 73856093LL ) ^ ( cy * 19349663LL ) ^ ( cz * 83492791LL );
-		std::map<long long, unsigned int>::const_iterator it = centreOfCell.find( key );
+		const TestCellKey key = MakeTestCellKey( off->ControlPoint( s, 0 ), (double)kCell );
+		std::map<TestCellKey, unsigned int>::const_iterator it = centreOfCell.find( key );
 		if( it == centreOfCell.end() ) { centreOfCell[key] = s; }
 		else if( it->second != s )     { centre[s] = it->second; hasCentre[s] = true; }
 	}
@@ -644,6 +829,103 @@ static void RunClumping()
 	} else {
 		Check( false, "clump_size = 0 groom built" );
 	}
+
+	// ---------------------------------------------------------------
+	//  THE PARTITION ITSELF, on three well-separated islands.
+	//
+	//  "Tips got closer to their centre" is satisfied by any scheme
+	//  that pulls tips together, INCLUDING the index-strided one the
+	//  design explicitly rejects (every Nth generated root is a centre
+	//  -- which, because roots come out of an area-weighted sampler,
+	//  would pull strands across the entire surface).  Three islands
+	//  `kGap` apart make the two schemes give visibly different
+	//  answers, and the assertion is the EXACT documented target rather
+	//  than an inequality: a clumped tip is a lerp of `clump` from its
+	//  own tip toward its OWN cell centre's tip, so its distance to
+	//  that centre must come out at exactly (1 - clump) of what it was.
+	// ---------------------------------------------------------------
+	{
+		const double kSide  = 0.2;
+		const double kGap   = 10.0;
+		const double kCell3 = 5.0;			// >> island, << gap: one cell per island
+		const double kClump = 0.6;
+
+		Owned<ITriangleMeshGeometryIndexed> islands( MakeThreeIslands( kSide, kGap ) );
+		if( !islands ) { Check( false, "three-island base built" ); return; }
+
+		HairGroomRecipe ri = PlainRecipe( islands.get(), 600, 8 );
+		ri.p.frizz = 0.4;					// so tips are not already coincident
+		Owned<HairGeometry> before( BuildAndRealize( ri ) );
+		ri.p.clump     = kClump;
+		ri.p.clumpSize = kCell3;
+		Owned<HairGeometry> after( BuildAndRealize( ri ) );
+		if( !before || !after ) { Check( false, "three-island grooms built" ); return; }
+
+		std::map<TestCellKey, unsigned int> cells;
+		std::vector<unsigned int> own( before->numStrands(), 0 );
+		std::vector<bool> owned( before->numStrands(), false );
+		for( unsigned int s = 0; s < before->numStrands(); ++s ) {
+			const TestCellKey key = MakeTestCellKey( before->ControlPoint( s, 0 ), kCell3 );
+			std::map<TestCellKey, unsigned int>::const_iterator it = cells.find( key );
+			if( it == cells.end() ) { cells[key] = s; }
+			else if( it->second != s ) { own[s] = it->second; owned[s] = true; }
+		}
+		std::cout << "  island cells occupied      : " << cells.size() << std::endl;
+		Check( cells.size() == 3,
+		       "three separated islands, one clump cell each (the documented spatial partition)" );
+
+		// The centres themselves are never touched.
+		unsigned int centresMoved = 0;
+		for( std::map<TestCellKey, unsigned int>::const_iterator it = cells.begin(); it != cells.end(); ++it ) {
+			if( Point3Ops::Distance( StrandTip( *before, it->second ), StrandTip( *after, it->second ) ) != 0.0 ) {
+				++centresMoved;
+			}
+		}
+		Check( centresMoved == 0, "a clump centre is never itself pulled" );
+
+		// EXACT per-cell lerp target, and no cross-island attraction.
+		double worstTargetErr = 0;
+		double worstCrossRatio = 0;			// smallest on/off ratio to a FOREIGN centre
+		bool   haveCross = false;
+		unsigned int nOwned = 0;
+		for( unsigned int s = 0; s < before->numStrands(); ++s ) {
+			if( !owned[s] ) continue;
+			++nOwned;
+			const Point3 cTip = StrandTip( *before, own[s] );
+			const double dOff = Point3Ops::Distance( StrandTip( *before, s ), cTip );
+			const double dOn  = Point3Ops::Distance( StrandTip( *after,  s ), cTip );
+			worstTargetErr = std::max( worstTargetErr, fabs( dOn - ( 1.0 - kClump ) * dOff ) );
+
+			// ... and against every OTHER island's centre, the distance
+			//     must be essentially unchanged: the pull is local.
+			for( std::map<TestCellKey, unsigned int>::const_iterator it = cells.begin(); it != cells.end(); ++it ) {
+				if( it->second == own[s] ) continue;
+				const Point3 fTip = StrandTip( *before, it->second );
+				const double fOff = Point3Ops::Distance( StrandTip( *before, s ), fTip );
+				const double fOn  = Point3Ops::Distance( StrandTip( *after,  s ), fTip );
+				if( fOff > 0 ) {
+					const double ratio = fOn / fOff;
+					if( !haveCross || ratio < worstCrossRatio ) { worstCrossRatio = ratio; haveCross = true; }
+				}
+			}
+		}
+		std::cout << "  clumped strands (islands)  : " << nOwned << std::endl;
+		std::cout << "  worst |d_on - (1-c)*d_off| : " << worstTargetErr << std::endl;
+		std::cout << "  worst cross-island ratio   : " << worstCrossRatio << std::endl;
+
+		Check( nOwned > 100, "the island fixture actually put many strands into shared cells" );
+		// The tolerance is float-storage quantisation, not slack: the
+		// third island sits at x ~ 20, where a float coordinate carries
+		// ~2e-6 of quantisation, and three independently-quantised
+		// points enter each distance.  The signal it has to separate is
+		// enormous by comparison -- converging on the WRONG island's
+		// centre would miss by ~10 scene units.
+		Check( worstTargetErr < 5e-5,
+		       "MONEY: a clumped tip lands EXACTLY `clump` of the way to its OWN cell centre's tip" );
+		Check( haveCross && worstCrossRatio > 0.95,
+		       "MONEY: no strand converges on a FOREIGN island's centre -- the partition is spatial, "
+		       "not index-strided" );
+	}
 }
 
 // ============================================================
@@ -676,17 +958,82 @@ static void RunFrizzAndCurl()
 		Check( worstLateral < 1e-9, "with every styling knob off, strands grow straight along the normal" );
 	}
 
-	// Explicit zeros reproduce the baseline EXACTLY -- the effects are
-	// skipped, not applied at zero amplitude through a path that would
-	// still perturb the stream.
+	// CROSS-EFFECT STREAM ISOLATION.  Adding gravity to an ALREADY
+	// FRIZZED groom must displace every control point by exactly the
+	// documented gravity term -- world -Y, gravity * length * t^2 --
+	// and by nothing else.  Two things fail at once if it does not: the
+	// gravity formula, and the independence of the effects (a gravity
+	// path that drew from, or perturbed, the frizz stream would shift
+	// the jitter as well, showing up as a non-zero x / z delta).
+	//
+	// This replaces an earlier check that set frizz / curl / gravity /
+	// clump explicitly to 0.0 and asserted the groom matched the
+	// baseline.  That check could not fail: the baseline recipe already
+	// held those defaults, so it compared two BYTE-IDENTICAL recipes and
+	// re-tested nothing but group 1's determinism.
+	{
+		HairGroomRecipe rf = plain;
+		rf.p.frizz = 0.5;
+		HairGroomRecipe rg = rf;
+		rg.p.gravity = 0.3;
+
+		Owned<HairGeometry> f( BuildAndRealize( rf ) );
+		Owned<HairGeometry> fg( BuildAndRealize( rg ) );
+		if( !f || !fg ) { Check( false, "frizz and frizz+gravity grooms built" ); return; }
+
+		Check( f->numStrands() == fg->numStrands(), "adding gravity does not change the strand count" );
+
+		double worstLateral = 0;			// x / z must not move at all
+		double worstDropErr = 0;			// y must move by exactly the gravity term
+		for( unsigned int s = 0; s < f->numStrands() && s < fg->numStrands(); ++s ) {
+			const unsigned int n = f->numControlPointsOfStrand( s );
+			for( unsigned int k = 0; k < n; ++k ) {
+				const Point3 a = f->ControlPoint( s, k );
+				const Point3 b = fg->ControlPoint( s, k );
+				const double t = (double)k / (double)( n - 1 );
+				const double expectedDrop = rg.p.gravity * rg.p.length * t * t;
+				worstLateral = std::max( worstLateral,
+					std::max( fabs( (double)b.x - (double)a.x ), fabs( (double)b.z - (double)a.z ) ) );
+				worstDropErr = std::max( worstDropErr,
+					fabs( ( (double)a.y - (double)b.y ) - expectedDrop ) );
+			}
+		}
+		std::cout << "  gravity: worst lateral drift: " << worstLateral << std::endl;
+		std::cout << "  gravity: worst drop error   : " << worstDropErr << std::endl;
+		Check( worstLateral < 1e-7,
+		       "MONEY: gravity does not disturb the frizz stream (x and z are untouched)" );
+		Check( worstDropErr < 1e-6,
+		       "MONEY: gravity drops every control point by exactly gravity * length * t^2 in world -Y" );
+	}
+
+	// PER-STRAND JITTER INDEPENDENCE.  Each strand's frizz comes from
+	// its own stream, keyed on its own ordinal.  A single stream shared
+	// across the groom, or a stream keyed on something constant, would
+	// give every strand the SAME jitter -- which reads as a coherent
+	// wave through the whole coat rather than as roughness, and which
+	// no "frizz moves the strands" assertion can see.
 	{
 		HairGroomRecipe r = plain;
-		r.p.frizz = 0.0; r.p.curlRadius = 0.0; r.p.curlStep = 0.0;
-		r.p.gravity = 0.0; r.p.clump = 0.0; r.p.clumpSize = 0.0;
-		Owned<HairGeometry> z( BuildAndRealize( r ) );
-		if( !z ) { Check( false, "all-zero groom built" ); return; }
-		Check( GroomsIdentical( *baseline, *z ),
-		       "MONEY: explicitly-zero frizz / curl / gravity / clump reproduce the baseline BIT-IDENTICALLY" );
+		r.p.frizz = 0.5;
+		Owned<HairGeometry> f( BuildAndRealize( r ) );
+		if( !f ) { Check( false, "jitter-independence groom built" ); return; }
+
+		// At a fixed segment index the ONLY thing separating two strands
+		// is their jitter draw: growth is along +Z from the root by the
+		// same arc on this flat base.
+		std::set< std::pair<double,double> > distinct;
+		const unsigned int kProbe = 1;
+		for( unsigned int s = 0; s < f->numStrands(); ++s ) {
+			if( f->numControlPointsOfStrand( s ) <= kProbe ) continue;
+			const Point3 root = f->ControlPoint( s, 0 );
+			const Point3 p    = f->ControlPoint( s, kProbe );
+			distinct.insert( std::make_pair( (double)p.x - (double)root.x,
+			                                 (double)p.y - (double)root.y ) );
+		}
+		std::cout << "  distinct jitters at cp 1   : " << distinct.size()
+		          << " of " << f->numStrands() << " strands" << std::endl;
+		Check( distinct.size() > f->numStrands() / 2,
+		       "MONEY: frizz is drawn PER STRAND -- strands at the same segment index jitter differently" );
 	}
 
 	// Frizz moves control points, but never the root.
@@ -853,8 +1200,15 @@ static void RunChunk()
 		safe_release( job );
 	}
 
-	// -- a fully-styled chunk parses (every optional parameter exercised
-	//    at once, so a descriptor/Finalize name mismatch cannot hide).
+	// -- a fully-styled chunk parses, with every optional parameter bound
+	//    at once.  This proves each field is DECLARED (an undeclared one
+	//    is a hard parse error) and that a full styling set resolves its
+	//    painter references and grows a groom.  It does NOT prove
+	//    Finalize reads any of them under the declared name -- a dropped
+	//    or transposed `bag.Get*` parses exactly as cleanly.  The
+	//    behavioural probes below cover `segments`, `seed`, `gravity` and
+	//    `frizz`; the rest are pinned through the direct recipe API in
+	//    groups 3-6 and 9 instead.
 	{
 		IJobPriv* job = 0;
 		if( !RISE_CreateJobPriv( &job ) || !job ) { Check( false, "job created (styled)" ); return; }
@@ -881,23 +1235,26 @@ static void RunChunk()
 		safe_release( job );
 	}
 
-	// -- `segments` and `seed` REACH the generator through the chunk.
-	//    Parsing successfully only proves the DESCRIPTOR declares a
-	//    parameter; it does not prove Finalize reads it under the same
-	//    name (a typo there would silently keep the default forever).
-	//    These two are observable in the resulting groom, so they pin
-	//    the descriptor-to-Finalize name agreement behaviourally.
+	// -- FOUR fields REACH the generator through the chunk.  Parsing
+	//    successfully only proves the DESCRIPTOR declares a parameter; it
+	//    does not prove Finalize reads it under the same name, nor that
+	//    it hands it to the right `HairGroomParams` slot -- a typo would
+	//    silently keep the default forever, and a transposition (frizz
+	//    into gravity) would parse just as happily.  Each probe below
+	//    grows two grooms from scenes differing in exactly ONE LINE and
+	//    measures the difference in the resulting strands, which is the
+	//    only construction that catches either failure.
 	{
-		auto GroomWith = []( const char* tag, const std::string& base,
+		auto GroomWith = []( const char* tag, const std::string& base, const std::string& extra,
 		                     unsigned segments, unsigned seed,
-		                     std::vector<Point3>& outTips, unsigned& outCPs ) -> bool {
+		                     std::vector<Point3>& outPoints, unsigned& outCPs ) -> bool {
 			IJobPriv* job = 0;
 			if( !RISE_CreateJobPriv( &job ) || !job ) { return false; }
 			std::ostringstream oss;
 			oss << base
 			    << "hair_geometry\n{\n\tname\tg\n\tbase_geometry\tcc_base\n"
 			    << "\tcount\t120\n\tlength\t0.1\n\tsegments\t" << segments
-			    << "\n\tseed\t" << seed << "\n}\n";
+			    << "\n\tseed\t" << seed << "\n" << extra << "}\n";
 			bool good = false;
 			if( ParseBodyInto( tag, oss.str(), *job ) ) {
 				IGeometry* geom = job->GetGeometries() ? job->GetGeometries()->GetItem( "g" ) : 0;
@@ -905,29 +1262,84 @@ static void RunChunk()
 				if( hg ) {
 					hg->Realize();
 					outCPs = hg->numStrands() ? hg->numControlPointsOfStrand( 0 ) : 0;
-					for( unsigned s = 0; s < hg->numStrands(); ++s ) { outTips.push_back( StrandTip( *hg, s ) ); }
-					good = !outTips.empty();
+					for( unsigned s = 0; s < hg->numStrands(); ++s ) {
+						for( unsigned k = 0; k < hg->numControlPointsOfStrand( s ); ++k ) {
+							outPoints.push_back( hg->ControlPoint( s, k ) );
+						}
+					}
+					good = !outPoints.empty();
 				}
 			}
 			safe_release( job );
 			return good;
 		};
 
-		std::vector<Point3> tipsA, tipsB, tipsC;
+		// `segments` and `seed`.
+		std::vector<Point3> ptsA, ptsB, ptsC;
 		unsigned cpsA = 0, cpsB = 0, cpsC = 0;
-		const bool a = GroomWith( "seg4_seed1", kBase, 4, 1, tipsA, cpsA );
-		const bool b = GroomWith( "seg4_seed2", kBase, 4, 2, tipsB, cpsB );
-		const bool c = GroomWith( "seg9_seed1", kBase, 9, 1, tipsC, cpsC );
+		const bool a = GroomWith( "seg4_seed1", kBase, "", 4, 1, ptsA, cpsA );
+		const bool b = GroomWith( "seg4_seed2", kBase, "", 4, 2, ptsB, cpsB );
+		const bool c = GroomWith( "seg9_seed1", kBase, "", 9, 1, ptsC, cpsC );
 
 		Check( a && b && c, "the three seed/segments probe grooms all built" );
 		if( a && b && c ) {
 			Check( cpsA == 4 && cpsC == 9,
 			       "MONEY: `segments` reaches the generator through the chunk (4 and 9 control points per strand)" );
-			bool same = ( tipsA.size() == tipsB.size() );
-			for( size_t i = 0; same && i < tipsA.size(); ++i ) {
-				same = ( tipsA[i].x == tipsB[i].x && tipsA[i].y == tipsB[i].y && tipsA[i].z == tipsB[i].z );
+			bool same = ( ptsA.size() == ptsB.size() );
+			for( size_t i = 0; same && i < ptsA.size(); ++i ) {
+				same = ( ptsA[i].x == ptsB[i].x && ptsA[i].y == ptsB[i].y && ptsA[i].z == ptsB[i].z );
 			}
 			Check( !same, "MONEY: `seed` reaches the generator through the chunk (two seeds give different strands)" );
+		}
+
+		// `gravity`.  Two scenes differing in one line; every tip must
+		// end up measurably LOWER, and the roots must not move at all
+		// (gravity is a styling knob applied after placement).
+		std::vector<Point3> ptsG0, ptsG1;
+		unsigned cpsG0 = 0, cpsG1 = 0;
+		const bool g0 = GroomWith( "grav0", kBase, "\tgravity\t0.0\n", 6, 5, ptsG0, cpsG0 );
+		const bool g1 = GroomWith( "grav5", kBase, "\tgravity\t0.5\n", 6, 5, ptsG1, cpsG1 );
+		Check( g0 && g1 && ptsG0.size() == ptsG1.size() && cpsG0 == 6,
+		       "the two gravity probe grooms built with matching topology" );
+		if( g0 && g1 && ptsG0.size() == ptsG1.size() && cpsG0 == 6 ) {
+			unsigned notLower = 0, rootsMoved = 0;
+			double worstDrop = 0;
+			for( size_t i = 0; i < ptsG0.size(); ++i ) {
+				const unsigned k = (unsigned)( i % cpsG0 );
+				if( k == 0 ) {
+					if( Point3Ops::Distance( ptsG0[i], ptsG1[i] ) != 0.0 ) ++rootsMoved;
+				} else if( k == cpsG0 - 1 ) {
+					const double drop = (double)ptsG0[i].y - (double)ptsG1[i].y;
+					if( !( drop > 1e-6 ) ) ++notLower;
+					worstDrop = std::max( worstDrop, drop );
+				}
+			}
+			std::cout << "  gravity probe: largest tip drop: " << worstDrop << std::endl;
+			Check( rootsMoved == 0, "`gravity` through the chunk never moves a root" );
+			Check( notLower == 0,
+			       "MONEY: `gravity` reaches the generator through the chunk (every tip is measurably lower)" );
+		}
+
+		// `frizz`.  Same construction: one line's difference must show
+		// up in the control points, and again not in the roots.
+		std::vector<Point3> ptsF0, ptsF1;
+		unsigned cpsF0 = 0, cpsF1 = 0;
+		const bool f0 = GroomWith( "frizz0", kBase, "\tfrizz\t0.0\n", 6, 5, ptsF0, cpsF0 );
+		const bool f1 = GroomWith( "frizz3", kBase, "\tfrizz\t0.3\n", 6, 5, ptsF1, cpsF1 );
+		Check( f0 && f1 && ptsF0.size() == ptsF1.size() && cpsF0 == 6,
+		       "the two frizz probe grooms built with matching topology" );
+		if( f0 && f1 && ptsF0.size() == ptsF1.size() && cpsF0 == 6 ) {
+			unsigned rootsMoved = 0;
+			double worstDeviation = 0;
+			for( size_t i = 0; i < ptsF0.size(); ++i ) {
+				const double d = Point3Ops::Distance( ptsF0[i], ptsF1[i] );
+				if( (unsigned)( i % cpsF0 ) == 0 ) { if( d != 0.0 ) ++rootsMoved; }
+				else                               { worstDeviation = std::max( worstDeviation, d ); }
+			}
+			std::cout << "  frizz probe: largest deviation : " << worstDeviation << std::endl;
+			Check( rootsMoved == 0, "`frizz` through the chunk never moves a root" );
+			Check( worstDeviation > 1e-4,
+			       "MONEY: `frizz` reaches the generator through the chunk (control points deviate)" );
 		}
 	}
 
@@ -987,6 +1399,128 @@ static void RunChunk()
 }
 
 // ============================================================
+//  9. Comb and the root tangent frame
+// ============================================================
+
+static void RunComb()
+{
+	std::cout << "=== 9. Comb and the root tangent frame ===" << std::endl;
+
+	Owned<ITriangleMeshGeometryIndexed> base( MakeUnitQuad() );
+	if( !base ) { Check( false, "unit-quad base built" ); return; }
+
+	// The fixture's UV is exactly its position, so dP/du is (1,0,0)
+	// everywhere and the surface normal is +Z -- which makes the whole
+	// expected strand shape closed-form:
+	//
+	//     cp(k) = root + (0,0,1) * length * t  +  dWorld * length * t^2
+	//
+	// with dWorld the comb direction decoded from the painter's RGB.
+	// The t^2 weight is the documented tip weighting, and `length` is
+	// the documented magnitude scale (a unit-length d sweeps the tip a
+	// full strand-length).
+	const double kLen = 0.5;					// PlainRecipe's `length`
+
+	struct Case { const char* what; double r, g, b; double ex, ey, ez; };
+	const Case cases[] = {
+		// red = +1 along dP/du, the surface tangent
+		{ "red combs along +dP/du",      1.0, 0.5, 0.5,   1, 0, 0 },
+		// green = +1 along the bitangent, N x T = (0,0,1) x (1,0,0) = (0,1,0)
+		{ "green combs along the bitangent", 0.5, 1.0, 0.5,   0, 1, 0 },
+		// the opposite red combs the opposite way -- a sign flip in the
+		// 2*rgb-1 decode inverts this and nothing else
+		{ "0 0.5 0.5 combs along -dP/du", 0.0, 0.5, 0.5,  -1, 0, 0 },
+	};
+
+	for( size_t ci = 0; ci < sizeof(cases)/sizeof(cases[0]); ++ci )
+	{
+		const Case& C = cases[ci];
+		Owned<IPainter> comb( MakeConstColorPainter( C.r, C.g, C.b ) );
+		if( !comb ) { Check( false, "comb painter built" ); return; }
+
+		HairGroomRecipe r = PlainRecipe( base.get(), 400, 6 );
+		r.pComb = comb.get();
+		Owned<HairGeometry> g( BuildAndRealize( r ) );
+		if( !g ) { Check( false, "combed groom built" ); return; }
+
+		double worstErr = 0;
+		unsigned int lowerTri = 0, upperTri = 0;
+		double minTipAlong = 0;
+		bool   haveTip = false;
+		for( unsigned int s = 0; s < g->numStrands(); ++s ) {
+			const Point3 root = g->ControlPoint( s, 0 );
+			// Which of the two triangles this root sits on -- the split
+			// runs along y = x.  Both must be populated or the coherence
+			// claim below is vacuous.
+			( (double)root.y < (double)root.x ? lowerTri : upperTri )++;
+
+			const unsigned int n = g->numControlPointsOfStrand( s );
+			for( unsigned int k = 0; k < n; ++k ) {
+				const Point3 p = g->ControlPoint( s, k );
+				const double t = (double)k / (double)( n - 1 );
+				const double bend = kLen * t * t;
+				const double expX = C.ex * bend;
+				const double expY = C.ey * bend;
+				const double expZ = C.ez * bend + kLen * t;		// growth along +Z
+				worstErr = std::max( worstErr, fabs( (double)p.x - (double)root.x - expX ) );
+				worstErr = std::max( worstErr, fabs( (double)p.y - (double)root.y - expY ) );
+				worstErr = std::max( worstErr, fabs( (double)p.z - (double)root.z - expZ ) );
+			}
+			// The tip's displacement along the intended comb axis, so a
+			// sign flip is called out as a SIGN failure, not just as a
+			// large residual.
+			const Point3 tip = StrandTip( *g, s );
+			const double along = ( (double)tip.x - (double)root.x ) * C.ex
+			                   + ( (double)tip.y - (double)root.y ) * C.ey;
+			if( !haveTip || along < minTipAlong ) { minTipAlong = along; haveTip = true; }
+		}
+		std::cout << "  [" << C.what << "] worst error: " << worstErr
+		          << "  min tip displacement along the comb axis: " << minTipAlong
+		          << "  (" << lowerTri << " / " << upperTri << " strands per triangle)" << std::endl;
+
+		Check( lowerTri > 20 && upperTri > 20,
+		       std::string( "both triangles of the quad carry strands (" ) + C.what + ")" );
+		Check( haveTip && minTipAlong > 0.9 * kLen,
+		       std::string( "MONEY: the comb pushes the tip a full strand-length the RIGHT way -- " ) + C.what );
+		// One tolerance for every strand on BOTH triangles is what makes
+		// this a coherence assertion as well as a magnitude one: an
+		// edge-derived tangent frame differs by 45 degrees between the
+		// quad's two triangles, so half the strands would miss by
+		// ~0.3 * length -- five orders of magnitude outside this bound.
+		Check( worstErr < 1e-6,
+		       std::string( "MONEY: EVERY strand, on BOTH triangles, is combed by exactly "
+		                    "length * t^2 along one shared direction -- " ) + C.what );
+	}
+
+	// PURE BLUE IS NOT A COMB.  The encoding borrows the normal map's
+	// 2*rgb-1 remap and nothing else: the component along the normal is
+	// projected out, so a normal map's `flat` pixel 0.5 0.5 1.0 decodes
+	// to d = (0,0,1) and combs NOTHING.  Authors reach for a normal map
+	// here, so the behaviour is worth pinning rather than leaving to the
+	// descriptor's prose.
+	{
+		HairGroomRecipe rPlain = PlainRecipe( base.get(), 300, 6 );
+		Owned<HairGeometry> uncombed( BuildAndRealize( rPlain ) );
+
+		Owned<IPainter> blue( MakeConstColorPainter( 0.5, 0.5, 1.0 ) );
+		Owned<IPainter> grey( MakeConstColorPainter( 0.5, 0.5, 0.5 ) );
+		if( !uncombed || !blue || !grey ) { Check( false, "flow-map convention grooms built" ); return; }
+
+		HairGroomRecipe rBlue = rPlain;  rBlue.pComb = blue.get();
+		HairGroomRecipe rGrey = rPlain;  rGrey.pComb = grey.get();
+		Owned<HairGeometry> gBlue( BuildAndRealize( rBlue ) );
+		Owned<HairGeometry> gGrey( BuildAndRealize( rGrey ) );
+		if( !gBlue || !gGrey ) { Check( false, "flow-map convention grooms realized" ); return; }
+
+		Check( GroomsIdentical( *uncombed, *gGrey ),
+		       "neutral grey (0.5 0.5 0.5) is exactly no comb" );
+		Check( GroomsIdentical( *uncombed, *gBlue ),
+		       "MONEY: it is a FLOW map, not a normal map -- a normal map's flat pixel "
+		       "(0.5 0.5 1.0) combs nothing at all, because the blue channel is projected out" );
+	}
+}
+
+// ============================================================
 //  main
 // ============================================================
 
@@ -1002,6 +1536,7 @@ int main()
 	RunFrizzAndCurl();     std::cout << std::endl;
 	RunRealizeContract();  std::cout << std::endl;
 	RunChunk();            std::cout << std::endl;
+	RunComb();             std::cout << std::endl;
 
 	std::cout << "===== Summary =====" << std::endl;
 	std::cout << "checks run:    " << g_checks << std::endl;
