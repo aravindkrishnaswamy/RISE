@@ -1,7 +1,8 @@
 # Hair / Fur System Design — Scattering Model, Strand Geometry, and Phased Plan
 
-**Status:** PROPOSED — research + design record only; no code has landed.
-**Date:** 2026-08-25
+**Status:** PHASE 1 IMPLEMENTED (2026-08-27) — §7 Phase 1 complete through render validation;
+Phases 2-4 remain proposed.
+**Date:** 2026-08-25 (design); Phase 1 landed 2026-08-26/27.
 **Nature:** Decision document + phased execution plan, in the mold of
 [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey → scored candidates →
 recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (gated phases).
@@ -10,6 +11,28 @@ recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (
 [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) (scalar-vs-color pipe discipline),
 [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (integrator routing map), [OIDN.md](OIDN.md)
 (AOV contract), plus the external literature in §10.
+
+**Phase 1 slice history (2026-08-26/27), oldest to newest:**
+- `7dfe12e5` — Slice A: hair BSDF core (Chiang 2016 lobes, three colour tiers).
+- `ce22a7a2` — Slice B: `hair_material` registration end-to-end (API/Job/parser).
+- `d579bcfa` — Slice C1: `HairGeometry` curve primitive (strand storage, segment BVH, ribbon
+  intersection).
+- `27b33aed` — Slice C2: geometry-supplied fibre tangent honoured in `Object`/`CSGObject` ONB.
+- `bddb2307` — Slice D: painter-driven groom generator + `hair_geometry` chunk.
+- `fb092712` — Slice D review-round fixes (UV-derived comb frame, stream keying, suite gaps).
+- Slice E (this closeout) — render-level regression scenes (`scenes/Tests/Hair/`),
+  `tests/HairRenderTest.cpp`, and this docs closeout.
+
+**Standing residuals carried forward (not blocking Phase 1, tracked for Phase 2+):**
+- NEE cannot reach hair's transmissive hemisphere (`LightSampler` rejects
+  `dot(wToLight, vNormal) <= 0`; TT-lobe energy from a delta/point light is only reachable via
+  BSDF sampling) — §4/§6.2, `HairBSDF.h` section 5.
+- `NormalMap`/`BumpMap` modifiers unconditionally rebuild the ONB from the perturbed normal alone,
+  discarding any incoming fibre tangent — hair is incompatible with `bump_map`/`normal_map` until
+  those two modifiers are fixed the way `GlintModifier` already is (§4.1).
+- Windows (VS2022), Android (NDK/Gradle), and Xcode build-project files were updated with every
+  new source file across all slices but have not been compiled this arc — only the Linux/macOS
+  `make` build and its test suite have been gated.
 
 ---
 

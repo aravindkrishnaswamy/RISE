@@ -167,6 +167,10 @@ scenes/Tests/Geometry/vertex_colors_quad_pt_spectral.RISEscene  d2cbbccc5b4442c5
 scenes/Tests/Geometry/vertex_colors_quad_vcm.RISEscene  4ec355fd84565a2016e14b78988b3ed1587727c83d356353b427dcb7775a2354  632  21
 scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene  d2cbbccc5b4442c5feab8f2851224ebb0bda02e658a126b61636928f59e3b116  632  21
 scenes/Tests/GlobalIllumination/cornellbox_fg.RISEscene  04634d1ec669bcc083b593e7605a8f2aff455db3c8ef18b0458545aaba666698  2129  47
+scenes/Tests/Hair/hair_backlit_tt.RISEscene  a1c869052201b92e150213b1f9034591402b517ee8f68e516aee80d6a257729a  730  25
+scenes/Tests/Hair/hair_furnace.RISEscene  9288bb97f1633ec68e9c56939922cfe435bf53954f12a4a0cf32723e51a0c533  514  21
+scenes/Tests/Hair/hair_melanin_ladder.RISEscene  d164e4aedd33dc7359e428d713f5d47a2a23d053e859868cfd102fd000d855aa  883  27
+scenes/Tests/Hair/hair_styled.RISEscene  f94f50bdf14f999bb51a455f91db6d17872b108d7f6c5bd475a40b63b07ea440  821  23
 scenes/Tests/Importers/gltf_helmet_light_control.RISEscene  ecd11a14f4c48c135d1919dc68c02f9bad094830a29d85cfc9d94e24172e24c2  751  22
 scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene  17b155bb6d76064ae6738ad64e166a155969bca06e6cdd3b8db0c572ffb36261  5751  143
 scenes/Tests/Importers/gltf_import_attenuation.RISEscene  dcc4d6866b829f0cec8e06f0a5ce6a4b9686dd6d3499714f581135ee2a5f88bf  9188  166

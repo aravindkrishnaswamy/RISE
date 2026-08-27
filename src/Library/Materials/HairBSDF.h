@@ -262,17 +262,22 @@
 //    final_gather_shaderop / arealight_shaderop; gating hair out of
 //    those ops at the shader-op level, if it becomes a real complaint,
 //    is future work, not part of this slice.
-//  * REGRESSION SCENE -- PARTIALLY UNBLOCKED as of Slice B (registration:
-//    RISE_API_CreateHairMaterial / Job::AddHairMaterial / the
-//    `hair_material` chunk parser).  `scenes/Tests/ChunkCoverage/
-//    cc_hair_material.RISEscene` exists and parses + registers a
-//    material bound to a sphere.  MATERIALS.md section 9's real
-//    per-BSDF regression scene (visible strand-level renders exercising
-//    the lobes at grazing/backlit angles) still needs actual fibre
-//    geometry to bind to and remains BLOCKED on `hair_geometry`
-//    (docs/HAIR_FUR_DESIGN.md section 5).  HairBSDFTest.cpp carries the
-//    numeric coverage and HairMaterialChunkTest.cpp the registration
-//    coverage in the meantime.
+//  * REGRESSION SCENE -- RESOLVED as of Slice E (this file's docs
+//    closeout).  `scenes/Tests/Hair/` now carries the real per-BSDF,
+//    render-level regression scenes MATERIALS.md section 9 asked for:
+//    `hair_furnace.RISEscene` (sigma_a=0 energy-conservation gate),
+//    `hair_melanin_ladder.RISEscene` (three grooms differing only in
+//    eumelanin), `hair_backlit_tt.RISEscene` (light behind the groom,
+//    exercising the TT rim and the documented NEE-transmissive-
+//    hemisphere limitation below), and `hair_styled.RISEscene`
+//    (comb/clump/curl/frizz through the parser).  `tests/
+//    HairRenderTest.cpp` renders the equivalent recipes in-process and
+//    asserts on the resulting images (white furnace, HWSS invariant,
+//    melanin-ladder monotonicity, and a loose-tolerance PT-vs-BDPT
+//    sanity check citing the reciprocity caveat above).  The earlier
+//    `scenes/Tests/ChunkCoverage/cc_hair_material.RISEscene` fixture,
+//    HairBSDFTest.cpp's numeric coverage, and HairMaterialChunkTest.cpp's
+//    registration coverage remain in place unchanged.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: August 26, 2026

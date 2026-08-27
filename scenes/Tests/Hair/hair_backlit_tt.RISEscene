@@ -1,0 +1,155 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           hair_backlit_tt.RISEscene                                                              #
+#   Description:    BACKLIT TT REGIME.  The dominant light source is an emissive panel BEHIND the groom    #
+#                    relative to the camera (panel at z=-2, camera at z=+4, groom at the origin) -- the     #
+#                    classic photograph-of-hair-against-the-sun setup that makes the TT (p=1, two           #
+#                    transmissions) lobe visible as a bright rim, distinct from the R (p=0, surface          #
+#                    reflection) highlight a front-lit groom shows instead.                                 #
+#                                                                                                           #
+#                    KNOWN LIMITATION THIS SCENE EXERCISES (docs/HAIR_FUR_DESIGN.md section 4/HairBSDF.h    #
+#                    section 5, "NEE CANNOT REACH THE TRANSMISSIVE HALF"): `LightSampler` rejects any        #
+#                    shadow direction with dot(wToLight, vNormal) <= 0, so next-event estimation can never  #
+#                    sample the TT lobe's far-side exit direction -- it is geometrically on the wrong side  #
+#                    of the shading normal's hemisphere test even though the fibre genuinely transmits      #
+#                    there.  ALL of the rim light in this render therefore arrives via BSDF SAMPLING        #
+#                    (PT's indirect bounce hitting the emissive panel directly), not NEE, which is           #
+#                    noisier per sample than a reachable NEE lobe would be.  This is an integrator-level     #
+#                    limitation, not a material bug -- the scene's purpose is to confirm the rim EXISTS      #
+#                    (BSDF sampling carries the energy) at a workable sample count, not to be a noise-free   #
+#                    reference.  `rr_min_depth` is raised so the multi-bounce paths that reach the panel     #
+#                    through several strands survive Russian roulette long enough to matter.                #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      August 27, 2026                                                                         #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+film
+{
+	width			64
+	height			64
+}
+
+pinhole_camera
+{
+	location		0 0 4.0
+	lookat			0 0 0
+	up			0 1 0
+	fov			28.0
+}
+
+##################################################
+# A very dim uniform env keeps the camera-facing side of the groom
+# above pure black so its own (non-rim) colour is legible; it is far
+# too weak to compete with the backlight for the rim itself.
+##################################################
+uniformcolor_painter
+{
+	name			pnt_fill
+	color			0.03 0.03 0.03
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			128
+	rr_min_depth		12
+	radiance_map		pnt_fill
+	radiance_scale		1.0
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/hair_backlit_tt
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# Groom: neutral brown (Tier 1, mid eumelanin) so the rim shows real
+# fibre colour rather than a pure-white furnace throughput.
+##################################################
+scalar_painter
+{
+	name			pnt_eumel
+	value			0.6
+}
+
+hair_material
+{
+	name			mat_hair
+	eumelanin		pnt_eumel
+}
+
+sphere_geometry
+{
+	name			scalp
+	radius			1.0
+}
+
+hair_geometry
+{
+	name			groom
+	base_geometry		scalp
+	count			2500
+	segments		6
+	length			0.24
+	width_root		0.03
+	width_tip		0.01
+	base_detail		20
+	seed			11
+}
+
+standard_object
+{
+	name			groom_obj
+	geometry		groom
+	material		mat_hair
+	position		0 0 0
+}
+
+##################################################
+# The backlight: an emissive panel at z=-2, BEHIND the groom as seen
+# from the camera at z=+4.  Winding is chosen so the panel's normal
+# (cross(ptb-pta, ptd-pta)) faces +z -- toward the groom and camera --
+# matching the `facing`-only single-sided area-light convention
+# documented in scenes/Tests/Lights/rect_light_sidedness.RISEscene.
+##################################################
+uniformcolor_painter
+{
+	name			pnt_sun
+	color			1.0 0.96 0.9
+}
+
+lambertian_luminaire_material
+{
+	name			mat_sun
+	exitance		pnt_sun
+	scale			30.0
+	material		none
+}
+
+clippedplane_geometry
+{
+	name			sun_geom
+	pta			-1.6  1.6 -2.0
+	ptb			-1.6 -1.6 -2.0
+	ptc			 1.6 -1.6 -2.0
+	ptd			 1.6  1.6 -2.0
+}
+
+standard_object
+{
+	name			sun_obj
+	geometry		sun_geom
+	material		mat_sun
+}

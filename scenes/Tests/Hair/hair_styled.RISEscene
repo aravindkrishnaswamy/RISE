@@ -1,0 +1,137 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           hair_styled.RISEscene                                                                  #
+#   Description:    GROOMING SHOWCASE.  One groom on a sphere patch with every styling field of             #
+#                    `hair_geometry` bound at once and away from its inert default: `comb` sweeps the       #
+#                    strands sideways via a tangent-space direction painter, `clump`/`clump_size` gather    #
+#                    them into locks, `curl_radius`/`curl_step` superpose a helix, `frizz` breaks up the    #
+#                    machine-perfect look, and `gravity` droops the tips.  `segments 12` gives the curls    #
+#                    enough control points to read as smooth curves rather than polylines (the             #
+#                    descriptor's own guidance: 8-16 for a strong comb/curl).  This is the end-to-end       #
+#                    exercise of the groom GENERATOR through the ASCII PARSER (as opposed to                #
+#                    cc_hair_geometry.RISEscene, which is a minimal parse/golden-coverage fixture, or       #
+#                    HairGeneratorTest.cpp's direct-recipe-API behavioural checks) -- a visible, renderable #
+#                    proof that comb+clump+curl+frizz compose correctly when authored through the scene     #
+#                    language rather than constructed in C++.                                               #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      August 27, 2026                                                                         #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+film
+{
+	width			96
+	height			96
+}
+
+pinhole_camera
+{
+	location		1.4 1.0 3.4
+	lookat			0 0.1 0
+	up			0 1 0
+	fov			34.0
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			48
+	rr_min_depth		10
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/hair_styled
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# Groom material: mid-brown melanin, default roughness.
+##################################################
+scalar_painter
+{
+	name			pnt_eumel
+	value			0.9
+}
+
+hair_material
+{
+	name			mat_hair
+	eumelanin		pnt_eumel
+}
+
+sphere_geometry
+{
+	name			scalp
+	radius			1.0
+}
+
+##################################################
+# comb: RGB encodes a tangent-space direction d = 2*rgb - 1.  0.85 0.5
+# 0.5 -> d = (0.7, 0, 0): a strong sweep along the surface tangent
+# (the blue channel is inert -- projected back out, per the
+# descriptor).
+##################################################
+uniformcolor_painter
+{
+	name			pnt_comb
+	color			0.85 0.5 0.5
+}
+
+hair_geometry
+{
+	name			groom
+	base_geometry		scalp
+	count			6000
+	segments		12
+	length			0.30
+	width_root		0.025
+	width_tip		0.008
+	base_detail		28
+	seed			23
+	comb			pnt_comb
+	gravity			0.15
+	frizz			0.12
+	clump			0.55
+	clump_size		0.06
+	curl_radius		0.02
+	curl_step		0.09
+}
+
+standard_object
+{
+	name			groom_obj
+	geometry		groom
+	material		mat_hair
+	position		0 0 0
+}
+
+##################################################
+# Two omni lights -- key and fill -- for a legible styled look (this
+# scene is a visual/generator check, not an energy-conservation gate,
+# so plain point lights are fine here).
+##################################################
+omni_light
+{
+	name			keylight
+	power			45
+	color			1.0 0.98 0.94
+	position		3.5 3.0 3.0
+}
+
+omni_light
+{
+	name			filllight
+	power			14
+	color			0.85 0.9 1.0
+	position		-3.0 1.0 2.5
+}
