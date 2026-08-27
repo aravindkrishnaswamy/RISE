@@ -1959,21 +1959,71 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// PTSoloSuppressEnvironment for why fractional leakage
 				// is worse than either extreme).
 				const bool soloSuppressEnv = PTSoloSuppressEnvironment( caster );
-				// Per-object radiance map (via material)
-				if( pRadianceMap )
-				{
-					Value envRadiance = PTEvalRadianceMap<Tag>( pRadianceMap, currentRay, rast, tag );
-					if( !suppressIndirectEnv && !soloSuppressEnv ) {
-						result = result + throughput * envRadiance;
-					}
-				}
-				else if( scene.GetGlobalRadianceMap() )
+				// Which radiance map does this escaping ray see?  A
+				// per-object map (bound via the material) overrides the
+				// global one; otherwise the global map supplies the
+				// background radiance.
+				//
+				// MIS PARTNER RULE.  LightSampler's env-NEE block samples
+				// the GLOBAL radiance map through the EnvironmentSampler
+				// and MIS-weights its contribution against the BSDF pdf.
+				// This BSDF-sampled env hit is that strategy's partner --
+				// and must carry the complementary weight -- ONLY when the
+				// map read here IS the global map.  A genuinely per-object
+				// map has no NEE partner (nothing importance-samples it),
+				// so it is the sole estimator of that transport and must be
+				// added at full weight.
+				//
+				// This used to be written `if( pRadianceMap ) { no MIS }
+				// else if( global ) { MIS }`.  Every production rasterizer
+				// passes the GLOBAL map in as `pRadianceMap`
+				// (PathTracing{Pel,Spectral}Rasterizer::IntegratePixel both
+				// do `pRadianceMap = pScene.GetGlobalRadianceMap()`), so the
+				// first arm always won and the MIS arm was unreachable:
+				// every BSDF-sampled env hit was added at weight 1 on top of
+				// a correctly MIS-weighted env-NEE, i.e. the two strategies
+				// summed to 1 + w_nee instead of 1.  Measured on a white
+				// furnace (Lambertian albedo 1, uniform L = 1 env, no other
+				// lights): +17.72 % over unity, matching the closed form
+				// INTEGRAL_H (cos/pi) w_nee dw = ln(17)/16 = 0.17708 for
+				// envPdf = 1/(4 pi) under the power-2 heuristic.  The HWSS
+				// loop never had this bug (it tests the global map first),
+				// which is exactly why hwss=true and hwss=false disagreed on
+				// the same furnace scene.
+				//
+				// Independently corroborated on a second scene with its own
+				// closed form: EnvLightBalanceTest's "env-only Lambertian"
+				// topology (albedo 0.5 quad, uniform L = 1 env) has expected
+				// mean radiance exactly 0.5.  PT read 0.58848 / 0.58948 /
+				// 0.58857 before this fix (+17.70 %, the same ln(17)/16) and
+				// 0.49994 / 0.50076 / 0.49997 after.  NOTE for whoever reads
+				// that suite next: it asserts BDPT and VCM agree with PT, so
+				// its tolerances were calibrated against the inflated PT.
+				// With PT correct, BDPT (0.6422, +28.5 %) and VCM (0.6220,
+				// +24.4 %) -- both untouched by this fix, both genuinely over
+				// the closed form -- now fall outside those bands: 7 of its
+				// 101 checks fail where all 101 passed before.  Those are
+				// pre-existing BDPT/VCM env bias surfacing, not a regression
+				// from this change, and the suite's reference/tolerances need
+				// re-deriving against the closed form rather than against PT.
+				//
+				// One further consequence of merging the two arms: the
+				// OpenPGL background-segment recorder at the bottom of this
+				// block used to live only in the (unreachable) global arm, so
+				// PT never trained the guiding field on env background at
+				// all.  It now runs for every escaping ray, which is the
+				// intended behaviour -- guiding should learn where the
+				// environment's energy is -- and is a no-op for
+				// `pathguiding FALSE`.
+				const IRadianceMap* pEnvForEscape =
+					pRadianceMap ? pRadianceMap : scene.GetGlobalRadianceMap();
+				if( pEnvForEscape )
 				{
 					Value envRadiance = PTEvalRadianceMap<Tag>(
-						scene.GetGlobalRadianceMap(), currentRay, rast, tag );
+						pEnvForEscape, currentRay, rast, tag );
 
 					// MIS weight for BSDF-sampled environment hit
-					if( pLS && bsdfPdf > 0 )
+					if( pEnvForEscape == scene.GetGlobalRadianceMap() && pLS && bsdfPdf > 0 )
 					{
 						const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 						if( pES )

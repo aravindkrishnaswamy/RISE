@@ -61,6 +61,18 @@
 //       BDPT -- whose MIS weights assume reciprocity -- is expected to
 //       agree with PT well but not to MC-exactness).
 //
+//  MEASUREMENT BASELINE.  Every number quoted below was measured on
+//    this machine AFTER the env-MIS fix in
+//    src/Library/Shaders/PathTracingIntegrator.cpp (the surface-escape
+//    env block in `IntegrateFromHitTemplated`).  Before that fix the
+//    RGB and non-HWSS-spectral path tracers added every BSDF-sampled
+//    environment hit at MIS weight 1 on top of a correctly
+//    MIS-weighted env-NEE, so any env-lit PT render read
+//    `1 + w_nee` times too bright -- +17.7 % on a Lambertian white
+//    furnace, +4.0 % on this file's groom furnace.  If you are
+//    bisecting a pre-fix commit, expect every furnace number here to
+//    read HIGH by roughly that much.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
@@ -268,11 +280,6 @@ static std::string GroomInEnvCommon(
 // (UINT_MAX)".  Hair lobes are all tagged eRayReflection
 // (docs/HAIR_FUR_DESIGN.md section 6.1 / HairBSDF.h section 5), so
 // this is the one bucket that actually governs hair path length.
-// `useEnv` == false omits the radiance_map lines entirely, for scenes
-// that light via an explicit light source instead (test 4, to avoid
-// compounding hair's own reciprocity caveat with the separately
-// documented env-light BDPT MIS-partition bias, CLAUDE.md "Env-IBL
-// deficit" / docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md).
 // `indirectClamp` == 0 means "leave it at the rasterizer default (0 =
 // disabled)".  Test 4 uses a nonzero clamp on BOTH PT and BDPT to tame
 // the heavy-tailed firefly variance BDPT's light-subpath connections
@@ -281,7 +288,15 @@ static std::string GroomInEnvCommon(
 // clamping identically on both sides is a standard, unbiased-in-mean-
 // enough variance-reduction technique for a MEAN-level sanity check,
 // not a correctness change.
-static std::string RasterizerPTRgb( unsigned int samples, unsigned int rrMinDepth, unsigned int maxGlossyBounce = 0, bool useEnv = true, double indirectClamp = 0.0 )
+//
+// EVERY scene in this file is env-lit.  There is deliberately no
+// "omit the radiance_map lines" switch: an earlier revision carried a
+// `useEnv` parameter documented as "test 4 lights via an explicit
+// light source instead", but no caller ever passed false and the
+// point-lit configuration it described does not work -- see test 4's
+// LIGHTING NOTE for the measured reason it was dropped rather than
+// wired up.
+static std::string RasterizerPTRgb( unsigned int samples, unsigned int rrMinDepth, unsigned int maxGlossyBounce = 0, double indirectClamp = 0.0 )
 {
 	std::ostringstream ss;
 	ss <<
@@ -291,7 +306,7 @@ static std::string RasterizerPTRgb( unsigned int samples, unsigned int rrMinDept
 		"\toidn_denoise FALSE\n";
 	if( maxGlossyBounce > 0 ) ss << "\tmax_glossy_bounce " << maxGlossyBounce << "\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
-	if( useEnv ) ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+	ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	ss <<
 		"}\n\n"
 		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
@@ -314,7 +329,7 @@ static std::string RasterizerPTSpectral( unsigned int samples, bool hwss, unsign
 	return ss.str();
 }
 
-static std::string RasterizerBDPTRgb( unsigned int samples, unsigned int maxEyeDepth, unsigned int maxLightDepth, bool useEnv = true, double indirectClamp = 0.0 )
+static std::string RasterizerBDPTRgb( unsigned int samples, unsigned int maxEyeDepth, unsigned int maxLightDepth, double indirectClamp = 0.0 )
 {
 	std::ostringstream ss;
 	ss <<
@@ -323,7 +338,7 @@ static std::string RasterizerBDPTRgb( unsigned int samples, unsigned int maxEyeD
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
 		"\toidn_denoise FALSE\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
-	if( useEnv ) ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+	ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	ss <<
 		"}\n\n"
 		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
@@ -339,28 +354,96 @@ static std::string AssembleScene( const std::string& common, const std::string& 
 //////////////////////////////////////////////////////////////////////
 // 1. White furnace -- RGB, spectral hwss=false, spectral hwss=true.
 //
-// Tolerance rationale: measured at samples=384 (RGB) / 256 (spectral)
-// on a 40x40 image on this machine, repeated across several runs with
-// near-identical results each time (RISE's sampler is deterministic
-// per pixel at a fixed sample count, so this is a stable measurement,
-// not one noisy sample): RGB furnace mean luminance ~1.040, spectral
-// hwss=false ~1.046, spectral hwss=true ~0.947.  RGB and hwss=false
-// sit ~4-5% OVER the ideal 1.0, hwss=true ~5.3% UNDER -- a background
-// of pixels that miss the groom entirely and read the env directly at
-// exactly 1.0 (`radiance_background TRUE`) is mixed with strand-hit
-// pixels whose furnace estimate isn't itself exactly 1.0 pixel-by-
-// pixel, and the antialiased silhouette between the two contributes
-// its own small quantization.  This matches HairBSDFTest's own furnace
-// tolerance being a *quadrature* tolerance (2%) rather than an exact
-// identity, just wider because a render additionally mixes in
-// geometry/AA effects the pure-BCSDF test doesn't have.  8% catches a
-// genuinely dropped lobe (order 20-50% dim, per
-// docs/HAIR_FUR_DESIGN.md's phase-0 description of what the furnace
-// test guards) with roughly 3-4pp of headroom over every measured
-// value above.
+// WHAT THE IDEAL IS, AND WHY IT IS EXACTLY 1.0.  Rays that miss the
+// groom read the env directly at exactly 1.0
+// (`radiance_background TRUE`; verified -- an identical scene with the
+// groom deleted renders 1.000000 in every pixel, min == max).  Rays
+// that hit a strand enter a sigma_a == 0 fibre whose per-scatter
+// throughput `kray` is exactly 1 by construction (HairBSDFTest's
+// SPF-side furnace asserts that at 1e-9), so a correct estimator
+// returns the env's own radiance no matter how many times the path
+// scatters.  There is therefore NO "background dilution" or "AA
+// quantization" slack to spend: every pixel should read 1.0, and any
+// deviation is a real estimator error.
+//
+// AN EARLIER REVISION OF THIS COMMENT WAS WRONG.  It explained the
+// then-measured +4.0 % (RGB) / +4.6 % (hwss=false) as background
+// mixing plus silhouette quantization and set an 8 % band around it.
+// That explanation is mathematically impossible -- a mean over
+// {exactly-1.0 background, hair pixels} can only exceed 1.0 if hair
+// pixels exceed 1.0 -- and the over-unity turned out to be a real
+// defect in the RGB / non-HWSS-spectral path tracer's environment MIS
+// (fixed in PathTracingIntegrator.cpp; see the MIS PARTNER RULE
+// comment there).  Every BSDF-sampled env hit was being added at
+// weight 1 on top of a correctly MIS-weighted env-NEE, so the two
+// strategies summed to 1 + w_nee.  Diagnosis chain, for the record:
+// filter ruled out (`pixel_filter box` moves the mean by 0.0001);
+// noise ruled out (the excess is 1.0398 -> 1.0402 across a 64x spp
+// ladder, 96 -> 6144); Russian roulette ruled out (1.0400 +/- 0.0002
+// across rr_min_depth 1 -> 100000); env-importance-map resolution
+// ruled out (identical at 64 and 1024).  The clincher was a Lambertian
+// albedo-1 control on a plain sphere in the same furnace, which read
+// 1.154 -- i.e. NOT hair-specific at all -- and whose surface-pixel
+// excess matched the closed form INTEGRAL_H (cos/pi) w_nee dw =
+// ln(17)/16 = 0.17708 (measured 0.17718) for envPdf = 1/(4 pi) under
+// the power-2 heuristic.  With the fix the same Lambertian controls
+// read 1.000073 (plane) and 0.999919 (sphere), and EnvLightBalanceTest's
+// own albedo-0.5 env-only quad (closed form 0.5) moves from 0.5885 to
+// 0.4999.
+//
+// WHAT IS MEASURED NOW (this machine, post-fix, four repeat runs of
+// this binary; RISE's sampler is deterministic per pixel at a fixed
+// sample count, so the residual spread below is thread scheduling, not
+// a fresh seed):
+//
+//     RGB PT, samples=384        0.98834 / 0.98859 / 0.98867 / 0.98859
+//     spectral hwss=false, 256   0.99489 / 0.99452 / 0.99078 / 0.99374
+//     spectral hwss=true,  256   0.94718 / 0.94678 / 0.94714 / 0.94685
+//
+// RGB and hwss=false now sit 0.51-1.17 % UNDER 1.0.  That residual is
+// itself understood and is NOT hair-specific either: LightSampler's
+// env-NEE block gates on `cosEnv > 0`, so a full-sphere BSDF (hair's
+// TT lobe transmits THROUGH the fibre) gets no NEE strategy at all for
+// the below-normal half of the sphere, while the BSDF-sampling side
+// still applies its w_bsdf < 1 there -- the two strategies sum to less
+// than 1 for those directions.  Confirmed by construction: relaxing
+// that single gate to `fabs(cosEnv)` (which is a no-op for ordinary
+// BRDFs, whose `value()` returns 0 below the hemisphere -- the
+// Lambertian controls stay at 1.0001) moves this furnace from 0.98863
+// to 1.00181.  That fix is NOT applied: it needs a per-IBSDF audit of
+// below-hemisphere `value()` behaviour plus the matching light-table
+// gate, which is a separate workstream from slice E.
+//
+// TOLERANCES.  `kFurnaceTol` (RGB + hwss=false) is 3 %: it clears the
+// worst measured deficit (1.17 %) by 1.83pp, and still fails on the
+// 2-3 % scale of a genuinely lost residual lobe (docs/HAIR_FUR_DESIGN.md
+// phase-0's description of what this test guards) -- and, importantly,
+// it now fails on the +4.0 % over-count above if that regresses.  The
+// 8 % band the earlier revision used would have passed it.
+//
+// hwss=true gets its OWN, asymmetric band, because its 5.3 % deficit
+// is a different, pre-existing problem that this test must name rather
+// than absorb.  It is the HWSS spectral-bundle bias recorded in
+// CLAUDE.md's env-IBL arc ("hwss=true env-only is already 18 % under
+// PT at the disc-area baseline"): same direction, hair-independent,
+// and demonstrably untouched by the env-MIS fix above (the HWSS loop
+// in PathTracingIntegrator.cpp tests the global radiance map FIRST and
+// so never had the branch-order bug -- which is precisely why
+// hwss=true read 0.947 both before AND after the fix, while hwss=false
+// moved 1.046 -> 0.993).  So:
+//   * `kFurnaceHwssUnderTol` 9 % -- 3.7pp of headroom over the
+//     measured 5.28-5.32 % deficit, pending the spectral-bundle work.
+//   * `kFurnaceHwssOverTol` 2 % -- an OVER-unity reading is never
+//     legitimate for a sigma_a == 0 furnace, so the upper half of the
+//     band stays tight regardless.
+// When the spectral-bundle bias is fixed, hwss=true should join the
+// other two near 0.99-1.00 and this pair should collapse back to
+// `kFurnaceTol`.
 //////////////////////////////////////////////////////////////////////
-static const double kFurnaceTarget = 1.0;
-static const double kFurnaceTol    = 0.08;	// 8%, see rationale above
+static const double kFurnaceTarget       = 1.0;
+static const double kFurnaceTol          = 0.03;	// RGB + hwss=false, see rationale above
+static const double kFurnaceHwssUnderTol = 0.09;	// hwss=true lower bound (known spectral-bundle deficit)
+static const double kFurnaceHwssOverTol  = 0.02;	// hwss=true upper bound (over-unity is never legitimate)
 
 static void TestFurnace()
 {
@@ -394,9 +477,16 @@ static void TestFurnace()
 			AssembleScene( common, RasterizerPTSpectral( 256, true, 8 ) ), "furnace_spec_hwss_on" );
 		Check( s.valid, "furnace spectral (hwss=true): render produced output" );
 		if( s.valid ) {
-			std::cout << "  spectral hwss=true luminance = " << s.luminance << std::endl;
-			Check( std::fabs( s.luminance - kFurnaceTarget ) <= kFurnaceTol,
-				"furnace spectral (hwss=true): mean luminance within tolerance of the env" );
+			std::cout << "  spectral hwss=true luminance = " << s.luminance
+				<< "  (expected ~0.947 -- the known HWSS spectral-bundle deficit)" << std::endl;
+			// Asymmetric band: the deficit is the documented pre-existing
+			// HWSS spectral-bundle bias (see the section comment); an
+			// over-unity reading would be a fresh energy-creation bug and
+			// is held to the tight side.
+			Check( s.luminance >= kFurnaceTarget - kFurnaceHwssUnderTol,
+				"furnace spectral (hwss=true): deficit no worse than the known spectral-bundle bias" );
+			Check( s.luminance <= kFurnaceTarget + kFurnaceHwssOverTol,
+				"furnace spectral (hwss=true): does not exceed the env (no energy created)" );
 		}
 	}
 }
@@ -409,13 +499,20 @@ static void TestFurnace()
 // hwss=true == hwss=false as a reference-free invariant").
 //
 // Tolerance rationale: measured at samples=256 / 32x32 on a
-// eumelanin=1.3 groom across several repeated runs, hwss=false
-// luminance sat at 0.170-0.172, hwss=true at 0.160-0.161 -- a stable
-// 5.8-6.9% relative difference every run.  12% leaves ~2x headroom
-// over the observed spread while still catching the kind of collapse
-// the env-IBL arc saw when HWSS was genuinely broken (order 50%+, per
+// eumelanin=1.3 groom across repeated runs, POST the env-MIS fix (see
+// the file header's MEASUREMENT BASELINE), across four repeat runs of
+// this binary hwss=false luminance sits at 0.16891-0.17158 and
+// hwss=true at 0.16044-0.16095 -- a relative difference of 4.71% /
+// 5.91% / 6.16% / 6.48%.  (Pre-fix the same pair read 0.170-0.172 vs
+// 0.160-0.161, i.e. 5.8-6.9%: the fix moved the hwss=false side only,
+// exactly as expected since the HWSS loop never carried the
+// branch-order bug.)  12% leaves ~1.85x headroom over the worst
+// observed run while still catching the kind of collapse the
+// env-IBL arc saw when HWSS was genuinely broken (order 50%+, per
 // CLAUDE.md's "hwss=true env-only is already 18% under" and worse
-// pre-fix numbers).
+// pre-fix numbers).  This section's residual and the furnace's
+// hwss=true deficit are the SAME pre-existing spectral-bundle bias
+// seen two ways.
 //////////////////////////////////////////////////////////////////////
 static const double kHwssTol = 0.12;
 
@@ -492,38 +589,65 @@ static void TestMelaninLadder()
 // PT-vs-X pattern -- NOT a tight tolerance the way EnvLightBalanceTest
 // uses on ordinary (reciprocal) Lambertian scenes.
 //
-// TUNING NOTES (both empirical, discovered while building this test --
-// worth recording since they will bite the next person who touches
-// this scene):
-//   (a) `radiance_map`/`radiance_background` env lighting compounds
-//       hair's own non-reciprocity with the SEPARATE, already-documented
-//       env-light BDPT MIS-partition bias that ordinary (non-hair)
-//       materials carry too (CLAUDE.md "Env-IBL deficit" /
-//       docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md) -- an early version
-//       of this test used env lighting and saw the PT/BDPT gap swing
-//       anywhere from ~8% to ~48% run to run, which is that second,
-//       unrelated bug leaking into a test meant to isolate the first.
-//       Switching to `oidn_denoise FALSE` didn't move this; it is a
-//       genuine env+BDPT interaction, not a denoiser artifact.
-//   (b) Even off env lighting, BDPT's light-subpath connections through
-//       hair's narrow lobes show real heavy-tailed (firefly-like)
-//       per-pixel variance -- at 256 spp / 32x32 with NO clamp, five
-//       repeated runs of the SAME scene gave relative PT/BDPT
-//       differences of 11%, 14%, 19%, 28%, and one run as high as 48%,
-//       while PT's own luminance stayed rock-stable (0.2913-0.2920)
-//       across every run.  That is exactly the signature of a few
+// LIGHTING NOTE -- THIS TEST IS ENV-LIT, AND THAT IS THE MEASURED
+// CHOICE, NOT A LEFTOVER.  An earlier revision of this comment claimed
+// env lighting had been REJECTED for this test (as compounding hair's
+// non-reciprocity with the documented env+BDPT MIS-partition bias,
+// CLAUDE.md "Env-IBL deficit") and that the test lit via an explicit
+// light source instead -- while the code below shipped env lighting.
+// The code was right and the comment was wrong; here is what a
+// point-lit variant actually does, measured on this machine.
+//
+// A discrete `omni_light` version of this exact scene (same groom,
+// same 256 spp / 32x32, no `radiance_map`) renders PT and BDPT
+// 4.3x APART -- PT 0.0132 vs BDPT 0.0575 at one light power, PT 0.0773
+// vs BDPT 0.3305 at another, i.e. the ratio is scale-invariant, so it
+// is a systematic bias and not fireflies.  Root cause: LightSampler's
+// light-table NEE breaks out on `cosSurface <= 0`, so PT cannot light
+// a hair fibre from BEHIND -- and hair's TT lobe, which carries most
+// of its energy, is exactly that transport.  BDPT's light subpath has
+// no such gate and reaches those vertices.  Relaxing that one gate to
+// `fabs(...)` as a diagnostic moves PT 0.0773 -> 0.1451 and closes
+// roughly half the gap (4.3x -> 2.3x); the rest is not yet
+// characterised.  Fixing it properly is a full-sphere-NEE workstream
+// (per-IBSDF below-hemisphere audit + the matching env-NEE gate --
+// see the furnace section's note on the same defect), not something
+// this test can wire around.  Until then a point-lit PT-vs-BDPT
+// comparison has no tolerance at which it is both passing and
+// meaningful, so this test stays on the env.
+//
+// The env-lit configuration, by contrast, is stable and is what is
+// measured below.  Note the "~8% to ~48% run to run" swing the earlier
+// comment attributed to env lighting was really the clamp being absent
+// -- see (a).
+//
+// TUNING NOTE -- the clamp is load-bearing:
+//   (a) BDPT's light-subpath connections through hair's narrow lobes
+//       show real heavy-tailed (firefly-like) per-pixel variance -- at
+//       256 spp / 32x32 with NO clamp, repeated runs of the SAME scene
+//       gave relative PT/BDPT differences of 11%, 14%, 19%, 28% and one
+//       as high as 48%, while PT's own luminance stayed rock-stable
+//       across every run.  That is the signature of a few
 //       high-throughput BDPT connection samples dominating the mean,
 //       not a shifting systematic bias -- so `indirect_clamp 1.5` /
 //       `direct_clamp 1.5` (identical on both PT and BDPT, applied
 //       symmetrically so it is a shared variance-reduction step, not a
-//       one-sided thumb on the scale) tames it.  With the clamp,
-//       five repeated runs gave PT luminance 0.2914-0.2917 and BDPT
-//       0.2972-0.2978 -- a stable ~2% relative difference every time.
-// Tolerance rationale: given the clamped measurement above sits at a
-// very stable ~2%, 10% leaves 5x headroom for machine-to-machine RNG
-// differences while still catching a genuine regression (order 30%+,
-// matching the unclamped run's own worst excursions and the collapse
-// sizes recorded elsewhere in CLAUDE.md's BDPT/VCM regression history).
+//       one-sided thumb on the scale) tames it.
+//
+// Tolerance rationale: with the clamp, POST the env-MIS fix (file
+// header, MEASUREMENT BASELINE), four repeat runs of this binary gave
+//   PT   0.28903 / 0.28897 / 0.28851 / 0.28858
+//   BDPT 0.29693 / 0.29756 / 0.29724 / 0.29738
+// i.e. a relative difference of 2.73% / 2.97% / 3.02% / 3.05% -- the
+// same stable few-percent the pre-fix build showed (the fix moves PT
+// only, and this groom's eumelanin 0.9 absorption keeps the env-escape
+// term small).  10% leaves ~3.3x headroom over the worst observed run
+// for machine-to-machine RNG differences while still catching a genuine
+// regression (order 30%+, matching the unclamped runs' own worst
+// excursions and the collapse sizes recorded elsewhere in CLAUDE.md's
+// BDPT/VCM regression history).  It also stays well inside the 4.3x
+// the point-lit configuration above would produce, so this tolerance
+// cannot be satisfied by accident.
 //////////////////////////////////////////////////////////////////////
 static const double kPtBdptTol = 0.10;
 
@@ -535,9 +659,9 @@ static void TestPtVsBdpt()
 	const std::string common = GroomInEnvCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED );
 
 	const ImageStats pt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTRgb( 256, 8, 0, true, 1.5 ) ), "ptvbdpt_pt" );
+		AssembleScene( common, RasterizerPTRgb( 256, 8, 0, 1.5 ) ), "ptvbdpt_pt" );
 	const ImageStats bdpt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerBDPTRgb( 256, 4, 4, true, 1.5 ) ), "ptvbdpt_bdpt" );
+		AssembleScene( common, RasterizerBDPTRgb( 256, 4, 4, 1.5 ) ), "ptvbdpt_bdpt" );
 
 	Check( pt.valid,   "PT-vs-BDPT: PT render produced output" );
 	Check( bdpt.valid, "PT-vs-BDPT: BDPT render produced output" );
