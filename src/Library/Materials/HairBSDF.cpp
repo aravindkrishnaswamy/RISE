@@ -48,18 +48,48 @@ namespace
 	const Scalar	kRGBWavelengthsNM[3] = { 600.0, 550.0, 450.0 };
 
 	//! Per-unit-concentration sigma_a at 550 nm that the OMLC melanin
-	//! curves are normalised to.  These are PBRT-v4's green-channel
-	//! `SigmaAFromConcentration` coefficients, which are the
-	//! RGB-projection of the same OMLC spectroscopy; anchoring to them
-	//! keeps `eumelanin 1.3` meaning "brown-black hair" exactly as it
-	//! does in every other Chiang implementation, and makes a
-	//! cross-check against a PBRT render an apples-to-apples test.
+	//! curves are normalised to.  These are PBRT-v4's GREEN-channel
+	//! `SigmaAFromConcentration` coefficients, so `eumelanin 1.3` means
+	//! "brown-black hair" exactly as it does in every other Chiang
+	//! implementation.
+	//!
+	//! SCOPE OF THE PBRT MATCH -- exactly one anchor, not three.  We
+	//! reproduce PBRT's GREEN coefficient exactly and then let the
+	//! measured OMLC curve shape carry R and B.  PBRT's other two
+	//! constants are an RGB PROJECTION of the same spectroscopy through
+	//! a colour-matching integral, which is not the same thing as the
+	//! curve's value at a representative wavelength, so they do NOT
+	//! agree.  Measured against `kRGBWavelengthsNM` (600 / 550 / 450):
+	//!
+	//!     eumelanin    R +23.5 %  (0.518 vs PBRT 0.419)
+	//!                  B  -5.6 %  (1.293 vs PBRT 1.370)
+	//!     pheomelanin  R +24.2 %  (0.232 vs PBRT 0.187)
+	//!                  B  +1.7 %  (1.067 vs PBRT 1.050)
+	//!
+	//! The deviation is deliberate: spectral fidelity to the measured
+	//! OMLC curve wins over matching a projection constant, and it is
+	//! what keeps the RGB and NM paths driven by ONE curve.  A PBRT
+	//! cross-render is therefore an apples-to-apples test in G only;
+	//! expect a slightly warmer R and a marginally deeper B.
+	//!
+	//! Also note the pheomelanin table itself has a small NON-MONOTONIC
+	//! bump at 591.91 -> 600.98 nm (1.589 -> 1.756 cm^-1 mg/ml).  That is
+	//! in the measured data and is kept verbatim -- it does not break the
+	//! "pheomelanin reddens" behaviour, which is driven by the overall
+	//! fall from ~3.0 at 550 nm to ~1.19 at 653 nm.
 	const Scalar	kEumelaninSigmaAAt550   = 0.697;
 	const Scalar	kPheomelaninSigmaAAt550 = 0.400;
 
 	//! Used only if a caller misconfigures the colour tiers (an error
-	//! is logged at construction).  Mid-brown.
+	//! is logged at construction).  Mid-brown.  `bColorTierValid` gates
+	//! it, so a MISCONFIGURED material really does resolve to this and
+	//! nothing else -- it is not a "all four painters were null" last
+	//! resort (that would have made the construction-time log a lie).
 	const Scalar	kFallbackSigmaA = 1.0;
+
+	//! How close to the fibre edge a resolved h is allowed to get.
+	//! See the note in HairScatteringBase::Resolve.
+	const Scalar	kHEdge = 0.9995;
 
 	inline Scalar Sqr( const Scalar x ) { return x * x; }
 
@@ -99,7 +129,14 @@ namespace
 	Scalar LogBesselI0( const Scalar x )
 	{
 		if( x > 12 ) {
-			return x + 0.5 * ( -log( TWO_PI ) + log( 1 / x ) + 1 / ( 8 * x ) );
+			// log I0(x) ~ x - 0.5 log(2 pi x) + 1/(8x) + O(1/x^2).
+			// NOTE this DEVIATES from PBRT, which writes the same line as
+			// `x + 0.5 * (-log(2 pi) + log(1/x) + 1/(8x))` and thereby
+			// halves the 1/(8x) correction (a known slip in that source).
+			// The difference is ~1/(16x) in the log, i.e. ~2e-5 relative
+			// at the smallest x this branch sees (x ~ 1/v ~ 2700 at
+			// beta_m = 0.05); correct is free, so we take it.
+			return x - 0.5 * log( TWO_PI * x ) + 1 / ( 8 * x );
 		}
 		return log( BesselI0( x ) );
 	}
@@ -211,6 +248,16 @@ namespace
 		// Modified index for the projected (azimuthal) refraction.
 		// Degenerate only when the ray runs exactly along the fibre
 		// axis, where every lobe's contribution is ~0 anyway.
+		//
+		// MEASURE-ZERO DIVERGENCE FROM PBRT.  As cosThetaO -> 0 the true
+		// etap -> +inf, hence sinGammaT = h/etap -> 0 and gammaT -> 0;
+		// PBRT lets the IEEE division produce that limit.  RISE's finite
+		// sentinels forbid an inf here (see the fast-math note in
+		// CLAUDE.md), so we substitute etap = eta, which gives
+		// sinGammaT = h/eta instead of 0.  It matters only on the exact
+		// axial great circle, a set of measure zero that every lobe
+		// weights at ~0 -- and it keeps `Pdf` and `EvalFsum` consistent
+		// with each other, which is what the estimator actually needs.
 		const Scalar etap = ( g.cosThetaO > 1e-9 )
 			? SafeSqrt( Sqr( eta ) - Sqr( g.sinThetaO ) ) / g.cosThetaO
 			: eta;
@@ -289,6 +336,47 @@ namespace
 		return true;
 	}
 
+	//! Cuticle-tilt rotation of the OUTGOING longitudinal angle for one
+	//! scattering order.  `sin2kAlpha[k] / cos2kAlpha[k]` hold
+	//! sin/cos(2^k * alpha), so the three lobes get their offsets
+	//!
+	//!     p = 0 (R)    theta_o - 2 alpha
+	//!     p = 1 (TT)   theta_o + alpha
+	//!     p = 2 (TRT)  theta_o + 4 alpha
+	//!
+	//! from a single sin/cos pair (PBRT-identical; the classic
+	//! Marschner "-alpha / +alpha/2 / +3alpha/2" figures describe the
+	//! resulting HIGHLIGHT separation, not these rotation amounts).
+	//! p >= kPMax (the residual lobe) is untilted.
+	//!
+	//! THE SINGLE SOURCE OF THIS ROTATION.  Both `LobeWeights` (the
+	//! evaluation side) and `HairSPF::DoScatter` (the sampling side)
+	//! call it, so the two cannot drift in sign -- which is exactly the
+	//! bug a duplicated copy invites, and which
+	//! `RunCuticleTiltDirection` in HairBSDFTest.cpp pins.
+	inline void ApplyLobeTilt(
+		const int p, const Scalar sin2kAlpha[3], const Scalar cos2kAlpha[3],
+		const Scalar sinThetaO, const Scalar cosThetaO,
+		Scalar& sinThetaOp, Scalar& cosThetaOp
+		)
+	{
+		if( p == 0 ) {
+			sinThetaOp = sinThetaO * cos2kAlpha[1] - cosThetaO * sin2kAlpha[1];
+			cosThetaOp = cosThetaO * cos2kAlpha[1] + sinThetaO * sin2kAlpha[1];
+		} else if( p == 1 ) {
+			sinThetaOp = sinThetaO * cos2kAlpha[0] + cosThetaO * sin2kAlpha[0];
+			cosThetaOp = cosThetaO * cos2kAlpha[0] - sinThetaO * sin2kAlpha[0];
+		} else if( p == 2 ) {
+			sinThetaOp = sinThetaO * cos2kAlpha[2] + cosThetaO * sin2kAlpha[2];
+			cosThetaOp = cosThetaO * cos2kAlpha[2] - sinThetaO * sin2kAlpha[2];
+		} else {
+			sinThetaOp = sinThetaO;
+			cosThetaOp = cosThetaO;
+		}
+		// The tilt can push cos past the pole; reflect it back.
+		cosThetaOp = fabs( cosThetaOp );
+	}
+
 	//! Achromatic per-order weights: w[p] = Mp_p * Np_p for p < kPMax,
 	//! w[kPMax] = Mp_kPMax / (2 pi) for the uniform-azimuth residual.
 	//!
@@ -303,22 +391,9 @@ namespace
 		)
 	{
 		for( int p = 0; p < kPMax; p++ ) {
-			// Cuticle-tilt rotation of the outgoing longitudinal angle.
-			// The 2k-alpha recurrence gives the -alpha / +alpha/2 /
-			// +3alpha/2 lobe offsets without a trig call per lobe.
 			Scalar sinThetapO, cosThetapO;
-			if( p == 0 ) {
-				sinThetapO = G.sinThetaO * R.cos2kAlpha[1] - G.cosThetaO * R.sin2kAlpha[1];
-				cosThetapO = G.cosThetaO * R.cos2kAlpha[1] + G.sinThetaO * R.sin2kAlpha[1];
-			} else if( p == 1 ) {
-				sinThetapO = G.sinThetaO * R.cos2kAlpha[0] + G.cosThetaO * R.sin2kAlpha[0];
-				cosThetapO = G.cosThetaO * R.cos2kAlpha[0] - G.sinThetaO * R.sin2kAlpha[0];
-			} else {
-				sinThetapO = G.sinThetaO * R.cos2kAlpha[2] + G.cosThetaO * R.sin2kAlpha[2];
-				cosThetapO = G.cosThetaO * R.cos2kAlpha[2] - G.sinThetaO * R.sin2kAlpha[2];
-			}
-			// The tilt can push cos past the pole; reflect it back.
-			cosThetapO = fabs( cosThetapO );
+			ApplyLobeTilt( p, R.sin2kAlpha, R.cos2kAlpha,
+			               G.sinThetaO, G.cosThetaO, sinThetapO, cosThetapO );
 
 			w[p] = Mp( cosThetaI, cosThetapO, sinThetaI, sinThetapO, R.v[p] ) *
 			       Np( phi, p, R.s, G.gammaO, G.gammaT );
@@ -427,9 +502,10 @@ HairScatteringBase::HairScatteringBase( const HairPainters& p ) :
   pBetaM( p.beta_m ),
   pBetaN( p.beta_n ),
   pAlpha( p.alpha ),
-  pIOR( p.ior )
+  pIOR( p.ior ),
+  bColorTierValid( p.ActiveColorTierCount() == 1 )
 {
-	if( p.ActiveColorTierCount() != 1 ) {
+	if( !bColorTierValid ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"HairBSDF: exactly one colour tier (melanin | sigma_a | color) must be bound, %d were; "
 			"falling back to a uniform mid-brown sigma_a", p.ActiveColorTierCount() );
@@ -464,7 +540,17 @@ HairScatteringBase::~HairScatteringBase()
 void HairScatteringBase::Resolve( const RayIntersectionGeometric& ri, Resolved& R ) const
 {
 	// Near-field offset: PBRT's Curve convention, h = 2v - 1.
-	R.h = Clamp( 2.0 * ri.ptCoord.y - 1.0, -1.0, 1.0 );
+	//
+	// Clamped just SHORT of the fibre edge.  At |h| == 1 exactly,
+	// cos(gamma_o) == 0, so the Fresnel argument collapses to 0 and
+	// F == 1: the fibre turns into a colourless white mirror (ap[0] == 1,
+	// every transmissive order == 0).  That is the correct limit for a
+	// grazing edge ray, but it is a TRAP for the common misconfiguration:
+	// geometry with no UV channel leaves ptCoord == (0, 0), which sends
+	// h == -1 over the WHOLE surface and renders the hair as flat white.
+	// kHEdge keeps the model just inside the edge so such a hit still
+	// carries colour, at the cost of a physically irrelevant sliver.
+	R.h = Clamp( 2.0 * ri.ptCoord.y - 1.0, -kHEdge, kHEdge );
 
 	R.betaM  = Clamp( pBetaM ? pBetaM->GetValuesAt( ri ).v[0] : 0.3, kMinBeta, kMaxBeta );
 	R.betaN  = Clamp( pBetaN ? pBetaN->GetValuesAt( ri ).v[0] : 0.3, kMinBeta, kMaxBeta );
@@ -495,9 +581,9 @@ void HairScatteringBase::Resolve( const RayIntersectionGeometric& ri, Resolved& 
 		R.s = 1e-4;
 	}
 
-	// 2k-alpha cuticle-tilt recurrence (double-angle formulas), so the
-	// three lobes get their -alpha, +alpha/2, +3alpha/2 offsets from one
-	// sin/cos pair.
+	// 2k-alpha cuticle-tilt recurrence (double-angle formulas):
+	// sin2kAlpha[k] = sin(2^k * alpha), so ONE sin/cos pair serves the
+	// -2 alpha / +alpha / +4 alpha lobe rotations ApplyLobeTilt applies.
 	const Scalar aRad = alphaDeg * ( PI / 180.0 );
 	R.sin2kAlpha[0] = sin( aRad );
 	R.cos2kAlpha[0] = SafeSqrt( 1 - Sqr( R.sin2kAlpha[0] ) );
@@ -511,11 +597,18 @@ void HairScatteringBase::SigmaARGB(
 	const RayIntersectionGeometric& ri, const Scalar betaN, Scalar out[3]
 	) const
 {
+	// Misconfigured tier set -> the mid-brown the constructor's error
+	// message PROMISES.  Checked first (and as one cached bool) so the
+	// hot path does not re-derive the tier count from four pointers.
+	if( !bColorTierValid ) {
+		out[0] = out[1] = out[2] = kFallbackSigmaA;
+		return;
+	}
 	if( pColor ) {														// tier 3
 		const RISEPel C = pColor->GetColor( ri );
 		const Scalar D = ReflectanceDenom( betaN );
-		for( unsigned int c = 0; c < 3; c++ ) {
-			out[c] = SigmaAFromReflectance( C[c], D );
+		for( int c = 0; c < 3; c++ ) {
+			out[c] = SigmaAFromReflectance( C[(unsigned int)c], D );
 		}
 		return;
 	}
@@ -526,21 +619,22 @@ void HairScatteringBase::SigmaARGB(
 		}
 		return;
 	}
-	if( pEumelanin || pPheomelanin ) {									// tier 1
-		const Scalar ce = pEumelanin   ? r_max( Scalar( 0 ), pEumelanin->GetValuesAt( ri ).v[0] )   : Scalar( 0 );
-		const Scalar cp = pPheomelanin ? r_max( Scalar( 0 ), pPheomelanin->GetValuesAt( ri ).v[0] ) : Scalar( 0 );
-		for( int c = 0; c < 3; c++ ) {
-			out[c] = MelaninSigmaA( ce, cp, kRGBWavelengthsNM[c] );
-		}
-		return;
+	// tier 1 -- the only remaining possibility once bColorTierValid holds.
+	const Scalar ce = pEumelanin   ? r_max( Scalar( 0 ), pEumelanin->GetValuesAt( ri ).v[0] )   : Scalar( 0 );
+	const Scalar cp = pPheomelanin ? r_max( Scalar( 0 ), pPheomelanin->GetValuesAt( ri ).v[0] ) : Scalar( 0 );
+	for( int c = 0; c < 3; c++ ) {
+		out[c] = MelaninSigmaA( ce, cp, kRGBWavelengthsNM[c] );
 	}
-	out[0] = out[1] = out[2] = kFallbackSigmaA;
 }
 
 Scalar HairScatteringBase::SigmaANM(
 	const RayIntersectionGeometric& ri, const Scalar betaN, const Scalar nm
 	) const
 {
+	// Same gate as SigmaARGB -- see the note there.
+	if( !bColorTierValid ) {
+		return kFallbackSigmaA;
+	}
 	if( pColor ) {														// tier 3
 		// The uplift is legitimate here and only here: `color` IS an
 		// albedo-class colour, so the JH-uplifted spectrum is the
@@ -551,12 +645,10 @@ Scalar HairScatteringBase::SigmaANM(
 		const Scalar s = pSigmaA->GetValueAtNM( ri, nm );
 		return s > 0 ? s : Scalar( 0 );
 	}
-	if( pEumelanin || pPheomelanin ) {									// tier 1
-		const Scalar ce = pEumelanin   ? r_max( Scalar( 0 ), pEumelanin->GetValueAtNM( ri, nm ) )   : Scalar( 0 );
-		const Scalar cp = pPheomelanin ? r_max( Scalar( 0 ), pPheomelanin->GetValueAtNM( ri, nm ) ) : Scalar( 0 );
-		return MelaninSigmaA( ce, cp, nm );
-	}
-	return kFallbackSigmaA;
+	// tier 1 -- the only remaining possibility once bColorTierValid holds.
+	const Scalar ce = pEumelanin   ? r_max( Scalar( 0 ), pEumelanin->GetValueAtNM( ri, nm ) )   : Scalar( 0 );
+	const Scalar cp = pPheomelanin ? r_max( Scalar( 0 ), pPheomelanin->GetValueAtNM( ri, nm ) ) : Scalar( 0 );
+	return MelaninSigmaA( ce, cp, nm );
 }
 
 Scalar HairScatteringBase::SigmaAProxy(
@@ -565,10 +657,27 @@ Scalar HairScatteringBase::SigmaAProxy(
 {
 	Scalar s[3];
 	SigmaARGB( ri, betaN, s );
-	// MINIMUM, not average: see HairBSDF.h section 3.  The minimum is
-	// the maximum transmittance, so the resulting PMF over-weights the
-	// transmissive lobes relative to every wavelength and f/pdf can
-	// never blow up because a wavelength landed in a starved lobe.
+	// MINIMUM, not average -- and the reason is an algebraic BOUND, not
+	// a heuristic (HairBSDF.h section 3):
+	//
+	//   sigma_proxy = min_c sigma_c  =>  T_proxy = exp(-sigma_proxy L)
+	//                                            >= T_lambda  for all lambda.
+	//   Every ap[p] with p >= 1 -- ap[1] = (1-f)^2 T, ap[2] = ap[1] T f,
+	//   and the residual ap[3] = ap[2] f T / (1 - T f) -- is strictly
+	//   INCREASING in T, and ap[0] = f is independent of T.  Hence
+	//   ap_lambda[p] <= ap_proxy[p] termwise.
+	//
+	//   pdf = dot(w, ap_proxy) / S with S = sum_p ap_proxy[p], so
+	//     fsum_lambda / pdf = S * dot(w, ap_lambda) / dot(w, ap_proxy)
+	//                       <= S.
+	//   And S <= 1: at T = 1 the four orders telescope to
+	//   f + (1-f)^2 + (1-f)^2 f + (1-f) f^2 = f + (1-f) = 1 exactly, and
+	//   S falls monotonically as T drops.
+	//
+	//   => kray = fsum/pdf lies in [0, 1] PROVABLY, for every RGB channel
+	//   and for any non-dispersive NM wavelength.  A maximum or a mean
+	//   proxy gives no such bound: a wavelength darker than the proxy
+	//   would land in an under-weighted transmissive lobe and fire.
 	Scalar m = s[0];
 	if( s[1] < m ) { m = s[1]; }
 	if( s[2] < m ) { m = s[2]; }
@@ -581,20 +690,44 @@ void HairScatteringBase::ReflectanceRGB(
 {
 	const Scalar betaN = Clamp( pBetaN ? pBetaN->GetValuesAt( ri ).v[0] : 0.3, kMinBeta, kMaxBeta );
 
-	if( pColor ) {
+	// --- the absorption-driven (coloured) part -----------------------
+	if( bColorTierValid && pColor ) {
 		// Tier 3 authored the target reflectance directly.
 		const RISEPel C = pColor->GetColor( ri );
-		for( unsigned int c = 0; c < 3; c++ ) {
-			out[c] = Clamp( C[c], 0.0, 1.0 );
+		for( int c = 0; c < 3; c++ ) {
+			out[c] = Clamp( C[(unsigned int)c], 0.0, 1.0 );
 		}
-		return;
+	} else {
+		Scalar sigma[3];
+		SigmaARGB( ri, betaN, sigma );		// honours bColorTierValid
+		const Scalar D = ReflectanceDenom( betaN );
+		for( int c = 0; c < 3; c++ ) {
+			out[c] = ReflectanceFromSigmaA( sigma[c], D );
+		}
 	}
 
-	Scalar sigma[3];
-	SigmaARGB( ri, betaN, sigma );
-	const Scalar D = ReflectanceDenom( betaN );
+	// --- plus the ACHROMATIC R-lobe surface reflection ---------------
+	// Chiang's C <-> sigma_a fit describes the light that goes THROUGH
+	// the fibre and comes back out; it says nothing about the p = 0
+	// surface highlight, which is white and present at every colour.
+	// Without this term `albedo()` reports 0 for black hair -- and OIDN
+	// divides the noisy radiance by the albedo AOV, so a 0 there turns
+	// the whole specular highlight into unguided noise.
+	//
+	// F_avg is approximated by the NORMAL-INCIDENCE dielectric Fresnel
+	// (eta-1)^2/(eta+1)^2 (0.0465 at eta = 1.55).  The true
+	// hemispherical average for eta = 1.55 is ~0.09; the normal-incidence
+	// value understates it, which is the safe direction for a denoiser
+	// prior (it never claims more energy than the fibre reflects) and it
+	// is closed-form with no fit constants.  Composited as
+	// C + (1 - C) * F: the surface reflects F, and the remainder is what
+	// the absorption model already accounts for.
+	// Same guard as Resolve: an IOR of 1 or below is not a dielectric.
+	const Scalar etaRaw = pIOR ? pIOR->GetValuesAt( ri ).v[0] : Scalar( 1.55 );
+	const Scalar eta = ( etaRaw > 1.0 + 1e-6 ) ? etaRaw : Scalar( 1.55 );
+	const Scalar fAvg = Sqr( ( eta - 1 ) / ( eta + 1 ) );
 	for( int c = 0; c < 3; c++ ) {
-		out[c] = ReflectanceFromSigmaA( sigma[c], D );
+		out[c] = Clamp( out[c] + ( 1 - out[c] ) * fAvg, 0.0, 1.0 );
 	}
 }
 
@@ -712,10 +845,13 @@ RISEPel HairBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric
 	Scalar fsum[3];
 	EvalFsum( ri, R, vLightIn, false, 0, fsum );
 
-	// The 1/|cos theta_i| reconciliation -- HairBSDF.h section 2.
-	// Applied only when the cosine is nonzero, exactly as PBRT does;
-	// every consumer multiplies the same cosine straight back, so the
-	// cancellation is exact and the product stays finite.
+	// The 1/|wi . N| reconciliation -- HairBSDF.h section 2.  NOTE this
+	// is the SHADING cosine (PBRT's AbsCosTheta in the shading frame),
+	// NOT cos(theta_i) of the fibre inclination: theta_i is measured
+	// from the normal PLANE, so cos(theta_i) never vanishes where
+	// |wi . N| does.  Applied only when the cosine is nonzero, exactly
+	// as PBRT does; every consumer multiplies the same cosine straight
+	// back, so the cancellation is exact and the product stays finite.
 	const Scalar absCos = fabs( Vector3Ops::Dot(
 		Vector3Ops::Normalize( vLightIn ), ri.onb.w() ) );
 	if( absCos > 0 ) {
@@ -743,6 +879,30 @@ RISEPel HairBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	Scalar C[3];
 	ReflectanceRGB( ri, C );
 	return RISEPel( C[0], C[1], C[2] );
+}
+
+void HairBRDF::TestApAndPathLength(
+	const RayIntersectionGeometric& ri, const Scalar sigmaA,
+	Scalar ap[4], Scalar& absorbLen
+	) const
+{
+	// The header cannot name kPMax (it is file-local here), so the array
+	// extent is spelled out there.  Keep the two in step.
+	static_assert( kPMax + 1 == 4,
+		"HairBRDF::TestApAndPathLength's declared ap[4] must match kPMax + 1" );
+
+	Resolved R;
+	Resolve( ri, R );
+
+	const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+	Scalar woL[3];
+	ToFibreFrame( wo, ri.onb, woL );
+
+	Geom G;
+	MakeGeom( R.h, R.etaRef, woL, G );
+
+	absorbLen = G.absorbLen;
+	ComputeAp( G.cosThetaO, R.etaRef, R.h, exp( -sigmaA * G.absorbLen ), ap );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -836,21 +996,11 @@ void HairSPF::DoScatter(
 	}
 
 	// --- tilt the outgoing longitudinal angle for this lobe ----------
+	// SAME helper the evaluation side uses, so the sign convention is
+	// structurally shared rather than duplicated.
 	Scalar sinThetapO, cosThetapO;
-	if( p == 0 ) {
-		sinThetapO = G.sinThetaO * R.cos2kAlpha[1] - G.cosThetaO * R.sin2kAlpha[1];
-		cosThetapO = G.cosThetaO * R.cos2kAlpha[1] + G.sinThetaO * R.sin2kAlpha[1];
-	} else if( p == 1 ) {
-		sinThetapO = G.sinThetaO * R.cos2kAlpha[0] + G.cosThetaO * R.sin2kAlpha[0];
-		cosThetapO = G.cosThetaO * R.cos2kAlpha[0] - G.sinThetaO * R.sin2kAlpha[0];
-	} else if( p == 2 ) {
-		sinThetapO = G.sinThetaO * R.cos2kAlpha[2] + G.cosThetaO * R.sin2kAlpha[2];
-		cosThetapO = G.cosThetaO * R.cos2kAlpha[2] - G.sinThetaO * R.sin2kAlpha[2];
-	} else {
-		sinThetapO = G.sinThetaO;
-		cosThetapO = G.cosThetaO;
-	}
-	cosThetapO = fabs( cosThetapO );
+	ApplyLobeTilt( p, R.sin2kAlpha, R.cos2kAlpha,
+	               G.sinThetaO, G.cosThetaO, sinThetapO, cosThetapO );
 
 	// --- sample M_p exactly (d'Eon et al. 2013) ----------------------
 	const Scalar u0 = sampler.Get1D();
@@ -894,9 +1044,9 @@ void HairSPF::DoScatter(
 	}
 
 	// --- throughput --------------------------------------------------
-	// kray = f_RISE * |cos theta_i| / pdf = fsum / pdf: the 1/|cos|
-	// inside f_RISE and the integrator's |cos| cancel (HairBSDF.h
-	// section 2), so the cosine never appears here at all.
+	// kray = f_RISE * |wi . N| / pdf = fsum / pdf: the 1/|wi . N|
+	// inside f_RISE and the integrator's |wi . N| cancel (HairBSDF.h
+	// section 2), so the shading cosine never appears here at all.
 	Scalar fsum[3];
 	EvalFsum( ri, R, wi, bNM, nm, fsum );
 

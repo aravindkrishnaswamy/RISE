@@ -283,27 +283,61 @@ Contract items (from [MATERIALS.md](MATERIALS.md) §9 and the interface headers)
 - `IsVolumetric()` stays false — fiber-interior absorption is inside the lobe attenuation terms
   A_p, not a medium the integrator marches.
 
-### 4.1 The tangent-frame and h plumbing (the one genuine gap)
+### 4.1 The tangent-frame and h plumbing
 
 A hair BSDF is expressed in the **fiber frame**: u = fiber tangent, with θ measured from the
 normal plane. RISE's existing anisotropic BRDFs (Ward, Ashikhmin-Shirley, GGX) read their frame
 from `ri.onb.u()/v()` — but for meshes and patches that ONB is built by `CreateFromW(normal)`
 with an **arbitrary** tangent (`TriangleMeshGeometry.cpp:663` et al.), which is useless as a
-fiber direction. The correct hook already exists and is already honored end-to-end:
-`RayIntersectionGeometric::bShadingTangentFromGeometry` (`RayIntersectionGeometric.h:237-250`)
-lets a geometry demand a coherent geometry-defined tangent, and `Object::IntersectRay`
-(`Object.cpp:637-657`) then builds the ONB via `CreateFromWU(n, t)`. Today only `SDFGeometry`'s
-heightfield mode sets it; **`hair_geometry` becomes the second setter**, writing the curve
-tangent at the hit. No integrator or material-dispatch changes are needed — the SPF simply reads
-`ri.onb.u()` as the fiber axis.
+fiber direction.
 
-The near-field offset **h** rides in the intersection's UV: `hair_geometry` defines
+**Nothing in the tree today can deliver a geometry-defined tangent, and this is real work the
+`hair_geometry` slice owns.** The near-miss is
+`RayIntersectionGeometric::bShadingTangentFromGeometry` (`RayIntersectionGeometric.h:237-250`).
+Read it carefully: it is a request for a **coherent** tangent, not for a **geometry-supplied**
+one, and it has **no companion tangent field** for a geometry to write. `Object::IntersectRay`
+(`Object.cpp:641-655`) honors it by projecting **world-X** into the plane perpendicular to the
+world-space shading normal — unconditionally, with a world-Y fallback when world-X is parallel to
+the normal — and handing that to `CreateFromWU(n, t)`. It never consults the geometry. That is
+exactly what its one current setter (`SDFGeometry` heightfield mode) wants: a *shared, stable*
+base tangent so an anisotropic `tangent_rotation` rotates from the same place on an SDF as on the
+`cartesian_disk` mesh. It is *not* a curve tangent, and a hair render driven by it would give
+every strand on the model the same world-X-derived fiber axis.
+
+The separate `vTangent` / `bitangentSign` / `bHasTangent` triple
+(`RayIntersectionGeometric.h:224-235`) *is* a real interpolated per-vertex tangent in world
+space — but it is populated only by glTF-loaded triangle meshes carrying a TANGENT array, and it
+is consumed by the normal-map modifier, not by the ONB build.
+
+So `hair_geometry` must land one of two plumbing changes:
+
+- **(a) Extend the flag's contract.** Add a `vShadingTangent` member alongside
+  `bShadingTangentFromGeometry`, have the geometry write the curve tangent at the hit, and make
+  the `Object::IntersectRay` branch prefer that member over the world-X projection when it is
+  set (keeping the projection as the fallback so `SDFGeometry`'s existing behavior is
+  byte-identical). Cleanest fit for the flag's *name*; costs one `RayIntersectionGeometric`
+  field.
+- **(b) Reuse `vTangent` / `bHasTangent`.** Let curve primitives populate the existing tangent
+  pair and have the ONB build honor `bHasTangent`. No record growth, but it widens a field whose
+  current contract is "glTF per-vertex tangent for normal mapping," and the ONB build would then
+  need to be ordered against the normal-map modifier.
+
+Either way this is **not** a no-op: an `Object::IntersectRay` change is required. Until it lands,
+`HairBSDF` reads whatever `ri.onb.u()` happens to be (see the fiber-frame note at the top of
+`HairBSDF.h`), which is correct-but-arbitrary — fine for the unit tests, wrong for a render.
+
+The near-field offset **h**, by contrast, needs no new plumbing at all: `hair_geometry` defines
 `ri.ptCoord = (s, t)` with s = normalized arc-length root→tip and t ∈ [0,1] across the ribbon
 width, so h = 2t − 1 — exactly PBRT's `Curve` convention. The second UV channel
 `ri.ptCoord1` (`RayIntersectionGeometric.h:155-165`) carries the **strand's root UV on the base
 surface**, baked per-strand at generation time, so any existing `IPainter` grooming/color map
 authored in scalp space works on strands unmodified (e.g. a calico color map). This reuses two
-existing record fields; no `RayIntersectionGeometric` growth is required for Phase 1.
+existing record fields; no `RayIntersectionGeometric` growth is required for the h side.
+
+Note the same slice owes the *default*: geometry with no UV channel leaves `ptCoord` at (0, 0),
+so h resolves to the fiber edge everywhere, where the Fresnel term saturates and the model reads
+as a colorless white mirror. `HairBSDF` clamps h just short of ±1 so such a hit still carries
+some color, but that is damage control, not a fix.
 
 ### 4.2 Registration surface (per-material fixed cost)
 
@@ -392,7 +426,8 @@ holding all strands of one groom in shared arrays:
   matters enormously in hair — self-shadowing dominates), `GenerateBoundingBox/Sphere` trivial;
   `UniformRandomPoint`/`GetArea` unsupported with `CanBeAreaLight() = false` (`IGeometry.h:207`)
   — emissive fur is out of scope; `CanTessellate() = false` (hair must not be eligible as a
-  `displaced_geometry` base or glTF-export victim); sets `bShadingTangentFromGeometry` (§4.1).
+  `displaced_geometry` base or glTF-export victim); supplies the curve tangent through whichever
+  of §4.1's two options is taken, which includes the accompanying `Object::IntersectRay` change.
 
 ### 5.3 Generation and grooming — the authoring surface
 
@@ -557,7 +592,8 @@ grooming on a base mesh.
 1. `HairBRDF`/`HairSPF`/`HairMaterial` (Chiang lobes, three color tiers, `EvaluateKrayNM`,
    `albedo()`, roughness floors).
 2. `HairGeometry` (float CP arrays, segment `BVH<>`, recursive-split ribbon intersection,
-   cylinder shading normal, tangent + h + dual-UV plumbing via `bShadingTangentFromGeometry`).
+   cylinder shading normal, h + dual-UV plumbing, and the curve-tangent plumbing of §4.1 —
+   including the `Object::IntersectRay` change it requires).
 3. `Realize()` grooming generator: surface sampling, density/length/orient painters, clump,
    frizz, seed-deterministic.
 4. Registration: `AddHairMaterial` + `AddHairGeometry` through IJob/Job/RISE_API + two

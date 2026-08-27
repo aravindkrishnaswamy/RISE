@@ -31,20 +31,36 @@
 //  fibre axis at which the ray crosses the fibre's width.  It rides in
 //  the intersection's across-width texture coordinate:
 //
-//      h = 2 * ri.ptCoord.y - 1        (clamped to [-1, 1])
+//      h = 2 * ri.ptCoord.y - 1        (clamped to +/- 0.9995)
 //
 //  which is PBRT's `Curve` convention (h = 2v - 1).  Geometry that is
 //  not a fibre (a sphere or a mesh, as used by the unit tests) still
 //  yields a well-defined h; the model degrades to "the hair BCSDF
 //  evaluated at that offset", which is exactly what a fibre would do.
 //
+//  ! GEOMETRY WITH NO UV CHANNEL IS A TRAP.  `ptCoord` defaults to
+//  (0, 0), so h resolves to -1 -- the fibre EDGE -- at every hit.
+//  cos(gamma_o) is then 0, the Fresnel term saturates to 1, and the
+//  model degenerates to a colourless white mirror (all transmissive
+//  orders vanish).  The +/- 0.9995 clamp keeps a sliver of colour
+//  rather than a hard white, but the appearance is still near-grazing
+//  everywhere and is NOT what the author asked for.  Until
+//  `hair_geometry` supplies real across-width coordinates, bind hair
+//  only to geometry that generates a v coordinate.
+//
 //  The fibre TANGENT must be a real, coherent, geometry-supplied
-//  direction for a hair render to look right.  Today only geometries
-//  that set `bShadingTangentFromGeometry` get a non-arbitrary ONB u
-//  axis, and `Object::IntersectRay` currently derives that axis by
-//  projecting world-X into the normal plane rather than from a
-//  geometry-supplied tangent.  Supplying the curve tangent is the job
-//  of the `hair_geometry` slice; this file only reads `ri.onb.u()`.
+//  direction for a hair render to look right, and TODAY NOTHING
+//  SUPPLIES ONE.  `bShadingTangentFromGeometry` is a request for a
+//  COHERENT tangent, not for a geometry-defined one: `Object::IntersectRay`
+//  (Object.cpp:641-655) honours it by projecting WORLD-X into the plane
+//  perpendicular to the shading normal, unconditionally -- the flag has
+//  no companion tangent field for a geometry to write.  The separate
+//  `vTangent` / `bHasTangent` pair (RayIntersectionGeometric.h:224-235)
+//  IS a real per-vertex tangent, but it is glTF-only and consumed by the
+//  normal-map modifier.  Closing the gap is the `hair_geometry` slice's
+//  job (see docs/HAIR_FUR_DESIGN.md section 4.1 for the two options);
+//  this file only reads `ri.onb.u()` and will pick up whatever that
+//  slice lands.
 //
 //  ------------------------------------------------------------------
 //  2.  THE kray / pdf CONVENTION  (the load-bearing reconciliation)
@@ -55,10 +71,18 @@
 //  the PT integrator (PathTracingIntegrator.cpp:2968 / :3285 multiply
 //  `kray` straight into throughput with no further cosine or pdf):
 //
-//      ScatteredRay::kray / krayNM  ==  f_RISE * |cos theta_i| / pdf
+//      ScatteredRay::kray / krayNM  ==  f_RISE * |wi . N| / pdf
 //      IBSDF::value(wi, ri)         ==  f_RISE                       (NEE
 //          multiplies it by |dot(wi, ri.vNormal)| and divides by the
 //          light pdf -- LightSampler.cpp:1675-1679, :1776, :1885)
+//
+//  NOTE THE COSINE.  |wi . N| is the SHADING cosine (PBRT's
+//  AbsCosTheta in the shading frame).  It is NOT cos(theta_i): the
+//  fibre's theta is measured from the NORMAL PLANE (the plane
+//  perpendicular to the fibre tangent), so cos(theta_i) is 1 exactly
+//  where wi is perpendicular to the tangent, while |wi . N| is 0
+//  wherever wi is perpendicular to the shading normal.  The two are
+//  different functions and only the shading one appears here.
 //
 //  The Chiang BCSDF, on the other hand, is normalised WITHOUT a
 //  cosine: the bare lobe sum obeys
@@ -67,9 +91,10 @@
 //
 //  because a fibre's scattering is defined per unit projected fibre
 //  cross-section, not per unit projected surface area.  PBRT reconciles
-//  the two by dividing `fsum` by |cos theta_i| inside `f`, so that the
-//  integrator's own |cos theta_i| cancels it.  RISE needs the identical
-//  reconciliation, and it is the CONSTRAINT this file is built around:
+//  the two by dividing `fsum` by the shading |wi . N| inside `f`, so
+//  that the integrator's own |wi . N| cancels it.  RISE needs the
+//  identical reconciliation, and it is the CONSTRAINT this file is
+//  built around:
 //
 //      CONSTRAINT:   value(wi, ri) = fsum(wo, wi) / |dot(wi, N)|
 //                    kray          = fsum(wo, wi) / pdf
@@ -81,10 +106,15 @@
 //  estimate of INTEGRAL value*|cos| == 1) proves it.  `HairBSDFTest`
 //  asserts exactly these two quantities.
 //
-//  The 1/|cos theta_i| factor is singular in the normal plane.  It is
-//  applied only when |cos theta_i| > 0 (PBRT does the same); every
-//  consumer that uses `value` multiplies the cosine straight back, so
-//  the product stays finite and the cancellation is exact.
+//  The 1/|wi . N| factor is singular on the great circle where
+//  wi . N == 0 -- the circle spanned by the fibre tangent u and the
+//  bitangent v, which CONTAINS the fibre tangent.  (It is emphatically
+//  NOT the "normal plane" of hair terminology, the v-w plane
+//  perpendicular to the tangent; the two are perpendicular to each
+//  other.)  The reciprocal is applied only when |wi . N| > 0 (PBRT does
+//  the same); every consumer that uses `value` multiplies the same
+//  cosine straight back, so the product stays finite and the
+//  cancellation is exact.
 //
 //  ------------------------------------------------------------------
 //  3.  SAMPLING PDF IS DELIBERATELY ACHROMATIC
@@ -101,10 +131,18 @@
 //
 //    * the lobe-selection PMF A_p is built from an ACHROMATIC proxy
 //      absorption -- the component-wise MINIMUM of the RGB sigma_a
-//      triple.  Minimum (i.e. MAXIMUM transmittance) is deliberate: it
-//      over-weights the transmissive lobes relative to every
-//      wavelength, so f(lambda)/pdf stays bounded and no wavelength can
-//      produce a firefly by landing in an under-weighted lobe.
+//      triple.  Minimum (i.e. MAXIMUM transmittance) buys a genuine
+//      ALGEBRAIC BOUND, not merely a heuristic margin.  T_proxy >=
+//      T_lambda; ap[0] = f is independent of T and every ap[p >= 1] is
+//      strictly increasing in T, so ap_lambda[p] <= ap_proxy[p]
+//      termwise, so
+//          fsum_lambda / pdf = S * dot(w, ap_lambda) / dot(w, ap_proxy)
+//                            <= S = sum_p ap_proxy[p] <= 1,
+//      the last step because the four orders telescope to exactly 1 at
+//      T = 1 and S falls monotonically in T.  kray therefore provably
+//      lies in [0, 1] for every channel and for any non-dispersive
+//      wavelength -- no wavelength can fire by landing in a starved
+//      lobe.  The full derivation is at HairScatteringBase::SigmaAProxy.
 //    * the azimuthal / longitudinal geometry used by `Pdf` uses the
 //      achromatic reference IOR `ior->GetValuesAt(ri).v[0]`.
 //
@@ -123,10 +161,19 @@
 //    1. `eumelanin` / `pheomelanin` concentrations (IScalarPainter):
 //       sigma_a(lambda) = c_eu * eps_eu(lambda) + c_ph * eps_ph(lambda),
 //       eps from the in-tree OMLC spectroscopy tables shared verbatim
-//       out of BioSpecSkinData.h, normalised so the 550 nm value
-//       reproduces PBRT's per-unit-concentration green coefficient
-//       (0.697 eu / 0.400 ph) -- i.e. concentration ~1.3 is brown-black
-//       hair, matching every published Chiang parameterisation.
+//       out of BioSpecSkinData.h, normalised at a SINGLE anchor so the
+//       550 nm value reproduces PBRT's per-unit-concentration GREEN
+//       coefficient (0.697 eu / 0.400 ph) -- i.e. concentration ~1.3 is
+//       brown-black hair, matching every published Chiang
+//       parameterisation.
+//       ! THE PBRT MATCH IS GREEN-ONLY.  R and B are then whatever the
+//       measured OMLC curve says, and they do NOT reproduce PBRT's other
+//       two constants (which are a colour-matching PROJECTION of the same
+//       data, a different quantity): measured at 600 / 450 nm, eumelanin
+//       is +23.5 % / -5.6 % and pheomelanin +24.2 % / +1.7 % against
+//       PBRT.  Spectral fidelity to the measurement is the deliberate
+//       choice; a PBRT cross-render matches in G and runs slightly warm
+//       in R.  Numbers and rationale at kEumelaninSigmaAAt550 in the .cpp.
 //    2. `sigma_a` directly (IScalarPainter): power users, measured data.
 //    3. `color` (IPainter, Albedo kind): Chiang's inversion of the
 //       multiple-scattering-averaged reflectance,
@@ -165,6 +212,30 @@
 //    weight is consequently too small.  That is an integrator-level
 //    limitation, not a material one; it is out of scope for this slice
 //    and is recorded in docs/HAIR_FUR_DESIGN.md's risk register.
+//  * LEGACY COSINE-OMITTING `value` CONSUMERS.  Section 2's constraint
+//    -- value == fsum / |wi . N| -- is only safe for a caller that
+//    multiplies |wi . N| back.  Three legacy shader ops do not:
+//      - AmbientOcclusionShaderOp.cpp:139, :151 and
+//        FinalGatherShaderOp.cpp:215, :508 accumulate
+//        `radiance * pBRDF->value(dir, ri)` with NO cosine, which on
+//        hair is an unbounded-variance estimator (the 1/|wi . N| is
+//        left uncancelled and diverges as wi approaches the
+//        tangent/bitangent great circle).
+//      - AreaLightShaderOp.cpp:137, :214 weight by `pow(fDot, pN)`
+//        where fDot is the surface cosine and pN is the emitter's
+//        Phong exponent; at the common `pN == 0` that term is 1, so
+//        the surface cosine is missing entirely and 1/|wi . N| blows
+//        up the same way.
+//    ALL FOUR ARE UNREACHABLE TODAY -- nothing can bind a hair material
+//    until the parser/registration slice lands.  The decision (clamp
+//    the reciprocal, gate hair out of these ops, or fix the ops to
+//    carry the cosine) is OWED BY THAT SLICE and must not ship without
+//    one.
+//  * NO REGRESSION SCENE YET.  MATERIALS.md section 9 requires a
+//    `scenes/Tests/` scene per new BSDF.  That is BLOCKED on the
+//    registration slice, not an oversight: a scene file cannot name a
+//    material the parser does not accept.  HairBSDFTest.cpp carries the
+//    numeric coverage in the meantime.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: August 26, 2026
@@ -217,8 +288,13 @@ namespace RISE
 			{}
 
 			//! Number of colour tiers that have at least one slot bound.
-			//! Must be exactly 1; HairBRDF / HairSPF log an error and
-			//! fall back to a mid-brown sigma_a otherwise.
+			//! Must be exactly 1.  When it is not, HairBRDF / HairSPF log
+			//! an error at construction and cache the verdict in
+			//! `bColorTierValid`; EVERY colour resolution then returns the
+			//! uniform mid-brown sigma_a, whatever painters happen to be
+			//! bound.  (It is deliberately NOT "priority order among the
+			//! bound tiers": a misconfigured material must look like the
+			//! error the log describes, not like a silently-chosen tier.)
 			int ActiveColorTierCount() const
 			{
 				return ( ( eumelanin || pheomelanin ) ? 1 : 0 ) +
@@ -267,10 +343,13 @@ namespace RISE
 			void Resolve( const RayIntersectionGeometric& ri, Resolved& out ) const;
 
 			//! sigma_a per RGB channel at this hit (all three tiers).
+			//! Returns the uniform mid-brown fallback -- and ONLY that --
+			//! when `bColorTierValid` is false.
 			void SigmaARGB( const RayIntersectionGeometric& ri,
 			                const Scalar betaN, Scalar out[3] ) const;
 
-			//! sigma_a at one wavelength (all three tiers).
+			//! sigma_a at one wavelength (all three tiers).  Same
+			//! `bColorTierValid` fallback as SigmaARGB.
 			Scalar SigmaANM( const RayIntersectionGeometric& ri,
 			                 const Scalar betaN, const Scalar nm ) const;
 
@@ -280,19 +359,23 @@ namespace RISE
 			Scalar SigmaAProxy( const RayIntersectionGeometric& ri,
 			                    const Scalar betaN ) const;
 
-			//! Closed-form multiple-scattering-averaged reflectance
-			//! implied by this hit's colour tier -- tier 3 returns the
-			//! painter's colour, tiers 1-2 invert
-			//! C = exp( -sqrt(sigma_a) * D(beta_n) ).  Clamped to [0, 1].
-			//! Backs `HairBRDF::albedo` (the OIDN albedo AOV).
+			//! Closed-form directional-hemispherical reflectance implied
+			//! by this hit's colour tier, PLUS the achromatic R-lobe
+			//! surface term -- tier 3 starts from the painter's colour,
+			//! tiers 1-2 invert C = exp( -sqrt(sigma_a) * D(beta_n) ),
+			//! and both are then composited as C + (1 - C) * F_avg with
+			//! F_avg the normal-incidence dielectric Fresnel for this
+			//! hit's eta.  Without that term black hair reports albedo 0
+			//! and OIDN de-guides the whole specular highlight.  Clamped
+			//! to [0, 1].  Backs `HairBRDF::albedo` (the OIDN albedo AOV).
 			void ReflectanceRGB( const RayIntersectionGeometric& ri,
 			                     Scalar out[3] ) const;
 
-			//! The BARE Chiang lobe sum -- NO 1/|cos theta_i| factor,
+			//! The BARE Chiang lobe sum -- NO 1/|wi . N| factor,
 			//! so it integrates to 1 over the sphere in solid-angle
 			//! measure when sigma_a == 0.  This is the quantity `kray`
 			//! divides by `pdf`, and the quantity `value` divides by
-			//! |cos theta_i| (file header, section 2).
+			//! the SHADING cosine |wi . N| (file header, section 2).
 			//!
 			//! `bNM == false` fills all three of `out` from the RGB
 			//! sigma_a triple at the reference IOR; `bNM == true` fills
@@ -322,6 +405,14 @@ namespace RISE
 			const IScalarPainter*	pAlpha;
 			const IScalarPainter*	pIOR;
 
+			//! `HairPainters::ActiveColorTierCount() == 1`, decided ONCE
+			//! at construction.  False makes every colour resolution
+			//! return the mid-brown fallback, which is what the
+			//! constructor's error message promises the author.  Cached
+			//! so the per-hit path tests one bool instead of four
+			//! pointers.
+			const bool				bColorTierValid;
+
 		private:
 			HairScatteringBase( const HairScatteringBase& );
 			HairScatteringBase& operator=( const HairScatteringBase& );
@@ -342,7 +433,8 @@ namespace RISE
 		public:
 			explicit HairBRDF( const HairPainters& p );
 
-			//! f_RISE = fsum / |cos theta_i|; see the file header,
+			//! f_RISE = fsum / |wi . N| (the SHADING cosine, NOT
+			//! cos theta_i); see the file header,
 			//! section 2.  `vLightIn` points FROM the surface TOWARD the
 			//! light (PBRT's wi); the view direction is -ri.ray.Dir().
 			RISEPel	value(
@@ -362,6 +454,23 @@ namespace RISE
 			//! OIDN albedo AOV -- noise-free by construction.
 			RISEPel albedo(
 				const RayIntersectionGeometric& ri
+				) const;
+
+			//! TEST HOOK -- not called by the renderer, and deliberately
+			//! not part of `IBSDF`.  Exposes the per-order apparent
+			//! attenuation A_p (4 entries, p = 0..kPMax) and the internal
+			//! optical path length at this hit for one absorption
+			//! coefficient, so `HairBSDFTest` can check the absorption
+			//! FORMULA against its closed form (at h = 0 and theta_o = 0
+			//! the path length is exactly 2 fibre diameters, hence the
+			//! TT transmittance is exactly exp(-2 sigma_a)) rather than
+			//! against a self-consistency identity.  Uses the achromatic
+			//! reference IOR, matching `EvalPdf`.
+			void TestApAndPathLength(
+				const RayIntersectionGeometric& ri,
+				const Scalar sigmaA,
+				Scalar ap[4],
+				Scalar& absorbLen
 				) const;
 		};
 

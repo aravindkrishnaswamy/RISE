@@ -3,7 +3,7 @@
 //  HairBSDFTest.cpp - Validation of the Chiang et al. 2016 near-field
 //    hair BCSDF (src/Library/Materials/HairBSDF.{h,cpp}).
 //
-//  Six groups of tests:
+//  Twelve groups of tests:
 //
 //    1. WHITE FURNACE (the energy-conservation regression guard).
 //       With sigma_a == 0 the bare Chiang lobe sum must integrate to
@@ -15,17 +15,23 @@
 //             `value(wi) * |cos(wi, N)|` over the sphere, which is the
 //             ONLY one of the two that actually tests the M_p / N_p
 //             normalisation (see the note above RunFurnace).
+//       1b repeats both at the PARAMETER CORNERS: the beta floor
+//       (0.05, the only cell that reaches LogBesselI0's asymptotic
+//       branch), the beta ceiling (1.0), the post-clamp fibre edge
+//       (h = +/- 0.9995), and near-grazing theta_o (88 degrees).
 //
 //    2. SAMPLE <-> PDF CONSISTENCY.  Every sampled direction must
 //       report a strictly positive `Pdf`, and that `Pdf` must equal the
-//       pdf the sample carried.  Plus the estimator cross-check
+//       pdf the sample carried (a WIRING identity -- see the note in
+//       RunSPFSamples).  Plus the estimator cross-check
 //       E[value * cos / pdf] (over SPF samples) == the quadrature of
 //       INTEGRAL value * cos, at a NON-zero sigma_a so the ratio is not
-//       trivially 1.
+//       trivially 1; 2c repeats it at the same corners as 1b.
 //
 //    3. PdfNM integrates to 1 over the sphere.
 //
-//    4. EvaluateKrayNM CONSISTENCY.  At the hero wavelength it must
+//    4. EvaluateKrayNM CONSISTENCY (also wiring identities -- see the
+//       note above RunEvaluateKrayNM).  At the hero wavelength it must
 //       reproduce the krayNM that ScatterNM produced; at a companion
 //       wavelength it must reproduce the integrator's own fallback
 //       route, valueNM * |cos| / pdf_hero.
@@ -34,7 +40,28 @@
 //       monotonically; pheomelanin reddens (throughput at 650 nm above
 //       throughput at 450 nm).
 //
-//    6. TIER-3 INVERSION ROUND TRIP.  colour C -> sigma_a -> C.
+//    6. TIER-3 INVERSION ROUND TRIP.  colour C -> sigma_a -> C, plus
+//       the achromatic R-lobe Fresnel term `albedo()` must carry.
+//
+//    7. ROUGHNESS FLOORS.  8. MATERIAL AGGREGATE.
+//
+//    9. COLOUR-TIER MISCONFIGURATION.  A material that binds two tiers
+//       must resolve to the mid-brown fallback its constructor logs,
+//       not to a silent priority-order pick.
+//
+//   10. beta_m / beta_n AXIS DISCRIMINATOR.  Groups 1-4 are all
+//       invariant under transposing the two roughnesses; this one is
+//       not.
+//
+//   11. CUTICLE-TILT DIRECTION.  A rotation is measure preserving, so
+//       every energy check above survives a flipped tilt sign; this one
+//       pins the sign and the 2k-alpha recurrence.
+//
+//   12. ABSORPTION PATH LENGTH.  The one CLOSED-FORM absorption check:
+//       at h = 0, theta_o = 0 the internal path is exactly 2 fibre
+//       diameters, so A_1 == (1-F)^2 exp(-2 sigma_a) with F written out
+//       longhand.  Plus an oblique cell against
+//       2 cos(gamma_t)/cos(theta_t).
 //
 //  DELIBERATELY NOT TESTED: reciprocity.  The Chiang model is knowingly
 //  non-reciprocal -- the near-field h-conditioning and the cuticle-tilt
@@ -99,6 +126,16 @@ static const double kPdfExactTol     = 1e-9;
 static const double kEstimatorTol    = 0.02;
 static const double kKrayNMTol       = 1e-9;
 static const double kInversionTol    = 0.15;
+
+//! EXPLICIT RNG SEED.  `RandomNumberGenerator`'s default argument is
+//! `rand()`, i.e. libc's global generator in whatever state the process
+//! left it -- so an unseeded construction here is only accidentally
+//! reproducible, and stops being so the moment anything above it draws a
+//! number.  Every generator in this file is constructed with this
+//! constant, which makes the Monte-Carlo means below deterministic
+//! run-to-run and a failure reproducible from the binary alone.
+//! (MERSENNE53 is on in Config.common, so the seeded overload exists.)
+static const unsigned int kRNGSeed = 20260826u;
 
 static int g_failures = 0;
 static int g_checks   = 0;
@@ -315,7 +352,7 @@ static SPFStats RunSPFSamples(
     st.pdfMismatches = 0;
     st.maxPdfRelErr = 0;
 
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( kRNGSeed );
     IndependentSampler sampler( rng );
 
     double sum = 0;
@@ -336,7 +373,17 @@ static SPFStats RunSPFSamples(
         const ScatteredRay& s = scattered[0];
         sum += bNM ? s.krayNM : s.kray[(unsigned int)channel];
 
-        // Cross-validate the carried pdf against a fresh Pdf() query.
+        // WIRING check, not an accuracy check.  `DoScatter` computes the
+        // pdf it stores by calling `EvalPdf`, and `Pdf`/`PdfNM` call the
+        // same `EvalPdf` on the same (ri, wi) -- so this is an algebraic
+        // IDENTITY between two evaluations of one pure function, and it
+        // is 1e-9-tight for that reason and no other.  What it does
+        // catch: a direction rebuilt inconsistently between sampling and
+        // query, a stale `Resolved`, a PdfNM that forgets to delegate, or
+        // a future lobe-index shortcut in `Pdf`.  What it does NOT
+        // evidence: that either number is the CORRECT density -- that is
+        // group 3 (PdfNM integrates to 1) and group 2b (the estimator
+        // cross-check against an independent quadrature).
         const double pdfEval = bNM
             ? spf.PdfNM( ri, s.ray.Dir(), nm, iorStack )
             : spf.Pdf( ri, s.ray.Dir(), iorStack );
@@ -422,6 +469,165 @@ static void RunFurnace()
         }
     }
 
+}
+
+// ============================================================
+//  1b.  Furnace + pdf CORNERS
+//
+//  The main grid above samples the interior of the parameter space.
+//  These are the edges, where the model is most likely to fall over:
+//    * beta = kMinBeta (0.05), the FLOOR.  This is the only cell that
+//      exercises `LogBesselI0`'s large-argument asymptote at all: the
+//      TT variance there is ~3.7e-4, so a = cos.cos/v reaches ~2.7e3 and
+//      the direct sinh(1/v)/I0(a) form would overflow.
+//    * beta = kMaxBeta (1.0), the CEILING, where the pow(b, 20) / pow(b,
+//      22) terms in the beta -> variance / beta -> s remaps are at full
+//      strength.
+//    * h = +/- 0.9995, the post-clamp fibre EDGE, where cos(gamma_o) is
+//      ~0.032, the Fresnel term is ~0.85 and the transmissive orders are
+//      nearly starved -- the regime the h clamp exists to keep finite.
+//    * theta_o = 88 degrees, near-grazing along the fibre, where
+//      eta' ~ 34 and the tilted TRT lobe rotates past the pole.
+//  Sample counts are trimmed (the SPF furnace is an exact identity at
+//  sigma_a == 0, so it needs no statistics) while the quadrature keeps
+//  full resolution, since it is the only check that can actually fail.
+// ============================================================
+
+static void RunFurnaceCorners()
+{
+    std::cout << "=== 1b. Furnace corners (beta floor / ceiling, fibre edge, grazing) ===" << std::endl;
+
+    ScalarRef sigmaZero( new UniformScalarPainter( 0.0 ) );
+    ScalarRef alpha( new UniformScalarPainter( 2.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    const int kCornerSPFSamples = 20000;
+
+    // (beta_m, beta_n, h, theta_o)
+    const double cells[16][4] = {
+        { 0.05, 0.05,  0.0,     0.35 },
+        { 0.05, 0.05,  0.9995,  0.35 },
+        { 0.05, 0.05, -0.9995,  0.35 },
+        { 0.05, 1.0,   0.0,     0.35 },
+        { 0.05, 1.0,   0.9995,  0.35 },
+        { 1.0,  0.05,  0.0,     0.35 },
+        { 1.0,  0.05, -0.9995,  0.35 },
+        { 1.0,  1.0,   0.0,     0.35 },
+        { 1.0,  1.0,   0.9995,  0.35 },
+        { 1.0,  1.0,  -0.9995,  0.35 },
+        // Near-grazing along the fibre axis (88 degrees).
+        { 0.05, 0.05,  0.0,     1.53589 },
+        { 0.05, 0.05,  0.9995,  1.53589 },
+        { 0.3,  0.3,   0.0,     1.53589 },
+        { 0.3,  0.3,   0.9995,  1.53589 },
+        { 1.0,  1.0,   0.0,     1.53589 },
+        { 1.0,  1.0,  -0.9995,  1.53589 }
+    };
+
+    for( int i = 0; i < 16; i++ )
+    {
+        ScalarRef betaM( new UniformScalarPainter( cells[i][0] ) );
+        ScalarRef betaN( new UniformScalarPainter( cells[i][1] ) );
+
+        const HairPainters hp = MakeSigmaAPainters( *sigmaZero, *betaM, *betaN, *alpha, *ior );
+        HairBRDF* brdf = new HairBRDF( hp );  brdf->addref();
+        HairSPF*  spf  = new HairSPF( hp );   spf->addref();
+
+        const RayIntersectionGeometric ri = MakeFibreHit( cells[i][3], 0.9, cells[i][2] );
+
+        char label[192];
+        snprintf( label, sizeof(label), "corner bm=%.2f bn=%.2f h=%+.4f thO=%.2f",
+                  cells[i][0], cells[i][1], cells[i][2], cells[i][3] );
+
+        const SPFStats rgb = RunSPFSamples( *spf, ri, iorStack, false, 0, 1, kCornerSPFSamples );
+        const SPFStats nm  = RunSPFSamples( *spf, ri, iorStack, true, 550.0, 0, kCornerSPFSamples );
+
+        Check( Near( rgb.meanKray, 1.0, kFurnaceSPFTol ),
+               std::string(label) + " SPF/RGB E[kray]", rgb.meanKray, 1.0 );
+        Check( Near( nm.meanKray, 1.0, kFurnaceSPFTol ),
+               std::string(label) + " SPF/NM E[krayNM]", nm.meanKray, 1.0 );
+        CheckTrue( rgb.nullScatters == 0 && nm.nullScatters == 0,
+                   std::string(label) + " no null scatters" );
+        CheckTrue( rgb.pdfMismatches == 0 && nm.pdfMismatches == 0,
+                   std::string(label) + " Pdf() == sample pdf" );
+
+        const double quad = QuadratureBSDFEnergy( *brdf, ri, 1 );
+        Check( Near( quad, 1.0, kFurnaceQuadTol ),
+               std::string(label) + " INTEGRAL value*cos", quad, 1.0 );
+
+        const double pdfInt = QuadraturePdfNM( *spf, ri, iorStack, 550.0 );
+        Check( Near( pdfInt, 1.0, kFurnaceQuadTol ),
+               std::string(label) + " INTEGRAL PdfNM", pdfInt, 1.0 );
+
+        std::cout << "  " << label
+                  << "  SPF=" << std::setprecision(8) << rgb.meanKray
+                  << "  quad=" << quad << "  pdfInt=" << pdfInt << std::endl;
+
+        spf->release();
+        brdf->release();
+    }
+}
+
+// ============================================================
+//  2c.  Estimator cross-check at the CORNERS
+//
+//  The interior estimator check below runs at beta = 0.3.  These repeat
+//  it at the roughness floor and ceiling and at the post-clamp fibre
+//  edge, with a NON-zero sigma_a so the f/pdf ratio is not the trivial
+//  1 the sigma_a == 0 furnace produces.
+// ============================================================
+
+static void RunEstimatorCorners()
+{
+    std::cout << "=== 2c. Estimator cross-check at the corners ===" << std::endl;
+
+    ScalarRef sigmaA( new UniformScalarPainter( 0.6 ) );
+    ScalarRef alpha( new UniformScalarPainter( 2.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    // (beta_m, beta_n, h, theta_o)
+    const double cells[5][4] = {
+        { 0.05, 0.05,  0.0,     -0.2 },
+        { 1.0,  1.0,   0.0,     -0.2 },
+        { 0.05, 1.0,   0.9995,  -0.2 },
+        { 1.0,  0.05, -0.9995,  -0.2 },
+        { 0.3,  0.3,   0.4,      1.53589 }
+    };
+
+    for( int i = 0; i < 5; i++ )
+    {
+        ScalarRef betaM( new UniformScalarPainter( cells[i][0] ) );
+        ScalarRef betaN( new UniformScalarPainter( cells[i][1] ) );
+
+        const HairPainters hp = MakeSigmaAPainters( *sigmaA, *betaM, *betaN, *alpha, *ior );
+        HairBRDF* brdf = new HairBRDF( hp );  brdf->addref();
+        HairSPF*  spf  = new HairSPF( hp );   spf->addref();
+
+        const RayIntersectionGeometric ri = MakeFibreHit( cells[i][3], 2.1, cells[i][2] );
+
+        const SPFStats st = RunSPFSamples( *spf, ri, iorStack, false, 0, 1, kSPFSamples );
+        const double quad = QuadratureBSDFEnergy( *brdf, ri, 1 );
+
+        char label[192];
+        snprintf( label, sizeof(label), "estimator corner bm=%.2f bn=%.2f h=%+.4f thO=%.2f",
+                  cells[i][0], cells[i][1], cells[i][2], cells[i][3] );
+
+        Check( Near( st.meanKray, quad, kEstimatorTol ),
+               std::string(label) + " E[value*cos/pdf] == INTEGRAL value*cos",
+               st.meanKray, quad );
+        CheckTrue( st.pdfMismatches == 0, std::string(label) + " Pdf() == sample pdf" );
+        CheckTrue( st.nullScatters == 0,  std::string(label) + " no null scatters" );
+
+        std::cout << "  " << label << "  E[kray]=" << std::setprecision(8) << st.meanKray
+                  << "  quad=" << quad << std::endl;
+
+        spf->release();
+        brdf->release();
+    }
 }
 
 // ============================================================
@@ -511,9 +717,21 @@ static void RunPdfIntegral()
 //  4.  EvaluateKrayNM consistency
 // ============================================================
 
+//! WHAT THIS GROUP IS AND IS NOT.  Both checks below are algebraic
+//! IDENTITIES -- `EvaluateKrayNM`, `ScatterNM` and `valueNM` are three
+//! entry points into the SAME `EvalFsum` / `EvalPdf` pair, so at
+//! matching arguments they cannot disagree except through a wiring bug.
+//! That is precisely what is being guarded, and it is worth guarding:
+//! the contract `EvaluateKrayNM` must satisfy is "return exactly what
+//! the integrator's own fallback would have computed", and the only way
+//! to break it is to wire it wrong (wrong pdf source, a lobe-index
+//! shortcut, a forgotten cosine, or -- the real hazard -- a sampling pdf
+//! that is NOT wavelength independent after all, which would make the
+//! hero identity fail).  It is NOT evidence that the underlying spectral
+//! values are physically right; that comes from groups 1, 2b and 5.
 static void RunEvaluateKrayNM()
 {
-    std::cout << "=== 4. EvaluateKrayNM consistency ===" << std::endl;
+    std::cout << "=== 4. EvaluateKrayNM consistency (wiring identities) ===" << std::endl;
 
     // A spectrally-varying tier-1 source, so the companion-wavelength
     // check is not trivially the same number as the hero's.
@@ -536,7 +754,7 @@ static void RunEvaluateKrayNM()
     IORStack iorStack = MakeTestIORStack( g_stubObject );
     const RayIntersectionGeometric ri = MakeFibreHit( 0.4, 0.7, 0.25 );
 
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( kRNGSeed );
     IndependentSampler sampler( rng );
 
     const double heroNM = 550.0;
@@ -666,6 +884,20 @@ static void RunMelaninLadder()
 //  the part that is meaningful at one bounce.
 // ============================================================
 
+//! What `albedo()` must report for an authored (tier 3) or implied
+//! (tiers 1-2) reflectance C: the absorption-driven part PLUS the
+//! achromatic R-lobe surface reflection, composited C + (1 - C) * F_avg
+//! with F_avg the normal-incidence dielectric Fresnel for `eta`.
+//! Chiang's C <-> sigma_a fit describes only the light that goes through
+//! the fibre, so without the surface term `albedo()` reports 0 for black
+//! hair -- and OIDN divides by the albedo AOV, turning the specular
+//! highlight into unguided noise.  See HairBSDF.h / ReflectanceRGB.
+static double ExpectedAlbedo( const double C, const double eta )
+{
+    const double r = ( eta - 1 ) / ( eta + 1 );
+    return C + ( 1 - C ) * r * r;
+}
+
 static double AlbedoForColor( const double C, const double betaNVal )
 {
     ColorRef color( new UniformColorPainter( RISEPel( C, C, C ), eSpectrumKind_Albedo ) );
@@ -743,23 +975,34 @@ static void RunInversionRoundTrip()
     {
         for( int i = 0; i < 4; i++ )
         {
-            // Tier 3 reports the authored colour verbatim.
+            // Tier 3 reports the authored colour, plus the achromatic
+            // R-lobe Fresnel term the AOV must carry.
+            const double want = ExpectedAlbedo( Cs[i], 1.55 );
             const double direct = AlbedoForColor( Cs[i], betaNs[bi] );
             char l1[160];
             snprintf( l1, sizeof(l1), "tier-3 albedo C=%.2f bn=%.2f", Cs[i], betaNs[bi] );
-            Check( Near( direct, Cs[i], 0.02 ), l1, direct, Cs[i] );
+            Check( Near( direct, want, 0.02 ), l1, direct, want );
 
             // Full C -> sigma_a -> C round trip across the two tiers.
             const double rt = RoundTripThroughSigmaA( Cs[i], betaNs[bi] );
             char l2[160];
             snprintf( l2, sizeof(l2), "C->sigma_a->C round trip C=%.2f bn=%.2f", Cs[i], betaNs[bi] );
-            Check( Near( rt, Cs[i], kInversionTol ), l2, rt, Cs[i] );
+            Check( Near( rt, want, kInversionTol ), l2, rt, want );
 
             std::cout << "  C=" << Cs[i] << " bn=" << betaNs[bi]
                       << "  albedo=" << std::setprecision(6) << direct
                       << "  roundtrip=" << rt << std::endl;
         }
     }
+
+    // The R-lobe Fresnel floor: pure black hair still reflects its
+    // surface highlight, so the AOV must NOT be 0 (OIDN divides by it).
+    const double blackAlbedo = AlbedoForColor( 0.0, 0.3 );
+    Check( Near( blackAlbedo, ExpectedAlbedo( 0.0, 1.55 ), 1e-9 ),
+           "albedo(C=0) == R-lobe Fresnel, not 0",
+           blackAlbedo, ExpectedAlbedo( 0.0, 1.55 ) );
+    CheckTrue( blackAlbedo > 0.04, "black hair albedo AOV is non-zero" );
+    std::cout << "  C=0 albedo=" << std::setprecision(6) << blackAlbedo << std::endl;
 
     // Single-scatter monotonicity: darker authored colour must not
     // scatter MORE energy at one bounce.
@@ -856,7 +1099,7 @@ static void RunMaterial()
     CheckTrue( matPdf > 0, "IMaterial::Pdf is non-zero (MIS enabled)" );
 
     // Every sampled lobe must carry the glossy tag and be non-delta.
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( kRNGSeed );
     IndependentSampler sampler( rng );
     int badType = 0, badDelta = 0, badCount = 0;
     for( int i = 0; i < 5000; i++ )
@@ -875,6 +1118,387 @@ static void RunMaterial()
 }
 
 // ============================================================
+//  9.  Colour-tier misconfiguration really does fall back
+//
+//  `HairScatteringBase`'s constructor logs "exactly one colour tier ...
+//  falling back to a uniform mid-brown sigma_a" whenever
+//  ActiveColorTierCount() != 1.  This asserts the CODE keeps that
+//  promise.  The failure mode being guarded is a resolution path that
+//  quietly applies a PRIORITY ORDER among the bound tiers instead --
+//  which renders a plausible-looking image while the log says something
+//  else, the worst possible combination for an author debugging a scene.
+// ============================================================
+
+static void RunColorTierMisconfig()
+{
+    std::cout << "=== 9. Colour-tier misconfiguration ===" << std::endl;
+
+    ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
+    ScalarRef alpha( new UniformScalarPainter( 2.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+
+    // Two tiers at once, each deliberately FAR from the mid-brown
+    // fallback (kFallbackSigmaA == 1.0) and far from each other, so any
+    // priority-order resolution is unmistakable: sigma_a 0.05 is nearly
+    // white hair, eumelanin 3.0 is sigma_a ~1.55 / 2.09 / 3.88 per RGB.
+    ScalarRef sigmaLight( new UniformScalarPainter( 0.05 ) );
+    ScalarRef eumelDark( new UniformScalarPainter( 3.0 ) );
+    ScalarRef midBrown( new UniformScalarPainter( 1.0 ) );
+
+    HairPainters bad;
+    bad.sigma_a   = sigmaLight.get();
+    bad.eumelanin = eumelDark.get();
+    bad.beta_m = betaM.get();  bad.beta_n = betaN.get();
+    bad.alpha  = alpha.get();  bad.ior    = ior.get();
+
+    CheckTrue( bad.ActiveColorTierCount() == 2,
+               "the misconfigured painter set really does bind 2 tiers" );
+
+    const HairPainters ref = MakeSigmaAPainters( *midBrown, *betaM, *betaN, *alpha, *ior );
+
+    HairBRDF* bBad = new HairBRDF( bad ); bBad->addref();
+    HairBRDF* bRef = new HairBRDF( ref ); bRef->addref();
+
+    // Also confirm the fallback is NOT what either bound tier would have
+    // produced -- otherwise the assertions below would be vacuous.
+    const HairPainters lightOnly = MakeSigmaAPainters( *sigmaLight, *betaM, *betaN, *alpha, *ior );
+    HairBRDF* bLight = new HairBRDF( lightOnly ); bLight->addref();
+
+    const RayIntersectionGeometric ri = MakeFibreHit( 0.3, 1.1, 0.2 );
+
+    int rgbMismatch = 0, nmMismatch = 0, vacuous = 0;
+    const double dirs[5][2] = { {-0.2, 2.4}, {0.3, 0.6}, {-0.9, 4.1}, {0.05, 1.1}, {1.1, 5.3} };
+    for( int d = 0; d < 5; d++ )
+    {
+        const Vector3 wi = FibreDir( ri, dirs[d][0], dirs[d][1] );
+
+        const RISEPel vBad = bBad->value( wi, ri );
+        const RISEPel vRef = bRef->value( wi, ri );
+        for( unsigned int c = 0; c < 3; c++ ) {
+            if( !Near( vBad[c], vRef[c], 1e-12 ) ) { rgbMismatch++; }
+        }
+
+        const double nBad = bBad->valueNM( wi, ri, 610.0 );
+        const double nRef = bRef->valueNM( wi, ri, 610.0 );
+        if( !Near( nBad, nRef, 1e-12 ) ) { nmMismatch++; }
+
+        // Vacuity guard: the light-hair tier must NOT already agree.
+        if( Near( bLight->value( wi, ri )[1], vRef[1], 1e-6 ) ) { vacuous++; }
+    }
+
+    CheckTrue( rgbMismatch == 0,
+               "2-tier misconfig resolves to the mid-brown fallback (value, RGB)" );
+    CheckTrue( nmMismatch == 0,
+               "2-tier misconfig resolves to the mid-brown fallback (valueNM)" );
+    CheckTrue( vacuous == 0,
+               "the fallback differs from the bound sigma_a tier (assertion is not vacuous)" );
+
+    // albedo() reads the same tier resolution through ReflectanceRGB.
+    const RISEPel aBad = bBad->albedo( ri );
+    const RISEPel aRef = bRef->albedo( ri );
+    Check( Near( aBad[1], aRef[1], 1e-12 ),
+           "2-tier misconfig albedo == mid-brown albedo", aBad[1], aRef[1] );
+
+    std::cout << "  fallback value=" << std::setprecision(8) << bRef->value( FibreDir( ri, -0.2, 2.4 ), ri )[1]
+              << "  (sigma_a-only tier would be "
+              << bLight->value( FibreDir( ri, -0.2, 2.4 ), ri )[1] << ")" << std::endl;
+
+    bLight->release(); bRef->release(); bBad->release();
+}
+
+// ============================================================
+//  10.  beta_m and beta_n control DIFFERENT axes
+//
+//  Every furnace / pdf / estimator check above is invariant under
+//  swapping the two roughness parameters: both integrals stay 1 and the
+//  estimator still matches the quadrature, because M_p and N_p are each
+//  normalised on their own axis.  So the whole suite would pass with
+//  beta_m and beta_n transposed in `Resolve`, or with the v[] ladder and
+//  the logistic scale s reading each other's input.
+//
+//  This test breaks that symmetry.  Two configurations, transposed:
+//      A = (beta_m 0.05, beta_n 0.8)  narrow longitudinal, broad azimuthal
+//      B = (beta_m 0.8,  beta_n 0.05) broad  longitudinal, narrow azimuthal
+//  are evaluated at two probe directions off the R-lobe specular peak:
+//      P_phi   -- ON the longitudinal peak, 0.3 rad off in AZIMUTH
+//      P_theta -- ON the azimuthal peak,    0.4 rad off LONGITUDINALLY
+//  A must dominate at P_phi (its broad N_p still reaches 0.3 rad while
+//  B's near-delta one has died); B must dominate at P_theta (its broad
+//  M_p still reaches 0.4 rad while A's has died).  Transposing the two
+//  parameters anywhere in the model flips both verdicts.
+//
+//  sigma_a is set very high so only the p = 0 lobe carries energy and
+//  the geometry of the comparison is unambiguous; alpha is 0 so the
+//  specular peak sits at the untilted theta_i = -theta_o, phi_i = phi_o
+//  (h = 0 => gamma_o = 0 => the R lobe's ideal azimuthal exit is 0).
+// ============================================================
+
+//! The BARE Chiang lobe sum at `wi`: `value()` times the shading cosine
+//! it divides out.  Comparing fsum rather than value keeps the
+//! 1/|wi . N| reconciliation out of the ratio, so a ratio between two
+//! directions reflects the MODEL and not the reconciliation.
+static double Fsum( const HairBRDF& brdf, const RayIntersectionGeometric& ri, const Vector3& wi )
+{
+    return brdf.value( wi, ri )[1] * fabs( Vector3Ops::Dot( wi, ri.onb.w() ) );
+}
+
+static void RunRoughnessAxisDiscriminator()
+{
+    std::cout << "=== 10. beta_m / beta_n drive different axes ===" << std::endl;
+
+    ScalarRef sigmaOpaque( new UniformScalarPainter( 20.0 ) );   // kills TT / TRT / residual
+    ScalarRef alphaZero( new UniformScalarPainter( 0.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+
+    ScalarRef bLo( new UniformScalarPainter( 0.05 ) );           // the model's floor
+    ScalarRef bHi( new UniformScalarPainter( 0.8 ) );
+
+    const HairPainters hpA = MakeSigmaAPainters( *sigmaOpaque, *bLo, *bHi, *alphaZero, *ior );
+    const HairPainters hpB = MakeSigmaAPainters( *sigmaOpaque, *bHi, *bLo, *alphaZero, *ior );
+
+    HairBRDF* A = new HairBRDF( hpA ); A->addref();
+    HairBRDF* B = new HairBRDF( hpB ); B->addref();
+
+    const double thetaO = 0.4;
+    const double phiO   = 1.0;
+    const RayIntersectionGeometric ri = MakeFibreHit( thetaO, phiO, 0.0 );
+
+    // R-lobe specular peak with alpha == 0 and h == 0.
+    const double thetaPeak = -thetaO;
+
+    const Vector3 wPhi   = FibreDir( ri, thetaPeak,       phiO + 0.3 );
+    const Vector3 wTheta = FibreDir( ri, thetaPeak + 0.4, phiO       );
+
+    const double aPhi = Fsum( *A, ri, wPhi ),   bPhi = Fsum( *B, ri, wPhi );
+    const double aTh  = Fsum( *A, ri, wTheta ), bTh  = Fsum( *B, ri, wTheta );
+
+    CheckTrue( aPhi > 0 && bTh > 0, "both discriminator winners are strictly positive" );
+    CheckTrue( aPhi > 2.0 * bPhi,
+               "broad beta_n survives a 0.3 rad AZIMUTHAL offset where narrow beta_n does not" );
+    CheckTrue( bTh > 2.0 * aTh,
+               "broad beta_m survives a 0.4 rad LONGITUDINAL offset where narrow beta_m does not" );
+
+    std::cout << "  azimuthal probe:    A(bm.05,bn.8)=" << std::setprecision(6) << aPhi
+              << "  B(bm.8,bn.05)=" << bPhi << std::endl;
+    std::cout << "  longitudinal probe: A(bm.05,bn.8)=" << aTh
+              << "  B(bm.8,bn.05)=" << bTh << std::endl;
+
+    B->release(); A->release();
+}
+
+// ============================================================
+//  11.  Cuticle-tilt DIRECTION
+//
+//  The 2k-alpha recurrence rotates the R lobe's outgoing longitudinal
+//  angle by -2 alpha (ApplyLobeTilt, p == 0), which moves the R-lobe
+//  specular peak from theta_i = -theta_o to theta_i = -theta_o + 2 alpha.
+//  Flipping that sign is invisible to every energy / pdf / estimator
+//  check in this file: a rotation is measure preserving, so all the
+//  integrals stay exactly 1 either way.  It is, however, the single most
+//  visible parameter in a hair render -- it is what separates the white
+//  primary highlight from the coloured secondary one.
+//
+//  The probe pair straddles the UNTILTED peak symmetrically, at
+//  theta_i = -theta_o +/- 4 alpha.  With the correct sign the peak sits
+//  at -theta_o + 2 alpha, so the + probe is 2 alpha from the peak and
+//  the - probe is 6 alpha away; the + probe must therefore win by a wide
+//  margin.  A sign flip swaps the two.
+//
+//  THE alpha == 0 CONTROL IS NOT AN EQUALITY.  M_p is a von-Mises-like
+//  lobe on the sphere, not a Gaussian in the flat angle theta: its
+//  I0(cos.cos/v) prefactor makes the probe closer to the pole measurably
+//  WEAKER even when both are equidistant from the peak.  Measured here
+//  the untilted ratio is ~0.77, i.e. BELOW 1 and favouring the - probe.
+//  That is the baseline the tilt has to overturn, and it makes the
+//  tilted ratio (~5.6) a strictly stronger statement, not a weaker one.
+// ============================================================
+
+static void RunCuticleTiltDirection()
+{
+    std::cout << "=== 11. Cuticle-tilt direction ===" << std::endl;
+
+    ScalarRef sigmaOpaque( new UniformScalarPainter( 20.0 ) );   // isolate the R lobe
+    ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+    ScalarRef alphaTilt( new UniformScalarPainter( 6.0 ) );      // degrees
+    ScalarRef alphaZero( new UniformScalarPainter( 0.0 ) );
+
+    const HairPainters hpTilt = MakeSigmaAPainters( *sigmaOpaque, *betaM, *betaN, *alphaTilt, *ior );
+    const HairPainters hpFlat = MakeSigmaAPainters( *sigmaOpaque, *betaM, *betaN, *alphaZero, *ior );
+
+    HairBRDF* tilt = new HairBRDF( hpTilt ); tilt->addref();
+    HairBRDF* flat = new HairBRDF( hpFlat ); flat->addref();
+
+    const double thetaO = 0.5;
+    const double phiO   = 1.0;
+    const double aRad   = 6.0 * PI / 180.0;
+    const RayIntersectionGeometric ri = MakeFibreHit( thetaO, phiO, 0.0 );
+
+    // Straddle the untilted peak by +/- 2 * (2 alpha).
+    const Vector3 wPlus  = FibreDir( ri, -thetaO + 4.0 * aRad, phiO );
+    const Vector3 wMinus = FibreDir( ri, -thetaO - 4.0 * aRad, phiO );
+
+    const double tPlus  = Fsum( *tilt, ri, wPlus  );
+    const double tMinus = Fsum( *tilt, ri, wMinus );
+    const double fPlus  = Fsum( *flat, ri, wPlus  );
+    const double fMinus = Fsum( *flat, ri, wMinus );
+
+    // Baseline: with no tilt the + probe is the WEAKER of the pair.
+    CheckTrue( fPlus < fMinus,
+               "alpha = 0 control: the untilted lobe favours the - probe (ratio < 1)" );
+    // ... and the tilt has to overturn that by a wide margin.
+    CheckTrue( tPlus > 3.0 * tMinus,
+               "R-lobe peak is rotated toward theta_i = -theta_o + 2*alpha (tilt SIGN)" );
+    CheckTrue( tPlus > fPlus,
+               "the tilt moves the peak TOWARD the + probe (it is not merely broadening)" );
+
+    // The peak really is at -theta_o + 2 alpha, not at the mirror angle
+    // and not on the -2 alpha side.
+    const double atPeak   = Fsum( *tilt, ri, FibreDir( ri, -thetaO + 2.0 * aRad, phiO ) );
+    const double atMirror = Fsum( *tilt, ri, FibreDir( ri, -thetaO, phiO ) );
+    const double atAnti   = Fsum( *tilt, ri, FibreDir( ri, -thetaO - 2.0 * aRad, phiO ) );
+    CheckTrue( atPeak > atMirror,
+               "tilted peak beats the untilted mirror angle" );
+    CheckTrue( atPeak > atAnti,
+               "tilted peak beats the -2*alpha (sign-flipped) angle" );
+
+    // REGRESSION PIN.  One fixed (theta_o, alpha, h, beta) tuple, tight
+    // tolerance.  This guards the 2k-alpha RECURRENCE itself -- the
+    // double-angle step that turns sin(alpha) into sin(2 alpha) and
+    // sin(4 alpha).  The ordering checks above only pin the sign; a
+    // recurrence that produced sin(alpha) where sin(2 alpha) belongs
+    // would keep every ordering and still shift the highlight.
+    const double kTiltPin = 0.1467911904;
+    Check( Near( atPeak, kTiltPin, 1e-6 ),
+           "tilt regression pin: fsum at (theta_o=0.5, alpha=6deg, h=0, beta=0.3)",
+           atPeak, kTiltPin );
+
+    std::cout << "  tilt:  +probe=" << std::setprecision(10) << tPlus
+              << "  -probe=" << tMinus << "  ratio=" << tPlus / tMinus << std::endl;
+    std::cout << "  flat:  +probe=" << fPlus << "  -probe=" << fMinus
+              << "  ratio=" << fPlus / fMinus << std::endl;
+    std::cout << "  atPeak=" << atPeak << "  atMirror=" << atMirror
+              << "  atAnti=" << atAnti << std::endl;
+
+    flat->release(); tilt->release();
+}
+
+// ============================================================
+//  12.  Absorption path length -- a CLOSED-FORM check
+//
+//  Every other absorption assertion in this file is a self-consistency
+//  identity or a monotonicity trend.  This one pins the actual formula.
+//
+//  At h = 0 the ray crosses the fibre through its axis: gamma_o = 0,
+//  sin(gamma_t) = h / eta' = 0, so cos(gamma_t) = 1.  At theta_o = 0 the
+//  ray is perpendicular to the fibre axis: sin(theta_t) = 0, so
+//  cos(theta_t) = 1.  The internal optical path is therefore
+//      L = 2 cos(gamma_t) / cos(theta_t) = 2      (fibre diameters)
+//  EXACTLY, and the TT order's single-pass transmittance is exactly
+//  exp(-2 sigma_a), with
+//      A_0 = F,   A_1 = (1 - F)^2 exp(-2 sigma_a)
+//  and F the normal-incidence dielectric Fresnel ((eta-1)/(eta+1))^2.
+//  Nothing here is read back out of the model: F, L and A_1 are all
+//  written out longhand from the physics.
+//
+//  A second, oblique cell (theta_o = 0.6, h = 0.5) re-derives
+//  L = 2 cos(gamma_t)/cos(theta_t) from Snell longhand, so the test also
+//  covers the gamma_t / eta' geometry rather than only the h = 0 axis.
+// ============================================================
+
+static void RunAbsorptionPathLength()
+{
+    std::cout << "=== 12. Absorption path length (closed form) ===" << std::endl;
+
+    const double eta = 1.55;
+
+    ScalarRef sigmaP( new UniformScalarPainter( 0.4 ) );
+    ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
+    ScalarRef alpha( new UniformScalarPainter( 2.0 ) );
+    ScalarRef ior( new UniformScalarPainter( eta ) );
+
+    const HairPainters hp = MakeSigmaAPainters( *sigmaP, *betaM, *betaN, *alpha, *ior );
+    HairBRDF* brdf = new HairBRDF( hp ); brdf->addref();
+
+    // --- axial cell: h = 0, theta_o = 0 -> L == 2 exactly -------------
+    {
+        const RayIntersectionGeometric ri = MakeFibreHit( 0.0, 0.9, 0.0 );
+
+        const double r = ( eta - 1 ) / ( eta + 1 );
+        const double F = r * r;                     // normal-incidence Fresnel
+
+        const double sigmas[3] = { 0.0, 0.3, 0.7 };
+        double ap1[3];
+        for( int i = 0; i < 3; i++ )
+        {
+            Scalar ap[4], L = 0;
+            brdf->TestApAndPathLength( ri, sigmas[i], ap, L );
+            ap1[i] = ap[1];
+
+            char lab[128];
+            snprintf( lab, sizeof(lab), "path length == 2 at h=0,theta_o=0 (sigma_a=%.1f)", sigmas[i] );
+            Check( Near( L, 2.0, 1e-12 ), lab, L, 2.0 );
+
+            snprintf( lab, sizeof(lab), "A_0 == normal-incidence Fresnel (sigma_a=%.1f)", sigmas[i] );
+            Check( Near( ap[0], F, 1e-12 ), lab, ap[0], F );
+
+            const double wantAp1 = ( 1 - F ) * ( 1 - F ) * exp( -2.0 * sigmas[i] );
+            snprintf( lab, sizeof(lab), "A_1 == (1-F)^2 exp(-2 sigma_a) (sigma_a=%.1f)", sigmas[i] );
+            Check( Near( ap[1], wantAp1, 1e-12 ), lab, ap[1], wantAp1 );
+
+            std::cout << "  sigma_a=" << sigmas[i] << "  L=" << std::setprecision(12) << L
+                      << "  A_0=" << ap[0] << "  A_1=" << ap[1] << std::endl;
+        }
+
+        // The exponent's COEFFICIENT (the 2, i.e. the path length) is
+        // what this ratio isolates: it is independent of F.
+        Check( Near( ap1[2] / ap1[1], exp( -2.0 * ( 0.7 - 0.3 ) ), 1e-12 ),
+               "A_1 ratio across sigma_a == exp(-2 * delta sigma_a)",
+               ap1[2] / ap1[1], exp( -2.0 * ( 0.7 - 0.3 ) ) );
+    }
+
+    // --- oblique cell: L == 2 cos(gamma_t) / cos(theta_t) -------------
+    {
+        const double thetaO = 0.6;
+        const double h      = 0.5;
+        const RayIntersectionGeometric ri = MakeFibreHit( thetaO, 0.9, h );
+
+        // Longhand Snell, exactly as the model's MakeGeom derives it.
+        const double sinThetaO = sin( thetaO );
+        const double cosThetaO = cos( thetaO );
+        const double sinThetaT = sinThetaO / eta;
+        const double cosThetaT = sqrt( 1 - sinThetaT * sinThetaT );
+        const double etap      = sqrt( eta * eta - sinThetaO * sinThetaO ) / cosThetaO;
+        const double sinGammaT = h / etap;
+        const double cosGammaT = sqrt( 1 - sinGammaT * sinGammaT );
+        const double wantL     = 2 * cosGammaT / cosThetaT;
+
+        Scalar ap[4], L = 0;
+        brdf->TestApAndPathLength( ri, 0.5, ap, L );
+
+        Check( Near( L, wantL, 1e-12 ),
+               "oblique path length == 2 cos(gamma_t)/cos(theta_t)", L, wantL );
+        CheckTrue( wantL > 2.0,
+                   "the oblique path really is longer than the axial one (check is not vacuous)" );
+
+        // And the transmittance follows THAT length, not the axial 2.
+        const double wantRatio = exp( -( 0.9 - 0.5 ) * wantL );
+        Scalar ap2[4], L2 = 0;
+        brdf->TestApAndPathLength( ri, 0.9, ap2, L2 );
+        Check( Near( ap2[1] / ap[1], wantRatio, 1e-12 ),
+               "oblique A_1 ratio == exp(-delta sigma_a * L)", ap2[1] / ap[1], wantRatio );
+
+        std::cout << "  oblique L=" << std::setprecision(12) << L << " (want " << wantL << ")"
+                  << "  A_1 ratio=" << ap2[1] / ap[1] << std::endl;
+    }
+
+    brdf->release();
+}
+
+// ============================================================
 //  main
 // ============================================================
 
@@ -888,7 +1512,11 @@ int main()
 
     RunFurnace();
     std::cout << std::endl;
+    RunFurnaceCorners();
+    std::cout << std::endl;
     RunEstimatorCrossCheck();
+    std::cout << std::endl;
+    RunEstimatorCorners();
     std::cout << std::endl;
     RunPdfIntegral();
     std::cout << std::endl;
@@ -901,6 +1529,14 @@ int main()
     RunRoughnessFloor();
     std::cout << std::endl;
     RunMaterial();
+    std::cout << std::endl;
+    RunColorTierMisconfig();
+    std::cout << std::endl;
+    RunRoughnessAxisDiscriminator();
+    std::cout << std::endl;
+    RunCuticleTiltDirection();
+    std::cout << std::endl;
+    RunAbsorptionPathLength();
     std::cout << std::endl;
 
     g_stubObject->release();
