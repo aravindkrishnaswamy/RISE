@@ -38,7 +38,8 @@ void DirectionalLight::ComputeDirectLighting(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	RISEPel& amount,
-	const bool bFullSphereReceiver
+	const bool bFullSphereReceiver,
+	const bool bVolumeReceiver
 	) const
 {
 	amount = RISEPel(0.0);
@@ -58,10 +59,48 @@ void DirectionalLight::ComputeDirectLighting(
 	// rejecting it.  When `bFullSphereReceiver` is false this reduces
 	// TEXTUALLY to the pre-existing expression -- `fDotSigned` used
 	// verbatim -- so every non-full-sphere receiver is byte-identical.
+	//
+	// VOLUME RECEIVER (residual-ledger item 10 of
+	// docs/PT_ENV_MIS_DOUBLECOUNT.md).  `bVolumeReceiver` says the
+	// receiver is a MEDIUM SCATTER vertex, where `ri.vNormal` is not a
+	// normal at all: MediumTransport::EvaluateInScattering{,NM} sets it
+	// to the OUTGOING direction `wo` so that the surface-shaped rows it
+	// borrows produce *something*.  `Dot(vDirection, wo)` is a
+	// meaningless quantity there, and worse, the `<= 0` gate below
+	// rejects HALF THE SPHERE at a vertex whose phase function scatters
+	// over all of it -- a directional light lit only fog whose outgoing
+	// direction happened to lie within 90 degrees of the light.
+	//
+	// Derivation of the correct behaviour, radiance-only:
+	//     Ls(x, wo) = sigma_s(x) INT_{S^2} p(wi, wo) Li(x, wi) dwi
+	// The in-scattering integral runs over the FULL sphere and its only
+	// angular factor is the phase function.  There is no `cos theta`
+	// because the surface form's cosine is the projected-area Jacobian
+	// dA_perp/dA of an oriented surface patch, and a volume element has
+	// neither patch nor orientation.  `p` is already supplied to us as
+	// `brdf` (MediumScatterBSDF::value returns p(vLightIn, wo)) and
+	// `sigma_s` is applied by the caller, so all this function owes the
+	// estimator is `Li` = emitted radiance times visibility.  Setting
+	// `fDot` to 1 drops the factor; skipping the gate drops the
+	// rejection.  That is exactly what LightSampler's Step-2 / Step-3
+	// rows already do inline for the same vertex (`cosSurface = 1.0`
+	// under `isVolumeScatter`, plus `if( !isVolumeScatter && ... )` on
+	// the gate); Step 1, which reaches us, did not.
+	//
+	// PRECEDENCE: `bVolumeReceiver` beats `bFullSphereReceiver`.  The
+	// latter replaces the signed cosine with |cos| because a full-sphere
+	// SURFACE still has a real normal and a real projected-area factor;
+	// the former removes the cosine outright.  No cosine at all beats an
+	// unsigned cosine, so the volume branch is tested first.
+	//
+	// With both flags false the expression below reduces TEXTUALLY to the
+	// pre-existing one -- `fDotSigned` used verbatim, gate unchanged --
+	// so every surface receiver is byte-identical, not merely close.
 	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
-	const Scalar fDot = bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned;
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) :
+		( bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned );
 
-	if( fDot <= 0.0 ) {
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return;
 	}
 
@@ -94,17 +133,20 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	const Scalar nm,
-	const bool bFullSphereReceiver
+	const bool bFullSphereReceiver,
+	const bool bVolumeReceiver
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting: cosine of angle
 	// between light direction and surface normal, shadow ray test.
 	// Only the BSDF eval differs (per-NM scalar instead of per-RGB).
-	// FULL-SPHERE NEE: see the RGB overload above for the derivation;
-	// byte-identical to before when bFullSphereReceiver is false.
+	// FULL-SPHERE NEE and VOLUME RECEIVER: see the RGB overload above for
+	// both derivations; byte-identical to before when both flags are
+	// false.
 	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
-	const Scalar fDot = bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned;
-	if( fDot <= 0.0 ) {
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) :
+		( bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned );
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return Scalar(0);
 	}
 

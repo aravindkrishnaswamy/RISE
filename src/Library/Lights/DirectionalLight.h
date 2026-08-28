@@ -114,21 +114,32 @@ namespace RISE
 			//! itself gates), so when true this simply restores the
 			//! below-horizon direct term at full weight via `fabs`
 			//! instead of rejecting it -- see the .cpp.
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false ) const;
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27): this is the
+			//! light that item names.  At a MEDIUM SCATTER vertex
+			//! `ri.vNormal` is `wo`, not a normal, so both the `fDot`
+			//! factor and its `<= 0` rejection are dropped and the light
+			//! delivers RADIANCE ONLY -- the phase function, handed in as
+			//! `brdf`, carries the entire angular term.  Takes precedence
+			//! over `bFullSphereReceiver`.  Full derivation in the .cpp.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const;
 
 			//! Per-wavelength direct-lighting evaluation.  Mirrors the
 			//! RGB ComputeDirectLighting (cosine, shadow check) but
 			//! uses brdf.valueNM(direction, ri, nm) so the surface's
 			//! spectral character is preserved.  Light color projected
 			//! to luminance per the JH-flat-E convention.
-			//! `bFullSphereReceiver`: see the RGB overload above.
+			//! `bFullSphereReceiver` / `bVolumeReceiver`: see the RGB
+			//! overload above.
 			Scalar	ComputeDirectLightingNM(
 				const RayIntersectionGeometric& ri,
 				const IRayCaster& pCaster,
 				const IBSDF& brdf,
 				const bool bReceivesShadows,
 				const Scalar nm,
-				const bool bFullSphereReceiver = false
+				const bool bFullSphereReceiver = false,
+				const bool bVolumeReceiver = false
 				) const;
 
 			// For keyframamble interface

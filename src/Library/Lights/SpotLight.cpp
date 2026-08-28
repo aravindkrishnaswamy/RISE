@@ -48,7 +48,8 @@ void SpotLight::ComputeDirectLighting(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	RISEPel& amount,
-	const bool /*bFullSphereReceiver*/	// no-op here; see the .h doc
+	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
+	const bool bVolumeReceiver			// implemented; see the .h doc
 	) const
 {
 	//
@@ -69,10 +70,18 @@ void SpotLight::ComputeDirectLighting(
 	// we limit the spot light's effect.  If its between the outer and inner
 	// angles, then we linearly scale it.  If its within the inner angle, then its
 	// at full power.
+	//
+	// VOLUME RECEIVER: at a medium scatter vertex `ri.vNormal` is the
+	// outgoing direction `wo`, not a normal -- drop the receiver cosine
+	// and its hemisphere gate; the phase function (handed in as `brdf`)
+	// carries the whole angular term.  The cone falloff and `invDistSq`
+	// below are KEPT: both are emitter properties.  With the flag false
+	// this reduces TEXTUALLY to the pre-existing expression and gate.
+	// See ILight.h for the derivation.
+	const Scalar fDotSigned = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
 
-	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-
-	if( fDot <= 0.0 ) {
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return;
 	}
 
@@ -116,17 +125,19 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	const Scalar nm,
-	const bool /*bFullSphereReceiver*/	// no-op here; see the .h doc
+	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
+	const bool bVolumeReceiver			// implemented; see the .h doc
 	) const
 {
 	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
 	// BSDF eval and the shadow Fresnel are per-wavelength (brdf.valueNM,
-	// CastShadowRayAuto bNM=true).
+	// CastShadowRayAuto bNM=true).  VOLUME RECEIVER: see the RGB overload.
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
 	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
 
-	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-	if( fDot <= 0.0 ) {
+	const Scalar fDotSigned = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return Scalar(0);
 	}
 

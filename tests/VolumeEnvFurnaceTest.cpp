@@ -817,8 +817,13 @@ static ImageStats RunFurnaceCase(
 //   (cell 3 / cell 1).  The floor scene lands on the same value, which
 //   is the actual claim being asserted: HWSS loses nothing to the
 //   surface-bounce walk beyond the bundle deficit it already had.  Band
-//   [0.93, 1.00] -- 2.4 % of headroom below and the bundle deficit's own
-//   size above, and the truncating build reads 0.683, i.e. 6.5x outside.
+//   [0.93, 1.05]: 2.4 % of headroom below; the top was originally 1.00
+//   but a 36-render baseline sweep (wave 5, HEAD 561cf6d5, fix absent
+//   AND present -- indistinguishable) observed the ratio span 0.954 ..
+//   1.036, the heavy hwss tail documented below occasionally lifting a
+//   whole 16x16 frame's mean, so 1.00 flaked ~1 run in 12.  1.05 keeps
+//   the guard (the truncating build reads 0.683, 5x outside; a genuine
+//   hwss over-count would have to beat the bundle deficit by >9 %).
 //
 // PER-PIXEL, AND WHY IT IS ONE-SIDED HERE.  Expressed against the
 // cell's OWN mean rather than against 1.0, and only the LOW side is
@@ -842,7 +847,7 @@ static ImageStats RunFurnaceCase(
 static const double kRelBandNoHwssLo = 0.98;
 static const double kRelBandNoHwssHi = 1.02;
 static const double kRelBandHwssLo   = 0.93;
-static const double kRelBandHwssHi   = 1.00;
+static const double kRelBandHwssHi   = 1.05;
 //! Floor-scene per-pixel structural LOW bound, relative to the cell's
 //! own mean.  Worst measured over 12 post-fix runs: min/mean 0.911
 //! (cell 8).  0.80 gives ~1.5x headroom.  There is deliberately no high

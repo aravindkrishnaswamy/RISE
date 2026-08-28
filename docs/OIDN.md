@@ -436,6 +436,12 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P1 — solid wins, moderate effort
 
 #### OIDN-P1-1 — Inline AOV accumulation + `accurate` prefilter mode
+- **⚠ Scope correction, 2026-08-28:** `accurate` is **not** universally the
+  better mode.  On hair it is measurably WORSE than `fast` on every metric at
+  every sample count — see `OIDN-P1-5` below for the numbers and the working
+  hypothesis.  Treat `accurate` as the right default for surface-dominated
+  scenes with delta transport (the regime it was built and verified for), not
+  as a blanket upgrade.
 - **Status:** Shipped (v1 PT-only on 2026-04-29; v2 BDPT + VCM
   Pel/Spectral on 2026-04-29).  Supersedes OIDN-P1-4 — inline
   accumulation handles glass refraction probabilistically via
@@ -674,6 +680,55 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Verification:** same glass scene as `OIDN-P1-1`, comparing first-hit-only
   aux vs. recursive-into-non-specular aux. Save aux as EXR (per
   `OIDN-P2-2`) for visual diff.
+- **Result:** —
+
+#### OIDN-P1-5 — Coverage-weighted multi-sample aux accumulation for high-frequency geometry (hair)
+- **Status:** OPEN, and now evidence-backed — 2026-08-28.  Opened by the
+  hair measurement in
+  [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §6.5 ("Measurement, 2026-08-28"),
+  which has the full tables.
+- **Owner:** —
+- **PR:** —
+- **Why:** The aux contract captures albedo/normal **once per pixel**, from a
+  single surface.  On a groom, dozens of fibers cross one pixel, so the aux
+  buffers are strand-noise-textured and the denoiser is guided by one
+  arbitrary fiber.  Measured on `scenes/Tests/Hair/hair_styled.RISEscene`
+  (256x256, PT, RMSE vs a 2048-spp reference, `pixel_filter box` pinned
+  everywhere): denoising holds a **15–18 % mean-gradient deficit vs the
+  reference in `fast` mode and 25–30 % in `accurate` mode**, and the deficit
+  **does not shrink as spp rises** (fast: 0.824 / 0.843 / 0.854 of the
+  reference's gradient energy at 64 / 128 / 256 spp) — a systematic smear of
+  real strand structure, not noise removal.  Net RMSE crosses over between 64
+  and 128 spp: −17.2 % at 64 spp, a tie at 128, **+20.0 % at 256**, with the
+  loss concentrated at strand edges (+25.6 % at 256 spp) while flat regions
+  stay roughly neutral.
+- **Note — `accurate` is the WORSE mode here, which `OIDN-P1-1` did not
+  anticipate.** It loses to `fast` on every metric at every sample count
+  (+52.1 % RMSE vs off at 256 spp; 0.703–0.749 gradient ratio).  Working
+  hypothesis to test first: `accurate` both captures at the first non-delta
+  scatter rather than the first hit AND prefilters the aux buffers, and on
+  hair that prefilter blends the one sampled fiber's albedo/normal into the
+  background's — making the guide more wrong, not less.
+- **Touch:** [AOVBuffers.cpp](../src/Library/Rendering/AOVBuffers.cpp) /
+  [AOVBuffers.h](../src/Library/Rendering/AOVBuffers.h) (accumulate aux over
+  the pixel's samples weighted by hit coverage instead of first-write-wins),
+  plus the capture sites in
+  [PathTracingIntegrator.cpp](../src/Library/Shaders/PathTracingIntegrator.cpp)
+  (`pAOV && !pAOV->valid` guards).  Not a hair change.
+- **Target:** bring `fast`-mode gradient ratio from ~0.85 to within a few
+  percent of 1.0 while keeping the flat-region win.
+- **Interim guidance, needs no code:** on hair scenes do **not** set
+  `oidn_prefilter accurate`, and keep `oidn_denoise FALSE` above ~100 spp.
+- **Measurement protocol — pin `pixel_filter box` on EVERY scene in the
+  comparison, reference included.**  `oidn_denoise TRUE` skips the
+  `pFilteredFilm->Resolve()` step (see the §"inline box-filtered" note below
+  and `PixelBasedRasterizerHelper.cpp:1300-1320`), so an OIDN-on beauty image
+  is box-filtered where an OIDN-off one is filter-reconstructed.  Left
+  unpinned, that alone made OIDN-on plain renders read **22–39 % worse RMSE**
+  at matched spp in the 2026-08-28 run — a difference with nothing to do with
+  the denoiser, which would have been charged to it.  With the pin, the three
+  modes' plain renders agree to within 1 %.
+- **Effort:** ~1 day plus a re-measure against the same scene set.
 - **Result:** —
 
 ### P2 — polish

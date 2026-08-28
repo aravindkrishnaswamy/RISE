@@ -71,10 +71,17 @@ public:
 	Vector3 emissionDirection() const { return vDir; }
 	Scalar emissionConeHalfAngle() const { return dHalfAngle; }
 
+	// NOTE: deliberately NOT marked `override`, matching the rest of this
+	// mock's ILightPriv surface.  That means a signature drift here does
+	// NOT produce an error at THIS declaration -- it leaves the class
+	// abstract and the failure surfaces far away at the `new MockSpotLight`
+	// site.  Whenever ILight::ComputeDirectLighting{,NM} gains a parameter,
+	// this is the site to update.
 	void ComputeDirectLighting(
 		const RayIntersectionGeometric&, const IRayCaster&,
 		const IBSDF&, const bool, RISEPel& amount,
-		const bool /*bFullSphereReceiver*/ ) const
+		const bool /*bFullSphereReceiver*/,
+		const bool /*bVolumeReceiver*/ ) const
 	{
 		amount = RISEPel( 0, 0, 0 );
 	}

@@ -41,7 +41,8 @@ void PointLight::ComputeDirectLighting(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	RISEPel& amount,
-	const bool /*bFullSphereReceiver*/	// no-op here; see the .h doc
+	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
+	const bool bVolumeReceiver			// implemented; see the .h doc
 	) const
 {
 	//
@@ -57,10 +58,19 @@ void PointLight::ComputeDirectLighting(
 	// and the surface normal.  This angle tells us what illumination this surface
 	// should recieve.  If this value is negative, then the light is
 	// behind the object and we can stop.
+	//
+	// VOLUME RECEIVER: at a medium scatter vertex `ri.vNormal` is the
+	// outgoing direction `wo`, not a normal, so the cosine is meaningless
+	// and the `<= 0` gate would reject half the sphere at a vertex that
+	// scatters over all of it.  Drop both; the phase function (handed in
+	// as `brdf`) carries the whole angular term.  `invDistSq` below is
+	// deliberately KEPT -- it is emitter geometry, not receiver
+	// orientation.  With the flag false this reduces TEXTUALLY to the
+	// pre-existing expression and gate.  See ILight.h for the derivation.
+	const Scalar fDotSigned = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
 
-	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-
-	if( fDot <= 0.0 ) {
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return;
 	}
 
@@ -97,18 +107,21 @@ Scalar PointLight::ComputeDirectLightingNM(
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
 	const Scalar nm,
-	const bool /*bFullSphereReceiver*/	// no-op here; see the .h doc
+	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
+	const bool bVolumeReceiver			// implemented; see the .h doc
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting; only the BSDF eval and
 	// the shadow Fresnel are per-wavelength (brdf.valueNM, CastShadowRayAuto
 	// bNM=true) so a clear dielectric attenuates with the wavelength-specific
-	// IOR rather than the representative RGB IOR.
+	// IOR rather than the representative RGB IOR.  VOLUME RECEIVER: see the
+	// RGB overload above.
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
 	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
 
-	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-	if( fDot <= 0.0 ) {
+	const Scalar fDotSigned = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return Scalar(0);
 	}
 

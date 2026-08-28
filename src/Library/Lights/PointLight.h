@@ -97,7 +97,25 @@ namespace RISE
 			//! mirroring s==1 row call this virtual at all, and neither
 			//! ever holds a point/spot light -- both always have nonzero
 			//! exitance.  Accepted for interface conformance only.
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false ) const override;
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27) is a different
+			//! story and IS implemented for real below, even though the
+			//! same unreachability argument applies to it verbatim.  The
+			//! reason is the sibling-site bug pattern
+			//! docs/skills/audit-by-bug-pattern.md exists to prevent: a
+			//! defaulted flag whose contract one implementor silently
+			//! violates is a trap for the next caller who wires it up.
+			//! When true, the receiver cosine `fDot` and its `<= 0`
+			//! hemisphere gate are both dropped (a phase-function vertex
+			//! has no normal to project onto); `invDistSq` is KEPT, since
+			//! the inverse-square falloff is a property of the EMITTER's
+			//! geometry, not of the receiver's orientation, and applies
+			//! to a volume element exactly as it does to a surface patch.
+			//! This is the same shape as LightSampler's own inline
+			//! delta-light row, which forces `cosSurface = 1.0` under
+			//! `isVolumeScatter` and keeps its `invDistSq`.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
 
 			//! Per-wavelength direct lighting.  Overrides the ILight default
 			//! (which projects the RGB ComputeDirectLighting to luminance and
@@ -107,7 +125,8 @@ namespace RISE
 			//! than a representative RGB IOR.  Matches DirectionalLight /
 			//! AmbientLight; keeps every light's spectral NEE consistent.
 			//! `bFullSphereReceiver`: no-op, see the RGB override above.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false ) const override;
+			//! `bVolumeReceiver`: implemented, see the RGB override above.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
 
 			// Overrides the PARENT-COMPOSED overload only -- see SpotLight.h.
 			void	FinalizeTransformations( const Matrix4& parentWorld ) override;

@@ -164,13 +164,26 @@ namespace RISE
 			//! `bFullSphereReceiver` (residual wave 2 item D): no-op, for
 			//! the identical reason PointLight's own override is a
 			//! no-op -- see PointLight.h's doc.
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false ) const override;
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27) IS implemented,
+			//! again exactly as PointLight's is and for the same
+			//! sibling-site reason (docs/skills/audit-by-bug-pattern.md).
+			//! When true the receiver cosine and its hemisphere gate are
+			//! dropped; `invDistSq` AND the spot CONE FALLOFF are both
+			//! KEPT, since each is a property of the EMITTER (its
+			//! inverse-square geometry and its angular emission profile),
+			//! not of the receiver's orientation.  A volume element inside
+			//! the cone is lit by exactly the cone-shaped emission a
+			//! surface patch there would see.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
 
 			//! Per-wavelength direct lighting (cone falloff + wavelength-
 			//! specific transparent-shadow Fresnel).  See PointLight /
 			//! DirectionalLight; overrides the ILight RGB-projection default.
 			//! `bFullSphereReceiver`: no-op, see the RGB override above.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false ) const override;
+			//! `bVolumeReceiver`: implemented, see the RGB override above.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
 
 			// Overrides the PARENT-COMPOSED overload only -- Transformable's
 			// no-argument form delegates here, so ptPosition / vDirection are

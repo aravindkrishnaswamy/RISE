@@ -1604,9 +1604,76 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// `directional_light` goes through (radiantExitance()
 				// == 0), so it needs the same `bFullSphere` this
 				// function's other two NEE sites already carry.
+				//
+				// VOLUME RECEIVER (residual-ledger item 10 of
+				// docs/PT_ENV_MIS_DOUBLECOUNT.md) -- part A of 2.
+				// `isVolumeScatter` tells the light that `ri.vNormal` is
+				// the synthetic `wo` MediumTransport::EvaluateInScattering
+				// installed, not a surface normal, so it must deliver
+				// RADIANCE ONLY: no receiver cosine, no hemisphere
+				// rejection.  Steps 2 and 3 below already spell this
+				// inline (`cosSurface = 1.0` under `isVolumeScatter`);
+				// Step 1 could not, because the arithmetic lives behind
+				// this virtual.  See ILight.h for the derivation.
 				l->ComputeDirectLighting( ri, caster, brdf,
 					bReceivesShadows,
-					amount, bFullSphere );
+					amount, bFullSphere, isVolumeScatter );
+
+				// VOLUME RECEIVER -- part B of 2: MEDIUM ATTENUATION.
+				//
+				// The shadow ray for a Step-1 light is cast INSIDE the
+				// light (`CastShadowRayAuto`), which answers only the
+				// binary/Fresnel visibility question and never reaches
+				// `EvalShadowTransmittance`.  So a directional light's
+				// contribution was not attenuated by the medium it
+				// crosses -- unlike every row in Steps 2 and 3, each of
+				// which post-multiplies exactly this factor.
+				//
+				// Applied HERE rather than threaded into the ILight
+				// virtual on purpose: doing it there would need
+				// `IMedium*`, `IObject*`, `IScene*` and a bool pushed
+				// through a virtual on every light, plus lifting the
+				// file-static `EvalShadowTransmittance` out of this TU
+				// into a shared one (which trips the five-build-project
+				// source-file rule).  All four values are already in
+				// scope right here.
+				//
+				// Per light kind:
+				//   * Directional -- attenuate along `emissionDirection()`
+				//     (FROM surface TO light, per DirectionalLight.h's
+				//     convention) with maxDist = RISE_INFINITY, matching
+				//     the env-NEE row below exactly: same "light at
+				//     infinity" case, same walk limit.
+				//   * Ambient -- SKIPPED.  It is a directionless constant
+				//     with no ray to attenuate.
+				//   * Anything else with zero exitance (an out-of-tree
+				//     subclass) -- SKIPPED, conservatively preserving its
+				//     existing behaviour.
+				//
+				// NOT gated on `isVolumeScatter`: Steps 2 and 3 do not
+				// gate it either, and a SURFACE inside fog has the very
+				// same missing attenuation.  In a scene with no media at
+				// all `EvalShadowTransmittance` early-returns (1,1,1), so
+				// media-free scenes stay bit-identical by construction.
+				//
+				// CONSEQUENCE FOR A GLOBAL MEDIUM, stated plainly: with
+				// an unbounded global medium the fast path evaluates
+				// `EvalTransmittance( ray, RISE_INFINITY )`, i.e.
+				// exp(-sigma_t * DBL_MAX) == 0, so a directional light in
+				// an unbounded global medium is fully extinguished.  That
+				// is physically correct for an infinite medium and is
+				// precisely what env-NEE has always done below -- but it
+				// IS a visible change for any scene pairing a global
+				// medium with a directional light.
+				if( l->lightType() == ILight::LightType::Directional &&
+					ColorMath::MaxValue( amount ) > 0 )
+				{
+					const Ray rayToLight( ri.ptIntersection, l->emissionDirection() );
+					amount = amount * EvalShadowTransmittance( rayToLight,
+						RISE_INFINITY, pMedium, pMediumObject,
+						pPreparedScene, bSceneHasObjectMedia );
+				}
+
 				result = result + amount;
 			}
 		}
@@ -2135,9 +2202,24 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// DirectionalLight.cpp for the per-NM implementations.
 				// FULL-SPHERE NEE, DirectionalLight sibling (residual
 				// wave 2 item D) -- see the RGB Step 1 site's comment.
-				result += l->ComputeDirectLightingNM( ri, caster, brdf,
+				// VOLUME RECEIVER (residual-ledger item 10) -- spectral
+				// twin of the RGB Step-1 site; both halves of that fix
+				// (the `isVolumeScatter` flag and the medium
+				// transmittance) are derived in full there.
+				Scalar leNM = l->ComputeDirectLightingNM( ri, caster, brdf,
 					bReceivesShadows,
-					nm, bFullSphere );
+					nm, bFullSphere, isVolumeScatter );
+
+				if( leNM > 0 &&
+					l->lightType() == ILight::LightType::Directional )
+				{
+					const Ray rayToLight( ri.ptIntersection, l->emissionDirection() );
+					leNM *= EvalShadowTransmittanceNM( rayToLight,
+						RISE_INFINITY, pMedium, pMediumObject,
+						pPreparedScene, bSceneHasObjectMedia, nm );
+				}
+
+				result += leNM;
 			}
 		}
 	}

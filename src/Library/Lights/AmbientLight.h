@@ -78,7 +78,28 @@ namespace RISE
 			//! here: ambient light applies no cosine gate at all (it
 			//! evaluates `brdf.value` straight along the normal), so
 			//! there is nothing for the flag to flip.
-			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount, const bool = false ) const override
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md) is likewise a no-op, and
+			//! for the same reason: there is no receiver cosine and no
+			//! hemisphere rejection here to remove.  The math below is
+			//! deliberately UNCHANGED at a medium scatter vertex.  What
+			//! it means there is worth stating plainly, because it is
+			//! odd rather than wrong: at such a vertex
+			//! `MediumTransport::EvaluateInScattering{,NM}` has set
+			//! `ri.vNormal == wo`, so `brdf.value( ri.vNormal, ri )`
+			//! evaluates the PHASE FUNCTION at `p(wo, wo)` -- pure
+			//! back-scatter.  An ambient light is a directionless
+			//! constant with no incident direction of its own, so no
+			//! choice of evaluation direction is more defensible than
+			//! any other; back-scatter is as meaningful as the hack
+			//! admits, and for the isotropic phase (the common case) the
+			//! choice does not matter at all since `p` is constant.
+			//! Anisotropic phase functions will read the wrong lobe --
+			//! an accepted limitation of an ambient light, not a defect
+			//! this parameter can fix.  Part B of the same fix likewise
+			//! skips ambient: it is a constant with no ray to attenuate.
+			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount, const bool = false, const bool = false ) const override
 			{
 				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
 			}
@@ -96,7 +117,8 @@ namespace RISE
 				const IBSDF& brdf,
 				const bool,
 				const Scalar nm,
-				const bool = false				///< bFullSphereReceiver: no-op, see the RGB override above
+				const bool = false,				///< bFullSphereReceiver: no-op, see the RGB override above
+				const bool = false				///< bVolumeReceiver: no-op, see the RGB override above
 				) const override
 			{
 				const Scalar lightLum =

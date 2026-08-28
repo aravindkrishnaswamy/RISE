@@ -148,13 +148,65 @@ namespace RISE
 		//! capability-gated there; only Step 1's zero-exitance sweep
 		//! (ambient, directional) and BDPT's mirroring s==1 row call
 		//! this virtual at all).
+		//! `bVolumeReceiver` (residual-ledger item 10 of
+		//! docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27): the receiver is
+		//! a MEDIUM SCATTER vertex, not a surface.  Same defaulted-tail
+		//! shape as `bFullSphereReceiver` above, for the same reason --
+		//! every pre-existing call site keeps its exact prior behaviour
+		//! untouched.
+		//!
+		//! WHY IT EXISTS.  `MediumTransport::EvaluateInScattering{,NM}`
+		//! reuses this surface-shaped interface at a phase-function
+		//! vertex by synthesising a `RayIntersectionGeometric` whose
+		//! `vNormal` is the OUTGOING direction `wo`.  That synthetic
+		//! normal is not a surface normal and carries no geometric
+		//! meaning, so any `Dot(vToLight, ri.vNormal)` computed against
+		//! it is meaningless -- and the `<= 0` rejection that usually
+		//! accompanies it throws away half the sphere at a vertex that
+		//! scatters over the WHOLE sphere.
+		//!
+		//! THE CONTRACT WHEN TRUE: deliver RADIANCE ONLY.  No receiver
+		//! cosine, no hemisphere rejection.  Derivation: the medium
+		//! in-scattering integrand is
+		//!     Ls(x, wo) = sigma_s(x) * INT_{S^2} p(wi, wo) Li(x, wi) dwi
+		//! -- an integral over the FULL sphere whose only angular factor
+		//! is the phase function `p`.  There is no `|cos theta|` because
+		//! there is no surface to project onto: the surface form's cosine
+		//! is the projected-area Jacobian dA_perp/dA of a surface patch,
+		//! and a scattering volume element has no patch and no
+		//! orientation.  The caller already supplies `p` as the `brdf`
+		//! (`MediumScatterBSDF::value` returns `p(vLightIn, wo)`), and
+		//! multiplies by `sigma_s` outside, so this virtual's entire job
+		//! at such a vertex is `Li` -- i.e. emitted radiance times
+		//! visibility.  This is exactly what `LightSampler`'s own Step-2
+		//! and Step-3 rows already do inline: they test `isVolumeScatter`
+		//! and force `cosSurface = 1.0` (LightSampler.cpp's delta-light,
+		//! mesh-luminary and environment rows).  Step 1 -- the
+		//! zero-exitance sweep that reaches this virtual -- did not, which
+		//! is the defect this parameter closes.
+		//!
+		//! PRECEDENCE: `bVolumeReceiver` OVERRIDES `bFullSphereReceiver`.
+		//! `bFullSphereReceiver` replaces the signed cosine with `|cos|`
+		//! (a full-sphere-scattering SURFACE still has a real normal and a
+		//! real projected-area factor); `bVolumeReceiver` removes the
+		//! cosine altogether.  "No cosine at all" beats "unsigned cosine",
+		//! so when both are true the volume rule wins.
+		//!
+		//! IMPLEMENTOR NOTE: every concrete light MUST honour this if it
+		//! applies a receiver cosine or a hemisphere gate, even one that
+		//! today is unreachable through this virtual at a volume vertex
+		//! (`PointLight` / `SpotLight` -- see their overrides).  A
+		//! defaulted flag that silently means the wrong thing at one
+		//! implementor is the sibling-site bug pattern
+		//! docs/skills/audit-by-bug-pattern.md exists to prevent.
 		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information
 			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
 			const IBSDF& brdf,								///< [in] BRDF of the object
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
 			RISEPel& amount,								///< [out] Amount of lighting
-			const bool bFullSphereReceiver = false			///< [in] When true, use |cos| instead of the signed cosine (a full-sphere-scattering receiver, e.g. hair); see IMaterial::ScattersFullSphere()
+			const bool bFullSphereReceiver = false,			///< [in] When true, use |cos| instead of the signed cosine (a full-sphere-scattering receiver, e.g. hair); see IMaterial::ScattersFullSphere()
+			const bool bVolumeReceiver = false				///< [in] When true, the receiver is a phase-function (medium scatter) vertex: NO receiver cosine and NO hemisphere rejection; overrides bFullSphereReceiver.  See the block comment above.
 			) const = 0;
 
 		//! Per-wavelength direct-lighting contribution at wavelength
@@ -181,11 +233,12 @@ namespace RISE
 			const IBSDF& brdf,								///< [in] BSDF of the object (per-NM eval via valueNM)
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
 			const Scalar nm,								///< [in] Wavelength (nm) at which to evaluate
-			const bool bFullSphereReceiver = false			///< [in] See the RGB ComputeDirectLighting's doc
+			const bool bFullSphereReceiver = false,			///< [in] See the RGB ComputeDirectLighting's doc
+			const bool bVolumeReceiver = false				///< [in] See the RGB ComputeDirectLighting's doc
 			) const
 		{
 			RISEPel amount( 0, 0, 0 );
-			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver );
+			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver );
 			(void)nm;  // default fallback discards wavelength
 			return Scalar(0.2126) * amount.r + Scalar(0.7152) * amount.g + Scalar(0.0722) * amount.b;
 		}

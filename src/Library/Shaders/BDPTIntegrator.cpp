@@ -4761,6 +4761,22 @@ EvaluateAllStrategiesImpl(
 					// the `continue` above.
 					const bool bFullSphere = eyeEnd.pMaterial->ScattersFullSphere();
 
+					// VOLUME RECEIVER (residual-ledger item 10 of
+					// docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27):
+					// `bVolumeReceiver` is deliberately LEFT ON ITS
+					// DEFAULT `false` at this site, and the corresponding
+					// Step-1 medium-transmittance post-multiply is
+					// deliberately NOT mirrored here.  Two reasons, both
+					// checked rather than assumed: (1) this row can only
+					// ever see a SURFACE vertex -- the `eyeEnd.type !=
+					// BDPTVertex::SURFACE` continue above excludes MEDIUM
+					// vertices outright -- so the flag would be false at
+					// every reachable call anyway; (2) BDPT owns a
+					// separate volume-NEE path, and reshaping its
+					// zero-exitance sweep is out of scope for that item.
+					// If this row is ever extended to MEDIUM vertices,
+					// BOTH halves of the LightSampler Step-1 fix have to
+					// come with it.
 					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
 					l->ComputeDirectLighting( ri, caster, *pBSDF,

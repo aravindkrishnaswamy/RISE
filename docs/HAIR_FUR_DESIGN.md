@@ -737,6 +737,95 @@ follow-up (Phase 4 candidate) is a coverage-weighted multi-sample aux accumulati
 high-frequency geometry, which is an `AOVBuffers` change, not a hair change. Do not block
 shipping on denoiser perfection; `oidn_denoise FALSE` remains available per scene.
 
+#### Measurement, 2026-08-28 — OIDN smears strands, and `accurate` is the worse mode
+
+The measurement the paragraph above called for has been run. **Verdict: OIDN removes real
+strand structure on a groom, the deficit does not close with sample count, and the `accurate`
+prefilter — the mode this section nominated as the fix — is strictly worse than `fast` on
+every metric at every sample count.** The Phase-4 coverage-weighted AOV accumulation is
+therefore **warranted**; the current `albedo()` + accurate-mode contract is **not** adequate
+for hair.
+
+**Setup.** `scenes/Tests/Hair/hair_styled.RISEscene` (6000 strands, `segments 12`, full
+comb/clump/curl/frizz/gravity groom) at 256x256, `pathtracing_pel_rasterizer`, EXR out,
+RMSE against a 2048-spp denoise-off reference via `bin/tools/HDRVarianceTest`. **All scenes,
+reference included, pin `pixel_filter box`** — see the confound note below; without that pin
+the measurement is not comparing what it appears to compare. Structure metrics
+(edge/flat split, gradient energy) come from a scratchpad comparator over the same EXRs:
+luminance central-difference gradient magnitude; "edge" pixels are the reference's top
+gradient quartile, "flat" the rest.
+
+RMSE vs the 2048-spp reference (x1e-3; `off` = `oidn_denoise FALSE`, the two `on` columns are
+the `_denoised` outputs):
+
+| spp | off | on `fast` | Δ vs off | on `accurate` | Δ vs off |
+|-----|------|-----------|----------|---------------|----------|
+| 64  | 3.754 | 3.108 | **−17.2 %** | 3.497 | −6.8 % |
+| 128 | 2.719 | 2.697 | −0.8 % (tie) | 3.242 | **+19.2 %** |
+| 256 | 1.951 | 2.341 | **+20.0 %** | 2.967 | **+52.1 %** |
+
+Split by region, the win at low spp is entirely a flat-region win and the loss at high spp is
+entirely a strand-edge loss (x1e-3):
+
+| spp | metric | off | `fast` | `accurate` |
+|-----|--------|------|--------|------------|
+| 64  | edge | 6.340 | 5.477 (−13.6 %) | 6.230 (−1.7 %) |
+| 64  | flat | 2.323 | 1.698 (−26.9 %) | 1.836 (−21.0 %) |
+| 128 | edge | 4.577 | 4.722 (+3.2 %) | 5.760 (+25.8 %) |
+| 128 | flat | 1.695 | 1.505 (−11.2 %) | 1.721 (+1.5 %) |
+| 256 | edge | 3.255 | 4.090 (+25.6 %) | 5.262 (+61.6 %) |
+| 256 | flat | 1.243 | 1.316 (+5.9 %) | 1.585 (+27.5 %) |
+
+**The structural finding is the decisive one.** Mean gradient magnitude as a fraction of the
+reference's — 1.0 means the image carries exactly the reference's high-frequency content:
+
+| spp | off (noisy) | on `fast` denoised | on `accurate` denoised |
+|-----|-------------|--------------------|------------------------|
+| 64  | 1.189 | 0.824 | 0.703 |
+| 128 | 1.121 | 0.843 | 0.723 |
+| 256 | 1.069 | 0.854 | 0.749 |
+
+The undenoised column sits *above* 1.0 (MC noise adds gradient) and converges toward it as
+spp rises — the correct behaviour. The denoised columns sit **below** it and stay there:
+`fast` holds a **15–18 % structure deficit** and `accurate` a **25–30 %** one, and neither
+closes as the input gets cleaner. That is a systematic smear, not noise removal. It is the
+exact failure mode this section predicted from the one-fiber-per-pixel aux contract.
+
+`accurate` losing to `fast` is the actionable surprise. Hypothesis (not verified, and the
+thing to test first in Phase 4): `accurate` both captures at the first *non-delta scatter*
+rather than the first hit, and prefilters the aux buffers. On hair each pixel's aux already
+comes from a single fiber, so prefiltering blends that fiber's albedo/normal into the
+background's and hands the network an even smoother guide — it makes the guide *more* wrong,
+not less. Whatever the mechanism, the empirical rule stands on its own.
+
+**Disposition.**
+- Phase-4 coverage-weighted multi-sample aux accumulation is warranted, with a measurable
+  target: bring the `fast`-mode gradient ratio from 0.85 to within a few percent of 1.0 while
+  keeping the flat-region win. It stays an `AOVBuffers` change, not a hair change.
+- Until then, and needing no code: **do not set `oidn_prefilter accurate` on hair scenes** —
+  it is worse than the `fast` default on every metric measured. And **keep `oidn_denoise
+  FALSE` on hair scenes above ~100 spp**; the crossover on this groom is between 64 and 128
+  spp, and past it the denoiser costs more than it returns.
+- Nothing here blocks shipping, exactly as the paragraph above anticipated.
+
+**Confound found and removed — read this before re-running.** Turning `oidn_denoise TRUE`
+**skips the reconstruction-filter resolve entirely** (`PixelBasedRasterizerHelper.cpp:1300-1320`
+— deliberate: "OIDN is trained on raw MC noise and works poorly on filter-reconstructed
+images"), so an OIDN-on render's *beauty* image is the inline box-filtered estimate while an
+OIDN-off render's is filter-reconstructed. Measured with the scene's default filter, that made
+the OIDN-on plain image read **22–39 % worse RMSE** than the OIDN-off one at the same spp — a
+difference with nothing to do with denoising, which would have been charged to the denoiser.
+Pinning `pixel_filter box` everywhere collapses it: the plain renders then agree to within
+1 % across all three modes (3.754 / 3.760 / 3.793 at 64 spp; 1.951 / 1.972 / 1.982 at 256).
+Same lesson as the Phase-1 integrator matrix — never trust a measurement that reads through
+the component under suspicion.
+
+**Caveats.** One scene, one resolution, one integrator. The 2048-spp reference carries its own
+residual noise, which inflates every RMSE in the tables equally. OIDN here is Homebrew's
+CPU-only build (`/opt/homebrew/opt/open-image-denoise`), not the `extlib/oidn/install` Metal
+one; the network weights are the same, so the quality verdict should carry, but a Metal-device
+re-run has not been done. Quality preset resolved to `HIGH` through `auto` at this render time.
+
 ---
 
 ## 7. Phased plan
@@ -828,7 +917,9 @@ make -C build/make/rise tools
 
 ### Phase 4 — scale and polish (menu, prioritized by observed need)
 
-Strand LOD tiers (§5.4); coverage-weighted AOV accumulation if §6.5 measurement demands it;
+Strand LOD tiers (§5.4); coverage-weighted AOV accumulation — the §6.5 measurement (2026-08-28)
+**demanded it**: `fast` mode holds a 15–18 % strand-structure deficit that does not close with
+spp, and `accurate` mode is worse, not better;
 optional `auto_rasterizer` Tier-1 hair hint; optional dedicated fiber bounce bucket; elliptical
 cross-sections (Khungurn/azimuthal eccentricity) if wavy-hair glint fidelity is requested.
 
@@ -854,7 +945,7 @@ cross-sections (Khungurn/azimuthal eccentricity) if wavy-hair glint fidelity is 
 | Float CP storage diverges from `Scalar=double` culture | Low | Med | argued exception documented in header (mirrors `BVH<>` float AABBs); double math after load |
 | d'Eon M_p numerical instability at low β | Med | Med | log-space `LogI0` evaluation (PBRT pattern); β floors at parser |
 | HWSS spectral-bundle bias re-appears on hair (cf. env-IBL hwss residual) | Med | Med | hwss=true≡false gate in Phase 1; melanin ladder scenes |
-| OIDN smears strands | High | Low–Med | measured, not assumed (§6.5); accurate AOV mode; escape hatch `oidn_denoise FALSE`; Phase-4 fix path named |
+| OIDN smears strands | High | **Confirmed** (§6.5, 2026-08-28: 15–18 % structure deficit in `fast`, 25–30 % in `accurate`) | escape hatch `oidn_denoise FALSE` above ~100 spp; do NOT use `oidn_prefilter accurate` on hair; Phase-4 coverage-weighted AOV accumulation now warranted, not conditional |
 | Groom memory blowup from careless counts | Med | Low | descriptor-level count/segment caps with diagnostics (the `path_instances` budget-cap pattern) |
 | Reciprocity bias flagged as a BDPT/VCM "bug" later | Med | Low | §6.2 recorded here + in the material header; PT-vs-X expectations pre-stated |
 | Phase-3 medulla breaks the κ = 0 bit-identity promise | **Retired** | — | *Realised in a mild form and closed*: the shared-code form of the split cost 1 ULP on ~11 % of a golden grid. Off path now keeps verbatim duplicates of the pre-Phase-3 bodies; `HairBSDFTest` group 15a (golden literals from `e819bbee`) + 15b (in-binary, compiler-portable) are the standing guards |
