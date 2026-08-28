@@ -151,9 +151,15 @@ namespace FireProductionCalibration
 		return "rejected";
 	}
 
+	struct FilteredTemporalPlateauAuthority
+	{
+		double coarseDifference;
+		double fineDifference;
+	};
+
 	inline bool FilteredTemporalDistance(const double coarseDifference,
 		const double fineDifference,const double formalOrder,
-		const bool temporalConsistencyCertified,double& measuredOrder,
+		const FilteredTemporalPlateauAuthority* plateauAuthority,double& measuredOrder,
 		double& baselineDistance,FilteredTemporalDistanceMode& mode)
 	{
 		mode=FilteredTemporalDistanceMode::Rejected;
@@ -163,7 +169,8 @@ namespace FireProductionCalibration
 			return true;
 		}
 		measuredOrder=0.0;baselineDistance=0.0;
-		if(!temporalConsistencyCertified||!(coarseDifference>0.0)||
+		if(!plateauAuthority||coarseDifference!=plateauAuthority->coarseDifference||
+			fineDifference!=plateauAuthority->fineDifference||!(coarseDifference>0.0)||
 			!(fineDifference>0.0)||!std::isfinite(coarseDifference)||
 			!std::isfinite(fineDifference))return false;
 		baselineDistance=NextUp(std::max(coarseDifference,fineDifference));

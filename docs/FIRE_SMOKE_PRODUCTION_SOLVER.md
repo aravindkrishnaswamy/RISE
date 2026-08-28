@@ -4344,10 +4344,11 @@ uniformly.  No readmission result is inspected before this rule is sealed.
 The exact rerun takes the second branch only for oracle sensible energy.  Its
 bound is `nextUp(0.001273209006325096) = 0.0012732090063250962`; all other
 production and oracle scalar, velocity, and inventory channels retain their
-Richardson terms.  The complete matrix has zero refusals, 20 Richardson terms,
-and one measured-floor upper bound.  Thus the temporal part of the additive
+Richardson terms.  The complete matrix has zero refusals, 37 Richardson terms,
+and one measured-floor upper bound across 19 paired production/oracle rows.
+Thus the temporal part of the additive
 contract is complete without fitting a slope through branch-flip noise.  Exact
-exit `192`, all 21 rows, the no-Metal target schedules, and the raw transcript
+exit `192`, all 19 paired rows, the no-Metal target schedules, and the raw transcript
 are retained under `rendered/fire_production_calibration/r173_filtered_temporal`.
 The next rung is the eight-slice readmission verdict; no readmission result is
 claimed in this entry.

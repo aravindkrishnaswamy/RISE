@@ -2288,15 +2288,15 @@ int main()
 		"filtered_temporal.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalEvidence.begin(),filteredTemporalEvidence.end()))==
-			"6b2f16c5e07226f885e11e3557810b5599b675302ff297a81adf6f045c245986"&&
+			"ea3641b1e1e58cd4cd99a49f220e3a58d9700fb7e12b4a98114b1c89cd268747"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalRaw.begin(),filteredTemporalRaw.end()))==
 			"58d29b87137d71b429322e6e5adcb5223c448e163708023e1e67ae332b260009"&&
 		filteredTemporalEvidence.find("fixture_sha256 "
-			"bb29c1b00489cda9075dd73355f00bd85947a9500d96670fce8403738b7a0e23")!=
+			"5840a03f6f15d9d7a5ac4ffc5fd37ab5972ea805f303b276858ffa16d2a0f592")!=
 			std::string::npos&&
 		filteredTemporalEvidence.find("calibration_math_sha256 "
-			"071f8e92394125ca14382439ee19e8d6f00cf128e98da6e0714a1f08c887713b")!=
+			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6")!=
 			std::string::npos&&
 		filteredTemporalEvidence.find("owner_sha256 "
 			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668")!=
@@ -2324,19 +2324,19 @@ int main()
 		"equal_time_readmission.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionEvidence.begin(),equalTimeReadmissionEvidence.end()))==
-			"6f59cb1c4175aed11a498e515f86df1b9fe41aa9952a4984aea5523aa066c499"&&
+			"7bb7f4f6ef654ec5c9e312ea3778198b70870286e9e72b8adf8a784ea5873614"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
 			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"9ff00e8801bdcd04e1b7eec69a03f6af64e9ba4cf0dc9c60602f4a7db508aa25"&&
+			"49add6cb0095a51664e48bd81636dcd043d79e29e6e79bdc2cfa944457db2c4b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"54c3cdf6755495c52301d4a8d76e974863b6fa0ec03cfd669379b0bfffed79b9"&&
+			"5840a03f6f15d9d7a5ac4ffc5fd37ab5972ea805f303b276858ffa16d2a0f592"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"0b3ab867f66af3a3961dca683d712d8a4052e33ca2d97a49d59d220c7d7a76ae"&&
+			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
 			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668"&&
@@ -3483,16 +3483,19 @@ int main()
 	Check(TemporalRichardson(0.75,0.1875,2.0,order,distance)&&order==2.0&&
 		distance>=1.0,"three-level temporal Richardson uses the baseline distance");
 	FilteredTemporalDistanceMode temporalMode=FilteredTemporalDistanceMode::Rejected;
-	Check(FilteredTemporalDistance(0.75,0.1875,2.0,true,order,distance,temporalMode)&&
+	Check(FilteredTemporalDistance(0.75,0.1875,2.0,nullptr,order,distance,temporalMode)&&
 		temporalMode==FilteredTemporalDistanceMode::Richardson&&order==2.0&&distance>=1.0,
 		"filtered temporal contraction retains the registered Richardson rule");
 	const double floorCoarse=0.0012312438866646748;
 	const double floorFine=0.001273209006325096;
-	Check(FilteredTemporalDistance(floorCoarse,floorFine,2.0,true,order,distance,
+	const FilteredTemporalPlateauAuthority floorAuthority={floorCoarse,floorFine};
+	Check(FilteredTemporalDistance(floorCoarse,floorFine,2.0,&floorAuthority,order,distance,
 			temporalMode)&&temporalMode==FilteredTemporalDistanceMode::MeasuredFloorUpperBound&&
 		order==0.0&&distance==NextUp(floorFine)&&distance>floorFine&&
-		!FilteredTemporalDistance(floorCoarse,floorFine,2.0,false,order,distance,temporalMode),
-		"filtered temporal plateau needs consistency authority and uses the outward measured floor");
+		!FilteredTemporalDistance(floorCoarse,floorFine,2.0,nullptr,order,distance,temporalMode)&&
+		!FilteredTemporalDistance(floorCoarse,2.0*floorFine,2.0,&floorAuthority,order,
+			distance,temporalMode),
+		"filtered temporal plateau needs its exact evidence authority and uses the outward floor");
 	double tolerance=0.0;
 	Check(TriangleTolerance(1.0,2.0,3.0,4.0,5.0,tolerance)&&tolerance>15.0,
 		"triangle tolerance is an outward sum rather than a maximum");

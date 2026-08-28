@@ -196,7 +196,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(equalTimeReadmission){
 			const char* temporalPath=std::getenv("RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE");
 			if(!temporalPath||DigestFile(temporalPath)!=
-				"6b2f16c5e07226f885e11e3557810b5599b675302ff297a81adf6f045c245986")
+				"ea3641b1e1e58cd4cd99a49f220e3a58d9700fb7e12b4a98114b1c89cd268747")
 				return 187;
 		}
 	}
@@ -924,9 +924,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		request.divergenceTargetPerS.resize(cells);
 		request.restorationDivergenceTargetPerS.resize(cells);
 		request.beginningManifoldDeviationPerCell.resize(cells);
-		if((limitedClosure||monitoredLongShadow)&&equalTimeTerminalTarget.size()!=cells)return 129;
+		if((limitedClosure||monitoredLongShadow||equalTimeReadmission)&&
+			equalTimeTerminalTarget.size()!=cells)return 129;
 		for(std::size_t cell=0u;cell<cells;++cell){
-			request.divergenceTargetPerS[cell]=(limitedClosure||monitoredLongShadow)?
+			request.divergenceTargetPerS[cell]=(limitedClosure||monitoredLongShadow||
+				equalTimeReadmission)?
 				equalTimeTerminalTarget[cell]:
 				static_cast<float>(oracle.divergenceHeunPerS[cell]);
 			double volumeRatio=0.0;
@@ -945,6 +947,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}else if(monitoredLongShadow){
 			if(equalTimeReferenceSubstepCount!=0u||equalTimeTerminalTargetTime!=dt||
 				equalTimeTerminalTargetDigest!=publishedTargetDigest(request.divergenceTargetPerS)||
+				equalTimeReferenceScheduleDigest.empty())return 129;
+		}else if(equalTimeReadmission){
+			if(equalTimeTerminalTargetTime!=dt||equalTimeTerminalTargetDigest!=
+				publishedTargetDigest(request.divergenceTargetPerS)||
 				equalTimeReferenceScheduleDigest.empty())return 129;
 		}
 		request.monitorManifoldDiagnostics=true;

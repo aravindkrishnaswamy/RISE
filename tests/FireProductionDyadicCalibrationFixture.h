@@ -1094,6 +1094,8 @@ namespace FireProductionDyadicCalibration
 		unsigned int productionRefusals=0u,oracleRefusals=0u;
 		unsigned int productionFloors=0u,oracleFloors=0u;
 		bool expectedOracleEnergyFloor=false;
+		const FireProductionCalibration::FilteredTemporalPlateauAuthority
+			oracleEnergyPlateauAuthority={0.0012312438866646748,0.001273209006325096};
 		for(std::size_t component=0u;component<9u;++component){
 			double productionOrder=0.0,productionDistance=0.0;
 			double oracleOrder=0.0,oracleDistance=0.0;
@@ -1103,10 +1105,11 @@ namespace FireProductionDyadicCalibration
 				FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
 			const bool productionAccepted=FireProductionCalibration::FilteredTemporalDistance(
 				productionCoarse[component],productionFine[component],1.0,
-				true,productionOrder,productionDistance,productionMode);
+				nullptr,productionOrder,productionDistance,productionMode);
 			const bool oracleAccepted=FireProductionCalibration::FilteredTemporalDistance(
 				oracleCoarse[component],
-					oracleFine[component],2.0,true,oracleOrder,oracleDistance,oracleMode);
+					oracleFine[component],2.0,component==8u?&oracleEnergyPlateauAuthority:nullptr,
+					oracleOrder,oracleDistance,oracleMode);
 			if(!productionAccepted)++productionRefusals;
 			if(!oracleAccepted)++oracleRefusals;
 			if(productionMode==FireProductionCalibration::FilteredTemporalDistanceMode::
@@ -1137,10 +1140,10 @@ namespace FireProductionDyadicCalibration
 		FireProductionCalibration::FilteredTemporalDistanceMode oracleVelocityMode=
 			FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
 		const bool productionVelocityAccepted=FireProductionCalibration::FilteredTemporalDistance(
-			productionVelocityCoarse,productionVelocityFine,1.0,true,productionVelocityOrder,
+			productionVelocityCoarse,productionVelocityFine,1.0,nullptr,productionVelocityOrder,
 			productionVelocityDistance,productionVelocityMode);
 		const bool oracleVelocityAccepted=FireProductionCalibration::FilteredTemporalDistance(
-				oracleVelocityCoarse,oracleVelocityFine,2.0,true,oracleVelocityOrder,
+				oracleVelocityCoarse,oracleVelocityFine,2.0,nullptr,oracleVelocityOrder,
 				oracleVelocityDistance,oracleVelocityMode);
 		if(!productionVelocityAccepted)++productionRefusals;
 		if(!oracleVelocityAccepted)++oracleRefusals;
@@ -1174,10 +1177,10 @@ namespace FireProductionDyadicCalibration
 			FireProductionCalibration::FilteredTemporalDistanceMode oracleMode=
 				FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
 			const bool productionAccepted=FireProductionCalibration::FilteredTemporalDistance(
-				productionCoarseDifference,productionFineDifference,1.0,true,productionOrder,
+				productionCoarseDifference,productionFineDifference,1.0,nullptr,productionOrder,
 				productionDistance,productionMode);
 			const bool oracleAccepted=FireProductionCalibration::FilteredTemporalDistance(
-					oracleCoarseDifference,oracleFineDifference,2.0,true,oracleOrder,
+					oracleCoarseDifference,oracleFineDifference,2.0,nullptr,oracleOrder,
 					oracleDistance,oracleMode);
 			if(!productionAccepted)++productionRefusals;
 			if(!oracleAccepted)++oracleRefusals;

@@ -4270,8 +4270,9 @@ it was already tried and refuted here.
   `nextUp(max(D_coarse,D_fine))` as an upper bound on the measured filtered
   floor.  The latter is a bound, not a fitted order, and adds no constant.
   The exact rerun accepts every channel.  Oracle sensible energy alone uses
-  the floor branch, with bound `0.0012732090063250962`; the other 20 terms use
-  Richardson.  Refusal counts are `0/0`, so the temporal contribution to the
+  the floor branch, with bound `0.0012732090063250962`; the other 37 terms use
+  Richardson across 19 paired production/oracle rows.  Refusal counts are
+  `0/0`, so the temporal contribution to the
   equal-time additive contract is now complete.  Artifact and raw transcript
   are retained under `r173_filtered_temporal`; the eight-slice verdict remains
   the next unexecuted rung.
