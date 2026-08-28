@@ -4237,3 +4237,22 @@ it was already tried and refuted here.
   mutual limit rather than the observed fp32/fp64 delta, so this is protocol
   completion rather than measurement-driven widening.  The additive
   contract's last term is closed; equal-time eight-slice readmission is next.
+- **r172 tier-6 temporal-refinement stop (2026-08-27):** the r139 temporal
+  protocol is finally executed as the prerequisite embedded by the equal-time
+  amendment.  Three oracle target schedules are completed and SHA-bound before
+  either comparison; the generated production mirror uses binary64 stage
+  arithmetic with the production binary32 publication boundary between
+  substeps.  Eighteen of nineteen quantity classes contract and obtain their
+  registered temporal terms.  Production sensible energy is first order with
+  `E_dt=2.7328226439472538`, and the production/oracle velocity terms are
+  `1.5098888236479335e-5/4.1666621096787029e-5 m/s`.
+
+  Oracle sensible energy is the sole refusal:
+  `D(dt,dt/2)=0.0012312438866646748` while
+  `D(dt/2,dt/4)=0.001273209006325096`.  The ratio
+  `0.9670398815497335` is noncontracting, so r139 forbids a temporal order,
+  distance, fallback, or post-observation tolerance.  Exact exit `193` seals
+  the complete matrix.  The additive contract therefore remains incomplete;
+  the eight-slice verdict, manifold-floor attribution, thermo/source maps, and
+  first light do not run.  The unchanged golden checkpoint remains
+  `1b944176...4947`.

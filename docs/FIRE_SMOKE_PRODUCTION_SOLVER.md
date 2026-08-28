@@ -4279,6 +4279,40 @@ Durable evidence is under
 authorized rung is the eight-slice equal-time readmission verdict; source maps
 and first light remain unclaimed.
 
+### 7.56f Tier-6 temporal-refinement stop (r172)
+
+r172 executes the three-level temporal instrument frozen by r139 before the
+eight-slice readmission.  The tier-6 analytic beginning, represented baseline
+`dt=0.0018513043178245425 s`, dyadic halves, step counts `8/16/32`, common
+horizon `0.01481043454259634 s`, filters, metrics, and formal orders are
+unchanged.  All three binary64 oracle target schedules are completed and
+SHA-bound before the generated binary64 production mirror is evaluated.  The
+production mirror performs binary64 stage arithmetic, publishes each
+intermediate request through the production binary32 state boundary, and
+measures each level's final pre-publication binary64 output.  This keeps
+`B_fp32` separate while preserving the actual multi-step request lifecycle.
+
+Eighteen of nineteen quantity classes satisfy `D_coarse>D_fine>0` and obtain
+their pre-registered Richardson term.  Production sensible energy is first
+order with `D=1.3664113219736267/0.68316914382060645` and
+`E_dt=2.7328226439472538`.  Velocity obtains production/oracle temporal terms
+`1.5098888236479335e-5` and `4.1666621096787029e-5 m/s`; all nine ledgers and
+the other eight scalar components also contract.
+
+The oracle sensible-energy observable does not.  Its coarse and fine
+differences are `0.0012312438866646748` and `0.001273209006325096`, so the
+ratio is `0.9670398815497335 < 1`; no positive temporal order or finite
+Richardson distance may be emitted.  This is not replaced by a fallback
+constant and no tolerance is learned from the golden production difference.
+Consequently the additive contract is incomplete and the eight-slice
+readmission is not run.  The manifold-floor attribution flag is likewise not
+evaluated because no admissible contract exists against which to judge it.
+Thermo/source maps and first light remain blocked at this measured temporal
+prerequisite.  Exact exit `193`, all quantity rows, and target schedule hashes
+are retained under
+`rendered/fire_production_calibration/r172_temporal_refinement_stop`; the
+golden checkpoint remains unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

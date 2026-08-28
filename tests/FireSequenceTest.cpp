@@ -3497,6 +3497,8 @@ int main(int argc,char** argv)
 			argv[2],argv[3],argv[4],argv[5]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-check-dyadic-production")==0)
 		return FireProductionDyadicCalibration::CheckProduction(argv[2],argv[3],argv[4]);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-calibration-measure-temporal")==0)
+		return FireProductionDyadicCalibration::MeasureTemporalRefinement();
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-calibration-diagnose-roundoff")==0)
 		return FireProductionDyadicCalibration::DiagnoseRoundoff(argv[2],argv[3],argv[4]);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-calibration-measure-subdominance")==0)

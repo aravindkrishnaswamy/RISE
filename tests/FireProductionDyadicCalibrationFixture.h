@@ -848,6 +848,189 @@ namespace FireProductionDyadicCalibration
 		}
 		return true;
 	}
+
+	bool ApplyProductionMirrorResult(const FireProductionCalibration::ResidentStep64Result& production,
+		MethaneRunCheckpoint& state,std::string& error)
+	{
+		const std::size_t cells=state.states.size();
+		if(production.conservativeValues.size()!=MethaneConservativeDimension*cells)return false;
+		std::vector<ConservativeVector> conservative(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+				conservative[cell][component]=static_cast<double>(static_cast<float>(
+					production.conservativeValues[component*cells+cell]));
+			state.states[cell]=FromConservativeVector(conservative[cell],
+				FireStateProducerPrecision::Binary32);
+		}
+		std::vector<double> temperature;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
+			fuel.TemperatureMaxK(),FireStateProducerPrecision::Binary32,temperature,&error,1u,false)||
+			temperature.size()!=cells)return false;
+		for(std::size_t cell=0u;cell<cells;++cell)state.states[cell].temperatureK=temperature[cell];
+		for(unsigned int axis=0u;axis<3u;++axis){
+			state.momentum.component[axis].resize(
+				production.projection.momentumKGPerM2S[axis].size());
+			state.velocity.component[axis].resize(production.projection.velocityMPerS[axis].size());
+			for(std::size_t face=0u;face<state.momentum.component[axis].size();++face){
+				state.momentum.component[axis][face]=static_cast<double>(static_cast<float>(
+					production.projection.momentumKGPerM2S[axis][face]));
+				state.velocity.component[axis][face]=static_cast<double>(static_cast<float>(
+					production.projection.velocityMPerS[axis][face]));
+			}
+		}
+		return true;
+	}
+
+	int MeasureTemporalRefinement()
+	{
+		static const std::array<unsigned int,3> stepCounts={{8u,16u,32u}};
+		MethaneRunCheckpoint beginning;std::string error;
+		if(!BuildAnalyticState(6.0,beginning,error))return 173;
+		const double flowThrough=6.0*std::sqrt(
+			beginning.values.characteristicDiameterM/Gravity);
+		const double baseline=static_cast<double>(static_cast<float>(flowThrough/512.0));
+		std::array<OracleSpatialCalibrationResult,3> oracle;
+		std::array<std::string,3> targetDigest;
+		for(std::size_t level=0u;level<stepCounts.size();++level){
+			const double timeStep=std::ldexp(baseline,-static_cast<int>(level));
+			if(!RunOracleSpatialCalibrationTrajectory(beginning,timeStep,stepCounts[level],
+				oracle[level],error,false)){std::fprintf(stderr,
+				"temporal oracle level=%zu failed: %s\n",level,error.c_str());return 174;}
+			RISECBOR64::Bytes schedule;
+			for(const std::vector<double>& target:oracle[level].divergenceTargetsPerS)
+				for(const double value:target)FireProductionDyadicCalibration::AppendDouble(
+					schedule,value);
+			targetDigest[level]=RISECBOR64::SHA256Hex(schedule);
+		}
+		std::array<MethaneRunCheckpoint,3> production;
+		std::array<FireProductionCalibration::ResidentStep64Result,3> finalProduction;
+		for(std::size_t level=0u;level<stepCounts.size();++level){
+			production[level]=beginning;
+			const double timeStep=std::ldexp(baseline,-static_cast<int>(level));
+			for(std::size_t step=0u;step<stepCounts[level];++step){
+				RISE::FireProductionResidentStepRequest request;
+				if(!BuildProductionRequest(production[level],
+					oracle[level].divergenceTargetsPerS[step],timeStep,request,error))return 175;
+				RISE::FireProductionResidentStepResult producerProbe;
+				if(!RISE::AdvanceFireProductionResidentStepMetal(request,producerProbe,&error)||
+					!producerProbe.projection.validationPassed)return 176;
+				FireProductionCalibration::ResidentStep64Result advanced;
+				const bool mirrorAdvanced=FireProductionCalibration::AdvanceResidentStep64(request,
+					static_cast<double>(producerProbe.forceDiagnostics.outwardLambdaPerS),advanced,
+					&error);
+				const bool mirrorApplied=mirrorAdvanced&&advanced.projection.validationPassed&&
+					ApplyProductionMirrorResult(advanced,production[level],error);
+				if(!mirrorApplied){std::fprintf(stderr,
+					"temporal production level=%zu step=%zu failed advanced=%d validation=%d "
+					"pre=%.17g post=%.17g error=%s\n",level,step,mirrorAdvanced?1:0,
+					mirrorAdvanced&&advanced.projection.validationPassed?1:0,
+					mirrorAdvanced?advanced.projection.maximumPreProjectionResidualPerS:0.0,
+					mirrorAdvanced?advanced.projection.maximumPostProjectionResidualPerS:0.0,
+					error.c_str());return 177;}
+				if(step+1u==stepCounts[level])finalProduction[level]=std::move(advanced);
+			}
+		}
+		std::array<FilteredField,3> productionFiltered,oracleFiltered;
+		std::array<FilteredVelocityField,3> productionVelocity,oracleVelocity;
+		std::array<std::array<double,9>,3> productionInventory,oracleInventory;
+		for(std::size_t level=0u;level<stepCounts.size();++level){
+			std::vector<ConservativeVector> productionConservative(production[level].states.size());
+			for(std::size_t cell=0u;cell<productionConservative.size();++cell)
+				for(std::size_t component=0u;component<9u;++component)
+					productionConservative[cell][component]=
+						finalProduction[level].conservativeValues[
+							component*productionConservative.size()+cell];
+			PeriodicMACField productionTerminalVelocity;
+			productionTerminalVelocity.component=finalProduction[level].projection.velocityMPerS;
+			if(!FilterConservative(beginning,productionConservative,
+				beginning.values.characteristicDiameterM,productionFiltered[level])||
+				!FilterConservative(beginning,oracle[level].conservative,
+					beginning.values.characteristicDiameterM,oracleFiltered[level])||
+				!FilterVelocity(beginning,productionTerminalVelocity,
+					beginning.values.characteristicDiameterM,productionVelocity[level])||
+				!FilterVelocity(beginning,oracle[level].velocityMPerS,
+					beginning.values.characteristicDiameterM,oracleVelocity[level]))return 178;
+			productionInventory[level]=ComponentInventoryDensity(productionConservative);
+			oracleInventory[level]=ComponentInventoryDensity(oracle[level].conservative);
+		}
+		const std::array<double,9> productionCoarse=FieldDistance(
+			productionFiltered[0],productionFiltered[1]);
+		const std::array<double,9> productionFine=FieldDistance(
+			productionFiltered[1],productionFiltered[2]);
+		const std::array<double,9> oracleCoarse=FieldDistance(
+			oracleFiltered[0],oracleFiltered[1]);
+		const std::array<double,9> oracleFine=FieldDistance(
+			oracleFiltered[1],oracleFiltered[2]);
+		bool accepted=true;
+		for(std::size_t component=0u;component<9u;++component){
+			double productionOrder=0.0,productionDistance=0.0;
+			double oracleOrder=0.0,oracleDistance=0.0;
+			const bool productionAccepted=FireProductionCalibration::TemporalRichardson(
+				productionCoarse[component],productionFine[component],1.0,
+				productionOrder,productionDistance);
+			const bool oracleAccepted=FireProductionCalibration::TemporalRichardson(
+				oracleCoarse[component],
+					oracleFine[component],2.0,oracleOrder,oracleDistance);
+			accepted=accepted&&productionAccepted&&oracleAccepted;
+			std::fprintf(stderr,"temporal scalar component=%zu production_D=%.17g/%.17g "
+				"order=%.17g E=%.17g accepted=%d oracle_D=%.17g/%.17g order=%.17g "
+				"E=%.17g accepted=%d\n",
+				component,productionCoarse[component],productionFine[component],productionOrder,
+				productionDistance,productionAccepted?1:0,oracleCoarse[component],
+				oracleFine[component],oracleOrder,oracleDistance,oracleAccepted?1:0);
+		}
+		const double productionVelocityCoarse=VelocityDistance(productionVelocity[0],
+			productionVelocity[1]);
+		const double productionVelocityFine=VelocityDistance(productionVelocity[1],
+			productionVelocity[2]);
+		const double oracleVelocityCoarse=VelocityDistance(oracleVelocity[0],oracleVelocity[1]);
+		const double oracleVelocityFine=VelocityDistance(oracleVelocity[1],oracleVelocity[2]);
+		double productionVelocityOrder=0.0,productionVelocityDistance=0.0;
+		double oracleVelocityOrder=0.0,oracleVelocityDistance=0.0;
+		const bool productionVelocityAccepted=FireProductionCalibration::TemporalRichardson(
+			productionVelocityCoarse,productionVelocityFine,1.0,productionVelocityOrder,
+			productionVelocityDistance);
+		const bool oracleVelocityAccepted=FireProductionCalibration::TemporalRichardson(
+				oracleVelocityCoarse,oracleVelocityFine,2.0,oracleVelocityOrder,
+				oracleVelocityDistance);
+		accepted=accepted&&productionVelocityAccepted&&oracleVelocityAccepted;
+		std::fprintf(stderr,"temporal velocity production_D=%.17g/%.17g order=%.17g E=%.17g "
+			"accepted=%d oracle_D=%.17g/%.17g order=%.17g E=%.17g accepted=%d\n",
+			productionVelocityCoarse,
+			productionVelocityFine,productionVelocityOrder,productionVelocityDistance,
+			productionVelocityAccepted?1:0,oracleVelocityCoarse,oracleVelocityFine,
+			oracleVelocityOrder,oracleVelocityDistance,oracleVelocityAccepted?1:0);
+		for(std::size_t component=0u;component<9u;++component){
+			const double productionCoarseDifference=std::fabs(productionInventory[0][component]-
+				productionInventory[1][component]);
+			const double productionFineDifference=std::fabs(productionInventory[1][component]-
+				productionInventory[2][component]);
+			const double oracleCoarseDifference=std::fabs(oracleInventory[0][component]-
+				oracleInventory[1][component]);
+			const double oracleFineDifference=std::fabs(oracleInventory[1][component]-
+				oracleInventory[2][component]);
+			double productionOrder=0.0,productionDistance=0.0;
+			double oracleOrder=0.0,oracleDistance=0.0;
+			const bool productionAccepted=FireProductionCalibration::TemporalRichardson(
+				productionCoarseDifference,productionFineDifference,1.0,productionOrder,
+				productionDistance);
+			const bool oracleAccepted=FireProductionCalibration::TemporalRichardson(
+					oracleCoarseDifference,oracleFineDifference,2.0,oracleOrder,oracleDistance);
+			accepted=accepted&&productionAccepted&&oracleAccepted;
+			std::fprintf(stderr,"temporal ledger component=%zu production_D=%.17g/%.17g "
+				"order=%.17g E=%.17g accepted=%d oracle_D=%.17g/%.17g order=%.17g "
+				"E=%.17g accepted=%d\n",
+				component,productionCoarseDifference,productionFineDifference,productionOrder,
+				productionDistance,productionAccepted?1:0,oracleCoarseDifference,
+				oracleFineDifference,oracleOrder,oracleDistance,oracleAccepted?1:0);
+		}
+		std::fprintf(stderr,"temporal refinement complete baseline=%.17g horizon=%.17g "
+			"target_sha256=%s/%s/%s accepted=%d\n",baseline,8.0*baseline,
+			targetDigest[0].c_str(),targetDigest[1].c_str(),targetDigest[2].c_str(),
+			accepted?1:0);
+		return accepted?192:193;
+	}
 	bool ApplyAcceptedProductionResult(const RISE::FireProductionResidentStepResult& production,
 		const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
 		MethaneRunCheckpoint& state,std::string& error)
