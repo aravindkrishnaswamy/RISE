@@ -18,7 +18,12 @@ MIS partition violation, characterised quantitatively below).
 > inflated PT and understate the true bias (corrected, truth-referenced:
 > VCM env+mesh +50.0 %, env-only +24.3 %). The architectural diagnosis
 > below (env-S0 ↔ env-NEE partition violation) is unaffected; only the
-> magnitude quoted against PT needs this lens.
+> magnitude quoted against PT needs this lens. Those two corrected
+> figures were re-measured on 2026-08-27 (wave 4b) with the denoiser off
+> across the whole suite and are unchanged: `+50.0 %` and `+24.3 %` (the
+> underlying ratios moved by `0.03 pp` and `0.08 pp`), so they are
+> transport measurements, not denoiser artifacts. See
+> [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md) §4a.
 
 ---
 

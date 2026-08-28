@@ -190,7 +190,8 @@ F3 restructures the suite into three kinds of check
 ([tests/EnvLightBalanceTest.cpp:28-65](../tests/EnvLightBalanceTest.cpp)):
 
 1. **Absolute closed-form checks on PT.** Topology D (env-only Lambertian,
-   RGB) asserts exactly `0.5`, measured `-0.04%` to `+0.12%`. Topology E
+   RGB) asserts exactly `0.5`, measured `+0.0046%` on all three channels
+   (bit-identical run to run). Topology E
    (env + omni) asserts a closed-form increment over D of `0.01230206`.
    Topology F (env + mesh emitter) asserts an increment of `0.01987740` —
    derived from the emitter *occluding* the env over its own solid angle
@@ -207,18 +208,89 @@ F3 restructures the suite into three kinds of check
    them. Measured, against the corrected (truth-referenced) PT: env-only
    Lambertian BDPT `+28.5%`, VCM `+24.3%`; env+mesh BDPT `+13.6%`, VCM
    `+50.0%` — the single largest bias in the suite
-   ([tests/EnvLightBalanceTest.cpp:898-911](../tests/EnvLightBalanceTest.cpp) carries
+   ([tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp) carries
    the topology-F commentary tying this number to
    [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)).
 3. **Firefly caps**, replacing the old "within 1.5× of PT max": `max <=
    cap * own mean`, per integrator, immune to the mean bias and targeted at
    the historical t=1 white-firefly regression
-   ([tests/EnvLightBalanceTest.cpp:426-441](../tests/EnvLightBalanceTest.cpp)).
+   ([tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp)).
 
-Net: **116 checks** (up from 101), 6 consecutive clean runs measured, worst
-band utilisation 0.756. RGB rows are bit-identical run-to-run on the env-only and submerged
-topologies and move <= 0.01% on the mixed-light ones; spectral rasterizers are not (see residual ledger,
-item 6).
+Net: **116 checks** (up from 101), worst band utilisation 0.735, 4
+consecutive clean runs on the final calibration (10 runs pooled for the
+band derivation).
+
+### 4a. De-OIDN recalibration (residual wave 4b, 2026-08-27)
+
+Wave 4 (ledger item 5) found the suite was capturing OIDN's output and
+fixed **topology J only**, recording the other six rasterizer strings as
+open work and warning that every non-closed-form number above was
+denoiser-inclusive. That work is now done: **all seven strings set
+`oidn_denoise FALSE`** and every band was re-derived from six de-OIDN'd
+runs. What actually moved, measured OIDN-on vs OIDN-off on the same tree:
+
+| check kind | movement | note |
+| --- | --- | --- |
+| PT vs closed form, topology D | `-0.040/+0.117/-0.025 %` → `+0.0046 %` on all three channels | ≤ `0.12 pp` |
+| PT increment, topology E | `+0.18/+0.10/-0.12 %` → `-0.009 %` on all three | ≤ `0.30 pp` |
+| PT increment, topology F | `-0.35/-0.06/-0.06 %` → `-0.129/-0.124/-0.128 %` | ≤ `0.30 pp` |
+| PT spectral luminance, topology G | `-1.40 / -1.43 %` → `-1.62 / -1.32 %` | ≤ `0.23 pp` |
+| BDPT/VCM **mean** centres | ≤ `0.08 pp` on every RGB row, ≤ `0.9 pp` on spectral rows | inside each spectral row's own run spread |
+| BDPT/VCM **p99** centres | up to `+47 pp` | topology G `hwss=true`, BDPT green: `1.4459 → 1.9208` |
+| **peak caps** | moved in *both* directions | see below |
+
+The headline **bias figures are unchanged in substance** — the largest
+mean-centre movement anywhere is `0.9 pp`, and on the RGB rows it is under
+`0.1 pp`. VCM env+mesh reads `1.5000` de-OIDN'd against `1.5003` denoised,
+which is the strongest single piece of evidence that these biases are
+transport and not denoise. **The pre-recalibration figures in §4 above and
+in the ledger were denoiser-inclusive; the deltas were under `0.1 pp` on
+every RGB mean and under `0.9 pp` on every spectral mean, so the numbers
+stand as written.**
+
+Two things genuinely changed:
+
+- **p99 bands.** OIDN was flattening the very tail this statistic
+  measures, most severely under HWSS, where the per-wavelength bundle
+  makes BDPT/VCM's tail far heavier than PT's. Two tolerances widened to
+  satisfy the file's own `tol >= 3 × worst measured spread` rule (topology
+  G `hwss=false` p99 `0.15 → 0.18`, `hwss=true` p99 `0.10 → 0.12`), plus
+  two mean tolerances (`0.07 → 0.08` on the two spectral `hwss=false`
+  rows) where the de-OIDN'd spread left under `1.1 pp` of margin.
+- **Firefly caps split two → four, and every one got TIGHTER.** OIDN
+  *raised* peakiness on the near-deterministic RGB rows (topology D PT
+  `1.010` true vs `1.074` denoised — CNN ringing manufacturing a max the
+  transport never produced) and *suppressed* it on the noisy spectral rows
+  (topology G `hwss=true` BDPT `2.021` true vs `1.386` denoised). One pair
+  of caps could no longer be both tight on the RGB rows and true on the
+  spectral ones:
+
+  | group | worst measured | old cap | new cap | utilisation |
+  | --- | --- | --- | --- | --- |
+  | uniform RGB (D,E,F) | `1.3522` | `2.20` | `1.90` | `71.2 %` |
+  | uniform spectral (G×2) | `2.0207` | `2.20` | `2.75` | `73.5 %` |
+  | non-uniform RGB (H) | `1.2230` | `2.60` | `1.70` | `71.9 %` |
+  | non-uniform spectral (I×2) | `1.7629` | `2.60` | `2.40` | `73.5 %` |
+
+  All four stay below `3.5`, so all four still fail the historical
+  Phase-A t=1 white-firefly signature.
+
+One prior claim was **refuted** by the recalibration: topology D's
+`0.116 %` green-channel offset had been attributed to "a colour-pipe
+round-trip constant, not MC noise". It was the denoiser. With it off, the
+three channels agree to `6e-6` and all three sit `+0.004 %` from `0.5`;
+there is no colour-pipe offset on that path. (The topology-G *spectral*
+per-channel offsets — red `-4.8 %`, green `-1.1 %`, blue `+2.9 %` — really
+are the Jakob–Hanika round-trip: they moved `≤ 0.4 pp`.)
+
+**Reproducibility, re-verified post-de-OIDN over six runs.** Topology J is
+bit-identical run to run for PT, BDPT *and* VCM (wave 4 claimed it only
+for PT). PT is bit-identical on topologies D and E, and moves `≤ 0.013 %`
+on F and `≤ 0.010 %` on H; BDPT/VCM mean-ratios move `≤ 0.04 %` and
+p99-ratios `≤ 0.39 %` on the RGB rows. The spectral rows are *less*
+reproducible than the denoised buffers suggested: PT mean up to `1.37 %`,
+BDPT/VCM mean-ratio up to `2.21 %` (was `1.27 %`), p99-ratio up to
+`5.46 %` (was `4.48 %`), peak up to `6.9 %`.
 
 ## 5. Implications for prior conclusions
 
@@ -348,27 +420,106 @@ arc. Flagged so a future session does not re-discover them from scratch.
    ~350× and red-proves the artifact (the denoised buffer's `1.135` and
    `1.075` both fail it).
 
-   **Left open, deliberately: the other six rasterizer strings in the file
-   are still denoised.** Their topologies are noisy MC comparisons whose
-   `p99`/`max` bands were calibrated against the variance-suppressed
-   buffers; switching them all off costs 2 of the suite's 116 checks (BDPT
-   and VCM `p99`-ratio-to-PT on env-only Lambertian, spectral `hwss=true`)
-   purely because the bands no longer match the noise level they were sized
-   for. Recalibrating them is a separate task — but **until it happens,
-   every non-closed-form number this suite prints has passed through OIDN
-   and must not be quoted as an integrator measurement.** That includes the
-   BDPT/VCM bias figures §4 records. This is the same class of measurement
-   artifact CLAUDE.md's Phase-1 lesson warns about: never trust a
-   measurement harness that reads through a component it does not intend to
-   measure.
+   ~~**Left open, deliberately: the other six rasterizer strings in the
+   file are still denoised.**~~ **CLOSED 2026-08-27 (residual wave 4b).**
+   All seven strings now set `oidn_denoise FALSE` and every band in the
+   file was re-derived from de-OIDN'd runs — see §4a for what moved. The
+   warning that stood here (*"every non-closed-form number this suite
+   prints has passed through OIDN and must not be quoted as an integrator
+   measurement"*) is **withdrawn**: it no longer applies, and the figures
+   it applied to turned out to be denoiser-inclusive by under `0.1 pp` on
+   every RGB mean and under `0.9 pp` on every spectral mean. The two
+   checks wave 4 predicted would fail were exactly the two that did
+   (BDPT and VCM `p99`-ratio on env-only Lambertian, spectral
+   `hwss=true`), and re-centring them was the largest single band move in
+   the recalibration. This remains the same class of measurement artifact
+   CLAUDE.md's Phase-1 lesson warns about: never trust a measurement
+   harness that reads through a component it does not intend to measure.
    [tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp)
    (the topology-J block's comment carries the full evidence).
 6. **Spectral-rasterizer non-bit-reproducibility.** RGB (Pel) rasterizer
-   output is bit-identical run-to-run on the measuring machine; spectral
-   (HWSS and non-HWSS) rasterizer output moves `1.3-3.6%` run-to-run at
-   equal sample counts, which is why every spectral tolerance band in this
-   arc's tests is wider than its RGB twin. Recorded, not root-caused.
-   [tests/EnvLightBalanceTest.cpp:130-145](../tests/EnvLightBalanceTest.cpp).
+   output is bit-identical run-to-run on the measuring machine for PT on
+   topologies D, E and J (and for BDPT/VCM on J), and moves `<= 0.013 %`
+   elsewhere; spectral (HWSS and non-HWSS) rasterizer output moves up to
+   `2.2 %` on mean-ratios and `5.5 %` on `p99`-ratios run-to-run at equal
+   sample counts, which is why every spectral tolerance band in this arc's
+   tests is wider than its RGB twin. Recorded, not root-caused. (Figures
+   re-measured post-de-OIDN, wave 4b; the denoised numbers understated the
+   spectral jitter.)
+   [tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp).
+7. ~~**HWSS main-loop volume-scatter continuation.**~~ **CLOSED
+   2026-08-27 (residual wave 4b).** Item 1 fixed the truncation on CAMERA
+   rays; the same loss class survived one bounce further along.
+   `IntegrateFromHitHWSS` — the shared bounce loop for the hero bundle —
+   evaluated NEE at a volume-scatter vertex and then `break`, so a ray
+   that had already scattered off a **surface** and then scattered in a
+   medium lost every subsequent scatter, the surface hand-off and the
+   escape. The RGB and NM twins share `IntegrateFromHitTemplated`, which
+   always looped; that was **verified, not assumed** (see the red-prove
+   below). The HWSS site now runs the same per-wavelength walk wave 4
+   built for `IntegrateRayHWSS` — the hero bundle splits at the scatter,
+   each wavelength walks at its own λ, the surface hand-off is
+   `IntegrateFromHitNM` — adapted for a mid-path start: throughput seeds
+   from `throughputComp[w]`, `walkDepth`/`walkVolumeBounces` both advance
+   per scatter so Russian roulette sees exactly the `depth + volumeBounces`
+   schedule the RGB/NM loop produces, `importance` is the carried path
+   importance, the walk stops at `maxDepth` exactly as the enclosing loop
+   would, the hand-off carries the live per-type bounce counters and
+   `smsHadNonSpecularShading=true`, and the escape mirrors the enclosing
+   loop's own `!bHit` env branch including its `pRadianceMap` fallback.
+   Guarded by `VolumeEnvFurnaceTest` cells 7–9, a new fog-box-plus-white-
+   floor furnace. Red-prove: with the `break` restored, `floor hwss=true`
+   reads `0.7258` against `1.0138` fixed (ratio to the RGB reference
+   `0.683 → 0.955`, where `0.955` is the pre-existing spectral-bundle
+   deficit the no-geometry cells measure independently at `0.959`), while
+   the RGB and NM cells are unchanged within MC noise — `1.0626 → 1.0621`
+   and `1.0690 → 1.0670`.
+   [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
+8. **Surface-bounce-through-medium env excess (`+6 %`), NEW and
+   UNFIXED.** The floor scene added for item 7 does not read `1.0`: all
+   three variants read `~+6 %` over the exact furnace value. This is a
+   pre-existing defect that nothing in the tree had reached before,
+   because reaching it needs a **surface whose bounce rays traverse a
+   medium** and every prior volume test is camera-only. Characterised:
+   - It vanishes exactly as `sigma_s → 0` (`+6.20 %` at `0.004`,
+     `+4.16 %` at `0.002`, `+1.16 %` at `0.0005`, `-0.011 %` at `1e-9`),
+     so the scene's geometry, albedo, furnace reasoning and the surface's
+     own MIS partition are all verified correct — the excess is entirely a
+     medium interaction.
+   - It scales with the optical depth the **bounce** rays traverse, not
+     with where the surface sits: floor at `y=-20` `+6.25 %`, at `y=-80`
+     `+8.68 %`, and *outside* the fog box entirely (`y=-150`) `+9.41 %`.
+   - It is common-mode across RGB, NM and HWSS to within `0.7 %` (which is
+     what makes cells 8–9's ratio assertions valid) and independent of the
+     shader op (`DefaultDirectLighting` vs `DefaultPathTracing` agree to
+     `0.06 pp`).
+   - The obvious explanation is **refuted**: the surface env-NEE shadow
+     ray *is* medium-attenuated. Instrumenting `LightSampler`'s env branch
+     over a full run shows 1.75M surface (`isVolumeScatter=false`) calls
+     with mean `Tr = 0.604`, matching `e^-0.5` for this geometry — even
+     though `(1 - Tr) × w_nee` happens to predict roughly the right
+     magnitude.
+   - Cells 4–6 close at `1.0` on the same medium and the same no-scatter
+     survival machinery, and the volume-vertex MIS partition is verified
+     by cells 1–3, so both halves are fine in isolation. The defect is in
+     the **combination**: a surface vertex's env-MIS pair when the
+     BSDF-sampled partner must first survive a medium.
+   Cells 7–9 therefore assert **ratios**, which the common-mode excess
+   cancels out of, and print the absolute deviation without asserting it.
+   When this is fixed, cells 7–9 should be re-derived as absolute furnace
+   assertions like cells 1–6.
+   [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp)
+   (file header, "THE SURFACE-BOUNCE-THROUGH-MEDIUM EXCESS").
+9. **HWSS floor-cell heavy tail.** With item 7 fixed, cell 9 shows
+   `max/mean` between `1.05` and `5.31` over six runs while its mean stays
+   within `±1.9 %` (ratio to RGB `0.9515–0.9702`). It is variance, not
+   bias: the floor's bounce rays can run nearly parallel to the floor and
+   traverse `tau ~ 1.6`, and the escape weight `Tr / pSurvival` with
+   `pSurvival = e^-tau` legitimately reaches several. The RGB cell does not
+   show it (`1.05–1.12`) because its per-channel weights stay correlated
+   where the hero bundle's per-wavelength walks do not. Cell 9's per-pixel
+   check is one-sided (low side only) for this reason.
+   [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
 
 ---
 
