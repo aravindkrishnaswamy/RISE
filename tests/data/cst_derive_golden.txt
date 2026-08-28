@@ -28,6 +28,7 @@ scenes/FeatureBased/Geometry/f16.RISEscene  9eeb268a88b7cc353cf4c56045aacad8ed4c
 scenes/FeatureBased/Geometry/teapot.RISEscene  b962c50a94ced3ddea115807f4857c192672d88c33a4ad1ad952333a006461f9  856  35
 scenes/FeatureBased/GlobalIllumination/irradiance_cache_torture.RISEscene  afc86991ac7b90de2873b508b03790ab6e0916527a73f49ecf2d00c1909ac738  3865  62
 scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene  f3e9322258f4c9a18e6565576803d697dab9cf03e9ae59bb1a9319cb55f607ac  5582  99
+scenes/FeatureBased/Hair/cottontail_dusk.RISEscene  4d00ba6f5036255663aad59b5a88450e9a95e7849838a16bc5060b4f24be32d0  3344  65
 scenes/FeatureBased/MLT/mlt_caustic_chain.RISEscene  b5fc91b4a0053ece97c537d09910b1b0255d9fa3ea933d0b60e0ebc27ea406df  2214  43
 scenes/FeatureBased/MLT/mlt_keyhole.RISEscene  4d4344bb1c42594fd51524419a5228bab461b694ba451333a346266af5b7ca94  2790  46
 scenes/FeatureBased/MLT/mlt_luminous_orb.RISEscene  914526d176cfe4f6977402c08ca5555114cdb601731d37fd405bd92777c15147  2019  42

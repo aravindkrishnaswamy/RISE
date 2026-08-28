@@ -25,6 +25,32 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GlobalIllumination/`: heavyweight GI stress scenes
 - `GuillocheWatch/`: thin-film guilloché watch showcase and authored variants
+- `Hair/`: the hair/fur hero.
+
+  `cottontail_dusk.RISEscene` is a rabbit crouched in dry late-summer grass, shot into a
+  low Hosek-Wilkie sun placed almost directly behind it so the whole coat is rimmed by the
+  Chiang/Yan TT lobe. It is the showcase companion to the five focused regressions in
+  [../Tests/Hair](../Tests/README.md), which prove one axis each; this scene runs them all
+  at once on a real subject. The body is a 30-joint `skeleton_geometry` (aspect-flattened
+  ears, tucked forepaws, a cottontail puff) that the coat then grows on. The coat is a
+  TWO-LAYER groom -- 420k fine, heavily-medullated undercoat fibres under 110k longer,
+  coarser, thinner-medulla guard hairs -- because one layer alone reads as felt. Its
+  regions are stated in the animal's own anatomy rather than in a UV chart: `hair_geometry`
+  evaluates `density` and `length_painter` at each candidate ROOT with the root's object
+  position and normal in scope, so a `scalar_painter { expression ... }` shortens the coat
+  over the head, thins it on the ears until the pink membrane shows through, and carves the
+  two eye beads and the nose leather out of the groom so no hair grows across them.
+  `hair_material`'s melanin ports take painters too, giving countershading, a bleached ring
+  around each eye, and an agouti tick on the guard coat. Whiskers are a third groom on a
+  sphere buried inside the muzzle -- an unrendered base whose only visible product is the
+  fibres that push out through the flesh -- masked by the root NORMAL onto the whisker pads.
+  The meadow is the same generator three more times on flat `cartesian_disk_geometry` bases,
+  using the other colour tier (Tier 3 `color`) and reading each blade's own height above its
+  disk to run green at the root and straw at the tip. Shot on a `thinlens_camera` at
+  100 mm / f4 focused on the eye. `oidn_denoise FALSE` is the measured answer, not a
+  default -- [../../docs/HAIR_FUR_DESIGN.md](../../docs/HAIR_FUR_DESIGN.md) section 6.5
+  found OIDN removes real strand structure on a groom and the deficit does not close with
+  sample count -- so samples carry the convergence instead.
 - `MLT/`: visually interesting Metropolis light transport scenes
 - `Materials/`: integrated material showcases (GGX, thin film, glints, enamel)
 - `Parser/`: parser-generated showcase scenes

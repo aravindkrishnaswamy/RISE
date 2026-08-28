@@ -1,0 +1,919 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           cottontail_dusk.RISEscene                                                               #
+#   Description:    THE HAIR / FUR HERO -- a young rabbit crouched in dry late-summer grass, shot into a    #
+#                   low sun.  It is the showcase companion to the focused regressions in                    #
+#                   scenes/Tests/Hair/ (hair_furnace / hair_melanin_ladder / hair_backlit_tt /              #
+#                   fur_medulla / hair_styled): everything those five prove one axis at a time is here at   #
+#                   once, on a real subject, under one light.                                               #
+#                                                                                                           #
+#                   THE PICTURE.  The sun is a Hosek-Wilkie solar disc 8 degrees above the horizon and      #
+#                   almost directly BEHIND the animal from the camera, so the whole coat is rimmed by the   #
+#                   TT lobe -- light that entered one side of a fibre, crossed its interior and left the    #
+#                   other side.  That gold halo is the single most expensive thing a fur BCSDF buys you     #
+#                   and it is the reason for every other choice in this file.  The same chunk's sky dome    #
+#                   is the cool ambient; a `rect_light` bounce card off-camera opens the shadow side just   #
+#                   enough for the fibre colour to read instead of going to silhouette.                     #
+#                                                                                                           #
+#                   SCALE IS REAL.  `scene_options scene_unit 1.0` and the animal is 0.39 m nose to tail,   #
+#                   so `hair_geometry`'s width defaults are already in the right regime and every number    #
+#                   below is metres: a 14 mm undercoat, a 28 mm guard coat, 0.14 mm and 0.18 mm root        #
+#                   widths, 72 mm whiskers.                                                                 #
+#                                                                                                           #
+#                   TECHNIQUES ON SHOW, in the order they appear:                                           #
+#                                                                                                           #
+#                     * `skeleton_geometry` as a CREATURE BODY -- 30 joints (spine, skull, muzzle, two      #
+#                       aspect-flattened ears, haunches, tucked forepaws, a cottontail puff) smin-blended   #
+#                       into one implicit mass, which is then the `base_geometry` the coat grows on.        #
+#                                                                                                           #
+#                     * TWO-LAYER GROOM.  Real mammal coats are two coats.  `groom_under` is 420k short,    #
+#                       fine, heavily medullated fibres (kappa 0.88) -- that is the soft, saturated,        #
+#                       light-diffusing bulk.  `groom_guard` is 110k longer, coarser, darker fibres with a  #
+#                       thinner medulla (kappa 0.55) and a sharper longitudinal roughness -- that is the    #
+#                       sheen and the strands that break the silhouette.  One layer alone reads as felt.    #
+#                                                                                                           #
+#                     * REGIONS WITHOUT A UV CHART.  `hair_geometry`'s `density` and `length_painter`       #
+#                       ports are evaluated at each candidate ROOT, and the root's intersection record      #
+#                       carries its object position and normal -- so a `scalar_painter { expression ... }`  #
+#                       can state the groom's regions in the animal's own anatomy (`Po`, `N`) instead of    #
+#                       in a texture layout.  `pnt_len` shortens the coat over the head and to a stubble    #
+#                       on the ears, keeps it plush on the flanks, and adds a per-root noise jitter so the  #
+#                       silhouette tufts instead of shrink-wrapping.  `pnt_den` thins the ear fur so the    #
+#                       pink membrane shows through it, and CARVES THE FACE OUT OF THE COAT -- the two      #
+#                       eye beads and the nose leather each subtract a small spherical footprint, which is  #
+#                       what lets hard-surface parts sit in a groom without hair growing across them.       #
+#                                                                                                           #
+#                     * COUNTERSHADING AND AGOUTI TICKING, both as painters on `hair_material`'s melanin    #
+#                       ports.  The same expression VM runs at the SHADING point on the fibre, so           #
+#                       `pnt_eu_*` / `pnt_ph_*` can drop the melanin toward the belly (a real rabbit is     #
+#                       cream underneath), lift it along the spine, and bleach a pale ring around each      #
+#                       eye.  The guard hairs additionally get a BAND: `rr` is the cylindrical radius       #
+#                       about the trunk axis, which on the barrel of the body increases monotonically       #
+#                       along a strand, so it stands in for "distance out from the skin" and drives a       #
+#                       dark-base / ochre-tip agouti tick.  See the honest limitation note at that chunk.   #
+#                                                                                                           #
+#                     * WHISKERS as a THIRD groom, grown on a small sphere buried inside the muzzle so      #
+#                       its own surface never renders -- only the fibres that push out through the flesh.   #
+#                       Their `density` painter reads the root NORMAL, keeping them on the outward- and     #
+#                       forward-facing whisker pads and nowhere else.                                       #
+#                                                                                                           #
+#                     * THE MEADOW IS THE SAME GENERATOR, three more times, on flat                         #
+#                       `cartesian_disk_geometry` bases instead of a creature: dense short turf at the      #
+#                       animal's feet, sparser tall stalks around it, and a distant ring of seed-heads      #
+#                       that breaks the bare-ground band below the horizon.  These use the OTHER colour     #
+#                       tier of `hair_material` -- Tier 3 `color`, artist reflectance -- and each reads     #
+#                       the strand's own height above its disk (`Po.z` in the disk's frame, where blades    #
+#                       grow along +Z) to run green at the root and straw at the tip.                       #
+#                                                                                                           #
+#                     * `thinlens_camera` at 100 mm / f4 focused on the eye.  Real fur photography is       #
+#                       long-lens and shallow, and the defocused foreground grass is what makes the         #
+#                       sharp rim read as sharp.                                                            #
+#                                                                                                           #
+#                   RENDER SETTINGS AND WHY.  `oidn_denoise FALSE` is deliberate and is the measured        #
+#                   answer, not a default: docs/HAIR_FUR_DESIGN.md section 6.5 ("Measurement, 2026-08-28")  #
+#                   found that OIDN removes real strand structure on a groom, that the deficit does not     #
+#                   close with sample count, and that the `accurate` prefilter is strictly worse than       #
+#                   `fast`.  A fur hero is exactly the case the denoiser hurts, so it is off and the        #
+#                   samples carry the convergence instead.  `samples 256` is the hero setting; drop it to   #
+#                   32-64 for a look-dev pass -- composition, groom regions and light angle all read        #
+#                   there.  `rr_min_depth 6` is a deliberate economy: fur is a deep multiple-scattering     #
+#                   medium and the tail of that random walk contributes little here, since the rim is       #
+#                   dominated by the FIRST transmission through the outer fibres.                           #
+#                                                                                                           #
+#                   COST.  ~531k strands on the animal (420k undercoat + 110k guard + ~1k whiskers) and     #
+#                   ~390k in the meadow.  1024x683 at 112 spp is 7 min 43 s on a 14-core Apple Silicon       #
+#                   laptop; the committed 256 spp is ~18 min.                                               #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-28                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+film
+{
+	width			1024
+	height			683
+}
+
+thinlens_camera
+{
+	location		1.085 0.120 1.373
+	lookat			0.000 0.138 0.020
+	up			0 1 0
+	sensor_size		36.0
+	focal_length		100.0
+	fstop			4.0
+	focus_distance		1.64
+	aperture_blades		7
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			256
+	rr_min_depth		6
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/cottontail_dusk
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# LIGHT.  Two instruments and nothing else.
+#
+# The skylight chunk creates BOTH the solar directional and the sky
+# radiance map from one solar position, so they can never drift apart.
+# `solar_azimuth` 246 deg (0 = +Z, 90 = +X) puts the sun behind and to
+# the far side of the animal as seen from the camera's own bearing of
+# ~38 deg -- that ~208 deg separation is what makes the coat rim rather
+# than model.  `solar_elevation` 8 deg is late afternoon: warm, raking,
+# and just high enough to clear the tall grass (at 5 deg the stalks
+# shadowed the animal and the rim disappeared entirely -- measured, not
+# guessed).  The sky scale is deliberately far below the sun's so the
+# frame keeps a real key-to-fill ratio instead of flattening.
+#
+# The `rect_light` is a photographic BOUNCE CARD, out of frame on the
+# camera side, standing in for the open sky and pale field the animal
+# would really be sitting in front of.  It is cool where the sun is
+# warm, which is what puts colour -- not just value -- between the lit
+# and shadowed halves of the coat.
+##################################################
+hosek_wilkie_skylight
+{
+	solar_elevation		8.0
+	solar_azimuth		246.0
+	turbidity		3.0
+	sky_intensity_scale	0.060
+	sun_intensity_scale	55.00
+	create_sun		TRUE
+}
+
+rect_light
+{
+	name			fill_card
+	center			1.30 0.90 1.00
+	size			1.4 1.0
+	facing			-0.75 -0.50 -0.55
+	color			0.74 0.82 1.00
+	exitance		38.0
+}
+
+##################################################
+# GROUND.  A procedural dry-earth plane under the meadow.  At an 8 deg
+# solar elevation it receives almost none of the sun directly (cos 82
+# deg), so it reads as the shadowed floor of the field -- which is
+# correct, and is why the grass above it is the bright element.
+##################################################
+expression_painter
+{
+	name			pnt_ground
+	def			big  0.5 + 0.5 * fbm(P * 2.6, 4.0, 0.55, 2.15)
+	def			fine 0.5 + 0.5 * fbm(P * 34.0, 3.0, 0.55, 2.0)
+	def			grit worley_f1(P * 120.0, 1.0)
+	def			t    clamp(0.62 * big + 0.28 * fine + 0.10 * grit, 0.0, 1.0)
+	expr			mix(vec3(0.075,0.062,0.032), vec3(0.27,0.222,0.100), t)
+}
+
+scalar_painter
+{
+	name			pnt_ground_rough
+	value			0.72
+}
+
+orennayar_material
+{
+	name			mat_ground
+	reflectance		pnt_ground
+	roughness		pnt_ground_rough
+}
+
+infiniteplane_geometry
+{
+	name			geo_ground
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_ground
+	geometry		geo_ground
+	material		mat_ground
+	position		0 0 0
+	orientation		-90 0 0
+}
+
+##################################################
+# BODY.  `skeleton_geometry` -- a joint graph, not a part list.
+#
+# Proportions are a resting rabbit measured in metres: 0.39 m nose to
+# tail puff, 0.29 m to the ear tips, a rump higher than the shoulder,
+# forepaws tucked under the chest.  The ear bones carry an `aspect`
+# below 1 so they bake as flattened paddles rather than pipes -- a
+# round-section ear is the single loudest tell that a creature was
+# built out of capsules.
+#
+# The skin the coat grows out of is warm mid-brown, NOT dark: at any
+# renderable strand count you see between the fibres, and a dark
+# substrate under a light coat reads as a dirty animal.  It goes pink
+# on the ears, where the coat is deliberately thinned to let it show.
+##################################################
+expression_painter
+{
+	name			pnt_skin
+	def			ear smoothstep(0.172, 0.208, Po.y)
+	expr			mix(vec3(0.40,0.27,0.16), vec3(0.44,0.26,0.23), ear)
+}
+
+lambertian_material
+{
+	name			mat_skin
+	reflectance		pnt_skin
+}
+
+skeleton_geometry
+{
+	name			geo_body
+	blend			0.42
+	maxsteps		192
+	sampling_detail		128
+
+	joint			tailp   none      0.000 0.152 -0.172  0.030
+	joint			hips    tailp     0.000 0.140 -0.096  0.080
+	joint			loin    hips      0.000 0.130 -0.032  0.076
+	joint			chest   loin      0.000 0.112  0.032  0.068
+	joint			shldr   chest     0.000 0.108  0.070  0.056
+	joint			neck    shldr     0.000 0.120  0.100  0.044
+	joint			skull   neck      0.000 0.150  0.134  0.055
+	joint			brow    skull     0.000 0.147  0.164  0.038
+	joint			muzzle  brow      0.000 0.126  0.194  0.022
+	joint			nose    muzzle    0.000 0.116  0.214  0.010
+	joint			cheekL  brow     -0.036 0.135  0.172  0.032
+	joint			cheekR  brow      0.036 0.135  0.172  0.032
+
+	joint			earLb   skull    -0.025 0.176  0.126  0.021
+	joint			earLm   earLb    -0.038 0.222  0.108  0.023 0.40
+	joint			earLu   earLm    -0.046 0.262  0.089  0.017 0.35
+	joint			earLt   earLu    -0.050 0.286  0.074  0.006 0.35
+	joint			earRb   skull     0.025 0.176  0.126  0.021
+	joint			earRm   earRb     0.038 0.222  0.108  0.023 0.40
+	joint			earRu   earRm     0.046 0.262  0.089  0.017 0.35
+	joint			earRt   earRu     0.050 0.286  0.074  0.006 0.35
+
+	joint			haunchL hips     -0.062 0.100 -0.070  0.062 0.72
+	joint			kneeL   haunchL  -0.058 0.052 -0.020  0.034 0.70
+	joint			hockL   kneeL    -0.055 0.026  0.010  0.026 0.60
+	joint			hfootL  hockL    -0.053 0.018  0.062  0.020 0.55
+	joint			haunchR hips      0.062 0.100 -0.070  0.062 0.72
+	joint			kneeR   haunchR   0.058 0.052 -0.020  0.034 0.70
+	joint			hockR   kneeR     0.055 0.026  0.010  0.026 0.60
+	joint			hfootR  hockR     0.053 0.018  0.062  0.020 0.55
+
+	joint			foreL   chest    -0.038 0.058  0.062  0.026
+	joint			pawL    foreL    -0.035 0.020  0.100  0.018
+	joint			foreR   chest     0.038 0.058  0.062  0.026
+	joint			pawR    foreR     0.035 0.020  0.100  0.018
+}
+
+standard_object
+{
+	name			obj_body
+	geometry		geo_body
+	material		mat_skin
+	position		0 0 0
+}
+
+##################################################
+# COAT FIELDS.  Where hair grows, and how long.
+#
+# `comb` is a tangent-space direction field, d = 2*rgb - 1.  A constant
+# 0.78 0.5 0.5 is a uniform sweep along the base's surface tangent; it
+# exists here to kill the RADIAL ROSETTE that grow-along-the-normal
+# produces on any convex head, which is far more visible than any
+# stylistic sweep.  Note the base is an `sdf_geometry` expansion, whose
+# UV is one cylindrical wrap about the whole body -- so the comb's
+# tangent frame is azimuthal, not head-to-tail, and it is kept gentle
+# for that reason.  `gravity` (world -Y, frame-independent) carries the
+# rest of the flow.
+#
+# `pnt_len` and `pnt_den` are evaluated per candidate ROOT with the
+# root's object position and normal in scope.  That is what lets a
+# multi-region groom be authored in anatomy rather than in a UV chart:
+# no texture, no seams, and it survives a change to `base_detail`.
+##################################################
+uniformcolor_painter
+{
+	name			pnt_comb
+	color			0.78 0.5 0.5
+}
+
+scalar_painter
+{
+	name			pnt_len
+	def			head smoothstep(0.125, 0.180, Po.z)
+	def			ear  smoothstep(0.170, 0.205, Po.y)
+	def			low  1.0 - smoothstep(0.020, 0.080, Po.y)
+	def			a    mix(1.0, 0.45, head)
+	def			b    mix(a,   0.28, ear)
+	def			reg  mix(b, 0.78, low)
+	def			jit  0.76 + 0.44 * clamp(0.5 + 0.5 * fbm(Po * 85.0, 3.0, 0.5, 2.0), 0.0, 1.0)
+	expression		reg * jit
+}
+
+scalar_painter
+{
+	name			pnt_den
+	def			ear  smoothstep(0.170, 0.205, Po.y)
+	def			n    0.5 + 0.5 * fbm(Po * 46.0, 3.0, 0.5, 2.0)
+	def			base 0.80 + 0.20 * clamp(n, 0.0, 1.0)
+	def			coat mix(base, 0.45, ear)
+	def			dL   length(Po - vec3(-0.0500, 0.1600, 0.1520))
+	def			dR   length(Po - vec3( 0.0500, 0.1600, 0.1520))
+	def			dN   length(Po - vec3( 0.0,    0.1150, 0.2205))
+	def			eyes min(smoothstep(0.0098, 0.0168, dL), smoothstep(0.0098, 0.0168, dR))
+	def			lthr smoothstep(0.0095, 0.0155, dN)
+	expression		coat * eyes * lthr
+}
+
+##################################################
+# COAT MATERIALS.  Melanin as a field, not a number.
+#
+# Both `hair_material`s use Tier 1 (eumelanin + pheomelanin), the
+# physically based tier, and both bind PAINTERS rather than constants,
+# so the concentration varies over the animal:
+#
+#   * countershading -- melanin falls off toward the belly, which is
+#     what makes a real rabbit cream underneath and dark on top;
+#   * a bleached ring around each eye;
+#   * on the guard coat, AGOUTI TICKING.  `rr` is the cylindrical
+#     radius about the trunk axis at y = 0.128.  On the barrel of the
+#     body that quantity grows monotonically along a strand, so it is a
+#     usable stand-in for arc length out from the skin, and it drives a
+#     dark-base / ochre-outer band.
+#
+# HONEST LIMITATION, stated where the workaround lives: `hair_material`
+# painters are evaluated at the SHADING point, whose object position is
+# a world-ish coordinate -- there is no along-strand parameter exposed,
+# so true per-fibre banding is not directly expressible.  The `rr`
+# trick only holds where the body really is a barrel, which is why it
+# is gated by `trunk` and fades out over the head, legs and ears.  The
+# other half of the workaround is structural: the two grooms carry
+# different melanin, so a lighter undercoat showing between darker
+# guard hairs produces most of the ticked look without any banding at
+# all.  That two-layer substitution is how the coat gets its value
+# range, and it is the part worth copying.
+##################################################
+scalar_painter
+{
+	name			pnt_eu_under
+	def			belly 1.0 - smoothstep(0.026, 0.092, Po.y)
+	def			ring  1.0 - smoothstep(0.015, 0.034, min(length(Po - vec3(-0.0500,0.1600,0.1520)), length(Po - vec3(0.0500,0.1600,0.1520))))
+	def			v     mix(0.060, 0.028, belly)
+	expression		mix(v, 0.022, ring)
+}
+
+scalar_painter
+{
+	name			pnt_ph_under
+	def			belly 1.0 - smoothstep(0.026, 0.092, Po.y)
+	expression		mix(0.34, 0.120, belly)
+}
+
+hair_material
+{
+	name			mat_under
+	eumelanin		pnt_eu_under
+	pheomelanin		pnt_ph_under
+	beta_m			0.42
+	beta_n			0.50
+	alpha			2.5
+	medulla_ratio		0.88
+	medulla_scatter		2.4
+	medulla_g		0.50
+}
+
+scalar_painter
+{
+	name			pnt_eu_guard
+	def			belly 1.0 - smoothstep(0.030, 0.100, Po.y)
+	def			back  smoothstep(0.135, 0.185, Po.y)
+	def			base  mix(0.24, 0.48, back)
+	def			rr    sqrt(Po.x*Po.x + (Po.y - 0.128)*(Po.y - 0.128))
+	def			t     clamp((rr - 0.074) / 0.032, 0.0, 1.0)
+	def			trunk 1.0 - smoothstep(0.085, 0.150, abs(Po.z))
+	def			light smoothstep(0.26, 0.58, t) * (1.0 - 0.45 * smoothstep(0.86, 1.00, t))
+	def			band  mix(base, 0.07, light * trunk)
+	expression		mix(band, 0.13, belly)
+}
+
+scalar_painter
+{
+	name			pnt_ph_guard
+	def			belly 1.0 - smoothstep(0.030, 0.100, Po.y)
+	def			rr    sqrt(Po.x*Po.x + (Po.y - 0.128)*(Po.y - 0.128))
+	def			t     clamp((rr - 0.074) / 0.032, 0.0, 1.0)
+	def			trunk 1.0 - smoothstep(0.085, 0.150, abs(Po.z))
+	def			light smoothstep(0.26, 0.58, t) * (1.0 - 0.45 * smoothstep(0.86, 1.00, t))
+	def			band  mix(0.34, 0.86, light * trunk)
+	expression		mix(band, 0.110, belly)
+}
+
+hair_material
+{
+	name			mat_guard
+	eumelanin		pnt_eu_guard
+	pheomelanin		pnt_ph_guard
+	beta_m			0.26
+	beta_n			0.32
+	alpha			3.0
+	medulla_ratio		0.55
+	medulla_scatter		1.6
+	medulla_g		0.35
+}
+
+hair_geometry
+{
+	name			groom_under
+	base_geometry		geo_body
+	count			420000
+	segments		5
+	length			0.014
+	width_root		0.00014
+	width_tip		0.00006
+	base_detail		96
+	seed			7
+	density			pnt_den
+	length_painter		pnt_len
+	comb			pnt_comb
+	gravity			0.16
+	frizz			0.30
+	clump			0.38
+	clump_size		0.0055
+}
+
+hair_geometry
+{
+	name			groom_guard
+	base_geometry		geo_body
+	count			110000
+	segments		7
+	length			0.028
+	width_root		0.00018
+	width_tip		0.00007
+	base_detail		96
+	seed			19
+	density			pnt_den
+	length_painter		pnt_len
+	comb			pnt_comb
+	gravity			0.34
+	frizz			0.24
+	clump			0.34
+	clump_size		0.009
+}
+
+standard_object
+{
+	name			obj_under
+	geometry		groom_under
+	material		mat_under
+	position		0 0 0
+}
+
+standard_object
+{
+	name			obj_guard
+	geometry		groom_guard
+	material		mat_guard
+	position		0 0 0
+}
+
+##################################################
+# FACE.  Three hard-surface parts the coat is carved around.
+#
+# The eyes are `ggx_material` with a near-black diffuse and a dielectric
+# F0 -- dark beads that take a single sharp catchlight from the sun.
+# The nose is a `polished_material` ellipsoid.  Note `tau 0.0`: that
+# slot is an IScalarPainter and its "none" default is a COLOUR painter,
+# so leaving it unbound fails the material -- and a failed material
+# aborts the rest of the derive, silently dropping every chunk declared
+# after it.  This cost an hour of look-dev; bind it.
+#
+# Each part's footprint is subtracted from `pnt_den` above.  Get the
+# carve radius wrong in either direction and you either bury the part
+# under fur or leave a bald crater around it.
+##################################################
+uniformcolor_painter
+{
+	name			pnt_eyeball
+	color			0.020 0.014 0.011
+}
+
+uniformcolor_painter
+{
+	name			pnt_eyespec
+	color			0.055 0.055 0.055
+}
+
+ggx_material
+{
+	name			mat_eye
+	rd			pnt_eyeball
+	rs			pnt_eyespec
+	alphax			0.020
+	alphay			0.020
+	fresnel_mode		schlick_f0
+}
+
+sphere_geometry
+{
+	name			geo_eye
+	radius			0.0120
+}
+
+standard_object
+{
+	name			obj_eyeL
+	geometry		geo_eye
+	material		mat_eye
+	position		-0.0500 0.1600 0.1520
+}
+
+standard_object
+{
+	name			obj_eyeR
+	geometry		geo_eye
+	material		mat_eye
+	position		0.0500 0.1600 0.1520
+}
+
+uniformcolor_painter
+{
+	name			pnt_leather
+	color			0.150 0.082 0.078
+}
+
+polished_material
+{
+	name			mat_leather
+	reflectance		pnt_leather
+	tau			0.0
+	ior			1.38
+	scattering		9000
+}
+
+ellipsoid_geometry
+{
+	name			geo_nose
+	radii			0.0100 0.0072 0.0072
+}
+
+standard_object
+{
+	name			obj_nose
+	geometry		geo_nose
+	material		mat_leather
+	position		0.0 0.1150 0.2205
+}
+
+##################################################
+# WHISKERS.  A groom on an invisible base.
+#
+# `geo_whisk_base` is a 18 mm sphere sitting entirely INSIDE the muzzle
+# mass, and it is never bound to a `standard_object` -- a
+# `hair_geometry`'s base does not have to be rendered.  So the roots
+# are buried in flesh, exactly as real vibrissae are, and only the part
+# of each fibre that emerges is ever seen.
+#
+# The density painter reads the root NORMAL rather than its position:
+# whiskers survive only where the root faces sideways-and-forward,
+# which is the whisker pad.  Near-zero melanin makes them the palest
+# thing in the frame, so they take the backlight as bright filaments.
+##################################################
+scalar_painter
+{
+	name			pnt_whisk_den
+	def			side smoothstep(0.52, 0.80, abs(N.x))
+	def			fwd  smoothstep(0.05, 0.45, N.z)
+	def			up   smoothstep(-0.30, 0.10, N.y)
+	expression		side * fwd * up
+}
+
+scalar_painter
+{
+	name			pnt_eu_whisk
+	value			0.020
+}
+
+scalar_painter
+{
+	name			pnt_ph_whisk
+	value			0.015
+}
+
+hair_material
+{
+	name			mat_whisker
+	eumelanin		pnt_eu_whisk
+	pheomelanin		pnt_ph_whisk
+	beta_m			0.18
+	beta_n			0.24
+	alpha			2.0
+	medulla_ratio		0.62
+	medulla_scatter		0.9
+	medulla_g		0.30
+}
+
+sphere_geometry
+{
+	name			geo_whisk_base
+	radius			0.018
+}
+
+hair_geometry
+{
+	name			groom_whisk
+	base_geometry		geo_whisk_base
+	count			1200
+	segments		5
+	length			0.072
+	width_root		0.00022
+	width_tip		0.00009
+	base_detail		48
+	seed			41
+	density			pnt_whisk_den
+	gravity			0.14
+	frizz			0.07
+}
+
+standard_object
+{
+	name			obj_whisk
+	geometry		groom_whisk
+	material		mat_whisker
+	position		0.0 0.1270 0.1930
+}
+
+##################################################
+# THE MEADOW, part 1 of 3: dense short turf at the animal's feet.
+#
+# Same generator, flat base.  `cartesian_disk_geometry` is the right
+# base here because its UV and cell density are uniform in world space,
+# unlike a polar fan.  It bakes with +Z normals, so the object rotates
+# -90 about X to lie down -- and the density/length painters therefore
+# see the disk's own frame, where Po = (x, y, 0) in the plane and world
+# Z is the disk's y.
+#
+# `clear` keeps a reduced but non-zero density right up against the
+# body so the animal is nestled INTO the turf rather than parked on it;
+# `rn` is the radius jittered by the same noise that thins the grass,
+# which turns the disk's circular rim into a ragged edge instead of a
+# visible arc.
+##################################################
+cartesian_disk_geometry
+{
+	name			geo_turf
+	radius			1.15
+	mesh_n			280
+}
+
+scalar_painter
+{
+	name			pnt_turf_den
+	def			ex    Po.x / 0.098
+	def			ez    (Po.y + 0.015) / 0.230
+	def			body  sqrt(ex*ex + ez*ez)
+	def			rad   sqrt(Po.x*Po.x + Po.y*Po.y)
+	def			clear mix(0.80, 1.0, smoothstep(0.85, 1.25, body))
+	def			n     0.5 + 0.5 * fbm(vec3(Po.x, Po.y, 0.0) * 16.0, 3.0, 0.5, 2.0)
+	def			rn    rad * (0.78 + 0.55 * clamp(n, 0.0, 1.0))
+	def			fade  1.0 - 0.72 * smoothstep(0.28, 1.12, rn)
+	expression		clear * fade * clamp(0.35 + 0.85 * n, 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name			pnt_turf_len
+	def			n 0.5 + 0.5 * fbm(vec3(Po.x, Po.y, 0.0) * 8.0, 3.0, 0.5, 2.0)
+	expression		0.45 + 1.20 * clamp(n, 0.0, 1.0)
+}
+
+expression_painter
+{
+	name			pnt_turf_col
+	def			h clamp(Po.z / 0.020, 0.0, 1.0)
+	expr			mix(vec3(0.005,0.006,0.002), vec3(0.030,0.025,0.008), pow(h, 0.75))
+}
+
+hair_material
+{
+	name			mat_turf
+	color			pnt_turf_col
+	beta_m			0.75
+	beta_n			0.80
+	alpha			1.0
+	ior			1.34
+	medulla_ratio		0.15
+	medulla_scatter		0.8
+	medulla_g		0.25
+}
+
+hair_geometry
+{
+	name			groom_turf
+	base_geometry		geo_turf
+	count			210000
+	segments		4
+	length			0.013
+	width_root		0.0008
+	width_tip		0.0003
+	base_detail		200
+	seed			101
+	density			pnt_turf_den
+	length_painter		pnt_turf_len
+	gravity			0.55
+	frizz			0.12
+	clump			0.30
+	clump_size		0.016
+}
+
+standard_object
+{
+	name			obj_turf
+	geometry		groom_turf
+	material		mat_turf
+	position		0 0.0015 0
+	orientation		-90 0 0
+}
+
+##################################################
+# THE MEADOW, part 2 of 3: sparse tall dry stalks over a wider patch.
+# Strongly clumped (`clump_size` 45 mm) so they read as tufts, and
+# heavily gravity-drooped so they arch rather than spike.
+##################################################
+cartesian_disk_geometry
+{
+	name			geo_stalks
+	radius			2.00
+	mesh_n			200
+}
+
+scalar_painter
+{
+	name			pnt_stalk_den
+	def			ex    Po.x / 0.095
+	def			ez    (Po.y + 0.015) / 0.220
+	def			body  sqrt(ex*ex + ez*ez)
+	def			rad   sqrt(Po.x*Po.x + Po.y*Po.y)
+	def			clear smoothstep(0.95, 1.25, body)
+	def			fade  1.0 - smoothstep(0.85, 1.95, rad)
+	def			tuft  0.5 + 0.5 * fbm(vec3(Po.x, Po.y, 0.0) * 7.0, 3.0, 0.6, 2.0)
+	expression		clear * fade * smoothstep(0.35, 0.78, tuft)
+}
+
+expression_painter
+{
+	name			pnt_stalk_col
+	def			h clamp(Po.z / 0.070, 0.0, 1.0)
+	expr			mix(vec3(0.009,0.009,0.003), vec3(0.040,0.033,0.012), pow(h, 0.55))
+}
+
+hair_material
+{
+	name			mat_stalk
+	color			pnt_stalk_col
+	beta_m			0.62
+	beta_n			0.70
+	alpha			1.0
+	ior			1.34
+	medulla_ratio		0.22
+	medulla_scatter		0.9
+	medulla_g		0.30
+}
+
+hair_geometry
+{
+	name			groom_stalks
+	base_geometry		geo_stalks
+	count			70000
+	segments		6
+	length			0.075
+	width_root		0.0010
+	width_tip		0.0004
+	base_detail		120
+	seed			211
+	density			pnt_stalk_den
+	length_painter		pnt_turf_len
+	gravity			0.95
+	frizz			0.06
+	clump			0.45
+	clump_size		0.045
+}
+
+standard_object
+{
+	name			obj_stalks
+	geometry		groom_stalks
+	material		mat_stalk
+	position		0 0.0015 0
+	orientation		-90 0 0
+}
+
+##################################################
+# THE MEADOW, part 3 of 3: background seed-heads.
+#
+# A RING, not a disk: the density is zero inside 2.6 m so it never
+# reaches the camera at 1.75 m (an earlier version at 15 cm tall and
+# 1.2 m radius swallowed the lens entirely), and it fades out by 6.4 m.
+# Its only job is to fill the band of bare ground that otherwise sits
+# between the near turf and the horizon as a hard dark stripe.  Two
+# hundred millimetre stems at three to five metres are almost free per
+# unit area and are completely defocused at f4, so they cost little and
+# read as a field going away.
+##################################################
+cartesian_disk_geometry
+{
+	name			geo_weeds
+	radius			6.50
+	mesh_n			160
+}
+
+scalar_painter
+{
+	name			pnt_weed_den
+	def			rad   sqrt(Po.x*Po.x + Po.y*Po.y)
+	def			band  smoothstep(2.60, 3.30, rad) * (1.0 - smoothstep(4.80, 6.40, rad))
+	def			tuft  0.5 + 0.5 * fbm(vec3(Po.x, Po.y, 0.0) * 2.2, 3.0, 0.6, 2.0)
+	expression		band * smoothstep(0.30, 0.75, tuft)
+}
+
+scalar_painter
+{
+	name			pnt_weed_len
+	def			n 0.5 + 0.5 * fbm(vec3(Po.x, Po.y, 0.0) * 3.0, 3.0, 0.5, 2.0)
+	expression		0.40 + 1.35 * clamp(n, 0.0, 1.0)
+}
+
+expression_painter
+{
+	name			pnt_weed_col
+	def			h clamp(Po.z / 0.190, 0.0, 1.0)
+	expr			mix(vec3(0.011,0.011,0.004), vec3(0.048,0.040,0.015), pow(h, 0.55))
+}
+
+hair_material
+{
+	name			mat_weed
+	color			pnt_weed_col
+	beta_m			0.62
+	beta_n			0.70
+	alpha			1.0
+	ior			1.34
+	medulla_ratio		0.22
+	medulla_scatter		0.9
+	medulla_g		0.30
+}
+
+hair_geometry
+{
+	name			groom_weeds
+	base_geometry		geo_weeds
+	count			110000
+	segments		6
+	length			0.200
+	width_root		0.0016
+	width_tip		0.0004
+	base_detail		140
+	seed			307
+	density			pnt_weed_den
+	length_painter		pnt_weed_len
+	gravity			0.90
+	frizz			0.05
+	clump			0.50
+	clump_size		0.220
+}
+
+standard_object
+{
+	name			obj_weeds
+	geometry		groom_weeds
+	material		mat_weed
+	position		0 0.0015 0
+	orientation		-90 0 0
+}
