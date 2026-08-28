@@ -698,11 +698,12 @@ namespace
 			bytes.insert(bytes.end(),value.begin(),value.end());};
 		auto appendDoubles=[&](const std::vector<double>& values){appendU64(values.size());
 			for(const double value:values)appendDouble(value);};
-		const char schema[]="rise.fire.production.beginning.v1";
+		const char schema[]="rise.fire.production.beginning.v2";
 		bytes.insert(bytes.end(),schema,schema+sizeof(schema));
 		appendText(checkpoint.caseRecordId);
 		appendU64(checkpoint.dimensions[0]);appendU64(checkpoint.dimensions[1]);
 		appendU64(checkpoint.dimensions[2]);appendDouble(checkpoint.cellWidthM);
+		appendDouble(checkpoint.values.characteristicDiameterM);
 		appendDouble(checkpoint.simulationTimeS);appendDouble(checkpoint.previousStepS);
 		appendDouble(checkpoint.lastAcceptedStepS);appendU64(checkpoint.acceptedSteps);
 		appendU64(checkpoint.values.acceptedTimeStepHistoryS.size());
@@ -3350,6 +3351,16 @@ namespace
 		MethaneRunCheckpoint root;std::string error,stateDigest;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,root,error)||
 			!CheckpointProductionBeginningSHA256(root,stateDigest))return 188;
+		const double characteristicDiameterM=root.values.characteristicDiameterM;
+		root.values.characteristicDiameterM=std::nextafter(characteristicDiameterM,
+			std::numeric_limits<double>::infinity());
+		std::string mutatedFilterScaleDigest;
+		if(!CheckpointProductionBeginningSHA256(root,mutatedFilterScaleDigest)||
+			mutatedFilterScaleDigest==stateDigest)return 188;
+		root.values.characteristicDiameterM=characteristicDiameterM;
+		std::fprintf(stderr,
+			"r171 golden beginning filter-scale mutation refused original=%s mutated=%s\n",
+			stateDigest.c_str(),mutatedFilterScaleDigest.c_str());
 		std::fprintf(stderr,"r171 golden beginning step=0 state_sha256=%s\n",
 			stateDigest.c_str());
 		for(std::size_t step=0u;step<8u;++step){

@@ -1100,6 +1100,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 	r171_inputs_bound=1
 	if [ "$r171_generate_rc" -eq 189 ]; then
+		if ! grep -Fq 'r171 golden beginning filter-scale mutation refused original=935af89dc8f7d000427dd239a877cdc5ed64191e75214f8273d86f979c4da449 mutated=2f2a43c95c39560756cd27f4232979f109280a969f1574c195862472875b34fe' \
+			"$r171_generate_log"; then
+			r171_inputs_bound=0
+		fi
 		for r171_slice in 0 1 2 3 4 5 6 7; do
 			r171_expected="$(awk -v key="beginning_${r171_slice}_state_sha256" \
 				'$1==key {print $2}' "$r171_protocol")"

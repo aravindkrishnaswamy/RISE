@@ -2111,16 +2111,16 @@ int main()
 		!goldenSubdominanceRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenSubdominanceProtocol.begin(),goldenSubdominanceProtocol.end()))==
-			"9dfdc2b0f31ecb58e1acead414e459031c3e199ec801fee1fd1412b6cc2fe8ff"&&
+			"7455f7d7e181adb0e3f78ed2e7bb31b1f6fde9b8d1545e01d6431e4ab953b3b5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenSubdominanceEvidence.begin(),goldenSubdominanceEvidence.end()))==
-			"6d6e4aaacd4e4f359974a058c9900ffd29ed5ee4c649b332857a9cfefcba04ad"&&
+			"7477788fa4534cd87549d3564c6e5a3263360b564a7785c80af6742d97dc180c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenSubdominanceRaw.begin(),goldenSubdominanceRaw.end()))==
 			"52ebd0e9a401bbb01bcf73f79d2a127b6385aa69cfa16447a8035a59bf58bcb5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"7c139299cf4edf212f3af390114ce23da1598bffbe71e21f8a3fb613d12b89eb"&&
+			"fac523acb9ad43f629d4fb2aab132b2ac2156443c10fd1ee3422b8da1b151739"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
 			"0a91b12c762fa1beadac41c716d9a9d15b200f42bb77dd9b8f4842b477c2a5c8"&&
@@ -2131,6 +2131,15 @@ int main()
 			forceHeader.begin(),forceHeader.end()))==
 			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMetal.begin(),projectionMetal.end()))==
+			"bff3315513f88b51f5967c179dbd2995eaa9ab1ccb35a78d2ae223ae6a5f4871"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionSource.begin(),projectionSource.end()))==
+			"133a41686fcf4538f0fa14d65a675cb6a3b8ad72d83b376d4022efd34e57663d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionHeader.begin(),projectionHeader.end()))==
+			"e657a44dd08b0b26c7674800ff0e15a28b996d1373f7f80cd57359fcd9475e42"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
 			"88c66592f87990a4a844acca91d2ba907c96ed0d9b8420726dfd5e6142c4b2a5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
@@ -2138,7 +2147,14 @@ int main()
 			"6befdf70f4e96e6ad836d32722326665551ec0046534e41d603f683fd0948e4e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"1075895f05e16dd147cbafc2e640a3b52c8608e38c9358226a29ee741d16a8d1"&&
+			"1cb7c6ca09c69e57ae10da9307af81400e060b796952e317dfddb27ba2b20524"&&
+		goldenSubdominanceProtocol.find(
+			"state_digest_schema rise.fire.production.beginning.v2")!=std::string::npos&&
+		goldenSubdominanceProtocol.find("filter_scale_mutation_RED true")!=
+			std::string::npos&&
+		goldenSubdominanceEvidence.find("projection_metal_sha256 "
+			"bff3315513f88b51f5967c179dbd2995eaa9ab1ccb35a78d2ae223ae6a5f4871")!=
+			std::string::npos&&
 		goldenSubdominanceProtocol.find("admitted_measurement_performed false")!=
 			std::string::npos&&
 		goldenSubdominanceEvidence.find("gate_count 152")!=std::string::npos&&
