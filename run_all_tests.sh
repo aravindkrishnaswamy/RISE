@@ -1152,10 +1152,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	rm -rf "$r171_temp"
 fi
 
-# r172: execute r139's three-level temporal protocol after r171 and before
-# equal-time readmission.  All rows are emitted even after the first refusal.
+# r173: execute r139's uniformly filtered three-level temporal protocol after
+# r171 and before equal-time readmission.  A consistency-certified filtered
+# plateau is admitted only as the outward measured-floor upper bound frozen by
+# the r173 amendment; every row is emitted and identity-bound.
 if [ "$(uname -s)" = "Darwin" ]; then
-	r172_name="FireSequenceTest.r172_temporal_refinement_stop"
+	r172_name="FireSequenceTest.r173_filtered_temporal_refinement"
 	r172_path="$BIN_DIR/FireSequenceTest"
 	r172_oracle_path="$BIN_DIR/FireProductionCalibrationOracle"
 	r172_log="$LOG_DIR/$r172_name.log"
@@ -1165,6 +1167,8 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	r172_protocol="$REPO_ROOT/rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1"
 	r172_protocol_sha="e58ee48de0c79dc35aa6e6bf344729c12cc74bf7d89cfa3e78cfeaf28cc9630c"
 	r172_targets_sha="6e0af5dcb7602b6fd067bc6d4b113378c14444643300ede6375d442c7cdef42c"
+	r173_amendment="$REPO_ROOT/rendered/fire_production_calibration/r173_filtered_temporal_protocol/filtered_temporal_protocol.v1"
+	r173_amendment_sha="5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562"
 	r172_temp="$(mktemp -d "${TMPDIR:-/tmp}/rise-r172-targets.XXXXXX")"
 	r172_evaluator_allowed() {
 		[ -x "$1" ] && [ -x "$2" ] && [ "$3" -eq 1 ]
@@ -1202,24 +1206,27 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		RISE_OPTIONS_FILE="$r172_options" "$timeout_bin" "$RISE_TEST_TIMEOUT" \
 			"$r172_path" --fire-production-calibration-measure-temporal "$r172_directory" \
 			"$r172_protocol" "$r172_protocol_sha" "$r172_targets_sha" \
+			"$r173_amendment" "$r173_amendment_sha" \
 			>"$r172_log" 2>&1 || r172_rc=$?
 	else
 		RISE_OPTIONS_FILE="$r172_options" "$r172_path" \
 			--fire-production-calibration-measure-temporal "$r172_directory" "$r172_protocol" \
-			"$r172_protocol_sha" "$r172_targets_sha" >"$r172_log" 2>&1 || r172_rc=$?
+			"$r172_protocol_sha" "$r172_targets_sha" "$r173_amendment" \
+			"$r173_amendment_sha" >"$r172_log" 2>&1 || r172_rc=$?
 	fi
-	if [ "$r172_rc" -eq 193 ] && [ "$r172_sealed" -eq 1 ] &&
+	if [ "$r172_rc" -eq 192 ] && [ "$r172_sealed" -eq 1 ] &&
 		[ "$r172_missing_owner_red" -eq 1 ] &&
-		grep -Fq 'temporal scalar component=8 production_D=1.3664113219736267/0.68316914382060645 order=1 E=2.7328226439472538 accepted=1 oracle_D=0.0012312438866646748/0.001273209006325096 order=0 E=0 accepted=0' "$r172_log" &&
-		grep -Fq 'temporal velocity production_D=6.7800078709060773e-06/3.735511745788258e-06 order=0.85998104987383395 E=1.5098888236479335e-05 accepted=1 oracle_D=6.2907169766867145e-06/5.3409610560218166e-06 order=0.23612509109838353 E=4.1666621096787029e-05 accepted=1' "$r172_log" &&
-		grep -Fq 'temporal refinement complete baseline=0.0018513043178245425 horizon=0.01481043454259634 target_sha256=1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c/1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1/95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551 refusals=0/1 expected=1' "$r172_log" &&
+		grep -Fq 'temporal scalar component=8 production_D=1.3664113219736267/0.68316914382060645 order=1 E=2.7328226439472538 mode=richardson accepted=1 oracle_D=0.0012312438866646748/0.001273209006325096 order=0 E=0.0012732090063250962 mode=floor_upper_bound accepted=1' "$r172_log" &&
+		grep -Fq 'temporal velocity production_D=6.7800078709060773e-06/3.735511745788258e-06 order=0.85998104987383395 E=1.5098888236479335e-05 mode=richardson accepted=1 oracle_D=6.2907169766867145e-06/5.3409610560218166e-06 order=0.23612509109838353 E=4.1666621096787029e-05 mode=richardson accepted=1' "$r172_log" &&
+		grep -Fq 'temporal refinement complete baseline=0.0018513043178245425 horizon=0.01481043454259634 target_sha256=1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c/1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1/95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551 amendment_sha256=5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562 refusals=0/0 floor_bounds=0/1 sole_floor=oracle_scalar_8 accepted=1' "$r172_log" &&
 		[ "$(grep -c '^temporal scalar component=' "$r172_log")" -eq 9 ] &&
 		[ "$(grep -c '^temporal ledger component=' "$r172_log")" -eq 9 ] &&
-		[ "$(grep -o 'accepted=0' "$r172_log" | wc -l | tr -d ' ')" -eq 1 ]; then
-		echo 'PASS (exact exit=193, oracle energy temporal refusal)'
+		[ "$(grep -o 'mode=floor_upper_bound' "$r172_log" | wc -l | tr -d ' ')" -eq 1 ] &&
+		[ "$(grep -o 'accepted=0' "$r172_log" | wc -l | tr -d ' ')" -eq 0 ]; then
+		echo 'PASS (exact exit=192, filtered temporal contract complete)'
 		rm -f "$r172_log" "$r172_seal_log"
 	else
-		echo "FAIL (exit=$r172_rc expected 193)"
+		echo "FAIL (exit=$r172_rc expected 192)"
 		printf '%s\t%d\t%s\n' "$r172_name" "$r172_rc" "$r172_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi

@@ -970,10 +970,13 @@ namespace FireProductionDyadicCalibration
 
 	int MeasureTemporalRefinement(const std::filesystem::path& directory,
 		const std::filesystem::path& protocolPath,const char* expectedProtocol,
-		const char* expectedTargets)
+		const char* expectedTargets,const std::filesystem::path& amendmentPath,
+		const char* expectedAmendment)
 	{
-		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
+		if(!expectedProtocol||!expectedTargets||!expectedAmendment||
+			std::strlen(expectedProtocol)!=64u||std::strlen(expectedAmendment)!=64u||
 			std::strlen(expectedTargets)!=64u||DigestFile(protocolPath)!=expectedProtocol||
+			DigestFile(amendmentPath)!=expectedAmendment||
 			DigestFile(directory/"temporal_targets.v1")!=expectedTargets)return 173;
 		std::array<unsigned int,3> stepCounts;std::array<double,3> sealedTimeSteps;
 		std::array<std::string,3> targetFileDigests;
@@ -1078,24 +1081,37 @@ namespace FireProductionDyadicCalibration
 		const std::array<double,9> oracleFine=FieldDistance(
 			oracleFiltered[1],oracleFiltered[2]);
 		unsigned int productionRefusals=0u,oracleRefusals=0u;
-		bool expectedOracleEnergyRefusal=false;
+		unsigned int productionFloors=0u,oracleFloors=0u;
+		bool expectedOracleEnergyFloor=false;
 		for(std::size_t component=0u;component<9u;++component){
 			double productionOrder=0.0,productionDistance=0.0;
 			double oracleOrder=0.0,oracleDistance=0.0;
-			const bool productionAccepted=FireProductionCalibration::TemporalRichardson(
+			FireProductionCalibration::FilteredTemporalDistanceMode productionMode=
+				FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
+			FireProductionCalibration::FilteredTemporalDistanceMode oracleMode=
+				FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
+			const bool productionAccepted=FireProductionCalibration::FilteredTemporalDistance(
 				productionCoarse[component],productionFine[component],1.0,
-				productionOrder,productionDistance);
-			const bool oracleAccepted=FireProductionCalibration::TemporalRichardson(
+				true,productionOrder,productionDistance,productionMode);
+			const bool oracleAccepted=FireProductionCalibration::FilteredTemporalDistance(
 				oracleCoarse[component],
-					oracleFine[component],2.0,oracleOrder,oracleDistance);
+					oracleFine[component],2.0,true,oracleOrder,oracleDistance,oracleMode);
 			if(!productionAccepted)++productionRefusals;
-			if(!oracleAccepted){++oracleRefusals;if(component==8u)expectedOracleEnergyRefusal=true;}
+			if(!oracleAccepted)++oracleRefusals;
+			if(productionMode==FireProductionCalibration::FilteredTemporalDistanceMode::
+				MeasuredFloorUpperBound)++productionFloors;
+			if(oracleMode==FireProductionCalibration::FilteredTemporalDistanceMode::
+				MeasuredFloorUpperBound){++oracleFloors;if(component==8u)
+				expectedOracleEnergyFloor=true;}
 			std::fprintf(stderr,"temporal scalar component=%zu production_D=%.17g/%.17g "
-				"order=%.17g E=%.17g accepted=%d oracle_D=%.17g/%.17g order=%.17g "
-				"E=%.17g accepted=%d\n",
+				"order=%.17g E=%.17g mode=%s accepted=%d oracle_D=%.17g/%.17g "
+				"order=%.17g E=%.17g mode=%s accepted=%d\n",
 				component,productionCoarse[component],productionFine[component],productionOrder,
-				productionDistance,productionAccepted?1:0,oracleCoarse[component],
-				oracleFine[component],oracleOrder,oracleDistance,oracleAccepted?1:0);
+				productionDistance,FireProductionCalibration::FilteredTemporalDistanceModeName(
+					productionMode),productionAccepted?1:0,oracleCoarse[component],
+				oracleFine[component],oracleOrder,oracleDistance,
+				FireProductionCalibration::FilteredTemporalDistanceModeName(oracleMode),
+				oracleAccepted?1:0);
 		}
 		const double productionVelocityCoarse=VelocityDistance(productionVelocity[0],
 			productionVelocity[1]);
@@ -1105,20 +1121,32 @@ namespace FireProductionDyadicCalibration
 		const double oracleVelocityFine=VelocityDistance(oracleVelocity[1],oracleVelocity[2]);
 		double productionVelocityOrder=0.0,productionVelocityDistance=0.0;
 		double oracleVelocityOrder=0.0,oracleVelocityDistance=0.0;
-		const bool productionVelocityAccepted=FireProductionCalibration::TemporalRichardson(
-			productionVelocityCoarse,productionVelocityFine,1.0,productionVelocityOrder,
-			productionVelocityDistance);
-		const bool oracleVelocityAccepted=FireProductionCalibration::TemporalRichardson(
-				oracleVelocityCoarse,oracleVelocityFine,2.0,oracleVelocityOrder,
-				oracleVelocityDistance);
+		FireProductionCalibration::FilteredTemporalDistanceMode productionVelocityMode=
+			FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
+		FireProductionCalibration::FilteredTemporalDistanceMode oracleVelocityMode=
+			FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
+		const bool productionVelocityAccepted=FireProductionCalibration::FilteredTemporalDistance(
+			productionVelocityCoarse,productionVelocityFine,1.0,true,productionVelocityOrder,
+			productionVelocityDistance,productionVelocityMode);
+		const bool oracleVelocityAccepted=FireProductionCalibration::FilteredTemporalDistance(
+				oracleVelocityCoarse,oracleVelocityFine,2.0,true,oracleVelocityOrder,
+				oracleVelocityDistance,oracleVelocityMode);
 		if(!productionVelocityAccepted)++productionRefusals;
 		if(!oracleVelocityAccepted)++oracleRefusals;
+		if(productionVelocityMode==FireProductionCalibration::FilteredTemporalDistanceMode::
+			MeasuredFloorUpperBound)++productionFloors;
+		if(oracleVelocityMode==FireProductionCalibration::FilteredTemporalDistanceMode::
+			MeasuredFloorUpperBound)++oracleFloors;
 		std::fprintf(stderr,"temporal velocity production_D=%.17g/%.17g order=%.17g E=%.17g "
-			"accepted=%d oracle_D=%.17g/%.17g order=%.17g E=%.17g accepted=%d\n",
+			"mode=%s accepted=%d oracle_D=%.17g/%.17g order=%.17g E=%.17g mode=%s "
+			"accepted=%d\n",
 			productionVelocityCoarse,
 			productionVelocityFine,productionVelocityOrder,productionVelocityDistance,
+			FireProductionCalibration::FilteredTemporalDistanceModeName(productionVelocityMode),
 			productionVelocityAccepted?1:0,oracleVelocityCoarse,oracleVelocityFine,
-			oracleVelocityOrder,oracleVelocityDistance,oracleVelocityAccepted?1:0);
+			oracleVelocityOrder,oracleVelocityDistance,
+			FireProductionCalibration::FilteredTemporalDistanceModeName(oracleVelocityMode),
+			oracleVelocityAccepted?1:0);
 		for(std::size_t component=0u;component<9u;++component){
 			const double productionCoarseDifference=std::fabs(productionInventory[0][component]-
 				productionInventory[1][component]);
@@ -1130,27 +1158,42 @@ namespace FireProductionDyadicCalibration
 				oracleInventory[2][component]);
 			double productionOrder=0.0,productionDistance=0.0;
 			double oracleOrder=0.0,oracleDistance=0.0;
-			const bool productionAccepted=FireProductionCalibration::TemporalRichardson(
-				productionCoarseDifference,productionFineDifference,1.0,productionOrder,
-				productionDistance);
-			const bool oracleAccepted=FireProductionCalibration::TemporalRichardson(
-					oracleCoarseDifference,oracleFineDifference,2.0,oracleOrder,oracleDistance);
+			FireProductionCalibration::FilteredTemporalDistanceMode productionMode=
+				FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
+			FireProductionCalibration::FilteredTemporalDistanceMode oracleMode=
+				FireProductionCalibration::FilteredTemporalDistanceMode::Rejected;
+			const bool productionAccepted=FireProductionCalibration::FilteredTemporalDistance(
+				productionCoarseDifference,productionFineDifference,1.0,true,productionOrder,
+				productionDistance,productionMode);
+			const bool oracleAccepted=FireProductionCalibration::FilteredTemporalDistance(
+					oracleCoarseDifference,oracleFineDifference,2.0,true,oracleOrder,
+					oracleDistance,oracleMode);
 			if(!productionAccepted)++productionRefusals;
 			if(!oracleAccepted)++oracleRefusals;
+			if(productionMode==FireProductionCalibration::FilteredTemporalDistanceMode::
+				MeasuredFloorUpperBound)++productionFloors;
+			if(oracleMode==FireProductionCalibration::FilteredTemporalDistanceMode::
+				MeasuredFloorUpperBound)++oracleFloors;
 			std::fprintf(stderr,"temporal ledger component=%zu production_D=%.17g/%.17g "
-				"order=%.17g E=%.17g accepted=%d oracle_D=%.17g/%.17g order=%.17g "
-				"E=%.17g accepted=%d\n",
+				"order=%.17g E=%.17g mode=%s accepted=%d oracle_D=%.17g/%.17g "
+				"order=%.17g E=%.17g mode=%s accepted=%d\n",
 				component,productionCoarseDifference,productionFineDifference,productionOrder,
-				productionDistance,productionAccepted?1:0,oracleCoarseDifference,
-				oracleFineDifference,oracleOrder,oracleDistance,oracleAccepted?1:0);
+				productionDistance,FireProductionCalibration::FilteredTemporalDistanceModeName(
+					productionMode),productionAccepted?1:0,oracleCoarseDifference,
+				oracleFineDifference,oracleOrder,oracleDistance,
+				FireProductionCalibration::FilteredTemporalDistanceModeName(oracleMode),
+				oracleAccepted?1:0);
 		}
-		const bool expectedRefusal=productionRefusals==0u&&oracleRefusals==1u&&
-			expectedOracleEnergyRefusal;
+		const bool acceptedMatrix=productionRefusals==0u&&oracleRefusals==0u&&
+			productionFloors==0u&&oracleFloors==1u&&expectedOracleEnergyFloor;
 		std::fprintf(stderr,"temporal refinement complete baseline=%.17g horizon=%.17g "
-			"target_sha256=%s/%s/%s refusals=%u/%u expected=%d\n",baseline,8.0*baseline,
+			"target_sha256=%s/%s/%s amendment_sha256=%s refusals=%u/%u "
+			"floor_bounds=%u/%u sole_floor=oracle_scalar_8 accepted=%d\n",baseline,
+			8.0*baseline,
 			targetDigest[0].c_str(),targetDigest[1].c_str(),targetDigest[2].c_str(),
-			productionRefusals,oracleRefusals,expectedRefusal?1:0);
-		return expectedRefusal?193:192;
+			expectedAmendment,productionRefusals,oracleRefusals,productionFloors,oracleFloors,
+			acceptedMatrix?1:0);
+		return acceptedMatrix?192:193;
 	}
 	bool ApplyAcceptedProductionResult(const RISE::FireProductionResidentStepResult& production,
 		const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,

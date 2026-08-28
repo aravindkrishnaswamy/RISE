@@ -135,6 +135,44 @@ namespace FireProductionCalibration
 		return std::isfinite(baselineDistance);
 	}
 
+	enum class FilteredTemporalDistanceMode
+	{
+		Rejected,
+		Richardson,
+		MeasuredFloorUpperBound
+	};
+
+	inline const char* FilteredTemporalDistanceModeName(
+		const FilteredTemporalDistanceMode mode)
+	{
+		switch(mode){
+		case FilteredTemporalDistanceMode::Richardson:return "richardson";
+		case FilteredTemporalDistanceMode::MeasuredFloorUpperBound:return "floor_upper_bound";
+		case FilteredTemporalDistanceMode::Rejected:return "rejected";
+		}
+		return "rejected";
+	}
+
+	inline bool FilteredTemporalDistance(const double coarseDifference,
+		const double fineDifference,const double formalOrder,
+		const bool temporalConsistencyCertified,double& measuredOrder,
+		double& baselineDistance,FilteredTemporalDistanceMode& mode)
+	{
+		mode=FilteredTemporalDistanceMode::Rejected;
+		if(TemporalRichardson(coarseDifference,fineDifference,formalOrder,
+			measuredOrder,baselineDistance)){
+			mode=FilteredTemporalDistanceMode::Richardson;
+			return true;
+		}
+		measuredOrder=0.0;baselineDistance=0.0;
+		if(!temporalConsistencyCertified||!(coarseDifference>0.0)||
+			!(fineDifference>0.0)||!std::isfinite(coarseDifference)||
+			!std::isfinite(fineDifference))return false;
+		baselineDistance=NextUp(std::max(coarseDifference,fineDifference));
+		mode=FilteredTemporalDistanceMode::MeasuredFloorUpperBound;
+		return std::isfinite(baselineDistance);
+	}
+
 	struct DyadicDistanceEstimate
 	{
 		double coarseDistance=0.0;

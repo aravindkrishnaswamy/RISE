@@ -2224,15 +2224,15 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalTarget2.begin(),temporalTarget2.end()))==
 			"95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			dyadicFixture.begin(),dyadicFixture.end()))==
-			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"3f98a148082a4113bedfad8473a271890784cce42be010e08903694fb7f6ce13"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"6c4297597ff1b09d62042d8d74baee0200dcbbbb5b464536f56e6b43e169a83c"&&
+		temporalStop.find("fixture_sha256 "
+			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d")!=
+			std::string::npos&&
+		temporalStop.find("owner_sha256 "
+			"3f98a148082a4113bedfad8473a271890784cce42be010e08903694fb7f6ce13")!=
+			std::string::npos&&
+		temporalStop.find("unix_runner_sha256 "
+			"6c4297597ff1b09d62042d8d74baee0200dcbbbb5b464536f56e6b43e169a83c")!=
+			std::string::npos&&
 		temporalStop.find("solver_doc_sha256 "
 			"1509d05724ab8e13c802fd53b5f48d7998804b106af3d4bf6f6868a56db542fb")!=
 			std::string::npos&&
@@ -2253,12 +2253,10 @@ int main()
 			std::string::npos&&
 		CountText(temporalStopRaw,"temporal scalar component=")==9u&&
 		CountText(temporalStopRaw,"temporal ledger component=")==9u&&
-		unixTestDriver.find("--fire-production-calibration-seal-temporal-targets")!=
-			std::string::npos&&unixTestDriver.find(
-			"--fire-production-calibration-measure-temporal")!=std::string::npos&&
-		unixTestDriver.find("r172_evaluator_allowed")!=std::string::npos&&
-		unixTestDriver.find("r172_missing_owner_red")!=std::string::npos&&
-		unixTestDriver.find("grep -o 'accepted=0'")!=std::string::npos,
+		temporalStop.find("target_replay write_once_payloads_SHA_verified_const_memory")!=
+			std::string::npos&&
+		temporalStop.find("all_quantities_evaluated_after_first_failure true")!=
+			std::string::npos,
 		"r172 executes all temporal rows and refuses noncontracting oracle energy");
 	const std::string filteredTemporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r173_filtered_temporal_protocol/"
@@ -2266,15 +2264,9 @@ int main()
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalProtocol.begin(),filteredTemporalProtocol.end()))==
 			"5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			dyadicFixture.begin(),dyadicFixture.end()))==
-			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			solverDoc.begin(),solverDoc.end()))==
-			"26f07b4d597cf2c691528d0fa42ada1f1c4620c932370d0636cc5d83b64af9e3"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			historyDoc.begin(),historyDoc.end()))==
-			"9f72e5566e191f2d20babf1226bae0e857c10351e46a0ec4fafe8439e0dbe990"&&
+		filteredTemporalProtocol.find("filter_owner_source_sha256 "
+			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d")!=
+			std::string::npos&&
 		filteredTemporalProtocol.find("protocol_before_filtered_temporal_evidence true")!=
 			std::string::npos&&
 		filteredTemporalProtocol.find("filter_width_m 0.04894898570785762")!=
@@ -2286,6 +2278,42 @@ int main()
 		filteredTemporalProtocol.find("temporal_measurement_performed false")!=
 			std::string::npos,
 		"r173 freezes filtered temporal floor handling before the rerun");
+	const std::string filteredTemporalEvidence=ReadText(
+		"rendered/fire_production_calibration/r173_filtered_temporal/"
+		"filtered_temporal_evidence.v1");
+	const std::string filteredTemporalRaw=ReadText(
+		"rendered/fire_production_calibration/r173_filtered_temporal/"
+		"filtered_temporal.raw.log");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			filteredTemporalEvidence.begin(),filteredTemporalEvidence.end()))==
+			"6b2f16c5e07226f885e11e3557810b5599b675302ff297a81adf6f045c245986"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			filteredTemporalRaw.begin(),filteredTemporalRaw.end()))==
+			"58d29b87137d71b429322e6e5adcb5223c448e163708023e1e67ae332b260009"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			dyadicFixture.begin(),dyadicFixture.end()))==
+			"bb29c1b00489cda9075dd73355f00bd85947a9500d96670fce8403738b7a0e23"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			sequenceTest.begin(),sequenceTest.end()))==
+			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			calibrationMathSource.begin(),calibrationMathSource.end()))==
+			"071f8e92394125ca14382439ee19e8d6f00cf128e98da6e0714a1f08c887713b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"efe61c133b593409ff1caa4cddb3efe3738fd0b722618089134fd3429d735aab"&&
+		filteredTemporalEvidence.find("floor_upper_bound_terms production_0 oracle_1")!=
+			std::string::npos&&
+		filteredTemporalEvidence.find("sole_floor_upper_bound "
+			"oracle_scalar_component_8_sensible_energy")!=std::string::npos&&
+		filteredTemporalEvidence.find("temporal_contract_complete true")!=
+			std::string::npos&&
+		CountText(filteredTemporalRaw,"temporal scalar component=")==9u&&
+		CountText(filteredTemporalRaw,"temporal ledger component=")==9u&&
+		CountText(filteredTemporalRaw,"mode=floor_upper_bound")==1u&&
+		filteredTemporalRaw.find("refusals=0/0 floor_bounds=0/1 "
+			"sole_floor=oracle_scalar_8 accepted=1")!=std::string::npos,
+		"r173 completes the uniformly filtered temporal term with one measured-floor bound");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&
@@ -3403,6 +3431,17 @@ int main()
 		"dyadic verified-order estimates own an exact independent-limit overlap rule");
 	Check(TemporalRichardson(0.75,0.1875,2.0,order,distance)&&order==2.0&&
 		distance>=1.0,"three-level temporal Richardson uses the baseline distance");
+	FilteredTemporalDistanceMode temporalMode=FilteredTemporalDistanceMode::Rejected;
+	Check(FilteredTemporalDistance(0.75,0.1875,2.0,true,order,distance,temporalMode)&&
+		temporalMode==FilteredTemporalDistanceMode::Richardson&&order==2.0&&distance>=1.0,
+		"filtered temporal contraction retains the registered Richardson rule");
+	const double floorCoarse=0.0012312438866646748;
+	const double floorFine=0.001273209006325096;
+	Check(FilteredTemporalDistance(floorCoarse,floorFine,2.0,true,order,distance,
+			temporalMode)&&temporalMode==FilteredTemporalDistanceMode::MeasuredFloorUpperBound&&
+		order==0.0&&distance==NextUp(floorFine)&&distance>floorFine&&
+		!FilteredTemporalDistance(floorCoarse,floorFine,2.0,false,order,distance,temporalMode),
+		"filtered temporal plateau needs consistency authority and uses the outward measured floor");
 	double tolerance=0.0;
 	Check(TriangleTolerance(1.0,2.0,3.0,4.0,5.0,tolerance)&&tolerance>15.0,
 		"triangle tolerance is an outward sum rather than a maximum");
