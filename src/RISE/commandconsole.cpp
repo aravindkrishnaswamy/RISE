@@ -76,7 +76,15 @@ double DoPerformanceRating()
 {
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );
-	pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" );   // Slice 6c-3a: via Auto (CST-only -- native-v7 -> CST, else hard-fail)
+	if( !pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" ) ) {   // Slice 6c-3a: via Auto (CST-only -- native-v7 -> CST, else hard-fail)
+		// bug-fix wave (2026-08-28, fix 4): unlike the interactive-console loads (see the
+		// loud PARTIAL SCENE banners below), a partial `scenes/pr.RISEscene` is not useful
+		// debugging material here -- a performance rating measures render throughput, and
+		// rasterizing a scene missing some objects/materials/lights would report a bogus
+		// number that LOOKS like a valid PR score.  Abort instead of computing one.
+		std::cerr << "ERROR: DoPerformanceRating: failed to load scenes/pr.RISEscene -- see the log for the derive diagnostics.\n";
+		std::exit( 1 );
+	}
 
 	unsigned int		actual_time = 1;
 	pJob->PredictRasterizationTime( 10000, 0, &actual_time );
@@ -1150,6 +1158,18 @@ int main( int argc, char** argv )
 						safe_release( pWinRO );
 					}
 				}
+			} else {
+				// bug-fix wave (2026-08-28, fix 4): a `false` here means DeriveToJob's PASS-2
+				// left SOME chunks applied to `pJob` (continue-past-failure) but the load as a
+				// whole is diagnosed-failed -- LoadAsciiSceneViaCst's per-diagnostic log lines
+				// already recorded WHY, but this path deliberately falls through to the
+				// interactive console loop instead of aborting (rendering a partial scene is
+				// legitimate author debugging -- continuation makes the partial MORE useful).
+				// Make that loud so it is not mistaken for a clean load.
+				std::cerr << "=====================================================================\n"
+				             "PARTIAL SCENE: derive reported failures -- see the log; 'render' will\n"
+				             "render the PARTIAL scene\n"
+				             "=====================================================================\n";
 			}
 
 			// Detach the block-scoped StdOutProgress above -- it exists only for the parse.
@@ -1173,6 +1193,13 @@ int main( int argc, char** argv )
 					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
 					pJob->SetFilm( w, h, pAR );
 				}
+			} else {
+				// See the matching `else` in the Windows branch above (bug-fix wave 2026-08-28,
+				// fix 4) -- same deliberate loud-fall-through, same reason.
+				std::cerr << "=====================================================================\n"
+				             "PARTIAL SCENE: derive reported failures -- see the log; 'render' will\n"
+				             "render the PARTIAL scene\n"
+				             "=====================================================================\n";
 			}
 #endif
 		}

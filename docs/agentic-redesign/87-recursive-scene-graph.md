@@ -782,6 +782,19 @@ what was authored, live material included).
      chunk's failure already leaves the Job partial.  The containment is the
      CALLER's: `LoadAsciiSceneViaCst` returns false on any diagnostic, and the GUI
      re-derive dry-runs into a staging Job.
+     **SUPERSEDED 2026-08-28: `DeriveToJob`'s PASS-2 no longer breaks on the
+     first refusal (see `src/Library/Cst/Cst.cpp`'s `ClonedEntry` /
+     `SourceSubtree` comments and `DeriveToJob`'s doc comment in `Cst.h`) --
+     PASS-2 now keeps going, so a partial Job can be MORE complete than this
+     paragraph describes.  The "containment is the CALLER's" claim is also
+     narrower than stated: `LoadAsciiSceneViaCst` still returns false on any
+     diagnostic and still does not itself roll back the partial Job it derived
+     into, but its OWN caller is no longer guaranteed to discard that Job on a
+     `false` return -- `commandconsole.cpp`'s two `sceneArg` load sites
+     (bug-fix wave, fix 4) deliberately KEEP the partial Job live and print a
+     loud "PARTIAL SCENE" banner instead, precisely because a partial Job is
+     now more useful to keep than before.  This paragraph is historical record
+     of the argument as it stood at the time, not a live claim.**
    - **`InstanceBaseName` TRUNCATED, WHICH IS EXACTLY THE INVARIANT THE COLLISION
      SCAN RESTS ON.**  `char[256]` + `snprintf`: a 253-character chunk name with
      `count_u 1 count_v 2` truncates both repetitions to `<name>[0`, the scan's
@@ -937,19 +950,24 @@ what was authored, live material included).
      expansion is necessarily earlier in the document (declare-before-use) and
      PASS-2 breaks on the first refusal — so the scene is refused with the
      identical message whether or not the deeper walk would have caught it.
-     Same shape as the override-lookup unreachability argued at that site.
+     Same shape as the override-lookup unreachability argued at that site —
+     and the override refusal now prints the key that actually matched
+     (`ov->first`) rather than always `keys[0]`, so a match on a shorter name
+     names the right entry, but the branch itself remains unreachable for the
+     reason written at the site.
      **SUPERSEDED 2026-08-28: `DeriveToJob`'s PASS-2 no longer breaks on the
      first refusal (see `src/Library/Cst/Cst.cpp`'s `ClonedEntry` /
      `SourceSubtree` comments and `DeriveToJob`'s doc comment in `Cst.h` for
-     the corrected, carefully-hedged current reasoning) — this paragraph is
-     historical record of the argument as it stood at the time, not a live
-     claim.**  What
+     the corrected, carefully-hedged current reasoning) — BOTH the "PASS-2
+     breaks on the first refusal" claim above AND the "branch remains
+     unreachable" claim it supports are historical record of the argument as
+     it stood at the time, not live claims; see the same `Cst.cpp` comments
+     (the override-lookup site, "ONLY THE FIRST KEY... was PROVABLY
+     REACHABLE under the OLD break-on-first-failure PASS-2") for why that
+     guard's reachability is no longer provable either way.**  What
      IS pinned is the generator refusal on a TWO-level synthesized entry
      (`parent I2.I1.B` with `I3 source I2`), which no shallower expansion can
-     see.  Also unpinned by construction: the override refusal now prints the
-     key that actually matched (`ov->first`) rather than always `keys[0]`, so a
-     match on a shorter name names the right entry — one expression, and the
-     branch remains unreachable for the reason written at the site.
+     see.
 
    **3b review round 3 (2026-08-17) — no P1.  Every finding is a MISSING
    REGRESSION GUARD on something a previous round had just fixed or just
@@ -1027,8 +1045,10 @@ what was authored, live material included).
      (a key at `ki > 0` is `keys[0]` of a shallower expansion, necessarily
      earlier in the document, and PASS-2 breaks on the first refusal) and
      labelled defensive.  **SUPERSEDED 2026-08-28: PASS-2 no longer breaks on
-     the first refusal (see the note two bullets above) -- this is historical
-     record of the argument as it stood, not current.**  **Naming the narrowing round 2's commit message left
+     the first refusal (see the "NOT CLAIMED: the `instance_array` refusal on
+     an INTERMEDIATE key..." bullet above, and `src/Library/Cst/Cst.cpp`'s
+     `ClonedEntry` / `SourceSubtree` comments) -- this is historical record of
+     the argument as it stood, not current.**  **Naming the narrowing round 2's commit message left
      unnamed: the obvious one — `keys[0]` only — is GREEN, verified at 327/0.**
      The CHILD walk between them is the one that genuinely needs every index,
      and it has the depth-3 guard.  Separately, `ApplyObjectSolo`'s

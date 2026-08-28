@@ -2125,12 +2125,22 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 	// FIRST, on a plainer diagnostic, before its walk ever gets far enough to attempt
 	// re-visiting `K`'s own subtree.  Reaching THIS guard for real additionally needs
 	// the failed name to still resolve to SOME object despite `K`'s own failure -- e.g.
-	// a duplicate-name chunk supplying one under first-wins.  So: no longer provably
-	// UNreachable (the premise that proved it so is gone), but the mechanism by which it
-	// becomes reachable is narrower than "any later pending chunk" -- do not read this
-	// note as a full reachability proof either way.  `ClonedEntry`'s "member produced no
-	// object" guard is the everyday-reachable one (pinned by its own test); this one
-	// stays defensive, now on a narrower and less-obviously-empty premise than before.
+	// an EARLIER chunk already registered an object under that same name, so `K`'s own
+	// attempt to add one never reached the manager at all (Job's add helpers diagnose-
+	// and-refuse a duplicate name outright; a later `GetItem` lookup on that name finds
+	// the EARLIER chunk's object, not `K`'s).  So: no longer provably UNreachable (the
+	// premise that proved it so is gone), but the mechanism by which it becomes
+	// reachable is narrower than "any later pending chunk" -- do not read this note as
+	// a full reachability proof either way.  THIS revisit guard (the `path.insert`
+	// check just below) is itself the genuinely-pinned one: CstSourceInstanceTest's
+	// "a recursion through a TRANSITIVE descendant is caught by the walk's revisit
+	// guard" fixture is a positive fire ("this scene is what proves that guard is not
+	// dead code"), with "revisit-diamond" / "revisit-sibling" as its matching non-
+	// false-positive controls (~2533-2650).  `ClonedEntry`'s "member produced no
+	// object" guard (its `objMgr->GetItem` probe, a few hundred lines down) has only a
+	// NEGATIVE assertion on record -- the count-collision fixture (~3305) checks that
+	// ITS message does NOT appear on a scene it does not apply to -- so do not cite
+	// that guard as pinned until a positive fixture exists for it.
 	if( !path.insert( srcChunkIdx ).second ) {
 		diags.push_back( who + ": expanding this instance would copy `" + srcOwnName + "` into its own subtree -- a "
 			"recursive definition with no fixed point.  The usual cause is a `parent` line that puts a node inside "
@@ -2728,9 +2738,15 @@ static bool ExpandSourceInstance(
 	// would buy an atomicity the surrounding machinery does not have.  What makes a
 	// partially-applied expansion harmless is NOT "no caller ever sees it" -- some do,
 	// by design (see the CANONICAL enumeration in DeriveToJob's doc comment in Cst.h,
-	// "CANONICAL STATEMENT") -- it is that EVERY caller, gating or not, treats a
-	// non-empty `diags` as "the derive failed" and every chunk that failed (including a
-	// partially-applied `source` expansion) is diagnosed exactly as such.
+	// "CANONICAL STATEMENT") -- it is that EVERY caller that CAN surface a derive
+	// failure DOES: it gates on `diags`, discards the throwaway/staging Job outright,
+	// or separately diagnoses it as an Error afterward, and every chunk that failed
+	// (including a partially-applied `source` expansion) is diagnosed exactly as such.
+	// The one caller that reads NEITHER (`AgentSession::FindUnacknowledgedNullGeometryEmitters_`
+	// -- its local `diags` out-param is populated and never inspected) is still harmless,
+	// but for a DIFFERENT reason: it derives into its OWN throwaway `Job` and releases it
+	// before returning, so only its finding list -- never `diags`, never the Job -- crosses
+	// back out (see the CANONICAL enumeration for the full account).
 	{
 		// The chunk name is ambiguous whether or not counts are present: provenance maps
 		// every entry back to THIS name, so two chunks holding it send a picked instance
@@ -3115,7 +3131,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// to reference.  Chunks that applied stay applied, exactly as before;
 	// full apply-atomicity (rollback of every applied chunk) is later
 	// Facet-2 work.  The OVERALL derive still fails whenever `diags` is
-	// non-empty -- every caller treats that as "the derive failed", so "keep
+	// non-empty -- every caller that reads `diags` treats that as "the derive
+	// failed" (one caller derives but never reads its own `diags` at all; see
+	// the CANONICAL enumeration for why that is still harmless), so "keep
 	// going" buys more diagnostics per run, never a scene `diags` calls clean
 	// when it is not.  Which callers DISCARD a diagnosed Job outright vs.
 	// which still consult a possibly-partial one is NOT uniform -- see the

@@ -7,8 +7,12 @@
 //  text is its serialization and the rendered scene is a separate derivation.
 //  Built across the transfer-gate items (docs/agentic-redesign/
 //  IMPLEMENTATION_SLICES.md) -- the foundation validated by the four
-//  `tests/Cst*SliceTest` prototypes, promoted into the real library and gated by
-//  the render-equivalence harness (DumpJob(cstJob) == DumpJob(legacyJob)).
+//  `tests/Cst*SliceTest` prototypes, promoted into the real library and, while
+//  the legacy parser still existed, gated by a render-equivalence harness
+//  (DumpJob(cstJob) == DumpJob(legacyJob)).  That harness is a RETIRED ORACLE
+//  now: the legacy parser was deleted in the Model-B P5 retirement, so there
+//  is no second `Job` left to dump and compare against (see the item 5 bullet
+//  below, which records the same retirement from the derive side).
 //
 //  Scope landed so far:
 //    * item 2 -- bytes <-> CST (lossless, multi-chunk, brace-nested) + derive
@@ -267,9 +271,9 @@ namespace RISE
 		//! spaces, like AsciiCommandParser::TokenizeString + rejoin), validated +
 		//! bagged by the SAME DispatchChunkParameters the legacy parser runs, and
 		//! applied via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk
-		//! type derives, and the CST path and the legacy path build an IDENTICAL
-		//! Job for the CANONICAL scenes the CST is actually fed -- the v6->v7
-		//! serializer's output:
+		//! type derives, and -- while the legacy parser still existed -- the CST
+		//! path and the legacy path built an IDENTICAL Job for the CANONICAL
+		//! scenes the CST is actually fed: the v6->v7 serializer's output:
 		//!   * macro-free ($()/DEFINE/FOR),
 		//!   * directive-free (no `>` run/load/set/clearall command lines),
 		//!   * comments either `#` line-comments or MULTI-line `/* */` blocks
@@ -278,33 +282,37 @@ namespace RISE
 		//!   * single-space-separated values.
 		//! These exclusions are all the v6->v7 MIGRATOR's domain (D8), not the CST
 		//! runtime: a legacy scene that uses them is migrated to canonical form
-		//! before it reaches the CST. On a NON-canonical legacy input the two paths
-		//! may diverge, each by its own rules:
+		//! before it reaches the CST. This is a HISTORICAL record of why: on a
+		//! NON-canonical legacy input, the CST path and the (now-deleted) legacy
+		//! parser used to diverge, each by its own rules -- kept here because it
+		//! explains the migrator's exclusion list, not because a live second path
+		//! still exists to diverge from:
 		//!   - the CST skips a `>` line as a stray (it does not run directives --
 		//!     a `> run`-included reference then goes unresolved and is reported by
-		//!     the apply-time boundary below);
+		//!     the apply-time boundary below) -- this part is still CST's live
+		//!     behavior today;
 		//!   - the CST strips a MID-LINE `#`/`/* */` comment as trivia, whereas the
-		//!     legacy tokenizer keeps it as VALUE tokens (it never strips a comment
-		//!     after the first token of a line). The legacy outcomes, all DIVERGING
-		//!     from the CST's clean strip:
-		//!       * `#`/`/* */` after a STRING-valued param -- legacy SILENTLY MIS-
-		//!         CAPTURES (the comment bytes become part of the value: `name s # x`
-		//!         binds the name `s # x`, not `s`; parse SUCCEEDS, value corrupted),
+		//!     legacy tokenizer USED TO keep it as VALUE tokens (it never stripped a
+		//!     comment after the first token of a line). The legacy outcomes, all
+		//!     DIVERGING from the CST's clean strip, as legacy USED TO work:
+		//!       * `#`/`/* */` after a STRING-valued param -- legacy used to SILENTLY
+		//!         MIS-CAPTURE (the comment bytes became part of the value: `name s # x`
+		//!         bound the name `s # x`, not `s`; parse SUCCEEDED, value corrupted),
 		//!         where the CST yields `s`;
-		//!       * a trailing `#` on a NUMERIC value -- legacy TOLERATES it (the
-		//!         numeric validator stops at the `#`: `radius 1 # cm` reads 1), and
-		//!         here the CST AGREES (also reads 1), so this case alone does not
+		//!       * a trailing `#` on a NUMERIC value -- legacy used to TOLERATE it (the
+		//!         numeric validator stopped at the `#`: `radius 1 # cm` read 1), and
+		//!         here the CST AGREES (also reads 1), so this case alone did not
 		//!         diverge the Job;
-		//!       * `/* */` on a NUMERIC value -- legacy REJECTS it (the validator
-		//!         sees a non-numeric token and fails the chunk), where the CST reads
+		//!       * `/* */` on a NUMERIC value -- legacy used to REJECT it (the validator
+		//!         saw a non-numeric token and failed the chunk), where the CST reads
 		//!         the clean number;
-		//!   - a SINGLE-LINE `/* ... */` block comment on its own line also
-		//!     diverges: the CST strips it as one trivia run, but the legacy
-		//!     top-level comment-block state machine only inspects each line's
-		//!     FIRST token, so it enters comment mode on `/*` and never sees the
+		//!   - a SINGLE-LINE `/* ... */` block comment on its own line also used to
+		//!     diverge: the CST strips it as one trivia run (still true today), but the
+		//!     legacy top-level comment-block state machine only inspected each line's
+		//!     FIRST token, so it entered comment mode on `/*` and never saw the
 		//!     same-line `*/` -- swallowing the rest of the file (or, in a chunk
 		//!     body, rejecting the chunk). Only a MULTI-line block (`*/` opening a
-		//!     later line) round-trips through legacy.
+		//!     later line) used to round-trip through legacy.
 		//! The serializer emits none of these, so they are out of the equivalence
 		//! scope. Returns the number of chunks applied.
 		//!
@@ -336,43 +344,74 @@ namespace RISE
 		//! places and drifted in one of them; see the bug-fix wave's own review
 		//! history if that recurs).
 		//!
-		//! Every caller treats a non-empty `diagnostics` as "the derive failed",
-		//! but NOT every caller discards the resulting/live Job outright on
-		//! failure -- this split predates the PASS-2 continuation change above
+		//! Every caller that reads `diagnostics` treats a non-empty one as "the
+		//! derive failed" (the one exception -- a caller that derives but never
+		//! reads its own `diagnostics` at all -- is called out by name below, and
+		//! it is harmless for a different reason, not because it treats a failure
+		//! as success). NOT every caller discards the resulting/live Job outright
+		//! on failure -- this split predates the PASS-2 continuation change above
 		//! (it is about which callers CONSULT a possibly-partial Job, not about
 		//! break-vs-continue) and is unchanged in KIND by it, only in how complete
 		//! the partial Job those callers see can now be.
-		//!   * DISCARD ON FAILURE (the common case): `Job::LoadAsciiSceneViaCst`;
-		//!     every DRY-RUN derive into a throwaway/staging `Job` gated before a
-		//!     commit (`Job::DeriveEditedCstDocument_`'s P1-A root gate,
-		//!     `Job::RederiveCstDocumentFull_`'s own dry-run,
-		//!     `Job::RederiveCstWithVariant`'s own dry-run).
+		//!   * DISCARD ON FAILURE (the common case): `Job::LoadAsciiSceneViaCst`
+		//!     itself discards its OWN retained-Document/head-version state and
+		//!     returns false without committing them (though the Job it derived
+		//!     INTO -- `*this` -- keeps whatever chunks PASS-2 already applied;
+		//!     see the KEPT LIVE BUT LOUD bucket below for what its own callers
+		//!     then choose to do with that); every DRY-RUN derive into a
+		//!     throwaway/staging `Job` gated before a commit (`Job::
+		//!     DeriveEditedCstDocument_`'s P1-A root gate, `Job::
+		//!     RederiveCstDocumentFull_`'s own dry-run, `Job::
+		//!     RederiveCstWithVariant`'s own dry-run) discards that throwaway
+		//!     Job outright.
 		//!   * DOES NOT DISCARD -- keeps mutating/consulting a Job whose SAME
 		//!     derive diagnosed:
-		//!       - `AgentSession::FindUnacknowledgedNullGeometryEmitters_` and
-		//!         `AgentSession::ValidateText`'s (b2) null-geometry-emitter walk
-		//!         both derive into a throwaway `Job` and then scan its realized
-		//!         objects as a best-effort lint REGARDLESS of `diagnostics` (by
-		//!         design -- `FindUnacknowledgedNullGeometryEmitters_`'s own header
-		//!         says "an inconclusive derive fails OPEN"); `diagnostics` is
-		//!         still separately surfaced as Error `AgentDiagnostic`s afterward.
+		//!       - `AgentSession::FindUnacknowledgedNullGeometryEmitters_` derives
+		//!         into a throwaway `Job` and then scans its realized objects as a
+		//!         best-effort lint REGARDLESS of `diagnostics` (by design -- its
+		//!         own header says "an inconclusive derive fails OPEN") -- and it
+		//!         is the one caller that reads NEITHER: its local `diagnostics`
+		//!         out-param is never even inspected, let alone surfaced.  Harmless
+		//!         anyway, because the throwaway `Job` is released before the
+		//!         function returns -- only the finding list crosses back out, not
+		//!         `diagnostics` or the Job.  `AgentSession::ValidateText`'s (b2)
+		//!         null-geometry-emitter walk does the same throwaway-derive-and-
+		//!         scan, but IT does read `diagnostics` afterward and separately
+		//!         surfaces it as Error `AgentDiagnostic`s -- that surfacing claim
+		//!         is ValidateText's alone, not FindUnacknowledgedNullGeometryEmitters_'s.
 		//!       - `Job::RederiveCstDocumentFull_`'s COMMITTING derive (the one
 		//!         AFTER `ClearAll()`, into the live `*this`) and
 		//!         `Job::RederiveCstWithVariant`'s COMMITTING derive (same shape)
 		//!         can each, in the rare case their OWN preceding dry-run passed
 		//!         but this second derive still fails, leave that partial result
-		//!         LIVE with no rollback (both functions' own comments say so).
+		//!         LIVE with no rollback -- `RederiveCstDocumentFull_`'s own doc
+		//!         comment says so explicitly (its return-code contract: "3 = ...
+		//!         the edit FAILED... managers still replaced -> caller MUST
+		//!         rebind"); `RederiveCstWithVariant`'s comments do not carry the
+		//!         equivalent statement, though its code takes the same shape.
 		//!         `RederiveCstDocumentFull_` additionally still pushes that
 		//!         partial Job's framestore to the rasterizers on this path;
 		//!         `RederiveCstWithVariant` does not (it returns before reaching
 		//!         its own framestore-push call).
+		//!   * KEPT LIVE BUT LOUD -- a caller ONE LEVEL ABOVE `Job::
+		//!     LoadAsciiSceneViaCst` that chooses, on its `false` return, to keep
+		//!     consuming the SAME (already-partially-applied) `Job` rather than
+		//!     discarding or re-creating it (bug-fix wave, 2026-08-28, fix 4):
+		//!     `commandconsole.cpp`'s two `sceneArg` load sites print a prominent
+		//!     "PARTIAL SCENE" console banner and then fall through to the
+		//!     interactive console loop anyway -- rendering a partial scene is
+		//!     legitimate author debugging, and continuing makes the partial Job
+		//!     MORE useful, but it must not be mistaken for a clean load.  Contrast
+		//!     `DoPerformanceRating` (same file), which instead ABORTS the process
+		//!     on the same `false` -- a performance number computed by rasterizing
+		//!     a partial scene would look like a valid rating and is not one.
 		//! Continuing past a PASS-2 failure means every one of the "does not
-		//! discard" Jobs above can now be MORE complete than before (more chunks
-		//! got a chance to apply) -- never less honest, since every chunk that
-		//! failed is still diagnosed exactly as it was; a NEW caller that would
-		//! keep and use a diagnosed Job should read this list first. (Top-level
-		//! non-chunk items -- the scene header strays / trivia -- are skipped;
-		//! they carry no Job state.)
+		//! discard" Jobs above (and now the "kept live but loud" one) can now be
+		//! MORE complete than before (more chunks got a chance to apply) -- never
+		//! less honest, since every chunk that failed is still diagnosed exactly
+		//! as it was; a NEW caller that would keep and use a diagnosed Job should
+		//! read this list first. (Top-level non-chunk items -- the scene header
+		//! strays / trivia -- are skipped; they carry no Job state.)
 		//!
 		//! D35 record-during-derive (slice 1, §8): when `outRecorded` is non-null, the derive
 		//! RESETS it at entry (it reflects THIS derive only, never a reused or caller-supplied

@@ -23,8 +23,11 @@
 //  is already the home for CST-only DeriveToJob apply-loop contracts nothing
 //  else covers:
 //
-//    * [refuse-all]  DeriveToJob's PASS-1 structural rejection (Cst.cpp
-//      ~1408-1416, `return 0; // refuse-all: applies NOTHING`).  A malformed
+//    * [refuse-all]  DeriveToJob's PASS-1 structural rejection (Cst.cpp,
+//      `DeriveToJob`'s PASS-1 chunk-validation loop: `if( !diags.empty() )
+//      return 0;   // refuse-all: a malformed scene applies NOTHING` -- a
+//      symbol/comment anchor rather than a line number, which has already
+//      drifted once).  A malformed
 //      chunk -- unknown chunk type, unknown parameter, non-finite value
 //      (radius nan), non-numeric value (radius abc), or a value-less line
 //      (radius with no value) -- refuses the WHOLE document and applies
@@ -32,7 +35,9 @@
 //      applied.  Recovered from CstDescriptorBindTest's `[validate]` block.
 //
 //    * [statelessness]  DeriveToJob calls ClearChunkParserState() at its start
-//      (Cst.cpp:1380), resetting the chunk parsers' file-scope state BETWEEN
+//      (Cst.cpp, the `ClearChunkParserState();` call at the top of `DeriveToJob`
+//      -- a symbol anchor rather than a line number, which has already drifted
+//      once), resetting the chunk parsers' file-scope state BETWEEN
 //      consecutive derives -- the redesign runs DeriveToJob repeatedly, once per
 //      edit, in the SAME process.  Two file-scope leaks are guarded: the
 //      uniformcolor_painter colour cache (translucent_material's energy-
