@@ -11,9 +11,11 @@
 //  through the LIVE chunk-parser registry (CreateAllChunkParsers): every chunk
 //  type is validated via the shared DispatchChunkParameters and applied via the
 //  shared IAsciiChunkParser::Finalize -- with each param line whitespace-
-//  normalised exactly as the legacy parser normalises it -- so the CST and
-//  legacy paths build an identical Job for the canonical scenes the CST is fed
-//  (see DeriveToJob for the exact equivalence scope + failure boundary).
+//  normalised exactly as the legacy parser normalised it -- so, while the
+//  legacy parser still existed, the CST and legacy paths built an identical
+//  Job for the canonical scenes the CST was fed.  The legacy parser was
+//  deleted in the Model-B P5 retirement; see Cst.h's header and DeriveToJob's
+//  doc for the retired-oracle record and today's single-path failure boundary.
 //
 //////////////////////////////////////////////////////////////////////
 

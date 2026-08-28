@@ -405,6 +405,11 @@ namespace RISE
 		//!     `DoPerformanceRating` (same file), which instead ABORTS the process
 		//!     on the same `false` -- a performance number computed by rasterizing
 		//!     a partial scene would look like a valid rating and is not one.
+		//!     `risempi.cpp`'s load site carries the same banner (rank 0).  The
+		//!     interactive console's `load <file>` command is in this bucket too
+		//!     but with only the generic per-command "command failure" message --
+		//!     accepted: it does say failure, just not the full banner (round-4
+		//!     review, P3).
 		//! Continuing past a PASS-2 failure means every one of the "does not
 		//! discard" Jobs above (and now the "kept live but loud" one) can now be
 		//! MORE complete than before (more chunks got a chance to apply) -- never
