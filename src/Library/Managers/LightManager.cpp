@@ -37,7 +37,12 @@ void LightManager::ComputeDirectLighting(
 
 	GenericManager<ILightPriv>::ItemListType::const_iterator		i, e;
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
-		// Accrue the light values
+		// Accrue the light values.  NOTE: forwards WITHOUT the
+		// bFullSphereReceiver / bVolumeReceiver flags (both default
+		// false).  This virtual has no in-tree caller today; a future
+		// caller handing it a medium vertex or a full-sphere receiver
+		// must widen this forward or the receiver silently loses the
+		// wave-5 semantics.
 		RISEPel p;
 		i->second.first->ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, p );
 		amount = amount + p;

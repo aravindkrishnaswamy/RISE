@@ -4776,7 +4776,17 @@ EvaluateAllStrategiesImpl(
 					// zero-exitance sweep is out of scope for that item.
 					// If this row is ever extended to MEDIUM vertices,
 					// BOTH halves of the LightSampler Step-1 fix have to
-					// come with it.
+					// come with it.  KNOWN DIVERGENCE (ledgered in
+					// docs/PT_ENV_MIS_DOUBLECOUNT.md): PT's Step 1 now
+					// post-multiplies directional-light medium attenuation
+					// for a SURFACE in fog; this row does not, because
+					// EvalShadowTransmittance is file-static in
+					// LightSampler.cpp and lifting it trips the
+					// five-build-project rule.  A directional light seen
+					// through a bounded medium therefore reads brighter in
+					// BDPT's s==1 row than in PT until that helper is
+					// shared.  No in-tree BDPT scene pairs a directional
+					// light with media today.
 					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
 					l->ComputeDirectLighting( ri, caster, *pBSDF,

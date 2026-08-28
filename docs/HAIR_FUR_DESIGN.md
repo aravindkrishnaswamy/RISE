@@ -752,8 +752,10 @@ The measurement the paragraph above called for has been run. **Verdict: OIDN rem
 strand structure on a groom, the deficit does not close with sample count, and the `accurate`
 prefilter — the mode this section nominated as the fix — is strictly worse than `fast` on
 every metric at every sample count.** The Phase-4 coverage-weighted AOV accumulation is
-therefore **warranted**; the current `albedo()` + accurate-mode contract is **not** adequate
-for hair.
+therefore **warranted** — **withdrawn, see the follow-up below**: the premise was wrong
+(accumulation already existed per-sample) and the diagnostics traced the residual smear to
+OIDN's spatial prior, which no aux change can close; the current contract stands with the
+prefilter caveat.
 
 **Setup.** `scenes/Tests/Hair/hair_styled.RISEscene` (6000 strands, `segments 12`, full
 comb/clump/curl/frizz/gravity groom) at 256x256, `pathtracing_pel_rasterizer`, EXR out,

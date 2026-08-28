@@ -822,7 +822,8 @@ static ImageStats RunFurnaceCase(
 //   AND present -- indistinguishable) observed the ratio span 0.954 ..
 //   1.036, the heavy hwss tail documented below occasionally lifting a
 //   whole 16x16 frame's mean, so 1.00 flaked ~1 run in 12.  1.05 keeps
-//   the guard (the truncating build reads 0.683, 5x outside; a genuine
+//   the guard (the truncating build reads 0.683, far below the unchanged
+//   0.93 floor -- the guard is low-side and did not move; a genuine
 //   hwss over-count would have to beat the bundle deficit by >9 %).
 //
 // PER-PIXEL, AND WHY IT IS ONE-SIDED HERE.  Expressed against the
