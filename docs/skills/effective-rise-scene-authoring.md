@@ -133,6 +133,16 @@ each section against your scene:
    use `matrix`.  Hand-authored scenes usually use Euler `orientation`.
 5. **§6 Coordinate system.**  Y-up, right-handed.  Camera at `+Z`
    looking at `-Z`.
+6. **§11 Backlit hair/fur rims read achromatic — but the broader glow
+   does not.**  If a `hair_material` groom shows a hairline-thin
+   white/silver RIM right at a strand's backlit silhouette edge no
+   matter what colour you set `sigma_a` / `eumelanin` / `pheomelanin`
+   to, that's the Fresnel R lobe, not a lost tint — don't spend time on
+   the colour painter for THAT feature.  Reach for `hair_geometry.count`
+   (density), the kicker light's angle, or `width_root`/`width_tip` /
+   `medulla_scatter` instead.  A broader, tinted GLOW across the whole
+   backlit fibre body is a different effect (the TT halo) and DOES
+   read your pigment tier correctly — don't "fix" that one either.
 
 ### 3. Render a Lambertian-white control sphere first
 

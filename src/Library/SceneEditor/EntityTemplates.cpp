@@ -749,15 +749,28 @@ namespace
 		{ "voronoi3d_painter",     "gen",   "0.25 0.25 0.25 none" },
 		{ "voronoi3d_painter",     "gen",   "0.75 0.75 0.75 none" },
 
-		// SCALAR-PIPE slots whose Finalize default is the `none` painter
-		// name.  `none` resolves in the COLOUR manager, so
-		// ResolveOrDiagnoseScalar rejects it ("bound to `IPainter` chunk
-		// `none`; this slot now requires a scalar_painter" --
-		// docs/ISCALARPAINTER_REFACTOR.md).  An inline numeric literal is
-		// the documented idiom for these slots and needs no companion
-		// chunk, so it is exactly the right seed.  (The other scalar
-		// slots on these same chunks already default to a numeric
-		// literal in their own Finalize and need nothing here.)
+		// SCALAR-PIPE slots.  Historically (pre-fix) these four Finalize()s
+		// defaulted straight to the `none` painter name -- `none` resolves
+		// only in the COLOUR manager, so ResolveOrDiagnoseScalar rejected it
+		// ("bound to `IPainter` chunk `none`; this slot now requires a
+		// scalar_painter" -- docs/ISCALARPAINTER_REFACTOR.md), and a BARE
+		// chunk (this param omitted) hard-failed to parse at all.  Fixed:
+		// each Finalize's own default is now the numeric literal `0.0`,
+		// reproducing the pre-refactor "none" IPainter default (black) bit-
+		// for-bit, so a bare chunk parses and applies cleanly without this
+		// table's help.  The seeds below are kept anyway, NOT as a
+		// parse-failure workaround any more, but because `0.0` is a
+		// visually UNDERWHELMING default for three of these four (no coat /
+		// no extinction) -- an agent-created node is more useful for canvas
+		// exploration with a value that actually shows the effect.  (`g 0.0`
+		// on generic_human_tissue_material is the odd one out: isotropic
+		// scattering is NOT inert -- with `sca` at its own numeric default
+		// it is an active, visible phase function -- kept seeded anyway
+		// purely for symmetry with the physically-recommended isotropic
+		// default, not because 0.0 needed rescuing here the way it does for
+		// tau/ext.  The other scalar slots on these same chunks already
+		// default to a numeric literal in their own Finalize and need
+		// nothing here.)
 		{ "polished_material",     "tau",        "1.0" },
 		{ "dielectric_material",   "tau",        "1.0" },
 		{ "translucent_material",  "ext",        "1.0" },

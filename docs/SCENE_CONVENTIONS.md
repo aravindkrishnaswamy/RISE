@@ -885,6 +885,71 @@ Override `OPENEXR_PREFIX` / `IMATH_PREFIX` in
 
 ---
 
+## 11. Backlit hair/fur rims read achromatic, regardless of the fibre's colour
+
+A `hair_material` fibre lit from behind (rim/kicker light roughly
+opposite the camera) shows a bright silver-white glint along its edge
+even when `color` / `sigma_a` / `eumelanin`+`pheomelanin` are set to a
+strongly saturated hue (black fur, red fur, dyed fur — doesn't matter).
+This is expected, physically-correct behaviour, not a lost tint or a
+missing painter binding — **don't chase it as a colour-pipe bug.**
+
+**Why:** the bright backlit rim is the R (primary reflection) lobe of
+the Chiang et al. 2016 / Marschner hair BCSDF — a specular reflection
+directly off the fibre's outer cuticle, governed by dielectric Fresnel
+reflectance at grazing angles.  Fresnel reflectance at grazing
+incidence approaches 1.0 for every wavelength alike (hair's IOR is
+~1.55 with negligible dispersion across the visible band), so the R
+lobe is essentially colourless.  The fibre's melanin absorption
+(`sigma_a` / `eumelanin` / `pheomelanin`) only tints the **transmitted**
+lobes (TT, TRT) — light that actually enters the fibre core and picks
+up the pigment's absorption spectrum on the way through.  A grazing
+backlit ray is exactly the geometry where the specular R lobe
+dominates and the pigmented TT/TRT lobes contribute least, so the rim
+you see is mostly R — mostly white — by construction, on every real
+furred/haired subject as much as in RISE.
+
+**Rim vs. halo — these are two different, coexisting effects, not a
+contradiction.** [docs/HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §2's own
+lobe glossary calls TT "the bright halo when backlit," which is also
+correct and describes a DIFFERENT visual feature: TT is genuine
+transmission straight through the fibre core, so it produces a
+broader, pigment-tinted GLOW across the fibre's visible width — the
+classic warm backlit-hair glow. The RIM this section is about is a
+much thinner feature sitting right at the fibre's silhouette edge,
+where the local surface is nearly edge-on to the viewer and Fresnel
+reflectance saturates toward 1.0 regardless of wavelength — that is R,
+not TT. A single backlit strand typically shows both at once: a
+colourless bright line exactly at the edge (R), inside a broader
+tinted glow across the body (TT). If what you are chasing reads as a
+broad warm glow rather than a hairline-thin white edge, you are
+already seeing the (correctly tinted) TT halo — the achromatic-rim
+note above applies specifically to the thin edge feature.
+
+**The levers that actually change a backlit rim's character are NOT
+colour:**
+
+- **Fibre density / count** (`hair_geometry.count`) — a denser coat
+  scatters more TT/TRT (tinted) light back toward camera alongside the
+  R rim, softening the white-edge effect with colour from behind.
+- **Light angle** — directly behind (180°) maximizes the pure-R grazing
+  geometry; rotating the kicker off-axis brings more TT/TRT into the
+  visible mix.
+- **`width_root` / `width_tip`** and **`medulla_ratio`/`medulla_scatter`**
+  (animal fur) — a thicker fibre or a stronger medulla increases
+  internal scattering path length, giving TT/TRT more chance to tint
+  the escaping light.
+
+Tuning `color` / `sigma_a` / melanin further will change the ALBEDO
+(the base fur colour under front/top lighting) without moving the rim,
+because the rim was never reading that tier to begin with.
+
+See [docs/HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §2.3 (Chiang et al.
+2016 lobe decomposition) and §3.1 (parameter → pipe mapping) for the
+model this follows.
+
+---
+
 ## See also
 
 - [scenes/README.md](../scenes/README.md): where to put scenes

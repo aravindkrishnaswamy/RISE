@@ -3334,7 +3334,19 @@ namespace RISE
 				{
 					std::string name        = bag.GetString( "name",        "noname" );
 					std::string reflectance = bag.GetString( "reflectance", "none" );
-					std::string tau         = bag.GetString( "tau",         "none" );
+					// tau is a physical SCALAR (IScalarPainter) -- "none" is the
+					// COLOUR manager's default painter name and does not resolve
+					// there (ISCALARPAINTER_REFACTOR wrong-pipe-default class; see
+					// CLAUDE.md).  "0.0" reproduces the exact pre-refactor
+					// behaviour: the historical default WAS the "none" IPainter,
+					// which is RISE_API_CreateUniformColorPainter(RISEPel(0,0,0))
+					// -- i.e. literal 0 on every channel -- so the numeric literal
+					// default below is bit-identical to what a bare
+					// `polished_material` (no `tau` line) rendered before the
+					// refactor: kray = tau*Rs = 0, so the dielectric coat
+					// contributes no specular lobe and the material reads as
+					// plain Lambertian (`reflectance`) until `tau` is set.
+					std::string tau         = bag.GetString( "tau",         "0.0" );
 					std::string ior         = bag.GetString( "ior",         "1.0" );
 					std::string scat        = bag.GetString( "scattering",  "64" );
 					bool hg                 = bag.GetBool(   "henyey-greenstein", false );
@@ -3350,7 +3362,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; p.semantics.pipe = ParameterPipe::Color; }
-						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default (black) -- the dielectric coat contributes no specular lobe until this is set."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
@@ -3366,7 +3378,13 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = bag.GetString( "name",       "noname" );
-					std::string tau  = bag.GetString( "tau",        "none" );
+					// tau is a physical SCALAR (IScalarPainter) -- see the
+					// identical note on polished_material::tau.  "0.0"
+					// reproduces the pre-refactor "none" IPainter default
+					// (black) bit-for-bit: pow(0, distance) = 0, i.e. the
+					// medium fully absorbs over any nonzero path length until
+					// `tau` is set explicitly (as every real scene already does).
+					std::string tau  = bag.GetString( "tau",        "0.0" );
 					std::string ior  = bag.GetString( "ior",        "1.33" );
 					std::string scat = bag.GetString( "scattering", "10000" );
 					bool hg          = bag.GetBool(   "henyey-greenstein", false );
@@ -3445,7 +3463,7 @@ namespace RISE
 						cd.description = "Fresnel dielectric (reflect + refract) with optional volumetric scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default (black) -- fully absorbing until this is set."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`, all positive (k optional, >=0).  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  At most 8 layers (more is a parse error)."; }
@@ -3661,7 +3679,19 @@ namespace RISE
 					std::string name = bag.GetString( "name",       "noname" );
 					std::string ref  = bag.GetString( "ref",        "none" );
 					std::string tau  = bag.GetString( "tau",        "none" );
-					std::string ext  = bag.GetString( "ext",        "none" );
+					// ext (extinction) is a physical SCALAR (IScalarPainter) --
+					// see the identical note on polished_material::tau.  "0.0"
+					// reproduces the pre-refactor "none" IPainter default's
+					// NUMERIC VALUE bit-for-bit (black = RISEPel(0,0,0), i.e.
+					// 0.0 on every channel) -- but note what that number DOES
+					// here is the opposite of "opaque": TranslucentSPF applies
+					// it as exp(-extinction*distance) (see TranslucentSPF.cpp),
+					// so ext=0.0 means NO extinction, i.e. a fully clear
+					// interior, not a black one.  Still the historically
+					// correct default -- a bare chunk pre-refactor got the
+					// same fully-clear interior, it just failed to parse
+					// post-refactor before this fix.
+					std::string ext  = bag.GetString( "ext",        "0.0" );
 					std::string N    = bag.GetString( "N",          "1.0" );
 					std::string scat = bag.GetString( "scattering", "0.0" );
 
@@ -3729,7 +3759,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "ref";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "tau";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; p.semantics.pipe = ParameterPipe::Color; }
-						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction, applied as exp(-ext*distance) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default's numeric value bit-for-bit -- which means NO extinction (a fully clear interior), not black/opaque."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						AddVariantTagParam( cd );
@@ -3854,7 +3884,12 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name              = bag.GetString( "name",                      "noname" );
-					std::string g                 = bag.GetString( "g",                         "none" );
+					// g (HG asymmetry) is a physical SCALAR (IScalarPainter) --
+					// see the identical note on polished_material::tau.  "0.0"
+					// reproduces the pre-refactor "none" IPainter default
+					// (black) bit-for-bit, and happens to double as the
+					// physically sensible "isotropic phase function" default.
+					std::string g                 = bag.GetString( "g",                         "0.0" );
 					std::string sca               = bag.GetString( "sca",                       "0.85" );
 					double hb_ratio               = bag.GetDouble( "hb_ratio",                  0.75 );
 					double whole_blood            = bag.GetDouble( "whole_blood",               0.012 );
@@ -3873,7 +3908,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "sca";                      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering amplitude"; p.semantics.pipe = ParameterPipe::Scalar; }
-						{ auto& p = P(); p.name = "g";                        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phase-function asymmetry"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "g";                        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phase-function asymmetry.  0.0 (default) reproduces the pre-refactor \"none\" IPainter default (black) and doubles as isotropic scattering."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "whole_blood";              p.kind = ValueKind::Double;    p.description = "Blood volume fraction"; p.defaultValueHint = "0.012"; }
 						{ auto& p = P(); p.name = "hb_ratio";                 p.kind = ValueKind::Double;    p.description = "Oxygenated hemoglobin ratio"; p.defaultValueHint = "0.75"; }
 						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; }

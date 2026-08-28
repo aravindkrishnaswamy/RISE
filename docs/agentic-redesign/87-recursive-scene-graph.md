@@ -937,7 +937,13 @@ what was authored, live material included).
      expansion is necessarily earlier in the document (declare-before-use) and
      PASS-2 breaks on the first refusal — so the scene is refused with the
      identical message whether or not the deeper walk would have caught it.
-     Same shape as the override-lookup unreachability argued at that site.  What
+     Same shape as the override-lookup unreachability argued at that site.
+     **SUPERSEDED 2026-08-28: `DeriveToJob`'s PASS-2 no longer breaks on the
+     first refusal (see `src/Library/Cst/Cst.cpp`'s `ClonedEntry` /
+     `SourceSubtree` comments and `DeriveToJob`'s doc comment in `Cst.h` for
+     the corrected, carefully-hedged current reasoning) — this paragraph is
+     historical record of the argument as it stood at the time, not a live
+     claim.**  What
      IS pinned is the generator refusal on a TWO-level synthesized entry
      (`parent I2.I1.B` with `I3 source I2`), which no shallower expansion can
      see.  Also unpinned by construction: the override refusal now prints the
@@ -1020,7 +1026,9 @@ what was authored, live material included).
      demonstrating `keys[0]`.  Rewritten to the override site's actual argument
      (a key at `ki > 0` is `keys[0]` of a shallower expansion, necessarily
      earlier in the document, and PASS-2 breaks on the first refusal) and
-     labelled defensive.  **Naming the narrowing round 2's commit message left
+     labelled defensive.  **SUPERSEDED 2026-08-28: PASS-2 no longer breaks on
+     the first refusal (see the note two bullets above) -- this is historical
+     record of the argument as it stood, not current.**  **Naming the narrowing round 2's commit message left
      unnamed: the obvious one — `keys[0]` only — is GREEN, verified at 327/0.**
      The CHILD walk between them is the one that genuinely needs every index,
      and it has the depth-3 guard.  Separately, `ApplyObjectSolo`'s

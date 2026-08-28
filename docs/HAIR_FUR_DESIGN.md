@@ -972,7 +972,7 @@ grooming on a base mesh.
    descriptor-driven chunk parsers; melanin `IFunction1D` sharing out of `BioSpecSkinData`.
 5. Tests: Phase-0 harness goes green; `HairGeometryTest` (intersection/bounds/tangent
    invariants); `scenes/Tests/Hair/` regression scenes (single-strand lobes, sphere groom,
-   backlit TT rim, black/brown/blond/red melanin ladder); a PT-vs-BDPT sanity scene with the
+   backlit TT halo, black/brown/blond/red melanin ladder); a PT-vs-BDPT sanity scene with the
    §6.2 tolerance note.
 **New library files (each × 5 build surfaces):** `HairBSDF.{h,cpp}` (BRDF+SPF can share a pair),
 `HairMaterial.h`, `HairGeometry.{h,cpp}`, `HairGenerator.{h,cpp}` (groom growth) — ≈ 4 `.cpp` +
@@ -1096,6 +1096,44 @@ section sets for itself. Each remains cheap to reopen:
 - **Dedicated fibre bounce bucket** — deep grooms are served today by the existing bounce budget
   plus RR tuning (§6.4); no scene has shown the budget mis-spent between fibre and surface
   bounces.
+- **Along-strand agouti-style banding on `hair_material`: NOT actually declined -- it is
+  already possible today, and this bullet exists to correct a wrong claim a draft of this section
+  briefly carried.**  An earlier revision of this bullet asserted "there is no along-the-strand
+  coordinate a painter can read", citing §3.1's PIPE mapping table (colour-vs-scalar routing) as
+  if it also spoke to spatial evaluation, which it does not.  §4.1 (above, unmodified) already
+  documents the real answer: `hair_geometry` sets `ri.ptCoord = (s, t)` per hit, with `s` the
+  normalized ARC-LENGTH root->tip -- and `HairBSDF`'s `color` / `sigma_a` / `eumelanin` /
+  `pheomelanin` reads (`HairBSDF.cpp` `GetColor(ri)` / `GetColorNM(ri,nm)` / `GetValuesAt(ri)` /
+  `GetValueAtNM(ri,nm)`) all pass that same `ri` straight through with no substitution.  Every
+  ordinary 2D painter that reads `ptCoord.x` by default (`expression_function2d_painter`,
+  `function2d_painter` wrapping any `IFunction2D`, an image-backed painter with `s` as its U
+  coordinate, and the scalar-pipe equivalents for `sigma_a`/melanin) therefore ALREADY varies
+  along the strand root-to-tip when bound to any of these four slots -- no engine plumbing is
+  missing.  `ri.ptCoord1` (the separate, baked root-UV-on-scalp coordinate) is what a painter
+  reads for CROSS-strand variation (a calico map, a bald patch via `hair_geometry.density`); the
+  two coordinates are already distinct fields for exactly this reason.  If a scene author reaches
+  for a proxy-geometry workaround (a separately painted gradient cylinder standing in for the
+  groom) instead of an `expression_function2d` bound to `color`/`sigma_a`, the likely cause is
+  DISCOVERABILITY -- this coordinate was undocumented outside §4.1's h-offset discussion -- not a
+  missing capability.  No Phase-5 scope opens here; if anything, a small convenience shorthand
+  (a builtin banding knob so an author doesn't have to hand-write an expression) is the only
+  plausible follow-up, and only if requested.
+- **`skeleton_geometry` comb tangent frames inherit the base SDF's cylindrical wrap**
+  (observed need: same showcase, grooming fur to follow a `skeleton_geometry` spine).  A groom's
+  `comb` painter steers strand lean in the TANGENT FRAME `hair_geometry` builds from the base
+  surface at each root (§5.3); on a `skeleton_geometry` base that frame comes from the SDF's
+  cylindrical parameterization around the spine, not from a frame that varies along the spine's
+  own flow -- so a single `comb` value combs consistently around the girth but cannot express
+  "sweep back along the spine's curve," the way a real coat's flow follows the animal's spine
+  from shoulder to tail.  No fix landed; the workaround the author used is `gravity` (which pulls
+  in world-space, not the base's tangent frame, and so naturally reads as spine-following on a
+  roughly-horizontal spine) layered with a gentle `comb` for local grooming on top.  A real fix
+  needs a spine-flow-aware tangent basis on `skeleton_geometry` specifically (its bases (the
+  medial-axis primitives) already know their own spine direction; `hair_geometry`'s frame-build
+  would need a base-geometry-specific hook to read it instead of falling back to the generic SDF
+  UV-tangent path every other base uses) -- out of scope for this bug-fix wave; left here as a
+  concrete, observed-need candidate for whichever of Phase 5 or a dedicated grooming pass picks
+  it up.
 
 ---
 

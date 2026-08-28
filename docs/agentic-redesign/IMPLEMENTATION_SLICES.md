@@ -329,9 +329,15 @@ halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_arra
    **Two-tier failure boundary** (per the item-5
    review): VALIDATION-time failures (unknown chunk/param, value-less line, non-finite/non-numeric value)
    are **refuse-all** (validate every chunk via a populated `ParseStateBag`; apply none on any failure);
-   an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply) matches the
-   legacy parser's **abort-on-first-failure** (stop, emit a diagnostic, leave chunks before it applied —
-   never silently swallowed or continued past; full rollback is later Facet-2 work). Two enabling
+   an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply)
+   **CONTINUES PAST the failing chunk** (bug-fix wave, 2026-08-28 — previously matched the since-deleted
+   legacy parser's abort-on-first-failure: stop, emit a diagnostic, leave chunks before it applied,
+   never continued past). Every pending chunk still gets its own attempt and its own named diagnostic
+   on failure, so one derive surfaces every independent problem instead of hiding everything after the
+   first; the overall derive is still refused whenever any diagnostic fired. Full apply-atomicity
+   (rollback of the whole derive) remains later Facet-2 work; see `DeriveToJob`'s doc comment in
+   `src/Library/Cst/Cst.h` for the exact current contract, including which callers discard a diagnosed
+   Job outright and which do not. Two enabling
    changes: (a) `ParseChunk` now captures **multi-token param values** (`color 1 0 0`, `position 1 2 3`)
    as several `pvalue` tokens, round-trip-lossless, and the derive feeds each param line **whitespace-
    normalised exactly as the legacy parser normalises it** (`TokenizeString` collapses ` \t\r` runs +

@@ -14,7 +14,14 @@
 //  surviving golden (CstDeriveGoldenTest) captures only scenes that derive
 //  CLEANLY, in a FRESH Job per scene -- so it structurally cannot exercise
 //  (a) the refuse-all rejection path, nor (b) cross-derive parse-state reset.
-//  This file recovers exactly those CST-only contracts:
+//  This file recovers exactly those two CST-only contracts, [refuse-all] and
+//  [statelessness] below.  Two LATER blocks, [apply-continuation] and
+//  [scalar-pipe-default], are NOT recovered from the deleted originals -- they
+//  are NEW regression coverage added by the 2026-08-28 bug-fix wave for
+//  DeriveToJob's PASS-2 continue-past-failure change and the four
+//  ISCALARPAINTER-class `"none"`-default fixes, added here because this file
+//  is already the home for CST-only DeriveToJob apply-loop contracts nothing
+//  else covers:
 //
 //    * [refuse-all]  DeriveToJob's PASS-1 structural rejection (Cst.cpp
 //      ~1408-1416, `return 0; // refuse-all: applies NOTHING`).  A malformed
@@ -212,6 +219,129 @@ int main()
 		const std::string dump = DumpCst( two );
 		Check( dump.find( "  default" ) != std::string::npos && dump.find( "  default_1" ) != std::string::npos,
 			"in-scene dedup intact: two unnamed cameras in ONE derive -> default + default_1 (reset is cross-derive only)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [apply-continuation] bug-fix wave 2026-08-28: a PASS-2 (apply-time,
+	// Finalize) failure used to `break` DeriveToJob's apply loop, silently
+	// dropping every LATER chunk with no diagnostic of its own -- one bad
+	// chunk could make an unrelated sibling three lines down look like it
+	// had vanished from the scene.  DeriveToJob now keeps going: every
+	// pending chunk still gets its own attempt and (on failure) its own
+	// named diagnostic, and the overall derive still fails whenever
+	// anything failed (every real caller gates on `diags.empty()`).
+	//----------------------------------------------------------------------
+	std::printf( "[apply-continuation] a PASS-2 apply failure does not hide later chunks\n" );
+
+	// (a) TWO independent apply-time failures (unresolved painter reference --
+	// PASS-1 cannot see this; the param is a syntactically-valid string, just
+	// not the name of anything) bracket a perfectly valid THIRD chunk.  Before
+	// the fix this scene reported exactly ONE diagnostic (`bad_a`'s) and
+	// `should_apply` was never even attempted.  After the fix: both failures
+	// are each individually diagnosed, `should_apply` DID apply, and the
+	// derive still fails overall.
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR +
+			"lambertian_material\n{\nname bad_a\nreflectance does_not_exist_a\n}\n"
+			"uniformcolor_painter\n{\nname should_apply\ncolor 0.5 0.2 0.9\n}\n"
+			"lambertian_material\n{\nname bad_b\nreflectance does_not_exist_b\n}\n",
+			*j, &diags );
+		Check( n == 1, "exactly the one valid chunk (the painter) applied" );
+		Check( !diags.empty(), "the overall derive still reports failure" );
+		// Each failing chunk's own diagnostic names its KEYWORD, not its
+		// instance name (`ResolveOrDiagnoseScalar`'s name-carrying message
+		// goes to the log, not the `diags` vector) -- so the proof that
+		// BOTH failures were reached, not just the first, is that a
+		// `lambertian_material` diagnostic appears TWICE.  Matches on the
+		// KEYWORD prefix only, not the current "apply failed" wording, so a
+		// future improvement that gives this chunk a more specific message
+		// (via g_cstFinalizeDiagSink) does not make this count silently
+		// drop to zero and fail claiming continuation broke.
+		int perChunkFailures = 0;
+		for( const std::string& d : diags )
+			if( d.rfind( "lambertian_material: ", 0 ) == 0 ) ++perChunkFailures;
+		Check( perChunkFailures == 2,
+			"BOTH failing chunks (bad_a AND bad_b) are individually diagnosed -- "
+			"bad_b was reached at all, proving the loop did not stop at bad_a" );
+		Check( j->GetPainters() && j->GetPainters()->GetItem( "should_apply" ) != 0,
+			"the chunk AFTER the first failure applied anyway (continuation, not silent drop)" );
+		// The summary ("N of M chunk(s) failed...") is a LOG-ONLY line
+		// (GlobalLog, not `diags`) precisely so a structured consumer of
+		// `diags` (e.g. AgentSession::ValidateText, which maps every entry
+		// to a localized AgentDiagnostic) never sees an aggregate entry
+		// with no chunk to name and no offset to localize -- so `diags`
+		// here must hold EXACTLY the two per-chunk failures, nothing more.
+		Check( diags.size() == 2, "diags holds exactly the two per-chunk failures -- no extra aggregate entry polluting a structured consumer" );
+		j->release();
+	}
+
+	// (b) SELF-PROVING control: the same three-chunk shape but with BOTH
+	// references resolved -- all three chunks must apply and diags must be
+	// empty, so (a) is not vacuously passing because nothing here can ever
+	// derive cleanly.
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR +
+			"uniformcolor_painter\n{\nname refl_a\ncolor 0.1 0.1 0.1\n}\n"
+			"lambertian_material\n{\nname ok_a\nreflectance refl_a\n}\n"
+			"uniformcolor_painter\n{\nname should_apply2\ncolor 0.5 0.2 0.9\n}\n"
+			"uniformcolor_painter\n{\nname refl_b\ncolor 0.2 0.2 0.2\n}\n"
+			"lambertian_material\n{\nname ok_b\nreflectance refl_b\n}\n",
+			*j, &diags );
+		Check( n == 5 && diags.empty(), "self-proving control: the same shape, all-valid, applies every chunk with no diagnostics" );
+		j->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [scalar-pipe-default] bug-fix wave 2026-08-28: four Scalar-pipe
+	// parameters (polished_material::tau, dielectric_material::tau,
+	// translucent_material::ext, generic_human_tissue_material::g) used to
+	// default straight to the `none` painter name, which resolves ONLY in
+	// the colour-painter manager -- so a BARE chunk (the parameter simply
+	// omitted, the common case for an author who has not yet decided a
+	// value) hard-failed to apply at all, with a diagnostic that reads like
+	// a reference problem rather than a missing-default one.  Each now
+	// defaults to the numeric literal `0.0`, which reproduces the pre-
+	// ISCALARPAINTER-refactor behaviour bit-for-bit (the historical `none`
+	// IPainter default WAS RISEPel(0,0,0), i.e. literal zero on every
+	// channel) -- see docs/ISCALARPAINTER_REFACTOR.md and the comments at
+	// each Finalize site in ChunkParserRegistry.cpp.
+	//----------------------------------------------------------------------
+	std::printf( "[scalar-pipe-default] a bare chunk with tau/ext/g omitted parses and applies\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR +
+			"uniformcolor_painter\n{\nname pm_refl\ncolor 0.6 0.6 0.6\n}\n"
+			"polished_material\n{\nname pm_bare\nreflectance pm_refl\n}\n",
+			*j, &diags );
+		Check( n == 2 && diags.empty(), "bare polished_material (no tau) derives cleanly" );
+		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "pm_bare" ) != 0, "...and the material is actually registered" );
+		j->release();
+	}
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst( HDR + "dielectric_material\n{\nname dm_bare\n}\n", *j, &diags );
+		Check( n == 1 && diags.empty(), "bare dielectric_material (no tau) derives cleanly" );
+		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "dm_bare" ) != 0, "...and the material is actually registered" );
+		j->release();
+	}
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst( HDR + "translucent_material\n{\nname tm_bare\n}\n", *j, &diags );
+		Check( n == 1 && diags.empty(), "bare translucent_material (no ext) derives cleanly" );
+		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "tm_bare" ) != 0, "...and the material is actually registered" );
+		j->release();
+	}
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst( HDR + "generic_human_tissue_material\n{\nname ght_bare\n}\n", *j, &diags );
+		Check( n == 1 && diags.empty(), "bare generic_human_tissue_material (no g) derives cleanly" );
+		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "ght_bare" ) != 0, "...and the material is actually registered" );
+		j->release();
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

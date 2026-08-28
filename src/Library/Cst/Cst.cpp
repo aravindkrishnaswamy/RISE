@@ -2102,18 +2102,35 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 			"one.  Instance the node the counts repeat, or write the counts on THIS chunk instead." );
 		return false;
 	}
-	// DEFENSIVE, and deliberately kept: no scene can reach this guard TODAY, and the
-	// argument is worth writing down because it is not obvious and it is fragile.
-	// Reaching it needs a `source` hop back onto a chunk already on the clone path,
-	// i.e. a chunk `K` that instances an ancestor of itself in the document tree.  But
-	// `K`'s OWN expansion, which runs EARLIER in PASS-2 (a `source` must name something
-	// declared above), walks that same ancestor down to `K` and refuses there --
-	// `ClonedEntry`'s revisit guard or its declare-before-use one -- and PASS-2 `break`s
-	// on the first refusal, so the derive never gets as far as the instance that would
-	// trip THIS one.  Deleting it leaves the suite green; it stays because the argument
-	// rests on "PASS-2 stops at the first refusal", and a future diagnostic pass that
-	// collected every refusal instead would make this the only thing terminating the
-	// walk.  `ClonedEntry`'s guard is the reachable one, and is pinned by its own test.
+	// DEFENSIVE, and deliberately kept -- and, since the derive-continuation change
+	// below (bug-fix wave, 2026-08-28), no longer provably unreachable, so read this
+	// note as history rather than a live unreachability proof.  Reaching it needs a
+	// `source` hop back onto a chunk already on the clone path, i.e. a chunk `K` that
+	// instances an ancestor of itself in the document tree.  `K`'s OWN expansion, which
+	// runs EARLIER in PASS-2 (a `source` must name something declared above), walks
+	// that same ancestor down to `K` and refuses there first -- `ClonedEntry`'s revisit
+	// guard or its declare-before-use one -- so THIS guard was provably unreachable
+	// back when DeriveToJob's outer loop stopped at the first Finalize/expansion
+	// failure (K's own refusal would have ended the whole derive before any LATER
+	// pending chunk -- "the instance that would trip THIS one" -- was ever attempted).
+	// DeriveToJob's PASS-2 loop now keeps going after a failed chunk instead of
+	// stopping (every later chunk gets its own chance + its own diagnostic), which is
+	// exactly the "future diagnostic pass that collected every refusal instead" this
+	// comment used to anticipate -- so a LATER pending chunk can now be REACHED (its
+	// own expansion attempted) after `K` refuses, where before it never was.  That does
+	// NOT by itself mean THIS specific guard is reached, though: `K`'s own refusal
+	// leaves `K` producing no object, and the ordinary "does the name I'm sourcing from
+	// resolve to an object" probes elsewhere (`ExpandSourceInstance`'s own precondition;
+	// `ClonedEntry`'s own "member produced no object" check) refuse the later chunk
+	// FIRST, on a plainer diagnostic, before its walk ever gets far enough to attempt
+	// re-visiting `K`'s own subtree.  Reaching THIS guard for real additionally needs
+	// the failed name to still resolve to SOME object despite `K`'s own failure -- e.g.
+	// a duplicate-name chunk supplying one under first-wins.  So: no longer provably
+	// UNreachable (the premise that proved it so is gone), but the mechanism by which it
+	// becomes reachable is narrower than "any later pending chunk" -- do not read this
+	// note as a full reachability proof either way.  `ClonedEntry`'s "member produced no
+	// object" guard is the everyday-reachable one (pinned by its own test); this one
+	// stays defensive, now on a narrower and less-obviously-empty premise than before.
 	if( !path.insert( srcChunkIdx ).second ) {
 		diags.push_back( who + ": expanding this instance would copy `" + srcOwnName + "` into its own subtree -- a "
 			"recursive definition with no fixed point.  The usual cause is a `parent` line that puts a node inside "
@@ -2232,15 +2249,23 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 	// the original but not for this copy), and -- once the nesting is two deep -- the
 	// intermediate names in between, which are entries in their own right.
 	//
-	// ONLY THE FIRST KEY (the fully-qualified entry name) IS REACHABLE TODAY, and the
-	// rest are defensive.  An override on a member's BARE chunk name is always caught
-	// by the FIRST expansion that copies that member -- the one whose `ctxParts` is
-	// empty, so its first key already IS the bare name -- and that expansion is
-	// necessarily earlier in the document than any nested one, so PASS-2 `break`s
-	// before a qualified copy of the same member is ever planned.  The union is kept
-	// whole rather than trimmed to `keys[0]` because the CHILD walk below genuinely
-	// needs every key, and an override lookup that answered a different question about
-	// the same entry would be the kind of near-miss this arc keeps finding.
+	// ONLY THE FIRST KEY (the fully-qualified entry name) WAS PROVABLY REACHABLE under
+	// the OLD break-on-first-failure PASS-2 (see the derive-continuation note further
+	// down at DeriveToJob's apply loop, bug-fix wave 2026-08-28); the rest were
+	// defensive.  An override on a member's BARE chunk name is always caught by the
+	// FIRST expansion that copies that member -- the one whose `ctxParts` is empty, so
+	// its first key already IS the bare name -- and that expansion is necessarily
+	// earlier in the document than any nested one.  Under the old break-on-first-
+	// failure PASS-2, a refusal anywhere in or before that first expansion ended the
+	// WHOLE derive, closing off one (not necessarily the only) route by which a
+	// qualified copy of the same member could be planned before this lookup is reached
+	// with keys[0] already spoken for.  PASS-2 now keeps going past a failed chunk, so
+	// that particular closure no longer holds -- meaning "only keys[0] is reachable" is
+	// no longer a proof, not that every OTHER key is now demonstrated reachable by some
+	// specific route (this note does not attempt that derivation, and the guard three
+	// lines below this block is written not to assume it: it names `ov->first`,
+	// whichever key actually matched).  The union is kept whole (never trimmed to
+	// `keys[0]`) because the CHILD walk below genuinely needs every key regardless.
 	{
 		std::map<std::string, std::size_t>::const_iterator ov = index.overriddenNames.end();
 		for( std::size_t ki = 0; ki < keys.size() && ov == index.overriddenNames.end(); ++ki )
@@ -2252,8 +2277,12 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 			// matched -- not `srcEntryName`, which is only `keys[0]`.  The two differ
 			// whenever a non-zero key matches, and the message would then assert the
 			// layer is on the fully-qualified entry when it is on a shorter name, i.e.
-			// send the author to the wrong line to fix it.  Unreachable today for the
-			// reason argued above; costs one expression to be right if that changes.
+			// send the author to the wrong line to fix it.  A non-zero key match was
+			// PROVABLY unreachable back when PASS-2 broke on the first failure
+			// elsewhere in the document (see the block above); that proof no longer
+			// holds (bug-fix wave, 2026-08-28), and no replacement proof of reachability
+			// is claimed either -- `ov->first` is simply the correct expression
+			// regardless of which key matched, so it costs nothing to have it be right.
 			diags.push_back( who + ": the source subtree member `" + ov->first + "` has an `override_object` layer ("
 				+ pos + ").  An override is applied to the LIVE object by name, after its base chunk, so a copy built "
 				"from that base chunk would silently carry the UN-overridden pose.  Fold the override into the base "
@@ -2689,15 +2718,19 @@ static bool ExpandSourceInstance(
 	// THE APPLY LOOP BELOW, and PASS-1 validated only (i,j) = (0,0), so a value that is
 	// finite at instance zero and NOT at instance two (`position expr(sqrt(1-i)) 0 0`,
 	// count_u 4) applies `I[0,0]` and `I[1,0]` and THEN refuses.  Deliberately not
-	// pre-validated over every (i,j): PASS-2 applies chunk by chunk and `break`s on the
-	// first refusal (see DeriveToJob), so a member's Finalize failure, or any later
-	// chunk's, already leaves the Job partially applied -- an extra count_u*count_v
-	// evaluation pass here would buy an atomicity the surrounding machinery does not
-	// have.  What makes it harmless is the CALLER, and that is where the guarantee lives:
-	// `Job::LoadAsciiSceneViaCst` returns false on any diagnostic and the Job is
-	// discarded, and the GUI re-derive dry-runs into a STAGING Job
-	// (`RederiveCstDocumentFull_`) before it swaps.  A new caller that keeps a Job whose
-	// derive diagnosed would see the partial state -- so do not add one.
+	// pre-validated over every (i,j): this per-repetition apply loop (below) stops at
+	// ITS OWN first refusal -- a member's Finalize failure, or any later repetition's,
+	// already leaves the Job partially applied within THIS chunk's expansion.  This is
+	// a property of THIS loop and is unrelated to whether DeriveToJob's OUTER PASS-2
+	// loop stops or keeps going past a DIFFERENT chunk's failure (it keeps going, since
+	// the derive-continuation change, bug-fix wave 2026-08-28 -- see the note at
+	// DeriveToJob's own apply loop) -- an extra count_u*count_v evaluation pass here
+	// would buy an atomicity the surrounding machinery does not have.  What makes a
+	// partially-applied expansion harmless is NOT "no caller ever sees it" -- some do,
+	// by design (see the CANONICAL enumeration in DeriveToJob's doc comment in Cst.h,
+	// "CANONICAL STATEMENT") -- it is that EVERY caller, gating or not, treats a
+	// non-empty `diags` as "the derive failed" and every chunk that failed (including a
+	// partially-applied `source` expansion) is diagnosed exactly as such.
 	{
 		// The chunk name is ambiguous whether or not counts are present: provenance maps
 		// every entry back to THIS name, so two chunks holding it send a picked instance
@@ -2929,8 +2962,11 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// graph at entry -- before any early return -- or a reused/replaced ReferenceGraph (or a
 	// caller-supplied BuildReferenceGraph result) would mix stale dependents/edges/stamp with
 	// this derive's, and a validation-failure early return would leave the caller's old graph
-	// untouched (silently stale). After this, `outRecorded` reflects THIS derive only, and is
-	// empty on a refused/failed derive.
+	// untouched (silently stale). After this, `outRecorded` reflects THIS derive only -- empty
+	// on a PASS-1 refuse-all (nothing was ever applied), but a PASS-2 failure can still record a
+	// graph covering most of the document, since every chunk that DID apply still records its
+	// productions/resolutions (PASS-2 keeps going past a failure -- see DeriveToJob's doc comment
+	// in Cst.h).
 	if( outRecorded ) *outRecorded = ReferenceGraph();
 
 	std::vector<NodeRef> items;
@@ -3054,16 +3090,38 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		if( !diags.empty() ) return 0;
 	}
 
-	// PASS 2 -- apply via the SAME Finalize the legacy parser calls, so the CST
-	// path and the legacy path build an identical Job for a validation-clean
-	// CANONICAL registry scene (see DeriveToJob's doc for the exact scope).
-	// A Finalize failure is an APPLY-TIME error that PASS-1
-	// validation cannot detect (e.g. a reference to a not-yet/never-defined
-	// chunk): match the legacy parser's abort-on-first-failure -- surface a
-	// diagnostic and STOP (do not silently swallow it, and do not keep applying
-	// later chunks, which would diverge from legacy). Chunks before the failure
-	// stay applied, exactly as the legacy parser leaves them; full apply-atomicity
-	// (rollback of the prior chunks) is later Facet-2 work.
+	// PASS 2 -- apply via the SAME Finalize the (now-deleted) legacy parser
+	// used to call, so the CST path builds the identical Job a validation-
+	// clean CANONICAL registry scene always built (see DeriveToJob's doc for
+	// the exact scope).  A Finalize failure is an APPLY-TIME error that
+	// PASS-1 validation cannot detect (e.g. a reference to a not-yet/never-
+	// defined chunk).
+	//
+	// CONTINUE past a Finalize failure rather than stopping at the first one
+	// (bug-fix wave, 2026-08-28): every EARLIER design here matched the
+	// legacy parser's abort-on-first-failure -- one bad chunk's diagnostic
+	// was the only one a caller ever saw, and every chunk after it in the
+	// document silently vanished with NO diagnostic of its own, even a chunk
+	// with no relation to the failure.  That made a single mistake (e.g. a
+	// scalar-pipe parameter whose default resolved through the wrong
+	// painter manager -- see ISCALARPAINTER_REFACTOR.md) look like it had
+	// deleted the rest of the scene, when the actual, fixable cause was one
+	// line.  Now every pending chunk is still attempted: a failure is
+	// diagnosed BY NAME and the loop moves on, so one run surfaces every
+	// independent problem instead of forcing fix-one/rebuild/find-the-next.
+	// A chunk that legitimately references the failed one's would-be entity
+	// still fails too (its OWN unresolved-reference diagnostic) -- that is
+	// expected, not a bug: the failed chunk's entity genuinely never existed
+	// to reference.  Chunks that applied stay applied, exactly as before;
+	// full apply-atomicity (rollback of every applied chunk) is later
+	// Facet-2 work.  The OVERALL derive still fails whenever `diags` is
+	// non-empty -- every caller treats that as "the derive failed", so "keep
+	// going" buys more diagnostics per run, never a scene `diags` calls clean
+	// when it is not.  Which callers DISCARD a diagnosed Job outright vs.
+	// which still consult a possibly-partial one is NOT uniform -- see the
+	// CANONICAL enumeration in this function's own doc comment in Cst.h
+	// (search "CANONICAL STATEMENT"); do not restate or re-derive that list
+	// here, it has drifted out of sync with copies before.
 	// D35 record-during-derive (slice 1, §8): when recording, capture each chunk's PRODUCED
 	// + RESOLVED entities from the engine's actual manager AddItem/GetItem (the chokepoint
 	// hooks in GenericManager.h), and build (producer -> consumer) reverse-adjacency from the
@@ -3095,9 +3153,22 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// 87 step 3b: ONE document-wide synthesized-entry allowance, spent by every
 	// `source` expansion below -- and, since 87 step 3d deleted the `instance_array`
 	// generator, by nothing else.  See kMaxSynthesizedEntries for why it is in entries.
+	// DISCLOSED RESIDUAL (bug-fix wave, 2026-08-28): PASS-2 now keeps applying past a
+	// failed chunk (see the header comment above), so a `source` expansion that spends
+	// some of this budget before itself failing partway through leaves LESS budget for
+	// a later, wholly unrelated `source` chunk -- which could then be refused with a
+	// "this document has room for only N more" diagnostic that is honest about the
+	// number but misleading about the cause.  Not a safety issue (the budget only ever
+	// shrinks, and the headroom is kMaxSynthesizedEntries, ~1e7) and not fixed here:
+	// "refund exactly what a failed expansion spent" needs bookkeeping this loop does
+	// not have (a partial expansion's own per-repetition apply can itself succeed
+	// partway before failing -- see ExpandSourceInstance -- so "spent" and "still live
+	// in the Job" are not the same set to refund from).  Flagging for whoever next
+	// touches source-instance budget accounting.
 	long long entryBudget = kMaxSynthesizedEntries;
 
 	int count = 0;
+	int failedCount = 0;   // chunks whose Finalize/expansion failed -- see the header comment above
 	for( Pending& p : pending ) {
 		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
 		// its overridden BASE's slot (so objects bind it by name regardless of the override chunk's file position -- the
@@ -3145,8 +3216,42 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			diags.push_back( finalizeDiag.empty()
 				? applyP->keyword + ": apply failed (e.g. unresolved reference); see log"
 				: applyP->keyword + ": " + finalizeDiag );
-		break;
+		++failedCount;
+		// CONTINUE, not break (see the header comment above): a later chunk
+		// unrelated to this failure still deserves the chance to apply --
+		// and to be diagnosed BY NAME if it too fails, rather than vanishing
+		// silently behind this one's diagnostic.
 	}
+	// Summary LOG LINE (not a `diags` entry) when anything failed above:
+	// `diags` is already non-empty (each failure pushed its own named
+	// diagnostic), which is what every caller actually keys "did the derive
+	// fail" on -- this line exists only so a log skimmed for just the last
+	// line still shows the derive failed and how many chunks were involved,
+	// not just the LAST diagnostic pushed.  Deliberately logged directly
+	// rather than pushed into `diags`: `diags` is a STRUCTURED per-chunk
+	// feed some callers consume mechanically (e.g. `AgentSession::ValidateText`
+	// maps every entry to a localized `AgentDiagnostic` with a specific
+	// chunk keyword and byte offset) -- an aggregate count entry has no
+	// chunk to name and no offset to localize, so it would land as a
+	// spurious, unlocalized, generic-code diagnostic alongside the real
+	// per-chunk ones instead of the log-only footnote it is meant to be.
+	// Every caller that logs `diags` already does so in its own loop, so
+	// this is visible in the SAME log without duplicating that machinery
+	// inside DeriveToJob for every other diagnostic.  For which callers
+	// discard a diagnosed Job outright vs. which still consult a possibly-
+	// partial one (relevant to whether "not considered successful" below is
+	// the whole story for a given caller), see the CANONICAL enumeration in
+	// this function's own doc comment in Cst.h ("CANONICAL STATEMENT") --
+	// not restated here, it has drifted out of sync with copies before.
+	if( failedCount > 0 )
+		// Denominator is `count + failedCount` (chunks actually ATTEMPTED),
+		// not `pending.size()`: an inactive scene_variant-tagged material
+		// `continue`s above before either counter increments, so it was
+		// never attempted at all and must not inflate the total.
+		GlobalLog()->PrintEx( eLog_Error,
+			"DeriveToJob:: %u of %u chunk(s) failed to apply (see the diagnostic(s) above, by keyword); "
+			"this derive is not considered successful",
+			(unsigned int)failedCount, (unsigned int)( count + failedCount ) );
 	// scene_variant: apply the active variant's camera (its material overrides were baked above).
 	// `none` is the universal no-reference sentinel (cf. `material none`) -> no camera override, NOT a
 	// missing-camera error; exclude it from the diagnostic below.
@@ -3346,11 +3451,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// on a chunk's re-Finalize, and the closure is applied entities-first then objects (by doc index) so a producer
 	// re-applies before its consumer reads it.)
 	//
-	// Same refuse-all + abort-on-first-failure contract as DeriveToJob: validate the
-	// WHOLE closure before touching the Job -- every chunk must be named AND of a type
-	// whose re-derivation is a clean single-manager create-and-undo (DropChunkByCategory)
-	// for entities, or an in-place re-point for standard_object/csg_object.  On any validation
-	// failure nothing is dropped or applied.
+	// Same refuse-all PASS-1 contract as DeriveToJob: validate the WHOLE closure
+	// before touching the Job -- every chunk must be named AND of a type whose
+	// re-derivation is a clean single-manager create-and-undo (DropChunkByCategory)
+	// for entities, or an in-place re-point for standard_object/csg_object.  On any
+	// validation failure nothing is dropped or applied.  PASS-2 below, unlike
+	// DeriveToJob's (which now keeps going past a failed chunk -- bug-fix wave
+	// 2026-08-28), DELIBERATELY KEEPS abort-on-first-failure + full rollback: this
+	// function mutates a LIVE, already-derived Job in place rather than building a
+	// throwaway/staging one, so "keep going and diagnose everything" is not an option
+	// here -- a failure must restore the Job to its exact pre-edit state (see the
+	// rollback machinery below), which only composes with stopping immediately.
 	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; NodeRef node; int index; ChunkCategory cat; std::string name; };
 	std::vector<Pending> pending;
 	pending.reserve( chunkIds.size() );

@@ -18,7 +18,9 @@
 //       duplicate fails to load (return false); the same scene with a unique
 //       name loads (true).
 //    C. CST derive (DeriveToJob direct) -- a duplicate-name document is refused
-//       (diagnostics emitted; exactly the first chunk applied).
+//       overall (diagnostics emitted, first-wins preserved), but PASS-2 keeps
+//       applying past the duplicate rather than stopping there (bug-fix wave,
+//       2026-08-28) -- a later, unrelated chunk still applies.
 //
 //  (Slice 6c-3b: layer B was the legacy parser + a legacy-vs-CST DumpJob tail;
 //  both were retired with the legacy reader.  The load is now the CST path and
@@ -140,21 +142,35 @@ int main()
 	std::printf( "[C] CST derive: duplicate-name document refused (diagnosed, first-wins)\n" );
 	//----------------------------------------------------------------------
 	{
+		// A THIRD, independent chunk after the duplicate pair -- DeriveToJob's
+		// PASS-2 keeps applying past a failed chunk instead of stopping there
+		// (bug-fix wave, 2026-08-28), so `applied == 2` (the first `g` PLUS
+		// this one) is what actually pins that: with the pre-fix stop-at-
+		// first-failure behaviour this chunk would never have been attempted
+		// and `applied` would have stayed at 1.  Without this third chunk the
+		// assertion below would be identical either way (nothing after the
+		// duplicate to observe), which is not a meaningful regression guard
+		// for THIS test file's own subject.
 		const std::string dup = HDR +
-			"sphere_geometry\n{\nname g\nradius 1\n}\n" "sphere_geometry\n{\nname g\nradius 2\n}\n";
+			"sphere_geometry\n{\nname g\nradius 1\n}\n" "sphere_geometry\n{\nname g\nradius 2\n}\n"
+			"sphere_geometry\n{\nname unrelated\nradius 3\n}\n";
 
-		// CST derive refuses the second chunk and diagnoses it.
+		// CST derive refuses the second (duplicate) chunk and diagnoses it,
+		// but keeps going: the first `g` and the unrelated third chunk both apply.
 		Job* jc = new Job();
 		Document d = ParseToCst( dup );
 		std::vector<std::string> diags;
 		const int applied = DeriveToJob( d, *jc, &diags );
 		Check( !diags.empty(), "CST derive: duplicate diagnosed (not silently applied)" );
-		Check( applied == 1, "CST derive: exactly the first chunk applied (count not inflated)" );
-		Check( jc->GetGeometries()->getItemCount() == 1, "CST derive: only the first geometry registered" );
+		Check( applied == 2, "CST derive: the first `g` AND the unrelated third chunk applied "
+			"(count not inflated by the duplicate, and not truncated by it either -- the loop kept going)" );
+		Check( jc->GetGeometries()->getItemCount() == 2, "CST derive: only the first `g` geometry registered (not the duplicate), plus the unrelated one" );
 		// first-wins: the surviving geometry is the FIRST definition (radius 1, not 2).
 		IGeometry* g = jc->GetGeometries()->GetItem( "g" );
 		Point3 c; Scalar r = 0; if( g ) g->GenerateBoundingSphere( c, r );
 		Check( g && r == (Scalar)1.0, "CST derive: the FIRST 'g' survives (radius 1, not 2)" );
+		Check( jc->GetGeometries()->GetItem( "unrelated" ) != 0,
+			"CST derive: the chunk AFTER the duplicate applied anyway (continuation, not silent drop)" );
 		jc->release();
 	}
 

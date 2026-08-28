@@ -670,10 +670,13 @@ namespace
 	// declared no rasterizer chunk at all) segfaulted at load, and the
 	// interactive console's `remove rasterizeroutputs` command segfaulted
 	// on a Job with no rasterizer set.  Both sites now null-guard: Add
-	// fails cleanly (Finalize returns false, so Cst's PASS 2 stops and
-	// LoadAsciiSceneAuto/LoadAsciiSceneViaCst returns false with a
-	// diagnostic); Remove returns false.  These load calls not crashing
-	// IS the regression guard for what was a segfault before the fix.
+	// fails cleanly (Finalize returns false, diagnosing the chunk by name;
+	// Cst's PASS 2 keeps applying any later chunks -- bug-fix wave,
+	// 2026-08-28 -- but the derive as a whole is still refused whenever any
+	// diagnostic fired, so LoadAsciiSceneAuto/LoadAsciiSceneViaCst still
+	// returns false with a diagnostic); Remove returns false.  These load
+	// calls not crashing IS the regression guard for what was a segfault
+	// before the fix.
 	// ------------------------------------------------------------------
 
 	bool WriteSceneFile( const std::string& path, const std::string& text )

@@ -304,8 +304,10 @@ private:
 // Every diagnostic `DeriveToJob` raised for ONE chunk, joined.  A scene can hold two REFUSABLE
 // chunks whose reasons differ (a self-parenting instance beside an unparented sibling that merely
 // names the same source), and a whole-bag substring search could not tell which chunk got which
-// message.  Today the derive stops at the first refusal, so the bag holds one -- this keeps the
-// assertions meaningful if that ever changes.  `who` is "standard_object `NAME`: ...".
+// message.  DeriveToJob's PASS-2 continues past a failing chunk instead of stopping at the first
+// one (bug-fix wave, 2026-08-28), so the bag can legitimately hold MULTIPLE chunks' diagnostics in
+// one derive -- this filter is what keeps the assertions meaningful, by picking out only the lines
+// that belong to the chunk under test.  `who` is "standard_object `NAME`: ...".
 static std::string DiagsForChunk( const std::string& scene, const char* chunkName )
 {
 	std::vector<std::string> diags;

@@ -86,11 +86,16 @@ static void BumpSceneLightGen( RISE::IScenePriv* pScene )
 // bool and returned true, so a second entity sharing a name was silently dropped
 // (first-wins) while the add still reported SUCCESS -- no parse- or derive-time
 // error.  These helpers make the add report the truth: a clear, kind-specific
-// diagnostic + a false return.  The descriptor-driven legacy parser turns that
-// false into a hard "Failed to load chunk" scene-load error (AsciiSceneParser
-// PASS-2 loop); the CST derive turns it into a refused apply (DeriveToJob breaks
-// + diagnoses; DeriveToJobIncremental rolls back).  Both derive paths share these
-// Job methods, so CstDeriveDifferentialTest stays equivalent (legacy == CST).
+// diagnostic + a false return.  The CST derive turns that into a refused apply:
+// `DeriveToJob`'s PASS-2 diagnoses the failing chunk BY NAME and, since the
+// 2026-08-28 bug-fix wave, keeps applying every later chunk instead of
+// stopping there (the overall derive is still refused whenever `diags` is
+// non-empty); `DeriveToJobIncremental` (the live-Job-mutating fast path) keeps
+// strict abort-on-first-failure + rollback, since "keep going" cannot compose
+// with restoring an already-live Job to its exact pre-edit state on failure.
+// (The legacy, non-CST `AsciiSceneParser` this comment used to also describe
+// was deleted in the Model-B P5 legacy-parser retirement; the CST derive is
+// now the sole scene-load path.)
 // ---------------------------------------------------------------------------
 namespace {
 

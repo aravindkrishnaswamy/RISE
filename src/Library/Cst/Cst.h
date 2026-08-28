@@ -18,19 +18,28 @@
 //    * item 4 -- NodeId lineage + name-path / reverse / param identity.
 //    * item 5 -- the derive binds through the LIVE chunk-parser descriptor
 //      registry (CreateAllChunkParsers): EVERY registry chunk type is validated
-//      via the same DispatchChunkParameters and applied via the same Finalize as
-//      the legacy parser (with the same param-line whitespace normalisation), so
-//      the two paths build an identical Job for the canonical scenes the CST is
-//      fed. See DeriveToJob for the exact equivalence scope + the two-tier
-//      (validation refuse-all / apply abort-on-first) failure boundary.
+//      via DispatchChunkParameters and applied via Finalize.  (Landed as
+//      equivalence with the then-still-live legacy parser -- same Finalize,
+//      same param-line whitespace normalisation, an identical Job for the
+//      canonical scenes the CST is fed; the legacy parser was deleted in the
+//      Model-B P5 retirement, so the CST derive is now the sole scene-load
+//      path and there is no second path left to be equivalent TO -- this
+//      bullet records what item 5 achieved, not a live two-path claim.)
+//      See DeriveToJob for the exact scope + the two-tier
+//      (validation refuse-all / apply continue-past-failure -- was
+//      abort-on-first-failure before the 2026-08-28 bug-fix wave) failure
+//      boundary.
 //
 //  Derive domain: the CST is the v7 runtime format -- macro-free and
 //  expression-free. v6 `$( )` / DEFINE / FOR (and `>` run/load/set/clearall
 //  directives, and non-canonical whitespace/comment forms) are the one-shot
 //  v6->v7 MIGRATOR's job (D8), never the CST runtime's; descriptor-driven
-//  validation of params (rejecting unknown/ill-typed values, which the legacy
-//  parser does) landed in item 5. So the equivalence gate is exact for the
-//  canonical scenes the CST is fed -- see DeriveToJob for the precise scope.
+//  validation of params (rejecting unknown/ill-typed values, which the
+//  since-deleted legacy parser also did) landed in item 5.  That equivalence
+//  gate was exact for the canonical scenes the CST is fed while the legacy
+//  parser still existed to compare against -- see DeriveToJob for the
+//  precise scope (and the "item 5" bullet above for why this is now history,
+//  not a live two-path claim).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -305,17 +314,73 @@ namespace RISE
 		//!     finite-or-non-numeric numeric value) is REFUSE-ALL -- if any chunk
 		//!     fails validation, NOTHING is applied.
 		//!   * APPLY-time (PASS 2, a Finalize failure that only surfaces on apply,
-		//!     e.g. an unresolved reference) matches the legacy parser's
-		//!     ABORT-ON-FIRST-FAILURE: it stops at the first failing chunk, leaving
-		//!     chunks BEFORE it applied (as legacy does) -- not silently swallowed,
-		//!     not continued past. Full apply-atomicity (rollback) is later work.
+		//!     e.g. an unresolved reference) CONTINUES PAST a failing chunk (bug-fix
+		//!     wave, 2026-08-28 -- was previously abort-on-first-failure, matching the
+		//!     since-deleted legacy parser): every pending chunk still gets its own
+		//!     attempt and its own named diagnostic on failure, so one run surfaces
+		//!     every independent problem instead of hiding everything after the
+		//!     first. A chunk that legitimately depends on a failed one's would-be
+		//!     entity fails too, with its own unresolved-reference diagnostic -- that
+		//!     is expected, not a bug. Chunks that DID apply stay applied (as before);
+		//!     full apply-atomicity (rollback of the whole derive) is later work.
+		//!     `DeriveToJobIncremental` below is DIFFERENT: it mutates an
+		//!     already-derived LIVE Job in place and keeps strict
+		//!     abort-on-first-failure + rollback, because "keep going" is not
+		//!     compatible with restoring a live Job to its exact pre-edit state.
 		//! Both tiers report the failures in `diagnostics` (when non-null); neither
-		//! silently half-derives. (Top-level non-chunk items -- the scene header
-		//! strays / trivia -- are skipped; they carry no Job state.)
+		//! silently half-derives.  THIS IS THE CANONICAL STATEMENT of which
+		//! `DeriveToJob` callers gate on `diagnostics` and which do not -- other
+		//! comments in Cst.cpp / Job.cpp / AgentSession.cpp reference this one
+		//! rather than restate it, so a future edit here does not have to be
+		//! chased down across copies (a prior draft of this note existed in four
+		//! places and drifted in one of them; see the bug-fix wave's own review
+		//! history if that recurs).
+		//!
+		//! Every caller treats a non-empty `diagnostics` as "the derive failed",
+		//! but NOT every caller discards the resulting/live Job outright on
+		//! failure -- this split predates the PASS-2 continuation change above
+		//! (it is about which callers CONSULT a possibly-partial Job, not about
+		//! break-vs-continue) and is unchanged in KIND by it, only in how complete
+		//! the partial Job those callers see can now be.
+		//!   * DISCARD ON FAILURE (the common case): `Job::LoadAsciiSceneViaCst`;
+		//!     every DRY-RUN derive into a throwaway/staging `Job` gated before a
+		//!     commit (`Job::DeriveEditedCstDocument_`'s P1-A root gate,
+		//!     `Job::RederiveCstDocumentFull_`'s own dry-run,
+		//!     `Job::RederiveCstWithVariant`'s own dry-run).
+		//!   * DOES NOT DISCARD -- keeps mutating/consulting a Job whose SAME
+		//!     derive diagnosed:
+		//!       - `AgentSession::FindUnacknowledgedNullGeometryEmitters_` and
+		//!         `AgentSession::ValidateText`'s (b2) null-geometry-emitter walk
+		//!         both derive into a throwaway `Job` and then scan its realized
+		//!         objects as a best-effort lint REGARDLESS of `diagnostics` (by
+		//!         design -- `FindUnacknowledgedNullGeometryEmitters_`'s own header
+		//!         says "an inconclusive derive fails OPEN"); `diagnostics` is
+		//!         still separately surfaced as Error `AgentDiagnostic`s afterward.
+		//!       - `Job::RederiveCstDocumentFull_`'s COMMITTING derive (the one
+		//!         AFTER `ClearAll()`, into the live `*this`) and
+		//!         `Job::RederiveCstWithVariant`'s COMMITTING derive (same shape)
+		//!         can each, in the rare case their OWN preceding dry-run passed
+		//!         but this second derive still fails, leave that partial result
+		//!         LIVE with no rollback (both functions' own comments say so).
+		//!         `RederiveCstDocumentFull_` additionally still pushes that
+		//!         partial Job's framestore to the rasterizers on this path;
+		//!         `RederiveCstWithVariant` does not (it returns before reaching
+		//!         its own framestore-push call).
+		//! Continuing past a PASS-2 failure means every one of the "does not
+		//! discard" Jobs above can now be MORE complete than before (more chunks
+		//! got a chance to apply) -- never less honest, since every chunk that
+		//! failed is still diagnosed exactly as it was; a NEW caller that would
+		//! keep and use a diagnosed Job should read this list first. (Top-level
+		//! non-chunk items -- the scene header strays / trivia -- are skipped;
+		//! they carry no Job state.)
 		//!
 		//! D35 record-during-derive (slice 1, §8): when `outRecorded` is non-null, the derive
-		//! RESETS it at entry (it reflects THIS derive only -- empty on a refused/failed derive --
-		//! so a reused or caller-supplied graph is never mixed with stale state), then RECORDS the
+		//! RESETS it at entry (it reflects THIS derive only, never a reused or caller-supplied
+		//! graph's stale state) -- empty on a PASS-1 REFUSE-ALL (nothing was ever applied to
+		//! record), but NOT necessarily empty on a PASS-2 failure: every chunk that DID apply
+		//! before, between, or after a failing one (PASS-2 keeps going -- see above) still
+		//! records its productions/resolutions, so a failed derive's graph can cover most of
+		//! the document.  Then RECORDS the
 		//! reference graph from the engine's ACTUAL resolution -- it brackets each chunk's Finalize
 		//! and captures every entity the chunk PRODUCES (manager AddItem) and RESOLVES (manager
 		//! GetItem), then writes `(producer -> consumer)` reverse-adjacency into
