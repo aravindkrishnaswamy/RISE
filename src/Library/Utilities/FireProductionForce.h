@@ -280,10 +280,31 @@ namespace RISE
 		std::uint32_t physicalOpenProjectionVCycleCount;
 		bool monitorManifoldDiagnostics;
 		bool enforceManifoldPlateau;
+		bool restoreManifoldOutliers;
 
 		FireProductionResidentStepRequest() : physicalOpenProjectionVCycleCount(17u),
-			monitorManifoldDiagnostics(true),enforceManifoldPlateau(false) {}
+			monitorManifoldDiagnostics(true),enforceManifoldPlateau(false),
+			restoreManifoldOutliers(true) {}
 	};
+
+	//! Stability-class boundary for monitored production.  The ordinary policy
+	//! leaves the bulk manifold untouched, drains only the tail beyond 2^-3,
+	//! and atomically refuses a beginning state beyond the 2^-2 dynamics bound.
+	struct FireProductionManifoldTailTarget
+	{
+		std::vector<float> divergenceTargetPerS;
+		std::uint32_t outlierCellCount;
+		double excessSum;
+		double drainedVolumeM3;
+		double maximumTargetMagnitudePerS;
+
+		FireProductionManifoldTailTarget() : outlierCellCount(0u),excessSum(0.0),
+			drainedVolumeM3(0.0),maximumTargetMagnitudePerS(0.0) {}
+	};
+	bool DeriveFireProductionManifoldTailTarget(
+		const std::vector<double>& beginningDeviationPerCell,
+		double representedTimeStepS,double cellWidthM,
+		FireProductionManifoldTailTarget&,std::string* error=0 );
 
 	class FireProductionAcceptedManifoldObservation;
 	struct FireProductionAcceptedCheckpointStateView
@@ -400,6 +421,8 @@ namespace RISE
 			deliveredDrainFraction_(0.0),maximumPostResidualPerS_(0.0),
 			acceptedDeviationP95_(0.0),acceptedDeviationP50_(0.0),
 			physicalMaximumPreResidualPerS_(0.0f),physicalMaximumPostResidualPerS_(0.0f),
+			tailRestorationApplied_(false),tailCellCount_(0u),tailExcessSum_(0.0),
+			tailDrainedVolumeM3_(0.0),dynamicsBoundPassed_(false),
 			payloadDigest_(0u),acceptedStateDigest_(0u),acceptedStateDigestVersion_(0u),
 			generationAuthoritative_(false),plateauEnforced_(false) {}
 		FireProductionAcceptedManifoldToken(const FireProductionAcceptedManifoldToken&) :
@@ -417,6 +440,10 @@ namespace RISE
 			acceptedDeviationP50_(other.acceptedDeviationP50_),
 			physicalMaximumPreResidualPerS_(other.physicalMaximumPreResidualPerS_),
 			physicalMaximumPostResidualPerS_(other.physicalMaximumPostResidualPerS_),
+			tailRestorationApplied_(other.tailRestorationApplied_),
+			tailCellCount_(other.tailCellCount_),tailExcessSum_(other.tailExcessSum_),
+			tailDrainedVolumeM3_(other.tailDrainedVolumeM3_),
+			dynamicsBoundPassed_(other.dynamicsBoundPassed_),
 			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_),
 			acceptedStateDigestVersion_(other.acceptedStateDigestVersion_),
 			generationAuthoritative_(other.generationAuthoritative_),
@@ -435,6 +462,10 @@ namespace RISE
 				acceptedDeviationP50_=other.acceptedDeviationP50_;
 				physicalMaximumPreResidualPerS_=other.physicalMaximumPreResidualPerS_;
 				physicalMaximumPostResidualPerS_=other.physicalMaximumPostResidualPerS_;
+				tailRestorationApplied_=other.tailRestorationApplied_;
+				tailCellCount_=other.tailCellCount_;tailExcessSum_=other.tailExcessSum_;
+				tailDrainedVolumeM3_=other.tailDrainedVolumeM3_;
+				dynamicsBoundPassed_=other.dynamicsBoundPassed_;
 				payloadDigest_=other.payloadDigest_;
 				acceptedStateDigest_=other.acceptedStateDigest_;
 				acceptedStateDigestVersion_=other.acceptedStateDigestVersion_;
@@ -450,6 +481,8 @@ namespace RISE
 			deliveredDrainFraction_=0.0;maximumPostResidualPerS_=0.0;
 			acceptedDeviationP95_=0.0;acceptedDeviationP50_=0.0;
 			physicalMaximumPreResidualPerS_=0.0f;physicalMaximumPostResidualPerS_=0.0f;
+			tailRestorationApplied_=false;tailCellCount_=0u;tailExcessSum_=0.0;
+			tailDrainedVolumeM3_=0.0;dynamicsBoundPassed_=false;
 			payloadDigest_=0u;acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u;
 			generationAuthoritative_=false;plateauEnforced_=false; }
 		bool available_;
@@ -463,6 +496,11 @@ namespace RISE
 		double acceptedDeviationP50_;
 		float physicalMaximumPreResidualPerS_;
 		float physicalMaximumPostResidualPerS_;
+		bool tailRestorationApplied_;
+		std::uint32_t tailCellCount_;
+		double tailExcessSum_;
+		double tailDrainedVolumeM3_;
+		bool dynamicsBoundPassed_;
 		std::uint64_t payloadDigest_;
 		std::uint64_t acceptedStateDigest_;
 		unsigned int acceptedStateDigestVersion_;
@@ -522,6 +560,11 @@ namespace RISE
 		double acceptedManifoldDeviationP95;
 		double acceptedManifoldDeviationP50;
 		bool manifoldGenerationAuthoritative;
+		bool manifoldTailRestorationApplied;
+		std::uint32_t manifoldTailCellCount;
+		double manifoldTailExcessSum;
+		double manifoldTailDrainedVolumeM3;
+		bool manifoldDynamicsBoundPassed;
 		double maximumPredictedAdvectiveManifoldAnomaly;
 		std::uint32_t manifoldMapCellCount;
 		std::uint32_t manifoldScalarDeviceToHostTransferCount;
@@ -553,6 +596,9 @@ namespace RISE
 			representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
 			maximumAcceptedManifoldDeviation(0.0),acceptedManifoldDeviationP95(0.0),
 			acceptedManifoldDeviationP50(0.0),manifoldGenerationAuthoritative(false),
+			manifoldTailRestorationApplied(false),manifoldTailCellCount(0u),
+			manifoldTailExcessSum(0.0),manifoldTailDrainedVolumeM3(0.0),
+			manifoldDynamicsBoundPassed(false),
 			maximumPredictedAdvectiveManifoldAnomaly(0.0),
 			manifoldMapCellCount(0u),
 			manifoldScalarDeviceToHostTransferCount(0u),manifoldFullGridDeviceToHostTransferCount(0u),

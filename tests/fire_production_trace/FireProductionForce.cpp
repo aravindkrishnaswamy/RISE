@@ -335,6 +335,55 @@ namespace RISEFireProductionTrace
 			"production advective anomaly target is invalid");
 	}
 
+	bool DeriveFireProductionManifoldTailTarget(
+		const std::vector<double>& beginningDeviationPerCell,
+		const double representedTimeStepS,const double cellWidthM,
+		FireProductionManifoldTailTarget& result,std::string* error )
+	{
+		result=FireProductionManifoldTailTarget();
+		constexpr double EngagementThreshold=0x1p-3;
+		constexpr double DynamicsValidityBound=0x1p-2;
+		if(beginningDeviationPerCell.empty()||!std::isfinite(representedTimeStepS)||
+			representedTimeStepS<=0.0||!std::isfinite(cellWidthM)||cellWidthM<=0.0)
+			return Fail(error,"production manifold tail target metadata is invalid");
+		result.divergenceTargetPerS.resize(beginningDeviationPerCell.size(),0.0f);
+		for(std::size_t cell=0u;cell<beginningDeviationPerCell.size();++cell){
+			const double deviation=beginningDeviationPerCell[cell];
+			const double magnitude=std::fabs(deviation);
+			if(!std::isfinite(deviation)||magnitude>DynamicsValidityBound){
+				result=FireProductionManifoldTailTarget();
+				return Fail(error,
+					"production manifold beginning deviation exceeds dynamics bound");
+			}
+			if(magnitude<=EngagementThreshold)continue;
+			if(result.outlierCellCount==std::numeric_limits<std::uint32_t>::max()){
+				result=FireProductionManifoldTailTarget();
+				return Fail(error,"production manifold tail population overflows");
+			}
+			const double excess=magnitude-EngagementThreshold;
+			// Positive production divergence increases this EOS-volume observable;
+			// the restoration target must therefore oppose the signed tail excess.
+			const double target=-std::copysign(excess/representedTimeStepS,deviation);
+			const FireProductionRoundoffTrace::TraceFloat represented=static_cast<FireProductionRoundoffTrace::TraceFloat>(target);
+			if(!std::isfinite(target)||!std::isfinite(represented)){
+				result=FireProductionManifoldTailTarget();
+				return Fail(error,"production manifold tail target is not representable");
+			}
+			result.divergenceTargetPerS[cell]=represented;
+			++result.outlierCellCount;
+			result.excessSum+=excess;
+			result.maximumTargetMagnitudePerS=std::max(
+				result.maximumTargetMagnitudePerS,std::fabs(static_cast<double>(represented)));
+		}
+		const double cellVolume=cellWidthM*cellWidthM*cellWidthM;
+		result.drainedVolumeM3=result.excessSum*cellVolume;
+		if(!std::isfinite(result.excessSum)||!std::isfinite(result.drainedVolumeM3)){
+			result=FireProductionManifoldTailTarget();
+			return Fail(error,"production manifold tail volume is invalid");
+		}
+		return true;
+	}
+
 	bool FireProductionResidentStepEligibleForAcceptedManifoldToken(
 		const FireProductionResidentStepResult& value )
 	{
@@ -362,13 +411,28 @@ namespace RISEFireProductionTrace
 			value.manifoldStageGeneration[0]==value.maximumManifoldGeneration&&
 			value.manifoldStageGeneration[1]==0.0&&value.manifoldStageGeneration[2]==0.0;
 		if(!common)return false;
-		if(value.manifoldPlateauEnforced)return value.physicalProjection.validationPassed&&
+		if(!value.manifoldDynamicsBoundPassed||!std::isfinite(value.manifoldTailExcessSum)||
+			value.manifoldTailExcessSum<0.0||!std::isfinite(value.manifoldTailDrainedVolumeM3)||
+			value.manifoldTailDrainedVolumeM3<0.0||
+			value.manifoldTailRestorationApplied!=(value.manifoldTailCellCount>0u))return false;
+		if(value.manifoldPlateauEnforced)return !value.manifoldTailRestorationApplied&&
+			value.manifoldTailCellCount==0u&&value.manifoldTailExcessSum==0.0&&
+			value.manifoldTailDrainedVolumeM3==0.0&&value.physicalProjection.validationPassed&&
 			value.residentProjectionInvocationCount==2u&&
 			value.manifoldScalarDeviceToHostTransferCount==2u&&
 			(value.advectiveAnomalyClosurePassCount==1u||
 				value.advectiveAnomalyClosurePassCount==2u)&&
 			!value.manifoldAllowanceExceeded&&!value.manifoldCeilingExceeded;
-		return value.residentProjectionInvocationCount==1u&&
+		if(value.manifoldTailRestorationApplied)return value.physicalProjection.validationPassed&&
+			value.projection.validationPassed&&value.residentProjectionInvocationCount==2u&&
+			value.manifoldScalarDeviceToHostTransferCount==1u&&
+			value.advectiveAnomalyClosurePassCount==0u&&
+			value.requiredRestorationDrainFraction==0.0&&
+			value.deliveredRestorationDrainFraction==0.0&&
+			value.restorationResidualBandPerS==0.0&&
+			!value.manifoldNextTimeStepAvailable&&value.suggestedManifoldTimeStepS==0.0;
+		return value.manifoldTailCellCount==0u&&value.manifoldTailExcessSum==0.0&&
+			value.manifoldTailDrainedVolumeM3==0.0&&value.residentProjectionInvocationCount==1u&&
 			value.manifoldScalarDeviceToHostTransferCount==1u&&
 			value.advectiveAnomalyClosurePassCount==0u&&
 			value.requiredRestorationDrainFraction==0.0&&

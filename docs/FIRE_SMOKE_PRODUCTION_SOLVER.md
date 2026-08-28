@@ -4106,6 +4106,64 @@ and the monitored trajectory attributes the failure to manifold drift, the
 enforcement question reopens against those numbers; that conditional is not a
 hidden production stall.
 
+### 7.56c Outlier-bounded monitored manifold (r169)
+
+r168 exposed the production coupling omitted by the r160 consumer enumeration.
+Absolute `P0` consistency still has no production consumer, but an order-one
+EOS volume deviation corrupts gas density, and gas density is consumed twice:
+face velocity is `M/rho_g`, and buoyancy is density dependent.  The r168 chain
+is therefore causal rather than merely correlative: localized order-one
+deviation precedes density corruption, velocity reaches
+`219.97698974609375 m/s`, and the physical CFL step collapses to
+`6.441490404540673e-5 s`.  The missed channel is immaterial for small monitored
+deviations and material at order one.
+
+The r169 policy retains monitored bulk behavior and bounds only its tail.
+Before Metal, the resident owner independently derives a target for every cell
+with `|V-1| > 2^-3`: the target opposes the signed excess
+`|V-1|-2^-3`, so the intended endpoint is the threshold, not zero.  Cells at
+or below `2^-3` receive exact positive zero.  A second, existing restoration
+projection is scheduled only when the tail count is nonzero.  The diagnostic
+record binds count, excess sum, and exchanged volume
+`dx^3 sum(|V-1|-2^-3)` into the accepted token.  The ordinary manifold limiter
+and global absolute-reference restoration remain off.  `2^-3` is the
+stability engagement class: it bounds the direct density/velocity/buoyancy
+error near 12.5%.  `2^-2` is the fail-closed dynamics-validity bound: a
+beginning beyond it refuses before Metal, and a realized terminal crossing
+refuses without an accepted token; the ordinary API publishes its default
+result.
+
+The r168 transcript supplies the first RED.  Its first `2^-3` crossing is step
+16 (`max=0.12784385681152344`) at only `8.471941947937012 m/s`; velocity first
+exceeds 100 m/s at step 81 (`104.89600372314453 m/s`).  In r169 the conditional
+projection therefore first engages on step 17 at `8.753913879394531 m/s`, well
+before the old blow-up.  The threshold-zero mutant is the already sealed r166
+global-restoration topology: it restores the whole field and reproduces the
+`0.7925875134206254` feedback/hover and timestep-collapse signature.  This
+pair binds the surgical scope and the reason bulk restoration stays retired.
+
+The requested 104-step GREEN did not result.  Both projections validate and
+velocity remains plume-scale, but the localized tail is not bounded by a
+single conditional projection.  Thirty-three steps are accepted; restoration
+runs on 16.  Accepted maximum velocity peaks at
+`10.694913864135742 m/s`, accepted deviation peaks at
+`0.23147010803222656`, tail population peaks at 102 cells, and accumulated
+exchanged volume is `0.00023257764777146186 m^3`.  Step 33 realizes
+`max=0.25728172063827515` at beginning velocity
+`10.222167015075684 m/s`; physical and restoration projections both validate,
+but the `2^-2` dynamics gate withholds the token and the ordinary API rejects
+atomically.  The inherited positive target sign was also tested and amplified
+the tail more quickly, refusing at step 24; opposing the excess delays but does
+not remove the feedback.
+
+The accepted prefix measures `110.67970842123032/146.903083 ms` device/wall
+p95, conditionally `0.4895552021256551/0.6497773577180106 h` at its mean step.
+Those are not a 104-step projection because the state cannot pass step 33.
+This is exactly the pre-registered genuine-finding branch.  The shadow is not
+claimed, and golden `B_fp32`, guard supersession, readmission, thermo/source
+maps, and first light remain blocked pending a new owner ruling on the
+localized tail mechanism.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

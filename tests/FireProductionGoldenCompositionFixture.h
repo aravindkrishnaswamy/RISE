@@ -217,6 +217,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	std::vector<std::string> longShadowActiveLimit;
 	std::vector<double> longShadowMaximumVelocity,longShadowMaximumReducedGravity,
 		longShadowMaximumDiffusivity;
+	std::vector<std::uint32_t> longShadowTailCellCount;
+	std::vector<double> longShadowTailExcessSum,longShadowTailDrainedVolumeM3;
 	std::vector<double> longShadowDeviceMS,longShadowWallMS;
 	std::size_t longShadowAllowanceCrossings=0u,longShadowCeilingCrossings=0u;
 	RISECBOR64::Bytes longShadowTrace;
@@ -1122,6 +1124,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				left.acceptedManifoldDeviationP95==right.acceptedManifoldDeviationP95&&
 				left.acceptedManifoldDeviationP50==right.acceptedManifoldDeviationP50&&
 				left.manifoldGenerationAuthoritative==right.manifoldGenerationAuthoritative&&
+				left.manifoldTailRestorationApplied==right.manifoldTailRestorationApplied&&
+				left.manifoldTailCellCount==right.manifoldTailCellCount&&
+				left.manifoldTailExcessSum==right.manifoldTailExcessSum&&
+				left.manifoldTailDrainedVolumeM3==right.manifoldTailDrainedVolumeM3&&
+				left.manifoldDynamicsBoundPassed==right.manifoldDynamicsBoundPassed&&
 				left.manifoldMapCellCount==right.manifoldMapCellCount&&
 				left.manifoldScalarDeviceToHostTransferCount==
 					right.manifoldScalarDeviceToHostTransferCount&&
@@ -2540,7 +2547,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		double productionWallMS=0.0;
 		for(;;){
 			const auto productionWallStart=std::chrono::steady_clock::now();
-			productionSucceeded=longShadow&&!monitoredLongShadow?
+			productionSucceeded=longShadow?
 				RISE::AttemptFireProductionResidentStepMetal(request,production,&error):
 				RISE::AdvanceFireProductionResidentStepMetal(request,production,&error);
 			productionWallMS=std::chrono::duration<double,std::milli>(
@@ -2577,7 +2584,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			production=RISE::FireProductionResidentStepResult();
 			error.clear();
 		}
-		if(!productionSucceeded&&!(longShadow&&production.manifoldNextTimeStepAvailable&&
+		const bool monitoredDynamicsRefusal=monitoredLongShadow&&!productionSucceeded&&
+			!production.manifoldDynamicsBoundPassed&&
+			production.maximumAcceptedManifoldDeviation>0x1p-2&&
+			!production.HasAcceptedManifoldToken();
+		if(!productionSucceeded&&!monitoredDynamicsRefusal&&
+			!(longShadow&&production.manifoldNextTimeStepAvailable&&
 			!production.manifoldPlateauPassed&&!production.HasAcceptedManifoldToken())){
 			std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
@@ -2600,15 +2612,49 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}
 		if(monitoredLongShadow){
 			const double fieldMaximum=production.maximumAcceptedManifoldDeviation;
+			const bool tailRestored=production.manifoldTailRestorationApplied;
+			if(monitoredDynamicsRefusal){
+				RISE::FireProductionResidentStepResult ordinaryResult;
+				ordinaryResult.conservativeValues.push_back(1.0f);
+				std::string ordinaryError;
+				const bool ordinaryAtomic=!RISE::AdvanceFireProductionResidentStepMetal(
+					request,ordinaryResult,&ordinaryError)&&ordinaryResult.conservativeValues.empty()&&
+					ordinaryResult.representedTimeStepS==0.0f&&
+					!ordinaryResult.HasAcceptedManifoldToken()&&
+					ordinaryError==
+						"production realized manifold deviation exceeds the dynamics-validity bound";
+				std::fprintf(stderr,"OUTLIER_BOUNDED_MANIFOLD_REFUSAL step=%zu dt=%.17g "
+					"field_max=%.17g field_p95=%.17g field_p50=%.17g tail_cells=%u "
+					"tail_excess=%.17g tail_drain_m3=%.17g restoration_passes=%d "
+					"physical_valid=%d restoration_valid=%d accepted_token=0 "
+					"beginning_max_velocity=%.17g ordinary_atomic=%d golden=%s\n",slice,
+					static_cast<double>(production.representedTimeStepS),fieldMaximum,
+					production.acceptedManifoldDeviationP95,
+					production.acceptedManifoldDeviationP50,
+					production.manifoldTailCellCount,production.manifoldTailExcessSum,
+					production.manifoldTailDrainedVolumeM3,tailRestored?1:0,
+					production.physicalProjection.validationPassed?1:0,
+					production.projection.validationPassed?1:0,monitoredMaximumVelocity,
+					ordinaryAtomic?1:0,checkpointDigest);
+				return slice==33u&&tailRestored&&fieldMaximum>0x1p-2&&
+					monitoredMaximumVelocity<100.0&&
+					production.physicalProjection.validationPassed&&
+					production.projection.validationPassed&&ordinaryAtomic&&
+					DigestFile(checkpointPath)==checkpointDigest?194:197;
+			}
 			const bool monitoredAccepted=productionSucceeded&&
 				production.manifoldDiagnosticsMonitored&&
 				!production.manifoldPlateauEnforced&&production.manifoldPlateauPassed&&
 				production.HasAcceptedManifoldToken()&&
 				production.projection.validationPassed&&
-				production.residentProjectionInvocationCount==1u&&
+				production.residentProjectionInvocationCount==(tailRestored?2u:1u)&&
 				production.interstageFullGridTransferCount==0u&&
 				production.advectiveAnomalyClosurePassCount==0u&&
 				production.manifoldScalarDeviceToHostTransferCount==1u&&
+				production.manifoldDynamicsBoundPassed&&
+				production.manifoldTailRestorationApplied==
+					(production.manifoldTailCellCount>0u)&&
+				(!tailRestored||production.physicalProjection.validationPassed)&&
 				!production.manifoldNextTimeStepAvailable&&
 				production.suggestedManifoldTimeStepS==0.0&&
 				std::isfinite(fieldMaximum)&&fieldMaximum>=0.0&&
@@ -2633,11 +2679,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			longShadowMaximumVelocity.push_back(monitoredMaximumVelocity);
 			longShadowMaximumReducedGravity.push_back(monitoredMaximumReducedGravity);
 			longShadowMaximumDiffusivity.push_back(monitoredMaximumDiffusivity);
+			longShadowTailCellCount.push_back(production.manifoldTailCellCount);
+			longShadowTailExcessSum.push_back(production.manifoldTailExcessSum);
+			longShadowTailDrainedVolumeM3.push_back(production.manifoldTailDrainedVolumeM3);
 			longShadowDeviceMS.push_back(production.deviceMakespanMS);
 			longShadowWallMS.push_back(productionWallMS);
 			longShadowAllowanceCrossings+=production.manifoldAllowanceExceeded?1u:0u;
 			longShadowCeilingCrossings+=production.manifoldCeilingExceeded?1u:0u;
 			++longShadowPhysicalValidationCount;
+			longShadowRestorationValidationCount+=tailRestored?1u:0u;
 			longShadowFinalStepS=static_cast<double>(production.representedTimeStepS);
 			FireProductionDyadicCalibration::AppendInteger(longShadowTrace,slice);
 			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
@@ -2653,6 +2703,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				production.manifoldAllowanceExceeded?1u:0u);
 			FireProductionDyadicCalibration::AppendInteger(longShadowTrace,
 				production.manifoldCeilingExceeded?1u:0u);
+			FireProductionDyadicCalibration::AppendInteger(longShadowTrace,
+				production.manifoldTailCellCount);
+			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
+				production.manifoldTailExcessSum);
+			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
+				production.manifoldTailDrainedVolumeM3);
 			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
 				monitoredMaximumVelocity);
 			FireProductionDyadicCalibration::AppendDouble(longShadowTrace,
@@ -2665,7 +2721,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::fprintf(stderr,"MONITORED_MANIFOLD_SHADOW_STEP step=%zu dt=%.17g "
 				"G_eulerian=%.17g field_max=%.17g field_p95=%.17g field_p50=%.17g "
 				"allowance_crossed=%d ceiling_crossed=%d projection_valid=1 "
-				"restoration_passes=0 scalar_reads=1 selector=%s max_velocity=%.17g "
+				"restoration_passes=%d tail_cells=%u tail_excess=%.17g "
+				"tail_drain_m3=%.17g dynamics_bound=1 scalar_reads=1 selector=%s max_velocity=%.17g "
 				"max_reduced_gravity=%.17g max_diffusivity=%.17g device_ms=%.17g wall_ms=%.17g "
 				"target=%s schedule=%s\n",slice,
 				static_cast<double>(production.representedTimeStepS),
@@ -2673,7 +2730,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				production.acceptedManifoldDeviationP95,
 				production.acceptedManifoldDeviationP50,
 				production.manifoldAllowanceExceeded?1:0,
-				production.manifoldCeilingExceeded?1:0,monitoredActiveLimit.c_str(),
+				production.manifoldCeilingExceeded?1:0,tailRestored?1:0,
+				production.manifoldTailCellCount,production.manifoldTailExcessSum,
+				production.manifoldTailDrainedVolumeM3,monitoredActiveLimit.c_str(),
 				monitoredMaximumVelocity,monitoredMaximumReducedGravity,
 				monitoredMaximumDiffusivity,production.deviceMakespanMS,productionWallMS,
 				equalTimeTerminalTargetDigest.c_str(),
@@ -3413,6 +3472,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 					longShadowMaximumDiffusivity.size()==1u&&
 					longShadowPhysicalValidationCount==1u&&
 					longShadowRestorationValidationCount==0u&&
+					longShadowTailCellCount==std::vector<std::uint32_t>{0u}&&
+					longShadowTailExcessSum==std::vector<double>{0.0}&&
+					longShadowTailDrainedVolumeM3==std::vector<double>{0.0}&&
 					longShadowAcceptedCandidate==std::vector<unsigned int>{0u}&&
 					longShadowFinalStepS==static_cast<double>(0.0016462659696117043f)&&
 					DigestFile(checkpointPath)==checkpointDigest;
@@ -3435,8 +3497,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				longShadowMaximumVelocity.size()!=LongShadowSteps||
 				longShadowMaximumReducedGravity.size()!=LongShadowSteps||
 				longShadowMaximumDiffusivity.size()!=LongShadowSteps||
+				longShadowTailCellCount.size()!=LongShadowSteps||
+				longShadowTailExcessSum.size()!=LongShadowSteps||
+				longShadowTailDrainedVolumeM3.size()!=LongShadowSteps||
 				longShadowPhysicalValidationCount!=LongShadowSteps||
-				longShadowRestorationValidationCount!=0u)return 197;
+				longShadowRestorationValidationCount!=std::count_if(
+					longShadowTailCellCount.begin(),longShadowTailCellCount.end(),
+					[](const std::uint32_t value){return value>0u;}))return 197;
 			std::vector<double> sortedDevice=longShadowDeviceMS,sortedWall=longShadowWallMS;
 			std::sort(sortedDevice.begin(),sortedDevice.end());
 			std::sort(sortedWall.begin(),sortedWall.end());
@@ -3458,6 +3525,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				longShadowFieldP95.end());
 			const double p50Maximum=*std::max_element(longShadowFieldP50.begin(),
 				longShadowFieldP50.end());
+			const std::uint32_t tailPopulationPeak=*std::max_element(
+				longShadowTailCellCount.begin(),longShadowTailCellCount.end());
+			const double tailDrainTotal=std::accumulate(longShadowTailDrainedVolumeM3.begin(),
+				longShadowTailDrainedVolumeM3.end(),0.0);
 			const std::string traceDigest=RISECBOR64::SHA256Hex(longShadowTrace);
 			const std::string finalStateDigest=
 				FireProductionDyadicCalibration::AnalyticStateDigest(longShadowState);
@@ -3465,7 +3536,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				"final_dt=%.17g average_dt=%.17g simulated_time=%.17g "
 				"max_peak=%.17g p95_peak=%.17g p50_peak=%.17g final_max=%.17g "
 				"final_p95=%.17g final_p50=%.17g allowance_crossings=%zu "
-				"ceiling_crossings=%zu physical_validations=%zu restoration_passes=0 "
+				"ceiling_crossings=%zu physical_validations=%zu restoration_passes=%zu "
+				"tail_population_peak=%u tail_drain_total_m3=%.17g "
 				"device_p95_ms=%.17g wall_p95_ms=%.17g tier10_device_hours=%.17g "
 				"tier10_wall_hours=%.17g tier10_device_mean_rate_hours=%.17g "
 				"tier10_wall_mean_rate_hours=%.17g trace=%s final_state=%s golden=%s\n",
@@ -3474,6 +3546,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				longShadowFieldMaximum.back(),longShadowFieldP95.back(),
 				longShadowFieldP50.back(),longShadowAllowanceCrossings,
 				longShadowCeilingCrossings,longShadowPhysicalValidationCount,
+				longShadowRestorationValidationCount,tailPopulationPeak,tailDrainTotal,
 				deviceP95,wallP95,deviceP95Hours,wallP95Hours,deviceMeanRateHours,
 				wallMeanRateHours,traceDigest.c_str(),
 				finalStateDigest.c_str(),DigestFile(checkpointPath).c_str());

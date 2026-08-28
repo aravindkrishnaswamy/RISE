@@ -4157,3 +4157,29 @@ it was already tried and refuted here.
   attributes that measured failure to manifold drift.  The ladder resumes
   with short-horizon equal-time B_fp32/subdominance, readmission, thermo/source
   maps, and first light after this shadow is sealed.
+- **r169 outlier-bounded monitored manifold (2026-08-27):** r168 closes the
+  r160 enumeration gap.  No production consumer needs absolute `P0`
+  consistency, but density/temperature inconsistency feeds `M/rho_g` velocity
+  and buoyancy; at order one it caused the observed 220 m/s/CFL-collapse chain.
+  Production now derives, before Metal, a conditional restoration target only
+  for cells beyond `|V-1|=2^-3`, opposing the signed excess and leaving every
+  other cell at exact zero target.  The existing second projection runs only
+  for a nonempty tail.  Count, excess sum, and exchanged volume are bound into
+  accepted authority.  A beginning above `2^-2` rejects before Metal; a
+  terminal crossing withholds authority and the ordinary API rejects
+  atomically.  These are stability-class constants, not tolerances widened to
+  accept a measurement.
+
+  The r168 replay crosses `2^-3` at step 16 and 8.47 m/s, whereas 100 m/s is
+  first reached at step 81.  r169 engages at step 17 and 8.75 m/s, satisfying
+  the causal RED.  Threshold zero is the sealed r166 bulk-restoration mutant
+  and retains the 0.7926 feedback/hover signature.  Nevertheless the requested
+  GREEN fails: 33 steps accept, 16 use targeted restoration, velocity stays
+  below 10.70 m/s, but the accepted max reaches 0.23147 and step 33 realizes
+  0.25728172063827515.  Both projections validate; the hard dynamics bound
+  alone refuses, no token is minted, and the ordinary result is default.  The
+  accepted prefix records peak tail population 102 and total exchange
+  `2.3257764777146186e-4 m^3`.  The measured prefix p95 is
+  110.68/146.90 ms device/wall, but its conditional 0.49/0.65 h extrapolation
+  is not a 104-step claim.  This is the pre-registered genuine finding, so the
+  shadow and every later ladder rung remain blocked.

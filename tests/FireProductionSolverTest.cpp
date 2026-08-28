@@ -891,6 +891,28 @@ int main()
 			"r163 initial manifold predictor rejects missing audit operands");
 	}
 	{
+		const double threshold=0x1p-3;
+		const double excess=0x1p-8;
+		const double dt=0x1p-10;
+		const double width=0.25;
+		FireProductionManifoldTailTarget tail;
+		Check(DeriveFireProductionManifoldTailTarget(
+			{0.0,threshold,-threshold,threshold+excess,-threshold-excess},
+			dt,width,tail,&error)&&tail.outlierCellCount==2u&&
+			tail.divergenceTargetPerS==
+				std::vector<float>({0.0f,0.0f,0.0f,-4.0f,4.0f})&&
+			tail.excessSum==2.0*excess&&
+			tail.drainedVolumeM3==2.0*excess*width*width*width&&
+			tail.maximumTargetMagnitudePerS==4.0,
+			"r-next monitored tail target touches only deviations beyond 2^-3");
+		FireProductionManifoldTailTarget rejected;
+		Check(!DeriveFireProductionManifoldTailTarget(
+			{std::nextafter(0x1p-2,std::numeric_limits<double>::infinity())},
+			dt,width,rejected,&error)&&rejected.divergenceTargetPerS.empty()&&
+			rejected.outlierCellCount==0u,
+			"r-next monitored tail refuses a beginning beyond the 2^-2 dynamics bound");
+	}
+	{
 		FireProductionAcceptedManifoldObservation none;
 		FireProductionAcceptedCheckpointStateView noAcceptedState;
 		FireProductionStableTimeStep first;
@@ -3889,12 +3911,12 @@ int main()
 	bool composedMatches=composedCPU&&composedMetal&&composedMetalRepeat&&
 		composedGPU.cellSubmapCount==5u&&composedGPU.dualSubmapCount==15u&&
 		composedGPU.sourceCommandCommitCount==1u&&
-		composedGPU.residentProjectionInvocationCount==2u&&
+		composedGPU.residentProjectionInvocationCount==1u&&
 		composedGPU.interstageFullGridTransferCount==0u&&
 		composedGPU.terminalStagingCount==2u&&composedGPU.deviceElapsedMS>0.0&&
-		composedGPU.physicalProjection.validationPassed&&
+		!composedGPU.physicalProjection.validationPassed&&
 		composedGPU.projection.validationPassed&&
-		composedGPU.physicalProjection.executedVCycleCount==17u&&
+		composedGPU.physicalProjection.executedVCycleCount==0u&&
 		composedGPU.projection.executedVCycleCount==16u&&
 		composedGPU.conservativeValues==composedGPURepeat.conservativeValues&&
 		composedGPU.transportedDual.momentum==composedGPURepeat.transportedDual.momentum&&
@@ -3909,7 +3931,7 @@ int main()
 		SameFloatVectorsWithin(composedGPU.projection.momentumKGPerM2S[axis],
 			composedProjectionCPU.momentumKGPerM2S[axis],3.0e-5f);
 	Check(composedMatches,
-		"full resident force, transport, explicit zero-source, and two-projection step matches "
+		"full resident force, transport, explicit zero-source, and monitored single-projection step matches "
 		"the independent CPU composition with no interstage transfer");
 	// A uniform accepted ambient state has exactly zero advective anomaly.  Exercise the
 	// complete owner twice so the r161 no-op claim is about published payload bytes, not
@@ -4245,7 +4267,7 @@ int main()
 	seedFullStepResult(rejectedFullStep);error.clear();
 	setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","full-target",1);
 	const bool restorationMiswireRejected=!AdvanceFireProductionResidentStepMetal(
-		composedStep,rejectedFullStep,&error);
+		zeroAnomalyStep,rejectedFullStep,&error);
 	unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
 	Check(restorationMiswireRejected&&fullStepResultIsDefault(rejectedFullStep)&&
 		error.find("restoration projection target ownership")!=std::string::npos,
@@ -4448,14 +4470,14 @@ int main()
 				FireStateProducerPrecision::Binary32&&
 			tier10ResidentStepResult.cellSubmapCount==5u&&
 			tier10ResidentStepResult.dualSubmapCount==15u&&
-			tier10ResidentStepResult.residentProjectionInvocationCount==2u&&
+			tier10ResidentStepResult.residentProjectionInvocationCount==1u&&
 			tier10ResidentStepResult.interstageFullGridTransferCount==0u&&
-			tier10ResidentStepResult.physicalProjection.validationPassed&&
+			!tier10ResidentStepResult.physicalProjection.validationPassed&&
 			tier10ResidentStepResult.projection.validationPassed&&
-			tier10ResidentStepResult.physicalProjection.executedVCycleCount==12u&&
+			tier10ResidentStepResult.physicalProjection.executedVCycleCount==0u&&
 			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
 			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1918285016)&&
-			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1338301072)&&
+			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1241789440)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
 			"tier-10 resident full-step timing trial preserves the exact schedule and resource gate");

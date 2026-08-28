@@ -939,10 +939,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
-# r168: the production default monitors manifold distribution diagnostics but
-# does not restore, limit, or refuse on threshold crossings.  Keep the full
-# 104-step transcript as SHA-bound evidence; this one-step replay binds the
-# executable policy/token/projection boundary in the ordinary Darwin suite.
+# r168/r169: the production default monitors the bulk distribution and engages
+# the retained restoration projection only for a beginning tail beyond 2^-3.
+# This golden one-step replay is the exact zero-tail/no-op boundary; the sealed
+# r169 transcript binds the later conditional engagement and 2^-2 refusal.
 if [ "$(uname -s)" = "Darwin" ]; then
 	monitored_shadow_name="FireSequenceTest.r168_monitored_manifold_smoke"
 	monitored_shadow_path="$BIN_DIR/FireSequenceTest"
@@ -972,10 +972,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 	if [ "$monitored_shadow_rc" -eq 195 ] &&
 		grep -Fq 'MONITORED_TARGET_POLICY absolute_reference_pressure_gate=0 producer_precision=2 strict_pressure_detector_refused=1 affine_RED_refused=1' "$monitored_shadow_log" &&
-		grep -Fq 'dt=0.0016462659696117043 G_eulerian=0.085895776748657227 field_max=0.085895776748657227 field_p95=0.00071418285369873047 field_p50=1.1920928955078125e-07 allowance_crossed=1 ceiling_crossed=1 projection_valid=1 restoration_passes=0 scalar_reads=1' "$monitored_shadow_log" &&
+		grep -Fq 'dt=0.0016462659696117043 G_eulerian=0.085895776748657227 field_max=0.085895776748657227 field_p95=0.00071418285369873047 field_p50=1.1920928955078125e-07 allowance_crossed=1 ceiling_crossed=1 projection_valid=1 restoration_passes=0 tail_cells=0 tail_excess=0 tail_drain_m3=0 dynamics_bound=1 scalar_reads=1' "$monitored_shadow_log" &&
 		grep -Fq 'MONITORED_MANIFOLD_SHADOW_SMOKE dt=0.0016462659696117043 field_max=0.085895776748657227 field_p95=0.00071418285369873047 field_p50=1.1920928955078125e-07 allowance_crossed=1 ceiling_crossed=1 projection_valid=1 restoration_passes=0 accepted=1' "$monitored_shadow_log" &&
 		grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$monitored_shadow_log"; then
-		echo 'PASS (exact exit=195, monitored threshold crossing accepted)'
+		echo 'PASS (exact exit=195, zero-tail monitored step accepted)'
 		rm -f "$monitored_shadow_log"
 	else
 		echo "FAIL (exit=$monitored_shadow_rc expected 195)"
