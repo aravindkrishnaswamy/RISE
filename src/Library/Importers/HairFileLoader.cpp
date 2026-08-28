@@ -26,6 +26,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/MediaPathLocator.h"
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -156,6 +157,85 @@ namespace
 		if( fseeko( f, 0, SEEK_SET ) != 0 ) return -1;
 	#endif
 		return len;
+	}
+
+	// ---- root_uv_mode "scatter" support (residual wave 2 item B) -----
+	//
+	// Self-contained, platform-independent, integer-only -- deliberately
+	// NOT RISE::GlobalRNG() (a shared, globally-seeded, build-config-
+	// dependent Mersenne Twister), for the identical reason
+	// HairGenerator.cpp's own local PRNG gives: a groom's determinism is
+	// a documented contract here too (see the header's "scatter" entry),
+	// so it gets its own bit-exact-everywhere generator rather than one
+	// that could answer differently between two builds of the same
+	// source.  Structurally the same SplitMix64-seeded, PCG-XSH-RR-style
+	// generator HairGenerator.cpp uses for per-candidate jitter streams;
+	// duplicated rather than shared because the two live in separate,
+	// unrelated translation units and this is ~15 lines.
+
+	//! Mixes a fixed seed and a strand index into a 64-bit stream key
+	//! (SplitMix64's finalizer) -- one independent stream per strand.
+	uint64_t MixHairFileRootUVSeed( uint32_t seed, uint32_t strandIndex )
+	{
+		uint64_t z = ( (uint64_t)seed << 32 ) ^ ( (uint64_t)strandIndex + 0x9E3779B97F4A7C15ull );
+		z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ull;
+		z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBull;
+		return z ^ ( z >> 31 );
+	}
+
+	//! A minimal PCG-XSH-RR-style 64-bit LCG with an output permutation.
+	//! Only what `ScatterRootUV` below needs: two draws in [0,1).
+	struct HairFileRootUVRNG
+	{
+		uint64_t state;
+
+		explicit HairFileRootUVRNG( uint64_t seed ) : state( seed + 0x9E3779B97F4A7C15ull )
+		{
+			Advance();
+			Advance();
+		}
+
+		void Advance() { state = state * 6364136223846793005ull + 1442695040888963407ull; }
+
+		uint32_t NextUInt32()
+		{
+			const uint64_t x = state;
+			Advance();
+			const uint32_t xorshifted = (uint32_t)( ( ( x >> 18 ) ^ x ) >> 27 );
+			const uint32_t rot        = (uint32_t)( x >> 59 );
+			return ( xorshifted >> rot ) | ( xorshifted << ( ( 32u - rot ) & 31u ) );
+		}
+
+		//! Uniform in the HALF-OPEN interval [0,1) -- matches the
+		//! `root_uv_mode "scatter"` contract exactly (a UV of 1.0 would
+		//! be indistinguishable from wrapped 0.0 to most painters, so
+		//! the format deliberately never produces it).
+		double Canonical01()
+		{
+			return (double)NextUInt32() * ( 1.0 / 4294967296.0 );
+		}
+	};
+
+	//! A fixed, internal (not scene-authorable) seed for `root_uv_mode
+	//! "scatter"` -- deliberately not the groom's own `seed` parameter:
+	//! that parameter does not exist in `file` mode at all (an imported
+	//! groom does not grow), so there is nothing to key against except a
+	//! constant baked in here.  Spells 'HAIR' in ASCII, matching the
+	//! 'ROOT' / etc. marker idiom HairGenerator.cpp uses for its own
+	//! fixed stream-separation constants.
+	const uint32_t kHairFileRootUVScatterSeed = 0x48414952u;	// 'HAIR'
+
+	//! One strand's deterministic pseudo-random root UV -- keyed on
+	//! `strandIndex` (the strand's position in the file's OWN order,
+	//! i.e. the loop index in `BuildStrandsFromHairFile`, taken BEFORE
+	//! any per-strand rejection so the mapping is stable regardless of
+	//! which other strands survive) and the fixed seed above.
+	Point2 ScatterRootUV( unsigned int strandIndex )
+	{
+		HairFileRootUVRNG rng( MixHairFileRootUVSeed( kHairFileRootUVScatterSeed, strandIndex ) );
+		const double u = rng.Canonical01();
+		const double v = rng.Canonical01();
+		return Point2( u, v );
 	}
 }
 
@@ -483,7 +563,8 @@ bool BuildStrandsFromHairFile(
 		const double							widthRootScale,
 		const double							widthTipScale,
 		std::vector<HairGeometry::StrandDesc>&	out,
-		const char*								who )
+		const char*								who,
+		const HairFileRootUVMode				rootUVMode )
 {
 	out.clear();
 
@@ -626,7 +707,11 @@ bool BuildStrandsFromHairFile(
 		sd.tipWidth  = tipW;
 		// The format has no per-strand surface parameterization; see the
 		// header for what a (0,0) root UV costs a UV-driven material.
-		sd.rootUV    = Point2( 0, 0 );
+		// `s` (the ORIGINAL file-order loop index, not this strand's
+		// position in `out`) is what keys "scatter" mode -- stable
+		// regardless of which other strands get rejected above.
+		sd.rootUV    = ( rootUVMode == HairFileRootUVMode::Scatter )
+			? ScatterRootUV( s ) : Point2( 0, 0 );
 		sd.controlPoints.resize( nCP );
 		for( unsigned int k = 0; k < nCP; ++k ) {
 			const float* p = &data.points[ ( cursor + k ) * 3 ];

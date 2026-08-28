@@ -995,8 +995,11 @@ static void TestPtVsBdpt()
 //     (8.77e-4) and 3.4x ABOVE the highest OFF reading (1.45e-4), so
 //     it fails hard the moment the gate regresses and has real
 //     headroom in the passing direction.  The max (2.0e-3) is 2.0x
-//     above the highest ON reading and catches an OVER-count -- e.g. a
-//     future unconditional `fabs` that double-counts, or a lost `w`.
+//     above the highest ON reading and catches a generic OVER-count --
+//     a duplicated contribution or a doubled geometry term.  (In THIS
+//     scene every receiver is hair, so an unconditional fabs is
+//     bit-identical here, and the delta row carries w=1 -- those two
+//     modes are guarded elsewhere, not by this bound.)
 //   * The two readings' relative drift is PRINTED but deliberately NOT
 //     asserted.  A delta light's NEE row is exactly linear in emitted
 //     power, so drift "should" be zero -- but at 256 spp on a 32x32

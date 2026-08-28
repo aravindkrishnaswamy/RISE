@@ -7808,27 +7808,35 @@ namespace RISE
 			// area-sampled roots.  Authoring an individual rendered
 			// strand's position remains a C++-only path (HairGeometry's
 			// explicit-strand constructor, for tools and tests).
+			//! The `hair_geometry` grow-mode-only parameters, in one list:
+			//! everything that describes how to GENERATE strands, and
+			//! therefore has nothing to say about strands read out of a
+			//! file.  Refused (not ignored) in `file` mode -- a silently
+			//! ignored `count` or `comb` is the failure mode this list
+			//! exists to prevent.  `name`, `file`, `width_root`,
+			//! `width_tip` and `root_uv_mode` are the only parameters
+			//! file mode accepts, so they are exactly the ones absent
+			//! here.
+			//!
+			//! A FREE FUNCTION, not a private struct static (residual
+			//! wave 2 item C, 2026-08-27, closing a documented drift-
+			//! guard gap): declared in ChunkParserRegistry.h so
+			//! HairFileImportTest's drift guard can call the REAL
+			//! production list directly instead of maintaining its own
+			//! byte-copied mirror that could silently drift from it.
+			const char* const* HairGeometryGrowOnlyParameters( unsigned int& n )
+			{
+				static const char* const kGrowOnly[] = {
+					"base_geometry", "count", "length", "segments", "seed", "base_detail",
+					"density", "length_painter", "comb", "guides",
+					"gravity", "frizz", "clump", "clump_size", "curl_radius", "curl_step"
+				};
+				n = (unsigned int)( sizeof(kGrowOnly) / sizeof(kGrowOnly[0]) );
+				return kGrowOnly;
+			}
+
 			struct HairGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				//! The grow-mode-only parameters, in one list: everything
-				//! that describes how to GENERATE strands, and therefore
-				//! has nothing to say about strands read out of a file.
-				//! Refused (not ignored) in `file` mode -- a silently
-				//! ignored `count` or `comb` is the failure mode this
-				//! list exists to prevent.  `name`, `file`, `width_root`
-				//! and `width_tip` are the only parameters file mode
-				//! accepts, so they are exactly the ones absent here.
-				static const char* const* GrowOnlyParameters( unsigned int& n )
-				{
-					static const char* const kGrowOnly[] = {
-						"base_geometry", "count", "length", "segments", "seed", "base_detail",
-						"density", "length_painter", "comb", "guides",
-						"gravity", "frizz", "clump", "clump_size", "curl_radius", "curl_step"
-					};
-					n = (unsigned int)( sizeof(kGrowOnly) / sizeof(kGrowOnly[0]) );
-					return kGrowOnly;
-				}
-
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name          = bag.GetString( "name",          "noname" );
@@ -7866,13 +7874,13 @@ namespace RISE
 						// typed `count 50000` learns that it does nothing
 						// instead of wondering why it had no effect.
 						unsigned int nGrowOnly = 0;
-						const char* const* growOnly = GrowOnlyParameters( nGrowOnly );
+						const char* const* growOnly = HairGeometryGrowOnlyParameters( nGrowOnly );
 						for( unsigned int i = 0; i < nGrowOnly; ++i ) {
 							if( bag.Has( growOnly[i] ) ) {
 								GlobalLog()->PrintEx( eLog_Error,
 									"hair_geometry:: `%s`: `%s` describes how to GENERATE a groom and has no meaning "
 									"in `file` mode -- an imported .hair file supplies its own strands.  File mode "
-									"accepts only `name`, `file`, `width_root` and `width_tip`",
+									"accepts only `name`, `file`, `width_root`, `width_tip` and `root_uv_mode`",
 									name.c_str(), growOnly[i] );
 								return false;
 							}
@@ -7884,7 +7892,36 @@ namespace RISE
 						// see the parameter descriptions below.
 						fd.widthRootScale = bag.GetDouble( "width_root", 1.0 );
 						fd.widthTipScale  = bag.GetDouble( "width_tip",  1.0 );
+
+						const std::string rootUVModeStr = bag.GetString( "root_uv_mode", "zero" );
+						if( rootUVModeStr == "zero" ) {
+							fd.rootUVMode = HairFileRootUVMode::Zero;
+						} else if( rootUVModeStr == "scatter" ) {
+							fd.rootUVMode = HairFileRootUVMode::Scatter;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"hair_geometry:: `%s`: unknown root_uv_mode `%s` (expected zero or scatter)",
+								name.c_str(), rootUVModeStr.c_str() );
+							return false;
+						}
+
 						return pJob.AddHairGeometryFromFile( name.c_str(), fd );
+					}
+
+					// `root_uv_mode` selects how an IMPORTED groom's
+					// per-strand UV is assigned (see the `file` branch
+					// above) -- a GROWN strand's root UV already comes from
+					// the base surface's own UV map, so grow mode has
+					// nothing to select between and refuses it symmetrically
+					// with `HairGeometryGrowOnlyParameters` above, rather than silently
+					// ignoring it.
+					if( bag.Has( "root_uv_mode" ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"hair_geometry:: `%s`: `root_uv_mode` describes how an IMPORTED groom's per-strand UV is "
+							"assigned and has no meaning in grow mode -- a grown strand's root UV already comes from "
+							"the base surface's own UV map",
+							name.c_str() );
+						return false;
 					}
 
 					if( !bag.Has( "count" ) ) {
@@ -7934,7 +7971,7 @@ namespace RISE
 							"AUTHORING IN ONE LINE: `count` roots at `length` long along the surface normal, then style them with the optional fields -- `gravity` droops, `comb` combs, `clump`/`clump_size` gather, `curl_radius`/`curl_step` curl, `frizz` roughens.  Each is inert at its default, so start with count/length/width and add one at a time.  "
 							"UNITS ARE SCENE UNITS throughout (metres by default, see `scene_options scene_unit`): the width defaults are real human-hair numbers (0.1 mm root, 0.03 mm tip), so a groom authored on a scene-scale head needs no width tuning, and one on a stylised 1-unit sphere will want widths raised until the strands are visible at all.  "
 							"NOT AN AREA LIGHT and NOT TESSELLATABLE: a groom cannot emit (emissive fur is out of scope) and cannot be a `displaced_geometry` base -- both refuse it with a diagnostic rather than approximating.  "
-							"TWO SOURCES, EXACTLY ONE OF THEM: either GROW mode (`base_geometry` + `count` + `length`, everything described above) or IMPORT mode (`file` -- a Cem Yuksel `.hair` groom exported from Blender / Houdini / XGen, or one of the published research hair models).  Authoring both is an error, and in `file` mode every grow-mode parameter is REFUSED rather than quietly ignored: an imported file brings its own strands, so `count`, `length`, `segments`, `seed`, `density`, `comb`, `guides`, `gravity`, `frizz`, `clump*` and `curl*` have nothing to act on.  File mode accepts `name`, `file`, `width_root` and `width_tip` only, and the two widths change meaning there (they become MULTIPLIERS on the file's own thickness).";
+							"TWO SOURCES, EXACTLY ONE OF THEM: either GROW mode (`base_geometry` + `count` + `length`, everything described above) or IMPORT mode (`file` -- a Cem Yuksel `.hair` groom exported from Blender / Houdini / XGen, or one of the published research hair models).  Authoring both is an error, and in `file` mode every grow-mode parameter is REFUSED rather than quietly ignored: an imported file brings its own strands, so `count`, `length`, `segments`, `seed`, `density`, `comb`, `guides`, `gravity`, `frizz`, `clump*` and `curl*` have nothing to act on.  File mode accepts `name`, `file`, `width_root`, `width_tip` and `root_uv_mode` only, and the two widths change meaning there (they become MULTIPLIERS on the file's own thickness).  `root_uv_mode` is symmetrically refused in grow mode, where a strand's root UV already comes from the base surface.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.required = true; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "base_geometry";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to grow the hair ON.  It must be TESSELLATABLE (any analytic primitive, mesh, sdf_geometry, lathe/sweep/skin, or a displaced_geometry -- displace a scalp, then grow on the displaced surface).  An infinite plane, or another hair_geometry, is refused.  REQUIRED IN GROW MODE, AND REFUSED IN `file` MODE: an imported groom brings its own strands and grows on nothing"; }
@@ -7942,8 +7979,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "length";         p.kind = ValueKind::Double;    p.description = "Nominal strand length in SCENE UNITS, multiplied per-strand by `length_painter`.  Must be > 0.  Grow mode only -- refused in `file` mode, where each strand's length is whatever the file says it is"; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "file";           p.kind = ValueKind::Filename;  p.description = "IMPORT MODE: a Cem Yuksel `.hair` binary groom to read strands from verbatim (path resolved against $RISE_MEDIA_PATH, like every other `file` parameter).  This is how a production groom gets in -- a Blender / Houdini / XGen export or a downloaded hair model -- since a six-figure strand count is megabytes of control points and belongs in a binary file next to the scene rather than inline in it.  Mutually exclusive with `base_geometry`, and it refuses every grow-mode parameter.  "
 							"WHAT IS HONOURED: per-strand segment counts, control points, and per-point thickness (the format's thickness is read as a FULL WIDTH -- the published specification never says whether it means a radius or a diameter, so no conversion factor is invented; use `width_root` / `width_tip` to correct it).  Only each strand's FIRST and LAST thickness are used, because a RISE strand tapers linearly from one root width to one tip width.  "
-							"WHAT IS NOT: per-point transparency and per-point colours are read for their length and discarded with a warning (fibre colour comes from the bound `hair_material`, and per-strand opacity is not modelled), and the format carries no root UVs -- so every imported strand reports UV (0,0) and a `hair_material` driven by a painter over the root UV will NOT vary across the groom.  "
+							"WHAT IS NOT: per-point transparency and per-point colours are read for their length and discarded with a warning (fibre colour comes from the bound `hair_material`, and per-strand opacity is not modelled), and the format carries no root UVs -- so every imported strand's rootUV comes from `root_uv_mode` instead (default `zero`, every strand at (0,0), so a `hair_material` painter driven by the root UV will NOT vary across the groom unless `root_uv_mode scatter` is set).  "
 							"UNITS AND AXES ARE THE FILE'S OWN: `.hair` declares neither, so nothing is rescaled or reoriented -- place the groom with the `standard_object`'s `scale` / `orientation` / `matrix`, exactly as for an imported mesh"; }
+						{ auto& p = P(); p.name = "root_uv_mode";   p.kind = ValueKind::Enum;      p.enumValues = {"zero","scatter"}; p.description = "IMPORT MODE ONLY (refused in grow mode, where a strand's root UV already comes from the base surface's own UV map): how each imported strand's `ptCoord1` root UV is assigned, since the `.hair` format carries none of its own.  `zero` (default, and the ONLY behaviour before this parameter existed) assigns (0,0) to every strand, so a `hair_material` painter driven by the root UV (a scalp-space tint or roughness map) evaluates at one constant point and does not vary across the groom.  `scatter` assigns each strand its OWN deterministic pseudo-random UV in [0,1)^2, keyed on the strand's position in the file and a fixed internal seed -- the SAME file always scatters to the SAME per-strand UVs, but the values do not reconstruct the file's real scalp position (the format doesn't carry one); use it to give a root-UV-driven painter (a calico/patch pattern, a per-strand tint noise) something to vary against on an imported groom"; p.defaultValueHint = "zero"; }
 						{ auto& p = P(); p.name = "segments";       p.kind = ValueKind::UInt;      p.description = "Control points per strand (>= 2).  2 is a perfectly straight quill; a curl or a strong comb needs 8-16 to read as a smooth curve rather than a polyline.  Cost is linear in this.  Grow mode only -- refused in `file` mode, where the file's own segment counts decide"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "width_root";     p.kind = ValueKind::Double;    p.description = "GROW MODE: the FULL fibre width (not radius) at the root, in scene units; the default is real human hair (0.1 mm).  FILE MODE: a MULTIPLIER on the imported file's own thickness at each strand's first point, defaulting to 1.0 = verbatim -- write 2 if the file's thickness means a radius, or 0.001 to bring a millimetre-scale file into a metre-scale scene.  (If the file carries no thickness at all -- no array and a non-positive header default -- the groom falls back to these same human-hair numbers, with a warning, and the multiplier then scales THOSE)"; p.defaultValueHint = "0.0001 (grow) / 1.0 (file)"; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "width_tip";      p.kind = ValueKind::Double;    p.description = "GROW MODE: the FULL fibre width at the tip, linearly interpolated from the root in arc-length fraction; tapering to about a third of the root width is what reads as hair rather than as wire.  FILE MODE: a MULTIPLIER on the imported file's own thickness at each strand's LAST point, defaulting to 1.0 = verbatim"; p.defaultValueHint = "0.00003 (grow) / 1.0 (file)"; p.unitLabel = "scene units"; }

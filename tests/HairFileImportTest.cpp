@@ -112,6 +112,7 @@
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Geometry/HairGeometry.h"
 #include "../src/Library/Importers/HairFileLoader.h"
+#include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -966,6 +967,50 @@ static void RunGeometry()
 	Check( g->StrandRootUV( 0 ).x == 0.0 && g->StrandRootUV( 0 ).y == 0.0,
 	       "the synthesized (0,0) root UV reaches the geometry" );
 
+	// -- root_uv_mode "scatter" (residual wave 2 item B): deterministic
+	//    across two independent loads of the SAME file, and the per-
+	//    strand UVs actually vary (unlike "zero", checked above).
+	{
+		HairFileGroomDescriptor sdesc;
+		sdesc.file       = path.c_str();
+		sdesc.rootUVMode = HairFileRootUVMode::Scatter;
+
+		IGeometry* rawA = 0;
+		const bool builtA = RISE_API_CreateHairGeometryFromFile( &rawA, sdesc, "geom_scatter_a" );
+		Owned<HairGeometry> gA( dynamic_cast<HairGeometry*>( rawA ) );
+		Check( builtA && gA.get() != 0, "root_uv_mode scatter: the factory builds a geometry" );
+
+		IGeometry* rawB = 0;
+		const bool builtB = RISE_API_CreateHairGeometryFromFile( &rawB, sdesc, "geom_scatter_b" );
+		Owned<HairGeometry> gB( dynamic_cast<HairGeometry*>( rawB ) );
+		Check( builtB && gB.get() != 0, "root_uv_mode scatter: a second, independent load also builds" );
+
+		if( gA.get() && gB.get() && gA->numStrands() == 5 && gB->numStrands() == 5 ) {
+			bool anyNonZero = false;
+			bool anyDiffers = false;
+			bool deterministic = true;
+			for( unsigned int s = 0; s < 5; ++s ) {
+				const Point2 uvA = gA->StrandRootUV( s );
+				const Point2 uvB = gB->StrandRootUV( s );
+				if( uvA.x != uvB.x || uvA.y != uvB.y ) deterministic = false;
+				if( uvA.x != 0.0 || uvA.y != 0.0 ) anyNonZero = true;
+				if( s > 0 ) {
+					const Point2 prev = gA->StrandRootUV( s - 1 );
+					if( uvA.x != prev.x || uvA.y != prev.y ) anyDiffers = true;
+				}
+				// [0,1) contract.
+				Check( uvA.x >= 0.0 && uvA.x < 1.0 && uvA.y >= 0.0 && uvA.y < 1.0,
+				       "root_uv_mode scatter: strand " + std::to_string( s ) + "'s UV is in [0,1)^2" );
+			}
+			Check( deterministic,
+			       "MONEY: root_uv_mode scatter is deterministic -- two independent loads of the same file "
+			       "produce the identical per-strand UVs" );
+			Check( anyNonZero, "root_uv_mode scatter: at least one strand's UV is not (0,0)" );
+			Check( anyDiffers,
+			       "MONEY: root_uv_mode scatter: UVs actually VARY across strands (not all the same value)" );
+		}
+	}
+
 	// A groom is never an area light and never tessellates, whatever
 	// its source.
 	Check( !g->CanBeAreaLight(), "an imported groom refuses to serve as an area light" );
@@ -1002,31 +1047,23 @@ static void RunChunk()
 {
 	std::cout << "=== 6. The hair_geometry `file` mode chunk ===" << std::endl;
 
-	// -- DRIFT GUARD.  ChunkParserRegistry.cpp's `HairGeometryAsciiChunk-
-	//    Parser::GrowOnlyParameters()` is the list of parameters `file`
-	//    mode REFUSES; it is a private static list, not something this
-	//    test can call directly, so this walks the REAL registered
-	//    descriptor instead and asserts every declared parameter name is
-	//    either one of the four file-mode-accepted names or on a mirror
-	//    of that grow-only list kept HERE.  If someone adds a new
-	//    `hair_geometry` parameter and forgets to add it to
-	//    GrowOnlyParameters() in the real parser, this still passes (the
-	//    new name would silently fall through file mode's refusal loop);
-	//    if they add it to the test's mirror but not the real list, or
-	//    change one without the other, THIS assertion is what forces the
-	//    developer to update both -- it fails, naming the offending
-	//    parameter, if the live descriptor and the mirror below ever
-	//    disagree on the FULL set (declared-but-not-in-either-list is the
-	//    case that actually protects against; a genuine list disagreement
-	//    would need `HairGeometryAsciiChunkParser::GrowOnlyParameters()`
-	//    read back too, which this test cannot do).
+	// -- DRIFT GUARD.  Residual wave 2 item C (2026-08-27) closed the gap
+	//    this comment used to document: `HairGeometryGrowOnlyParameters`
+	//    (ChunkParserRegistry.cpp, declared in ChunkParserRegistry.h) is
+	//    now a free function the PRODUCTION `Finalize` calls directly,
+	//    so this test asserts against that REAL list instead of
+	//    maintaining its own byte-copied mirror that could silently
+	//    drift from it.  What remains local is only the small,
+	//    intentionally-not-file-mode-refused allowlist -- the names
+	//    `file` mode itself ACCEPTS (`name`, `file`, `width_root`,
+	//    `width_tip`, `root_uv_mode`) -- since those are the complement
+	//    of the production list, not a copy of it.
 	{
-		static const char* const kGrowOnlyMirror[] = {
-			"base_geometry", "count", "length", "segments", "seed", "base_detail",
-			"density", "length_painter", "comb", "guides",
-			"gravity", "frizz", "clump", "clump_size", "curl_radius", "curl_step"
-		};
-		static const char* const kFileModeAccepted[] = { "name", "file", "width_root", "width_tip" };
+		static const char* const kFileModeAccepted[] = { "name", "file", "width_root", "width_tip", "root_uv_mode" };
+
+		unsigned int nGrowOnly = 0;
+		const char* const* growOnly =
+			RISE::Implementation::ChunkParsers::HairGeometryGrowOnlyParameters( nGrowOnly );
 
 		const ChunkDescriptor* d = DescriptorForKeyword( String( "hair_geometry" ) );
 		Check( d != nullptr, "the hair_geometry descriptor is registered" );
@@ -1034,15 +1071,16 @@ static void RunChunk()
 			for( size_t i = 0; i < d->parameters.size(); ++i ) {
 				const std::string pname = d->parameters[i].name;
 				bool known = false;
-				for( size_t g = 0; g < sizeof( kGrowOnlyMirror ) / sizeof( kGrowOnlyMirror[0] ) && !known; ++g ) {
-					if( pname == kGrowOnlyMirror[g] ) known = true;
+				for( unsigned int g = 0; g < nGrowOnly && !known; ++g ) {
+					if( pname == growOnly[g] ) known = true;
 				}
 				for( size_t g = 0; g < sizeof( kFileModeAccepted ) / sizeof( kFileModeAccepted[0] ) && !known; ++g ) {
 					if( pname == kFileModeAccepted[g] ) known = true;
 				}
 				Check( known, "DRIFT GUARD: hair_geometry.`" + pname + "` is declared on the descriptor but is "
-				       "neither in this test's grow-only mirror nor in the four file-mode-accepted names -- "
-				       "classify it in both ChunkParserRegistry.cpp's GrowOnlyParameters() and here" );
+				       "neither in the REAL HairGeometryGrowOnlyParameters() list nor in this test's small "
+				       "file-mode-accepted allowlist -- classify it in both ChunkParserRegistry.cpp's "
+				       "Finalize/Describe and (if it's a new accepted name) the allowlist here" );
 			}
 		}
 	}
@@ -1085,6 +1123,58 @@ static void RunChunk()
 			HairGeometry* hg = dynamic_cast<HairGeometry*>( geom );
 			Check( hg && NearF( hg->StrandWidthAt( 0, 0.0 ), 0.06, 1e-6 ),
 			       "MONEY: `width_root 3.0` reaches the loader as a MULTIPLIER (0.02 x 3)" );
+			safe_release( job );
+		}
+	}
+
+	// -- root_uv_mode CHUNK-PATH BEHAVIORAL PROBE (residual wave 2 item
+	//    B): `root_uv_mode scatter` reaches the loader through the full
+	//    scene-language path (not just the direct C++ API RunGeometry()
+	//    already covers) and its strands' UVs actually vary.
+	{
+		IJobPriv* job = 0;
+		if( RISE_CreateJobPriv( &job ) && job ) {
+			const std::string body =
+				"hair_geometry\n{\n\tname\tcc_import\n\tfile\t" + path +
+				"\n\troot_uv_mode\tscatter\n}\n";
+			const bool ok = ParseBodyInto( "filerootuv", body, *job );
+			Check( ok, "the chunk accepts root_uv_mode scatter in file mode" );
+			IGeometry* geom = job->GetGeometries() ? job->GetGeometries()->GetItem( "cc_import" ) : 0;
+			HairGeometry* hg = dynamic_cast<HairGeometry*>( geom );
+			Check( hg != 0, "root_uv_mode scatter: the chunk still registers a HairGeometry" );
+			if( hg && hg->numStrands() == 5 ) {
+				bool anyNonZero = false;
+				bool anyDiffers = false;
+				for( unsigned int s = 0; s < 5; ++s ) {
+					const Point2 uv = hg->StrandRootUV( s );
+					if( uv.x != 0.0 || uv.y != 0.0 ) anyNonZero = true;
+					if( s > 0 ) {
+						const Point2 prev = hg->StrandRootUV( s - 1 );
+						if( uv.x != prev.x || uv.y != prev.y ) anyDiffers = true;
+					}
+				}
+				Check( anyNonZero, "MONEY (chunk path): root_uv_mode scatter produces a non-zero UV" );
+				Check( anyDiffers, "MONEY (chunk path): root_uv_mode scatter varies UVs across strands" );
+			}
+			safe_release( job );
+		}
+	}
+
+	// -- root_uv_mode "zero" through the chunk is the unmodified default
+	//    -- an explicit `root_uv_mode zero` must byte-match omitting the
+	//    parameter entirely (the happy-path block above).
+	{
+		IJobPriv* job = 0;
+		if( RISE_CreateJobPriv( &job ) && job ) {
+			const std::string body =
+				"hair_geometry\n{\n\tname\tcc_import\n\tfile\t" + path +
+				"\n\troot_uv_mode\tzero\n}\n";
+			const bool ok = ParseBodyInto( "filerootuvzero", body, *job );
+			Check( ok, "the chunk accepts an explicit root_uv_mode zero" );
+			IGeometry* geom = job->GetGeometries() ? job->GetGeometries()->GetItem( "cc_import" ) : 0;
+			HairGeometry* hg = dynamic_cast<HairGeometry*>( geom );
+			Check( hg && hg->StrandRootUV( 0 ).x == 0.0 && hg->StrandRootUV( 0 ).y == 0.0,
+			       "root_uv_mode zero: unchanged (0,0) golden" );
 			safe_release( job );
 		}
 	}
@@ -1135,6 +1225,20 @@ static void RunChunk()
 	{
 		Neg n; n.tag = "zero_width"; n.mustSay = "width";
 		n.body = "hair_geometry\n{\n\tname\tg\n\tfile\t" + path + "\n\twidth_root\t0\n}\n";
+		negs.push_back( n );
+	}
+	{
+		Neg n; n.tag = "bad_root_uv_mode"; n.mustSay = "root_uv_mode";
+		n.body = "hair_geometry\n{\n\tname\tg\n\tfile\t" + path + "\n\troot_uv_mode\tbogus\n}\n";
+		negs.push_back( n );
+	}
+	{
+		// root_uv_mode is FILE-mode-only, symmetric with the grow-only
+		// list -- a grown strand's root UV already comes from the base
+		// surface's own UV map.
+		Neg n; n.tag = "root_uv_mode_in_grow_mode"; n.mustSay = "root_uv_mode";
+		n.body = "sphere_geometry\n{\n\tname\tcc_base3\n\tradius\t1.0\n}\n"
+		         "hair_geometry\n{\n\tname\tg\n\tbase_geometry\tcc_base3\n\troot_uv_mode\tscatter\n}\n";
 		negs.push_back( n );
 	}
 

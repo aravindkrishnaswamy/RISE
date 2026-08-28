@@ -4745,10 +4745,26 @@ EvaluateAllStrategiesImpl(
 					const bool bReceivesShadows = eyeEnd.pObject
 						? eyeEnd.pObject->DoesReceiveShadows() : true;
 
+					// FULL-SPHERE NEE, DirectionalLight sibling (residual
+					// wave 2 item D, 2026-08-27; docs/HAIR_FUR_DESIGN.md
+					// section 4.1 / HairBSDF.h section 5's "KNOWN
+					// REMAINING SIBLING" entry).  This s==1 row calls the
+					// SAME ILight::ComputeDirectLighting virtual
+					// LightSampler's Step 1 does, and inherits whatever
+					// gate the concrete light applies -- 1472ae57's "BDPT
+					// is already unconditionally full-sphere" audit was
+					// about the s>=2 connection strategies' `fabs` in
+					// `GeometricTerm`, not this zero-exitance sweep, so a
+					// backlit hair groom under a `directional_light`
+					// still lost this row's contribution before this
+					// fix.  `eyeEnd.pMaterial` is guaranteed non-null by
+					// the `continue` above.
+					const bool bFullSphere = eyeEnd.pMaterial->ScattersFullSphere();
+
 					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
 					l->ComputeDirectLighting( ri, caster, *pBSDF,
-						bReceivesShadows, amount );
+						bReceivesShadows, amount, bFullSphere );
 
 					if( ColorMath::MaxValue( amount ) > 0 )
 					{
@@ -4769,7 +4785,7 @@ EvaluateAllStrategiesImpl(
 						// character; the per-NM virtual queries brdf.valueNM
 						// at the connecting wavelength.
 						const Scalar leNM = l->ComputeDirectLightingNM(
-							ri, caster, *pBSDF, bReceivesShadows, tag.nm );
+							ri, caster, *pBSDF, bReceivesShadows, tag.nm, bFullSphere );
 						if( leNM > 0 )
 						{
 							CR cr;

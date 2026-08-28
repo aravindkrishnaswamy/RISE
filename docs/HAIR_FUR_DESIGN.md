@@ -131,8 +131,14 @@ light powers where PT's is flat to 4 %), so it is clamp-cut heavy-tailed connect
   scalar hair params (roughness/radial roughness/IOR) flatten to constants across the bridge
   with a warning — no IJob entry point registers named scalar painters; lifting that needs an
   `AddScalarPainter`-style bridge surface.
-- Imported/exported grooms carry **root UV (0,0)** — scalp-space painters do not vary across
-  a `.hair` groom (the format has no UVs).
+- Imported grooms carry **root UV (0,0) by default** — scalp-space painters do not vary across
+  a `.hair` groom (the format has no UVs).  **PARTIALLY ADDRESSED, residual wave 2 item B,
+  2026-08-27**: `hair_geometry` file mode's new `root_uv_mode scatter` gives each strand a
+  deterministic pseudo-random UV in [0,1)² instead, so a root-UV-driven painter has something to
+  vary against — see `HairFileRootUVMode` (Interfaces/ProceduralDescriptors.h) and
+  `HairFileLoader.h`.  This does not recover the file's real scalp position (still unrecoverable,
+  the format carries none); a true scalp-space import still needs a source format with UVs.
+  Export (Blender bridge, above) is unaffected.
 - Legacy Blender **particle-hair** systems are not exported (convert to Curves in Blender;
   the exporter warns).
 - The reverse-direction editor legality gap (a `hair_guides` node wired into a *geometry* port
@@ -142,19 +148,20 @@ light powers where PT's is flat to 4 %), so it is clamp-cut heavy-tailed connect
 - ~~NEE cannot reach hair's transmissive hemisphere~~ — **RESOLVED** via
   `IMaterial::ScattersFullSphere()`; see the Phase-3 residual entry above and `HairBSDF.h`
   section 5's "NEE REACHES THE TRANSMISSIVE HALF".
-- **Directional lights still cannot light hair from behind** (the one sibling site the fix above
-  did not reach). `DirectionalLight::ComputeDirectLighting{,NM}` carries the same `fDot <= 0`
-  gate and runs in `EvaluateDirectLighting`'s Step-1 zero-exitance pass, outside the
-  capability-gated sites. It is not gatable in place: `ILight::ComputeDirectLighting` takes a
-  `RayIntersectionGeometric`, which (unlike `RayIntersection`) carries no material pointer, so
-  closing it means widening an `ILight` vtable signature across four light classes
-  (`AmbientLight` needs no change — it applies no cosine at all) and their two callers
-  (`LightSampler` Step 1, `BDPTIntegrator`'s s == 1 zero-exitance row). Mechanical but
-  interface-visible; deferred rather than folded into the LightSampler slice. Point, spot, mesh
-  area and environment lights are all covered.
-- `NormalMap`/`BumpMap` modifiers unconditionally rebuild the ONB from the perturbed normal alone,
-  discarding any incoming fibre tangent — hair is incompatible with `bump_map`/`normal_map` until
-  those two modifiers are fixed the way `GlintModifier` already is (§4.1).
+- ~~Directional lights still cannot light hair from behind~~ — **RESOLVED, residual wave 2 item D,
+  2026-08-27.** `ILight::ComputeDirectLighting{,NM}` gained a trailing, defaulted
+  `const bool bFullSphereReceiver` parameter, threaded through all four light classes
+  (`DirectionalLight` applies `fabs`; `AmbientLight`/`PointLight`/`SpotLight` no-op it — see
+  `HairBSDF.h` section 5's "REMAINING SIBLING" entry for why those three are safe no-ops) and
+  both real callers (`LightSampler` Step 1 passes its existing `bFullSphere` local;
+  `BDPTIntegrator`'s s == 1 zero-exitance row derives `eyeEnd.pMaterial->ScattersFullSphere()`
+  directly — no context gap after all). Defaulted `false` so every untouched caller (any
+  out-of-tree light, `LightManager::ComputeDirectLighting`'s forwarding loop) is byte-identical.
+  Point, spot, mesh area and environment lights were already covered by the fix above.
+- ~~`NormalMap`/`BumpMap` modifiers unconditionally rebuild the ONB from the perturbed normal
+  alone, discarding any incoming fibre tangent~~ — **RESOLVED, residual wave 2 item A, 2026-08-27**
+  (§4.1): both now preserve `bHasShadingTangent` hits via the `GlintModifier` `CreateFromWU`
+  idiom, byte-identical otherwise.
 - Windows (VS2022), Android (NDK/Gradle), and Xcode build-project files were updated with every
   new source file across all slices but have not been compiled this arc — only the Linux/macOS
   `make` build and its test suite have been gated.
@@ -477,19 +484,17 @@ boundary-reattribution helper) now copies `vShadingTangent` / `bHasShadingTangen
 guards against for `vTangent` / `bHasTangent`. `HairBSDF` now reads a real, geometry-derived fiber
 tangent from `ri.onb.u()` for any hair hit that reaches it directly or through a CSG composite.
 
-**One site remains open, found during the round-2 hair BSDF review — still owed:**
-
-- **The normal-map / bump-map modifiers discard any tangent that reaches them.** Even with a real
-  fiber tangent now landing in `ri.onb.u()`, `NormalMap::Modify` (`NormalMap.cpp:172`) and
-  `BumpMap::Modify` (`BumpMap.cpp:69`) both rebuild the ONB with the unconditional
-  `ri.onb.CreateFromW(ri.vNormal)` after perturbing the normal, which drops whatever tangent was
-  there and replaces it with an arbitrary one derived from the (perturbed) normal alone.
-  `GlintModifier` already gets this right — it rebuilds via `CreateFromWU`, projecting the OLD
-  tangent into the new normal's plane, specifically to keep `bShadingTangentFromGeometry` /
-  `tangent_rotation` consumers coherent across a perturbation (`GlintModifier.cpp:230-246`). Bump
-  or normal-mapped hair needs the same treatment — either fix both modifiers to preserve the
-  incoming tangent the `GlintModifier` way, or document that hair fibers are incompatible with
-  `bump_map` / `normal_map` until that lands.
+**RESOLVED — residual wave 2 item A, 2026-08-27.** `NormalMap::Modify` (`NormalMap.cpp:172`) and
+`BumpMap::Modify` (`BumpMap.cpp:69`) no longer discard the incoming tangent unconditionally. Both
+now check `ri.bHasShadingTangent`: when set, the CURRENT `ri.onb.u()` (already the promoted,
+world-space fiber tangent by the time either modifier runs) is projected into the perturbed
+normal's plane and the ONB is rebuilt via `CreateFromWU`, exactly the `GlintModifier.cpp:230-246`
+idiom; a degenerate projection falls back to `CreateFromW`. When `bHasShadingTangent` is false
+(every non-hair hit, and the `SDFGeometry` heightfield case that sets
+`bShadingTangentFromGeometry` alone) the new branch is skipped entirely and the rebuild is
+byte-identical to the old unconditional `CreateFromW` call. Bump- and normal-mapped hair are now
+supported; regression coverage in `tests/HairTangentPlumbingTest.cpp` (hair-through-modifier keeps
+`onb.u()` fiber-aligned; non-hair-through-modifier byte-matches pre-fix golden output).
 
 The near-field offset **h**, by contrast, needs no new plumbing at all: `hair_geometry` defines
 `ri.ptCoord = (s, t)` with s = normalized arc-length root→tip and t ∈ [0,1] across the ribbon

@@ -73,13 +73,25 @@
 //  monotonically tapering thickness -- that is lossless or nearly so;
 //  a file that bulges mid-strand loses the bulge.
 //
-//  NO ROOT UVs.  The format has no per-strand surface parameterization,
-//  so every imported strand reports ptCoord1 = (0, 0).  Consequence,
-//  and it is a real one: a `hair_material` driven by a painter over the
-//  root UV (a scalp-space tint or roughness map) evaluates at one
-//  single point across the whole imported groom and therefore does not
-//  vary.  Uniform materials, and materials driven by the fibre's own
-//  along-strand coordinate, are unaffected.
+//  NO ROOT UVs, BUT TWO WAYS TO STAND ONE IN.  The format has no
+//  per-strand surface parameterization, so `root_uv_mode` (residual
+//  wave 2 item B, 2026-08-27; `HairFileRootUVMode`,
+//  Interfaces/ProceduralDescriptors.h) decides what every imported
+//  strand's `ptCoord1` becomes:
+//    `zero`    (default, unchanged from before this slice) -- every
+//              strand reports (0, 0).  A `hair_material` driven by a
+//              painter over the root UV (a scalp-space tint or
+//              roughness map) evaluates at one single point across the
+//              whole imported groom and therefore does not vary.
+//    `scatter` -- each strand gets its own deterministic pseudo-random
+//              UV in [0,1)^2, keyed on (strand index, a fixed internal
+//              seed) -- see `HairFileRootUVMode::Scatter`'s own doc.
+//              This does NOT recover the file's real scalp position
+//              (the format doesn't carry one); it exists purely so a
+//              root-UV-driven painter has something to vary against on
+//              an imported groom instead of reading one constant point.
+//  Either way, materials driven by the fibre's own along-strand
+//  coordinate (`ptCoord`, not `ptCoord1`) are unaffected.
 //
 //  NO AXIS OR UNIT JUGGLING.  `.hair` files carry no unit or up-axis
 //  declaration -- the published models are in assorted scales and
@@ -105,6 +117,7 @@
 #define HAIR_FILE_LOADER_
 
 #include "../Geometry/HairGeometry.h"
+#include "../Interfaces/ProceduralDescriptors.h"
 #include <string>
 #include <vector>
 
@@ -294,13 +307,29 @@ namespace RISE
 		//! `who` names the authoring chunk in every diagnostic (may be
 		//! null).  Diagnostics also name the source file, via
 		//! `data.sourceFile` when `LoadHairFile` populated it.
+		//!
+		//! `rootUVMode` (residual wave 2 item B, 2026-08-27) decides what
+		//! each surviving strand's `StrandDesc::rootUV` is set to --
+		//! `HairFileRootUVMode::Zero` (default, and the ONLY behaviour
+		//! before this parameter existed -- every existing call site
+		//! omitting it is therefore byte-identical) assigns (0,0)
+		//! verbatim; `::Scatter` assigns a deterministic pseudo-random
+		//! UV in [0,1)^2 keyed on (the strand's index in the ORIGINAL
+		//! file-order loop -- i.e. before any per-strand rejection --
+		//! and a fixed internal seed), so the assignment is stable
+		//! across reloads of the same file and independent of which
+		//! OTHER strands happen to get rejected.  See
+		//! HairFileRootUVMode's own doc (ProceduralDescriptors.h) and
+		//! the header comment above ("NO ROOT UVs, BUT TWO WAYS TO
+		//! STAND ONE IN").
 		/// \return TRUE if successful, FALSE otherwise
 		bool BuildStrandsFromHairFile(
 			const HairFileData&						data,			///< [in] A file parsed by LoadHairFile
 			const double							widthRootScale,	///< [in] Multiplier on the file's root thickness
 			const double							widthTipScale,	///< [in] Multiplier on the file's tip thickness
 			std::vector<HairGeometry::StrandDesc>&	out,			///< [out] Receives one StrandDesc per surviving strand
-			const char*								who				///< [in] Name of the authoring chunk, for diagnostics (may be null)
+			const char*								who,			///< [in] Name of the authoring chunk, for diagnostics (may be null)
+			const HairFileRootUVMode				rootUVMode = HairFileRootUVMode::Zero	///< [in] How to assign each surviving strand's rootUV; see above
 			);
 	}
 }

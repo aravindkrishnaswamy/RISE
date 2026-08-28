@@ -15,6 +15,7 @@
 #include "DirectionalLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
+#include <cmath>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -31,22 +32,34 @@ DirectionalLight::~DirectionalLight( )
 {
 }
 
-void DirectionalLight::ComputeDirectLighting( 
+void DirectionalLight::ComputeDirectLighting(
 	const RayIntersectionGeometric& ri,
-	const IRayCaster& pCaster, 
-	const IBSDF& brdf, 
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
 	const bool bReceivesShadows,
-	RISEPel& amount 
+	RISEPel& amount,
+	const bool bFullSphereReceiver
 	) const
 {
 	amount = RISEPel(0.0);
 
 	// This dot product tells us the angle of incidence between the light ray
 	// and the surface normal.  This angle tells us what illumination this surface
-	// should recieve.  If this value is negative, then the light is 
+	// should recieve.  If this value is negative, then the light is
 	// behind the object and we can stop.
 
-	Scalar		fDot = Vector3Ops::Dot( vDirection, ri.vNormal );
+	// FULL-SPHERE NEE (residual wave 2 item D; see LightSampler.cpp's
+	// FULL-SPHERE NEE block comment for the full derivation, and
+	// IMaterial::ScattersFullSphere() for the capability).  A
+	// directional light has no MIS partner to keep in partition with
+	// (same as LightSampler's delta-position light row) -- so when the
+	// receiver scatters over the full sphere (e.g. hair), `fabs` simply
+	// restores the below-horizon term at full weight instead of
+	// rejecting it.  When `bFullSphereReceiver` is false this reduces
+	// TEXTUALLY to the pre-existing expression -- `fDotSigned` used
+	// verbatim -- so every non-full-sphere receiver is byte-identical.
+	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
+	const Scalar fDot = bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned;
 
 	if( fDot <= 0.0 ) {
 		return;
@@ -80,13 +93,17 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
-	const Scalar nm
+	const Scalar nm,
+	const bool bFullSphereReceiver
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting: cosine of angle
 	// between light direction and surface normal, shadow ray test.
 	// Only the BSDF eval differs (per-NM scalar instead of per-RGB).
-	const Scalar fDot = Vector3Ops::Dot( vDirection, ri.vNormal );
+	// FULL-SPHERE NEE: see the RGB overload above for the derivation;
+	// byte-identical to before when bFullSphereReceiver is false.
+	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
+	const Scalar fDot = bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned;
 	if( fDot <= 0.0 ) {
 		return Scalar(0);
 	}

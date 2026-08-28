@@ -787,7 +787,7 @@ namespace RISE
 		}
 
 		std::vector<HairGeometry::StrandDesc> strands;
-		if( !BuildStrandsFromHairFile( data, desc.widthRootScale, desc.widthTipScale, strands, chunkName ) ) {
+		if( !BuildStrandsFromHairFile( data, desc.widthRootScale, desc.widthTipScale, strands, chunkName, desc.rootUVMode ) ) {
 			return false;
 		}
 

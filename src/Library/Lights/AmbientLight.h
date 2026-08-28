@@ -74,7 +74,11 @@ namespace RISE
 				return 0;
 			}
 
-			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount ) const override
+			//! `bFullSphereReceiver` (residual wave 2 item D) is a no-op
+			//! here: ambient light applies no cosine gate at all (it
+			//! evaluates `brdf.value` straight along the normal), so
+			//! there is nothing for the flag to flip.
+			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount, const bool = false ) const override
 			{
 				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
 			}
@@ -91,7 +95,8 @@ namespace RISE
 				const IRayCaster&,
 				const IBSDF& brdf,
 				const bool,
-				const Scalar nm
+				const Scalar nm,
+				const bool = false				///< bFullSphereReceiver: no-op, see the RGB override above
 				) const override
 			{
 				const Scalar lightLum =

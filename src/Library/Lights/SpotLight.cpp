@@ -47,7 +47,8 @@ void SpotLight::ComputeDirectLighting(
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
-	RISEPel& amount
+	RISEPel& amount,
+	const bool /*bFullSphereReceiver*/	// no-op here; see the .h doc
 	) const
 {
 	//
@@ -114,7 +115,8 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
-	const Scalar nm
+	const Scalar nm,
+	const bool /*bFullSphereReceiver*/	// no-op here; see the .h doc
 	) const
 {
 	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the

@@ -92,6 +92,34 @@
 //  unreachable there) -- the stub exists specifically to reach the
 //  code paths a real curve hit cannot.
 //
+//  Residual wave 2 item A (docs/HAIR_FUR_DESIGN.md section 4.1,
+//  2026-08-27) closed the one remaining gap this slice's own header
+//  used to flag as open: `NormalMap::Modify` and `BumpMap::Modify`
+//  used to rebuild the shading ONB with the unconditional
+//  `CreateFromW(perturbed normal)` after perturbing it, silently
+//  discarding whatever fiber tangent Object::IntersectRay had just
+//  promoted into `ri.onb.u()`.  Cases 9-12 guard the fix:
+//
+//    9. TestNormalMapPreservesHairFiberTangent -- a real HairGeometry
+//       hit (bHasShadingTangent == true) run through `NormalMap` with
+//       a non-trivial tangent-space tilt.  Expected result computed
+//       INDEPENDENTLY (same formula, written fresh in the test, not by
+//       calling the modifier's own helpers): the perturbed normal from
+//       the pre-modify {T=onb.u(), B=onb.v(), N=vNormal} frame, then
+//       onb.u() projected into that new normal's plane and normalized
+//       -- the CreateFromWU idiom GlintModifier already used.
+//   10. TestNormalMapNonHairByteMatchesLegacy -- the identical tilt
+//       through the identical modifier on a SphereGeometry hit
+//       (bHasShadingTangent == false).  Golden value is a fresh,
+//       independent `OrthonormalBasis3D::CreateFromW` call on the same
+//       perturbed normal -- the fix's guard must be a true no-op here.
+//   11. TestBumpMapPreservesHairFiberTangent -- same idea against
+//       `BumpMap`, using a synthetic linear-gradient IFunction2D stub
+//       (LinearGradientFunction2D below) so the finite-difference bump
+//       is an exact, hand-computable constant regardless of `ptCoord`.
+//   12. TestBumpMapNonHairByteMatchesLegacy -- BumpMap's non-hair
+//       byte-match twin of case 10.
+//
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
 //
@@ -110,8 +138,11 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Intersection/RayIntersection.h"
+#include "../src/Library/Modifiers/BumpMap.h"
+#include "../src/Library/Modifiers/NormalMap.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -293,6 +324,26 @@ namespace
 		descs.push_back( d );
 		return new HairGeometry( descs );
 	}
+
+	//! Minimal IFunction2D stub for the BumpMap tests (cases 11/12):
+	//! f(x,y) = a*x + b*y.  A linear gradient makes the central-
+	//! difference bump BumpMap::Modify computes a HAND-COMPUTABLE
+	//! constant (2*a*dWindow, 2*b*dWindow) independent of WHERE
+	//! ptCoord happens to land -- unlike ConstantFunction2D (already
+	//! included above), whose zero gradient would produce no
+	//! perturbation at all and defeat the point of these tests.
+	class LinearGradientFunction2D : public virtual IFunction2D, public virtual Reference
+	{
+	public:
+		LinearGradientFunction2D( Scalar a_, Scalar b_ ) : a( a_ ), b( b_ ) {}
+		Scalar Evaluate( const Scalar x, const Scalar y ) const override { return a * x + b * y; }
+	protected:
+		virtual ~LinearGradientFunction2D() {}
+	private:
+		Scalar a, b;
+		LinearGradientFunction2D( const LinearGradientFunction2D& );
+		LinearGradientFunction2D& operator=( const LinearGradientFunction2D& );
+	};
 }
 
 // ============================================================
@@ -791,6 +842,213 @@ static void TestObjectSingularTransformClearsSuppliedTangent()
 }
 
 // ============================================================
+// Test 9: NormalMap through a real hair hit -- residual wave 2 item A.
+//         onb.u() must stay fiber-aligned (projected into the
+//         perturbed normal's plane), not replaced by an arbitrary
+//         canonical-axis tangent.  Expected value computed
+//         INDEPENDENTLY of the modifier's own CreateFromWU call.
+// ============================================================
+static void TestNormalMapPreservesHairFiberTangent()
+{
+	std::cout << "NormalMap: preserves the fiber tangent on a hair hit..." << std::endl;
+
+	const Point3 root( 0, 0, -0.05 );
+	const Point3 tip( 0, 0, 0.05 );
+	HairGeometry* g = MakeStraightStrandGeometry( root, tip, 0.02 );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->FinalizeTransformations();
+
+	Ray r( Point3( 0.5, 0, 0 ), Vector3( -1, 0, 0 ) );
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( o, r, ri );
+
+	Check( ri.geometric.bHit, "Test9: ray hits the strand" );
+	Check( ri.geometric.bHasShadingTangent, "Test9: bHasShadingTangent set (precondition)" );
+
+	// Snapshot the pre-modify frame: HairGeometry sets neither
+	// bHasTangent nor derivatives.valid, so NormalMap's last-ditch
+	// fallback (T=onb.u(), B=onb.v()) is exactly what fires -- these
+	// ARE the values the modifier will read.
+	const Vector3 oldU = ri.geometric.onb.u();
+	const Vector3 oldV = ri.geometric.onb.v();
+	const Vector3 oldN = ri.geometric.vNormal;
+
+	// r=0.75,g=0.35 -> nx=0.5, ny=-0.3, dScale=1 -> nz=sqrt(1-0.25-0.09).
+	UniformColorPainter* pPainter = new UniformColorPainter( RISEPel( 0.75, 0.35, 1.0 ) );
+	NormalMap* pMod = new NormalMap( *pPainter, 1.0 );
+	safe_release( pPainter );
+
+	const Scalar nx = 0.5, ny = -0.3;
+	const Scalar nz = std::sqrt( 1.0 - nx*nx - ny*ny );
+	const Vector3 expectedNormal = Vector3Ops::Normalize( oldU * nx + oldV * ny + oldN * nz );
+	const Vector3 uProj = oldU - expectedNormal * Vector3Ops::Dot( oldU, expectedNormal );
+	Check( Vector3Ops::SquaredModulus( uProj ) > 1e-12, "Test9: (sanity) projection is non-degenerate" );
+	const Vector3 expectedU = Vector3Ops::Normalize( uProj );
+
+	pMod->Modify( ri.geometric );
+	safe_release( pMod );
+
+	Check( VecClose( ri.geometric.vNormal, expectedNormal, 1e-9 ),
+		"Test9: (sanity) perturbed normal matches the independently-computed value" );
+	Check( VecClose( ri.geometric.onb.u(), expectedU, 1e-9 ),
+		"Test9: MONEY ASSERTION -- onb.u() stays fiber-aligned (projected into the perturbed normal's plane)" );
+	Check( VecClose( ri.geometric.onb.w(), ri.geometric.vNormal, 1e-9 ),
+		"Test9: onb.w() equals the perturbed normal" );
+	CheckOrthonormalRightHanded( ri.geometric.onb, "Test9" );
+
+	o->release();
+}
+
+// ============================================================
+// Test 10: NormalMap through a non-hair hit -- byte-matches the
+//          pre-fix (unconditional CreateFromW) behaviour.  Golden
+//          value is a fresh, independent CreateFromW call.
+// ============================================================
+static void TestNormalMapNonHairByteMatchesLegacy()
+{
+	std::cout << "NormalMap: non-hair hit byte-matches legacy CreateFromW rebuild..." << std::endl;
+
+	SphereGeometry* g = new SphereGeometry( 1.0 );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->FinalizeTransformations();
+
+	Ray r( Point3( 0, 0, 5 ), Vector3( 0, 0, -1 ) );
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( o, r, ri );
+
+	Check( ri.geometric.bHit, "Test10: ray hits the sphere" );
+	Check( !ri.geometric.bHasShadingTangent, "Test10: (precondition) sphere hit carries no supplied tangent" );
+
+	const Vector3 oldU = ri.geometric.onb.u();
+	const Vector3 oldV = ri.geometric.onb.v();
+	const Vector3 oldN = ri.geometric.vNormal;
+
+	UniformColorPainter* pPainter = new UniformColorPainter( RISEPel( 0.75, 0.35, 1.0 ) );
+	NormalMap* pMod = new NormalMap( *pPainter, 1.0 );
+	safe_release( pPainter );
+
+	const Scalar nx = 0.5, ny = -0.3;
+	const Scalar nz = std::sqrt( 1.0 - nx*nx - ny*ny );
+	const Vector3 expectedNormal = Vector3Ops::Normalize( oldU * nx + oldV * ny + oldN * nz );
+
+	pMod->Modify( ri.geometric );
+	safe_release( pMod );
+
+	// Golden: an independent CreateFromW call on the same perturbed
+	// normal -- the legacy, unconditional rebuild this hit must still
+	// take because bHasShadingTangent is false.
+	OrthonormalBasis3D golden;
+	golden.CreateFromW( expectedNormal );
+
+	Check( VecClose( ri.geometric.onb.u(), golden.u(), 1e-9 ), "Test10: onb.u() byte-matches the legacy CreateFromW golden" );
+	Check( VecClose( ri.geometric.onb.v(), golden.v(), 1e-9 ), "Test10: onb.v() byte-matches the legacy CreateFromW golden" );
+	Check( VecClose( ri.geometric.onb.w(), golden.w(), 1e-9 ), "Test10: onb.w() byte-matches the legacy CreateFromW golden" );
+
+	o->release();
+}
+
+// ============================================================
+// Test 11: BumpMap through a real hair hit -- same guard as Test 9,
+//          via BumpMap's finite-difference perturbation instead of
+//          NormalMap's tangent-space decode.
+// ============================================================
+static void TestBumpMapPreservesHairFiberTangent()
+{
+	std::cout << "BumpMap: preserves the fiber tangent on a hair hit..." << std::endl;
+
+	const Point3 root( 0, 0, -0.05 );
+	const Point3 tip( 0, 0, 0.05 );
+	HairGeometry* g = MakeStraightStrandGeometry( root, tip, 0.02 );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->FinalizeTransformations();
+
+	Ray r( Point3( 0.5, 0, 0 ), Vector3( -1, 0, 0 ) );
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( o, r, ri );
+
+	Check( ri.geometric.bHit, "Test11: ray hits the strand" );
+	Check( ri.geometric.bHasShadingTangent, "Test11: bHasShadingTangent set (precondition)" );
+
+	const Vector3 oldU = ri.geometric.onb.u();
+	const Vector3 oldV = ri.geometric.onb.v();
+	const Vector3 oldN = ri.geometric.vNormal;
+
+	// a=0.4, b=-0.3, dScale=1, dWindow=0.05, no gradient normalization
+	// -> bumpU = 2*a*dWindow = 0.04, bumpV = 2*b*dWindow = -0.03
+	// (the y-term/x-term cancel exactly in each central difference
+	// because the function is linear -- see the class comment).
+	LinearGradientFunction2D* pFunc = new LinearGradientFunction2D( 0.4, -0.3 );
+	BumpMap* pMod = new BumpMap( *pFunc, 1.0, 0.05, false );
+	safe_release( pFunc );
+
+	const Scalar bumpU = 0.04, bumpV = -0.03;
+	const Vector3 expectedNormal = Vector3Ops::Normalize( oldN + oldU * bumpU + oldV * bumpV );
+	const Vector3 uProj = oldU - expectedNormal * Vector3Ops::Dot( oldU, expectedNormal );
+	Check( Vector3Ops::SquaredModulus( uProj ) > 1e-12, "Test11: (sanity) projection is non-degenerate" );
+	const Vector3 expectedU = Vector3Ops::Normalize( uProj );
+
+	pMod->Modify( ri.geometric );
+	safe_release( pMod );
+
+	Check( VecClose( ri.geometric.vNormal, expectedNormal, 1e-9 ),
+		"Test11: (sanity) perturbed normal matches the independently-computed value" );
+	Check( VecClose( ri.geometric.onb.u(), expectedU, 1e-9 ),
+		"Test11: MONEY ASSERTION -- onb.u() stays fiber-aligned (projected into the perturbed normal's plane)" );
+	Check( VecClose( ri.geometric.onb.w(), ri.geometric.vNormal, 1e-9 ),
+		"Test11: onb.w() equals the perturbed normal" );
+	CheckOrthonormalRightHanded( ri.geometric.onb, "Test11" );
+
+	o->release();
+}
+
+// ============================================================
+// Test 12: BumpMap through a non-hair hit -- byte-matches the pre-fix
+//          (unconditional CreateFromW) behaviour.
+// ============================================================
+static void TestBumpMapNonHairByteMatchesLegacy()
+{
+	std::cout << "BumpMap: non-hair hit byte-matches legacy CreateFromW rebuild..." << std::endl;
+
+	SphereGeometry* g = new SphereGeometry( 1.0 );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->FinalizeTransformations();
+
+	Ray r( Point3( 0, 0, 5 ), Vector3( 0, 0, -1 ) );
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( o, r, ri );
+
+	Check( ri.geometric.bHit, "Test12: ray hits the sphere" );
+	Check( !ri.geometric.bHasShadingTangent, "Test12: (precondition) sphere hit carries no supplied tangent" );
+
+	const Vector3 oldU = ri.geometric.onb.u();
+	const Vector3 oldV = ri.geometric.onb.v();
+	const Vector3 oldN = ri.geometric.vNormal;
+
+	LinearGradientFunction2D* pFunc = new LinearGradientFunction2D( 0.4, -0.3 );
+	BumpMap* pMod = new BumpMap( *pFunc, 1.0, 0.05, false );
+	safe_release( pFunc );
+
+	const Scalar bumpU = 0.04, bumpV = -0.03;
+	const Vector3 expectedNormal = Vector3Ops::Normalize( oldN + oldU * bumpU + oldV * bumpV );
+
+	pMod->Modify( ri.geometric );
+	safe_release( pMod );
+
+	OrthonormalBasis3D golden;
+	golden.CreateFromW( expectedNormal );
+
+	Check( VecClose( ri.geometric.onb.u(), golden.u(), 1e-9 ), "Test12: onb.u() byte-matches the legacy CreateFromW golden" );
+	Check( VecClose( ri.geometric.onb.v(), golden.v(), 1e-9 ), "Test12: onb.v() byte-matches the legacy CreateFromW golden" );
+	Check( VecClose( ri.geometric.onb.w(), golden.w(), 1e-9 ), "Test12: onb.w() byte-matches the legacy CreateFromW golden" );
+
+	o->release();
+}
+
+// ============================================================
 //  main
 // ============================================================
 int main()
@@ -805,6 +1063,10 @@ int main()
 	TestCsgAdoptSurfacePayloadCopiesSuppliedTangent();
 	TestCsgOfCsgComposesThreeLevelPromotion();
 	TestObjectSingularTransformClearsSuppliedTangent();
+	TestNormalMapPreservesHairFiberTangent();
+	TestNormalMapNonHairByteMatchesLegacy();
+	TestBumpMapPreservesHairFiberTangent();
+	TestBumpMapNonHairByteMatchesLegacy();
 
 	std::cout << std::endl << g_pass << " passed, " << g_fail << " failed." << std::endl;
 	return g_fail == 0 ? 0 : 1;

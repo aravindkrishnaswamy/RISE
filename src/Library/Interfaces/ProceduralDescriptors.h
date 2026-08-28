@@ -308,6 +308,19 @@ namespace RISE
 		}
 	};
 
+	//! Root-UV assignment for an IMPORTED (`file`-mode) groom.  The
+	//! `.hair` format has no per-strand surface parameterization at all
+	//! (see HairFileLoader.h's "NO ROOT UVs"), so this decides what
+	//! `HairGeometry::StrandDesc::rootUV` becomes for every strand --
+	//! and therefore whether a `hair_material` painter driven by the
+	//! root UV (a scalp-space tint / roughness map) can vary across an
+	//! imported groom at all.
+	enum class HairFileRootUVMode
+	{
+		Zero,		//!< every strand reports (0,0) -- the historical, and still default, behaviour.  A root-UV-driven painter evaluates at one single point across the whole groom and therefore does not vary.
+		Scatter		//!< each strand gets its own deterministic pseudo-random UV in [0,1)^2, keyed on (strand index, a fixed internal seed) -- same file in, same per-strand UVs out, every load.  Does NOT reconstruct the file's real scalp position (the format doesn't carry one); it exists so a root-UV-driven painter (a calico/patch pattern, a per-strand tint noise) has SOMETHING to vary against on an imported groom instead of reading one constant point everywhere.
+	};
+
 	//! An IMPORTED groom: the FILE half of the `hair_geometry` chunk
 	//! (Phase 2, docs/HAIR_FUR_DESIGN.md section 7).  Where
 	//! `HairGroomDescriptor` describes a groom to GENERATE, this one
@@ -328,12 +341,13 @@ namespace RISE
 	//! converts a millimetre-scale file to a metre-scale scene.
 	struct HairFileGroomDescriptor
 	{
-		const char* file;			//!< REQUIRED: path to a `.hair` file, resolved against $RISE_MEDIA_PATH
-		double      widthRootScale;	//!< multiplier on the file's thickness at each strand's FIRST point; must be finite and > 0
-		double      widthTipScale;	//!< multiplier on the file's thickness at each strand's LAST point; must be finite and > 0
+		const char*        file;			//!< REQUIRED: path to a `.hair` file, resolved against $RISE_MEDIA_PATH
+		double             widthRootScale;	//!< multiplier on the file's thickness at each strand's FIRST point; must be finite and > 0
+		double             widthTipScale;	//!< multiplier on the file's thickness at each strand's LAST point; must be finite and > 0
+		HairFileRootUVMode rootUVMode;		//!< how each imported strand's rootUV is assigned; see HairFileRootUVMode
 
 		HairFileGroomDescriptor() :
-			file( 0 ), widthRootScale( 1.0 ), widthTipScale( 1.0 )
+			file( 0 ), widthRootScale( 1.0 ), widthTipScale( 1.0 ), rootUVMode( HairFileRootUVMode::Zero )
 		{
 		}
 	};

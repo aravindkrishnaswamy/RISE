@@ -126,12 +126,35 @@ namespace RISE
 		virtual Scalar emissionOuterAngle() const { return PI; }
 
 		//! Computes direct lighting
+		//!
+		//! `bFullSphereReceiver` (residual wave 2 item D, 2026-08-27;
+		//! the sibling this file's `EvaluateDirectLighting` FULL-SPHERE
+		//! NEE block comment named as owed) closes the one full-sphere-
+		//! NEE gap `IMaterial::ScattersFullSphere()` did not reach: this
+		//! virtual, not `LightSampler`'s own inline delta-light site, is
+		//! what a groom lit by a `directional_light` goes through (see
+		//! `EvaluateDirectLighting`'s Step-1 zero-exitance pass), so the
+		//! capability has to be threaded down to here too.  Defaulted
+		//! `false` so every pre-existing call site (any out-of-tree
+		//! light, and `LightManager::ComputeDirectLighting`'s own
+		//! forwarding loop, which has no material to ask) keeps its
+		//! exact prior behaviour without being touched.  Only
+		//! `DirectionalLight` reads it (see its own override); every
+		//! other concrete light no-ops it, either because it applies no
+		//! cosine gate at all (`AmbientLight`) or because its own NEE
+		//! site is never reached through this virtual for a delta-
+		//! position light (`PointLight` / `SpotLight` -- LightSampler's
+		//! proportional-selection path evaluates those inline, already
+		//! capability-gated there; only Step 1's zero-exitance sweep
+		//! (ambient, directional) and BDPT's mirroring s==1 row call
+		//! this virtual at all).
 		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information
 			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
 			const IBSDF& brdf,								///< [in] BRDF of the object
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
-			RISEPel& amount									///< [out] Amount of lighting
+			RISEPel& amount,								///< [out] Amount of lighting
+			const bool bFullSphereReceiver = false			///< [in] When true, use |cos| instead of the signed cosine (a full-sphere-scattering receiver, e.g. hair); see IMaterial::ScattersFullSphere()
 			) const = 0;
 
 		//! Per-wavelength direct-lighting contribution at wavelength
@@ -157,11 +180,12 @@ namespace RISE
 			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
 			const IBSDF& brdf,								///< [in] BSDF of the object (per-NM eval via valueNM)
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
-			const Scalar nm									///< [in] Wavelength (nm) at which to evaluate
+			const Scalar nm,								///< [in] Wavelength (nm) at which to evaluate
+			const bool bFullSphereReceiver = false			///< [in] See the RGB ComputeDirectLighting's doc
 			) const
 		{
 			RISEPel amount( 0, 0, 0 );
-			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount );
+			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver );
 			(void)nm;  // default fallback discards wavelength
 			return Scalar(0.2126) * amount.r + Scalar(0.7152) * amount.g + Scalar(0.0722) * amount.b;
 		}

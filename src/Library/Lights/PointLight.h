@@ -86,7 +86,18 @@ namespace RISE
 				const bool shootPhotons
 				);
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const override;
+			//! `bFullSphereReceiver` (residual wave 2 item D) is a no-op
+			//! here: this virtual is never the path a full-sphere
+			//! material's point-light NEE goes through -- LightSampler's
+			//! proportional-selection site evaluates delta-position
+			//! lights (point/spot) INLINE and is already capability-
+			//! gated there (see EvaluateDirectLighting's FULL-SPHERE NEE
+			//! site 1 of 3).  Only Step 1's zero-exitance sweep
+			//! (ambient/directional, radiantExitance() == 0) and BDPT's
+			//! mirroring s==1 row call this virtual at all, and neither
+			//! ever holds a point/spot light -- both always have nonzero
+			//! exitance.  Accepted for interface conformance only.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false ) const override;
 
 			//! Per-wavelength direct lighting.  Overrides the ILight default
 			//! (which projects the RGB ComputeDirectLighting to luminance and
@@ -95,7 +106,8 @@ namespace RISE
 			//! SPECIFIC Fresnel transmittance (CastShadowRayAuto bNM=true) rather
 			//! than a representative RGB IOR.  Matches DirectionalLight /
 			//! AmbientLight; keeps every light's spectral NEE consistent.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const override;
+			//! `bFullSphereReceiver`: no-op, see the RGB override above.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false ) const override;
 
 			// Overrides the PARENT-COMPOSED overload only -- see SpotLight.h.
 			void	FinalizeTransformations( const Matrix4& parentWorld ) override;

@@ -74,16 +74,18 @@
 //  modifier -- unrelated to the fibre tangent described here.  This
 //  file only reads `ri.onb.u()`, so it picks up whatever the fibre-
 //  tangent plumbing above produced -- PROVIDED nothing downstream
-//  rebuilds the ONB from the normal alone afterward.  Today something
-//  does: `NormalMap::Modify`
-//  (NormalMap.cpp:172) and `BumpMap::Modify` (BumpMap.cpp:69) both call
-//  the unconditional `ri.onb.CreateFromW(ri.vNormal)` after perturbing
-//  the normal, discarding whatever tangent was in `ri.onb.u()` --
-//  including a future hair fibre tangent.  `GlintModifier` is the one
-//  modifier in the tree that gets this right (`CreateFromWU`, projecting
-//  the OLD tangent into the new normal's plane).  See
-//  docs/HAIR_FUR_DESIGN.md section 4.1 for the fix or documented-
-//  incompatibility decision this owes.
+//  rebuilds the ONB from the normal alone afterward.  RESOLVED, residual
+//  wave 2 item A, 2026-08-27: `NormalMap::Modify` (NormalMap.cpp:172) and
+//  `BumpMap::Modify` (BumpMap.cpp:69) used to call the unconditional
+//  `ri.onb.CreateFromW(ri.vNormal)` after perturbing the normal,
+//  discarding whatever tangent was in `ri.onb.u()` -- including the hair
+//  fibre tangent.  Both now check `ri.bHasShadingTangent` first and, when
+//  set, project the CURRENT `ri.onb.u()` into the perturbed normal's
+//  plane and rebuild via `CreateFromWU` -- the same idiom `GlintModifier`
+//  already used for its facet tilt -- falling back to `CreateFromW` only
+//  on a degenerate projection.  When `bHasShadingTangent` is false the
+//  new branch is skipped and the rebuild is byte-identical to before.
+//  See docs/HAIR_FUR_DESIGN.md section 4.1.
 //
 //  ------------------------------------------------------------------
 //  2.  THE kray / pdf CONVENTION  (the load-bearing reconciliation)
@@ -383,19 +385,28 @@
 //    is false, each site's expression reduces textually to the
 //    pre-change one.  EnvLightBalanceTest (all Lambertian) stays 116/116.
 //
-//    KNOWN REMAINING SIBLING, NOT FIXED HERE.  `DirectionalLight::
-//    ComputeDirectLighting{,NM}` carries the same `fDot <= 0` gate and
-//    is reached through `EvaluateDirectLighting`'s Step-1
-//    zero-exitance pass, so a groom lit by a `directional_light` still
-//    cannot be lit from behind.  It is NOT capability-gatable in place:
-//    `ILight::ComputeDirectLighting` takes a
-//    `RayIntersectionGeometric`, which -- unlike `RayIntersection` --
-//    carries no material pointer, so closing it means widening an
-//    `ILight` vtable signature across four light classes and their two
-//    callers.  Out of scope for this slice; recorded in
-//    docs/HAIR_FUR_DESIGN.md's risk register with that shape.
-//    (`AmbientLight` needs nothing: it evaluates `brdf.value` along the
-//    normal with no cosine gate at all.)
+//    REMAINING SIBLING -- RESOLVED, residual wave 2 item D, 2026-08-27.
+//    `DirectionalLight::ComputeDirectLighting{,NM}` carried the same
+//    `fDot <= 0` gate, reached through `EvaluateDirectLighting`'s
+//    Step-1 zero-exitance pass, so a groom lit by a `directional_light`
+//    could not be lit from behind.  Closed exactly the way this entry
+//    predicted: `ILight::ComputeDirectLighting{,NM}` gained a trailing
+//    `const bool bFullSphereReceiver = false` parameter (defaulted, so
+//    every untouched caller -- any out-of-tree light,
+//    `LightManager::ComputeDirectLighting`'s own forwarding loop -- is
+//    unaffected), threaded through all four light classes
+//    (`DirectionalLight` reads it with `fabs`; `AmbientLight` no-ops it
+//    because it applies no cosine gate at all; `PointLight` / `SpotLight`
+//    no-op it because their own delta-light NEE is evaluated INLINE by
+//    LightSampler's proportional-selection site, already
+//    capability-gated there -- this virtual is reached only by Step 1's
+//    zero-exitance sweep and BDPT's mirroring s==1 row, and neither
+//    ever holds a point/spot light) and both real callers:
+//    `LightSampler::EvaluateDirectLighting{,NM}` Step 1 (passes the
+//    SAME `bFullSphere` its other NEE sites use) and
+//    `BDPTIntegrator.cpp`'s s==1 zero-exitance row (derives its own
+//    `eyeEnd.pMaterial->ScattersFullSphere()` -- BDPT's per-eye-vertex
+//    material was already right there, no context gap after all).
 //  * LEGACY COSINE-OMITTING `value` CONSUMERS.  Section 2's constraint
 //    -- value == fsum / |wi . N| -- is only safe for a caller that
 //    multiplies |wi . N| back.  Recounted honestly: three legacy shader

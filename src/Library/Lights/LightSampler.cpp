@@ -1569,9 +1569,14 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			if( exitance <= 0 )
 			{
 				RISEPel amount( 0, 0, 0 );
+				// FULL-SPHERE NEE, DirectionalLight sibling (residual
+				// wave 2 item D): Step 1 is the path a groom lit by a
+				// `directional_light` goes through (radiantExitance()
+				// == 0), so it needs the same `bFullSphere` this
+				// function's other two NEE sites already carry.
 				l->ComputeDirectLighting( ri, caster, brdf,
 					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
-					amount );
+					amount, bFullSphere );
 				result = result + amount;
 			}
 		}
@@ -2089,9 +2094,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// integrated contribution was a flat scalar (Y of green
 				// RGB) regardless of wavelength.  See AmbientLight.h /
 				// DirectionalLight.cpp for the per-NM implementations.
+				// FULL-SPHERE NEE, DirectionalLight sibling (residual
+				// wave 2 item D) -- see the RGB Step 1 site's comment.
 				result += l->ComputeDirectLightingNM( ri, caster, brdf,
 					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
-					nm );
+					nm, bFullSphere );
 			}
 		}
 	}

@@ -4564,9 +4564,11 @@ int main()
 		Check( !src.empty(), "full-sphere NEE: LightSampler.cpp readable" );
 
 		// Exactly six guarded sites: {delta light, mesh area light, env map}
-		// x {RGB, NM}.  Counting them pins the audit -- a seventh cosine gate
-		// added later without the guard, or one of these six silently
-		// dropped, changes this number.
+		// x {RGB, NM}.  What the count actually pins: one of these six
+		// silently DROPPED, or a literal unconditional fabs on a receiver
+		// cosine.  It can NOT see a new receiver-side gate added later
+		// without the guard (a new variable name matches neither literal) --
+		// that reintroduction is caught only by review, not by this census.
 		// Matched against a whitespace-collapsed copy so a reindent or a
 		// line re-wrap does not fail the suite spuriously -- the FORM is what
 		// is being pinned, not the layout.
@@ -4622,18 +4624,38 @@ int main()
 		// back faces at full weight), so it must be a deliberate, reviewed
 		// act -- not something that spreads by copy-paste.  Today exactly one
 		// material claims it.
+		// Robust in the direction that matters: the scan is RECURSIVE over
+		// all of src/Library (claimers need not live in Materials/), and it
+		// matches on a whitespace-flattened body so an `override` keyword, a
+		// multi-line definition, or a reindent neither hides a claimer nor
+		// false-fails the census.
 		std::vector<std::string> claimers;
-		const fs::path matDir = repoRoot / "src" / "Library" / "Materials";
-		if( fs::exists( matDir ) ) {
-			for( const auto& e : fs::directory_iterator( matDir ) ) {
+		const fs::path libDir = repoRoot / "src" / "Library";
+		if( fs::exists( libDir ) ) {
+			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
 				if( !e.is_regular_file() ) { continue; }
 				const fs::path& f = e.path();
 				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
 				std::ifstream mi( f );
 				const std::string body( ( std::istreambuf_iterator<char>( mi ) ),
 				                          std::istreambuf_iterator<char>() );
-				if( body.find( "ScattersFullSphere() const { return true; }" )
-				    != std::string::npos ) {
+				std::string bflat;
+				bflat.reserve( body.size() );
+				bool ws = false;
+				for( char ch : body ) {
+					if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
+					if( ws && !bflat.empty() ) { bflat += ' '; }
+					ws = false;
+					bflat += ch;
+				}
+				size_t at = 0;
+				bool claims = false;
+				while( ( at = bflat.find( "ScattersFullSphere() const", at ) ) != std::string::npos ) {
+					const std::string window = bflat.substr( at, 80 );
+					if( window.find( "return true" ) != std::string::npos ) { claims = true; break; }
+					at += 1;
+				}
+				if( claims ) {
 					claimers.push_back( f.filename().string() );
 				}
 			}

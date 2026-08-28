@@ -167,7 +167,32 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		T * nx + B * ny + N * nz );
 
 	ri.vNormal = perturbed;
+
 	// Rebuild the ONB so SPFs (refraction / reflection) sample around
-	// the perturbed normal, not the original geometric one.
-	ri.onb.CreateFromW( ri.vNormal );
+	// the perturbed normal, not the original geometric one.  When the
+	// hit carries a geometry-defined fiber tangent
+	// (ri.bHasShadingTangent -- HairGeometry; see the field's doc in
+	// RayIntersectionGeometric.h), ri.onb.u() at this point already IS
+	// that fiber tangent: Object::IntersectRay promoted it to world
+	// space and built the ONB from it before this modifier ran.  A
+	// plain CreateFromW would silently discard it for an arbitrary
+	// canonical-axis tangent and break the coherent along-fiber frame
+	// HairBSDF depends on -- the same failure mode GlintModifier.cpp
+	// avoids for its facet tilt.  Project the CURRENT u onto the new
+	// normal's tangent plane and rebuild with CreateFromWU instead;
+	// fall back to CreateFromW only if that projection degenerates
+	// (the perturbed normal swung onto the old tangent).  When
+	// bHasShadingTangent is false, this is skipped entirely and
+	// behaviour is byte-identical to before.
+	if( ri.bHasShadingTangent ) {
+		const Vector3 oldU = ri.onb.u();
+		const Vector3 uProj = oldU - ri.vNormal * Vector3Ops::Dot( oldU, ri.vNormal );
+		if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
+			ri.onb.CreateFromWU( ri.vNormal, uProj );
+		} else {
+			ri.onb.CreateFromW( ri.vNormal );
+		}
+	} else {
+		ri.onb.CreateFromW( ri.vNormal );
+	}
 }

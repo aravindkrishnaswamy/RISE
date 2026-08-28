@@ -161,12 +161,16 @@ namespace RISE
 				const bool shootPhotons
 				);
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const override;
+			//! `bFullSphereReceiver` (residual wave 2 item D): no-op, for
+			//! the identical reason PointLight's own override is a
+			//! no-op -- see PointLight.h's doc.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false ) const override;
 
 			//! Per-wavelength direct lighting (cone falloff + wavelength-
 			//! specific transparent-shadow Fresnel).  See PointLight /
 			//! DirectionalLight; overrides the ILight RGB-projection default.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const override;
+			//! `bFullSphereReceiver`: no-op, see the RGB override above.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false ) const override;
 
 			// Overrides the PARENT-COMPOSED overload only -- Transformable's
 			// no-argument form delegates here, so ptPosition / vDirection are

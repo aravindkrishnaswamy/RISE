@@ -104,19 +104,31 @@ namespace RISE
 
 			DirectionalLight( Scalar radiantEnergy_, const RISEPel& c, const Vector3& vDir );
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
+			//! `bFullSphereReceiver` (residual wave 2 item D,
+			//! 2026-08-27; docs/HAIR_FUR_DESIGN.md section 4.1 /
+			//! HairBSDF.h section 5's "KNOWN REMAINING SIBLING" entry,
+			//! now closed): the one full-sphere-NEE gate
+			//! `IMaterial::ScattersFullSphere()` did not reach when it
+			//! landed (commit 1472ae57).  A directional light has no
+			//! MIS partner (same as the delta-position row LightSampler
+			//! itself gates), so when true this simply restores the
+			//! below-horizon direct term at full weight via `fabs`
+			//! instead of rejecting it -- see the .cpp.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false ) const;
 
 			//! Per-wavelength direct-lighting evaluation.  Mirrors the
 			//! RGB ComputeDirectLighting (cosine, shadow check) but
 			//! uses brdf.valueNM(direction, ri, nm) so the surface's
 			//! spectral character is preserved.  Light color projected
 			//! to luminance per the JH-flat-E convention.
+			//! `bFullSphereReceiver`: see the RGB overload above.
 			Scalar	ComputeDirectLightingNM(
 				const RayIntersectionGeometric& ri,
 				const IRayCaster& pCaster,
 				const IBSDF& brdf,
 				const bool bReceivesShadows,
-				const Scalar nm
+				const Scalar nm,
+				const bool bFullSphereReceiver = false
 				) const;
 
 			// For keyframamble interface
