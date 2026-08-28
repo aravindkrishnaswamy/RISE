@@ -4164,6 +4164,71 @@ claimed, and golden `B_fp32`, guard supersession, readmission, thermo/source
 maps, and first light remain blocked pending a new owner ruling on the
 localized tail mechanism.
 
+### 7.56d Two-dose tail margin and ordinary hard-bound retry (r170)
+
+r170 corrects two margins without changing the outlier-bounded policy.  The
+single engagement threshold is now `theta=2^-4=0.0625`; every cell above it is
+drained toward `theta`, and every other cell remains untouched.  The derivation
+reserves at least two measured worst-case local doses beneath the `2^-2`
+dynamics bound: `2^-2 - 2*0.09 = 0.07`, whose stability-class dyadic choice is
+`2^-4`.  This is a deeper pre-emptive margin, not a relaxed acceptance bound.
+The hard bound remains exactly `2^-2`.
+
+The expanded population remains tail-only.  Restoration first engages at step
+1 with one cell, peaks at 9,698 of the tier-10 cells, and runs on 100 of the 104
+steps.  The peak per-step excess sum is `137.31766988594759`; the peak and total
+exchanged volumes are `0.0020131099705025537 m^3` and
+`0.063814808515304383 m^3`.  Exchange is proportional only to
+`sum_tail(|deviation|-2^-4) dx^3`; there is still no bulk target.  That is the
+feedback-safety boundary relative to r167's global restoration of every cell.
+
+A terminal hard-bound crossing is an ordinary tokenless refusal with a
+device-reduced timestep suggestion.  For each violating cell, the reduction
+uses its measured local dose and remaining headroom,
+`scale=(|d_terminal|-|d_begin|)/(2^-2-|d_begin|)`, and chooses the next lower
+representable `dt/scale`.  The shared 20-attempt classifier then rebuilds the
+tangent target and retries from the unchanged accepted beginning.  This is
+valid because the local advective dose is timestep-scaled.  It is explicitly
+different from the retired global manifold limiter: that limiter attempted to
+control a measured `G` with a timestep-invariant feedback component, so
+reducing `dt` could not remove its floor.
+
+The sealed r169 state proves both sides.  With the retired `2^-3` threshold,
+step 33 again refuses at `dt=0.0011971283238381147 s` and
+`max=0.25728172063827515`, then suggests
+`0.0011418721405789256 s`.  The ordinary retry at that duration accepts at
+`max=0.24757766723632812`; both projections validate and an authenticated token
+is minted.  The dedicated retired-threshold mutant stops on the original
+refusal, so the old r169 finding remains a live RED rather than overwritten
+history.
+
+With `theta=2^-4`, the requested shadow completes without needing a hard-bound
+retry.  All 104 physical projections validate; all 100 conditional restoration
+projections validate.  Step 33 accepts on candidate zero at
+`dt=0.0011745213996618986 s` with `max=0.14402782917022705`.  Across the shadow,
+maximum deviation peaks at `0.15430498123168945`, p95 at
+`0.0021685957908630371`, p50 at `2.0384788513183594e-5`, and physical velocity
+at `10.871506690979004 m/s`.  The CFL family remains plume-scale and the final
+step is `0.0011549204355105758 s`; there are zero hard-bound retries.
+
+The accepted trajectory simulates `0.13594708242453635 s` with average step
+`0.001307183484851311 s`.  The final serialized campaign measures
+`112.8718750551343/149.257125 ms` device/wall p95.  Counting complete accepted
+step cost, tier-10 times 25 seconds projects to
+`0.5996346149904227/0.7929321510804586 h` by p95 and
+`0.5658843734913572/0.7588896044270401 h` by measured mean rate.  The result is
+inside the hour on device but not at the earlier 0.65 wall-hour expectation;
+the actual number is recorded rather than normalized to the forecast.  Trace
+`e3273037f56068efb2c067b8b70ec9524cfbd4edcf742c4ac51084b8bde507fa`
+binds every accepted dt, distribution statistic, tail population, exchanged
+volume, retry count, selector class, and target schedule; the final state is
+`b885eec0d01a1c3ddc96a70b797af2cba61769772543c78e9997aa53b79bce3b`.
+
+The 104-step shadow is therefore claimed.  The next authorized rung is the
+golden-slice Binary32/Binary64 subdominance measurement; guard supersession,
+eight-slice readmission, thermo/source maps, and first light still depend on
+their own evidence and are not inferred from this shadow.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

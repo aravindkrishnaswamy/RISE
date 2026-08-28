@@ -4183,3 +4183,31 @@ it was already tried and refuted here.
   110.68/146.90 ms device/wall, but its conditional 0.49/0.65 h extrapolation
   is not a 104-step claim.  This is the pre-registered genuine finding, so the
   shadow and every later ladder rung remain blocked.
+- **r170 two-dose tail margin (2026-08-27):** the policy is unchanged, but its
+  margins are corrected from the r169 measurement.  Engagement moves from
+  `2^-3` to `2^-4`: `2^-2 - 2*0.09 = 0.07`, so the dyadic stability coefficient
+  reserves at least two worst measured local doses beneath the unchanged
+  `2^-2` dynamics bound.  Cells drain only their signed excess above `2^-4`;
+  the exchange measure remains a tail sum, not global restoration.
+
+  A hard-bound terminal crossing now carries a device-reduced suggestion based
+  on local dose/headroom and enters the existing 20-attempt ordinary rejection
+  classifier.  This reduction is justified because local advective dose scales
+  with `dt`; it does not revive the retired global manifold limiter, whose
+  feedback floor was measured timestep-invariant.  The r169 state reproduces
+  its exact candidate-zero refusal under the retired threshold, and a second
+  retained RED takes that refusal through candidate one at
+  `0.0011418721405789256 s`, accepting at `0.24757766723632812` with both
+  projections valid.
+
+  The new policy completes all 104 steps with zero hard-bound retries.  Step 33
+  accepts at `0.14402782917022705`; the campaign peak is
+  `0.15430498123168945`, peak velocity is `10.871506690979004 m/s`, and all 104
+  physical plus 100 conditional restoration projections validate.  Tail
+  population peaks at 9,698 and total exchanged volume is
+  `0.063814808515304383 m^3`.  Device/wall p95 are
+  `112.8718750551343/149.257125 ms`, projecting to
+  `0.5996346149904227/0.7929321510804586 h`; the wall result is reported above
+  the forecast rather than adjusted.  Trace `e3273037...07fa` and final state
+  `b885eec0...ce3b` seal the shadow.  The ladder is unblocked only to the next
+  golden-slice subdominance rung.

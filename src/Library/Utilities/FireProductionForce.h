@@ -304,7 +304,8 @@ namespace RISE
 	bool DeriveFireProductionManifoldTailTarget(
 		const std::vector<double>& beginningDeviationPerCell,
 		double representedTimeStepS,double cellWidthM,
-		FireProductionManifoldTailTarget&,std::string* error=0 );
+		FireProductionManifoldTailTarget&,std::string* error=0,
+		double engagementThreshold=0x1p-4 );
 
 	class FireProductionAcceptedManifoldObservation;
 	struct FireProductionAcceptedCheckpointStateView

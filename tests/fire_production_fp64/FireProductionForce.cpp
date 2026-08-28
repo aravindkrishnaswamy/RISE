@@ -337,13 +337,15 @@ namespace RISEFireProductionFP64
 	bool DeriveFireProductionManifoldTailTarget(
 		const std::vector<double>& beginningDeviationPerCell,
 		const double representedTimeStepS,const double cellWidthM,
-		FireProductionManifoldTailTarget& result,std::string* error )
+		FireProductionManifoldTailTarget& result,std::string* error,
+		const double engagementThreshold )
 	{
 		result=FireProductionManifoldTailTarget();
-		constexpr double EngagementThreshold=0x1p-3;
 		constexpr double DynamicsValidityBound=0x1p-2;
 		if(beginningDeviationPerCell.empty()||!std::isfinite(representedTimeStepS)||
-			representedTimeStepS<=0.0||!std::isfinite(cellWidthM)||cellWidthM<=0.0)
+			representedTimeStepS<=0.0||!std::isfinite(cellWidthM)||cellWidthM<=0.0||
+			!std::isfinite(engagementThreshold)||engagementThreshold<=0.0||
+			engagementThreshold>=DynamicsValidityBound)
 			return Fail(error,"production manifold tail target metadata is invalid");
 		result.divergenceTargetPerS.resize(beginningDeviationPerCell.size(),0.0);
 		for(std::size_t cell=0u;cell<beginningDeviationPerCell.size();++cell){
@@ -354,12 +356,12 @@ namespace RISEFireProductionFP64
 				return Fail(error,
 					"production manifold beginning deviation exceeds dynamics bound");
 			}
-			if(magnitude<=EngagementThreshold)continue;
+			if(magnitude<=engagementThreshold)continue;
 			if(result.outlierCellCount==std::numeric_limits<std::uint32_t>::max()){
 				result=FireProductionManifoldTailTarget();
 				return Fail(error,"production manifold tail population overflows");
 			}
-			const double excess=magnitude-EngagementThreshold;
+			const double excess=magnitude-engagementThreshold;
 			// Positive production divergence increases this EOS-volume observable;
 			// the restoration target must therefore oppose the signed tail excess.
 			const double target=-std::copysign(excess/representedTimeStepS,deviation);

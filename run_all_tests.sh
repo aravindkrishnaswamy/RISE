@@ -985,6 +985,88 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	fi
 fi
 
+# r170: the deeper tail margin completes the 104-step shadow.  Two separately
+# serialized replays bind the retired 2^-3 stop and the ordinary hard-bound
+# refusal -> reduced-dt -> accepted transition on that same sealed state.
+if [ "$(uname -s)" = "Darwin" ]; then
+	run_r170_evidence() {
+		if [ -n "$timeout_bin" ]; then
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$@"
+		else
+			"$@"
+		fi
+	}
+	for r170_case in shadow retired retry; do
+		r170_name="FireSequenceTest.r170_${r170_case}"
+		r170_path="$BIN_DIR/FireSequenceTest"
+		r170_log="$LOG_DIR/$r170_name.log"
+		r170_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+		printf '[ evidence ] %-46s ... ' "$r170_name"
+		r170_rc=0
+		if [ ! -x "$r170_path" ]; then
+			r170_rc=127
+		else
+			case "$r170_case" in
+				shadow)
+					r170_expected=196
+					RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+						RISE_FIRE_MONITORED_MANIFOLD_SHADOW=1 \
+						RISE_OPTIONS_FILE="$r170_options" \
+						run_r170_evidence "$r170_path" --fire-production-golden-composition \
+						"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+						"$REPO_ROOT" >"$r170_log" 2>&1 || r170_rc=$?
+					;;
+				retired)
+					r170_expected=193
+					RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+						RISE_FIRE_MONITORED_MANIFOLD_SHADOW=1 \
+						RISE_FIRE_MANIFOLD_TAIL_THRESHOLD_RED=1 \
+						RISE_OPTIONS_FILE="$r170_options" \
+						run_r170_evidence "$r170_path" --fire-production-golden-composition \
+						"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+						"$REPO_ROOT" >"$r170_log" 2>&1 || r170_rc=$?
+					;;
+				retry)
+					r170_expected=192
+					RISE_FIRE_GOLDEN_LONG_SHADOW=1 \
+						RISE_FIRE_MONITORED_MANIFOLD_SHADOW=1 \
+						RISE_FIRE_MANIFOLD_TAIL_THRESHOLD_RED=1 \
+						RISE_FIRE_MANIFOLD_HARD_BOUND_RETRY_RED=1 \
+						RISE_OPTIONS_FILE="$r170_options" \
+						run_r170_evidence "$r170_path" --fire-production-golden-composition \
+						"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+						"$REPO_ROOT" >"$r170_log" 2>&1 || r170_rc=$?
+					;;
+			esac
+		fi
+		r170_bound=0
+		if [ "$r170_case" = shadow ]; then
+			grep -Fq 'MONITORED_MANIFOLD_SHADOW_STEP step=33 dt=0.0011745213996618986' "$r170_log" &&
+			grep -Fq 'field_max=0.14402782917022705' "$r170_log" &&
+			grep -Fq 'MONITORED_MANIFOLD_SHADOW_COMPLETE steps=104' "$r170_log" &&
+			grep -Fq 'max_peak=0.15430498123168945' "$r170_log" &&
+			grep -Fq 'restoration_passes=100 tail_population_peak=9698' "$r170_log" &&
+			grep -Fq 'hard_bound_retries=0 step33_refusals=0' "$r170_log" &&
+			grep -Fq 'trace=e3273037f56068efb2c067b8b70ec9524cfbd4edcf742c4ac51084b8bde507fa' "$r170_log" && r170_bound=1
+		elif [ "$r170_case" = retired ]; then
+			grep -Fq 'OUTLIER_BOUNDED_MANIFOLD_REFUSAL step=33 candidate=0 dt=0.0011971283238381147 field_max=0.25728172063827515' "$r170_log" &&
+			grep -Fq 'suggested_dt=0.0011418721405789256 next_candidate=1 cap=20 ordinary_atomic=1' "$r170_log" && r170_bound=1
+		else
+			grep -Fq 'OUTLIER_BOUNDED_MANIFOLD_REFUSAL step=33 candidate=0 dt=0.0011971283238381147 field_max=0.25728172063827515' "$r170_log" &&
+			grep -Fq 'OUTLIER_BOUNDED_HARD_RETRY_ACCEPTED step=33 candidate=1 dt=0.0011418721405789256 field_max=0.24757766723632812 physical_valid=1 restoration_valid=1 accepted_token=1' "$r170_log" && r170_bound=1
+		fi
+		if [ "$r170_rc" -eq "$r170_expected" ] && [ "$r170_bound" -eq 1 ] &&
+			grep -Fq 'golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$r170_log"; then
+			echo "PASS (exact exit=$r170_expected, r170 $r170_case)"
+			rm -f "$r170_log"
+		else
+			echo "FAIL (exit=$r170_rc expected $r170_expected)"
+			printf '%s\t%d\t%s\n' "$r170_name" "$r170_rc" "$r170_log" >> "$RUN_FAIL_TSV"
+			failed=$((failed + 1))
+		fi
+	done
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

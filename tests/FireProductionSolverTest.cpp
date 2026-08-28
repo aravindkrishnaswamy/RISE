@@ -891,7 +891,7 @@ int main()
 			"r163 initial manifold predictor rejects missing audit operands");
 	}
 	{
-		const double threshold=0x1p-3;
+		const double threshold=0x1p-4;
 		const double excess=0x1p-8;
 		const double dt=0x1p-10;
 		const double width=0.25;
@@ -904,7 +904,14 @@ int main()
 			tail.excessSum==2.0*excess&&
 			tail.drainedVolumeM3==2.0*excess*width*width*width&&
 			tail.maximumTargetMagnitudePerS==4.0,
-			"r-next monitored tail target touches only deviations beyond 2^-3");
+			"r170 monitored tail target touches only deviations beyond 2^-4");
+		FireProductionManifoldTailTarget retiredThreshold;
+		Check(DeriveFireProductionManifoldTailTarget(
+			{threshold+excess,0x1p-3+excess},dt,width,retiredThreshold,&error,0x1p-3)&&
+			retiredThreshold.outlierCellCount==1u&&
+			retiredThreshold.divergenceTargetPerS[0]==0.0f&&
+			retiredThreshold.divergenceTargetPerS[1]==-4.0f,
+			"r170 retained 2^-3 mutant leaves the newly engaged margin untouched");
 		FireProductionManifoldTailTarget rejected;
 		Check(!DeriveFireProductionManifoldTailTarget(
 			{std::nextafter(0x1p-2,std::numeric_limits<double>::infinity())},
@@ -4815,8 +4822,14 @@ int main()
 		advectionMetalSource.find("MTLMathModeFast")==std::string::npos&&
 		advectionMetalSource.find("fast::")==std::string::npos&&
 		CountSubstring(advectionMetalSource,"device atomic_uint* reduction")==1u&&
-		CountSubstring(advectionMetalSource,"atomic_fetch_max_explicit")==2u&&
-		CountSubstring(advectionMetalSource,"atomic_fetch_or_explicit")==2u&&
+		CountSubstring(advectionMetalSource,"atomic_fetch_max_explicit")==3u&&
+		CountSubstring(advectionMetalSource,"atomic_fetch_or_explicit")==3u&&
+		advectionMetalSource.find(
+			"atomic_fetch_max_explicit(reduction+3u,as_type<uint>(localDose/headroom)")!=
+			std::string::npos&&
+		advectionMetalSource.find(
+			"request.force.timeStepS/maximumDynamicsDoseScaleFloat,0.0f")!=
+			std::string::npos&&
 		advectionMetalSource.find("kernel void measure_methane_manifold(")!=std::string::npos&&
 		advectionMetalSource.find("makePipeline(\"measure_methane_manifold\")")!=std::string::npos&&
 		advectionMetalSource.find("simd_")==std::string::npos&&

@@ -799,6 +799,15 @@ kernel void measure_methane_manifold(device const float* beginningDeviation [[bu
  float generation=abs(terminalDeviation-beginning),field=abs(terminalDeviation);
  atomic_fetch_max_explicit(reduction,as_type<uint>(generation),memory_order_relaxed);
  atomic_fetch_max_explicit(reduction+1u,as_type<uint>(field),memory_order_relaxed);
+ constexpr float dynamicsBound=0x1p-2f;
+ if(field>dynamicsBound){
+  float beginningMagnitude=abs(beginning),headroom=dynamicsBound-beginningMagnitude;
+  float localDose=field-beginningMagnitude;
+  if(!(headroom>0.0f)||!(localDose>0.0f)||!isfinite(headroom)||!isfinite(localDose))
+   atomic_fetch_or_explicit(reduction+2u,1u,memory_order_relaxed);
+  else atomic_fetch_max_explicit(reduction+3u,as_type<uint>(localDose/headroom),
+   memory_order_relaxed);
+ }
  atomic_fetch_add_explicit(highHistogram+(as_type<uint>(field)>>16u),1u,memory_order_relaxed);
 }
 kernel void select_methane_manifold_high_bins(device atomic_uint* histogram [[buffer(0)]],
@@ -2504,6 +2513,15 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			}
 			const bool anomalyClosureTestDisabled=anomalyClosureTestActivation&&
 				std::strcmp(anomalyClosureTestActivation,"disabled")==0;
+			const char* tailThresholdREDActivation=std::getenv(
+				"RISE_FIRE_MANIFOLD_TAIL_THRESHOLD_RED");
+			if( tailThresholdREDActivation&&(!goldenLongShadowActivation||
+				std::strcmp(tailThresholdREDActivation,"1")!=0) ) {
+				if( structuredError ) *structuredError=
+					"production manifold tail-threshold RED activation is invalid";
+				return false;
+			}
+			const bool tailThresholdREDEnabled=tailThresholdREDActivation!=0;
 			const char* anomalyConvergenceProbeActivation=std::getenv(
 				"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
 			if( anomalyConvergenceProbeActivation&&
@@ -2643,7 +2661,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						request.beginningManifoldDeviationPerCell,
 						static_cast<double>(request.force.timeStepS),
 						static_cast<double>(shape.cellWidthM),manifoldTailTarget,
-						structuredError))return false;
+						structuredError,tailThresholdREDEnabled?0x1p-3:0x1p-4))return false;
 					effectiveRestorationTarget=manifoldTailTarget.divergenceTargetPerS;
 				}
 			}
@@ -3105,7 +3123,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				}
 				markPhase("production resident step failed while publishing resident terminal state");
 				const std::size_t manifoldReductionOffset=cellValueBytes+2u*packedFaceBytes;
-				const std::size_t manifoldReductionBytes=3u*sizeof(std::uint32_t);
+				const std::size_t manifoldReductionBytes=4u*sizeof(std::uint32_t);
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:
 					(manifoldReductionOffset+(measureManifold?manifoldReductionBytes:0u))
 					options:MTLResourceStorageModeShared];
@@ -3203,10 +3221,12 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const bool enforcePlateau=request.enforceManifoldPlateau&&
 					!restorationRemoved&&!plateauEvidenceEnabled;
 				float maximumManifoldGenerationFloat=0.0f,maximumTerminalDeviationFloat=0.0f;
+				float maximumDynamicsDoseScaleFloat=0.0f;
 				float terminalDeviationP50Float=0.0f,terminalDeviationP95Float=0.0f;
 				if( measureManifold&&manifoldReduction ) {
 					std::memcpy(&maximumManifoldGenerationFloat,manifoldReduction,sizeof(float));
 					std::memcpy(&maximumTerminalDeviationFloat,manifoldReduction+1u,sizeof(float));
+					std::memcpy(&maximumDynamicsDoseScaleFloat,manifoldReduction+3u,sizeof(float));
 					const std::uint32_t* quantileControl=reinterpret_cast<const std::uint32_t*>(
 						static_cast<const unsigned char*>([manifoldQuantileScratch contents])+
 						MetalManifoldQuantileControlOffset);
@@ -3217,6 +3237,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const double maximumTerminalDeviation=maximumTerminalDeviationFloat;
 				const double terminalDeviationP50=terminalDeviationP50Float;
 				const double terminalDeviationP95=terminalDeviationP95Float;
+				const double maximumDynamicsDoseScale=maximumDynamicsDoseScaleFloat;
 				FireProductionRestorationPlateauValidation plateauValidation;
 				if( measureManifold&&(!manifoldReduction||manifoldReduction[2u]!=0u||
 					!std::isfinite(maximumManifoldGeneration)||
@@ -3233,6 +3254,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				constexpr double monitoredDynamicsValidityBound=0x1p-2;
 				const bool dynamicsBoundPassed=!measureManifold||
 					maximumTerminalDeviation<=monitoredDynamicsValidityBound;
+				if(measureManifold&&!dynamicsBoundPassed&&
+					(!std::isfinite(maximumDynamicsDoseScale)||maximumDynamicsDoseScale<=1.0))
+					return false;
 				const bool plateauPassed=dynamicsBoundPassed&&(!enforcePlateau||
 					(plateauValidation.mechanismPassed&&
 					maximumTerminalDeviation<=lowMachPlateauAllowance));
@@ -3334,10 +3358,18 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.restorationResidualBandPerS=
 					plateauValidation.maximumPostResidualPerS;
 				double suggestedManifoldTimeStepS=0.0;
-				computed.manifoldNextTimeStepAvailable=enforcePlateau&&
-					DeriveFireProductionManifoldTimeStep(
+				if(enforcePlateau)
+					computed.manifoldNextTimeStepAvailable=DeriveFireProductionManifoldTimeStep(
 						static_cast<double>(request.force.timeStepS),maximumManifoldGeneration,
 						plateauValidation.deliveredDrainFraction,suggestedManifoldTimeStepS,0);
+				else if(measureManifold&&!dynamicsBoundPassed){
+					const float reduced=std::nextafter(
+						request.force.timeStepS/maximumDynamicsDoseScaleFloat,0.0f);
+					computed.manifoldNextTimeStepAvailable=std::isfinite(reduced)&&reduced>0.0f&&
+						reduced<request.force.timeStepS;
+					suggestedManifoldTimeStepS=computed.manifoldNextTimeStepAvailable?
+						static_cast<double>(reduced):0.0;
+				}
 				computed.suggestedManifoldTimeStepS=computed.manifoldNextTimeStepAvailable?
 					suggestedManifoldTimeStepS:0.0;
 				computed.manifoldDiagnosticsMonitored=measureManifold;
