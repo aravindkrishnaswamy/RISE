@@ -1168,7 +1168,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	r172_protocol_sha="e58ee48de0c79dc35aa6e6bf344729c12cc74bf7d89cfa3e78cfeaf28cc9630c"
 	r172_targets_sha="6e0af5dcb7602b6fd067bc6d4b113378c14444643300ede6375d442c7cdef42c"
 	r173_amendment="$REPO_ROOT/rendered/fire_production_calibration/r173_filtered_temporal_protocol/filtered_temporal_protocol.v1"
-	r173_amendment_sha="5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562"
+	r173_amendment_sha="5cefe11a97feb182988e1254c15bb9b1bfb4ecc642e8ad4b3ab2a16b462caeb0"
 	r172_temp="$(mktemp -d "${TMPDIR:-/tmp}/rise-r172-targets.XXXXXX")"
 	r172_evaluator_allowed() {
 		[ -x "$1" ] && [ -x "$2" ] && [ "$3" -eq 1 ]
@@ -1218,7 +1218,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 		[ "$r172_missing_owner_red" -eq 1 ] &&
 		grep -Fq 'temporal scalar component=8 production_D=1.3664113219736267/0.68316914382060645 order=1 E=2.7328226439472538 mode=richardson accepted=1 oracle_D=0.0012312438866646748/0.001273209006325096 order=0 E=0.0012732090063250962 mode=floor_upper_bound accepted=1' "$r172_log" &&
 		grep -Fq 'temporal velocity production_D=6.7800078709060773e-06/3.735511745788258e-06 order=0.85998104987383395 E=1.5098888236479335e-05 mode=richardson accepted=1 oracle_D=6.2907169766867145e-06/5.3409610560218166e-06 order=0.23612509109838353 E=4.1666621096787029e-05 mode=richardson accepted=1' "$r172_log" &&
-		grep -Fq 'temporal refinement complete baseline=0.0018513043178245425 horizon=0.01481043454259634 target_sha256=1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c/1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1/95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551 amendment_sha256=5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562 refusals=0/0 floor_bounds=0/1 sole_floor=oracle_scalar_8 accepted=1' "$r172_log" &&
+		grep -Fq 'temporal refinement complete baseline=0.0018513043178245425 horizon=0.01481043454259634 target_sha256=1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c/1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1/95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551 amendment_sha256=5cefe11a97feb182988e1254c15bb9b1bfb4ecc642e8ad4b3ab2a16b462caeb0 refusals=0/0 floor_bounds=0/1 sole_floor=oracle_scalar_8 accepted=1' "$r172_log" &&
 		[ "$(grep -c '^temporal scalar component=' "$r172_log")" -eq 9 ] &&
 		[ "$(grep -c '^temporal ledger component=' "$r172_log")" -eq 9 ] &&
 		[ "$(grep -o 'mode=floor_upper_bound' "$r172_log" | wc -l | tr -d ' ')" -eq 1 ] &&

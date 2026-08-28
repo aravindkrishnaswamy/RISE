@@ -2265,7 +2265,7 @@ int main()
 		"filtered_temporal_protocol.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalProtocol.begin(),filteredTemporalProtocol.end()))==
-			"5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562"&&
+			"5cefe11a97feb182988e1254c15bb9b1bfb4ecc642e8ad4b3ab2a16b462caeb0"&&
 		filteredTemporalProtocol.find("filter_owner_source_sha256 "
 			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d")!=
 			std::string::npos&&
@@ -2274,7 +2274,9 @@ int main()
 		filteredTemporalProtocol.find("filter_width_m 0.04894898570785762")!=
 			std::string::npos&&
 		filteredTemporalProtocol.find(
-			"outcome_plateau use_nextUp_max_filtered_interlevel_difference_as_upper_bound")!=
+			"outcome_plateau exact_r172_oracle_sensible_energy_pair_only_use_nextUp_max_filtered_interlevel_difference_as_upper_bound")!=
+			std::string::npos&&
+		filteredTemporalProtocol.find("all_other_noncontracting_pairs refuse")!=
 			std::string::npos&&
 		filteredTemporalProtocol.find("new_numeric_constant_added false")!=std::string::npos&&
 		filteredTemporalProtocol.find("temporal_measurement_performed false")!=
@@ -2288,10 +2290,10 @@ int main()
 		"filtered_temporal.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalEvidence.begin(),filteredTemporalEvidence.end()))==
-			"ea3641b1e1e58cd4cd99a49f220e3a58d9700fb7e12b4a98114b1c89cd268747"&&
+			"c85364852d2a48cc4d6b147dddb6c040254ef3931153a387b3950b33da93f5f4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalRaw.begin(),filteredTemporalRaw.end()))==
-			"58d29b87137d71b429322e6e5adcb5223c448e163708023e1e67ae332b260009"&&
+			"a9036ec70ef6259dd458c53c5232e4b4d5999e75333d0ecca9da2849521363b5"&&
 		filteredTemporalEvidence.find("fixture_sha256 "
 			"5840a03f6f15d9d7a5ac4ffc5fd37ab5972ea805f303b276858ffa16d2a0f592")!=
 			std::string::npos&&
@@ -2302,7 +2304,7 @@ int main()
 			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668")!=
 			std::string::npos&&
 		filteredTemporalEvidence.find("unix_runner_sha256 "
-			"efe61c133b593409ff1caa4cddb3efe3738fd0b722618089134fd3429d735aab")!=
+			"211c3de0442f83e3f8be70a65efd6891f01b18681dafb03668c80331e89fa847")!=
 			std::string::npos&&
 		filteredTemporalEvidence.find("floor_upper_bound_terms production_0 oracle_1")!=
 			std::string::npos&&
@@ -2324,13 +2326,13 @@ int main()
 		"equal_time_readmission.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionEvidence.begin(),equalTimeReadmissionEvidence.end()))==
-			"7bb7f4f6ef654ec5c9e312ea3778198b70870286e9e72b8adf8a784ea5873614"&&
+			"f8ef083d184115e0829e1a005ded9cbc8ea80af87d4779872edb0c144c1c017a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
 			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"49add6cb0095a51664e48bd81636dcd043d79e29e6e79bdc2cfa944457db2c4b"&&
+			"6686ec509f503ca73e31f3a96abab530388fc9b957226b1f17daf5cb253be100"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"5840a03f6f15d9d7a5ac4ffc5fd37ab5972ea805f303b276858ffa16d2a0f592"&&
@@ -2342,7 +2344,7 @@ int main()
 			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"c2e505ce5703ba2d3f841a265867d62a544ca275da67447feea48be8be3f1121"&&
+			"211c3de0442f83e3f8be70a65efd6891f01b18681dafb03668c80331e89fa847"&&
 		equalTimeReadmissionEvidence.find("gate_count 152")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find("failure_count 0")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find(

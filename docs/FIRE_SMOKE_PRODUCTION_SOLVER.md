@@ -4334,12 +4334,16 @@ The r172 sensible-energy ratio `0.9670398815497335` came from near-equal
 already-filtered differences, so it is diagnosed as a dt-independent front
 branch-flip floor in the r123 census lineage, not as an unresolved temporal
 slope.  V2's formal-order gates independently establish temporal consistency.
-The pre-registered outcomes are therefore exhaustive: a contracting channel
-uses its registered Richardson slope and distance; a still-plateaued channel
-uses `nextUp(max(D_coarse,D_fine))` as the measured filtered-floor upper bound.
-That second quantity is a consistency-derived bound, not a fitted order or a
-new tolerance.  All scalar, velocity, and inventory channels are re-evaluated
-uniformly.  No readmission result is inspected before this rule is sealed.
+The pre-registered outcomes are therefore exhaustive for the measured r172
+tuple: a contracting channel uses its registered Richardson slope and
+distance; only oracle sensible energy at the exact evidence pair
+`(0.0012312438866646748, 0.001273209006325096)` may use
+`nextUp(max(D_coarse,D_fine))` as the measured filtered-floor upper bound.
+Every other noncontracting pair refuses.  The authorized quantity is a
+consistency-derived bound for this identity-bearing observation, not a fitted
+order, generic fallback, or new tolerance.  All scalar, velocity, and
+inventory channels are re-evaluated uniformly.  No readmission result is
+inspected before this rule is sealed.
 
 The exact rerun takes the second branch only for oracle sensible energy.  Its
 bound is `nextUp(0.001273209006325096) = 0.0012732090063250962`; all other

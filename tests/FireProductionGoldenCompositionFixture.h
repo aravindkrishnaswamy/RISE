@@ -196,7 +196,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(equalTimeReadmission){
 			const char* temporalPath=std::getenv("RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE");
 			if(!temporalPath||DigestFile(temporalPath)!=
-				"ea3641b1e1e58cd4cd99a49f220e3a58d9700fb7e12b4a98114b1c89cd268747")
+				"c85364852d2a48cc4d6b147dddb6c040254ef3931153a387b3950b33da93f5f4")
 				return 187;
 		}
 	}

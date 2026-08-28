@@ -4265,10 +4265,13 @@ it was already tried and refuted here.
   ratio and near-equal filtered differences are therefore classified as the
   dt-independent front branch-flip floor anticipated by the r123 census,
   while V2's formal-order gates own temporal consistency.  Before rerunning,
-  r173 freezes two outcomes for every scalar, velocity, and inventory channel:
-  contracting differences use Richardson; a persistent plateau uses
+  r173 freezes two outcomes for the observed r172 tuple: contracting
+  differences use Richardson; only the exact oracle sensible-energy pair
+  `(0.0012312438866646748, 0.001273209006325096)` may use
   `nextUp(max(D_coarse,D_fine))` as an upper bound on the measured filtered
-  floor.  The latter is a bound, not a fitted order, and adds no constant.
+  floor.  Every other noncontracting pair refuses.  The authorized quantity
+  is an identity-bearing bound, not a generic fallback or fitted order, and
+  adds no constant.
   The exact rerun accepts every channel.  Oracle sensible energy alone uses
   the floor branch, with bound `0.0012732090063250962`; the other 37 terms use
   Richardson across 19 paired production/oracle rows.  Refusal counts are
