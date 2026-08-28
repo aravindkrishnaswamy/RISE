@@ -136,14 +136,26 @@ namespace FireProductionCalibration
 		}
 		projection.provisionalMomentumKGPerM2S=computed.dual.momentum;
 		projection.divergenceTargetPerS=Promote(request.divergenceTargetPerS);
-		if(!FP64::ProjectFireProductionResidentPhysicalCPU(projection,
-			computed.physicalProjection,error))return false;
-		if(!request.enforceManifoldPlateau){
-			computed.projection=std::move(computed.physicalProjection);
+		RISE::FireProductionManifoldTailTarget tailTarget;
+		std::string tailError;
+		const bool tailMetadataAvailable=!request.beginningManifoldDeviationPerCell.empty();
+		if(tailMetadataAvailable&&!RISE::DeriveFireProductionManifoldTailTarget(
+			request.beginningManifoldDeviationPerCell,
+			static_cast<double>(request.force.timeStepS),
+			static_cast<double>(request.force.shape.cellWidthM),tailTarget,&tailError)){
+			if(error)*error=tailError;return false;
+		}
+		const bool targetedRestorationActive=tailMetadataAvailable&&
+			tailTarget.outlierCellCount>0u;
+		if(!request.enforceManifoldPlateau&&!targetedRestorationActive){
+			if(!FP64::ProjectFireProductionCPU(projection,computed.projection,error))return false;
 			result=std::move(computed);return true;
 		}
+		if(!FP64::ProjectFireProductionResidentPhysicalCPU(projection,
+			computed.physicalProjection,error))return false;
 		projection.provisionalMomentumKGPerM2S=computed.physicalProjection.momentumKGPerM2S;
-		projection.divergenceTargetPerS=Promote(request.restorationDivergenceTargetPerS);
+		projection.divergenceTargetPerS=Promote(targetedRestorationActive?
+			tailTarget.divergenceTargetPerS:request.restorationDivergenceTargetPerS);
 		if(!FP64::ProjectFireProductionRestorationCPU(projection,computed.projection,error))return false;
 		result=std::move(computed);return true;
 	}

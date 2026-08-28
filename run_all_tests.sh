@@ -1067,6 +1067,87 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	done
 fi
 
+# r171: deterministically regenerate and SHA-gate the current-build golden
+# continuation, then execute all 152 same-scheme fp32/fp64 subdominance gates.
+# The historical r138a hashes remain historical and are never overwritten.
+if [ "$(uname -s)" = "Darwin" ]; then
+	r171_path="$BIN_DIR/FireSequenceTest"
+	r171_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	r171_protocol="$REPO_ROOT/rendered/fire_production_calibration/r171_golden_subdominance_protocol/golden_subdominance_protocol.v1"
+	r171_temp="$(mktemp -d "${TMPDIR:-/tmp}/rise-r171-golden.XXXXXX")"
+	case "$(basename -- "$r171_temp")" in rise-r171-golden.*) ;; *)
+		echo "Refusing unsafe r171 temporary directory: $r171_temp" >&2; exit 1;; esac
+	r171_trace="$r171_temp/golden.trace"
+	r171_frame="$r171_temp/golden.vdb"
+	r171_generate_log="$LOG_DIR/FireSequenceTest.r171_generate.log"
+	r171_measure_log="$LOG_DIR/FireSequenceTest.r171_subdominance.log"
+	printf '[ evidence ] %-46s ... ' 'FireSequenceTest.r171_golden_subdominance'
+	r171_generate_rc=0
+	r171_measure_rc=0
+	if [ ! -x "$r171_path" ]; then
+		r171_generate_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r171_path" \
+			--fire-r171-golden-beginnings \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$r171_trace" "$r171_frame" >"$r171_generate_log" 2>&1 ||
+			r171_generate_rc=$?
+	else
+		"$r171_path" --fire-r171-golden-beginnings \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$r171_trace" "$r171_frame" >"$r171_generate_log" 2>&1 ||
+			r171_generate_rc=$?
+	fi
+	r171_inputs_bound=1
+	if [ "$r171_generate_rc" -eq 189 ]; then
+		for r171_slice in 0 1 2 3 4 5 6 7; do
+			r171_expected="$(awk -v key="beginning_${r171_slice}_state_sha256" \
+				'$1==key {print $2}' "$r171_protocol")"
+			if [ -z "$r171_expected" ] || ! grep -Fq \
+				"r171 golden beginning step=${r171_slice} state_sha256=${r171_expected}" \
+				"$r171_generate_log"; then
+				r171_inputs_bound=0
+			fi
+		done
+	fi
+	if [ "$r171_generate_rc" -eq 189 ] && [ "$r171_inputs_bound" -eq 1 ]; then
+		if [ -n "$timeout_bin" ]; then
+			RISE_FIRE_GOLDEN_SUBDOMINANCE=1 \
+				RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL="$r171_protocol" \
+				RISE_OPTIONS_FILE="$r171_options" \
+				"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r171_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r171_trace.snapshots" >"$r171_measure_log" 2>&1 || r171_measure_rc=$?
+		else
+			RISE_FIRE_GOLDEN_SUBDOMINANCE=1 \
+				RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL="$r171_protocol" \
+				RISE_OPTIONS_FILE="$r171_options" \
+				"$r171_path" --fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r171_trace.snapshots" >"$r171_measure_log" 2>&1 || r171_measure_rc=$?
+		fi
+	else
+		r171_measure_rc=127
+	fi
+	if [ "$r171_generate_rc" -eq 189 ] && [ "$r171_inputs_bound" -eq 1 ] &&
+		[ "$r171_measure_rc" -eq 190 ] &&
+		grep -Fq 'r171 golden beginning generation complete slices=8 root=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' "$r171_generate_log" &&
+		[ "$(grep -c '^golden subdominance slice=' "$r171_measure_log")" -eq 8 ] &&
+		grep -Fq 'golden subdominance complete trace=1e48343aa5589cded65f2345e74d2ba103508bdf07fb9ab56e5ea7351cd00b61 slices=8 gates=152 physical_retries=0 velocity_max=3.2429213131399156e-09 velocity_bound=0.00073630739506866123 velocity_margin=227050.65093168768 scalar_min_margin=7972.9650118056461 inventory_min_margin=8894.785377013457' "$r171_measure_log"; then
+		echo 'PASS (exact exits=189/190, 152 gates)'
+		rm -f "$r171_generate_log" "$r171_measure_log"
+	else
+		echo "FAIL (generator=$r171_generate_rc expected 189; measurement=$r171_measure_rc expected 190)"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r171_generate' "$r171_generate_rc" \
+			"$r171_generate_log" >> "$RUN_FAIL_TSV"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r171_subdominance' "$r171_measure_rc" \
+			"$r171_measure_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+	rm -rf "$r171_temp"
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

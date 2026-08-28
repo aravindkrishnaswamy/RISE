@@ -686,6 +686,47 @@ namespace
 			momentum,velocity,digest);
 	}
 
+	bool CheckpointProductionBeginningSHA256(const MethaneRunCheckpoint& checkpoint,
+		std::string& digest)
+	{
+		RISECBOR64::Bytes bytes;
+		auto appendU64=[&](const std::uint64_t value){
+			for(unsigned int byte=0u;byte<8u;++byte)
+				bytes.push_back(static_cast<unsigned char>((value>>(8u*byte))&0xffu));};
+		auto appendDouble=[&](const double value){appendU64(DoubleBits(value));};
+		auto appendText=[&](const std::string& value){appendU64(value.size());
+			bytes.insert(bytes.end(),value.begin(),value.end());};
+		auto appendDoubles=[&](const std::vector<double>& values){appendU64(values.size());
+			for(const double value:values)appendDouble(value);};
+		const char schema[]="rise.fire.production.beginning.v1";
+		bytes.insert(bytes.end(),schema,schema+sizeof(schema));
+		appendText(checkpoint.caseRecordId);
+		appendU64(checkpoint.dimensions[0]);appendU64(checkpoint.dimensions[1]);
+		appendU64(checkpoint.dimensions[2]);appendDouble(checkpoint.cellWidthM);
+		appendDouble(checkpoint.simulationTimeS);appendDouble(checkpoint.previousStepS);
+		appendDouble(checkpoint.lastAcceptedStepS);appendU64(checkpoint.acceptedSteps);
+		appendU64(checkpoint.values.acceptedTimeStepHistoryS.size());
+		for(const double value:checkpoint.values.acceptedTimeStepHistoryS)appendDouble(value);
+		appendU64(checkpoint.productionManifoldObservation.Available()?1u:0u);
+		appendDouble(checkpoint.productionManifoldObservation.TimeStepS());
+		appendDouble(checkpoint.productionManifoldObservation.MaximumGeneration());
+		appendDouble(checkpoint.productionManifoldObservation.RestorationDrainFraction());
+		appendU64(checkpoint.productionManifoldObservation.SerializedAcceptedStateDigest());
+		appendU64(checkpoint.states.size());
+		for(const MethaneCellState& state:checkpoint.states){
+			appendU64(static_cast<std::uint64_t>(state.producerPrecision));
+			appendDouble(state.temperatureK);
+			const ConservativeVector conservative=ToConservativeVector(state);
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+				appendDouble(conservative[component]);
+		}
+		for(unsigned int axis=0u;axis<3u;++axis)
+			appendDoubles(checkpoint.momentum.component[axis]);
+		for(unsigned int axis=0u;axis<3u;++axis)
+			appendDoubles(checkpoint.velocity.component[axis]);
+		digest=RISECBOR64::SHA256Hex(bytes);return digest.size()==64u;
+	}
+
 	bool CheckpointAcceptedStateMatchesObservation(const MethaneRunCheckpoint& checkpoint,
 		const FireProductionAcceptedManifoldObservation& observation,
 		std::uint64_t& legacyDigest)
@@ -3296,6 +3337,35 @@ namespace
 		return 0;
 	}
 
+	int RunR171GoldenBeginningGeneration(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
+	{
+		static const char* checkpointBuild=
+			"8fb5e3eb14566f29266013487be77bbbb64fa745383d7ec2af62c55f4f37cd56";
+		const double targetS=25.032480502915522;
+		const int status=RunResumeEquivalenceTraceChild(checkpointPath,tracePath,framePath,
+			16u,8u,targetS,1.0/targetS,10.0,0.30,33.0,checkpointBuild);
+		if(status!=0)return status;
+		const std::filesystem::path snapshots=tracePath.string()+".snapshots";
+		MethaneRunCheckpoint root;std::string error,stateDigest;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,root,error)||
+			!CheckpointProductionBeginningSHA256(root,stateDigest))return 188;
+		std::fprintf(stderr,"r171 golden beginning step=0 state_sha256=%s\n",
+			stateDigest.c_str());
+		for(std::size_t step=0u;step<8u;++step){
+			std::ostringstream name;name<<"step_"<<std::setw(2)<<std::setfill('0')<<step+1u<<
+				".checkpoint";
+			MethaneRunCheckpoint beginning;
+			if(!LoadMethaneRunCheckpoint(snapshots/name.str(),beginning,error)||
+				!CheckpointProductionBeginningSHA256(beginning,stateDigest))return 188;
+			std::fprintf(stderr,"r171 golden beginning step=%zu state_sha256=%s\n",step+1u,
+				stateDigest.c_str());
+		}
+		std::fprintf(stderr,"r171 golden beginning generation complete slices=8 root=%s\n",
+			DigestFile(checkpointPath).c_str());
+		return 189;
+	}
+
 #if defined(_WIN32)
 	std::string QuoteSubprocessArgument(const std::string& value)
 	{
@@ -3385,6 +3455,8 @@ int main(int argc,char** argv)
 		return RunResumeEquivalenceCertificateChild(argv[2],argv[3],argv[4],argv[5]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-r80-golden-continuation")==0)
 		return RunR80GoldenContinuationFixture(argv[2],argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r171-golden-beginnings")==0)
+		return RunR171GoldenBeginningGeneration(argv[2],argv[3],argv[4]);
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-golden-projection")==0)
 		return RunProductionGoldenProjectionFixture(argv[2]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-golden-composition")==0)

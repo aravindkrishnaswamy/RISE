@@ -170,6 +170,26 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"RISE_FIRE_MANIFOLD_HARD_BOUND_RETRY_RED");
 	if(hardBoundRetryREDValue&&std::strcmp(hardBoundRetryREDValue,"1")!=0)return 192;
 	const bool hardBoundRetryRED=hardBoundRetryREDValue!=nullptr;
+	const char* goldenSubdominanceValue=std::getenv(
+		"RISE_FIRE_GOLDEN_SUBDOMINANCE");
+	if(goldenSubdominanceValue&&std::strcmp(goldenSubdominanceValue,"1")!=0)return 191;
+	const bool goldenSubdominance=goldenSubdominanceValue!=nullptr;
+	std::array<std::string,8> goldenSubdominanceBeginningDigests;
+	if(goldenSubdominance){
+		const char* protocolPath=std::getenv("RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL");
+		if(!protocolPath)return 191;
+		std::ifstream protocol(protocolPath,std::ios::binary);
+		if(!protocol)return 191;
+		std::string line;
+		while(std::getline(protocol,line))for(std::size_t slice=0u;slice<8u;++slice){
+			const std::string prefix="beginning_"+std::to_string(slice)+"_state_sha256 ";
+			if(line.rfind(prefix,0u)==0u)
+				goldenSubdominanceBeginningDigests[slice]=line.substr(prefix.size());
+		}
+		if(std::any_of(goldenSubdominanceBeginningDigests.begin(),
+			goldenSubdominanceBeginningDigests.end(),[](const std::string& digest){
+				return digest.size()!=64u;}))return 191;
+	}
 	const char* physicalRetryREDValue=std::getenv(
 		"RISE_FIRE_PHYSICAL_PROJECTION_RETRY_RED");
 	if(physicalRetryREDValue&&std::strcmp(physicalRetryREDValue,"1")!=0)return 202;
@@ -191,6 +211,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		(monitoredLongShadowSmoke&&!monitoredLongShadow)||
 		(tailThresholdRED&&(!monitoredLongShadow||monitoredLongShadowSmoke))||
 		(hardBoundRetryRED&&!tailThresholdRED)||
+		(goldenSubdominance&&(longShadow||plateauProbe||manifoldProbe||stageBudgetProbe||
+			timestepVelocityAuditPresent||contractionProbe||closureConvergence))||
 		(physicalRetryRED&&(!longShadow||hostResidualProbe||acceptedLongShadow))||
 		(longShadow&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe))||
@@ -200,6 +222,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			timestepVelocityAuditPresent||longShadow||contractionProbe)))return 224;
 	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
 		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
+	std::array<double,9> maximumPrecisionScalar={{}},maximumPrecisionInventory={{}};
+	double maximumPrecisionVelocity=0.0;
+	double minimumScalarSubdominanceMargin=std::numeric_limits<double>::infinity();
+	double minimumInventorySubdominanceMargin=std::numeric_limits<double>::infinity();
+	double minimumVelocitySubdominanceMargin=std::numeric_limits<double>::infinity();
+	std::size_t precisionGateCount=0u,physicalRetryCount=0u;
 	for(std::size_t component=0u;component<9u;++component)
 		if(!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
 			FireProductionDyadicCalibration::ExpectedProductionScalarEvidence[component][0],
@@ -253,10 +281,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		MethaneRunCheckpoint beginning;
 		if(longShadow&&slice>0u)beginning=std::move(longShadowState);
 		else if((longShadow?slice==0u&&DigestFile(beginningPath)!=checkpointDigest:
-			DigestFile(beginningPath)!=beginningDigests[slice])||
+			(!goldenSubdominance&&DigestFile(beginningPath)!=beginningDigests[slice]))||
 			!LoadMethaneRunCheckpoint(beginningPath,beginning,error)){
 			std::fprintf(stderr,"production golden composition beginning %zu failed: %s\n",
 				slice,error.c_str());return 113;}
+		if(goldenSubdominance){
+			std::string stateDigest;
+			if(!CheckpointProductionBeginningSHA256(beginning,stateDigest)||
+				stateDigest!=goldenSubdominanceBeginningDigests[slice]){
+				std::fprintf(stderr,
+					"production golden composition beginning %zu state digest mismatch\n",slice);
+				return 113;
+			}
+		}
 		if(
 			beginning.acceptedSteps!=3479u+slice){std::fprintf(stderr,
 			"production golden composition beginning %zu failed: %s\n",slice,error.c_str());return 113;}
@@ -2567,7 +2604,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		double productionWallMS=0.0;
 		for(;;){
 			const auto productionWallStart=std::chrono::steady_clock::now();
-			productionSucceeded=longShadow?
+			productionSucceeded=(longShadow||goldenSubdominance)?
 				RISE::AttemptFireProductionResidentStepMetal(request,production,&error):
 				RISE::AdvanceFireProductionResidentStepMetal(request,production,&error);
 			productionWallMS=std::chrono::duration<double,std::milli>(
@@ -2581,7 +2618,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			// must be brought into band before the owner classifies that ordinary
 			// refusal; the boolean alone cannot distinguish it from a fatal/default
 			// result.
-			if((!acceptedLongShadow&&!physicalRetryRED)||
+			if((!acceptedLongShadow&&!physicalRetryRED&&!goldenSubdominance)||
 				production.physicalProjection.validationPassed||
 				production.residentProjectionInvocationCount!=2u)break;
 			const double pre=production.physicalProjection.maximumPreProjectionResidualPerS;
@@ -2604,6 +2641,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.physicalOpenProjectionVCycleCount=required;
 			longShadowPhysicalOpenVCycleCount=required;
 			++longShadowPhysicalRetryCount;
+			++physicalRetryCount;
 			longShadowPhysicalRetryFinalCount=required;
 			production=RISE::FireProductionResidentStepResult();
 			error.clear();
@@ -2962,12 +3000,20 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			production.projection.maximumPreProjectionResidualPerS,
 			production.projection.maximumPostProjectionResidualPerS,
 			std::fabs(maximumRestorationTarget),0.005f*std::fabs(maximumRestorationTarget));
-		if(production.interstageFullGridTransferCount!=0u||production.residentProjectionInvocationCount!=2u||
+		if(goldenSubdominance){
+			if(production.interstageFullGridTransferCount!=0u||
+				production.residentProjectionInvocationCount!=1u||
+				production.conservativeProducerPrecision!=
+					RISE::FireStateProducerPrecision::Binary32||
+				!production.projection.validationPassed||
+				production.projection.executedVCycleCount!=16u||
+				production.projection.executedJacobiSweepCount!=1088u)return 120;
+		}else if(production.interstageFullGridTransferCount!=0u||
+			production.residentProjectionInvocationCount!=2u||
 			production.conservativeProducerPrecision!=RISE::FireStateProducerPrecision::Binary32||
 			!production.physicalProjection.validationPassed||
 			production.projection.executedVCycleCount!=16u||
-			production.projection.executedJacobiSweepCount!=1088u)
-			return 120;
+			production.projection.executedJacobiSweepCount!=1088u)return 120;
 		if(!production.projection.validationPassed){
 			const bool exactRefusal=slice==0u&&
 				production.physicalProjection.executedVCycleCount==17u&&
@@ -3357,12 +3403,16 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::fprintf(stderr,"production golden fp64 slice %zu failed: %s\n",slice,
 				error.c_str());return 131;}
 		if(production64.force.schedule.substepCount!=production.forceSchedule.substepCount||
-			!production64.physicalProjection.validationPassed||
 			!production64.projection.validationPassed||
-			production64.physicalProjection.executedVCycleCount!=
-				production.physicalProjection.executedVCycleCount||
 			production64.projection.executedVCycleCount!=
 				production.projection.executedVCycleCount)return 132;
+		const bool precisionRestorationActive=
+			production.residentProjectionInvocationCount==2u;
+		if(precisionRestorationActive!=
+			(production64.physicalProjection.executedVCycleCount!=0u)||
+			(precisionRestorationActive&&(!production64.physicalProjection.validationPassed||
+				production64.physicalProjection.executedVCycleCount!=
+					production.physicalProjection.executedVCycleCount)))return 132;
 		std::vector<ConservativeVector> conservative32,conservative64;
 		PeriodicMACField velocity32,velocity64;
 		FireProductionDyadicCalibration::FilteredField filtered32,filtered64;
@@ -3401,22 +3451,48 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				precisionScalar[component]);
 			FireProductionDyadicCalibration::AppendDouble(precisionTrace,
 				precisionInventory);
+			FireProductionDyadicCalibration::AppendDouble(precisionTrace,scalarBound[component]);
+			FireProductionDyadicCalibration::AppendDouble(precisionTrace,inventoryBound[component]);
+			maximumPrecisionScalar[component]=std::max(maximumPrecisionScalar[component],
+				precisionScalar[component]);
+			maximumPrecisionInventory[component]=std::max(
+				maximumPrecisionInventory[component],precisionInventory);
+			minimumScalarSubdominanceMargin=std::min(minimumScalarSubdominanceMargin,
+				precisionScalar[component]>0.0?scalarBound[component]/precisionScalar[component]:
+				std::numeric_limits<double>::infinity());
+			minimumInventorySubdominanceMargin=std::min(minimumInventorySubdominanceMargin,
+				precisionInventory>0.0?inventoryBound[component]/precisionInventory:
+				std::numeric_limits<double>::infinity());
+			precisionGateCount+=2u;
 		}
 		if(!(precisionVelocity<=velocityBound))return 134;
 		FireProductionDyadicCalibration::AppendDouble(precisionTrace,precisionVelocity);
+		FireProductionDyadicCalibration::AppendDouble(precisionTrace,velocityBound);
+		maximumPrecisionVelocity=std::max(maximumPrecisionVelocity,precisionVelocity);
+		minimumVelocitySubdominanceMargin=std::min(minimumVelocitySubdominanceMargin,
+			precisionVelocity>0.0?velocityBound/precisionVelocity:
+			std::numeric_limits<double>::infinity());
+		++precisionGateCount;
 		FireProductionDyadicCalibration::AppendInteger(precisionTrace,
 			production.forceSchedule.substepCount);
 		FireProductionDyadicCalibration::AppendInteger(precisionTrace,
 			production.residentProjectionInvocationCount);
 		std::fprintf(stderr,"golden subdominance slice=%zu velocity=%.17g bound=%.17g "
-			"margin=%.17g scalar=",slice,precisionVelocity,velocityBound,
+			"margin=%.17g scalar_value_bound_margin=",slice,precisionVelocity,velocityBound,
 			precisionVelocity>0.0?velocityBound/precisionVelocity:
 			std::numeric_limits<double>::infinity());
-		for(const double value:precisionScalar)std::fprintf(stderr," %.17g",value);
-		std::fprintf(stderr," inventory=");
 		for(std::size_t component=0u;component<9u;++component)
-			std::fprintf(stderr," %.17g",std::fabs(inventory32[component]-
-				inventory64[component]));
+			std::fprintf(stderr," %.17g/%.17g/%.17g",precisionScalar[component],
+				scalarBound[component],precisionScalar[component]>0.0?
+				scalarBound[component]/precisionScalar[component]:
+				std::numeric_limits<double>::infinity());
+		std::fprintf(stderr," inventory_value_bound_margin=");
+		for(std::size_t component=0u;component<9u;++component){
+			const double value=std::fabs(inventory32[component]-inventory64[component]);
+			std::fprintf(stderr," %.17g/%.17g/%.17g",value,inventoryBound[component],
+				value>0.0?inventoryBound[component]/value:
+				std::numeric_limits<double>::infinity());
+		}
 		std::fprintf(stderr,"\n");
 		projectionResiduals[slice]=production.projection.maximumPostProjectionResidualPerS;
 		oracleProjectionResiduals[slice]=oracle.maximumDivergenceResidualPerS;
@@ -3711,7 +3787,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		maximumProductionResidual,maximumOracleResidual,minimumPinnedProbeContrast[0],
 		minimumPinnedProbeContrast[1],monitoredProjectionMisses);
 	const std::string precisionDigest=RISECBOR64::SHA256Hex(precisionTrace);
-	std::fprintf(stderr,"golden subdominance complete trace=%s slices=8\n",
-		precisionDigest.c_str());
-	return DigestFile(checkpointPath)==checkpointDigest?243:135;
+	std::fprintf(stderr,"golden subdominance complete trace=%s slices=8 gates=%zu "
+		"physical_retries=%zu velocity_max=%.17g velocity_bound=%.17g "
+		"velocity_margin=%.17g scalar_min_margin=%.17g inventory_min_margin=%.17g\n",
+		precisionDigest.c_str(),precisionGateCount,physicalRetryCount,
+		maximumPrecisionVelocity,velocityBound,minimumVelocitySubdominanceMargin,
+		minimumScalarSubdominanceMargin,minimumInventorySubdominanceMargin);
+	return DigestFile(checkpointPath)==checkpointDigest?(goldenSubdominance?190:243):135;
 }

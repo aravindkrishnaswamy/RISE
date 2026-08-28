@@ -288,7 +288,7 @@ namespace RISE
 	};
 
 	//! Stability-class boundary for monitored production.  The ordinary policy
-	//! leaves the bulk manifold untouched, drains only the tail beyond 2^-3,
+	//! leaves the bulk manifold untouched, drains only the tail beyond 2^-4,
 	//! and atomically refuses a beginning state beyond the 2^-2 dynamics bound.
 	struct FireProductionManifoldTailTarget
 	{

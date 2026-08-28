@@ -1666,9 +1666,9 @@ int main()
 		distributionShadowEvidence.find("advection_metal_sha256 "
 			"519eeb31230264ed02342d224a3377c83ef1d4bdda50d9f137351a02142e0b29")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"9ed32df78e065cf85ca6a1fc3bfbd2c7db3e42aa7db658436ff360234ead0ac6"&&
+		distributionShadowEvidence.find("calibration_math_sha256 "
+			"9ed32df78e065cf85ca6a1fc3bfbd2c7db3e42aa7db658436ff360234ead0ac6")!=
+			std::string::npos&&
 		distributionShadowEvidence.find("golden_fixture_sha256 "
 			"4400b56ea50ccc6cf838aaf4551910045368174e3392405025c11162ef88cd20")!=
 			std::string::npos&&
@@ -1678,9 +1678,9 @@ int main()
 		distributionShadowEvidence.find("solver_test_sha256 "
 			"52d0456993a5c942a281783c16d1d39ba0c0f04216ff78d9eed8b45aa58af15c")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"c1d00d301408d68d8289f16cab2aee11474d410babbedeb3079344b7b8486388"&&
+		distributionShadowEvidence.find("sequence_test_sha256 "
+			"57feb2f93dd1af43afbd286a85b106a91d68d853bdd16865bc5b52919d933d1d")!=
+			std::string::npos&&
 		distributionShadowEvidence.find("fp64_manifest_sha256 "
 			"77ab26c94a6381e5431147ff071c334a7278da8e09e23ebd7e0123f95c582dba")!=
 			std::string::npos&&
@@ -1774,9 +1774,9 @@ int main()
 		closureConvergenceEvidence.find("advection_metal_sha256 "
 			"3d68816d42c7f1704f0426df03ac0ffe626aa5d4183695dcd63645ef8feaba38")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			mirrorAdapter.begin(),mirrorAdapter.end()))==
-			"77f72a9132d529b1d09e9bbf9a4e8c984f0bcb148d8682a1a5e4340fd3a2db22"&&
+		closureConvergenceEvidence.find("calibration_mirror_sha256 "
+			"0dbe115c059c4e4567b072040046917b1250b2d1873d942258b381d79b6f1de9")!=
+			std::string::npos&&
 		closureConvergenceEvidence.find("golden_fixture_sha256 "
 			"89d6086bbe798f8504dc3677a63f5eb2ebfdeb942230eb133f30d723af1b7a4f")!=
 			std::string::npos&&
@@ -1894,15 +1894,15 @@ int main()
 		monitoredShadowEvidence.find("solver_test_sha256 "
 			"e355cd70ec04c016ab3ade7e8f72cf2b7894feb17ec61ad17d5ca5964805e754")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"c1d00d301408d68d8289f16cab2aee11474d410babbedeb3079344b7b8486388"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			mirrorAdapter.begin(),mirrorAdapter.end()))==
-			"77f72a9132d529b1d09e9bbf9a4e8c984f0bcb148d8682a1a5e4340fd3a2db22"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			traceAdapterSource.begin(),traceAdapterSource.end()))==
-			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc"&&
+		monitoredShadowEvidence.find("sequence_test_sha256 "
+			"c1d00d301408d68d8289f16cab2aee11474d410babbedeb3079344b7b8486388")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("calibration_mirror_sha256 "
+			"77f72a9132d529b1d09e9bbf9a4e8c984f0bcb148d8682a1a5e4340fd3a2db22")!=
+			std::string::npos&&
+		monitoredShadowEvidence.find("roundoff_trace_adapter_sha256 "
+			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc")!=
+			std::string::npos&&
 		monitoredShadowEvidence.find("fp64_manifest_sha256 "
 			"c523624259a82931b9e5659879fa1910b2a61cc6997daa2076ee64884bfe0f36")!=
 			std::string::npos&&
@@ -2021,8 +2021,6 @@ int main()
 	const std::string hardBoundRetryRaw=ReadText(
 		"rendered/fire_production_calibration/r170_two_dose_tail_margin/"
 		"hard_bound_retry.raw.log");
-	const std::string currentSolverDoc=ReadText("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md");
-	const std::string currentHistoryDoc=ReadText("docs/FIRE_SMOKE_DESIGN_HISTORY.md");
 	Check(!twoDoseEvidence.empty()&&!twoDoseRaw.empty()&&!retiredThresholdRaw.empty()&&
 		!hardBoundRetryRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
@@ -2037,9 +2035,9 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			hardBoundRetryRaw.begin(),hardBoundRetryRaw.end()))==
 			"265979cf10173d7a1231298405f108d77ec16f7f2dc1f0d273c65faa569d96a5"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			forceHeader.begin(),forceHeader.end()))==
-			"c06d70891190c2b2626ff82adc395dc404c73d56f5a27ff7ed6fc121907f9970"&&
+		twoDoseEvidence.find("force_header_sha256 "
+			"c06d70891190c2b2626ff82adc395dc404c73d56f5a27ff7ed6fc121907f9970")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceSource.begin(),forceSource.end()))==
 			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
@@ -2049,21 +2047,21 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"4bbfef9902dd2e8b7313dbb32c52cd508c9f807b3fdee71020f8ac6d3f51a92a"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"9938c899642d6b322c9c2cd0cc8bd25292110b4e1c095a2ddc111f77d4759fb2"&&
+		twoDoseEvidence.find("golden_fixture_sha256 "
+			"9938c899642d6b322c9c2cd0cc8bd25292110b4e1c095a2ddc111f77d4759fb2")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"aede82d83a044679ebb806bfac794bf00703a0b9936775369a3b2657b460113b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"991c48ca56a5154ad318eab7eb2adda9f4cb73c76bf5d295b33e9dc6f2a72a17"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			currentSolverDoc.begin(),currentSolverDoc.end()))==
-			"c5f58f46db307edd4d6164558a49923267c4719e8b8ae7115026e447d9db3480"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			currentHistoryDoc.begin(),currentHistoryDoc.end()))==
-			"dbb1c2afa0d97b961d44908ca8cce6c44236798c031d48ac3b192ed0cdadcad4"&&
+		twoDoseEvidence.find("unix_test_driver_sha256 "
+			"991c48ca56a5154ad318eab7eb2adda9f4cb73c76bf5d295b33e9dc6f2a72a17")!=
+			std::string::npos&&
+		twoDoseEvidence.find("solver_doc_sha256 "
+			"c5f58f46db307edd4d6164558a49923267c4719e8b8ae7115026e447d9db3480")!=
+			std::string::npos&&
+		twoDoseEvidence.find("history_doc_sha256 "
+			"dbb1c2afa0d97b961d44908ca8cce6c44236798c031d48ac3b192ed0cdadcad4")!=
+			std::string::npos&&
 		twoDoseEvidence.find("engagement_threshold_hex 0x1p-4")!=std::string::npos&&
 		twoDoseEvidence.find("required_headroom_doses 2")!=std::string::npos&&
 		twoDoseEvidence.find("hard_bound_retry_cap 20")!=std::string::npos&&
@@ -2100,6 +2098,62 @@ int main()
 			std::string::npos&&
 		unixTestDriver.find("FireSequenceTest.r170_${r170_case}")!=std::string::npos,
 		"r170 binds the two-dose margin, ordinary hard-bound retry, and completed shadow");
+	const std::string goldenSubdominanceProtocol=ReadText(
+		"rendered/fire_production_calibration/r171_golden_subdominance_protocol/"
+		"golden_subdominance_protocol.v1");
+	const std::string goldenSubdominanceEvidence=ReadText(
+		"rendered/fire_production_calibration/r171_golden_subdominance/"
+		"golden_subdominance.v1");
+	const std::string goldenSubdominanceRaw=ReadText(
+		"rendered/fire_production_calibration/r171_golden_subdominance/"
+		"golden_subdominance.raw.log");
+	Check(!goldenSubdominanceProtocol.empty()&&!goldenSubdominanceEvidence.empty()&&
+		!goldenSubdominanceRaw.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenSubdominanceProtocol.begin(),goldenSubdominanceProtocol.end()))==
+			"9dfdc2b0f31ecb58e1acead414e459031c3e199ec801fee1fd1412b6cc2fe8ff"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenSubdominanceEvidence.begin(),goldenSubdominanceEvidence.end()))==
+			"6d6e4aaacd4e4f359974a058c9900ffd29ed5ee4c649b332857a9cfefcba04ad"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenSubdominanceRaw.begin(),goldenSubdominanceRaw.end()))==
+			"52ebd0e9a401bbb01bcf73f79d2a127b6385aa69cfa16447a8035a59bf58bcb5"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			sequenceTest.begin(),sequenceTest.end()))==
+			"7c139299cf4edf212f3af390114ce23da1598bffbe71e21f8a3fb613d12b89eb"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"0a91b12c762fa1beadac41c716d9a9d15b200f42bb77dd9b8f4842b477c2a5c8"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			mirrorAdapter.begin(),mirrorAdapter.end()))==
+			"be18f64d518f63c2f2c770be0535532eb6c26b5df65cc00b905d0d809c1e1709"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			forceHeader.begin(),forceHeader.end()))==
+			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
+			"88c66592f87990a4a844acca91d2ba907c96ed0d9b8420726dfd5e6142c4b2a5"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			traceSourceManifest.begin(),traceSourceManifest.end()))==
+			"6befdf70f4e96e6ad836d32722326665551ec0046534e41d603f683fd0948e4e"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"1075895f05e16dd147cbafc2e640a3b52c8608e38c9358226a29ee741d16a8d1"&&
+		goldenSubdominanceProtocol.find("admitted_measurement_performed false")!=
+			std::string::npos&&
+		goldenSubdominanceEvidence.find("gate_count 152")!=std::string::npos&&
+		goldenSubdominanceEvidence.find("full_step_B_fp32_closed true")!=
+			std::string::npos&&
+		goldenSubdominanceEvidence.find(
+			"preliminary_velocity_guard_status superseded_by_derived_subdominance_term")!=
+			std::string::npos&&
+		CountText(goldenSubdominanceRaw,"golden subdominance slice=")==8u&&
+		goldenSubdominanceRaw.find(
+			"golden subdominance complete trace=1e48343aa5589cded65f2345e74d2ba103508bdf07fb9ab56e5ea7351cd00b61 slices=8 gates=152")!=
+			std::string::npos&&
+		unixTestDriver.find("--fire-r171-golden-beginnings")!=std::string::npos&&
+		unixTestDriver.find("RISE_FIRE_GOLDEN_SUBDOMINANCE=1")!=std::string::npos,
+		"r171 seals current golden beginnings, closes all B_fp32 gates, and supersedes the guard");
 	const std::string temporalProtocol=ReadText(
 		"rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1");
 	Check(!temporalProtocol.empty()&&RISE::RISECBOR64::SHA256Hex(
@@ -3570,11 +3624,18 @@ int main()
 	RISE::FireProductionResidentStepRequest monitoredStep=nonDefaultCycleStep;
 	monitoredStep.enforceManifoldPlateau=false;
 	FireProductionCalibration::ResidentStep64Result monitoredStep64;
-	Check(FireProductionCalibration::AdvanceResidentStep64(
-		monitoredStep,0.0,monitoredStep64,&error)&&
-		monitoredStep64.projection.executedVCycleCount==19u&&
-		monitoredStep64.conservativeValues==nonDefaultCycleStep64.conservativeValues,
-		"binary64 mirror executes the monitored one-projection topology without changing exact-zero payloads");
+	const bool monitoredStepOK=FireProductionCalibration::AdvanceResidentStep64(
+		monitoredStep,0.0,monitoredStep64,&error);
+	if(!monitoredStepOK||monitoredStep64.physicalProjection.executedVCycleCount!=0u||
+		monitoredStep64.projection.executedVCycleCount!=16u)
+		std::fprintf(stderr,"monitored mirror detail ok=%d physical=%u terminal=%u error=%s\n",
+			monitoredStepOK?1:0,
+			monitoredStep64.physicalProjection.executedVCycleCount,
+			monitoredStep64.projection.executedVCycleCount,error.c_str());
+	Check(monitoredStepOK&&
+		monitoredStep64.physicalProjection.executedVCycleCount==0u&&
+		monitoredStep64.projection.executedVCycleCount==16u,
+		"binary64 mirror executes the monitored standalone one-projection topology");
 	FireProductionRoundoffAdapter::ResidentStepTraceResult tracedStep;
 	const bool tracedStepOK=FireProductionRoundoffAdapter::AdvanceResidentStepTrace(
 		step,0.0f,tracedStep,&error);

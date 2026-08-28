@@ -4211,3 +4211,29 @@ it was already tried and refuted here.
   the forecast rather than adjusted.  Trace `e3273037...07fa` and final state
   `b885eec0...ce3b` seal the shadow.  The ladder is unblocked only to the next
   golden-slice subdominance rung.
+- **r171 golden-slice subdominance and guard supersession (2026-08-27):** the
+  unchanged golden root and seven deterministic current-build continuations
+  are independently SHA-bound by canonical physical-state/lifecycle bytes
+  before the admitted measurement.  Whole checkpoint bytes are not used as
+  continuation identity because their executable digest changes on relink;
+  the root remains independently whole-file gated.  The missing
+  historical r138a payload bytes are not silently substituted and their old
+  hashes remain historical.  A dedicated exact generator owns the current
+  selection; an earlier root-only diagnostic is discarded.
+
+  The monitored golden states have an empty `2^-4` tail, so the same-scheme
+  comparison is one 16-cycle terminal projection in both Metal fp32 and the
+  strict fp64 mirror.  The mirror also retains the conditional two-projection
+  path for a nonempty tail.  All 152 filtered-scalar, filtered-velocity, and
+  inventory inequalities `|P32-P64| <= 2^-3 E_P` pass.  Maximum velocity
+  delta is `3.2429213131399156e-9 m/s` against the derived
+  `7.363073950686612e-4 m/s` term (`227050.65093168768x` margin); minimum
+  scalar and inventory margins are `7972.9650118056461` and
+  `8894.785377013457`.  Trace `1e48343a...00b61` binds all values, bounds,
+  margins, and topology.
+
+  The preliminary `3e-5 m/s` velocity guard is superseded by the derived
+  `7.363073950686612e-4 m/s` B_fp32 term.  The bound comes from distance to the
+  mutual limit rather than the observed fp32/fp64 delta, so this is protocol
+  completion rather than measurement-driven widening.  The additive
+  contract's last term is closed; equal-time eight-slice readmission is next.

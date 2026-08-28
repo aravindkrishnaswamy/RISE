@@ -4229,6 +4229,56 @@ golden-slice Binary32/Binary64 subdominance measurement; guard supersession,
 eight-slice readmission, thermo/source maps, and first light still depend on
 their own evidence and are not inferred from this shadow.
 
+### 7.56e Golden-slice B_fp32 and guard supersession (r171)
+
+r171 closes the last additive-contract term on eight independently restarted
+golden beginnings.  The historical r138a continuation payloads were not
+present in the workspace; their hashes remain immutable historical evidence
+and were not rewritten.  Instead, a new identity-bearing generator command
+replays the canonical current-build continuation from the unchanged root,
+then requires exact SHA-256 for each beginning's canonical physical state and
+lifecycle before measurement.  Whole-checkpoint bytes are not the slice
+identity because they include the executable digest and therefore change on a
+clean relink without a physical-state change; the unchanged root still keeps
+its independent whole-file SHA gate.  The current set was sealed before the
+admitted eight-slice run.  A root-only
+diagnostic observed before that seal was discarded and cannot select an input
+or enter the result.
+
+The monitored-policy golden states have no `2^-4` tail, so the current
+production scheme executes one terminal physical projection, not the retired
+global-restoration pair.  The strict binary64 mirror was corrected to follow
+that topology exactly: it uses the same force schedule, five cell remaps,
+fifteen dual remaps, exact `+0` source, and 16-cycle terminal projection.  If a
+tail is present, the same adapter derives the identical thresholded target and
+uses physical plus restoration projections.  Projection topology and cycle
+counts are compared before a precision value is admitted.
+
+For each slice and each of nine filtered scalars, one filtered-velocity metric,
+and nine inventory quantities, the frozen rule remains
+`|P32-P64| <= 2^-3 E_P`.  All `8*(9+1+9)=152` gates pass.  Maximum filtered
+velocity difference is `3.2429213131399156e-9 m/s` against
+`7.363073950686612e-4 m/s`, a minimum velocity margin of
+`227050.65093168768`.  The minimum filtered-scalar and inventory margins are
+`7972.9650118056461` and `8894.785377013457`.  Every per-slice
+value/bound/margin triple is retained in the raw evidence; the aggregate trace
+is `1e48343aa5589cded65f2345e74d2ba103508bdf07fb9ab56e5ea7351cd00b61`.
+No oracle value participates in these precision inequalities.
+
+This certifies the composed `B_fp32` terms as the pre-registered one-eighth
+production distances and completes the additive contract's precision term.
+It also supersedes the preliminary velocity guard: the retired guard is
+`3e-5 m/s`; the derived, now-measured term is
+`7.363073950686612e-4 m/s`.  The replacement is larger because it is derived
+from the scheme's independently measured distance to its limit, not widened
+from the observed `3.24e-9 m/s` difference.  Guard retirement therefore
+changes no measurement and consumes none of its margin.
+
+Durable evidence is under
+`rendered/fire_production_calibration/r171_golden_subdominance`.  The next
+authorized rung is the eight-slice equal-time readmission verdict; source maps
+and first light remain unclaimed.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
