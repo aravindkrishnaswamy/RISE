@@ -1836,7 +1836,7 @@ static void CheckExactRadiance(
 		const bool maxOk  = s.max[c] <= 1.05;
 		Check( meanOk, ( std::string(integratorName) + " mean == 1.0 (closed form), channel "
 			+ std::to_string(c) + ": " + topologyName ).c_str() );
-		Check( maxOk, ( std::string(integratorName) + " max <= 1.5, channel "
+		Check( maxOk, ( std::string(integratorName) + " max <= 1.05, channel "
 			+ std::to_string(c) + ": " + topologyName ).c_str() );
 		if( !meanOk ) {
 			std::cout << "    " << integratorName << " mean[" << c << "] = "
