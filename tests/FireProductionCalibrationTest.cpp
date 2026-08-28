@@ -2208,7 +2208,7 @@ int main()
 	Check(!temporalStop.empty()&&!temporalStopRaw.empty()&&!temporalTargets.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalStop.begin(),temporalStop.end()))==
-			"2da3f59ba57fe1c883ee526e80ecf41d39fd8994fab48e73cee9c594e8f98ef1"&&
+			"554fa871ab47c486f4dcc1a431adbf63b9b8ac1d61ae4d166170ff051c314add"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalStopRaw.begin(),temporalStopRaw.end()))==
 			"b36fa4200dfdc253f78e25c9ec2a1f2552e26c46ff4718102aab0c54c1f116a3"&&
@@ -2232,7 +2232,7 @@ int main()
 			"3f98a148082a4113bedfad8473a271890784cce42be010e08903694fb7f6ce13"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"10ab7ff4616a426de167b1f235f5a7a75a795719583bf05ba902353b9d328a48"&&
+			"6c4297597ff1b09d62042d8d74baee0200dcbbbb5b464536f56e6b43e169a83c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
 			"1509d05724ab8e13c802fd53b5f48d7998804b106af3d4bf6f6868a56db542fb"&&
@@ -2243,6 +2243,7 @@ int main()
 		temporalStop.find("target_seal_exact_exit 194")!=std::string::npos&&
 		temporalStop.find("stale_schedule_actual_penultimate_RED true")!=
 			std::string::npos&&
+		temporalStop.find("missing_no_Metal_owner_RED true")!=std::string::npos&&
 		temporalStop.find("producer_precision_mutation_RED true")!=std::string::npos&&
 		temporalStop.find("refusal_counts production_0 oracle_1")!=std::string::npos&&
 		temporalStop.find("rejected_scalar_components 8_sensible_energy")!=
@@ -2255,6 +2256,8 @@ int main()
 		unixTestDriver.find("--fire-production-calibration-seal-temporal-targets")!=
 			std::string::npos&&unixTestDriver.find(
 			"--fire-production-calibration-measure-temporal")!=std::string::npos&&
+		unixTestDriver.find("r172_evaluator_allowed")!=std::string::npos&&
+		unixTestDriver.find("r172_missing_owner_red")!=std::string::npos&&
 		unixTestDriver.find("grep -o 'accepted=0'")!=std::string::npos,
 		"r172 executes all temporal rows and refuses noncontracting oracle energy");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
