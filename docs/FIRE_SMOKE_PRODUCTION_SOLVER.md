@@ -4320,6 +4320,27 @@ are retained under
 `rendered/fire_production_calibration/r172_temporal_refinement_stop`; the
 golden checkpoint remains unchanged.
 
+### 7.56g Filtered temporal-floor amendment (r173 protocol)
+
+r173 corrects the r172 decision rule without changing the operator, filter, or
+numeric constants.  Temporal observables inherit r112 exactly: the nonnegative
+partition-of-unity tensor cubic cardinal B-spline is applied before every
+difference at physical width `0.04894898570785762 m` and support radius twice
+that width.  Scalars use filtered volume-L1, velocity uses filtered volume-RMS,
+and inventories retain their exact global reductions.  The kernel owner and
+r112 protocol/metric artifacts are SHA-bound before the rerun.
+
+The r172 sensible-energy ratio `0.9670398815497335` came from near-equal
+already-filtered differences, so it is diagnosed as a dt-independent front
+branch-flip floor in the r123 census lineage, not as an unresolved temporal
+slope.  V2's formal-order gates independently establish temporal consistency.
+The pre-registered outcomes are therefore exhaustive: a contracting channel
+uses its registered Richardson slope and distance; a still-plateaued channel
+uses `nextUp(max(D_coarse,D_fine))` as the measured filtered-floor upper bound.
+That second quantity is a consistency-derived bound, not a fitted order or a
+new tolerance.  All scalar, velocity, and inventory channels are re-evaluated
+uniformly.  No readmission result is inspected before this rule is sealed.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

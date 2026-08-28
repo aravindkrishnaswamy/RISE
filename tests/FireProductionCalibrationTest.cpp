@@ -2233,12 +2233,12 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"6c4297597ff1b09d62042d8d74baee0200dcbbbb5b464536f56e6b43e169a83c"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			solverDoc.begin(),solverDoc.end()))==
-			"1509d05724ab8e13c802fd53b5f48d7998804b106af3d4bf6f6868a56db542fb"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			historyDoc.begin(),historyDoc.end()))==
-			"1c7783a845a74534d79e72d67a62992d9fc63654344644ac64001cfd8ab7b29d"&&
+		temporalStop.find("solver_doc_sha256 "
+			"1509d05724ab8e13c802fd53b5f48d7998804b106af3d4bf6f6868a56db542fb")!=
+			std::string::npos&&
+		temporalStop.find("history_doc_sha256 "
+			"1c7783a845a74534d79e72d67a62992d9fc63654344644ac64001cfd8ab7b29d")!=
+			std::string::npos&&
 		temporalStop.find("exact_exit 193")!=std::string::npos&&
 		temporalStop.find("target_seal_exact_exit 194")!=std::string::npos&&
 		temporalStop.find("stale_schedule_actual_penultimate_RED true")!=
@@ -2260,6 +2260,32 @@ int main()
 		unixTestDriver.find("r172_missing_owner_red")!=std::string::npos&&
 		unixTestDriver.find("grep -o 'accepted=0'")!=std::string::npos,
 		"r172 executes all temporal rows and refuses noncontracting oracle energy");
+	const std::string filteredTemporalProtocol=ReadText(
+		"rendered/fire_production_calibration/r173_filtered_temporal_protocol/"
+		"filtered_temporal_protocol.v1");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			filteredTemporalProtocol.begin(),filteredTemporalProtocol.end()))==
+			"5d11c42a5ae6efdcdd9e9902d7571de629fddc37fa76050aaac04e4e606fd562"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			dyadicFixture.begin(),dyadicFixture.end()))==
+			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			solverDoc.begin(),solverDoc.end()))==
+			"26f07b4d597cf2c691528d0fa42ada1f1c4620c932370d0636cc5d83b64af9e3"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			historyDoc.begin(),historyDoc.end()))==
+			"9f72e5566e191f2d20babf1226bae0e857c10351e46a0ec4fafe8439e0dbe990"&&
+		filteredTemporalProtocol.find("protocol_before_filtered_temporal_evidence true")!=
+			std::string::npos&&
+		filteredTemporalProtocol.find("filter_width_m 0.04894898570785762")!=
+			std::string::npos&&
+		filteredTemporalProtocol.find(
+			"outcome_plateau use_nextUp_max_filtered_interlevel_difference_as_upper_bound")!=
+			std::string::npos&&
+		filteredTemporalProtocol.find("new_numeric_constant_added false")!=std::string::npos&&
+		filteredTemporalProtocol.find("temporal_measurement_performed false")!=
+			std::string::npos,
+		"r173 freezes filtered temporal floor handling before the rerun");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

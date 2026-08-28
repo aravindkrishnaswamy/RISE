@@ -4259,3 +4259,13 @@ it was already tried and refuted here.
   the eight-slice verdict, manifold-floor attribution, thermo/source maps, and
   first light do not run.  The unchanged golden checkpoint remains
   `1b944176...4947`.
+- **r173 filtered temporal-floor protocol (2026-08-28):** the r172 observable
+  is confirmed to have already used r112's SHA-bound tensor cubic B-spline at
+  the exact physical width before differencing.  Its `0.9670398815497335`
+  ratio and near-equal filtered differences are therefore classified as the
+  dt-independent front branch-flip floor anticipated by the r123 census,
+  while V2's formal-order gates own temporal consistency.  Before rerunning,
+  r173 freezes two outcomes for every scalar, velocity, and inventory channel:
+  contracting differences use Richardson; a persistent plateau uses
+  `nextUp(max(D_coarse,D_fine))` as an upper bound on the measured filtered
+  floor.  The latter is a bound, not a fitted order, and adds no constant.
