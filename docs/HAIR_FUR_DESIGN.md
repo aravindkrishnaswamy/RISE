@@ -127,10 +127,18 @@ a PT gap: BDPT's estimator is not converged there (its per-unit-power reading sw
 light powers where PT's is flat to 4 %), so it is clamp-cut heavy-tailed connection variance.
 
 **Phase-2 residuals (named, deferred):**
-- The Blender add-on is **bridge-only** (it emits no `.RISEscene` text). Texture-driven
-  scalar hair params (roughness/radial roughness/IOR) flatten to constants across the bridge
-  with a warning — no IJob entry point registers named scalar painters; lifting that needs an
-  `AddScalarPainter`-style bridge surface.
+- The Blender add-on is **bridge-only** (it emits no `.RISEscene` text).  Texture-driven
+  roughness / radial roughness / IOR — **RESOLVED, ABI v10, 2026-08-27**: `AddHairMaterial`
+  already consulted the `IScalarPainterManager` before parsing a slot as a number, so the fix
+  was to *register* something there, not to add an `AddScalarPainter` entry point.
+  `rise_blender_hair_material` gained three appended `*_texture_painter_name` fields; the
+  bridge wraps the named colour painter with `RISE_API_CreatePainterChannelScalarPainter`
+  (channel R — the same wrapper the `scalar_painter { painter ... }` chunk uses) and passes the
+  wrapper's name through, so `beta_m` / `beta_n` / `ior` now reach the renderer as real
+  spatially-varying values.  `eumelanin` / `pheomelanin` / `sigma_a` / `alpha` remain
+  numeric-only: a melanin or absorption image has no defined concentration-per-texel convention
+  in RISE (a roughness or IOR map is already read as a literal physical value), and Blender's
+  `Offset` socket is never texture-sampled by the exporter in the first place.
 - Imported grooms carry **root UV (0,0) by default** — scalp-space painters do not vary across
   a `.hair` groom (the format has no UVs).  **PARTIALLY ADDRESSED, residual wave 2 item B,
   2026-08-27**: `hair_geometry` file mode's new `root_uv_mode scatter` gives each strand a

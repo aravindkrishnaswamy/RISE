@@ -678,7 +678,7 @@ int main()
 		// per-pipe switch.
 		{
 			Check( ConnectionLegality::CheckConnectionByKeyword(
-				"hair_geometry", "guides", "hair_guides", ChunkCategory::Geometry ).legal,
+				"hair_geometry", "guides", "hair_guides", ChunkCategory::HairGuides ).legal,
 				"3h: hair_geometry.guides accepts a hair_guides name" );
 			Check( !ConnectionLegality::CheckConnectionByKeyword(
 				"hair_geometry", "guides", "uniformcolor_painter", ChunkCategory::Painter ).legal,
@@ -709,6 +709,103 @@ int main()
 			Check( !DeriveTargetOK( BuildSceneMulti( "hair_geometry", params ), "hair_geometry", ChunkCategory::Geometry ),
 				"3h MONEY: the real parser also rejects a sphere_geometry name in `guides` (Job::AddHairGeometry "
 				"resolves `guides` against the Job-side hair_guides table, which a sphere_geometry name is never in)" );
+		}
+
+		// 3i. THE REVERSE DIRECTION -- a `hair_guides` name wired into an
+		// ORDINARY Geometry-typed port (`standard_object.geometry`).
+		//
+		// 3h above covers the FORWARD direction (what may bind INTO
+		// `hair_geometry.guides`), which a `keywordAllowlist` closes.  An
+		// allowlist says nothing about the reverse, though, and while
+		// `hair_guides` shared `ChunkCategory::Geometry` with real,
+		// renderable geometry chunks NOTHING closed it: `standard_object`'s
+		// `geometry` port declares `referenceCategories = {Geometry}`, a
+		// guide set answered to that category, and so the canvas would
+		// happily commit the wire.  The only refusal came late, at derive,
+		// from Job::AddHairGeometry / AddObject failing to find the name in
+		// the geometry manager.
+		//
+		// `ChunkCategory::HairGuides` is what closes it: a guide set is now
+		// simply not a candidate for a Geometry-typed port, and the refusal
+		// comes from the `CategoryAllowed` fallback in
+		// CheckConnectionByKeyword -- no allowlist on `geometry` required
+		// (deliberately: adding one there would only special-case the ONE
+		// port anybody thought of, whereas the category split covers every
+		// present and future Geometry-typed port at once).
+		{
+			// (a) STATIC form, straight off the descriptors.
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"standard_object", "geometry", "hair_guides", ChunkCategory::HairGuides ).legal,
+				"3i MONEY: standard_object.geometry REFUSES a hair_guides name (the reverse-direction "
+				"gap the ChunkCategory::HairGuides split closes)" );
+			Check( ConnectionLegality::CheckConnectionByKeyword(
+				"standard_object", "geometry", "sphere_geometry", ChunkCategory::Geometry ).legal,
+				"3i control: standard_object.geometry still accepts a real geometry name" );
+
+			// (b) DOCUMENT form -- the shape the canvas actually calls, and
+			// the one that exercises the REGISTRATION (`cd.category` on the
+			// hair_guides descriptor) rather than a category this test hands
+			// in itself.  Node ids are found by ROLE, not by category, so
+			// this assertion stays honest if the registration regresses:
+			// re-point `hair_guides` at ChunkCategory::Geometry and
+			// KeywordAndCategoryForId hands CheckConnectionByKeyword
+			// `Geometry`, CategoryAllowed says yes, and this check goes RED.
+			const char* scene =
+				"RISE ASCII SCENE 7\n"
+				"sphere_geometry\n{\nname rev_base\n}\n"
+				"hair_guides\n{\nname rev_guides\nguide 0 0 0 0 0 1\n}\n"
+				"standard_object\n{\nname rev_obj\ngeometry rev_base\n}\n";
+			const Cst::Document doc = Cst::ParseToCst( scene );
+			Cst::NodeId objId = 0, guidesId = 0, baseId = 0;
+			const int nItems = Cst::DocItemCount( doc );
+			for( int i = 0; i < nItems; ++i ) {
+				const Cst::NodeId id = Cst::DocNodeIdAt( doc, i );
+				const Cst::NodeRef n = Cst::DocResolveNodeId( doc, id );
+				if( !n || n->kind != Cst::NodeKind::Chunk ) continue;
+				if(      n->role == "standard_object" ) objId    = id;
+				else if( n->role == "hair_guides"     ) guidesId = id;
+				else if( n->role == "sphere_geometry" ) baseId   = id;
+			}
+			Check( objId != 0 && guidesId != 0 && baseId != 0,
+				"3i: the reverse-direction mini-scene resolves all three chunks by role" );
+			if( objId != 0 && guidesId != 0 && baseId != 0 ) {
+				Check( !ConnectionLegality::CheckConnection(
+					doc, objId, String( "geometry" ), guidesId ).legal,
+					"3i MONEY (document form): wiring the hair_guides chunk into "
+					"standard_object.geometry is ILLEGAL -- the candidate's REGISTERED category is "
+					"HairGuides, which the Geometry-typed port does not accept" );
+				Check( ConnectionLegality::CheckConnection(
+					doc, objId, String( "geometry" ), baseId ).legal,
+					"3i control (document form): the sphere_geometry chunk still wires into "
+					"standard_object.geometry" );
+			}
+
+			// (c) The registration + port declarations this all rests on,
+			// pinned directly so a silent re-categorisation is caught HERE
+			// with a precise message rather than only as a puzzling verdict
+			// change above.
+			const ChunkDescriptor* guidesDesc = DescriptorForKeyword( String( "hair_guides" ) );
+			Check( guidesDesc != nullptr && guidesDesc->category == ChunkCategory::HairGuides,
+				"3i: the hair_guides chunk registers under ChunkCategory::HairGuides, not ::Geometry" );
+			const ChunkDescriptor* hairDesc = DescriptorForKeyword( String( "hair_geometry" ) );
+			Check( hairDesc != nullptr && hairDesc->category == ChunkCategory::Geometry,
+				"3i: hair_geometry itself is STILL ChunkCategory::Geometry (it is a real, renderable "
+				"geometry -- only its guide-set input moved category)" );
+			bool guidesPortOk = false, objGeomPortOk = false;
+			if( hairDesc ) for( const ParameterDescriptor& p : hairDesc->parameters )
+				if( p.name == "guides" )
+					guidesPortOk = ( p.referenceCategories.size() == 1
+						&& p.referenceCategories[0] == ChunkCategory::HairGuides );
+			const ChunkDescriptor* objDesc = DescriptorForKeyword( String( "standard_object" ) );
+			if( objDesc ) for( const ParameterDescriptor& p : objDesc->parameters )
+				if( p.name == "geometry" )
+					objGeomPortOk = ( p.referenceCategories.size() == 1
+						&& p.referenceCategories[0] == ChunkCategory::Geometry );
+			Check( guidesPortOk,
+				"3i: hair_geometry.guides declares referenceCategories == {HairGuides}" );
+			Check( objGeomPortOk,
+				"3i: standard_object.geometry declares referenceCategories == {Geometry} -- UNCHANGED; "
+				"it must NOT list HairGuides, or the reverse direction re-opens" );
 		}
 	}
 

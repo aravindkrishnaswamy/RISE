@@ -116,6 +116,7 @@ namespace RISE
 					case ChunkCategory::IrradianceCache:  return "irradiance_cache";
 					case ChunkCategory::Animation:        return "animation";
 					case ChunkCategory::SceneVariant:     return "scene_variant";
+					case ChunkCategory::HairGuides:       return "hair_guides";
 				}
 				return "unknown";
 			}
@@ -336,7 +337,8 @@ namespace RISE
 				AppendJsonString( out, "unknown or empty category '" + category +
 					"' (want one of: painter, function, material, camera, film, geometry, "
 					"modifier, medium, object, shaderop, shader, rasterizer, rasterizer_output, "
-					"light, photon_map, photon_gather, irradiance_cache, animation, scene_variant)" );
+					"light, photon_map, photon_gather, irradiance_cache, animation, scene_variant, "
+					"hair_guides)" );
 			}
 			out += '}';
 			return out;

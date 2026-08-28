@@ -3198,6 +3198,29 @@ static bool EntityExists( IJobPriv& priv, ChunkCategory cat, const std::string& 
 		case ChunkCategory::Function: return ( priv.GetFunction1Ds() != 0 && priv.GetFunction1Ds()->GetItem( n ) != 0 )
 		                                  || ( priv.GetFunction2Ds() != 0 && priv.GetFunction2Ds()->GetItem( n ) != 0 );   // incl. colour painters dual-registered as Function2D
 		case ChunkCategory::Medium:   return priv.GetMedium( n ) != 0;
+		case ChunkCategory::HairGuides: {
+			// The `hair_geometry.guides` slot.  Manager-less like Medium, but
+			// with no by-name getter -- so probe the enumeration hook instead
+			// (a guide table is tens of entries; this runs once per closure
+			// reference in a preflight, never per sample).  Answering
+			// `default: return true` here would be a REGRESSION: before the
+			// category split this slot declared `{Geometry}` and so was
+			// checked against the geometry manager (which never holds a guide
+			// set) -- i.e. always refused, always falling back to a full
+			// derive.  An exact probe is the honest version of that: a real
+			// guide set now passes the preflight, and a stale/misspelt one
+			// still refuses BEFORE anything is mutated.
+			struct Probe : public IEnumCallback<const char*> {
+				const char* want; bool found;
+				Probe( const char* w ) : want( w ), found( false ) {}
+				bool operator()( const char* const& nm ) override {
+					if( nm && strcmp( nm, want ) == 0 ) { found = true; return false; }
+					return true;
+				}
+			} probe( n );
+			priv.EnumerateHairGuideNames( probe );
+			return probe.found;
+		}
 		default: return true;
 	}
 }

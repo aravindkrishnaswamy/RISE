@@ -94,6 +94,16 @@ namespace RISE
 				case ChunkCategory::Geometry:
 				case ChunkCategory::Object:
 					return ParameterPipe::Geometry;
+				// ChunkCategory::HairGuides is DELIBERATELY ABSENT from the
+				// Geometry arm and falls through to `Other`.  A `hair_guides`
+				// set is not an IGeometry and never enters the geometry
+				// manager, so it must not answer "yes" to a Geometry-pipe
+				// question -- that equivalence is precisely the reverse-
+				// direction hole the category split closed.  Its own port
+				// (`hair_geometry.guides`) declares `ParameterPipe::Other`
+				// plus `referenceCategories = {HairGuides}`, so it is checked
+				// by the fallback `CategoryAllowed` arm, which now separates
+				// the two categories exactly.
 				default:
 					return ParameterPipe::Other;
 			}
@@ -245,17 +255,23 @@ namespace RISE
 		// A `keywordAllowlist` is a per-PARAMETER special case (e.g.
 		// `hair_geometry`'s `guides` field, which resolves against the Job's
 		// `hair_guides` table rather than the geometry manager and so must
-		// accept ONLY `hair_guides` chunks, even though both share
-		// `ChunkCategory::Geometry`).  It is enforced HERE, ahead of the
-		// per-pipe switch below, so it applies uniformly to every pipe --
+		// accept ONLY `hair_guides` chunks).  It is enforced HERE, ahead of
+		// the per-pipe switch below, so it applies uniformly to every pipe --
 		// not just Color, whose own resolver used to be the only one that
 		// consulted it (a `ParameterPipe::Other` parameter like `guides`
 		// fell through to the generic `CategoryAllowed` check and never saw
-		// the allowlist at all).  NOTE this only constrains what wires INTO
-		// this parameter; it says nothing about the reverse direction (this
-		// parameter's candidate keyword wired into some OTHER chunk's
-		// same-category slot) -- see IJob.h's `hair_guides` comment for that
-		// residual gap.
+		// the allowlist at all).
+		//
+		// It constrains ONE direction only: what may wire INTO this
+		// parameter.  The REVERSE direction -- this parameter's candidate
+		// keyword wired into some OTHER chunk's slot -- is governed by
+		// category, and used to be a hole while `hair_guides` shared
+		// `ChunkCategory::Geometry` with real geometry chunks (a guide name
+		// was then a legal candidate for `standard_object.geometry`).  That
+		// hole is closed by `ChunkCategory::HairGuides`: a Geometry-typed
+		// port declares `referenceCategories = {Geometry}`, and the
+		// `CategoryAllowed` fallback below refuses a HairGuides candidate
+		// outright.  See IJob::AddHairGuides for the whole arrangement.
 		if( !pd->semantics.keywordAllowlist.empty() && !InAllowlist( pd->semantics.keywordAllowlist, candidateKeyword ) ) {
 			return { false, Fmt(
 				"%s: parameter `%s` only accepts one of {%s} (got `%s`) -- see the parameter's "

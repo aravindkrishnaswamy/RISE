@@ -4145,28 +4145,30 @@ namespace RISE
 		//! intersect nothing, render nothing, and are never bound to an
 		//! object.  They live in a Job-side name table rather than a
 		//! manager, following the `AddMedium*` family's manager-less
-		//! `mediaMap` -- but ONLY that half of the precedent.  Media got
-		//! their OWN `ChunkCategory::Medium`, with its own enumeration
-		//! hooks across the editor/agent/suggestion surfaces (SceneGrammar's
-		//! category-name switch, SceneEditController's `Cat::Medium`,
-		//! CstIntrospection, AgentSession's schema + build-count switches).
-		//! `hair_guides` did NOT get that: it deliberately reuses
-		//! `ChunkCategory::Geometry` (declared alongside `hair_geometry` in
-		//! ChunkParserRegistry.cpp), a storage-only precedent that avoids a
-		//! new category's ripple but is NOT full parity with the media
-		//! precedent it's named after.  Known consequences: (1) any
-		//! jump-to-definition / category-scoped lookup keyed off
-		//! `ChunkCategory::Geometry` alone cannot distinguish a `hair_guides`
-		//! set from a real, renderable geometry chunk; (2) `guides`-typed
-		//! chunks are legal candidates for an ORDINARY Geometry-pipe slot
-		//! (e.g. `standard_object.geometry`) unless that specific parameter
-		//! also carries the `guides`-side keyword allowlist -- the reverse
-		//! direction from `hair_geometry`'s `guides` field is governed by
-		//! `ChunkCategory` alone (ConnectionLegality.cpp's `OwnPipe`, which
-		//! classifies every `ChunkCategory::Geometry` chunk as pipe
-		//! `Geometry` regardless of keyword), so this residual gap survives
-		//! even after ConnectionLegality.cpp's `guides` parameter hoists its
-		//! own `keywordAllowlist` check ahead of the per-pipe switch.  The
+		//! `mediaMap` -- and, since the category split, the OTHER half of
+		//! that precedent too.  Media got their own `ChunkCategory::Medium`
+		//! with its own enumeration hooks across the editor/agent/suggestion
+		//! surfaces; `hair_guides` now has the same: its own
+		//! `ChunkCategory::HairGuides` (declared in ChunkParserRegistry.cpp
+		//! alongside, but no longer sharing a category with, `hair_geometry`)
+		//! plus `EnumerateHairGuideNames` at the tail of this interface,
+		//! which `CstIntrospection::CandidateNamesForChunkCategory`
+		//! dispatches to exactly as it does `EnumerateMediumNames`.
+		//!
+		//! WHAT THE SPLIT BUYS, in the two places the earlier shared-category
+		//! arrangement was known to be wrong: (1) a category-scoped lookup
+		//! (jump-to-definition, the reference graph, the suggestion index) no
+		//! longer confuses a guide set with a real, renderable geometry
+		//! chunk; (2) a `hair_guides` name is no longer a candidate for an
+		//! ORDINARY Geometry-typed slot such as `standard_object.geometry`
+		//! -- that port declares `referenceCategories = {Geometry}`, so the
+		//! wiring is refused at WIRE time by ConnectionLegality rather than
+		//! only at derive time by `Job::AddHairGeometry`'s guide-table probe
+		//! (which is kept as defence-in-depth for hand-authored scene text,
+		//! and is what a scene file that never passes through the canvas
+		//! still hits).  The forward direction -- a real geometry name typed
+		//! into `hair_geometry.guides` -- was already refused by that
+		//! parameter's `keywordAllowlist`, and the allowlist remains.  The
 		//! set is COPIED here; the caller keeps its arrays.
 		//!
 		//! Validated here (`ValidateHairGuides`): at least one guide, at
@@ -4221,6 +4223,26 @@ namespace RISE
 									const char* name,						///< [in] Name of the geometry
 									const HairFileGroomDescriptor& desc		///< [in] File path + the two width multipliers
 									) = 0;
+
+		//! Enumerates registered `hair_guides` set names.  The guide-table
+		//! twin of `EnumerateMediumNames` (which enumerates the OTHER
+		//! manager-less Job-side name table), and the live-enumeration hook
+		//! `CstIntrospection::CandidateNamesForChunkCategory` dispatches to
+		//! for `ChunkCategory::HairGuides` -- so a `guides` reference row can
+		//! offer real candidates, and the editor's dangling-reference guard
+		//! can tell a runtime-registered guide set from an inline literal.
+		//! Iteration order is unspecified (it is `hairGuidesMap`'s, i.e.
+		//! name order, but no caller may rely on that).
+		//!
+		//! DECLARED HERE, at the tail, rather than beside
+		//! `EnumerateMediumNames` in the middle of the interface: IJob's
+		//! documented policy is append-only (see the "ABI POLICY" comment
+		//! above `SetActiveRasterizer`, and `AddHairGuides`'s own "appended
+		//! per the append-only IJob tail" note) -- inserting a virtual next
+		//! to its thematic sibling would renumber every vtable slot after it.
+		virtual void EnumerateHairGuideNames(
+									IEnumCallback<const char*>& cb			///< [in] Functor called once per registered guide-set name
+									) const = 0;
 
 	};
 

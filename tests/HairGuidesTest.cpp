@@ -134,6 +134,8 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Interfaces/ITriangleMeshGeometry.h"
+#include "../src/Library/Parsers/ChunkDescriptor.h"
+#include "../src/Library/SceneEditor/CstIntrospection.h"
 #include "../src/Library/Geometry/HairGenerator.h"
 #include "../src/Library/Geometry/HairGeometry.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -814,6 +816,56 @@ static void RunChunk()
 		const std::string body = std::string( kBase ) + kGuides +
 			"hair_geometry\n{\n\tname\tg\n\tbase_geometry\tcc_base\n\tcount\t200\n\tlength\t0.1\n\tguides\tcc_guides\n}\n";
 		Check( ParseBodyInto( "ok", body, *job ), "a hair_guides chunk parses and a hair_geometry binds it" );
+
+		// -- THE CATEGORY SPLIT, live.  `hair_guides` carries its OWN
+		//    ChunkCategory::HairGuides (not ::Geometry), backed by its own
+		//    IJob enumeration hook over the Job-side guide table -- the same
+		//    arrangement `medium` has.  Two halves, both asserted here
+		//    because each is load-bearing on its own:
+		//      (a) a guide set IS enumerable under HairGuides, so a
+		//          `hair_geometry.guides` reference row can offer real
+		//          candidates and the editor's dangling-reference guard can
+		//          recognise a live guide set;
+		//      (b) a guide set is NOT enumerable under Geometry -- it never
+		//          enters the IGeometryManager -- which is exactly why
+		//          sharing ChunkCategory::Geometry with real, renderable
+		//          geometry was wrong, and why a guide name is no longer a
+		//          legal candidate for `standard_object.geometry`
+		//          (ConnectionLegalityTest 3i owns that verdict).
+		{
+			struct Collect : public IEnumCallback<const char*> {
+				std::vector<std::string> names;
+				bool operator()( const char* const& n ) override {
+					if( n && n[0] ) names.push_back( std::string( n ) );
+					return true;
+				}
+			} direct;
+			job->EnumerateHairGuideNames( direct );
+			Check( direct.names.size() == 1 && direct.names[0] == "cc_guides",
+			       "IJob::EnumerateHairGuideNames yields the declared guide set, and only it" );
+
+			const std::vector<String> asGuides =
+				CstIntrospection::CandidateNamesForChunkCategory( *job, ChunkCategory::HairGuides );
+			bool foundAsGuides = false;
+			for( const String& n : asGuides ) if( std::string( n.c_str() ) == "cc_guides" ) foundAsGuides = true;
+			Check( foundAsGuides,
+			       "MONEY: CandidateNamesForChunkCategory(HairGuides) enumerates the guide set (the new "
+			       "CstIntrospection arm, mirroring the Medium one)" );
+
+			const std::vector<String> asGeometry =
+				CstIntrospection::CandidateNamesForChunkCategory( *job, ChunkCategory::Geometry );
+			bool foundAsGeometry = false, foundRealGeometry = false;
+			for( const String& n : asGeometry ) {
+				const std::string s( n.c_str() );
+				if( s == "cc_guides" ) foundAsGeometry = true;
+				if( s == "g" )         foundRealGeometry = true;   // the hair_geometry itself IS geometry
+			}
+			Check( !foundAsGeometry,
+			       "MONEY: the guide set is NOT enumerated as Geometry -- it is data in the Job's guide "
+			       "table, never an entry in the IGeometryManager" );
+			Check( foundRealGeometry,
+			       "control: the hair_geometry that READS the guides is still ordinary Geometry" );
+		}
 	}
 
 	// -- BEHAVIOURAL: the same scene with and without the `guides` line

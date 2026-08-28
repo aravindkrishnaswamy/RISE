@@ -265,7 +265,26 @@ namespace RISE
 		PhotonGather,
 		IrradianceCache,
 		Animation,
-		SceneVariant
+		SceneVariant,
+		//! AN AUTHORED GUIDE-STRAND SET (`hair_guides`) -- data a
+		//! `hair_geometry` reads, NOT a renderable scene entity.  Its own
+		//! category, following the `Medium` precedent exactly: guides live
+		//! in a Job-side name table (`Job::hairGuidesMap`), never in the
+		//! IGeometryManager, so they are not interchangeable with a real
+		//! `*_geometry` chunk in EITHER direction.  Splitting them out of
+		//! `ChunkCategory::Geometry` is what makes the reverse-direction
+		//! wiring (`standard_object.geometry <- a hair_guides name`)
+		//! structurally illegal at WIRE time -- a Geometry-typed port
+		//! declares `referenceCategories = {Geometry}` and a guide set is
+		//! simply not a candidate for it -- rather than only at derive
+		//! time in `Job::AddHairGeometry`.  See IJob::AddHairGuides.
+		//!
+		//! APPENDED, NEVER REORDERED: this enum crosses the GUI ABI as a
+		//! bare int (SceneEditController.h's `PainterGraphNodeCategory` /
+		//! `AppearanceClosureEntry::category` "just append, never reorder"
+		//! contract), so a new value goes on the END even when a tidier
+		//! home would be next to `Geometry`.
+		HairGuides
 	};
 
 	// Base class for per-chunk parse state.  In the registry-driven

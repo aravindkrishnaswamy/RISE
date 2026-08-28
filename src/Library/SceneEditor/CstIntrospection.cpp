@@ -80,6 +80,15 @@ std::vector<String> CstIntrospection::CandidateNamesForChunkCategory(
 	case ChunkCategory::Medium:
 		job.EnumerateMediumNames( cb );
 		break;
+	case ChunkCategory::HairGuides:
+		// The other manager-less Job-side name table (`hairGuidesMap`), so
+		// the same shape as Medium above: a dedicated IJob enumeration hook
+		// rather than a manager.  A `hair_geometry.guides` row's candidates
+		// come from here and NOWHERE else -- guide sets are never in the
+		// IGeometryManager, which is exactly why they no longer share
+		// ChunkCategory::Geometry with the chunks that are.
+		job.EnumerateHairGuideNames( cb );
+		break;
 	case ChunkCategory::Object:
 		if( IScenePriv* s = job.GetScene() )
 			if( const IObjectManager* m = s->GetObjects() )

@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  BlenderBridgeHairTest.cpp - Contract test for the HAIR half of the
-//    Blender native bridge (ABI v9): `rise_blender_hair_material` /
+//    Blender native bridge (ABI v10): `rise_blender_hair_material` /
 //    `rise_blender_hair_object` and the two translation functions that
 //    consume them, in src/Blender/native/rise_blender_bridge.cpp.
 //    Slice P2-D of the hair/fur arc, docs/HAIR_FUR_DESIGN.md; the
@@ -40,12 +40,13 @@
 //  with `-std=gnu++17` and no OpenVDB define -- every VDB-gated region
 //  is media-only, so hair is unaffected either way.
 //
-//  The five groups:
+//  The six groups:
 //
 //    1. THE ABI ITSELF.  The version constant and `rise_blender_api_
-//       version()` agree and read 9; the v9 scene fields are APPENDED
-//       (every v8 field keeps its offset), which is what lets a stale
-//       add-on fail on the version check rather than on garbage.
+//       version()` agree and read 10; the v9 scene fields and the v10
+//       hair-material fields are APPENDED (every earlier field keeps its
+//       offset), which is what lets a stale add-on fail on the version
+//       check rather than on garbage.
 //
 //    2. EACH COLOUR TIER REACHES A REAL HairMaterial.  Melanin,
 //       sigma_a and color each register a material whose GetBSDF() is a
@@ -67,6 +68,16 @@
 //       HairGeometry under `<object>::hairgeom` with the strand count
 //       the file declares, bound to a registered object carrying the
 //       transform and visibility the struct asked for.
+//
+//    4b. TEXTURE-DRIVEN SCALAR SLOTS (v10).  A `beta_m` driven by a
+//       spatially-varying colour painter really does vary the shaded
+//       result across UV, really does override the struct's numeric
+//       `beta_m`, and really does register the scalar wrapper the
+//       header promises -- checked against a numeric-only twin that must
+//       NOT vary, and against the empty-field fallback, which must be
+//       indistinguishable from pre-v10 behaviour.  Plus the non-fatal
+//       missing-painter case: warn, fall back to the number for that ONE
+//       slot, and still register the material.
 //
 //    5. EVERY FAILURE IS NON-FATAL AND NAMED.  A missing file, a
 //       corrupt file, a non-positive width multiplier, an unresolvable
@@ -228,7 +239,7 @@ std::string MakeHairFile( const std::string& tag, const bool badMagic, const uns
 //! A synthetic fibre hit, enough for HairBRDF::albedo() -- which reads
 //! the bound painters and the ONB, nothing scene-side.  Same
 //! construction HairBSDFTest uses.
-RISE::RayIntersectionGeometric MakeFibreHit()
+RISE::RayIntersectionGeometric MakeFibreHitAt( const double u, const double v )
 {
 	const RISE::Vector3 wo( 0.0, 1.0, 0.0 );
 	const RISE::Ray inRay( RISE::Point3( wo.x, wo.y, wo.z ), -wo );
@@ -241,9 +252,14 @@ RISE::RayIntersectionGeometric MakeFibreHit()
 	ri.vNormal     = RISE::Vector3( 0, 0, 1 );
 	ri.vGeomNormal = RISE::Vector3( 0, 0, 1 );
 	ri.onb.CreateFromWU( RISE::Vector3( 0, 0, 1 ), RISE::Vector3( 1, 0, 0 ) );
-	ri.ptCoord  = RISE::Point2( 0.5, 0.5 );
+	ri.ptCoord  = RISE::Point2( u, v );
 	ri.ptCoord1 = ri.ptCoord;
 	return ri;
+}
+
+RISE::RayIntersectionGeometric MakeFibreHit()
+{
+	return MakeFibreHitAt( 0.5, 0.5 );
 }
 
 rise_blender_hair_material MelaninMaterial(
@@ -352,9 +368,9 @@ private:
 
 void TestAbiVersionAndLayout()
 {
-	std::cout << "Test: ABI version 9 and an append-only v9 scene struct" << std::endl;
+	std::cout << "Test: ABI version 10 and append-only v9 / v10 struct growth" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 9, "RISE_BLENDER_API_VERSION is 9" );
+	Check( RISE_BLENDER_API_VERSION == 10, "RISE_BLENDER_API_VERSION is 10" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 
@@ -371,6 +387,18 @@ void TestAbiVersionAndLayout()
 	Check( offsetof( rise_blender_render_result, warnings ) >
 	       offsetof( rise_blender_render_result, resolve_reason ),
 		"result.warnings is appended after the v8 auto-dispatcher fields" );
+
+	// Same discipline for v10's three optional texture-scalar fields:
+	// appended after `ior`, the last v9 field of the hair material, so
+	// every v9 offset in that struct survives.
+	Check( offsetof( rise_blender_hair_material, beta_m_texture_painter_name ) >
+	       offsetof( rise_blender_hair_material, ior ),
+		"hair_material's v10 texture fields are appended after the last v9 field" );
+	Check( offsetof( rise_blender_hair_material, beta_n_texture_painter_name ) >
+	       offsetof( rise_blender_hair_material, beta_m_texture_painter_name ) &&
+	       offsetof( rise_blender_hair_material, ior_texture_painter_name ) >
+	       offsetof( rise_blender_hair_material, beta_n_texture_painter_name ),
+		"the three v10 texture fields are in the order bridge.py mirrors" );
 
 	// The tier tags the add-on maps its `tier` strings onto.
 	Check( RISE_BLENDER_HAIR_TIER_MELANIN == 0 &&
@@ -631,6 +659,169 @@ void TestHairObjectEndToEnd()
 }
 
 // ============================================================
+//  4b. Texture-driven scalar slots (v10)
+// ============================================================
+
+//! The wrapped painter is read PER HIT, so a spatially-varying source
+//! must produce a spatially-varying shade.  `value()` is the
+//! observable, not `albedo()`: `beta_m` is the LONGITUDINAL roughness,
+//! which shapes M_p and hence the directional lobe, while the
+//! closed-form multiple-scattering reflectance the OIDN AOV uses does
+//! not read it at all.
+void TestTextureDrivenScalarSlots()
+{
+	std::cout << "Test: a texture-driven beta_m varies the shade, overrides the number, and falls back safely" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) {
+		Check( false, "created a job" );
+		return;
+	}
+
+	// Two constants and a checker between them.  0.25 / 0.75 rather
+	// than round decimals on purpose: both are exact in binary, so the
+	// painter's double and the `%.9g` float literal the numeric
+	// reference materials below travel as are the SAME number, and the
+	// equality checks can be exact instead of approximate.  Registered
+	// Rec709RGB_Linear, i.e. verbatim -- RISEPel IS Rec709RGBPel -- so
+	// the R channel the bridge's wrapper reads is exactly 0.25 / 0.75.
+	double lo[3] = { 0.25, 0.25, 0.25 };
+	double hi[3] = { 0.75, 0.75, 0.75 };
+	Check( (*job).AddUniformColorPainter( "rough_lo", lo, "Rec709RGB_Linear" ) &&
+	       (*job).AddUniformColorPainter( "rough_hi", hi, "Rec709RGB_Linear" ) &&
+	       (*job).AddCheckerPainter( "rough_checker", 0.25, "rough_lo", "rough_hi" ),
+		"registered a spatially-varying roughness painter" );
+
+	std::vector<std::string> warnings;
+
+	// Textured.  The struct's numeric beta_m stays at MelaninMaterial's
+	// 0.3 -- a value the checker never takes -- so a wiring that quietly
+	// kept the number would show up rather than coincide.
+	rise_blender_hair_material textured = MelaninMaterial( "tex_beta", 1.3f, 0.0f, 0 );
+	textured.beta_m_texture_painter_name = "rough_checker";
+	Check( add_hair_material( *job, textured, warnings ), "a texture-driven beta_m registers" );
+
+	// The same material with no texture: the numeric beta_m, unchanged.
+	rise_blender_hair_material numeric = MelaninMaterial( "num_beta", 1.3f, 0.0f, 0 );
+	Check( add_hair_material( *job, numeric, warnings ), "the numeric-only twin registers" );
+
+	// Numeric twins pinned to the two checker constants, so the check is
+	// "the wrapper is TRANSPARENT", not merely "the wrapper changed
+	// something".
+	rise_blender_hair_material atLo = MelaninMaterial( "beta_lo", 1.3f, 0.0f, 0 );
+	atLo.beta_m = 0.25f;
+	rise_blender_hair_material atHi = MelaninMaterial( "beta_hi", 1.3f, 0.0f, 0 );
+	atHi.beta_m = 0.75f;
+	Check( add_hair_material( *job, atLo, warnings ) && add_hair_material( *job, atHi, warnings ),
+		"the two pinned numeric reference materials register" );
+
+	Check( warnings.empty(), "a resolvable texture painter produces no warnings" );
+
+	// The wrapper the header promises, under the derived name.
+	Check( (*job).GetScalarPainters() != 0 &&
+	       (*job).GetScalarPainters()->GetItem( "rough_checker::hairscalar" ) != 0,
+		"the colour painter is registered as a scalar painter under its derived name" );
+
+	// Two hits differing ONLY in u.  v is pinned at 0.5 so the near-field
+	// offset h = 2v - 1 is identical at both -- any difference in the
+	// shade is the roughness, not the geometry.  Checker size 0.25:
+	// ceil(0.1/0.25) = 1 (odd) and ceil(0.4/0.25) = 2 (even) against
+	// ceil(0.5/0.25) = 2 (even), so the two cells pick opposite painters.
+	const RISE::RayIntersectionGeometric riHi = MakeFibreHitAt( 0.1, 0.5 );
+	const RISE::RayIntersectionGeometric riLo = MakeFibreHitAt( 0.4, 0.5 );
+
+	// Off the fibre's normal plane (a non-zero x component in the ONB's
+	// tangent direction): beta_m only shapes M_p, which is flat in theta
+	// when both directions sit in that plane.
+	const RISE::Vector3 wi = RISE::Vector3Ops::Normalize( RISE::Vector3( 0.4, 0.5, 0.5 ) );
+
+	const HairBRDF* bTex = BrdfOf( *job, "tex_beta" );
+	const HairBRDF* bNum = BrdfOf( *job, "num_beta" );
+	const HairBRDF* bLo  = BrdfOf( *job, "beta_lo" );
+	const HairBRDF* bHi  = BrdfOf( *job, "beta_hi" );
+
+	if( bTex && bNum && bLo && bHi ) {
+		const RISE::RISEPel texAtHi = bTex->value( wi, riHi );
+		const RISE::RISEPel texAtLo = bTex->value( wi, riLo );
+		const RISE::RISEPel numAtHi = bNum->value( wi, riHi );
+		const RISE::RISEPel numAtLo = bNum->value( wi, riLo );
+
+		Check( std::fabs( texAtHi[1] - texAtLo[1] ) > 1e-9,
+			"a texture-driven beta_m shades differently at two UVs" );
+		Check( std::fabs( numAtHi[1] - numAtLo[1] ) == 0.0,
+			"the numeric-only twin does not vary across the same two UVs" );
+
+		const RISE::RISEPel refHi = bHi->value( wi, riHi );
+		const RISE::RISEPel refLo = bLo->value( wi, riLo );
+		for( unsigned int c = 0; c < 3; ++c ) {
+			Check( std::fabs( texAtHi[c] - refHi[c] ) == 0.0,
+				"the textured material at the 0.75 cell equals a pinned beta_m = 0.75" );
+			Check( std::fabs( texAtLo[c] - refLo[c] ) == 0.0,
+				"the textured material at the 0.25 cell equals a pinned beta_m = 0.25" );
+		}
+
+		Check( std::fabs( texAtHi[1] - numAtHi[1] ) > 1e-9 &&
+		       std::fabs( texAtLo[1] - numAtLo[1] ) > 1e-9,
+			"the texture overrides the struct's numeric beta_m at both cells" );
+	} else {
+		Check( false, "the v10 A/B materials produced HairBRDFs" );
+		return;
+	}
+
+	// --- the empty-field fallback: exactly the pre-v10 path ----------
+	{
+		// MelaninMaterial memsets, so the three v10 fields are already
+		// NULL above; an explicitly EMPTY string must read the same way.
+		warnings.clear();
+		rise_blender_hair_material emptyStr = MelaninMaterial( "empty_str", 1.3f, 0.0f, 0 );
+		emptyStr.beta_m_texture_painter_name = "";
+		emptyStr.beta_n_texture_painter_name = "";
+		emptyStr.ior_texture_painter_name    = "";
+		Check( add_hair_material( *job, emptyStr, warnings ), "empty texture names register" );
+		Check( warnings.empty(), "empty texture names warn about nothing" );
+
+		const HairBRDF* bEmpty = BrdfOf( *job, "empty_str" );
+		if( bEmpty ) {
+			const RISE::RISEPel emptyAt = bEmpty->value( wi, riHi );
+			const RISE::RISEPel numAt   = bNum->value( wi, riHi );
+			for( unsigned int c = 0; c < 3; ++c ) {
+				Check( std::fabs( emptyAt[c] - numAt[c] ) == 0.0,
+					"an empty texture name is bit-for-bit the pre-v10 numeric path" );
+			}
+		} else {
+			Check( false, "the empty-name material produced a HairBRDF" );
+		}
+	}
+
+	// --- a texture name nothing is registered under ------------------
+	{
+		warnings.clear();
+		rise_blender_hair_material dangling = MelaninMaterial( "dangling_rough", 1.3f, 0.0f, 0 );
+		dangling.beta_m_texture_painter_name = "no_such_texture";
+		const bool ok = Quietly( [&]() { return add_hair_material( *job, dangling, warnings ); } );
+		Check( ok, "an unresolvable texture does NOT lose the material" );
+		Check( warnings.size() == 1 &&
+		       WarningsMention( warnings, "no_such_texture" ) &&
+		       WarningsMention( warnings, "dangling_rough" ),
+			"the unresolvable-texture warning names both the texture and the material" );
+		Check( (*job).GetMaterials()->GetItem( "dangling_rough" ) != 0,
+			"the material with the unresolvable texture is still registered" );
+
+		const HairBRDF* bDangling = BrdfOf( *job, "dangling_rough" );
+		if( bDangling ) {
+			const RISE::RISEPel danglingAt = bDangling->value( wi, riHi );
+			const RISE::RISEPel numAt      = bNum->value( wi, riHi );
+			for( unsigned int c = 0; c < 3; ++c ) {
+				Check( std::fabs( danglingAt[c] - numAt[c] ) == 0.0,
+					"an unresolvable texture falls back to that slot's number" );
+			}
+		} else {
+			Check( false, "the unresolvable-texture material produced a HairBRDF" );
+		}
+	}
+}
+
+// ============================================================
 //  5. Every failure is non-fatal and named
 // ============================================================
 
@@ -857,12 +1048,13 @@ void TestPackWarnings()
 
 int main()
 {
-	std::cout << "=== Blender bridge hair test (ABI v9) ===" << std::endl;
+	std::cout << "=== Blender bridge hair test (ABI v10) ===" << std::endl;
 
 	TestAbiVersionAndLayout();
 	TestEachTierRegisters();
 	TestMelaninParityRescale();
 	TestHairObjectEndToEnd();
+	TestTextureDrivenScalarSlots();
 	TestFailuresAreNonFatalAndNamed();
 	TestPackWarnings();
 

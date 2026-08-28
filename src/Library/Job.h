@@ -1904,6 +1904,13 @@ namespace RISE
 			IEnumCallback<const char*>& cb
 			) const;
 
+		//! Enumerate registered `hair_guides` set names; see IJob.h.
+		//! (Declared here beside its `mediaMap` twin even though IJob's own
+		//! declaration is at that interface's append-only tail.)
+		void EnumerateHairGuideNames(
+			IEnumCallback<const char*>& cb
+			) const;
+
 		//! Return a registered geometry by name; see IJob.h.
 		const IGeometry* GetGeometry(
 			const char* name

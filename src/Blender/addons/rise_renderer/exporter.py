@@ -314,23 +314,35 @@ class HairMaterialData:
     "exactly one"): "melanin" (eumelanin/pheomelanin painters set),
     "sigma_a" (sigma_a painter set), or "color" (color painter set).
 
-    TWO REPRESENTATIONS, AND WHY.  Every parameter appears twice: as a
+    TWO REPRESENTATIONS, AND WHY.  Most parameters appear twice: as a
     painter NAME (the `*_painter_name` fields, registered in
     `state.painters`) and, for everything except `color`, as a plain
-    NUMBER.  The live-render bridge (ABI v9) consumes the NUMBERS; only
-    `color` travels as a painter reference.  That is not redundancy for
-    its own sake -- `hair_material`'s `sigma_a` / `eumelanin` /
-    `pheomelanin` / `beta_m` / `beta_n` / `alpha` / `ior` are
-    `IScalarPainter` slots (docs/ISCALARPAINTER_REFACTOR.md), `IJob` has
-    no entry point that registers a scalar painter under a name, and
-    `Job::AddHairMaterial` rejects an `IPainter` name bound to one of
-    them outright.  Inline numeric literals ARE accepted there, so
-    numbers are what the bridge carries.  `color` is a genuine
-    `IPainter` slot and keeps full texture support.
+    NUMBER.  The live-render bridge consumes the NUMBERS.  That is not
+    redundancy for its own sake -- `hair_material`'s `sigma_a` /
+    `eumelanin` / `pheomelanin` / `beta_m` / `beta_n` / `alpha` / `ior`
+    are `IScalarPainter` slots (docs/ISCALARPAINTER_REFACTOR.md), and
+    `Job::AddHairMaterial` rejects a plain `IPainter` name bound to one
+    of them outright.  Inline numeric literals ARE accepted there, so
+    numbers are what the bridge carries by default.  `color` is a
+    genuine `IPainter` slot and keeps full texture support.
 
-    Consequence worth stating plainly: a texture-driven Roughness /
-    Radial Roughness / IOR reaches the renderer as its constant socket
-    value (warned at export time).  See
+    THE THREE EXCEPTIONS (ABI v10).  `beta_m_texture_painter_name` /
+    `beta_n_texture_painter_name` / `ior_texture_painter_name` are set
+    ONLY when a real texture chain resolved on the corresponding
+    Blender socket, and the native bridge wraps the named colour painter
+    into an `IScalarPainter` (`PainterChannelScalarPainter`, channel R)
+    before handing its name to `AddHairMaterial`.  So a texture-driven
+    Roughness / Radial Roughness / IOR now reaches the renderer as a
+    real spatially-varying value.  When no texture is bound the field
+    stays `None` and the numeric field is used verbatim, unchanged from
+    before -- no extra painter, no extra indirection.
+
+    What still flattens to a constant: `eumelanin` / `pheomelanin` /
+    `sigma_a` (a melanin or absorption image has no defined
+    concentration-per-texel convention in RISE, unlike a roughness or
+    IOR map which is read as a literal physical value) and `alpha`
+    (Blender's `Offset` socket is never texture-sampled here -- a linked
+    Offset is read at its default and warned about).  See
     docs/BLENDER_MATERIAL_TRANSLATION.md's hair section.
     """
 
@@ -340,10 +352,11 @@ class HairMaterialData:
     pheomelanin_painter_name: str | None = None
     sigma_a_painter_name: str | None = None
     color_painter_name: str | None = None
-    beta_m_painter_name: str | None = None
-    beta_n_painter_name: str | None = None
     alpha_painter_name: str | None = None
-    ior_painter_name: str | None = None
+    # ABI v10 -- set ONLY when the socket is genuinely texture-driven.
+    beta_m_texture_painter_name: str | None = None
+    beta_n_texture_painter_name: str | None = None
+    ior_texture_painter_name: str | None = None
     # Numeric form -- what `bridge.py` marshals into the native ABI.
     eumelanin: float = 0.0
     pheomelanin: float = 0.0
@@ -2402,20 +2415,17 @@ def _default_hair_material(state: _ExportState) -> str:
 
     eumelanin = _add_uniform_painter(state, "hair_default_eumelanin", (1.3, 1.3, 1.3))
     pheomelanin = _add_uniform_painter(state, "hair_default_pheomelanin", (0.0, 0.0, 0.0))
-    beta_m = _add_uniform_painter(state, "hair_default_beta_m", (0.3, 0.3, 0.3))
-    beta_n = _add_uniform_painter(state, "hair_default_beta_n", (0.3, 0.3, 0.3))
     alpha = _add_uniform_painter(state, "hair_default_alpha", (2.0, 2.0, 2.0))
-    ior = _add_uniform_painter(state, "hair_default_ior", (1.55, 1.55, 1.55))
 
+    # No `*_texture_painter_name` here: this material is RISE's own
+    # default, so beta_m / beta_n / ior are constants by construction and
+    # travel as the numbers below.
     payload = HairMaterialData(
         name=_unique_name(state, "hairmat", "default"),
         tier="melanin",
         eumelanin_painter_name=eumelanin,
         pheomelanin_painter_name=pheomelanin,
-        beta_m_painter_name=beta_m,
-        beta_n_painter_name=beta_n,
         alpha_painter_name=alpha,
-        ior_painter_name=ior,
         eumelanin=1.3,
         pheomelanin=0.0,
         beta_m=0.3,
@@ -2487,31 +2497,50 @@ def _hair_material_payload(material, state: _ExportState) -> str:
                 "BCSDF instance shades the whole groom).",
             )
 
-    # Shared across all three parametrizations.  Each is captured BOTH
-    # as a painter (texture chain honoured) and as its constant socket
-    # value: the live-render bridge can only carry the number, because
-    # these are IScalarPainter slots and no bridge-registered painter
-    # can satisfy one -- see HairMaterialData's docstring.
+    # Shared across all three parametrizations.  Each is captured as its
+    # constant socket value AND, when the socket is genuinely
+    # texture-driven, as a registered painter name the bridge turns into
+    # an IScalarPainter (ABI v10 -- see HairMaterialData's docstring).
+    #
+    # The painter is registered ONLY in the textured case.  With no
+    # texture bound, `_scalar_or_texture_painter` would synthesize a
+    # uniform painter carrying the same constant the numeric field
+    # already carries, and sending its name would buy an extra painter
+    # plus a scalar wrapper per material to say exactly what the float
+    # says -- so `None` is passed instead and the number is used.
+    #
+    # The gate is the RESOLVED texture, not a validated one: if a chain
+    # resolves to an image `_validate_texture_wrapper` then rejects
+    # (non-UV coords, a projection/extension RISE has no form for, an
+    # unsupported file type -- each already warned about there),
+    # `_scalar_or_texture_painter` degrades to a uniform painter carrying
+    # this same constant.  That is numerically identical to the numeric
+    # field (uniform painters are registered Rec709-linear, i.e.
+    # verbatim), just one painter more expensive -- correct, and not
+    # worth a second validation pass here to avoid.
     beta_m_value = _socket_default_float(node, "Roughness", 0.3)
     beta_m_texture = _maybe_resolve_socket_texture(node, "Roughness", None, colorspace_is_data=True)
-    beta_m = _scalar_or_texture_painter(state, f"{material_name}_beta_m", beta_m_value, beta_m_texture)
+    beta_m = (
+        _scalar_or_texture_painter(state, f"{material_name}_beta_m", beta_m_value, beta_m_texture)
+        if beta_m_texture
+        else None
+    )
 
     beta_n_value = _socket_default_float(node, "Radial Roughness", 0.3)
     beta_n_texture = _maybe_resolve_socket_texture(node, "Radial Roughness", None, colorspace_is_data=True)
-    beta_n = _scalar_or_texture_painter(state, f"{material_name}_beta_n", beta_n_value, beta_n_texture)
+    beta_n = (
+        _scalar_or_texture_painter(state, f"{material_name}_beta_n", beta_n_value, beta_n_texture)
+        if beta_n_texture
+        else None
+    )
 
     ior_value = _socket_default_float(node, "IOR", 1.55)
     ior_texture = _maybe_resolve_socket_texture(node, "IOR", None, colorspace_is_data=True)
-    ior = _scalar_or_texture_painter(state, f"{material_name}_ior", ior_value, ior_texture)
-
-    if beta_m_texture or beta_n_texture or ior_texture:
-        _warn_once(
-            state,
-            f"RISE renders Principled Hair BSDF 'Roughness'/'Radial Roughness'/'IOR' on "
-            f"'{material_name}' at their constant values -- a texture-driven hair roughness or "
-            "IOR cannot be sent to the renderer (they are physical-scalar slots, and the "
-            "Blender bridge can only pass numbers to those).",
-        )
+    ior = (
+        _scalar_or_texture_painter(state, f"{material_name}_ior", ior_value, ior_texture)
+        if ior_texture
+        else None
+    )
 
     offset_socket = _node_input(node, "Offset")
     if offset_socket is not None and offset_socket.is_linked:
@@ -2534,10 +2563,10 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             name=_unique_name(state, "hairmat", material_name),
             tier="color",
             color_painter_name=color_painter,
-            beta_m_painter_name=beta_m,
-            beta_n_painter_name=beta_n,
             alpha_painter_name=alpha,
-            ior_painter_name=ior,
+            beta_m_texture_painter_name=beta_m,
+            beta_n_texture_painter_name=beta_n,
+            ior_texture_painter_name=ior,
             beta_m=beta_m_value,
             beta_n=beta_n_value,
             alpha_degrees=alpha_degrees,
@@ -2558,10 +2587,10 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             name=_unique_name(state, "hairmat", material_name),
             tier="sigma_a",
             sigma_a_painter_name=sigma_painter,
-            beta_m_painter_name=beta_m,
-            beta_n_painter_name=beta_n,
             alpha_painter_name=alpha,
-            ior_painter_name=ior,
+            beta_m_texture_painter_name=beta_m,
+            beta_n_texture_painter_name=beta_n,
+            ior_texture_painter_name=ior,
             sigma_a=tuple(float(channel) for channel in sigma_default),
             beta_m=beta_m_value,
             beta_n=beta_n_value,
@@ -2595,10 +2624,10 @@ def _hair_material_payload(material, state: _ExportState) -> str:
             tier="melanin",
             eumelanin_painter_name=eumelanin_painter,
             pheomelanin_painter_name=pheomelanin_painter,
-            beta_m_painter_name=beta_m,
-            beta_n_painter_name=beta_n,
             alpha_painter_name=alpha,
-            ior_painter_name=ior,
+            beta_m_texture_painter_name=beta_m,
+            beta_n_texture_painter_name=beta_n,
+            ior_texture_painter_name=ior,
             eumelanin=eumelanin_value,
             pheomelanin=pheomelanin_value,
             beta_m=beta_m_value,

@@ -110,6 +110,14 @@ namespace RISE
 		//!     IFunction2DManager; `expression_painter` is deliberately
 		//!     single-registered -- see its Job.cpp comment -- and
 		//!     `scalar_painter` never touches that manager at all).
+		//!   - `hair_geometry`'s `guides` param: BOTH directions are typed.
+		//!     Forward, a `keywordAllowlist` of {"hair_guides"} narrows what
+		//!     may bind there.  Reverse, `hair_guides` carries its OWN
+		//!     `ChunkCategory::HairGuides` (it is data in a Job-side table,
+		//!     never an IGeometry in the geometry manager), so a guide-set
+		//!     name is not a candidate for an ordinary Geometry-typed port
+		//!     such as `standard_object.geometry` -- that refusal comes from
+		//!     the `CategoryAllowed` fallback, not the allowlist.
 		//!   - `scalar_painter`'s own `texture` param: a `keywordAllowlist`
 		//!     on its `ParameterSemantics` narrows Color-pipe legality to
 		//!     the five raster-image painter chunks (a `checker_painter`

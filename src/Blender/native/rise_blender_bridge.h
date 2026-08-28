@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 9
+#define RISE_BLENDER_API_VERSION 10
 
 #ifdef __cplusplus
 extern "C" {
@@ -325,9 +325,9 @@ typedef struct rise_blender_medium {
 	float bbox_max[3];
 } rise_blender_medium;
 
-// A Chiang et al. 2016 hair BCSDF (`hair_material`), ABI v9.
+// A Chiang et al. 2016 hair BCSDF (`hair_material`), ABI v10.
 //
-// WHY THE SCALAR SLOTS ARE NUMBERS AND `color` IS A PAINTER NAME.
+// WHY MOST SCALAR SLOTS ARE NUMBERS AND `color` IS A PAINTER NAME.
 // Every other material struct here references painters BY NAME, because
 // `IJob` has an entry point that registers an `IPainter` under a name
 // (`Add*Painter`) and the material factories resolve those names.  Hair
@@ -335,15 +335,34 @@ typedef struct rise_blender_medium {
 // painter-name reference and full texture support.  But `sigma_a`,
 // `eumelanin`, `pheomelanin`, `beta_m`, `beta_n`, `alpha` and `ior` are
 // `IScalarPainter` slots (the physical-scalar pipe -- no JH spectral
-// uplift; see docs/ISCALARPAINTER_REFACTOR.md), and there is NO IJob
-// entry point that registers a scalar painter under a name.  Passing a
-// bridge-registered `IPainter` name into one of them is not "close
-// enough": `Job::AddHairMaterial` diagnoses it as "bound to an IPainter
-// chunk" and fails the material.  What those slots DO accept is an
-// inline numeric literal, so the bridge carries the numbers and formats
-// them at the call.  Cost, stated plainly: a texture-driven Roughness /
-// Radial Roughness / IOR on the Blender side reaches the renderer as
-// its constant socket value (the exporter warns when it drops one).
+// uplift; see docs/ISCALARPAINTER_REFACTOR.md), and passing a
+// bridge-registered `IPainter` name straight into one of them is not
+// "close enough": `Job::AddHairMaterial` diagnoses it as "bound to an
+// IPainter chunk" and fails the material.  Those slots accept an inline
+// numeric literal, which is what the `float` fields below carry.
+//
+// WHAT v10 ADDS.  `Job::AddHairMaterial` resolves each scalar slot by
+// consulting the job's IScalarPainterManager FIRST and only then
+// parsing the string as a number, so a NAME does work there -- provided
+// something is registered under it as an `IScalarPainter`.  v10 lets
+// the bridge register one: the three `*_texture_painter_name` fields
+// below each name an ORDINARY colour painter from
+// `rise_blender_scene.painters`, and `add_hair_material` wraps it in a
+// PainterChannelScalarPainter (channel R, scale 1, bias 0 -- the same
+// wrapper, and the same default channel, that the scene language's
+// `scalar_painter { painter <name> }` chunk builds), registers the
+// wrapper under a derived name, and passes THAT name to
+// `AddHairMaterial`.  A texture-driven Roughness / Radial Roughness /
+// IOR therefore reaches the renderer as a real spatially-varying value.
+// Empty / NULL -- the overwhelmingly common case -- means "use the
+// numeric field", and costs no extra indirection.
+//
+// STILL NUMERIC-ONLY, deliberately: `sigma_a`, `eumelanin`,
+// `pheomelanin` and `alpha_degrees`.  A melanin or absorption image
+// would need a defined concentration-per-texel convention RISE does not
+// have (roughness and IOR maps are already read as literal physical
+// values, which is what makes them safe to wire through), and Blender's
+// `Offset` socket is never texture-sampled by the exporter at all.
 typedef struct rise_blender_hair_material {
 	const char* name;
 	int tier;						// rise_blender_hair_tier -- selects which colour fields below are read
@@ -369,6 +388,16 @@ typedef struct rise_blender_hair_material {
 	float beta_n;
 	float alpha_degrees;
 	float ior;
+	// OPTIONAL, APPENDED in v10 (every v9 field keeps its offset).
+	// Each names an ordinary COLOUR painter in
+	// rise_blender_scene.painters whose R channel drives the matching
+	// scalar slot spatially; empty / NULL means "use the numeric field
+	// above".  A name the job cannot resolve is NON-FATAL: the bridge
+	// records a warning and falls back to the number for that ONE slot,
+	// leaving the rest of the material intact.  See add_hair_material().
+	const char* beta_m_texture_painter_name;
+	const char* beta_n_texture_painter_name;
+	const char* ior_texture_painter_name;
 } rise_blender_hair_material;
 
 // One imported groom: a `.hair` file (Cem Yuksel format) plus the same

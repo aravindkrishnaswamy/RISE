@@ -5384,13 +5384,15 @@ bool Job::AddHairGeometry( const char* name, const HairGroomDescriptor& desc )
 
 	IGeometry* pBase = pGeomManager->GetItem( desc.baseGeometry );
 	if( !pBase ) {
-		// A `hair_guides` set shares ChunkCategory::Geometry with real,
-		// renderable geometry (IJob.h's AddHairGuides doc explains why --
-		// a storage-only precedent, not a distinct category), so an author
-		// who typed a guide set's name into `base_geometry` instead of
-		// `guides` gets a bare "not found" here with no clue why: it DID
-		// get declared, just into a different table.  Probe `hairGuidesMap`
-		// and say so directly when that's what happened.
+		// KEPT AS DEFENCE-IN-DEPTH, and as the diagnostic that actually
+		// reaches a scene author.  Since the category split a `hair_guides`
+		// set carries ChunkCategory::HairGuides, so the GUI/agent connection
+		// checker already refuses a guide name dropped on `base_geometry`
+		// (a Geometry-typed port) at WIRE time.  Hand-authored scene TEXT
+		// never passes through that checker, though -- it arrives straight
+		// here -- and without this probe it would get a bare "not found"
+		// with no clue why: the name DID get declared, just into a different
+		// table.  So the check stays, and says so directly.
 		const bool isGuideSet = hairGuidesMap.find( desc.baseGeometry ) != hairGuidesMap.end();
 		GlobalLog()->PrintEx( eLog_Error,
 			"Job::AddHairGeometry:: `%s`: base geometry `%s` not found (declare it first)%s",
@@ -7246,6 +7248,14 @@ const IMedium* Job::GetMedium( const char* name ) const
 void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
 {
 	for( MediumMap::const_iterator it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
+		const char* n = it->first.c_str();
+		if( !cb( n ) ) return;
+	}
+}
+
+void Job::EnumerateHairGuideNames( IEnumCallback<const char*>& cb ) const
+{
+	for( std::map<String, HairGuideStore>::const_iterator it = hairGuidesMap.begin(); it != hairGuidesMap.end(); ++it ) {
 		const char* n = it->first.c_str();
 		if( !cb( n ) ) return;
 	}
@@ -12668,6 +12678,7 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			case ChunkCategory::Function: return 0;
 			case ChunkCategory::Material:
 			case ChunkCategory::Geometry:
+			case ChunkCategory::HairGuides:   // declared before the hair_geometry that reads it
 			case ChunkCategory::Modifier:
 			case ChunkCategory::Medium:
 			case ChunkCategory::Shader:

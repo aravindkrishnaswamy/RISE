@@ -621,7 +621,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 9)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 10)
 
     def test_hair_material_struct_matches(self):
         self._assert_matches(bridge._HairMaterial, "rise_blender_hair_material")
@@ -665,6 +665,63 @@ class BridgeAbiLayoutTest(unittest.TestCase):
             self.assertEqual(int(match.group(1)), value, f"{name} tag drifted")
 
 
+_EXPORTER_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exporter.py")
+
+
+class ExporterHairTextureGatingTest(unittest.TestCase):
+    """The v10 gating rule inside `_hair_material_payload`, checked at
+    the SOURCE level.
+
+    Why source level and not behaviour: `exporter.py` imports `bpy` at
+    module scope and `_hair_material_payload` walks a live Blender node
+    graph, so it cannot be called outside Blender at all (the module
+    docstring above says the same about every other bpy-dependent
+    exporter function).  What CAN be pinned without Blender is the rule
+    the rest of the pipe depends on -- that each `*_texture_painter_name`
+    is populated ONLY under its `*_texture` guard, so an unbound socket
+    sends `None` and the native side uses the number.  A behavioural
+    version of this test needs a Blender-in-the-loop harness that does
+    not exist here."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_EXPORTER_SOURCE, "r", encoding="utf-8") as handle:
+            cls.source = handle.read()
+
+    def _hair_material_payload_body(self):
+        start = self.source.index("def _hair_material_payload(")
+        end = self.source.index("\ndef ", start + 1)
+        return self.source[start:end]
+
+    def test_each_texture_field_is_gated_on_a_resolved_texture(self):
+        body = self._hair_material_payload_body()
+        for slot in ("beta_m", "beta_n", "ior"):
+            with self.subTest(slot=slot):
+                # `<slot> = _scalar_or_texture_painter(...) if <slot>_texture else None`
+                self.assertRegex(
+                    body,
+                    rf"{slot}\s*=\s*\(\s*\n\s*_scalar_or_texture_painter\(.*?\n\s*if {slot}_texture\s*\n\s*else None",
+                    f"{slot} is no longer gated on a resolved texture",
+                )
+
+    def test_every_tier_branch_forwards_the_texture_field(self):
+        body = self._hair_material_payload_body()
+        for slot in ("beta_m", "beta_n", "ior"):
+            with self.subTest(slot=slot):
+                # One per colour tier: color, sigma_a, melanin.
+                self.assertEqual(
+                    body.count(f"{slot}_texture_painter_name={slot},"),
+                    3,
+                    f"{slot}_texture_painter_name is not forwarded by all three tier branches",
+                )
+
+    def test_the_flattening_warning_is_gone(self):
+        # The pre-v10 warning claimed roughness / IOR textures "cannot be
+        # sent to the renderer".  They can now; the warning would be a
+        # false statement in the artist's Blender info log.
+        self.assertNotIn("at their constant values", self.source)
+
+
 class _StubHairMaterial:
     """The subset of `exporter.HairMaterialData` the bridge marshals.
     Deliberately a stand-in rather than the real dataclass: importing
@@ -682,6 +739,10 @@ class _StubHairMaterial:
         self.alpha_degrees = 2.0
         self.ior = 1.55
         self.apply_melanin_parity_rescale = True
+        # ABI v10 -- None unless the Blender socket was texture-driven.
+        self.beta_m_texture_painter_name = None
+        self.beta_n_texture_painter_name = None
+        self.ior_texture_painter_name = None
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -759,6 +820,43 @@ class BridgeHairMarshallingTest(unittest.TestCase):
         self.assertAlmostEqual(payload.beta_n, 0.4, places=6)
         self.assertAlmostEqual(payload.alpha_degrees, 3.5, places=6)
         self.assertAlmostEqual(payload.ior, 1.6, places=6)
+
+    def test_texture_driven_scalar_slots_travel_as_painter_names(self):
+        # ABI v10.  A texture-driven Roughness / Radial Roughness / IOR
+        # reaches the native side as the NAME of a colour painter, which
+        # the bridge wraps into an IScalarPainter.  The numeric fields
+        # ride along unchanged as the per-slot fallback.
+        payload = _handle()._marshal_hair_material(
+            _StubHairMaterial(
+                beta_m_texture_painter_name="mat_beta_m",
+                beta_n_texture_painter_name="mat_beta_n",
+                ior_texture_painter_name="mat_ior",
+            )
+        )
+        self.assertEqual(payload.beta_m_texture_painter_name, b"mat_beta_m")
+        self.assertEqual(payload.beta_n_texture_painter_name, b"mat_beta_n")
+        self.assertEqual(payload.ior_texture_painter_name, b"mat_ior")
+
+    def test_untextured_scalar_slots_send_no_painter_name(self):
+        # The common case, and the one the "empty => use the number"
+        # contract rests on: no texture bound means a NULL pointer, not
+        # the name of a synthesized uniform painter.
+        payload = _handle()._marshal_hair_material(_StubHairMaterial())
+        self.assertIsNone(payload.beta_m_texture_painter_name)
+        self.assertIsNone(payload.beta_n_texture_painter_name)
+        self.assertIsNone(payload.ior_texture_painter_name)
+
+    def test_a_pre_v10_exporter_payload_still_marshals(self):
+        # `_marshal_hair_material` reads the three v10 fields with
+        # getattr defaults, so an older exporter object that has never
+        # heard of them marshals as "no texture" rather than raising.
+        stub = _StubHairMaterial()
+        del stub.beta_m_texture_painter_name
+        del stub.beta_n_texture_painter_name
+        del stub.ior_texture_painter_name
+        payload = _handle()._marshal_hair_material(stub)
+        self.assertIsNone(payload.beta_m_texture_painter_name)
+        self.assertAlmostEqual(payload.beta_m, 0.3, places=6)
 
     def test_hair_object(self):
         transform = [float(i) for i in range(16)]

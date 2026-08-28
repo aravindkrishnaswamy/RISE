@@ -7675,6 +7675,7 @@ namespace RISE
 					case ChunkCategory::IrradianceCache:    return "irradiance_cache";
 					case ChunkCategory::Animation:           return "animation";
 					case ChunkCategory::SceneVariant:        return "scene_variant";
+					case ChunkCategory::HairGuides:         return "hair_guides";
 				}
 				return "chunk";
 			}
@@ -11479,6 +11480,7 @@ namespace RISE
 					case ChunkCategory::Function: return 0;
 					case ChunkCategory::Material:
 					case ChunkCategory::Geometry:
+					case ChunkCategory::HairGuides:   // declared before the hair_geometry that reads it
 					case ChunkCategory::Modifier:
 					case ChunkCategory::Medium:
 					case ChunkCategory::Shader:

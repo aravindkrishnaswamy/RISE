@@ -401,7 +401,7 @@ supported:
 
 | Blender input | RISE `hair_material` field | Notes |
 |----------------|------------------------------|-------|
-| `Roughness` | `beta_m` | Direct value. A texture chain is resolved into a painter on the export side, but the **live render uses the constant socket value** — see "Scalars travel as numbers" below. Warned when a texture is dropped. |
+| `Roughness` | `beta_m` | Direct value, **or a real texture**: a resolved image chain travels to the live render as a painter name that the bridge wraps into an `IScalarPainter` (ABI v10) — see "Scalars travel as numbers, with three exceptions" below. Nothing is dropped and nothing is warned. |
 | `Radial Roughness` | `beta_n` | Same |
 | `IOR` | `ior` | Same |
 | `Offset` (radians) | `alpha` (**degrees**) | Converted via `hair_material_math.offset_radians_to_alpha_degrees` (`math.degrees`). Blender's own default, 2°, is stored as ~0.0349066 rad. Linked inputs are read at their socket default only (warned). |
@@ -536,7 +536,8 @@ and RISE's own `beta_m`/`beta_n`/`alpha`/`ior` defaults
 at the end of the struct, so every v8 field keeps its offset).
 `bridge.py` mirrors both structs and marshals `SceneData.hair_objects`
 / `SceneData.hair_materials` into them; its `_EXPECTED_API_VERSION` is
-bumped to 9 in lockstep with `RISE_BLENDER_API_VERSION`, and the
+bumped in lockstep with `RISE_BLENDER_API_VERSION` (9 at that slice, 10
+since the texture-driven scalar slots below landed), and the
 existing hard-mismatch behaviour is unchanged (a stale add-on against a
 newer bridge, or the reverse, raises `BridgeError` telling you to
 rebuild — it does not attempt a partial load).
@@ -548,22 +549,49 @@ On the native side each hair material becomes an
 `<object name>::hairgeom`, followed by the **same** `AddObject` +
 transform path a mesh object takes.
 
-**Scalars travel as numbers, `color` travels as a painter.** Every
-other material struct in this ABI references painters by name, and hair
-is the exception. `hair_material`'s `sigma_a`, `eumelanin`,
-`pheomelanin`, `beta_m`, `beta_n`, `alpha` and `ior` are
+**Scalars travel as numbers, with three exceptions; `color` travels as
+a painter.** Every other material struct in this ABI references painters
+by name, and hair is the exception. `hair_material`'s `sigma_a`,
+`eumelanin`, `pheomelanin`, `beta_m`, `beta_n`, `alpha` and `ior` are
 `IScalarPainter` slots (`docs/ISCALARPAINTER_REFACTOR.md` — the
-physical-scalar pipe, no JH spectral uplift), and there is **no `IJob`
-entry point that registers a scalar painter under a name**. Passing a
-bridge-registered `IPainter` name into one is not close enough:
+physical-scalar pipe, no JH spectral uplift), and passing a
+bridge-registered `IPainter` name straight into one is not close enough:
 `Job::AddHairMaterial` diagnoses it as "bound to an IPainter chunk" and
 fails the material outright. What those slots *do* accept is an inline
 numeric literal, so the ABI carries the numbers and the bridge formats
 them (`%.9g`, which round-trips a float exactly) at the call. `color`
 is a genuine `IPainter` slot and keeps its painter reference and full
-texture support. The consequence, stated plainly: **a texture-driven
-Roughness / Radial Roughness / IOR reaches the renderer as its constant
-socket value**, and the exporter warns when it drops one.
+texture support.
+
+**The three exceptions, as of ABI v10.** `Job::AddHairMaterial` resolves
+each scalar slot by consulting the job's `IScalarPainterManager` *first*
+and only then parsing the string as a number, so a **name** does work
+there — provided something is registered under it as an
+`IScalarPainter`. v10 makes the bridge register one for the three slots
+a Blender artist can plausibly paint: `rise_blender_hair_material` gained
+`beta_m_texture_painter_name`, `beta_n_texture_painter_name` and
+`ior_texture_painter_name` (appended, so every v9 offset holds). Each
+names an ordinary colour painter from `rise_blender_scene.painters`;
+`add_hair_material` wraps it with
+`RISE_API_CreatePainterChannelScalarPainter` — channel **R**, scale 1,
+bias 0, the same wrapper and default channel the scene language's
+`scalar_painter { painter <name> }` chunk builds — registers the wrapper
+under `<painter name>::hairscalar`, and passes *that* name to
+`AddHairMaterial`. So **a texture-driven Roughness / Radial Roughness /
+IOR now reaches the renderer as a real spatially-varying value.**
+The exporter sets these fields only when a texture chain actually
+resolved; otherwise they are `NULL` and the numeric field is used, with
+no extra painter and no extra indirection. An unresolvable name is
+non-fatal in the narrowest possible way: the bridge warns and falls back
+to the number **for that one slot**, keeping the material.
+
+**What still flattens to a constant**, and why: `eumelanin` /
+`pheomelanin` / `sigma_a` — a melanin or absorption image would need a
+defined concentration-per-texel convention RISE does not have, whereas a
+roughness or IOR map is already read as a literal physical value — and
+`alpha` (Blender's `Offset`), which the exporter never texture-samples
+in the first place (a linked `Offset` is read at its socket default and
+warned about).
 
 **Hair failures are non-fatal, and there is now a channel for saying
 so.** Before v9 the bridge had exactly one reporting path —

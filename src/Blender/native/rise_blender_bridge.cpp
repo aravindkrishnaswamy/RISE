@@ -26,6 +26,8 @@
 #include <Interfaces/IObjectPriv.h>
 #include <Interfaces/IPainterManager.h>
 #include <Interfaces/IPhaseFunction.h>
+#include <Interfaces/IScalarPainter.h>
+#include <Interfaces/IScalarPainterManager.h>
 #include <Interfaces/IProgressCallback.h>
 #include <Utilities/AdaptiveSamplingConfig.h>
 #include <Utilities/Math3D/Math3D.h>
@@ -1238,9 +1240,10 @@ namespace
 	}
 
 	//
-	// Hair / fur (ABI v9).  See rise_blender_hair_material /
-	// rise_blender_hair_object in the header for the struct contract,
-	// and docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the
+	// Hair / fur (ABI v9; the texture-driven scalar slots are v10).  See
+	// rise_blender_hair_material / rise_blender_hair_object in the
+	// header for the struct contract, and
+	// docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the
 	// Blender-side translation these two consume.
 	//
 	// EVERYTHING IN THIS BLOCK IS NON-FATAL.  Unlike add_material /
@@ -1252,6 +1255,12 @@ namespace
 	// frame the other 400 objects rendered fine over it would be the
 	// wrong trade.  The warnings reach the artist through
 	// rise_blender_render_result.warnings.
+	//
+	// The v10 texture-scalar slots degrade one step FURTHER than that:
+	// an unresolvable `*_texture_painter_name` does not even skip the
+	// material, it falls back to that slot's numeric field and warns.
+	// A missing roughness map is a reason to render the groom at its
+	// constant roughness, not a reason to lose the groom.
 	//
 
 	// Blender-parity rescale for the two melanin concentrations.
@@ -1318,6 +1327,120 @@ namespace
 		std::snprintf( buffer, sizeof( buffer ), "%.9g %.9g %.9g",
 			double( value[0] ), double( value[1] ), double( value[2] ) );
 		return std::string( buffer );
+	}
+
+	//! Suffix that turns a colour-painter name into the name of its
+	//! hair-scalar wrapper.  The two live in DIFFERENT managers (an
+	//! `IPainterManager` and an `IScalarPainterManager`), so the suffix
+	//! is not needed to avoid a clash between them -- it is there so
+	//! that the wrapper is unmistakably bridge-private and cannot be
+	//! confused with, or collide with, a scalar painter some other code
+	//! path registered under a plain name.  `::`-qualified derived names
+	//! are this bridge's existing idiom (`<object>::hairgeom`).  The
+	//! incoming painter name is itself unique -- it came out of the
+	//! exporter's `_unique_name` / painter-registration path and has
+	//! already been accepted by `IPainterManager::AddItem`, which
+	//! refuses duplicates -- so the derived name is unique too.
+	const char* const kHairScalarWrapperSuffix = "::hairscalar";
+
+	//! Resolve one OPTIONAL v10 texture-driven IScalarPainter slot on a
+	//! hair material to the string `IJob::AddHairMaterial` should be
+	//! handed for it.
+	//!
+	//! `Job::AddHairMaterial` resolves every scalar slot by looking the
+	//! string up in the job's IScalarPainterManager FIRST and only then
+	//! parsing it as an inline number (Job.cpp's
+	//! `ResolveOrDiagnoseScalar` / `ResolveScalarPainterArg`), so the
+	//! job of this function is to get a suitable `IScalarPainter`
+	//! registered under a name and return that name.
+	//!
+	//! The wrapper is `RISE_API_CreatePainterChannelScalarPainter`
+	//! (`PainterChannelScalarPainter`), NOT the older
+	//! `PainterToScalarAdapter`: it is the general, already-shipped
+	//! "wrap a named colour painter as a named scalar painter" surface
+	//! the scene language's `scalar_painter { painter <name> }` chunk is
+	//! built on (ChunkParserRegistry.cpp, doc 88 P2.1/S3), it supports
+	//! channel selection and an affine remap should this ever need them,
+	//! and it carries the SAME post-colourspace caveat as the adapter.
+	//! CHANNEL R (0), matching both that chunk's default channel and
+	//! `PainterToScalarAdapter`'s fixed channel: the exporter registers
+	//! these maps as non-colour data (`colorspace_is_data=True` ->
+	//! linear), i.e. a single physical value replicated across the
+	//! channels, so R is the value.  scale 1 / bias 0 -- the numeric
+	//! remap the artist wants already lives in the image.
+	//!
+	//! CAVEAT, inherited from the wrapper and worth repeating: the value
+	//! read is POST-colourspace, whatever the source painter was
+	//! registered with.  For the data-linear maps the exporter sends
+	//! that is the texel value verbatim, which is the intent.
+	//!
+	//! NON-FATAL throughout, matching this whole block: an empty field,
+	//! an unresolvable name, or a failure to build/register the wrapper
+	//! all return `fallbackLiteral` (the slot's numeric field, already
+	//! formatted) so the material still registers with its constant
+	//! value.
+	std::string resolve_hair_scalar_slot(
+		RISE::IJobPriv& job,
+		const char* painterName,
+		const char* slotLabel,
+		const std::string& who,
+		const std::string& fallbackLiteral,
+		std::vector<std::string>& warnings
+	)
+	{
+		if( !painterName || !painterName[0] ) {
+			return fallbackLiteral;			// the common case: no texture bound
+		}
+
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		RISE::IPainter* source = pmgr ? pmgr->GetItem( painterName ) : 0;
+
+		if( !source || !smgr ) {
+			record_warning( warnings,
+				std::string( "RISE could not bind the texture named '" ) + painterName +
+				"' to hair material " + who + "'s " + slotLabel +
+				"; that one parameter falls back to its constant value." );
+			return fallbackLiteral;
+		}
+
+		const std::string wrapperName = std::string( painterName ) + kHairScalarWrapperSuffix;
+
+		// Two hair materials may legitimately share one texture painter
+		// (a groom split across several Blender materials that all point
+		// at the same roughness map).  The wrapper is fully determined by
+		// the source painter plus the fixed channel/scale/bias, so the
+		// second material reuses the first's rather than failing on
+		// AddItem's duplicate-name refusal.
+		if( !smgr->GetItem( wrapperName.c_str() ) ) {
+			RISE::IScalarPainter* wrapper = 0;
+			RISE::RISE_API_CreatePainterChannelScalarPainter(
+				&wrapper, *source, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+			if( !wrapper ) {
+				record_warning( warnings,
+					std::string( "RISE could not build a scalar view of texture '" ) + painterName +
+					"' for hair material " + who + "'s " + slotLabel +
+					"; that one parameter falls back to its constant value." );
+				return fallbackLiteral;
+			}
+
+			// AddItem takes its OWN reference (GenericManager::AddItem
+			// addrefs), so the local one is released either way -- the
+			// same add-then-release pairing ChunkParserRegistry.cpp's
+			// scalar_painter chunk uses.
+			const bool added = smgr->AddItem( wrapper, wrapperName.c_str() );
+			wrapper->release();
+
+			if( !added ) {
+				record_warning( warnings,
+					std::string( "RISE could not register a scalar view of texture '" ) + painterName +
+					"' for hair material " + who + "'s " + slotLabel +
+					"; that one parameter falls back to its constant value." );
+				return fallbackLiteral;
+			}
+		}
+
+		return wrapperName;
 	}
 
 	// Pack the accumulated non-fatal warnings into the fixed result
@@ -1455,10 +1578,23 @@ namespace
 			return false;
 		}
 
-		const std::string beta_m = scalar_literal( material.beta_m );
-		const std::string beta_n = scalar_literal( material.beta_n );
+		// v10: three of the shared scalar slots may be driven by a
+		// texture instead of a number.  Each resolves to a registered
+		// IScalarPainter NAME when a painter is bound and resolvable, and
+		// to the numeric literal otherwise -- including on a name the job
+		// cannot resolve, which warns but does not lose the material.
+		// `alpha_degrees` has no texture form by design (Blender's
+		// `Offset` socket is never texture-sampled by the exporter).
+		const std::string beta_m = resolve_hair_scalar_slot(
+			job, material.beta_m_texture_painter_name, "beta_m (Roughness)",
+			who, scalar_literal( material.beta_m ), warnings );
+		const std::string beta_n = resolve_hair_scalar_slot(
+			job, material.beta_n_texture_painter_name, "beta_n (Radial Roughness)",
+			who, scalar_literal( material.beta_n ), warnings );
 		const std::string alpha  = scalar_literal( material.alpha_degrees );
-		const std::string ior    = scalar_literal( material.ior );
+		const std::string ior    = resolve_hair_scalar_slot(
+			job, material.ior_texture_painter_name, "ior (IOR)",
+			who, scalar_literal( material.ior ), warnings );
 
 		if( !job.AddHairMaterial(
 			material.name,

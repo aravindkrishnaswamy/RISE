@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 9
+_EXPECTED_API_VERSION = 10
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -205,9 +205,17 @@ class _HairMaterial(ctypes.Structure):
     # field for field and in order.  Note the deliberate asymmetry with
     # _Material: only the `color` tier is a painter NAME (it is a real
     # IPainter slot on the RISE side); every other hair parameter is an
-    # IScalarPainter slot, which no bridge-registered painter can
-    # satisfy, so the numbers travel directly and the native side
-    # formats them as inline literals.  See the header's comment.
+    # IScalarPainter slot, so the numbers travel directly and the native
+    # side formats them as inline literals.
+    #
+    # ABI v10 carves out three exceptions, appended at the end: a
+    # Roughness / Radial Roughness / IOR map CAN be sent, as the name of
+    # an ordinary colour painter, and the native side wraps it into an
+    # IScalarPainter (PainterChannelScalarPainter, channel R) registered
+    # under a derived name before calling AddHairMaterial.  Empty / None
+    # means "use the numeric field", which is the common case.
+    # `sigma_a` / `eumelanin` / `pheomelanin` / `alpha_degrees` stay
+    # numeric-only -- see the header's comment for why.
     _fields_ = [
         ("name", ctypes.c_char_p),
         ("tier", ctypes.c_int),
@@ -220,6 +228,9 @@ class _HairMaterial(ctypes.Structure):
         ("beta_n", ctypes.c_float),
         ("alpha_degrees", ctypes.c_float),
         ("ior", ctypes.c_float),
+        ("beta_m_texture_painter_name", ctypes.c_char_p),
+        ("beta_n_texture_painter_name", ctypes.c_char_p),
+        ("ior_texture_painter_name", ctypes.c_char_p),
     ]
 
 
@@ -762,6 +773,19 @@ class _SceneHandle:
         payload.beta_n = float(getattr(material, "beta_n", 0.3))
         payload.alpha_degrees = float(getattr(material, "alpha_degrees", 2.0))
         payload.ior = float(getattr(material, "ior", 1.55))
+        # ABI v10 -- optional texture drivers for three of the scalar
+        # slots.  `_cstring(None)` is a NULL pointer, which the native
+        # side reads as "no texture bound, use the number above"; the
+        # exporter only sets these when a real texture chain resolved.
+        payload.beta_m_texture_painter_name = self._cstring(
+            getattr(material, "beta_m_texture_painter_name", None)
+        )
+        payload.beta_n_texture_painter_name = self._cstring(
+            getattr(material, "beta_n_texture_painter_name", None)
+        )
+        payload.ior_texture_painter_name = self._cstring(
+            getattr(material, "ior_texture_painter_name", None)
+        )
         return payload
 
     def _marshal_hair_object(self, obj):
