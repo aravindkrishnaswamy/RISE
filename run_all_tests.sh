@@ -1157,33 +1157,60 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
 	r172_name="FireSequenceTest.r172_temporal_refinement_stop"
 	r172_path="$BIN_DIR/FireSequenceTest"
+	r172_oracle_path="$BIN_DIR/FireProductionCalibrationOracle"
 	r172_log="$LOG_DIR/$r172_name.log"
+	r172_seal_log="$LOG_DIR/$r172_name.seal.log"
 	r172_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	r172_directory="$REPO_ROOT/rendered/fire_production_calibration/r172_temporal_refinement_stop"
+	r172_protocol="$REPO_ROOT/rendered/fire_production_calibration/r139_temporal_protocol/temporal_protocol.v1"
+	r172_protocol_sha="e58ee48de0c79dc35aa6e6bf344729c12cc74bf7d89cfa3e78cfeaf28cc9630c"
+	r172_targets_sha="6e0af5dcb7602b6fd067bc6d4b113378c14444643300ede6375d442c7cdef42c"
+	r172_temp="$(mktemp -d "${TMPDIR:-/tmp}/rise-r172-targets.XXXXXX")"
 	printf '[ evidence ] %-46s ... ' "$r172_name"
-	r172_rc=0
-	if [ ! -x "$r172_path" ]; then
+	r172_rc=0 r172_seal_rc=0 r172_sealed=0
+	if [ ! -x "$r172_path" ] || [ ! -x "$r172_oracle_path" ]; then
 		r172_rc=127
+	elif "$r172_oracle_path" --fire-production-calibration-seal-temporal-targets \
+		"$r172_temp" "$r172_protocol" "$r172_protocol_sha" >"$r172_seal_log" 2>&1; then
+		r172_seal_rc=0
+	else
+		r172_seal_rc=$?
+	fi
+	if [ "$r172_seal_rc" -eq 194 ] &&
+		grep -Fq "temporal targets sealed manifest_sha256=$r172_targets_sha" "$r172_seal_log" &&
+		cmp -s "$r172_temp/temporal_targets.v1" "$r172_directory/temporal_targets.v1" &&
+		cmp -s "$r172_temp/temporal_level0_sdiv.f64" "$r172_directory/temporal_level0_sdiv.f64" &&
+		cmp -s "$r172_temp/temporal_level1_sdiv.f64" "$r172_directory/temporal_level1_sdiv.f64" &&
+		cmp -s "$r172_temp/temporal_level2_sdiv.f64" "$r172_directory/temporal_level2_sdiv.f64"; then
+		r172_sealed=1
+	fi
+	if [ "$r172_rc" -ne 127 ] && [ "$r172_sealed" -ne 1 ]; then
+		r172_rc="$r172_seal_rc"
 	elif [ -n "$timeout_bin" ]; then
 		RISE_OPTIONS_FILE="$r172_options" "$timeout_bin" "$RISE_TEST_TIMEOUT" \
-			"$r172_path" --fire-production-calibration-measure-temporal \
+			"$r172_path" --fire-production-calibration-measure-temporal "$r172_directory" \
+			"$r172_protocol" "$r172_protocol_sha" "$r172_targets_sha" \
 			>"$r172_log" 2>&1 || r172_rc=$?
 	else
 		RISE_OPTIONS_FILE="$r172_options" "$r172_path" \
-			--fire-production-calibration-measure-temporal >"$r172_log" 2>&1 || r172_rc=$?
+			--fire-production-calibration-measure-temporal "$r172_directory" "$r172_protocol" \
+			"$r172_protocol_sha" "$r172_targets_sha" >"$r172_log" 2>&1 || r172_rc=$?
 	fi
 	if [ "$r172_rc" -eq 193 ] &&
 		grep -Fq 'temporal scalar component=8 production_D=1.3664113219736267/0.68316914382060645 order=1 E=2.7328226439472538 accepted=1 oracle_D=0.0012312438866646748/0.001273209006325096 order=0 E=0 accepted=0' "$r172_log" &&
 		grep -Fq 'temporal velocity production_D=6.7800078709060773e-06/3.735511745788258e-06 order=0.85998104987383395 E=1.5098888236479335e-05 accepted=1 oracle_D=6.2907169766867145e-06/5.3409610560218166e-06 order=0.23612509109838353 E=4.1666621096787029e-05 accepted=1' "$r172_log" &&
-		grep -Fq 'temporal refinement complete baseline=0.0018513043178245425 horizon=0.01481043454259634 target_sha256=1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c/1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1/95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551 accepted=0' "$r172_log" &&
+		grep -Fq 'temporal refinement complete baseline=0.0018513043178245425 horizon=0.01481043454259634 target_sha256=1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c/1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1/95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551 refusals=0/1 expected=1' "$r172_log" &&
 		[ "$(grep -c '^temporal scalar component=' "$r172_log")" -eq 9 ] &&
-		[ "$(grep -c '^temporal ledger component=' "$r172_log")" -eq 9 ]; then
+		[ "$(grep -c '^temporal ledger component=' "$r172_log")" -eq 9 ] &&
+		[ "$(grep -o 'accepted=0' "$r172_log" | wc -l | tr -d ' ')" -eq 1 ]; then
 		echo 'PASS (exact exit=193, oracle energy temporal refusal)'
-		rm -f "$r172_log"
+		rm -f "$r172_log" "$r172_seal_log"
 	else
 		echo "FAIL (exit=$r172_rc expected 193)"
 		printf '%s\t%d\t%s\n' "$r172_name" "$r172_rc" "$r172_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
+	rm -rf "$r172_temp"
 fi
 
 print_summary

@@ -2191,31 +2191,60 @@ int main()
 	const std::string temporalStopRaw=ReadText(
 		"rendered/fire_production_calibration/r172_temporal_refinement_stop/"
 		"temporal_refinement.raw.log");
+	const std::string temporalTargets=ReadText(
+		"rendered/fire_production_calibration/r172_temporal_refinement_stop/"
+		"temporal_targets.v1");
+	const std::string temporalTarget0=ReadText(
+		"rendered/fire_production_calibration/r172_temporal_refinement_stop/"
+		"temporal_level0_sdiv.f64");
+	const std::string temporalTarget1=ReadText(
+		"rendered/fire_production_calibration/r172_temporal_refinement_stop/"
+		"temporal_level1_sdiv.f64");
+	const std::string temporalTarget2=ReadText(
+		"rendered/fire_production_calibration/r172_temporal_refinement_stop/"
+		"temporal_level2_sdiv.f64");
 	const std::string solverDoc=ReadText("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md");
 	const std::string historyDoc=ReadText("docs/FIRE_SMOKE_DESIGN_HISTORY.md");
-	Check(!temporalStop.empty()&&!temporalStopRaw.empty()&&
+	Check(!temporalStop.empty()&&!temporalStopRaw.empty()&&!temporalTargets.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalStop.begin(),temporalStop.end()))==
-			"137293ae5287c1f07d91fa9438b3465f1505dc236825cbb158130d3602cef8af"&&
+			"a36bc5fd0a873fdbe1208cbcf7214f25d21de74f502e7c5aa94c1b384ed962f7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalStopRaw.begin(),temporalStopRaw.end()))==
-			"4fa4e0b4dc5bc7532d857197d20f62c63c7a0eac39a963f1e4ba2c282fe0a4f4"&&
+			"b36fa4200dfdc253f78e25c9ec2a1f2552e26c46ff4718102aab0c54c1f116a3"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			temporalTargets.begin(),temporalTargets.end()))==
+			"6e0af5dcb7602b6fd067bc6d4b113378c14444643300ede6375d442c7cdef42c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			temporalTarget0.begin(),temporalTarget0.end()))==
+			"1cf6244040426b2704f8ac2c4b953c32efd1d0c71cdebea7eacef85f2217d05c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			temporalTarget1.begin(),temporalTarget1.end()))==
+			"1f6a95c059bf63224b63697689e3498a05add9418f9470b1e4c3f8d6e9e30cf1"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			temporalTarget2.begin(),temporalTarget2.end()))==
+			"95e0f5032efb2171bc412d4e26411e7dedd91962d171b187a752555862112551"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"1ef10b2afa5e1952c6edf796dec3ba519cd9d72484fae434f41bf081ea460444"&&
+			"36d8ae800891bcd9e3f2e8fb4e57751ce928173184130aba160967ad9491e94d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"46591a19480f28cc865a986cfdcc9e7f21bb0ad2d9536664abb1ad1cd700523f"&&
+			"3f98a148082a4113bedfad8473a271890784cce42be010e08903694fb7f6ce13"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"ce3d9560d354d97b24aa53eb9c63992dca082c06d281f0ac9bf98b87aed6a6f1"&&
+			"874d88383abe09fb164ae1596ebdeceec18cfbfef3ee4fc7402bcfff0bc8b8a7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"35da3f5623c62a7e202b216d20c7c55c7ae43eb4ec33df11ef6e3cf2e2c50256"&&
+			"1509d05724ab8e13c802fd53b5f48d7998804b106af3d4bf6f6868a56db542fb"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"78939d3db2ff1cd5f0e08676d78719a6bbe428e003fab182df8e95089a0f0025"&&
+			"1c7783a845a74534d79e72d67a62992d9fc63654344644ac64001cfd8ab7b29d"&&
 		temporalStop.find("exact_exit 193")!=std::string::npos&&
+		temporalStop.find("target_seal_exact_exit 194")!=std::string::npos&&
+		temporalStop.find("stale_schedule_actual_penultimate_RED true")!=
+			std::string::npos&&
+		temporalStop.find("producer_precision_mutation_RED true")!=std::string::npos&&
+		temporalStop.find("refusal_counts production_0 oracle_1")!=std::string::npos&&
 		temporalStop.find("rejected_scalar_components 8_sensible_energy")!=
 			std::string::npos&&
 		temporalStop.find("eight_slice_readmission_run false")!=std::string::npos&&
@@ -2223,8 +2252,10 @@ int main()
 			std::string::npos&&
 		CountText(temporalStopRaw,"temporal scalar component=")==9u&&
 		CountText(temporalStopRaw,"temporal ledger component=")==9u&&
-		unixTestDriver.find("--fire-production-calibration-measure-temporal")!=
-			std::string::npos,
+		unixTestDriver.find("--fire-production-calibration-seal-temporal-targets")!=
+			std::string::npos&&unixTestDriver.find(
+			"--fire-production-calibration-measure-temporal")!=std::string::npos&&
+		unixTestDriver.find("grep -o 'accepted=0'")!=std::string::npos,
 		"r172 executes all temporal rows and refuses noncontracting oracle energy");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==

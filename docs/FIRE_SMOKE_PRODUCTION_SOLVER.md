@@ -4285,8 +4285,14 @@ r172 executes the three-level temporal instrument frozen by r139 before the
 eight-slice readmission.  The tier-6 analytic beginning, represented baseline
 `dt=0.0018513043178245425 s`, dyadic halves, step counts `8/16/32`, common
 horizon `0.01481043454259634 s`, filters, metrics, and formal orders are
-unchanged.  All three binary64 oracle target schedules are completed and
-SHA-bound before the generated binary64 production mirror is evaluated.  The
+unchanged.  A capability-isolated `FireProductionCalibrationOracle` process
+with no Metal framework generates all three binary64 target schedules into
+write-once payloads.  Their manifest and payload SHA-256 digests are checked
+before the Metal-capable evaluator opens them for const replay; the evaluator
+also rejects an actual penultimate-target substitution before any dispatch.
+The analytic beginning is checked against the r139 SHA plus the consumed
+all-cell Binary64 producer class, with a Binary32 producer-class mutation RED.
+Only after those boundaries close is the generated binary64 production mirror evaluated.  The
 production mirror performs binary64 stage arithmetic, publishes each
 intermediate request through the production binary32 state boundary, and
 measures each level's final pre-publication binary64 output.  This keeps
@@ -4304,7 +4310,8 @@ differences are `0.0012312438866646748` and `0.001273209006325096`, so the
 ratio is `0.9670398815497335 < 1`; no positive temporal order or finite
 Richardson distance may be emitted.  This is not replaced by a fallback
 constant and no tolerance is learned from the golden production difference.
-Consequently the additive contract is incomplete and the eight-slice
+It is the sole refusal in the complete matrix (`production=0`, `oracle=1`),
+not an alias for another noncontracting row.  Consequently the additive contract is incomplete and the eight-slice
 readmission is not run.  The manifold-floor attribution flag is likewise not
 evaluated because no admissible contract exists against which to judge it.
 Thermo/source maps and first light remain blocked at this measured temporal

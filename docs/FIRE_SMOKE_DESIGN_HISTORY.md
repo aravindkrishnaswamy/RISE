@@ -4239,8 +4239,11 @@ it was already tried and refuted here.
   contract's last term is closed; equal-time eight-slice readmission is next.
 - **r172 tier-6 temporal-refinement stop (2026-08-27):** the r139 temporal
   protocol is finally executed as the prerequisite embedded by the equal-time
-  amendment.  Three oracle target schedules are completed and SHA-bound before
-  either comparison; the generated production mirror uses binary64 stage
+  amendment.  The no-Metal calibration owner generates three oracle target
+  schedules as write-once payloads; a manifest, each payload, the r139 analytic
+  beginning SHA, and the consumed all-cell Binary64 producer class are checked
+  before const replay in the Metal-capable evaluator.  Penultimate-target and
+  producer-class mutations are RED.  The generated production mirror uses binary64 stage
   arithmetic with the production binary32 publication boundary between
   substeps.  Eighteen of nineteen quantity classes contract and obtain their
   registered temporal terms.  Production sensible energy is first order with
@@ -4252,7 +4255,7 @@ it was already tried and refuted here.
   `D(dt/2,dt/4)=0.001273209006325096`.  The ratio
   `0.9670398815497335` is noncontracting, so r139 forbids a temporal order,
   distance, fallback, or post-observation tolerance.  Exact exit `193` seals
-  the complete matrix.  The additive contract therefore remains incomplete;
+  the complete matrix and requires the exact refusal counts `0/1`.  The additive contract therefore remains incomplete;
   the eight-slice verdict, manifold-floor attribution, thermo/source maps, and
   first light do not run.  The unchanged golden checkpoint remains
   `1b944176...4947`.

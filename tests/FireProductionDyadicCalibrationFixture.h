@@ -882,14 +882,126 @@ namespace FireProductionDyadicCalibration
 		return true;
 	}
 
-	int MeasureTemporalRefinement()
+	bool TemporalBeginningMatchesProtocol(const MethaneRunCheckpoint& state)
+	{
+		return AnalyticStateDigest(state)==
+			"5116d667f31d197fe9fbbc98348093cc86a3d70c693163579d6c6f3023a1adff"&&
+			std::all_of(state.states.begin(),state.states.end(),[](const MethaneCellState& cell){
+				return cell.producerPrecision==FireStateProducerPrecision::Binary64;
+			});
+	}
+
+	bool TemporalTargetMatchesSealedSchedule(const std::vector<std::vector<double> >& schedule,
+		const std::size_t step,const std::vector<double>& target)
+	{
+		return step<schedule.size()&&schedule[step].size()==target.size()&&
+			std::memcmp(schedule[step].data(),target.data(),target.size()*sizeof(double))==0;
+	}
+
+	int SealTemporalTargets(const std::filesystem::path& directory,
+		const std::filesystem::path& protocolPath,const char* expectedProtocol)
 	{
 		static const std::array<unsigned int,3> stepCounts={{8u,16u,32u}};
+		if(!expectedProtocol||std::strlen(expectedProtocol)!=64u||
+			DigestFile(protocolPath)!=expectedProtocol)return 194;
 		MethaneRunCheckpoint beginning;std::string error;
-		if(!BuildAnalyticState(6.0,beginning,error))return 173;
+		if(!BuildAnalyticState(6.0,beginning,error)||!TemporalBeginningMatchesProtocol(beginning))
+			return 195;
+		MethaneRunCheckpoint precisionMutant=beginning;
+		precisionMutant.states.front().producerPrecision=FireStateProducerPrecision::Binary32;
+		if(AnalyticStateDigest(precisionMutant)!=AnalyticStateDigest(beginning)||
+			TemporalBeginningMatchesProtocol(precisionMutant))return 196;
+		std::error_code directoryError;std::filesystem::create_directories(directory,directoryError);
+		if(directoryError)return 197;
 		const double flowThrough=6.0*std::sqrt(
 			beginning.values.characteristicDiameterM/Gravity);
 		const double baseline=static_cast<double>(static_cast<float>(flowThrough/512.0));
+		std::array<std::string,3> targetDigests;
+		for(std::size_t level=0u;level<stepCounts.size();++level){
+			const double timeStep=std::ldexp(baseline,-static_cast<int>(level));
+			OracleSpatialCalibrationResult result;
+			if(!RunOracleSpatialCalibrationTrajectory(beginning,timeStep,stepCounts[level],
+				result,error,false))return 198;
+			const std::filesystem::path target=directory/(std::string("temporal_level")+
+				std::to_string(level)+"_sdiv.f64");
+			if(!WriteCalibrationDoublePayload(target,result.divergenceTargetsPerS))return 199;
+			targetDigests[level]=DigestFile(target);
+		}
+		std::ostringstream manifest;manifest<<std::setprecision(17)
+			<<"fire_production_temporal_targets_v1\nprotocol_sha256 "<<expectedProtocol<<"\n"
+			<<"beginning_sha256 "<<AnalyticStateDigest(beginning)<<"\n"
+			<<"beginning_producer_precision binary64_all_cells\n"
+			<<"baseline_dt_s "<<baseline<<"\n";
+		for(std::size_t level=0u;level<stepCounts.size();++level)manifest<<"level "<<level
+			<<" step_count "<<stepCounts[level]<<" dt_s "
+			<<std::ldexp(baseline,-static_cast<int>(level))<<" sdiv_sha256 "
+			<<targetDigests[level]<<"\n";
+		if(!WriteTextAtomically(directory/"temporal_targets.v1",manifest.str()))return 200;
+		std::fprintf(stderr,"temporal targets sealed manifest_sha256=%s\n",
+			DigestFile(directory/"temporal_targets.v1").c_str());
+		return 194;
+	}
+
+	bool ReadTemporalTargetManifest(const std::filesystem::path& path,
+		const char* expectedProtocol,std::array<unsigned int,3>& stepCounts,
+		std::array<double,3>& timeSteps,std::array<std::string,3>& targetDigests)
+	{
+		std::ifstream input(path);std::string token,protocol,beginning,precision;
+		if(!(input>>token)||token!="fire_production_temporal_targets_v1")return false;
+		if(!(input>>token>>protocol)||token!="protocol_sha256"||protocol!=expectedProtocol)
+			return false;
+		if(!(input>>token>>beginning)||token!="beginning_sha256"||beginning!=
+			"5116d667f31d197fe9fbbc98348093cc86a3d70c693163579d6c6f3023a1adff")
+			return false;
+		if(!(input>>token>>precision)||token!="beginning_producer_precision"||
+			precision!="binary64_all_cells")return false;
+		double baseline=0.0;if(!(input>>token>>baseline)||token!="baseline_dt_s"||
+			baseline!=0.0018513043178245425)return false;
+		for(std::size_t expectedLevel=0u;expectedLevel<3u;++expectedLevel){
+			std::size_t level=0u;std::string stepLabel,dtLabel,digestLabel;
+			if(!(input>>token>>level>>stepLabel>>stepCounts[expectedLevel]>>dtLabel>>
+				timeSteps[expectedLevel]>>digestLabel>>targetDigests[expectedLevel])||
+				token!="level"||level!=expectedLevel||stepLabel!="step_count"||
+				dtLabel!="dt_s"||digestLabel!="sdiv_sha256"||
+				targetDigests[expectedLevel].size()!=64u)return false;
+		}
+		return true;
+	}
+
+	int MeasureTemporalRefinement(const std::filesystem::path& directory,
+		const std::filesystem::path& protocolPath,const char* expectedProtocol,
+		const char* expectedTargets)
+	{
+		if(!expectedProtocol||!expectedTargets||std::strlen(expectedProtocol)!=64u||
+			std::strlen(expectedTargets)!=64u||DigestFile(protocolPath)!=expectedProtocol||
+			DigestFile(directory/"temporal_targets.v1")!=expectedTargets)return 173;
+		std::array<unsigned int,3> stepCounts;std::array<double,3> sealedTimeSteps;
+		std::array<std::string,3> targetFileDigests;
+		if(!ReadTemporalTargetManifest(directory/"temporal_targets.v1",expectedProtocol,
+			stepCounts,sealedTimeSteps,targetFileDigests)||stepCounts!=
+			std::array<unsigned int,3>{{8u,16u,32u}})return 173;
+		MethaneRunCheckpoint beginning;std::string error;
+		if(!BuildAnalyticState(6.0,beginning,error)||!TemporalBeginningMatchesProtocol(beginning))
+			return 173;
+		MethaneRunCheckpoint precisionMutant=beginning;
+		precisionMutant.states.front().producerPrecision=FireStateProducerPrecision::Binary32;
+		if(AnalyticStateDigest(precisionMutant)!=AnalyticStateDigest(beginning)||
+			TemporalBeginningMatchesProtocol(precisionMutant))return 173;
+		const double flowThrough=6.0*std::sqrt(
+			beginning.values.characteristicDiameterM/Gravity);
+		const double baseline=static_cast<double>(static_cast<float>(flowThrough/512.0));
+		std::array<std::vector<std::vector<double> >,3> loadedSchedules;
+		for(std::size_t level=0u;level<stepCounts.size();++level){
+			const std::filesystem::path target=directory/(std::string("temporal_level")+
+				std::to_string(level)+"_sdiv.f64");
+			if(sealedTimeSteps[level]!=std::ldexp(baseline,-static_cast<int>(level))||
+				DigestFile(target)!=targetFileDigests[level]||!ReadCalibrationDoublePayload(target,
+					beginning.states.size(),stepCounts[level],loadedSchedules[level]))return 173;
+		}
+		const std::array<std::vector<std::vector<double> >,3> sealedSchedules=
+			std::move(loadedSchedules);
+		if(TemporalTargetMatchesSealedSchedule(sealedSchedules[0],1u,
+			sealedSchedules[0][0]))return 173;
 		std::array<OracleSpatialCalibrationResult,3> oracle;
 		std::array<std::string,3> targetDigest;
 		for(std::size_t level=0u;level<stepCounts.size();++level){
@@ -897,11 +1009,12 @@ namespace FireProductionDyadicCalibration
 			if(!RunOracleSpatialCalibrationTrajectory(beginning,timeStep,stepCounts[level],
 				oracle[level],error,false)){std::fprintf(stderr,
 				"temporal oracle level=%zu failed: %s\n",level,error.c_str());return 174;}
-			RISECBOR64::Bytes schedule;
-			for(const std::vector<double>& target:oracle[level].divergenceTargetsPerS)
-				for(const double value:target)FireProductionDyadicCalibration::AppendDouble(
-					schedule,value);
-			targetDigest[level]=RISECBOR64::SHA256Hex(schedule);
+			if(oracle[level].divergenceTargetsPerS.size()!=sealedSchedules[level].size())
+				return 174;
+			for(std::size_t step=0u;step<sealedSchedules[level].size();++step)
+				if(!TemporalTargetMatchesSealedSchedule(sealedSchedules[level],step,
+					oracle[level].divergenceTargetsPerS[step]))return 174;
+			targetDigest[level]=targetFileDigests[level];
 		}
 		std::array<MethaneRunCheckpoint,3> production;
 		std::array<FireProductionCalibration::ResidentStep64Result,3> finalProduction;
@@ -910,8 +1023,10 @@ namespace FireProductionDyadicCalibration
 			const double timeStep=std::ldexp(baseline,-static_cast<int>(level));
 			for(std::size_t step=0u;step<stepCounts[level];++step){
 				RISE::FireProductionResidentStepRequest request;
-				if(!BuildProductionRequest(production[level],
-					oracle[level].divergenceTargetsPerS[step],timeStep,request,error))return 175;
+				const std::vector<double>& sealedTarget=sealedSchedules[level][step];
+				if(!TemporalTargetMatchesSealedSchedule(sealedSchedules[level],step,sealedTarget)||
+					!BuildProductionRequest(production[level],sealedTarget,timeStep,request,error))
+					return 175;
 				RISE::FireProductionResidentStepResult producerProbe;
 				if(!RISE::AdvanceFireProductionResidentStepMetal(request,producerProbe,&error)||
 					!producerProbe.projection.validationPassed)return 176;
@@ -962,7 +1077,8 @@ namespace FireProductionDyadicCalibration
 			oracleFiltered[0],oracleFiltered[1]);
 		const std::array<double,9> oracleFine=FieldDistance(
 			oracleFiltered[1],oracleFiltered[2]);
-		bool accepted=true;
+		unsigned int productionRefusals=0u,oracleRefusals=0u;
+		bool expectedOracleEnergyRefusal=false;
 		for(std::size_t component=0u;component<9u;++component){
 			double productionOrder=0.0,productionDistance=0.0;
 			double oracleOrder=0.0,oracleDistance=0.0;
@@ -972,7 +1088,8 @@ namespace FireProductionDyadicCalibration
 			const bool oracleAccepted=FireProductionCalibration::TemporalRichardson(
 				oracleCoarse[component],
 					oracleFine[component],2.0,oracleOrder,oracleDistance);
-			accepted=accepted&&productionAccepted&&oracleAccepted;
+			if(!productionAccepted)++productionRefusals;
+			if(!oracleAccepted){++oracleRefusals;if(component==8u)expectedOracleEnergyRefusal=true;}
 			std::fprintf(stderr,"temporal scalar component=%zu production_D=%.17g/%.17g "
 				"order=%.17g E=%.17g accepted=%d oracle_D=%.17g/%.17g order=%.17g "
 				"E=%.17g accepted=%d\n",
@@ -994,7 +1111,8 @@ namespace FireProductionDyadicCalibration
 		const bool oracleVelocityAccepted=FireProductionCalibration::TemporalRichardson(
 				oracleVelocityCoarse,oracleVelocityFine,2.0,oracleVelocityOrder,
 				oracleVelocityDistance);
-		accepted=accepted&&productionVelocityAccepted&&oracleVelocityAccepted;
+		if(!productionVelocityAccepted)++productionRefusals;
+		if(!oracleVelocityAccepted)++oracleRefusals;
 		std::fprintf(stderr,"temporal velocity production_D=%.17g/%.17g order=%.17g E=%.17g "
 			"accepted=%d oracle_D=%.17g/%.17g order=%.17g E=%.17g accepted=%d\n",
 			productionVelocityCoarse,
@@ -1017,7 +1135,8 @@ namespace FireProductionDyadicCalibration
 				productionDistance);
 			const bool oracleAccepted=FireProductionCalibration::TemporalRichardson(
 					oracleCoarseDifference,oracleFineDifference,2.0,oracleOrder,oracleDistance);
-			accepted=accepted&&productionAccepted&&oracleAccepted;
+			if(!productionAccepted)++productionRefusals;
+			if(!oracleAccepted)++oracleRefusals;
 			std::fprintf(stderr,"temporal ledger component=%zu production_D=%.17g/%.17g "
 				"order=%.17g E=%.17g accepted=%d oracle_D=%.17g/%.17g order=%.17g "
 				"E=%.17g accepted=%d\n",
@@ -1025,11 +1144,13 @@ namespace FireProductionDyadicCalibration
 				productionDistance,productionAccepted?1:0,oracleCoarseDifference,
 				oracleFineDifference,oracleOrder,oracleDistance,oracleAccepted?1:0);
 		}
+		const bool expectedRefusal=productionRefusals==0u&&oracleRefusals==1u&&
+			expectedOracleEnergyRefusal;
 		std::fprintf(stderr,"temporal refinement complete baseline=%.17g horizon=%.17g "
-			"target_sha256=%s/%s/%s accepted=%d\n",baseline,8.0*baseline,
+			"target_sha256=%s/%s/%s refusals=%u/%u expected=%d\n",baseline,8.0*baseline,
 			targetDigest[0].c_str(),targetDigest[1].c_str(),targetDigest[2].c_str(),
-			accepted?1:0);
-		return accepted?192:193;
+			productionRefusals,oracleRefusals,expectedRefusal?1:0);
+		return expectedRefusal?193:192;
 	}
 	bool ApplyAcceptedProductionResult(const RISE::FireProductionResidentStepResult& production,
 		const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
