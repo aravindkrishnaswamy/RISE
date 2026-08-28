@@ -1,8 +1,15 @@
 # Hair / Fur System Design — Scattering Model, Strand Geometry, and Phased Plan
 
-**Status:** PHASES 1, 2 AND 3 IMPLEMENTED (2026-08-27) — §7 Phase 1 complete through render
-validation; Phase 2 (guides + `.hair` import + Blender export) shipped; Phase 3 (Yan 2017 fur
-medulla) shipped; Phase 4 (LOD/perf) remains proposed.
+**Status:** PHASES 1, 2 AND 3 IMPLEMENTED (2026-08-27); PHASE 4 EXECUTED AND CLOSED
+(2026-08-28) — §7 Phase 1 complete through render validation; Phase 2 (guides + `.hair` import +
+Blender export) shipped; Phase 3 (Yan 2017 fur medulla) shipped. Phase 4 was a menu "prioritized
+by observed need": the two items with an observed need were taken up and are reported with their
+measurements in §7; the other four (strand LOD tiers, elliptical cross-sections, an
+`auto_rasterizer` hair hint, a dedicated fibre bounce bucket) are **DECLINED for now** — no
+driving scene or user need was observed this arc. Of the two taken up, the AOV item found the
+mechanism it was opened for did **not** exist (§6.5 follow-up) and the perf item's change was
+**measured and reverted** for not clearing its own bar (§7 Phase 4). Neither left code in tree
+beyond one contract fix.
 **Date:** 2026-08-25 (design); Phase 1 landed 2026-08-26/27.
 **Nature:** Decision document + phased execution plan, in the mold of
 [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey → scored candidates →
@@ -727,7 +734,9 @@ adds uncontrolled bias. Deep bounce budgets + RR tuning are the supported path.
 
 The AOV contract ([OIDN.md](OIDN.md)): albedo/normal are captured **once, at the first non-delta
 hit** (`PathTracingIntegrator.cpp:2703-2710`), albedo from `IBSDF::albedo()`, normal from
-`ri.geometric.vNormal`. For hair this means per-pixel aux values come from *one* fiber among the
+`ri.geometric.vNormal`. ⚠ **Read "once" as once per PATH SAMPLE, not once per pixel** — the
+paragraph below took it the second way and that was wrong; see the 2026-08-28 follow-up. For
+hair this means per-*sample* aux values come from *one* fiber among the
 dozens crossing the pixel — the aux buffers will be strand-noise-textured, which is the classic
 hair-denoising failure mode (over-smoothing of fine strands or aux-noise passthrough). Phase-1
 stance: implement a clean closed-form `albedo()` (§4), render hair test scenes through the
@@ -798,15 +807,107 @@ comes from a single fiber, so prefiltering blends that fiber's albedo/normal int
 background's and hands the network an even smoother guide — it makes the guide *more* wrong,
 not less. Whatever the mechanism, the empirical rule stands on its own.
 
-**Disposition.**
-- Phase-4 coverage-weighted multi-sample aux accumulation is warranted, with a measurable
+**Disposition** (superseded the same day — read the follow-up below before acting on it).
+- ~~Phase-4 coverage-weighted multi-sample aux accumulation is warranted, with a measurable
   target: bring the `fast`-mode gradient ratio from 0.85 to within a few percent of 1.0 while
-  keeping the flat-region win. It stays an `AOVBuffers` change, not a hair change.
-- Until then, and needing no code: **do not set `oidn_prefilter accurate` on hair scenes** —
+  keeping the flat-region win.~~ **Withdrawn**: that accumulation was already shipped in
+  2026-04, so it cannot be the cause and could not be the fix. See the follow-up.
+- Still standing, and needing no code: **do not set `oidn_prefilter accurate` on hair scenes** —
   it is worse than the `fast` default on every metric measured. And **keep `oidn_denoise
   FALSE` on hair scenes above ~100 spp**; the crossover on this groom is between 64 and 128
   spp, and past it the denoiser costs more than it returns.
 - Nothing here blocks shipping, exactly as the paragraph above anticipated.
+
+#### Follow-up, 2026-08-28 (Phase 4) — the aux was never single-sampled, and the deficit is not aux-limited
+
+The Phase-4 item the block above demanded was taken up, and the first thing it found is that
+**its premise was already false.** The paragraph opening §6.5 says albedo/normal are captured
+"once, at the first non-delta hit". That is true **per PATH SAMPLE** and was mistaken for
+per PIXEL. Every pixel-based integrator has accumulated its AOVs across all of a pixel's
+samples, weighted by each sample's film weight and normalized at resolve, since
+`OIDN-P1-1` v1/v2 shipped on 2026-04-29 — `PathTracingPelRasterizer.cpp:431-440` (and the six
+sibling rasterizers) inside the per-sample loop, resolved by
+`AOVBuffers::Normalize(x, y, 1/alphaSum)` in `PixelBasedRasterizerHelper.cpp:1284`. The
+single-capture retrace survives only as the fallback for estimators with no `PixelAOV` hook
+(MLT). So "coverage-weighted multi-sample aux accumulation" was not a thing to build; it was
+already the shipping behaviour, and the strand-noise story built on top of it was wrong.
+
+Two genuine defects did remain in that accumulation, and one is fixed:
+
+- **Normals were averaged but never renormalized.** The weighted arithmetic mean of unit
+  normals is not a unit vector; its length collapses toward 0 as the samples disagree, which is
+  exactly what happens on a groom. OIDN's normal guide is contractually unit-length, so it read
+  that shortening as a different surface orientation. `AOVBuffers::NormalizeSelected` now
+  renormalizes (spherical-mean estimator; the discarded concentration has no OIDN channel to go
+  to). Guarded by three new `FrameStoreTest` checks. This also fixes the agent-perception Normal
+  channel, whose `n*0.5+0.5` byte encoding in `InMemoryRasterizerOutput.cpp:141` assumes a unit
+  normal and was washing multi-surface pixels toward flat grey.
+- **`invWeight` was applied to a quantity where it is meaningless** (a uniform positive scale
+  cannot survive renormalization). Now documented as ignored for the normal plane rather than
+  silently applied.
+
+**Measured effect of the renormalization: none, within noise.** Same protocol as the table
+above (`hair_styled`, 256², `pixel_filter box` everywhere, RMSE vs the same 2048-spp reference).
+The run-to-run band was established first by re-rendering the whole matrix on the unchanged
+binary: it reproduces the table above to within +1.7 % (RMSE) and 0.3–3.0 % (gradient ratio).
+
+| spp | mode | grad ratio before | grad ratio after | RMSE before (×1e-3) | RMSE after (×1e-3) |
+|-----|------|-------------------|------------------|---------------------|--------------------|
+| 64  | `fast` | 0.826 | 0.806 | 3.162 | 3.202 |
+| 128 | `fast` | 0.834 | 0.841 | 2.749 | 2.728 |
+| 256 | `fast` | 0.861 | 0.856 | 2.375 | 2.321 |
+| 64  | `accurate` | 0.698 | 0.691 | 3.493 | 3.543 |
+| 128 | `accurate` | 0.725 | 0.712 | 3.243 | 3.287 |
+| 256 | `accurate` | 0.726 | 0.726 | 3.064 | 3.056 |
+
+Every delta is inside the band. The fix is kept because it is a contract correction with a
+regression guard and a real benefit to a different consumer, **not** because it moved this
+metric — it did not.
+
+**Why it could not have.** Three ablations, run by temporarily forcing guide pointers null /
+skipping the aux prefilter (diagnostics only, reverted; 128 spp, `fast` unless noted):
+
+| configuration | RMSE (×1e-3) | grad ratio |
+|---|---|---|
+| undenoised | 2.741 | 1.114 |
+| denoised, albedo + normal guides | 2.728 | **0.841** |
+| denoised, **albedo guide only** | 3.101 | 0.757 |
+| denoised, **no guides at all** | 3.076 | 0.760 |
+| `accurate` capture, prefilter ON (shipping) | 3.287 | 0.712 |
+| `accurate` capture, **prefilter OFF** | 2.700 | **0.839** |
+
+(A normal-only run is not in the table: OIDN rejects normal-without-albedo with
+`InvalidOperation: unsupported combination of input features`, and the "denoised" image is then
+an untouched passthrough. Worth knowing before anyone tries it as an experiment.)
+
+Three conclusions, all decisive:
+
+1. **The albedo guide does nothing on a groom.** Albedo-only (0.757) is indistinguishable from
+   no guides at all (0.760). Of course it is: every fibre in the groom shares one melanin
+   colour, so the albedo plane is *flat* over the hair and carries no strand structure to give.
+   The entire +0.08 lift comes from the normal guide.
+2. **The guide channel's total authority is ~0.08 of gradient ratio, and the deficit is
+   ~0.16.** Removing the guides costs 0.081 (0.841 → 0.760). Even a hypothetically perfect
+   guide can only be worth something of that order, so no aux improvement reaches 1.0. The
+   residual smear is OIDN's spatial prior, not the guide.
+3. **The aux is not noise-limited, and smoothing it is actively harmful.** At 256 spp each
+   pixel's albedo/normal is a 256-sample mean of a bounded quantity — essentially converged —
+   and the deficit is still 0.14. Meanwhile `accurate`, whose whole job is to *clean* the aux,
+   is the worst configuration measured. This resolves the open hypothesis the block above
+   flagged as "the thing to test first in Phase 4": **`accurate`'s penalty on hair is entirely
+   the aux PREFILTER, not the first-non-delta capture point.** With the prefilter disabled,
+   accurate-mode capture matches `fast` (0.839 vs 0.841 at 128 spp; 0.869 vs 0.856 at 256 spp,
+   i.e. marginally better). The capture point is neutral-to-slightly-positive; prefiltering a
+   groom's aux is what destroys it, because it blends the one sampled fibre's normal into its
+   neighbours' and hands the network a smoother guide than the truth.
+
+**Disposition (final).** `OIDN-P1-5` is closed as **not the mechanism** — see the ticket for the
+rewritten entry. The two interim rules stand unchanged and are now explained rather than merely
+observed: no `oidn_prefilter accurate` on hair (it is the prefilter), and `oidn_denoise FALSE`
+above ~100 spp (the network smooths strands regardless of guide quality). If strand-preserving
+denoising is ever wanted, the lever is the denoiser (a different network, or a hair-aware
+prior), not RISE's aux plumbing. Same measurement caveats as the block above: one scene, one
+resolution, one integrator, Homebrew CPU-only OIDN.
 
 **Confound found and removed — read this before re-running.** Turning `oidn_denoise TRUE`
 **skips the reconstruction-filter resolve entirely** (`PixelBasedRasterizerHelper.cpp:1300-1320`
@@ -915,13 +1016,84 @@ make -C build/make/rise tools
 ./bin/tools/HairMedullaProfileGen        # ~4.5 s, writes src/Library/Materials/HairMedullaProfile_LUTData.cpp
 ```
 
-### Phase 4 — scale and polish (menu, prioritized by observed need)
+### Phase 4 — scale and polish (menu, prioritized by observed need) — **EXECUTED 2026-08-28**
 
-Strand LOD tiers (§5.4); coverage-weighted AOV accumulation — the §6.5 measurement (2026-08-28)
-**demanded it**: `fast` mode holds a 15–18 % strand-structure deficit that does not close with
-spp, and `accurate` mode is worse, not better;
-optional `auto_rasterizer` Tier-1 hair hint; optional dedicated fiber bounce bucket; elliptical
-cross-sections (Khungurn/azimuthal eccentricity) if wavy-hair glint fidelity is requested.
+The menu was: strand LOD tiers (§5.4); coverage-weighted AOV accumulation; an optional
+`auto_rasterizer` Tier-1 hair hint; an optional dedicated fibre bounce bucket; elliptical
+cross-sections (Khungurn/azimuthal eccentricity). Per the section's own "prioritized by observed
+need" rule, two items had an observed need and were executed; four did not and are declined.
+
+#### Executed
+
+**(1) Coverage-weighted AOV accumulation — need was real, mechanism was not.**
+Opened by the §6.5 measurement, which found a 15–18 % strand-structure deficit in `fast` mode
+that does not close with spp. The investigation is written up in full as the §6.5 follow-up.
+Summary: the accumulation this item was to build had already shipped in 2026-04 (`OIDN-P1-1`
+v1/v2) — the "captured once" reading of the AOV contract was per-sample, not per-pixel. Two
+real defects in that accumulation were found; the substantive one (normals averaged but never
+renormalized, so the guide normal shrank exactly where samples straddle fibres) is **fixed and
+guarded** in `AOVBuffers::NormalizeSelected` + three `FrameStoreTest` checks, and also repairs
+the agent-perception Normal channel. Measured effect on the OIDN matrix: **none, inside the
+run-to-run band** — reported honestly rather than claimed. Ablations then showed why nothing
+in the aux plumbing could have worked: the albedo guide contributes nothing on a groom (uniform
+melanin ⇒ flat guide; albedo-only ≈ no guide at all), the whole guide channel is worth ~0.08 of
+gradient ratio against a ~0.16 deficit, and the aux is already converged at 256 spp. The same
+ablations root-caused the `accurate`-is-worse surprise to the **aux prefilter** specifically
+(capture point is neutral) — the hypothesis §6.5 nominated as "the thing to test first",
+now settled. `OIDN-P1-5` closed as *not the mechanism*.
+
+**(2) Per-leaf recompute in `HairGeometry::IntersectSegment` — measured, then reverted.**
+`IntersectSegment` is the BVH's per-PRIMITIVE callback, so it rebuilt the orthonormal ray frame
+and re-evaluated the span's Catmull-Rom coefficients for every leaf primitive tested. Baseline
+(100k strands × 8 CPs, 50k closest-hit rays, 5 timed repeats after a warm-up): **287.5 ms ±
+2.5 ms**; `hair_styled` at 256²/256 spp: **27.6 s ± 0.7 s** over 3 runs. A profile
+(`sample`, ~6.2k self-time samples) put `RecursivePieceIntersect` at 54 %, `BVH::IntersectRay`
+20 %, `IntersectSegment` self (frame build + `ProjectCubic` + context fill) 14 %,
+`EvalSpanCoefficients` 8 % — i.e. the two candidates bound the achievable gain at ~22 % of a
+54 %-dominated profile.
+
+- *Ray-frame hoist* (a self-validating per-thread memo keyed on the ray's own origin and
+  direction — the `BVH<>` template carries no per-traversal context to thread one through):
+  **280.97 ms vs 291.59 ms over 4 interleaved A/B pairs, −3.64 %**, paired and highly
+  significant (per-pair deltas −9.3/−11.0/−13.2/−9.1 ms). At render level, −3.7 % point estimate
+  (26.58 s vs 27.61 s, 3 pairs) but **not** separated from noise at that n.
+- *Span-coefficient memo*: probed before being designed, by caching the ray-space coefficients
+  keyed on (strand, span). **A LOSS: +3.9 %** (299.9 ms vs 288.6 ms). The groom averages 1.80
+  sub-segments per span, so the memo hits at best ~44 % of the time, and the key comparison plus
+  two 96-byte coefficient copies cost more than recomputing. Not implemented.
+
+Neither cleared the 5 % bar this item was given, so **both are reverted** and the tree carries
+no `HairGeometry` change. The ray-frame hoist also was *not* bit-identical: hit/miss
+classification matched on all 10,000 probe rays (5,887 hits), but moving the frame across a
+memory boundary changes FP contraction under `-ffast-math`, drifting `t` by ≤ 4 ULP and shading
+normals by ≤ 7.4e-10 relative — a second, independent reason not to bank a sub-5 % win. If hair
+query time ever becomes the bottleneck, the profile says the target is
+`RecursivePieceIntersect` (54 %), not the setup around it.
+
+*(Measurement note for anyone re-running these: RISE renders are **not** reproducible run to
+run. `commandconsole.cpp:616` seeds `srand` from the wall clock and `RandomNumberGenerator`'s
+default seed is `rand()`, so two runs of the same binary on the same scene differ — RMSE
+5.2e-3 between two 256²/64-spp renders, and 7.4e-3 even pinned to a single thread via
+`force_number_of_threads 1`. A "bit-identical golden render" is therefore not an available
+correctness check; use an interleaved A/B against a saved baseline binary for timing, and a
+deterministic non-render harness for hit-for-hit identity.)*
+
+#### Declined for now
+
+None of these had an observed driving scene or user request this arc, which is the bar this
+section sets for itself. Each remains cheap to reopen:
+
+- **Strand LOD tiers (§5.4)** — no groom in the suite is large enough or far enough from camera
+  for LOD to pay, and no user has asked. §5.4's storage layout stays LOD-compatible by
+  construction, so reopening costs no migration.
+- **Elliptical cross-sections** (Khungurn azimuthal eccentricity) — gated in §7's own words on
+  "if wavy-hair glint fidelity is requested". It has not been.
+- **`auto_rasterizer` Tier-1 hair hint** — the routing map already sends hair scenes to PT by
+  default, which is where a hint would send them; the hint would encode a decision the
+  dispatcher already makes.
+- **Dedicated fibre bounce bucket** — deep grooms are served today by the existing bounce budget
+  plus RR tuning (§6.4); no scene has shown the budget mis-spent between fibre and surface
+  bounces.
 
 ---
 
@@ -945,7 +1117,7 @@ cross-sections (Khungurn/azimuthal eccentricity) if wavy-hair glint fidelity is 
 | Float CP storage diverges from `Scalar=double` culture | Low | Med | argued exception documented in header (mirrors `BVH<>` float AABBs); double math after load |
 | d'Eon M_p numerical instability at low β | Med | Med | log-space `LogI0` evaluation (PBRT pattern); β floors at parser |
 | HWSS spectral-bundle bias re-appears on hair (cf. env-IBL hwss residual) | Med | Med | hwss=true≡false gate in Phase 1; melanin ladder scenes |
-| OIDN smears strands | High | **Confirmed** (§6.5, 2026-08-28: 15–18 % structure deficit in `fast`, 25–30 % in `accurate`) | escape hatch `oidn_denoise FALSE` above ~100 spp; do NOT use `oidn_prefilter accurate` on hair; Phase-4 coverage-weighted AOV accumulation now warranted, not conditional |
+| OIDN smears strands | High | **Confirmed and now root-caused** (§6.5, 2026-08-28: 15–18 % structure deficit in `fast`, 25–30 % in `accurate`; the follow-up ablations put the cause in OIDN's spatial prior, not RISE's aux — the guide channel is worth only ~0.08 of the ~0.16 deficit, and the albedo guide is flat on a groom) | escape hatch `oidn_denoise FALSE` above ~100 spp; do NOT use `oidn_prefilter accurate` on hair (the aux **prefilter** is the penalty, isolated 2026-08-28); no aux-side fix available — mitigation is the denoiser, not the plumbing |
 | Groom memory blowup from careless counts | Med | Low | descriptor-level count/segment caps with diagnostics (the `path_instances` budget-cap pattern) |
 | Reciprocity bias flagged as a BDPT/VCM "bug" later | Med | Low | §6.2 recorded here + in the material header; PT-vs-X expectations pre-stated |
 | Phase-3 medulla breaks the κ = 0 bit-identity promise | **Retired** | — | *Realised in a mild form and closed*: the shared-code form of the split cost 1 ULP on ~11 % of a golden grid. Off path now keeps verbatim duplicates of the pre-Phase-3 bodies; `HairBSDFTest` group 15a (golden literals from `e819bbee`) + 15b (in-binary, compiler-portable) are the standing guards |

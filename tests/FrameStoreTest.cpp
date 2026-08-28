@@ -207,9 +207,16 @@ namespace
 		Check( ApproxEq( albedo->At( 0, 0 ).r, 0.2, 1e-6 ) &&
 		       ApproxEq( albedo->At( 0, 0 ).b, 0.6, 1e-6 ),
 			"AOV bridge propagates albedo" );
-		Check( ApproxEq( normal->At( 0, 0 ).x, -1.0, 1e-6 ) &&
-		       ApproxEq( normal->At( 0, 0 ).y, 0.5, 1e-6 ),
-			"AOV bridge propagates world normal" );
+		// Normalize() renormalizes the accumulated normal to unit length:
+		// the weighted arithmetic mean of unit normals is not itself a
+		// unit vector, and OIDN's normal guide is contractually one.
+		// (-1, 0.5, 1) has length exactly 1.5, so the propagated normal
+		// must be that direction scaled by 1/1.5 -- direction preserved,
+		// magnitude restored.
+		Check( ApproxEq( normal->At( 0, 0 ).x, -1.0/1.5, 1e-6 ) &&
+		       ApproxEq( normal->At( 0, 0 ).y, 0.5/1.5, 1e-6 ) &&
+		       ApproxEq( normal->At( 0, 0 ).z, 1.0/1.5, 1e-6 ),
+			"AOV bridge propagates a unit-length world normal" );
 		Check( ApproxEq( depth->At( 0, 0 ), 7.5, 1e-6 ),
 			"AOV bridge propagates camera-ray depth" );
 
@@ -231,6 +238,36 @@ namespace
 		silhouette.Normalize( 0, 0, 0.5 );
 		Check( ApproxEq( silhouette.GetDepthPtr()[0], 5.0, 1e-6 ),
 			"depth normalization excludes miss samples at silhouettes" );
+
+		// High-frequency geometry (a groom, foliage) puts several
+		// disagreeing surfaces inside one pixel.  The raw weighted mean
+		// of their unit normals is SHORT -- here two normals 90 degrees
+		// apart average to length 1/sqrt(2) -- which OIDN would read as
+		// a differently-oriented surface rather than as disagreement.
+		// Normalize() must hand back a unit vector along the mean
+		// direction, and must be idempotent so a second Normalize()
+		// (the bounded first-hit completion pass can issue one) cannot
+		// shrink or grow it again.
+		AOVBuffers crossing( 1, 1, AOVBuffers::Plan( false, true, false ) );
+		crossing.AccumulateNormal( 0, 0, Vector3( 1, 0, 0 ), 1.0 );
+		crossing.AccumulateNormal( 0, 0, Vector3( 0, 1, 0 ), 1.0 );
+		crossing.Normalize( 0, 0, 0.5 );
+		const float* cn = crossing.GetNormalPtr();
+		const double kInvRoot2 = 1.0 / sqrt( 2.0 );
+		Check( ApproxEq( cn[0], kInvRoot2, 1e-6 ) && ApproxEq( cn[1], kInvRoot2, 1e-6 )
+		    && ApproxEq( cn[2], 0.0, 1e-6 ),
+			"disagreeing samples average to a UNIT normal, not a short one" );
+		crossing.Normalize( 0, 0, 0.25 );
+		Check( ApproxEq( cn[0], kInvRoot2, 1e-6 ) && ApproxEq( cn[1], kInvRoot2, 1e-6 ),
+			"normal renormalization is idempotent under a repeated Normalize" );
+
+		// A pixel every sample missed keeps the zero vector rather than
+		// having a direction invented for it.
+		AOVBuffers allMiss( 1, 1, AOVBuffers::Plan( false, true, false ) );
+		allMiss.Normalize( 0, 0, 1.0 );
+		Check( allMiss.GetNormalPtr()[0] == 0.0f && allMiss.GetNormalPtr()[1] == 0.0f
+		    && allMiss.GetNormalPtr()[2] == 0.0f,
+			"an all-miss pixel keeps a zero normal instead of a fabricated one" );
 
 		const AOVBuffers::Plan requested = MakeAOVPlan( store, false );
 		Check( requested.albedo && requested.normal && requested.depth,

@@ -157,9 +157,48 @@ void AOVBuffers::NormalizeSelected(
 	}
 	if( selected.normal && !normals.empty() ) {
 		const size_t idx = pixel * 3;
-		normals[idx + 0] *= fw;
-		normals[idx + 1] *= fw;
-		normals[idx + 2] *= fw;
+		// SPHERICAL-MEAN CAVEAT.  What the samples accumulated is the
+		// weighted ARITHMETIC mean of unit normals, and that mean is
+		// NOT a unit vector: its length is 1 only when every sample
+		// agreed, and it collapses toward 0 as they disagree.  On
+		// high-frequency geometry (a groom, foliage) a pixel's samples
+		// routinely straddle several surfaces, so the raw mean hands
+		// OIDN a normal whose DIRECTION is right but whose MAGNITUDE
+		// silently encodes intra-pixel disagreement -- and OIDN's
+		// normal guide is documented as a unit vector in [-1,1], so it
+		// reads that shortening as a different surface orientation
+		// rather than as "these samples disagreed".
+		//
+		// Renormalizing recovers the mean DIRECTION (the standard
+		// spherical-mean estimator, i.e. the maximum-likelihood mean
+		// of a von Mises-Fisher fit).  What is deliberately discarded
+		// is the concentration: a pixel whose samples span a 90-degree
+		// spread reports the same unit normal as one whose samples all
+		// agree.  OIDN has no channel to receive that concentration,
+		// so encoding it in the magnitude was never actionable -- it
+		// only degraded the direction.
+		//
+		// Idempotent by construction (renormalizing a unit vector is a
+		// no-op), which also makes a double Normalize() call harmless.
+		// `invWeight` is intentionally unused here for the same reason:
+		// a uniform positive scale cannot change a normalized result.
+		const double nx = static_cast<double>( normals[idx + 0] );
+		const double ny = static_cast<double>( normals[idx + 1] );
+		const double nz = static_cast<double>( normals[idx + 2] );
+		const double len2 = nx*nx + ny*ny + nz*nz;
+		if( len2 > 0 && RISE::IsFiniteDouble( len2 ) ) {
+			const double inv = 1.0 / sqrt( len2 );
+			normals[idx + 0] = static_cast<float>( nx * inv );
+			normals[idx + 1] = static_cast<float>( ny * inv );
+			normals[idx + 2] = static_cast<float>( nz * inv );
+		} else {
+			// All-miss (or degenerate) pixel: leave the zero vector,
+			// which is what this plane has always reported for a pixel
+			// with no surface, rather than inventing a direction.
+			normals[idx + 0] = 0.0f;
+			normals[idx + 1] = 0.0f;
+			normals[idx + 2] = 0.0f;
+		}
 	}
 	if( selected.depth && !depths.empty() ) {
 		const float hitWeight = depthWeights[pixel];

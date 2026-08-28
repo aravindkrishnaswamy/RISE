@@ -438,10 +438,15 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 #### OIDN-P1-1 — Inline AOV accumulation + `accurate` prefilter mode
 - **⚠ Scope correction, 2026-08-28:** `accurate` is **not** universally the
   better mode.  On hair it is measurably WORSE than `fast` on every metric at
-  every sample count — see `OIDN-P1-5` below for the numbers and the working
-  hypothesis.  Treat `accurate` as the right default for surface-dominated
-  scenes with delta transport (the regime it was built and verified for), not
-  as a blanket upgrade.
+  every sample count — see `OIDN-P1-5` below for the numbers.  The cause is now
+  isolated: it is the **aux PREFILTER**, part 2 of this ticket's change, not the
+  inline first-non-delta capture (part 1).  With the two prefilter `execute()`
+  calls disabled, `accurate`'s capture matches or slightly beats `fast` on the
+  hair matrix.  On high-frequency geometry the prefilter blends one sampled
+  fibre's albedo/normal into its neighbours', handing the network a guide
+  smoother than the truth.  Treat `accurate` as the right default for
+  surface-dominated scenes with delta transport (the regime it was built and
+  verified for), not as a blanket upgrade.
 - **Status:** Shipped (v1 PT-only on 2026-04-29; v2 BDPT + VCM
   Pel/Spectral on 2026-04-29).  Supersedes OIDN-P1-4 — inline
   accumulation handles glass refraction probabilistically via
@@ -683,16 +688,70 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P1-5 — Coverage-weighted multi-sample aux accumulation for high-frequency geometry (hair)
-- **Status:** OPEN, and now evidence-backed — 2026-08-28.  Opened by the
-  hair measurement in
-  [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §6.5 ("Measurement, 2026-08-28"),
-  which has the full tables.
+- **Status: CLOSED — not the mechanism (2026-08-28).**  Opened and closed the
+  same day.  The work was taken up in the hair Phase-4 wave; the write-up with
+  every table is [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §6.5 ("Follow-up,
+  2026-08-28").  Two findings close it:
+  1. **The accumulation this ticket asked for already exists.**  The "captured
+     once per pixel" premise below misread the AOV contract: capture is once
+     per PATH SAMPLE, and every pixel-based integrator has accumulated across
+     all of a pixel's samples — weighted by film weight, normalized at
+     resolve — since `OIDN-P1-1` v1/v2 shipped 2026-04-29
+     ([PathTracingPelRasterizer.cpp:431-440](../src/Library/Rendering/PathTracingPelRasterizer.cpp#L431)
+     inside the per-sample loop, resolved at
+     [PixelBasedRasterizerHelper.cpp:1284](../src/Library/Rendering/PixelBasedRasterizerHelper.cpp#L1284)).
+     Only estimators with no `PixelAOV` hook (MLT) use the single-capture
+     retrace.  There was nothing here to build.
+  2. **The deficit is not aux-limited, so no aux change could have closed it.**
+     Ablation at 128 spp on the same scene: guides give a gradient-ratio lift of
+     0.081 (0.760 with no guides → 0.841 with both) against a deficit of ~0.16;
+     the **albedo guide contributes nothing** on a groom (albedo-only 0.757 ≈
+     no-guide 0.760 — every fibre shares one melanin colour, so the albedo plane
+     is flat); and the aux is already converged at 256 spp while the deficit
+     persists.  The residual is OIDN's spatial prior.  (Note for future
+     experiments: OIDN rejects a normal guide supplied *without* an albedo guide
+     — `InvalidOperation: unsupported combination of input features` — and the
+     "denoised" output is then an untouched passthrough.)
+- **Shipped from this ticket anyway** (a contract fix, not a fix for the
+  symptom): `AOVBuffers::NormalizeSelected` now **renormalizes the accumulated
+  normal to unit length**.  The weighted arithmetic mean of unit normals is not
+  a unit vector and collapses toward zero as a pixel's samples disagree, which
+  is precisely what high-frequency geometry does; OIDN's normal guide is
+  contractually unit-length, so it read that shortening as a different surface
+  orientation.  This also repairs the agent-perception Normal channel, whose
+  `n*0.5+0.5` byte encoding
+  ([InMemoryRasterizerOutput.cpp:141](../src/Library/Agent/InMemoryRasterizerOutput.cpp#L141))
+  assumes unit normals and was washing multi-surface pixels toward flat grey.
+  Guarded by three `FrameStoreTest` checks (unit-length mean, idempotence, and
+  an all-miss pixel keeping its zero vector).  Measured effect on the hair OIDN
+  matrix: **none, inside the run-to-run band** — kept on contract grounds, not
+  on this metric.
+- **Also settled here — the `accurate`-is-worse surprise is the PREFILTER, not
+  the capture point.**  Running `accurate`'s inline first-non-delta capture with
+  the two aux prefilter `execute()` calls disabled restores `fast`-level results
+  (128 spp: gradient ratio 0.839 vs `fast` 0.841, RMSE 2.700e-3 vs 2.728e-3;
+  256 spp: 0.869 vs 0.856).  So the capture-point difference is
+  neutral-to-slightly-positive and prefiltering the aux is the entire penalty:
+  on a groom it blends one sampled fibre's normal into its neighbours' and hands
+  the network a guide smoother than the truth.  This confirms and sharpens the
+  working hypothesis recorded below.  No code change — the interim rule ("do not
+  set `oidn_prefilter accurate` on hair") already covers it, and no scene has
+  asked for a third prefilter mode.
+- **Reopen only if** a scene appears whose aux genuinely *is* the limiter — a
+  groom with strongly varying per-strand albedo would be the case to look for,
+  since that is the one regime where the (currently inert) albedo guide could
+  start carrying structure.
+- Historical premise and numbers, kept for the record:
 - **Owner:** —
 - **PR:** —
-- **Why:** The aux contract captures albedo/normal **once per pixel**, from a
+- **Why (ORIGINAL PREMISE -- REFUTED, see Status):** The aux contract captures
+  albedo/normal **once per pixel**, from a
   single surface.  On a groom, dozens of fibers cross one pixel, so the aux
   buffers are strand-noise-textured and the denoiser is guided by one
-  arbitrary fiber.  Measured on `scenes/Tests/Hair/hair_styled.RISEscene`
+  arbitrary fiber.  *(The first sentence is wrong: capture is once per path
+  SAMPLE, and per-pixel accumulation has shipped since 2026-04.  The measured
+  deficit in the rest of this bullet is real and reproduced; only its
+  attribution was wrong.)*  Measured on `scenes/Tests/Hair/hair_styled.RISEscene`
   (256x256, PT, RMSE vs a 2048-spp reference, `pixel_filter box` pinned
   everywhere): denoising holds a **15–18 % mean-gradient deficit vs the
   reference in `fast` mode and 25–30 % in `accurate` mode**, and the deficit
@@ -708,15 +767,18 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   hypothesis to test first: `accurate` both captures at the first non-delta
   scatter rather than the first hit AND prefilters the aux buffers, and on
   hair that prefilter blends the one sampled fiber's albedo/normal into the
-  background's — making the guide more wrong, not less.
-- **Touch:** [AOVBuffers.cpp](../src/Library/Rendering/AOVBuffers.cpp) /
-  [AOVBuffers.h](../src/Library/Rendering/AOVBuffers.h) (accumulate aux over
-  the pixel's samples weighted by hit coverage instead of first-write-wins),
-  plus the capture sites in
-  [PathTracingIntegrator.cpp](../src/Library/Shaders/PathTracingIntegrator.cpp)
-  (`pAOV && !pAOV->valid` guards).  Not a hair change.
-- **Target:** bring `fast`-mode gradient ratio from ~0.85 to within a few
-  percent of 1.0 while keeping the flat-region win.
+  background's — making the guide more wrong, not less.  **CONFIRMED and
+  narrowed 2026-08-28** (see Status): it is the prefilter alone; the
+  capture-point half of the hypothesis is neutral-to-slightly-positive.
+- **Touch (as scoped; the accumulation half was already in tree):**
+  [AOVBuffers.cpp](../src/Library/Rendering/AOVBuffers.cpp) /
+  [AOVBuffers.h](../src/Library/Rendering/AOVBuffers.h) -- what actually
+  landed here is the normal renormalization in `NormalizeSelected`.
+  Not a hair change.
+- **Target (NOT MET, and shown to be unreachable from the aux side):** bring
+  `fast`-mode gradient ratio from ~0.85 to within a few
+  percent of 1.0 while keeping the flat-region win.  The whole guide channel
+  is worth ~0.08 of gradient ratio; the deficit is ~0.16.
 - **Interim guidance, needs no code:** on hair scenes do **not** set
   `oidn_prefilter accurate`, and keep `oidn_denoise FALSE` above ~100 spp.
 - **Measurement protocol — pin `pixel_filter box` on EVERY scene in the
@@ -729,7 +791,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   the denoiser, which would have been charged to it.  With the pin, the three
   modes' plain renders agree to within 1 %.
 - **Effort:** ~1 day plus a re-measure against the same scene set.
-- **Result:** —
+- **Result:** Closed as *not the mechanism* -- see Status.  Landed: the normal
+  renormalization + three `FrameStoreTest` guards.  Not landed: any change to
+  the accumulation itself (it was already correct) and any new prefilter mode
+  (no scene has asked).
 
 ### P2 — polish
 
