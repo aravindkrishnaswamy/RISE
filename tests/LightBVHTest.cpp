@@ -73,7 +73,8 @@ public:
 
 	void ComputeDirectLighting(
 		const RayIntersectionGeometric&, const IRayCaster&,
-		const IBSDF&, const bool, RISEPel& amount ) const
+		const IBSDF&, const bool, RISEPel& amount,
+		const bool /*bFullSphereReceiver*/ ) const
 	{
 		amount = RISEPel( 0, 0, 0 );
 	}
