@@ -1298,6 +1298,58 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$r174_measure_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
+	r175_measure_log="$LOG_DIR/FireSequenceTest.r175_thermo_source_maps.log"
+	r175_malformed_log="$LOG_DIR/FireSequenceTest.r175_thermo_source_maps_malformed.log"
+	printf '[ evidence ] %-46s ... ' 'FireSequenceTest.r175_thermo_source_maps'
+	r175_measure_rc=127 r175_malformed_rc=127
+	if [ "$r174_generate_rc" -eq 189 ]; then
+		if [ -n "$timeout_bin" ]; then
+			RISE_FIRE_THERMO_SOURCE_MAPS=1 \
+				RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL="$r174_protocol" \
+				RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE="$r174_temporal" \
+				RISE_OPTIONS_FILE="$r174_options" \
+				"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r174_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r174_trace.snapshots" >"$r175_measure_log" 2>&1 || r175_measure_rc=$?
+			RISE_FIRE_THERMO_SOURCE_MAPS=malformed \
+				"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r174_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r174_trace.snapshots" >"$r175_malformed_log" 2>&1 || r175_malformed_rc=$?
+		else
+			RISE_FIRE_THERMO_SOURCE_MAPS=1 \
+				RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL="$r174_protocol" \
+				RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE="$r174_temporal" \
+				RISE_OPTIONS_FILE="$r174_options" "$r174_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r174_trace.snapshots" >"$r175_measure_log" 2>&1 || r175_measure_rc=$?
+			RISE_FIRE_THERMO_SOURCE_MAPS=malformed "$r174_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r174_trace.snapshots" >"$r175_malformed_log" 2>&1 || r175_malformed_rc=$?
+		fi
+	fi
+	if [ "$r175_measure_rc" -eq 184 ] && [ "$r175_malformed_rc" -eq 185 ] &&
+		[ "$(grep -c '^THERMO_SOURCE_MAP_PREPARED ' "$r175_measure_log")" -eq 2 ] &&
+		[ "$(grep -c '^THERMO_SOURCE_MAP_STEP ' "$r175_measure_log")" -eq 2 ] &&
+		grep -Fq 'THERMO_SOURCE_MAP_STEP step=0 dt=0.0016462659696117043 active_cells=219 heat_release_W=15289.762218506474 source_margin=112.55273459563601 source_digest=acf87f65ccdfb1079214215f63c632a9f54c3cb01a52a887ef85a5483587cf0e' "$r175_measure_log" &&
+		grep -Fq 'field_max=0.085888981819152832 field_p95=0.00071436166763305664 field_p50=1.1920928955078125e-07 tail_cells=0 tail_excess=0 tail_drain_m3=0 hard_bound=0 projection_invocations=1 physical_status=not_invoked restoration_valid=1' "$r175_measure_log" &&
+		grep -Fq 'THERMO_SOURCE_MAP_STEP step=1 dt=0.0016462659696117043 active_cells=219 heat_release_W=15971.195489199945 source_margin=112.55273459563601 source_digest=a07913ee07713a53f9fdfc91e03d741e4f96611648b11f58c281e0846ff76df7' "$r175_measure_log" &&
+		grep -Fq 'field_max=0.079523563385009766 field_p95=0.00082623958587646484 field_p50=8.3446502685546875e-07 tail_cells=1 tail_excess=0.023389111965054887 tail_drain_m3=3.4288999032069217e-07 hard_bound=0 projection_invocations=2 physical_status=valid restoration_valid=1' "$r175_measure_log" &&
+		grep -Fq 'THERMO_SOURCE_MAP_COMPLETE steps=2 field_max=0.085888981819152832/0.079523563385009766 field_p95=0.00071436166763305664/0.00082623958587646484 field_p50=1.1920928955078125e-07/8.3446502685546875e-07 tail_cells=0/1 tail_excess=0/0.023389111965054887 tail_drain_m3=0/3.4288999032069217e-07' "$r175_measure_log" &&
+		[ "$(grep -o 'accepted=0' "$r175_measure_log" | wc -l | tr -d ' ')" -eq 0 ]; then
+		echo 'PASS (exact exits=184/185, source + burning-tail maps)'
+		rm -f "$r175_measure_log" "$r175_malformed_log"
+	else
+		echo "FAIL (source=$r175_measure_rc expected 184; malformed=$r175_malformed_rc expected 185)"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r175_thermo_source_maps' "$r175_measure_rc" \
+			"$r175_measure_log" >> "$RUN_FAIL_TSV"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r175_thermo_source_maps_malformed' \
+			"$r175_malformed_rc" "$r175_malformed_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
 	rm -rf "$r174_temp"
 fi
 

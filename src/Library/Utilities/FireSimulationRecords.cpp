@@ -2503,19 +2503,20 @@ namespace RISE
 		// Precision-class extension of the immutable v1 record.  The embedded
 		// r60 certificate and golden-checkpoint identity remain byte-identical.
 		// Remap contributes 256 eps32, the r96 composed force certificate 64
-		// eps32 (and subsumes r93's 8-ULP kernel result), and the single
-		// each of the two resident projections contributes 256 eps32.  Source
-		// addition is exactly +0 in this pre-thermo resident path.  The union is
-		// 832; r60's next-power-of-
-		// two construction therefore selects kappa32=1024.
+		// eps32 (and subsumes r93's 8-ULP kernel result), each of the two
+		// resident projections contributes 256 eps32, and the frozen source
+		// packet expression plus represented add contributes 128 eps32.  The
+		// union is 960; r60's existing next-power-of-two construction therefore
+		// still selects kappa32=1024.
 		envelope.remapFactorEpsilon32=256.0;
 		envelope.composedForceFactorEpsilon32=64.0;
 		envelope.projectionFactorEpsilon32=256.0;
+		envelope.sourcePacketFactorEpsilon32=128.0;
 		envelope.derivedUnionFactorEpsilon32=
 			envelope.remapFactorEpsilon32+envelope.composedForceFactorEpsilon32+
-			2.0*envelope.projectionFactorEpsilon32;
+			2.0*envelope.projectionFactorEpsilon32+envelope.sourcePacketFactorEpsilon32;
 		envelope.kappaEpsilon32=1024.0;
-		if(envelope.derivedUnionFactorEpsilon32!=832.0||
+		if(envelope.derivedUnionFactorEpsilon32!=960.0||
 			envelope.kappaEpsilon32<envelope.derivedUnionFactorEpsilon32||
 			envelope.kappaEpsilon32>=2.0*envelope.derivedUnionFactorEpsilon32)
 			return Fail(error,"fire-simulation binary32 feasibility extension is malformed");

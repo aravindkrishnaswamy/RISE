@@ -4386,6 +4386,52 @@ This completes readmission.  Thermochemistry/source maps, their Binary32
 source-producer subdominance term and burning-tail measurement, and first
 light remain the next rung; none is claimed by r174.
 
+### 7.56i Binary32 thermochemistry/source maps and first-light release (r175)
+
+r175 removes the production `+0` source restriction without weakening any
+conservation-class gate.  A Binary32 frozen source packet is accepted only
+when every resident source byte is finite and exactly representable, positive
+zero is canonical, the mass and certified affine rows close, the packet ledger
+closes, and the post-source conservative state remains inside r60.  The source
+producer contributes `128 eps32`; remap (`256`), force (`64`), two possible
+projections (`2*256`), and source therefore total `960 eps32`, below the
+existing `1024 eps32` accepted-state envelope.  No tolerance is widened.
+
+The sealed golden burning checkpoint uses the canonical ignition-eligibility
+map, no pilot source, soot oxidation, the case's `33 kW` nominal release, and
+the audited CFL step `0.0016462659696117043 s`.  Independent Binary32 and
+Binary64 packet construction gives 219 active cells and `15289.762218506474 W`
+realized heat release.  The source-packet digest is
+`acf87f65...cf0e`; the source-induced tangent target is
+`7334d417...d0eb`.  Every component satisfies the pre-registered
+`|S32-S64| <= 2^-3 dist` rule; the minimum margin is
+`112.55273459563601x`.
+
+Production accepts the first step.  The monitored manifold distribution is
+max/p95/p50 `0.085888981819152832 / 0.00071436166763305664 /
+1.1920928955078125e-7`, below the `2^-2` dynamics bound.  There are no
+beginning-state tail cells, so the tail-restoration projection is correctly
+not invoked; the single terminal projection validates and an accepted-state
+token is minted.
+
+The fixture then applies that accepted payload and repeats the real source
+step from the produced beginning.  The source-created tail now engages exactly
+one cell: excess `0.023389111965054887` is drained by
+`3.4288999032069217e-7 m3`.  Both projections validate, max/p95/p50 are
+`0.079523563385009766 / 0.00082623958587646484 /
+8.3446502685546875e-7`, the hard bound remains clear, and the second step also
+accepts.  This closes the pre-registered burning-tail continuation with the
+correct one-step causal ordering.
+
+The paired run measures device/wall projections of
+`0.40872554073287515/0.63840048687616735 h` for tier-10 x 25 s.  Source maps
+therefore add device work honestly while retaining the sub-hour device class
+and the requested wall class.  Exact exit `184` and both source, target,
+schedule, tail, projection, timing, and source-owner records are retained under
+`rendered/fire_production_calibration/r175_thermo_source_maps`.  This accepted
+checkpoint releases the explicitly preview-labelled tier-6 first-light
+artifact.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

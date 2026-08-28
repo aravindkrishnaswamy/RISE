@@ -82,6 +82,7 @@ namespace RISE
 		double remapFactorEpsilon32;
 		double composedForceFactorEpsilon32;
 		double projectionFactorEpsilon32;
+		double sourcePacketFactorEpsilon32;
 		double derivedUnionFactorEpsilon32;
 		double kappaEpsilon32;
 
@@ -91,6 +92,7 @@ namespace RISE
 			ledgerReductionFactorEpsilon64(0.0), derivedUnionFactorEpsilon64(0.0),
 			kappaEpsilon64(0.0),remapFactorEpsilon32(0.0),
 			composedForceFactorEpsilon32(0.0),projectionFactorEpsilon32(0.0),
+			sourcePacketFactorEpsilon32(0.0),
 			derivedUnionFactorEpsilon32(0.0),kappaEpsilon32(0.0) {}
 	};
 

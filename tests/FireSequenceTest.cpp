@@ -4935,21 +4935,27 @@ int main(int argc,char** argv)
 		!parsedMetadata.activeFireMedia[0].preparedInputId.empty();
 	Check(publishedSequence,
 		"actual prepared render publishes the sequence-backed provenance variant");
-	RISECBOR64::Bytes renderedSidecar;
-	{
-		const std::filesystem::path sidecar=renderBase.string()+".exr.provenance.cbor";
-		std::ifstream input(sidecar,std::ios::binary);
-		input.seekg(0,std::ios::end);
-		const std::streampos size=input.tellg();
-		input.seekg(0,std::ios::beg);
-		if( size > 0 ) {
-			renderedSidecar.resize(static_cast<std::size_t>(size));
-			input.read(reinterpret_cast<char*>(renderedSidecar.data()),size);
-		}
-	}
 	RISECBOR64::Value renderedEnvelope;
-	const bool renderedEnvelopeValid=RISECBOR64::DecodeCanonical(
-		renderedSidecar,renderedEnvelope,&error);
+	bool renderedEnvelopeValid=false;
+	// File outputs publish on encoder observers.  Rasterize has completed the
+	// frame, but a heavily loaded capstone can still be finishing the atomic
+	// provenance rename when control returns here.  Admit only the complete
+	// canonical sidecar, with a short bounded wait; never read a partial file
+	// and misclassify it as a provenance failure.
+	for(unsigned int attempt=0u;attempt<200u&&!renderedEnvelopeValid;++attempt) {
+		const RISECBOR64::Bytes renderedSidecar=ReadFileBytes(
+			renderBase.string()+".exr.provenance.cbor");
+		if(!renderedSidecar.empty()) {
+			RISECBOR64::Value candidate;
+			std::string decodeError;
+			if(RISECBOR64::DecodeCanonical(renderedSidecar,candidate,&decodeError)) {
+				renderedEnvelope=std::move(candidate);
+				renderedEnvelopeValid=true;
+				break;
+			}
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
 	const RISECBOR64::Value* renderedPayload=renderedEnvelopeValid ?
 		renderedEnvelope.Find("payload") : nullptr;
 	const RISECBOR64::Value* renderedMedia=renderedPayload ?

@@ -1811,7 +1811,7 @@ int main()
 	Check(!monitoredShadowEvidence.empty()&&!monitoredShadowRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			monitoredShadowEvidence.begin(),monitoredShadowEvidence.end()))==
-			"8ab3a87bdf77437d2ea56d7da05b5e732c831eacb434cee8315cd1397fdbfb15"&&
+			"99efa9d9a7ed11b37ccf67d8e619a08bfb8ea89cb6fca04efad085a1aad1db2a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			monitoredShadowRaw.begin(),monitoredShadowRaw.end()))==
 			"e6d74d5796787e24a4df02d686069a68fbef5b7b749c93993ee1cb4b0e2f8faf"&&
@@ -1883,10 +1883,10 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
-			"d82a613bc230363ba2459fc27e31d5d1e29ffa0eb0a1b220e49687a148099f48"&&
+			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
-			"6119e3a1bd00acf47113a8eb59df156a4adfceedb53f31c3b93f12aa4db7394c"&&
+			"8aeab53bed48486ccebe48ed278b5e46980dddad598c57579e4b3399569af7fe"&&
 		monitoredShadowEvidence.find("golden_fixture_sha256 "
 			"387b6dc930afc92a7d5480ab7b6b55b8024dedd7cc17a796214368406ee58b6c")!=
 			std::string::npos&&
@@ -2027,7 +2027,7 @@ int main()
 		!hardBoundRetryRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			twoDoseEvidence.begin(),twoDoseEvidence.end()))==
-			"5f70fee0500692ec733a9645de2a8e0ab12bb5fcde43a0d3d78c8d4424b4cd61"&&
+			"43bbf3a92e822595854e41356f85d934990c6ad4466cd94571a22d00addfe8e0"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			twoDoseRaw.begin(),twoDoseRaw.end()))==
 			"7780d89283627fa12e50b92f86a0378575dcfc43129f90cc4f979c08ca380f3f"&&
@@ -2045,10 +2045,10 @@ int main()
 			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"7dd1390aaf3a84e7cbee100038e04cbddeaacaa09449ca791f0675fafa0287ef"&&
+			"a93e1114fce972a7d2c1498cb7b6aaa95bb79eba1a8c979d74b998097d9983e7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
-			"4bbfef9902dd2e8b7313dbb32c52cd508c9f807b3fdee71020f8ac6d3f51a92a"&&
+			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		twoDoseEvidence.find("golden_fixture_sha256 "
 			"9938c899642d6b322c9c2cd0cc8bd25292110b4e1c095a2ddc111f77d4759fb2")!=
 			std::string::npos&&
@@ -2326,13 +2326,13 @@ int main()
 		"equal_time_readmission.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionEvidence.begin(),equalTimeReadmissionEvidence.end()))==
-			"f8ef083d184115e0829e1a005ded9cbc8ea80af87d4779872edb0c144c1c017a"&&
+			"1e4298c6d5132f41e93a8732bf3f1e875fc2096f2d8a56e04902f488b8745f7f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
 			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"6686ec509f503ca73e31f3a96abab530388fc9b957226b1f17daf5cb253be100"&&
+			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"5840a03f6f15d9d7a5ac4ffc5fd37ab5972ea805f303b276858ffa16d2a0f592"&&
@@ -2341,10 +2341,10 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668"&&
+			"49a9877445f5e9ef6823a77d14cc7104b31e928728769fc7ea4d66e4d95e762d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"211c3de0442f83e3f8be70a65efd6891f01b18681dafb03668c80331e89fa847"&&
+			"7f2c28de6e315c774ccd2bf4fd501c54076a2cacd1a223528e840b4ce37f98e1"&&
 		equalTimeReadmissionEvidence.find("gate_count 152")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find("failure_count 0")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find(
@@ -2367,6 +2367,81 @@ int main()
 		historyDoc.find("the original `83x/28x/8.7x` excess classes now pass")!=
 			std::string::npos,
 		"r174 admits every sealed slice under the completed filtered equal-time contract");
+	const std::string thermoSourceEvidence=ReadText(
+		"rendered/fire_production_calibration/r175_thermo_source_maps/"
+		"thermo_source_maps_evidence.v1");
+	const std::string thermoSourceRaw=ReadText(
+		"rendered/fire_production_calibration/r175_thermo_source_maps/"
+		"thermo_source_maps.raw.log");
+	Check(!thermoSourceEvidence.empty()&&!thermoSourceRaw.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			thermoSourceEvidence.begin(),thermoSourceEvidence.end()))==
+			"9d2ffbd29da8c5c8e7342e4c0714c15d2ad52909a5a490720b69d3b06f961ad3"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			thermoSourceRaw.begin(),thermoSourceRaw.end()))==
+			"c9f0188fdfd688e10f0edef4c7ef7e9712e4bf71d7cff19ddcba3b5276553865"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
+			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
+			"8aeab53bed48486ccebe48ed278b5e46980dddad598c57579e4b3399569af7fe"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			advectionMetal.begin(),advectionMetal.end()))==
+			"a93e1114fce972a7d2c1498cb7b6aaa95bb79eba1a8c979d74b998097d9983e7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			recordsHeader.begin(),recordsHeader.end()))==
+			"b73382076eafc153c4a2b058ed0fc247e4f14ffa20d9700df0aaa8e4b98b6f5c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			recordsSource.begin(),recordsSource.end()))==
+			"38762e15cde178da70e15f0762b3dbff1c2ebeaa93994ac78348960df6e84b42"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			productionSolverTest.begin(),productionSolverTest.end()))==
+			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			sequenceTest.begin(),sequenceTest.end()))==
+			"49a9877445f5e9ef6823a77d14cc7104b31e928728769fc7ea4d66e4d95e762d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"7f2c28de6e315c774ccd2bf4fd501c54076a2cacd1a223528e840b4ce37f98e1"&&
+		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("step_0_tail_cells_beginning_target 0")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("step_1_tail_cells_beginning_target 1")!=
+			std::string::npos&&
+		thermoSourceEvidence.find(
+			"step_1_tail_drain_m3_beginning_target 3.4288999032069217e-07")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("dynamics_hard_bound_passed_both_steps true")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("accepted_state_tokens_minted 2")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("tier10_25s_device_hours 0.40872554073287515")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("tier10_25s_wall_hours 0.63840048687616735")!=
+			std::string::npos&&
+		CountText(thermoSourceRaw,"THERMO_SOURCE_MAP_STEP step=")==2u&&
+		CountText(thermoSourceRaw,"accepted=0")==0u&&
+		thermoSourceRaw.find("THERMO_SOURCE_MAP_COMPLETE steps=2")!=std::string::npos&&
+		fireSimulatorCore.find("CertifiedBinary32SourcePacket")!=std::string::npos&&
+		advectionMetal.find("ValidateFireProductionCellSourceIncrement")!=
+			std::string::npos&&
+		productionSolverTest.find(
+			"production source admission requires a certified ledger and terminal thermochemistry")!=
+			std::string::npos&&
+		unixTestDriver.find("FireSequenceTest.r175_thermo_source_maps")!=
+			std::string::npos&&
+		solverDoc.find("### 7.56i Binary32 thermochemistry/source maps")!=
+			std::string::npos&&
+		historyDoc.find("r175 Binary32 thermo/source maps and preview release")!=
+			std::string::npos,
+		"r175 admits certified Binary32 sources, remeasures the burning tail, and releases first light");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

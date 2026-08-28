@@ -4296,3 +4296,24 @@ it was already tried and refuted here.
   `75817882...cfc19`, and the complete transcript are retained under
   `r174_equal_time_readmission`.  Thermo/source maps and first light are now
   next; neither is claimed by this entry.
+- **r175 Binary32 thermo/source maps and preview release (2026-08-28):** the
+  source boundary is promoted from exact `+0` to a certified Binary32 packet.
+  Its `128 eps32` source term brings the complete producer union to
+  `960 eps32`, still below the existing `1024 eps32` r60 envelope.  Mass,
+  affine rows, frozen ledgers, representability, terminal admissibility,
+  projection validation, CFL, and NaN gates remain fail-closed.
+
+  At the sealed golden beginning and audited CFL step, the canonical ignition
+  map selects 219 source cells and realizes `15289.762218506474 W`.  The
+  independent fp32/fp64 source term passes `2^-3` subdominance with a minimum
+  `112.55273459563601x` margin.  The production step accepts with terminal
+  deviation max/p95/p50 `0.085888981819152832 / 0.00071436166763305664 /
+  1.1920928955078125e-7`, below the `2^-2` dynamics bound.  Because the sealed
+  beginning has no tail outliers, only the terminal projection is invoked and
+  validates.  The next accepted beginning closes the burning-tail check: one
+  cell engages, `3.4288999032069217e-7 m3` is drained, both projections
+  validate, terminal max is `0.079523563385009766`, and the hard bound remains
+  clear.  The paired tier-10 x 25 s projection is
+  `0.40872554073287515/0.63840048687616735 h` device/wall.  Exact exit `184`
+  binds both source/target/schedule records and the one-step causal tail
+  transition.  First light is authorized only as `preview_primary`.

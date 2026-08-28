@@ -224,6 +224,84 @@ namespace RISE
 				parameters.pressurePa>0.0f&&parameters.feasibilityFactor>0.0f;
 		}
 
+		bool ValidateFireProductionCellSourceIncrement(
+			const std::vector<float>& source,const std::size_t cells,
+			const bool thermochemicalTerminalValidation,std::string* error )
+		{
+			if(source.size()!=9u*cells||cells==0u){
+				if(error)*error="production resident step cell source shape is invalid";
+				return false;
+			}
+			const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+			const FireCertifiedNullspace& closure=fuel.ConservativeReconstruction();
+			if(!fuel.IsValid()||closure.stateDimension!=8u||
+				closure.constraintMatrix.size()!=closure.constraintRows*closure.stateDimension){
+				if(error)*error="production resident step cell source certificate is unavailable";
+				return false;
+			}
+			const double factor=fuel.AcceptedStateFeasibilityEnvelope().
+				sourcePacketFactorEpsilon32*std::numeric_limits<float>::epsilon();
+			bool anyNonzero=false;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<double,8> represented={{}};
+				std::uint32_t rhoBits=0u;const float rhoSource=source[cell];
+				std::memcpy(&rhoBits,&rhoSource,sizeof(rhoBits));
+				if(rhoBits!=0u){
+					if(error)*error="production resident step rho-total source is not positive zero";
+					return false;
+				}
+				double massResidual=0.0,massScale=0.0;
+				for(std::size_t species=0u;species<7u;++species){
+					const float value=source[(1u+species)*cells+cell];
+					std::uint32_t valueBits=0u;std::memcpy(&valueBits,&value,sizeof(valueBits));
+					if(!std::isfinite(value)){
+						if(error)*error="production resident step cell source is nonfinite";
+						return false;
+					}
+					if(value==0.0f&&valueBits!=0u){
+						if(error)*error="production resident step cell source has negative zero";
+						return false;
+					}
+					represented[1u+species]=value;massResidual+=value;
+					massScale+=std::fabs(static_cast<double>(value));anyNonzero|=value!=0.0f;
+				}
+				const float energy=source[8u*cells+cell];
+				std::uint32_t energyBits=0u;std::memcpy(&energyBits,&energy,sizeof(energyBits));
+				if(!std::isfinite(energy)){
+					if(error)*error="production resident step cell source energy is nonfinite";
+					return false;
+				}
+				if(energy==0.0f&&energyBits!=0u){
+					if(error)*error="production resident step cell source energy has negative zero";
+					return false;
+				}
+				anyNonzero|=energy!=0.0f;
+				if(std::fabs(massResidual)>factor*std::max(1.0,massScale)){
+					if(error)*error=
+						"production resident step cell source violates mass conservation";
+					return false;
+				}
+				for(std::size_t row=0u;row<closure.constraintRows;++row){
+					double residual=0.0,scale=0.0;
+					for(std::size_t column=0u;column<closure.stateDimension;++column){
+						const double term=closure.constraintMatrix[row*closure.stateDimension+column]*
+							represented[column];
+						residual+=term;scale+=std::fabs(term);
+					}
+					if(!std::isfinite(residual)||std::fabs(residual)>
+						factor*std::max(1.0,scale)){
+						if(error)*error=
+							"production resident step cell source violates an affine ledger";
+						return false;
+					}
+				}
+			}
+			if(anyNonzero&&!thermochemicalTerminalValidation){if(error)*error=
+				"production resident step nonzero source lacks terminal thermochemical validation";
+				return false;}
+			return true;
+		}
+
 		bool ValidateDualMomentumStaticOwnerMetadata(
 			const FireProductionDualMomentumRequest& request,
 			std::string* error )
@@ -2725,9 +2803,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					if( !valid ) taskError=
 						"production resident step packed gas density does not match force input";
 				} else if( task==6u ) {
-					for( const float value:request.cellSourceIncrement )
-						if( !positiveZero(value) ) {valid=false;break;}
-					if( !valid ) taskError="production resident step cell source is not positive zero";
+					valid=ValidateFireProductionCellSourceIncrement(request.cellSourceIncrement,
+						cells,measureManifold,&taskError);
 				} else {
 					const unsigned int axis=task-7u;
 					valid=request.momentumSourceIncrement[axis].size()==faceCounts[axis]&&

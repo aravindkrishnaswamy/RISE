@@ -84,6 +84,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	auto fromBits=[](std::uint64_t bits){double value=0.0;std::memcpy(&value,&bits,sizeof(value));return value;};
 	const FireSimulationMethaneRecord fuel=FireSimulationMethaneRecord::PhysicalV1();
 	const FireSimulationTransportRecord transport=FireSimulationTransportRecord::OpenV1();
+	const FireSimulationGasOpacityRecord opacity=
+		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	std::string error;
 	MethaneCellState ambient;ambient.temperatureK=300.0;
 	for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
@@ -178,8 +180,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"RISE_FIRE_EQUAL_TIME_READMISSION");
 	if(equalTimeReadmissionValue&&std::strcmp(equalTimeReadmissionValue,"1")!=0)return 187;
 	const bool equalTimeReadmission=equalTimeReadmissionValue!=nullptr;
+	const char* thermoSourceMapsValue=std::getenv("RISE_FIRE_THERMO_SOURCE_MAPS");
+	if(thermoSourceMapsValue&&std::strcmp(thermoSourceMapsValue,"1")!=0)return 185;
+	const bool thermoSourceMaps=thermoSourceMapsValue!=nullptr;
 	std::array<std::string,8> goldenSubdominanceBeginningDigests;
-	if(goldenSubdominance||equalTimeReadmission){
+	if(goldenSubdominance||equalTimeReadmission||thermoSourceMaps){
 		const char* protocolPath=std::getenv("RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL");
 		if(!protocolPath)return 191;
 		std::ifstream protocol(protocolPath,std::ios::binary);
@@ -193,7 +198,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(std::any_of(goldenSubdominanceBeginningDigests.begin(),
 			goldenSubdominanceBeginningDigests.end(),[](const std::string& digest){
 				return digest.size()!=64u;}))return 191;
-		if(equalTimeReadmission){
+		if(equalTimeReadmission||thermoSourceMaps){
 			const char* temporalPath=std::getenv("RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE");
 			if(!temporalPath||DigestFile(temporalPath)!=
 				"c85364852d2a48cc4d6b147dddb6c040254ef3931153a387b3950b33da93f5f4")
@@ -221,9 +226,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		(monitoredLongShadowSmoke&&!monitoredLongShadow)||
 		(tailThresholdRED&&(!monitoredLongShadow||monitoredLongShadowSmoke))||
 		(hardBoundRetryRED&&!tailThresholdRED)||
-		((goldenSubdominance||equalTimeReadmission)&&(longShadow||plateauProbe||manifoldProbe||stageBudgetProbe||
+		((goldenSubdominance||equalTimeReadmission||thermoSourceMaps)&&(longShadow||plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe||closureConvergence))||
-		(goldenSubdominance&&equalTimeReadmission)||
+		((goldenSubdominance?1u:0u)+(equalTimeReadmission?1u:0u)+
+			(thermoSourceMaps?1u:0u)>1u)||
 		(physicalRetryRED&&(!longShadow||hostResidualProbe||acceptedLongShadow))||
 		(longShadow&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe))||
@@ -313,6 +319,16 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	std::size_t longShadowAllowanceCrossings=0u,longShadowCeilingCrossings=0u;
 	RISECBOR64::Bytes longShadowTrace;
 	MethaneRunCheckpoint longShadowState;
+	MethaneRunCheckpoint thermoSourceState;
+	std::array<double,2> thermoSourceFieldMaximum={{}};
+	std::array<double,2> thermoSourceFieldP95={{}};
+	std::array<double,2> thermoSourceFieldP50={{}};
+	std::array<std::uint32_t,2> thermoSourceTailCells={{}};
+	std::array<double,2> thermoSourceTailExcess={{}};
+	std::array<double,2> thermoSourceTailDrainM3={{}};
+	std::array<double,2> thermoSourceDeviceMS={{}};
+	std::array<double,2> thermoSourceWallMS={{}};
+	double thermoSourceMinimumSubdominanceMargin=0.0;
 	std::vector<ConservativeVector> longShadowReferenceConservative;
 	PeriodicMACField longShadowReferenceMomentum;
 	double longShadowFinalStepS=0.0;
@@ -327,18 +343,20 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 	std::vector<double> longShadowFirstRefusedField(requestedLongShadowSteps,
 		std::numeric_limits<double>::quiet_NaN());
 	for(std::size_t slice=0u;slice<((contractionProbe||closureConvergence)?1u:
-		(longShadow?requestedLongShadowSteps:8u));++slice){
+		(thermoSourceMaps?2u:
+		(longShadow?requestedLongShadowSteps:8u)));++slice){
 		const std::filesystem::path beginningPath=slice==0u?checkpointPath:
 			snapshotDirectory/(std::string("step_0")+std::to_string(slice)+".checkpoint");
 		MethaneRunCheckpoint beginning;
 		if(longShadow&&slice>0u)beginning=std::move(longShadowState);
+		else if(thermoSourceMaps&&slice>0u)beginning=std::move(thermoSourceState);
 		else if((longShadow?slice==0u&&DigestFile(beginningPath)!=checkpointDigest:
-			(!(goldenSubdominance||equalTimeReadmission)&&
+			(!(goldenSubdominance||equalTimeReadmission||thermoSourceMaps)&&
 				DigestFile(beginningPath)!=beginningDigests[slice]))||
 			!LoadMethaneRunCheckpoint(beginningPath,beginning,error)){
 			std::fprintf(stderr,"production golden composition beginning %zu failed: %s\n",
 				slice,error.c_str());return 113;}
-		if(goldenSubdominance||equalTimeReadmission){
+		if(goldenSubdominance||equalTimeReadmission||(thermoSourceMaps&&slice==0u)){
 			std::string stateDigest;
 			if(!CheckpointProductionBeginningSHA256(beginning,stateDigest)||
 				stateDigest!=goldenSubdominanceBeginningDigests[slice]){
@@ -416,7 +434,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(contractionProbe&&!RISE::DeriveFireProductionManifoldTimeStep(
 			0.0016462659696117043,0.066569089889526367,
 			0.99987278979872063,limitedStep,&error))return 250;
-		const std::size_t cells=shape.CellCount();double dt=(longShadow||contractionProbe)?
+		const std::size_t cells=shape.CellCount();double dt=thermoSourceMaps?
+			static_cast<double>(0.0016462659696117043f):(longShadow||contractionProbe)?
 			((limitedClosure||contractionProbe)?static_cast<double>(static_cast<float>(limitedStep)):
 				0.0016462659696117043):
 			fromBits(stepBits[slice]);
@@ -442,7 +461,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		// Keep that inherited producer's r60 envelope while performing the target
 		// generator arithmetic in binary64; silently promoting its admissibility
 		// class rejects roundoff that production was already certified to carry.
-		shadowConfig.transport.producerPrecision=monitoredLongShadow?
+		shadowConfig.transport.producerPrecision=(monitoredLongShadow||thermoSourceMaps)?
 			RISE::FireStateProducerPrecision::Binary32:
 			RISE::FireStateProducerPrecision::Binary64;
 		shadowConfig.gravityMPerS2={{0.0,0.0,-9.80665}};shadowConfig.periodicBoundaries=false;
@@ -529,6 +548,137 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			shadowConfig.transport.deltaTimeS=dt;
 		}
 		std::vector<MethaneSourcePacket> zeroPackets(cells);
+		std::vector<MethaneSourcePacket> sourcePackets32,sourcePackets64;
+		std::vector<ConservativeVector> sourceDelta32(cells);
+		std::array<double,9> sourceProducerDifference={{}};
+		double sourceProducerMinimumMargin=std::numeric_limits<double>::infinity();
+		std::size_t sourceActiveCellCount=0u;
+		double sourceHeatReleaseW=0.0;
+		std::string sourcePacketDigest;
+		if(thermoSourceMaps){
+			std::vector<MethaneReactionStep> reactionStep(cells);
+			std::vector<double> cellVolumeM3(cells,std::pow(shape.cellWidthM,3.0));
+			std::vector<MethaneCellState> beginning32=beginning.states;
+			std::vector<MethaneCellState> beginning64=beginning.states;
+			IgnitionGrid eligibilityGrid;
+			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;
+			eligibilityGrid.nz=shape.nz;eligibilityGrid.cells=beginning.states;
+			eligibilityGrid.pilotMask.assign(cells,false);
+			std::vector<bool> sourceEligibility;
+			if(!BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,transport,
+				sourceEligibility,&error))return 183;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				reactionStep[cell].deltaTimeS=dt;
+				reactionStep[cell].mixingTimeS=0.05;
+				reactionStep[cell].primaryEligible=sourceEligibility[cell];
+				reactionStep[cell].sootOxidationEnabled=true;
+				reactionStep[cell].maximumAcceptedTemperatureK=
+					fuel.TemperatureMaxK();
+				beginning32[cell].producerPrecision=FireStateProducerPrecision::Binary32;
+				beginning64[cell].producerPrecision=FireStateProducerPrecision::Binary64;
+			}
+			RadiationEscapeFactor escape32,escape64;
+			const double nominalHeatReleaseW=1000.0*CapstoneHeatReleaseRateKW;
+			const double radiativeFraction=0.20;
+			if(!(nominalHeatReleaseW>0.0)){
+				std::fprintf(stderr,"THERMO_SOURCE_MAP nominal heat release invalid %.17g\n",
+					nominalHeatReleaseW);return 183;
+			}
+			error.clear();
+			const bool built32=BuildFrozenMethaneSourcePackets(beginning32,reactionStep,
+				cellVolumeM3,300.0,nominalHeatReleaseW,radiativeFraction,false,fuel,fuel,
+				opacity,sourcePackets32,escape32,&error,16u);
+			if(!built32){std::fprintf(stderr,
+				"THERMO_SOURCE_MAP binary32 packet construction failed: %s\n",error.c_str());
+				return 183;}
+			if(slice==0u){
+				error.clear();
+				const bool built64=BuildFrozenMethaneSourcePackets(beginning64,reactionStep,
+					cellVolumeM3,300.0,nominalHeatReleaseW,radiativeFraction,false,fuel,fuel,
+					opacity,sourcePackets64,escape64,&error,16u);
+				if(!built64){std::fprintf(stderr,
+					"THERMO_SOURCE_MAP binary64 packet construction failed: %s\n",error.c_str());
+					return 183;}
+			}
+			RISECBOR64::Bytes sourceBytes;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				if(!CertifiedBinary32SourcePacket(sourcePackets32[cell],fuel)){
+					ConservativeVector diagnostic{};
+					for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+						diagnostic[1u+species]=sourcePackets32[cell].constituentDelta[species];
+					diagnostic[8]=sourcePackets32[cell].sensibleEnergyDeltaJPerM3;
+					std::fprintf(stderr,"THERMO_SOURCE_MAP source certificate failed cell=%zu "
+						"delta_certified=%d values=",cell,
+						CertifiedBinary32SourceDelta(diagnostic,fuel)?1:0);
+					for(std::size_t component=0u;component<9u;++component)
+						std::fprintf(stderr," %.17g/%d",diagnostic[component],
+							std::signbit(diagnostic[component])?1:0);
+					const FireCertifiedNullspace& closure=fuel.ConservativeReconstruction();
+					std::fprintf(stderr," factor=%.17g roundtrip=",
+						fuel.AcceptedStateFeasibilityEnvelope().sourcePacketFactorEpsilon32*
+						std::numeric_limits<float>::epsilon());
+					for(std::size_t component=0u;component<9u;++component)
+						std::fprintf(stderr,"%d",static_cast<double>(static_cast<float>(
+							diagnostic[component]))==diagnostic[component]?1:0);
+					std::fprintf(stderr," rows=");
+					for(std::size_t row=0u;row<closure.constraintRows;++row){
+						double residual=0.0;
+						for(std::size_t column=0u;column<closure.stateDimension;++column)
+							residual+=closure.constraintMatrix[row*closure.stateDimension+column]*
+								diagnostic[column];
+						std::fprintf(stderr," %.17g",residual);
+					}
+					std::fprintf(stderr," diagnostics=%.17g/%.17g/%.17g/%.17g/%.17g/%.17g/%.17g/%.17g\n",
+						sourcePackets32[cell].reactedFuelKGPerM3,
+						sourcePackets32[cell].oxidizedCarbonKGPerM3,
+						sourcePackets32[cell].grossCarbonFormedKGPerM3,
+						sourcePackets32[cell].gasHeatReleaseWPerM3,
+						sourcePackets32[cell].sootHeatReleaseWPerM3,
+						sourcePackets32[cell].pilotEnergyDeltaJPerM3,
+						sourcePackets32[cell].pilotExpansionIntegral,
+						sourcePackets32[cell].radiativeCoolingWPerM3);return 183;
+				}
+				sourceDelta32[cell][0]=0.0;
+				for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
+					const std::size_t component=1u+species;
+					sourceDelta32[cell][component]=sourcePackets32[cell].constituentDelta[species];
+				if(slice==0u)sourceProducerDifference[component]=std::max(
+					sourceProducerDifference[component],std::fabs(
+						sourcePackets32[cell].constituentDelta[species]-
+						sourcePackets64[cell].constituentDelta[species]));
+				}
+				sourceDelta32[cell][8]=sourcePackets32[cell].sensibleEnergyDeltaJPerM3;
+				if(slice==0u)sourceProducerDifference[8]=std::max(
+					sourceProducerDifference[8],std::fabs(
+					sourcePackets32[cell].sensibleEnergyDeltaJPerM3-
+						sourcePackets64[cell].sensibleEnergyDeltaJPerM3));
+				if(sourcePackets32[cell].reactedFuelKGPerM3>0.0||
+					sourcePackets32[cell].oxidizedCarbonKGPerM3>0.0)++sourceActiveCellCount;
+				sourceHeatReleaseW+=(sourcePackets32[cell].gasHeatReleaseWPerM3+
+					sourcePackets32[cell].sootHeatReleaseWPerM3)*cellVolumeM3[cell];
+				for(std::size_t component=0u;component<9u;++component)
+					FireProductionDyadicCalibration::AppendDouble(sourceBytes,
+						sourceDelta32[cell][component]);
+			}
+			for(std::size_t component=0u;slice==0u&&component<9u;++component){
+				const double bound=0x1p-3*productionDistance[component];
+				if(sourceProducerDifference[component]>bound){
+					std::fprintf(stderr,"THERMO_SOURCE_MAP subdominance failed component=%zu "
+						"difference=%.17g bound=%.17g distance=%.17g\n",component,
+						sourceProducerDifference[component],bound,productionDistance[component]);
+					return 183;
+				}
+				if(sourceProducerDifference[component]>0.0)
+					sourceProducerMinimumMargin=std::min(sourceProducerMinimumMargin,
+						bound/sourceProducerDifference[component]);
+			}
+			if(slice==0u)thermoSourceMinimumSubdominanceMargin=sourceProducerMinimumMargin;
+			else sourceProducerMinimumMargin=thermoSourceMinimumSubdominanceMargin;
+			sourcePacketDigest=RISECBOR64::SHA256Hex(sourceBytes);
+			std::fprintf(stderr,"THERMO_SOURCE_MAP_PREPARED active_cells=%zu "
+				"source_digest=%s source_margin=%.17g\n",sourceActiveCellCount,
+				sourcePacketDigest.c_str(),sourceProducerMinimumMargin);
+		}
 		ConservativeAdvance3DResult oracle,oracleSerial;
 		if(contractionProbe){
 			const double baseStep=dt;
@@ -657,10 +807,13 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			ConservativeAdvance3DResult& composed,std::string& scheduleDigest,
 			std::vector<float>& terminalTarget,std::string& terminalTargetDigest,
 			double& terminalTargetTime)->bool{
-			if(monitoredLongShadow){
+			if(monitoredLongShadow||thermoSourceMaps){
 				OpenMACField3D currentVelocity;
 				currentVelocity.component=beginning.velocity.component;
-				std::vector<ConservativeVector> sourceDelta(cells);
+				std::vector<ConservativeVector> emptySourceDelta;
+				if(!thermoSourceMaps)emptySourceDelta.resize(cells);
+				const std::vector<ConservativeVector>& sourceDelta=thermoSourceMaps?
+					sourceDelta32:emptySourceDelta;
 				ConservativeAdvance3DConfig tangentConfig=shadowConfig;
 				tangentConfig.workerCount=workerCount;
 				std::vector<double> tangentTarget;
@@ -673,7 +826,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				terminalTargetDigest=publishedTargetDigest(terminalTarget);
 				terminalTargetTime=dt;
 				RISECBOR64::Bytes scheduleTrace;
-				FireProductionDyadicCalibration::AppendInteger(scheduleTrace,0x72313638u);
+				FireProductionDyadicCalibration::AppendInteger(scheduleTrace,
+					thermoSourceMaps?0x72313735u:0x72313638u);
 				FireProductionDyadicCalibration::AppendDouble(scheduleTrace,dt);
 				FireProductionDyadicCalibration::AppendInteger(scheduleTrace,
 					static_cast<unsigned int>(shadowConfig.transport.producerPrecision));
@@ -921,14 +1075,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			request.momentumSourceIncrement[axis].assign(faces,0.0f);
 		}
 		request.cellSourceIncrement.assign(9u*cells,0.0f);
+		if(thermoSourceMaps)for(std::size_t cell=0u;cell<cells;++cell)
+			for(std::size_t component=0u;component<9u;++component)
+				request.cellSourceIncrement[component*cells+cell]=
+					static_cast<float>(sourceDelta32[cell][component]);
 		request.divergenceTargetPerS.resize(cells);
 		request.restorationDivergenceTargetPerS.resize(cells);
 		request.beginningManifoldDeviationPerCell.resize(cells);
-		if((limitedClosure||monitoredLongShadow||equalTimeReadmission)&&
+		if((limitedClosure||monitoredLongShadow||equalTimeReadmission||thermoSourceMaps)&&
 			equalTimeTerminalTarget.size()!=cells)return 129;
 		for(std::size_t cell=0u;cell<cells;++cell){
 			request.divergenceTargetPerS[cell]=(limitedClosure||monitoredLongShadow||
-				equalTimeReadmission)?
+				equalTimeReadmission||thermoSourceMaps)?
 				equalTimeTerminalTarget[cell]:
 				static_cast<float>(oracle.divergenceHeunPerS[cell]);
 			double volumeRatio=0.0;
@@ -951,6 +1109,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}else if(equalTimeReadmission){
 			if(equalTimeTerminalTargetTime!=dt||equalTimeTerminalTargetDigest!=
 				publishedTargetDigest(request.divergenceTargetPerS)||
+				equalTimeReferenceScheduleDigest.empty())return 129;
+		}else if(thermoSourceMaps){
+			if(equalTimeReferenceSubstepCount!=0u||equalTimeTerminalTargetTime!=dt||
+				equalTimeTerminalTargetDigest!=publishedTargetDigest(request.divergenceTargetPerS)||
 				equalTimeReferenceScheduleDigest.empty())return 129;
 		}
 		request.monitorManifoldDiagnostics=true;
@@ -2685,7 +2847,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		double productionWallMS=0.0;
 		for(;;){
 			const auto productionWallStart=std::chrono::steady_clock::now();
-			productionSucceeded=(longShadow||goldenSubdominance||equalTimeReadmission)?
+			productionSucceeded=(longShadow||goldenSubdominance||equalTimeReadmission||
+				thermoSourceMaps)?
 				RISE::AttemptFireProductionResidentStepMetal(request,production,&error):
 				RISE::AdvanceFireProductionResidentStepMetal(request,production,&error);
 			productionWallMS=std::chrono::duration<double,std::milli>(
@@ -2700,9 +2863,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			// refusal; the boolean alone cannot distinguish it from a fatal/default
 			// result.
 			if((!acceptedLongShadow&&!physicalRetryRED&&!goldenSubdominance&&
-				!equalTimeReadmission)||
+				!equalTimeReadmission&&!thermoSourceMaps)||
+				production.HasAcceptedManifoldToken()||
 				production.physicalProjection.validationPassed||
-				production.residentProjectionInvocationCount!=2u)break;
+				(production.residentProjectionInvocationCount!=2u&&!thermoSourceMaps))break;
 			const double pre=production.physicalProjection.maximumPreProjectionResidualPerS;
 			const double post=production.physicalProjection.maximumPostProjectionResidualPerS;
 			const double band=production.physicalProjection.validationBandPerS;
@@ -2710,7 +2874,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			if(production.HasAcceptedManifoldToken()||!production.projection.validationPassed||
 				cycles!=request.physicalOpenProjectionVCycleCount||cycles<1u||cycles>=64u||
 				!std::isfinite(pre)||!std::isfinite(post)||!std::isfinite(band)||
-				!(pre>post)||!(post>0.0)||!(band>0.0)||!(post>band))return 120;
+				!(pre>post)||!(post>0.0)||!(band>0.0)||!(post>band)){
+				std::fprintf(stderr,"PHYSICAL_PROJECTION_RETRY_INVALID source_mode=%d token=%d "
+					"terminal_valid=%d invocations=%u cycles=%u requested=%u pre=%.17g "
+					"post=%.17g band=%.17g error=%s\n",thermoSourceMaps?1:0,
+					production.HasAcceptedManifoldToken()?1:0,
+					production.projection.validationPassed?1:0,
+					production.residentProjectionInvocationCount,cycles,
+					request.physicalOpenProjectionVCycleCount,pre,post,band,error.c_str());return 120;
+			}
 			const double contraction=std::pow(post/pre,1.0/static_cast<double>(cycles));
 			if(!std::isfinite(contraction)||!(contraction>0.0)||!(contraction<1.0))return 120;
 			const double requiredReal=std::ceil(std::log(band/pre)/std::log(contraction));
@@ -2737,6 +2909,89 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			!production.manifoldPlateauPassed&&!production.HasAcceptedManifoldToken())){
 			std::fprintf(stderr,
 			"production golden resident slice %zu failed: %s\n",slice,error.c_str());return 119;}
+		if(thermoSourceMaps){
+			if(slice>=thermoSourceFieldMaximum.size())return 183;
+			const bool tailBeginningExpected=slice>0u;
+			const bool projectionTopologyValid=
+				(!tailBeginningExpected&&production.residentProjectionInvocationCount==1u&&
+					!production.manifoldTailRestorationApplied)||
+				(tailBeginningExpected&&production.residentProjectionInvocationCount==2u&&
+					production.manifoldTailRestorationApplied&&
+					production.physicalProjection.validationPassed);
+			const bool accepted=productionSucceeded&&production.HasAcceptedManifoldToken()&&
+				projectionTopologyValid&&production.projection.validationPassed&&
+				production.manifoldDynamicsBoundPassed&&production.manifoldDiagnosticsMonitored&&
+				!production.manifoldPlateauEnforced&&sourceActiveCellCount>0u&&
+				!sourcePacketDigest.empty()&&
+				production.manifoldTailRestorationApplied==
+					(production.manifoldTailCellCount>0u);
+			thermoSourceFieldMaximum[slice]=production.maximumAcceptedManifoldDeviation;
+			thermoSourceFieldP95[slice]=production.acceptedManifoldDeviationP95;
+			thermoSourceFieldP50[slice]=production.acceptedManifoldDeviationP50;
+			thermoSourceTailCells[slice]=production.manifoldTailCellCount;
+			thermoSourceTailExcess[slice]=production.manifoldTailExcessSum;
+			thermoSourceTailDrainM3[slice]=production.manifoldTailDrainedVolumeM3;
+			thermoSourceDeviceMS[slice]=production.deviceMakespanMS;
+			thermoSourceWallMS[slice]=productionWallMS;
+			std::fprintf(stderr,"THERMO_SOURCE_MAP_STEP step=%zu dt=%.17g active_cells=%zu "
+				"heat_release_W=%.17g "
+				"source_margin=%.17g source_digest=%s target_digest=%s schedule=%s "
+				"field_max=%.17g field_p95=%.17g field_p50=%.17g tail_cells=%u "
+				"tail_excess=%.17g tail_drain_m3=%.17g hard_bound=%d "
+				"projection_invocations=%u physical_status=%s restoration_valid=%d "
+				"device_ms=%.17g wall_ms=%.17g accepted=%d golden=%s\n",
+				slice,dt,sourceActiveCellCount,sourceHeatReleaseW,sourceProducerMinimumMargin,
+				sourcePacketDigest.c_str(),equalTimeTerminalTargetDigest.c_str(),
+				equalTimeReferenceScheduleDigest.c_str(),
+				production.maximumAcceptedManifoldDeviation,
+				production.acceptedManifoldDeviationP95,
+				production.acceptedManifoldDeviationP50,production.manifoldTailCellCount,
+				production.manifoldTailExcessSum,production.manifoldTailDrainedVolumeM3,
+				production.manifoldDynamicsBoundPassed?0:1,
+				production.residentProjectionInvocationCount,
+				production.residentProjectionInvocationCount==1u?"not_invoked":
+					(production.physicalProjection.validationPassed?"valid":"invalid"),
+				production.projection.validationPassed?1:0,production.deviceMakespanMS,
+				productionWallMS,accepted?1:0,checkpointDigest);
+			if(!accepted||DigestFile(checkpointPath)!=checkpointDigest)return 183;
+			RISE::FireProductionAcceptedManifoldObservation acceptedObservation;
+			if(!RISE::PublishFireProductionAcceptedManifoldObservation(
+				static_cast<double>(production.representedTimeStepS),production,
+				acceptedObservation,&error)||!acceptedObservation.Available()||
+				acceptedObservation.MaximumGeneration()!=0.0||
+				acceptedObservation.RestorationDrainFraction()!=0.0||
+				!FireProductionDyadicCalibration::ApplyAcceptedProductionResult(
+					production,acceptedObservation,beginning,error))return 183;
+			const double representedStep=static_cast<double>(production.representedTimeStepS);
+			beginning.simulationTimeS+=representedStep;
+			beginning.previousStepS=representedStep;
+			beginning.lastAcceptedStepS=representedStep;
+			++beginning.acceptedSteps;
+			beginning.values.acceptedTimeStepHistoryS.push_back(representedStep);
+			beginning.productionManifoldObservation=acceptedObservation;
+			if(slice==0u){
+				thermoSourceState=std::move(beginning);
+				sliceAccepted=true;
+				break;
+			}
+			const double deviceProjectionHours=(thermoSourceDeviceMS[0]+
+				thermoSourceDeviceMS[1])*25.0/(2.0*dt*3600000.0);
+			const double wallProjectionHours=(thermoSourceWallMS[0]+
+				thermoSourceWallMS[1])*25.0/(2.0*dt*3600000.0);
+			std::fprintf(stderr,"THERMO_SOURCE_MAP_COMPLETE steps=2 field_max=%.17g/%.17g "
+				"field_p95=%.17g/%.17g field_p50=%.17g/%.17g tail_cells=%u/%u "
+				"tail_excess=%.17g/%.17g tail_drain_m3=%.17g/%.17g "
+				"device_projection_hours=%.17g wall_projection_hours=%.17g golden=%s\n",
+				thermoSourceFieldMaximum[0],thermoSourceFieldMaximum[1],
+				thermoSourceFieldP95[0],thermoSourceFieldP95[1],
+				thermoSourceFieldP50[0],thermoSourceFieldP50[1],
+				thermoSourceTailCells[0],thermoSourceTailCells[1],
+				thermoSourceTailExcess[0],thermoSourceTailExcess[1],
+				thermoSourceTailDrainM3[0],thermoSourceTailDrainM3[1],
+				deviceProjectionHours,wallProjectionHours,checkpointDigest);
+			return thermoSourceTailCells[0]==0u&&thermoSourceTailCells[1]>0u&&
+				thermoSourceTailDrainM3[1]>0.0?184:183;
+		}
 		if(physicalRetryRED){
 			std::fprintf(stderr,"PHYSICAL_PROJECTION_RETRY_RED initial_cycles=12 "
 				"retry_count=%zu final_cycles=%u physical_valid=%d manifold_refused=%d "

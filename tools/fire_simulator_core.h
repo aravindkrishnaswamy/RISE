@@ -742,7 +742,7 @@ namespace RISE
 			return true;
 		}
 
-		inline bool CertifiedBinary32ZeroSourcePacket(const MethaneSourcePacket& packet)
+	inline bool CertifiedBinary32ZeroSourcePacket(const MethaneSourcePacket& packet)
 		{
 			for(const double value:packet.constituentDelta)
 				if(!CertifiedPositiveZeroSourceValue(value))return false;
@@ -754,8 +754,70 @@ namespace RISE
 				CertifiedPositiveZeroSourceValue(packet.sootHeatReleaseWPerM3)&&
 				CertifiedPositiveZeroSourceValue(packet.pilotEnergyDeltaJPerM3)&&
 				CertifiedPositiveZeroSourceValue(packet.pilotExpansionIntegral)&&
-				CertifiedPositiveZeroSourceValue(packet.radiativeCoolingWPerM3);
+			CertifiedPositiveZeroSourceValue(packet.radiativeCoolingWPerM3);
+	}
+
+	inline bool CertifiedBinary32SourceDelta(const ConservativeVector& source,
+		const FireSimulationMethaneRecord& fuel)
+	{
+		std::array<double,MethaneMassStateDimension> represented={{}};
+		if(!CertifiedPositiveZeroSourceValue(source[0])||!std::isfinite(
+			source[MethaneMassStateDimension])||static_cast<double>(static_cast<float>(
+			source[MethaneMassStateDimension]))!=source[MethaneMassStateDimension]||
+			(source[MethaneMassStateDimension]==0.0&&
+			!CertifiedPositiveZeroSourceValue(source[MethaneMassStateDimension])))return false;
+		double massResidual=0.0,massScale=0.0;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+			const double value=source[1u+species];
+			if(!std::isfinite(value)||static_cast<double>(static_cast<float>(value))!=value||
+				(value==0.0&&!CertifiedPositiveZeroSourceValue(value)))
+				return false;
+			represented[1u+species]=value;massResidual+=value;massScale+=std::fabs(value);
 		}
+		const double factor=fuel.AcceptedStateFeasibilityEnvelope().
+			sourcePacketFactorEpsilon32*std::numeric_limits<float>::epsilon();
+		if(!(factor>0.0)||std::fabs(massResidual)>factor*std::max(1.0,massScale))return false;
+		const FireCertifiedNullspace& closure=fuel.ConservativeReconstruction();
+		if(closure.stateDimension!=MethaneMassStateDimension||
+			closure.constraintMatrix.size()!=closure.constraintRows*closure.stateDimension)
+			return false;
+		for(std::size_t row=0;row<closure.constraintRows;++row){
+			double residual=0.0,scale=0.0;
+			for(std::size_t column=0;column<closure.stateDimension;++column){
+				const double term=closure.constraintMatrix[row*closure.stateDimension+column]*
+					represented[column];
+				residual+=term;scale+=std::fabs(term);
+			}
+			if(!std::isfinite(residual)||std::fabs(residual)>factor*std::max(1.0,scale))
+				return false;
+		}
+		return true;
+	}
+
+	inline bool CertifiedBinary32SourcePacket(const MethaneSourcePacket& packet,
+		const FireSimulationMethaneRecord& fuel)
+	{
+		ConservativeVector represented{};
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+			const double value=packet.constituentDelta[species];
+			represented[1u+species]=value;
+		}
+		represented[MethaneMassStateDimension]=packet.sensibleEnergyDeltaJPerM3;
+		// The production source-map authority covers the bytes consumed by the
+		// conservative update.  Reaction/radiation diagnostics are certified by
+		// the frozen-packet ledger, but are not resident source inputs.
+		return CertifiedBinary32SourceDelta(represented,fuel);
+	}
+
+	inline void RepresentMethaneSourcePacketBinary32(MethaneSourcePacket& packet)
+	{
+		auto represented=[](const double value){
+			const double result=static_cast<double>(static_cast<float>(value));
+			return result==0.0?0.0:result;
+		};
+		for(double& delta:packet.constituentDelta)delta=represented(delta);
+		packet.sensibleEnergyDeltaJPerM3=represented(packet.sensibleEnergyDeltaJPerM3);
+	}
 
 		struct MethaneReactionStep
 		{
@@ -845,7 +907,7 @@ namespace RISE
 #elif defined(__GNUC__) || defined(__clang__)
 		__attribute__((noinline))
 #endif
-		inline bool CanonicalApplySourcePacket(
+	inline bool CanonicalApplySourcePacket(
 			const MethaneCellState& beginning,
 			const MethaneSourcePacket& packet,
 			const FireSimulationMethaneRecord& thermochemistry,
@@ -860,20 +922,29 @@ namespace RISE
 					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
 					upperEnthalpy,thermochemistry,beginning.producerPrecision,error))return false;
-			if(beginning.producerPrecision==FireStateProducerPrecision::Binary32&&
-				!CertifiedBinary32ZeroSourcePacket(packet))return Fail(error,
-					"fire solver binary32 source producer is not yet certified");
-			bool identity=packet.sensibleEnergyDeltaJPerM3==0.0;
-			for(const double delta:packet.constituentDelta)identity=identity&&delta==0.0;
+		const bool binary32=beginning.producerPrecision==FireStateProducerPrecision::Binary32;
+		if(binary32&&!CertifiedBinary32SourcePacket(packet,thermochemistry))return Fail(error,
+			"fire solver binary32 source packet lacks its precision-class certificate");
+		bool identity=binary32?static_cast<float>(packet.sensibleEnergyDeltaJPerM3)==0.0f:
+			packet.sensibleEnergyDeltaJPerM3==0.0;
+		for(const double delta:packet.constituentDelta)identity=identity&&
+			(binary32?static_cast<float>(delta)==0.0f:delta==0.0);
 			if(identity) {
 				if(!ValidateCellState(beginning,error))return false;
 				result=beginning;
 				return true;
 			}
-			MethaneCellState candidate=beginning;
-			for(std::size_t index=0;index<MethaneSpeciesCount;++index)
-				candidate.constituent[index]+=packet.constituentDelta[index];
-			candidate.sensibleEnergyJPerM3+=packet.sensibleEnergyDeltaJPerM3;
+		MethaneCellState candidate=beginning;
+		for(std::size_t index=0;index<MethaneSpeciesCount;++index){
+			if(binary32)candidate.constituent[index]=static_cast<double>(
+				static_cast<float>(beginning.constituent[index])+
+				static_cast<float>(packet.constituentDelta[index]));
+			else candidate.constituent[index]+=packet.constituentDelta[index];
+		}
+		if(binary32)candidate.sensibleEnergyJPerM3=static_cast<double>(
+			static_cast<float>(beginning.sensibleEnergyJPerM3)+
+			static_cast<float>(packet.sensibleEnergyDeltaJPerM3));
+		else candidate.sensibleEnergyJPerM3+=packet.sensibleEnergyDeltaJPerM3;
 			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(candidate,
 				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
 				candidate.temperatureK,error)||!ValidateCellState(candidate,error))return false;
@@ -964,6 +1035,8 @@ namespace RISE
 					oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
 				candidate.pilotEnergyDeltaJPerM3=pilotMap.sensibleEnergyDeltaJPerM3;
 				candidate.pilotExpansionIntegral=pilotMap.expansionIntegral;
+				if(beginning.producerPrecision==FireStateProducerPrecision::Binary32)
+					RepresentMethaneSourcePacketBinary32(candidate);
 			};
 			auto strictCandidate=[&](const MethaneSourcePacket& candidate,
 				MethaneCellState& endpoint){
@@ -6153,7 +6226,7 @@ namespace RISE
 			return true;
 		}
 
-		inline bool ValidateFrozenMethaneSourcePacketLedger(
+	inline bool ValidateFrozenMethaneSourcePacketLedger(
 			const MethaneCellState& beginning,
 			const MethaneReactionStep& reactionStep,
 			const FireSimulationMethaneRecord& fuel,
@@ -6175,8 +6248,11 @@ namespace RISE
 					scale+=std::fabs(coefficient*beginning.constituent[species])+std::fabs(
 						coefficient*(beginning.constituent[species]+packet.constituentDelta[species]));}
 				elementRatio=std::max(elementRatio,std::fabs(residual)/std::max(1.0,scale));}
-			const double factor=fuel.AcceptedStateFeasibilityEnvelope().
-				sourcePacketFactorEpsilon64*std::numeric_limits<double>::epsilon();
+		const FireAcceptedStateFeasibilityEnvelope& envelope=
+			fuel.AcceptedStateFeasibilityEnvelope();
+		const double factor=beginning.producerPrecision==FireStateProducerPrecision::Binary32?
+			envelope.sourcePacketFactorEpsilon32*std::numeric_limits<float>::epsilon():
+			envelope.sourcePacketFactorEpsilon64*std::numeric_limits<double>::epsilon();
 			const double massRatio=std::fabs(massResidual)/std::max(1.0,massScale);
 			MethanePilotProjectionMap expectedPilotMap;
 			if(!ComputeMethanePilotProjectionMap(beginning,fuel,
@@ -6266,9 +6342,12 @@ namespace RISE
 				result.constituentDelta[species] = finalScratch.constituent[species]-
 					beginning.constituent[species];
 			}
-			result.sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
-				beginning.sensibleEnergyJPerM3;
-			result.radiativeCoolingWPerM3 = signedCoolingWPerM3;
+		result.sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
+			beginning.sensibleEnergyJPerM3;
+		result.radiativeCoolingWPerM3 = signedCoolingWPerM3;
+		if(beginning.producerPrecision==FireStateProducerPrecision::Binary32){
+			RepresentMethaneSourcePacketBinary32(result);
+		}
 			return ValidateFrozenMethaneSourcePacketLedger(beginning,reactionStep,fuel,result,error)&&
 				FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning),
 					beginning.temperatureK,result,reactionStep.deltaTimeS,thermochemistry,
@@ -6367,6 +6446,8 @@ namespace RISE
 				candidateResult[cell].sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
 					beginning[cell].sensibleEnergyJPerM3;
 				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
+				if(beginning[cell].producerPrecision==FireStateProducerPrecision::Binary32)
+					RepresentMethaneSourcePacketBinary32(candidateResult[cell]);
 				if(!ValidateFrozenMethaneSourcePacketLedger(beginning[cell],reactionStep[cell],fuel,
 					candidateResult[cell],&cellError)) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;

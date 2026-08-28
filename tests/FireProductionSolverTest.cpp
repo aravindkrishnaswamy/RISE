@@ -2599,6 +2599,34 @@ int main()
 			FireProductionProjectionFaceCount(mixedDual.shape,axis),0.0f);
 	composedStep.divergenceTargetPerS.assign(mixedDual.shape.CellCount(),0.0f);
 	composedStep.restorationDivergenceTargetPerS.assign(mixedDual.shape.CellCount(),0.0f);
+	FireProductionResidentStepRequest certifiedSourceWithoutTerminal=composedStep;
+	certifiedSourceWithoutTerminal.monitorManifoldDiagnostics=false;
+	const std::vector<double>& primarySourceDirection=
+		FireSimulationMethaneRecord::PhysicalV1().PrimaryReactionDelta();
+	for(std::size_t species=0u;species<primarySourceDirection.size();++species){
+		const float represented=static_cast<float>(1.0e-4*primarySourceDirection[species]);
+		certifiedSourceWithoutTerminal.cellSourceIncrement[
+			(1u+species)*mixedDual.shape.CellCount()]=represented;
+	}
+	FireProductionResidentStepResult certifiedSourceRejected;
+	std::string certifiedSourceError;
+	const bool certifiedSourceRequiresTerminal=
+		!AdvanceFireProductionResidentStepMetal(certifiedSourceWithoutTerminal,
+			certifiedSourceRejected,&certifiedSourceError)&&
+		certifiedSourceError==
+			"production resident step nonzero source lacks terminal thermochemical validation"&&
+		certifiedSourceRejected.conservativeValues.empty();
+	FireProductionResidentStepRequest brokenSourceLedger=composedStep;
+	brokenSourceLedger.monitorManifoldDiagnostics=false;
+	brokenSourceLedger.cellSourceIncrement[mixedDual.shape.CellCount()]=1.0e-4f;
+	FireProductionResidentStepResult brokenSourceRejected;
+	std::string brokenSourceError;
+	const bool brokenSourceFailsClosed=!AdvanceFireProductionResidentStepMetal(
+		brokenSourceLedger,brokenSourceRejected,&brokenSourceError)&&
+		brokenSourceError=="production resident step cell source violates mass conservation"&&
+		brokenSourceRejected.conservativeValues.empty();
+	Check(certifiedSourceRequiresTerminal&&brokenSourceFailsClosed,
+		"production source admission requires a certified ledger and terminal thermochemistry");
 	FireProductionFrozenForceAdvanceResult composedForceCPU;
 	FireProductionCellPalindromeResult composedCellCPU;
 	FireProductionDualMomentumResult composedDualCPU;

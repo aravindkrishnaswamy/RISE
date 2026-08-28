@@ -451,7 +451,8 @@ int main()
 		r60Envelope.remapFactorEpsilon32==256.0&&
 		r60Envelope.composedForceFactorEpsilon32==64.0&&
 		r60Envelope.projectionFactorEpsilon32==256.0&&
-		r60Envelope.derivedUnionFactorEpsilon32==832.0&&
+		r60Envelope.sourcePacketFactorEpsilon32==128.0&&
+		r60Envelope.derivedUnionFactorEpsilon32==960.0&&
 		r60Envelope.kappaEpsilon32==1024.0,
 		"precision-class accepted-state envelope retains r60 and derives the fp32 producer union");
 	std::array<double,MethaneSpeciesCount> r60LowerEnthalpy,r60UpperEnthalpy;
@@ -639,10 +640,26 @@ int main()
 		fp32Molecular,&error)&&
 		fp32Molecular.molecularViscosityPaS>0.0;
 	MethaneReactionStep fp32SourceStep;fp32SourceStep.deltaTimeS=0.01;
-	fp32SourceStep.mixingTimeS=0.01;
+	fp32SourceStep.mixingTimeS=0.05;fp32SourceStep.primaryEligible=true;
+	fp32SourceStep.sootOxidationEnabled=true;
+	fp32SourceStep.maximumAcceptedTemperatureK=fuel.TemperatureMaxK();
 	MethaneSourcePacket fp32BuiltSource;
-	const bool fp32SourceBlockedUntilCertified=!BuildFrozenMethaneSourcePacket(fp32EnvelopeState,
+	const bool fp32SourceCertified=BuildFrozenMethaneSourcePacket(fp32EnvelopeState,
 		fp32SourceStep,300.0,0.0,fuel,thermochemistry,opacity,fp32BuiltSource,&error);
+	MethaneCellState fp32SourceResult;
+	const bool fp32SourceApplied=fp32SourceCertified&&
+		CertifiedBinary32SourcePacket(fp32BuiltSource,fuel)&&
+		ApplySourcePacket(fp32EnvelopeState,fp32BuiltSource,fuel,fp32SourceResult,&error)&&
+		fp32BuiltSource.reactedFuelKGPerM3>0.0&&
+		fp32SourceResult.constituent[MethaneCH4]<fp32EnvelopeState.constituent[MethaneCH4];
+	MethaneCellState fp32RejectedSourceState=eosFixture;
+	MethaneSourcePacket fp32LedgerMutant=fp32BuiltSource;
+	const float mutatedMethane=static_cast<float>(
+		fp32LedgerMutant.constituentDelta[MethaneCH4])+0.001f;
+	fp32LedgerMutant.constituentDelta[MethaneCH4]=mutatedMethane;
+	const bool fp32LedgerMutationRejects=!CertifiedBinary32SourcePacket(fp32LedgerMutant,fuel)&&
+		!CanonicalApplySourcePacket(fp32EnvelopeState,fp32LedgerMutant,fuel,
+			fp32RejectedSourceState,&error);
 	MethaneSourcePacket fp32CertifiedZeroSource;
 	MethaneCellState fp32ZeroSourceResult;
 	const bool fp32ZeroSourceTotal=CanonicalApplySourcePacket(fp32EnvelopeState,
@@ -653,7 +670,6 @@ int main()
 	MethaneSourcePacket fp32UncertifiedSource;
 	fp32UncertifiedSource.constituentDelta[MethaneCH4]=
 		std::numeric_limits<double>::denorm_min();
-	MethaneCellState fp32RejectedSourceState=eosFixture;
 	const bool fp32UncertifiedSourceRejects=!CanonicalApplySourcePacket(fp32EnvelopeState,
 		fp32UncertifiedSource,fuel,fp32RejectedSourceState,&error);
 	MethaneSourcePacket fp32NegativeZeroSource;
@@ -662,8 +678,8 @@ int main()
 		fp32NegativeZeroSource,fuel,fp32RejectedSourceState,&error);
 	std::vector<MethaneSourcePacket> fp32MixedSource;
 	RadiationEscapeFactor fp32MixedEscape;
-	const bool fp32MixedSourceBlockedUntilCertified=!BuildFrozenMethaneSourcePackets(
-		{eosFixture,fp32EnvelopeState},{fp32SourceStep,fp32SourceStep},{1.0,1.0},300.0,
+	const bool fp32MixedSourceProduced=BuildFrozenMethaneSourcePackets(
+		{fp32EnvelopeState,fp32EnvelopeState},{fp32SourceStep,fp32SourceStep},{1.0,1.0},300.0,
 		1.0,0.0,false,fuel,thermochemistry,opacity,fp32MixedSource,fp32MixedEscape,&error,1u);
 	MethaneCellState unsafeBinary64Source=fp32EnvelopeState;
 	unsafeBinary64Source.producerPrecision=FireStateProducerPrecision::Binary64;
@@ -671,11 +687,22 @@ int main()
 		{fp32EnvelopeState,unsafeBinary64Source},{fp32SourceStep,fp32SourceStep},{1.0,1.0},
 		300.0,1.0,0.0,false,fuel,thermochemistry,opacity,fp32MixedSource,
 		fp32MixedEscape,&error,1u);
+	if(!(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport&&
+		fp32ZeroSourceTotal&&fp32SourceApplied&&fp32LedgerMutationRejects&&
+		fp32UncertifiedSourceRejects&&fp32NegativeZeroSourceRejects&&
+		fp32MixedSourceProduced&&fp32MixedSourceRejectsWidening))std::fprintf(stderr,
+		"fp32 source diagnostic base=%d/%d/%d/%d/%d zero=%d source=%d ledger=%d "
+		"unrepresented=%d negzero=%d grid=%d mixed=%d error=%s\n",fp32FailsFp64,
+		fp32Admissible,fp32Inverts,fp32EOS,fp32Transport,fp32ZeroSourceTotal,
+		fp32SourceApplied,fp32LedgerMutationRejects,fp32UncertifiedSourceRejects,
+		fp32NegativeZeroSourceRejects,fp32MixedSourceProduced,
+		fp32MixedSourceRejectsWidening,error.c_str());
 	Check(fp32FailsFp64&&fp32Admissible&&fp32Inverts&&fp32EOS&&fp32Transport&&
-		fp32ZeroSourceTotal&&fp32SourceBlockedUntilCertified&&fp32UncertifiedSourceRejects&&
+		fp32ZeroSourceTotal&&fp32SourceApplied&&fp32LedgerMutationRejects&&
+		fp32UncertifiedSourceRejects&&
 		fp32NegativeZeroSourceRejects&&
-		fp32MixedSourceBlockedUntilCertified&&fp32MixedSourceRejectsWidening,
-		"fp32-envelope states keep physical consumers total and uncertified sources fail closed");
+		fp32MixedSourceProduced&&fp32MixedSourceRejectsWidening,
+		"fp32-envelope states keep physical consumers total and admit only certified sources");
 	ConservativeVector residentVolumeState=ToConservativeVector(eosFixture);
 	double residentVolumeRatio=0.0;
 	const bool residentVolumeAccepted=fuel.AcceptedConservativeVolumeRatioByComponentOrder(
