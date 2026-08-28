@@ -1,0 +1,1189 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           variety_gallery.RISEscene                                                               #
+#   Description:    THE HAIR / FUR VARIETY PLATE -- nine IDENTICAL milliner's blocks, each wearing a        #
+#                   different groom, under ONE unchanged light.  Where cottontail_dusk.RISEscene puts the   #
+#                   whole system on a single subject, this file does the opposite: it holds everything      #
+#                   constant EXCEPT the groom, so that every difference you see is `hair_geometry` and      #
+#                   `hair_material` and nothing else.  Same form, same key, same rim, same fill, same       #
+#                   camera, same exposure -- nine answers.                                                  #
+#                                                                                                           #
+#                   THE CONTROL.  `geo_bust` is one `lathe_geometry`: a turned wooden wig block, 0.31 m     #
+#                   tall, revolved from a twenty-point profile (base disc, shoulder swell, collar cut,      #
+#                   neck, domed skull).  It is deliberately rotationally symmetric and featureless -- a     #
+#                   milliner's block IS a surface of revolution, so the "identical forms" premise is        #
+#                   satisfied BY CONSTRUCTION rather than by care, and there is no face to distract from    #
+#                   the fibre.  Nine `standard_object`s share that single geometry; only the groom bound    #
+#                   alongside each one differs.                                                             #
+#                                                                                                           #
+#                   THE NINE, left to right by row, front row nearest:                                      #
+#                                                                                                           #
+#                     front   S1 golden blond bob      S2 jet black straight    S3 copper ringlets          #
+#                     middle  S4 afro-textured coils   S5 silver-grey (Tier 2)  S6 fox two-layer coat       #
+#                     back    S7 angora undercoat      S8 coarse boar bristle   S9 sheep fleece (Tier 3)    #
+#                                                                                                           #
+#                   They are ordered for ADJACENCY CONTRAST, not for taxonomy: blond sits beside jet        #
+#                   black so the multiple-scattering glow of low melanin reads against the near-total       #
+#                   absorption of high melanin; the coils sit beside the silver; the fleece sits beside     #
+#                   the bristle, soft mass against wire.                                                     #
+#                                                                                                           #
+#                   ALL THREE COLOUR TIERS ARE ON THE PLATE.  `hair_material` accepts exactly one of        #
+#                   three ways to say what a fibre is made of, and this scene uses all three so they can    #
+#                   be compared under one light:  Tier 1 (`eumelanin` / `pheomelanin`, the physically       #
+#                   based default) on seven specimens -- the whole human range from 0.28 eumelanin at S1    #
+#                   to 5.5 at S4 comes out of that one pair of numbers;  Tier 2 (`sigma_a`, direct          #
+#                   per-channel absorption) on S5, which is how you ask for a genuinely ACHROMATIC fibre    #
+#                   -- 0.150 / 0.156 / 0.175 is flat grey in a way no melanin pair can be, since both       #
+#                   pigments are coloured;  Tier 3 (`color`, artist reflectance, inverted per Chiang's      #
+#                   sigma_a = (ln C / D(beta_n))^2) on S9, the fleece, where "pale cream wool" is a         #
+#                   swatch and not a chemistry.                                                             #
+#                                                                                                           #
+#                   MEDULLA IS THE HAIR / FUR AXIS.  `medulla_ratio` 0 (S1, S2, S3 -- human hair) gives     #
+#                   the plain Chiang model, thin and shiny.  Turning it up splits TT and TRT into           #
+#                   unscattered and medulla-scattered halves (Yan et al. 2017), which is what makes a       #
+#                   coat read as soft and saturated instead: S6's undercoat at 0.80, S9's fleece at 0.72,   #
+#                   and S7's angora at 0.90 -- the highest on the plate, and the specimen that reads as     #
+#                   velvet rather than as strands.                                                          #
+#                                                                                                           #
+#                   TWO COVERAGE FIELDS, SHARED BY ALL NINE.  `pnt_scalp` is a hairline: a smoothstep on    #
+#                   `Po.y + 0.55 * (-Po.z)`, so hair stops on the front of the skull and runs down to the   #
+#                   nape at the back.  `pnt_pelt` is the animal answer -- everything above the base disc.   #
+#                   The five HAIR specimens take the hairline, the four FUR specimens take the pelt, and    #
+#                   that single choice is most of why the two families read as different KINDS of thing     #
+#                   and not just different colours.  Both are `scalar_painter { expression ... }` over      #
+#                   the base's own object space: a groom's `density` and `length_painter` are evaluated     #
+#                   at each candidate ROOT during `HairGeometry::Realize()`, which runs once per            #
+#                   GEOMETRY and knows nothing of any `standard_object` transform -- so `Po` is the base    #
+#                   geometry's local position, and one painter is correct for all nine placements at all    #
+#                   three tier heights.                                                                     #
+#                                                                                                           #
+#                   HONEST LIMITATION, MEASURED HERE: `gravity` IS THE ONLY FLOW LEVER ON A SURFACE OF      #
+#                   REVOLUTION.  `comb` is a tangent-space field in the frame {dP/du, bitangent, normal},   #
+#                   and on a lathe (UV = angle, arc length along the profile) -- as on the cylindrical      #
+#                   wrap of an `sdf_geometry` -- dP/du is AZIMUTHAL.  A constant comb painter therefore     #
+#                   sweeps hair AROUND the form, which renders as a lateral flare and a part, not as a      #
+#                   sweep down the head.  This was A/B'd on both base kinds during look-dev: comb up,       #
+#                   comb down and no comb all flare; only `gravity` (world -Y, frame-independent) drapes.   #
+#                   `hair_guides` would not help either -- a guide is replayed in the SAME surface frame,   #
+#                   so it can only say what comb can say, more precisely.  Every draped specimen here       #
+#                   gets its fall from `gravity` alone, and S1's asymmetric sweep is comb used FOR what     #
+#                   it actually does (`0.80 0.5 0.5`, an azimuthal push that reads as a side part).         #
+#                                                                                                           #
+#                   THE RIG, and why it is three lights and not one.  A single instrument cannot show a     #
+#                   fibre BCSDF: the R lobe wants a source in front, the TT lobe wants one behind, and      #
+#                   the multiple-scattering glow of a pale groom only separates from a dark one when the    #
+#                   shadow side is open enough to have colour in it.  `key` is a warm 1.7 m panel high on   #
+#                   the left (form and the anisotropic sheen band).  `rim` is a 4.2 m wide panel behind     #
+#                   and above the whole array, out of frame, aimed forward and down -- that is the TT       #
+#                   halo, and it is what makes S8's quills legible and S2's black hair glow red at its      #
+#                   edge instead of dying into the backdrop.  `fill` is a dim cool panel on the right so    #
+#                   the unlit halves stay chromatic.  The room is deliberately near-black (floor 0.007,     #
+#                   backdrop 0.010, blocks 0.013): the specimens are the only bright things in the frame.   #
+#                                                                                                           #
+#                   STAGING.  Three tiers at y = 0.00 / 0.46 / 0.92 on `lathe_geometry` stems, each row     #
+#                   0.78 m further back and STAGGERED half a column sideways so the stems never line up     #
+#                   into vertical totem poles.  The camera is a 245 mm lens 13 m away -- near enough to     #
+#                   orthographic that the back row is only ~12 % smaller than the front, which is what      #
+#                   lets a three-deep arrangement read as a plate of nine equal specimens rather than as    #
+#                   a receding crowd.  f/11 keeps all three tiers inside the depth of field.                #
+#                                                                                                           #
+#                   RENDER SETTINGS.  `oidn_denoise FALSE`, for the reason measured in                      #
+#                   docs/HAIR_FUR_DESIGN.md section 6.5: the denoiser removes real strand structure from    #
+#                   a groom and the deficit does not close with sample count.  Samples carry the            #
+#                   convergence instead.  A groom at these fibre widths (0.09-0.24 mm) is sub-pixel at      #
+#                   this framing, so what converges is the MASS -- below ~64 spp every specimen reads as    #
+#                   glitter rather than as hair, and the difference between 64 and 256 is the difference    #
+#                   between a texture and a material.                                                       #
+#                                                                                                           #
+#                   COST.  ~1.98 M strands across the nine grooms (S4 the heaviest at 300 k, S8 the         #
+#                   lightest at 14 k -- a bristle brush is SPARSE, and that is the point of it).            #
+#                   1400x1050 at 96 spp is 5 min 40 s on a 14-core Apple Silicon laptop; the committed      #
+#                   256 spp is ~15 min.  Drop to 48 spp for look-dev: composition, groom silhouettes and    #
+#                   the colour ordering all read there.                                                     #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-28                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+film
+{
+	width			1400
+	height			1050
+}
+
+thinlens_camera
+{
+	location		0.00 0.615 13.00
+	lookat			0.00 0.615 -0.78
+	up			0 1 0
+	sensor_size		36.0
+	focal_length		245.0
+	fstop			11.0
+	focus_distance		13.78
+	aperture_blades		9
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			256
+	rr_min_depth		6
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/variety_gallery
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# LIGHT.  Three panels, unchanged for all nine.
+#
+# `key`   -- warm, high left, in front: form + the R-lobe sheen band.
+# `rim`   -- a 4.2 m panel behind and above the whole array, aimed
+#            forward and down and well out of frame.  This is the TT
+#            lobe's instrument: light that entered one side of a fibre,
+#            crossed its interior and left the other side.  It is the
+#            single most expensive thing a hair BCSDF buys, and every
+#            specimen on the plate is posed to show it.
+# `fill`  -- dim and cool, right: keeps the shadow halves chromatic so
+#            a pale groom's multiple-scattering glow can be told apart
+#            from a dark groom's absorption.
+#
+# Exitances are balanced so the BRIGHTEST specimen (S5 / S7) sits just
+# under clipping; everything else is measured against that.
+##################################################
+rect_light
+{
+	name			key
+	center			-1.55 1.85 1.55
+	size			1.70 1.70
+	facing			0.50 -0.40 -0.77
+	color			1.00 0.88 0.72
+	exitance		210.0
+}
+
+rect_light
+{
+	name			rim
+	center			0.00 2.55 -2.90
+	size			4.20 1.10
+	facing			0.00 -0.56 0.83
+	color			1.00 0.95 0.90
+	exitance		215.0
+}
+
+rect_light
+{
+	name			fill
+	center			2.20 0.95 1.85
+	size			2.20 1.70
+	facing			-0.62 -0.10 -0.76
+	color			0.66 0.74 1.00
+	exitance		24.0
+}
+
+##################################################
+# ROOM.  Near-black, on purpose.  The specimens are the story, so the
+# floor is 0.007, the backdrop 0.010 and the blocks 0.013 -- all of
+# them an order of magnitude below the grooms they carry.
+##################################################
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.007 0.008 0.010
+}
+
+orennayar_material
+{
+	name			mat_floor
+	reflectance		pnt_floor
+	roughness		0.85
+}
+
+infiniteplane_geometry
+{
+	name			geo_floor
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_floor
+	geometry		geo_floor
+	material		mat_floor
+	position		0 0 0
+	orientation		-90 0 0
+}
+
+uniformcolor_painter
+{
+	name			pnt_wall
+	color			0.010 0.011 0.014
+}
+
+orennayar_material
+{
+	name			mat_wall
+	reflectance		pnt_wall
+	roughness		0.90
+}
+
+infiniteplane_geometry
+{
+	name			geo_wall
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_wall
+	geometry		geo_wall
+	material		mat_wall
+	position		0 0 -4.20
+}
+
+##################################################
+# THE FORM -- one turned milliner's block, used nine times.
+#
+# `lathe_geometry` is the right chunk for this because a wig block IS a
+# silhouette spun about an axis, and because rotational symmetry makes
+# "all nine forms are identical" true by construction rather than by
+# care.  Twenty profile points: base disc, bevel, shoulder swell, the
+# collar cut, a slim neck, and a domed skull that peaks at r = 0.073
+# and closes to a pole at h = 0.310.  `smooth TRUE` averages each
+# profile point's two adjacent segment normals, so the turned surface
+# shades as a turned surface and not as a stack of cones.
+#
+# The two stems are the same chunk again, at the two riser heights.
+##################################################
+uniformcolor_painter
+{
+	name			pnt_stone
+	color			0.0128 0.0133 0.0150
+}
+
+orennayar_material
+{
+	name			mat_stone
+	reflectance		pnt_stone
+	roughness		0.70
+}
+
+uniformcolor_painter
+{
+	name			pnt_column
+	color			0.006 0.006 0.007
+}
+
+orennayar_material
+{
+	name			mat_column
+	reflectance		pnt_column
+	roughness		0.80
+}
+
+lathe_geometry
+{
+	name			geo_bust
+	axis			y
+	n_radial		96
+	smooth			TRUE
+	profile_point		0.000 0.000
+	profile_point		0.098 0.000
+	profile_point		0.098 0.014
+	profile_point		0.086 0.026
+	profile_point		0.084 0.050
+	profile_point		0.096 0.082
+	profile_point		0.108 0.104
+	profile_point		0.100 0.122
+	profile_point		0.070 0.138
+	profile_point		0.036 0.152
+	profile_point		0.030 0.168
+	profile_point		0.032 0.186
+	profile_point		0.046 0.198
+	profile_point		0.062 0.212
+	profile_point		0.072 0.234
+	profile_point		0.073 0.252
+	profile_point		0.066 0.272
+	profile_point		0.050 0.290
+	profile_point		0.028 0.302
+	profile_point		0.000 0.310
+}
+
+lathe_geometry
+{
+	name			geo_col_b
+	axis			y
+	n_radial		48
+	smooth			TRUE
+	profile_point		0.000 0.000
+	profile_point		0.076 0.000
+	profile_point		0.076 0.018
+	profile_point		0.028 0.036
+	profile_point		0.022 0.434
+	profile_point		0.058 0.446
+	profile_point		0.058 0.460
+	profile_point		0.000 0.460
+}
+
+lathe_geometry
+{
+	name			geo_col_c
+	axis			y
+	n_radial		48
+	smooth			TRUE
+	profile_point		0.000 0.000
+	profile_point		0.080 0.000
+	profile_point		0.080 0.020
+	profile_point		0.028 0.038
+	profile_point		0.022 0.894
+	profile_point		0.058 0.906
+	profile_point		0.058 0.920
+	profile_point		0.000 0.920
+}
+
+##################################################
+# SHARED GROOM FIELDS -- the same four painters for all nine specimens.
+#
+# `pnt_scalp` is a HAIRLINE.  The smoothstep runs on `Po.y + 0.55 *
+# (-Po.z)`, a plane tilted back over the skull, so growth stops across
+# the front of the head and carries on down to the nape behind.  The
+# five HAIR specimens use it.
+#
+# `pnt_pelt` is the animal answer: everything above the base disc, so
+# the coat covers the whole block the way a pelt covers a whole animal.
+# The four FUR specimens use it.  That one binding is most of why the
+# two families read as different KINDS of thing rather than as
+# recolourings of each other.
+#
+# `Po` here is the BASE GEOMETRY'S OWN object space.  A groom is
+# realized once per `hair_geometry`, from the base's tessellation, with
+# no `standard_object` transform in scope -- so one painter is correct
+# for every placement at every tier height, and moving a specimen never
+# moves its hairline.
+#
+# `pnt_part` is a comb field, and it is the honest use of one on a
+# surface of revolution: `0.80 0.5 0.5` is d = (0.6, 0, 0) along the
+# AZIMUTHAL tangent, which reads as a side part and a sweep around the
+# head.  It cannot sweep hair DOWN the head -- see the header's
+# limitation note.  Only S1 uses it.
+##################################################
+scalar_painter
+{
+	name			pnt_scalp
+	def			hl smoothstep(0.168, 0.215, Po.y + 0.55 * (0.0 - Po.z))
+	def			n  0.5 + 0.5 * fbm(Po * 62.0, 3.0, 0.5, 2.0)
+	expression		hl * clamp(0.74 + 0.36 * n, 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name			pnt_pelt
+	def			top smoothstep(0.048, 0.086, Po.y)
+	def			n   0.5 + 0.5 * fbm(Po * 55.0, 3.0, 0.5, 2.0)
+	expression		top * clamp(0.76 + 0.34 * n, 0.0, 1.0)
+}
+
+uniformcolor_painter
+{
+	name			pnt_part
+	color			0.80 0.5 0.5
+}
+
+scalar_painter
+{
+	name			pnt_lenbob
+	def			n 0.5 + 0.5 * fbm(Po * 55.0, 3.0, 0.5, 2.0)
+	expression		0.93 + 0.14 * clamp(n, 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name			pnt_lenjit
+	def			n 0.5 + 0.5 * fbm(Po * 40.0, 3.0, 0.5, 2.0)
+	expression		0.78 + 0.42 * clamp(n, 0.0, 1.0)
+}
+
+##################################################
+# S1 -- GOLDEN BLOND BOB.  The multiple-scattering specimen.
+#
+# Eumelanin 0.28 with pheomelanin 0.42 is the low-absorption end of the
+# human range, and it is the one groom on the plate where light entering
+# the mass genuinely bounces fibre-to-fibre before it leaves.  Put it
+# next to S2 (eumelanin 4.5) under the same rim and the difference is
+# not a hue shift, it is a change of KIND: the blond glows from within
+# its own volume, the black returns only its surface lobes.
+#
+# `comb pnt_part` is the plate's one comb, used for what a comb can
+# actually do on a lathe -- an azimuthal push that reads as a side part.
+##################################################
+scalar_painter
+{
+	name			eu_s1
+	value			0.28
+}
+
+scalar_painter
+{
+	name			ph_s1
+	value			0.42
+}
+
+hair_material
+{
+	name			mat_s1
+	eumelanin		eu_s1
+	pheomelanin		ph_s1
+	beta_m			0.28
+	beta_n			0.34
+	alpha			3.0
+	ior			1.55
+}
+
+hair_geometry
+{
+	name			groom_s1
+	base_geometry		geo_bust
+	count			240000
+	segments		12
+	length			0.100
+	width_root		0.00009
+	width_tip		0.00004
+	base_detail		144
+	seed			11
+	density			pnt_scalp
+	comb			pnt_part
+	length_painter		pnt_lenbob
+	gravity			0.95
+	frizz			0.07
+	clump			0.22
+	clump_size		0.012
+	curl_radius		0.006
+	curl_step		0.100
+}
+
+##################################################
+# S2 -- JET BLACK STRAIGHT.  The sheen specimen.
+#
+# High eumelanin, no medulla, and the LOWEST roughness pair on the
+# plate (beta_m 0.14 / beta_n 0.13) -- a narrow, hard, anisotropic R
+# lobe, which is what "glossy black hair" means physically.  `alpha`
+# 3.2 tilts the cuticle scales a little further than the human default
+# so the sheen band sits clearly off the specular direction.  Longest
+# groom here (0.175 m) with `gravity` at its ceiling of 1.00, so it
+# falls as a curtain over the shoulders instead of ballooning.
+##################################################
+scalar_painter
+{
+	name			eu_s2
+	value			4.50
+}
+
+scalar_painter
+{
+	name			ph_s2
+	value			0.15
+}
+
+hair_material
+{
+	name			mat_s2
+	eumelanin		eu_s2
+	pheomelanin		ph_s2
+	beta_m			0.140
+	beta_n			0.130
+	alpha			3.2
+	ior			1.55
+}
+
+hair_geometry
+{
+	name			groom_s2
+	base_geometry		geo_bust
+	count			260000
+	segments		12
+	length			0.175
+	width_root		0.00012
+	width_tip		0.00007
+	base_detail		144
+	seed			23
+	density			pnt_scalp
+	length_painter		pnt_lenbob
+	gravity			1.00
+	frizz			0.03
+	clump			0.45
+	clump_size		0.014
+}
+
+##################################################
+# S3 -- COPPER RINGLETS.  The pheomelanin specimen.
+#
+# Pheomelanin 4.60 against eumelanin 0.95: red hair is not brown hair
+# with a red tint, it is a different pigment dominating, and the tier-1
+# parameterisation says so directly.  `curl_radius` 0.0125 with
+# `curl_step` 0.030 -- a helix whose pitch is a quarter of its own
+# length -- is a ringlet; raise the step toward the strand length (see
+# S5) and the same two numbers give a lazy wave instead.  18 control
+# points, because a tight helix on 8 is a polygon.
+##################################################
+scalar_painter
+{
+	name			eu_s3
+	value			0.95
+}
+
+scalar_painter
+{
+	name			ph_s3
+	value			4.60
+}
+
+hair_material
+{
+	name			mat_s3
+	eumelanin		eu_s3
+	pheomelanin		ph_s3
+	beta_m			0.30
+	beta_n			0.32
+	alpha			3.0
+	ior			1.55
+}
+
+hair_geometry
+{
+	name			groom_s3
+	base_geometry		geo_bust
+	count			220000
+	segments		18
+	length			0.115
+	width_root		0.00010
+	width_tip		0.00005
+	base_detail		144
+	seed			37
+	density			pnt_scalp
+	length_painter		pnt_lenjit
+	gravity			0.72
+	frizz			0.10
+	clump			0.35
+	clump_size		0.014
+	curl_radius		0.0125
+	curl_step		0.030
+}
+
+##################################################
+# S4 -- AFRO-TEXTURED COILS.  The volume specimen.
+#
+# The shape here comes from what is NOT set: `gravity` 0.06 means the
+# coat keeps growing along the normal instead of falling, so the mass
+# stays round and stands away from the block.  Tight coils
+# (`curl_radius` 0.0045 / `curl_step` 0.011, a helix that turns four
+# times in a centimetre) plus heavy `frizz` 0.55 give the interior its
+# texture, and the largest strand budget on the plate (300 k) is what
+# keeps a mass that big from going transparent.  A small medulla (0.25)
+# lifts it just off pure absorption.
+##################################################
+scalar_painter
+{
+	name			eu_s4
+	value			5.50
+}
+
+scalar_painter
+{
+	name			ph_s4
+	value			0.10
+}
+
+hair_material
+{
+	name			mat_s4
+	eumelanin		eu_s4
+	pheomelanin		ph_s4
+	beta_m			0.34
+	beta_n			0.42
+	alpha			2.5
+	ior			1.55
+	medulla_ratio		0.25
+	medulla_scatter		1.0
+	medulla_g		0.35
+}
+
+hair_geometry
+{
+	name			groom_s4
+	base_geometry		geo_bust
+	count			300000
+	segments		16
+	length			0.115
+	width_root		0.00011
+	width_tip		0.00006
+	base_detail		144
+	seed			53
+	density			pnt_scalp
+	length_painter		pnt_lenjit
+	gravity			0.06
+	frizz			0.55
+	clump			0.40
+	clump_size		0.010
+	curl_radius		0.0045
+	curl_step		0.011
+}
+
+##################################################
+# S5 -- SILVER-GREY WAVES.  The Tier-2 specimen, and the achromatic one.
+#
+# `sigma_a` binds absorption per RGB channel DIRECTLY, with no melanin
+# model in between -- which is the only way to ask for a genuinely
+# neutral fibre, since eumelanin and pheomelanin are both coloured
+# pigments and no mixture of them is flat grey.  0.150 / 0.156 / 0.175
+# is a hair's breadth cool, which is what un-pigmented keratin actually
+# looks like next to a warm key.
+#
+# Same `curl_*` mechanism as S3 with the pitch raised to 0.050 against
+# a 0.150 m strand: one third of a turn over the whole length, i.e. a
+# wave rather than a curl.
+##################################################
+scalar_painter
+{
+	name			sig_s5
+	values			0.150 0.156 0.175
+}
+
+hair_material
+{
+	name			mat_s5
+	sigma_a			sig_s5
+	beta_m			0.30
+	beta_n			0.30
+	alpha			2.8
+	ior			1.55
+	medulla_ratio		0.10
+	medulla_scatter		0.8
+	medulla_g		0.30
+}
+
+hair_geometry
+{
+	name			groom_s5
+	base_geometry		geo_bust
+	count			210000
+	segments		14
+	length			0.150
+	width_root		0.00010
+	width_tip		0.00005
+	base_detail		144
+	seed			71
+	density			pnt_scalp
+	length_painter		pnt_lenjit
+	gravity			0.95
+	frizz			0.05
+	clump			0.25
+	clump_size		0.017
+	curl_radius		0.014
+	curl_step		0.050
+}
+
+##################################################
+# S6 -- FOX-STYLE TWO-LAYER GUARD COAT.  The structure specimen.
+#
+# TWO grooms on one block, and the only specimen here that needs two.
+# `groom_s6u` is 150 k short (0.028 m), fine, heavily medullated fibres
+# (kappa 0.80) in warm ginger -- the soft, saturated, light-diffusing
+# bulk.  `groom_s6g` is 72 k longer (0.066 m), coarser, DARKER fibres
+# (eumelanin 2.30 against the undercoat's 0.30) with a thinner medulla
+# and a sharper roughness -- the guard hairs that break the silhouette
+# and give the coat its dark tipping.
+#
+# NOTE (corrected after authoring): an along-strand parameter DOES
+# exist -- `ri.ptCoord.x` carries the root-to-tip arc-length fraction at
+# the shading point, and ordinary painters can read it (the gap was
+# discoverability, not capability; see HAIR_FUR_DESIGN.md).  A per-fibre
+# agouti band is therefore expressible directly.  The two-groom
+# two-melanin structural substitution used here still earns its keep --
+# it separates guard silhouette from undercoat mass, which a band on
+# one groom cannot -- and remains the part worth copying.
+##################################################
+scalar_painter
+{
+	name			eu_s6u
+	value			0.30
+}
+
+scalar_painter
+{
+	name			ph_s6u
+	value			1.55
+}
+
+hair_material
+{
+	name			mat_s6u
+	eumelanin		eu_s6u
+	pheomelanin		ph_s6u
+	beta_m			0.45
+	beta_n			0.55
+	alpha			2.2
+	ior			1.55
+	medulla_ratio		0.80
+	medulla_scatter		2.4
+	medulla_g		0.50
+}
+
+scalar_painter
+{
+	name			eu_s6g
+	value			2.30
+}
+
+scalar_painter
+{
+	name			ph_s6g
+	value			0.85
+}
+
+hair_material
+{
+	name			mat_s6g
+	eumelanin		eu_s6g
+	pheomelanin		ph_s6g
+	beta_m			0.26
+	beta_n			0.32
+	alpha			2.8
+	ior			1.55
+	medulla_ratio		0.50
+	medulla_scatter		1.6
+	medulla_g		0.35
+}
+
+hair_geometry
+{
+	name			groom_s6u
+	base_geometry		geo_bust
+	count			150000
+	segments		6
+	length			0.028
+	width_root		0.00010
+	width_tip		0.00004
+	base_detail		144
+	seed			89
+	density			pnt_pelt
+	length_painter		pnt_lenjit
+	gravity			0.30
+	frizz			0.30
+	clump			0.35
+	clump_size		0.006
+}
+
+hair_geometry
+{
+	name			groom_s6g
+	base_geometry		geo_bust
+	count			72000
+	segments		8
+	length			0.066
+	width_root		0.00019
+	width_tip		0.00007
+	base_detail		144
+	seed			97
+	density			pnt_pelt
+	length_painter		pnt_lenjit
+	gravity			0.45
+	frizz			0.22
+	clump			0.30
+	clump_size		0.010
+}
+
+##################################################
+# S7 -- ANGORA UNDERCOAT.  The diffuse-fur end of the axis.
+#
+# `medulla_ratio` 0.90 is the highest on the plate, near the 0.95 clamp,
+# with `medulla_scatter` 2.8: almost the whole fibre is scattering core
+# rather than absorbing cortex.  Combined with the highest roughness
+# pair here (0.55 / 0.65) and the finest fibres (0.09 mm root), the
+# result reads as VELVET rather than as strands -- which is the correct
+# answer for rabbit undercoat and the clearest demonstration on the
+# plate of what the Yan et al. 2017 medulla lobes actually buy.
+##################################################
+scalar_painter
+{
+	name			eu_s7
+	value			0.060
+}
+
+scalar_painter
+{
+	name			ph_s7
+	value			0.200
+}
+
+hair_material
+{
+	name			mat_s7
+	eumelanin		eu_s7
+	pheomelanin		ph_s7
+	beta_m			0.55
+	beta_n			0.65
+	alpha			2.0
+	ior			1.55
+	medulla_ratio		0.90
+	medulla_scatter		2.8
+	medulla_g		0.55
+}
+
+hair_geometry
+{
+	name			groom_s7
+	base_geometry		geo_bust
+	count			220000
+	segments		5
+	length			0.032
+	width_root		0.00009
+	width_tip		0.00004
+	base_detail		144
+	seed			103
+	density			pnt_pelt
+	length_painter		pnt_lenjit
+	gravity			0.28
+	frizz			0.35
+	clump			0.30
+	clump_size		0.007
+}
+
+##################################################
+# S8 -- COARSE BOAR BRISTLE.  The wiry end, and the sparse one.
+#
+# 14 000 strands -- fifteen times fewer than S7 -- at 1.4 mm root width,
+# fifteen times thicker.  A bristle brush is SPARSE and that is what
+# makes it a bristle brush; the temptation to raise the count is the
+# thing to resist.  `gravity` 0.03 and `frizz` 0.05 keep each quill
+# straight and radial, so the rim light rakes along individual fibres
+# and they resolve as separate lines at this framing where every other
+# specimen resolves only as a mass.
+##################################################
+scalar_painter
+{
+	name			eu_s8
+	value			3.20
+}
+
+scalar_painter
+{
+	name			ph_s8
+	value			0.35
+}
+
+hair_material
+{
+	name			mat_s8
+	eumelanin		eu_s8
+	pheomelanin		ph_s8
+	beta_m			0.20
+	beta_n			0.22
+	alpha			2.0
+	ior			1.55
+	medulla_ratio		0.25
+	medulla_scatter		0.8
+	medulla_g		0.30
+}
+
+hair_geometry
+{
+	name			groom_s8
+	base_geometry		geo_bust
+	count			14000
+	segments		4
+	length			0.115
+	width_root		0.00140
+	width_tip		0.00050
+	base_detail		144
+	seed			109
+	density			pnt_pelt
+	length_painter		pnt_lenjit
+	gravity			0.03
+	frizz			0.05
+}
+
+##################################################
+# S9 -- SHEEP FLEECE.  The Tier-3 specimen, and the clumped one.
+#
+# `color` takes an artist reflectance swatch and inverts it to an
+# absorption per Chiang's sigma_a = (ln C / D(beta_n))^2 -- the right
+# tier when the answer is "this cream" and not "this chemistry".
+#
+# The crimped mass is `clump` 0.66 at `clump_size` 0.024 (roots
+# quantised onto a 24 mm grid, each cell's first strand becoming its
+# centre) over heavy `frizz` 0.70 and a short tight curl.  Clumping is
+# what turns an even coat into locks; an earlier pass at `clump_size`
+# 0.011 made the cell grid itself visible as corduroy, so the cell has
+# to be large relative to the fibre spacing or the Phase-1 grid
+# quantisation shows through.
+##################################################
+uniformcolor_painter
+{
+	name			col_s9
+	color			0.720 0.655 0.510
+}
+
+hair_material
+{
+	name			mat_s9
+	color			col_s9
+	beta_m			0.60
+	beta_n			0.70
+	alpha			2.0
+	ior			1.55
+	medulla_ratio		0.72
+	medulla_scatter		2.0
+	medulla_g		0.45
+}
+
+hair_geometry
+{
+	name			groom_s9
+	base_geometry		geo_bust
+	count			190000
+	segments		12
+	length			0.062
+	width_root		0.00024
+	width_tip		0.00013
+	base_detail		144
+	seed			127
+	density			pnt_pelt
+	length_painter		pnt_lenjit
+	gravity			0.24
+	frizz			0.70
+	clump			0.66
+	clump_size		0.024
+	curl_radius		0.0075
+	curl_step		0.014
+}
+
+##################################################
+# PLACEMENT -- three tiers, staggered.
+#
+# Rows at y = 0.00 / 0.46 / 0.92 and z = 0.00 / -0.78 / -1.56, with the
+# columns offset half a cell per row so no stem ever sits directly
+# above another (aligned stems read as three totem poles; this was the
+# first composition and it was worse).  The rises are tuned against the
+# 245 mm lens so that each row's bases clear the row in front by a
+# visible gap in SCREEN space, which is what a stepped museum riser
+# does and what makes nine specimens legible in one frame.
+##################################################
+standard_object
+{
+	name			obj_bust_1
+	geometry		geo_bust
+	material		mat_stone
+	position		-0.52 0.000 0.00
+}
+
+standard_object
+{
+	name			obj_hair_1
+	geometry		groom_s1
+	material		mat_s1
+	position		-0.52 0.000 0.00
+}
+
+standard_object
+{
+	name			obj_bust_2
+	geometry		geo_bust
+	material		mat_stone
+	position		0.00 0.000 0.00
+}
+
+standard_object
+{
+	name			obj_hair_2
+	geometry		groom_s2
+	material		mat_s2
+	position		0.00 0.000 0.00
+}
+
+standard_object
+{
+	name			obj_bust_3
+	geometry		geo_bust
+	material		mat_stone
+	position		0.52 0.000 0.00
+}
+
+standard_object
+{
+	name			obj_hair_3
+	geometry		groom_s3
+	material		mat_s3
+	position		0.52 0.000 0.00
+}
+
+standard_object
+{
+	name			obj_col_4
+	geometry		geo_col_b
+	material		mat_column
+	position		-0.35 0.000 -0.78
+}
+
+standard_object
+{
+	name			obj_bust_4
+	geometry		geo_bust
+	material		mat_stone
+	position		-0.35 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_hair_4
+	geometry		groom_s4
+	material		mat_s4
+	position		-0.35 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_col_5
+	geometry		geo_col_b
+	material		mat_column
+	position		0.17 0.000 -0.78
+}
+
+standard_object
+{
+	name			obj_bust_5
+	geometry		geo_bust
+	material		mat_stone
+	position		0.17 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_hair_5
+	geometry		groom_s5
+	material		mat_s5
+	position		0.17 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_col_6
+	geometry		geo_col_b
+	material		mat_column
+	position		0.69 0.000 -0.78
+}
+
+standard_object
+{
+	name			obj_bust_6
+	geometry		geo_bust
+	material		mat_stone
+	position		0.69 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_hair_6u
+	geometry		groom_s6u
+	material		mat_s6u
+	position		0.69 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_hair_6g
+	geometry		groom_s6g
+	material		mat_s6g
+	position		0.69 0.460 -0.78
+}
+
+standard_object
+{
+	name			obj_col_7
+	geometry		geo_col_c
+	material		mat_column
+	position		-0.69 0.000 -1.56
+}
+
+standard_object
+{
+	name			obj_bust_7
+	geometry		geo_bust
+	material		mat_stone
+	position		-0.69 0.920 -1.56
+}
+
+standard_object
+{
+	name			obj_hair_7
+	geometry		groom_s7
+	material		mat_s7
+	position		-0.69 0.920 -1.56
+}
+
+standard_object
+{
+	name			obj_col_8
+	geometry		geo_col_c
+	material		mat_column
+	position		-0.17 0.000 -1.56
+}
+
+standard_object
+{
+	name			obj_bust_8
+	geometry		geo_bust
+	material		mat_stone
+	position		-0.17 0.920 -1.56
+}
+
+standard_object
+{
+	name			obj_hair_8
+	geometry		groom_s8
+	material		mat_s8
+	position		-0.17 0.920 -1.56
+}
+
+standard_object
+{
+	name			obj_col_9
+	geometry		geo_col_c
+	material		mat_column
+	position		0.35 0.000 -1.56
+}
+
+standard_object
+{
+	name			obj_bust_9
+	geometry		geo_bust
+	material		mat_stone
+	position		0.35 0.920 -1.56
+}
+
+standard_object
+{
+	name			obj_hair_9
+	geometry		groom_s9
+	material		mat_s9
+	position		0.35 0.920 -1.56
+}

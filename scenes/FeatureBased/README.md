@@ -25,7 +25,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GlobalIllumination/`: heavyweight GI stress scenes
 - `GuillocheWatch/`: thin-film guilloché watch showcase and authored variants
-- `Hair/`: the hair/fur hero.
+- `Hair/`: the hair/fur showcases -- one hero, one variety plate, one macro.
 
   `cottontail_dusk.RISEscene` is a rabbit crouched in dry late-summer grass, shot into a
   low Hosek-Wilkie sun placed almost directly behind it so the whole coat is rimmed by the
@@ -51,6 +51,42 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   default -- [../../docs/HAIR_FUR_DESIGN.md](../../docs/HAIR_FUR_DESIGN.md) section 6.5
   found OIDN removes real strand structure on a groom and the deficit does not close with
   sample count -- so samples carry the convergence instead.
+
+  `variety_gallery.RISEscene` is the breadth plate: NINE identical turned milliner's blocks
+  (one `lathe_geometry`, instanced nine times -- rotational symmetry makes "identical forms"
+  true by construction) on three staggered risers under one unchanged three-panel rig, each
+  wearing a different groom, so every visible difference is `hair_geometry` and
+  `hair_material` and nothing else. Jet-black straight, golden blond, copper ringlets,
+  afro-textured coils, silver-grey, a two-layer fox guard coat, angora undercoat, coarse
+  boar bristle and crimped sheep fleece -- ordered for adjacency contrast, so the
+  multiple-scattering glow of eumelanin 0.28 sits directly beside the near-total absorption
+  of 4.5. All THREE of `hair_material`'s colour tiers are on the plate under the same light:
+  Tier 1 melanin on seven specimens, Tier 2 `sigma_a` on the silver (the only way to ask for
+  a genuinely achromatic fibre, since both pigments are coloured), and Tier 3 artist `color`
+  on the fleece. `medulla_ratio` is the hair-vs-fur axis: 0 on the three human grooms, 0.90
+  on the angora, which is why that one reads as velvet rather than as strands. Two shared
+  `scalar_painter { expression ... }` coverage fields -- a hairline for the five hair
+  specimens, a whole-block pelt for the four fur ones -- do most of the work of separating
+  the two families, and both are correct for all nine placements because a groom's root
+  painters see the BASE geometry's object space, not the `standard_object` transform.
+  It also records a measured limitation in its header: on a surface of revolution (and on an
+  `sdf_geometry`'s cylindrical wrap) `comb`'s tangent frame is AZIMUTHAL, so a comb field
+  flares and parts hair but cannot sweep it down the form -- `gravity` is the only drape
+  lever, and `hair_guides` would not help because a guide is replayed in the same frame.
+
+  `dandelion_clock.RISEscene` is the macro: a seed head into a low sun with two seeds
+  already adrift. It is the one scene in the folder framed tightly enough that INDIVIDUAL
+  FIBRES RESOLVE -- 100 mm at 0.42 m puts the frame at ~0.10 mm per pixel, so an 0.08 mm
+  pappus filament finally lands on the sensor as a line rather than as part of a converged
+  mass. The head is two grooms: 900 tan medullated spokes on the rendered receptacle, and
+  22 000 near-white filaments grown on an invisible 17 mm shell sphere that is never bound
+  to a `standard_object`, which is what puts the parachutes in a band around the head
+  instead of packing them into the middle. It is also the folder's counter-example on strand
+  budget: the first pass used 260 000 filaments and rendered a featureless white ball, and
+  the structure only came back at 22 000 -- when a groom is meant to be SEEN as fibres
+  rather than felt as a mass, fewer is the correct direction. High key on purpose (the
+  backdrop wash faces away from the subject), because a one-pixel filament staying legible
+  against a bright ground is the harder test.
 - `MLT/`: visually interesting Metropolis light transport scenes
 - `Materials/`: integrated material showcases (GGX, thin film, glints, enamel)
 - `Parser/`: parser-generated showcase scenes
