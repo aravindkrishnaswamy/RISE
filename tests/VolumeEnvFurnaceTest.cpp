@@ -1,13 +1,20 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  VolumeEnvFurnaceTest.cpp - Regression guard for the environment
-//    MIS partition on the CAMERA-RAY MEDIUM-SCATTER path of the
-//    path tracer (slice F2 of the PT env-MIS arc).
+//  VolumeEnvFurnaceTest.cpp - Regression guard for the CAMERA-RAY
+//    MEDIUM-SCATTER path of the path tracer.  Two defects, both closed,
+//    both guarded here:
 //
-//  WHAT IS GUARDED.  PathTracingIntegrator::IntegrateRayTemplated
-//    handles a camera ray that scatters in a participating medium
-//    before reaching any surface inline: it evaluates env-NEE at the
-//    scatter point (MediumTransport::EvaluateInScattering ->
+//      Fix 1 (slice F2 of the PT env-MIS arc) - the env MIS partition
+//             at the scatter vertex.  Guarded by cells 1-3.
+//      Fix 2 (residual wave 4) - the multiple-scatter continuation,
+//             which the path used to truncate after ONE scatter.
+//             Guarded by cells 4-6.
+//
+//  WHAT IS GUARDED - FIX 1 (env MIS partition).
+//    PathTracingIntegrator::IntegrateRayTemplated handles a camera ray
+//    that scatters in a participating medium before reaching any
+//    surface inline: it evaluates env-NEE at the scatter point
+//    (MediumTransport::EvaluateInScattering ->
 //    LightSampler::EvaluateDirectLighting with isVolumeScatter=true,
 //    which MIS-weights the env sample against the PHASE pdf), then
 //    samples the phase function for a continuation.  When that
@@ -20,6 +27,26 @@
 //    heuristic and the single-scatter env term was 50 % too bright.
 //    The HWSS twin (IntegrateRayHWSS) carried the identical defect.
 //
+//  WHAT IS GUARDED - FIX 2 (multiple-scatter continuation).
+//    The same three sites used to handle exactly ONE scatter.  A
+//    continuation that missed all geometry was TERMINATED with a
+//    deterministic Beer-Lambert factor (`TrEsc`) times the
+//    environment: the "scatter AGAIN" event was dropped outright, so
+//    the estimator lost its whole multiple-scatter tail, an energy
+//    LOSS of order tau*tau'.  (The main loop in
+//    IntegrateFromHitTemplated always re-sampled the medium and looped;
+//    the camera-ray inline path was a legacy single-scatter
+//    approximation, and existed separately only because the main loop
+//    is entered FROM A HIT and there is no RayIntersection to hand it
+//    until the walk finds a surface.)  All three sites now run the
+//    ordinary volumetric random walk, bounded by
+//    stabilityConfig.maxVolumeBounce and Russian roulette exactly as
+//    the main loop bounds its own volume bounces, with the env MIS
+//    partition of Fix 1 re-closed at EVERY scatter vertex rather than
+//    only the first.  The estimator, its invariants and the
+//    indirect-only routing are derived in the comment on that walk in
+//    PathTracingIntegrator.cpp; the numbers below are its measurement.
+//
 //  HARNESS PATTERN: EnvLightBalanceTest.cpp / HairRenderTest.cpp --
 //    scene text assembled as ordinary `RISE ASCII SCENE 7` chunks in
 //    C++ string literals, written to a temp file, loaded through
@@ -31,91 +58,121 @@
 //    forwards POST-denoise pixels to OutputImage, which a capture
 //    that only overrides OutputImage would silently pick up.
 //
-//  THE SCENE, AND WHY IT IS SHAPED LIKE THIS.  A closed furnace needs
-//    the estimator to be energy-conserving end to end, and the camera
-//    medium-scatter path is NOT: after its ONE inline scatter, a
-//    continuation that misses all geometry is terminated with a
-//    deterministic Beer-Lambert factor (`TrEsc`) and the environment
-//    -- the "scatter again" branch is simply dropped.  (The main loop
-//    in IntegrateFromHitTemplated does re-sample the medium and is
-//    unbiased; this truncation is specific to the camera-ray inline
-//    scatter, is PRE-EXISTING, and is out of scope for this test.)
-//    A naive box-shaped fog furnace therefore does NOT read 1.0 after
-//    the fix, and -- worse for a regression guard -- at moderate
-//    optical depth the truncation deficit and the MIS over-count very
-//    nearly CANCEL, so such a scene reads ~1.0 with the BUG PRESENT
-//    and low WITHOUT it.  A "must read 1.0" assertion on that scene
-//    would have the sign of the test backwards.
+//  THE TWO SCENES, AND WHY THERE ARE TWO.
+//    Cells 1-3 (the thin COLUMN) predate Fix 2 and were shaped AROUND
+//    the truncation, because with the truncation present a furnace
+//    could not be used to measure Fix 1 directly: at moderate optical
+//    depth the truncation deficit and the MIS over-count very nearly
+//    CANCEL, so a plain fog box read ~1.0 with the MIS bug PRESENT and
+//    low without it -- a "must read 1.0" assertion on that scene would
+//    have had the sign of the test backwards.  The column removes the
+//    truncation from the answer instead of modelling it: the medium is
+//    a long, thin column along the view axis (bbox 3 x 3 x 101) and the
+//    camera sits inside its near end looking down its length through a
+//    1-degree field of view.  The VIEW ray accumulates a substantial
+//    optical depth (sigma_t = 0.004 over ~100 units, tau ~= 0.40, so
+//    ~33 % of camera rays scatter), while a scattered ray -- isotropic,
+//    so essentially never within the ~0.9-degree cone that would send
+//    it back down the column -- leaves through a side wall after only
+//    ~1-3 units, i.e. an escape optical depth of ~0.01.  The dropped
+//    multiple-scatter branch was thus worth only ~0.4 % there.
 //
-//    The scene below removes the truncation from the answer instead of
-//    modelling it: the medium is a long, thin COLUMN along the view
-//    axis (bbox 3 x 3 x 101), and the camera sits inside its near end
-//    looking down its length through a 1-degree field of view.  The
-//    VIEW ray therefore accumulates a substantial optical depth
-//    (sigma_t = 0.004 over ~100 units, tau ~= 0.40, so ~33 % of camera
-//    rays scatter), while a scattered ray -- isotropic, so essentially
-//    never within the ~0.9-degree cone that would send it back down
-//    the column -- leaves through a side wall after only ~1-3 units,
-//    i.e. an escape optical depth of ~0.01.  The dropped
-//    multiple-scatter branch is thus worth ~0.4 % instead of the
-//    several percent a cubical fog box would cost, and the closed-form
-//    furnace target of 1.0 is restored to within that residual:
+//    The column is KEPT as the Fix-1 guard (it is the geometry the
+//    +16 % red-prove below was measured on, and its near-unit
+//    single-scatter albedo pins the mean tightly), but it is no longer
+//    the interesting cell for Fix 2.
 //
-//      correct   = e^-tau + (1 - e^-tau) * E[Tr_escape]  ~= 0.996
-//      with bug  = e^-tau + (1 - e^-tau) * 1.5 * E[Tr_escape] ~= 1.16
+//    Cells 4-6 (the cubical FOG BOX) are the Fix-2 guard and could only
+//    be written once the walk continued: a 200-unit cube centred on the
+//    camera, tau = 0.4 to a face and 0.69 into a corner, 40-degree
+//    field of view.  sigma_a = 0 makes the closed-form furnace answer
+//    exactly 1.0 at EVERY pixel whatever optical depth that pixel's ray
+//    sees, so the spread of depths in frame means a fix that only
+//    happened to work at one tau cannot pass.  The truncated estimator
+//    instead reads
 //
-//    sigma_a = 0 also makes the single-scatter albedo exactly 1, so the
-//    scatter branch carries weight 1 and the estimator stays close to
-//    unity sample by sample -- which is why 4096 spp on a 24x24 frame
-//    (about 5 s for all three variants together) already pins the mean
-//    to within about a part in a thousand.
+//      e^-tau + (1 - e^-tau) * E[Tr_escape]  ~= 0.89
 //
-//  MEASURED, THIS MACHINE, POST-FIX.  Four SAMPLES (n = 4 repeat runs
-//    of this binary), not measured bounds -- much of RISE's sampling is
-//    deterministic per pixel at a fixed sample count, so repeat runs
-//    under-sample the true run-to-run range and their min/max must not
-//    be read as one.  The tolerances below are sized off these values
-//    with explicit headroom, never off their spread:
+//    i.e. every path that scattered ONCE was allowed to escape but
+//    never to scatter again.  Measured pre-Fix-2: 0.880.
 //
-//      RGB PT              0.99509 / 0.99543 / 0.99534 / 0.99570
-//      spectral hwss=false 0.99915 / 1.00014 / 0.99984 / 0.99997
-//      spectral hwss=true  0.95326 / 0.95396 / 0.95405 / 0.95348
+//  MEASURED, THIS MACHINE, POST-FIX (both fixes in).  Four SAMPLES
+//    (n = 4 repeat runs of this binary), not measured bounds -- much of
+//    RISE's sampling is deterministic per pixel at a fixed sample
+//    count, so repeat runs under-sample the true run-to-run range and
+//    their min/max must not be read as one.  The tolerances below are
+//    sized off these values with explicit headroom, never off their
+//    spread:
 //
-//    Per-pixel spread at that sample count: RGB [0.969, 1.021],
-//    hwss=false [0.950, 1.064], hwss=true [0.933, 0.975].
+//      column  RGB PT              0.99854 / 0.99863 / 0.99812 / 0.99834
+//      column  spectral hwss=false 1.00200 / 1.00397 / 1.00347 / 1.00273
+//      column  spectral hwss=true  0.95686 / 0.95652 / 0.95681 / 0.95650
+//      fog box RGB PT              0.99625 / 0.99681 / 0.99679 / 0.99622
+//      fog box spectral hwss=false 1.00228 / 0.99916 / 1.00195 / 1.00109
+//      fog box spectral hwss=true  0.95483 / 0.95510 / 0.95464 / 0.95438
 //
-//    RGB sits ~0.46 % under and hwss=false ~0.03 % under.  Both are
-//    within the ~0.4 % truncation residual described above; the small
-//    RGB-vs-NM difference (the two take different distance-sampling
-//    entry points, PTSampleMediumDistance<PelTag> vs the NM twin) was
-//    NOT separately diagnosed and is not claimed to be understood.
+//    Per-pixel spread over those runs: column RGB [0.970, 1.022],
+//    hwss=false [0.953, 1.058], hwss=true [0.932, 0.982]; fog box RGB
+//    [0.964, 1.024], hwss=false [0.948, 1.050], hwss=true
+//    [0.934, 0.978].
 //
-//  THE hwss=true DEFICIT IS PRE-EXISTING AND IS NOT THIS FIX.  The
-//    hero-wavelength bundle reads 4.6 % under unity here.  That is the
-//    same spectral-bundle env deficit CLAUDE.md's "High-Value Facts"
-//    already records for hwss=true env-IBL (18 % under PT on the
+//    RGB and hwss=false now sit within ~0.4 % of unity on BOTH
+//    geometries.  On the column the residual moved from ~0.46 % under
+//    to ~0.15 % under when Fix 2 landed, which is the ~0.4 % truncation
+//    term that scene was designed to make small being collected rather
+//    than dropped -- the direction and the order of magnitude both
+//    match the prediction.  hwss=false crosses slightly OVER unity on
+//    both (+0.2 to +0.4 %); that residual is not separately diagnosed
+//    and is not claimed to be understood, and it is a fifth of the
+//    band.
+//
+//  THE hwss=true DEFICIT IS PRE-EXISTING AND IS NEITHER FIX.  The
+//    hero-wavelength bundle reads ~4.3 % under unity on the column and
+//    ~4.5 % under on the fog box -- the SAME deficit on two geometries
+//    whose truncation terms differ by 30x, which is itself evidence
+//    that it is neither of the defects fixed here.  It is the
+//    spectral-bundle env deficit CLAUDE.md's "High-Value Facts" already
+//    records for hwss=true env-IBL (18 % under PT on the
 //    EnvLightBalanceTest uniform env-only topology, at the disc-area
-//    baseline, independent of any MIS migration).  The red-prove below
-//    settles it as pre-existing rather than introduced: reverting the
-//    fix moves hwss=true from -4.67 % to +10.90 %, a shift of 15.5 pp
-//    -- the SAME shift the other two variants show (RGB 15.7 pp,
-//    hwss=false 16.4 pp).  The fix therefore does exactly one thing to
-//    the bundle path, and the residual sits underneath it untouched.
-//    hwss=true accordingly gets its own asymmetric band (below) rather
-//    than being dropped or having the shared band widened to hide it.
+//    baseline, independent of any MIS migration).  Both red-proves
+//    below settle it as pre-existing rather than introduced: reverting
+//    Fix 1 moves column hwss=true from -4.67 % to +10.90 %, the same
+//    15.5 pp shift the other two variants show (RGB 15.7 pp, hwss=false
+//    16.4 pp); reverting Fix 2 moves fog-box hwss=true from -4.5 % to
+//    -15.8 %, the same ~11 pp shift the other two show.  Each fix does
+//    exactly one thing to the bundle path and the residual sits
+//    underneath both untouched.  hwss=true accordingly gets its own
+//    asymmetric band (below) rather than being dropped or having the
+//    shared band widened to hide it.
 //
-//  RED-PROVE.  With Fix 1 reverted (the MIS weight dropped again at
-//    both camera-ray medium-escape sites, i.e. the two
+//  RED-PROVE, FIX 1.  With Fix 1 reverted (the MIS weight dropped again
+//    at both camera-ray medium-escape sites, i.e. the two
 //    `if( pLS && phasePdf > 0 )` guards forced false), rebuilt and
-//    re-run, this binary reports:
+//    re-run, this binary reported on the column cells:
 //
 //      RGB PT              1.15731 / 1.15732   (+15.73 %)
 //      spectral hwss=false 1.16410 / 1.16395   (+16.39 %)
 //      spectral hwss=true  1.10869 / 1.10904   (+10.90 %)
 //
 //    against a predicted +0.5 * (1 - e^-tau) * E[Tr_escape] ~= +16 %.
-//    Six of this file's nine checks fail in that state; all nine pass
-//    with the fix in place.
+//    (Measured before the fog-box cells existed, hence column only.)
+//
+//  RED-PROVE, FIX 2.  Measured on the truncating build -- i.e. the tree
+//    as it stood with Fix 1 in and the walk still stopping after one
+//    scatter -- with the fog-box cells added but nothing else changed:
+//
+//      column  RGB PT              0.99519   (-0.48 %)
+//      column  spectral hwss=false 0.99973   (-0.03 %)
+//      column  spectral hwss=true  0.95371   (-4.63 %)
+//      fog box RGB PT              0.87997   (-12.00 %)
+//      fog box spectral hwss=false 0.88303   (-11.70 %)
+//      fog box spectral hwss=true  0.84220   (-15.78 %)
+//
+//    against the predicted ~0.89 for the truncated estimator.  Six of
+//    this file's eighteen checks fail in that state (all six on the fog
+//    box, which is the point of adding it: the column moves only
+//    0.3-0.4 pp and would never have caught this); all eighteen pass
+//    with the walk continuing.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -341,6 +398,61 @@ static std::string SceneCommon( unsigned int width, unsigned int height )
 	return ss.str();
 }
 
+//////////////////////////////////////////////////////////////////////
+// THE FOG-BOX FURNACE (cells 4-6).
+//
+// The thin column above was shaped to make the multiple-scatter term
+// negligible, because at the time it was written that term was DROPPED
+// by the camera-ray inline scatter path and would otherwise have
+// cancelled against the MIS defect being measured.  With the camera
+// walk now continuing (bounded by max_volume_bounce + RR, matching the
+// main loop), a plain cubical fog box is finally a legitimate furnace,
+// and it is the direct guard on that continuation: it is the geometry
+// where the truncation is worth ~11 %, not ~0.4 %.
+//
+// A 200-unit cube centred on the camera at sigma_s = 0.004 gives
+// tau = 0.4 along a face normal (0.69 into a corner).  sigma_a = 0, so
+// the closed-form furnace answer is exactly 1.0 at EVERY pixel no
+// matter what optical depth that pixel's ray sees -- an infinite
+// uniform L = 1 field in equilibrium with a purely scattering medium.
+// The truncated estimator instead reads
+//
+//   e^-tau + (1 - e^-tau) * E[Tr_escape]  ~= 0.89
+//
+// i.e. every path that scattered ONCE was allowed to escape but never
+// to scatter AGAIN, so the (1 - e^-tau) fraction lost its own
+// multiple-scatter tail.  40 degrees of field of view keeps a spread of
+// optical depths in frame (centre vs corner), so a fix that only
+// happened to work at one tau cannot pass.
+//////////////////////////////////////////////////////////////////////
+static const double kBoxHalfExtent = 100.0;	// tau = 0.4 from centre to a face
+static const double kBoxFovDegrees = 40.0;
+
+static std::string SceneCommonFogBox( unsigned int width, unsigned int height )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov "
+			<< kBoxFovDegrees << "\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_density\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"painter_heterogeneous_medium\n{\n"
+		"\tname furnace_fog\n"
+		"\tabsorption 0.0 0.0 0.0\n"
+		"\tscattering " << kSigmaS << " " << kSigmaS << " " << kSigmaS << "\n"
+		"\tphase isotropic\n"
+		"\tdensity_painter pnt_density\n"
+		"\tresolution 4\n"
+		"\tcolor_to_scalar luminance\n"
+		"\tbbox_min " << -kBoxHalfExtent << " " << -kBoxHalfExtent << " " << -kBoxHalfExtent << "\n"
+		"\tbbox_max " <<  kBoxHalfExtent << " " <<  kBoxHalfExtent << " " <<  kBoxHalfExtent << "\n"
+		"}\n\n"
+		"global_medium\n{\n\tmedium furnace_fog\n}\n\n";
+	return ss.str();
+}
+
 static std::string RasterizerPTRgb( unsigned int samples )
 {
 	std::ostringstream ss;
@@ -383,22 +495,25 @@ static std::string AssembleScene( const std::string& common, const std::string& 
 // (`loTol`, `hiTol`) around the closed-form furnace value of 1.0,
 // because the two directions guard different things.
 //
-//   ABOVE unity is the defect.  Both bands cap over-unity at 2 %.
-//   Nothing in this scene can legitimately exceed 1.0: a sigma_a = 0
-//   medium in equilibrium with a uniform L = 1 field is exactly 1.0 and
-//   the one bias present (the dropped multiple-scatter branch, file
-//   header) can only LOSE energy.  The pre-fix build reads +15.7 to
-//   +16.4 %, so the guard has ~8x margin and cannot be satisfied by the
-//   bug it exists for.
+//   ABOVE unity is Fix 1's defect.  Both bands cap over-unity at 2 %.
+//   Nothing in either scene can legitimately exceed 1.0: a sigma_a = 0
+//   medium in equilibrium with a uniform L = 1 field is exactly 1.0, and
+//   every bias still present can only LOSE energy (the bounce cap and
+//   Russian roulette both truncate a tail; RR compensates in
+//   expectation but never over-shoots the closed form on average).  The
+//   Fix-1-reverted build reads +15.7 to +16.4 %, so the guard has ~8x
+//   margin and cannot be satisfied by the bug it exists for.
 //
-//   BELOW unity is the structural residual.  For RGB and hwss=false the
-//   floor is also 2 %, which clears the worst measured deficit
-//   (0.49 %) by 4x while still failing on the 2 %+ scale a genuinely
-//   lost transport term would cost.  hwss=true gets a 7 % floor instead
-//   -- it measures 4.6 % under for a documented, pre-existing,
-//   separately-red-proved reason (file header) -- which still leaves
-//   ~1.5x headroom and still catches an over-unity regression at the
-//   same 2 % as the others.
+//   BELOW unity is Fix 2's defect plus whatever structural residual
+//   remains.  For RGB and hwss=false the floor is also 2 %, which
+//   clears the worst measured deficit (0.38 %) by 5x while still
+//   failing on the 2 %+ scale a genuinely lost transport term would
+//   cost -- and the Fix-2-reverted fog box reads -12 %, six times the
+//   floor.  hwss=true gets a 7 % floor instead -- it measures ~4.5 %
+//   under for a documented, pre-existing, separately-red-proved reason
+//   (file header) -- which still leaves ~1.5x headroom, still catches
+//   an over-unity regression at the same 2 % as the others, and still
+//   fails on the -15.8 % the truncating build gave it.
 //
 // PER-PIXEL BAND.  Deliberately loose (15 %) and deliberately NOT a
 // precision check: at these sample counts the per-pixel spread is
@@ -475,6 +590,38 @@ static void TestVolumeEnvFurnaceHwss()
 		"hwss", kHwssFurnaceTolLo );
 }
 
+// The fog box scatters far more than the thin column (every path can
+// take several bounces before escaping), so it costs more per sample
+// AND has a wider per-pixel spread.  4096 spp on 16x16 is ~1.3 s per
+// variant here and lands the per-pixel extremes near +-5 %, i.e. a
+// third of kPixelSanityBand; at 1024 spp the extremes reached +12 %,
+// which is close enough to that band to be a flakiness generator.
+static const unsigned int kBoxW = 16, kBoxH = 16, kBoxSamples = 4096;
+
+static void TestFogBoxFurnaceRGB()
+{
+	std::cout << "=== 4. Cubical fog-box furnace -- RGB PT ===" << std::endl;
+	RunFurnaceCase( "fog box RGB PT",
+		AssembleScene( SceneCommonFogBox( kBoxW, kBoxH ), RasterizerPTRgb( kBoxSamples ) ),
+		"boxrgb", kFurnaceTolLo );
+}
+
+static void TestFogBoxFurnaceSpectral()
+{
+	std::cout << "=== 5. Cubical fog-box furnace -- spectral PT, hwss=false ===" << std::endl;
+	RunFurnaceCase( "fog box spectral hwss=false",
+		AssembleScene( SceneCommonFogBox( kBoxW, kBoxH ), RasterizerPTSpectral( kBoxSamples, false ) ),
+		"boxspec", kFurnaceTolLo );
+}
+
+static void TestFogBoxFurnaceHwss()
+{
+	std::cout << "=== 6. Cubical fog-box furnace -- spectral PT, hwss=true ===" << std::endl;
+	RunFurnaceCase( "fog box spectral hwss=true",
+		AssembleScene( SceneCommonFogBox( kBoxW, kBoxH ), RasterizerPTSpectral( kBoxSamples, true ) ),
+		"boxhwss", kHwssFurnaceTolLo );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeEnvFurnaceTest -- camera-in-medium environment MIS partition regression" << std::endl;
@@ -482,6 +629,9 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestVolumeEnvFurnaceRGB();
 	TestVolumeEnvFurnaceSpectral();
 	TestVolumeEnvFurnaceHwss();
+	TestFogBoxFurnaceRGB();
+	TestFogBoxFurnaceSpectral();
+	TestFogBoxFurnaceHwss();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

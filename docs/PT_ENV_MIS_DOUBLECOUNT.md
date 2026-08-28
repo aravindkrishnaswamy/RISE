@@ -129,13 +129,14 @@ reproduced here; this section states the mechanism, not a re-derivation.
 **Volumetric corroboration.** `VolumeEnvFurnaceTest.cpp` (new in F2,
 `afb2d64e`) isolates the same mechanism on the camera-ray medium-scatter
 path with a thin-column geometry chosen specifically so a *different*,
-pre-existing truncation bug (see residual ledger, item 1) cannot cancel
-against it. Red-proving the fix (reverting it and rebuilding) reproduces
+then-pre-existing truncation bug (residual ledger item 1, since closed)
+cannot cancel against it. Red-proving the fix (reverting it and rebuilding) reproduces
 the predicted `+0.5 * (1 - e^-tau) * E[Tr_escape] ≈ +16%` excess: RGB
 `+15.73%`, spectral hwss=false `+16.39%`, spectral hwss=true `+10.90%`
 ([tests/VolumeEnvFurnaceTest.cpp:107-118](../tests/VolumeEnvFurnaceTest.cpp)).
-Six of that file's nine checks fail with the fix reverted; all nine pass
-with it in place.
+Six of that file's checks fail with the fix reverted; all pass with it in
+place. (The file has since grown from nine checks to eighteen — cells 4-6,
+the fog-box furnace, were added when residual-ledger item 1 was closed.)
 
 ## 3. The fixes
 
@@ -258,16 +259,31 @@ arc touches σ²·T.
 Known-open items, each measured or diagnosed but **not** fixed in this
 arc. Flagged so a future session does not re-discover them from scratch.
 
-1. **Medium-scatter continuation truncation loss.** After a camera ray's
-   one inline medium scatter, a continuation that misses all geometry is
-   terminated with a deterministic Beer-Lambert factor; the "scatter
-   again" branch is dropped. Pre-existing, out of scope for this arc.
-   Worth `~0.4%` on `VolumeEnvFurnaceTest`'s thin-column geometry (chosen
-   specifically to minimize this term so it wouldn't cancel against the
-   MIS fix being measured) but would cost several percent on a cubical fog
-   box: `correct = e^-τ + (1-e^-τ)·E[Tr_escape] ≈ 0.996` vs the actual
-   truncated estimator.
-   [tests/VolumeEnvFurnaceTest.cpp:34-71](../tests/VolumeEnvFurnaceTest.cpp).
+1. ~~**Medium-scatter continuation truncation loss.**~~ **CLOSED
+   2026-08-27 (residual wave 4).** After a camera ray's one inline medium
+   scatter, a continuation that missed all geometry was terminated with a
+   deterministic Beer-Lambert factor and the "scatter again" branch was
+   dropped — an energy LOSS of order `τ·τ'`. All three sites
+   (`IntegrateRayTemplated`'s Pel and NM instantiations, and the
+   `IntegrateRayHWSS` twin's per-wavelength loop) now run the ordinary
+   volumetric random walk, bounded by `stabilityConfig.maxVolumeBounce`
+   and Russian roulette exactly as `IntegrateFromHitTemplated`'s main loop
+   bounds its own volume bounces, with this arc's env MIS partition
+   re-closed at **every** scatter vertex rather than only the first. The
+   replacement escape term has the **same expectation** as the
+   deterministic one it replaces — for a bounded medium the no-scatter
+   event has probability `Tr` and weight `Tr/pSurvival == 1` — so the
+   whole of the fix is that the complementary event now continues the walk
+   instead of being discarded. At the bounce cap the walk falls back to the
+   old deterministic escape, so the cap degrades to the previous behaviour
+   rather than to black. Guarded by `VolumeEnvFurnaceTest` cells 4–6, a
+   cubical `τ = 0.4` fog-box furnace that could not be written while the
+   truncation existed (`0.880 / 0.883 / 0.842` before, `0.996 / 1.000 /
+   0.955` after; the column cells 1–3 move only `0.3–0.4 pp`, which is why
+   they never caught it). The remaining `hwss=true` `~4.5 %` deficit is the
+   pre-existing spectral-bundle env deficit, unchanged by this fix and
+   identical on both geometries.
+   [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
 2. **`cosEnv > 0` env-NEE gate denies full-sphere BSDFs.** `LightSampler`'s
    env-NEE block gates on `cosEnv > 0`, so a transmissive full-sphere BSDF
    (hair's TT lobe transmits *through* the fibre) gets no NEE strategy for
@@ -299,16 +315,54 @@ arc. Flagged so a future session does not re-discover them from scratch.
    mistaken for a finished reference if a caller starts passing a genuine
    per-object map.
    [PathTracingIntegrator.cpp:1998-2036](../src/Library/Shaders/PathTracingIntegrator.cpp).
-5. **Topology J noise-free PT max reads `1.135`.** Flagged, not chased:
-   on a delta path with no MC noise and no MIS (every ray crosses exactly
-   one lossless interface), the per-pixel max should track the mean at
-   `1.0` closely; a value of `1.135` sits inside the check's existing
-   `<= 1.5` cap but is higher than the noise-free geometry would predict.
-   Filter normalisation or fp16 accumulation is suspect; the closed-form
-   transport itself is exonerated (the mean check passes tightly). Not
-   investigated further this arc — commit `ff92ab91`;
-   [tests/EnvLightBalanceTest.cpp:1642-1659](../tests/EnvLightBalanceTest.cpp)
-   (`CheckExactRadiance`'s `maxOk` threshold).
+5. ~~**Topology J noise-free PT max reads `1.135`.**~~ **DIAGNOSED AND
+   CLOSED 2026-08-27 (residual wave 4). Cause: the test harness was
+   capturing OIDN's output, not the integrator's.**
+   `CapturingRasterizerOutput` overrides only `OutputImage`, and
+   `IRasterizerOutput::OutputDenoisedImage`'s **default** implementation
+   forwards the POST-denoise pixels to `OutputImage`. Denoising is on by
+   default and **no rasterizer string in `EnvLightBalanceTest` set
+   `oidn_denoise FALSE`**, so every render in the suite was captured after
+   OIDN had rewritten it. Evidence, in the order it settles the question:
+   - The two suspects named in the original entry are both **refuted**.
+     `pixel_filter box` was **already** set on every rasterizer string in
+     the file, so no Mitchell-class negative lobe was ever in play; and the
+     capture path is `RISEColor` doubles straight off
+     `IRasterImage::GetPEL`, with no fp16/RGBE stage.
+   - The three colour channels **disagree** (`1.110 / 1.064 / 1.135`) on a
+     scene whose three channels are identical by construction. No filter
+     and no transport effect can separate the channels here; a CNN mixing
+     them can.
+   - **Zero run-to-run jitter** is explained rather than mysterious: OIDN
+     is deterministic.
+   - It is **not PT-specific** — BDPT and VCM read `max ≈ 1.05–1.075` on
+     the same closed form.
+   - Decisive: setting `oidn_denoise FALSE` makes PT read
+     `mean == p99 == max == 1.0` **bit-exactly**, BDPT to `2e-6` and VCM to
+     `1.4e-4`.
+
+   **Fixed, scoped to topology J only.** The PT-submerged rasterizer gains
+   `oidn_denoise FALSE`, and BDPT/VCM get submerged-specific twins of the
+   shared strings so all three read the closed form. `maxOk` tightens from
+   `<= 1.5` to `<= 1.05`, which still clears the measured deviation by
+   ~350× and red-proves the artifact (the denoised buffer's `1.135` and
+   `1.075` both fail it).
+
+   **Left open, deliberately: the other six rasterizer strings in the file
+   are still denoised.** Their topologies are noisy MC comparisons whose
+   `p99`/`max` bands were calibrated against the variance-suppressed
+   buffers; switching them all off costs 2 of the suite's 116 checks (BDPT
+   and VCM `p99`-ratio-to-PT on env-only Lambertian, spectral `hwss=true`)
+   purely because the bands no longer match the noise level they were sized
+   for. Recalibrating them is a separate task — but **until it happens,
+   every non-closed-form number this suite prints has passed through OIDN
+   and must not be quoted as an integrator measurement.** That includes the
+   BDPT/VCM bias figures §4 records. This is the same class of measurement
+   artifact CLAUDE.md's Phase-1 lesson warns about: never trust a
+   measurement harness that reads through a component it does not intend to
+   measure.
+   [tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp)
+   (the topology-J block's comment carries the full evidence).
 6. **Spectral-rasterizer non-bit-reproducibility.** RGB (Pel) rasterizer
    output is bit-identical run-to-run on the measuring machine; spectral
    (HWSS and non-HWSS) rasterizer output moves `1.3-3.6%` run-to-run at

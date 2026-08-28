@@ -3708,114 +3708,292 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 		if( scattered )
 		{
-			// Volume scatter on camera ray — handle inline and then
-			// delegate continuation to IntegrateFromHit if we get a hit.
-			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
-			const Vector3 wo = cameraRay.Dir();
-			const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
-			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, t_m, tag );
-
-			Value medWeight = Traits::zero();
-			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
-			{
-				// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
-				medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
-			}
-			else if( coeff.sigmaTReduced > 0 )
-			{
-				const Scalar Tr_scalar = PTTrReduced( Tr );
-				if( Tr_scalar > 0 ) {
-					medWeight = PTDivByScalar( Tr * coeff.sigma_s,
-						coeff.sigmaTReduced * Tr_scalar );
-				}
-			}
-
-			if( PTPositiveMagnitude( medWeight ) <= 0 ) {
-				return Traits::zero();
-			}
+			// ============================================================
+			// CAMERA-RAY VOLUMETRIC WALK
+			//
+			// The camera ray scattered in a participating medium before
+			// reaching any surface.  This is the medium analogue of the
+			// `if( scattered && volumeBounces < maxVolumeBounce )` block in
+			// IntegrateFromHitTemplated, and it exists as a separate site
+			// only because that loop is entered FROM A HIT: there is no
+			// RayIntersection to hand it until this walk finds a surface.
+			//
+			// It used to handle exactly ONE scatter -- NEE, sample the
+			// phase function, then either delegate to
+			// IntegrateFromHitForTag (the continuation hit a surface) or
+			// TERMINATE with a deterministic Beer-Lambert escape factor
+			// times the environment.  That terminal branch dropped the
+			// "scatter AGAIN" event entirely, so the estimator lost the
+			// whole multiple-scatter tail: order tau*tau' of the signal,
+			// which is ~0.4 % on a thin column but 12 % on a tau = 0.4 fog
+			// box with the camera inside it (VolumeEnvFurnaceTest cells
+			// 1-3 vs 4-6).  The walk below continues instead.
+			//
+			// ESTIMATOR.  The ordinary volumetric random walk, over scatter
+			// events k = 1, 2, ...:
+			//
+			//   T_1     = Tr(camera segment) * sigma_s / p_dist       (medWeight)
+			//   L      += T_k * Ld_NEE(x_k)                                 (a)
+			//   T_k    *= phase(wo,wi) / phasePdf   [then RR compensation]  (b)
+			//   trace the phase-sampled ray from x_k:
+			//     surface hit -> L += T_k * IntegrateFromHitForTag(...)     (d)
+			//     miss        -> sample the medium along it once more:
+			//        no scatter -> L += T_k * (Tr/pSurvival) * w_phase * L_env  (c)
+			//        scatter    -> T_{k+1} = T_k * medWeight, loop with k+1
+			//
+			// (c) has the SAME EXPECTATION as the deterministic escape it
+			// replaces -- for a bounded medium the no-scatter event has
+			// probability Tr and weight Tr/pSurvival == 1, so E[(c)] is the
+			// old `T_k * Tr * env` exactly.  The whole of the fix is that
+			// the complementary event (probability 1 - Tr) now continues
+			// the walk instead of being discarded.
+			//
+			// MIS INVARIANT -- holds at EVERY k, which is what makes this a
+			// furnace rather than an approximation.  (a) is env-NEE,
+			// MIS-weighted against the phase pdf inside
+			// MediumTransport::EvaluateInScattering; (c) is that same
+			// strategy's phase-sampled partner and carries the
+			// complementary weight (full derivation at the escape site
+			// below).  Extending the walk to N scatters therefore means
+			// extending the PAIR to every scatter vertex, not just the
+			// first -- a continuation that re-scattered and then escaped is
+			// weighted against the pdf of the LAST phase sample (`walkPdf`),
+			// which is the density the NEE at that same last vertex weighed
+			// itself against.
+			//
+			// LOOP INVARIANTS:
+			//   `result`      radiance estimated so far.
+			//   `throughput`  path weight from the camera through the LAST
+			//                 phase sample -- the factor multiplying
+			//                 anything `walkRay` goes on to see.
+			//   `walkRay`     the ray currently being followed; `walkMso` /
+			//                 `walkT` are the medium-sampling outcome along
+			//                 it, always with `scattered == true` at the top
+			//                 of the loop body.
+			//   `walkPdf`     solid-angle pdf of `walkRay`'s direction (0 on
+			//                 the camera segment, which has no phase sample
+			//                 behind it and never reaches the env branch).
+			//   `volumeBounces` scatter events already COMPLETED.
+			//   `pCurrentMedium` is LOOP-INVARIANT.  The walk only continues
+			//                 while the ray misses ALL geometry, so no
+			//                 boundary is ever crossed and the IOR stack --
+			//                 hence MediumTracking's answer -- cannot change.
+			//                 The moment a surface is hit the walk hands off
+			//                 to IntegrateFromHitForTag, which re-derives the
+			//                 medium for itself.
+			//
+			// TERMINATION.  `stabilityConfig.maxVolumeBounce` (64) and
+			// Russian roulette, both driven exactly as the main loop drives
+			// them: `EvaluateRussianRoulette( depth + volumeBounces, ... )`
+			// with depth == 0 on the camera segment, and `importance` == 1
+			// (the camera-entry value every IntegrateFromHit* call site
+			// passes).  At the bounce cap the walk falls back to the old
+			// deterministic Beer-Lambert escape rather than dropping the
+			// tail, so the cap degrades to the PREVIOUS behaviour instead
+			// of to black.
+			//
+			// INDIRECT-ONLY ROUTING.  Scatter 1 is the camera-visible
+			// vertex: its NEE and its phase-sampled env partner are the
+			// "direct light at the camera-visible point" that indirect-only
+			// must suppress (see SetIndirectOnly's doc and the original
+			// single-scatter comment this block replaces).  Scatters 2..N
+			// are genuine MULTIPLE scattering -- indirect by construction --
+			// and are kept, mirroring the main loop, whose volume NEE is
+			// likewise ungated.  Both are still EVALUATED in every mode so
+			// the sampler stream stays in lockstep; only the routing of the
+			// contribution differs.
+			// ============================================================
+			const bool bIndirectOnly = EffectivePathTracingIndirectOnly( rc, mIndirectOnly );
+			const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
+			const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
 			Value result = Traits::zero();
+			Value throughput = PTValueOne<Tag>();
+			Ray walkRay = cameraRay;
+			MediumSampleOutcome walkMso = mso;
+			Scalar walkT = t_m;
+			Scalar walkPdf = 0;
+			unsigned int volumeBounces = 0;
 
-			// NEE at scatter point.  GUI render modes P2b `indirect` fix
-			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
-			// camera-ray segment -- the medium/volumetric analog of the
-			// depth==0 surface vertex the loop's own NEE gate (see
-			// SetIndirectOnly's doc) suppresses.  There is no explicit
-			// `depth` variable at this call site (it runs before the main
-			// loop's first iteration -- IntegrateFromHitForTag below is
-			// invoked with startDepth=1, i.e. the CONTINUATION ray is
-			// already past the camera-visible vertex), so the depth==0
-			// rule applies unconditionally here rather than via a depth
-			// comparison: a camera ray that scatters in fog before ever
-			// reaching a surface is exactly the "direct light at the
-			// camera-visible point" case indirect-only must suppress --
-			// otherwise a camera in fog with a lamp still shows the direct
-			// single-scatter glow.  Still EVALUATED (same RNG consumption/
-			// shadow-ray cost as every other mode, matching the surface
-			// site's lockstep contract) so the sampler stream stays in
-			// lockstep across modes; only the contribution is zeroed.
-			if( pLS )
+			for( ;; )
 			{
-				Value Ld = PTEvaluateInScattering<Tag>(
-					scatterPt, wo, pCurrentMedium, caster, pLS,
-					sampler, rast, pMediumObject, tag );
-				if( PTPositiveMagnitude( Ld ) > 0 )
+				//
+				// --- scatter event k == volumeBounces + 1 ---------------
+				//
+				const Point3 scatterPt = walkRay.PointAtLength( walkT );
+				const Vector3 wo = walkRay.Dir();
+				const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
+				const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, walkRay, walkT, tag );
+
+				Value medWeight = Traits::zero();
+				if( walkMso.useExplicitThroughput && walkMso.combinedPdf > 0 )
 				{
-					Value directContrib = medWeight * Ld;
-					directContrib = ClampContribution( directContrib,
-						stabilityConfig.directClamp );
-					if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-						result = result + directContrib;
-					} else if( pDirectResult ) {
-						*pDirectResult = *pDirectResult + directContrib;
+					// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
+					medWeight = PTDivByScalar( Tr * coeff.sigma_s, walkMso.combinedPdf );
+				}
+				else if( coeff.sigmaTReduced > 0 )
+				{
+					const Scalar Tr_scalar = PTTrReduced( Tr );
+					if( Tr_scalar > 0 ) {
+						medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+							coeff.sigmaTReduced * Tr_scalar );
 					}
 				}
-			}
 
-			// Sample phase function for continuation
-			const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
-			if( !pPhase ) {
-				return result;
-			}
+				if( PTPositiveMagnitude( medWeight ) <= 0 ) {
+					// Degenerate scatter vertex.  At k == 1 `result` is still
+					// zero, so this is the original `return Traits::zero()`.
+					return result;
+				}
 
-			const Vector3 wi = pPhase->Sample( wo, sampler );
-			const Scalar phasePdf = pPhase->Pdf( wo, wi );
-			if( phasePdf <= NEARZERO ) {
-				return result;
-			}
+				throughput = throughput * medWeight;
 
-			const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-			// Preserve the per-variant arithmetic exactly: the Pel path
-			// builds RISEPel(s,s,s) and multiplies channel-wise; the NM
-			// path evaluates `medWeight * phaseVal / phasePdf` left-to-right
-			// (multiply-then-divide).  These differ at the ULP level, so the
-			// two forms are kept distinct rather than unified.
-			Value volThroughput;
-			if constexpr ( Traits::is_pel ) {
-				volThroughput = medWeight * RISEPel(
-					phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
-			} else {
-				volThroughput = medWeight * phaseVal / phasePdf;
-			}
+				// NEE at the scatter point.
+				if( pLS )
+				{
+					Value Ld = PTEvaluateInScattering<Tag>(
+						scatterPt, wo, pCurrentMedium, caster, pLS,
+						sampler, rast, pMediumObject, tag );
+					if( PTPositiveMagnitude( Ld ) > 0 )
+					{
+						Value directContrib = throughput * Ld;
+						directContrib = ClampContribution( directContrib,
+							stabilityConfig.directClamp );
+						if( !bIndirectOnly || volumeBounces > 0 ) {
+							result = result + directContrib;
+						} else if( pDirectResult ) {
+							*pDirectResult = *pDirectResult + directContrib;
+						}
+					}
+				}
 
-			// Intersect the scattered direction
-			const Ray scatteredRay( scatterPt, wi );
-			RayIntersection ri2( scatteredRay, rast );
-			scene.GetObjects()->IntersectRay( ri2, true, true, false );
+				// Sample the phase function for the continuation.
+				const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
+				if( !pPhase ) {
+					return result;
+				}
 
-			if( !ri2.geometric.bHit ) {
-				// Environment for volume-scattered ray.  The scattered ray
-				// continues through the same medium and escapes — attenuate
-				// the env contribution by the transmittance along that
-				// escape segment (PBRT-v4 beta *= T_maj convention).
+				const Vector3 wi = pPhase->Sample( wo, sampler );
+				const Scalar phasePdf = pPhase->Pdf( wo, wi );
+				if( phasePdf <= NEARZERO ) {
+					return result;
+				}
+
+				const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+				// Preserve the per-variant arithmetic exactly: the Pel path
+				// builds RISEPel(s,s,s) and multiplies channel-wise; the NM
+				// path evaluates `throughput * phaseVal / phasePdf`
+				// left-to-right (multiply-then-divide).  These differ at the
+				// ULP level, so the two forms are kept distinct rather than
+				// unified.
+				if constexpr ( Traits::is_pel ) {
+					throughput = throughput * RISEPel(
+						phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
+				} else {
+					throughput = throughput * phaseVal / phasePdf;
+				}
+
+				// Russian roulette on the volume scatter -- same call, same
+				// arguments, same ordering as the main loop's volume RR.
+				{
+					const PathTransportUtilities::RussianRouletteResult rr =
+						PathTransportUtilities::EvaluateRussianRoulette(
+							volumeBounces,
+							rrMinDepth, rrThreshold,
+							PTSurvivalMagnitude( throughput ),
+							1.0,
+							sampler.Get1D() );
+					if( rr.terminate ) {
+						return result;
+					}
+					if( rr.survivalProb < 1.0 ) {
+						throughput = PTDivByScalar( throughput, rr.survivalProb );
+					}
+				}
+
+				walkRay = Ray( scatterPt, wi );
+				walkPdf = phasePdf;
+				volumeBounces++;
+
+				//
+				// --- follow the continuation ---------------------------
+				//
+				RayIntersection ri2( walkRay, rast );
+				scene.GetObjects()->IntersectRay( ri2, true, true, false );
+
+				if( ri2.geometric.bHit )
+				{
+					// A surface ends the walk: the main loop takes over and
+					// handles everything past this point, including any
+					// further medium transport, with `volumeBounces` carried
+					// across so the shared bounce cap keeps counting.
+					const Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
+						sampler, pRadianceMap, 1, iorStack, walkPdf,
+						Traits::zero(), true, 1.0,
+						IRayCaster::RAY_STATE::eRayDiffuse,
+						0, 0, 0, 0, volumeBounces, 0,
+						pAOV, tag );
+
+					return result + throughput * hitResult;
+				}
+
+				//
+				// --- the continuation missed all geometry --------------
+				//
+				// Sample the medium along it once more.  A scatter continues
+				// the walk; a no-scatter is the escape, and carries the
+				// per-channel survival weight Tr / pSurvival (== 1 for a
+				// bounded medium, where "no scatter" means "left the
+				// medium's AABB") rather than Tr itself, which would
+				// double-count the attenuation the survival probability
+				// already encodes.  Identical bookkeeping to the main loop's
+				// `!scattered && !bHit` branch.
+				//
+				Value escapeWeight;
+				if( volumeBounces < stabilityConfig.maxVolumeBounce )
+				{
+					const MediumSampleOutcome mso2 = PTSampleMediumDistance<Tag>(
+						pCurrentMedium, walkRay, RISE_INFINITY, pLS, mediumSampler, tag );
+
+					if( mso2.zeroContrib ) {
+						// Equiangular strategy sampled a zero-density point:
+						// a scatter-measure sample with zero weight.  Same
+						// disposition as the two sites above -- stop, keeping
+						// what the walk has already estimated.
+						return result;
+					}
+
+					if( mso2.scattered ) {
+						walkMso = mso2;
+						walkT = mso2.t;
+						continue;			// next scatter event
+					}
+
+					const Value TrEsc = PTEvalTransmittance<Tag>(
+						pCurrentMedium, walkRay, RISE_INFINITY, tag );
+					const Scalar pSurvival = mso2.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
+						pCurrentMedium, walkRay, RISE_INFINITY, tag );
+					escapeWeight = PTSurvivalWeight<Tag>( TrEsc, pSurvival );
+				}
+				else
+				{
+					// Bounce cap reached.  Close the path with the
+					// deterministic Beer-Lambert escape -- the estimator
+					// this whole block replaced -- so the cap loses only the
+					// tail beyond it rather than the escape as well.
+					escapeWeight = PTEvalTransmittance<Tag>(
+						pCurrentMedium, walkRay, RISE_INFINITY, tag );
+				}
+
+				// Environment for the escaped volume-scattered ray.
 				//
 				// MIS PARTNER RULE -- volume twin of the surface-escape block
 				// in IntegrateFromHitTemplated (read that block's doc first;
-				// this is the same bug in the camera-ray medium-scatter path).
-				// The NEE call a few lines above (PTEvaluateInScattering ->
-				// MediumTransport::EvaluateInScattering ->
-				// LightSampler::EvaluateDirectLighting with
-				// isVolumeScatter=true) runs the env-NEE strategy and
+				// this is the same rule on the camera-ray medium-scatter
+				// path).  The NEE call at the scatter vertex this ray left
+				// (PTEvaluateInScattering -> MediumTransport::
+				// EvaluateInScattering -> LightSampler::EvaluateDirectLighting
+				// with isVolumeScatter=true) runs the env-NEE strategy and
 				// MIS-weights it against the PHASE pdf: EvaluateDirectLighting's
 				// env block calls pMaterial->Pdf(), and pMaterial there is
 				// MediumTransport's MediumScatterMaterial, whose Pdf() forwards
@@ -3827,6 +4005,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// envPdf == phasePdf == 1/(4 pi), so w_nee = 0.5 and the
 				// single-scatter env term was over-counted by 50 %.
 				//
+				// `walkPdf` is the pdf of the LAST phase sample, i.e. of the
+				// very vertex whose NEE this partners -- which is why it is
+				// carried across iterations rather than recomputed.
+				//
 				// Argument-order note: the NEE side evaluates
 				// pPhase->Pdf( envDir, wo ) while this side has
 				// pPhase->Pdf( wo, wi ).  Both concrete phase functions
@@ -3837,8 +4019,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				//
 				// Delta guard: RISE has no delta phase function -- both
 				// implementations return a finite density -- and `phasePdf >
-				// NEARZERO` was already required above to reach this point, so
-				// the `phasePdf > 0` test below is a formality kept for textual
+				// NEARZERO` was already required to reach this point, so the
+				// `walkPdf > 0` test below is a formality kept for textual
 				// parallelism with the surface site (where `bsdfPdf > 0` really
 				// does select the "delta lobe keeps full weight" arm).
 				//
@@ -3850,39 +4032,43 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// mirrored, because omitting it would break partition-of-unity
 				// against LightSampler's env-NEE (which does switch to
 				// OptimalMIS2Weight for volume scatter points once alpha solves).
-				if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
+				//
+				// The env escape after scatter 1 is the camera-visible
+				// vertex's direct partner and follows the indirect-only
+				// routing; after scatter 2 or later it is multiple
+				// scattering and is kept in every mode.
+				const bool bDirectPartner = ( volumeBounces == 1 );
+				if( ( !bIndirectOnly || !bDirectPartner || pDirectResult )
 				 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
-					const Value TrEsc = PTEvalTransmittance<Tag>(
-						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
 					Value envRadiance = PTEvalRadianceMap<Tag>(
-						scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
+						scene.GetGlobalRadianceMap(), walkRay, rast, tag );
 
 					// MIS weight for the phase-sampled environment hit.
-					if( pLS && phasePdf > 0 )
+					if( pLS && walkPdf > 0 )
 					{
 						const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 						if( pES )
 						{
-							const Scalar envPdf = pES->Pdf( scatteredRay.Dir() );
+							const Scalar envPdf = pES->Pdf( walkRay.Dir() );
 							if( envPdf > 0 )
 							{
 								Scalar w_phase;
 								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 								{
 									const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-									w_phase = MISWeights::OptimalMIS2Weight( phasePdf, envPdf, alpha );
+									w_phase = MISWeights::OptimalMIS2Weight( walkPdf, envPdf, alpha );
 								}
 								else
 								{
-									w_phase = PowerHeuristic( phasePdf, envPdf );
+									w_phase = PowerHeuristic( walkPdf, envPdf );
 								}
 								envRadiance = envRadiance * w_phase;
 							}
 						}
 					}
 
-					const Value volumeEnv = volThroughput * TrEsc * envRadiance;
-					if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+					const Value volumeEnv = throughput * escapeWeight * envRadiance;
+					if( bIndirectOnly && bDirectPartner ) {
 						if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
 					} else {
 						result = result + volumeEnv;
@@ -3890,16 +4076,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				}
 				return result;
 			}
-
-			// Continue from the volume-scattered hit
-			Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
-				sampler, pRadianceMap, 1, iorStack, phasePdf,
-				Traits::zero(), true, 1.0,
-				IRayCaster::RAY_STATE::eRayDiffuse,
-				0, 0, 0, 0, 1, 0,
-				pAOV, tag );
-
-			return result + volThroughput * hitResult;
 		}
 		else if( ri.geometric.bHit )
 		{
@@ -5133,132 +5309,254 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 		if( scattered )
 		{
-			// Volume scatter: fall back to per-wavelength NM
-			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
-			const Vector3 wo = cameraRay.Dir();
+			// ============================================================
+			// CAMERA-RAY VOLUMETRIC WALK -- HWSS twin.
+			//
+			// Read IntegrateRayTemplated's walk first: the estimator, the
+			// per-scatter MIS invariant, the loop invariants, the
+			// termination rule and the indirect-only routing are all
+			// derived there and are NOT restated here.  This block differs
+			// from that one in exactly one structural way, which is
+			// pre-existing: at a volume scatter the hero bundle SPLITS, and
+			// each wavelength runs its own independent walk (its own phase
+			// samples, its own directions, its own escape).  That is why
+			// the walk sits INSIDE the per-wavelength loop and why the
+			// surface hand-off is IntegrateFromHitNM rather than
+			// IntegrateFromHitHWSS -- the original single-scatter code
+			// already made that choice ("fall back to per-wavelength NM"),
+			// and continuing the walk keeps it.
+			//
+			// Consequence for the continuation's medium sampling: after the
+			// bundle has split there is no hero to drive anything, so each
+			// continuation segment samples its free flight at ITS OWN
+			// `lambda` rather than at `heroNM`.  Only the FIRST segment --
+			// the shared camera segment, sampled before the split -- is
+			// hero-driven, which is why `walkMso` starts as the hero `mso`
+			// and is replaced by a per-wavelength outcome from then on.
+			// This matches what the surface hand-off has always done:
+			// IntegrateFromHitNM samples its media at the wavelength it was
+			// given.
+			//
+			// The truncation this replaces cost more here than on the
+			// RGB/NM path (VolumeEnvFurnaceTest fog box: -15.5 % vs -12 %)
+			// because it stacked on top of the pre-existing hero-bundle env
+			// deficit that cell also measures.
+			// ============================================================
+			const bool bIndirectOnly = EffectivePathTracingIndirectOnly( rc, mIndirectOnly );
+			const bool bSoloSuppressEnv = PTSoloSuppressEnvironment( caster );
+			const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
+			const Scalar rrThreshold = stabilityConfig.rrThreshold;
+			const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
 				if( swl.terminated[w] ) continue;
 
-				const MediumCoefficientsNM coeff = pCurrentMedium->GetCoefficientsNM( scatterPt, swl.lambda[w] );
-				const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( cameraRay, t_m, swl.lambda[w] );
+				const Scalar lambda = swl.lambda[w];
 
-				Scalar medWeight = 0;
-				if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
-				{
-					medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
-				}
-				else if( coeff.sigma_t > 0 && Tr > 0 )
-				{
-					medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
-				}
+				Scalar throughput = 1.0;
+				Ray walkRay = cameraRay;
+				MediumSampleOutcome walkMso = mso;
+				Scalar walkT = t_m;
+				Scalar walkPdf = 0;
+				unsigned int volumeBounces = 0;
 
-				if( medWeight <= 0 ) continue;
-
-				// NEE at scatter point.  GUI render modes P2b `indirect`
-				// fix (review-p2b P2-e, HWSS twin of the RGB/NM
-				// IntegrateRayTemplated fix): same primary-camera-segment
-				// depth==0 reasoning -- see that fix's doc for the full
-				// rationale.  Still evaluated for RNG lockstep; only the
-				// contribution is zeroed.
-				if( pLS )
+				for( ;; )
 				{
-					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-						scatterPt, wo, pCurrentMedium, swl.lambda[w], caster,
-						pLS, sampler, rast, pMediumObject );
-					if( Ld > 0 )
+					//
+					// --- scatter event k == volumeBounces + 1 -----------
+					//
+					const Point3 scatterPt = walkRay.PointAtLength( walkT );
+					const Vector3 wo = walkRay.Dir();
+
+					const MediumCoefficientsNM coeff = pCurrentMedium->GetCoefficientsNM( scatterPt, lambda );
+					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( walkRay, walkT, lambda );
+
+					Scalar medWeight = 0;
+					if( walkMso.useExplicitThroughput && walkMso.combinedPdf > 0 )
 					{
-						Scalar directContrib = medWeight * Ld;
-						directContrib = ClampContribution( directContrib,
-							stabilityConfig.directClamp );
-						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-							result[w] += directContrib;
-						}
+						// MIS throughput in hero-driven HWSS: per-wavelength
+						// Tr_w * sigma_s_w divided by the combined hero-driven PDF.
+						medWeight = Tr * coeff.sigma_s / walkMso.combinedPdf;
 					}
-				}
-
-				// Phase function continuation
-				const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
-				if( pPhase )
-				{
-					const Vector3 wi = pPhase->Sample( wo, sampler );
-					const Scalar phasePdf = pPhase->Pdf( wo, wi );
-					if( phasePdf > NEARZERO )
+					else if( coeff.sigma_t > 0 && Tr > 0 )
 					{
-						const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-						Scalar volThroughput = medWeight * phaseVal / phasePdf;
+						medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
+					}
 
-						const Ray scatteredRay( scatterPt, wi );
-						RayIntersection ri2( scatteredRay, rast );
-						scene.GetObjects()->IntersectRay( ri2, true, true, false );
+					if( medWeight <= 0 ) break;
 
-						if( !ri2.geometric.bHit )
+					throughput *= medWeight;
+
+					// NEE at the scatter point.  GUI render modes P2b
+					// `indirect` fix (review-p2b P2-e, HWSS twin of the
+					// RGB/NM IntegrateRayTemplated fix): same
+					// primary-camera-segment depth==0 reasoning -- see that
+					// fix's doc for the full rationale.  Still evaluated for
+					// RNG lockstep; only the contribution is zeroed.  From
+					// the SECOND scatter on the vertex is genuine multiple
+					// scattering, i.e. indirect, and is kept in every mode.
+					if( pLS )
+					{
+						Scalar Ld = MediumTransport::EvaluateInScatteringNM(
+							scatterPt, wo, pCurrentMedium, lambda, caster,
+							pLS, sampler, rast, pMediumObject );
+						if( Ld > 0 )
 						{
-						// MIS PARTNER RULE -- HWSS twin of the RGB/NM
-						// IntegrateRayTemplated volume escape; see that site's
-						// doc for the full derivation (phase-sampled env hit is
-						// env-NEE's MIS partner; MediumScatterMaterial::Pdf is
-						// the pdf the NEE side weighs against; the phase pdf is
-						// symmetric in its two arguments; no delta phase
-						// function exists; optimal-MIS training deliberately not
-						// accumulated).  envPdf/phasePdf MUST be recomputed
-						// per-wavelength: pPhase->Sample above runs inside the
-						// per-wavelength loop, so each wavelength holds its OWN
-						// sampled direction, and EnvironmentSampler::Pdf of that
-						// direction generically differs across the bundle (any
-						// HG medium or non-uniform env map).  They coincide only
-						// in the isotropic-phase / uniform-env special case the
-						// VolumeEnvFurnaceTest scene exercises -- do NOT hoist
-						// this out of the loop as a "redundant" recomputation.
-						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
-							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
-							{
-								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-									scatteredRay, RISE_INFINITY, swl.lambda[w] );
-								Scalar envRadiance =
-									scene.GetGlobalRadianceMap()->GetRadianceNM(
-										scatteredRay, rast, swl.lambda[w] );
-
-								if( pLS && phasePdf > 0 )
-								{
-									const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
-									if( pES )
-									{
-										const Scalar envPdf = pES->Pdf( scatteredRay.Dir() );
-										if( envPdf > 0 )
-										{
-											Scalar w_phase;
-											if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-											{
-												const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-												w_phase = MISWeights::OptimalMIS2Weight( phasePdf, envPdf, alpha );
-											}
-											else
-											{
-												w_phase = PowerHeuristic( phasePdf, envPdf );
-											}
-											envRadiance *= w_phase;
-										}
-									}
-								}
-
-								result[w] += volThroughput * TrEsc * envRadiance;
+							Scalar directContrib = throughput * Ld;
+							directContrib = ClampContribution( directContrib,
+								stabilityConfig.directClamp );
+							if( !bIndirectOnly || volumeBounces > 0 ) {
+								result[w] += directContrib;
 							}
 						}
-						else
-						{
-							result[w] += volThroughput * IntegrateFromHitNM(
-								rc, rast, ri2, swl.lambda[w], scene, caster,
-								sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
-								true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
-								0, 0, 0, 0, 1, 0, false, false,
-								// HWSS geometry is hero-driven. Let only the hero
-								// continuation populate the shared, wavelength-independent
-								// Accurate guide so companion paths cannot race to define it.
-								w == 0 ? pAOV : 0 );
+					}
+
+					// Phase function continuation
+					if( !pPhase ) break;
+
+					const Vector3 wi = pPhase->Sample( wo, sampler );
+					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					if( phasePdf <= NEARZERO ) break;
+
+					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+					throughput = throughput * phaseVal / phasePdf;
+
+					// Russian roulette on the volume scatter -- same call,
+					// same arguments, same ordering as the RGB/NM walk and
+					// the shared main loop.
+					{
+						const PathTransportUtilities::RussianRouletteResult rr =
+							PathTransportUtilities::EvaluateRussianRoulette(
+								volumeBounces,
+								rrMinDepth, rrThreshold,
+								PTSurvivalMagnitude( throughput ),
+								1.0,
+								sampler.Get1D() );
+						if( rr.terminate ) break;
+						if( rr.survivalProb < 1.0 ) {
+							throughput /= rr.survivalProb;
 						}
 					}
+
+					walkRay = Ray( scatterPt, wi );
+					walkPdf = phasePdf;
+					volumeBounces++;
+
+					//
+					// --- follow the continuation ------------------------
+					//
+					RayIntersection ri2( walkRay, rast );
+					scene.GetObjects()->IntersectRay( ri2, true, true, false );
+
+					if( ri2.geometric.bHit )
+					{
+						result[w] += throughput * IntegrateFromHitNM(
+							rc, rast, ri2, lambda, scene, caster,
+							sampler, pRadianceMap, 1, iorStack, walkPdf, 0,
+							true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
+							0, 0, 0, 0, volumeBounces, 0, false, false,
+							// HWSS geometry is hero-driven. Let only the hero
+							// continuation populate the shared, wavelength-independent
+							// Accurate guide so companion paths cannot race to define it.
+							w == 0 ? pAOV : 0 );
+						break;
+					}
+
+					//
+					// --- the continuation missed all geometry -----------
+					//
+					// Sample this wavelength's medium along it once more: a
+					// scatter continues the walk, a no-scatter is the escape
+					// and carries the survival weight Tr / pSurvival (== 1
+					// for a bounded medium, where "no scatter" means "left
+					// the medium's AABB") rather than Tr itself, which would
+					// double-count the attenuation the survival probability
+					// already encodes (G1-c).
+					//
+					Scalar escapeWeight;
+					if( volumeBounces < stabilityConfig.maxVolumeBounce )
+					{
+						const MediumSampleOutcome mso2 = SampleDistanceWithEquiangularMIS_NM(
+							pCurrentMedium, walkRay, RISE_INFINITY, lambda, pLS, mediumSampler );
+
+						if( mso2.zeroContrib ) break;
+
+						if( mso2.scattered ) {
+							walkMso = mso2;
+							walkT = mso2.t;
+							continue;			// next scatter event
+						}
+
+						const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
+							walkRay, RISE_INFINITY, lambda );
+						const Scalar pSurvival = mso2.noScatterPdfScale *
+							pCurrentMedium->EvalDistancePdfNM(
+								walkRay, RISE_INFINITY, /*scattered=*/false, RISE_INFINITY, lambda );
+						escapeWeight = ( pSurvival > 0.0 ) ? ( TrEsc / pSurvival ) : TrEsc;
+					}
+					else
+					{
+						// Bounce cap: close the path with the deterministic
+						// Beer-Lambert escape -- the estimator this block
+						// replaced -- so the cap loses only the tail beyond
+						// it rather than the escape as well.
+						escapeWeight = pCurrentMedium->EvalTransmittanceNM(
+							walkRay, RISE_INFINITY, lambda );
+					}
+
+					// MIS PARTNER RULE -- HWSS twin of the RGB/NM
+					// IntegrateRayTemplated volume escape; see that site's
+					// doc for the full derivation (phase-sampled env hit is
+					// env-NEE's MIS partner; MediumScatterMaterial::Pdf is
+					// the pdf the NEE side weighs against; the phase pdf is
+					// symmetric in its two arguments; no delta phase
+					// function exists; optimal-MIS training deliberately not
+					// accumulated).  envPdf/walkPdf MUST be recomputed
+					// per-wavelength: pPhase->Sample above runs inside the
+					// per-wavelength loop, so each wavelength holds its OWN
+					// sampled direction, and EnvironmentSampler::Pdf of that
+					// direction generically differs across the bundle (any
+					// HG medium or non-uniform env map).  They coincide only
+					// in the isotropic-phase / uniform-env special case the
+					// VolumeEnvFurnaceTest scene exercises -- do NOT hoist
+					// this out of the loop as a "redundant" recomputation.
+					// `walkPdf` is the pdf of the LAST phase sample, i.e. of
+					// the very vertex whose NEE this partners.
+					const bool bDirectPartner = ( volumeBounces == 1 );
+					if( ( !bIndirectOnly || !bDirectPartner ) &&
+						!bSoloSuppressEnv && scene.GetGlobalRadianceMap() )
+					{
+						Scalar envRadiance =
+							scene.GetGlobalRadianceMap()->GetRadianceNM(
+								walkRay, rast, lambda );
+
+						if( pLS && walkPdf > 0 )
+						{
+							const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+							if( pES )
+							{
+								const Scalar envPdf = pES->Pdf( walkRay.Dir() );
+								if( envPdf > 0 )
+								{
+									Scalar w_phase;
+									if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+									{
+										const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+										w_phase = MISWeights::OptimalMIS2Weight( walkPdf, envPdf, alpha );
+									}
+									else
+									{
+										w_phase = PowerHeuristic( walkPdf, envPdf );
+									}
+									envRadiance *= w_phase;
+								}
+							}
+						}
+
+						result[w] += throughput * escapeWeight * envRadiance;
+					}
+					break;
 				}
 			}
 			return;

@@ -1573,8 +1573,48 @@ static void TestEnvOnlySpectral( bool hwss )
 // in the legacy PixelBased rasterizer camera entries and the photon
 // tracers' emission origins.
 //
-// Tolerance: 3% on the mean (fp16 capture + box filter), 1.5x max.
-// Pre-fix PT fails catastrophically (mean 0 vs 1).
+// WHY THIS TOPOLOGY -- AND ONLY THIS TOPOLOGY -- RUNS WITH
+// `oidn_denoise FALSE` (residual wave 4, 2026-08-27).
+//   CapturingRasterizerOutput overrides only OutputImage, and
+//   IRasterizerOutput::OutputDenoisedImage's DEFAULT implementation
+//   forwards the POST-denoise pixels to OutputImage.  Denoising is on
+//   by default, so every render in this suite used to be captured
+//   AFTER OIDN had rewritten it -- the suite was measuring the
+//   denoiser's output, not the integrator's.  On this cell that was
+//   measurable and unambiguous: the closed form is EXACTLY 1.0 at
+//   every pixel, and the captured buffer read
+//
+//     PT   mean (1.000, 0.998, 0.998)  max (1.110, 1.064, 1.135)
+//     BDPT mean (0.999, 1.000, 0.998)  max (1.053, 1.072, 1.075)
+//     VCM  mean (0.999, 1.000, 0.998)  max (1.054, 1.072, 1.075)
+//
+//   with ZERO run-to-run jitter (OIDN is deterministic) and with the
+//   three colour channels DISAGREEING on a scene whose three channels
+//   are identical by construction -- a CNN mixing channels, which no
+//   filter or transport effect can do here.  `pixel_filter box` was
+//   already set, so filter ringing was never a candidate; nor was fp16
+//   (the capture is RISEColor doubles straight off IRasterImage::GetPEL).
+//   With denoising off all three integrators read mean == p99 == max ==
+//   1.0 to within 1.4e-4, and PT reads it BIT-EXACTLY.
+//
+//   The other six rasterizer strings in this file are deliberately LEFT
+//   denoised.  Their topologies are noisy Monte Carlo comparisons whose
+//   p99 / max bands were calibrated against the denoised (variance-
+//   suppressed) buffers; switching them costs 2 of the suite's 116
+//   checks (BDPT and VCM p99-ratio-to-PT on env-only Lambertian,
+//   spectral hwss=true) purely because the bands no longer match the
+//   noise level they were sized for.  Recalibrating them is a separate
+//   task -- but note that until it happens, every NON-closed-form
+//   number this suite prints has passed through OIDN, and none of them
+//   should be quoted as an integrator measurement.
+//
+// Tolerance: with denoising off this is a bit-exact check, so the max
+// cap is 1.05 rather than the 1.5x the denoised buffer needed.  The
+// mean band stays at 3 %: it is sized to catch the catastrophic
+// pre-2026-08-13 failure (mean 0 vs 1), not to resolve the last
+// 1e-4.  1.05 is ~350x the measured max deviation (1.4e-4) and still
+// fails on the denoised buffer's 1.135 / 1.075, i.e. it red-proves
+// the artifact above.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedCamera =
 	"film\n"
@@ -1627,6 +1667,7 @@ static const char* kRasterizerPTSubmerged =
 	"pathtracing_pel_rasterizer\n"
 	"{\n"
 	"\tsamples 16\n"
+	"\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
 	"\tradiance_scale 1.0\n"
@@ -1641,6 +1682,68 @@ static const char* kRasterizerPTSubmerged =
 	"\tcolor_space sRGB\n"
 	"}\n";
 
+// BDPT / VCM twins of the shared kRasterizerBDPT / kRasterizerVCM,
+// differing ONLY by `oidn_denoise FALSE`.  Duplicated rather than
+// switched on in the shared strings because those are also used by the
+// noisy topologies, whose bands are calibrated against the denoised
+// buffers -- see the topology block's comment above.
+static const char* kRasterizerBDPTSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 256\n"
+	"\toidn_denoise FALSE\n"
+	"\tpixel_filter box\n"
+	"\tradiance_map pnt_env\n"
+	"\tradiance_scale 1.0\n"
+	"\tradiance_background TRUE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/env_balance_bdpt_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerVCMSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 256\n"
+	"\toidn_denoise FALSE\n"
+	"\tpixel_filter box\n"
+	"\tradiance_map pnt_env\n"
+	"\tradiance_scale 1.0\n"
+	"\tradiance_background TRUE\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/env_balance_vcm_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
 static void CheckExactRadiance(
 	const char* integratorName,
 	const ImageStats& s,
@@ -1650,7 +1753,7 @@ static void CheckExactRadiance(
 	if( !s.valid ) return;
 	for( int c = 0; c < 3; ++c ) {
 		const bool meanOk = std::fabs( s.mean[c] - 1.0 ) <= 0.03;
-		const bool maxOk  = s.max[c] <= 1.5;
+		const bool maxOk  = s.max[c] <= 1.05;
 		Check( meanOk, ( std::string(integratorName) + " mean == 1.0 (closed form), channel "
 			+ std::to_string(c) + ": " + topologyName ).c_str() );
 		Check( maxOk, ( std::string(integratorName) + " max <= 1.5, channel "
@@ -1669,8 +1772,8 @@ static void TestSubmergedCameraDeltaShell()
 
 	const std::string common = std::string( kSceneSubmergedCamera ) + kEnvPainter;
 	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerPTSubmerged;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerBDPT;
-	const std::string vcmScene  = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerVCM;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerBDPTSubmerged;
+	const std::string vcmScene  = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerVCMSubmerged;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "ptsub"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdptsub" );
