@@ -1233,6 +1233,74 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	rm -rf "$r172_temp"
 fi
 
+# r174: regenerate the executable-bound eight golden beginnings, then judge
+# every filtered scalar, velocity, and inventory row under the completed
+# equal-time additive contract.  A numerical refusal is retained as exact 187;
+# the admitted matrix is exact 188 and must contain all 152 identity rows.
+if [ "$(uname -s)" = "Darwin" ]; then
+	r174_path="$BIN_DIR/FireSequenceTest"
+	r174_options="$REPO_ROOT/rendered/fire_production_calibration/r159_timestep_velocity_ceiling_stop/benchmark.options"
+	r174_protocol="$REPO_ROOT/rendered/fire_production_calibration/r171_golden_subdominance_protocol/golden_subdominance_protocol.v1"
+	r174_temporal="$REPO_ROOT/rendered/fire_production_calibration/r173_filtered_temporal/filtered_temporal_evidence.v1"
+	r174_temp="$(mktemp -d "${TMPDIR:-/tmp}/rise-r174-readmission.XXXXXX")"
+	r174_trace="$r174_temp/golden.trace"
+	r174_frame="$r174_temp/golden.vdb"
+	r174_generate_log="$LOG_DIR/FireSequenceTest.r174_generate.log"
+	r174_measure_log="$LOG_DIR/FireSequenceTest.r174_readmission.log"
+	printf '[ evidence ] %-46s ... ' 'FireSequenceTest.r174_equal_time_readmission'
+	r174_generate_rc=0 r174_measure_rc=0
+	if [ ! -x "$r174_path" ]; then
+		r174_generate_rc=127
+	elif [ -n "$timeout_bin" ]; then
+		"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r174_path" --fire-r171-golden-beginnings \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$r174_trace" "$r174_frame" >"$r174_generate_log" 2>&1 || r174_generate_rc=$?
+	else
+		"$r174_path" --fire-r171-golden-beginnings \
+			"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+			"$r174_trace" "$r174_frame" >"$r174_generate_log" 2>&1 || r174_generate_rc=$?
+	fi
+	if [ "$r174_generate_rc" -eq 189 ]; then
+		if [ -n "$timeout_bin" ]; then
+			RISE_FIRE_EQUAL_TIME_READMISSION=1 \
+				RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL="$r174_protocol" \
+				RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE="$r174_temporal" \
+				RISE_OPTIONS_FILE="$r174_options" \
+				"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r174_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r174_trace.snapshots" >"$r174_measure_log" 2>&1 || r174_measure_rc=$?
+		else
+			RISE_FIRE_EQUAL_TIME_READMISSION=1 \
+				RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL="$r174_protocol" \
+				RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE="$r174_temporal" \
+				RISE_OPTIONS_FILE="$r174_options" "$r174_path" \
+				--fire-production-golden-composition \
+				"$REPO_ROOT/rendered/fire_methane_capstone/tier10.run.checkpoint" \
+				"$r174_trace.snapshots" >"$r174_measure_log" 2>&1 || r174_measure_rc=$?
+		fi
+	else
+		r174_measure_rc=127
+	fi
+	if [ "$r174_generate_rc" -eq 189 ] && [ "$r174_measure_rc" -eq 188 ] &&
+		[ "$(grep -c '^equal-time readmission slice=.* component=' "$r174_measure_log")" -eq 72 ] &&
+		[ "$(grep -c '^equal-time readmission slice=.* velocity=' "$r174_measure_log")" -eq 8 ] &&
+		[ "$(grep -o 'accepted=0' "$r174_measure_log" | wc -l | tr -d ' ')" -eq 0 ] &&
+		grep -Fq 'equal-time readmission complete slices=8 gates=152 failures=0 scalar_max_ratio=0.0018329622432418256 velocity_ratio=0.0081254983789433733 inventory_max_ratio=0.0032325000146012773 original_excesses=83/28/8.7 manifold_floor_attribution=0 trace=75817882f342187f794a263f6adfd58ad4d165b6b91e433529afac8c1fdcfc19 golden=1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947' \
+			"$r174_measure_log"; then
+		echo 'PASS (exact exits=189/188, 152 equal-time gates)'
+		rm -f "$r174_generate_log" "$r174_measure_log"
+	else
+		echo "FAIL (generator=$r174_generate_rc expected 189; readmission=$r174_measure_rc expected 188)"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r174_generate' "$r174_generate_rc" \
+			"$r174_generate_log" >> "$RUN_FAIL_TSV"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r174_readmission' "$r174_measure_rc" \
+			"$r174_measure_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+	rm -rf "$r174_temp"
+fi
+
 print_summary
 
 if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \

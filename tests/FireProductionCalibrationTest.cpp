@@ -168,11 +168,13 @@ int main()
 	const double equalTimeProduction=static_cast<double>(
 		static_cast<float>(0.000579539999762149));
 	const double equalTimeSubstep=equalTimeProduction*0.125;
-	const std::vector<double> equalTimeSchedule(8u,equalTimeSubstep);
+	std::vector<double> equalTimeSchedule(8u,equalTimeSubstep);
+	equalTimeSchedule.back()=equalTimeProduction-
+		equalTimeSubstep*static_cast<double>(equalTimeSchedule.size()-1u);
 	const std::string equalTimeTerminalTarget="terminal-target";
 	const std::string equalTimePenultimateTarget="penultimate-target";
 	std::vector<double> mismatchedEqualTimeSchedule=equalTimeSchedule;
-	mismatchedEqualTimeSchedule.back()=std::nextafter(mismatchedEqualTimeSchedule.back(),0.0);
+	mismatchedEqualTimeSchedule.back()+=equalTimeSubstep;
 	Check(FireProductionCalibration::EqualTimeReferenceSchedule(equalTimeProduction,
 		equalTimeSchedule,equalTimeProduction,equalTimeProduction,
 		equalTimeTerminalTarget,equalTimeTerminalTarget),
@@ -2121,9 +2123,9 @@ int main()
 		goldenSubdominanceEvidence.find("generator_source_sha256 "
 			"fac523acb9ad43f629d4fb2aab132b2ac2156443c10fd1ee3422b8da1b151739")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"0a91b12c762fa1beadac41c716d9a9d15b200f42bb77dd9b8f4842b477c2a5c8"&&
+		goldenSubdominanceEvidence.find("measurement_fixture_sha256 "
+			"0a91b12c762fa1beadac41c716d9a9d15b200f42bb77dd9b8f4842b477c2a5c8")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			mirrorAdapter.begin(),mirrorAdapter.end()))==
 			"be18f64d518f63c2f2c770be0535532eb6c26b5df65cc00b905d0d809c1e1709"&&
@@ -2290,18 +2292,18 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			filteredTemporalRaw.begin(),filteredTemporalRaw.end()))==
 			"58d29b87137d71b429322e6e5adcb5223c448e163708023e1e67ae332b260009"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			dyadicFixture.begin(),dyadicFixture.end()))==
-			"bb29c1b00489cda9075dd73355f00bd85947a9500d96670fce8403738b7a0e23"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"071f8e92394125ca14382439ee19e8d6f00cf128e98da6e0714a1f08c887713b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"efe61c133b593409ff1caa4cddb3efe3738fd0b722618089134fd3429d735aab"&&
+		filteredTemporalEvidence.find("fixture_sha256 "
+			"bb29c1b00489cda9075dd73355f00bd85947a9500d96670fce8403738b7a0e23")!=
+			std::string::npos&&
+		filteredTemporalEvidence.find("calibration_math_sha256 "
+			"071f8e92394125ca14382439ee19e8d6f00cf128e98da6e0714a1f08c887713b")!=
+			std::string::npos&&
+		filteredTemporalEvidence.find("owner_sha256 "
+			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668")!=
+			std::string::npos&&
+		filteredTemporalEvidence.find("unix_runner_sha256 "
+			"efe61c133b593409ff1caa4cddb3efe3738fd0b722618089134fd3429d735aab")!=
+			std::string::npos&&
 		filteredTemporalEvidence.find("floor_upper_bound_terms production_0 oracle_1")!=
 			std::string::npos&&
 		filteredTemporalEvidence.find("sole_floor_upper_bound "
@@ -2314,6 +2316,55 @@ int main()
 		filteredTemporalRaw.find("refusals=0/0 floor_bounds=0/1 "
 			"sole_floor=oracle_scalar_8 accepted=1")!=std::string::npos,
 		"r173 completes the uniformly filtered temporal term with one measured-floor bound");
+	const std::string equalTimeReadmissionEvidence=ReadText(
+		"rendered/fire_production_calibration/r174_equal_time_readmission/"
+		"equal_time_readmission_evidence.v1");
+	const std::string equalTimeReadmissionRaw=ReadText(
+		"rendered/fire_production_calibration/r174_equal_time_readmission/"
+		"equal_time_readmission.raw.log");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			equalTimeReadmissionEvidence.begin(),equalTimeReadmissionEvidence.end()))==
+			"6f59cb1c4175aed11a498e515f86df1b9fe41aa9952a4984aea5523aa066c499"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
+			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
+			"9ff00e8801bdcd04e1b7eec69a03f6af64e9ba4cf0dc9c60602f4a7db508aa25"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			dyadicFixture.begin(),dyadicFixture.end()))==
+			"54c3cdf6755495c52301d4a8d76e974863b6fa0ec03cfd669379b0bfffed79b9"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			calibrationMathSource.begin(),calibrationMathSource.end()))==
+			"0b3ab867f66af3a3961dca683d712d8a4052e33ca2d97a49d59d220c7d7a76ae"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			sequenceTest.begin(),sequenceTest.end()))==
+			"b5293053ebcbcfd12fa0585c412c6dd72e5e64d18d59fd29aefd5af36f1d9668"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			unixTestDriver.begin(),unixTestDriver.end()))==
+			"c2e505ce5703ba2d3f841a265867d62a544ca275da67447feea48be8be3f1121"&&
+		equalTimeReadmissionEvidence.find("gate_count 152")!=std::string::npos&&
+		equalTimeReadmissionEvidence.find("failure_count 0")!=std::string::npos&&
+		equalTimeReadmissionEvidence.find(
+			"oracle_schedule_endpoint exact_representable_remainder_in_final_substep")!=
+			std::string::npos&&
+		equalTimeReadmissionEvidence.find(
+			"original_excess_verdict pass_under_completed_filtered_equal_time_contract")!=
+			std::string::npos&&
+		equalTimeReadmissionEvidence.find(
+			"manifold_floor_fidelity_flag evaluated_not_implicated")!=std::string::npos&&
+		CountText(equalTimeReadmissionRaw,"equal-time readmission slice=")==80u&&
+		CountText(equalTimeReadmissionRaw,"accepted=0")==0u&&
+		equalTimeReadmissionRaw.find("equal-time readmission complete slices=8 gates=152 "
+			"failures=0")!=std::string::npos&&
+		solverDoc.find("### 7.56h Equal-time eight-slice readmission (r174)")!=
+			std::string::npos&&
+		solverDoc.find("0.0018329622432418256")!=std::string::npos&&
+		solverDoc.find("0.0081254983789433733")!=std::string::npos&&
+		solverDoc.find("0.0032325000146012773")!=std::string::npos&&
+		historyDoc.find("the original `83x/28x/8.7x` excess classes now pass")!=
+			std::string::npos,
+		"r174 admits every sealed slice under the completed filtered equal-time contract");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

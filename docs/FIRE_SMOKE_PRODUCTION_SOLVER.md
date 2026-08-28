@@ -4352,6 +4352,35 @@ are retained under `rendered/fire_production_calibration/r173_filtered_temporal`
 The next rung is the eight-slice readmission verdict; no readmission result is
 claimed in this entry.
 
+### 7.56h Equal-time eight-slice readmission (r174)
+
+r174 applies the now-complete additive contract to the eight sealed r171
+beginnings.  Every observable uses the same SHA-pinned r112 tensor cubic
+cardinal B-spline and physical width before differencing.  Production advances
+one represented step.  The Binary64 reference advances to that exact endpoint
+with eight converged substeps: seven equal nominal substeps followed by the
+positive representable remainder that makes the accumulated endpoint exact.
+The terminal target digest and endpoint are checked before production consumes
+them.  The duplicate serial oracle replay is intentionally absent here because
+r112/r139 already own worker-count identity; this rung measures the admitted
+contract, not that retired duplication.
+
+All 152 inequalities pass: nine filtered scalar rows, one filtered velocity
+row, and nine inventory rows on each of eight slices.  The maximum scalar,
+velocity, and inventory contract ratios are 0.0018329622432418256,
+0.0081254983789433733, and 0.0032325000146012773.  Thus the original
+83x/28x/8.7x excess classes pass under the completed filtered equal-time
+contract rather than being hidden or tolerance-widened.  The pre-registered
+manifold-floor fidelity flag is evaluated and is not implicated.  Exact exits
+`189/188`, all 152 identity rows, trace
+`75817882f342187f794a263f6adfd58ad4d165b6b91e433529afac8c1fdcfc19`,
+and the raw transcript are retained under
+`rendered/fire_production_calibration/r174_equal_time_readmission`.
+
+This completes readmission.  Thermochemistry/source maps, their Binary32
+source-producer subdominance term and burning-tail measurement, and first
+light remain the next rung; none is claimed by r174.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

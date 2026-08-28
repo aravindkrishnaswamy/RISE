@@ -174,8 +174,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"RISE_FIRE_GOLDEN_SUBDOMINANCE");
 	if(goldenSubdominanceValue&&std::strcmp(goldenSubdominanceValue,"1")!=0)return 191;
 	const bool goldenSubdominance=goldenSubdominanceValue!=nullptr;
+	const char* equalTimeReadmissionValue=std::getenv(
+		"RISE_FIRE_EQUAL_TIME_READMISSION");
+	if(equalTimeReadmissionValue&&std::strcmp(equalTimeReadmissionValue,"1")!=0)return 187;
+	const bool equalTimeReadmission=equalTimeReadmissionValue!=nullptr;
 	std::array<std::string,8> goldenSubdominanceBeginningDigests;
-	if(goldenSubdominance){
+	if(goldenSubdominance||equalTimeReadmission){
 		const char* protocolPath=std::getenv("RISE_FIRE_GOLDEN_SUBDOMINANCE_PROTOCOL");
 		if(!protocolPath)return 191;
 		std::ifstream protocol(protocolPath,std::ios::binary);
@@ -189,6 +193,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		if(std::any_of(goldenSubdominanceBeginningDigests.begin(),
 			goldenSubdominanceBeginningDigests.end(),[](const std::string& digest){
 				return digest.size()!=64u;}))return 191;
+		if(equalTimeReadmission){
+			const char* temporalPath=std::getenv("RISE_FIRE_FILTERED_TEMPORAL_EVIDENCE");
+			if(!temporalPath||DigestFile(temporalPath)!=
+				"6b2f16c5e07226f885e11e3557810b5599b675302ff297a81adf6f045c245986")
+				return 187;
+		}
 	}
 	const char* physicalRetryREDValue=std::getenv(
 		"RISE_FIRE_PHYSICAL_PROJECTION_RETRY_RED");
@@ -211,8 +221,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		(monitoredLongShadowSmoke&&!monitoredLongShadow)||
 		(tailThresholdRED&&(!monitoredLongShadow||monitoredLongShadowSmoke))||
 		(hardBoundRetryRED&&!tailThresholdRED)||
-		(goldenSubdominance&&(longShadow||plateauProbe||manifoldProbe||stageBudgetProbe||
+		((goldenSubdominance||equalTimeReadmission)&&(longShadow||plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe||closureConvergence))||
+		(goldenSubdominance&&equalTimeReadmission)||
 		(physicalRetryRED&&(!longShadow||hostResidualProbe||acceptedLongShadow))||
 		(longShadow&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||contractionProbe))||
@@ -220,8 +231,11 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			timestepVelocityAuditPresent))||
 		(closureConvergence&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent||longShadow||contractionProbe)))return 224;
-	std::array<double,9> productionDistance={{}},scalarBound={{}},inventoryDistance={{}},
-		inventoryBound={{}};double velocityDistance=0.0,velocityBound=0.0;
+	std::array<double,9> productionDistance={{}},oracleDistance={{}},scalarBound={{}},
+		oracleScalarBound={{}},inventoryDistance={{}},oracleInventoryDistance={{}},
+		inventoryBound={{}},oracleInventoryBound={{}};
+	double velocityDistance=0.0,oracleVelocityDistance=0.0,velocityBound=0.0,
+		oracleVelocityBound=0.0;
 	std::array<double,9> maximumPrecisionScalar={{}},maximumPrecisionInventory={{}};
 	double maximumPrecisionVelocity=0.0;
 	double minimumScalarSubdominanceMargin=std::numeric_limits<double>::infinity();
@@ -237,12 +251,50 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
 			FireProductionDyadicCalibration::ExpectedProductionInventoryEvidence[component][0],
 			FireProductionDyadicCalibration::ExpectedProductionInventoryEvidence[component][1],
-			FireProductionDyadicCalibration::VerifiedOrder,inventoryDistance[component],
-			inventoryBound[component]))return 130;
+				FireProductionDyadicCalibration::VerifiedOrder,inventoryDistance[component],
+				inventoryBound[component])||
+			!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
+				FireProductionDyadicCalibration::ExpectedOracleScalarEvidence[component][0],
+				FireProductionDyadicCalibration::ExpectedOracleScalarEvidence[component][1],
+				FireProductionDyadicCalibration::VerifiedOrder,oracleDistance[component],
+				oracleScalarBound[component])||
+			!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
+				FireProductionDyadicCalibration::ExpectedOracleInventoryEvidence[component][0],
+				FireProductionDyadicCalibration::ExpectedOracleInventoryEvidence[component][1],
+				FireProductionDyadicCalibration::VerifiedOrder,oracleInventoryDistance[component],
+				oracleInventoryBound[component]))return 130;
 	if(!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
 		FireProductionDyadicCalibration::ExpectedProductionVelocityEvidence[0],
 		FireProductionDyadicCalibration::ExpectedProductionVelocityEvidence[1],
-		FireProductionDyadicCalibration::VerifiedOrder,velocityDistance,velocityBound))return 130;
+		FireProductionDyadicCalibration::VerifiedOrder,velocityDistance,velocityBound)||
+		!FireProductionCalibration::Tier6DistanceFromDyadicPairs(
+		FireProductionDyadicCalibration::ExpectedOracleVelocityEvidence[0],
+		FireProductionDyadicCalibration::ExpectedOracleVelocityEvidence[1],
+		FireProductionDyadicCalibration::VerifiedOrder,oracleVelocityDistance,
+		oracleVelocityBound))
+		return 130;
+	static const std::array<double,9> productionTemporal={{
+		3.3888571164267637e-06,2.7108173821817564e-06,1.6159364810834396e-05,
+		6.1893639007923478e-05,1.8037400675670603e-06,1.5220697786566516e-06,
+		2.3666127133488299e-08,4.9725209139647414e-09,2.7328226439472538}};
+	static const std::array<double,9> oracleTemporal={{
+		6.239484288564373e-09,4.9915874284309687e-09,1.239123663934076e-08,
+		3.8793498314296024e-08,3.3213560206185572e-09,2.8027137098095474e-09,
+		4.3576503523885752e-11,9.155922778680957e-12,0.0012732090063250962}};
+	static const std::array<double,9> productionInventoryTemporal={{
+		4.439765595612102e-07,3.5545857596541104e-07,1.2805048754671455e-06,
+		3.0645565915350953e-06,2.3653321227820405e-07,1.994172191316885e-07,
+		3.1040925640894887e-09,6.5188314704960754e-10,0.36013833851793453}};
+	static const std::array<double,9> oracleInventoryTemporal={{
+		1.3465158969386569e-06,1.0772127175457343e-06,2.3958178689437078e-06,
+		4.3874068464757684e-06,7.1676736013986942e-07,6.0484142474779291e-07,
+		9.4040552195169564e-09,1.9758997701890746e-09,1.0513592731731316}};
+	static constexpr double ProductionVelocityTemporal=1.5098888236479335e-05;
+	static constexpr double OracleVelocityTemporal=4.1666621096787029e-05;
+	std::size_t readmissionGateCount=0u,readmissionFailureCount=0u;
+	double maximumScalarContractRatio=0.0,maximumInventoryContractRatio=0.0,
+		velocityContractRatio=0.0;
+	RISECBOR64::Bytes readmissionTrace;
 	RISECBOR64::Bytes precisionTrace;
 	static const std::size_t LongShadowSteps=FireProductionCalibration::LongShadowSteps;
 	static const std::size_t LongShadowWindow=FireProductionCalibration::LongShadowWindow;
@@ -281,11 +333,12 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		MethaneRunCheckpoint beginning;
 		if(longShadow&&slice>0u)beginning=std::move(longShadowState);
 		else if((longShadow?slice==0u&&DigestFile(beginningPath)!=checkpointDigest:
-			(!goldenSubdominance&&DigestFile(beginningPath)!=beginningDigests[slice]))||
+			(!(goldenSubdominance||equalTimeReadmission)&&
+				DigestFile(beginningPath)!=beginningDigests[slice]))||
 			!LoadMethaneRunCheckpoint(beginningPath,beginning,error)){
 			std::fprintf(stderr,"production golden composition beginning %zu failed: %s\n",
 				slice,error.c_str());return 113;}
-		if(goldenSubdominance){
+		if(goldenSubdominance||equalTimeReadmission){
 			std::string stateDigest;
 			if(!CheckpointProductionBeginningSHA256(beginning,stateDigest)||
 				stateDigest!=goldenSubdominanceBeginningDigests[slice]){
@@ -296,7 +349,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		}
 		if(
 			beginning.acceptedSteps!=3479u+slice){std::fprintf(stderr,
-			"production golden composition beginning %zu failed: %s\n",slice,error.c_str());return 113;}
+			"production golden composition beginning %zu accepted-step mismatch actual=%llu "
+			"expected=%zu\n",slice,static_cast<unsigned long long>(beginning.acceptedSteps),
+			3479u+slice);return 113;}
 		unsigned int sliceRetryCandidate=0u;
 		double sliceRetryStepS=0.0;
 		const auto scheduledRetry=std::find_if(manifoldRetrySchedule.begin(),
@@ -629,7 +684,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				composed=ConservativeAdvance3DResult();
 				return true;
 			}
-			if(!limitedClosure&&!monitoredLongShadow){
+			if(!limitedClosure&&!monitoredLongShadow&&!equalTimeReadmission){
 				ConservativeAdvance3DConfig directConfig=shadowConfig;
 				directConfig.workerCount=workerCount;
 				const bool advanced=AdvanceConservative3D(shape,conservative,
@@ -647,9 +702,18 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::size_t referenceSubstepCount=8u;
 			for(;;){
 				const double referenceStep=dt/static_cast<double>(referenceSubstepCount);
-				const std::vector<double> schedule(referenceSubstepCount,referenceStep);
+				std::vector<double> schedule(referenceSubstepCount,referenceStep);
+				double representedPrefix=0.0;
+				for(std::size_t substep=1u;substep<referenceSubstepCount;++substep)
+					representedPrefix+=referenceStep;
+				schedule.back()=dt-representedPrefix;
 				if(!FireProductionCalibration::EqualTimeReferenceSchedule(dt,schedule,dt,dt,
 					"precomposition","precomposition")){
+					double diagnosticSum=0.0;
+					for(const double step:schedule)diagnosticSum+=step;
+					std::fprintf(stderr,"equal-time schedule precomposition rejected dt=%.17g "
+						"substeps=%zu first=%.17g last=%.17g sum=%.17g\n",dt,
+						schedule.size(),schedule.front(),schedule.back(),diagnosticSum);
 					error="equal-time reference schedule does not reach the production endpoint";
 					return false;
 				}
@@ -667,7 +731,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				bool converged=true;
 				for(std::size_t substep=0u;substep<referenceSubstepCount;++substep){
 				ConservativeAdvance3DConfig referenceConfig=shadowConfig;
-				referenceConfig.transport.deltaTimeS=referenceStep;
+				const double representedReferenceStep=schedule[substep];
+				referenceConfig.transport.deltaTimeS=representedReferenceStep;
 				referenceConfig.workerCount=workerCount;
 				ConservativeAdvance3DResult advanced;
 				if(!AdvanceConservative3D(shape,referenceState,referenceMomentum,zeroPackets,
@@ -676,8 +741,9 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 						std::to_string(substep)+": "+error;
 					converged=false;break;
 				}
-				referenceTime+=referenceStep;
-				FireProductionDyadicCalibration::AppendDouble(scheduleTrace,referenceStep);
+				referenceTime+=representedReferenceStep;
+				FireProductionDyadicCalibration::AppendDouble(scheduleTrace,
+					representedReferenceStep);
 				FireProductionDyadicCalibration::AppendDouble(scheduleTrace,referenceTime);
 				FireProductionDyadicCalibration::AppendDouble(scheduleTrace,
 					advanced.maximumDivergenceResidualPerS);
@@ -697,7 +763,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				composed=std::move(advanced);
 				}
 				if(!converged){
-					if(!(acceptedLongShadow||monitoredLongShadow)||
+					if(!(acceptedLongShadow||monitoredLongShadow||equalTimeReadmission)||
 						referenceSubstepCount>=64u)return false;
 					std::fprintf(stderr,"EQUAL_TIME_REFERENCE_RETRY slice=%zu failed_substeps=%zu "
 						"next_substeps=%zu error=%s\n",slice,referenceSubstepCount,
@@ -741,6 +807,15 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				std::fprintf(stderr,"monitored tangent target worker mismatch: %s\n",
 					error.c_str());return 116;
 			}
+		}else if(equalTimeReadmission){
+			// r112/r139 already own oracle worker-identity.  Readmission consumes the
+			// authoritative parallel schedule once per slice; a second one-worker
+			// trajectory is not an additive-contract term.
+			oracleSerial=oracle;
+			equalTimeReferenceSerialDigest=equalTimeReferenceScheduleDigest;
+			equalTimeSerialTerminalTarget=equalTimeTerminalTarget;
+			equalTimeSerialTerminalTargetDigest=equalTimeTerminalTargetDigest;
+			equalTimeSerialTerminalTargetTime=equalTimeTerminalTargetTime;
 		}else if(!(acceptedLongShadow||monitoredLongShadow)){
 			error.clear();
 			if(!advanceReference(1u,oracleSerial,equalTimeReferenceSerialDigest,
@@ -2604,7 +2679,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		double productionWallMS=0.0;
 		for(;;){
 			const auto productionWallStart=std::chrono::steady_clock::now();
-			productionSucceeded=(longShadow||goldenSubdominance)?
+			productionSucceeded=(longShadow||goldenSubdominance||equalTimeReadmission)?
 				RISE::AttemptFireProductionResidentStepMetal(request,production,&error):
 				RISE::AdvanceFireProductionResidentStepMetal(request,production,&error);
 			productionWallMS=std::chrono::duration<double,std::milli>(
@@ -2618,7 +2693,8 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			// must be brought into band before the owner classifies that ordinary
 			// refusal; the boolean alone cannot distinguish it from a fatal/default
 			// result.
-			if((!acceptedLongShadow&&!physicalRetryRED&&!goldenSubdominance)||
+			if((!acceptedLongShadow&&!physicalRetryRED&&!goldenSubdominance&&
+				!equalTimeReadmission)||
 				production.physicalProjection.validationPassed||
 				production.residentProjectionInvocationCount!=2u)break;
 			const double pre=production.physicalProjection.maximumPreProjectionResidualPerS;
@@ -3000,7 +3076,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			production.projection.maximumPreProjectionResidualPerS,
 			production.projection.maximumPostProjectionResidualPerS,
 			std::fabs(maximumRestorationTarget),0.005f*std::fabs(maximumRestorationTarget));
-		if(goldenSubdominance){
+		if(goldenSubdominance||equalTimeReadmission){
 			if(production.interstageFullGridTransferCount!=0u||
 				production.residentProjectionInvocationCount!=1u||
 				production.conservativeProducerPrecision!=
@@ -3442,6 +3518,72 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			FireProductionDyadicCalibration::ComponentInventoryDensity(conservative32);
 		const std::array<double,9> inventory64=
 			FireProductionDyadicCalibration::ComponentInventoryDensity(conservative64);
+		if(equalTimeReadmission){
+			FireProductionDyadicCalibration::FilteredField filteredOracle;
+			FireProductionDyadicCalibration::FilteredVelocityField filteredOracleVelocity;
+			if(!FireProductionDyadicCalibration::FilterConservative(beginning,
+				oracle.conservative,beginning.values.characteristicDiameterM,filteredOracle)||
+				!FireProductionDyadicCalibration::FilterVelocity(beginning,
+				oracle.velocityMPerS,beginning.values.characteristicDiameterM,
+				filteredOracleVelocity))return 186;
+			const std::array<double,9> schemeScalar=
+				FireProductionDyadicCalibration::FieldDistance(filtered32,filteredOracle);
+			const double schemeVelocity=FireProductionDyadicCalibration::VelocityDistance(
+				filteredVelocity32,filteredOracleVelocity);
+			const std::array<double,9> oracleInventory=
+				FireProductionDyadicCalibration::ComponentInventoryDensity(oracle.conservative);
+			for(std::size_t component=0u;component<9u;++component){
+				double scalarTolerance=0.0,inventoryTolerance=0.0;
+				const double schemeInventory=std::fabs(inventory32[component]-
+					oracleInventory[component]);
+				const bool scalarToleranceDefined=FireProductionCalibration::TriangleTolerance(
+					productionDistance[component],productionTemporal[component],
+					oracleDistance[component],oracleTemporal[component],scalarBound[component],
+					scalarTolerance);
+				const bool inventoryToleranceDefined=FireProductionCalibration::TriangleTolerance(
+					inventoryDistance[component],productionInventoryTemporal[component],
+					oracleInventoryDistance[component],oracleInventoryTemporal[component],
+					inventoryBound[component],inventoryTolerance);
+				const bool scalarPassed=scalarToleranceDefined&&
+					schemeScalar[component]<=scalarTolerance;
+				const bool inventoryPassed=inventoryToleranceDefined&&
+					schemeInventory<=inventoryTolerance;
+				readmissionGateCount+=2u;
+				readmissionFailureCount+=scalarPassed?0u:1u;
+				readmissionFailureCount+=inventoryPassed?0u:1u;
+				const double scalarRatio=schemeScalar[component]/scalarTolerance;
+				const double inventoryRatio=schemeInventory/inventoryTolerance;
+				maximumScalarContractRatio=std::max(maximumScalarContractRatio,scalarRatio);
+				maximumInventoryContractRatio=std::max(maximumInventoryContractRatio,
+					inventoryRatio);
+				FireProductionDyadicCalibration::AppendDouble(readmissionTrace,
+					schemeScalar[component]);
+				FireProductionDyadicCalibration::AppendDouble(readmissionTrace,scalarTolerance);
+				FireProductionDyadicCalibration::AppendDouble(readmissionTrace,schemeInventory);
+				FireProductionDyadicCalibration::AppendDouble(readmissionTrace,inventoryTolerance);
+				std::fprintf(stderr,"equal-time readmission slice=%zu component=%zu "
+					"scalar=%.17g tolerance=%.17g ratio=%.17g accepted=%d "
+					"inventory=%.17g inventory_tolerance=%.17g inventory_ratio=%.17g "
+					"inventory_accepted=%d\n",slice,component,schemeScalar[component],
+					scalarTolerance,scalarRatio,scalarPassed?1:0,schemeInventory,
+					inventoryTolerance,inventoryRatio,inventoryPassed?1:0);
+			}
+			double velocityTolerance=0.0;
+			const bool velocityToleranceDefined=FireProductionCalibration::TriangleTolerance(
+				velocityDistance,ProductionVelocityTemporal,oracleVelocityDistance,
+				OracleVelocityTemporal,velocityBound,velocityTolerance);
+			const bool velocityPassed=velocityToleranceDefined&&schemeVelocity<=velocityTolerance;
+			++readmissionGateCount;readmissionFailureCount+=velocityPassed?0u:1u;
+			velocityContractRatio=std::max(velocityContractRatio,
+				schemeVelocity/velocityTolerance);
+			FireProductionDyadicCalibration::AppendDouble(readmissionTrace,schemeVelocity);
+			FireProductionDyadicCalibration::AppendDouble(readmissionTrace,velocityTolerance);
+			std::fprintf(stderr,"equal-time readmission slice=%zu velocity=%.17g "
+				"tolerance=%.17g ratio=%.17g accepted=%d reference_substeps=%zu "
+				"schedule=%s\n",slice,schemeVelocity,velocityTolerance,
+				schemeVelocity/velocityTolerance,velocityPassed?1:0,
+				equalTimeReferenceSubstepCount,equalTimeReferenceScheduleDigest.c_str());
+		}
 		for(std::size_t component=0u;component<9u;++component){
 			const double precisionInventory=std::fabs(inventory32[component]-
 				inventory64[component]);
@@ -3608,8 +3750,19 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			reductionRatios[slice],
 			maximumOracleThreadScalar,maximumOracleThreadVelocity,
 			production.projection.validationPassed?1:0);
-		sliceAccepted=true;
+			sliceAccepted=true;
 		}
+	}
+	if(equalTimeReadmission){
+		const std::string trace=RISECBOR64::SHA256Hex(readmissionTrace);
+		std::fprintf(stderr,"equal-time readmission complete slices=8 gates=%zu failures=%zu "
+			"scalar_max_ratio=%.17g velocity_ratio=%.17g inventory_max_ratio=%.17g "
+			"original_excesses=83/28/8.7 manifold_floor_attribution=%d trace=%s golden=%s\n",
+			readmissionGateCount,readmissionFailureCount,maximumScalarContractRatio,
+			velocityContractRatio,maximumInventoryContractRatio,
+			readmissionFailureCount>0u?1:0,trace.c_str(),checkpointDigest);
+		return readmissionGateCount==152u&&DigestFile(checkpointPath)==checkpointDigest?
+			(readmissionFailureCount==0u?188:187):186;
 	}
 	if(longShadow){
 		if(monitoredLongShadow){

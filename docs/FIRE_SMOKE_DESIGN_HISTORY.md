@@ -4275,3 +4275,20 @@ it was already tried and refuted here.
   equal-time additive contract is now complete.  Artifact and raw transcript
   are retained under `r173_filtered_temporal`; the eight-slice verdict remains
   the next unexecuted rung.
+- **r174 equal-time eight-slice readmission (2026-08-28):** the complete
+  additive contract is applied uniformly to the eight SHA-sealed r171
+  beginnings.  The r112 tensor cubic B-spline and physical width precede every
+  difference.  Production takes one represented step; the Binary64 reference
+  takes seven nominal eighth-steps plus a positive final representable
+  remainder, so its accumulated endpoint and terminal target are exactly the
+  production endpoint.  The r112/r139 evidence owns worker-count identity, so
+  this admitted measurement does not repeat the retired serial-oracle copy.
+
+  All 152 scalar, velocity, and inventory inequalities pass.  Maximum contract
+  ratios are `0.0018329622432418256`, `0.0081254983789433733`, and
+  `0.0032325000146012773`; the original `83x/28x/8.7x` excess classes now pass
+  under the completed equal-time contract.  The manifold-floor fidelity flag
+  is evaluated and not implicated.  Exact exit `188`, trace
+  `75817882...cfc19`, and the complete transcript are retained under
+  `r174_equal_time_readmission`.  Thermo/source maps and first light are now
+  next; neither is claimed by this entry.

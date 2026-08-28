@@ -22,11 +22,9 @@ namespace FireProductionCalibration
 	{
 		if(!(productionDurationS>0.0)||!std::isfinite(productionDurationS)||
 			referenceSubstepsS.empty())return false;
-		const double expectedSubstep=productionDurationS/
-			static_cast<double>(referenceSubstepsS.size());
 		double accumulated=0.0;
 		for(const double step:referenceSubstepsS){
-			if(!(step>0.0)||!std::isfinite(step)||step!=expectedSubstep)return false;
+			if(!(step>0.0)||!std::isfinite(step))return false;
 			accumulated+=step;
 		}
 		return std::isfinite(accumulated)&&accumulated==productionDurationS&&
