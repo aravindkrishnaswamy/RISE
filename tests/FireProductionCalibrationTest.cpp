@@ -2208,7 +2208,7 @@ int main()
 	Check(!temporalStop.empty()&&!temporalStopRaw.empty()&&!temporalTargets.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalStop.begin(),temporalStop.end()))==
-			"a36bc5fd0a873fdbe1208cbcf7214f25d21de74f502e7c5aa94c1b384ed962f7"&&
+			"2da3f59ba57fe1c883ee526e80ecf41d39fd8994fab48e73cee9c594e8f98ef1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			temporalStopRaw.begin(),temporalStopRaw.end()))==
 			"b36fa4200dfdc253f78e25c9ec2a1f2552e26c46ff4718102aab0c54c1f116a3"&&
@@ -2232,7 +2232,7 @@ int main()
 			"3f98a148082a4113bedfad8473a271890784cce42be010e08903694fb7f6ce13"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"874d88383abe09fb164ae1596ebdeceec18cfbfef3ee4fc7402bcfff0bc8b8a7"&&
+			"10ab7ff4616a426de167b1f235f5a7a75a795719583bf05ba902353b9d328a48"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
 			"1509d05724ab8e13c802fd53b5f48d7998804b106af3d4bf6f6868a56db542fb"&&

@@ -1170,11 +1170,17 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	r172_rc=0 r172_seal_rc=0 r172_sealed=0
 	if [ ! -x "$r172_path" ] || [ ! -x "$r172_oracle_path" ]; then
 		r172_rc=127
-	elif "$r172_oracle_path" --fire-production-calibration-seal-temporal-targets \
-		"$r172_temp" "$r172_protocol" "$r172_protocol_sha" >"$r172_seal_log" 2>&1; then
-		r172_seal_rc=0
 	else
-		r172_seal_rc=$?
+		if [ -n "$timeout_bin" ]; then
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r172_oracle_path" \
+				--fire-production-calibration-seal-temporal-targets "$r172_temp" \
+				"$r172_protocol" "$r172_protocol_sha" >"$r172_seal_log" 2>&1 ||
+				r172_seal_rc=$?
+		else
+			"$r172_oracle_path" --fire-production-calibration-seal-temporal-targets \
+				"$r172_temp" "$r172_protocol" "$r172_protocol_sha" \
+				>"$r172_seal_log" 2>&1 || r172_seal_rc=$?
+		fi
 	fi
 	if [ "$r172_seal_rc" -eq 194 ] &&
 		grep -Fq "temporal targets sealed manifest_sha256=$r172_targets_sha" "$r172_seal_log" &&
