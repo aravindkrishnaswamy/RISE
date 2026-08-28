@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  VolumeEnvFurnaceTest.cpp - Regression guard for the MEDIUM-SCATTER
-//    paths of the path tracer.  Three defects, all closed, all guarded
+//    paths of the path tracer.  Four defects, all closed, all guarded
 //    here:
 //
 //      Fix 1 (slice F2 of the PT env-MIS arc) - the env MIS partition
@@ -15,6 +15,10 @@
 //             vertex and then broke out of the loop, so a ray that had
 //             already bounced off a SURFACE lost its whole
 //             multiple-scatter tail.  Guarded by cells 7-9.
+//      Fix 4 (residual wave 4c) - NEE at a volume-scatter vertex cast
+//             NO SHADOW RAY, so every medium vertex integrated light it
+//             could not actually see.  Guarded by cells 7-9, which are
+//             now ABSOLUTE furnace assertions because of it.
 //
 //  WHAT IS GUARDED - FIX 1 (env MIS partition).
 //    PathTracingIntegrator::IntegrateRayTemplated handles a camera ray
@@ -192,7 +196,10 @@
 //    perfectly white Lambertian floor 20 units below (see the scene's
 //    own comment for the construction and why it is lossless).
 //
-//  RED-PROVE, FIX 3.  Same tree, HWSS walk reverted to the `break`:
+//  RED-PROVE, FIX 3.  Same tree, HWSS walk reverted to the `break`.
+//    Measured BEFORE Fix 4 landed, so every number here carries the
+//    ~+6 % over-count Fix 4 removed; read them as a comparison between
+//    two states of the same build, not as current absolutes:
 //
 //      floor RGB PT              1.06261   (unchanged: 1.06210 fixed)
 //      floor spectral hwss=false 1.06903   (unchanged: 1.06704 fixed)
@@ -201,48 +208,97 @@
 //    i.e. the RGB and NM cells are byte-for-byte unaffected by the fix
 //    -- which is the file's EVIDENCE, not its assumption, that those
 //    two twins already continued -- while the hero bundle recovers from
-//    a ratio-to-RGB of 0.683 to 0.955.  Two of the file's 26 checks
-//    fail in that state (cell 9's ratio band and its structural-dark
-//    band); all 26 pass with the walk continuing.
+//    a ratio-to-RGB of 0.683 to 0.955.  Cell 9's ratio band and its
+//    structural-dark band both fail in that state; with the walk
+//    continuing, every check in the file passes.  Post-Fix-4 the same
+//    revert also fails cell 9's new absolute mean band (0.726 against a
+//    -9 % floor, 3x outside).
 //
-//  THE SURFACE-BOUNCE-THROUGH-MEDIUM EXCESS -- A NEW, UNFIXED RESIDUAL.
-//    Cells 7-9 do NOT read 1.0.  All three read ~+6 % over unity, and
-//    the excess is NOT any of the three fixes above -- it is a
-//    pre-existing defect that this scene is the first thing in the tree
-//    to reach, because it needs a SURFACE whose bounce rays traverse a
-//    medium and no prior test had one.  Characterised so far:
+//  WHAT IS GUARDED - FIX 4 (the UNSHADOWED volume-vertex NEE).
+//    Cells 7-9 used to read ~+6 % over unity and could therefore only
+//    assert RATIOS.  The excess was a pre-existing defect that this
+//    scene is the first thing in the tree to reach, because reaching it
+//    needs a MEDIUM VERTEX WITH GEOMETRY AROUND IT, and every prior
+//    volume test in the tree is a bare medium in empty space.
 //
-//      - It vanishes exactly as sigma_s -> 0: measured +6.20 % at
-//        sigma_s = 0.004, +4.16 % at 0.002, +1.16 % at 0.0005, and
-//        -0.011 % at 1e-9.  So the geometry, the albedo, the furnace
-//        reasoning and the surface's own MIS are all correct; the
-//        excess is entirely a medium interaction.
-//      - It grows with the optical depth the BOUNCE rays traverse, not
-//        with the surface's own position in the medium: moving the
-//        floor from y=-20 to y=-80 (still inside the fog) takes it from
-//        +6.25 % to +8.68 %, and moving it OUTSIDE the fog entirely
-//        (y=-150, fog box +-100) takes it to +9.41 %.
-//      - It is common-mode across RGB, NM and HWSS to within 0.7 %,
-//        which is what makes cells 8 and 9's ratio assertions valid.
-//      - It is independent of the shader op (DefaultDirectLighting and
-//        DefaultPathTracing agree to 0.06 pp).
-//      - The surface env-NEE shadow ray IS medium-attenuated:
-//        instrumenting LightSampler's env branch over a full run of
-//        this file shows 1.75M surface (isVolumeScatter=false) calls
-//        with mean Tr 0.604, matching e^-0.5 for this geometry.  So the
-//        naive "NEE forgot the transmittance" explanation is REFUTED,
-//        even though (1 - Tr) x w_nee happens to predict the right
-//        order of magnitude.
-//      - Cells 4-6 close at 1.0 on the same medium and the same escape
-//        machinery, so the no-scatter survival weighting and the
-//        volume-vertex MIS partition are both fine in isolation.  The
-//        defect lives in the COMBINATION -- a surface vertex's env-MIS
-//        pair when the partner ray must first survive a medium.
+//    MECHANISM.  `LightSampler::EvaluateDirectLighting{,NM}` gated all
+//    three of its NEE rows' shadow rays on
 //
-//    Not fixed here, and deliberately not asserted: cells 7-9 assert
-//    RATIOS (see the RELATIVE block further down), which the common-mode
-//    excess cancels out of.  When it is fixed, cells 7-9 should be
-//    re-derived as absolute furnace assertions like cells 1-6.
+//        if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+//
+//    `pShadingObject` is NULL at a volume-scatter vertex --
+//    MediumTransport::EvaluateInScattering{,NM} is the only caller that
+//    passes 0, and it always pairs it with isVolumeScatter=true -- so
+//    the gate was false and NO SHADOW RAY WAS EVER CAST there.  Every
+//    medium vertex integrated the environment (and any delta or mesh
+//    light) over the FULL sphere, including the directions the floor
+//    blocks.  Its phase-sampled MIS partner does stop at the floor, so
+//    the two strategies summed to more than 1 by exactly the blocked
+//    solid angle's share.  Step 1 of the same function had always
+//    spelled the gate `pShadingObject ? ...->DoesReceiveShadows() :
+//    true`; the fix is to use that reading -- "a NULL means nobody
+//    opted out", not "skip the visibility test" -- at all six sites.
+//
+//    HOW IT WAS FOUND, and the per-strategy numbers.  A compile-time
+//    per-strategy tally on this scene (RGB, 16x16x4096) plus a 2-bit
+//    A/B that can make SURFACE vertices and/or VOLUME vertices analog
+//    (env-NEE off there, MIS weight forced to 1 on its partner):
+//
+//      mode              surf-NEE  vol-NEE  esc/surf  esc/vol  TOTAL
+//      0 both MIS          0.1194   0.2356    0.5396   0.1673  1.0620
+//      1 volume MIS only   0.0000   0.2370    0.6586   0.1679  1.0636
+//      2 surface MIS only  0.1201   0.0000    0.5375   0.3357  0.9933
+//      3 fully analog      0.0000   0.0000    0.6583   0.3349  0.9932
+//
+//    (vol-NEE and esc/vol pool the main loop's and the camera walk's
+//    volume vertices.)  Modes 2 and 3 agreeing at 0.993 says the
+//    transport and the SURFACE partition are both exact; mode 1 landing
+//    +7 pp above mode 3 says the VOLUME partition is the whole defect.
+//    In mode 1 the volume vertices' env-NEE reads 0.412 unweighted
+//    against its partner's 0.298 -- two strategies for the same
+//    integral disagreeing by +38 %, which is the blocked solid angle.
+//    Post-fix all four modes agree at 0.993 and vol-NEE / esc-vol split
+//    0.1488 / 0.1496, i.e. an exact half each, as w_nee = w_phase = 0.5
+//    demands for an isotropic phase in a uniform environment.
+//
+//    Every previously-recorded symptom follows from this one cause:
+//      - It vanished as sigma_s -> 0 (+6.20 % at 0.004, +1.16 % at
+//        0.0005, -0.011 % at 1e-9) because that is the volume-vertex
+//        count going to zero.
+//      - It grew with the optical depth the BOUNCE rays traverse (floor
+//        at y=-20 +6.25 %, at y=-80 +8.68 %, OUTSIDE the fog at y=-150
+//        +9.41 %) because that is how many volume vertices sit where
+//        the floor blocks a large solid angle.
+//      - It was common-mode across RGB, NM and HWSS: all three reach
+//        the same two LightSampler functions through
+//        MediumTransport::EvaluateInScattering{,NM}.
+//      - The surface env-NEE shadow ray really was medium-attenuated
+//        (1.75M isVolumeScatter=false calls, mean Tr 0.604 = e^-0.5).
+//        That instrumentation was correct and its refutation stands --
+//        it measured the SURFACE calls, and the surface rows were never
+//        the broken ones.
+//      - Cells 4-6 closed at 1.0 throughout: with no geometry at all,
+//        an unshadowed volume NEE is exactly right.  They still close
+//        after the fix (the shadow ray they now cast can hit nothing),
+//        which is this file's evidence that the fix is scoped to the
+//        occluded case.
+//
+//    RED-PROVE, FIX 4.  Same tree, all six shadow gates restored to
+//    `if( pShadingObject && pShadingObject->DoesReceiveShadows() )`:
+//
+//                                  reverted   fixed
+//        RGB PT (cell 1)            0.99849   0.99777    unchanged
+//        fog box RGB PT (cell 4)    0.99633   0.99522    unchanged
+//        floor RGB PT (cell 7)      1.06205   0.99322    FAILS +2 %
+//        floor hwss=false (cell 8)  1.06916   0.99794    FAILS +2 %
+//        floor hwss=true  (cell 9)  1.02062   0.94900    borderline
+//
+//    3 of the file's 29 checks fail in that state.  Cells 1-6 are
+//    unchanged to within MC noise, which is the evidence that the fix
+//    touches only volume vertices that actually have geometry around
+//    them.  Cell 9's +2.1 % here is only just over the cap and reads
+//    +1.4 % on other runs, so it is not a dependable Fix-4 guard --
+//    cells 7 and 8 are, at ~3x outside.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -709,41 +765,60 @@ static ImageStats RunFurnaceCase(
 }
 
 //////////////////////////////////////////////////////////////////////
-// The RELATIVE furnace assertions (cells 7-9 only).
+// The floor-scene assertions (cells 7-9): ABSOLUTE mean, one-sided
+// per-pixel, plus two cross-variant RATIOS.
 //
-// WHY CELLS 7-9 ARE RELATIVE AND CELLS 1-6 ARE ABSOLUTE.
-//   The floor scene does NOT read 1.0.  All three of its variants read
-//   ~+6 % over unity (RGB 1.0625, hwss=false 1.0690, hwss=true 1.0138
-//   -- the last being 1.0620 x the hwss bundle factor), and that excess
-//   is a PRE-EXISTING defect this scene is the first thing in the tree
-//   to reach.  It is NOT what cells 7-9 exist to guard, and it is not
-//   fixed here; it is characterised in the file header under "THE
-//   SURFACE-BOUNCE-THROUGH-MEDIUM EXCESS".
+// WHY THE MEAN IS NOW ASSERTED.  Until residual wave 4c these three
+// cells read ~+6 % over unity and could only assert ratios, which the
+// common-mode excess cancelled out of.  Fix 4 (the unshadowed
+// volume-vertex NEE -- see the file header) removed that excess, so the
+// floor scene is now an exact furnace like cells 1-6 and its mean is
+// asserted directly.  Measured over 12 consecutive runs:
 //
-//   Because the excess is common-mode across RGB, NM and HWSS to
-//   within 0.7 %, the RATIO between the variants is unaffected by it
-//   and is a sharp assertion.  RGB is the reference: its main loop
-//   (IntegrateFromHitTemplated, shared by the Pel and NM tags) has
-//   always continued the volumetric walk, which is exactly what this
-//   file verified rather than assumed -- reverting the HWSS fix leaves
-//   the RGB and hwss=false cells unchanged to within MC noise
-//   (1.0626 vs 1.0621, 1.0690 vs 1.0670) while the hwss=true cell
-//   collapses.
+//     cell 7  floor RGB PT              0.9922 .. 0.9950   (-0.50..-0.78 %)
+//     cell 8  floor spectral hwss=false 0.9950 .. 1.0005   (-0.50..+0.05 %)
+//     cell 9  floor spectral hwss=true  0.9479 .. 0.9560   (-4.40..-5.21 %)
 //
-// BANDS.
-//   hwss=false / RGB: measured 1.0047.  Band [0.98, 1.02] -- the NM tag
-//   walks the SAME templated loop as the Pel tag, so anything outside a
-//   couple of percent means the two tags diverged.
+// BANDS, DERIVED.
+//   ABOVE unity is capped at kFurnaceTolHi (2 %) for all three, exactly
+//   as cells 1-6: nothing in a sigma_a = 0, rho = 1 furnace can exceed
+//   1.0, so any over-unity reading is a double-count.  This is the Fix-4
+//   guard -- with the shadow gates reverted, cell 7 reads 1.0621 and
+//   cell 8 reads 1.0692, both ~3x outside it (see RED-PROVE, FIX 4).
 //
-//   hwss=true / RGB: measured 0.9546.  The reference is NOT 1.0: the
-//   hero bundle carries the documented pre-existing spectral-bundle
-//   env deficit, which the no-geometry cells measure independently at
-//   0.959 (cell 6 / cell 4) and 0.958 (cell 3 / cell 1).  The floor
-//   scene lands on the same value, which is the actual claim being
-//   asserted: after the fix, HWSS loses nothing to the surface-bounce
-//   walk beyond the bundle deficit it already had.  Band [0.93, 1.00]
-//   -- 2.6 % of headroom below and the bundle deficit's own size above,
-//   and the truncating build reads 0.683, i.e. 6.5x outside it.
+//   BELOW unity, cells 7 and 8 take the same kFurnaceTolLo (2 %) as
+//   cells 1-6: the worst measured deficit is 0.78 %, so the floor has
+//   ~2.6x headroom, and the wave-4b revert drops cell 9 to 0.726, which
+//   is 3.0x outside its own band.
+//
+//   Cell 9 takes its own kFloorHwssTolLo (9 %) rather than the
+//   kHwssFurnaceTolLo (7 %) cells 3 and 6 use.  It sits ~0.7 pp deeper
+//   than those two (-5.2 % vs -4.5 %) for the same reason they sit below
+//   unity at all -- the pre-existing spectral-bundle env deficit -- and
+//   this scene runs more bounces per path, so it has a wider run-to-run
+//   spread (0.81 pp over 12 runs vs ~0.25 pp for cell 6).  9 % leaves
+//   3.8 pp of headroom, ~4.7 spread-widths, and still fails the wave-4b
+//   revert (0.726, 3.0x outside).  Cell 9 is NOT a dependable Fix-4
+//   guard: its pre-Fix-4 reading is only +1.4 to +2.1 % across runs --
+//   it straddles the +2 % cap -- because the hero bundle's own -5 %
+//   deficit masks most of the over-count.  Cells 7 and 8 carry that
+//   job, at +6.2 % and +6.9 %.
+//
+// THE RATIOS ARE KEPT, and are the sharper of the two guards for Fix 3.
+//   hwss=false / RGB: measured 1.0015 .. 1.0074 over 12 runs.  Band
+//   [0.98, 1.02] -- the NM tag walks the SAME templated loop as the Pel
+//   tag, so anything outside a couple of percent means the two tags
+//   diverged.
+//
+//   hwss=true / RGB: measured 0.9535 .. 0.9577 over 12 runs.  The
+//   reference is NOT 1.0: the hero bundle carries the documented
+//   pre-existing spectral-bundle env deficit, which the no-geometry
+//   cells measure independently at 0.959 (cell 6 / cell 4) and 0.958
+//   (cell 3 / cell 1).  The floor scene lands on the same value, which
+//   is the actual claim being asserted: HWSS loses nothing to the
+//   surface-bounce walk beyond the bundle deficit it already had.  Band
+//   [0.93, 1.00] -- 2.4 % of headroom below and the bundle deficit's own
+//   size above, and the truncating build reads 0.683, i.e. 6.5x outside.
 //
 // PER-PIXEL, AND WHY IT IS ONE-SIDED HERE.  Expressed against the
 // cell's OWN mean rather than against 1.0, and only the LOW side is
@@ -753,15 +828,15 @@ static ImageStats RunFurnaceCase(
 // traverse up to tau ~ 1.6 before leaving the box, and the escape
 // weight is Tr / pSurvival with pSurvival = e^-tau, so a surviving
 // long-tau escape legitimately carries a weight of several.  Measured
-// max/mean on cell 9 over 6 runs: 1.05, 1.11, 1.11, 1.37, 2.73, 5.31 --
-// a genuinely heavy tail, and one the RGB cell does not show (1.05 to
-// 1.12) because its per-channel weights stay correlated where the hero
-// bundle's per-wavelength walks do not.  It is VARIANCE, not bias: the
-// cell-9 mean over those same 6 runs is 1.0111 to 1.0304 (ratio to RGB
-// 0.9515 to 0.9702), i.e. stable to +-1.9 %.  A max-side cap that
-// tolerated 5.3x would not be a guard, so the high side is left to the
-// ratio bands -- a NaN, an infinity or a runaway pixel moves the mean
-// and fails those instead.  The low side still does its original job:
+// max/mean on cell 9 over 12 post-fix runs: 1.09 .. 1.79 (median
+// ~1.16, worst 1.79) -- a genuinely heavy tail, and one the RGB
+// cell does not show (1.04 to 1.05) because its per-channel weights
+// stay correlated where the hero bundle's per-wavelength walks do not.
+// It is VARIANCE, not bias: the cell-9 mean over those same 12 runs is
+// stable to +-0.4 %.  A max-side cap that tolerated 1.8x would not be
+// much of a guard, so the high side is left to the mean band and the
+// ratios -- a NaN, an infinity or a runaway pixel moves the mean and
+// fails those instead.  The low side still does its original job:
 // black pixels or a wrongly-lit region.
 //////////////////////////////////////////////////////////////////////
 static const double kRelBandNoHwssLo = 0.98;
@@ -769,15 +844,19 @@ static const double kRelBandNoHwssHi = 1.02;
 static const double kRelBandHwssLo   = 0.93;
 static const double kRelBandHwssHi   = 1.00;
 //! Floor-scene per-pixel structural LOW bound, relative to the cell's
-//! own mean.  Worst measured over 6 runs: min/mean 0.913 (cell 8).
-//! 0.80 gives ~1.5x headroom.  There is deliberately no high bound --
-//! see the block above.
+//! own mean.  Worst measured over 12 post-fix runs: min/mean 0.911
+//! (cell 8).  0.80 gives ~1.5x headroom.  There is deliberately no high
+//! bound -- see the block above.
 static const double kFloorPixelLo     = 0.80;
+//! Cell 9's own below-unity floor; see "BANDS, DERIVED" above for why
+//! it is wider than kHwssFurnaceTolLo.
+static const double kFloorHwssTolLo   = 0.09;
 
 static ImageStats RunFloorCase(
 	const char* label,
 	const std::string& sceneText,
-	const char* tag )
+	const char* tag,
+	const double loTol )
 {
 	const ImageStats s = RenderAndComputeStats( sceneText, tag );
 
@@ -792,7 +871,12 @@ static ImageStats RunFloorCase(
 		<< "  (min " << s.minLum << ", max " << s.maxLum << ")"
 		<< "  deviation from 1.0 = "
 		<< ( (s.luminance - 1.0) * 100.0 ) << " %"
-		<< "  [absolute NOT asserted -- see RELATIVE block]" << std::endl;
+		<< "  [band -" << (loTol * 100.0) << " % .. +"
+		<< (kFurnaceTolHi * 100.0) << " %]" << std::endl;
+
+	std::string meanName = std::string( label ) + ": mean inside the furnace band around 1.0";
+	Check( s.luminance >= 1.0 - loTol && s.luminance <= 1.0 + kFurnaceTolHi,
+		   meanName.c_str() );
 
 	std::string bandName = std::string( label ) + ": no pixel structurally dark vs this cell's own mean";
 	Check( s.luminance > 0.0 &&
@@ -892,19 +976,19 @@ static void TestFloorFurnace()
 	std::cout << "=== 7. Fog box + white floor (surface bounce -> medium) -- RGB PT ===" << std::endl;
 	const ImageStats rgb = RunFloorCase( "floor RGB PT",
 		AssembleScene( SceneCommonFogBoxFloor( kFloorW, kFloorH ), RasterizerPTRgb( kFloorSamples ) ),
-		"floorrgb" );
+		"floorrgb", kFurnaceTolLo );
 
 	std::cout << "=== 8. Fog box + white floor -- spectral PT, hwss=false ===" << std::endl;
 	const ImageStats nohwss = RunFloorCase( "floor spectral hwss=false",
 		AssembleScene( SceneCommonFogBoxFloor( kFloorW, kFloorH ), RasterizerPTSpectral( kFloorSamples, false ) ),
-		"floorspec" );
+		"floorspec", kFurnaceTolLo );
 	CheckFloorRatio( "floor spectral hwss=false", nohwss, rgb,
 		kRelBandNoHwssLo, kRelBandNoHwssHi );
 
 	std::cout << "=== 9. Fog box + white floor -- spectral PT, hwss=true ===" << std::endl;
 	const ImageStats hwss = RunFloorCase( "floor spectral hwss=true",
 		AssembleScene( SceneCommonFogBoxFloor( kFloorW, kFloorH ), RasterizerPTSpectral( kFloorSamples, true ) ),
-		"floorhwss" );
+		"floorhwss", kFloorHwssTolLo );
 	CheckFloorRatio( "floor spectral hwss=true", hwss, rgb,
 		kRelBandHwssLo, kRelBandHwssHi );
 }

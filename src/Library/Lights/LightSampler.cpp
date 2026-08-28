@@ -1541,6 +1541,36 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	// per material rather than a blanket `fabs`.
 	const bool bFullSphere = ( pMaterial != 0 && pMaterial->ScattersFullSphere() );
 
+	// ================================================================
+	// SHADOW GATE (see the twin in EvaluateDirectLightingNM).
+	// ================================================================
+	// `pShadingObject` is the object being shaded, consulted only for its
+	// `DoesReceiveShadows()` opt-out.  It is NULL for a MEDIUM SCATTER
+	// VERTEX: MediumTransport::EvaluateInScattering{,NM} -- the only
+	// caller that passes 0 -- has no object to name, and always pairs the
+	// 0 with `isVolumeScatter == true`.  Every surface caller passes
+	// `ri.pObject`.
+	//
+	// A NULL therefore means "no object opted out", not "skip the shadow
+	// ray".  Step 1 (ambient / directional) always spelled it that way;
+	// Steps 2 and 3 used to spell it `pShadingObject && ...`, so every
+	// NEE row at a volume scatter vertex -- delta light, mesh area light,
+	// AND environment -- silently skipped its visibility test and
+	// reported UNOCCLUDED radiance.  Fog behind a wall was lit by the
+	// light in front of it; in a furnace with geometry, a medium vertex's
+	// env-NEE integrated the whole sphere while its phase-sampled MIS
+	// partner (which really does stop at the surface) integrated only the
+	// unoccluded part, so the two strategies summed to more than 1 by
+	// exactly the blocked solid angle's share.  Measured on
+	// VolumeEnvFurnaceTest's fog-box-plus-white-floor scene: the volume
+	// vertices' env-NEE read 0.412 against its partner's 0.298, i.e.
+	// +38 %, which is the whole of that scene's +6.2 % over-unity.
+	//
+	// Scenes with no geometry at all (VolumeEnvFurnaceTest cells 1-6) are
+	// unaffected: the shadow ray they now cast can hit nothing.
+	const bool bReceivesShadows =
+		pShadingObject ? pShadingObject->DoesReceiveShadows() : true;
+
 	const ILightManager* pLightMgr = pPreparedScene->GetLights();
 
 	// ----------------------------------------------------------------
@@ -1575,7 +1605,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// == 0), so it needs the same `bFullSphere` this
 				// function's other two NEE sites already carry.
 				l->ComputeDirectLighting( ri, caster, brdf,
-					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
+					bReceivesShadows,
 					amount, bFullSphere );
 				result = result + amount;
 			}
@@ -1736,7 +1766,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// Shadow test.  shadowT carries the Fresnel transmittance
 			// when transparent shadows are enabled (else 1,1,1).
 			RISEPel shadowT( 1.0, 1.0, 1.0 );
-			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
 				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT ) )
@@ -1840,7 +1870,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// when transparent shadows are enabled (else 1,1,1).
 				bool shadowed = false;
 				RISEPel meshShadowT( 1.0, 1.0, 1.0 );
-				if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+				if( bReceivesShadows )
 				{
 					const Ray rayToLight( ri.ptIntersection, vToLight );
 					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT );
@@ -1965,7 +1995,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// Fresnel transmittance when transparent shadows are on (else 1,1,1).
 			bool envShadowed = false;
 			RISEPel envShadowT( 1.0, 1.0, 1.0 );
-			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			if( bReceivesShadows )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
 				envShadowed = ShadowOccludedRGB( caster, rayToEnv, RISE_INFINITY, envShadowT );
@@ -2061,6 +2091,15 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	// is the convention the rest of this RGB/NM pair already follows.
 	const bool bFullSphere = ( pMaterial != 0 && pMaterial->ScattersFullSphere() );
 
+	// SHADOW GATE -- NM twin.  Full derivation of why a NULL
+	// `pShadingObject` means "nobody opted out" rather than "skip the
+	// shadow ray" is in EvaluateDirectLighting above; the short version is
+	// that MediumTransport::EvaluateInScatteringNM is the only caller that
+	// passes 0 and it is always a volume scatter vertex, whose NEE rows
+	// were consequently unshadowed.
+	const bool bReceivesShadows =
+		pShadingObject ? pShadingObject->DoesReceiveShadows() : true;
+
 	// ----------------------------------------------------------------
 	// Step 1: Deterministic evaluation of lights with zero exitance
 	// (ambient, directional).  These cannot participate in
@@ -2097,7 +2136,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// FULL-SPHERE NEE, DirectionalLight sibling (residual
 				// wave 2 item D) -- see the RGB Step 1 site's comment.
 				result += l->ComputeDirectLightingNM( ri, caster, brdf,
-					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
+					bReceivesShadows,
 					nm, bFullSphere );
 			}
 		}
@@ -2225,7 +2264,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// Shadow test.  shadowTNM carries the Fresnel transmittance
 			// when transparent shadows are enabled (else 1.0).
 			Scalar shadowTNM = 1.0;
-			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
 				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM ) )
@@ -2312,7 +2351,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// Shadow test.  meshShadowTNM carries the Fresnel transmittance
 		// when transparent shadows are enabled (else 1.0).
 		Scalar meshShadowTNM = 1.0;
-		if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+		if( bReceivesShadows )
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
 			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM ) )
@@ -2414,7 +2453,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// transparent shadows are enabled (else 1.0).
 			bool envShadowed = false;
 			Scalar envShadowTNM = 1.0;
-			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			if( bReceivesShadows )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
 				envShadowed = ShadowOccludedNM( caster, rayToEnv, RISE_INFINITY, nm, envShadowTNM );

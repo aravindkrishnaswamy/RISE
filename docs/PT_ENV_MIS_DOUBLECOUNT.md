@@ -7,7 +7,9 @@
 furnace with `sigma_a 0.0` held a stable +4% over-unity reading that
 background dilution could not explain.
 **Commits:** `e4f36607` (F1, surface fix), `afb2d64e` (F2, medium-scatter
-siblings + OpenPGL), `ff92ab91` (F3, `EnvLightBalanceTest` re-derivation).
+siblings + OpenPGL), `ff92ab91` (F3, `EnvLightBalanceTest` re-derivation),
+plus F4 (residual wave 4c, unshadowed volume-vertex NEE — closes
+residual-ledger item 8; uncommitted at the time of writing).
 
 ---
 
@@ -135,8 +137,10 @@ the predicted `+0.5 * (1 - e^-tau) * E[Tr_escape] ≈ +16%` excess: RGB
 `+15.73%`, spectral hwss=false `+16.39%`, spectral hwss=true `+10.90%`
 ([tests/VolumeEnvFurnaceTest.cpp:107-118](../tests/VolumeEnvFurnaceTest.cpp)).
 Six of that file's checks fail with the fix reverted; all pass with it in
-place. (The file has since grown from nine checks to eighteen — cells 4-6,
-the fog-box furnace, were added when residual-ledger item 1 was closed.)
+place. (The file has since grown from nine checks to twenty-nine — cells
+4-6, the fog-box furnace, were added when residual-ledger item 1 was
+closed, and cells 7-9, the fog box with a white floor, when items 7 and 8
+were.)
 
 ## 3. The fixes
 
@@ -175,6 +179,34 @@ the fog-box furnace, were added when residual-ledger item 1 was closed.)
   [PathTracingIntegrator.cpp:5205-5213](../src/Library/Shaders/PathTracingIntegrator.cpp)).
   `EnvLightBalanceTest.cpp` was rewritten to assert PT against closed forms
   directly instead of asserting BDPT/VCM agreement with PT. See below.
+
+- **F4 (residual wave 4c), unshadowed volume-vertex NEE.** All three NEE
+  rows in `LightSampler::EvaluateDirectLighting{,NM}` — delta light, mesh
+  area light, environment — gated their shadow ray on
+  `if( pShadingObject && pShadingObject->DoesReceiveShadows() )`.
+  `pShadingObject` is NULL at a **medium scatter vertex**
+  (`MediumTransport::EvaluateInScattering{,NM}` is the only caller that
+  passes `0`, and it always pairs the `0` with `isVolumeScatter == true`),
+  so the gate was false and **no shadow ray was ever cast there**: every
+  volume vertex integrated light it could not see. Step 1 of the same two
+  functions had always spelled the test `pShadingObject ?
+  pShadingObject->DoesReceiveShadows() : true` — "a NULL means nobody
+  opted out", not "skip the visibility test" — and the fix hoists that
+  reading into a single `bReceivesShadows` local used by all six sites.
+  [LightSampler.cpp:1543-1572](../src/Library/Lights/LightSampler.cpp)
+  (RGB, with the full derivation) and
+  [LightSampler.cpp:2094-2101](../src/Library/Lights/LightSampler.cpp)
+  (NM twin). Fixes residual-ledger item 8; see there for the per-strategy
+  tally and the red-prove. RGB, NM and HWSS all reach these two functions
+  through `MediumTransport`, so one fix closes all three; the legacy
+  `RayCaster` volume walk
+  ([RayCaster.cpp:1055](../src/Library/Rendering/RayCaster.cpp),
+  [RayCaster.cpp:1678](../src/Library/Rendering/RayCaster.cpp)) is fixed by
+  the same edit. BDPT and VCM have their own volume NEE and are untouched.
+  **Cost:** the shadow rays are new work that was previously skipped —
+  `scenes/Tests/Volumes/pt_chromatic_fog.RISEscene` goes from 17.1 s to
+  20.8 s (**+21 %**, mean of 3 runs each). That is the price of the
+  visibility test, not a regression to optimize away.
 
 ## 4. The fallout and re-calibration
 
@@ -473,53 +505,116 @@ arc. Flagged so a future session does not re-discover them from scratch.
    `0.683 → 0.955`, where `0.955` is the pre-existing spectral-bundle
    deficit the no-geometry cells measure independently at `0.959`), while
    the RGB and NM cells are unchanged within MC noise — `1.0626 → 1.0621`
-   and `1.0690 → 1.0670`.
+   and `1.0690 → 1.0670`. Those absolutes were measured **before** item 8
+   was fixed and all carry its `~+6 %` over-count; post-item-8 the same
+   revert also fails cell 9's new absolute `-9 %` mean band (`0.726`,
+   3.0× outside).
    [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
-8. **Surface-bounce-through-medium env excess (`+6 %`), NEW and
-   UNFIXED.** The floor scene added for item 7 does not read `1.0`: all
-   three variants read `~+6 %` over the exact furnace value. This is a
-   pre-existing defect that nothing in the tree had reached before,
-   because reaching it needs a **surface whose bounce rays traverse a
-   medium** and every prior volume test is camera-only. Characterised:
-   - It vanishes exactly as `sigma_s → 0` (`+6.20 %` at `0.004`,
-     `+4.16 %` at `0.002`, `+1.16 %` at `0.0005`, `-0.011 %` at `1e-9`),
-     so the scene's geometry, albedo, furnace reasoning and the surface's
-     own MIS partition are all verified correct — the excess is entirely a
-     medium interaction.
-   - It scales with the optical depth the **bounce** rays traverse, not
-     with where the surface sits: floor at `y=-20` `+6.25 %`, at `y=-80`
-     `+8.68 %`, and *outside* the fog box entirely (`y=-150`) `+9.41 %`.
-   - It is common-mode across RGB, NM and HWSS to within `0.7 %` (which is
-     what makes cells 8–9's ratio assertions valid) and independent of the
-     shader op (`DefaultDirectLighting` vs `DefaultPathTracing` agree to
-     `0.06 pp`).
-   - The obvious explanation is **refuted**: the surface env-NEE shadow
-     ray *is* medium-attenuated. Instrumenting `LightSampler`'s env branch
-     over a full run shows 1.75M surface (`isVolumeScatter=false`) calls
-     with mean `Tr = 0.604`, matching `e^-0.5` for this geometry — even
-     though `(1 - Tr) × w_nee` happens to predict roughly the right
-     magnitude.
-   - Cells 4–6 close at `1.0` on the same medium and the same no-scatter
-     survival machinery, and the volume-vertex MIS partition is verified
-     by cells 1–3, so both halves are fine in isolation. The defect is in
-     the **combination**: a surface vertex's env-MIS pair when the
-     BSDF-sampled partner must first survive a medium.
-   Cells 7–9 therefore assert **ratios**, which the common-mode excess
-   cancels out of, and print the absolute deviation without asserting it.
-   When this is fixed, cells 7–9 should be re-derived as absolute furnace
-   assertions like cells 1–6.
+8. ~~**Surface-bounce-through-medium env excess (`+6 %`).**~~ **CLOSED
+   (residual wave 4c, 2026-08-27) — it was never a surface-bounce defect
+   at all: NEE at a volume-scatter vertex cast NO SHADOW RAY.** See F4 in
+   §3 for the fix. The symptom needed a *medium vertex with geometry
+   around it*, and every prior volume test in the tree is a bare medium in
+   empty space, which is why nothing had reached it before — and why cells
+   1–6 stayed at `1.0` throughout: with no geometry, an unshadowed volume
+   NEE is exactly right.
+   - **Diagnosis method.** A compile-time per-strategy tally on cell 7
+     (RGB, 16×16×4096) plus a 2-bit A/B that can make SURFACE and/or
+     VOLUME vertices *analog* (env-NEE off there, the partner's MIS weight
+     forced to 1). A fully analog unidirectional estimator must read the
+     furnace value with no MIS anywhere, so any mode reading higher
+     localizes the broken partition:
+
+     | mode | surf-NEE | vol-NEE | esc/surf | esc/vol | TOTAL |
+     |---|---|---|---|---|---|
+     | 0 both MIS | 0.1194 | 0.2356 | 0.5396 | 0.1673 | **1.0620** |
+     | 1 volume MIS only | 0.0000 | 0.2370 | 0.6586 | 0.1679 | **1.0636** |
+     | 2 surface MIS only | 0.1201 | 0.0000 | 0.5375 | 0.3357 | **0.9933** |
+     | 3 fully analog | 0.0000 | 0.0000 | 0.6583 | 0.3349 | **0.9932** |
+
+     Modes 2 and 3 agreeing at `0.993` prove the transport *and* the
+     surface partition exact; mode 1 sitting `+7 pp` above mode 3 pins the
+     whole defect on the VOLUME partition. Within mode 1 the volume
+     vertices' env-NEE reads `0.412` unweighted against its phase-sampled
+     partner's `0.298` — two strategies for the same integral disagreeing
+     by **+38 %**, which is exactly the solid angle the floor blocks.
+     Post-fix all four modes agree at `0.993` and vol-NEE / esc-vol split
+     `0.1488 / 0.1496`, an exact half each, as `w_nee = w_phase = 0.5`
+     demands for an isotropic phase in a uniform environment.
+   - **Every recorded symptom follows from the one cause.** It vanished as
+     `sigma_s → 0` because that is the volume-vertex count going to zero;
+     it scaled with the *bounce* rays' optical depth because that is how
+     many volume vertices sit where the floor blocks a large solid angle
+     (floor at `y=-20` `+6.25 %`, `y=-80` `+8.68 %`, outside the fog at
+     `y=-150` `+9.41 %`); it was common-mode across RGB/NM/HWSS because
+     all three reach the same two `LightSampler` functions through
+     `MediumTransport`; and it was shader-op independent for the same
+     reason.
+   - **The earlier refutation stands and was not the miss.** The 1.75M
+     instrumented calls with mean `Tr = 0.604` were `isVolumeScatter ==
+     false` — surface calls — and the surface rows were never broken. The
+     `(1 - Tr) × w_nee` coincidence was exactly that.
+   - **Red-prove.** All six gates restored to `pShadingObject && …`:
+     cell 7 `1.06205` (fixed `0.99322`) and cell 8 `1.06916` (fixed
+     `0.99794`) both fail their `+2 %` mean band by ~3×; cells 1–6 are
+     unchanged to within MC noise (`0.99849` / `0.99633` reverted vs
+     `0.99777` / `0.99522` fixed), which is the evidence that the fix is
+     scoped to volume vertices that actually have geometry around them.
+     Cell 9 reads `+1.4…+2.1 %` across runs — it straddles the cap
+     because the hero bundle's own `-5 %` deficit masks most of the
+     over-count — so cells 7 and 8 are the guard, not cell 9.
+   - **Cells 7–9 are now ABSOLUTE furnace assertions** (measured over 12
+     runs: `0.9922…0.9950`, `0.9950…1.0005`, `0.9479…0.9560`), bands
+     `[-2 %, +2 %]` for 7 and 8 and `[-9 %, +2 %]` for 9, with the two
+     cross-variant ratios kept as the sharper item-7 guard. The suite is
+     29 checks, up from 26.
    [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp)
-   (file header, "THE SURFACE-BOUNCE-THROUGH-MEDIUM EXCESS").
-9. **HWSS floor-cell heavy tail.** With item 7 fixed, cell 9 shows
-   `max/mean` between `1.05` and `5.31` over six runs while its mean stays
-   within `±1.9 %` (ratio to RGB `0.9515–0.9702`). It is variance, not
-   bias: the floor's bounce rays can run nearly parallel to the floor and
-   traverse `tau ~ 1.6`, and the escape weight `Tr / pSurvival` with
-   `pSurvival = e^-tau` legitimately reaches several. The RGB cell does not
-   show it (`1.05–1.12`) because its per-channel weights stay correlated
-   where the hero bundle's per-wavelength walks do not. Cell 9's per-pixel
-   check is one-sided (low side only) for this reason.
+   (file header, "WHAT IS GUARDED - FIX 4").
+9. **HWSS floor-cell heavy tail.** With items 7 and 8 fixed, cell 9 shows
+   `max/mean` between `1.09` and `1.79` over twelve runs while its mean
+   stays within `±0.4 %` (`0.9479–0.9560`; ratio to RGB `0.9535–0.9577`).
+   It is variance, not bias: the floor's bounce rays can run nearly
+   parallel to the floor and traverse `tau ~ 1.6`, and the escape weight
+   `Tr / pSurvival` with `pSurvival = e^-tau` legitimately reaches several.
+   The RGB cell does not show it (`1.04–1.05`) because its per-channel
+   weights stay correlated where the hero bundle's per-wavelength walks do
+   not. Cell 9's per-pixel check is one-sided (low side only) for this
+   reason, and its mean band is `9 %` rather than the `7 %` cells 3 and 6
+   use — same bundle deficit, `0.7 pp` deeper and a `0.81 pp` run-to-run
+   spread because this scene runs more bounces per path. (Pre-item-8 the
+   same tail measured `1.05–5.31` with a `±1.9 %` mean spread; both
+   narrowed once the over-count went away, but the tail's cause is
+   unchanged.)
    [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
+
+10. **Step-1 lights (ambient, directional) are shaded as if a medium
+    vertex were a surface, and their shadow ray is not medium-attenuated.
+    NEW, UNFIXED — found while fixing item 8.**
+    `MediumTransport::EvaluateInScattering{,NM}` builds a synthetic
+    `RayIntersectionGeometric` whose `vNormal` is set to the OUTGOING
+    direction `wo`, precisely so that the light rows which multiply by
+    `Dot(vToLight, vNormal)` produce something sane. The light-table and
+    environment rows sidestep the issue properly — they test
+    `isVolumeScatter` and force `cos = 1`, leaving the phase function
+    (via `MediumScatterBSDF::value`) to supply the angular term. **Step 1
+    does not.** `DirectionalLight::ComputeDirectLighting` computes
+    `fDot = Dot(vDirection, ri.vNormal)` and returns early on
+    `fDot <= 0` ([DirectionalLight.cpp:60-66](../src/Library/Lights/DirectionalLight.cpp)),
+    so at a volume vertex a directional light illuminates only the
+    hemisphere within 90° of `wo` and is scaled by that cosine — neither
+    of which has any physical meaning for an isotropic or HG phase
+    function. Separately, Step 1's shadow ray goes through
+    `ILight::ComputeDirectLighting`'s own `CastShadowRayAuto` and never
+    reaches `EvalShadowTransmittance`, so a directional light's
+    contribution to a medium is not attenuated by the medium it crosses
+    (the light-table and env rows both do apply it). Item 8's fix at
+    least makes Step 1 *cast* the ray at volume vertices, so fog behind an
+    occluder is no longer lit by a directional light; the cosine gate and
+    the missing transmittance remain. Not reachable from
+    `VolumeEnvFurnaceTest` (env-only scenes) — a guard would need a
+    fog-plus-directional-light furnace, and the fix likely means an
+    `isVolumeScatter` parameter on `ILight::ComputeDirectLighting{,NM}`,
+    which is a virtual on every light implementation.
 
 ---
 
