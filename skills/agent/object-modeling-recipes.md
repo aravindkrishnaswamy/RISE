@@ -1,6 +1,11 @@
 # Object Modeling Recipes
 > hook: Read when building an actual OBJECT (a mug, a table, a lamp) rather than blocking out a generic scene -- the geometry vocabulary, per-type gotchas, and CSG/SDF composition recipes.
 
+FURRED OR HAIRED SUBJECT IN THE SCENE (cat, dog, any animal, a person
+with hair)?  Read `hair-and-fur` BEFORE modelling its body -- an animal
+is a groom plus a body, and the groom decides how the body should be
+sculpted.  This skill covers only the solid parts.
+
 This skill goes deep on modeling real objects.  For the observe loop
 (cheap preview renders from multiple angles), the basic primitive
 table, `csg_object`'s no-scale rule, and the cylinder-axis default,

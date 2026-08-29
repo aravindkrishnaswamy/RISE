@@ -1,5 +1,21 @@
 # Hair and Fur
-> hook: Read before growing hair, fur, grass, whiskers, bristle or any fibre coat -- before you pick a strand count, a colour tier, or a styling knob.
+> hook: Read whenever a scene contains ANY furred or haired subject -- a cat, dog, fox, rabbit, mouse, any pet, animal, creature, or person with hair -- and before growing grass, whiskers, bristle or any fibre coat.  An animal modelled without this skill will read as plastic; read it BEFORE modelling the body, and again before picking a strand count, colour tier, or styling knob.
+
+THE ONE RULE THAT OUTRANKS THE REST: if the subject is a furred
+animal, no sculpted surface, painter, or material will ever read as
+fur -- not perlin, not a ramp, not roughness.  Fur is geometry; you
+must GROW it.  Sculpt the body first, then put grooms on it, and if
+the turn budget is tight, a modest groom on a rough body beats a
+perfect body with painted-on fur every time.
+
+RETROFITTING AN EXISTING SOLID ANIMAL (the common "make my cat look
+real" request): keep the sculpted body -- it becomes `base_geometry`.
+Add two `hair_material` chunks (undercoat + guard, per the two-layer
+recipe below), two `hair_geometry` grooms bound to the body, a
+`density` painter to keep fur out of eyes/nose/paw pads, and set
+`oidn_denoise FALSE`.  Do this FIRST, render, and only then refine the
+body underneath -- the coat hides most sculpt sins, so grooming first
+saves the sculpting you were about to do.
 
 Three chunks do all of it.  `hair_material` says what a fibre is made
 of, `hair_geometry` grows a groom on a surface, and `hair_guides`
