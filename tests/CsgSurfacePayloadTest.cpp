@@ -122,6 +122,7 @@
 #include "../src/Library/Geometry/CylinderGeometry.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
@@ -1516,6 +1517,44 @@ namespace
 		return pMesh;
 	}
 
+	// Non-indexed twin of the helper above (P1-4b): builds a
+	// TriangleMeshGeometry (triangle-SOUP, no shared-vertex indices) with
+	// the SAME tessellation and per-vertex normals, by de-indexing the
+	// already-tested SphereGeometry::TessellateToMesh output rather than
+	// hand-deriving spherical trig.  TriangleMeshGeometry's Triangle element
+	// (Polygon_Template<3>, see Polygon.h) carries `vertices[3]`,
+	// `normals[3]`, `coords[3]` directly PER TRIANGLE -- there is no
+	// indexed/shared-vertex layer to be missing, so smooth per-vertex
+	// shading (non-degenerate dndu/dndv) is fully expressible with the
+	// non-indexed API; nothing here needed to fall back to flat shading.
+	TriangleMeshGeometry* BuildCsgTessellatedSphereMeshSoup( Scalar radius, unsigned int detail )
+	{
+		SphereGeometry* g = new SphereGeometry( radius );
+		IndexTriangleListType tris;
+		VerticesListType verts;
+		NormalsListType norms;
+		TexCoordsListType coords;
+		const bool ok = g->TessellateToMesh( tris, verts, norms, coords, detail );
+		g->release();
+		if( !ok ) {
+			return 0;
+		}
+
+		TriangleMeshGeometry* pMesh = new TriangleMeshGeometry( true );   // double sided
+		pMesh->BeginTriangles();
+		for( size_t i = 0; i < tris.size(); ++i ) {
+			Triangle tri;
+			for( int k = 0; k < 3; ++k ) {
+				tri.vertices[k] = verts[ tris[i].iVertices[k] ];
+				tri.normals[k]  = norms[ tris[i].iNormals[k] ];
+				tri.coords[k]   = coords[ tris[i].iCoords[k] ];
+			}
+			pMesh->AddTriangle( tri );
+		}
+		pMesh->DoneTriangles();
+		return pMesh;
+	}
+
 	// Duplicated from GeometryUVRoundtripTest.cpp's identical helper (P1-2).
 	Scalar CsgRecordMeanCurvatureH(
 		const Vector3& dpdu, const Vector3& dpdv,
@@ -1727,10 +1766,13 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 	// `riObjA.geometric.range2 == 0` "inside A, not inside B" branch --
 	// B's own range2 (a mesh; TriangleMeshGeometryIndexed ignores
 	// bComputeExitInfo entirely, so Object::IntersectRay's promotion
-	// converts B's default RISE_INFINITY range2 into some huge but finite
-	// magnitude, never 0) never satisfies the OTHER branch conditions, so
-	// this routing is unambiguous. Fire straight at B's near (cavity) wall
-	// from just outside B, well inside A.
+	// (`range2 = Magnitude(ptExit - origin)`, with ptExit derived from
+	// RISE_INFINITY) converts B's default RISE_INFINITY range2 into EITHER
+	// a huge finite magnitude OR a literal +inf, depending on whether the
+	// transform's FP arithmetic overflows -- never 0 either way) never
+	// satisfies the OTHER branch conditions, so this routing is
+	// unambiguous. Fire straight at B's near (cavity) wall from just
+	// outside B, well inside A.
 	const Point3 origin( 0, 0, -3.0 );      // inside A (dist 3 < 4), outside B (dist 3 > 1.5)
 	const Vector3 dir( 0, 0, 1 );
 	Ray r( origin, dir );
@@ -1854,6 +1896,500 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 	safe_release( oB );
 }
 
+//
+// Test 18 (P1-A item 1): CSG_SUBTRACTION's "inside both A and B" entry-flip
+// branch (CSGObject.cpp ~line 876) -- the third of the three P1-1
+// dndu/dndv-negation branches, and the one with NO existing coverage at
+// all (Test 17 covers "inside A, not B"; the sibling below covers
+// "inside B, not A").
+//
+// REACHABILITY: this branch requires BOTH riObjA.range2==0 AND
+// riObjB.range2==0.  RaySphereIntersection.cpp is the ONLY geometry in
+// this codebase that hard-codes range2=0 for an inside-origin hit;
+// TriangleMeshGeometry(Indexed)::IntersectRay ignores bComputeExitInfo
+// entirely, so a mesh operand's range2 never reads as exactly 0.  So
+// reaching this branch with derivatives.valid==true would need BOTH A and
+// B to be analytic spheres -- and analytic sphere geometry never sets
+// derivatives.valid.  CONCLUSION: with today's geometry set, the
+// dndu/dndv negation inside this branch is UNREACHABLE code (harmlessly
+// guarded by `.valid`).  This test routes through the branch with two
+// NESTED analytic spheres to exercise the reachable half -- the
+// vNormal/vGeomNormal negation -- and confirms derivatives.valid is false
+// here, documenting the unreachability empirically rather than asserting
+// it away.
+//
+void TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch()
+{
+	std::cout << "CSG_SUBTRACTION: \"inside both A and B\" branch negates vNormal (P1-A item 1)..." << std::endl;
+
+	// A: big sphere, radius 4. B: smaller NESTED sphere, radius 2, same
+	// center -- so any point inside B is automatically inside A too.
+	SphereGeometry* gA = new SphereGeometry( 4.0 );
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->FinalizeTransformations();
+
+	SphereGeometry* gB = new SphereGeometry( 2.0 );
+	Object* oB = new Object( gB );
+	safe_release( gB );
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test18 (P1-A item1): composite takes A(sphere r4)/B(nested sphere r2) operands" );
+	csg->FinalizeTransformations();
+
+	// Origin strictly inside BOTH spheres (dist 1 < 2 < 4).
+	const Point3 origin( 0, 0, -1.0 );
+	const Vector3 dir( 0, 0, 1 );
+	Ray r( origin, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test18 (P1-A item1): (control) ray hits the composite" );
+
+	// Reference: standalone hits on A and B alone confirm which branch fired.
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	RayIntersection refB( r, nullRasterizerState );
+	Hit( oB, r, refB );
+	Check( refA.geometric.bHit && Close( refA.geometric.range2, 0.0, 1e-9 ),
+		"Test18 (P1-A item1): (control) standalone A reports \"inside\" (range2==0)" );
+	Check( refB.geometric.bHit && Close( refB.geometric.range2, 0.0, 1e-9 ),
+		"Test18 (P1-A item1): (control) standalone B reports \"inside\" (range2==0)" );
+	Check( refB.geometric.range < refA.geometric.range,
+		"Test18 (P1-A item1): (control) B's exit is nearer than A's exit (branch's inner `if` condition)" );
+
+	// This routing means B is analytic -- derivatives are NEVER valid here.
+	// This is the empirical half of the reachability conclusion above.
+	Check( !ri.geometric.derivatives.valid,
+		"Test18 (P1-A item1): (documents reachability) derivatives.valid is FALSE -- sphere B never populates derivatives, confirming the dndu/dndv negation in this branch is unreachable today" );
+
+	if( ri.geometric.bHit ) {
+		// MONEY ASSERTIONS: range == B's exit range, range2 == A's own
+		// "range" field (A's exit distance, since A also reports "inside"),
+		// and vNormal/vGeomNormal are B's exit-point normal, NEGATED.
+		Check( Close( ri.geometric.range, refB.geometric.range, 1e-3 ),
+			"Test18 (P1-A item1): (sanity) composite range == B's exit range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range, 1e-3 ),
+			"Test18 (P1-A item1): (sanity) composite range2 == A's own \"range\" field (A's exit distance)" );
+		Check( VecClose( ri.geometric.vNormal, -refB.geometric.vNormal, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- composite vNormal == -(B's exit normal)" );
+		Check( VecClose( ri.geometric.vGeomNormal, -refB.geometric.vGeomNormal, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- composite vGeomNormal == -(B's exit geometric normal)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 19 (P1-A item 2): CSG_SUBTRACTION's "inside B, not A" entry-flip
+// branch (CSGObject.cpp ~line 920) -- the second of the three P1-1
+// dndu/dndv-negation branches without existing coverage.
+//
+// REACHABILITY: same reasoning as Test 18 -- this branch requires
+// riObjB.range2==0 (origin inside B), which only an analytic sphere B can
+// report, and analytic sphere geometry never sets derivatives.valid.
+// CONCLUSION: the dndu/dndv negation here is UNREACHABLE today under the
+// same analysis.  This test routes through the branch with an analytic
+// sphere B (nested inside a farther, off-center sphere A) to exercise the
+// reachable vNormal/vGeomNormal-negation half.
+//
+void TestSubtraction_InsideBNotA_NormalNegationRoutesThroughBranch()
+{
+	std::cout << "CSG_SUBTRACTION: \"inside B, not A\" branch negates vNormal (P1-A item 2)..." << std::endl;
+
+	// B: sphere radius 2, centered at the origin -- origin (0,0,-1) starts
+	// inside B.
+	SphereGeometry* gB = new SphereGeometry( 2.0 );
+	Object* oB = new Object( gB );
+	safe_release( gB );
+	oB->FinalizeTransformations();
+
+	// A: small sphere radius 1.5, centered further along +Z (3,0,0 in Z)
+	// so the origin (0,0,-1) starts OUTSIDE A, A is entered WHILE still
+	// inside B (A's entry z=1.5 < B's exit z=2), and A's exit (z=4.5) is
+	// AFTER B's exit (z=2) -- so at B's exit the ray is still inside A,
+	// giving a genuine A-minus-B solid boundary there (not an A wholly
+	// swallowed inside B, which would make A-minus-B empty).
+	SphereGeometry* gA = new SphereGeometry( 1.5 );
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->SetPosition( Point3( 0, 0, 3.0 ) );
+	oA->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test19 (P1-A item2): composite takes A(offset sphere r1.5)/B(sphere r2) operands" );
+	csg->FinalizeTransformations();
+
+	const Point3 origin( 0, 0, -1.0 );
+	const Vector3 dir( 0, 0, 1 );
+	Ray r( origin, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test19 (P1-A item2): (control) ray hits the composite" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	RayIntersection refB( r, nullRasterizerState );
+	Hit( oB, r, refB );
+	Check( refA.geometric.bHit && !Close( refA.geometric.range2, 0.0, 1e-9 ),
+		"Test19 (P1-A item2): (control) standalone A is a normal outside hit (range2 != 0)" );
+	Check( refB.geometric.bHit && Close( refB.geometric.range2, 0.0, 1e-9 ),
+		"Test19 (P1-A item2): (control) standalone B reports \"inside\" (range2==0)" );
+	Check( refA.geometric.range < refB.geometric.range,
+		"Test19 (P1-A item2): (control) A's entry precedes B's exit (branch's inner `if` condition)" );
+	Check( refA.geometric.range2 > refB.geometric.range,
+		"Test19 (P1-A item2): (control) A's exit is AFTER B's exit -- A is not wholly swallowed inside B" );
+
+	Check( !ri.geometric.derivatives.valid,
+		"Test19 (P1-A item2): (documents reachability) derivatives.valid is FALSE -- sphere B never populates derivatives, confirming the dndu/dndv negation in this branch is unreachable today" );
+
+	if( ri.geometric.bHit ) {
+		// MONEY ASSERTIONS: range == B's exit range (unchanged from the
+		// `ri = riObjB` copy), range2 == A's own exit range2, and
+		// vNormal/vGeomNormal are B's exit-point normal, NEGATED.
+		Check( Close( ri.geometric.range, refB.geometric.range, 1e-3 ),
+			"Test19 (P1-A item2): (sanity) composite range == B's exit range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range2, 1e-3 ),
+			"Test19 (P1-A item2): (sanity) composite range2 == A's exit range2" );
+		Check( VecClose( ri.geometric.vNormal, -refB.geometric.vNormal, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- composite vNormal == -(B's exit normal)" );
+		Check( VecClose( ri.geometric.vGeomNormal, -refB.geometric.vGeomNormal, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- composite vGeomNormal == -(B's exit geometric normal)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 20 (P1-B item 1): TriangleMeshGeometryIndexed's double-sided
+// back-face flip (TriangleMeshGeometryIndexed.cpp ~line 173-188) negates
+// vNormal AND (if valid) dndu/dndv together when a ray hits the mesh from
+// INSIDE (Dot(vNormal, dir) > 0 before the flip).  No existing test in
+// this repo fires an interior ray at a mesh -- every prior mesh test hits
+// from outside.  Fire from just off-center inside a tessellated mesh
+// sphere, straight out to the far wall: the interior hit trips the flip.
+//
+void TestMeshIndexed_BackFaceHit_DndvSignMatchesFDAndCurvature()
+{
+	std::cout << "TriangleMeshGeometryIndexed: back-face (interior-ray) hit flips vNormal+dndu/dndv together (P1-B item1)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+
+	TriangleMeshGeometryIndexed* mesh = BuildCsgTessellatedSphereMesh( rad, detail );
+	Check( mesh != 0, "Test20 (P1-B item1): mesh sphere built" );
+	Object* o = new Object( mesh );
+	safe_release( mesh );
+	o->FinalizeTransformations();
+
+	// Interior origin, off-center (avoids the pole singularity); direction
+	// +Z hits the far wall FROM INSIDE.
+	const Point3 origin( 0.3, 0.2, 0.0 );
+	const Vector3 dir( 0, 0, 1 );
+	Ray r0( origin, dir );
+
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( o, r0, ri );
+	Check( ri.geometric.bHit, "Test20 (P1-B item1): (control) interior ray hits the far wall" );
+	Check( ri.geometric.derivatives.valid, "Test20 (P1-B item1): (control) derivatives.valid" );
+	// Confirms this really is a back-face hit that tripped the flip (see
+	// TriangleMeshGeometryIndexed.cpp:197-201 -- bGeomNormalOrientedToRay
+	// is set true exactly when the geometric-normal flip fired).
+	Check( ri.geometric.bGeomNormalOrientedToRay,
+		"Test20 (P1-B item1): (control) bGeomNormalOrientedToRay confirms a back-face hit" );
+
+	if( !ri.geometric.bHit || !ri.geometric.derivatives.valid ) {
+		safe_release( o );
+		return;
+	}
+
+	// ---- Check (a): finite-difference consistency (Test17's technique) ----
+	const Scalar dx = 1e-4;
+	Ray rPlus( Point3( 0.3 + dx, 0.2, 0.0 ), dir );
+	Ray rMinus( Point3( 0.3 - dx, 0.2, 0.0 ), dir );
+	RayIntersection riPlus( rPlus, nullRasterizerState );
+	Hit( o, rPlus, riPlus );
+	RayIntersection riMinus( rMinus, nullRasterizerState );
+	Hit( o, rMinus, riMinus );
+	Check( riPlus.geometric.bHit && riMinus.geometric.bHit,
+		"Test20 (P1-B item1): (control) FD-offset interior rays hit the far wall" );
+
+	if( riPlus.geometric.bHit && riMinus.geometric.bHit ) {
+		const Vector3 dN_FD(
+			( riPlus.geometric.vNormal.x - riMinus.geometric.vNormal.x ) / ( 2.0 * dx ),
+			( riPlus.geometric.vNormal.y - riMinus.geometric.vNormal.y ) / ( 2.0 * dx ),
+			( riPlus.geometric.vNormal.z - riMinus.geometric.vNormal.z ) / ( 2.0 * dx ) );
+
+		const Vector3& dpdu = ri.geometric.derivatives.dpdu;
+		const Vector3& dpdv = ri.geometric.derivatives.dpdv;
+		const Vector3& dndu = ri.geometric.derivatives.dndu;
+		const Vector3& dndv = ri.geometric.derivatives.dndv;
+		const Vector3 target( 1, 0, 0 );
+		const Scalar Muu = Vector3Ops::Dot( dpdu, dpdu );
+		const Scalar Muv = Vector3Ops::Dot( dpdu, dpdv );
+		const Scalar Mvv = Vector3Ops::Dot( dpdv, dpdv );
+		const Scalar bu = Vector3Ops::Dot( dpdu, target );
+		const Scalar bv = Vector3Ops::Dot( dpdv, target );
+		const Scalar det = Muu * Mvv - Muv * Muv;
+		Check( fabs( det ) > 1e-12, "Test20 (P1-B item1): (control) dpdu/dpdv normal-equations system non-degenerate" );
+		if( fabs( det ) > 1e-12 ) {
+			const Scalar duDx = ( bu * Mvv - bv * Muv ) / det;
+			const Scalar dvDx = ( bv * Muu - bu * Muv ) / det;
+			const Vector3 dN_analytic(
+				dndu.x * duDx + dndv.x * dvDx,
+				dndu.y * duDx + dndv.y * dvDx,
+				dndu.z * duDx + dndv.z * dvDx );
+			const Scalar dot = Vector3Ops::Dot( dN_FD, dN_analytic );
+			Check( dot > 0.0, "Test20 (P1-B item1): MONEY ASSERTION -- FD dN/dx and reported (flipped) dndu/dndv agree in sign" );
+		}
+	}
+
+	// ---- Check (b): signed curvature flips vs. a FRONT-face hit of the
+	// SAME mesh, fired from outside (no flip fires there) ----
+	Ray refRay( Point3( 0, 0, -10.0 ), dir );
+	RayIntersection refRi( refRay, nullRasterizerState );
+	Hit( o, refRay, refRi );
+	Check( refRi.geometric.bHit, "Test20 (P1-B item1): (control) front-face reference ray hits" );
+	Check( refRi.geometric.derivatives.valid, "Test20 (P1-B item1): (control) front-face reference derivatives.valid" );
+	Check( !refRi.geometric.bGeomNormalOrientedToRay,
+		"Test20 (P1-B item1): (control) front-face reference did NOT flip (confirms it's the un-flipped twin)" );
+
+	if( refRi.geometric.bHit && refRi.geometric.derivatives.valid ) {
+		const Scalar H_back = CsgRecordMeanCurvatureH(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv );
+		const Scalar H_front = CsgRecordMeanCurvatureH(
+			refRi.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdv,
+			refRi.geometric.derivatives.dndu, refRi.geometric.derivatives.dndv );
+
+		Check( fabs( H_back ) > 1e-6 && fabs( H_front ) > 1e-6,
+			"Test20 (P1-B item1): (control) both signed curvatures non-degenerate" );
+		Check( ( H_back > 0.0 ) != ( H_front > 0.0 ),
+			"Test20 (P1-B item1): MONEY ASSERTION -- back-face signed H has OPPOSITE sign from front-face" );
+		Check( Close( fabs( H_back ), fabs( H_front ), 0.05 * fabs( H_front ) ),
+			"Test20 (P1-B item1): back-face |H| matches front-face |H| (same mesh, up to discretization tolerance)" );
+	}
+
+	safe_release( o );
+}
+
+//
+// Test 21 (P1-B item 2): non-indexed TriangleMeshGeometry twin of Test 20.
+// Also gives TriangleMeshGeometry its first-ever end-to-end coverage of
+// the quotient-rule derivatives path in this repo (front-face sanity), on
+// top of the back-face sign check.
+//
+void TestMeshNonIndexed_FrontAndBackFace_DndvSign()
+{
+	std::cout << "TriangleMeshGeometry (non-indexed): front-face sanity + back-face sign flip (P1-B item2)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+
+	TriangleMeshGeometry* mesh = BuildCsgTessellatedSphereMeshSoup( rad, detail );
+	Check( mesh != 0, "Test21 (P1-B item2): non-indexed mesh sphere built" );
+	Object* o = new Object( mesh );
+	safe_release( mesh );
+	o->FinalizeTransformations();
+
+	// ---- Front-face sanity: standard outside hit, |H| close to analytic
+	// 1/r, first-ever exercise of this class's quotient-rule path. ----
+	const Vector3 dir( 0, 0, 1 );
+	Ray frontRay( Point3( 0, 0, -10.0 ), dir );
+	RayIntersection frontRi( frontRay, nullRasterizerState );
+	Hit( o, frontRay, frontRi );
+	Check( frontRi.geometric.bHit, "Test21 (P1-B item2): (control) front-face ray hits" );
+	Check( frontRi.geometric.derivatives.valid, "Test21 (P1-B item2): (control) non-indexed mesh sets derivatives.valid" );
+	Check( !frontRi.geometric.bGeomNormalOrientedToRay,
+		"Test21 (P1-B item2): (control) front-face hit did NOT flip" );
+
+	if( frontRi.geometric.bHit && frontRi.geometric.derivatives.valid ) {
+		const Scalar H_front = fabs( CsgRecordMeanCurvatureH(
+			frontRi.geometric.derivatives.dpdu, frontRi.geometric.derivatives.dpdv,
+			frontRi.geometric.derivatives.dndu, frontRi.geometric.derivatives.dndv ) );
+		Check( Close( H_front, 1.0 / rad, 0.05 * (1.0/rad) ),
+			"Test21 (P1-B item2): non-indexed front-face |H| close to analytic sphere 1/r" );
+		const Vector3& n = frontRi.geometric.vNormal;
+		Check( fabs( Vector3Ops::Dot( frontRi.geometric.derivatives.dndu, n ) ) < 1e-6,
+			"Test21 (P1-B item2): non-indexed dndu . n ~= 0" );
+		Check( fabs( Vector3Ops::Dot( frontRi.geometric.derivatives.dndv, n ) ) < 1e-6,
+			"Test21 (P1-B item2): non-indexed dndv . n ~= 0" );
+	}
+
+	// ---- Back-face sign test: same interior-ray technique as Test 20. ----
+	const Point3 origin( 0.3, 0.2, 0.0 );
+	Ray r0( origin, dir );
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( o, r0, ri );
+	Check( ri.geometric.bHit, "Test21 (P1-B item2): (control) interior ray hits the far wall" );
+	Check( ri.geometric.derivatives.valid, "Test21 (P1-B item2): (control) back-face derivatives.valid" );
+	Check( ri.geometric.bGeomNormalOrientedToRay,
+		"Test21 (P1-B item2): (control) bGeomNormalOrientedToRay confirms a back-face hit" );
+
+	if( ri.geometric.bHit && ri.geometric.derivatives.valid && frontRi.geometric.bHit && frontRi.geometric.derivatives.valid ) {
+		const Scalar H_back = CsgRecordMeanCurvatureH(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv );
+		const Scalar H_front_signed = CsgRecordMeanCurvatureH(
+			frontRi.geometric.derivatives.dpdu, frontRi.geometric.derivatives.dpdv,
+			frontRi.geometric.derivatives.dndu, frontRi.geometric.derivatives.dndv );
+
+		Check( fabs( H_back ) > 1e-6 && fabs( H_front_signed ) > 1e-6,
+			"Test21 (P1-B item2): (control) both signed curvatures non-degenerate" );
+		Check( ( H_back > 0.0 ) != ( H_front_signed > 0.0 ),
+			"Test21 (P1-B item2): MONEY ASSERTION -- back-face signed H has OPPOSITE sign from front-face (non-indexed twin)" );
+		Check( Close( fabs( H_back ), fabs( H_front_signed ), 0.05 * fabs( H_front_signed ) ),
+			"Test21 (P1-B item2): back-face |H| matches front-face |H| (same mesh, up to discretization tolerance)" );
+	}
+
+	safe_release( o );
+}
+
+//
+// Test 22 (P2-C): CSGObject::IntersectRay's dndu/dndv quotient-rule
+// projection block (CSGObject.cpp ~1220-1232) previously had UNIFORM-scale
+// coverage only (Test 16, csg->SetScale).  Uniform scale cannot
+// discriminate whether the projection-onto-tangent-plane step actually
+// ran: under uniform scale s, M^-T is a scalar multiple of the identity,
+// and a scalar multiple trivially preserves orthogonality --
+// dndu_obj . n_obj == 0 (dndu is a derivative of a UNIT normal field)
+// implies (s * dndu_obj) . (s * n_obj)-direction is STILL proportional to
+// dndu_obj . n_obj == 0, with or without the explicit projection.  A
+// NON-uniform stretch has no such shortcut: skipping the projection would
+// generally leave dndu_lin . n_w nonzero, because (M^-T u) . (M^-T v) != u.v
+// in general (only the PAIRED transform (Mu).(M^-Tv) == u.v holds).  This
+// test exercises the discriminating non-uniform case on a mesh operand hit
+// and asserts the full orthogonality + finiteness invariant set
+// (docs/GEOMETRY_DERIVATIVES.md).  Also covers the CSG singular-guard
+// contract (derivatives.valid == false under a near-degenerate transform)
+// as a bonus, cheap addition.
+//
+void TestUnion_CsgQuotientRule_NonUniformStretch_OrthogonalityInvariants()
+{
+	std::cout << "CSG_UNION: non-uniform-stretch dndu/dndv/dpdu/dpdv orthogonality invariants (P2-C)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+	const Point3 localOrigin( 0.35, 0.22, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );
+
+	TriangleMeshGeometryIndexed* meshA = BuildCsgTessellatedSphereMesh( rad, detail );
+	Check( meshA != 0, "Test22 (P2-C): mesh A built" );
+	Object* a = new Object( meshA );
+	safe_release( meshA );
+	a->FinalizeTransformations();
+
+	SphereGeometry* gB = new SphereGeometry( 1.0 );
+	Object* b = new Object( gB );
+	safe_release( gB );
+	b->SetPosition( Point3( 10000, 10000, 10000 ) );   // never hit
+	b->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "Test22 (P2-C): composite takes mesh(A)/far-sphere(B) operands" );
+	csg->SetStretch( Vector3( 2.0, 0.5, 1.25 ) );   // NON-uniform -- the discriminating case
+	csg->FinalizeTransformations();
+
+	const Matrix4 mxFinal = csg->GetFinalTransformMatrix();
+	const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+	const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+	const Ray r0( worldOrigin, worldDir );
+
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( csg, r0, ri );
+	Check( ri.geometric.bHit, "Test22 (P2-C): (control) non-uniform-stretched CSG hit" );
+	Check( ri.geometric.derivatives.valid, "Test22 (P2-C): (control) derivatives.valid" );
+
+	if( ri.geometric.bHit && ri.geometric.derivatives.valid ) {
+		const Vector3& n = ri.geometric.vNormal;
+		const Vector3& dpdu = ri.geometric.derivatives.dpdu;
+		const Vector3& dpdv = ri.geometric.derivatives.dpdv;
+		const Vector3& dndu = ri.geometric.derivatives.dndu;
+		const Vector3& dndv = ri.geometric.derivatives.dndv;
+
+		Check( Vector3Ops::SquaredModulus( dpdu ) > 1e-8 && Vector3Ops::SquaredModulus( dndu ) > 1e-8,
+			"Test22 (P2-C): (sanity) dpdu/dndu are non-degenerate (a zero vector would trivially pass orthogonality)" );
+
+		Check( std::isfinite( n.x ) && std::isfinite( n.y ) && std::isfinite( n.z ), "Test22 (P2-C): n finite" );
+		Check( std::isfinite( dpdu.x ) && std::isfinite( dpdu.y ) && std::isfinite( dpdu.z ), "Test22 (P2-C): dpdu finite" );
+		Check( std::isfinite( dpdv.x ) && std::isfinite( dpdv.y ) && std::isfinite( dpdv.z ), "Test22 (P2-C): dpdv finite" );
+		Check( std::isfinite( dndu.x ) && std::isfinite( dndu.y ) && std::isfinite( dndu.z ), "Test22 (P2-C): dndu finite" );
+		Check( std::isfinite( dndv.x ) && std::isfinite( dndv.y ) && std::isfinite( dndv.z ), "Test22 (P2-C): dndv finite" );
+
+		Check( fabs( Vector3Ops::Dot( dpdu, n ) ) < 1e-6, "Test22 (P2-C): dpdu_w . n_w ~= 0 under non-uniform stretch" );
+		Check( fabs( Vector3Ops::Dot( dpdv, n ) ) < 1e-6, "Test22 (P2-C): dpdv_w . n_w ~= 0 under non-uniform stretch" );
+		Check( fabs( Vector3Ops::Dot( dndu, n ) ) < 1e-6, "Test22 (P2-C): MONEY ASSERTION -- dndu_w . n_w ~= 0 under non-uniform stretch (projection step ran)" );
+		Check( fabs( Vector3Ops::Dot( dndv, n ) ) < 1e-6, "Test22 (P2-C): MONEY ASSERTION -- dndv_w . n_w ~= 0 under non-uniform stretch (projection step ran)" );
+	}
+
+	safe_release( csg );
+	safe_release( a );
+	safe_release( b );
+}
+
+//
+// Test 23 (P2-C, optional singular-guard bonus): a HUGE non-uniform
+// stretch along an axis the hit's local normal is EXACTLY aligned with
+// must collapse the promoted world-space normal magnitude below NEARZERO,
+// tripping CSGObject.cpp's singular-guard (`derivatives.valid = false`,
+// ~line 1233-1244) rather than dividing by ~0.  Fires straight down at the
+// mesh sphere's north pole (local normal (0,0,1) there) under a 1e13
+// stretch on Z.
+//
+void TestUnion_CsgSingularGuard_HugeAxisAlignedStretch()
+{
+	std::cout << "CSG_UNION: singular-guard trips under huge axis-aligned stretch (P2-C bonus)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+	const Point3 localOrigin( 0, 0, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );   // straight down onto the north pole
+
+	TriangleMeshGeometryIndexed* meshA = BuildCsgTessellatedSphereMesh( rad, detail );
+	Check( meshA != 0, "Test23 (P2-C bonus): mesh A built" );
+	Object* a = new Object( meshA );
+	safe_release( meshA );
+	a->FinalizeTransformations();
+
+	SphereGeometry* gB = new SphereGeometry( 1.0 );
+	Object* b = new Object( gB );
+	safe_release( gB );
+	b->SetPosition( Point3( 10000, 10000, 10000 ) );   // never hit
+	b->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "Test23 (P2-C bonus): composite takes mesh(A)/far-sphere(B) operands" );
+	csg->SetStretch( Vector3( 1.0, 1.0, 1e13 ) );   // huge stretch on Z, matching the hit's normal axis
+	csg->FinalizeTransformations();
+
+	const Matrix4 mxFinal = csg->GetFinalTransformMatrix();
+	const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+	const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+	const Ray r0( worldOrigin, worldDir );
+
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( csg, r0, ri );
+	Check( ri.geometric.bHit, "Test23 (P2-C bonus): (control) hit lands (north pole, local normal (0,0,1))" );
+	if( ri.geometric.bHit ) {
+		Check( !ri.geometric.derivatives.valid,
+			"Test23 (P2-C bonus): MONEY ASSERTION -- singular guard trips (derivatives.valid == false) instead of dividing by ~0" );
+	}
+
+	safe_release( csg );
+	safe_release( a );
+	safe_release( b );
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -1873,6 +2409,12 @@ int main()
 	TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor();
 	TestUnion_TransformedCsgDerivativesMatchStandaloneScaled();
 	TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature();
+	TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch();
+	TestSubtraction_InsideBNotA_NormalNegationRoutesThroughBranch();
+	TestMeshIndexed_BackFaceHit_DndvSignMatchesFDAndCurvature();
+	TestMeshNonIndexed_FrontAndBackFace_DndvSign();
+	TestUnion_CsgQuotientRule_NonUniformStretch_OrthogonalityInvariants();
+	TestUnion_CsgSingularGuard_HugeAxisAlignedStretch();
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

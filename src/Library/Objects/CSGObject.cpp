@@ -889,6 +889,22 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// and uv are left untouched -- they still parameterize the
 					// SAME point on B's surface; only the reported NORMAL
 					// FIELD is negated, so only its derivatives flip with it.
+					//
+					// REACHABILITY (CsgSurfacePayloadTest.cpp Test 18/19 audit):
+					// this branch requires BOTH riObjA.range2==0 AND
+					// riObjB.range2==0 -- RaySphereIntersection.cpp is the ONLY
+					// geometry in this codebase that hard-codes range2=0 for an
+					// inside-origin hit (TriangleMeshGeometry(Indexed)::
+					// IntersectRay ignores bComputeExitInfo entirely, leaving a
+					// mesh operand's range2 at its RISE_INFINITY default, which
+					// can never read as exactly 0). So reaching this branch
+					// with derivatives.valid==true would require BOTH A and B
+					// to be analytic spheres -- and analytic sphere geometry
+					// never sets derivatives.valid in the first place. The
+					// dndu/dndv negation below is therefore UNREACHABLE under
+					// today's geometry set (guarded harmlessly by .valid); the
+					// vNormal/vGeomNormal negation above IS reachable (nested
+					// sphere/sphere operands) and IS regression-tested.
 					if( ri.geometric.derivatives.valid ) {
 						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
 						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
@@ -926,6 +942,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
 					// P1-1: same sign-negation rationale as the two branches
 					// above.
+					//
+					// REACHABILITY (CsgSurfacePayloadTest.cpp Test 18/19 audit):
+					// this branch requires riObjB.range2==0 (origin inside B),
+					// which -- same reasoning as the "inside both" branch above
+					// -- only an analytic sphere B can report, and analytic
+					// sphere geometry never sets derivatives.valid. The
+					// dndu/dndv negation below is therefore UNREACHABLE under
+					// today's geometry set (guarded harmlessly by .valid); the
+					// vNormal/vGeomNormal negation above IS reachable
+					// (sphere-B nested inside a farther sphere-A boundary) and
+					// IS regression-tested.
 					if( ri.geometric.derivatives.valid ) {
 						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
 						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;

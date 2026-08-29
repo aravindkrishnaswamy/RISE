@@ -29,9 +29,11 @@ meshes, face for flat meshes).
    identically implies `2·n·(dn/d*) = 0`.
 3. **Handedness.** `(dpdu × dpdv) · n > 0`. The local `(dpdu, dpdv, n)` frame
    is **right-handed** with the outward normal. Consumers may rely on this
-   sign without inspecting the specific geometry. Per-geometry `IGeometry`
-   implementations must satisfy this at every point; the one documented
-   exception is downstream of them, at the CSG-composition layer — see
+   sign without inspecting the specific geometry **for any per-`IGeometry`
+   output** — every `IGeometry` implementation must satisfy it at every
+   point; the one documented exception is downstream of them, at the
+   CSG-composition layer, on a **final `CSGObject` subtraction cavity-wall
+   hit** (a composition-layer negation, not a per-geometry one) — see
    "CSG-subtraction exception" under the Handedness audit below.
 4. **Finite values.** No NaN / Inf at any valid surface point. Degenerate
    parameter values (poles, caps) must return `valid = true` with a
