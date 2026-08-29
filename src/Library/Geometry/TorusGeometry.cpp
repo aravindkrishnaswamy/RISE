@@ -18,6 +18,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -150,6 +151,26 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 			m_p0,
 			m_p1
 			);
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+		// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4) -- see the identical
+		// block in SphereGeometry::IntersectRay for the full rationale:
+		// publish the closed-form Weingarten map this primitive already knows,
+		// ungated (a few trig calls on data the hit produced); gate only
+		// `scaleHint`, which nothing but the expression VM's `curv` reads.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+			}
+		}
 	}
 }
 

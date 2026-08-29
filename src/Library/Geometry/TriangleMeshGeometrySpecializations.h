@@ -308,6 +308,19 @@ namespace RISE
 				ri.derivatives.dndu = dndu;
 				ri.derivatives.dndv = dndv;
 				ri.derivatives.valid = true;
+				// Phase-1 geometry-derived shading signals
+				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2): the
+				// characteristic length that makes the expression VM's
+				// dimensionless `curv` scale-free -- this mesh's own BVH root
+				// box, read through the shared bbox-diagonal convention.  GATED:
+				// nothing but `curv` reads scaleHint, and this is a (cheap, but
+				// not free) sqrt on the per-hit path.  Object::IntersectRay folds
+				// the object's world scale in afterward, which is what makes
+				// `curv` per-INSTANCE correct across two instances of this one
+				// shared geometry placed at different world scales.
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
 
 				// Project ray differentials onto the surface UV plane
 				// and store the texture-space footprint.  No-op when

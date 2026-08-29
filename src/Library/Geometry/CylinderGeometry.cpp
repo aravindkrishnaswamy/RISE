@@ -18,6 +18,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -366,6 +367,28 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 					FillSurfaceNormalUV( ri.ptExit, ( ri.range2 > 0.0 ) ? surfOther : surfHit, ri.vNormal2, 0 );
 					ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 				}
+
+				// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4) -- see the
+				// identical block in SphereGeometry::IntersectRay for the full
+				// rationale.  ComputeSurfaceDerivatives handles BOTH surfaces of
+				// a capped cylinder: it identifies an end cap by an axis-aligned
+				// normal and returns dndu = dndv = 0 there, so a cap correctly
+				// reads as flat (H = 0) while the side wall reports its genuine
+				// 1/(2r).  No cap special-case is needed here.
+				{
+					const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+					if( sd.valid ) {
+						ri.derivatives.dpdu = sd.dpdu;
+						ri.derivatives.dpdv = sd.dpdv;
+						ri.derivatives.dndu = sd.dndu;
+						ri.derivatives.dndv = sd.dndv;
+						ri.derivatives.valid = true;
+						if( SurfaceCurvatureDemand::Any() ) {
+							ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+						}
+					}
+				}
 			}
 			else
 			{
@@ -476,6 +499,24 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 
 		// Calculate UV co-ordinates
 		GeometricUtilities::CylinderTextureCoord( ri.ptIntersection, m_chAxis, m_dOVRadius, m_dAxisMin, m_dAxisMax, ri.ptCoord );
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS -- see the capped-path
+		// block above (and SphereGeometry::IntersectRay) for the rationale.
+		// Open-tube path: every hit is on the side wall, so the derivatives
+		// are unconditionally the curved ones.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+			}
+		}
 	}
 }
 

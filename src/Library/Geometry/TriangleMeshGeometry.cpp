@@ -38,6 +38,7 @@ inline unsigned int VoidPtrToUInt( const void* v )
 using namespace RISE;
 using namespace RISE::Implementation;
 
+#include "../Utilities/SurfaceCurvature.h"	// scaleHint stamping in the specializations below
 #include "TriangleMeshGeometrySpecializations.h"
 
 TriangleMeshGeometry::TriangleMeshGeometry(

@@ -26,6 +26,7 @@
 #include "../Animation/KeyframableHelper.h"	// Parameter<>, Point3/Vector3Keyframe, ParseStrict*
 #include "../Utilities/RenderParallelScope.h"	// g_renderParallelDepth -- single-thread-mutation tripwire
 #include "../Utilities/FiniteMath.h"		// RISE::IsFiniteDouble -- the superellipsoid's non-finite guards
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -997,6 +998,34 @@ Vector3 SDFGeometry::GradientNormal( const Point3& p ) const
 	return Vector3( gx/len, gy/len, gz/len );
 }
 
+Scalar SDFGeometry::CurvatureFDStep() const
+{
+	// See the header doc.  Both terms matter: m_eps*8 keeps the stencil out
+	// of the surface-epsilon noise floor on a tiny object, m_diagonal*5e-4
+	// keeps it from collapsing to nothing on a large one.
+	return std::max( m_eps * Scalar(8), m_diagonal * Scalar(5e-4) );
+}
+
+Scalar SDFGeometry::DivergenceOfUnitNormal( const Point3& y, const Vector3& n, const Scalar hfd ) const
+{
+	if( !( hfd > Scalar(0) ) ) {
+		return Scalar(0);
+	}
+	// One-sided forward difference of the unit normal field, one axis per
+	// component: div n_hat = dnx/dx + dny/dy + dnz/dz.  This is the standard
+	// SDF mean-curvature form div(grad f / |grad f|) (= k1 + k2 = 2H),
+	// evaluated at an ON-SURFACE point -- callers must project first.
+	const Vector3 nX = GradientNormal( Point3( y.x + hfd, y.y, y.z ) );
+	const Vector3 nY = GradientNormal( Point3( y.x, y.y + hfd, y.z ) );
+	const Vector3 nZ = GradientNormal( Point3( y.x, y.y, y.z + hfd ) );
+	const Scalar div = ( ( nX.x - n.x ) + ( nY.y - n.y ) + ( nZ.z - n.z ) ) / hfd;
+	// GradientNormal has its own degenerate fallback (a fabricated +Y unit
+	// vector where the gradient collapses), which can make this difference
+	// meaningless but never non-finite; guard anyway so no consumer can be
+	// handed a NaN from a pathological field.
+	return RISE::IsFiniteDouble( static_cast<double>( div ) ) ? div : Scalar(0);
+}
+
 // March along (o + t*dir), dir UNIT, from tStart up to t1, to the next surface.
 bool SDFGeometry::March( const Point3& o, const Vector3& dir, const Scalar tStart, const Scalar t1, Scalar& tHit ) const
 {
@@ -1187,6 +1216,33 @@ void SDFGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	// false and is byte-identical.
 	if( m_isHeightfield ) {
 		ri.bShadingTangentFromGeometry = true;
+	}
+
+	// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS: DIRECT curvature
+	// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4).
+	//
+	// The SDF family reports curvature DIRECTLY rather than synthesizing a
+	// dndu/dndv pair, because an implicit surface has no natural (u, v) for
+	// which those partials would mean anything -- but `div n_hat = k1 + k2`
+	// is a few field evaluations away and is smooth and resolution-free,
+	// which is exactly what makes this the highest-quality family for the
+	// signal.  H = div/2, in OBJECT-space 1/length; Object::IntersectRay
+	// divides by |det M|^(1/3) to land it in world measure, the same fold
+	// that multiplies scaleHint.  Sign follows the shared convention
+	// (positive = convex): the gradient normal is outward, so a sphere of
+	// radius r gives div = 2/r and H = +1/r.
+	//
+	// GATED, and this is the gate's whole reason for existing: three extra
+	// GradientNormal calls == ~18 extra Map() evaluations per hit, each
+	// O(#parts).  On a scene whose expressions never mention `curv` this is
+	// one relaxed atomic load and nothing else.  `derivatives.valid` stays
+	// FALSE -- there is no dpdu/dpdv here to be valid -- and `curvatureValid`
+	// is deliberately independent of it for that reason.
+	if( SurfaceCurvatureDemand::Any() ) {
+		ri.derivatives.scaleHint = m_diagonal;
+		const Scalar div = DivergenceOfUnitNormal( hp, n, CurvatureFDStep() );
+		ri.derivatives.curvature = Scalar(0.5) * div;
+		ri.derivatives.curvatureValid = true;
 	}
 
 	if( bComputeExitInfo )
@@ -1593,17 +1649,17 @@ void SDFGeometry::EnsureSamplingStructure() const
 		// consistent to the next order in (cell / curvature radius).  J is
 		// clamped to [0.5, 2] near creases where FD curvature spikes; the
 		// clamp count is reported in the build diagnostic.
-		const Scalar hfd = std::max( m_eps * Scalar(8), m_diagonal * Scalar(5e-4) );
+		const Scalar hfd = CurvatureFDStep();
 		unsigned int jClamped = 0;
 		auto jacobianAt = [this, hfd, &jClamped]( const Point3& x ) -> Scalar {
 			const Point3 y = ProjectToSurface( x );
 			const Vector3 n = GradientNormal( y );
 			const Scalar d = ( x.x - y.x )*n.x + ( x.y - y.y )*n.y + ( x.z - y.z )*n.z;
-			// one-sided FD divergence of the unit normal = k1 + k2 at y
-			const Vector3 nX = GradientNormal( Point3( y.x + hfd, y.y, y.z ) );
-			const Vector3 nY = GradientNormal( Point3( y.x, y.y + hfd, y.z ) );
-			const Vector3 nZ = GradientNormal( Point3( y.x, y.y, y.z + hfd ) );
-			const Scalar div = ( ( nX.x - n.x ) + ( nY.y - n.y ) + ( nZ.z - n.z ) ) / hfd;
+			// one-sided FD divergence of the unit normal = k1 + k2 at y.
+			// Extracted to DivergenceOfUnitNormal so the intersection-time
+			// `curv` signal (design doc 5.4) shares this exact stencil
+			// instead of carrying a second copy of it.
+			const Scalar div = DivergenceOfUnitNormal( y, n, hfd );
 			Scalar J = Scalar(1) - d * div;
 			if( J < Scalar(0.5) ) { J = Scalar(0.5); jClamped++; }
 			if( J > Scalar(2) )   { J = Scalar(2);   jClamped++; }

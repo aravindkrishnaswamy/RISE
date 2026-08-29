@@ -65,6 +65,7 @@ namespace {
 #endif
 
 #include "../Intersection/TextureFootprintCompute.h"
+#include "../Utilities/SurfaceCurvature.h"	// scaleHint stamping in the specializations below
 #include "TriangleMeshGeometryIndexedSpecializations.h"
 
 TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(

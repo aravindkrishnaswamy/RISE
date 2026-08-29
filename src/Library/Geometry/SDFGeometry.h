@@ -172,6 +172,33 @@ namespace RISE
 
 			Scalar  Map( const Point3& p ) const;				//!< composed signed distance at p
 			Vector3 GradientNormal( const Point3& p ) const;	//!< unit gradient (outward) normal
+
+			//! DIVERGENCE OF THE UNIT NORMAL FIELD at an on-surface point,
+			//! `div n_hat = k1 + k2 = 2H` -- the one-sided finite difference
+			//! that has been in this file since the curvature-corrected
+			//! sampling weights were added (it was the `jacobianAt` lambda's
+			//! inner math; extracted so the sampling structure and the
+			//! intersection-time `curv` signal share ONE implementation
+			//! rather than two copies of the same stencil).
+			//!
+			//! Costs 3 extra GradientNormal calls == ~18 extra Map()
+			//! evaluations, each O(#parts).  That is why the intersection-time
+			//! caller gates on SurfaceCurvatureDemand.
+			//!
+			//! `n` must be GradientNormal(y) -- passed in rather than
+			//! recomputed because every caller already has it.  `hfd` is the
+			//! FD step; use CurvatureFDStep() unless you have a reason not to.
+			//! Returns 0 on a degenerate step, which reads as "flat" -- the
+			//! honest neutral answer, never a NaN.
+			Scalar  DivergenceOfUnitNormal( const Point3& y, const Vector3& n, const Scalar hfd ) const;
+
+			//! The FD step the curvature stencil uses: comfortably above the
+			//! surface epsilon (so the two GradientNormal evaluations are not
+			//! differencing numerical noise) and a fixed fraction of the bbox
+			//! diagonal (so it scales with the object).  Shared by the
+			//! sampling-weight path and the intersection-time signal so a
+			//! future tuning change moves both together.
+			Scalar  CurvatureFDStep() const;
 			//! March along (o + t*dir) from tStart, within [.., t1], to the
 			//! next surface crossing.  Returns true + tHit on a hit.
 			bool    March( const Point3& o, const Vector3& dir, const Scalar tStart, const Scalar t1, Scalar& tHit ) const;

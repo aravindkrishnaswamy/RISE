@@ -18,6 +18,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -136,6 +137,35 @@ void SphereGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHit
 			Vector3( 0.0, 1.0, 0.0 ),
 			Vector3( -1.0, 0.0, 0.0 ), 
 			ri.vNormal, ri.ptCoord );
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+		// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4).  Publish the genuine
+		// closed-form Weingarten map this primitive already knows how to
+		// compute, so consumers reading `ri.derivatives` -- the expression VM's
+		// `curv`, NormalMap's UV-aligned tangent frame, SMS's Newton Jacobian --
+		// get an EXACT curvature/tangent frame here instead of the honest zero
+		// (or the ONB / finite-difference fallback) an unpopulated record used
+		// to force.  UNGATED: this is a handful of trig calls on data the hit
+		// already produced, closed-form and exact.  Contrast the SDF family's
+		// direct curvature, which costs ~18 extra field evaluations per hit and
+		// IS gated on SurfaceCurvatureDemand.
+		//
+		// `scaleHint` (the dimensionless `curv`'s normalizer) is the ONE part
+		// that IS gated -- nothing but `curv` reads it, and
+		// Object::IntersectRay folds the world scale into it afterward.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+			}
+		}
 	}
 }
 
