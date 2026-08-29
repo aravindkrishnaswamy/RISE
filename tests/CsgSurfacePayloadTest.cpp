@@ -1736,9 +1736,11 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 	const unsigned int detail = 40;
 
 	// A MUST be an analytic SPHERE, not a box: CSGObject.cpp's "inside"
-	// signal is `range2 == 0` EXACTLY, and only RaySphereIntersection.cpp
+	// signal is `range2 == 0` EXACTLY, and RaySphereIntersection.cpp
 	// hard-codes `hit.dRange2 = 0.0` for an inside-origin hit (the
-	// one-positive-root case). RayBoxIntersection.cpp instead reports the
+	// one-positive-root case; the torus and quadric/ellipsoid intersectors
+	// and SDFGeometry do likewise, but a BOX does not).
+	// RayBoxIntersection.cpp instead reports the
 	// (negative) tmin verbatim, which Object::IntersectRay's own exit-info
 	// promotion then converts to a POSITIVE magnitude via
 	// `range2 = Magnitude(ptExit - origin)` -- never exactly 0 -- so a box
@@ -1904,13 +1906,13 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 // "inside B, not A").
 //
 // REACHABILITY: this branch requires BOTH riObjA.range2==0 AND
-// riObjB.range2==0.  RaySphereIntersection.cpp is the ONLY geometry in
-// this codebase that hard-codes range2=0 for an inside-origin hit;
+// riObjB.range2==0.  Only ANALYTIC geometries report range2=0 for an
+// inside-origin hit (the sphere, torus, and quadric/ellipsoid
+// intersectors hard-code it; SDFGeometry sets it directly);
 // TriangleMeshGeometry(Indexed)::IntersectRay ignores bComputeExitInfo
-// entirely, so a mesh operand's range2 never reads as exactly 0.  So
-// reaching this branch with derivatives.valid==true would need BOTH A and
-// B to be analytic spheres -- and analytic sphere geometry never sets
-// derivatives.valid.  CONCLUSION: with today's geometry set, the
+// entirely, so a mesh operand's range2 never reads as exactly 0.  And no
+// analytic geometry populates derivatives.valid (only the two
+// triangle-mesh classes do).  CONCLUSION: with today's geometry set, the
 // dndu/dndv negation inside this branch is UNREACHABLE code (harmlessly
 // guarded by `.valid`).  This test routes through the branch with two
 // NESTED analytic spheres to exercise the reachable half -- the
@@ -1990,8 +1992,9 @@ void TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch()
 // dndu/dndv-negation branches without existing coverage.
 //
 // REACHABILITY: same reasoning as Test 18 -- this branch requires
-// riObjB.range2==0 (origin inside B), which only an analytic sphere B can
-// report, and analytic sphere geometry never sets derivatives.valid.
+// riObjB.range2==0 (origin inside B), which only an ANALYTIC B
+// (sphere/torus/quadric/SDF) can report, and no analytic geometry sets
+// derivatives.valid (only the two triangle-mesh classes do).
 // CONCLUSION: the dndu/dndv negation here is UNREACHABLE today under the
 // same analysis.  This test routes through the branch with an analytic
 // sphere B (nested inside a farther, off-center sphere A) to exercise the

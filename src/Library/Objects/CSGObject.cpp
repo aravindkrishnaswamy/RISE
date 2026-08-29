@@ -892,15 +892,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					//
 					// REACHABILITY (CsgSurfacePayloadTest.cpp Test 18/19 audit):
 					// this branch requires BOTH riObjA.range2==0 AND
-					// riObjB.range2==0 -- RaySphereIntersection.cpp is the ONLY
-					// geometry in this codebase that hard-codes range2=0 for an
-					// inside-origin hit (TriangleMeshGeometry(Indexed)::
-					// IntersectRay ignores bComputeExitInfo entirely, leaving a
-					// mesh operand's range2 at its RISE_INFINITY default, which
-					// can never read as exactly 0). So reaching this branch
-					// with derivatives.valid==true would require BOTH A and B
-					// to be analytic spheres -- and analytic sphere geometry
-					// never sets derivatives.valid in the first place. The
+					// riObjB.range2==0.  The geometries that report range2=0
+					// for an inside-origin hit are all ANALYTIC ones -- the
+					// sphere, torus, and quadric/ellipsoid intersectors
+					// hard-code it, and SDFGeometry sets it directly -- while
+					// TriangleMeshGeometry(Indexed)::IntersectRay ignores
+					// bComputeExitInfo entirely, leaving a mesh operand's
+					// range2 at its RISE_INFINITY default, which can never
+					// read as exactly 0.  And NO analytic geometry populates
+					// derivatives.valid (only the two triangle-mesh classes
+					// do) -- so no operand can BOTH trip range2==0 AND carry
+					// valid derivatives.  If Torus/Ellipsoid ever gain
+					// intersection-time derivatives (ManifoldSolver's stated
+					// eventual plan), re-audit this branch.  The
 					// dndu/dndv negation below is therefore UNREACHABLE under
 					// today's geometry set (guarded harmlessly by .valid); the
 					// vNormal/vGeomNormal negation above IS reachable (nested
@@ -946,8 +950,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// REACHABILITY (CsgSurfacePayloadTest.cpp Test 18/19 audit):
 					// this branch requires riObjB.range2==0 (origin inside B),
 					// which -- same reasoning as the "inside both" branch above
-					// -- only an analytic sphere B can report, and analytic
-					// sphere geometry never sets derivatives.valid. The
+					// -- only an ANALYTIC B (sphere/torus/quadric/SDF) can
+					// report, and no analytic geometry sets derivatives.valid
+					// (only the two triangle-mesh classes do). The
 					// dndu/dndv negation below is therefore UNREACHABLE under
 					// today's geometry set (guarded harmlessly by .valid); the
 					// vNormal/vGeomNormal negation above IS reachable

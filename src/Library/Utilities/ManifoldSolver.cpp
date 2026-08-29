@@ -139,7 +139,17 @@ namespace { constexpr RISE::Scalar kNewtonStepNormCapFrac = RISE::Scalar( 0.0 );
 //
 // Compile-time toggle, default 0 (legacy mesh-J path).  Flip to 1 to
 // reproduce the smooth-J experiment on the displaced Veach egg.
-#define SMS_SMOOTH_BASE_JACOBIAN 0
+// ⚠ Before enabling: the override replaces vertex.dndu/dndv with a fresh
+// uv-keyed ComputeAnalyticalDerivatives() answer while KEEPING
+// vertex.normal from the probe raycast -- and the raycast record's
+// normal may be back-face-flipped (double-sided mesh hit from inside),
+// in which case its dndu/dndv were negated to match
+// (TriangleMeshGeometry(Indexed)::IntersectRay).  The uv-keyed analytic
+// answer knows nothing of that flip, so on a back-facing DisplacedGeometry
+// vertex the override would pair a flipped normal with an unflipped
+// dndu/dndv -- a sign-inconsistent Newton Jacobian.  Reconcile the sign
+// (e.g. negate the analytic dndu/dndv when Dot(analyticN, vertex.normal)
+// < 0) before turning this on.
 #if SMS_EDGE_AWARE_NEWTON
 namespace { constexpr RISE::Scalar kEdgeTrustAbsFloor = RISE::Scalar( 0.05 ); }	///< below this absolute rotation magnitude, no test (any change OK)
 namespace { constexpr RISE::Scalar kEdgeTrustRelRatio = RISE::Scalar( 3.0  ); }	///< actual must not exceed predicted × this when both > floor
