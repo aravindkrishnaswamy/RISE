@@ -18857,10 +18857,23 @@ namespace RISE
 			//! same ReadSchema the `read_schema` tool answers with -- there is
 			//! no second, hand-written grammar description in this file that
 			//! could drift from the parser.
+			//! `expression_painter` earns its slot on the ADOPTION argument of
+			//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 11 step 1, not on
+			//! grammar completeness: the descriptor registry's own text is the
+			//! only documentation channel guaranteed to reach every agent, and
+			//! the measured record (doc 88 C-ADV / C-READ) says design-note
+			//! prose and unread skills do not.  It is also where the
+			//! curvature context variables (`curv` / `curvR`) are described,
+			//! and a mask built from a world-axis position proxy instead of
+			//! from geometry is precisely the failure this block is trying to
+			//! stop.  It is the largest entry here; if the builder prompt ever
+			//! needs trimming, weigh it against a measured census rather than
+			//! against its byte count.
 			const char* const kBuilderGrammarKeywords[] = {
 				"sdf_geometry",
 				"box_geometry",
 				"uniformcolor_painter",
+				"expression_painter",
 				"lambertian_material",
 				"pbr_metallic_roughness_material",
 				"standard_object"
