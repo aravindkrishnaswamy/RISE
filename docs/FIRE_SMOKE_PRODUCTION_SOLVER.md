@@ -4541,8 +4541,10 @@ The read-only r178 audit localizes the failure.  Maximum physical velocity is
 `0.01402869021009805 s`; it is not the selector that collapses the step.  Gas
 density ranges from `0.15965474117547274` to `1.2099052290432155 kg/m3`
 against `1.1719579191113527 kg/m3` ambient.  The diagnosed chain is therefore
-density corruption -> momentum/density velocity amplification -> advective CFL
-collapse.  The simultaneous manifold max/p95/p50 is
+density corruption coupled to momentum growth -> advective CFL collapse.  The
+narrower claim that density division alone owns the velocity is superseded by
+r179's direct momentum/scalar compatibility and projection-impulse audit.  The
+simultaneous manifold max/p95/p50 is
 `0.11917137460802585 / 0.009886252187254363 /
 1.1382639254042815e-5`.
 
@@ -4563,6 +4565,47 @@ evidence files are under
 `rendered/fire_production_calibration/r178_tier10_density_velocity_stop`; the
 121-MB restart checkpoint remains a local recoverable run product identified
 by the SHA above.
+
+### 7.56l r178 momentum decomposition and cap decision (r179)
+
+The r178 checkpoint is instrumented before applying the proposed restoration
+cap.  Its minimum gas-density cell has `rho=0.15965474117547274 kg/m3`,
+`T=1981.9763228118441 K`, and signed deviation
+`-0.060475840911561773`; the low density is not manifold-consistent.  At the
+maximum-velocity face, the two adjacent `(rho,T,deviation)` tuples are
+`(0.23534662136808038,1614.7138732295894,+0.11917137460802585)` and
+`(0.21136353025212884,1643.7593009811521,+0.02378781404850927)`.  Face density
+is `0.22335506975650787 kg/m3`, momentum is
+`57.098869323730469 kg/(m2 s)`, and velocity is
+`255.64169311523438 m/s`.  The maximum checkpoint compatibility residual
+`|M-rho_f u|` is `9.639436029829085e-6`, so the velocity is the compatible
+image of an already-large momentum rather than a stale scalar/momentum pair.
+
+The short decomposition starts from a copy of the recoverable checkpoint and
+accepts eight more steps.  Every request is executed normally and again with
+the existing restoration-removed diagnostic; transported-dual momentum must
+be byte-identical, which makes the physical-only terminal the projection
+baseline for the normal restoration result.  Across
+`dt=4.7868743422441185e-5--6.0848105931654572e-5 s`, maximum physical velocity
+is `204.94149780273438--254.57662963867188 m/s`.  Restoration's maximum face-
+velocity change is `6.11376953125--12.380699157714844 m/s`; its largest ratio
+to maximum physical velocity is `0.058162335108278389`.  The proposed
+momentum-subdominant ceiling is `2^-3=0.125`, so it is slack by more than a
+factor of two.  Maximum restoration/physical projection-impulse ratio is
+`0.17676903757991816`; restoration does not dominate.  The replay's largest
+terminal compatibility residual is `1.8754599295789376e-6`.
+
+The pre-registered conditional therefore refuses the implementation branch:
+a cap that never engages cannot make the r178 replay plume-scale, and adding
+it would create machinery without a measured customer.  The r159 lineage is
+recorded exactly: excluding per-step-finite restoration velocity from CFL was
+necessary, but not sufficient to prevent momentum accumulated elsewhere; the
+new evidence shows restoration itself is not that accumulation owner.  r178
+is reclassified as coupled off-manifold density and physical-momentum runaway.
+Tier 10 remains blocked until the physical projection and its provisional
+momentum budget are decomposed.  No cap, cap REDs, full-window spectrum, or
+animation is claimed by r179.  Raw per-attempt data and the dt plot are under
+`rendered/fire_production_calibration/r179_r178_momentum_decomposition`.
 
 ## 8. Rejected directions and future work
 

@@ -4402,8 +4402,10 @@ it was already tried and refuted here.
   is `0.01402869021009805 s`, so buoyancy selection is not the direct limiter.
   Gas density spans `0.15965474117547274--1.2099052290432155 kg/m3` around the
   `1.1719579191113527 kg/m3` ambient value.  Together these identify the causal
-  bundle as density corruption feeding momentum division, producing the
-  255-m/s field and collapsing the advective step.
+  bundle provisionally as density corruption coupled to momentum growth,
+  producing the 255-m/s field and collapsing the advective step.  r179 below
+  supersedes the narrower implication that division by density alone caused
+  the velocity: the stored momentum/velocity compatibility identity closes.
 
   The combustion ledger does not explain the failure.  A Binary32 source probe
   at the checkpoint produces `94466.977979105024 W`; methane consumption times
@@ -4418,3 +4420,33 @@ it was already tried and refuted here.
   and does not invent later-state wall statistics.  The tier-6 full spectra and
   r177 complete-owner cost remain valid, but the pre-registered tier-10 branch
   is the genuine production-physics stop.
+- **r179 r178 momentum decomposition (2026-08-29):** the recoverable r178
+  checkpoint is audited before any restoration policy change.  The minimum
+  density cell is `0.15965474117547274 kg/m3` at `1981.9763228118441 K`, with
+  signed manifold deviation `-0.060475840911561773`; it is not a
+  manifold-consistent low-density state.  At the `255.64169311523438 m/s`
+  face, adjacent states are `0.23534662136808038 kg/m3, 1614.7138732295894 K,
+  +0.11917137460802585` and `0.21136353025212884 kg/m3,
+  1643.7593009811521 K, +0.02378781404850927`.  The face carries
+  `57.098869323730469 kg/(m2 s)` at `0.22335506975650787 kg/m3`; the checkpoint
+  maximum `|M-rho_f u|` residual is only `9.639436029829085e-6`.  r178 is
+  therefore reclassified as coupled off-manifold density and real physical-
+  momentum runaway, not a stale momentum/scalar pairing and not pure density
+  division.
+
+  An eight-accepted-step Metal replay pairs every normal targeted-restoration
+  attempt with the identical request under the existing restoration-removed
+  diagnostic.  Transported-dual momentum bytes must match before comparison.
+  Over represented `dt = 4.7868743422441185e-5--6.0848105931654572e-5 s`,
+  physical velocity is `204.94--254.58 m/s`; restoration changes it by only
+  `6.11376953125--12.380699157714844 m/s`.  The maximum correction/physical
+  ratio is `0.058162335108278389`, already below the proposed `2^-3 = 0.125`
+  cap.  Maximum restoration impulse is `0.17676903757991816` of the physical-
+  projection impulse, and terminal compatibility residual remains below
+  `1.876e-6`.  Restoration neither dominates nor violates the proposed cap.
+  The pre-registered cap branch is rejected as a slack no-op; its r159 lineage
+  remains true—excluding per-step-finite correction velocity from CFL was
+  necessary, but this replay shows that correction impulse is not the runaway
+  owner.  Tier 10 stays blocked pending a physical-projection/preprojection
+  momentum budget; the requested r178-cap, uncapped-runaway, and r170-shadow
+  RED campaign does not apply because no cap is landed.

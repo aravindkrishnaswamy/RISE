@@ -2347,7 +2347,7 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"f8c63ec59e88e47eee9b7c4cd0aef0f3d6dcfec14dafdc3035bfacc3fbde3575"&&
+			"aeac982487ec88528887f905ac1cb2260e687d428481b3c98b02563f327d8536"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2479,7 +2479,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"f8c63ec59e88e47eee9b7c4cd0aef0f3d6dcfec14dafdc3035bfacc3fbde3575"&&
+			"aeac982487ec88528887f905ac1cb2260e687d428481b3c98b02563f327d8536"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2509,10 +2509,10 @@ int main()
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"fd4e5e2c6468caa664c2861e71731224f17436505a762ae53d95dc17d1563591"&&
+			"15cfce36f7b561ac665e702c0a051571e3e4d6b6cb0c1a0f59bd46bab4c1fb07"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"d514d41cb55551b7e33f3ff083c07752ef479ef7494402ab03d73ad8e26bcfd7"&&
+			"9fd534fe68a9513285dc31fbf3d93f8d079c1ed93875215edda8f9ed9c944fff"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2647,7 +2647,7 @@ int main()
 		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"f8c63ec59e88e47eee9b7c4cd0aef0f3d6dcfec14dafdc3035bfacc3fbde3575"&&
+			"aeac982487ec88528887f905ac1cb2260e687d428481b3c98b02563f327d8536"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
@@ -2691,7 +2691,49 @@ int main()
 		solverDoc.find("### 7.56k Tier-10 density/velocity physics stop (r178)")!=
 			std::string::npos&&historyDoc.find(
 			"r178 tier-10 density/velocity physics stop")!=std::string::npos,
-		"r178 stops tier-10 before statistics and localizes density-driven advective collapse");
+		"r178 stops tier-10 before statistics and retains its pre-decomposition diagnostic");
+	const std::string momentumDecompositionEvidence=ReadText(
+		"rendered/fire_production_calibration/r179_r178_momentum_decomposition/"
+		"momentum_decomposition_evidence.v1");
+	const std::string momentumDecompositionRaw=ReadText(
+		"rendered/fire_production_calibration/r179_r178_momentum_decomposition/"
+		"momentum_decomposition.raw.csv");
+	const std::string momentumExtremeState=ReadText(
+		"rendered/fire_production_calibration/r179_r178_momentum_decomposition/"
+		"checkpoint_extreme_state.v1");
+	const std::string momentumDecompositionPlot=ReadText(
+		"rendered/fire_production_calibration/r179_r178_momentum_decomposition/"
+		"restoration_velocity_vs_dt.svg");
+	Check(!momentumDecompositionEvidence.empty()&&!momentumDecompositionRaw.empty()&&
+		!momentumExtremeState.empty()&&!momentumDecompositionPlot.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			momentumDecompositionEvidence.begin(),momentumDecompositionEvidence.end()))==
+			"f6e80653cef5eff5b53f0faf02fb003c66d8faf80d5166693dbe053751378bd7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			momentumDecompositionRaw.begin(),momentumDecompositionRaw.end()))==
+			"5a22923813cde771452d3c00ad42f5496bff6d8d91030e2d76ba2a9b0a49d77a"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			momentumExtremeState.begin(),momentumExtremeState.end()))==
+			"45fbcf4e358af7c506508f6c431dfe2390f19e1adc6a990daf09a5189a5d58e7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			momentumDecompositionPlot.begin(),momentumDecompositionPlot.end()))==
+			"ae0c52f457b0cbfe9622df0341c947462f2a0d443583046cda0a1531ff870f8e"&&
+		CountText(momentumDecompositionRaw,"\n")==9u&&
+		momentumDecompositionEvidence.find("minimum_density_manifold_consistent false")!=
+			std::string::npos&&
+		momentumDecompositionEvidence.find("restoration_impulse_dominates false")!=
+			std::string::npos&&
+		momentumDecompositionEvidence.find("cap_binding false")!=std::string::npos&&
+		momentumDecompositionEvidence.find(
+			"maximum_restoration_to_physical_velocity_ratio 0.058162335108278389")!=
+			std::string::npos&&
+		momentumExtremeState.find(
+			"maximum_momentum_velocity_compatibility_residual 9.6394360298290849e-06")!=
+			std::string::npos&&
+		solverDoc.find("### 7.56l r178 momentum decomposition and cap decision (r179)")!=
+			std::string::npos&&historyDoc.find("r179 r178 momentum decomposition")!=
+			std::string::npos,
+		"r179 refutes restoration dominance before changing the tier-10 policy");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

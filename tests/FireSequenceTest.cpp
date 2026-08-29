@@ -3065,6 +3065,91 @@ namespace
 							++values.productionPhysicalProjectionRetryCount;
 							production=RISE::FireProductionResidentStepResult();error.clear();
 						}
+						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH")){
+							RISE::FireProductionResidentStepResult physicalOnly;
+							std::string physicalOnlyError;
+							const bool restorationModeClear=
+								std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")==nullptr;
+							bool physicalOnlyComputed=false;
+							if(attemptComputed&&restorationModeClear&&
+								setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed",1)==0){
+								physicalOnlyComputed=RISE::AttemptFireProductionResidentStepMetal(
+									request,physicalOnly,&physicalOnlyError);
+								unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
+							}
+							const RISE::FireProductionProjectionResult& physical=physicalOnly.projection;
+							double physicalVelocityMaximum=0.0,terminalVelocityMaximum=0.0;
+							double restorationVelocityMaximum=0.0,physicalImpulseMaximum=0.0;
+							double restorationImpulseMaximum=0.0,compatibilityResidualMaximum=0.0;
+							unsigned int terminalAxis=0u,restorationAxis=0u;
+							std::size_t terminalFace=0u,restorationFace=0u;
+							bool auditValid=attemptComputed&&physicalOnlyComputed&&
+								physicalOnly.transportedDual.momentum==production.transportedDual.momentum;
+							for(unsigned int axis=0u;axis<3u&&auditValid;++axis){
+								const std::size_t faces=production.projection.velocityMPerS[axis].size();
+								auditValid=faces>0u&&physical.velocityMPerS[axis].size()==faces&&
+									production.projection.momentumKGPerM2S[axis].size()==faces&&
+									physical.momentumKGPerM2S[axis].size()==faces&&
+									production.projection.faceDensityKGPerM3[axis].size()==faces&&
+									production.transportedDual.momentum[axis].size()==faces;
+								for(std::size_t face=0u;face<faces&&auditValid;++face){
+									const double physicalVelocity=physical.velocityMPerS[axis][face];
+									const double terminalVelocity=production.projection.velocityMPerS[axis][face];
+									const double restorationVelocity=terminalVelocity-physicalVelocity;
+									const double physicalImpulse=physical.momentumKGPerM2S[axis][face]-
+										production.transportedDual.momentum[axis][face];
+									const double restorationImpulse=
+										production.projection.momentumKGPerM2S[axis][face]-
+										physical.momentumKGPerM2S[axis][face];
+									const double compatibility=std::fabs(
+										production.projection.momentumKGPerM2S[axis][face]-
+										production.projection.faceDensityKGPerM3[axis][face]*terminalVelocity);
+									physicalVelocityMaximum=std::max(physicalVelocityMaximum,
+										std::fabs(physicalVelocity));
+									if(std::fabs(terminalVelocity)>terminalVelocityMaximum){
+										terminalVelocityMaximum=std::fabs(terminalVelocity);
+										terminalAxis=axis;terminalFace=face;}
+									if(std::fabs(restorationVelocity)>restorationVelocityMaximum){
+										restorationVelocityMaximum=std::fabs(restorationVelocity);
+										restorationAxis=axis;restorationFace=face;}
+									physicalImpulseMaximum=std::max(physicalImpulseMaximum,
+										std::fabs(physicalImpulse));
+									restorationImpulseMaximum=std::max(restorationImpulseMaximum,
+										std::fabs(restorationImpulse));
+									compatibilityResidualMaximum=std::max(compatibilityResidualMaximum,
+										compatibility);
+								}
+							}
+							if(auditValid){
+								std::error_code sizeError;const bool writeHeader=
+									!std::filesystem::exists(auditPath)||
+									std::filesystem::file_size(auditPath,sizeError)==0u;
+								std::ofstream audit(auditPath,std::ios::app);
+								if(writeHeader)audit<<"beginning_time_s,candidate,dt_s,tail_cells,tail_drained_m3,"
+									"physical_velocity_max_m_per_s,restoration_delta_velocity_max_m_per_s,"
+									"terminal_velocity_max_m_per_s,physical_impulse_max_kg_per_m2_s,"
+									"restoration_impulse_max_kg_per_m2_s,terminal_axis,terminal_face,"
+									"terminal_provisional_momentum,terminal_physical_momentum,"
+									"terminal_momentum,terminal_face_density,terminal_physical_velocity,"
+									"terminal_velocity,restoration_axis,restoration_face,"
+									"compatibility_residual_max\n";
+								audit<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
+									static_cast<double>(production.representedTimeStepS)<<','<<
+									production.manifoldTailCellCount<<','<<
+									production.manifoldTailDrainedVolumeM3<<','<<physicalVelocityMaximum<<','<<
+									restorationVelocityMaximum<<','<<terminalVelocityMaximum<<','<<
+									physicalImpulseMaximum<<','<<restorationImpulseMaximum<<','<<terminalAxis<<','<<
+									terminalFace<<','<<production.transportedDual.momentum[terminalAxis][terminalFace]<<','<<
+									physical.momentumKGPerM2S[terminalAxis][terminalFace]<<','<<
+									production.projection.momentumKGPerM2S[terminalAxis][terminalFace]<<','<<
+									production.projection.faceDensityKGPerM3[terminalAxis][terminalFace]<<','<<
+									physical.velocityMPerS[terminalAxis][terminalFace]<<','<<
+									production.projection.velocityMPerS[terminalAxis][terminalFace]<<','<<
+									restorationAxis<<','<<restorationFace<<','<<compatibilityResidualMaximum<<'\n';
+								if(!audit){lastAdvanceError="production momentum audit write failed";
+									advancedOK=false;break;}
+							}
+						}
 						advancedOK=attemptComputed;
 						unsigned int nextCandidate=0u;double nextTimeStepS=0.0;
 						const RISE::FireProductionResidentStepAttemptDisposition disposition=
@@ -4951,11 +5036,13 @@ namespace
 			}
 		}
 		double minimumGasDensity=std::numeric_limits<double>::infinity(),maximumGasDensity=0.0;
+		std::size_t minimumGasDensityCell=0u;
 		double maximumReducedGravity=0.0;std::size_t maximumReducedGravityCell=0u;
 		std::vector<double> deviations;deviations.reserve(checkpoint.states.size());
+		std::vector<double> signedDeviation(checkpoint.states.size(),0.0);
 		for(std::size_t cell=0u;cell<checkpoint.states.size();++cell){
 			const double density=checkpoint.states[cell].GasDensity();
-			minimumGasDensity=std::min(minimumGasDensity,density);
+			if(density<minimumGasDensity){minimumGasDensity=density;minimumGasDensityCell=cell;}
 			maximumGasDensity=std::max(maximumGasDensity,density);
 			const double reduced=std::max(0.0,9.80665*(ambient.GasDensity()-density)/density);
 			if(reduced>maximumReducedGravity){maximumReducedGravity=reduced;
@@ -4963,11 +5050,54 @@ namespace
 			double ratio=0.0;
 			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(checkpoint.states[cell]),fuel,
 				checkpoint.states[cell].producerPrecision,ratio,&error))return 96;
-			deviations.push_back(std::fabs(ratio-1.0));
+			signedDeviation[cell]=ratio-1.0;deviations.push_back(std::fabs(ratio-1.0));
 		}
 		std::sort(deviations.begin(),deviations.end());
 		auto quantile=[&](const double fraction){return deviations[static_cast<std::size_t>(
 			fraction*static_cast<double>(deviations.size()-1u))];};
+		auto faceCoordinates=[&](const unsigned int axis,const std::size_t face,
+			std::size_t& x,std::size_t& y,std::size_t& z){
+			const std::size_t ex=axis==0u?shape.nx+1u:shape.nx;
+			const std::size_t ey=axis==1u?shape.ny+1u:shape.ny;
+			x=face%ex;const std::size_t row=face/ex;y=row%ey;z=row/ey;
+		};
+		auto cellIndex=[&](const std::size_t x,const std::size_t y,const std::size_t z){
+			return (z*shape.ny+y)*shape.nx+x;};
+		auto faceDensity=[&](const unsigned int axis,const std::size_t face,
+			std::size_t* lowCell,std::size_t* highCell){
+			std::size_t x=0u,y=0u,z=0u;faceCoordinates(axis,face,x,y,z);
+			const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+			const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+			std::array<std::size_t,3> low={{x,y,z}},high=low;
+			if(coordinate>0u&&coordinate<extent){low[axis]=coordinate-1u;high[axis]=coordinate;}
+			else {low[axis]=coordinate==0u?0u:extent-1u;high=low;}
+			const std::size_t lowIndex=cellIndex(low[0],low[1],low[2]);
+			const std::size_t highIndex=cellIndex(high[0],high[1],high[2]);
+			if(lowCell)*lowCell=lowIndex;if(highCell)*highCell=highIndex;
+			const float lowDensity=static_cast<float>(checkpoint.states[lowIndex].GasDensity());
+			if(coordinate==0u||coordinate==extent)return 0.5f*lowDensity+
+				0.5f*static_cast<float>(ambient.GasDensity());
+			return 0.5f*lowDensity+0.5f*
+				static_cast<float>(checkpoint.states[highIndex].GasDensity());
+		};
+		double maximumMomentumVelocityResidual=0.0;unsigned int residualAxis=0u;
+		std::size_t residualFace=0u;
+		for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;
+			face<checkpoint.velocity.component[axis].size();++face){
+			const double density=faceDensity(axis,face,nullptr,nullptr);
+			const double residual=std::fabs(checkpoint.momentum.component[axis][face]-
+				density*checkpoint.velocity.component[axis][face]);
+			if(residual>maximumMomentumVelocityResidual){maximumMomentumVelocityResidual=residual;
+				residualAxis=axis;residualFace=face;}
+		}
+		std::size_t extremeLowCell=0u,extremeHighCell=0u,extremeX=0u,extremeY=0u,extremeZ=0u;
+		faceCoordinates(maximumSpeedAxis,maximumSpeedFace,extremeX,extremeY,extremeZ);
+		const double extremeFaceDensity=faceDensity(maximumSpeedAxis,maximumSpeedFace,
+			&extremeLowCell,&extremeHighCell);
+		const double extremeMomentum=checkpoint.momentum.component[maximumSpeedAxis][maximumSpeedFace];
+		const double extremeVelocity=checkpoint.velocity.component[maximumSpeedAxis][maximumSpeedFace];
+		const double extremeCompatibilityResidual=std::fabs(extremeMomentum-
+			extremeFaceDensity*extremeVelocity);
 
 		std::vector<ConservativeVector> conservative(shape.CellCount());
 		std::vector<double> temperature(shape.CellCount());
@@ -5093,6 +5223,30 @@ namespace
 			<<"maximum_velocity_m_per_s "<<maximumSpeed<<"\n"
 			<<"maximum_velocity_axis "<<maximumSpeedAxis<<"\n"
 			<<"maximum_velocity_face "<<maximumSpeedFace<<"\n"
+			<<"maximum_velocity_face_xyz "<<extremeX<<' '<<extremeY<<' '<<extremeZ<<"\n"
+			<<"maximum_velocity_face_density_kg_per_m3 "<<extremeFaceDensity<<"\n"
+			<<"maximum_velocity_face_momentum_kg_per_m2_s "<<extremeMomentum<<"\n"
+			<<"maximum_velocity_face_compatibility_residual "<<extremeCompatibilityResidual<<"\n"
+			<<"maximum_velocity_low_cell "<<extremeLowCell<<"\n"
+			<<"maximum_velocity_low_cell_rho_kg_per_m3 "<<
+				checkpoint.states[extremeLowCell].GasDensity()<<"\n"
+			<<"maximum_velocity_low_cell_temperature_K "<<
+				checkpoint.states[extremeLowCell].temperatureK<<"\n"
+			<<"maximum_velocity_low_cell_signed_deviation "<<signedDeviation[extremeLowCell]<<"\n"
+			<<"maximum_velocity_high_cell "<<extremeHighCell<<"\n"
+			<<"maximum_velocity_high_cell_rho_kg_per_m3 "<<
+				checkpoint.states[extremeHighCell].GasDensity()<<"\n"
+			<<"maximum_velocity_high_cell_temperature_K "<<
+				checkpoint.states[extremeHighCell].temperatureK<<"\n"
+			<<"maximum_velocity_high_cell_signed_deviation "<<signedDeviation[extremeHighCell]<<"\n"
+			<<"minimum_density_cell "<<minimumGasDensityCell<<"\n"
+			<<"minimum_density_cell_temperature_K "<<
+				checkpoint.states[minimumGasDensityCell].temperatureK<<"\n"
+			<<"minimum_density_cell_signed_deviation "<<signedDeviation[minimumGasDensityCell]<<"\n"
+			<<"maximum_momentum_velocity_compatibility_residual "<<
+				maximumMomentumVelocityResidual<<"\n"
+			<<"maximum_momentum_velocity_compatibility_axis "<<residualAxis<<"\n"
+			<<"maximum_momentum_velocity_compatibility_face "<<residualFace<<"\n"
 			<<"advective_CFL_candidate_s "<<advectiveStep<<"\n"
 			<<"ambient_gas_density_kg_per_m3 "<<ambient.GasDensity()<<"\n"
 			<<"minimum_gas_density_kg_per_m3 "<<minimumGasDensity<<"\n"
@@ -5361,6 +5515,45 @@ namespace
 #endif
 	}
 
+	int RunProductionMomentumReplayChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& auditPath,const std::string& expectedCheckpointBuildId)
+	{
+		if(expectedCheckpointBuildId.size()!=64u)return 90;
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			checkpoint.producerBuildId!=expectedCheckpointBuildId)return 91;
+		std::ofstream clearAudit(auditPath,std::ios::trunc);clearAudit.close();
+		if(!clearAudit)return 92;
+		if(setenv("RISE_FIRE_MOMENTUM_AUDIT_PATH",auditPath.string().c_str(),1)!=0)return 92;
+		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
+			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+		if(!beginning.succeeded||!(beginning.flowThroughTimeS>0.0))return 93;
+		const double expectedPuffingHz=1.5/std::sqrt(CapstonePoolDiameterM);
+		const double statisticsStartS=5.0*beginning.flowThroughTimeS;
+		const double statisticsDurationS=std::ceil((40.0/expectedPuffingHz)/0.0625)*0.0625;
+		const double fullTargetS=statisticsStartS+statisticsDurationS;
+		RunPersistenceOptions persistence;
+		persistence.productionMetal=true;persistence.resume=true;
+		persistence.checkpointPath=checkpointPath;
+		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		persistence.isolatedEquivalenceProbe=true;
+		persistence.isolatedExpectedCheckpointBuildId=expectedCheckpointBuildId;
+		persistence.stopAfterAdditionalAcceptedSteps=8u;
+		persistence.maximumProductionSourceStepS=
+			static_cast<double>(static_cast<float>(0.0016462659696117043));
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,0.0,fullTargetS,1.0,
+			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		unsetenv("RISE_FIRE_MOMENTUM_AUDIT_PATH");
+		if(!result.succeeded){std::fprintf(stderr,"production momentum replay failed: %s\n",
+			result.structuredError.c_str());return 94;}
+		std::ifstream audit(auditPath);std::string line;std::size_t rows=0u;
+		while(std::getline(audit,line))if(!line.empty())++rows;
+		if(rows<9u)return 95;
+		std::fprintf(stderr,"PRODUCTION_MOMENTUM_REPLAY beginning_step=%llu additional_steps=8 "
+			"audit_rows=%zu\n",static_cast<unsigned long long>(checkpoint.acceptedSteps),rows-1u);
+		return 0;
+	}
+
 // Kept as a compact test-only include because the checkpoint schema and
 // certified periodic oracle are private to this translation unit.
 #include "FireProductionCalibrationFixture.h"
@@ -5560,6 +5753,8 @@ int main(int argc,char** argv)
 			!ParsePositiveDoubleArgument(argv[3],cadence))return 91;
 		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4]);
 	}
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
+		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-temporal-preview")==0)
 		return RunTemporalFirePreviewChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-first-light-preview")==0)
