@@ -953,7 +953,8 @@ namespace
 	bool ProductionEstablishedFlameHolderEligible(const std::size_t cell,
 		const std::size_t nx,const std::size_t ny,
 		const std::vector<std::uint8_t>& canonicalPilotMask,
-		const std::vector<double>& sourcePattern,const MethaneCellState& candidate,
+		const std::vector<double>& sourcePattern,const bool pilotEstablished,
+		const MethaneCellState& candidate,
 		const FireSimulationMethaneRecord& fuel,
 		const FireSimulationTransportRecord& transport,bool& eligible,std::string* error)
 	{
@@ -967,7 +968,8 @@ namespace
 			std::numeric_limits<double>::infinity());
 		const double gasDensity=candidate.GasDensity();
 		if(!(gasDensity>0.0)||candidate.constituent[MethaneCH4]<=0.0||
-			candidate.constituent[MethaneO2]<=0.0||
+			candidate.constituent[MethaneO2]<=0.0)return true;
+		if(!pilotEstablished&&
 			(candidate.constituent[MethaneCO2]+candidate.constituent[MethaneH2O])/
 				gasDensity<productWitness)return true;
 		double adiabaticTemperatureK=0.0;
@@ -1010,14 +1012,19 @@ namespace
 			cold.temperatureK,cold.sensibleEnergyJPerM3,&error)||
 			!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(established),
 				established.temperatureK,established.sensibleEnergyJPerM3,&error))return false;
-		bool establishedEligible=false,coldEligible=true,noncontactEligible=true;
+		bool establishedEligible=false,coldEligible=true,latchedColdEligible=false,
+			noncontactEligible=true;
 		const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
-		return ProductionEstablishedFlameHolderEligible(1u,3u,2u,annulus,source,
-			established,fuel,transport,establishedEligible,&error)&&establishedEligible&&
-			ProductionEstablishedFlameHolderEligible(1u,3u,2u,annulus,source,cold,
-				fuel,transport,coldEligible,&error)&&!coldEligible&&
-			ProductionEstablishedFlameHolderEligible(0u,3u,2u,annulus,source,
-				established,fuel,transport,noncontactEligible,&error)&&!noncontactEligible;
+		const bool establishedAccepted=ProductionEstablishedFlameHolderEligible(1u,3u,2u,
+			annulus,source,false,established,fuel,transport,establishedEligible,&error);
+		const bool coldAccepted=ProductionEstablishedFlameHolderEligible(1u,3u,2u,annulus,
+			source,false,cold,fuel,transport,coldEligible,&error);
+		const bool latchedAccepted=ProductionEstablishedFlameHolderEligible(1u,3u,2u,
+			annulus,source,true,cold,fuel,transport,latchedColdEligible,&error);
+		const bool noncontactAccepted=ProductionEstablishedFlameHolderEligible(0u,3u,2u,
+			annulus,source,true,established,fuel,transport,noncontactEligible,&error);
+		return establishedAccepted&&establishedEligible&&coldAccepted&&!coldEligible&&
+			latchedAccepted&&latchedColdEligible&&noncontactAccepted&&!noncontactEligible;
 	}
 
 	class CheckpointWriter
@@ -2429,7 +2436,7 @@ namespace
 				for(std::size_t cell=0u;cell<shape.nx*shape.ny;++cell){
 					bool flameHolderEligible=false;
 					advancedOK=ProductionEstablishedFlameHolderEligible(cell,shape.nx,shape.ny,
-						canonicalPilotMask,sourcePattern,states[cell],fuel,
+						canonicalPilotMask,sourcePattern,simulationTimeS>=pilotEndS,states[cell],fuel,
 						FireSimulationTransportRecord::OpenV1(),flameHolderEligible,&error);
 					if(!advancedOK)break;
 					if(flameHolderEligible)eligibility[cell]=true;
@@ -4861,6 +4868,14 @@ namespace
 
 int main(int argc,char** argv)
 {
+	if(argc==3&&std::strcmp(argv[1],"--fire-checkpoint-build-id")==0){
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(argv[2],checkpoint,error))return 98;
+		std::fprintf(stdout,"checkpoint_build_id=%s accepted_steps=%llu\n",
+			checkpoint.producerBuildId.c_str(),
+			static_cast<unsigned long long>(checkpoint.acceptedSteps));
+		return 0;
+	}
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-flame-holder-red")==0){
 		const bool passed=ProductionEstablishedFlameHolderREDPasses();
 		std::fprintf(stdout,"PRODUCTION_FLAME_HOLDER_RED passed=%d\n",passed?1:0);
