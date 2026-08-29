@@ -2323,9 +2323,12 @@ namespace
 			IgnitionGrid eligibilityGrid;
 			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;eligibilityGrid.nz=shape.nz;
 			eligibilityGrid.cells=states;eligibilityGrid.pilotMask.resize(shape.CellCount(),false);
-			for(std::size_t cell=0;cell<shape.CellCount();++cell)
+			for(std::size_t cell=0;cell<shape.CellCount();++cell){
+				const bool fuelSourceSurface=cell<shape.nx*shape.ny&&
+					cell<sourcePattern.size()&&sourcePattern[cell]!=0.0;
 				eligibilityGrid.pilotMask[cell]=!persistence.forceZeroSourceForTest&&
-					canonicalPilotMask[cell]!=0u;
+					(canonicalPilotMask[cell]!=0u||fuelSourceSurface);
+			}
 			std::vector<bool> eligibility;
 			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
 				FireSimulationTransportRecord::OpenV1(),eligibility,&error);
