@@ -64,12 +64,21 @@ namespace
 	std::string DigestFile(const std::filesystem::path& path);
 	bool VerifyVisibleFireDisplayDerivative(const RISECBOR64::Bytes& artifact,
 		const RISECBOR64::Bytes& sidecar,const RISECBOR64::Value& primaryEnvelope,
-		std::string& error);
+		std::string& error,const bool requireVisible=true,const bool requirePlume=false);
+	bool FirstLightEnvelopeHasFreshProvenance(const RISECBOR64::Value& envelope,
+		const std::string& previousProvenance,std::string& provenance)
+	{
+		const RISECBOR64::Value* value=envelope.Find("provenance_id");
+		if(!value||value->GetType()!=RISECBOR64::Value::Text||
+			value->GetText().size()!=64u)return false;
+		provenance=value->GetText();
+		return previousProvenance.empty()||provenance!=previousProvenance;
+	}
 
 #if defined(__APPLE__)
 	bool DecodeFirstLightGIFFrame(CGImageSourceRef source,const std::size_t frame,
 		const unsigned int width,const unsigned int height,std::string& digest,
-		bool& visible)
+		bool& visible,bool& structuredPlume)
 	{
 		CGImageRef image=CGImageSourceCreateImageAtIndex(source,frame,nullptr);
 		if(!image||CGImageGetWidth(image)!=width||CGImageGetHeight(image)!=height){
@@ -84,9 +93,21 @@ namespace
 		if(!context){CFRelease(image);return false;}
 		CGContextDrawImage(context,CGRectMake(0,0,width,height),image);
 		CFRelease(context);CFRelease(image);
-		visible=false;
-		for(std::size_t i=0u;i<pixels.size();i+=4u)
+		visible=false;structuredPlume=false;
+		std::size_t litPixels=0u,minX=width,minY=height,maxX=0u,maxY=0u;
+		std::uint64_t redSum=0u,blueSum=0u;
+		for(unsigned int y=0u;y<height;++y)for(unsigned int x=0u;x<width;++x){
+			const std::size_t i=4u*(static_cast<std::size_t>(y)*width+x);
 			visible=visible||pixels[i]!=0u||pixels[i+1u]!=0u||pixels[i+2u]!=0u;
+			const bool lit=std::max({pixels[i],pixels[i+1u],pixels[i+2u]})>127u;
+			if(lit){visible=true;++litPixels;minX=std::min(minX,static_cast<std::size_t>(x));
+				minY=std::min(minY,static_cast<std::size_t>(y));
+				maxX=std::max(maxX,static_cast<std::size_t>(x));
+				maxY=std::max(maxY,static_cast<std::size_t>(y));
+				redSum+=pixels[i];blueSum+=pixels[i+2u];}
+		}
+		structuredPlume=visible&&2u*litPixels<static_cast<std::size_t>(width)*height&&
+			(maxY-minY)>(maxX-minX)&&blueSum>redSum;
 		digest=RISECBOR64::SHA256Hex(pixels);return true;
 	}
 
@@ -96,9 +117,13 @@ namespace
 		const std::vector<FireFramePrimary>& frames,std::string& error)
 	{
 		error.clear();
-		if(encoding!=FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit||
+		if(encoding!=FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit||
 			width==0u||height==0u||framesPerSecond==0u||frames.size()<2u){
 			error="first-light GIF expectations are inconsistent";return false;
+		}
+		const RISECBOR64::Bytes encoded=ReadFileBytes(path);
+		if(encoded.size()<6u||std::string(encoded.begin(),encoded.begin()+6u)!="GIF87a"){
+			error="first-light GIF container revision differs";return false;
 		}
 		CFURLRef url=CFURLCreateFromFileSystemRepresentation(nullptr,
 			reinterpret_cast<const UInt8*>(path.data()),path.size(),false);
@@ -107,7 +132,7 @@ namespace
 		if(!source||CGImageSourceGetCount(source)!=frames.size()){
 			if(source)CFRelease(source);error="first-light GIF frame count differs";return false;
 		}
-		std::string firstDigest;bool visible=false,distinct=false;
+		std::string firstDigest;bool visible=false,distinct=false,terminalPlume=false;
 		for(std::size_t frame=0u;frame<frames.size();++frame){
 			CFDictionaryRef properties=CGImageSourceCopyPropertiesAtIndex(
 				source,frame,nullptr);
@@ -121,15 +146,19 @@ namespace
 				std::fabs(delaySeconds-1.0/static_cast<double>(framesPerSecond))<=0.011;
 			if(properties)CFRelease(properties);
 			if(!cadence){CFRelease(source);error="first-light GIF cadence differs";return false;}
-			std::string digest;bool frameVisible=false;
-			if(!DecodeFirstLightGIFFrame(source,frame,width,height,digest,frameVisible)){
+			std::string digest;bool frameVisible=false,structuredPlume=false;
+			if(!DecodeFirstLightGIFFrame(source,frame,width,height,digest,frameVisible,
+				structuredPlume)){
 				CFRelease(source);error="first-light GIF frame decode failed";return false;
 			}
 			visible=visible||frameVisible;
+			if(frame+1u==frames.size())terminalPlume=structuredPlume;
 			if(frame==0u)firstDigest=digest;else distinct=distinct||digest!=firstDigest;
 		}
 		CFRelease(source);
-		if(!visible||!distinct){error="first-light GIF is black or temporally static";return false;}
+		if(!visible||!distinct||!terminalPlume){
+			error="first-light GIF is black, static, or lacks a bounded blue plume";return false;
+		}
 		return true;
 	}
 
@@ -216,25 +245,34 @@ namespace
 		const double depth=std::max({static_cast<double>(channel.dimensions[0]),
 			static_cast<double>(channel.dimensions[1]),
 			static_cast<double>(channel.dimensions[2])})*width;
-		const std::filesystem::path stage=std::filesystem::temp_directory_path()/
-			("rise-first-light-"+std::to_string(static_cast<long>(getpid())));
-		std::filesystem::create_directories(stage);
+		const double previewCenterZ=0.15*depth;
+		std::filesystem::path stage;
+		const std::string stageStem="rise-first-light-"+
+			std::to_string(static_cast<long>(getpid()))+"-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+		for(unsigned int nonce=0u;nonce<100u&&stage.empty();++nonce){
+			const std::filesystem::path candidate=std::filesystem::temp_directory_path()/
+				(stageStem+"-"+std::to_string(nonce));
+			std::error_code createError;
+			if(std::filesystem::create_directory(candidate,createError))stage=candidate;
+		}
+		if(stage.empty())return 91;
 		setenv("RISE_MEDIA_PATH",(stage.string()+"/").c_str(),1);
 		const std::filesystem::path scenePath=stage/"first_light.RISEscene";
 		{
 			std::ofstream scene(scenePath);
 			scene << "RISE ASCII SCENE 7\n\nscene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
 				<< "standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
-				<< "pathtracing_spectral_rasterizer\n{\nsamples 1\nnmbegin 380\nnmend 780\n"
-				<< "num_wavelengths 1\nspectral_samples 1\nhwss false\npixel_filter box\n"
+				<< "pathtracing_spectral_rasterizer\n{\nsamples 4\nnmbegin 380\nnmend 780\n"
+				<< "num_wavelengths 32\nspectral_samples 4\nhwss false\npixel_filter box\n"
 				<< "oidn_denoise false\n}\n\nfile_rasterizeroutput\n{\npattern first_light_primary\n"
 				<< "type EXR\nbpp 32\ncolor_space Rec709RGB_Linear\nexposure 0\n"
 				<< "display_transform none\nexr_compression piz\n}\n\nfile_rasterizeroutput\n{\n"
 				<< "pattern first_light_display\ntype PNG\nbpp 16\ncolor_space sRGB\n"
-				<< "exposure 65\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
-				<< "pinhole_camera\n{\nname camera\nlocation " << centerX << ' ' << centerY << ' '
-				<< -depth << "\nlookat " << centerX << ' ' << centerY << ' ' << 0.5*depth
-				<< "\nup 0 1 0\nfov 45\nexposure 0.04\nscanning_rate -0.1\npixel_rate 0.02\n}\n\n"
+				<< "exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
+				<< "pinhole_camera\n{\nname camera\nlocation " << centerX << ' ' << -0.125*depth << ' '
+				<< previewCenterZ << "\nlookat " << centerX << ' ' << centerY << ' ' << previewCenterZ
+				<< "\nup 0 0 1\nfov 45\nexposure 0.04\nscanning_rate -0.1\npixel_rate 0.02\n}\n\n"
 				<< "fire_medium\n{\nname sequence_fire\nfidelity_mode preview\nsequence_manifest "
 				<< manifestPath.string() << "\nchannel_carbon carbon\nchannel_temperature temperature\n"
 				<< "channel_reaction reaction\nchannel_chem_ch chem_CH\nchannel_chem_c2 chem_C2\n"
@@ -243,32 +281,66 @@ namespace
 		}
 		IJobPriv* job=nullptr;
 		if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(scenePath.string().c_str())||
-			!job->RasterizeAnimation(end,end,1u,false,false)){
+			!job->RasterizeAnimation(std::nextafter(end,
+				std::numeric_limits<double>::infinity()),std::nextafter(end,
+				std::numeric_limits<double>::infinity()),1u,false,false)){
 			if(job)job->release();return 92;
 		}
+		auto waitForRenderedPair=[&stage](const std::string& previousProvenance,
+			RISECBOR64::Bytes& primaryBytes,RISECBOR64::Bytes& primarySidecar,
+			RISECBOR64::Bytes& displayBytes,RISECBOR64::Bytes& displaySidecar,
+			RISECBOR64::Value& primaryEnvelope,std::string& provenance,
+			std::string& pairError,const bool requireVisible)->bool{
+			for(unsigned int attempt=0u;attempt<6000u;++attempt){
+				primaryBytes=ReadFileBytes(stage/"first_light_primary.exr");
+				primarySidecar=ReadFileBytes(stage/
+					"first_light_primary.exr.provenance.cbor");
+				displayBytes=ReadFileBytes(stage/"first_light_display.png");
+				displaySidecar=ReadFileBytes(stage/
+					"first_light_display.png.provenance.cbor");
+				pairError.clear();
+				if(VerifyFireProvenanceEXR(primaryBytes,primarySidecar,pairError)&&
+					RISECBOR64::DecodeCanonical(primarySidecar,primaryEnvelope,
+						&pairError)&&VerifyVisibleFireDisplayDerivative(displayBytes,
+						displaySidecar,primaryEnvelope,pairError,requireVisible,
+						false)&&
+					FirstLightEnvelopeHasFreshProvenance(primaryEnvelope,
+						previousProvenance,provenance))return true;
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			pairError="first-light render pair did not publish a fresh identity";
+			return false;
+		};
 		RISECBOR64::Value primaryEnvelope;
 		RISECBOR64::Bytes primaryBytes,primarySidecar,displayBytes,displaySidecar;
-		bool pairs=false;
-		for(unsigned int attempt=0u;attempt<6000u&&!pairs;++attempt){
-			primaryBytes=ReadFileBytes(stage/"first_light_primary.exr");
-			primarySidecar=ReadFileBytes(stage/"first_light_primary.exr.provenance.cbor");
-			displayBytes=ReadFileBytes(stage/"first_light_display.png");
-			displaySidecar=ReadFileBytes(stage/"first_light_display.png.provenance.cbor");
-			std::string pairError;
-			pairs=VerifyFireProvenanceEXR(primaryBytes,primarySidecar,pairError)&&
-				RISECBOR64::DecodeCanonical(primarySidecar,primaryEnvelope,&pairError)&&
-				VerifyVisibleFireDisplayDerivative(displayBytes,displaySidecar,
-					primaryEnvelope,pairError);
-			if(!pairs)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		std::string previousProvenance;
+		const bool pairs=waitForRenderedPair("",primaryBytes,primarySidecar,
+			displayBytes,displaySidecar,primaryEnvelope,previousProvenance,error,true);
+		std::string staleProvenance;
+		if(!pairs||FirstLightEnvelopeHasFreshProvenance(primaryEnvelope,
+			previousProvenance,staleProvenance)){
+			std::fprintf(stderr,"first-light terminal pair rejected: %s\n",error.c_str());
+			job->release();return 93;
 		}
 		std::vector<std::filesystem::path> primaryFrames,displayFrames;
 		std::vector<FireFramePrimary> primaryLinks;
 		bool animationPairs=pairs;
 		for(unsigned int frame=0u;frame<8u;++frame){
 			const double fraction=static_cast<double>(frame)/7.0;
-			const double frameTime=start+(end-start)*fraction;
-			animationPairs=animationPairs&&job->RasterizeAnimation(
-				frameTime,frameTime,1u,false,false);
+			const double nominalFrameTime=start+(end-start)*fraction;
+			const double frameTime=frame==7u?std::nextafter(end,
+				std::numeric_limits<double>::infinity()):nominalFrameTime;
+			for(const std::filesystem::path& prior:std::array<std::filesystem::path,4>{
+				stage/"first_light_primary.exr",
+				stage/"first_light_primary.exr.provenance.cbor",
+				stage/"first_light_display.png",
+				stage/"first_light_display.png.provenance.cbor"}){
+				std::error_code removeError;
+				std::filesystem::remove(prior,removeError);
+				animationPairs=animationPairs&&!removeError;
+			}
+			animationPairs=animationPairs&&job->RasterizeAnimation(frameTime,
+				frameTime,1u,false,false);
 			std::ostringstream index;index<<std::setw(4)<<std::setfill('0')<<frame;
 			const std::filesystem::path currentPrimary=stage/"first_light_primary.exr";
 			const std::filesystem::path currentDisplay=stage/"first_light_display.png";
@@ -276,19 +348,15 @@ namespace
 				("animation_primary"+index.str()+".exr");
 			const std::filesystem::path display=stage/
 				("animation_display"+index.str()+".png");
-			const RISECBOR64::Bytes framePrimary=ReadFileBytes(currentPrimary);
-			const RISECBOR64::Bytes framePrimarySidecar=ReadFileBytes(
-				currentPrimary.string()+".provenance.cbor");
-			const RISECBOR64::Bytes frameDisplay=ReadFileBytes(currentDisplay);
-			const RISECBOR64::Bytes frameDisplaySidecar=ReadFileBytes(
-				currentDisplay.string()+".provenance.cbor");
+			RISECBOR64::Bytes framePrimary,framePrimarySidecar,frameDisplay,
+				frameDisplaySidecar;
 			RISECBOR64::Value envelope;
 			std::string frameError;
-			animationPairs=animationPairs&&VerifyFireProvenanceEXR(
-				framePrimary,framePrimarySidecar,frameError)&&
-				RISECBOR64::DecodeCanonical(framePrimarySidecar,envelope,&frameError)&&
-				VerifyVisibleFireDisplayDerivative(frameDisplay,frameDisplaySidecar,
-					envelope,frameError);
+			std::string frameProvenance;
+			animationPairs=animationPairs&&waitForRenderedPair(previousProvenance,
+				framePrimary,framePrimarySidecar,frameDisplay,frameDisplaySidecar,
+				envelope,frameProvenance,frameError,frame==7u);
+			if(animationPairs)previousProvenance=frameProvenance;
 			const RISECBOR64::Value* payload=envelope.Find("payload");
 			const RISECBOR64::Value* provenance=envelope.Find("provenance_id");
 			const RISECBOR64::Value* artifact=payload?payload->Find("artifact_sha256"):nullptr;
@@ -322,7 +390,7 @@ namespace
 			displayFrames,temporaryGIF,8u,error);
 		const bool gifPublished=gifAuthored&&PublishFireFrameSequenceFileTransaction(
 			animationMetadata,
-			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit,
+			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
 			temporaryGIF.string(),gifPath.string(),64u,64u,8u,8u,primaryLinks,
 			ValidateFirstLightGIF,error);
 		job->release();
@@ -358,7 +426,7 @@ namespace
 				primary.artifactSha256+"\n";
 		const RISECBOR64::Bytes primaryScheduleBytes(primaryScheduleIdentity.begin(),
 			primaryScheduleIdentity.end());
-		std::printf("FIRST_LIGHT_PREVIEW frames=8 exposure_ev=65 primary_schedule=%s "
+		std::printf("FIRST_LIGHT_PREVIEW frames=8 exposure_ev=6 primary_schedule=%s "
 			"terminal_primary=%s png=%s gif=%s\n",
 			RISECBOR64::SHA256Hex(primaryScheduleBytes).c_str(),
 			primaryLinks.back().artifactSha256.c_str(),
@@ -3127,7 +3195,9 @@ namespace
 		const RISECBOR64::Bytes& artifact,
 		const RISECBOR64::Bytes& sidecar,
 		const RISECBOR64::Value& primaryEnvelope,
-		std::string& error )
+		std::string& error,
+		const bool requireVisible,
+		const bool requirePlume )
 	{
 		error.clear();
 		RISECBOR64::Value envelope;
@@ -3161,18 +3231,33 @@ namespace
 			static_cast<unsigned int>(artifact.size()),false);
 		IRasterImageReader* reader=nullptr;
 		unsigned int width=0u,height=0u;
-		bool visible=false;
 		const bool began=RISE_API_CreatePNGReader(&reader,*buffer,
 			eColorSpace_Rec709RGB_Linear)&&reader&&reader->BeginRead(width,height);
-		if( began ) for(unsigned int y=0u;y<height&&!visible;++y)
-			for(unsigned int x=0u;x<width&&!visible;++x) {
+		bool visible=false;
+		std::size_t litPixels=0u,minX=width,minY=height,maxX=0u,maxY=0u;
+		double redSum=0.0,blueSum=0.0;
+		if( began ) for(unsigned int y=0u;y<height;++y)
+			for(unsigned int x=0u;x<width;++x) {
 				RISEColor pixel;reader->ReadColor(pixel,x,y);
-				visible=pixel.base.r>0.0||pixel.base.g>0.0||pixel.base.b>0.0;
+				visible=visible||pixel.base.r>0.0||pixel.base.g>0.0||pixel.base.b>0.0;
+				const bool lit=std::max({pixel.base.r,pixel.base.g,pixel.base.b})>0.5;
+				if(lit){visible=true;++litPixels;minX=std::min(minX,static_cast<std::size_t>(x));
+					minY=std::min(minY,static_cast<std::size_t>(y));
+					maxX=std::max(maxX,static_cast<std::size_t>(x));
+					maxY=std::max(maxY,static_cast<std::size_t>(y));
+					redSum+=pixel.base.r;blueSum+=pixel.base.b;}
 			}
 		if( began ) reader->EndRead();
 		safe_release(reader);safe_release(buffer);
-		if( !began || width==0u || height==0u || !visible ) {
+		if( !began || width==0u || height==0u || (requireVisible&&!visible) ) {
 			error="display derivative is undecodable, empty, or all black";return false;
+		}
+		if(requirePlume&&(!visible||2u*litPixels>=static_cast<std::size_t>(width)*height||
+			(maxY-minY)<=(maxX-minX)||!(blueSum>redSum))){
+			std::ostringstream reason;
+			reason<<"display derivative lacks a bounded blue plume: lit="<<litPixels<<
+				" bbox="<<minX<<','<<minY<<'-'<<maxX<<','<<maxY<<
+				" red="<<redSum<<" blue="<<blueSum;error=reason.str();return false;
 		}
 		return true;
 	}
@@ -3348,14 +3433,26 @@ namespace
 			reaction->tree().setValueOn(openvdb::Coord(0,0,0),solver.reactionWPerM3);
 		}
 		if( includeChem ) {
+			float reactionMaximum=0.0f,temperatureMaximum=300.0f;
+			if(solverGrid) for(std::size_t cell=0u;cell<solver.reaction.size();++cell){
+				reactionMaximum=std::max(reactionMaximum,solver.reaction[cell]);
+				temperatureMaximum=std::max(temperatureMaximum,solver.temperature[cell]);
+			}
 			if(solverGrid) for(std::size_t z=0;z<solver.dimensions[2];++z)
 				for(std::size_t y=0;y<solver.dimensions[1];++y)
 					for(std::size_t x=0;x<solver.dimensions[0];++x) {
+						const std::size_t index=(z*solver.dimensions[1]+y)*solver.dimensions[0]+x;
+						const float reactionWeight=reactionMaximum>0.0f?
+							std::clamp(solver.reaction[index]/reactionMaximum,0.0f,1.0f):0.0f;
+						const float thermalWeight=temperatureMaximum>300.0f?
+							std::clamp((solver.temperature[index]-300.0f)/
+								(temperatureMaximum-300.0f),0.0f,1.0f):0.0f;
+						const float previewSourceWeight=std::max(reactionWeight,thermalWeight);
 						const openvdb::Coord fixture(static_cast<int>(x),static_cast<int>(y),
 							static_cast<int>(z));
-						chemCH->tree().setValueOn(fixture,chemScale*120.0f);
-						chemC2->tree().setValueOn(fixture,chemScale*50.0f);
-						chemCO2->tree().setValueOn(fixture,chemScale*8.0f);
+						chemCH->tree().setValueOn(fixture,chemScale*120.0f*previewSourceWeight);
+						chemC2->tree().setValueOn(fixture,chemScale*50.0f*previewSourceWeight);
+						chemCO2->tree().setValueOn(fixture,chemScale*8.0f*previewSourceWeight);
 					}
 			else {
 				chemCH->tree().setValueOn(openvdb::Coord(0,0,0),chemScale*120.0f);

@@ -3015,23 +3015,25 @@ namespace
 		FireFrameSequenceEncodingDescriptor firstLightGIF;
 		std::string firstLightGIFError;
 		Check( DescribeFireFrameSequenceEncoding(
-				FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit,8u,
+				FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,8u,
 				firstLightGIF,firstLightGIFError) &&
 			firstLightGIF.backend == "apple_imageio" &&
 			firstLightGIF.containerFormat == "GIF" &&
 			firstLightGIF.codec == "gif_lzw" &&
 			firstLightGIF.codecImplementation == "CGImageDestination" &&
+			firstLightGIF.codecProfile == "gif87a" &&
+			firstLightGIF.codecTag == "GIF87a" &&
 			firstLightGIF.displayTransform ==
-				"rec709_linear_exposure_plus65_aces_to_srgb" &&
-			firstLightGIF.conversionBrightness == (65 << 16) &&
+				"rec709_linear_exposure_plus6_aces_to_srgb" &&
+			firstLightGIF.conversionBrightness == (6 << 16) &&
 			ValidateFireFrameSequenceEncodingDescriptor(
-				FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit,8u,
+				FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,8u,
 				firstLightGIF,firstLightGIFError),
-			"[fire provenance] first-light GIF descriptor binds ImageIO and +65 EV view" );
+			"[fire provenance] first-light GIF descriptor binds ImageIO and +6 EV view" );
 		FireFrameSequenceEncodingDescriptor changedFirstLightGIF=firstLightGIF;
 		changedFirstLightGIF.conversionBrightness=64 << 16;
 		Check( !ValidateFireFrameSequenceEncodingDescriptor(
-				FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit,8u,
+				FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,8u,
 				changedFirstLightGIF,firstLightGIFError),
 			"[fire provenance] first-light GIF rejects a changed display exposure" );
 

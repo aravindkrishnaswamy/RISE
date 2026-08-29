@@ -4322,14 +4322,20 @@ it was already tried and refuted here.
   steps, with a `2284.8533 K` pilot-off physical peak and a `1784.60397 K`,
   `1.27718934e7 W/m3` terminal state.  The primary EXR is
   `rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
-  (SHA-256 `b632f77b...3ade`), accompanied by canonical CBOR provenance
-  (`5dd4afa1...9a1`).  Eight scene-linear EXR frames, each with a
+  (SHA-256 `8509f3fe...f343`), accompanied by canonical CBOR provenance
+  (`fdc545b0...102e`).  Eight scene-linear EXR frames, each with a
   canonical sidecar, are the animation's `preview_primary` evidence.  The
-  visible PNG (`ad351f00...e901`) and looping 8-frame/8-fps ImageIO GIF
-  (`5a596525...506f`) are correctly classified as `display_derivative` and
-  linked to those primaries.  They use a display-only +65 EV ACES-to-sRGB
-  transform; the zero-soot preview remains distinct from the physical
-  source-map and checkpoint claims.  The headless AVFoundation route returned
+  visible blue-plume PNG (`1abab746...6c7ca`) and looping 8-frame/8-fps
+  ImageIO GIF87a (`f9c7afe0...0291`) are correctly classified as
+  `display_derivative` and
+  linked to those primaries.  They use a display-only +6 EV ACES-to-sRGB
+  transform.  The preview-only volume spatializes the sealed reaction and
+  thermal-excess fields while preserving their recorded maxima; that
+  visualization mapping remains distinct from the physical source-map and
+  checkpoint claims.  The headless AVFoundation route returned
   `AVErrorCannotEncode`, so no MOV is claimed.  Publication now waits for and
-  verifies complete artifact/sidecar pairs; sidecar-first delayed-artifact
-  REDs prevent the former silent-success race.
+  verifies complete fresh artifact/sidecar pairs in a unique stage for every
+  requested frame; the stale-prior identity RED and sidecar-first
+  delayed-artifact REDs prevent the former silent-success race.  The committed
+  sidecars record source revision `fc636edf...f59f` and dirty diff
+  `82b2cef0...8101`; evidence binds those exact producer facts.

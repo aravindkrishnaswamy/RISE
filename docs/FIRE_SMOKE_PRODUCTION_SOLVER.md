@@ -4435,22 +4435,29 @@ steps, peaks at `2284.8533 K` with pilot input off, and terminates at
 `1784.60397 K` with `1.27718934e7 W/m3` maximum heat release.  The terminal
 scene-linear primary is
 `rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
-(SHA-256 `b632f77b...3ade`); its canonical provenance sidecar is
-`5dd4afa1...9a1`.  The animation retains eight FP32 EXR
+(SHA-256 `8509f3fe...f343`); its canonical provenance sidecar is
+`fdc545b0...102e`.  The animation retains eight FP32 EXR
 `preview_primary` frames and canonical sidecars.  Their ImageIO-authored,
 looping 8-frame/8-fps display derivative is
-`methane_preview_animation.gif` (`5a596525...506f`); the visible still is
-`methane_preview_display.png` (`ad351f00...e901`).  The PNG and GIF are
+`methane_preview_animation.gif` (`f9c7afe0...0291`); the visible blue-plume
+still is `methane_preview_display.png` (`1abab746...6c7ca`).  The PNG and GIF are
 explicitly `display_derivative`, never `preview_primary`, and each is linked
-to its primary input.  A +65 EV renderer-owned ACES-to-sRGB view transform
-makes the zero-soot methane preview visible without changing simulation or
-primary bytes.  AVFoundation returned `AVErrorCannotEncode` in the headless
+to its primary input.  A +6 EV renderer-owned ACES-to-sRGB view transform
+exposes the preview.  Its preview-only volume spatializes the sealed reaction
+and thermal-excess fields while retaining their exact checkpoint maxima; it
+does not alter the simulation, source-map evidence, golden checkpoint, or
+primary-radiance contract.  AVFoundation returned `AVErrorCannotEncode` in the headless
 authoring process, so the optional MOV derivative was not claimed; ImageIO
 GIF/LZW is the truthful portable derivative while the EXRs own the evidence.
+The committed sidecars identify the authoring binary honestly as source revision
+`fc636edf6a9281ed4aacaacd9dd5412535ff3f59f`, dirty-state digest
+`82b2cef0...8101`; the r175 evidence binds both rather than substituting a
+symbolic rung label for producer provenance.
 
 Publication is fail-closed at the file boundary.  The producer intentionally
-commits sidecar before artifact; the waiter therefore requires the complete
-artifact/sidecar pair and verifies artifact digest, provenance identity,
+commits sidecar before artifact; a unique staging directory and per-frame
+fresh-provenance wait therefore require the complete new artifact/sidecar pair
+and verify artifact digest, provenance identity,
 primary linkage, non-black decoded pixels, eight decoded frames, and temporal
 change before copying anything.  Sidecar-first/delayed-artifact REDs cover
 both the primary and visible derivative interleavings.  No conditional block

@@ -49,7 +49,7 @@ namespace RISE
 		enum class FireFrameSequenceEncoding
 		{
 			AppleProRes4444_12Bit,
-			AppleImageIOGif_PreviewPlus65EV_8Bit,
+			AppleImageIOGif_PreviewPlus6EV_8Bit,
 			AppleProRes4444_10Bit,
 			HevcMain10_10Bit
 		};

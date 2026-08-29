@@ -1358,6 +1358,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	rm -rf "$r175_first_light_output"
 	mkdir -p "$r175_first_light_output"
 	if [ "$(uname -s)" = 'Darwin' ] && [ -x "$r174_path" ]; then
+		r175_first_light_rc=0
 		if [ -n "$timeout_bin" ]; then
 			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r174_path" \
 				--fire-first-light-preview "$r175_first_light_source" \
@@ -1390,7 +1391,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	if [ "$(uname -s)" != 'Darwin' ]; then
 		echo 'PASS (macOS ImageIO authoring route not applicable)'
 	elif [ "$r175_first_light_rc" -eq 0 ] && [ "$r175_first_light_files_ok" -eq 1 ] &&
-		grep -Fq 'FIRST_LIGHT_PREVIEW frames=8 exposure_ev=65 primary_schedule=f5e2a799d675b2b65aca87aff453c347239b8ea4ad10c814a78745514639c224 terminal_primary=6121a5418b4e9b1406d6aeab10b605a9794b791252f9b41a37580c9f7ca10466 png=ad351f00fcdde2958308758a1d10571b6acdb603cd9087986f62c4c7e4fce901 gif=5a59652588c89720c2791fb043b3e9a4aef9190b37aa6b97122c37bab735506f' "$r175_first_light_log"; then
+		grep -Fq 'FIRST_LIGHT_PREVIEW frames=8 exposure_ev=6 primary_schedule=a1e5207e922a4afb787d249ce2ca5a476671dd6908d7293ef79ac367b66ed567 terminal_primary=dde35f925dfe4c5b006cc705a9f411c93eda4c97ea23f6c0930fed487323bb66 png=1abab746d3095f47c485194f7b2db51efda1bbd4c52b9f3a47434138b9d6c7ca gif=f9c7afe046afc920d2d6c75850809870561b273777fcd372510bffee6cb00291' "$r175_first_light_log"; then
 		echo 'PASS (8 primaries + visible animated derivative)'
 		rm -f "$r175_first_light_log"
 	else
