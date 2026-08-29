@@ -113,9 +113,26 @@ exactly three call sites, each applying **its own** object transform once:
   ([Object.cpp](../src/Library/Objects/Object.cpp), immediately after the
   block that promotes `vNormal`/`vGeomNormal`) — fires when the wrapped
   geometry populated `ri.geometric.derivatives.valid` during its own
-  `IntersectRay` (currently only `TriangleMeshGeometry` /
-  `TriangleMeshGeometryIndexed`; analytic primitives like `SphereGeometry`
-  never set it there).
+  `IntersectRay`.  **As of 2026-08-29 that is the two triangle-mesh classes
+  PLUS the analytic curved primitives** — `SphereGeometry`,
+  `EllipsoidGeometry`, `TorusGeometry` and `CylinderGeometry` now publish
+  the closed-form Weingarten map they already computed, at intersection
+  time, so `ri.derivatives` carries an exact tangent/curvature frame there
+  instead of nothing (geometry-derived shading signals Phase 1, see
+  [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
+  §5.4).  Three consequences worth knowing:
+  **(1)** `NormalMap`'s tangent-frame fallback ladder now takes its
+  `derivatives.dpdu` rung on those primitives instead of the arbitrary
+  ONB rung its own warning calls "correct only … essentially never";
+  **(2)** SMS's `ComputeVertexDerivatives` reads the record's analytic
+  frame instead of its geometry-agnostic finite-difference fallback;
+  **(3)** several `CSGObject` branches whose `dndu`/`dndv` negation was
+  documented as UNREACHABLE ("no analytic geometry sets
+  derivatives.valid") are now live, and are covered by
+  `tests/CsgSurfacePayloadTest.cpp` Tests 18/19.
+  Planar primitives and the two patch **stubs** deliberately stay
+  unpopulated — a patch reports flat while being genuinely curved, so it
+  must read as an ABSENCE, not as a claim.
 - `Object::ComputeAnalyticalDerivatives` ([Object.cpp](../src/Library/Objects/Object.cpp))
   — the `(u, v)`-keyed analytical query used by the SMS two-stage solver;
   wraps `IGeometry::ComputeAnalyticalDerivatives` (currently implemented by
@@ -142,6 +159,24 @@ exactly three call sites, each applying **its own** object transform once:
   false for every subtraction cavity wall a mesh operand carves, not just
   imprecise. See the CSG-subtraction exception in the Handedness section
   below for the follow-on frame-orientation consequence.
+
+### Two extra record-only scalars (not part of `SurfaceDerivatives`)
+
+`SurfaceDerivativesInfo` — the record-riding twin — additionally carries
+`scaleHint` (a characteristic LENGTH, the geometry's bounding-box diagonal)
+and `curvature` / `curvatureValid` (a DIRECT signed mean curvature, in
+1/length, for families like the SDF that answer the curvature question
+better than a synthesized `dndu`/`dndv` pair could).  **Neither exists on
+`SurfaceDerivatives`, and `IGeometry::ComputeSurfaceDerivatives`'s contract
+is unchanged by them.**  Both are stamped OBJECT-space by the geometry and
+folded to world measure at the same three transform sites below —
+`scaleHint` multiplied by `|det M|^(1/3)`, `curvature` divided by it —
+and that fold sits deliberately OUTSIDE the `derivatives.valid` gate,
+because the SDF family sets `curvatureValid` while leaving `valid` false.
+Both are populated only when something in the process actually reads
+curvature; see
+[GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
+§5.2/§5.4.
 
 **The two field kinds transform differently, and dndu/dndv are NOT a plain
 inverse-transpose:**

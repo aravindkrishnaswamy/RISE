@@ -1,10 +1,15 @@
 # Geometry-Derived Shading Signals — Curvature, Occlusion/Cavity, Thickness
 
-**Status:** **ACCEPTED — implementation in progress** (user-approved 2026-08-29;
+**Status:** **ACCEPTED — Phase 1 implemented** (user-approved 2026-08-29;
 all phases, in sequence). The §5.5 correctness item landed first, separately
 (commits `3f495c25..da92af3e`, merged to master 2026-08-29, zero-P1 — including
 a sign-pairing bug family in CSG/back-face `dndu/dndv` negation the review loop
-surfaced beyond this doc's scope).
+surfaced beyond this doc's scope).  **Phase 1 items 1–7 landed 2026-08-29**
+(`SurfaceCurvature.h`, `curv`/`curvR`, `scaleHint`, analytic-primitive and SDF
+population, the consumption gate, descriptor text, and
+`tests/SurfaceCurvatureTest.cpp`); item 8 (the two skill examples) is a later
+wave.  Where the implementation differs from this document's sketch, the
+amendments are marked **AMENDED (2026-08-29)** in the relevant section.
 **Date:** 2026-08-29 (proposed and accepted same day).
 **Inputs:** a six-pass source-grounded survey of the RISE tree — the expression
 VM ([ExpressionEval.h](../src/Library/Painters/ExpressionEval.h),
@@ -379,6 +384,27 @@ Three mechanical extensions, no interface change:
   compute genuine Weingarten maps in `ComputeSurfaceDerivatives`; they simply
   do not write them into `ri` at intersection time. Wiring that is per-geometry
   bookkeeping and makes exact closed-form curvature available essentially free.
+
+  **AMENDED (2026-08-29) — "essentially free" was optimistic, and the wiring
+  has two side effects worth naming.**  Cost: `ComputeSurfaceDerivatives` is
+  closed-form but not arithmetic-free (a sphere hit pays ~6 transcendentals
+  on top of the UV mapping it already does), and it is **ungated** —
+  gating a *record field* on a global demand flag would make SMS's and
+  NormalMap's behaviour depend on unrelated material authoring, which is
+  worse than the cost.  Side effects, both improvements, both behaviour
+  changes: **(a)** `NormalMap` on an analytic primitive now derives its
+  tangent frame from `dpdu` instead of the arbitrary ONB fallback its own
+  warning describes as "correct only when the normal map's UV axes happen to
+  align with the arbitrary ONB frame — i.e. essentially never"; **(b)** SMS's
+  `ComputeVertexDerivatives` reads the exact analytic frame instead of its
+  geometry-agnostic finite-difference fallback (`sms_k2_glasssphere`
+  re-rendered clean).  A third, purely internal: several `CSGObject` branches
+  documented as UNREACHABLE *because* no analytic geometry populated
+  derivatives are now live — the `dndu`/`dndv` negations they were already
+  carrying are correct, the exit-face probe helper gained the sign re-pairing
+  its own P1-1 audit note had flagged as needed-if-reachable, and
+  `tests/CsgSurfacePayloadTest.cpp` Tests 18/19 were upgraded from
+  documenting the unreachability to asserting the behaviour.
 - **SDF hits.** Following the `jacobianAt` precedent, mean curvature from
   `div n̂` via one-sided FD of `GradientNormal` at three offset points —
   **18 extra `Map()` evaluations** beyond the hit's own 6, i.e. three extra
@@ -390,13 +416,48 @@ Three mechanical extensions, no interface change:
   and falling back to the shape operator otherwise.
 - **Cost gating.** 18 extra `Map()` evals per hit, each `O(#parts)`, is not
   free on a heavy SDF. Gate the computation on consumption: compute it only
-  when the material bound at the hit has an expression that references `curv`
-  (a compile-time-known property of `ExpressionProgram`, since the Builder
-  already resolves every name). The `ConsumesScenePhotonMaps` predicate
-  (`IRasterizer.h:142`) is the established precedent for "build it only if
-  something reads it"; the queue-then-build-once shape of the photon path
-  (`IScenePriv.h:177-198` queueing, `BuildPendingPhotonMaps` at the start of
-  `RasterizeScene`) is the precedent for *where* such a build runs.
+  when an expression that references `curv` exists (a compile-time-known
+  property of `ExpressionProgram`, since the Builder already resolves every
+  name).
+
+  **AMENDED (2026-08-29) — the shipped mechanism.** The compile-time half is
+  as sketched: `ExpressionProgram::Builder` records a bitmask of the context
+  variables any body it compiles (defs included) actually resolved, and the
+  program exposes `UsesContextVar(slot)` / `UsesSurfaceCurvature()`.  The
+  *delivery* half is **not** a per-material lookup at the hit, and not a
+  scene/job flag threaded to the geometry, because **a geometry cannot reach
+  either**: `IGeometry::IntersectRay` receives only a
+  `RayIntersectionGeometric`, which carries no scene, object or material
+  back-pointer, and RISE deliberately shares one `IGeometry` across objects
+  and scenes.  The two routes that *would* reach it were both rejected:
+  a new per-cast INPUT field on the record (the `bWantsWireEdgeInfo`
+  pattern) needs every caster to stamp it, and a missed caster silently
+  disables the feature on that path; a painter→material→object→scene
+  aggregation walk does not exist and would be a project of its own.
+
+  What shipped instead is `SurfaceCurvatureDemand`
+  ([SurfaceCurvature.h](../src/Library/Utilities/SurfaceCurvature.h)): a
+  **process-wide `std::atomic<int>` demand counter**, RAII-incremented by
+  `ExpressionPainter` / `ExpressionScalarPainter` at construction when their
+  compiled program reads `curv`/`curvR`, decremented at destruction.
+  Geometry asks `SurfaceCurvatureDemand::Any()` — one relaxed atomic load —
+  at intersection time.  It gates the SDF finite-difference stencil **and**
+  the `scaleHint` stamping in every family (nothing but `curv` reads
+  `scaleHint`).
+
+  Its one documented weakness is **conservatism, never incorrectness**: a
+  curvature-reading painter alive anywhere in the process enables the
+  computation for every scene in it, which matters only to the GUI/MCP
+  surface that holds several scenes at once, and costs performance rather
+  than correctness (the computed value is a pure function of the hit).  It
+  is thread-safe by construction — mutated only at painter construction and
+  destruction, i.e. at scene build and teardown, outside the render phase;
+  render threads only load it, with no lock and no per-sample
+  synchronization.  Pinned by `tests/SurfaceCurvatureTest.cpp` (g), which
+  asserts the SDF publishes **no** curvature with the gate closed and the
+  right value with it open, that a `def`-only reference still raises demand,
+  and that a user `param` named `curv` (which shadows the context variable)
+  does **not**.
 
 ### 5.5 A correctness item this work exposes
 
@@ -838,6 +899,23 @@ requirement, §5.1), and the degenerate-parameter no-NaN case;
 `GeometrySurfaceDerivativesTest` and the SMS suite green; both worked examples
 parse + derive + render + land in their luma band; **cross-provider census,
 N=3.**
+
+**AMENDED (2026-08-29) — status of the gate.** Items 1–7 are done and
+`tests/SurfaceCurvatureTest.cpp` covers every listed case (94 checks, all
+green; the sign convention and the world-measure fold were red-proved by
+mutation).  `TextureExpressionVMTest` (685), `GeometrySurfaceDerivativesTest`,
+`GeometryUVRoundtripTest`, `SDFGeometryTest` (600) and `CsgSurfacePayloadTest`
+(251, two assertions upgraded — see §5.4's analytic-primitive amendment) are
+green, and `sms_k2_glasssphere` renders clean.  One deviation from the letter
+of §5.1: the orientation reference is **not** an explicit `ri.vGeomNormal`
+check.  It does not need to be — post the 2026-08-29 sign-pairing fix the
+record's `dndu`/`dndv` are already sign-paired with the geometric normal at
+every site that negates one, and modifiers mutate only `ri.vNormal`, so H
+computed from the stored derivatives is oriented off the geometry and
+bump-immune *by construction*.  The requirement that matters (§14 item 6) is
+that nothing orients off `ri.vNormal`, and nothing does; the bump-invariance
+test pins it empirically rather than by inspection.  Item 8 (the two skill
+examples) and the cross-provider census remain.
 
 ### Phase 2 — SDF occlusion and thickness
 
