@@ -35,10 +35,57 @@ namespace RISE
 		Vector3 dndv;
 		bool    valid;  // true if geometry populated these fields
 
+		//! CHARACTERISTIC LENGTH of the hit geometry, in WORLD units --
+		//! the normalization factor behind the expression VM's
+		//! dimensionless `curv` (design doc §5.2).  Mean curvature H has
+		//! units of 1/length, which is a trap for an author writing
+		//! `clamp(curv,0,1)` on a creature whose features have 0.05-unit
+		//! radius; multiplying by this makes the exposed value O(1) at
+		//! object scale on any scene scale.
+		//!
+		//! Stamped OBJECT-SPACE by the geometry at intersection time (the
+		//! bounding-box diagonal, uniformly: SDFGeometry's `m_diagonal`,
+		//! the mesh BVH root box, the analytic primitives' own radii),
+		//! then folded with the object's world scale --
+		//! `|det M|^(1/3)`, the linear-measure sibling of the
+		//! `|det L|^(2/3)` area Jacobian `Object::GetArea()` uses -- at the
+		//! `Object::IntersectRay` / `CSGObject::IntersectRay` transform
+		//! layer.  Exact for rotations and uniform scales; under
+		//! NON-UNIFORM scale no single scalar can be right (a
+		//! `scale 4 0.05 4` panel has no one characteristic length) and
+		//! this is the documented geometric-mean approximation.
+		//!
+		//! DEFAULT 1.0 -- the honest "this geometry did not say", which
+		//! makes `curv` collapse to the raw `curvR` rather than to zero.
+		//! Populated only when SurfaceCurvatureDemand::Any() (nothing else
+		//! reads it, so nothing else should pay for it).
+		Scalar  scaleHint;
+
+		//! DIRECT per-hit mean curvature, for geometry families that can
+		//! answer the curvature question better than a synthesized
+		//! `dndu`/`dndv` pair could (design doc §5.4).  Today that means
+		//! the SDF family, whose implicit surface has no natural `(u,v)`
+		//! for which those partials are meaningful but whose
+		//! `div n_hat = k1 + k2` is a few field evaluations away.
+		//!
+		//! Same sign convention, units and world-measure as the shape
+		//! operator's H (see SurfaceCurvature.h): positive = convex,
+		//! 1/world-length after the `Object::IntersectRay` fold divides
+		//! out the same `|det M|^(1/3)`.  `BuildContext` PREFERS this when
+		//! `curvatureValid`, and falls back to the shape operator over the
+		//! four vectors above.
+		//!
+		//! Independent of `valid`: the SDF sets `curvatureValid` while
+		//! leaving `valid` false, and a mesh does the reverse.
+		Scalar  curvature;
+		bool    curvatureValid;
+
 		SurfaceDerivativesInfo() :
 		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
-		valid( false )
+		valid( false ),
+		scaleHint( 1.0 ),
+		curvature( 0 ), curvatureValid( false )
 		{
 		}
 	};

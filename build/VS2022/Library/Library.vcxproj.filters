@@ -1314,6 +1314,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h">
       <Filter>Utilities</Filter>
     </ClInclude>

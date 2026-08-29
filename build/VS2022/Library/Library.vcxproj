@@ -1055,6 +1055,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Primes.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RayDifferentials.h" />
