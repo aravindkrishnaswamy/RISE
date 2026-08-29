@@ -2325,8 +2325,7 @@ namespace
 			eligibilityGrid.cells=states;eligibilityGrid.pilotMask.resize(shape.CellCount(),false);
 			for(std::size_t cell=0;cell<shape.CellCount();++cell)
 				eligibilityGrid.pilotMask[cell]=!persistence.forceZeroSourceForTest&&
-					canonicalPilotMask[cell]!=0u&&
-					simulationTimeS<pilotEndS;
+					canonicalPilotMask[cell]!=0u;
 			std::vector<bool> eligibility;
 			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
 				FireSimulationTransportRecord::OpenV1(),eligibility,&error);
