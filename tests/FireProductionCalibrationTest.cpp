@@ -698,6 +698,12 @@ int main()
 		"checkpoint_authority_closure.v1");
 	const std::string productionSolverTest=ReadText("tests/FireProductionSolverTest.cpp");
 	const std::string sequenceTest=ReadText("tests/FireSequenceTest.cpp");
+	const std::string fileEncoderObserverSource=ReadText(
+		"src/Library/Rendering/FileEncoderObserver.cpp");
+	const std::string fileEncoderObserverHeader=ReadText(
+		"src/Library/Rendering/FileEncoderObserver.h");
+	const std::string fileRasterizerOutputShimTest=ReadText(
+		"tests/FileRasterizerOutputShimTest.cpp");
 	const std::string fireCaseSource=ReadText("src/Library/Utilities/FireCase.cpp");
 	const std::string fireCaseHeader=ReadText("src/Library/Utilities/FireCase.h");
 	const std::string simulationSolverTest=ReadText("tests/FireSimulationSolverTest.cpp");
@@ -2326,7 +2332,7 @@ int main()
 		"equal_time_readmission.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionEvidence.begin(),equalTimeReadmissionEvidence.end()))==
-			"b4cf38535033582651c42c7a2c8283713da3bf0b2692a2f573adf85e73c94aaa"&&
+			"356c46c03600e8bd3bb769c3bf29f085fa602a8c82068bab26f09351ae4d128a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
 			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
@@ -2341,10 +2347,10 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"8e65f5083ef8fa2e4a0c82991e68563de9e61a18f7dd1cda5a5ac6752556deae"&&
+			"8c2457a2ede60bc1d6438b367997e8e8b36dac7fabb68fb7b804ab084f9191c4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"7f2c28de6e315c774ccd2bf4fd501c54076a2cacd1a223528e840b4ce37f98e1"&&
+			"058e363848e78e9120380eb37806db47eb0cd92b8cafe59b554176dc9d55a47b"&&
 		equalTimeReadmissionEvidence.find("gate_count 152")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find("failure_count 0")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find(
@@ -2384,10 +2390,69 @@ int main()
 	const std::string firstLightDisplayProvenance=ReadText(
 		"rendered/fire_production_first_light/r175_preview_tier6/"
 		"methane_preview_display.png.provenance.cbor");
+	const std::string firstLightAnimation=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"methane_preview_animation.gif");
+	const std::string firstLightAnimationProvenance=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"methane_preview_animation.gif.provenance.cbor");
+	const std::string firstLightReadme=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"README.preview_primary.txt");
+	const std::string firstLightSequenceManifest=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"sequence_manifest.rise-fire.cbor");
+	const std::string firstLightFrame4=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/frame4.vdb");
+	const std::string firstLightFrame5=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/frame5.vdb");
+	const std::array<const char*,8> firstLightFrameHashes={{
+		"f8d3889cff4d84572ee890fbe86fbd6690c4e4de7ac7efff14742b9a82d54a41",
+		"4a8d51c555ec879fd4cc64961dec2b79cd987f961829c4d367587c1a73700b3f",
+		"c5defdd855cf73820c6393cb079fd75dc902caa1d36183c913d04e4def7dfc89",
+		"6af340839a61dff57bcdc0ca543a555274ffb31cbf57061bf1d106d688ca2b6f",
+		"bd97315de7bdc3c9081bdb95f65b19ba5e4fc06d90ed3a8dd30665bbaecf472b",
+		"d7670e96dc60aa009eb90736ecb047a1bec40f6042f2876f605ba1ca1ecdd40c",
+		"dfa9012944fda9382fac88db047e8a0c961be825137e6b0bdfb5faca147f2f10",
+		"b632f77ba488a4e9a04b36752ddfde37336a2f3bd10731644b39af635bbd3ade"}};
+	const std::array<const char*,8> firstLightFrameSidecarHashes={{
+		"66afcefcef522a4042ac9c13b7f45674d135ff8317d0bf296ec8ad66d0efed04",
+		"81abcd289c456d672eb930ea06b3d8a85872d289bf33dbfe99f7025859f7c2ab",
+		"d8c0e84432a01ce4a267d5eb813ce211f891f2ac5d7f084aaf814dcd0bff9831",
+		"6a66d18bb801c8e25c465c54fd3a3a73dc74a2d3ad6863e5b55b99c83b3b64bf",
+		"22f112b095f46d6e1a5cebb3e85cffc6f4684ef32ca66a9cb9ef6033d73cdbe6",
+		"efc82cb51d7018750f42d327196ee7f53b075351eb6435db3530c036a860ca31",
+		"ec342094371426c746b7a1db9ad1951614ad0150892ce537ca7799ce7d250471",
+		"5dd4afa107d1008749d26ada7f96bdbc66133db6a52d15e986f40ab6cb8719a1"}};
+	bool firstLightFramesBound=true;
+	for(std::size_t frame=0u;frame<8u;++frame){
+		std::ostringstream index;index<<std::setw(4)<<std::setfill('0')<<frame;
+		const std::string framePath="rendered/fire_production_first_light/"
+			"r175_preview_tier6/methane_preview_frame"+index.str()+".exr";
+		const std::string frameBytes=ReadText(framePath.c_str());
+		const std::string sidecarPath=framePath+".provenance.cbor";
+		const std::string sidecarBytes=ReadText(sidecarPath.c_str());
+		firstLightFramesBound=firstLightFramesBound&&!frameBytes.empty()&&
+			!sidecarBytes.empty()&&RISE::RISECBOR64::SHA256Hex(
+				RISE::RISECBOR64::Bytes(frameBytes.begin(),frameBytes.end()))==
+				firstLightFrameHashes[frame]&&RISE::RISECBOR64::SHA256Hex(
+				RISE::RISECBOR64::Bytes(sidecarBytes.begin(),sidecarBytes.end()))==
+				firstLightFrameSidecarHashes[frame];
+	}
+	RISE::RISECBOR64::Value firstLightAnimationEnvelope;
+	std::string firstLightAnimationError;
+	const bool firstLightAnimationDecoded=RISE::RISECBOR64::DecodeCanonical(
+		RISE::RISECBOR64::Bytes(firstLightAnimationProvenance.begin(),
+			firstLightAnimationProvenance.end()),firstLightAnimationEnvelope,
+			&firstLightAnimationError);
+	const RISE::RISECBOR64::Value* firstLightAnimationPayload=
+		firstLightAnimationDecoded?firstLightAnimationEnvelope.Find("payload"):nullptr;
+	const RISE::RISECBOR64::Value* firstLightAnimationLinks=firstLightAnimationPayload?
+		firstLightAnimationPayload->Find("derived_from_frames"):nullptr;
 	Check(!thermoSourceEvidence.empty()&&!thermoSourceRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceEvidence.begin(),thermoSourceEvidence.end()))==
-			"4acc3accab016371a16573795e310a3d31793f6311d3e67ea078b98c6bb33dea"&&
+			"48c84a9c26fb112715a66aace55217744069aaf7bb5115c97dfad7fd37d11dd2"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceRaw.begin(),thermoSourceRaw.end()))==
 			"c9f0188fdfd688e10f0edef4c7ef7e9712e4bf71d7cff19ddcba3b5276553865"&&
@@ -2414,10 +2479,40 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"8e65f5083ef8fa2e4a0c82991e68563de9e61a18f7dd1cda5a5ac6752556deae"&&
+			"8c2457a2ede60bc1d6438b367997e8e8b36dac7fabb68fb7b804ab084f9191c4"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"7f2c28de6e315c774ccd2bf4fd501c54076a2cacd1a223528e840b4ce37f98e1"&&
+			"058e363848e78e9120380eb37806db47eb0cd92b8cafe59b554176dc9d55a47b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fileEncoderObserverSource.begin(),fileEncoderObserverSource.end()))==
+			"2e44e1d8813db445563140b61fa06893d3e29f635985554cedce02ba7be586e0"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fileEncoderObserverHeader.begin(),fileEncoderObserverHeader.end()))==
+			"b2e706fa3167b118ab4770dd26ce06c04c14b2002e2a4a62cc9ab0279d9fa7ea"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fileRasterizerOutputShimTest.begin(),fileRasterizerOutputShimTest.end()))==
+			"049b53875a051b1910c120b30bb576c138ec0672f7fff0b7b3136efdd4508485"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			makeRules.begin(),makeRules.end()))==
+			"d81af70fb94b8714b1c4ee7cd9e89ba5f44347a74681bfa82fa266bd9c943625"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightReadme.begin(),firstLightReadme.end()))==
+			"dc78a16bd2d6806432073d524b0946d49334f8fa44c167680069ccd5328645f7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightSequenceManifest.begin(),firstLightSequenceManifest.end()))==
+			"7f96f0f2321c8000b3bb419e17e9fdd9a769ed904227da5f2ba2fa5f265c833a"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightFrame4.begin(),firstLightFrame4.end()))==
+			"20d56ae17795aefc59e078c1e63499c7d97e14a32071d121323bf8244b917ec5"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightFrame5.begin(),firstLightFrame5.end()))==
+			"4552102fc95c422adb1574795b0d194d80128d33cf65017fe3c2e022f335898e"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			solverDoc.begin(),solverDoc.end()))==
+			"5600fe0c68323e4a468ad249ea490dfae377e404a299449c1c5b7465a5b9dbfb"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			historyDoc.begin(),historyDoc.end()))==
+			"0f2e0367fbdc0d38c73fb68af664e26ae882484b1eaf4515b1de86ca3f84f091"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2439,16 +2534,44 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightEXR.begin(),firstLightEXR.end()))==
-			"4d0f8ef02ca6ae6328af1775bd32f44f5b950fa285a0a3d6709063d425aa96f2"&&
+			"b632f77ba488a4e9a04b36752ddfde37336a2f3bd10731644b39af635bbd3ade"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightEXRProvenance.begin(),firstLightEXRProvenance.end()))==
-			"e845fe1fa2aea00e4ca959a3ccb69c975112ced78966ca51a163e2c637a1f19b"&&
+			"5dd4afa107d1008749d26ada7f96bdbc66133db6a52d15e986f40ab6cb8719a1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightDisplay.begin(),firstLightDisplay.end()))==
-			"13d27873d68def0eb8ce03191c570e6954e1f490e43fd312d4efcff6ffbd6b4f"&&
+			"ad351f00fcdde2958308758a1d10571b6acdb603cd9087986f62c4c7e4fce901"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightDisplayProvenance.begin(),firstLightDisplayProvenance.end()))==
-			"58aafbe95e61acc6551e12e8671e0fff6135770307a23adeaf89d21557eab0d6"&&
+			"fb4784af377713826f224949276b75d44f41c16911c16c078f04de5b1bb65ec8"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightAnimation.begin(),firstLightAnimation.end()))==
+			"5a59652588c89720c2791fb043b3e9a4aef9190b37aa6b97122c37bab735506f"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightAnimationProvenance.begin(),
+			firstLightAnimationProvenance.end()))==
+			"3dbbd57ad91526f5b00df409acb4f976d21e35bc5f12e9bbd29a5e2c7ba3c7d0"&&
+		firstLightFramesBound&&firstLightAnimationPayload&&
+		firstLightAnimationPayload->Find("artifact_fidelity")&&
+		firstLightAnimationPayload->Find("artifact_fidelity")->GetText()==
+			"display_derivative"&&firstLightAnimationLinks&&
+		firstLightAnimationLinks->GetType()==RISE::RISECBOR64::Value::Array&&
+		firstLightAnimationLinks->GetArray().size()==8u&&
+		firstLightReadme.find("eight identity-bearing scene-linear FP32 EXR primaries")!=
+			std::string::npos&&
+		firstLightReadme.find("`display_derivative`, linked to the preview primaries")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("first_light_animation_frames 8")!=std::string::npos&&
+		thermoSourceEvidence.find("first_light_primary_schedule_content_sha256 "
+			"f5e2a799d675b2b65aca87aff453c347239b8ea4ad10c814a78745514639c224")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("first_light_terminal_primary_content_sha256 "
+			"6121a5418b4e9b1406d6aeab10b605a9794b791252f9b41a37580c9f7ca10466")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("first_light_animation_visible_nonzero true")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("first_light_animation_temporal_change true")!=
+			std::string::npos&&
 		thermoSourceEvidence.find("tier10_25s_device_hours 0.40872554073287515")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("tier10_25s_wall_hours 0.63840048687616735")!=

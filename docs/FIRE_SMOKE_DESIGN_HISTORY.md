@@ -4322,8 +4322,14 @@ it was already tried and refuted here.
   steps, with a `2284.8533 K` pilot-off physical peak and a `1784.60397 K`,
   `1.27718934e7 W/m3` terminal state.  The primary EXR is
   `rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
-  (SHA-256 `4d0f8ef0...96f2`), accompanied by canonical CBOR provenance
-  (`e845fe1f...f19b`) and the renderer-authored display PNG
-  (`13d27873...b4f`).  The preview remains deliberately labelled
-  `preview_primary`; it proves the prepared, sequence-backed fire path and is
-  not promoted into a production-fidelity image claim.
+  (SHA-256 `b632f77b...3ade`), accompanied by canonical CBOR provenance
+  (`5dd4afa1...9a1`).  Eight scene-linear EXR frames, each with a
+  canonical sidecar, are the animation's `preview_primary` evidence.  The
+  visible PNG (`ad351f00...e901`) and looping 8-frame/8-fps ImageIO GIF
+  (`5a596525...506f`) are correctly classified as `display_derivative` and
+  linked to those primaries.  They use a display-only +65 EV ACES-to-sRGB
+  transform; the zero-soot preview remains distinct from the physical
+  source-map and checkpoint claims.  The headless AVFoundation route returned
+  `AVErrorCannotEncode`, so no MOV is claimed.  Publication now waits for and
+  verifies complete artifact/sidecar pairs; sidecar-first delayed-artifact
+  REDs prevent the former silent-success race.

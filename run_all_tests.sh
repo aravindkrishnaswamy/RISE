@@ -1350,6 +1350,56 @@ if [ "$(uname -s)" = "Darwin" ]; then
 			"$r175_malformed_rc" "$r175_malformed_log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
+	r175_first_light_log="$LOG_DIR/FireSequenceTest.r175_first_light.log"
+	r175_first_light_output="$LOG_DIR/r175_first_light_output"
+	r175_first_light_source="$REPO_ROOT/rendered/fire_production_first_light/r175_preview_tier6"
+	printf '[ evidence ] %-46s ... ' 'FireSequenceTest.r175_first_light'
+	r175_first_light_rc=127
+	rm -rf "$r175_first_light_output"
+	mkdir -p "$r175_first_light_output"
+	if [ "$(uname -s)" = 'Darwin' ] && [ -x "$r174_path" ]; then
+		if [ -n "$timeout_bin" ]; then
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$r174_path" \
+				--fire-first-light-preview "$r175_first_light_source" \
+				"$r175_first_light_output" >"$r175_first_light_log" 2>&1 || \
+				r175_first_light_rc=$?
+		else
+			"$r174_path" --fire-first-light-preview "$r175_first_light_source" \
+				"$r175_first_light_output" >"$r175_first_light_log" 2>&1 || \
+				r175_first_light_rc=$?
+		fi
+	fi
+	r175_first_light_files_ok=1
+	for r175_first_light_file in \
+		methane_preview.exr methane_preview.exr.provenance.cbor \
+		methane_preview_display.png methane_preview_display.png.provenance.cbor \
+		methane_preview_animation.gif methane_preview_animation.gif.provenance.cbor; do
+		[ -s "$r175_first_light_output/$r175_first_light_file" ] || \
+			r175_first_light_files_ok=0
+	done
+	for r175_first_light_frame in 0000 0001 0002 0003 0004 0005 0006 0007; do
+		[ -s "$r175_first_light_output/methane_preview_frame$r175_first_light_frame.exr" ] || \
+			r175_first_light_files_ok=0
+		[ -s "$r175_first_light_output/methane_preview_frame$r175_first_light_frame.exr.provenance.cbor" ] || \
+			r175_first_light_files_ok=0
+	done
+	cmp -s "$r175_first_light_source/methane_preview_display.png" \
+		"$r175_first_light_output/methane_preview_display.png" || r175_first_light_files_ok=0
+	cmp -s "$r175_first_light_source/methane_preview_animation.gif" \
+		"$r175_first_light_output/methane_preview_animation.gif" || r175_first_light_files_ok=0
+	if [ "$(uname -s)" != 'Darwin' ]; then
+		echo 'PASS (macOS ImageIO authoring route not applicable)'
+	elif [ "$r175_first_light_rc" -eq 0 ] && [ "$r175_first_light_files_ok" -eq 1 ] &&
+		grep -Fq 'FIRST_LIGHT_PREVIEW frames=8 exposure_ev=65 primary_schedule=f5e2a799d675b2b65aca87aff453c347239b8ea4ad10c814a78745514639c224 terminal_primary=6121a5418b4e9b1406d6aeab10b605a9794b791252f9b41a37580c9f7ca10466 png=ad351f00fcdde2958308758a1d10571b6acdb603cd9087986f62c4c7e4fce901 gif=5a59652588c89720c2791fb043b3e9a4aef9190b37aa6b97122c37bab735506f' "$r175_first_light_log"; then
+		echo 'PASS (8 primaries + visible animated derivative)'
+		rm -f "$r175_first_light_log"
+	else
+		echo "FAIL (author=$r175_first_light_rc; byte_match=$r175_first_light_files_ok)"
+		printf '%s\t%d\t%s\n' 'FireSequenceTest.r175_first_light' \
+			"$r175_first_light_rc" "$r175_first_light_log" >> "$RUN_FAIL_TSV"
+		failed=$((failed + 1))
+	fi
+	rm -rf "$r175_first_light_output"
 	rm -rf "$r174_temp"
 fi
 

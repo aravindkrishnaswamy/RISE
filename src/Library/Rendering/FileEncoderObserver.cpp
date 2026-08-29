@@ -101,6 +101,40 @@ bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
 		descriptor.conversionDestinationRange = "avfoundation_codec_owned";
 		descriptor.expectsMediaDataInRealTime = false;
 		break;
+	case FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit:
+		descriptor.backend = "apple_imageio";
+		descriptor.containerFormat = "GIF";
+		descriptor.codec = "gif_lzw";
+		descriptor.codecImplementation = "CGImageDestination";
+		descriptor.codecProfile = "gif89a";
+		descriptor.bitsPerChannel = 8u;
+		descriptor.inputPixelFormat = "decoded_srgb_png";
+		descriptor.outputPixelFormat = "indexed_rgb8";
+		descriptor.chromaSubsampling = "rgb_palette";
+		descriptor.alphaMode = "discarded";
+		descriptor.colorRange = "full";
+		descriptor.colorPrimaries = "bt709";
+		descriptor.transferFunction = "srgb";
+		descriptor.ycbcrMatrix = "identity_rgb";
+		descriptor.displayTransform =
+			"rec709_linear_exposure_plus65_aces_to_srgb";
+		descriptor.referenceWhiteNits = 80u;
+		descriptor.pqPeakNits = 0u;
+		descriptor.dimensionRounding = "none";
+		descriptor.maxBFrames = 0u;
+		descriptor.gopFrames = 1u;
+		descriptor.rateControl = "palette_quantized_lzw";
+		descriptor.encoderPreset = "imageio_default";
+		descriptor.codecOptions = "loop_forever_delay_1_over_fps";
+		descriptor.codecTag = "GIF89a";
+		descriptor.muxerFlags = "none";
+		descriptor.conversionFilter = "renderer_owned_aces";
+		descriptor.conversionMatrix = "identity_rec709";
+		descriptor.conversionSourceRange = "full";
+		descriptor.conversionDestinationRange = "full";
+		descriptor.conversionBrightness = 65 << 16;
+		descriptor.expectsMediaDataInRealTime = false;
+		break;
 	case FireFrameSequenceEncoding::AppleProRes4444_10Bit:
 		descriptor.backend = "ffmpeg_libavcodec_libavformat_libswscale";
 		descriptor.containerFormat = "MOV";
@@ -1312,11 +1346,13 @@ namespace
 			{ "ycbcr_matrix", Value::String(descriptor.ycbcrMatrix) }
 		});
 		Value::Members resolvedMembers = resolvedConfig.GetMap();
+		const bool gifOutput=encoding==
+			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus65EV_8Bit;
 		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
 			{ "bits_per_channel", Value::Unsigned(descriptor.bitsPerChannel) },
 			{ "codec", Value::String(descriptor.codec) },
-			{ "color_space", Value::String("rec2020_pq") },
-			{ "display_transform", Value::String("rec709_linear_to_rec2020_pq") },
+			{ "color_space", Value::String(gifOutput?"srgb":"rec2020_pq") },
+			{ "display_transform", Value::String(descriptor.displayTransform) },
 			{ "encoding", encodingDescriptor },
 			{ "first_frame_index", Value::Unsigned(frames.front().frameIndex) },
 			{ "format", Value::String(descriptor.containerFormat) },

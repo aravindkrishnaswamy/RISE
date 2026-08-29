@@ -67,6 +67,11 @@ FIREPRODUCTIONFP64SOURCES = $(wildcard $(PATHTESTS)fire_production_fp64/*.cpp)
 FIREPRODUCTIONFP64OBJECTS = $(FIREPRODUCTIONFP64SOURCES:.cpp=.o)
 FIREPRODUCTIONTRACESOURCES = $(wildcard $(PATHTESTS)fire_production_trace/*.cpp)
 FIREPRODUCTIONTRACEOBJECTS = $(FIREPRODUCTIONTRACESOURCES:.cpp=.o)
+ifdef IS_MACOS_BUILD
+FIREPREVIEWLIBS = -framework ImageIO -framework CoreGraphics
+else
+FIREPREVIEWLIBS =
+endif
 FIREPRODUCTIONFP64ORIGINALS = \
 	$(PATHLIBRARY)Utilities/FireProductionAdvection.h \
 	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp \
@@ -278,12 +283,12 @@ $(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 check-
 $(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
-	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS)
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS) $(FIREPREVIEWLIBS)
 
 $(PATHTESTDEST)FireProductionCalibrationOracle : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking no-Metal calibration owner: $@
-	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL) $(LDLIBS_NOMETAL)
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL) $(LDLIBS_NOMETAL) $(FIREPREVIEWLIBS)
 ifdef IS_MACOS_BUILD
 	@if otool -L $@ | grep -q 'Metal.framework'; then \
 		echo 'calibration owner unexpectedly links Metal.framework'; rm -f $@; exit 1; fi
