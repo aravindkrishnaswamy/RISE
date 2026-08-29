@@ -129,10 +129,19 @@ static std::string TempDirBase()
 // Grew from six to seven with the observe-modes toolkit-slice-4 skill,
 // and to EIGHT with procedural-textures (the spatially-varying-painter
 // skill: models were reaching for uniformcolor_painter on every surface
-// because no skill mentioned any of the other 35 painter kinds)
+// because no skill mentioned any of the other 35 painter kinds).
+// NINE with hair-and-fur (2026-08-28): the hair/fur arc shipped
+// `hair_material` / `hair_geometry` / `hair_guides` through the engine
+// and the parser, so their parameters reach `read_schema` -- but nothing
+// told a model WHEN a groom is the answer, which colour tier is the only
+// achromatic one, that `comb` cannot sweep hair down a form, or that
+// count goes DOWN when fibres must resolve.  That judgment lives in the
+// three shipped scenes' headers and in HAIR_FUR_DESIGN.md, neither of
+// which is a channel an in-app agent reads.
 // (auto-discovered by ListSkillNames -- production never hardcodes
 // this list; only the test's own assertions do).
 static const char* const kSeedSkills[] = {
+	"hair-and-fur",
 	"lighting-recipes",
 	"materials-and-media-basics",
 	"modeling-from-image-captures",
@@ -659,7 +668,20 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// deliberate addition; a second fence for the caveats is not.  Per-skill
 	// split is now 4/8/3 for materials-and-media-basics/object-modeling-
 	// recipes/procedural-textures.
-	Check( totalSnippets == 24, "the seed skills carry the expected 24 ```rise snippets in total (got " +
+	//
+	// The hair/fur skill (2026-08-28) took the count 24 -> 26, and both of
+	// its snippets are DELIBERATE.  A groom has two failure modes an
+	// example fixes and prose does not: the minimal one (a `hair_material`
+	// with exactly ONE colour tier bound, plus `base_geometry`/`count`/
+	// `length`) is the shape a model gets wrong by binding two tiers or
+	// none, and the worked creature head is the two-layer coat with its
+	// region painters over the root's `Po`/`N` and an along-strand melanin
+	// band over `u` -- the one idiom that is reachable today but was
+	// documented nowhere a model reads.  Both are registered here because
+	// the render contract is what proves a groom example is not black:
+	// hair is thin, sub-pixel, and easy to author into invisibility.
+	// Per-skill split for this file is 2.
+	Check( totalSnippets == 26, "the seed skills carry the expected 26 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
