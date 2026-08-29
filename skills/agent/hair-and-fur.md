@@ -17,6 +17,19 @@ recipe below), two `hair_geometry` grooms bound to the body, a
 body underneath -- the coat hides most sculpt sins, so grooming first
 saves the sculpting you were about to do.
 
+SIZE FUR RELATIVE TO THE SUBJECT, NOT IN ABSOLUTE METERS.  The
+descriptor defaults assume a real-scale metric scene, but many scenes
+are built in arbitrary units.  Before picking length or width, measure
+the subject (its bounding extent from read_document): a body coat runs
+roughly 8-25% of the animal's body length (short face fur ~3-6%), and
+fibre width about 1/100 to 1/300 of fur length.  A cat 1.4 units long
+wants length ~0.15-0.30 and width_root ~0.001-0.003 IN THOSE UNITS --
+the metric defaults (length 0.03, width 0.0001) on that cat produce
+invisible stubble that renders as pure noise.  If a groom "isn't
+showing up" or looks like noise, check SCALE FIRST -- do not delete
+the groom, and do not fix invisibility by inflating width alone (that
+gives sparse wire, not coat).
+
 INSPECTING A GROOM (the 192px trap): the render tool's usual tiny
 preview cannot resolve individual strands -- at imageMaxEdge 192 every
 groom looks like the same fuzzy silhouette, good or broken.  To judge
