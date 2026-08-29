@@ -17,6 +17,15 @@ recipe below), two `hair_geometry` grooms bound to the body, a
 body underneath -- the coat hides most sculpt sins, so grooming first
 saves the sculpting you were about to do.
 
+INSPECTING A GROOM (the 192px trap): the render tool's usual tiny
+preview cannot resolve individual strands -- at imageMaxEdge 192 every
+groom looks like the same fuzzy silhouette, good or broken.  To judge
+fur: render the groomed object with `isolate` at `quality: "draft"` and
+`imageMaxEdge` 512 or more (or frame a temporary close-up), check the
+silhouette fringe and coat structure there, THEN take a full-scene
+render to verify how it sits in context.  Focus close, pull back --
+never sign off on fur you have only seen as a thumbnail.
+
 Three chunks do all of it.  `hair_material` says what a fibre is made
 of, `hair_geometry` grows a groom on a surface, and `hair_guides`
 supplies explicit strand SHAPES when the styling knobs cannot.  The
