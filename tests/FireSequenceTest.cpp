@@ -926,14 +926,12 @@ namespace
 		timeStepS=static_cast<double>(represented);return true;
 	}
 
-	bool ProductionPilotCommandCell(const std::size_t cell,const std::size_t nx,const std::size_t ny,
-		const std::vector<std::uint8_t>& canonicalPilotMask,
+	bool ProductionSourceBoundaryContactCell(const std::size_t cell,const std::size_t nx,
+		const std::size_t ny,const std::vector<std::uint8_t>& canonicalPilotMask,
 		const std::vector<double>& sourcePattern)
 	{
-		if(cell>=canonicalPilotMask.size())return false;
-		if(canonicalPilotMask[cell]!=0u)return true;
-		if(nx==0u||ny==0u||cell>=nx*ny||cell>=sourcePattern.size()||
-			sourcePattern[cell]==0.0)return false;
+		if(cell>=canonicalPilotMask.size()||nx==0u||ny==0u||cell>=nx*ny||
+			cell>=sourcePattern.size()||sourcePattern[cell]==0.0)return false;
 		const std::size_t x=cell%nx,y=cell/nx;
 		const std::size_t missing=canonicalPilotMask.size();
 		const std::size_t neighbors[4]={x?cell-1u:missing,x+1u<nx?cell+1u:missing,
@@ -941,6 +939,85 @@ namespace
 		for(const std::size_t neighbor:neighbors)
 			if(neighbor<canonicalPilotMask.size()&&canonicalPilotMask[neighbor]!=0u)return true;
 		return false;
+	}
+
+	bool ProductionPilotCommandCell(const std::size_t cell,const std::size_t nx,const std::size_t ny,
+		const std::vector<std::uint8_t>& canonicalPilotMask,
+		const std::vector<double>& sourcePattern)
+	{
+		if(cell>=canonicalPilotMask.size())return false;
+		return canonicalPilotMask[cell]!=0u||ProductionSourceBoundaryContactCell(
+			cell,nx,ny,canonicalPilotMask,sourcePattern);
+	}
+
+	bool ProductionEstablishedFlameHolderEligible(const std::size_t cell,
+		const std::size_t nx,const std::size_t ny,
+		const std::vector<std::uint8_t>& canonicalPilotMask,
+		const std::vector<double>& sourcePattern,const MethaneCellState& candidate,
+		const FireSimulationMethaneRecord& fuel,
+		const FireSimulationTransportRecord& transport,bool& eligible,std::string* error)
+	{
+		eligible=false;
+		if(!ProductionSourceBoundaryContactCell(cell,nx,ny,canonicalPilotMask,
+			sourcePattern))return true;
+		const std::vector<double>& ambientMassFraction=fuel.AmbientMassFractions();
+		const double ambientProductMassFraction=ambientMassFraction[MethaneCO2]+
+			ambientMassFraction[MethaneH2O];
+		const double productWitness=std::nextafter(ambientProductMassFraction,
+			std::numeric_limits<double>::infinity());
+		const double gasDensity=candidate.GasDensity();
+		if(!(gasDensity>0.0)||candidate.constituent[MethaneCH4]<=0.0||
+			candidate.constituent[MethaneO2]<=0.0||
+			(candidate.constituent[MethaneCO2]+candidate.constituent[MethaneH2O])/
+				gasDensity<productWitness)return true;
+		double adiabaticTemperatureK=0.0;
+		if(!TrialAdiabaticTemperatureK(candidate,fuel,fuel,adiabaticTemperatureK,error))
+			return false;
+		eligible=adiabaticTemperatureK>=transport.CriticalFlameTemperatureK();
+		return true;
+	}
+
+	bool ProductionEstablishedFlameHolderREDPasses()
+	{
+		const std::vector<std::uint8_t> annulus={0u,0u,1u,0u,0u,0u};
+		const std::vector<double> source={1.0,1.0,0.0,1.0,0.0,0.0};
+		std::string error;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		const double mixtureFraction=0.055;
+		MethaneCellState cold;cold.temperatureK=300.0;
+		double inverseMolecularWeight=0.0;
+		for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
+			cold.constituent[species]=(1.0-mixtureFraction)*
+				fuel.AmbientMassFractions()[species]+mixtureFraction*
+				fuel.InjectedMassFractions()[species];
+			if(species<MethaneCarbon){
+				const FireThermochemistrySpecies* property=
+					fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
+				if(property)inverseMolecularWeight+=cold.constituent[species]/
+					property->molecularWeightKGPerKMol;
+			}
+		}
+		const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+			cold.temperatureK*inverseMolecularWeight);
+		for(double& constituent:cold.constituent)constituent*=density;
+		cold.rhoTotalZ=mixtureFraction*density;
+		MethaneCellState established=cold;
+		const double reacted=0.02*std::min(established.constituent[MethaneCH4],
+			established.constituent[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+		for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+			established.constituent[species]+=reacted*fuel.PrimaryReactionDelta()[species];
+		if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(cold),
+			cold.temperatureK,cold.sensibleEnergyJPerM3,&error)||
+			!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(established),
+				established.temperatureK,established.sensibleEnergyJPerM3,&error))return false;
+		bool establishedEligible=false,coldEligible=true,noncontactEligible=true;
+		const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
+		return ProductionEstablishedFlameHolderEligible(1u,3u,2u,annulus,source,
+			established,fuel,transport,establishedEligible,&error)&&establishedEligible&&
+			ProductionEstablishedFlameHolderEligible(1u,3u,2u,annulus,source,cold,
+				fuel,transport,coldEligible,&error)&&!coldEligible&&
+			ProductionEstablishedFlameHolderEligible(0u,3u,2u,annulus,source,
+				established,fuel,transport,noncontactEligible,&error)&&!noncontactEligible;
 	}
 
 	class CheckpointWriter
@@ -2341,14 +2418,23 @@ namespace
 			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;eligibilityGrid.nz=shape.nz;
 			eligibilityGrid.cells=states;eligibilityGrid.pilotMask.resize(shape.CellCount(),false);
 			for(std::size_t cell=0;cell<shape.CellCount();++cell){
-				const bool fuelSourceSurface=cell<shape.nx*shape.ny&&
-					cell<sourcePattern.size()&&sourcePattern[cell]!=0.0;
 				eligibilityGrid.pilotMask[cell]=!persistence.forceZeroSourceForTest&&
-					(canonicalPilotMask[cell]!=0u||fuelSourceSurface);
+					ProductionPilotCommandCell(cell,shape.nx,shape.ny,canonicalPilotMask,
+						sourcePattern);
 			}
 			std::vector<bool> eligibility;
 			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
 				FireSimulationTransportRecord::OpenV1(),eligibility,&error);
+			if(advancedOK&&persistence.productionMetal&&!persistence.forceZeroSourceForTest){
+				for(std::size_t cell=0u;cell<shape.nx*shape.ny;++cell){
+					bool flameHolderEligible=false;
+					advancedOK=ProductionEstablishedFlameHolderEligible(cell,shape.nx,shape.ny,
+						canonicalPilotMask,sourcePattern,states[cell],fuel,
+						FireSimulationTransportRecord::OpenV1(),flameHolderEligible,&error);
+					if(!advancedOK)break;
+					if(flameHolderEligible)eligibility[cell]=true;
+				}
+			}
 			profileEligibilityMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-profileStageStart).count();
 			if(!advancedOK) break;
@@ -4775,6 +4861,11 @@ namespace
 
 int main(int argc,char** argv)
 {
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-flame-holder-red")==0){
+		const bool passed=ProductionEstablishedFlameHolderREDPasses();
+		std::fprintf(stdout,"PRODUCTION_FLAME_HOLDER_RED passed=%d\n",passed?1:0);
+		return passed?0:98;
+	}
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-temporal-capstone")==0){
 		double tier=0.0,cadence=0.0;
@@ -4828,6 +4919,8 @@ int main(int argc,char** argv)
 			!ProductionPilotCommandCell(4u,3u,2u,annulus,source)&&
 			!ProductionPilotCommandCell(5u,3u,2u,annulus,source),
 			"production pilot command contacts only the source-side boundary of the canonical annulus");
+		Check(ProductionEstablishedFlameHolderREDPasses(),
+			"production established-flame holder requires product evidence and source-boundary contact");
 	}
 	if(const char* profileEnvironment=std::getenv("RISE_FIRE_PROFILE")){
 		if(std::strcmp(profileEnvironment,"1")!=0){
