@@ -18,6 +18,21 @@
 //              P, Po, N        -- vec3 context: world position, object
 //                                 position, shading normal (0 unless the
 //                                 caller supplies an ExprEvalContext)
+//              curv, curvR     -- scalar surface curvature at the hit.
+//                                 `curvR` is the raw signed MEAN curvature
+//                                 in 1/world-length; `curv` is the same
+//                                 value normalized by the hit geometry's
+//                                 world bounding-box diagonal, so it reads
+//                                 O(1) at object scale on any scene scale.
+//                                 POSITIVE = convex, negative = concave,
+//                                 0 = flat -- and 0 is also the honest
+//                                 "this geometry reports no curvature"
+//                                 answer (planar primitives, patch stubs),
+//                                 the same convention fw uses.  Computed
+//                                 from the GEOMETRIC normal field, so a
+//                                 bump / normal map does not move them and
+//                                 `curv` and `N` legitimately disagree on a
+//                                 bump-mapped surface.
 //              fw              -- scalar filter width, in the SAME units
 //                                 as whatever position argument the body
 //                                 passes into fbm/turbulence/ridged (see
@@ -110,12 +125,22 @@ namespace RISE
 			Vector3	N;
 			Scalar	fw;
 			Scalar	time;
+			//! Signed MEAN curvature at the hit (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+			//! 5.1-5.2).  POSITIVE = convex, negative = concave, 0 = flat -- and 0 is
+			//! also the honest "this geometry reports no curvature" answer, exactly
+			//! like fw's 0.  `curvR` is raw, in 1/world-length; `curv` is the same
+			//! value multiplied by the hit geometry's world bounding-box diagonal, so
+			//! clamp(curv,0,1) is an edge-wear mask and clamp(-curv,0,1) a crevice
+			//! mask at ANY scene scale.  Both come from the GEOMETRIC normal field
+			//! and are therefore invariant under bump / normal maps.
+			Scalar	curv;
+			Scalar	curvR;
 
 			ExprEvalContext() :
-				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0)
+				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0), curv(0), curvR(0)
 			{}
 			ExprEvalContext( const Scalar u_, const Scalar v_ ) :
-				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0)
+				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0), curv(0), curvR(0)
 			{}
 		};
 
@@ -178,19 +203,40 @@ namespace RISE
 			static const int kMaxRampStops  = 64;
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=2..4, Po=5..7, N=8..10, fw=kContextSlotFw(11),
-			//!   time=kContextSlotFw+1(12).
-			//! P2-a (S9 review round 1): this pair is the SOLE place the fw slot
-			//! index and the reserved-slot count are spelled out -- Builder's ctor
-			//! (m_names reserve), Builder::Finalize (m_fwSlot/m_timeSlot pin + the
-			//! "N are reserved" error text), ExpressionProgram's default member
-			//! init, and RunAny/CallFunc's static (no `this`) fw read all reference
-			//! these two constants instead of each carrying its own copy of the
-			//! literals 11/13 -- previously four independent magic numbers that a
-			//! future context-var insertion could silently desynchronize.
+			//!   time=kContextSlotTime(12), curv=kContextSlotCurv(13),
+			//!   curvR=kContextSlotCurvR(14).
+			//! P2-a (S9 review round 1): this block is the SOLE place the slot
+			//! indices and the reserved-slot count are spelled out.  EVERY site
+			//! below references these constants instead of carrying its own copy
+			//! of the literals -- and every one of them must be touched when a
+			//! context var is added:
+			//!   1. LookupContextVar            (name -> slot/type)
+			//!   2. Builder's ctor              (m_names reserve, kContextSlotCount)
+			//!   3. Builder::Finalize           (the out.m_*Slot pins + the
+			//!                                   "N are reserved for ..." error text)
+			//!   4. ExpressionProgram's member list + default member init
+			//!   5. BindEnv                     (the ONE definition) and ALL FOUR
+			//!      of its call sites: Eval(u,v), Eval(ctx), EvalVec3(ctx), and
+			//!      EvalDefStage(ctx,...) -- the last is the easy one to miss
+			//!   6. ExprEvalContext             (field + both ctors)
+			//!   7. RunAny/CallFunc's static (no `this`) fw read, if the new var
+			//!      is one a builtin reads implicitly
+			//! Adding one WITHOUT touching all of them is exactly the silent
+			//! desynchronization this comment exists to prevent.
 			static const int kContextSlotFw    = 11;
-			//! Total reserved context-var slots (u,v,P,Po,N,fw,time) -- fw slot + 2
-			//! (fw itself, then time).
-			static const int kContextSlotCount = kContextSlotFw + 2;
+			static const int kContextSlotTime  = 12;
+			//! curv / curvR -- the geometry-derived shading signal
+			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md Phase 1).  Gated behind
+			//! EnableContextVars(true) exactly like P/N/fw, so
+			//! expression_function2d's frozen UV-only surface never sees them.
+			static const int kContextSlotCurv  = 13;
+			static const int kContextSlotCurvR = 14;
+			//! Total reserved context-var slots (u,v,P,Po,N,fw,time,curv,curvR).
+			static const int kContextSlotCount = kContextSlotCurvR + 1;
+			//! Bit position of a context var within the `UsesContextVar` mask --
+			//! its first env slot.  kContextSlotCount stays well under 32, which
+			//! is what lets the mask be a plain unsigned int.
+			static const int kContextVarMaskBits = 32;
 
 			//! Finiteness test hardened for the production -ffast-math build.
 			//! IsFiniteDouble materialises the value through volatile before its
@@ -207,7 +253,7 @@ namespace RISE
 			Scalar Eval( const Scalar u, const Scalar v ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0) );
+				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0) );
 				Scalar out[3];
 				RunAny( m_final, env, out );
 				return out[0];
@@ -218,7 +264,7 @@ namespace RISE
 			Scalar Eval( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR );
 				Scalar out[3];
 				RunAny( m_final, env, out );
 				return out[0];
@@ -231,7 +277,7 @@ namespace RISE
 			Vector3 EvalVec3( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR );
 				Scalar out[3];
 				RunAny( m_final, env, out );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
@@ -239,6 +285,35 @@ namespace RISE
 			}
 
 			VType ResultType() const { return m_final.type; }
+
+			//! Does this compiled program READ the context variable whose first
+			//! env slot is `firstSlot` (use a kContextSlot* constant)?  Resolved
+			//! entirely at COMPILE time by the Builder -- every identifier is
+			//! bound to a slot when the body is parsed -- so this is a static
+			//! property of the program, not a per-eval check, and covers `def`
+			//! stage bodies as well as the final expression.
+			//!
+			//! It is CONSERVATIVE in exactly one direction: a var read only
+			//! inside a `def` the final expression never uses still reports
+			//! true.  That is the safe direction for a cost gate (the failure
+			//! mode is "computed and unread", never "read and absent").
+			//!
+			//! Its consumer is the curvature cost gate (SurfaceCurvature.h's
+			//! SurfaceCurvatureDemand, design doc 5.4): ~18 extra SDF field
+			//! evaluations per hit must cost zero when no expression in the
+			//! scene mentions `curv`.
+			bool UsesContextVar( int firstSlot ) const
+			{
+				if( firstSlot < 0 || firstSlot >= kContextVarMaskBits ) return false;
+				return ( m_ctxUsedMask & ( 1u << firstSlot ) ) != 0;
+			}
+
+			//! Convenience for the gate's actual question: does the body read
+			//! EITHER curvature variable?
+			bool UsesSurfaceCurvature() const
+			{
+				return UsesContextVar( kContextSlotCurv ) || UsesContextVar( kContextSlotCurvR );
+			}
 
 			//! Number of compiled `def` stages (registration order == the
 			//! chunk's `def` line order, since AddDef pushes onto m_defs in
@@ -271,7 +346,7 @@ namespace RISE
 			{
 				if( defIdx < 0 || (size_t)defIdx >= m_defs.size() ) return false;
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, defIdx );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, defIdx );
 				const Compiled& d = m_defs[ (size_t)defIdx ];
 				if( d.type == kVec3 ) {
 					outVal = Vector3( env[ d.writeSlot+0 ], env[ d.writeSlot+1 ], env[ d.writeSlot+2 ] );
@@ -296,10 +371,12 @@ namespace RISE
 			class Builder
 			{
 			public:
-				Builder() : m_errorOffset(-1), m_hasBuilderError(false), m_contextVarsEnabled(false)
+				Builder() : m_errorOffset(-1), m_hasBuilderError(false), m_contextVarsEnabled(false),
+					m_ctxUsed(0)
 				{
-					// Reserve fixed context-variable slots 0..12 (u=0, v=1,
-					// P=2..4, Po=5..7, N=8..10, fw=11, time=12) WITHOUT
+					// Reserve the fixed context-variable slots (u=0, v=1,
+					// P=2..4, Po=5..7, N=8..10, fw=11, time=12, curv=13,
+					// curvR=14 -- see the kContextSlot* block) WITHOUT
 					// registering their names in m_index.  A param/def is
 					// free to reuse any of these names -- ParseAtom checks
 					// m_index (user params/defs) first and falls back to
@@ -372,7 +449,7 @@ namespace RISE
 					if( (int)m_names.size() > kMaxSlots ) {
 						SetError( "too many variables (context + param + def); user-declared names may use "
 							"at most " + std::to_string( kMaxSlots - kContextSlotCount ) + " of the " + std::to_string( kMaxSlots ) +
-							" total variable slots (" + std::to_string( kContextSlotCount ) + " are reserved for u,v,P,Po,N,fw,time)", -1 );
+							" total variable slots (" + std::to_string( kContextSlotCount ) + " are reserved for u,v,P,Po,N,fw,time,curv,curvR)", -1 );
 						out.m_valid = false; out.m_error = m_error; out.m_errorOffset = m_errorOffset;
 						return false;
 					}
@@ -380,7 +457,13 @@ namespace RISE
 					c.type = t;
 					out.m_uSlot = 0; out.m_vSlot = 1;
 					out.m_PSlot = 2; out.m_PoSlot = 5; out.m_NSlot = 8;
-					out.m_fwSlot = kContextSlotFw; out.m_timeSlot = kContextSlotFw + 1;
+					out.m_fwSlot = kContextSlotFw; out.m_timeSlot = kContextSlotTime;
+					out.m_curvSlot = kContextSlotCurv; out.m_curvRSlot = kContextSlotCurvR;
+					// Compile-time consumption record (design doc 5.4): which context
+					// vars did any def body or the final expression actually resolve?
+					// Accumulated by ParseAtom across every Compile() this Builder
+					// ran, so it covers `def` stages as well as the final expr.
+					out.m_ctxUsedMask = m_ctxUsed;
 					out.m_initEnv.assign( m_names.size(), Scalar(0) );
 					for( std::map<int,Scalar>::const_iterator it = m_init.begin(); it != m_init.end(); ++it ) {
 						out.m_initEnv[ it->first ] = it->second;
@@ -394,8 +477,8 @@ namespace RISE
 				const std::string& Error() const { return m_error; }
 				ptrdiff_t ErrorOffset() const { return m_errorOffset; }
 
-				//! Context vars (P, Po, N, fw, time) are OFF by default -- ParseAtom
-				//! treats those five names as ordinary unknown identifiers unless this
+				//! Context vars (P, Po, N, fw, time, curv, curvR) are OFF by default -- ParseAtom
+				//! treats those seven names as ordinary unknown identifiers unless this
 				//! is turned on (u and v are never gated; they are the query
 				//! coordinates every surface has always had).  This keeps the
 				//! document-level `expr(...)` / `let` sublanguage (Cst.cpp's
@@ -424,6 +507,15 @@ namespace RISE
 				ptrdiff_t m_errorOffset;
 				bool m_hasBuilderError;	// sticky: once true, Finalize always fails (P1-A dup-name guard)
 				bool m_contextVarsEnabled;	// see EnableContextVars() doc comment
+				//! Bit i set == some body compiled by THIS builder resolved the
+				//! context var whose FIRST env slot is i.  Written only by
+				//! ParseAtom's context branch; copied into the program by Finalize
+				//! as m_ctxUsedMask.  (Named differently from the program-side
+				//! field on purpose: Builder is a NESTED class, so a same-named
+				//! member would shadow-collide with the enclosing
+				//! ExpressionProgram's own -- which is a hard compile error, not a
+				//! silent shadow, but a confusing one.)
+				unsigned int m_ctxUsed;
 
 				void SetError( const std::string& msg, ptrdiff_t offset ) { m_error = msg; m_errorOffset = offset; }
 
@@ -465,9 +557,10 @@ namespace RISE
 				// Fixed context-variable name -> (slot, type).  Checked only
 				// when `name` isn't a user param/def (see the Builder()
 				// constructor comment on why user names shadow these).  ALL
-				// SEVEN names resolve here regardless of m_contextVarsEnabled
-				// -- the caller (ParseAtom) is what gates P/Po/N/fw/time on
-				// that flag; u/v are never gated.  See EnableContextVars().
+				// NINE names resolve here regardless of m_contextVarsEnabled
+				// -- the caller (ParseAtom) is what gates
+				// P/Po/N/fw/time/curv/curvR on that flag; u/v are never
+				// gated.  See EnableContextVars().
 				static bool LookupContextVar( const std::string& name, int& slot, VType& vt )
 				{
 					if( name == "u" )    { slot = 0;  vt = kScalar; return true; }
@@ -475,8 +568,10 @@ namespace RISE
 					if( name == "P" )    { slot = 2;  vt = kVec3;   return true; }
 					if( name == "Po" )   { slot = 5;  vt = kVec3;   return true; }
 					if( name == "N" )    { slot = 8;  vt = kVec3;   return true; }
-					if( name == "fw" )   { slot = 11; vt = kScalar; return true; }
-					if( name == "time" ) { slot = 12; vt = kScalar; return true; }
+					if( name == "fw" )    { slot = kContextSlotFw;    vt = kScalar; return true; }
+					if( name == "time" )  { slot = kContextSlotTime;  vt = kScalar; return true; }
+					if( name == "curv" )  { slot = kContextSlotCurv;  vt = kScalar; return true; }
+					if( name == "curvR" ) { slot = kContextSlotCurvR; vt = kScalar; return true; }
 					return false;
 				}
 
@@ -879,11 +974,22 @@ namespace RISE
 							if( LookupContextVar( name, ctxSlot, ctxType ) ) {
 								const bool alwaysAvailable = ( name == "u" || name == "v" );
 								if( alwaysAvailable || m_contextVarsEnabled ) {
+									// Record the reference for the compile-time consumption
+									// query (design doc 5.4), so a geometry can skip an
+									// expensive per-hit signal nothing in the scene reads.
+									// Set ONLY on the branch that actually emits the slot
+									// read -- a name that falls through to "unknown
+									// variable", or one shadowed by a user param (resolved
+									// earlier via m_index), must not count.
+									if( ctxSlot < kContextVarMaskBits ) {
+										m_ctxUsed |= ( 1u << ctxSlot );
+									}
 									type = ctxType;
 									if( type == kVec3 ) EmitVec3Var( ctxSlot ); else EmitVarSlot( ctxSlot );
 									return true;
 								}
-								// P/Po/N/fw/time on a surface that didn't opt in: fall
+								// P/Po/N/fw/time/curv/curvR on a surface that didn't opt
+								// in: fall
 								// through and treat exactly like any other unknown
 								// identifier below.
 							}
@@ -1063,6 +1169,11 @@ namespace RISE
 
 		private:
 			int m_uSlot, m_vSlot, m_PSlot, m_PoSlot, m_NSlot, m_fwSlot, m_timeSlot;
+			int m_curvSlot, m_curvRSlot;
+			//! Compile-time record of which context vars this program reads --
+			//! bit i set == the var whose first env slot is i.  See
+			//! UsesContextVar().
+			unsigned int m_ctxUsedMask;
 			std::vector<Scalar> m_initEnv;
 			std::vector<Compiled> m_defs;
 			Compiled m_final;
@@ -1071,7 +1182,8 @@ namespace RISE
 			ptrdiff_t m_errorOffset;
 
 			ExpressionProgram() :
-				m_uSlot(0), m_vSlot(1), m_PSlot(2), m_PoSlot(5), m_NSlot(8), m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotFw + 1),
+				m_uSlot(0), m_vSlot(1), m_PSlot(2), m_PoSlot(5), m_NSlot(8), m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
+				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_ctxUsedMask(0),
 				m_valid(false), m_errorOffset(-1)
 			{}
 			friend class Builder;
@@ -1083,7 +1195,7 @@ namespace RISE
 			//! treated as "run all", matching Eval's normal full-program
 			//! behaviour (EvalDefStage itself never passes such a value; this
 			//! is a defensive fallback, not a documented caller contract).
-			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time, int stopAfterDef = -1 ) const
+			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time, const Scalar curv, const Scalar curvR, int stopAfterDef = -1 ) const
 			{
 				const size_t n = m_initEnv.size();
 				for( size_t i = 0; i < n; ++i ) env[i] = m_initEnv[i];
@@ -1093,6 +1205,8 @@ namespace RISE
 				env[ m_NSlot+0 ] = N.x;  env[ m_NSlot+1 ] = N.y;  env[ m_NSlot+2 ] = N.z;
 				env[ m_fwSlot ] = fw;
 				env[ m_timeSlot ] = time;
+				env[ m_curvSlot ] = curv;
+				env[ m_curvRSlot ] = curvR;
 				const size_t defLimit = ( stopAfterDef >= 0 && (size_t)stopAfterDef < m_defs.size() )
 					? (size_t)stopAfterDef + 1 : m_defs.size();
 				for( size_t i = 0; i < defLimit; ++i ) {

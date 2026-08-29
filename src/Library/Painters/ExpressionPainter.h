@@ -42,6 +42,7 @@
 #include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/SurfaceCurvature.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include <string>
 #include <vector>
@@ -175,6 +176,19 @@ namespace RISE
 			std::vector<ParamSpec> m_paramSpecs;	// S4 introspection; not consulted by Eval
 			Scalar                 m_time;			// keyframeable
 			SpectrumKind            m_kind;
+			//! CURVATURE DEMAND (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4).
+			//! Active iff this painter's compiled body reads `curv` / `curvR`.
+			//! Its whole job is to let the SDF family skip ~18 extra field
+			//! evaluations per hit on the overwhelming majority of scenes,
+			//! whose expressions never mention curvature -- `curv` is a
+			//! CONTEXT VARIABLE, computed before the painter runs, so unlike a
+			//! lazily-called builtin it needs an up-front consumption
+			//! predicate.  RAII: constructed with the painter, dropped with
+			//! it, so a geometry edit that replaces the material stops paying
+			//! the moment the old painter's last reference goes.  See
+			//! SurfaceCurvatureDemand for the mechanism and its documented
+			//! process-wide conservatism.
+			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 
 			virtual ~ExpressionPainter() {}
 
@@ -193,7 +207,8 @@ namespace RISE
 		public:
 			ExpressionPainter( const ExpressionProgram& prog, const std::vector<ParamSpec>& paramSpecs,
 				const Scalar time, const SpectrumKind kind = eSpectrumKind_Albedo ) :
-				m_prog( prog ), m_paramSpecs( paramSpecs ), m_time( time ), m_kind( kind )
+				m_prog( prog ), m_paramSpecs( paramSpecs ), m_time( time ), m_kind( kind ),
+				m_curvatureDemand( prog.UsesSurfaceCurvature() )
 			{}
 
 			//! S4 introspection: full param metadata (min/max/step/label),
@@ -248,6 +263,12 @@ namespace RISE
 		protected:
 			ExpressionProgram      m_prog;
 			std::vector<ParamSpec> m_paramSpecs;
+			//! See ExpressionPainter::m_curvatureDemand -- same RAII gate on
+			//! the physical-scalar pipe.  Both pipes must register or the gate
+			//! would miss the single most likely authoring shape for this
+			//! signal: `scalar_painter { expression "clamp(-curv,0,1)" }`
+			//! feeding a roughness slot.
+			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 			virtual ~ExpressionScalarPainter() {}
 
 			static Scalar SafeComp( const Scalar v ) { return ExpressionProgram::IsFinite( v ) ? v : Scalar(0); }
@@ -256,7 +277,8 @@ namespace RISE
 
 		public:
 			ExpressionScalarPainter( const ExpressionProgram& prog, const std::vector<ParamSpec>& paramSpecs ) :
-				m_prog( prog ), m_paramSpecs( paramSpecs )
+				m_prog( prog ), m_paramSpecs( paramSpecs ),
+				m_curvatureDemand( prog.UsesSurfaceCurvature() )
 			{}
 
 			//! S4 introspection: full param metadata, in `param` line order.

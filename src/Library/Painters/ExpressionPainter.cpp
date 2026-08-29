@@ -14,6 +14,7 @@
 #include "ExpressionPainter.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Utilities/Color/RGBSpectra.h"
+#include "../Utilities/SurfaceCurvature.h"
 #include <cstdlib>
 
 using namespace RISE;
@@ -22,6 +23,62 @@ using namespace RISE::Implementation;
 //////////////////////////////////////////////////////////////////////
 // ExpressionPainter
 //////////////////////////////////////////////////////////////////////
+
+namespace
+{
+	//! Fills ExprEvalContext::curv / curvR from the hit record -- SHARED by
+	//! ExpressionPainter::BuildContext and ExpressionScalarPainter::BuildContext
+	//! so the colour pipe and the physical-scalar pipe cannot drift (the two
+	//! functions are twins; every other line in them is already duplicated
+	//! deliberately, but this one has real logic in it).
+	//!
+	//! Preference order, per docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4:
+	//!
+	//!   1. the DIRECT per-hit value, when the geometry computed one -- the
+	//!      SDF family, whose implicit surface has no natural (u,v) for which
+	//!      dndu/dndv would mean anything, but whose div n_hat is a few field
+	//!      evaluations away and is genuinely smooth and resolution-free;
+	//!   2. otherwise the shape operator over the record's derivatives --
+	//!      triangle meshes and (since Phase 1) the analytic curved
+	//!      primitives, which carry exact closed-form Weingarten maps;
+	//!   3. otherwise 0 -- the `fw` convention: a valid-flag gate with a
+	//!      documented zero fallback, not a fabricated value.  Planar
+	//!      primitives read 0 because they ARE flat; the patch stubs read 0
+	//!      because they report nothing (they are genuinely curved and
+	//!      deliberately kept on the honest-absence path until their
+	//!      derivative stubs are fixed -- design doc 14 item 2).  An
+	//!      expression cannot tell those two zeros apart, which is the same
+	//!      bargain `fw` already makes.
+	//!
+	//! `curv` is the dimensionless one: H x the hit geometry's WORLD
+	//! bounding-box diagonal (`scaleHint`, already folded through the
+	//! object's |det M|^(1/3) at the transform layer), so clamp(curv,0,1)
+	//! behaves the same on a 0.05-unit creature feature and a 50-unit wall.
+	//! `curvR` is the raw 1/world-length value for physically-scaled work.
+	inline void PopulateCurvature( const RayIntersectionGeometric& ri, ExprEvalContext& ctx )
+	{
+		Scalar H = Scalar( 0 );
+		bool haveH = false;
+
+		if( ri.derivatives.curvatureValid ) {
+			H = ri.derivatives.curvature;
+			haveH = true;
+		} else if( ri.derivatives.valid ) {
+			haveH = SurfaceCurvature::MeanCurvatureFromDerivatives(
+				ri.derivatives.dpdu, ri.derivatives.dpdv,
+				ri.derivatives.dndu, ri.derivatives.dndv, H );
+		}
+
+		if( !haveH ) {
+			ctx.curv  = Scalar( 0 );
+			ctx.curvR = Scalar( 0 );
+			return;
+		}
+
+		ctx.curvR = H;
+		ctx.curv  = H * ri.derivatives.scaleHint;
+	}
+}
 
 ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric& ri ) const
 {
@@ -38,6 +95,7 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	// that is the honest "point sample, no filter info" answer, not a bug.
 	ctx.fw = ri.txFootprint.valid ? ri.txFootprint.worldWidth : Scalar(0);
 	ctx.time = m_time;
+	PopulateCurvature( ri, ctx );
 	return ctx;
 }
 
@@ -155,6 +213,7 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	// that is the honest "point sample, no filter info" answer, not a bug.
 	ctx.fw = ri.txFootprint.valid ? ri.txFootprint.worldWidth : Scalar(0);
 	ctx.time = Scalar(0);		// not exposed on this pipe -- see class doc comment
+	PopulateCurvature( ri, ctx );
 	return ctx;
 }
 
