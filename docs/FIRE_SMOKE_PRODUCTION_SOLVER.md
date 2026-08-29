@@ -4607,6 +4607,53 @@ momentum budget are decomposed.  No cap, cap REDs, full-window spectrum, or
 animation is claimed by r179.  Raw per-attempt data and the dt plot are under
 `rendered/fire_production_calibration/r179_r178_momentum_decomposition`.
 
+### 7.56m Force-inclusive projection budget and preservation stop (r180)
+
+The r179 stop is instrumented at the recoverable production checkpoint before
+choosing either proposed projection remedy.  The schedule audit is explicit:
+the resident force solve produces force-inclusive staggered momentum; the dual
+remap acts on that momentum; the face-source impulse is added; and this complete
+provisional momentum is passed to the physical projection in the same step.
+Only after that solve does the thresholded restoration projection run.  An
+independent Metal-force/CPU-dual reconstruction differs from the resident
+provisional field at 10,960--13,521 faces by at most
+`1.9073486328125e-6--3.814697265625e-6 kg/(m2 s)`, the one-Binary32-ulp class at
+the extreme momentum.  It is retained as an independent schedule witness, not
+mislabelled as byte identity.  The pre-registered post-projection force defect
+is therefore false.
+
+The eight-step replay writes all 49 vertical faces in column `(38,42)` and
+closes
+`dM/dt = stress + buoyancy + advection + source + pressure + restoration`
+with maximum absolute residual `0.009961346891941503 kg/(m2 s2)`.  Across the
+eight steps, column maximum absolute rates are:
+
+| term | minimum of step maxima | maximum of step maxima |
+|---|---:|---:|
+| stress | 3,135.266 | 5,352.502 |
+| buoyancy | 9.482 | 9.587 |
+| advection | 79,966.694 | 176,609.678 |
+| pressure gradient | 149,525.786 | 266,096.563 |
+| restoration | 27,874.478 | 45,603.292 |
+| total | 149,653.942 | 266,967.063 |
+
+The units are `kg/(m2 s2)`.  At the original runaway face (`z=10`), pressure
+ranges from `-63,579.314` to `+42,226.628` while buoyancy remains
+`9.303--9.524`.  Pressure is not weak relative to buoyancy; it is four orders
+larger.  Consequently the conditional second-projection/tighter-tolerance
+branch is not authorized, and r180 lands no production arithmetic change.
+
+The requested cross-solver table cannot be completed from the preserved oracle
+bytes.  The oracle console retains scalar rows at steps 1,100/1,110/1,120 and
+times `2.09079544/2.10336069/2.11639945 s`, but not density, species,
+staggered momentum, pressure, or per-term fields.  Its atomically replaced
+checkpoint now holds step 3,479 at `2.8854439500002069 s`.  That later state is
+not substituted as a matched reference.  The decisive cross-solver attribution
+therefore stops until a full oracle checkpoint in the step-1,100--1,120
+neighborhood is recovered or regenerated.  Tier 10, its spectrum, empirical
+rows, and animation remain blocked; neither proposed projection remedy is
+claimed on a one-sided budget.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

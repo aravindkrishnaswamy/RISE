@@ -2347,7 +2347,7 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"aeac982487ec88528887f905ac1cb2260e687d428481b3c98b02563f327d8536"&&
+			"3f7aa5bd0e4e3c3d3933ae14bd81f46db06800bc9d29d7390b5af816ba091730"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2479,7 +2479,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"aeac982487ec88528887f905ac1cb2260e687d428481b3c98b02563f327d8536"&&
+			"3f7aa5bd0e4e3c3d3933ae14bd81f46db06800bc9d29d7390b5af816ba091730"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2509,10 +2509,10 @@ int main()
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"15cfce36f7b561ac665e702c0a051571e3e4d6b6cb0c1a0f59bd46bab4c1fb07"&&
+			"b6dd1be20b831f9f2d9915628c63cec20ff7c5fa603b6223202950d34c9bd946"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"9fd534fe68a9513285dc31fbf3d93f8d079c1ed93875215edda8f9ed9c944fff"&&
+			"ebd4041190c231d53e728e7764e33f42aadf000660af3e9b140af5adf9a42cfd"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2647,7 +2647,7 @@ int main()
 		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"aeac982487ec88528887f905ac1cb2260e687d428481b3c98b02563f327d8536"&&
+			"3f7aa5bd0e4e3c3d3933ae14bd81f46db06800bc9d29d7390b5af816ba091730"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
@@ -2734,6 +2734,42 @@ int main()
 			std::string::npos&&historyDoc.find("r179 r178 momentum decomposition")!=
 			std::string::npos,
 		"r179 refutes restoration dominance before changing the tier-10 policy");
+	const std::string projectionMomentumBudgetEvidence=ReadText(
+		"rendered/fire_production_calibration/r180_projection_momentum_budget/"
+		"projection_momentum_budget_stop.v1");
+	const std::string projectionMomentumBudgetRaw=ReadText(
+		"rendered/fire_production_calibration/r180_projection_momentum_budget/"
+		"production_momentum_budget.raw.csv");
+	const std::string projectionMomentumColumnRaw=ReadText(
+		"rendered/fire_production_calibration/r180_projection_momentum_budget/"
+		"production_momentum_budget.raw.csv.column.csv");
+	Check(!projectionMomentumBudgetEvidence.empty()&&!projectionMomentumBudgetRaw.empty()&&
+		!projectionMomentumColumnRaw.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMomentumBudgetEvidence.begin(),projectionMomentumBudgetEvidence.end()))==
+			"70b991d30ead4a57f3b74c445269c9abcc85f2619a27dcc575b2475702c27da7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMomentumBudgetRaw.begin(),projectionMomentumBudgetRaw.end()))==
+			"d660291c29a51ded842a83ccc6b417a640e66cbc9d136f1f1da49114d887e6d7"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectionMomentumColumnRaw.begin(),projectionMomentumColumnRaw.end()))==
+			"36f05800f031beeba75f6a09a5df02f99fc178194d3ea5e8ab3184cf87ee2b16"&&
+		CountText(projectionMomentumBudgetRaw,"\n")==9u&&
+		CountText(projectionMomentumColumnRaw,"\n")==1065u&&
+		projectionMomentumBudgetEvidence.find(
+			"every_force_substep_impulse_enters_same_step_projected_provisional_momentum true")!=
+			std::string::npos&&
+		projectionMomentumBudgetEvidence.find(
+			"pre_registered_pressure_under_response_relative_to_buoyancy_confirmed false")!=
+			std::string::npos&&
+		projectionMomentumBudgetEvidence.find(
+			"oracle_checkpoint_at_matched_time_preserved false")!=std::string::npos&&
+		projectionMomentumBudgetEvidence.find(
+			"later_oracle_checkpoint_substituted_as_matched_state false")!=std::string::npos&&
+		solverDoc.find("### 7.56m Force-inclusive projection budget and preservation stop (r180)")!=
+			std::string::npos&&historyDoc.find("r180 force-inclusive projection budget")!=
+			std::string::npos,
+		"r180 refutes both conditional projection remedies and stops on missing matched oracle state");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

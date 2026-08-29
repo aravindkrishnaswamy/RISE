@@ -4450,3 +4450,22 @@ it was already tried and refuted here.
   owner.  Tier 10 stays blocked pending a physical-projection/preprojection
   momentum budget; the requested r178-cap, uncapped-runaway, and r170-shadow
   RED campaign does not apply because no cap is landed.
+- **r180 force-inclusive projection budget and matched-state preservation stop
+  (2026-08-29):** an eight-step replay at the r178 checkpoint decomposes every
+  vertical face in runaway column `(38,42)` into stress, buoyancy, advection,
+  source, physical-pressure, and restoration rates.  The operator schedule is
+  not the proposed defect: force-inclusive momentum is remapped, receives the
+  face-source impulse, and is physically projected in the same step before the
+  restoration projection.  Column pressure-gradient maxima are
+  `1.49526e5--2.66097e5 kg/(m2 s2)` and advection maxima are
+  `7.99667e4--1.76610e5`; buoyancy is only `9.482--9.587`.  The pre-registered
+  pressure-under-response premise is therefore false, so neither a second
+  projection nor a tighter tolerance is authorized.  The preserved oracle
+  console proves samples near `2.1 s` existed but contains no field state; the
+  current oracle checkpoint is the later step-3,479 state at
+  `2.8854439500002069 s`.  Rather than manufacture a matched comparison from
+  that later state, r180 records a preservation stop.  Full density/species,
+  staggered-momentum, and projection state near oracle steps 1,100--1,120 must
+  be recovered or regenerated before one term can be named as the cross-solver
+  defect.  No production fix, tier-10 continuation, spectrum, empirical row,
+  or animation is claimed.

@@ -3067,6 +3067,10 @@ namespace
 						}
 						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH")){
 							RISE::FireProductionResidentStepResult physicalOnly;
+							RISE::FireProductionFrozenForceAdvanceResult forceCPU;
+							RISE::FireProductionFrozenForceResult forceFieldsCPU;
+							RISE::FireProductionResidentForceDiagnostics forceAuditDiagnostics;
+							RISE::FireProductionDualMomentumResult dualCPU;
 							std::string physicalOnlyError;
 							const bool restorationModeClear=
 								std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")==nullptr;
@@ -3083,6 +3087,10 @@ namespace
 							double restorationImpulseMaximum=0.0,compatibilityResidualMaximum=0.0;
 							unsigned int terminalAxis=0u,restorationAxis=0u;
 							std::size_t terminalFace=0u,restorationFace=0u;
+							const char* auditPhase="paired projection attempt";
+							bool forceInclusiveProvisionalByteIdentity=false;
+							double forceInclusiveProvisionalDifferenceMaximum=0.0;
+							std::size_t forceInclusiveProvisionalDifferenceCount=0u;
 							bool auditValid=attemptComputed&&physicalOnlyComputed&&
 								physicalOnly.transportedDual.momentum==production.transportedDual.momentum;
 							for(unsigned int axis=0u;axis<3u&&auditValid;++axis){
@@ -3120,7 +3128,109 @@ namespace
 										compatibility);
 								}
 							}
+							const std::size_t columnX=38u,columnY=42u;
+							std::vector<float> columnPhysicalMomentum(request.force.shape.nz+1u,0.0f);
+							for(std::size_t z=0u;z<columnPhysicalMomentum.size()&&auditValid;++z){
+								const std::size_t face=(z*request.force.shape.ny+columnY)*
+									request.force.shape.nx+columnX;
+								if(face>=physical.momentumKGPerM2S[2].size())auditValid=false;
+								else columnPhysicalMomentum[z]=physical.momentumKGPerM2S[2][face];
+							}
+							const double terminalPhysicalMomentum=auditValid?
+								physical.momentumKGPerM2S[terminalAxis][terminalFace]:0.0;
+							const double terminalPhysicalVelocity=auditValid?
+								physical.velocityMPerS[terminalAxis][terminalFace]:0.0;
+							physicalOnly=RISE::FireProductionResidentStepResult();
+							auditPhase="independent resident force-inclusive provisional reconstruction";
+							auditValid=auditValid&&
+								RISE::AdvanceFireProductionFrozenForceMetalResidentStateComparator(
+									request.force,forceCPU,forceAuditDiagnostics,&physicalOnlyError)&&
+								forceAuditDiagnostics.outwardLambdaPerS==
+									production.forceDiagnostics.outwardLambdaPerS&&
+								forceCPU.schedule.substepCount==production.forceSchedule.substepCount&&
+								forceCPU.schedule.substepTimeS==production.forceSchedule.substepTimeS&&
+								RISE::BuildFireProductionFrozenForceFieldsCPU(
+									request.force,forceFieldsCPU,&physicalOnlyError);
 							if(auditValid){
+								auditPhase="CPU dual remap from force-inclusive momentum";
+								RISE::FireProductionDualMomentumRequest forceInclusive=request.dualTransport;
+								forceInclusive.beginningMomentum=forceCPU.momentumKGPerM2S;
+								auditValid=RISE::RemapFireProductionDualMomentumCPU(
+									forceInclusive,dualCPU,&physicalOnlyError);
+								for(unsigned int axis=0u;axis<3u&&auditValid;++axis){
+									auditValid=dualCPU.momentum[axis].size()==
+										request.momentumSourceIncrement[axis].size();
+									for(std::size_t face=0u;face<dualCPU.momentum[axis].size()&&
+										auditValid;++face)dualCPU.momentum[axis][face]+=
+										request.momentumSourceIncrement[axis][face];
+								}
+							}
+							auditPhase="force-inclusive provisional comparison";
+							if(auditValid)for(unsigned int axis=0u;axis<3u;++axis)
+								for(std::size_t face=0u;face<dualCPU.momentum[axis].size();++face){
+									const double difference=std::fabs(static_cast<double>(dualCPU.momentum[axis][face])-
+										production.transportedDual.momentum[axis][face]);
+									if(difference!=0.0)++forceInclusiveProvisionalDifferenceCount;
+									forceInclusiveProvisionalDifferenceMaximum=std::max(
+										forceInclusiveProvisionalDifferenceMaximum,difference);
+								}
+							forceInclusiveProvisionalByteIdentity=auditValid&&
+								forceInclusiveProvisionalDifferenceCount==0u;
+							if(!auditValid){
+								lastAdvanceError=std::string("production momentum audit failed at ")+auditPhase+
+									(physicalOnlyError.empty()?"":": "+physicalOnlyError);
+								std::fprintf(stderr,"%s\n",lastAdvanceError.c_str());advancedOK=false;break;
+							}
+							if(auditValid){
+								const double representedStep=static_cast<double>(production.representedTimeStepS);
+								double columnStressMaximum=0.0,columnBuoyancyMaximum=0.0,
+									columnAdvectionMaximum=0.0,columnSourceMaximum=0.0,
+									columnPressureMaximum=0.0,columnRestorationMaximum=0.0,
+									columnTotalMaximum=0.0,columnClosureMaximum=0.0;
+								const std::filesystem::path columnPath=
+									std::filesystem::path(auditPath).string()+".column.csv";
+								std::error_code columnSizeError;const bool writeColumnHeader=
+									!std::filesystem::exists(columnPath)||
+									std::filesystem::file_size(columnPath,columnSizeError)==0u;
+								std::ofstream columnAudit(columnPath,std::ios::app);
+								if(writeColumnHeader)columnAudit<<"beginning_time_s,candidate,dt_s,x,y,z_face,"
+									"beginning_momentum,stress_rate,buoyancy_rate,advection_rate,source_rate,"
+									"pressure_gradient_rate,restoration_rate,total_rate,closure_residual\n";
+								for(std::size_t z=0u;z<=request.force.shape.nz;++z){
+									const std::size_t face=(z*request.force.shape.ny+columnY)*
+										request.force.shape.nx+columnX;
+									const double beginning=request.force.beginningMomentumKGPerM2S[2][face];
+									const double gravity=forceFieldsCPU.
+										gravityMomentumIncrementKGPerM2S[2][face];
+									const double stress=(forceCPU.momentumKGPerM2S[2][face]-beginning-gravity)/
+										representedStep;
+									const double buoyancy=gravity/representedStep;
+									const double source=request.momentumSourceIncrement[2][face]/representedStep;
+									const double advection=(production.transportedDual.momentum[2][face]-
+										request.momentumSourceIncrement[2][face]-
+										forceCPU.momentumKGPerM2S[2][face])/representedStep;
+									const double pressure=(columnPhysicalMomentum[z]-
+										production.transportedDual.momentum[2][face])/representedStep;
+									const double restoration=(production.projection.momentumKGPerM2S[2][face]-
+										columnPhysicalMomentum[z])/representedStep;
+									const double total=(production.projection.momentumKGPerM2S[2][face]-beginning)/
+										representedStep;
+									const double closure=total-(stress+buoyancy+advection+source+pressure+restoration);
+									columnStressMaximum=std::max(columnStressMaximum,std::fabs(stress));
+									columnBuoyancyMaximum=std::max(columnBuoyancyMaximum,std::fabs(buoyancy));
+									columnAdvectionMaximum=std::max(columnAdvectionMaximum,std::fabs(advection));
+									columnSourceMaximum=std::max(columnSourceMaximum,std::fabs(source));
+									columnPressureMaximum=std::max(columnPressureMaximum,std::fabs(pressure));
+									columnRestorationMaximum=std::max(columnRestorationMaximum,std::fabs(restoration));
+									columnTotalMaximum=std::max(columnTotalMaximum,std::fabs(total));
+									columnClosureMaximum=std::max(columnClosureMaximum,std::fabs(closure));
+									columnAudit<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
+										representedStep<<','<<columnX<<','<<columnY<<','<<z<<','<<beginning<<','<<
+										stress<<','<<buoyancy<<','<<advection<<','<<source<<','<<pressure<<','<<
+										restoration<<','<<total<<','<<closure<<'\n';
+								}
+								if(!columnAudit){lastAdvanceError="production momentum column audit write failed";
+									advancedOK=false;break;}
 								std::error_code sizeError;const bool writeHeader=
 									!std::filesystem::exists(auditPath)||
 									std::filesystem::file_size(auditPath,sizeError)==0u;
@@ -3132,7 +3242,11 @@ namespace
 									"terminal_provisional_momentum,terminal_physical_momentum,"
 									"terminal_momentum,terminal_face_density,terminal_physical_velocity,"
 									"terminal_velocity,restoration_axis,restoration_face,"
-									"compatibility_residual_max\n";
+									"compatibility_residual_max,column_stress_rate_max,column_buoyancy_rate_max,"
+									"column_advection_rate_max,column_source_rate_max,column_pressure_rate_max,"
+									"column_restoration_rate_max,column_total_rate_max,column_closure_residual_max,"
+									"force_inclusive_provisional_byte_identity,force_inclusive_provisional_"
+									"difference_count,force_inclusive_provisional_difference_max\n";
 								audit<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
 									static_cast<double>(production.representedTimeStepS)<<','<<
 									production.manifoldTailCellCount<<','<<
@@ -3140,12 +3254,18 @@ namespace
 									restorationVelocityMaximum<<','<<terminalVelocityMaximum<<','<<
 									physicalImpulseMaximum<<','<<restorationImpulseMaximum<<','<<terminalAxis<<','<<
 									terminalFace<<','<<production.transportedDual.momentum[terminalAxis][terminalFace]<<','<<
-									physical.momentumKGPerM2S[terminalAxis][terminalFace]<<','<<
+									terminalPhysicalMomentum<<','<<
 									production.projection.momentumKGPerM2S[terminalAxis][terminalFace]<<','<<
 									production.projection.faceDensityKGPerM3[terminalAxis][terminalFace]<<','<<
-									physical.velocityMPerS[terminalAxis][terminalFace]<<','<<
+									terminalPhysicalVelocity<<','<<
 									production.projection.velocityMPerS[terminalAxis][terminalFace]<<','<<
-									restorationAxis<<','<<restorationFace<<','<<compatibilityResidualMaximum<<'\n';
+									restorationAxis<<','<<restorationFace<<','<<compatibilityResidualMaximum<<','<<
+									columnStressMaximum<<','<<columnBuoyancyMaximum<<','<<columnAdvectionMaximum<<','<<
+									columnSourceMaximum<<','<<columnPressureMaximum<<','<<columnRestorationMaximum<<','<<
+									columnTotalMaximum<<','<<columnClosureMaximum<<','<<
+									(forceInclusiveProvisionalByteIdentity?1:0)<<','<<
+									forceInclusiveProvisionalDifferenceCount<<','<<
+									forceInclusiveProvisionalDifferenceMaximum<<'\n';
 								if(!audit){lastAdvanceError="production momentum audit write failed";
 									advancedOK=false;break;}
 							}
@@ -5524,6 +5644,9 @@ namespace
 			checkpoint.producerBuildId!=expectedCheckpointBuildId)return 91;
 		std::ofstream clearAudit(auditPath,std::ios::trunc);clearAudit.close();
 		if(!clearAudit)return 92;
+		std::ofstream clearColumn(std::filesystem::path(auditPath).string()+".column.csv",
+			std::ios::trunc);clearColumn.close();
+		if(!clearColumn)return 92;
 		if(setenv("RISE_FIRE_MOMENTUM_AUDIT_PATH",auditPath.string().c_str(),1)!=0)return 92;
 		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
 			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
