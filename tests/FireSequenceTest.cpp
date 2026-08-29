@@ -1984,23 +1984,36 @@ namespace
 		std::_Exit(91);
 	}
 
-	double DominantUniformResampledFrequency( const std::vector<double>& time,
-		const std::vector<double>& signal )
+	struct UniformHannSpectrum
 	{
-		if(time.size()<8u||time.size()!=signal.size()||!(time.back()>time.front())) return 0.0;
-		constexpr std::size_t sampleCount=512u;
-		std::array<double,sampleCount> uniform={{0.0}};
+		std::vector<double> uniformTimeS,uniformSignal,detrendedSignal;
+		std::vector<double> frequencyHz,amplitude,power,powerFraction;
+		double affineIntercept=0.0,affineSlopePerSample=0.0;
+		std::size_t dominantBin=0u;
+	};
+
+	bool ComputeUniformHannSpectrum( const std::vector<double>& time,
+		const std::vector<double>& signal,const std::size_t sampleCount,
+		UniformHannSpectrum& spectrum )
+	{
+		spectrum=UniformHannSpectrum();
+		if(time.size()<8u||time.size()!=signal.size()||sampleCount<8u||
+			(sampleCount&1u)!=0u||!(time.back()>time.front()))return false;
+		spectrum.uniformTimeS.resize(sampleCount);
+		spectrum.uniformSignal.resize(sampleCount);
 		const double duration=time.back()-time.front();
 		std::size_t right=1u;
 		for(std::size_t sample=0;sample<sampleCount;++sample) {
 			const double target=time.front()+duration*static_cast<double>(sample)/
 				static_cast<double>(sampleCount-1u);
+			spectrum.uniformTimeS[sample]=target;
 			while(right<time.size()&&time[right]<target) ++right;
-			if(right>=time.size()) uniform[sample]=signal.back();
+			if(right>=time.size()) spectrum.uniformSignal[sample]=signal.back();
 			else {
 				const double span=time[right]-time[right-1u];
 				const double fraction=span>0.0?(target-time[right-1u])/span:0.0;
-				uniform[sample]=signal[right-1u]+fraction*(signal[right]-signal[right-1u]);
+				spectrum.uniformSignal[sample]=signal[right-1u]+
+					fraction*(signal[right]-signal[right-1u]);
 			}
 		}
 		// Remove the least-squares affine trend before applying a Hann window.  The
@@ -2008,37 +2021,223 @@ namespace
 		double sumX=0.0,sumY=0.0,sumXX=0.0,sumXY=0.0;
 		for(std::size_t sample=0;sample<sampleCount;++sample) {
 			const double x=static_cast<double>(sample);
-			sumX+=x;sumY+=uniform[sample];sumXX+=x*x;sumXY+=x*uniform[sample];
+			sumX+=x;sumY+=spectrum.uniformSignal[sample];sumXX+=x*x;
+			sumXY+=x*spectrum.uniformSignal[sample];
 		}
 		const double denominator=static_cast<double>(sampleCount)*sumXX-sumX*sumX;
-		const double slope=denominator!=0.0?
+		spectrum.affineSlopePerSample=denominator!=0.0?
 			(static_cast<double>(sampleCount)*sumXY-sumX*sumY)/denominator:0.0;
-		const double intercept=(sumY-slope*sumX)/static_cast<double>(sampleCount);
+		spectrum.affineIntercept=(sumY-spectrum.affineSlopePerSample*sumX)/
+			static_cast<double>(sampleCount);
+		spectrum.detrendedSignal.resize(sampleCount);
 		double detrendedEnergy=0.0,signalScale=0.0;
 		for(std::size_t sample=0;sample<sampleCount;++sample) {
-			const double residual=uniform[sample]-intercept-slope*static_cast<double>(sample);
+			const double residual=spectrum.uniformSignal[sample]-spectrum.affineIntercept-
+				spectrum.affineSlopePerSample*static_cast<double>(sample);
+			spectrum.detrendedSignal[sample]=residual;
 			detrendedEnergy+=residual*residual;
-			signalScale=std::max(signalScale,std::fabs(uniform[sample]));
+			signalScale=std::max(signalScale,std::fabs(spectrum.uniformSignal[sample]));
 		}
 		if(!(detrendedEnergy>64.0*std::numeric_limits<double>::epsilon()*
-			std::max(1.0,signalScale*signalScale))) return 0.0;
-		double bestPower=-1.0;std::size_t bestBin=0u;
-		for(std::size_t bin=1u;bin<sampleCount/2u;++bin) {
+			std::max(1.0,signalScale*signalScale)))return false;
+		const std::size_t binCount=sampleCount/2u+1u;
+		spectrum.frequencyHz.resize(binCount);spectrum.amplitude.resize(binCount);
+		spectrum.power.resize(binCount);spectrum.powerFraction.resize(binCount);
+		double bestPower=-1.0,totalPositivePower=0.0,windowSum=0.0;
+		for(std::size_t sample=0;sample<sampleCount;++sample)windowSum+=
+			0.5-0.5*std::cos(2.0*3.14159265358979323846*
+				static_cast<double>(sample)/static_cast<double>(sampleCount-1u));
+		for(std::size_t bin=0u;bin<binCount;++bin) {
 			double real=0.0,imaginary=0.0;
 			for(std::size_t sample=0;sample<sampleCount;++sample) {
 				const double window=0.5-0.5*std::cos(2.0*3.14159265358979323846*
 					static_cast<double>(sample)/static_cast<double>(sampleCount-1u));
-				const double value=(uniform[sample]-intercept-slope*static_cast<double>(sample))*window;
+				const double value=spectrum.detrendedSignal[sample]*window;
 				const double angle=2.0*3.14159265358979323846*static_cast<double>(bin*sample)/
 					static_cast<double>(sampleCount);
 				real+=value*std::cos(angle);imaginary-=value*std::sin(angle);
 			}
 			const double power=real*real+imaginary*imaginary;
-			if(power>bestPower) {bestPower=power;bestBin=bin;}
+			spectrum.frequencyHz[bin]=static_cast<double>(bin)*
+				static_cast<double>(sampleCount-1u)/(static_cast<double>(sampleCount)*duration);
+			const double oneSidedScale=(bin==0u||bin+1u==binCount)?1.0:2.0;
+			spectrum.amplitude[bin]=windowSum>0.0?oneSidedScale*std::sqrt(power)/windowSum:0.0;
+			spectrum.power[bin]=power;
+			if(bin>0u){totalPositivePower+=power;if(power>bestPower){bestPower=power;
+				spectrum.dominantBin=bin;}}
 		}
-		return static_cast<double>(bestBin)*static_cast<double>(sampleCount-1u)/
-			(static_cast<double>(sampleCount)*duration);
+		if(!(totalPositivePower>0.0))return false;
+		for(std::size_t bin=0u;bin<binCount;++bin)
+			spectrum.powerFraction[bin]=spectrum.power[bin]/totalPositivePower;
+		return spectrum.dominantBin>0u;
 	}
+
+	double DominantUniformResampledFrequency( const std::vector<double>& time,
+		const std::vector<double>& signal )
+	{
+		UniformHannSpectrum spectrum;
+		return ComputeUniformHannSpectrum(time,signal,512u,spectrum)?
+			spectrum.frequencyHz[spectrum.dominantBin]:0.0;
+	}
+
+#if defined(__APPLE__)
+	bool ReadDisplayLitArea(const std::filesystem::path& path,std::size_t& litPixels,
+		unsigned int& width,unsigned int& height)
+	{
+		litPixels=0u;width=0u;height=0u;
+		const std::string native=path.string();
+		CFURLRef url=CFURLCreateFromFileSystemRepresentation(nullptr,
+			reinterpret_cast<const UInt8*>(native.data()),native.size(),false);
+		CGImageSourceRef source=url?CGImageSourceCreateWithURL(url,nullptr):nullptr;
+		if(url)CFRelease(url);
+		CGImageRef image=source?CGImageSourceCreateImageAtIndex(source,0u,nullptr):nullptr;
+		if(source)CFRelease(source);
+		if(!image)return false;
+		const std::size_t imageWidth=CGImageGetWidth(image),imageHeight=CGImageGetHeight(image);
+		if(imageWidth==0u||imageHeight==0u||imageWidth>4096u||imageHeight>4096u){
+			CFRelease(image);return false;
+		}
+		std::vector<unsigned char> pixels(imageWidth*imageHeight*4u,0u);
+		CGColorSpaceRef color=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+		CGContextRef context=color?CGBitmapContextCreate(pixels.data(),imageWidth,imageHeight,8u,
+			imageWidth*4u,color,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big):nullptr;
+		if(color)CFRelease(color);
+		if(!context){CFRelease(image);return false;}
+		CGContextDrawImage(context,CGRectMake(0,0,imageWidth,imageHeight),image);
+		CFRelease(context);CFRelease(image);
+		for(std::size_t pixel=0u;pixel<imageWidth*imageHeight;++pixel){
+			const std::size_t offset=4u*pixel;
+			if(std::max({pixels[offset],pixels[offset+1u],pixels[offset+2u]})>127u)++litPixels;
+		}
+		width=static_cast<unsigned int>(imageWidth);height=static_cast<unsigned int>(imageHeight);
+		return true;
+	}
+
+	int RunProductionPuffingSpectrumChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& simulationDirectory,
+		const std::filesystem::path& previewDirectory,
+		const std::filesystem::path& outputDirectory)
+	{
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)){
+			std::fprintf(stderr,"puffing spectrum checkpoint rejected: %s\n",error.c_str());return 91;
+		}
+		UniformHannSpectrum centerline;
+		if(!ComputeUniformHannSpectrum(checkpoint.values.probeTimeS,
+			checkpoint.values.probeCenterlineHeatReleaseW,512u,centerline))return 92;
+		std::ifstream frameTimesInput(simulationDirectory/"frame_times.csv");
+		std::string line;if(!std::getline(frameTimesInput,line)||
+			line!="frame,simulation_time_s,vdb_sha256")return 93;
+		std::vector<double> litTimeS,litAreaPixels;
+		std::vector<std::string> displayDigests;
+		unsigned int displayWidth=0u,displayHeight=0u;
+		while(std::getline(frameTimesInput,line)){
+			if(line.empty())continue;
+			std::istringstream row(line);std::string frameText,timeText,vdbDigest;
+			if(!std::getline(row,frameText,',')||!std::getline(row,timeText,',')||
+				!std::getline(row,vdbDigest)||vdbDigest.size()!=64u)return 93;
+			char* frameEnd=nullptr;char* timeEnd=nullptr;
+			const unsigned long frame=std::strtoul(frameText.c_str(),&frameEnd,10);
+			const double timeS=std::strtod(timeText.c_str(),&timeEnd);
+			if(!frameEnd||*frameEnd!='\0'||!timeEnd||*timeEnd!='\0'||
+				frame!=litTimeS.size()||!std::isfinite(timeS)||
+				(!litTimeS.empty()&&!(timeS>litTimeS.back())))return 93;
+			std::ostringstream name;name<<"temporal_display_"<<std::setw(5)<<
+				std::setfill('0')<<frame<<".png";
+			const std::filesystem::path displayPath=previewDirectory/name.str();
+			std::size_t lit=0u;unsigned int width=0u,height=0u;
+			if(!ReadDisplayLitArea(displayPath,lit,width,height)||
+				(!litTimeS.empty()&&(width!=displayWidth||height!=displayHeight)))return 94;
+			if(litTimeS.empty()){displayWidth=width;displayHeight=height;}
+			const std::string displayDigest=DigestFile(displayPath);
+			if(displayDigest.size()!=64u)return 94;
+			litTimeS.push_back(timeS);litAreaPixels.push_back(static_cast<double>(lit));
+			displayDigests.push_back(displayDigest);
+		}
+		UniformHannSpectrum litArea;
+		if(!ComputeUniformHannSpectrum(litTimeS,litAreaPixels,512u,litArea))return 95;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory,directoryError);
+		if(directoryError)return 96;
+		auto writeSignal=[&](const std::filesystem::path& path,const std::vector<double>& time,
+			const std::vector<double>& signal,const char* valueName)->bool{
+			std::ofstream output(path,std::ios::trunc);output<<"sample,time_s,"<<valueName<<"\n";
+			for(std::size_t sample=0u;sample<time.size();++sample)output<<sample<<','<<
+				std::setprecision(17)<<time[sample]<<','<<signal[sample]<<'\n';
+			return static_cast<bool>(output);
+		};
+		if(!writeSignal(outputDirectory/"centerline_signal.csv",checkpoint.values.probeTimeS,
+			checkpoint.values.probeCenterlineHeatReleaseW,"centerline_heat_release_W")||
+			!writeSignal(outputDirectory/"lit_area_signal.csv",litTimeS,litAreaPixels,
+				"lit_pixels"))return 96;
+		std::ofstream displays(outputDirectory/"display_inputs.csv",std::ios::trunc);
+		displays<<"frame,time_s,lit_pixels,display_sha256\n";
+		for(std::size_t frame=0u;frame<litTimeS.size();++frame)displays<<frame<<','<<
+			std::setprecision(17)<<litTimeS[frame]<<','<<litAreaPixels[frame]<<','<<
+			displayDigests[frame]<<'\n';
+		displays.close();if(!displays)return 96;
+		std::ofstream spectra(outputDirectory/"full_spectrum.csv",std::ios::trunc);
+		spectra<<"signal,bin,frequency_Hz,amplitude,power,power_fraction\n";
+		auto writeSpectrum=[&](const char* name,const UniformHannSpectrum& spectrum){
+			for(std::size_t bin=0u;bin<spectrum.frequencyHz.size();++bin)spectra<<name<<','<<
+				bin<<','<<std::setprecision(17)<<spectrum.frequencyHz[bin]<<','<<
+				spectrum.amplitude[bin]<<','<<spectrum.power[bin]<<','<<
+				spectrum.powerFraction[bin]<<'\n';
+		};
+		writeSpectrum("centerline_heat_release",centerline);writeSpectrum("display_lit_area",litArea);
+		spectra.close();if(!spectra)return 96;
+		const double expectedHz=1.5/std::sqrt(CapstonePoolDiameterM);
+		auto nearestBin=[&](const UniformHannSpectrum& spectrum){
+			return static_cast<std::size_t>(std::min_element(spectrum.frequencyHz.begin(),
+				spectrum.frequencyHz.end(),[&](const double a,const double b){
+					return std::fabs(a-expectedHz)<std::fabs(b-expectedHz);})-
+				spectrum.frequencyHz.begin());
+		};
+		const std::size_t centerlineExpected=nearestBin(centerline),litExpected=nearestBin(litArea);
+		const double cellsAcrossBurner=CapstonePoolDiameterM/checkpoint.cellWidthM;
+		std::ofstream summary(outputDirectory/"puffing_spectrum_evidence.v1",std::ios::trunc);
+		summary<<std::setprecision(17)
+			<<"artifact_fidelity simulation_evidence\n"
+			<<"checkpoint_sha256 "<<DigestFile(checkpointPath)<<"\n"
+			<<"frame_times_sha256 "<<DigestFile(simulationDirectory/"frame_times.csv")<<"\n"
+			<<"display_inputs_sha256 "<<DigestFile(outputDirectory/"display_inputs.csv")<<"\n"
+			<<"centerline_signal_sha256 "<<DigestFile(outputDirectory/"centerline_signal.csv")<<"\n"
+			<<"lit_area_signal_sha256 "<<DigestFile(outputDirectory/"lit_area_signal.csv")<<"\n"
+			<<"full_spectrum_sha256 "<<DigestFile(outputDirectory/"full_spectrum.csv")<<"\n"
+			<<"resolution_tier 6\n"
+			<<"burner_diameter_m "<<CapstonePoolDiameterM<<"\n"
+			<<"cell_width_m "<<checkpoint.cellWidthM<<"\n"
+			<<"burner_cells_across "<<cellsAcrossBurner<<"\n"
+			<<"r57_general_case_admissibility_minimum_cells 4\n"
+			<<"puffing_claim_requires_refined_approximately_ten_cell_class true\n"
+			<<"centerline_probe central_two_by_two_columns_full_height_cell_volume_integrated_and_four_column_averaged\n"
+			<<"lit_area_probe temporal_preview_display_pixels_max_srgb_channel_greater_than_127\n"
+			<<"display_dimensions "<<displayWidth<<' '<<displayHeight<<"\n"
+			<<"resampling linear_to_512_uniform_samples_over_each_exact_observation_span\n"
+			<<"detrending least_squares_affine\n"
+			<<"window symmetric_Hann\n"
+			<<"spectrum direct_DFT_nonnegative_bins_including_DC_and_Nyquist\n"
+			<<"expected_puffing_Hz "<<expectedHz<<"\n"
+			<<"centerline_dominant_Hz "<<centerline.frequencyHz[centerline.dominantBin]<<"\n"
+			<<"centerline_expected_nearest_Hz "<<centerline.frequencyHz[centerlineExpected]<<"\n"
+			<<"centerline_expected_power_fraction "<<centerline.powerFraction[centerlineExpected]<<"\n"
+			<<"centerline_expected_to_peak_power_ratio "<<centerline.power[centerlineExpected]/
+				centerline.power[centerline.dominantBin]<<"\n"
+			<<"lit_area_dominant_Hz "<<litArea.frequencyHz[litArea.dominantBin]<<"\n"
+			<<"lit_area_expected_nearest_Hz "<<litArea.frequencyHz[litExpected]<<"\n"
+			<<"lit_area_expected_power_fraction "<<litArea.powerFraction[litExpected]<<"\n"
+			<<"lit_area_expected_to_peak_power_ratio "<<litArea.power[litExpected]/
+				litArea.power[litArea.dominantBin]<<"\n";
+		if(!summary)return 96;
+		std::fprintf(stderr,"PRODUCTION_PUFFING_SPECTRUM centerline_peak=%.17g "
+			"centerline_expected_ratio=%.17g lit_peak=%.17g lit_expected_ratio=%.17g output=%s\n",
+			centerline.frequencyHz[centerline.dominantBin],centerline.power[centerlineExpected]/
+				centerline.power[centerline.dominantBin],litArea.frequencyHz[litArea.dominantBin],
+			litArea.power[litExpected]/litArea.power[litArea.dominantBin],
+			outputDirectory.string().c_str());
+		return 0;
+	}
+#endif
 
 	void FitCenterlineTemperaturePowerLaw( SolverFrameValues& values )
 	{
@@ -2110,9 +2309,15 @@ namespace
 	}
 	namespace FireProductionDyadicCalibration
 	{
+		bool ResidentStepRequestsExactlyEqual(
+			const RISE::FireProductionResidentStepRequest&,
+			const RISE::FireProductionResidentStepRequest&);
 		bool BuildProductionRequest(const MethaneRunCheckpoint& state,
 			const std::vector<double>& divergenceTarget,double timeStepS,
-			RISE::FireProductionResidentStepRequest& request,std::string& error);
+			RISE::FireProductionResidentStepRequest& request,std::string& error,
+			unsigned int workerCount=1u,
+			const std::vector<CellTransportEvaluation>* reusableTransport=nullptr,
+			const std::vector<unsigned char>* invalidReusableTransport=nullptr);
 		bool ApplyAcceptedProductionResult(
 			const RISE::FireProductionResidentStepResult& production,
 			const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
@@ -2479,7 +2684,9 @@ namespace
 		while(advancedOK&&(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
 			const auto profileStepStart=std::chrono::steady_clock::now();
 			double profileEligibilityMS=0.0,profileTransportMS=0.0,
-				profileSourceMS=0.0,profileTargetMS=0.0,profileResidentMS=0.0;
+				profileControlMS=0.0,profileSourceMS=0.0,profileTargetMS=0.0,
+				profileLayoutMS=0.0,profileResidentMS=0.0,profilePostMS=0.0,
+				profileStatisticsMS=0.0;
 			auto profileStageStart=profileStepStart;
 			if(acceptedSteps>=65536u) { advancedOK=false;error="capstone exceeded its deterministic step cap";break; }
 			IgnitionGrid eligibilityGrid;
@@ -2502,14 +2709,12 @@ namespace
 				(advanced.velocityMPerS.component[axis].empty()?momentum.component[axis]:
 					advanced.velocityMPerS.component[axis])) maximumSpeed=std::max(maximumSpeed,
 					std::fabs(velocity));
-			std::vector<ConservativeVector> currentConservative;
-			std::vector<double> currentTemperature;
-			currentConservative.reserve(shape.CellCount());
-			currentTemperature.reserve(shape.CellCount());
-			for(const MethaneCellState& cell:states) {
-				currentConservative.push_back(ToConservativeVector(cell));
-				currentTemperature.push_back(cell.temperatureK);
-			}
+			std::vector<ConservativeVector> currentConservative(shape.CellCount());
+			std::vector<double> currentTemperature(shape.CellCount());
+			ParallelFireSlices(shape.CellCount(),workerCount,[&](const std::size_t cell){
+				currentConservative[cell]=ToConservativeVector(states[cell]);
+				currentTemperature[cell]=states[cell].temperatureK;
+			});
 			OpenMACField3D currentVelocity;
 			for(unsigned int axis=0;axis<3;++axis) currentVelocity.component[axis]=
 				advanced.velocityMPerS.component[axis].empty()?momentum.component[axis]:
@@ -2522,23 +2727,49 @@ namespace
 			if(!advancedOK) break;
 			profileTransportMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-profileStageStart).count();
+			profileStageStart=std::chrono::steady_clock::now();
 			double maximumReducedGravity=0.0,maximumActiveDiffusivity=0.0;
-			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
-				const CellTransportEvaluation& cellTransport=cellTransportEvaluations[cell];
-				if(!ComputeMixingTimeS(states[cell],cellTransport,
-					FireSimulationTransportRecord::OpenV1(),shape.cellWidthM,
-					ambient.GasDensity(),9.80665,false,reactions[cell].mixingTimeS,&error)) {
-					advancedOK=false;break;
+			const unsigned int controlWorkers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(shape.CellCount())));
+			std::vector<double> workerGravity(controlWorkers,0.0),
+				workerDiffusivity(controlWorkers,0.0);
+			const std::size_t noControlFailure=std::numeric_limits<std::size_t>::max();
+			std::vector<std::size_t> controlFailureCell(controlWorkers,noControlFailure);
+			std::vector<std::string> controlFailureMessage(controlWorkers);
+			auto evaluateControlRange=[&](const unsigned int worker){
+				const std::size_t first=shape.CellCount()*worker/controlWorkers;
+				const std::size_t last=shape.CellCount()*(worker+1u)/controlWorkers;
+				for(std::size_t cell=first;cell<last;++cell){
+					const CellTransportEvaluation& cellTransport=cellTransportEvaluations[cell];
+					std::string cellError;
+					if(!ComputeMixingTimeS(states[cell],cellTransport,
+						FireSimulationTransportRecord::OpenV1(),shape.cellWidthM,
+						ambient.GasDensity(),9.80665,false,reactions[cell].mixingTimeS,&cellError)){
+						controlFailureCell[worker]=cell;
+						controlFailureMessage[worker]=cellError;break;
+					}
+					const double gasDensity=states[cell].GasDensity();
+					workerDiffusivity[worker]=std::max({workerDiffusivity[worker],
+						cellTransport.totalDiffusivityM2PerS,
+						cellTransport.effectiveViscosityPaS/gasDensity,
+						cellTransport.effectiveConductivityWPerMK/
+							(gasDensity*cellTransport.gasCpJPerKGK)});
+					workerGravity[worker]=std::max(workerGravity[worker],
+						std::max(0.0,9.80665*(ambient.GasDensity()-gasDensity)/gasDensity));
 				}
-				maximumActiveDiffusivity=std::max({maximumActiveDiffusivity,
-					cellTransport.totalDiffusivityM2PerS,
-					cellTransport.effectiveViscosityPaS/states[cell].GasDensity(),
-					cellTransport.effectiveConductivityWPerMK/
-						(states[cell].GasDensity()*cellTransport.gasCpJPerKGK)});
-				maximumReducedGravity=std::max(maximumReducedGravity,
-					std::max(0.0,9.80665*(ambient.GasDensity()-states[cell].GasDensity())/
-						states[cell].GasDensity()));
+			};
+			if(controlWorkers==1u)evaluateControlRange(0u);
+			else FireWorkerPool().Run(controlWorkers,evaluateControlRange);
+			std::size_t firstControlFailure=noControlFailure;unsigned int failedControlWorker=0u;
+			for(unsigned int worker=0u;worker<controlWorkers;++worker){
+				maximumReducedGravity=std::max(maximumReducedGravity,workerGravity[worker]);
+				maximumActiveDiffusivity=std::max(maximumActiveDiffusivity,workerDiffusivity[worker]);
+				if(controlFailureCell[worker]<firstControlFailure){
+					firstControlFailure=controlFailureCell[worker];failedControlWorker=worker;
+				}
 			}
+			if(firstControlFailure!=noControlFailure){advancedOK=false;
+				error=controlFailureMessage[failedControlWorker];}
 			if(!advancedOK) break;
 			// This owner is the binary64 oracle trajectory. Resident production owns
 			// and persists its separate (dt,G,r) selector in the r118/r143 path.
@@ -2574,12 +2805,11 @@ namespace
 			if(reportCapstoneProgress&&acceptedSteps<4u)std::fprintf(stderr,
 				"capstone event-step=%0.9g pilot_ceiling=%0.9g ramp_end=%0.9g\n",
 				eventStep,pilotCommandMaximumStepS,pilotRampEndS);
-			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
+			ParallelFireSlices(shape.CellCount(),workerCount,[&](const std::size_t cell){
 				reactions[cell].primaryEligible=eligibility[cell];
 				reactions[cell].sootOxidationEnabled=true;
-			}
-			std::vector<ConservativeVector> beginning;
-			for(const MethaneCellState& cell:states) beginning.push_back(ToConservativeVector(cell));
+			});
+			std::vector<ConservativeVector> beginning=currentConservative;
 			advancedOK=false;
 			std::string lastAdvanceError;
 			double trialStep=eventStep;
@@ -2616,14 +2846,16 @@ namespace
 				std::vector<MethaneCellState> packetBeginning=states;
 				PeriodicMACField productionMomentum=momentum;
 				PeriodicMACField productionVelocity=advanced.velocityMPerS;
+				std::vector<unsigned char> invalidReusableTransport(shape.CellCount(),0u);
 				double externalFuelMassKG=0.0;
 				if(persistence.productionMetal&&!persistence.forceZeroSourceForTest){
 					const double injectedGasDensity=injected.GasDensity();
 					const double injectedSpecificEnergy=injected.sensibleEnergyJPerM3/
 						injected.TotalDensity();
 					std::vector<ConservativeVector> staged(packetBeginning.size());
-					for(std::size_t cell=0u;cell<packetBeginning.size();++cell)
+					ParallelFireSlices(packetBeginning.size(),workerCount,[&](const std::size_t cell){
 						staged[cell]=ToConservativeVector(packetBeginning[cell]);
+					});
 					for(std::size_t y=0u;y<shape.ny;++y)for(std::size_t x=0u;x<shape.nx;++x){
 						const std::size_t sourceFace=y*shape.nx+x;
 						if(sourceFace>=sourcePattern.size()||sourcePattern[sourceFace]==0.0)continue;
@@ -2631,6 +2863,7 @@ namespace
 							sourcePattern[sourceFace];
 						const double densityDelta=massFlux*trialStep/shape.cellWidthM;
 						const std::size_t cell=x+shape.nx*y;
+						invalidReusableTransport[cell]=1u;
 						staged[cell][0]+=densityDelta;
 						for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
 							staged[cell][1u+species]+=densityDelta*
@@ -2641,22 +2874,35 @@ namespace
 						productionMomentum.component[2][lowerFace]=massFlux;
 						productionVelocity.component[2][lowerFace]=massFlux/injectedGasDensity;
 					}
-					for(ConservativeVector& represented:staged)
+					ParallelFireSlices(staged.size(),workerCount,[&](const std::size_t cell){
 						for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
-							represented[component]=static_cast<double>(
-								static_cast<float>(represented[component]));
+							staged[cell][component]=static_cast<double>(
+								static_cast<float>(staged[cell][component]));
+					});
 					std::vector<double> stagedTemperature;
 					if(!InvertPeriodicTemperaturesWithinBounds(staged,fuel,fuel.TemperatureMinK(),
 						fuel.TemperatureMaxK(),
 						FireStateProducerPrecision::Binary32,stagedTemperature,&error,
 						workerCount,false)){lastAdvanceError=error;trialStep*=0.5;error.clear();continue;}
 					bool stagedOK=true;
-					for(std::size_t cell=0u;cell<packetBeginning.size();++cell){
-						packetBeginning[cell]=FromConservativeVector(staged[cell],
+					std::vector<unsigned char> stagedValid(packetBeginning.size(),1u);
+					ParallelFireSlices(packetBeginning.size(),workerCount,[&](const std::size_t cell){
+						MethaneCellState represented=FromConservativeVector(staged[cell],
 							FireStateProducerPrecision::Binary32);
-						packetBeginning[cell].temperatureK=stagedTemperature[cell];
-						if(!canonicalizeProductionBinary32State(packetBeginning[cell])){
-							lastAdvanceError=error;stagedOK=false;break;}
+						represented.temperatureK=stagedTemperature[cell];
+						std::string cellError;
+						if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(represented),
+							represented.temperatureK,represented.sensibleEnergyJPerM3,&cellError)){
+							stagedValid[cell]=0u;return;
+						}
+						represented.sensibleEnergyJPerM3=static_cast<double>(static_cast<float>(
+							represented.sensibleEnergyJPerM3));
+						packetBeginning[cell]=represented;
+					});
+					const auto invalid=std::find(stagedValid.begin(),stagedValid.end(),0u);
+					if(invalid!=stagedValid.end()){
+						lastAdvanceError="production source staging failed Binary32 canonicalization";
+						stagedOK=false;
 					}
 					if(!stagedOK){trialStep*=0.5;error.clear();continue;}
 				}
@@ -2672,6 +2918,8 @@ namespace
 					}
 					if(!commandOK){lastAdvanceError=error;break;}
 				}
+				profileControlMS=std::chrono::duration<double,std::milli>(
+					std::chrono::steady_clock::now()-profileStageStart).count();
 				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
 				if(persistence.forceZeroSourceForTest){
 					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
@@ -2692,21 +2940,65 @@ namespace
 					profileStageStart=std::chrono::steady_clock::now();
 					std::vector<ConservativeVector> stagedConservative(packetBeginning.size());
 					std::vector<ConservativeVector> sourceDelta(packetBeginning.size());
-					for(std::size_t cell=0u;cell<packetBeginning.size();++cell){
+					ParallelFireSlices(packetBeginning.size(),workerCount,[&](const std::size_t cell){
 						stagedConservative[cell]=ToConservativeVector(packetBeginning[cell]);
 						for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
 							sourceDelta[cell][1u+species]=packets[cell].constituentDelta[species];
 						sourceDelta[cell][8]=packets[cell].sensibleEnergyDeltaJPerM3;
-					}
+					});
 					OpenMACField3D stagedVelocity;stagedVelocity.component=productionVelocity.component;
 					ConservativeAdvance3DConfig tangentConfig=config;
 					tangentConfig.transport.producerPrecision=FireStateProducerPrecision::Binary32;
+					std::vector<double> canonicalTargetTemperature(packetBeginning.size());
+					std::vector<CellMolecularTransportEvaluation> targetMolecular(
+						packetBeginning.size());
+					ParallelFireSlices(packetBeginning.size(),workerCount,[&](const std::size_t cell){
+						canonicalTargetTemperature[cell]=packetBeginning[cell].temperatureK;
+						targetMolecular[cell].gasDensityKGPerM3=states[cell].GasDensity();
+						targetMolecular[cell].gasCpJPerKGK=cellTransportEvaluations[cell].gasCpJPerKGK;
+						targetMolecular[cell].molecularViscosityPaS=
+							cellTransportEvaluations[cell].molecularViscosityPaS;
+						targetMolecular[cell].molecularConductivityWPerMK=
+							cellTransportEvaluations[cell].molecularConductivityWPerMK;
+					});
+					for(std::size_t cell=0u;packetOK&&cell<packetBeginning.size();++cell)
+						if(invalidReusableTransport[cell]!=0u)packetOK=EvaluateCellMolecularTransport(
+							packetBeginning[cell],fuel,FireSimulationTransportRecord::OpenV1(),
+							FireStateProducerPrecision::Binary32,targetMolecular[cell],&error);
+					if(std::getenv("RISE_FIRE_TARGET_TEMPERATURE_IDENTITY_RED")){
+						std::vector<double> reinvertedTemperature;
+						packetOK=InvertPeriodicTemperaturesWithinBounds(stagedConservative,fuel,
+							tangentConfig.transport.ambientTemperatureK,
+							tangentConfig.transport.adiabaticTemperatureK,
+							FireStateProducerPrecision::Binary32,reinvertedTemperature,&error,
+							workerCount,false)&&reinvertedTemperature.size()==packetBeginning.size();
+						if(packetOK)for(std::size_t cell=0u;cell<packetBeginning.size();++cell)
+							if(reinvertedTemperature[cell]!=packetBeginning[cell].temperatureK){
+								packetOK=false;error="stored production temperature differs from reinversion";
+								break;
+							}
+						if(packetOK)std::fprintf(stderr,"PRODUCTION_TARGET_TEMPERATURE_IDENTITY cells=%zu\n",
+							packetBeginning.size());
+					}
 					std::vector<double> divergenceTarget;
-					packetOK=MonitoredProductionTangentDivergenceTarget3D(shape,stagedConservative,
+					packetOK=packetOK&&MonitoredProductionTangentDivergenceTarget3D(shape,stagedConservative,
 						stagedVelocity,sourceDelta,tangentConfig,fuel,fuel,
-						FireSimulationTransportRecord::OpenV1(),divergenceTarget,&error);
+						FireSimulationTransportRecord::OpenV1(),divergenceTarget,&error,
+						&canonicalTargetTemperature,&targetMolecular);
+					if(packetOK&&std::getenv("RISE_FIRE_TARGET_MOLECULAR_IDENTITY_RED")){
+						std::vector<double> recomputedTarget;std::string recomputedError;
+						packetOK=MonitoredProductionTangentDivergenceTarget3D(shape,stagedConservative,
+							stagedVelocity,sourceDelta,tangentConfig,fuel,fuel,
+							FireSimulationTransportRecord::OpenV1(),recomputedTarget,&recomputedError,
+							&canonicalTargetTemperature)&&recomputedTarget==divergenceTarget;
+						if(!packetOK)error=recomputedError.empty()?
+							"reused molecular transport changed the tangent target":recomputedError;
+						else std::fprintf(stderr,"PRODUCTION_TARGET_MOLECULAR_IDENTITY cells=%zu\n",
+							packetBeginning.size());
+					}
 					profileTargetMS=std::chrono::duration<double,std::milli>(
 						std::chrono::steady_clock::now()-profileStageStart).count();
+					profileStageStart=std::chrono::steady_clock::now();
 					MethaneRunCheckpoint productionState;
 					productionState.dimensions={{shape.nx,shape.ny,shape.nz}};
 					productionState.cellWidthM=shape.cellWidthM;
@@ -2715,16 +3007,30 @@ namespace
 					productionState.velocity=productionVelocity;
 					RISE::FireProductionResidentStepRequest request;
 					packetOK=packetOK&&FireProductionDyadicCalibration::BuildProductionRequest(
-						productionState,divergenceTarget,trialStep,request,error);
+						productionState,divergenceTarget,trialStep,request,error,workerCount,
+						&cellTransportEvaluations,&invalidReusableTransport);
+					if(packetOK&&std::getenv("RISE_FIRE_REQUEST_LAYOUT_IDENTITY_RED")){
+						RISE::FireProductionResidentStepRequest serialRequest;
+						std::string serialError;
+						packetOK=FireProductionDyadicCalibration::BuildProductionRequest(
+							productionState,divergenceTarget,trialStep,serialRequest,serialError,1u)&&
+							FireProductionDyadicCalibration::ResidentStepRequestsExactlyEqual(
+								request,serialRequest);
+						if(!packetOK)error=serialError.empty()?
+							"parallel production request differs from the serial request":serialError;
+					}
 					if(packetOK){
-						profileStageStart=std::chrono::steady_clock::now();
 						request.physicalOpenProjectionVCycleCount=19u;
-						for(std::size_t cell=0u;cell<shape.CellCount();++cell)
+						ParallelFireSlices(shape.CellCount(),workerCount,[&](const std::size_t cell){
 							for(std::size_t component=0u;component<9u;++component){
 								const double value=sourceDelta[cell][component];
 								request.cellSourceIncrement[component*shape.CellCount()+cell]=
 									static_cast<float>(value);
 							}
+						});
+						profileLayoutMS=std::chrono::duration<double,std::milli>(
+							std::chrono::steady_clock::now()-profileStageStart).count();
+						profileStageStart=std::chrono::steady_clock::now();
 						RISE::FireProductionResidentStepResult production;
 						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
 						for(;;){
@@ -2800,13 +3106,13 @@ namespace
 								productionManifoldObservation=observation;
 								advanced.conservative.resize(productionState.states.size());
 								acceptedProductionTemperatureK.resize(productionState.states.size());
-								for(std::size_t cell=0u;cell<productionState.states.size();++cell)
-								{
+								ParallelFireSlices(productionState.states.size(),workerCount,
+									[&](const std::size_t cell){
 									advanced.conservative[cell]=ToConservativeVector(
 										productionState.states[cell]);
 									acceptedProductionTemperatureK[cell]=
 										productionState.states[cell].temperatureK;
-								}
+								});
 								advanced.momentumKGPerM2S=productionState.momentum;
 								advanced.velocityMPerS=productionState.velocity;
 								values.monitoredManifoldMaximumHistory.push_back(
@@ -2915,6 +3221,7 @@ namespace
 				}
 			}
 			if(!advancedOK) error=lastAdvanceError;
+			profileStageStart=std::chrono::steady_clock::now();
 			reaction.deltaTimeS=config.transport.deltaTimeS;
 			if(advancedOK) {
 				const bool checkLimiterIdentity=workerCount>1u&&
@@ -3128,6 +3435,9 @@ namespace
 						packets[hottest].reactedFuelKGPerM3,
 						packets[hottest].gasHeatReleaseWPerM3,reaction.deltaTimeS);
 				}
+				profilePostMS=std::chrono::duration<double,std::milli>(
+					std::chrono::steady_clock::now()-profileStageStart).count();
+				profileStageStart=std::chrono::steady_clock::now();
 				momentum=advanced.momentumKGPerM2S;
 				double stepHeatReleaseW=0.0,stepRadiativeLossW=0.0;
 				double stepFuelConsumptionKGPerS=0.0,centerlineHeatReleaseW=0.0;
@@ -3200,14 +3510,17 @@ namespace
 						}
 					}
 				}
+				profileStatisticsMS=std::chrono::duration<double,std::milli>(
+					std::chrono::steady_clock::now()-profileStageStart).count();
 				values.acceptedTimeStepHistoryS.push_back(reaction.deltaTimeS);
 				if(FireProfileEnabled()){
 					std::fprintf(stderr,"FIREPROFSTEP step=%u dt=%.17g wall_ms=%.3f "
-						"eligibility_ms=%.3f transport_ms=%.3f source_ms=%.3f target_ms=%.3f "
-						"resident_ms=%.3f\n",
+						"eligibility_ms=%.3f transport_ms=%.3f control_ms=%.3f source_ms=%.3f "
+						"target_ms=%.3f layout_ms=%.3f resident_ms=%.3f post_ms=%.3f statistics_ms=%.3f\n",
 						acceptedSteps+1u,reaction.deltaTimeS,std::chrono::duration<double,std::milli>(
 							std::chrono::steady_clock::now()-profileStepStart).count(),profileEligibilityMS,
-						profileTransportMS,profileSourceMS,profileTargetMS,profileResidentMS);
+						profileTransportMS,profileControlMS,profileSourceMS,profileTargetMS,
+						profileLayoutMS,profileResidentMS,profilePostMS,profileStatisticsMS);
 					FireProfileReportAndReset("step");
 				}
 				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
@@ -4372,6 +4685,41 @@ namespace
 		return WriteFrame(path,FrameMutation{},0.0f,true,values,0.8f);
 	}
 
+	int RunProductionFrameWriteBenchmarkChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& outputDirectory)
+	{
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error))return 90;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory,directoryError);
+		if(directoryError)return 91;
+		std::vector<double> measuredMS;std::string referenceDigest;
+		for(std::size_t trial=0u;trial<6u;++trial){
+			std::ostringstream name;name<<(trial==0u?"warmup_":"measured_")<<
+				std::setw(2)<<std::setfill('0')<<trial<<".vdb";
+			const std::filesystem::path path=outputDirectory/name.str();
+			const auto begin=std::chrono::steady_clock::now();
+			if(!WriteProductionTemporalFrame(path,checkpoint.values))return 92;
+			const double elapsedMS=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-begin).count();
+			const std::string digest=DigestFile(path);
+			if(digest.empty()||(!referenceDigest.empty()&&digest!=referenceDigest))return 93;
+			if(referenceDigest.empty())referenceDigest=digest;
+			if(trial>0u)measuredMS.push_back(elapsedMS);
+		}
+		std::sort(measuredMS.begin(),measuredMS.end());
+		std::ofstream result(outputDirectory/"frame_write_benchmark.v1",std::ios::trunc);
+		result<<std::setprecision(17)<<"checkpoint_sha256 "<<DigestFile(checkpointPath)<<"\n"
+			<<"frame_sha256 "<<referenceDigest<<"\n"
+			<<"warmup_count 1\nmeasured_count 5\n";
+		for(std::size_t sample=0u;sample<measuredMS.size();++sample)
+			result<<"sorted_wall_ms_"<<sample<<' '<<measuredMS[sample]<<'\n';
+		result<<"p95_max_order_statistic_ms "<<measuredMS.back()<<'\n';
+		if(!result)return 94;
+		std::fprintf(stderr,"PRODUCTION_FRAME_WRITE_BENCHMARK p95_ms=%.17g frame_sha256=%s\n",
+			measuredMS.back(),referenceDigest.c_str());return 0;
+	}
+
 	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
@@ -4946,6 +5294,10 @@ int main(int argc,char** argv)
 		return passed?0:98;
 	}
 #if defined(RISE_ENABLE_OPENVDB)
+	if(argc==6&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0)
+		return RunProductionPuffingSpectrumChild(argv[2],argv[3],argv[4],argv[5]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-frame-write-benchmark")==0)
+		return RunProductionFrameWriteBenchmarkChild(argv[2],argv[3]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-temporal-capstone")==0){
 		double tier=0.0,cadence=0.0;
 		if(!ParsePositiveDoubleArgument(argv[2],tier)||
@@ -4956,6 +5308,21 @@ int main(int argc,char** argv)
 		return RunTemporalFirePreviewChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-first-light-preview")==0)
 		return RunFirstLightPreviewChild(argv[2],argv[3]);
+	{
+		std::vector<double> time(129u),signal(129u);
+		for(std::size_t sample=0u;sample<time.size();++sample){
+			time[sample]=0.0625*static_cast<double>(sample);
+			signal[sample]=3.0+0.01*static_cast<double>(sample)+
+				2.0*std::sin(2.0*3.14159265358979323846*2.0*time[sample]);
+		}
+		UniformHannSpectrum spectrum;
+		Check(ComputeUniformHannSpectrum(time,signal,512u,spectrum)&&
+			std::fabs(spectrum.frequencyHz[spectrum.dominantBin]-2.0)<0.01,
+			"puffing spectrum removes an affine trend and retains a sealed sinusoid");
+		std::fill(signal.begin(),signal.end(),4.0);
+		Check(!ComputeUniformHannSpectrum(time,signal,512u,spectrum),
+			"puffing spectrum refuses a zero-energy detrended signal");
+	}
 	{
 		const std::vector<std::string> changing={"a","b","c","d","e","f","g","h"};
 		const std::vector<bool> plume(8u,true);

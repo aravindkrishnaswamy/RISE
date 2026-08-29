@@ -1892,7 +1892,7 @@ int main()
 			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
-			"8aeab53bed48486ccebe48ed278b5e46980dddad598c57579e4b3399569af7fe"&&
+			"c00fe5b8ba32797087e53b0306bb694d0b70f87e67abb4ea2de2e54e2891d20a"&&
 		monitoredShadowEvidence.find("golden_fixture_sha256 "
 			"387b6dc930afc92a7d5480ab7b6b55b8024dedd7cc17a796214368406ee58b6c")!=
 			std::string::npos&&
@@ -2051,7 +2051,7 @@ int main()
 			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"a93e1114fce972a7d2c1498cb7b6aaa95bb79eba1a8c979d74b998097d9983e7"&&
+			"254b2d8882dcf8cd273ff05dd6fd95bf3cfbf4bad114bac2ed576f17ebfb8b5b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			productionSolverTest.begin(),productionSolverTest.end()))==
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
@@ -2140,7 +2140,7 @@ int main()
 			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
-			"bff3315513f88b51f5967c179dbd2995eaa9ab1ccb35a78d2ae223ae6a5f4871"&&
+			"9f7356c9c1aa913fe4bfb83b3c9b31f1fdba0ff485183093a9fe42bf3b1edc7a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionSource.begin(),projectionSource.end()))==
 			"133a41686fcf4538f0fa14d65a675cb6a3b8ad72d83b376d4022efd34e57663d"&&
@@ -2341,13 +2341,13 @@ int main()
 			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
-			"5840a03f6f15d9d7a5ac4ffc5fd37ab5972ea805f303b276858ffa16d2a0f592"&&
+			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"b6d27def759cf521dc1f14fc45a94f8a3c97a21a1b92589ad1c3d40761f088fd"&&
+			"70afd3bb5eca9b8cd02af93b049379a396fe6d3e57d7502908507cd4602faa7a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2464,10 +2464,10 @@ int main()
 			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
-			"8aeab53bed48486ccebe48ed278b5e46980dddad598c57579e4b3399569af7fe"&&
+			"c00fe5b8ba32797087e53b0306bb694d0b70f87e67abb4ea2de2e54e2891d20a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			advectionMetal.begin(),advectionMetal.end()))==
-			"a93e1114fce972a7d2c1498cb7b6aaa95bb79eba1a8c979d74b998097d9983e7"&&
+			"254b2d8882dcf8cd273ff05dd6fd95bf3cfbf4bad114bac2ed576f17ebfb8b5b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			recordsHeader.begin(),recordsHeader.end()))==
 			"b73382076eafc153c4a2b058ed0fc247e4f14ffa20d9700df0aaa8e4b98b6f5c"&&
@@ -2479,7 +2479,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"b6d27def759cf521dc1f14fc45a94f8a3c97a21a1b92589ad1c3d40761f088fd"&&
+			"70afd3bb5eca9b8cd02af93b049379a396fe6d3e57d7502908507cd4602faa7a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2509,10 +2509,10 @@ int main()
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"dbdf61159805dd17dc8fee0ef45a0254a91ddf2caf27493e0f3a39bcfe0bed2d"&&
+			"3ea7ffd815a07b0ad6ed0dcb9abea3f12fdb9ffee48a4e18f6840de1c1d6fb47"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"218aafc982e458369b9ec0008ff4ee2f26032c91da86c693b590c80ce5d50699"&&
+			"5df3c3704620a365fd5188de9f68bc36f6fbe780f755a428b128a43529658931"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2614,6 +2614,51 @@ int main()
 		historyDoc.find("r175 Binary32 thermo/source maps and preview release")!=
 			std::string::npos,
 		"r175 admits certified Binary32 sources, remeasures the burning tail, and releases first light");
+	const std::string tier6SpectrumCostEvidence=ReadText(
+		"rendered/fire_production_calibration/r177_tier6_spectrum_and_tier10_cost/"
+		"tier6_spectrum_tier10_cost_evidence.v1");
+	const std::string tier10SteadyProfile=ReadText(
+		"rendered/fire_production_calibration/r177_tier6_spectrum_and_tier10_cost/"
+		"tier10_steady_profile.raw");
+	const std::string tier6FullSpectrum=ReadText(
+		"rendered/fire_production_calibration/r177_tier6_puffing_spectrum/full_spectrum.csv");
+	Check(!tier6SpectrumCostEvidence.empty()&&!tier10SteadyProfile.empty()&&
+		!tier6FullSpectrum.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			tier6SpectrumCostEvidence.begin(),tier6SpectrumCostEvidence.end()))==
+			"edea4d12db7c8529610a0e8933ccc842c2f938765fd927a183785b8fc60bdea4"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			tier10SteadyProfile.begin(),tier10SteadyProfile.end()))==
+			"81dc56f84eb3c5780e1576a49dd0852f07445cf5dc949f6b967580ea1151524d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			tier6FullSpectrum.begin(),tier6FullSpectrum.end()))==
+			"0e7f63c92d0f63d88dcf8cf4a5f69fd318f31dd6523f40581b3212e6771ab5ba"&&
+		tier6SpectrumCostEvidence.find(
+			"tier6_puffing_verdict expected_component_present_but_subdominant_to_slow_domain_mode")!=
+			std::string::npos&&
+		tier6SpectrumCostEvidence.find(
+			"tier10_complete_owner_wall_projection_hours_before_later_state_retries 4.740059356967345")!=
+			std::string::npos&&
+		tier6SpectrumCostEvidence.find("request_layout_serial_parallel_exact_RED true")!=
+			std::string::npos&&tier6SpectrumCostEvidence.find(
+			"target_temperature_reinversion_all_cell_exact_RED true")!=std::string::npos&&
+		tier6SpectrumCostEvidence.find("target_molecular_reuse_full_vector_exact_RED true")!=
+			std::string::npos&&CountText(tier10SteadyProfile,"FIREPROFSTEP step=")==10u&&
+		CountText(tier6FullSpectrum,"centerline_heat_release,")==257u&&
+		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			sequenceTest.begin(),sequenceTest.end()))==
+			"70afd3bb5eca9b8cd02af93b049379a396fe6d3e57d7502908507cd4602faa7a"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			dyadicFixture.begin(),dyadicFixture.end()))==
+			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
+			"c00fe5b8ba32797087e53b0306bb694d0b70f87e67abb4ea2de2e54e2891d20a"&&
+		solverDoc.find("### 7.56j Tier-6 full spectrum and complete-owner cost correction (r177)")!=
+			std::string::npos&&historyDoc.find(
+			"r176/r177 true temporal tier-6 preview and puffing-spectrum diagnosis")!=
+			std::string::npos,
+		"r177 publishes both tier-6 spectra and corrects tier-10 complete-owner cost");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

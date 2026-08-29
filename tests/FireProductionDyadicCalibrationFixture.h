@@ -716,14 +716,62 @@ namespace FireProductionDyadicCalibration
 		return accepted?0:199;
 	}
 
+	inline bool ResidentStepRequestsExactlyEqual(
+		const RISE::FireProductionResidentStepRequest& a,
+		const RISE::FireProductionResidentStepRequest& b)
+	{
+		auto sameShape=[](const RISE::FireProductionProjectionShape& x,
+			const RISE::FireProductionProjectionShape& y){return x.nx==y.nx&&x.ny==y.ny&&
+			x.nz==y.nz&&x.cellWidthM==y.cellWidthM;};
+		return sameShape(a.force.shape,b.force.shape)&&
+			a.force.timeStepS==b.force.timeStepS&&
+			a.force.ambientDensityKGPerM3==b.force.ambientDensityKGPerM3&&
+			a.force.vremanCoefficient==b.force.vremanCoefficient&&
+			a.force.gravityMPerS2==b.force.gravityMPerS2&&a.force.boundary==b.force.boundary&&
+			a.force.cellGasDensityKGPerM3==b.force.cellGasDensityKGPerM3&&
+			a.force.molecularKinematicViscosityM2PerS==
+				b.force.molecularKinematicViscosityM2PerS&&
+			a.force.faceDensityKGPerM3==b.force.faceDensityKGPerM3&&
+			a.force.beginningMomentumKGPerM2S==b.force.beginningMomentumKGPerM2S&&
+			sameShape(a.cellTransport.shape,b.cellTransport.shape)&&
+			a.cellTransport.componentCount==b.cellTransport.componentCount&&
+			a.cellTransport.timeStepS==b.cellTransport.timeStepS&&
+			a.cellTransport.boundary==b.cellTransport.boundary&&
+			a.cellTransport.conservativeValues==b.cellTransport.conservativeValues&&
+			a.cellTransport.frozenVelocityMPerS==b.cellTransport.frozenVelocityMPerS&&
+			a.cellTransport.ambientValues==b.cellTransport.ambientValues&&
+			sameShape(a.dualTransport.shape,b.dualTransport.shape)&&
+			a.dualTransport.timeStepS==b.dualTransport.timeStepS&&
+			a.dualTransport.ambientDensityKGPerM3==b.dualTransport.ambientDensityKGPerM3&&
+			a.dualTransport.boundary==b.dualTransport.boundary&&
+			a.dualTransport.beginningFaceDensity==b.dualTransport.beginningFaceDensity&&
+			a.dualTransport.beginningMomentum==b.dualTransport.beginningMomentum&&
+			a.dualTransport.frozenVelocityMPerS==b.dualTransport.frozenVelocityMPerS&&
+			a.cellSourceIncrement==b.cellSourceIncrement&&
+			a.momentumSourceIncrement==b.momentumSourceIncrement&&
+			a.divergenceTargetPerS==b.divergenceTargetPerS&&
+			a.restorationDivergenceTargetPerS==b.restorationDivergenceTargetPerS&&
+			a.beginningManifoldDeviationPerCell==b.beginningManifoldDeviationPerCell&&
+			a.physicalOpenProjectionVCycleCount==b.physicalOpenProjectionVCycleCount&&
+			a.monitorManifoldDiagnostics==b.monitorManifoldDiagnostics&&
+			a.enforceManifoldPlateau==b.enforceManifoldPlateau&&
+			a.restoreManifoldOutliers==b.restoreManifoldOutliers;
+	}
+
 	bool BuildProductionRequest(const MethaneRunCheckpoint& state,
 		const std::vector<double>& divergenceTarget,const double timeStepS,
-		RISE::FireProductionResidentStepRequest& request,std::string& error)
+		RISE::FireProductionResidentStepRequest& request,std::string& error,
+		const unsigned int workerCount,
+		const std::vector<CellTransportEvaluation>* reusableTransport,
+		const std::vector<unsigned char>* invalidReusableTransport)
 	{
 		request=RISE::FireProductionResidentStepRequest();
 		const std::size_t cells=state.states.size();
 		if(cells!=state.dimensions[0]*state.dimensions[1]*state.dimensions[2]||
-			divergenceTarget.size()!=cells)return false;
+			divergenceTarget.size()!=cells||
+			(reusableTransport&&reusableTransport->size()!=cells)||
+			(invalidReusableTransport&&(!reusableTransport||
+				invalidReusableTransport->size()!=cells)))return false;
 		MethaneCellState ambient,injected;if(!AmbientAndInjected(ambient,injected,error))return false;
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		const FireSimulationTransportRecord transport=FireSimulationTransportRecord::OpenV1();
@@ -745,11 +793,34 @@ namespace FireProductionDyadicCalibration
 		request.cellTransport.ambientValues.resize(9u);
 		for(std::size_t component=0u;component<9u;++component)
 			request.cellTransport.ambientValues[component]=static_cast<float>(ambientVector[component]);
-		for(std::size_t cell=0u;cell<cells;++cell){
+		request.divergenceTargetPerS.resize(cells);
+		request.restorationDivergenceTargetPerS.resize(cells);
+		request.beginningManifoldDeviationPerCell.resize(cells);
+		if(cells>static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())){
+			error="production request cell count exceeds the worker partition range";return false;
+		}
+		const unsigned int workers=std::max(1u,std::min(workerCount,
+			static_cast<unsigned int>(cells)));
+		const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
+		std::vector<std::size_t> failureCell(workers,noFailure);
+		std::vector<std::string> failureMessage(workers);
+		auto buildCellRange=[&](const unsigned int worker){
+			const std::size_t first=cells*worker/workers,last=cells*(worker+1u)/workers;
+			for(std::size_t cell=first;cell<last;++cell){
+			std::string cellError;
 			const ConservativeVector conservative=ToConservativeVector(state.states[cell]);
 			const double gas=state.states[cell].GasDensity();CellMolecularTransportEvaluation molecular;
-			if(!(gas>0.0)||!EvaluateCellMolecularTransport(state.states[cell],fuel,transport,
-				state.states[cell].producerPrecision,molecular,&error))return false;
+			if(!(gas>0.0)){
+				failureCell[worker]=cell;
+				failureMessage[worker]="production request gas density is nonpositive";break;
+			}
+			const bool reusable=reusableTransport&&(!invalidReusableTransport||
+				(*invalidReusableTransport)[cell]==0u);
+			if(reusable){
+				molecular.molecularViscosityPaS=(*reusableTransport)[cell].molecularViscosityPaS;
+			}else if(!EvaluateCellMolecularTransport(state.states[cell],fuel,transport,
+				state.states[cell].producerPrecision,molecular,&cellError)){
+				failureCell[worker]=cell;failureMessage[worker]=cellError;break;}
 			request.force.molecularKinematicViscosityM2PerS[cell]=
 				static_cast<float>(molecular.molecularViscosityPaS/gas);
 			for(std::size_t component=0u;component<9u;++component)
@@ -759,7 +830,22 @@ namespace FireProductionDyadicCalibration
 			for(std::size_t component=2u;component<=6u;++component)
 				packedGas+=request.cellTransport.conservativeValues[component*cells+cell];
 			request.force.cellGasDensityKGPerM3[cell]=packedGas;
-		}
+			double volumeRatio=0.0;
+			if(!AcceptedConservativeVolumeRatio(conservative,fuel,
+				state.states[cell].producerPrecision,volumeRatio,&cellError)){
+				failureCell[worker]=cell;failureMessage[worker]=cellError;break;}
+			request.divergenceTargetPerS[cell]=static_cast<float>(divergenceTarget[cell]);
+			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
+			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
+				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
+			}
+		};
+		if(workers==1u)buildCellRange(0u);
+		else FireWorkerPool().Run(workers,buildCellRange);
+		std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
+		for(unsigned int worker=0u;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+			firstFailure=failureCell[worker];failedWorker=worker;}
+		if(firstFailure!=noFailure){error=failureMessage[failedWorker];return false;}
 		request.dualTransport.shape=request.force.shape;
 		request.dualTransport.timeStepS=request.force.timeStepS;
 		request.dualTransport.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
@@ -775,7 +861,7 @@ namespace FireProductionDyadicCalibration
 			request.force.faceDensityKGPerM3[axis].resize(faces);
 			request.force.beginningMomentumKGPerM2S[axis].resize(faces);
 			request.cellTransport.frozenVelocityMPerS[axis].resize(faces);
-			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+			ParallelFireSlices(ez,workerCount,[&](const std::size_t z){for(std::size_t y=0u;y<ey;++y)
 				for(std::size_t x=0u;x<ex;++x){
 					const std::size_t face=(z*ey+y)*ex+x;
 					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
@@ -795,25 +881,13 @@ namespace FireProductionDyadicCalibration
 						static_cast<float>(state.momentum.component[axis][face]);
 					request.cellTransport.frozenVelocityMPerS[axis][face]=
 						static_cast<float>(state.velocity.component[axis][face]);
-				}
+				}});
 			request.dualTransport.beginningFaceDensity[axis]=request.force.faceDensityKGPerM3[axis];
 			request.dualTransport.beginningMomentum[axis]=request.force.beginningMomentumKGPerM2S[axis];
 			request.dualTransport.frozenVelocityMPerS[axis]=request.cellTransport.frozenVelocityMPerS[axis];
 			request.momentumSourceIncrement[axis].assign(faces,0.0f);
 		}
 		request.cellSourceIncrement.assign(9u*cells,0.0f);
-		request.divergenceTargetPerS.resize(cells);
-		request.restorationDivergenceTargetPerS.resize(cells);
-		request.beginningManifoldDeviationPerCell.resize(cells);
-		for(std::size_t cell=0u;cell<cells;++cell){
-			request.divergenceTargetPerS[cell]=static_cast<float>(divergenceTarget[cell]);
-			double volumeRatio=0.0;
-			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(state.states[cell]),fuel,
-				state.states[cell].producerPrecision,volumeRatio,&error))return false;
-			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
-			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
-				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
-		}
 		return RISE::ValidateFireProductionFrozenForceRequest(request.force,&error)&&
 			RISE::ValidateFireProductionCellPalindromeRequest(request.cellTransport,&error)&&
 			RISE::ValidateFireProductionDualMomentumRequest(request.dualTransport,&error);
@@ -1846,7 +1920,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="584ff3d14c12d700b06299e81947c3e2d03cf529b2f494fdf48f909a9570cbdd"||
+			traceDigest!="0cf4fda287cf2019ad09a261c883f7b2e51b598a4e6f814ba2538bce86c0df42"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||

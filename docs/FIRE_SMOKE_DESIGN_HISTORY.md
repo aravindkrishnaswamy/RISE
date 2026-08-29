@@ -4346,3 +4346,48 @@ it was already tried and refuted here.
   moves by at least two display pixels.  The rejected seven-black-frame/
   one-plume schedule and static-geometry digest/area-flicker schedule are
   retained as classifier REDs; no eight-timestep physical evolution is claimed.
+- **r176/r177 true temporal tier-6 preview and puffing-spectrum diagnosis
+  (2026-08-29):** the tier-6 production trajectory completes the full
+  `5 t_ft` discard plus 40 expected puffing periods, publishes 235 physical-time
+  frames at `0.0625 s`, and produces the first truthful temporal fire preview.
+  The follow-on spectrum publishes both complete signals, not only a selected
+  peak.  Centerline heat release is the full-height cell-volume integral averaged
+  over the central two-by-two columns.  Display lit area counts pixels whose
+  maximum sRGB channel exceeds 127.  Each irregular signal is linearly resampled
+  to 512 points over its exact observation span, least-squares affine detrended,
+  Hann-windowed, and evaluated by direct one-sided DFT.
+
+  Both observables peak at `0.13648504273426187 Hz`.  The expected
+  `2.7386127875258306 Hz` component is present at the nearest
+  `2.7297008546852375 Hz` bin but subdominant: expected-bin/peak power is
+  `0.0013755911450037712` for centerline heat release and
+  `0.001295326657846992` for lit area.  Integrated `2.5--3.0 Hz` power fractions
+  are `0.0113695656449402` and `0.002445681094526029`.  The verdict is therefore
+  “present but subdominant to a slow domain mode,” not “absent.”  This is also
+  the pre-registered resolution outcome: r57 admitted a general case at four
+  burner cells, tier 6 resolves the `0.30 m` burner with
+  `7.3545957039557281` cells, and the puffing row was reserved for the refined
+  approximately-ten-cell tier.
+
+  The cost audit corrects a second inherited extrapolation.  The accepted
+  tier-6 run took `8388.969329416 s / 15662 = 535.625694123 ms` per step, not a
+  900-ms rendering charge.  Resident attempts averaged `115.223978036 ms`; the
+  remaining `420.401716087 ms` was owner-side preparation and state work.
+  Durable VDB output is only `34.131667 ms` p95 per emitted frame, so in-loop
+  frame publication is not the step-cost driver.  There were 7,183 physical
+  projection retries, but their aggregate remains inside the measured resident
+  term; hard-bound retries were zero.
+
+  A complete tier-10 owner profile then exposes request layout (`628.994 ms`),
+  target formation (`306.259 ms`), and resident publication/application
+  (`492.809 ms`) inside a `2008.334 ms` cold baseline.  Fixed-partition request
+  construction, canonical-temperature reuse, and molecular-property reuse are
+  scheduling/staging changes only.  Their REDs compare the full request bytes,
+  all 976,272 stored/reinverted temperatures, and the complete divergence-target
+  vector against the former paths.  After warmup, nine steps average
+  `1116.682666667 ms`; request layout is `99.410111111 ms`, target formation
+  `199.215777778 ms`, and resident publication/application `430.550444444 ms`.
+  The honest 25.156864-s tier-10 projection is therefore `4.74005935697 h`
+  before later-state retry cost.  The older `0.6384 h` value measured only a
+  resident slice and is retired as a complete-run projection.  The tier-10
+  physics run remains authorized, now under this complete-owner cost account.

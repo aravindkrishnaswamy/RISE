@@ -2022,7 +2022,9 @@
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
 			std::vector<double>& result,
-			std::string* error=0
+			std::string* error=0,
+			const std::vector<double>* canonicalTemperatureK=0,
+			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0
 			)
 		{
 			const std::size_t count=shape.CellCount();
@@ -2030,7 +2032,14 @@
 				state.size()!=count||sourceDelta.size()!=count||config.workerCount==0u)
 				return Fail(error,"fire solver monitored tangent-target policy is malformed");
 			std::vector<double> temperature;
-			if(!InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
+			if(canonicalTemperatureK){
+				if(canonicalTemperatureK->size()!=count||std::any_of(canonicalTemperatureK->begin(),
+					canonicalTemperatureK->end(),[&](const double value){return !std::isfinite(value)||
+						value<config.transport.ambientTemperatureK||
+						value>config.transport.adiabaticTemperatureK;}))return Fail(error,
+						"fire solver monitored tangent canonical temperature is invalid");
+				temperature=*canonicalTemperatureK;
+			}else if(!InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
 				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
 				config.transport.producerPrecision,temperature,error,config.workerCount,false))
 				return false;
@@ -2061,7 +2070,7 @@
 			if(!BuildOpenStageTransport3D(shape,state,temperature,velocity,
 				config.openBoundary,config.dns,thermochemistry,transport,
 				config.transport.producerPrecision,diffusivity,conductivity,viscosity,
-				error,config.workerCount))return false;
+				error,config.workerCount,molecularEvaluations))return false;
 			OpenFluxPair3D flux;
 			if(!BuildOpenFluxPair3D(shape,state,temperature,kinematics,diffusivity,
 				conductivity,config.openBoundary,config.transport.ambientTemperatureK,

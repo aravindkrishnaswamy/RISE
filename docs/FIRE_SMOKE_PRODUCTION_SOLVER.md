@@ -4472,6 +4472,58 @@ change before copying anything.  Sidecar-first/delayed-artifact REDs cover
 both the primary and visible derivative interleavings.  No conditional block
 can now silently return success without first light.
 
+### 7.56j Tier-6 full spectrum and complete-owner cost correction (r177)
+
+The tier-6 temporal trajectory is measured over its complete statistics window,
+not reduced to the largest Fourier bin.  The centerline signal is the existing
+central two-by-two-column, full-height, cell-volume-integrated heat-release
+probe.  The visible-area signal is the accepted preview definition: the number
+of display pixels whose maximum sRGB channel is greater than 127.  Each signal
+is linearly resampled to 512 uniform points over its own exact observation
+span, least-squares affine detrended, multiplied by a symmetric Hann window,
+and evaluated at every nonnegative DFT bin through Nyquist.  The complete
+signals, display-input hashes, and spectrum table are retained under
+`rendered/fire_production_calibration/r177_tier6_puffing_spectrum`.
+
+Both spectra are dominated by `0.13648504273426187 Hz`.  The dimensional
+puffing expectation is `1.5/sqrt(0.30) = 2.7386127875258306 Hz`; its nearest
+bin is `2.7297008546852375 Hz`.  Centerline expected-bin power is
+`0.00035234515564980826` of total positive-frequency power and
+`0.0013755911450037712` of the dominant-bin power.  Lit-area values are
+`0.00022353198046603235` and `0.001295326657846992`.  The wider
+`2.5--3.0 Hz` bands contain `0.0113695656449402` and
+`0.002445681094526029` of total power.  Tier 6 therefore shows a weak expected
+component beneath a slow domain mode; it does not show that the expected
+component is absent.  This interpretation preserves the r57 resolution pin:
+four burner cells were the general-case admissibility minimum, tier 6 supplies
+`7.3545957039557281`, and puffing was pre-registered for the refined
+approximately-ten-cell claim tier.
+
+The same rung replaces the partial resident-step wall projection with a
+complete-owner measurement.  The tier-6 run consumed `8388.969329416 s` for
+15,662 accepted steps (`535.625694123 ms/step`).  Resident attempts account for
+`115.223978036 ms/step`; `420.401716087 ms/step` is owner preparation, target,
+state publication, and statistics.  The 235 frame writes are not responsible:
+a one-warmup/five-sample durable VDB benchmark measures `34.131667 ms` p95 per
+frame.  Physical projection retried 7,183 times; hard-bound retry count is zero.
+
+On tier 10, the first complete-owner profile is `2008.334 ms`: request layout
+`628.994`, target generation `306.259`, resident publication/application
+`492.809`, with the balance in eligibility, transport, source, control, and
+postprocessing.  The r177 scheduling-only repair uses fixed worker partitions
+for request construction, reuses the exactly reinverted canonical temperature,
+and reuses molecular thermochemistry while recomputing all target velocity
+gradients and eddy terms.  Three REDs compare the complete request, every
+canonical temperature, and the entire divergence target with their prior
+paths.  After warmup, nine tier-10 steps average `1116.682666667 ms`, including
+`99.410111111 ms` layout, `199.215777778 ms` target, and
+`430.550444444 ms` resident publication/application.  At the audited CFL step,
+the 25.156864-s campaign projects to `4.74005935697 h` before any later-state
+retry cost.  The earlier `0.638400486876 h` number remains a valid resident
+microcampaign observation but is retired as a complete production-run claim.
+The tier-10 run proceeds under this explicit cost account; no physics tolerance,
+operator ordering, or checkpoint authority is changed.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
