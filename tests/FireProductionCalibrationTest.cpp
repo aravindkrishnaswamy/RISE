@@ -2347,7 +2347,7 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"a91ec56cc0353502487f7b59ffec94847e7fe48bfa40b93e40db3bdc10000709"&&
+			"b6d27def759cf521dc1f14fc45a94f8a3c97a21a1b92589ad1c3d40761f088fd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2452,7 +2452,7 @@ int main()
 	Check(!thermoSourceEvidence.empty()&&!thermoSourceRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceEvidence.begin(),thermoSourceEvidence.end()))==
-			"2f7a3dc2ab001d81998274f18781d2f4f5b245e8b89f9fc307dd8a372dd68707"&&
+			"76aae5b70860fea15b4cf33cad127559ade6d79628e17c37b1ef58d8076d8518"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceRaw.begin(),thermoSourceRaw.end()))==
 			"c9f0188fdfd688e10f0edef4c7ef7e9712e4bf71d7cff19ddcba3b5276553865"&&
@@ -2479,7 +2479,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"a91ec56cc0353502487f7b59ffec94847e7fe48bfa40b93e40db3bdc10000709"&&
+			"b6d27def759cf521dc1f14fc45a94f8a3c97a21a1b92589ad1c3d40761f088fd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2497,7 +2497,7 @@ int main()
 			"d81af70fb94b8714b1c4ee7cd9e89ba5f44347a74681bfa82fa266bd9c943625"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightReadme.begin(),firstLightReadme.end()))==
-			"1e21decd0d76f0654da11cabdb8cd5ffdb8152852646b1942e6c3e1a9436c55a"&&
+			"d81ac9bbbee11082112a353494aa7ba141aa5432d6d67fa555b7c909de763017"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightSequenceManifest.begin(),firstLightSequenceManifest.end()))==
 			"a1b708384ce6c4232f43ae8cbbe54334e1b9289c51cdd75714df34cbc27b0455"&&
@@ -2509,10 +2509,10 @@ int main()
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"3b0cb299957b8bb045632d8b888068399744df81e077702e884b3df60e9f7d34"&&
+			"dbdf61159805dd17dc8fee0ef45a0254a91ddf2caf27493e0f3a39bcfe0bed2d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"89439539793100ee45b99985b278dd0a41e2eda4f57ceb775870884a09a9df89"&&
+			"218aafc982e458369b9ec0008ff4ee2f26032c91da86c693b590c80ce5d50699"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2590,6 +2590,9 @@ int main()
 			"first_light_animation_adjacent_frames_distinct true")!=std::string::npos&&
 		thermoSourceEvidence.find(
 			"first_light_animation_minimum_lit_area_range one_twentieth")!=
+			std::string::npos&&
+		thermoSourceEvidence.find(
+			"first_light_animation_minimum_plume_centroid_excursion_display_pixels 2")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("tier10_25s_device_hours 0.40872554073287515")!=
 			std::string::npos&&

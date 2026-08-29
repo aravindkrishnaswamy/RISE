@@ -76,24 +76,36 @@ namespace
 	}
 	bool FirstLightAnimatedPlumeMetricsPass(const std::vector<std::string>& digests,
 		const std::vector<bool>& visible,const std::vector<bool>& structured,
-		const std::vector<std::size_t>& litPixels)
+		const std::vector<std::size_t>& litPixels,const std::vector<double>& centroidX,
+		const std::vector<double>& centroidY)
 	{
 		if(digests.size()!=8u||visible.size()!=digests.size()||
-			structured.size()!=digests.size()||litPixels.size()!=digests.size())return false;
+			structured.size()!=digests.size()||litPixels.size()!=digests.size()||
+			centroidX.size()!=digests.size()||centroidY.size()!=digests.size())return false;
 		std::size_t minimumLit=std::numeric_limits<std::size_t>::max(),maximumLit=0u;
+		double maximumCentroidDistanceSquared=0.0;
 		for(std::size_t frame=0u;frame<digests.size();++frame){
 			if(!visible[frame]||!structured[frame]||
+				!std::isfinite(centroidX[frame])||!std::isfinite(centroidY[frame])||
 				(frame>0u&&digests[frame]==digests[frame-1u]))return false;
 			minimumLit=std::min(minimumLit,litPixels[frame]);
 			maximumLit=std::max(maximumLit,litPixels[frame]);
+			for(std::size_t prior=0u;prior<frame;++prior){
+				const double dx=centroidX[frame]-centroidX[prior];
+				const double dy=centroidY[frame]-centroidY[prior];
+				maximumCentroidDistanceSquared=std::max(
+					maximumCentroidDistanceSquared,dx*dx+dy*dy);
+			}
 		}
-		return maximumLit-minimumLit>=std::max<std::size_t>(16u,maximumLit/20u);
+		return maximumLit-minimumLit>=std::max<std::size_t>(16u,maximumLit/20u)&&
+			maximumCentroidDistanceSquared>=4.0;
 	}
 
 #if defined(__APPLE__)
 	bool DecodeFirstLightGIFFrame(CGImageSourceRef source,const std::size_t frame,
 		const unsigned int width,const unsigned int height,std::string& digest,
-		bool& visible,bool& structuredPlume,std::size_t& litPixelCount)
+		bool& visible,bool& structuredPlume,std::size_t& litPixelCount,
+		double& centroidX,double& centroidY)
 	{
 		CGImageRef image=CGImageSourceCreateImageAtIndex(source,frame,nullptr);
 		if(!image||CGImageGetWidth(image)!=width||CGImageGetHeight(image)!=height){
@@ -110,7 +122,7 @@ namespace
 		CFRelease(context);CFRelease(image);
 		visible=false;structuredPlume=false;
 		std::size_t litPixels=0u,minX=width,minY=height,maxX=0u,maxY=0u;
-		std::uint64_t redSum=0u,blueSum=0u;
+		std::uint64_t redSum=0u,blueSum=0u,xMoment=0u,yMoment=0u;
 		for(unsigned int y=0u;y<height;++y)for(unsigned int x=0u;x<width;++x){
 			const std::size_t i=4u*(static_cast<std::size_t>(y)*width+x);
 			visible=visible||pixels[i]!=0u||pixels[i+1u]!=0u||pixels[i+2u]!=0u;
@@ -119,11 +131,13 @@ namespace
 				minY=std::min(minY,static_cast<std::size_t>(y));
 				maxX=std::max(maxX,static_cast<std::size_t>(x));
 				maxY=std::max(maxY,static_cast<std::size_t>(y));
-				redSum+=pixels[i];blueSum+=pixels[i+2u];}
+				redSum+=pixels[i];blueSum+=pixels[i+2u];xMoment+=x;yMoment+=y;}
 		}
 		structuredPlume=visible&&2u*litPixels<static_cast<std::size_t>(width)*height&&
 			(maxY-minY)>(maxX-minX)&&blueSum>redSum;
 		litPixelCount=litPixels;
+		centroidX=litPixels?static_cast<double>(xMoment)/static_cast<double>(litPixels):0.0;
+		centroidY=litPixels?static_cast<double>(yMoment)/static_cast<double>(litPixels):0.0;
 		digest=RISECBOR64::SHA256Hex(pixels);return true;
 	}
 
@@ -151,6 +165,7 @@ namespace
 		std::vector<std::string> digests;
 		std::vector<bool> visible,structured;
 		std::vector<std::size_t> litCounts;
+		std::vector<double> centroidX,centroidY;
 		for(std::size_t frame=0u;frame<frames.size();++frame){
 			CFDictionaryRef properties=CGImageSourceCopyPropertiesAtIndex(
 				source,frame,nullptr);
@@ -165,16 +180,18 @@ namespace
 			if(properties)CFRelease(properties);
 			if(!cadence){CFRelease(source);error="first-light GIF cadence differs";return false;}
 			std::string digest;bool frameVisible=false,structuredPlume=false;
-			std::size_t litPixels=0u;
+			std::size_t litPixels=0u;double frameCentroidX=0.0,frameCentroidY=0.0;
 			if(!DecodeFirstLightGIFFrame(source,frame,width,height,digest,frameVisible,
-				structuredPlume,litPixels)){
+				structuredPlume,litPixels,frameCentroidX,frameCentroidY)){
 				CFRelease(source);error="first-light GIF frame decode failed";return false;
 			}
 			digests.push_back(digest);visible.push_back(frameVisible);
 			structured.push_back(structuredPlume);litCounts.push_back(litPixels);
+			centroidX.push_back(frameCentroidX);centroidY.push_back(frameCentroidY);
 		}
 		CFRelease(source);
-		if(!FirstLightAnimatedPlumeMetricsPass(digests,visible,structured,litCounts)){
+		if(!FirstLightAnimatedPlumeMetricsPass(digests,visible,structured,litCounts,
+			centroidX,centroidY)){
 			error="first-light GIF lacks eight visible structured and materially changing "
 				"blue-plume frames";return false;
 		}
@@ -413,7 +430,7 @@ namespace
 					std::filesystem::copy_options::overwrite_existing);
 			}
 			primaryFrames.push_back(primary);displayFrames.push_back(display);
-			if(frame+1u<8u){job->release();job=nullptr;}
+			if(frame+1u<8u){if(job)job->release();job=nullptr;}
 		}
 		const IRasterizer* rasterizer=job?job->GetRasterizer():nullptr;
 		const FrameStore* animationStore=rasterizer?rasterizer->GetFrameStore():nullptr;
@@ -3942,15 +3959,22 @@ int main(int argc,char** argv)
 		const std::vector<std::string> changing={"a","b","c","d","e","f","g","h"};
 		const std::vector<bool> plume(8u,true);
 		const std::vector<std::size_t> changingArea={640u,665u,690u,720u,750u,785u,820u,855u};
-		Check(FirstLightAnimatedPlumeMetricsPass(changing,plume,plume,changingArea),
+		const std::vector<double> movingX={27.0,27.2,27.4,27.6,27.8,28.0,28.2,28.4};
+		const std::vector<double> movingY={22.0,22.7,23.4,24.1,24.8,25.5,26.2,26.9};
+		Check(FirstLightAnimatedPlumeMetricsPass(changing,plume,plume,changingArea,
+			movingX,movingY),
 			"first-light animation accepts eight visible structured changing plume frames");
 		std::vector<bool> terminalOnly(8u,false);terminalOnly.back()=true;
 		Check(!FirstLightAnimatedPlumeMetricsPass(changing,terminalOnly,terminalOnly,
-			{0u,0u,0u,0u,0u,0u,0u,855u}),
+			{0u,0u,0u,0u,0u,0u,0u,855u},movingX,movingY),
 			"first-light animation rejects a black prefix followed by one plume still");
 		Check(!FirstLightAnimatedPlumeMetricsPass(std::vector<std::string>(8u,"same"),
-			plume,plume,std::vector<std::size_t>(8u,720u)),
+			plume,plume,std::vector<std::size_t>(8u,720u),movingX,movingY),
 			"first-light animation rejects a visible but static plume sequence");
+		const std::vector<double> staticCentroid(8u,24.0);
+		Check(!FirstLightAnimatedPlumeMetricsPass(changing,plume,plume,changingArea,
+			staticCentroid,staticCentroid),
+			"first-light animation rejects static geometry with digest and area flicker");
 	}
 	if(const char* profileEnvironment=std::getenv("RISE_FIRE_PROFILE")){
 		if(std::strcmp(profileEnvironment,"1")!=0){

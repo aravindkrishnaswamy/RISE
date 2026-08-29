@@ -55,5 +55,7 @@ validation evidence.
 The eight animation primaries render the same terminal monitored state through
 a sealed 20-degree camera orbit with a modest dolly. Every frame must contain a
 bounded blue plume, every adjacent decoded frame must differ, and the lit-area
-range must exceed five percent. This is intentionally a preview camera
-animation, not a claim of eight additional solver timesteps.
+range must exceed five percent.  The lit-mask centroid must also move by at
+least two display pixels, excluding static geometry with palette or edge
+flicker. This is intentionally a preview camera animation, not a claim of eight
+additional solver timesteps.

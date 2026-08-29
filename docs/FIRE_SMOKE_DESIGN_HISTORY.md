@@ -4342,6 +4342,7 @@ it was already tried and refuted here.
   The animation is explicitly a preview camera move: the same terminal
   monitored state is rendered through a sealed 20-degree orbit and dolly.
   All eight frames contain a bounded blue plume, every adjacent decoded frame
-  differs, and the lit-area range exceeds five percent.  The rejected
-  seven-black-frame/one-plume schedule is retained as a classifier RED; no
-  eight-timestep physical evolution is claimed.
+  differs, the lit-area range exceeds five percent, and the lit-mask centroid
+  moves by at least two display pixels.  The rejected seven-black-frame/
+  one-plume schedule and static-geometry digest/area-flicker schedule are
+  retained as classifier REDs; no eight-timestep physical evolution is claimed.

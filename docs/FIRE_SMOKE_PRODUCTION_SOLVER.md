@@ -4458,8 +4458,10 @@ The animation is a preview camera move over the terminal monitored state, not
 an assertion that eight additional solver timesteps were advanced.  Its sealed
 20-degree orbit and dolly produce eight visible structured blue-plume frames;
 every adjacent decoded frame differs and the lit-area range changes by at least
-five percent.  A synthetic seven-black-frame/one-terminal-plume sequence and a
-visible static sequence both fail the shared classifier.
+five percent.  The lit-mask centroid must move by at least two display pixels.
+A synthetic seven-black-frame/one-terminal-plume sequence, a visible static
+sequence, and static geometry with digest/area flicker all fail the shared
+classifier.
 
 Publication is fail-closed at the file boundary.  The producer intentionally
 commits sidecar before artifact; a unique staging directory and per-frame
