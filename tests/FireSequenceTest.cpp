@@ -100,11 +100,37 @@ namespace
 		return maximumLit-minimumLit>=std::max<std::size_t>(16u,maximumLit/20u)&&
 			maximumCentroidDistanceSquared>=4.0;
 	}
+	bool TemporalAnimatedFireMetricsPass(const std::vector<std::string>& digests,
+		const std::vector<bool>& visible,const std::vector<bool>& blueDominant,
+		const std::vector<std::size_t>& litPixels,const std::vector<double>& centroidX,
+		const std::vector<double>& centroidY)
+	{
+		if(digests.size()<8u||visible.size()!=digests.size()||
+			blueDominant.size()!=digests.size()||litPixels.size()!=digests.size()||
+			centroidX.size()!=digests.size()||centroidY.size()!=digests.size())return false;
+		std::size_t minimumLit=std::numeric_limits<std::size_t>::max(),maximumLit=0u;
+		double maximumCentroidDistanceSquared=0.0;
+		for(std::size_t frame=0u;frame<digests.size();++frame){
+			if(!visible[frame]||!blueDominant[frame]||
+				!std::isfinite(centroidX[frame])||!std::isfinite(centroidY[frame])||
+				(frame>0u&&digests[frame]==digests[frame-1u]))return false;
+			minimumLit=std::min(minimumLit,litPixels[frame]);
+			maximumLit=std::max(maximumLit,litPixels[frame]);
+			for(std::size_t prior=0u;prior<frame;++prior){
+				const double dx=centroidX[frame]-centroidX[prior];
+				const double dy=centroidY[frame]-centroidY[prior];
+				maximumCentroidDistanceSquared=std::max(
+					maximumCentroidDistanceSquared,dx*dx+dy*dy);
+			}
+		}
+		return maximumLit-minimumLit>=std::max<std::size_t>(16u,maximumLit/20u)&&
+			maximumCentroidDistanceSquared>=4.0;
+	}
 
 #if defined(__APPLE__)
 	bool DecodeFirstLightGIFFrame(CGImageSourceRef source,const std::size_t frame,
 		const unsigned int width,const unsigned int height,std::string& digest,
-		bool& visible,bool& structuredPlume,std::size_t& litPixelCount,
+		bool& visible,bool& structuredPlume,bool& blueDominant,std::size_t& litPixelCount,
 		double& centroidX,double& centroidY)
 	{
 		CGImageRef image=CGImageSourceCreateImageAtIndex(source,frame,nullptr);
@@ -133,18 +159,20 @@ namespace
 				maxY=std::max(maxY,static_cast<std::size_t>(y));
 				redSum+=pixels[i];blueSum+=pixels[i+2u];xMoment+=x;yMoment+=y;}
 		}
-		structuredPlume=visible&&2u*litPixels<static_cast<std::size_t>(width)*height&&
-			(maxY-minY)>(maxX-minX)&&blueSum>redSum;
+		blueDominant=visible&&blueSum>redSum;
+		structuredPlume=blueDominant&&2u*litPixels<static_cast<std::size_t>(width)*height&&
+			(maxY-minY)>(maxX-minX);
 		litPixelCount=litPixels;
 		centroidX=litPixels?static_cast<double>(xMoment)/static_cast<double>(litPixels):0.0;
 		centroidY=litPixels?static_cast<double>(yMoment)/static_cast<double>(litPixels):0.0;
 		digest=RISECBOR64::SHA256Hex(pixels);return true;
 	}
 
-	bool ValidateFirstLightGIF(const std::string& path,
+	bool ValidateFireGIF(const std::string& path,
 		const FireFrameSequenceEncoding encoding,const unsigned int width,
 		const unsigned int height,const unsigned int framesPerSecond,
-		const std::vector<FireFramePrimary>& frames,std::string& error)
+		const std::vector<FireFramePrimary>& frames,const bool requireBoundedPlume,
+		std::string& error)
 	{
 		error.clear();
 		if(encoding!=FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit||
@@ -163,7 +191,7 @@ namespace
 			if(source)CFRelease(source);error="first-light GIF frame count differs";return false;
 		}
 		std::vector<std::string> digests;
-		std::vector<bool> visible,structured;
+		std::vector<bool> visible,structured,blueDominant;
 		std::vector<std::size_t> litCounts;
 		std::vector<double> centroidX,centroidY;
 		for(std::size_t frame=0u;frame<frames.size();++frame){
@@ -179,23 +207,42 @@ namespace
 				std::fabs(delaySeconds-1.0/static_cast<double>(framesPerSecond))<=0.011;
 			if(properties)CFRelease(properties);
 			if(!cadence){CFRelease(source);error="first-light GIF cadence differs";return false;}
-			std::string digest;bool frameVisible=false,structuredPlume=false;
+			std::string digest;bool frameVisible=false,structuredPlume=false,frameBlue=false;
 			std::size_t litPixels=0u;double frameCentroidX=0.0,frameCentroidY=0.0;
 			if(!DecodeFirstLightGIFFrame(source,frame,width,height,digest,frameVisible,
-				structuredPlume,litPixels,frameCentroidX,frameCentroidY)){
+				structuredPlume,frameBlue,litPixels,frameCentroidX,frameCentroidY)){
 				CFRelease(source);error="first-light GIF frame decode failed";return false;
 			}
 			digests.push_back(digest);visible.push_back(frameVisible);
-			structured.push_back(structuredPlume);litCounts.push_back(litPixels);
+			structured.push_back(structuredPlume);blueDominant.push_back(frameBlue);
+			litCounts.push_back(litPixels);
 			centroidX.push_back(frameCentroidX);centroidY.push_back(frameCentroidY);
 		}
 		CFRelease(source);
-		if(!FirstLightAnimatedPlumeMetricsPass(digests,visible,structured,litCounts,
-			centroidX,centroidY)){
+		const bool animated=requireBoundedPlume?
+			FirstLightAnimatedPlumeMetricsPass(digests,visible,structured,litCounts,
+				centroidX,centroidY):
+			TemporalAnimatedFireMetricsPass(digests,visible,blueDominant,litCounts,
+				centroidX,centroidY);
+		if(!animated){
 			error="fire preview GIF lacks visible structured and materially changing "
 				"blue-plume frames";return false;
 		}
 		return true;
+	}
+	bool ValidateFirstLightGIF(const std::string& path,
+		const FireFrameSequenceEncoding encoding,const unsigned int width,
+		const unsigned int height,const unsigned int framesPerSecond,
+		const std::vector<FireFramePrimary>& frames,std::string& error)
+	{
+		return ValidateFireGIF(path,encoding,width,height,framesPerSecond,frames,true,error);
+	}
+	bool ValidateTemporalFireGIF(const std::string& path,
+		const FireFrameSequenceEncoding encoding,const unsigned int width,
+		const unsigned int height,const unsigned int framesPerSecond,
+		const std::vector<FireFramePrimary>& frames,std::string& error)
+	{
+		return ValidateFireGIF(path,encoding,width,height,framesPerSecond,frames,false,error);
 	}
 
 	bool AuthorFirstLightGIF(const std::vector<std::filesystem::path>& pngFrames,
@@ -638,7 +685,7 @@ namespace
 		const bool published=authored&&PublishFireFrameSequenceFileTransaction(metadata,
 			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
 			temporaryGIF.string(),gifPath.string(),64u,64u,framesPerSecond,
-			static_cast<unsigned int>(primaryLinks.size()),primaryLinks,ValidateFirstLightGIF,error);
+			static_cast<unsigned int>(primaryLinks.size()),primaryLinks,ValidateTemporalFireGIF,error);
 		job->release();
 		if(!published){std::fprintf(stderr,"temporal fire GIF rejected: %s\n",error.c_str());return 94;}
 		std::filesystem::create_directories(outputDirectory);
