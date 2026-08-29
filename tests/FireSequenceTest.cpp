@@ -623,7 +623,7 @@ namespace
 				if(VerifyFireProvenanceEXR(primaryBytes,primarySidecar,error)&&
 					RISECBOR64::DecodeCanonical(primarySidecar,primaryEnvelope,&error)&&
 					VerifyVisibleFireDisplayDerivative(displayBytes,displaySidecar,
-						primaryEnvelope,error,true,true)&&
+						primaryEnvelope,error,true,false)&&
 					FirstLightEnvelopeHasFreshProvenance(primaryEnvelope,
 						previousProvenance,provenance))return true;
 				if(!error.empty())lastVerificationError=error;
