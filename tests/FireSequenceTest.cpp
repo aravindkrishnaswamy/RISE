@@ -564,6 +564,7 @@ namespace
 			RISECBOR64::Bytes& primaryBytes,RISECBOR64::Bytes& primarySidecar,
 			RISECBOR64::Bytes& displayBytes,RISECBOR64::Bytes& displaySidecar,
 			RISECBOR64::Value& primaryEnvelope,std::string& provenance)->bool{
+			std::string lastVerificationError;
 			for(unsigned int attempt=0u;attempt<6000u;++attempt){
 				primaryBytes=ReadFileBytes(stage/"temporal_primary.exr");
 				primarySidecar=ReadFileBytes(stage/"temporal_primary.exr.provenance.cbor");
@@ -576,9 +577,12 @@ namespace
 						primaryEnvelope,error,true,true)&&
 					FirstLightEnvelopeHasFreshProvenance(primaryEnvelope,
 						previousProvenance,provenance))return true;
+				if(!error.empty())lastVerificationError=error;
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
-			error="temporal fire frame did not publish a fresh verified pair";return false;
+			error="temporal fire frame did not publish a fresh verified pair";
+			if(!lastVerificationError.empty())error+=": "+lastVerificationError;
+			return false;
 		};
 		std::vector<std::filesystem::path> primaryFrames,displayFrames;
 		std::vector<FireFramePrimary> primaryLinks;
@@ -597,7 +601,10 @@ namespace
 			RISECBOR64::Bytes primaryBytes,primarySidecar,displayBytes,displaySidecar;
 			RISECBOR64::Value envelope;std::string provenance;
 			if(!waitForPair(previousProvenance,primaryBytes,primarySidecar,displayBytes,
-				displaySidecar,envelope,provenance)){job->release();return 93;}
+				displaySidecar,envelope,provenance)){
+				std::fprintf(stderr,"temporal fire frame %zu rejected: %s\n",frame,
+					error.c_str());job->release();return 93;
+			}
 			previousProvenance=provenance;
 			const RISECBOR64::Value* payload=envelope.Find("payload");
 			const RISECBOR64::Value* artifact=payload?payload->Find("artifact_sha256"):nullptr;
