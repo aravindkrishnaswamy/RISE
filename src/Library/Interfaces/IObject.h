@@ -84,6 +84,16 @@ namespace RISE
 		//! see docs/GEOMETRY_DERIVATIVES.md "World-space transform").
 		//! Default returns false; concrete `Object` overrides.  Used by the
 		//! SMS two-stage solver — see `docs/SMS_TWO_STAGE_SOLVER.md`.
+		//! Contract: `false` means "this geometry/transform combination
+		//! can't answer the query" and the caller MUST fall back (e.g.
+		//! ManifoldSolver's smoothing>0 path falls back to single-stage
+		//! Newton) -- callers are entitled to treat `true` as full success
+		//! and use the output vectors with no further validity check.  This
+		//! includes the case where the object's transform is singular along
+		//! the world normal direction (no well-defined unit world normal to
+		//! differentiate dndu/dndv against): `Object::ComputeAnalyticalDerivatives`
+		//! returns `false` there too (P2-1) rather than fabricating a
+		//! zero-curvature (flat) Jacobian under a `true` return.
 		virtual bool ComputeAnalyticalDerivatives(
 			const Point2& uv,
 			Scalar        smoothing,

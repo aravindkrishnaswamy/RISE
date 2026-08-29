@@ -29,7 +29,10 @@ meshes, face for flat meshes).
    identically implies `2·n·(dn/d*) = 0`.
 3. **Handedness.** `(dpdu × dpdv) · n > 0`. The local `(dpdu, dpdv, n)` frame
    is **right-handed** with the outward normal. Consumers may rely on this
-   sign without inspecting the specific geometry.
+   sign without inspecting the specific geometry. Per-geometry `IGeometry`
+   implementations must satisfy this at every point; the one documented
+   exception is downstream of them, at the CSG-composition layer — see
+   "CSG-subtraction exception" under the Handedness audit below.
 4. **Finite values.** No NaN / Inf at any valid surface point. Degenerate
    parameter values (poles, caps) must return `valid = true` with a
    well-defined tangent frame (pick an arbitrary but deterministic frame
@@ -91,6 +94,12 @@ Current sign check at representative non-degenerate points (all must be **+**):
 
 Handedness is now uniform across all implemented geometries.  Consumers that care about orientation sign (texture-space normal mapping, future glossy SMS) can rely on `(dpdu × dpdv) · n > 0` without per-geometry conditioning.
 
+### CSG-subtraction exception (invariant 3 does not hold on a carved cavity wall)
+
+`CSG_SUBTRACTION`'s three entry-flip branches ([CSGObject.cpp](../src/Library/Objects/CSGObject.cpp), P1-1) report the carving operand B's normal NEGATED (`ri.geometric.vNormal = -riObjB.geometric.vNormal`) — the ray is leaving A's solid into the void B carved out of it, so the reported shading normal points the opposite way from B's own outward normal. `dpdu`/`dpdv` are left UNCHANGED (still B's own, un-negated, object-space tangent frame at that surface point) — flipping them would reparameterize the surface and break UV-keyed re-queries such as `ManifoldSolver`'s SMS two-stage-solver `ComputeAnalyticalDerivatives(vertex.uv)` path, which expects `uv` to keep meaning the same thing regardless of which CSG operand exposed the point. `dndu`/`dndv` ARE negated (alongside `vNormal`), because they must stay derivatives of whichever normal FIELD is actually being reported (see the `CSGObject::IntersectRay` bullet above).
+
+Net effect: on these cavity-wall hits, `(dpdu × dpdv) · n` is **negative** — the local `(dpdu, dpdv, n)` frame is intentionally LEFT-handed, because `n` flipped and `dpdu`/`dpdv` deliberately did not. This is not a bug to fix; it's the direct consequence of leaving `dpdu`/`dpdv` at their un-reparameterized values while reporting the physically-correct (into-the-cavity) shading normal. Weingarten-map / signed-curvature consumers (`e = dndu · dpdu`, etc.) stay self-consistent under this convention — both `n` and `dndu`/`dndv` flipped together, so the signed curvature correctly reports the concave cavity (opposite sign from the same mesh surface hit as a stand-alone convex object) — but any consumer that assumes invariant 3 unconditionally (e.g. to infer front/back-facing from the frame's handedness alone, independent of `n`) must special-case a CSG-subtraction cavity wall.
+
 ## World-space transform
 
 `IGeometry::ComputeSurfaceDerivatives` / `IGeometry::ComputeAnalyticalDerivatives`
@@ -113,10 +122,24 @@ exactly three call sites, each applying **its own** object transform once:
   ([CSGObject.cpp](../src/Library/Objects/CSGObject.cpp)) — mirrors
   `Object::IntersectRay`'s block exactly, applying THIS CSG level's own
   transform to whatever the operand below (a plain `Object`, or a
-  further-nested `CSGObject`) already promoted one level.  CSG composition
-  is correct because each nesting level applies its own transform to the
+  further-nested `CSGObject`) already promoted one level.  CSG nesting
+  composes correctly because each level applies its own transform to the
   level-local normal field in turn — the same pattern the `vNormal` /
-  `vTangent` promotions in that function already use.
+  `vTangent` promotions in that function already use — **provided
+  `ri.geometric.derivatives` is already paired with the same normal FIELD
+  `ri.geometric.vNormal` reports at the point this block runs**. That
+  pairing is not automatic: `CSG_SUBTRACTION`'s three entry-flip branches
+  (the two "we're inside one/both operands" branches and the "outside
+  both, B's entry is the visible boundary" branch) report a NEGATED
+  operand normal (`ri.geometric.vNormal = -riObjB.geometric.vNormal`) while
+  starting from a whole-record `ri = riObjB` copy that still carries B's
+  UN-negated `dndu`/`dndv` — so each of those three branches explicitly
+  negates `ri.geometric.derivatives.dndu`/`dndv` to re-pair them with the
+  negated normal (P1-1, 2026-08-29) before this promotion block ever runs.
+  Without that per-branch negation the composition claim above would be
+  false for every subtraction cavity wall a mesh operand carves, not just
+  imprecise. See the CSG-subtraction exception in the Handedness section
+  below for the follow-on frame-orientation consequence.
 
 **The two field kinds transform differently, and dndu/dndv are NOT a plain
 inverse-transpose:**

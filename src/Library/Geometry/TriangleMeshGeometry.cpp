@@ -95,6 +95,18 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 		// Flip the normal if we must
 		if( Vector3Ops::Dot(ri.vNormal, ri.ray.Dir()) > 0 ) {
 			ri.vNormal = -ri.vNormal;
+			// Sibling of CSGObject.cpp's P1-1 fix: `ri.derivatives.dndu/dndv`
+			// (set above, inside pPolygonsBVH->IntersectRay, per-vertex-
+			// normal-interpolation derivatives -- direction-independent, a
+			// pure function of surface position) are derivatives of the
+			// UN-flipped normal.  The flip just above changes which normal
+			// FIELD `ri.vNormal` reports; its derivative must flip with it
+			// or a back-facing hit on a double-sided mesh ships curvature
+			// for the wrong-signed normal.
+			if( ri.derivatives.valid ) {
+				ri.derivatives.dndu = -ri.derivatives.dndu;
+				ri.derivatives.dndv = -ri.derivatives.dndv;
+			}
 		}
 		// Mirror the flip for the geometric (face) normal so the side-
 		// tests using `ri.vGeomNormal` agree with the post-flip shading

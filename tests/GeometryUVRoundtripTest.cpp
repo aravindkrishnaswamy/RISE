@@ -1882,12 +1882,130 @@ static void TestObjectWorldDerivatives()
 	std::cout << "  object world-derivative quotient-rule checks done\n";
 }
 
+// Two-triangle flat quad in the local z=0 plane, constant vertex normal
+// (0,0,1) -- deliberately NOT a curved/tessellated shape.  Unlike
+// BuildTessellatedSphereMesh's near-pole triangles (interpolated, never
+// EXACTLY axis-aligned), every point on this quad has a byte-exact
+// axis-aligned normal, which TestSingularNormalTransformGuard() below needs:
+// after a huge single-axis stretch, ||M^-T n|| must land under NEARZERO
+// (1e-12), and that requires the OTHER two normal components to be exactly
+// zero, not just close to it.
+static Implementation::TriangleMeshGeometryIndexed* BuildFlatQuadMeshNormalZ()
+{
+	VerticesListType verts;
+	NormalsListType norms;
+	TexCoordsListType coords;
+	IndexTriangleListType tris;
+
+	verts.push_back( Point3( -1, -1, 0 ) );
+	verts.push_back( Point3(  1, -1, 0 ) );
+	verts.push_back( Point3(  1,  1, 0 ) );
+	verts.push_back( Point3( -1,  1, 0 ) );
+	for( int i = 0; i < 4; i++ ) {
+		norms.push_back( Vector3( 0, 0, 1 ) );
+	}
+	coords.push_back( Point2( 0, 0 ) );
+	coords.push_back( Point2( 1, 0 ) );
+	coords.push_back( Point2( 1, 1 ) );
+	coords.push_back( Point2( 0, 1 ) );
+
+	IndexedTriangle t0, t1;
+	t0.iVertices[0] = 0; t0.iVertices[1] = 1; t0.iVertices[2] = 2;
+	t0.iNormals[0]  = 0; t0.iNormals[1]  = 1; t0.iNormals[2]  = 2;
+	t0.iCoords[0]   = 0; t0.iCoords[1]   = 1; t0.iCoords[2]   = 2;
+	t1.iVertices[0] = 0; t1.iVertices[1] = 2; t1.iVertices[2] = 3;
+	t1.iNormals[0]  = 0; t1.iNormals[1]  = 2; t1.iNormals[2]  = 3;
+	t1.iCoords[0]   = 0; t1.iCoords[1]   = 2; t1.iCoords[2]   = 3;
+	tris.push_back( t0 );
+	tris.push_back( t1 );
+
+	Implementation::TriangleMeshGeometryIndexed* pMesh =
+		new Implementation::TriangleMeshGeometryIndexed( true, false );
+	pMesh->BeginIndexedTriangles();
+	pMesh->AddVertices( verts );
+	pMesh->AddNormals( norms );
+	pMesh->AddTexCoords( coords );
+	pMesh->AddIndexedTriangles( tris );
+	pMesh->DoneIndexedTriangles();
+	return pMesh;
+}
+
+// P2-2: regression coverage for the NEARZERO (1e-12) singular-transform
+// guards added alongside the dndu/dndv quotient-rule transform (3f495c25)
+// -- previously untested at either Object.cpp site.  A single-axis stretch
+// of s >= 1e13 makes ||M^-T n|| = 1/s <= 1e-12 for a normal EXACTLY aligned
+// with the stretched axis (M^-T is diagonal for an axis-aligned stretch, so
+// M^-T n just divides that one component by s).
+static void TestSingularNormalTransformGuard()
+{
+	std::cout << "Testing NEARZERO singular-transform guards (P2-2)..." << std::endl;
+
+	// ---- Part A: Object::IntersectRay's derivatives block (mesh path) ----
+	// Before P1-5 the guard's OWN behaviour was correctly conservative here
+	// (it always marked derivatives.valid = false); P1-5 only corrected a
+	// false comment about *why*.  This still deserves first-time coverage
+	// since nothing previously exercised the guard at all.
+	{
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildFlatQuadMeshNormalZ();
+		REQUIRE( mesh != 0, "singular-guard: flat quad mesh built" );
+		Implementation::Object* o = new Implementation::Object( mesh );
+		mesh->release();
+		o->SetStretch( Vector3( 1.0, 1.0, 1.0e13 ) );   // huge stretch on Z
+		o->FinalizeTransformations();
+
+		// Local ray straight down the (huge-scaled) Z axis onto the quad --
+		// mirrors HitMeshDerivatives's technique (promote a LOCAL-frame ray
+		// through the object's own final transform) but inlined here so we
+		// can distinguish "missed" from "hit with invalidated derivatives"
+		// (HitMeshDerivatives's single bool return conflates the two).
+		const Matrix4 mxFinal = o->GetFinalTransformMatrix();
+		const Point3 localOrigin( 0.1, 0.1, 5.0 );
+		const Vector3 localDir( 0, 0, -1 );
+		const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+		const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+
+		RayIntersection ri( Ray( worldOrigin, worldDir ), nullRasterizerState );
+		o->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		REQUIRE( ri.geometric.bHit, "singular-guard: (control) huge-Z-stretch quad hit" );
+		if( ri.geometric.bHit ) {
+			REQUIRE( !ri.geometric.derivatives.valid,
+				"singular-guard: IntersectRay invalidates derivatives when ||M^-T n|| <= NEARZERO" );
+		}
+		o->release();
+	}
+
+	// ---- Part B: Object::ComputeAnalyticalDerivatives (P2-1) ----
+	// EllipsoidGeometry's pole (uv.y = 0, i.e. phi = 0) has an EXACT
+	// object-space normal of (0,1,0) -- see EllipsoidGeometry.cpp's
+	// pos = (-a*sin(phi)*cos(theta), b*cos(phi), c*sin(phi)*sin(theta))
+	// convention: phi=0 gives pos=(0,b,0), gradient-normal (0, 1/b, 0),
+	// i.e. the pole sits on the Y axis, not Z.  Stretch Y (not Z) so the
+	// pole normal is the one that collapses under ||M^-T n||.
+	{
+		EllipsoidGeometry* g = new EllipsoidGeometry( Vector3( 1.5, 1.5, 1.5 ) );
+		Implementation::Object* o = new Implementation::Object( g );
+		g->release();
+		o->SetStretch( Vector3( 1.0, 1.0e13, 1.0 ) );   // huge stretch on Y
+		o->FinalizeTransformations();
+
+		Point3 pos; Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool ok = o->ComputeAnalyticalDerivatives(
+			Point2( 0.0, 0.0 ), 0.0, pos, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( !ok,
+			"singular-guard: ComputeAnalyticalDerivatives returns false when ||M^-T n|| <= NEARZERO (P2-1: was a fabricated true)" );
+		o->release();
+	}
+
+	std::cout << "  singular-transform guard checks done\n";
+}
+
 int main()
 {
 	std::cout << "=== Geometry (u, v) parameterisation regression test ===\n";
 
 	TestObjectWorldArea();
 	TestObjectWorldDerivatives();
+	TestSingularNormalTransformGuard();
 	TestSphere();
 	TestEllipsoid();
 	TestBox();

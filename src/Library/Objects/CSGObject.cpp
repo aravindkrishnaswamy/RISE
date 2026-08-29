@@ -880,6 +880,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.range2 = riObjA.geometric.range;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
+					// P1-1: `ri` is a whole-record copy of B, so it still
+					// carries B's dndu/dndv -- derivatives of B's UN-negated
+					// vNormal.  The reported shading normal above is -vNormal,
+					// so its derivative must be the derivative of -vNormal,
+					// i.e. -dndu/-dndv (same reasoning at the other two
+					// CSG_SUBTRACTION entry-flip branches below).  dpdu/dpdv
+					// and uv are left untouched -- they still parameterize the
+					// SAME point on B's surface; only the reported NORMAL
+					// FIELD is negated, so only its derivatives flip with it.
+					if( ri.geometric.derivatives.valid ) {
+						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
+						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
+					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 				}
@@ -891,6 +904,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
+					// P1-1: see the sign-negation rationale at the sibling
+					// branch above -- the reported normal here is -B.vNormal,
+					// so the derivatives inherited from the `ri = riObjB`
+					// whole-record copy (still derivatives of +B.vNormal)
+					// must flip sign to match.
+					if( ri.geometric.derivatives.valid ) {
+						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
+						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
+					}
 				} else {
 					ri = riObjA;
 				}
@@ -902,6 +924,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.range2 = riObjA.geometric.range2;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
+					// P1-1: same sign-negation rationale as the two branches
+					// above.
+					if( ri.geometric.derivatives.valid ) {
+						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
+						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
+					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 				}
@@ -977,6 +1005,38 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						// on a probe miss, fall back to B's entry-hit
 						// payload with wire-edge info cleared (it belongs to
 						// the wrong face in that fallback).
+						//
+						// P1-1 audit note (dndu/dndv sign, NOT changed here):
+						// on a probe HIT, AdoptCsgSurfacePayload copies the
+						// probe's own `derivatives` (including dndu/dndv) but
+						// deliberately never touches vNormal -- so those
+						// derivatives are, by construction, derivatives of the
+						// PROBE's own reported shading normal, not of
+						// `ri.geometric.vNormal` as set two lines below
+						// (-riObjB.vNormal2).  If the probe's own normal at
+						// that face agrees in sign with riObjB.vNormal2 (true
+						// for a direction-independent normal field, e.g. a
+						// single-sided surface where the shading normal is a
+						// pure function of surface position), this branch
+						// would need the same dndu/dndv negation as the three
+						// entry-flip branches above.  In practice this is
+						// UNREACHABLE with `derivatives.valid == true` today:
+						// only triangle-mesh geometry ever sets
+						// derivatives.valid, and both mesh IntersectRay
+						// overrides ignore `bComputeExitInfo` entirely
+						// (TriangleMeshGeometry(Indexed)::IntersectRay),
+						// leaving a mesh operand B's range2 at its
+						// RISE_INFINITY default -- which can never satisfy
+						// this branch's `riObjB.geometric.range2 <
+						// riObjA.geometric.range2` guard, so a raw mesh B
+						// never reaches this branch in the first place.  A
+						// NESTED CSG operand B that itself reports a finite
+						// composite range2 while its boundary happens to
+						// inherit valid derivatives from an underlying mesh
+						// sub-operand is a theoretical path this analysis has
+						// NOT verified; treat as an open residual rather than
+						// a confirmed-safe case if that configuration is ever
+						// exercised.
 						ri = riObjB;
 						ri.geometric.range = riObjB.geometric.range2;
 						ri.geometric.range2 = riObjA.geometric.range2;
@@ -1136,7 +1196,21 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// dShadingNormalWorldMag/vNormal captured just above -- CSG nesting
 		// composes correctly because each level applies its own transform
 		// to the level-local normal in turn, exactly like the tangent /
-		// vNormal promotions elsewhere in this function.
+		// vNormal promotions elsewhere in this function.  This composition
+		// claim depends on `ri.geometric.derivatives` already being paired
+		// with the SAME normal field `ri.geometric.vNormal` reports at the
+		// point this block runs -- true for a plain `ri = riObjX` passthrough,
+		// but NOT automatically true wherever a branch above reports a
+		// NEGATED normal (CSG_SUBTRACTION's three entry-flip branches:
+		// "inside both", "inside A only", "inside B only").  Those branches
+		// now negate `ri.geometric.derivatives.dndu/dndv` alongside vNormal
+		// (P1-1: a whole-record `ri = riObjB` copy carries B's UN-negated
+		// derivatives, which are derivatives of +vNormal, not the reported
+		// -vNormal) specifically so this level's quotient-rule transform
+		// below still differentiates the correct (already-negated) normal
+		// field.  Without that per-branch negation this composition claim
+		// would be false for every subtraction cavity wall, not just
+		// technically imprecise.
 		if( ri.geometric.derivatives.valid ) {
 			ri.geometric.derivatives.dpdu = Vector3Ops::Transform(
 				m_mxFinalTrans, ri.geometric.derivatives.dpdu );
@@ -1157,11 +1231,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				ri.geometric.derivatives.dndv =
 					( dndv_lin - n_w * Vector3Ops::Dot( n_w, dndv_lin ) ) * invMag;
 			} else {
-				// THIS level's transform is singular along the normal
-				// direction -- mirrors Object::IntersectRay's identical
-				// guard.  No well-defined unit world shading-normal to
-				// differentiate against; mark invalid rather than divide by
-				// ~0.
+				// THIS level's transform is ill-conditioned or degenerate
+				// along the normal direction -- mirrors Object::IntersectRay's
+				// identical guard (see its comment for why NormalizeMag's
+				// OWN internal guard, mag > 0.0, is looser than this NEARZERO
+				// gate: `ri.geometric.vNormal` above may already be a unit,
+				// just ill-conditioned-direction, vector rather than a literal
+				// zero vector here).  Either way there is no well-defined unit
+				// world shading-normal to differentiate against; mark invalid
+				// rather than divide by ~0.
 				ri.geometric.derivatives.valid = false;
 			}
 		}

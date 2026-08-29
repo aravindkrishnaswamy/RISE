@@ -440,13 +440,24 @@ bool Object::ComputeAnalyticalDerivatives(
 	} else {
 		// Transform singular along the normal direction -- mirrors
 		// Object::IntersectRay's identical guard.  No well-defined unit
-		// world normal to differentiate against; return zero derivatives
-		// rather than divide by ~0 (the caller only checks the bool
-		// return, not these vectors, for validity -- zero is the safe
-		// value here since the position/normal outputs are already
-		// degenerate in this case).
+		// world normal to differentiate against; dividing by ~0 would hand
+		// back Inf/NaN.
+		//
+		// P2-1: this function's OWN contract (see IObject.h) is that a
+		// `false` return means "geometry can't answer this query, caller
+		// falls back" -- e.g. ManifoldSolver::ComputeVertexDerivatives's
+		// smoothing>0 analytical path (ManifoldSolver.cpp) treats `true` as
+		// full success and feeds these vectors straight into Newton's
+		// Jacobian with no further validity check.  Zeroing outWorldDndu/
+		// outWorldDndv and still returning `true` was a FABRICATED success:
+		// the caller got a flat (zero-curvature) Jacobian instead of the
+		// documented "no analytical path available, fall back to the
+		// single-stage solver" behaviour it's written to expect.  Return
+		// `false` instead, exactly like the `!pGeometry` and
+		// `!pGeometry->ComputeAnalyticalDerivatives(...)` guards above.
 		outWorldDndu = Vector3( 0, 0, 0 );
 		outWorldDndv = Vector3( 0, 0, 0 );
+		return false;
 	}
 	return true;
 }
@@ -835,15 +846,30 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 				ri.geometric.derivatives.dndv =
 					( dndv_lin - n_w * Vector3Ops::Dot( n_w, dndv_lin ) ) * invMag;
 			} else {
-				// The transform is singular along the normal direction
-				// (||M^-T n|| ~ 0, e.g. a zero/near-zero scale axis
-				// collapsing the normal) -- there is no well-defined unit
-				// world shading-normal to differentiate against, and
-				// dividing by ~0 would produce Inf/NaN.  vNormal itself is
-				// left un-normalized (still ~0) by Normalize()'s own guard
-				// in this case, so the whole shading frame is already
-				// degenerate here; mark the derivatives invalid rather than
-				// hand a consumer a garbage curvature.
+				// The transform is ill-conditioned or degenerate along the
+				// normal direction (||M^-T n|| <= NEARZERO = 1e-12, e.g. a
+				// zero/near-zero scale axis collapsing the normal) -- there
+				// is no well-defined unit world shading-normal to
+				// differentiate against, and dividing by dShadingNormalWorldMag
+				// here would produce Inf/NaN or an arbitrarily amplified
+				// (numerically meaningless) derivative.
+				//
+				// P1-5 (was FALSE, twice): this code calls
+				// Vector3Ops::NormalizeMag, not Normalize, and NormalizeMag's
+				// OWN internal guard is `mag > 0.0` (VectorsOps.h) -- strictly
+				// looser than this branch's `dShadingNormalWorldMag > NEARZERO`
+				// (1e-12) gate.  So for a magnitude in the open interval
+				// (0, 1e-12], NormalizeMag's guard passes and `vNormal` (set
+				// just above this block, from the same `NormalizeMag` call) IS
+				// normalized to a unit -- but ill-conditioned-direction --
+				// vector; it is NOT "left un-normalized, still ~0".  Only an
+				// EXACTLY-zero transformed normal leaves vNormal at zero.
+				// Either way the shading frame is unusable in this regime
+				// (a unit vector pointing in a direction dominated by FP
+				// noise is exactly as degenerate for shading purposes as a
+				// literal zero vector), so the conclusion is unchanged: mark
+				// the derivatives invalid rather than hand a consumer a
+				// garbage curvature.
 				ri.geometric.derivatives.valid = false;
 			}
 		}
