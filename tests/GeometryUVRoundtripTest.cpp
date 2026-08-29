@@ -103,6 +103,7 @@
 #include "../src/Library/Geometry/EllipsoidGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TorusGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Objects/Object.h"
@@ -1430,11 +1431,463 @@ static void TestObjectWorldArea()
 	std::cout << "  object world-area Jacobian checks done\n";
 }
 
+// ============================================================
+// Object world-space DERIVATIVE transform (dndu/dndv quotient rule)
+//
+// Regression for two sites that promote a geometry's OBJECT-space
+// dndu/dndv to WORLD space: Object::IntersectRay's derivatives block and
+// Object::ComputeAnalyticalDerivatives (both in src/Library/Objects/
+// Object.cpp).  dndu/dndv are derivatives of the SHADING NORMAL, i.e. of
+// a normalized (unit) vector field -- a plain inverse-transpose transform
+// (correct for dpdu/dpdv, and for the normal ITSELF once renormalized)
+// under-corrects dndu/dndv by an extra factor of the local scale whenever
+// the transform isn't rigid, because it skips the renormalization the
+// normal FIELD requires.  The correct transform is the quotient rule:
+//   dn_w/du = (I - n_w n_w^T) . (M^-T dndu_obj) / ||M^-T n_obj||
+// For a uniform scale s this makes world mean curvature H_world = H_obj/s;
+// the pre-fix code gave H_obj/s^2.  See docs/GEOMETRY_DERIVATIVES.md
+// "World-space transform" for the derivation.
+//
+// Exercises BOTH fixed call sites:
+//   Part A -- Object::IntersectRay's derivatives block, via a tessellated
+//             triangle-mesh sphere (the only geometry kind that populates
+//             ri.geometric.derivatives during IntersectRay -- analytic
+//             primitives like SphereGeometry never do, so they can't
+//             exercise this specific code path).
+//   Part B -- Object::ComputeAnalyticalDerivatives, via EllipsoidGeometry
+//             (a=b=c gives an exact closed-form sphere curvature 1/r for
+//             absolute-tolerance checks; a genuinely non-uniform stretch
+//             gives an exact closed-form ellipsoid ground truth).
+// ============================================================
+
+// Mean curvature from the standard second-fundamental-form ratio.  Sign
+// convention follows whatever the record's (dpdu, dpdv, dndu, dndv, n)
+// happen to use -- callers compare |H| to sidestep sign-convention traps.
+static Scalar RecordMeanCurvatureH(
+	const Vector3& dpdu, const Vector3& dpdv,
+	const Vector3& dndu, const Vector3& dndv )
+{
+	const Scalar E = Vector3Ops::Dot( dpdu, dpdu );
+	const Scalar F = Vector3Ops::Dot( dpdu, dpdv );
+	const Scalar G = Vector3Ops::Dot( dpdv, dpdv );
+	const Scalar e = Vector3Ops::Dot( dndu, dpdu );
+	const Scalar f = 0.5 * ( Vector3Ops::Dot( dndu, dpdv ) + Vector3Ops::Dot( dndv, dpdu ) );
+	const Scalar g = Vector3Ops::Dot( dndv, dpdv );
+	return ( e * G - 2.0 * f * F + g * E ) / ( 2.0 * ( E * G - F * F ) );
+}
+
+// Independent closed-form mean curvature of an ellipsoid
+// x^2/a^2 + y^2/b^2 + z^2/c^2 = 1 at object-space surface point (x, y, z).
+// Derived from H = (1/2) div(grad F / |grad F|) for the quadric
+// F = x^2/a^2+y^2/b^2+z^2/c^2 - 1, whose Hessian is the CONSTANT diagonal
+// matrix diag(2/a^2, 2/b^2, 2/c^2):
+//   div(grad F / |grad F|)
+//     = ( |grad F|^2 * trace(Hess F) - (grad F)^T Hess(F) (grad F) ) / |grad F|^3
+// Substituting grad F = 2*(x/a^2, y/b^2, z/c^2) and simplifying:
+//   S = x^2/a^4 + y^2/b^4 + z^2/c^4        (= |grad F|^2 / 4)
+//   T = 1/a^2 + 1/b^2 + 1/c^2              (= trace(Hess F) / 2)
+//   U = x^2/a^6 + y^2/b^6 + z^2/c^6        (= (grad F)^T Hess(F) (grad F) / 8)
+//   H = (S*T - U) / (2 * S^1.5)
+// Sanity-checked in the a=b=c=r special case: S=1/r^2, T=3/r^2, U=1/r^4
+// (using x^2+y^2+z^2=r^2 on the surface) gives
+// H = (3/r^4 - 1/r^4) / (2/r^3) = (2/r^4)*(r^3/2) = 1/r, the known sphere
+// mean curvature -- this formula is used independently of, and predates,
+// any code in Object.cpp, so it is a real ground truth rather than a
+// restatement of the code under test.
+static Scalar EllipsoidClosedFormH(
+	Scalar a, Scalar b, Scalar c, Scalar x, Scalar y, Scalar z )
+{
+	const Scalar a2 = a * a, b2 = b * b, c2 = c * c;
+	const Scalar S = x*x / (a2*a2) + y*y / (b2*b2) + z*z / (c2*c2);
+	const Scalar T = 1.0/a2 + 1.0/b2 + 1.0/c2;
+	const Scalar U = x*x / (a2*a2*a2) + y*y / (b2*b2*b2) + z*z / (c2*c2*c2);
+	return ( S * T - U ) / ( 2.0 * pow( S, 1.5 ) );
+}
+
+// Builds a smooth-shaded (per-vertex analytic normal) triangle-mesh
+// approximation of a sphere by reusing SphereGeometry::TessellateToMesh --
+// deliberately NOT hand-deriving the spherical trig here, so the mesh's
+// vertex positions/normals are exactly what the already-tested tessellator
+// produces.  useFaceNormals=false so TriangleMeshGeometryIndexedSpecializations'
+// per-triangle UV-Jacobian inversion sees non-degenerate per-vertex normal
+// differences and populates non-zero dndu/dndv -- a flat-shaded / face-normal
+// mesh would give dndu=dndv=(0,0,0) identically, testing nothing.
+static Implementation::TriangleMeshGeometryIndexed* BuildTessellatedSphereMesh(
+	Scalar radius, unsigned int detail )
+{
+	SphereGeometry* g = new SphereGeometry( radius );
+	IndexTriangleListType tris;
+	VerticesListType verts;
+	NormalsListType norms;
+	TexCoordsListType coords;
+	const bool ok = g->TessellateToMesh( tris, verts, norms, coords, detail );
+	g->release();
+	if( !ok ) {
+		return 0;
+	}
+
+	Implementation::TriangleMeshGeometryIndexed* pMesh =
+		new Implementation::TriangleMeshGeometryIndexed( true, false );
+	pMesh->BeginIndexedTriangles();
+	pMesh->AddVertices( verts );
+	pMesh->AddNormals( norms );
+	pMesh->AddTexCoords( coords );
+	pMesh->AddIndexedTriangles( tris );
+	pMesh->DoneIndexedTriangles();
+	return pMesh;
+}
+
+// Fires the SAME object-space ray (expressed once in local coordinates,
+// then promoted through the object's own GetFinalTransformMatrix() so it
+// lands on the IDENTICAL local hit point regardless of the object's own
+// transform -- mirrors the technique CsgSurfacePayloadTest.cpp uses to
+// compare a rotated CSG against a standalone rotated reference) and
+// returns the populated derivatives from Object::IntersectRay.  Returns
+// false if the ray missed or the geometry didn't populate valid
+// derivatives.
+static bool HitMeshDerivatives(
+	Implementation::Object* obj,
+	const Point3& localOrigin,
+	const Vector3& localDir,
+	Vector3& worldNormal,
+	Vector3& dpdu, Vector3& dpdv, Vector3& dndu, Vector3& dndv )
+{
+	const Matrix4 mxFinal = obj->GetFinalTransformMatrix();
+	const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+	const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+
+	RayIntersection ri( Ray( worldOrigin, worldDir ), nullRasterizerState );
+	obj->IntersectRay( ri, RISE_INFINITY, true, true, false );
+	if( !ri.geometric.bHit || !ri.geometric.derivatives.valid ) {
+		return false;
+	}
+	worldNormal = ri.geometric.vNormal;
+	dpdu = ri.geometric.derivatives.dpdu;
+	dpdv = ri.geometric.derivatives.dpdv;
+	dndu = ri.geometric.derivatives.dndu;
+	dndv = ri.geometric.derivatives.dndv;
+	return true;
+}
+
+static void TestObjectWorldDerivatives()
+{
+	std::cout << "Testing Object world-space dndu/dndv quotient-rule transform..." << std::endl;
+
+	const Scalar r = 1.5;
+	const unsigned int detail = 40;   // 40x40 grid -> smooth-shaded curvature approx well within 5%
+
+	// A local-frame ray hitting a well-conditioned, off-axis equatorial-ish
+	// point -- far from both poles, and not landing exactly on a mesh grid
+	// vertex/edge.
+	const Point3 localOrigin( 0.35, 0.22, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );
+
+	// ---- Part A: Object::IntersectRay's derivatives block (mesh path) ----
+
+	Scalar H_identity_mesh = 0.0;
+	{
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildTessellatedSphereMesh( r, detail );
+		REQUIRE( mesh != 0, "derivatives: tessellated sphere mesh built" );
+		Implementation::Object* o = new Implementation::Object( mesh );
+		mesh->release();
+		o->FinalizeTransformations();
+
+		Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool hit = HitMeshDerivatives( o, localOrigin, localDir, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( hit, "derivatives: identity mesh hit with valid derivatives" );
+		if( hit ) {
+			H_identity_mesh = fabs( RecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			// Absolute sanity vs the true sphere curvature 1/r -- loose
+			// tolerance because this is a genuinely discretized mesh,
+			// unlike the exact ratio checks below.
+			REQUIRE( IsClose( H_identity_mesh, 1.0 / r, 0.05 * (1.0/r) ),
+				"derivatives: identity-mesh |H| close to analytic sphere 1/r" );
+
+			// Invariants 1+2 (docs/GEOMETRY_DERIVATIVES.md).
+			REQUIRE( fabs( Vector3Ops::Dot( dndu, n ) ) < 1e-6, "derivatives: identity dndu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dndv, n ) ) < 1e-6, "derivatives: identity dndv . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dpdu, n ) ) < 1e-6, "derivatives: identity dpdu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dpdv, n ) ) < 1e-6, "derivatives: identity dpdv . n ~= 0" );
+			REQUIRE( std::isfinite( H_identity_mesh ), "derivatives: identity |H| finite" );
+		}
+		o->release();
+	}
+
+	// Uniform scale s=2: SAME mesh construction, SAME local hit point (the
+	// ray is re-promoted through THIS object's own transform).  The
+	// object-space dpdu/dpdv/dndu/dndv the geometry hands back are
+	// BYTE-IDENTICAL to the identity case (same triangle, same barycentric
+	// point) -- so this is an EXACT algebraic check, not a discretization-
+	// limited one: the fixed quotient-rule transform gives
+	// H_world = H_obj/s (ratio == s between identity and scaled); the
+	// pre-fix plain inverse-transpose gave H_obj/s^2 (ratio == s^2). s=2
+	// separates those by 2x, far outside FP noise, so this catches a
+	// regression to the old bug at a tight tolerance.
+	{
+		const Scalar s = 2.0;
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildTessellatedSphereMesh( r, detail );
+		Implementation::Object* o = new Implementation::Object( mesh );
+		mesh->release();
+		o->SetScale( s );
+		o->FinalizeTransformations();
+
+		Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool hit = HitMeshDerivatives( o, localOrigin, localDir, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( hit, "derivatives: scaled mesh hit with valid derivatives" );
+		if( hit ) {
+			const Scalar H_scaled = fabs( RecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			REQUIRE( H_scaled > 0.0, "derivatives: scaled |H| non-degenerate" );
+
+			const Scalar ratio = H_identity_mesh / H_scaled;
+			REQUIRE( IsClose( ratio, s, 1e-6 * s ),
+				"derivatives: H_identity/H_scaled == s (quotient-rule fix; old bug gave s^2)" );
+			// Explicitly confirm the OLD buggy ratio (s^2 = 4) is excluded --
+			// s vs s^2 differ by 2x here, far outside 1e-6 relative tolerance
+			// either way, so this is a clean, loud failure if the bug returns.
+			REQUIRE( !IsClose( ratio, s * s, 1e-6 * s * s ),
+				"derivatives: ratio does NOT match the old buggy s^2 behaviour" );
+
+			REQUIRE( fabs( Vector3Ops::Dot( dndu, n ) ) < 1e-6, "derivatives: scaled dndu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dndv, n ) ) < 1e-6, "derivatives: scaled dndv . n ~= 0" );
+		}
+		o->release();
+	}
+
+	// Rigid transform (rotation + translation, no scale): |H| and the
+	// dndu/dndv MAGNITUDES must be unchanged from identity -- the quotient
+	// rule is a provable no-op under a rigid transform (||M^-T n|| == 1,
+	// and the (I - n n^T) projection removes a component that's already
+	// ~0 by the object-space tangency contract).
+	{
+		Implementation::TriangleMeshGeometryIndexed* meshId = BuildTessellatedSphereMesh( r, detail );
+		Implementation::Object* oId = new Implementation::Object( meshId );
+		meshId->release();
+		oId->FinalizeTransformations();
+		Vector3 nId, dpduId, dpdvId, dnduId, dndvId;
+		const bool hitId = HitMeshDerivatives( oId, localOrigin, localDir, nId, dpduId, dpdvId, dnduId, dndvId );
+		REQUIRE( hitId, "derivatives: (control) identity hit for rigid comparison" );
+
+		Implementation::TriangleMeshGeometryIndexed* meshRigid = BuildTessellatedSphereMesh( r, detail );
+		Implementation::Object* oRigid = new Implementation::Object( meshRigid );
+		meshRigid->release();
+		oRigid->SetOrientation( Vector3( 0.3, 1.1, -0.7 ) );
+		oRigid->TranslateObject( Vector3( 5, -2, 3 ) );
+		oRigid->FinalizeTransformations();
+		Vector3 nR, dpduR, dpdvR, dnduR, dndvR;
+		const bool hitR = HitMeshDerivatives( oRigid, localOrigin, localDir, nR, dpduR, dpdvR, dnduR, dndvR );
+		REQUIRE( hitR, "derivatives: rigid-transform hit" );
+
+		if( hitId && hitR ) {
+			const Scalar H_id = fabs( RecordMeanCurvatureH( dpduId, dpdvId, dnduId, dndvId ) );
+			const Scalar H_rigid = fabs( RecordMeanCurvatureH( dpduR, dpdvR, dnduR, dndvR ) );
+			REQUIRE( IsClose( H_rigid, H_id, 1e-6 * H_id ),
+				"derivatives: rigid transform preserves |H| exactly (no-op)" );
+
+			REQUIRE( IsClose( Vector3Ops::Magnitude( dnduR ), Vector3Ops::Magnitude( dnduId ), 1e-6 ),
+				"derivatives: rigid transform preserves |dndu|" );
+			REQUIRE( IsClose( Vector3Ops::Magnitude( dndvR ), Vector3Ops::Magnitude( dndvId ), 1e-6 ),
+				"derivatives: rigid transform preserves |dndv|" );
+		}
+		oId->release();
+		oRigid->release();
+	}
+
+	// Non-uniform stretch: post-transform invariants (dndu . n ~= 0,
+	// dndv . n ~= 0, dpdu . n ~= 0, dpdv . n ~= 0, all finite).  The
+	// absolute/ratio ground truth for a non-uniform transform is checked
+	// against a real closed-form ellipsoid in Part B below.
+	{
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildTessellatedSphereMesh( r, detail );
+		Implementation::Object* o = new Implementation::Object( mesh );
+		mesh->release();
+		o->SetStretch( Vector3( 2.0, 0.5, 1.25 ) );
+		o->FinalizeTransformations();
+
+		Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool hit = HitMeshDerivatives( o, localOrigin, localDir, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( hit, "derivatives: non-uniform-stretch mesh hit" );
+		if( hit ) {
+			REQUIRE( fabs( Vector3Ops::Dot( dndu, n ) ) < 1e-5, "derivatives: stretch dndu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dndv, n ) ) < 1e-5, "derivatives: stretch dndv . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dpdu, n ) ) < 1e-5, "derivatives: stretch dpdu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dpdv, n ) ) < 1e-5, "derivatives: stretch dpdv . n ~= 0" );
+			REQUIRE( std::isfinite( n.x ) && std::isfinite( n.y ) && std::isfinite( n.z ),
+				"derivatives: stretch world normal finite" );
+			REQUIRE( std::isfinite( dndu.x ) && std::isfinite( dndu.y ) && std::isfinite( dndu.z ),
+				"derivatives: stretch dndu finite" );
+			REQUIRE( std::isfinite( dndv.x ) && std::isfinite( dndv.y ) && std::isfinite( dndv.z ),
+				"derivatives: stretch dndv finite" );
+		}
+		o->release();
+	}
+
+	// ---- Part B: Object::ComputeAnalyticalDerivatives (EllipsoidGeometry) ----
+	// EllipsoidGeometry(a,b,c) with a=b=c=r is mathematically a sphere of
+	// radius r; its ComputeAnalyticalDerivatives gives EXACT closed-form
+	// (u,v)-parameterised derivatives with no mesh-discretization noise, so
+	// these checks compare against absolute closed-form values instead of
+	// the loose 5% mesh tolerance used in Part A.
+
+	// Get a valid (u, v) near the equator by ray-hitting an identity
+	// ellipsoid once (EllipsoidGeometry populates ri.geometric.ptCoord in
+	// IntersectRay, in OBJECT-space parameter terms -- unaffected by the
+	// wrapping Object's world transform, and the theta/phi -> (u,v) map is
+	// identical regardless of the semi-axis values, so this (u,v) is
+	// reusable for every variant below, including the differently-scaled
+	// unit-sphere base in the non-uniform ground-truth check).
+	Point2 hitUV;
+	{
+		EllipsoidGeometry* g = new EllipsoidGeometry( Vector3( r, r, r ) );
+		Implementation::Object* o = new Implementation::Object( g );
+		g->release();
+		o->FinalizeTransformations();
+
+		RayIntersection ri( Ray( localOrigin, localDir ), nullRasterizerState );
+		o->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		REQUIRE( ri.geometric.bHit, "derivatives(B): identity ellipsoid ray hit for UV" );
+		hitUV = ri.geometric.ptCoord;
+		o->release();
+	}
+
+	// Tolerance for comparisons against the closed-form 1/r (etc.):
+	// EllipsoidGeometry::ComputeAnalyticalDerivatives computes dN/du, dN/dv
+	// via CENTRAL FINITE DIFFERENCE on the unit gradient-normal (epsUv =
+	// 1e-3; see the comment at EllipsoidGeometry.cpp's ComputeAnalyticalDerivatives
+	// "dN/du, dN/dv via central FD"), so its outputs carry an inherent
+	// O(epsUv^2) ~ 1e-6 relative discretization error even for the
+	// identity/no-bug case -- confirmed empirically (~2-4e-6 relative on
+	// |H| at this test's hit point).  1e-4 gives >25x margin over that
+	// floor while remaining >1000x tighter than the old bug's ~100%
+	// (s or s^2) error, so it still fails loudly on a regression.
+	const Scalar kClosedFormRelTol = 1e-4;
+
+	// Identity: |H| must equal 1/r (closed form, within FD-noise tolerance).
+	{
+		EllipsoidGeometry* g = new EllipsoidGeometry( Vector3( r, r, r ) );
+		Implementation::Object* o = new Implementation::Object( g );
+		g->release();
+		o->FinalizeTransformations();
+
+		Point3 pos; Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool ok = o->ComputeAnalyticalDerivatives( hitUV, 0.0, pos, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( ok, "derivatives(B): identity ComputeAnalyticalDerivatives succeeds" );
+		if( ok ) {
+			const Scalar H = fabs( RecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			REQUIRE( IsClose( H, 1.0 / r, kClosedFormRelTol * (1.0/r) ),
+				"derivatives(B): identity |H| == 1/r (closed form)" );
+		}
+		o->release();
+	}
+
+	// Uniform scale s: |H| must equal 1/(r*s), ruling out the old buggy
+	// 1/(r*s^2) which differs by 2x -- far outside kClosedFormRelTol.
+	{
+		const Scalar s = 2.0;
+		EllipsoidGeometry* g = new EllipsoidGeometry( Vector3( r, r, r ) );
+		Implementation::Object* o = new Implementation::Object( g );
+		g->release();
+		o->SetScale( s );
+		o->FinalizeTransformations();
+
+		Point3 pos; Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool ok = o->ComputeAnalyticalDerivatives( hitUV, 0.0, pos, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( ok, "derivatives(B): scaled ComputeAnalyticalDerivatives succeeds" );
+		if( ok ) {
+			const Scalar H = fabs( RecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			REQUIRE( IsClose( H, 1.0 / (r * s), kClosedFormRelTol * (1.0/(r*s)) ),
+				"derivatives(B): scaled |H| == 1/(r*s) (closed form; old bug gave 1/(r*s^2))" );
+			REQUIRE( !IsClose( H, 1.0 / (r * s * s), kClosedFormRelTol * (1.0/(r*s*s)) ),
+				"derivatives(B): scaled |H| does NOT match the old buggy 1/(r*s^2)" );
+		}
+		o->release();
+	}
+
+	// Rigid transform: |H| unchanged, dndu/dndv magnitudes unchanged.
+	{
+		EllipsoidGeometry* gId = new EllipsoidGeometry( Vector3( r, r, r ) );
+		Implementation::Object* oId = new Implementation::Object( gId );
+		gId->release();
+		oId->FinalizeTransformations();
+		Point3 posId; Vector3 nId, dpduId, dpdvId, dnduId, dndvId;
+		const bool okId = oId->ComputeAnalyticalDerivatives( hitUV, 0.0, posId, nId, dpduId, dpdvId, dnduId, dndvId );
+		REQUIRE( okId, "derivatives(B): (control) identity for rigid comparison" );
+
+		EllipsoidGeometry* gR = new EllipsoidGeometry( Vector3( r, r, r ) );
+		Implementation::Object* oR = new Implementation::Object( gR );
+		gR->release();
+		oR->SetOrientation( Vector3( -0.4, 0.6, 1.2 ) );
+		oR->TranslateObject( Vector3( -3, 8, 1 ) );
+		oR->FinalizeTransformations();
+		Point3 posR; Vector3 nR, dpduR, dpdvR, dnduR, dndvR;
+		const bool okR = oR->ComputeAnalyticalDerivatives( hitUV, 0.0, posR, nR, dpduR, dpdvR, dnduR, dndvR );
+		REQUIRE( okR, "derivatives(B): rigid ComputeAnalyticalDerivatives succeeds" );
+
+		if( okId && okR ) {
+			const Scalar H_id = fabs( RecordMeanCurvatureH( dpduId, dpdvId, dnduId, dndvId ) );
+			const Scalar H_r = fabs( RecordMeanCurvatureH( dpduR, dpdvR, dnduR, dndvR ) );
+			// A tighter tolerance than kClosedFormRelTol is valid here: both
+			// sides run the SAME (u,v), SAME central-FD step, and differ
+			// only by a rotation applied AFTER the FD evaluation, so the FD
+			// noise cancels almost exactly rather than accumulating (empirically ~0).
+			REQUIRE( IsClose( H_r, H_id, 1e-5 * H_id ), "derivatives(B): rigid transform preserves |H| (no-op)" );
+			REQUIRE( IsClose( Vector3Ops::Magnitude( dnduR ), Vector3Ops::Magnitude( dnduId ), 1e-9 ),
+				"derivatives(B): rigid transform preserves |dndu|" );
+			REQUIRE( IsClose( Vector3Ops::Magnitude( dndvR ), Vector3Ops::Magnitude( dndvId ), 1e-9 ),
+				"derivatives(B): rigid transform preserves |dndv|" );
+		}
+		oId->release();
+		oR->release();
+	}
+
+	// Non-uniform ground truth: stretch (a, b, c) applied to a UNIT sphere
+	// makes an ellipsoid with semi-axes exactly (a, b, c) -- SetStretch
+	// alone, with no rotation/position, is a pure diagonal linear map
+	// (Transformable::FinalizeTransformations composes
+	// Position*Orientation*Stretch*Scale*Mirror, and all but Stretch are
+	// identity here).  The record-derived |H| at the transformed world
+	// point must match EllipsoidClosedFormH evaluated at that SAME world
+	// point with those semi-axes: H is parameterization-invariant, so
+	// comparing a record-derived value against an independently-derived
+	// closed form is valid regardless of how the record's own (u, v)
+	// chart is laid out.
+	{
+		const Vector3 stretch( 2.0, 0.5, 1.25 );
+		EllipsoidGeometry* g = new EllipsoidGeometry( Vector3( 1.0, 1.0, 1.0 ) );  // unit sphere
+		Implementation::Object* o = new Implementation::Object( g );
+		g->release();
+		o->SetStretch( stretch );
+		o->FinalizeTransformations();
+
+		Point3 pos; Vector3 n, dpdu, dpdv, dndu, dndv;
+		const bool ok = o->ComputeAnalyticalDerivatives( hitUV, 0.0, pos, n, dpdu, dpdv, dndu, dndv );
+		REQUIRE( ok, "derivatives(B): non-uniform ComputeAnalyticalDerivatives succeeds" );
+		if( ok ) {
+			const Scalar H_record = fabs( RecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			const Scalar H_closed = fabs( EllipsoidClosedFormH(
+				stretch.x, stretch.y, stretch.z, pos.x, pos.y, pos.z ) );
+			REQUIRE( IsClose( H_record, H_closed, kClosedFormRelTol * H_closed ),
+				"derivatives(B): non-uniform |H| matches independent closed-form ellipsoid curvature" );
+
+			// Same invariants as Part A, at a tighter tolerance since these
+			// derivatives are exact/analytic, not mesh-discretized.
+			REQUIRE( fabs( Vector3Ops::Dot( dndu, n ) ) < 1e-9, "derivatives(B): stretch dndu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dndv, n ) ) < 1e-9, "derivatives(B): stretch dndv . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dpdu, n ) ) < 1e-9, "derivatives(B): stretch dpdu . n ~= 0" );
+			REQUIRE( fabs( Vector3Ops::Dot( dpdv, n ) ) < 1e-9, "derivatives(B): stretch dpdv . n ~= 0" );
+			REQUIRE( std::isfinite( H_record ), "derivatives(B): stretch |H| finite" );
+		}
+		o->release();
+	}
+
+	std::cout << "  object world-derivative quotient-rule checks done\n";
+}
+
 int main()
 {
 	std::cout << "=== Geometry (u, v) parameterisation regression test ===\n";
 
 	TestObjectWorldArea();
+	TestObjectWorldDerivatives();
 	TestSphere();
 	TestEllipsoid();
 	TestBox();

@@ -91,20 +91,88 @@ Current sign check at representative non-degenerate points (all must be **+**):
 
 Handedness is now uniform across all implemented geometries.  Consumers that care about orientation sign (texture-space normal mapping, future glossy SMS) can rely on `(dpdu × dpdv) · n > 0` without per-geometry conditioning.
 
+## World-space transform
+
+`IGeometry::ComputeSurfaceDerivatives` / `IGeometry::ComputeAnalyticalDerivatives`
+and a mesh geometry's own `IntersectRay` all report `dpdu, dpdv, dndu, dndv`
+in OBJECT space, per the contract above.  Promotion to WORLD space happens at
+exactly three call sites, each applying **its own** object transform once:
+
+- `Object::IntersectRay`'s derivatives block
+  ([Object.cpp](../src/Library/Objects/Object.cpp), immediately after the
+  block that promotes `vNormal`/`vGeomNormal`) — fires when the wrapped
+  geometry populated `ri.geometric.derivatives.valid` during its own
+  `IntersectRay` (currently only `TriangleMeshGeometry` /
+  `TriangleMeshGeometryIndexed`; analytic primitives like `SphereGeometry`
+  never set it there).
+- `Object::ComputeAnalyticalDerivatives` ([Object.cpp](../src/Library/Objects/Object.cpp))
+  — the `(u, v)`-keyed analytical query used by the SMS two-stage solver;
+  wraps `IGeometry::ComputeAnalyticalDerivatives` (currently implemented by
+  `EllipsoidGeometry` and `DisplacedGeometry`, which forwards to its base).
+- `CSGObject::IntersectRay`'s derivatives block
+  ([CSGObject.cpp](../src/Library/Objects/CSGObject.cpp)) — mirrors
+  `Object::IntersectRay`'s block exactly, applying THIS CSG level's own
+  transform to whatever the operand below (a plain `Object`, or a
+  further-nested `CSGObject`) already promoted one level.  CSG composition
+  is correct because each nesting level applies its own transform to the
+  level-local normal field in turn — the same pattern the `vNormal` /
+  `vTangent` promotions in that function already use.
+
+**The two field kinds transform differently, and dndu/dndv are NOT a plain
+inverse-transpose:**
+
+- `dpdu`, `dpdv` are tangent VECTORS (directions along the surface) — the
+  forward transform `m_mxFinalTrans`'s linear part, same as `vTangent`.
+- The normal `n` is transformed by the inverse-transpose
+  `m_mxInvTranspose`'s linear part and then RENORMALIZED (`n_w =
+  normalize(M⁻ᵀ n_obj)`) — this renormalization is the detail that matters
+  for what comes next.
+- `dndu`, `dndv` are derivatives of that RENORMALIZED normal FIELD, not of
+  the raw inverse-transpose output.  Differentiating a quotient (the
+  normalize) rather than just the linear map gives the quotient rule:
+  ```
+  n_w(u,v)  = M⁻ᵀ n_obj(u,v) / ‖M⁻ᵀ n_obj(u,v)‖
+  dn_w/du   = (I − n_w n_wᵀ) · (M⁻ᵀ dndu_obj) / ‖M⁻ᵀ n_obj‖
+  dn_w/dv   = (I − n_w n_wᵀ) · (M⁻ᵀ dndv_obj) / ‖M⁻ᵀ n_obj‖
+  ```
+  A plain inverse-transpose (skipping both the projection and the divide by
+  `‖M⁻ᵀ n_obj‖`) is correct only for a RIGID transform, where
+  `‖M⁻ᵀ n_obj‖ == 1` identically and the projection removes a component
+  that's already ~0 by invariant 2 above (`dndu · n ≈ 0`).  Under any
+  non-rigid transform (scale, non-uniform stretch, shear) it under-corrects:
+  for a uniform scale `s`, the plain inverse-transpose gives world mean
+  curvature `H_obj / s²` instead of the correct `H_obj / s` (2026-08-29 fix;
+  see [tests/GeometryUVRoundtripTest.cpp](../tests/GeometryUVRoundtripTest.cpp)'s
+  `TestObjectWorldDerivatives()` for the regression coverage, including a
+  direct check that the old `s²` behaviour is excluded).
+- The degenerate case (`‖M⁻ᵀ n_obj‖` below `NEARZERO`, i.e. the transform is
+  singular along the normal direction) has no well-defined unit world
+  normal to differentiate against; both fixed call sites mark the
+  derivatives invalid there rather than dividing by ~0.
+
 ## Consumer expectations (SMS `ManifoldSolver`)
 
 Given the conventions above, the solver:
 
-1. Reads `sd.dpdu, sd.dpdv, sd.dndu, sd.dndv` from the geometry.
-2. Transforms them to world space via the object transform (tangent
-   directions transform by the inverse-transpose for correctness, but
-   for a rigid transform the upper-left 3×3 of the transform works).
-3. Projects `dpdu` into the tangent plane (removes any tiny n-component
-   from numerical noise), then Gram-Schmidts `dpdv` against `dpdu`.
-4. Computes `ds_du`, `dt_du`, etc. via the Cycles product-rule formula
+1. Reads `sd.dpdu, sd.dpdv, sd.dndu, sd.dndv` — already in WORLD space by
+   the time the solver sees them.  The solver itself does NOT transform
+   these fields; the promotion happened in `Object::IntersectRay` /
+   `Object::ComputeAnalyticalDerivatives` / `CSGObject::IntersectRay` per
+   the "World-space transform" section above.  (The solver also has its
+   own geometry-agnostic central-finite-difference fallback path — see
+   [docs/SMS.md](SMS.md) "Surface derivatives" — for geometries that don't
+   populate `derivatives.valid` and don't implement
+   `ComputeAnalyticalDerivatives`; that path never touches `M⁻ᵀ` at all,
+   since it differences world-space ray-cast hits directly.)
+2. Projects `dpdu` into the tangent plane (removes any tiny n-component
+   from numerical noise), then Gram-Schmidts `dpdv` against `dpdu`
+   (`OrthonormalizeTangentFrame`), which also applies the matching
+   correction to `dndv` so it stays consistent with the re-orthogonalized
+   `v` direction.
+3. Computes `ds_du`, `dt_du`, etc. via the Cycles product-rule formula
    ([ManifoldSolver.cpp](../src/Library/Utilities/ManifoldSolver.cpp) in
    `BuildJacobian`).
-5. Includes the per-vertex metric `|dpdu| × |dpdv|` in the final metric
+4. Includes the per-vertex metric `|dpdu| × |dpdv|` in the final metric
    conversion from parameter-space Jacobian to world tangent-plane
    Jacobian.
 

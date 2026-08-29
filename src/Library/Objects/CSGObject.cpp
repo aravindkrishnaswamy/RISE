@@ -1004,7 +1004,16 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	if( ri.geometric.bHit )
 	{
 		// Transform the normal back
-		ri.geometric.vNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal ));
+		//
+		// Also capture the PRE-normalization magnitude of the transformed
+		// shading normal (norm of M^-T n_obj) -- mirrors Object::IntersectRay's
+		// identical capture.  The derivatives block below (THIS CSG level's
+		// own transform) reuses both this magnitude and the resulting unit
+		// world normal to apply the quotient-rule transform to dndu/dndv;
+		// see docs/GEOMETRY_DERIVATIVES.md "World-space transform".
+		Vector3 vNormalWorldUnnorm = Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal );
+		const Scalar dShadingNormalWorldMag = Vector3Ops::NormalizeMag( vNormalWorldUnnorm );
+		ri.geometric.vNormal = vNormalWorldUnnorm;
 		ri.geometric.vNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal2 ));
 		ri.geometric.vGeomNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal ));
 		ri.geometric.vGeomNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal2 ));
@@ -1115,19 +1124,46 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.geometric.bitangentSign *= m_tangentFrameSign;
 
 		// Transform surface derivatives (P2-d) from THIS CSG object's local
-		// frame to world space -- mirrors Object::IntersectRay's
-		// derivatives block exactly.  dpdu / dpdv are tangent vectors
-		// (forward transform); dndu / dndv are normal-like quantities at
-		// first order (inverse-transpose).
+		// frame to world space -- mirrors Object::IntersectRay's derivatives
+		// block exactly (see that function's comment for the full
+		// derivation).  dpdu / dpdv are tangent vectors (forward transform).
+		// dndu / dndv are derivatives of the SHADING normal (vNormal,
+		// already renormalized to THIS CSG level's world/parent space
+		// above) and need the quotient-rule transform, not a plain
+		// inverse-transpose:
+		//   dn_w/du = (I - n_w n_w^T) . (M^-T dndu_local) / ||M^-T n_local||
+		// using THIS level's own m_mxInvTranspose and the
+		// dShadingNormalWorldMag/vNormal captured just above -- CSG nesting
+		// composes correctly because each level applies its own transform
+		// to the level-local normal in turn, exactly like the tangent /
+		// vNormal promotions elsewhere in this function.
 		if( ri.geometric.derivatives.valid ) {
 			ri.geometric.derivatives.dpdu = Vector3Ops::Transform(
 				m_mxFinalTrans, ri.geometric.derivatives.dpdu );
 			ri.geometric.derivatives.dpdv = Vector3Ops::Transform(
 				m_mxFinalTrans, ri.geometric.derivatives.dpdv );
-			ri.geometric.derivatives.dndu = Vector3Ops::Transform(
-				m_mxInvTranspose, ri.geometric.derivatives.dndu );
-			ri.geometric.derivatives.dndv = Vector3Ops::Transform(
-				m_mxInvTranspose, ri.geometric.derivatives.dndv );
+
+			if( dShadingNormalWorldMag > NEARZERO ) {
+				const Vector3& n_w = ri.geometric.vNormal;
+				const Scalar invMag = Scalar(1.0) / dShadingNormalWorldMag;
+
+				const Vector3 dndu_lin = Vector3Ops::Transform(
+					m_mxInvTranspose, ri.geometric.derivatives.dndu );
+				ri.geometric.derivatives.dndu =
+					( dndu_lin - n_w * Vector3Ops::Dot( n_w, dndu_lin ) ) * invMag;
+
+				const Vector3 dndv_lin = Vector3Ops::Transform(
+					m_mxInvTranspose, ri.geometric.derivatives.dndv );
+				ri.geometric.derivatives.dndv =
+					( dndv_lin - n_w * Vector3Ops::Dot( n_w, dndv_lin ) ) * invMag;
+			} else {
+				// THIS level's transform is singular along the normal
+				// direction -- mirrors Object::IntersectRay's identical
+				// guard.  No well-defined unit world shading-normal to
+				// differentiate against; mark invalid rather than divide by
+				// ~0.
+				ri.geometric.derivatives.valid = false;
+			}
 		}
 
 		// Compute the intersection in world space

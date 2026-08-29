@@ -406,20 +406,48 @@ bool Object::ComputeAnalyticalDerivatives(
 		return false;
 	}
 
-	// Apply transform — same convention as the IntersectRay path:
+	// Apply transform — same convention as the IntersectRay path (see the
+	// derivatives block comment there for the full derivation):
 	//  - Position: full forward transform.
 	//  - Tangent vectors (dpdu, dpdv): forward transform's linear part
 	//    (translation drops out for vector arithmetic).
-	//  - Normal and its derivatives (dndu, dndv): inverse-transpose's
-	//    linear part — keeps them orthogonal to the transformed surface
-	//    under non-uniform scale / shear.
+	//  - Normal: inverse-transpose's linear part, renormalized.
+	//  - Its derivatives (dndu, dndv): NOT a plain inverse-transpose --
+	//    they are derivatives of the SHADING normal, i.e. of the
+	//    RENORMALIZED world normal field, so they need the quotient-rule
+	//    transform (identical to Object::IntersectRay's derivatives
+	//    block):
+	//      dn_w/du = (I - n_w n_w^T) . (M^-T dndu_obj) / ||M^-T n_obj||
+	//    A plain inverse-transpose (no renormalize) under-corrects by a
+	//    factor of the local scale under non-uniform / non-rigid
+	//    transforms, same bug class as the IntersectRay path had.
 	outWorldPosition = Point3Ops::Transform( m_mxFinalTrans, oP );
 	outWorldDpdu     = Vector3Ops::Transform( m_mxFinalTrans, oDpdu );
 	outWorldDpdv     = Vector3Ops::Transform( m_mxFinalTrans, oDpdv );
-	outWorldNormal   = Vector3Ops::Normalize(
-		Vector3Ops::Transform( m_mxInvTranspose, oN ) );
-	outWorldDndu     = Vector3Ops::Transform( m_mxInvTranspose, oDndu );
-	outWorldDndv     = Vector3Ops::Transform( m_mxInvTranspose, oDndv );
+
+	Vector3 outNormalUnnorm = Vector3Ops::Transform( m_mxInvTranspose, oN );
+	const Scalar dNormalWorldMag = Vector3Ops::NormalizeMag( outNormalUnnorm );
+	outWorldNormal = outNormalUnnorm;
+
+	if( dNormalWorldMag > NEARZERO ) {
+		const Scalar invMag = Scalar(1.0) / dNormalWorldMag;
+
+		const Vector3 dndu_lin = Vector3Ops::Transform( m_mxInvTranspose, oDndu );
+		outWorldDndu = ( dndu_lin - outWorldNormal * Vector3Ops::Dot( outWorldNormal, dndu_lin ) ) * invMag;
+
+		const Vector3 dndv_lin = Vector3Ops::Transform( m_mxInvTranspose, oDndv );
+		outWorldDndv = ( dndv_lin - outWorldNormal * Vector3Ops::Dot( outWorldNormal, dndv_lin ) ) * invMag;
+	} else {
+		// Transform singular along the normal direction -- mirrors
+		// Object::IntersectRay's identical guard.  No well-defined unit
+		// world normal to differentiate against; return zero derivatives
+		// rather than divide by ~0 (the caller only checks the bool
+		// return, not these vectors, for validity -- zero is the safe
+		// value here since the position/normal outputs are already
+		// degenerate in this case).
+		outWorldDndu = Vector3( 0, 0, 0 );
+		outWorldDndv = Vector3( 0, 0, 0 );
+	}
 	return true;
 }
 
@@ -628,7 +656,16 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		}
 
 		// Transform the normals back
-		ri.geometric.vNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal ));
+		//
+		// Also capture the PRE-normalization magnitude of the transformed
+		// shading normal (norm of M^-T n_obj) -- the derivatives block below
+		// reuses both this magnitude and the resulting unit world normal to
+		// apply the quotient-rule transform to dndu/dndv (see
+		// docs/GEOMETRY_DERIVATIVES.md "World-space transform"). NormalizeMag
+		// mutates its argument in place and returns the pre-normalize length.
+		Vector3 vNormalWorldUnnorm = Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal );
+		const Scalar dShadingNormalWorldMag = Vector3Ops::NormalizeMag( vNormalWorldUnnorm );
+		ri.geometric.vNormal = vNormalWorldUnnorm;
 		// Geometric normal transforms identically (it's also a normal vector,
 		// just describing the actual face orientation rather than the shading
 		// approximation).  Renormalize because non-uniform scales can otherwise
@@ -757,19 +794,58 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.bitangentSign *= m_tangentFrameSign;
 
 		// Transform surface derivatives from object space to world space.
-		// dpdu, dpdv are tangent vectors — transform like positions (use
-		// the forward transform m_mxFinalTrans).  dndu, dndv are normals
-		// (change-of-normal is itself a normal-like quantity at first
-		// order) — transform like normals (inverse-transpose).
+		// dpdu, dpdv are tangent vectors -- transform like positions (use
+		// the forward transform m_mxFinalTrans).
+		//
+		// dndu, dndv are derivatives of the SHADING normal (vNormal, already
+		// renormalized to world space above), NOT the raw inverse-transpose
+		// of the object-space derivative.  A plain inverse-transpose
+		// transform is only correct for a normal-LIKE quantity that is not
+		// itself required to stay a derivative of a UNIT vector field; dndu/
+		// dndv fail that requirement whenever the transform isn't rigid,
+		// because the field they differentiate (n) gets renormalized and
+		// they must differentiate the renormalized field, not the raw one.
+		// The correct transform is the quotient rule applied to
+		//   n_w(u,v) = M^-T n_obj(u,v) / ||M^-T n_obj(u,v)||
+		// i.e.
+		//   dn_w/du = (I - n_w n_w^T) . (M^-T dndu_obj) / ||M^-T n_obj||
+		// (same for dndv).  This is a provable no-op under a rigid
+		// transform: ||M^-T n|| == 1 and the projection (I - n_w n_w^T)
+		// removes a component that is already ~0 by the object-space
+		// contract dndu . n ~= 0 (docs/GEOMETRY_DERIVATIVES.md invariant 2).
+		// dShadingNormalWorldMag/vNormal were captured/finalized just above
+		// when the shading normal itself was promoted to world space.
 		if( ri.geometric.derivatives.valid ) {
 			ri.geometric.derivatives.dpdu = Vector3Ops::Transform(
 				m_mxFinalTrans, ri.geometric.derivatives.dpdu );
 			ri.geometric.derivatives.dpdv = Vector3Ops::Transform(
 				m_mxFinalTrans, ri.geometric.derivatives.dpdv );
-			ri.geometric.derivatives.dndu = Vector3Ops::Transform(
-				m_mxInvTranspose, ri.geometric.derivatives.dndu );
-			ri.geometric.derivatives.dndv = Vector3Ops::Transform(
-				m_mxInvTranspose, ri.geometric.derivatives.dndv );
+
+			if( dShadingNormalWorldMag > NEARZERO ) {
+				const Vector3& n_w = ri.geometric.vNormal;
+				const Scalar invMag = Scalar(1.0) / dShadingNormalWorldMag;
+
+				const Vector3 dndu_lin = Vector3Ops::Transform(
+					m_mxInvTranspose, ri.geometric.derivatives.dndu );
+				ri.geometric.derivatives.dndu =
+					( dndu_lin - n_w * Vector3Ops::Dot( n_w, dndu_lin ) ) * invMag;
+
+				const Vector3 dndv_lin = Vector3Ops::Transform(
+					m_mxInvTranspose, ri.geometric.derivatives.dndv );
+				ri.geometric.derivatives.dndv =
+					( dndv_lin - n_w * Vector3Ops::Dot( n_w, dndv_lin ) ) * invMag;
+			} else {
+				// The transform is singular along the normal direction
+				// (||M^-T n|| ~ 0, e.g. a zero/near-zero scale axis
+				// collapsing the normal) -- there is no well-defined unit
+				// world shading-normal to differentiate against, and
+				// dividing by ~0 would produce Inf/NaN.  vNormal itself is
+				// left un-normalized (still ~0) by Normalize()'s own guard
+				// in this case, so the whole shading frame is already
+				// degenerate here; mark the derivatives invalid rather than
+				// hand a consumer a garbage curvature.
+				ri.geometric.derivatives.valid = false;
+			}
 		}
 
 		// Wireframe view-mode closest-edge point transforms like a

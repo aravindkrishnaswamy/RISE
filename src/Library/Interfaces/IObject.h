@@ -78,10 +78,12 @@ namespace RISE
 		//! World-space wrapper around `IGeometry::ComputeAnalyticalDerivatives`.
 		//! Forwards to the underlying geometry in object space and applies the
 		//! object's transform: positions by `m_mxFinalTrans`, tangent vectors
-		//! by its rotational/scale part, normal and its derivatives by
-		//! `m_mxInvTranspose`.  Default returns false; concrete `Object`
-		//! overrides.  Used by the SMS two-stage solver — see
-		//! `docs/SMS_TWO_STAGE_SOLVER.md`.
+		//! by its rotational/scale part, the normal by `m_mxInvTranspose`
+		//! (renormalized), and dndu/dndv by the quotient-rule transform of
+		//! the renormalized normal field (NOT a plain inverse-transpose --
+		//! see docs/GEOMETRY_DERIVATIVES.md "World-space transform").
+		//! Default returns false; concrete `Object` overrides.  Used by the
+		//! SMS two-stage solver — see `docs/SMS_TWO_STAGE_SOLVER.md`.
 		virtual bool ComputeAnalyticalDerivatives(
 			const Point2& uv,
 			Scalar        smoothing,
