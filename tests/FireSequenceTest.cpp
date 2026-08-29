@@ -1012,8 +1012,10 @@ namespace
 			cold.temperatureK,cold.sensibleEnergyJPerM3,&error)||
 			!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(established),
 				established.temperatureK,established.sensibleEnergyJPerM3,&error))return false;
+		MethaneCellState sourceDepleted=cold;
+		sourceDepleted.constituent[MethaneCH4]=0.0;
 		bool establishedEligible=false,coldEligible=true,latchedColdEligible=false,
-			noncontactEligible=true;
+			sourceDepletedEligible=true,noncontactEligible=true;
 		const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
 		const bool establishedAccepted=ProductionEstablishedFlameHolderEligible(1u,3u,2u,
 			annulus,source,false,established,fuel,transport,establishedEligible,&error);
@@ -1021,10 +1023,13 @@ namespace
 			source,false,cold,fuel,transport,coldEligible,&error);
 		const bool latchedAccepted=ProductionEstablishedFlameHolderEligible(1u,3u,2u,
 			annulus,source,true,cold,fuel,transport,latchedColdEligible,&error);
+		const bool sourceDepletedAccepted=ProductionEstablishedFlameHolderEligible(1u,3u,2u,
+			annulus,source,true,sourceDepleted,fuel,transport,sourceDepletedEligible,&error);
 		const bool noncontactAccepted=ProductionEstablishedFlameHolderEligible(0u,3u,2u,
 			annulus,source,true,established,fuel,transport,noncontactEligible,&error);
 		return establishedAccepted&&establishedEligible&&coldAccepted&&!coldEligible&&
-			latchedAccepted&&latchedColdEligible&&noncontactAccepted&&!noncontactEligible;
+			latchedAccepted&&latchedColdEligible&&sourceDepletedAccepted&&
+			!sourceDepletedEligible&&noncontactAccepted&&!noncontactEligible;
 	}
 
 	class CheckpointWriter
@@ -2432,16 +2437,6 @@ namespace
 			std::vector<bool> eligibility;
 			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
 				FireSimulationTransportRecord::OpenV1(),eligibility,&error);
-			if(advancedOK&&persistence.productionMetal&&!persistence.forceZeroSourceForTest){
-				for(std::size_t cell=0u;cell<shape.nx*shape.ny;++cell){
-					bool flameHolderEligible=false;
-					advancedOK=ProductionEstablishedFlameHolderEligible(cell,shape.nx,shape.ny,
-						canonicalPilotMask,sourcePattern,simulationTimeS>=pilotEndS,states[cell],fuel,
-						FireSimulationTransportRecord::OpenV1(),flameHolderEligible,&error);
-					if(!advancedOK)break;
-					if(flameHolderEligible)eligibility[cell]=true;
-				}
-			}
 			profileEligibilityMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-profileStageStart).count();
 			if(!advancedOK) break;
@@ -2548,6 +2543,7 @@ namespace
 					lastAdvanceError="production represented timestep is invalid";break;}
 				bool commandOK=true;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell) {
+					reactions[cell].primaryEligible=eligibility[cell];
 					commandOK=commandOK&&(persistence.forceZeroSourceForTest||
 						FireCase::EvaluatePilotSetpointTemperatureK(caseRecord.derived,
 							ProductionPilotCommandCell(cell,shape.nx,shape.ny,canonicalPilotMask,
@@ -2607,6 +2603,18 @@ namespace
 							lastAdvanceError=error;stagedOK=false;break;}
 					}
 					if(!stagedOK){trialStep*=0.5;error.clear();continue;}
+				}
+				if(persistence.productionMetal&&!persistence.forceZeroSourceForTest){
+					for(std::size_t cell=0u;cell<shape.nx*shape.ny;++cell){
+						bool flameHolderEligible=false;
+						commandOK=ProductionEstablishedFlameHolderEligible(cell,shape.nx,shape.ny,
+							canonicalPilotMask,sourcePattern,simulationTimeS>=pilotEndS,
+							packetBeginning[cell],fuel,FireSimulationTransportRecord::OpenV1(),
+							flameHolderEligible,&error);
+						if(!commandOK)break;
+						if(flameHolderEligible)reactions[cell].primaryEligible=true;
+					}
+					if(!commandOK){lastAdvanceError=error;break;}
 				}
 				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
 				if(persistence.forceZeroSourceForTest){
