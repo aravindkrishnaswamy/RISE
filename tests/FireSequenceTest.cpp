@@ -541,10 +541,12 @@ namespace
 				<<"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
 				<<"pathtracing_spectral_rasterizer\n{\nsamples 4\nnmbegin 380\nnmend 780\n"
 				<<"num_wavelengths 32\nspectral_samples 4\nhwss false\npixel_filter box\n"
-				<<"oidn_denoise false\n}\n\nfile_rasterizeroutput\n{\npattern temporal_primary\n"
+				<<"oidn_denoise false\n}\n\nfile_rasterizeroutput\n{\npattern "<<
+					(stage/"temporal_primary").string()<<"\n"
 				<<"type EXR\nbpp 32\ncolor_space Rec709RGB_Linear\nexposure 0\n"
 				<<"display_transform none\nexr_compression piz\n}\n\nfile_rasterizeroutput\n{\n"
-				<<"pattern temporal_display\ntype PNG\nbpp 16\ncolor_space sRGB\n"
+				<<"pattern "<<(stage/"temporal_display").string()<<
+				"\ntype PNG\nbpp 16\ncolor_space sRGB\n"
 				<<"exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
 				<<"pinhole_camera\n{\nname camera\nlocation "<<centerX<<' '<<
 					centerY-0.52*depth<<' '<<centerZ<<"\nlookat "<<centerX<<' '<<centerY<<' '<<
