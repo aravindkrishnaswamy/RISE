@@ -2326,7 +2326,7 @@ int main()
 		"equal_time_readmission.raw.log");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionEvidence.begin(),equalTimeReadmissionEvidence.end()))==
-			"1e4298c6d5132f41e93a8732bf3f1e875fc2096f2d8a56e04902f488b8745f7f"&&
+			"b4cf38535033582651c42c7a2c8283713da3bf0b2692a2f573adf85e73c94aaa"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
 			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
@@ -2341,7 +2341,7 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"49a9877445f5e9ef6823a77d14cc7104b31e928728769fc7ea4d66e4d95e762d"&&
+			"8e65f5083ef8fa2e4a0c82991e68563de9e61a18f7dd1cda5a5ac6752556deae"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"7f2c28de6e315c774ccd2bf4fd501c54076a2cacd1a223528e840b4ce37f98e1"&&
@@ -2373,10 +2373,21 @@ int main()
 	const std::string thermoSourceRaw=ReadText(
 		"rendered/fire_production_calibration/r175_thermo_source_maps/"
 		"thermo_source_maps.raw.log");
+	const std::string firstLightEXR=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr");
+	const std::string firstLightEXRProvenance=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"methane_preview.exr.provenance.cbor");
+	const std::string firstLightDisplay=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"methane_preview_display.png");
+	const std::string firstLightDisplayProvenance=ReadText(
+		"rendered/fire_production_first_light/r175_preview_tier6/"
+		"methane_preview_display.png.provenance.cbor");
 	Check(!thermoSourceEvidence.empty()&&!thermoSourceRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceEvidence.begin(),thermoSourceEvidence.end()))==
-			"9d2ffbd29da8c5c8e7342e4c0714c15d2ad52909a5a490720b69d3b06f961ad3"&&
+			"4acc3accab016371a16573795e310a3d31793f6311d3e67ea078b98c6bb33dea"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceRaw.begin(),thermoSourceRaw.end()))==
 			"c9f0188fdfd688e10f0edef4c7ef7e9712e4bf71d7cff19ddcba3b5276553865"&&
@@ -2403,7 +2414,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"49a9877445f5e9ef6823a77d14cc7104b31e928728769fc7ea4d66e4d95e762d"&&
+			"8e65f5083ef8fa2e4a0c82991e68563de9e61a18f7dd1cda5a5ac6752556deae"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"7f2c28de6e315c774ccd2bf4fd501c54076a2cacd1a223528e840b4ce37f98e1"&&
@@ -2422,6 +2433,22 @@ int main()
 			std::string::npos&&
 		thermoSourceEvidence.find("accepted_state_tokens_minted 2")!=
 			std::string::npos&&
+		thermoSourceEvidence.find("first_light_accepted_steps 523")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("first_light_maximum_physical_temperature_K 2284.8533")!=
+			std::string::npos&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightEXR.begin(),firstLightEXR.end()))==
+			"4d0f8ef02ca6ae6328af1775bd32f44f5b950fa285a0a3d6709063d425aa96f2"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightEXRProvenance.begin(),firstLightEXRProvenance.end()))==
+			"e845fe1fa2aea00e4ca959a3ccb69c975112ced78966ca51a163e2c637a1f19b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightDisplay.begin(),firstLightDisplay.end()))==
+			"13d27873d68def0eb8ce03191c570e6954e1f490e43fd312d4efcff6ffbd6b4f"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			firstLightDisplayProvenance.begin(),firstLightDisplayProvenance.end()))==
+			"58aafbe95e61acc6551e12e8671e0fff6135770307a23adeaf89d21557eab0d6"&&
 		thermoSourceEvidence.find("tier10_25s_device_hours 0.40872554073287515")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("tier10_25s_wall_hours 0.63840048687616735")!=

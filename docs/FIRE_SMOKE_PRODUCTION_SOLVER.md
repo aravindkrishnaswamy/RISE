@@ -4430,7 +4430,19 @@ and the requested wall class.  Exact exit `184` and both source, target,
 schedule, tail, projection, timing, and source-owner records are retained under
 `rendered/fire_production_calibration/r175_thermo_source_maps`.  This accepted
 checkpoint releases the explicitly preview-labelled tier-6 first-light
-artifact.
+artifact.  The clean capstone reaches `2.3170101413580206 s` in 523 accepted
+steps, peaks at `2284.8533 K` with pilot input off, and terminates at
+`1784.60397 K` with `1.27718934e7 W/m3` maximum heat release.  The primary
+linear-radiance file is
+`rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
+(SHA-256 `4d0f8ef0...96f2`); its canonical provenance sidecar is
+`e845fe1f...f19b`.  The renderer-authored ACES display derivative is
+`methane_preview_display.png` (`13d27873...b4f`).  All are explicitly
+`preview_primary`: methane's zero soot yield makes this 32x32 pipeline proof
+faint and blue, while burning-state validity remains owned by the source-map,
+checkpoint, and capstone records.  The sequence fixture now waits for the
+atomic encoder sidecar before publication, so the file copied to the release
+directory is the same frame whose prepared-input identity was validated.
 
 ## 8. Rejected directions and future work
 

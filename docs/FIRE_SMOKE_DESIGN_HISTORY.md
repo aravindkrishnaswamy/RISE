@@ -4317,3 +4317,13 @@ it was already tried and refuted here.
   `0.40872554073287515/0.63840048687616735 h` device/wall.  Exact exit `184`
   binds both source/target/schedule records and the one-step causal tail
   transition.  First light is authorized only as `preview_primary`.
+
+  The released tier-6 capstone reaches `2.3170101413580206 s` in 523 accepted
+  steps, with a `2284.8533 K` pilot-off physical peak and a `1784.60397 K`,
+  `1.27718934e7 W/m3` terminal state.  The primary EXR is
+  `rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
+  (SHA-256 `4d0f8ef0...96f2`), accompanied by canonical CBOR provenance
+  (`e845fe1f...f19b`) and the renderer-authored display PNG
+  (`13d27873...b4f`).  The preview remains deliberately labelled
+  `preview_primary`; it proves the prepared, sequence-backed fire path and is
+  not promoted into a production-fidelity image claim.

@@ -4942,7 +4942,7 @@ int main(int argc,char** argv)
 	// provenance rename when control returns here.  Admit only the complete
 	// canonical sidecar, with a short bounded wait; never read a partial file
 	// and misclassify it as a provenance failure.
-	for(unsigned int attempt=0u;attempt<200u&&!renderedEnvelopeValid;++attempt) {
+	for(unsigned int attempt=0u;attempt<6000u&&!renderedEnvelopeValid;++attempt) {
 		const RISECBOR64::Bytes renderedSidecar=ReadFileBytes(
 			renderBase.string()+".exr.provenance.cbor");
 		if(!renderedSidecar.empty()) {
