@@ -2547,7 +2547,20 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		result=FireProductionResidentStepResult();
 		bool plateauRefused=false;
 		try {
-			auto markPhase=[&](const char* phase){if(structuredError)*structuredError=phase;};
+			const char* activeFailurePhase=
+				"production resident step failed during preflight";
+			bool attemptCompleted=false;
+			struct FailurePhaseGuard
+			{
+				std::string* error;
+				const char*& phase;
+				bool& completed;
+				~FailurePhaseGuard(){
+					if(!completed&&error&&error->empty())*error=phase;
+				}
+			} failurePhaseGuard={structuredError,activeFailurePhase,attemptCompleted};
+			auto markPhase=[&](const char* phase){activeFailurePhase=phase;
+				if(structuredError)*structuredError=phase;};
 			const char* manifoldProbeActivation=std::getenv(
 				"RISE_FIRE_MANIFOLD_TIMESTEP_PROBE");
 			if( manifoldProbeActivation&&std::strcmp(manifoldProbeActivation,"1")!=0 ) {
@@ -2839,7 +2852,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			timestepVelocityAuditDualStaticMS=timestepVelocityAuditValidatedMS;
 			markPhase("production resident step failed while acquiring Metal context");
 			MetalRemapContext& context=Context();
-			if( !context.Valid() ) return false;
+			if( !context.Valid() ) {
+				if( structuredError ) *structuredError=context.error.empty()?
+					"production resident step failed while acquiring Metal context":context.error;
+				return false;
+			}
 			@autoreleasepool {
 				markPhase("production resident step failed while allocating resident buffers");
 				const std::size_t cellValueBytes=9u*cells*sizeof(float);
@@ -2966,7 +2983,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					preparationSucceeded.size(),prepareIndependent);
 				for(unsigned int task=0u;task<preparationSucceeded.size();++task)
 					if(!preparationSucceeded[task]){
-						if(structuredError)*structuredError=preparationError[task];return false;}
+						if(structuredError)*structuredError=preparationError[task].empty()?
+							("production independent preparation task "+std::to_string(task)+
+							 " rejected without a diagnostic"):preparationError[task];
+						return false;
+					}
 				timestepVelocityAuditForceMS=timestepVelocityAuditMS();
 				const double predictorCellDeviceMS=cell.deviceElapsedMS;
 				const double predictorCellDeviceStartTimeS=cell.deviceStartTimeS;
@@ -3260,6 +3281,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				if( values&&injected&&std::strcmp(injected,"terminal-nonfinite")==0 )
 					values[0]=std::numeric_limits<float>::quiet_NaN();
 				bool terminalValid=values!=0;
+				std::size_t invalidTerminalCell=cells,invalidTerminalFace=allFaces;
 				for( std::size_t cell=0u;terminalValid&&cell<cells;++cell ) {
 					float gas=values[cells+cell];
 					for( std::size_t component=0u;component<9u;++component )
@@ -3267,12 +3289,23 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					for( std::size_t component=2u;component<=6u;++component )
 						gas+=values[component*cells+cell];
 					terminalValid=terminalValid&&gas>0.0f&&std::isfinite(gas);
+					if(!terminalValid)invalidTerminalCell=cell;
 				}
-				for( std::size_t face=0u;terminalValid&&face<allFaces;++face )
+				for( std::size_t face=0u;terminalValid&&face<allFaces;++face ){
 					terminalValid=std::isfinite(values[9u*cells+face])&&
 						values[9u*cells+face]>0.0f&&
 						std::isfinite(values[9u*cells+allFaces+face]);
+					if(!terminalValid)invalidTerminalFace=face;
+				}
 				if( !terminalValid ) {
+					if(structuredError){
+						if(!values)*structuredError="production resident terminal readback is unavailable";
+						else if(invalidTerminalCell<cells)*structuredError=
+							"production resident terminal cell is invalid at "+
+							std::to_string(invalidTerminalCell);
+						else *structuredError="production resident terminal face is invalid at "+
+							std::to_string(invalidTerminalFace);
+					}
 					if( manifoldStageBudgetActivation&&values ) {
 						for(std::size_t cellIndex=0u;cellIndex<cells;++cellIndex){
 							float gas=values[cells+cellIndex];bool finite=true;
@@ -3314,7 +3347,40 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				const double maximumTerminalDeviation=maximumTerminalDeviationFloat;
 				const double terminalDeviationP50=terminalDeviationP50Float;
 				const double terminalDeviationP95=terminalDeviationP95Float;
-				const double maximumDynamicsDoseScale=maximumDynamicsDoseScaleFloat;
+				double maximumDynamicsDoseScale=maximumDynamicsDoseScaleFloat;
+				double canonicalDynamicsMaximum=0.0;
+				const FireSimulationMethaneRecord& dynamicsFuel=
+					FireSimulationMethaneRecord::PhysicalV1();
+				for(std::size_t cell=0u;cell<cells;++cell){
+					std::array<double,9> terminal;
+					for(std::size_t component=0u;component<9u;++component)
+						terminal[component]=values[component*cells+cell];
+					double ratio=0.0;
+					if(!dynamicsFuel.AcceptedConservativeVolumeRatioByComponentOrder(
+						terminal.data(),terminal.size(),FireStateProducerPrecision::Binary32,
+						ratio,structuredError)){
+						if(structuredError&&structuredError->empty())*structuredError=
+							"production canonical dynamics recheck rejected cell "+
+							std::to_string(cell);
+						return false;
+					}
+					const double magnitude=std::fabs(ratio-1.0);
+					canonicalDynamicsMaximum=std::max(canonicalDynamicsMaximum,magnitude);
+					if(magnitude>0x1p-2){
+						const double beginningMagnitude=std::fabs(
+							request.beginningManifoldDeviationPerCell[cell]);
+						const double headroom=0x1p-2-beginningMagnitude;
+						const double localDose=magnitude-beginningMagnitude;
+						if(!(headroom>0.0)||!(localDose>0.0)||!std::isfinite(headroom)||
+							!std::isfinite(localDose)){
+							if(structuredError)*structuredError=
+								"production canonical dynamics-bound dose is not reducible";
+							return false;
+						}
+						maximumDynamicsDoseScale=std::max(maximumDynamicsDoseScale,
+							localDose/headroom);
+					}
+				}
 				FireProductionRestorationPlateauValidation plateauValidation;
 				if( measureManifold&&(!manifoldReduction||manifoldReduction[2u]!=0u||
 					!std::isfinite(maximumManifoldGeneration)||
@@ -3330,7 +3396,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					lowMachValidityCeiling;
 				constexpr double monitoredDynamicsValidityBound=0x1p-2;
 				const bool dynamicsBoundPassed=!measureManifold||
-					maximumTerminalDeviation<=monitoredDynamicsValidityBound;
+					(maximumTerminalDeviation<=monitoredDynamicsValidityBound&&
+					 canonicalDynamicsMaximum<=monitoredDynamicsValidityBound);
 				if(measureManifold&&!dynamicsBoundPassed&&
 					(!std::isfinite(maximumDynamicsDoseScale)||maximumDynamicsDoseScale<=1.0))
 					return false;
@@ -3413,7 +3480,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				computed.deviceMakespanMS=(deviceEndTimeS-deviceStartTimeS)*1000.0;
 				computed.representedTimeStepS=request.force.timeStepS;
 				computed.maximumManifoldGeneration=maximumManifoldGeneration;
-				computed.maximumAcceptedManifoldDeviation=maximumTerminalDeviation;
+				computed.maximumAcceptedManifoldDeviation=!dynamicsBoundPassed?
+					std::max(maximumTerminalDeviation,canonicalDynamicsMaximum):
+					maximumTerminalDeviation;
 				computed.acceptedManifoldDeviationP95=terminalDeviationP95;
 				computed.acceptedManifoldDeviationP50=terminalDeviationP50;
 				computed.maximumPredictedAdvectiveManifoldAnomaly=
@@ -3440,8 +3509,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						static_cast<double>(request.force.timeStepS),maximumManifoldGeneration,
 						plateauValidation.deliveredDrainFraction,suggestedManifoldTimeStepS,0);
 				else if(measureManifold&&!dynamicsBoundPassed){
-					const float reduced=std::nextafter(
-						request.force.timeStepS/maximumDynamicsDoseScaleFloat,0.0f);
+					const float reduced=std::nextafter(static_cast<float>(
+						static_cast<double>(request.force.timeStepS)/maximumDynamicsDoseScale),0.0f);
 					computed.manifoldNextTimeStepAvailable=std::isfinite(reduced)&&reduced>0.0f&&
 						reduced<request.force.timeStepS;
 					suggestedManifoldTimeStepS=computed.manifoldNextTimeStepAvailable?
@@ -3602,7 +3671,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						"production restoration residual is amplified";
 				return false;
 			}
-			if( structuredError ) structuredError->clear();return true;
+			if( structuredError ) structuredError->clear();attemptCompleted=true;return true;
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionResidentStepResult();
 			if( structuredError ) try { *structuredError=

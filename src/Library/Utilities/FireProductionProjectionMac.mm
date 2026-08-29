@@ -514,7 +514,8 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			std::string* error )
 		{
 			cycleCount=hasOpenBoundary?
-				(execution==ProjectionResidentStateOnly?
+				((execution==ProjectionResidentStateOnly||
+					execution==ProjectionResidentTerminal)?
 					request.residentPhysicalOpenVCycleCount:16u):12u;
 			const char* activation=std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE");
 			const char* restorationTest=std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");

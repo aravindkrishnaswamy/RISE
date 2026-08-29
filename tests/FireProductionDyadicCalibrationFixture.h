@@ -821,7 +821,8 @@ namespace FireProductionDyadicCalibration
 
 	bool ApplyProductionResultUnchecked(const RISE::FireProductionResidentStepResult& production,
 		MethaneRunCheckpoint& state,std::string& error,
-		const bool enforceOracleEOSValidityDetector=true)
+		const bool enforceOracleEOSValidityDetector=true,
+		const unsigned int temperatureWorkerCount=1u)
 	{
 		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
 			return false;
@@ -838,17 +839,13 @@ namespace FireProductionDyadicCalibration
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		if(enforceOracleEOSValidityDetector){
 			if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
-				fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,1u)||
+				fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,
+				temperatureWorkerCount)||
 				temperature.size()!=cells)return false;
 		}else{
-			temperature.resize(cells);
-			for(std::size_t cell=0u;cell<cells;++cell){
-				MethaneCellState accepted=FromConservativeVector(conservative[cell],
-					production.conservativeProducerPrecision);
-				if(!InvertMethaneTemperatureWithinAcceptedEnvelope(accepted,
-					fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,
-					production.conservativeProducerPrecision,temperature[cell],&error))return false;
-			}
+			if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
+				fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,
+				temperatureWorkerCount,false)||temperature.size()!=cells)return false;
 		}
 		for(std::size_t cell=0u;cell<cells;++cell)state.states[cell].temperatureK=temperature[cell];
 		for(unsigned int axis=0u;axis<3u;++axis){
@@ -1211,7 +1208,8 @@ namespace FireProductionDyadicCalibration
 	}
 	bool ApplyAcceptedProductionResult(const RISE::FireProductionResidentStepResult& production,
 		const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
-		MethaneRunCheckpoint& state,std::string& error)
+		MethaneRunCheckpoint& state,std::string& error,
+		const unsigned int temperatureWorkerCount=1u)
 	{
 		if(!acceptedObservation.MatchesAcceptedResidentPayload(production))
 			return Fail(&error,"accepted manifold observation no longer matches resident payload");
@@ -1219,7 +1217,8 @@ namespace FireProductionDyadicCalibration
 		// validity detector, not a production thermochemistry-domain consumer.
 		// Accepted production publication retains the r60 conservative envelope
 		// and table-bounded temperature inversion without inheriting that detector.
-		return ApplyProductionResultUnchecked(production,state,error,false);
+		return ApplyProductionResultUnchecked(production,state,error,false,
+			temperatureWorkerCount);
 	}
 
 	struct ProductionAffineResidual

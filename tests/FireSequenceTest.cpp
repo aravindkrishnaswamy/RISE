@@ -79,7 +79,7 @@ namespace
 		const std::vector<std::size_t>& litPixels,const std::vector<double>& centroidX,
 		const std::vector<double>& centroidY)
 	{
-		if(digests.size()!=8u||visible.size()!=digests.size()||
+		if(digests.size()<8u||visible.size()!=digests.size()||
 			structured.size()!=digests.size()||litPixels.size()!=digests.size()||
 			centroidX.size()!=digests.size()||centroidY.size()!=digests.size())return false;
 		std::size_t minimumLit=std::numeric_limits<std::size_t>::max(),maximumLit=0u;
@@ -192,7 +192,7 @@ namespace
 		CFRelease(source);
 		if(!FirstLightAnimatedPlumeMetricsPass(digests,visible,structured,litCounts,
 			centroidX,centroidY)){
-			error="first-light GIF lacks eight visible structured and materially changing "
+			error="fire preview GIF lacks visible structured and materially changing "
 				"blue-plume frames";return false;
 		}
 		return true;
@@ -487,6 +487,183 @@ namespace
 		return 0;
 #endif
 	}
+
+	int RunTemporalFirePreviewChild(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& outputDirectory)
+	{
+#if !defined(__APPLE__)
+		(void)sourceDirectory;(void)outputDirectory;
+		std::fprintf(stderr,"temporal fire preview authoring requires macOS ImageIO\n");
+		return 90;
+#else
+		std::string error;
+		const std::filesystem::path manifestPath=
+			sourceDirectory/"sequence_manifest.rise-fire.cbor";
+		const RISECBOR64::Bytes manifestBytes=ReadFileBytes(manifestPath);
+		FireSequenceManifest manifest;
+		if(manifestBytes.empty()||!manifest.LoadCanonicalEnvelope(manifestBytes,
+			sourceDirectory.string(),error)||!manifest.PreflightAllFrames(error)||
+			manifest.Frames().size()<8u||manifest.Channels().empty()){
+			std::fprintf(stderr,"temporal fire manifest rejected: %s\n",error.c_str());return 91;
+		}
+		const FireSequenceChannelDescriptor& channel=manifest.Channels().front();
+		const FireSequenceTimeMap& timeMap=manifest.TimeMap();
+		const double width=channel.voxelSizeMeters[0];
+		const double sceneStep=timeMap.frameStepSeconds/timeMap.sceneToSimulationScale;
+		const double framesPerPhysicalSecond=1.0/timeMap.frameStepSeconds;
+		const unsigned int framesPerSecond=static_cast<unsigned int>(
+			std::llround(framesPerPhysicalSecond));
+		if(!(width>0.0)||!std::isfinite(sceneStep)||!(sceneStep>0.0)||
+			framesPerSecond==0u||std::fabs(static_cast<double>(framesPerSecond)-
+				framesPerPhysicalSecond)>1.0e-12)return 91;
+		const double centerX=0.5*static_cast<double>(channel.dimensions[0])*width;
+		const double centerY=0.5*static_cast<double>(channel.dimensions[1])*width;
+		const double depth=std::max({static_cast<double>(channel.dimensions[0]),
+			static_cast<double>(channel.dimensions[1]),
+			static_cast<double>(channel.dimensions[2])})*width;
+		const double centerZ=0.18*depth;
+		std::filesystem::path stage;
+		const std::string stageStem="rise-temporal-fire-"+
+			std::to_string(static_cast<long>(getpid()))+"-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+		for(unsigned int nonce=0u;nonce<100u&&stage.empty();++nonce){
+			const std::filesystem::path candidate=std::filesystem::temp_directory_path()/
+				(stageStem+"-"+std::to_string(nonce));
+			std::error_code createError;
+			if(std::filesystem::create_directory(candidate,createError))stage=candidate;
+		}
+		if(stage.empty())return 91;
+		setenv("RISE_MEDIA_PATH",(stage.string()+"/").c_str(),1);
+		const std::filesystem::path scenePath=stage/"temporal_fire.RISEscene";
+		{
+			std::ofstream scene(scenePath);
+			scene<<"RISE ASCII SCENE 7\n\nscene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
+				<<"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+				<<"pathtracing_spectral_rasterizer\n{\nsamples 4\nnmbegin 380\nnmend 780\n"
+				<<"num_wavelengths 32\nspectral_samples 4\nhwss false\npixel_filter box\n"
+				<<"oidn_denoise false\n}\n\nfile_rasterizeroutput\n{\npattern temporal_primary\n"
+				<<"type EXR\nbpp 32\ncolor_space Rec709RGB_Linear\nexposure 0\n"
+				<<"display_transform none\nexr_compression piz\n}\n\nfile_rasterizeroutput\n{\n"
+				<<"pattern temporal_display\ntype PNG\nbpp 16\ncolor_space sRGB\n"
+				<<"exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
+				<<"pinhole_camera\n{\nname camera\nlocation "<<centerX<<' '<<
+					centerY-0.52*depth<<' '<<centerZ<<"\nlookat "<<centerX<<' '<<centerY<<' '<<
+					centerZ<<"\nup 0 0 1\nfov 45\nexposure 0.04\nscanning_rate -0.1\n"
+				<<"pixel_rate 0.02\n}\n\nfire_medium\n{\nname sequence_fire\nfidelity_mode preview\n"
+				<<"sequence_manifest "<<manifestPath.string()<<"\nchannel_carbon carbon\n"
+				<<"channel_temperature temperature\nchannel_reaction reaction\n"
+				<<"channel_chem_ch chem_CH\nchannel_chem_c2 chem_C2\nchannel_chem_co2 chem_CO2\n"
+				<<"channel_velocity velocity\n}\n\nglobal_medium\n{\nmedium sequence_fire\n}\n";
+			if(!scene.good())return 92;
+		}
+		IJobPriv* job=nullptr;
+		if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(scenePath.string().c_str())){
+			if(job)job->release();return 92;
+		}
+		auto waitForPair=[&](const std::string& previousProvenance,
+			RISECBOR64::Bytes& primaryBytes,RISECBOR64::Bytes& primarySidecar,
+			RISECBOR64::Bytes& displayBytes,RISECBOR64::Bytes& displaySidecar,
+			RISECBOR64::Value& primaryEnvelope,std::string& provenance)->bool{
+			for(unsigned int attempt=0u;attempt<6000u;++attempt){
+				primaryBytes=ReadFileBytes(stage/"temporal_primary.exr");
+				primarySidecar=ReadFileBytes(stage/"temporal_primary.exr.provenance.cbor");
+				displayBytes=ReadFileBytes(stage/"temporal_display.png");
+				displaySidecar=ReadFileBytes(stage/"temporal_display.png.provenance.cbor");
+				error.clear();
+				if(VerifyFireProvenanceEXR(primaryBytes,primarySidecar,error)&&
+					RISECBOR64::DecodeCanonical(primarySidecar,primaryEnvelope,&error)&&
+					VerifyVisibleFireDisplayDerivative(displayBytes,displaySidecar,
+						primaryEnvelope,error,true,true)&&
+					FirstLightEnvelopeHasFreshProvenance(primaryEnvelope,
+						previousProvenance,provenance))return true;
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			error="temporal fire frame did not publish a fresh verified pair";return false;
+		};
+		std::vector<std::filesystem::path> primaryFrames,displayFrames;
+		std::vector<FireFramePrimary> primaryLinks;
+		std::string previousProvenance;
+		for(std::size_t frame=0u;frame<manifest.Frames().size();++frame){
+			for(const std::filesystem::path& prior:std::array<std::filesystem::path,4>{
+				stage/"temporal_primary.exr",stage/"temporal_primary.exr.provenance.cbor",
+				stage/"temporal_display.png",stage/"temporal_display.png.provenance.cbor"}){
+				std::error_code removeError;std::filesystem::remove(prior,removeError);
+				if(removeError){job->release();return 93;}
+			}
+			const double sceneTime=timeMap.sceneTimeOrigin+static_cast<double>(frame)*sceneStep;
+			if(!job->RasterizeAnimation(sceneTime,sceneTime,1u,false,false)){
+				job->release();return 93;
+			}
+			RISECBOR64::Bytes primaryBytes,primarySidecar,displayBytes,displaySidecar;
+			RISECBOR64::Value envelope;std::string provenance;
+			if(!waitForPair(previousProvenance,primaryBytes,primarySidecar,displayBytes,
+				displaySidecar,envelope,provenance)){job->release();return 93;}
+			previousProvenance=provenance;
+			const RISECBOR64::Value* payload=envelope.Find("payload");
+			const RISECBOR64::Value* artifact=payload?payload->Find("artifact_sha256"):nullptr;
+			if(!artifact||artifact->GetType()!=RISECBOR64::Value::Text){job->release();return 93;}
+			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+			const std::filesystem::path primary=stage/("temporal_primary_"+index.str()+".exr");
+			const std::filesystem::path display=stage/("temporal_display_"+index.str()+".png");
+			for(const auto& copy:std::array<std::pair<std::filesystem::path,
+				std::filesystem::path>,4>{{
+				{stage/"temporal_primary.exr",primary},
+				{stage/"temporal_primary.exr.provenance.cbor",primary.string()+".provenance.cbor"},
+				{stage/"temporal_display.png",display},
+				{stage/"temporal_display.png.provenance.cbor",display.string()+".provenance.cbor"}}})
+				std::filesystem::copy_file(copy.first,copy.second,
+					std::filesystem::copy_options::overwrite_existing);
+			FireFramePrimary link;link.frameIndex=frame;link.provenanceId=provenance;
+			link.artifactSha256=artifact->GetText();primaryLinks.push_back(link);
+			primaryFrames.push_back(primary);displayFrames.push_back(display);
+			std::fprintf(stderr,"temporal fire render frame=%zu/%zu simulation_time=%.9g\n",
+				frame+1u,manifest.Frames().size(),timeMap.simulationTimeOrigin+
+				static_cast<double>(frame)*timeMap.frameStepSeconds);
+		}
+		const IRasterizer* rasterizer=job->GetRasterizer();
+		const FrameStore* store=rasterizer?rasterizer->GetFrameStore():nullptr;
+		const FrameStore::Metadata metadata=store?store->Meta():FrameStore::Metadata();
+		const std::filesystem::path temporaryGIF=stage/"temporal_fire_preview.gif.tmp";
+		const std::filesystem::path gifPath=stage/"temporal_fire_preview.gif";
+		const bool authored=AuthorFirstLightGIF(displayFrames,temporaryGIF,framesPerSecond,error);
+		const bool published=authored&&PublishFireFrameSequenceFileTransaction(metadata,
+			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+			temporaryGIF.string(),gifPath.string(),64u,64u,framesPerSecond,
+			static_cast<unsigned int>(primaryLinks.size()),primaryLinks,ValidateFirstLightGIF,error);
+		job->release();
+		if(!published){std::fprintf(stderr,"temporal fire GIF rejected: %s\n",error.c_str());return 94;}
+		std::filesystem::create_directories(outputDirectory);
+		for(std::size_t frame=0u;frame<primaryFrames.size();++frame){
+			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+			for(const auto& copy:std::array<std::pair<std::filesystem::path,
+				std::filesystem::path>,4>{{
+				{primaryFrames[frame],outputDirectory/("temporal_primary_"+index.str()+".exr")},
+				{primaryFrames[frame].string()+".provenance.cbor",
+					outputDirectory/("temporal_primary_"+index.str()+".exr.provenance.cbor")},
+				{displayFrames[frame],outputDirectory/("temporal_display_"+index.str()+".png")},
+				{displayFrames[frame].string()+".provenance.cbor",
+					outputDirectory/("temporal_display_"+index.str()+".png.provenance.cbor")}}})
+				std::filesystem::copy_file(copy.first,copy.second,
+					std::filesystem::copy_options::overwrite_existing);
+		}
+		std::filesystem::copy_file(gifPath,outputDirectory/"temporal_fire_preview.gif",
+			std::filesystem::copy_options::overwrite_existing);
+		std::filesystem::copy_file(gifPath.string()+".provenance.cbor",
+			outputDirectory/"temporal_fire_preview.gif.provenance.cbor",
+			std::filesystem::copy_options::overwrite_existing);
+		std::ofstream summary(outputDirectory/"temporal_preview_summary.txt");
+		summary<<"artifact_fidelity=display_derivative\npreview_label=temporal_fire_preview\n"
+			<<"source_manifest_sha256="<<DigestFile(manifestPath)<<"\nframes="<<primaryLinks.size()<<
+			"\nfps="<<framesPerSecond<<"\ngif_sha256="<<
+			DigestFile(outputDirectory/"temporal_fire_preview.gif")<<"\n";
+		summary.close();
+		std::printf("TEMPORAL_FIRE_PREVIEW frames=%zu fps=%u manifest=%s gif=%s output=%s\n",
+			primaryLinks.size(),framesPerSecond,DigestFile(manifestPath).c_str(),
+			DigestFile(outputDirectory/"temporal_fire_preview.gif").c_str(),
+			(outputDirectory/"temporal_fire_preview.gif").string().c_str());
+		return 0;
+#endif
+	}
 }
 
 #if defined(_WIN32)
@@ -701,6 +878,16 @@ namespace
 		std::string migrationNewBuildId;
 		std::uint64_t migrationAcceptedStepCount=0u;
 		std::uint64_t migrationResumedFromStep=0u;
+		std::vector<double> monitoredManifoldMaximumHistory;
+		std::vector<double> monitoredManifoldP95History;
+		std::vector<double> monitoredManifoldP50History;
+		std::vector<std::uint32_t> monitoredTailCellHistory;
+		std::vector<double> monitoredTailDrainedVolumeHistoryM3;
+		std::vector<double> productionDeviceHistoryMS;
+		std::vector<double> productionWallHistoryMS;
+		std::uint64_t productionHardBoundRetryCount=0u;
+		std::uint64_t productionPhysicalProjectionRetryCount=0u;
+		double externalFuelMassKG=0.0;
 	};
 
 	struct RunPersistenceOptions
@@ -719,7 +906,25 @@ namespace
 		bool forceActiveSetIdentityCheckForTest=false;
 		bool injectActiveSetIdentityMismatchForTest=false;
 		bool forceZeroSourceForTest=false;
+		bool productionMetal=false;
+		std::filesystem::path temporalSnapshotDirectory;
+		double temporalSnapshotCadenceS=0.0;
+		double maximumProductionSourceStepS=0.0;
 	};
+
+	bool LimitBinary32ProductionStepToEvent(const double simulationTimeS,
+		const double eventTimeS,double& timeStepS)
+	{
+		if(!std::isfinite(simulationTimeS)||!std::isfinite(eventTimeS)||
+			!std::isfinite(timeStepS)||!(timeStepS>0.0)||!(simulationTimeS<eventTimeS)||
+			!(eventTimeS-simulationTimeS<timeStepS))return false;
+		const double remaining=eventTimeS-simulationTimeS;
+		float represented=static_cast<float>(remaining);
+		if(static_cast<double>(represented)<remaining)represented=std::nextafter(represented,
+			std::numeric_limits<float>::infinity());
+		if(!std::isfinite(represented)||!(represented>0.0f))return false;
+		timeStepS=static_cast<double>(represented);return true;
+	}
 
 	class CheckpointWriter
 	{
@@ -1087,7 +1292,7 @@ namespace
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		if(!InvertPeriodicTemperaturesWithinBounds(conservativeByCell,fuel,
 			fuel.TemperatureMinK(),fuel.TemperatureMaxK(),
-			FireStateProducerPrecision::Binary32,reconstructedTemperature,&inversionError,1u)||
+			FireStateProducerPrecision::Binary32,reconstructedTemperature,&inversionError,1u,false)||
 			reconstructedTemperature.size()!=checkpoint.states.size()){
 			if(!suppressExpectedCheckpointStateDiagnostic){
 				std::fprintf(stderr,
@@ -1312,7 +1517,11 @@ namespace
 			!forceMalformedManifoldLifecycleWriteForTest)return false;
 		if(version>=9u&&version<13u&&precision==FireStateProducerPrecision::Binary64&&
 			checkpoint.acceptedSteps>0u&&!forceMalformedManifoldLifecycleWriteForTest)return false;
-		if(!WriteCheckpointSerializedPrefix(writer,checkpoint,version))return false;
+		if(!WriteCheckpointSerializedPrefix(writer,checkpoint,version)){
+			if(!suppressExpectedCheckpointStateDiagnostic)
+				std::fprintf(stderr,"checkpoint serialization refused at serialized-prefix\n");
+			return false;
+		}
 		if(version<10u){
 			if(version==9u&&precision==FireStateProducerPrecision::Binary32&&
 				(checkpoint.acceptedSteps!=0u||checkpoint.simulationTimeS!=0.0||
@@ -1344,7 +1553,11 @@ namespace
 				!checkpoint.values.acceptedTimeStepHistoryS.empty()))||
 			(productionState&&checkpoint.acceptedSteps>0u&&
 				!AcceptedCheckpointTimelineValid(checkpoint));
-		if(invalidManifoldLifecycle&&!forceMalformedManifoldLifecycleWriteForTest)return false;
+		if(invalidManifoldLifecycle&&!forceMalformedManifoldLifecycleWriteForTest){
+			if(!suppressExpectedCheckpointStateDiagnostic)
+				std::fprintf(stderr,"checkpoint serialization refused at manifold-lifecycle\n");
+			return false;
+		}
 		const unsigned char manifoldAvailable=
 			observation.Available()?1u:0u;
 		const bool observationWritten=writer.Pod(manifoldAvailable)&&
@@ -1357,7 +1570,11 @@ namespace
 		if(version<12u)return true;
 		std::uint64_t stateDigest=0u;
 		if(observation.Available()&&!CheckpointAcceptedStateMatchesObservation(
-			checkpoint,observation,stateDigest))return false;
+			checkpoint,observation,stateDigest)){
+			if(!suppressExpectedCheckpointStateDiagnostic)
+				std::fprintf(stderr,"checkpoint serialization refused at accepted-state binding\n");
+			return false;
+		}
 		if(version>=13u&&precision==FireStateProducerPrecision::Binary64&&
 			checkpoint.acceptedSteps>0u){
 			stateDigest=checkpoint.binary64CheckpointAuthority.Digest();
@@ -1729,6 +1946,21 @@ namespace
 			++values.mccaffreyPlumeStationCount;
 		}
 	}
+	namespace FireProductionDyadicCalibration
+	{
+		bool BuildProductionRequest(const MethaneRunCheckpoint& state,
+			const std::vector<double>& divergenceTarget,double timeStepS,
+			RISE::FireProductionResidentStepRequest& request,std::string& error);
+		bool ApplyAcceptedProductionResult(
+			const RISE::FireProductionResidentStepResult& production,
+			const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
+			MethaneRunCheckpoint& state,std::string& error,
+			unsigned int temperatureWorkerCount);
+	}
+#if defined(RISE_ENABLE_OPENVDB)
+	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
+		const SolverFrameValues& values);
+#endif
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
 		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
 		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
@@ -1778,7 +2010,8 @@ namespace
 		}
 		RISECBOR64::Bytes currentBuildBytes;
 		std::string currentBuildId,currentExecutableDigest;
-		if((!persistence.checkpointPath.empty()||!persistence.finalCheckpointPath.empty())&&
+		if((!persistence.checkpointPath.empty()||!persistence.finalCheckpointPath.empty()||
+			!persistence.temporalSnapshotDirectory.empty())&&
 			(!CurrentRendererBuildIdentity(currentBuildBytes,currentBuildId)||
 			!CurrentExecutableDigest(currentBuildBytes,currentExecutableDigest,error))){
 			values.structuredError="checkpoint_build_identity_failure";return values;
@@ -1816,6 +2049,23 @@ namespace
 			shape.cellWidthM,rho,9.80665,false,reaction.mixingTimeS,&error),
 			"capstone derives mixing time instead of authoring a closure constant");
 		std::vector<MethaneCellState> states(shape.CellCount(),state);
+		auto canonicalizeProductionBinary32State=[&](MethaneCellState& candidate)->bool{
+			ConservativeVector conservative=ToConservativeVector(candidate);
+			for(std::size_t component=0u;component<MethaneMassStateDimension;++component)
+				conservative[component]=static_cast<double>(static_cast<float>(
+					conservative[component]));
+			MethaneCellState represented=FromConservativeVector(conservative,
+				FireStateProducerPrecision::Binary32);
+			represented.temperatureK=candidate.temperatureK;
+			if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(represented),
+				represented.temperatureK,represented.sensibleEnergyJPerM3,&error))return false;
+			represented.sensibleEnergyJPerM3=static_cast<double>(static_cast<float>(
+				represented.sensibleEnergyJPerM3));
+			candidate=represented;return true;
+		};
+		if(persistence.productionMetal)for(MethaneCellState& cell:states)
+			if(!canonicalizeProductionBinary32State(cell)){
+				values.structuredError="production_initial_state_failure:"+error;return values;}
 		std::vector<MethaneReactionStep> reactions(shape.CellCount(),reaction);
 		std::vector<MethaneSourcePacket> packets;
 		RadiationEscapeFactor escape;
@@ -1826,7 +2076,8 @@ namespace
 		config.transport.deltaTimeS=reaction.deltaTimeS; config.transport.ambientTemperatureK=300.0;
 		config.transport.adiabaticTemperatureK=caseRecord.derived.maximumAcceptedTemperatureK;
 		config.transport.ambientGasDensityKGPerM3=rho;
-		config.transport.producerPrecision=FireStateProducerPrecision::Binary64;
+		config.transport.producerPrecision=persistence.productionMetal?
+			FireStateProducerPrecision::Binary32:FireStateProducerPrecision::Binary64;
 		Check(config.transport.adiabaticTemperatureK==2300.0&&
 			config.transport.adiabaticTemperatureK<
 				FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().TemperatureMaxK(),
@@ -1916,10 +2167,13 @@ namespace
 				projectionReferenceVelocityMPerS*config.openBoundary.velocityToleranceMPerS,
 			"capstone pressure-open deadband derives from the pinned epsilon_abs scene scale");
 		ConservativeAdvance3DResult advanced;
+		if(persistence.productionMetal)for(unsigned int axis=0u;axis<3u;++axis)
+			advanced.velocityMPerS.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
 		bool advancedOK=minimumStepCount>0u || targetTimeS==0.0;
 		double simulationTimeS=0.0,previousStepS=0.0;
 		unsigned int acceptedSteps=0u;
 		unsigned int effectiveMinimumStepCount=minimumStepCount;
+		FireProductionAcceptedManifoldObservation productionManifoldObservation;
 		values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
 		values.streamedFrameCount=persistence.streamedFrameCountAtStart;
 		values.workerCountHistory.push_back(workerCount);
@@ -1978,6 +2232,7 @@ namespace
 				return values;
 			}
 			states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
+			productionManifoldObservation=checkpoint.productionManifoldObservation;
 			config.transport.producerPrecision=checkpointPrecision;
 			advanced.velocityMPerS=std::move(checkpoint.velocity);
 			values=std::move(checkpoint.values);
@@ -2014,9 +2269,56 @@ namespace
 				simulationTimeS,persistence.checkpointPath.string().c_str());
 		}
 		auto lastCheckpointWall=std::chrono::steady_clock::now();
+		std::uint64_t temporalSnapshotIndex=values.streamedFrameCount;
+		double nextTemporalSnapshotS=values.statisticsStartS;
+		if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS)
+			nextTemporalSnapshotS+=persistence.temporalSnapshotCadenceS*(1.0+
+				std::floor((simulationTimeS-nextTemporalSnapshotS)/
+					persistence.temporalSnapshotCadenceS));
+		auto captureTemporalFrame=[&](){
+			values.dimensions={{shape.nx,shape.ny,shape.nz}};values.cellWidthM=shape.cellWidthM;
+			values.caseRecordId=caseRecord.caseRecordId;values.temperature.resize(shape.CellCount());
+			values.reaction.resize(shape.CellCount());values.carbon.resize(shape.CellCount());
+			values.velocity.resize(shape.CellCount());
+			for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+				values.temperature[cell]=static_cast<float>(states[cell].temperatureK);
+				values.reaction[cell]=static_cast<float>(packets.empty()?0.0:
+					packets[cell].gasHeatReleaseWPerM3);
+				values.carbon[cell]=static_cast<float>(std::max(0.0,
+					states[cell].constituent[MethaneCarbon]));
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
+					const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
+					values.velocity[cell][axis]=static_cast<float>(0.5*(
+						advanced.velocityMPerS.component[axis][lower]+
+						advanced.velocityMPerS.component[axis][upper]));
+				}
+			}
+		};
+		auto writeTemporalFrame=[&]()->bool{
+			captureTemporalFrame();
+			std::ostringstream frameName;frameName<<"frame_"<<std::setw(5)<<
+				std::setfill('0')<<temporalSnapshotIndex;
+			const std::filesystem::path framePath=persistence.temporalSnapshotDirectory/
+				(frameName.str()+".vdb");
+			if(!WriteProductionTemporalFrame(framePath,values)){
+				error="production temporal VDB publication failed";return false;
+			}
+			const std::string digest=DigestFile(framePath);
+			std::ofstream timeRecord(persistence.temporalSnapshotDirectory/
+				(frameName.str()+".time"),std::ios::trunc);
+			timeRecord<<std::setprecision(17)<<simulationTimeS<<'\n'<<digest<<'\n';
+			timeRecord.close();
+			if(digest.empty()||!timeRecord){error="production temporal frame record failed";
+				return false;}
+			++temporalSnapshotIndex;++values.streamedFrameCount;return true;
+		};
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
 		while(advancedOK&&(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
 			const auto profileStepStart=std::chrono::steady_clock::now();
+			double profileEligibilityMS=0.0,profileTransportMS=0.0,
+				profileSourceMS=0.0,profileTargetMS=0.0,profileResidentMS=0.0;
+			auto profileStageStart=profileStepStart;
 			if(acceptedSteps>=65536u) { advancedOK=false;error="capstone exceeded its deterministic step cap";break; }
 			IgnitionGrid eligibilityGrid;
 			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;eligibilityGrid.nz=shape.nz;
@@ -2028,7 +2330,10 @@ namespace
 			std::vector<bool> eligibility;
 			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
 				FireSimulationTransportRecord::OpenV1(),eligibility,&error);
+			profileEligibilityMS=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-profileStageStart).count();
 			if(!advancedOK) break;
+			profileStageStart=std::chrono::steady_clock::now();
 			double maximumSpeed=0.0;
 			for(unsigned int axis=0;axis<3;++axis) for(const double velocity:
 				(advanced.velocityMPerS.component[axis].empty()?momentum.component[axis]:
@@ -2052,6 +2357,8 @@ namespace
 				FireSimulationTransportRecord::OpenV1(),config.transport.producerPrecision,
 				cellTransportEvaluations,&error,workerCount);
 			if(!advancedOK) break;
+			profileTransportMS=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-profileStageStart).count();
 			double maximumReducedGravity=0.0,maximumActiveDiffusivity=0.0;
 			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
 				const CellTransportEvaluation& cellTransport=cellTransportEvaluations[cell];
@@ -2080,12 +2387,27 @@ namespace
 				chosenStep,previousStepS);
 			if(!(chosenStep>0.0)) {advancedOK=false;error="capstone pinned timestep is unbounded";break;}
 			double eventStep=chosenStep;
-			if(simulationTimeS<pilotRampEndS)eventStep=std::min({eventStep,
-				pilotCommandMaximumStepS,pilotRampEndS-simulationTimeS});
-			if(simulationTimeS<pilotEndS) eventStep=std::min(eventStep,pilotEndS-simulationTimeS);
-			if(simulationTimeS<values.statisticsStartS)
-				eventStep=std::min(eventStep,values.statisticsStartS-simulationTimeS);
-			if(targetTimeS>simulationTimeS) eventStep=std::min(eventStep,targetTimeS-simulationTimeS);
+			if(persistence.productionMetal&&persistence.maximumProductionSourceStepS>0.0)
+				eventStep=std::min(eventStep,persistence.maximumProductionSourceStepS);
+			if(simulationTimeS<pilotRampEndS){
+				eventStep=std::min(eventStep,pilotCommandMaximumStepS);
+				if(persistence.productionMetal)
+					LimitBinary32ProductionStepToEvent(simulationTimeS,pilotRampEndS,eventStep);
+				else if(pilotRampEndS-simulationTimeS<eventStep)
+					eventStep=pilotRampEndS-simulationTimeS;
+			}
+			auto limitToEvent=[&](const double event){
+				if(persistence.productionMetal)
+					LimitBinary32ProductionStepToEvent(simulationTimeS,event,eventStep);
+				else if(simulationTimeS<event&&event-simulationTimeS<eventStep)
+					eventStep=event-simulationTimeS;
+			};
+			limitToEvent(pilotEndS);
+			limitToEvent(values.statisticsStartS);
+			if(!persistence.temporalSnapshotDirectory.empty()&&
+				persistence.temporalSnapshotCadenceS>0.0)
+				limitToEvent(nextTemporalSnapshotS);
+			limitToEvent(targetTimeS);
 			if(reportCapstoneProgress&&acceptedSteps<4u)std::fprintf(stderr,
 				"capstone event-step=%0.9g pilot_ceiling=%0.9g ramp_end=%0.9g\n",
 				eventStep,pilotCommandMaximumStepS,pilotRampEndS);
@@ -2099,11 +2421,19 @@ namespace
 			std::string lastAdvanceError;
 			double trialStep=eventStep;
 			const FireStateProducerPrecision advanceOutputPrecision=
-				FireStateProducerPrecision::Binary64;
+				persistence.productionMetal?FireStateProducerPrecision::Binary32:
+					FireStateProducerPrecision::Binary64;
 			std::vector<double> pilotSetpointTemperatureK(shape.CellCount(),0.0);
+			std::vector<MethaneCellState> acceptedBeginningStates=states;
+			std::vector<double> acceptedProductionTemperatureK;
+			double acceptedExternalFuelMassKG=0.0;
 			for(unsigned int reduction=0;
 				reduction<RISE::FireStepRejectionRetryCap&&!advancedOK;++reduction) {
 				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
+				if(persistence.productionMetal)
+					trialStep=static_cast<double>(static_cast<float>(trialStep));
+				if(!std::isfinite(trialStep)||trialStep<=0.0){
+					lastAdvanceError="production represented timestep is invalid";break;}
 				bool commandOK=true;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell) {
 					commandOK=commandOK&&(persistence.forceZeroSourceForTest||
@@ -2118,24 +2448,280 @@ namespace
 				}
 				if(!commandOK){lastAdvanceError=error;break;}
 				config.transport.deltaTimeS=trialStep;
-				bool packetOK=true;
+				std::vector<MethaneCellState> packetBeginning=states;
+				PeriodicMACField productionMomentum=momentum;
+				PeriodicMACField productionVelocity=advanced.velocityMPerS;
+				double externalFuelMassKG=0.0;
+				if(persistence.productionMetal&&!persistence.forceZeroSourceForTest){
+					const double injectedGasDensity=injected.GasDensity();
+					const double injectedSpecificEnergy=injected.sensibleEnergyJPerM3/
+						injected.TotalDensity();
+					std::vector<ConservativeVector> staged(packetBeginning.size());
+					for(std::size_t cell=0u;cell<packetBeginning.size();++cell)
+						staged[cell]=ToConservativeVector(packetBeginning[cell]);
+					for(std::size_t y=0u;y<shape.ny;++y)for(std::size_t x=0u;x<shape.nx;++x){
+						const std::size_t sourceFace=y*shape.nx+x;
+						if(sourceFace>=sourcePattern.size()||sourcePattern[sourceFace]==0.0)continue;
+						const double massFlux=caseRecord.derived.nominalFuelFluxKGPerM2S*
+							sourcePattern[sourceFace];
+						const double densityDelta=massFlux*trialStep/shape.cellWidthM;
+						const std::size_t cell=x+shape.nx*y;
+						staged[cell][0]+=densityDelta;
+						for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+							staged[cell][1u+species]+=densityDelta*
+								injected.constituent[species]/injectedGasDensity;
+						staged[cell][8]+=densityDelta*injectedSpecificEnergy;
+						externalFuelMassKG+=massFlux*trialStep*shape.cellWidthM*shape.cellWidthM;
+						const std::size_t lowerFace=(y*shape.nx+x);
+						productionMomentum.component[2][lowerFace]=massFlux;
+						productionVelocity.component[2][lowerFace]=massFlux/injectedGasDensity;
+					}
+					for(ConservativeVector& represented:staged)
+						for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+							represented[component]=static_cast<double>(
+								static_cast<float>(represented[component]));
+					std::vector<double> stagedTemperature;
+					if(!InvertPeriodicTemperaturesWithinBounds(staged,fuel,fuel.TemperatureMinK(),
+						fuel.TemperatureMaxK(),
+						FireStateProducerPrecision::Binary32,stagedTemperature,&error,
+						workerCount,false)){lastAdvanceError=error;trialStep*=0.5;error.clear();continue;}
+					bool stagedOK=true;
+					for(std::size_t cell=0u;cell<packetBeginning.size();++cell){
+						packetBeginning[cell]=FromConservativeVector(staged[cell],
+							FireStateProducerPrecision::Binary32);
+						packetBeginning[cell].temperatureK=stagedTemperature[cell];
+						if(!canonicalizeProductionBinary32State(packetBeginning[cell])){
+							lastAdvanceError=error;stagedOK=false;break;}
+					}
+					if(!stagedOK){trialStep*=0.5;error.clear();continue;}
+				}
+				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
 				if(persistence.forceZeroSourceForTest){
 					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
-				}else packetOK=BuildFrozenMethaneSourcePackets(states,reactions,
+				}else packetOK=BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
 					std::vector<double>(shape.CellCount(),cellVolume),300.0,
 					caseRecord.derived.referenceHeatReleaseRateW,
 					caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
 					FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,
 					workerCount);
-				advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
+				if(packetOK&&persistence.productionMetal)for(MethaneSourcePacket& packet:packets){
+					RepresentMethaneSourcePacketBinary32(packet);
+					if(!CertifiedBinary32SourcePacket(packet,fuel)){packetOK=false;
+						 error="production source packet failed its Binary32 certificate";break;}
+				}
+				profileSourceMS=std::chrono::duration<double,std::milli>(
+					std::chrono::steady_clock::now()-profileStageStart).count();
+				if(packetOK&&persistence.productionMetal){
+					profileStageStart=std::chrono::steady_clock::now();
+					std::vector<ConservativeVector> stagedConservative(packetBeginning.size());
+					std::vector<ConservativeVector> sourceDelta(packetBeginning.size());
+					for(std::size_t cell=0u;cell<packetBeginning.size();++cell){
+						stagedConservative[cell]=ToConservativeVector(packetBeginning[cell]);
+						for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+							sourceDelta[cell][1u+species]=packets[cell].constituentDelta[species];
+						sourceDelta[cell][8]=packets[cell].sensibleEnergyDeltaJPerM3;
+					}
+					OpenMACField3D stagedVelocity;stagedVelocity.component=productionVelocity.component;
+					ConservativeAdvance3DConfig tangentConfig=config;
+					tangentConfig.transport.producerPrecision=FireStateProducerPrecision::Binary32;
+					std::vector<double> divergenceTarget;
+					packetOK=MonitoredProductionTangentDivergenceTarget3D(shape,stagedConservative,
+						stagedVelocity,sourceDelta,tangentConfig,fuel,fuel,
+						FireSimulationTransportRecord::OpenV1(),divergenceTarget,&error);
+					profileTargetMS=std::chrono::duration<double,std::milli>(
+						std::chrono::steady_clock::now()-profileStageStart).count();
+					MethaneRunCheckpoint productionState;
+					productionState.dimensions={{shape.nx,shape.ny,shape.nz}};
+					productionState.cellWidthM=shape.cellWidthM;
+					productionState.states=packetBeginning;
+					productionState.momentum=productionMomentum;
+					productionState.velocity=productionVelocity;
+					RISE::FireProductionResidentStepRequest request;
+					packetOK=packetOK&&FireProductionDyadicCalibration::BuildProductionRequest(
+						productionState,divergenceTarget,trialStep,request,error);
+					if(packetOK){
+						profileStageStart=std::chrono::steady_clock::now();
+						request.physicalOpenProjectionVCycleCount=19u;
+						for(std::size_t cell=0u;cell<shape.CellCount();++cell)
+							for(std::size_t component=0u;component<9u;++component){
+								const double value=sourceDelta[cell][component];
+								request.cellSourceIncrement[component*shape.CellCount()+cell]=
+									static_cast<float>(value);
+							}
+						RISE::FireProductionResidentStepResult production;
+						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
+						for(;;){
+							const auto wallStart=std::chrono::steady_clock::now();
+							attemptComputed=RISE::AttemptFireProductionResidentStepMetal(
+								request,production,&error);
+							wallMS+=std::chrono::duration<double,std::milli>(
+								std::chrono::steady_clock::now()-wallStart).count();
+							if(std::isfinite(production.deviceMakespanMS)&&
+								production.deviceMakespanMS>=0.0)deviceMS+=production.deviceMakespanMS;
+							const bool twoProjectionAttempt=
+								production.residentProjectionInvocationCount==2u;
+							const RISE::FireProductionProjectionResult& retryProjection=
+								twoProjectionAttempt?production.physicalProjection:production.projection;
+							if(retryProjection.validationPassed||production.HasAcceptedManifoldToken())break;
+							const double pre=retryProjection.
+								maximumPreProjectionResidualPerS;
+							const double post=retryProjection.
+								maximumPostProjectionResidualPerS;
+							const double band=retryProjection.validationBandPerS;
+							const std::uint32_t cycles=retryProjection.executedVCycleCount;
+							if((twoProjectionAttempt&&!production.projection.validationPassed)||cycles!=
+								request.physicalOpenProjectionVCycleCount||cycles<1u||cycles>=64u||
+								!std::isfinite(pre)||!std::isfinite(post)||!std::isfinite(band)||
+								!(pre>post)||!(post>0.0)||!(band>0.0)||!(post>band))break;
+							const double contraction=std::pow(post/pre,1.0/static_cast<double>(cycles));
+							const double requiredReal=(contraction>0.0&&contraction<1.0)?
+								std::ceil(std::log(band/pre)/std::log(contraction)):0.0;
+							if(!std::isfinite(requiredReal)||requiredReal<=cycles||requiredReal>64.0)break;
+							request.physicalOpenProjectionVCycleCount=
+								static_cast<std::uint32_t>(requiredReal);
+							++values.productionPhysicalProjectionRetryCount;
+							production=RISE::FireProductionResidentStepResult();error.clear();
+						}
+						advancedOK=attemptComputed;
+						unsigned int nextCandidate=0u;double nextTimeStepS=0.0;
+						const RISE::FireProductionResidentStepAttemptDisposition disposition=
+							RISE::ClassifyFireProductionResidentStepAttempt(
+								reduction,production,nextCandidate,nextTimeStepS);
+						if(!persistence.temporalSnapshotDirectory.empty()&&
+							disposition!=RISE::FireProductionResidentStepAttemptDisposition::Accepted)
+							std::fprintf(stderr,
+							"production attempt candidate=%u computed=%d dt=%.17g dev=%.9g p95=%.9g "
+							"tail=%u drain=%.9g dynamics=%d physical=%d terminal=%d token=%d "
+							"next=%d suggested=%.17g disposition=%u error=%s\n",
+							reduction,attemptComputed?1:0,
+							static_cast<double>(production.representedTimeStepS),
+							production.maximumAcceptedManifoldDeviation,
+							production.acceptedManifoldDeviationP95,
+							production.manifoldTailCellCount,
+							production.manifoldTailDrainedVolumeM3,
+							production.manifoldDynamicsBoundPassed?1:0,
+							production.physicalProjection.validationPassed?1:0,
+							production.projection.validationPassed?1:0,
+							production.HasAcceptedManifoldToken()?1:0,
+							production.manifoldNextTimeStepAvailable?1:0,
+							production.suggestedManifoldTimeStepS,
+							static_cast<unsigned int>(disposition),error.c_str());
+						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::
+							RetryAtSuggestedTimeStep){
+							++values.productionHardBoundRetryCount;
+							lastAdvanceError="production monitored dynamics bound requested a reduced step";
+							trialStep=nextTimeStepS;error.clear();continue;
+						}
+						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted){
+							RISE::FireProductionAcceptedManifoldObservation observation;
+							advancedOK=RISE::PublishFireProductionAcceptedManifoldObservation(
+									static_cast<double>(production.representedTimeStepS),production,
+									observation,&error)&&
+								FireProductionDyadicCalibration::ApplyAcceptedProductionResult(
+									production,observation,productionState,error,workerCount);
+							if(advancedOK){
+								productionManifoldObservation=observation;
+								advanced.conservative.resize(productionState.states.size());
+								acceptedProductionTemperatureK.resize(productionState.states.size());
+								for(std::size_t cell=0u;cell<productionState.states.size();++cell)
+								{
+									advanced.conservative[cell]=ToConservativeVector(
+										productionState.states[cell]);
+									acceptedProductionTemperatureK[cell]=
+										productionState.states[cell].temperatureK;
+								}
+								advanced.momentumKGPerM2S=productionState.momentum;
+								advanced.velocityMPerS=productionState.velocity;
+								values.monitoredManifoldMaximumHistory.push_back(
+									production.maximumAcceptedManifoldDeviation);
+								values.monitoredManifoldP95History.push_back(
+									production.acceptedManifoldDeviationP95);
+								values.monitoredManifoldP50History.push_back(
+									production.acceptedManifoldDeviationP50);
+								values.monitoredTailCellHistory.push_back(
+									production.manifoldTailCellCount);
+								values.monitoredTailDrainedVolumeHistoryM3.push_back(
+									production.manifoldTailDrainedVolumeM3);
+								values.productionDeviceHistoryMS.push_back(deviceMS);
+								values.productionWallHistoryMS.push_back(wallMS);
+								if(!persistence.temporalSnapshotDirectory.empty()&&
+									(acceptedSteps+1u)%256u==0u){
+									double maximumVelocity=0.0,maximumTemperature=0.0,
+										minimumGasDensity=std::numeric_limits<double>::infinity(),
+										maximumGasDensity=0.0,
+										minimumAuxiliaryFaceDensity=std::numeric_limits<double>::infinity(),
+										maximumTransportedMomentum=0.0;
+									for(const MethaneCellState& accepted:productionState.states){
+										maximumTemperature=std::max(maximumTemperature,
+											accepted.temperatureK);
+										minimumGasDensity=std::min(minimumGasDensity,accepted.GasDensity());
+										maximumGasDensity=std::max(maximumGasDensity,accepted.GasDensity());
+									}
+									for(const std::vector<double>& component:productionState.velocity.component)
+										for(const double velocity:component)maximumVelocity=std::max(
+											maximumVelocity,std::fabs(velocity));
+									for(const std::vector<float>& component:
+										production.transportedDual.auxiliaryFaceDensity)
+										for(const float density:component)minimumAuxiliaryFaceDensity=
+											std::min(minimumAuxiliaryFaceDensity,static_cast<double>(density));
+									for(const std::vector<float>& component:production.transportedDual.momentum)
+										for(const float value:component)maximumTransportedMomentum=
+											std::max(maximumTransportedMomentum,std::fabs(static_cast<double>(value)));
+									std::fprintf(stderr,"production accepted step=%u time=%.17g dt=%.17g "
+										"dev=%.9g p95=%.9g tail=%u drain=%.9g velocity=%.9g "
+										"temperature=%.9g min_gas=%.9g max_gas=%.9g lambda=%.9g min_aux_rho=%.9g "
+										"max_transport_momentum=%.9g\n",
+										acceptedSteps+1u,simulationTimeS+trialStep,trialStep,
+										production.maximumAcceptedManifoldDeviation,
+										production.acceptedManifoldDeviationP95,
+										production.manifoldTailCellCount,
+										production.manifoldTailDrainedVolumeM3,maximumVelocity,
+										maximumTemperature,minimumGasDensity,maximumGasDensity,
+										static_cast<double>(production.forceDiagnostics.outwardLambdaPerS),
+										minimumAuxiliaryFaceDensity,maximumTransportedMomentum);
+								}
+								acceptedBeginningStates=std::move(packetBeginning);
+								acceptedExternalFuelMassKG=externalFuelMassKG;
+							}
+						}else{
+							advancedOK=false;
+							if(reportCapstoneProgress||
+								!persistence.temporalSnapshotDirectory.empty())std::fprintf(stderr,
+								"production rejection candidate=%u physical_valid=%d terminal_valid=%d "
+								"token=%d plateau_passed=%d dynamics_passed=%d next_available=%d "
+								"represented_dt=%.17g suggested_dt=%.17g field_max=%.17g "
+								"invocations=%u cycles=%u pre=%.17g post=%.17g band=%.17g error=%s\n",
+								reduction,production.physicalProjection.validationPassed?1:0,
+								production.projection.validationPassed?1:0,
+								production.HasAcceptedManifoldToken()?1:0,
+								production.manifoldPlateauPassed?1:0,
+								production.manifoldDynamicsBoundPassed?1:0,
+								production.manifoldNextTimeStepAvailable?1:0,
+								static_cast<double>(production.representedTimeStepS),
+								production.suggestedManifoldTimeStepS,
+								production.maximumAcceptedManifoldDeviation,
+								production.residentProjectionInvocationCount,
+								production.projection.executedVCycleCount,
+								production.projection.maximumPreProjectionResidualPerS,
+								production.projection.maximumPostProjectionResidualPerS,
+								production.projection.validationBandPerS,error.c_str());
+							if(error.empty())error="production resident attempt was rejected";
+							lastAdvanceError=error;break;
+						}
+						profileResidentMS=std::chrono::duration<double,std::milli>(
+							std::chrono::steady_clock::now()-profileStageStart).count();
+					}
+				}else advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
 					config,fuel,fuel,FireSimulationTransportRecord::OpenV1(),advanced,&error);
 				if(advancedOK) {
 					std::vector<double> trialTemperature;
-					advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
+					if(persistence.productionMetal){
+						trialTemperature=acceptedProductionTemperatureK;
+						advancedOK=trialTemperature.size()==advanced.conservative.size();
+					}else advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 						config.transport.ambientTemperatureK,
 						caseRecord.derived.maximumAcceptedTemperatureK,
-						advanceOutputPrecision,trialTemperature,&error,
-						workerCount);
+						advanceOutputPrecision,trialTemperature,&error,workerCount);
 					if(advancedOK&&std::any_of(trialTemperature.begin(),trialTemperature.end(),
 						[&caseRecord](const double temperatureK){return !std::isfinite(temperatureK)||
 							temperatureK>=caseRecord.derived.maximumAcceptedTemperatureK;})) {
@@ -2228,7 +2814,7 @@ namespace
 				double expectedStepPilotEnergyJ=0.0;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell){
 					double pilotEnergyJPerM3=0.0;
-					if(!ComputeMethanePilotEnergyDeltaJPerM3(states[cell],fuel,
+					if(!ComputeMethanePilotEnergyDeltaJPerM3(acceptedBeginningStates[cell],fuel,
 						pilotSetpointTemperatureK[cell],
 						reactions[cell].pilotExpansionVolumeRatioCap,
 						pilotEnergyJPerM3,&error)){
@@ -2239,11 +2825,13 @@ namespace
 				if(!advancedOK)break;
 				const double priorMaximumTemperatureK=values.maximumTemperatureK;
 				std::vector<double> acceptedTemperature;
-				advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
+				if(persistence.productionMetal){
+					acceptedTemperature=acceptedProductionTemperatureK;
+					advancedOK=acceptedTemperature.size()==advanced.conservative.size();
+				}else advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 					config.transport.ambientTemperatureK,
 					caseRecord.derived.maximumAcceptedTemperatureK,
-					advanceOutputPrecision,acceptedTemperature,&error,
-					workerCount);
+					advanceOutputPrecision,acceptedTemperature,&error,workerCount);
 				const bool measurePilotApproach=!values.pilotApproachComplete&&
 					simulationTimeS<pilotEndS;
 				const bool holdPhase=simulationTimeS>=pilotRampEndS&&simulationTimeS<pilotEndS;
@@ -2275,13 +2863,14 @@ namespace
 						accepted.temperatureK);
 					if(pilotSetpointTemperatureK[acceptedCell]>0.0){
 						MethanePilotProjectionMap pilotMap;
-						if(!ComputeMethanePilotProjectionMap(states[acceptedCell],fuel,
+						if(!ComputeMethanePilotProjectionMap(acceptedBeginningStates[acceptedCell],fuel,
 							pilotSetpointTemperatureK[acceptedCell],
 							reactions[acceptedCell].pilotExpansionVolumeRatioCap,pilotMap,&error)){
 							advancedOK=false;break;
 						}
 						const bool abovePilotCeiling=
-							states[acceptedCell].temperatureK>=caseRecord.derived.pilotSetpointTemperatureK;
+							acceptedBeginningStates[acceptedCell].temperatureK>=
+								caseRecord.derived.pilotSetpointTemperatureK;
 						allPilotLedgerCeilingsQualified=allPilotLedgerCeilingsQualified&&
 							packets[acceptedCell].pilotEnergyDeltaJPerM3==
 								pilotMap.sensibleEnergyDeltaJPerM3&&
@@ -2348,6 +2937,7 @@ namespace
 					advancedOK=false;error=message.str();break;
 				}
 				values.expectedPilotEnergyJ+=expectedStepPilotEnergyJ;
+				values.externalFuelMassKG+=acceptedExternalFuelMassKG;
 				if(reportCapstoneProgress&&values.maximumTemperatureK>
 					std::max(2250.0,priorMaximumTemperatureK)) {
 					const std::size_t hottest=static_cast<std::size_t>(std::max_element(
@@ -2435,9 +3025,12 @@ namespace
 				}
 				values.acceptedTimeStepHistoryS.push_back(reaction.deltaTimeS);
 				if(FireProfileEnabled()){
-					std::fprintf(stderr,"FIREPROFSTEP step=%u dt=%.17g wall_ms=%.3f\n",
+					std::fprintf(stderr,"FIREPROFSTEP step=%u dt=%.17g wall_ms=%.3f "
+						"eligibility_ms=%.3f transport_ms=%.3f source_ms=%.3f target_ms=%.3f "
+						"resident_ms=%.3f\n",
 						acceptedSteps+1u,reaction.deltaTimeS,std::chrono::duration<double,std::milli>(
-							std::chrono::steady_clock::now()-profileStepStart).count());
+							std::chrono::steady_clock::now()-profileStepStart).count(),profileEligibilityMS,
+						profileTransportMS,profileSourceMS,profileTargetMS,profileResidentMS);
 					FireProfileReportAndReset("step");
 				}
 				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
@@ -2448,7 +3041,17 @@ namespace
 					std::chrono::steady_clock::now()-lastCheckpointWall).count();
 				const bool equivalenceSnapshotDue=
 					!persistence.equivalenceSnapshotDirectory.empty();
+				const bool temporalSnapshotDue=
+					!persistence.temporalSnapshotDirectory.empty()&&
+					persistence.temporalSnapshotCadenceS>0.0&&
+					simulationTimeS>=nextTemporalSnapshotS;
 				const bool finalCheckpointDue=!moreWork&&!persistence.finalCheckpointPath.empty();
+				if(temporalSnapshotDue){
+					if(!writeTemporalFrame()){advancedOK=false;break;}
+					nextTemporalSnapshotS=values.statisticsStartS+
+						static_cast<double>(temporalSnapshotIndex)*
+						persistence.temporalSnapshotCadenceS;
+				}
 				const bool checkpointDue=equivalenceSnapshotDue||finalCheckpointDue||
 					(moreWork&&!persistence.checkpointPath.empty()&&
 						(persistence.checkpointCadenceWallS<=0.0||
@@ -2471,6 +3074,7 @@ namespace
 					checkpoint.previousStepS=previousStepS;
 					checkpoint.lastAcceptedStepS=reaction.deltaTimeS;
 					checkpoint.acceptedSteps=acceptedSteps;
+					checkpoint.productionManifoldObservation=productionManifoldObservation;
 					std::filesystem::path checkpointOutput=finalCheckpointDue?
 						persistence.finalCheckpointPath:persistence.checkpointPath;
 					if(equivalenceSnapshotDue){
@@ -2486,6 +3090,19 @@ namespace
 							IssueBinary64CheckpointAuthority(checkpoint));
 					const bool checkpointSaved=checkpointAuthorized&&SaveMethaneRunCheckpoint(
 						checkpointOutput,checkpoint,error);
+					if(!checkpointSaved&&(reportCapstoneProgress||
+						!persistence.temporalSnapshotDirectory.empty())){
+						std::uint64_t diagnosticStateDigest=0u;
+						const bool stateMatches=checkpoint.productionManifoldObservation.Available()&&
+							CheckpointAcceptedStateMatchesObservation(checkpoint,
+								checkpoint.productionManifoldObservation,diagnosticStateDigest);
+						std::fprintf(stderr,"checkpoint refusal authorized=%d timeline=%d observation=%d "
+							"state_matches=%d state_digest=%llu error=%s\n",checkpointAuthorized?1:0,
+							AcceptedCheckpointTimelineValid(checkpoint)?1:0,
+							checkpoint.productionManifoldObservation.Available()?1:0,
+							stateMatches?1:0,
+							static_cast<unsigned long long>(diagnosticStateDigest),error.c_str());
+					}
 					states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
 					advanced.velocityMPerS=std::move(checkpoint.velocity);
 					values=std::move(checkpoint.values);
@@ -2561,7 +3178,7 @@ namespace
 				values.maximumPilotApproachEOSResidual);
 		}
 		values.succeeded=true;
-		Check(advanced.conservative.empty() ||
+		if(!persistence.productionMetal)Check(advanced.conservative.empty() ||
 			advanced.effectiveWorkerCount==std::max(1u,std::min(workerCount,
 			static_cast<unsigned int>(shape.CellCount()))),
 			"capstone one-vs-N fixture selects the owning solver worker path");
@@ -2778,7 +3395,8 @@ namespace
 		const double caseHeatReleaseRateKW=0.10,
 		const bool caseHasRadiativeFractionOverride=false,
 		const double caseRadiativeFractionOverride=0.0,
-		const double caseResolutionTier=6.0,const bool casePlumeLaw=false )
+		const double caseResolutionTier=6.0,const bool casePlumeLaw=false,
+		const std::vector<std::pair<std::string,std::string> >& sequenceFrames={} )
 	{
 		using RISECBOR64::Value;
 		std::string error;
@@ -2828,6 +3446,23 @@ namespace
 			channels.push_back(Channel("chem_CO2","float32","W/m3","derived_eulerian_source",{0.0},scalarDimensions,voxelSize));
 		}
 		const bool preview=useProductionOptics || syntheticChem;
+		Value::Values encodedFrames;
+		std::uint64_t firstFrameIndex=4u,lastFrameIndex=5u;
+		if(sequenceFrames.empty()){
+			encodedFrames={
+				Value::MapValue({{"index",Value::Unsigned(4)},
+					{"path",Value::String("frame4.vdb")},{"sha256",Value::String(firstDigest)}}),
+				Value::MapValue({{"index",Value::Unsigned(5)},
+					{"path",Value::String("frame5.vdb")},{"sha256",Value::String(secondDigest)}})};
+		}else{
+			firstFrameIndex=0u;lastFrameIndex=sequenceFrames.size()-1u;
+			encodedFrames.reserve(sequenceFrames.size());
+			for(std::size_t frame=0u;frame<sequenceFrames.size();++frame)
+				encodedFrames.push_back(Value::MapValue({
+					{"index",Value::Unsigned(frame)},
+					{"path",Value::String(sequenceFrames[frame].first)},
+					{"sha256",Value::String(sequenceFrames[frame].second)}}));
+		}
 		const Value payload = Value::MapValue({
 			{"aerosol_thermochemistry_record",Value::BytesValue(aerosol)},
 			{"aerosol_thermochemistry_record_id",Value::String(RISECBOR64::SHA256Hex(aerosol))},
@@ -2837,15 +3472,10 @@ namespace
 			{"chem_record",Value::BytesValue(chem)},
 			{"chem_record_id",Value::String(RISECBOR64::SHA256Hex(chem))},
 			{"end_policy",Value::String(endPolicy)},
-			{"first_frame_index",Value::Unsigned(4)},
-			{"frame_count",Value::Unsigned(2)},
+			{"first_frame_index",Value::Unsigned(firstFrameIndex)},
+			{"frame_count",Value::Unsigned(encodedFrames.size())},
 			{"frame_encoding",Value::String("openvdb-v1")},
-			{"frames",Value::ArrayValue({
-				Value::MapValue({{"index",Value::Unsigned(4)},
-					{"path",Value::String("frame4.vdb")},{"sha256",Value::String(firstDigest)}}),
-				Value::MapValue({{"index",Value::Unsigned(5)},
-					{"path",Value::String("frame5.vdb")},{"sha256",Value::String(secondDigest)}})
-			})},
+			{"frames",Value::ArrayValue(encodedFrames)},
 			{"fuel_record",Value::BytesValue(fuel)},
 			{"fuel_record_id",Value::String(RISECBOR64::SHA256Hex(fuel))},
 			{"gas_opacity_record",Value::BytesValue(opacity)},
@@ -2853,7 +3483,7 @@ namespace
 			{"gas_thermochemistry_record",Value::BytesValue(thermo)},
 			{"gas_thermochemistry_record_id",Value::String(RISECBOR64::SHA256Hex(thermo))},
 			{"gate_evidence_ids",Value::ArrayValue({Value::String(gateEvidenceId)})},
-			{"last_frame_index",Value::Unsigned(5)},
+			{"last_frame_index",Value::Unsigned(lastFrameIndex)},
 			{"optical_record",Value::BytesValue(optics)},
 			{"optical_record_id",Value::String(RISECBOR64::SHA256Hex(optics))},
 			{"outside_halo_policy",Value::String("reject_outside_declared_halo")},
@@ -2874,7 +3504,7 @@ namespace
 			{"time_map",Value::MapValue({
 				{"alpha",Value::Float(sceneToSimulationScale)},
 				{"delta_t_frame",Value::Float(frameStepSeconds)},
-				{"i0",Value::Unsigned(4)},
+				{"i0",Value::Unsigned(firstFrameIndex)},
 				{"t0",Value::Float(simulationTimeOrigin)},
 				{"t_scene_0",Value::Float(sceneTimeOrigin)}
 			})},
@@ -3559,6 +4189,12 @@ namespace
 		return canonical&&durable;
 	}
 
+	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
+		const SolverFrameValues& values)
+	{
+		return WriteFrame(path,FrameMutation{},0.0f,true,values,0.8f);
+	}
+
 	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
@@ -3779,6 +4415,173 @@ namespace
 		return 0;
 	}
 
+	int RunProductionTemporalCapstoneChild(const double resolutionTier,
+		const double frameCadenceS,const std::filesystem::path& outputDirectory)
+	{
+#if !defined(RISE_ENABLE_OPENVDB)
+		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;return 90;
+#else
+		if((resolutionTier!=6.0&&resolutionTier!=10.0)||!(frameCadenceS>0.0)||
+			!std::isfinite(frameCadenceS)||
+			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
+		std::filesystem::create_directories(outputDirectory/"frames",directoryError);
+		if(directoryError)return 92;
+		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+		if(!beginning.succeeded||!(beginning.flowThroughTimeS>0.0))return 93;
+		const double expectedPuffingHz=1.5/std::sqrt(CapstonePoolDiameterM);
+		const double statisticsStartS=5.0*beginning.flowThroughTimeS;
+		const double statisticsDurationS=std::ceil((40.0/expectedPuffingHz)/
+			frameCadenceS)*frameCadenceS;
+		double targetTimeS=statisticsStartS+statisticsDurationS;
+		if(const char* diagnosticTarget=std::getenv("RISE_FIRE_TEMPORAL_TARGET_S")){
+			char* end=nullptr;const double parsed=std::strtod(diagnosticTarget,&end);
+			if(!end||*end!='\0'||!std::isfinite(parsed)||parsed<=0.0)return 91;
+			targetTimeS=parsed;
+		}
+		RunPersistenceOptions persistence;
+		persistence.productionMetal=true;
+		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
+		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
+		persistence.checkpointCadenceWallS=300.0;
+		const char* resumeRequested=std::getenv("RISE_FIRE_TEMPORAL_RESUME");
+		if(resumeRequested&&std::strcmp(resumeRequested,"1")==0){
+			if(!std::filesystem::exists(persistence.checkpointPath))return 92;
+			persistence.resume=true;
+		}
+		persistence.temporalSnapshotDirectory=outputDirectory/"checkpoints";
+		persistence.temporalSnapshotCadenceS=frameCadenceS;
+		// r175 certifies the nonzero Binary32 source producer and burning-tail
+		// continuation at this represented step.  A source-bearing campaign may
+		// select a smaller CFL step, but it must not extrapolate that certificate
+		// to a larger source integration interval.
+		persistence.maximumProductionSourceStepS=
+			static_cast<double>(static_cast<float>(0.0016462659696117043));
+		// The capstone's CPU-side source/target reductions retain their sealed
+		// eight-worker owner; Metal still owns the resident full-grid work.
+		const unsigned int workers=8u;
+		const auto wallStart=std::chrono::steady_clock::now();
+		const SolverFrameValues result=RunMethaneFrameProbe(workers,1u,targetTimeS,
+			targetTimeS,1.0,resolutionTier,CapstonePoolDiameterM,
+			CapstoneHeatReleaseRateKW,false,persistence);
+		const double wallS=std::chrono::duration<double>(
+			std::chrono::steady_clock::now()-wallStart).count();
+		if(!result.succeeded){std::fprintf(stderr,"production temporal capstone failed: %s\n",
+			result.structuredError.c_str());return 94;}
+		std::vector<std::filesystem::path> temporalFrames;
+		for(const std::filesystem::directory_entry& entry:
+			std::filesystem::directory_iterator(outputDirectory/"checkpoints"))
+			if(entry.is_regular_file()&&entry.path().extension()==".vdb")
+				temporalFrames.push_back(entry.path());
+		std::sort(temporalFrames.begin(),temporalFrames.end());
+		std::vector<std::string> frameDigests;
+		std::vector<double> frameTimesS;
+		std::string error;
+		for(std::size_t frame=0u;frame<temporalFrames.size();++frame){
+			std::ostringstream name;name<<"frame_"<<std::setw(5)<<std::setfill('0')<<frame<<".vdb";
+			const std::filesystem::path framePath=outputDirectory/"frames"/name.str();
+			if(temporalFrames[frame].filename()!=name.str())return 95;
+			std::filesystem::copy_file(temporalFrames[frame],framePath,
+				std::filesystem::copy_options::overwrite_existing,directoryError);
+			if(directoryError)return 96;
+			frameDigests.push_back(DigestFile(temporalFrames[frame]));
+			if(frameDigests.back().empty())return 96;
+			std::filesystem::path timePath=temporalFrames[frame];timePath.replace_extension(".time");
+			std::ifstream timeRecord(timePath);double timeS=0.0;std::string recordedDigest;
+			if(!(timeRecord>>timeS>>recordedDigest)||recordedDigest!=frameDigests.back()||
+				!std::isfinite(timeS))return 95;
+			frameTimesS.push_back(timeS);
+		}
+		if(frameTimesS.size()>1u)for(std::size_t frame=1u;frame<frameTimesS.size();++frame){
+			const double expected=static_cast<double>(frame)*frameCadenceS;
+			const double observed=frameTimesS[frame]-frameTimesS.front();
+			const double tolerance=8.0*std::numeric_limits<float>::epsilon()*
+				std::max(frameCadenceS,std::fabs(expected));
+			if(std::fabs(observed-expected)>tolerance)return 97;
+		}
+		std::ofstream frameTimes(outputDirectory/"frame_times.csv");
+		frameTimes<<"frame,simulation_time_s,vdb_sha256\n";
+		std::vector<std::pair<std::string,std::string> > manifestFrames;
+		for(std::size_t frame=0u;frame<frameDigests.size();++frame){
+			std::ostringstream name;name<<"frames/frame_"<<std::setw(5)<<
+				std::setfill('0')<<frame<<".vdb";
+			frameTimes<<frame<<','<<std::setprecision(17)<<frameTimesS[frame]<<','<<
+				frameDigests[frame]<<'\n';
+			manifestFrames.push_back({name.str(),frameDigests[frame]});
+		}
+		frameTimes.close();
+		std::string manifestDigest;
+		if(manifestFrames.size()>=2u){
+			const std::array<std::uint64_t,3> dimensions={{result.dimensions[0],
+				result.dimensions[1],result.dimensions[2]}};
+			const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,
+				dimensions,result.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,
+				true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
+				resolutionTier,true,manifestFrames);
+			const std::filesystem::path manifestPath=
+				outputDirectory/"sequence_manifest.rise-fire.cbor";
+			std::ofstream manifestOutput(manifestPath,std::ios::binary|std::ios::trunc);
+			manifestOutput.write(reinterpret_cast<const char*>(manifest.data()),
+				static_cast<std::streamsize>(manifest.size()));
+			manifestOutput.close();
+			if(!manifestOutput||DigestFile(manifestPath).empty())return 98;
+			FireSequenceManifest verified;
+			if(!verified.LoadCanonicalEnvelope(manifest,outputDirectory.string(),error)||
+				!verified.PreflightAllFrames(error))return 98;
+			manifestDigest=DigestFile(manifestPath);
+		}
+		std::ofstream diagnostics(outputDirectory/"monitored_diagnostics.csv");
+		diagnostics<<"step,dt_s,deviation_max,deviation_p95,deviation_p50,tail_cells,"
+			"tail_drained_m3,device_ms,wall_ms\n";
+		const std::size_t samples=std::min({result.acceptedTimeStepHistoryS.size(),
+			result.monitoredManifoldMaximumHistory.size(),result.monitoredManifoldP95History.size(),
+			result.monitoredManifoldP50History.size(),result.monitoredTailCellHistory.size(),
+			result.monitoredTailDrainedVolumeHistoryM3.size(),result.productionDeviceHistoryMS.size(),
+			result.productionWallHistoryMS.size()});
+		for(std::size_t sample=0u;sample<samples;++sample)diagnostics<<sample+1u<<','<<
+			std::setprecision(17)<<result.acceptedTimeStepHistoryS[sample]<<','<<
+			result.monitoredManifoldMaximumHistory[sample]<<','<<
+			result.monitoredManifoldP95History[sample]<<','<<
+			result.monitoredManifoldP50History[sample]<<','<<
+			result.monitoredTailCellHistory[sample]<<','<<
+			result.monitoredTailDrainedVolumeHistoryM3[sample]<<','<<
+			result.productionDeviceHistoryMS[sample]<<','<<result.productionWallHistoryMS[sample]<<'\n';
+		diagnostics.close();
+		std::ofstream summary(outputDirectory/"production_capstone_summary.txt");
+		summary<<std::setprecision(17)<<"artifact_fidelity=simulation_evidence\n"
+			<<"resolution_tier="<<resolutionTier<<"\n"
+			<<"maximum_source_step_s="<<persistence.maximumProductionSourceStepS<<"\n"
+			<<"target_time_s="<<targetTimeS<<"\n"
+			<<"statistics_start_s="<<result.statisticsStartS<<"\n"
+			<<"accepted_steps="<<result.acceptedTimeStepHistoryS.size()<<"\n"
+			<<"snapshot_cadence_s="<<frameCadenceS<<"\n"
+			<<"snapshot_count="<<frameDigests.size()<<"\n"
+			<<"frame_times_sha256="<<DigestFile(outputDirectory/"frame_times.csv")<<"\n"
+			<<"sequence_manifest_sha256="<<manifestDigest<<"\n"
+			<<"wall_s="<<wallS<<"\n"
+			<<"puffing_hz="<<result.puffingFrequencyHz<<"\n"
+			<<"puffing_relative_error="<<result.puffingRelativeError<<"\n"
+			<<"integrated_hrr_J="<<result.integratedHeatReleaseJ<<"\n"
+			<<"integrated_fuel_kg="<<result.integratedFuelConsumptionKG<<"\n"
+			<<"external_fuel_kg="<<result.externalFuelMassKG<<"\n"
+			<<"integrated_radiative_fraction="<<result.integratedRadiativeFraction<<"\n"
+			<<"hard_bound_retries="<<result.productionHardBoundRetryCount<<"\n"
+			<<"physical_projection_retries="<<result.productionPhysicalProjectionRetryCount<<"\n"
+			<<"diagnostics_sha256="<<DigestFile(outputDirectory/"monitored_diagnostics.csv")<<"\n";
+		for(std::size_t frame=0u;frame<frameDigests.size();++frame)
+			summary<<"frame_"<<std::setw(5)<<std::setfill('0')<<frame<<"_sha256="<<
+				frameDigests[frame]<<"\n";
+		summary.close();
+		std::fprintf(stderr,"PRODUCTION_TEMPORAL_CAPSTONE tier=%.0f time=%.17g steps=%zu "
+			"frames=%zu wall_s=%.17g summary=%s\n",resolutionTier,result.simulatedTimeS,
+			result.acceptedTimeStepHistoryS.size(),frameDigests.size(),wallS,
+			(outputDirectory/"production_capstone_summary.txt").string().c_str());
+		return frameDigests.empty()?97:0;
+#endif
+	}
+
 // Kept as a compact test-only include because the checkpoint schema and
 // certified periodic oracle are private to this translation unit.
 #include "FireProductionCalibrationFixture.h"
@@ -3953,6 +4756,14 @@ namespace
 int main(int argc,char** argv)
 {
 #if defined(RISE_ENABLE_OPENVDB)
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-temporal-capstone")==0){
+		double tier=0.0,cadence=0.0;
+		if(!ParsePositiveDoubleArgument(argv[2],tier)||
+			!ParsePositiveDoubleArgument(argv[3],cadence))return 91;
+		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4]);
+	}
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-temporal-preview")==0)
+		return RunTemporalFirePreviewChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-first-light-preview")==0)
 		return RunFirstLightPreviewChild(argv[2],argv[3]);
 	{
@@ -3975,6 +4786,17 @@ int main(int argc,char** argv)
 		Check(!FirstLightAnimatedPlumeMetricsPass(changing,plume,plume,changingArea,
 			staticCentroid,staticCentroid),
 			"first-light animation rejects static geometry with digest and area flicker");
+	}
+	{
+		const double beginning=2.1054894166300073;
+		const double pilotEnd=2.1063728557800188;
+		double representedStep=0.0016462659696117043;
+		Check(LimitBinary32ProductionStepToEvent(beginning,pilotEnd,representedStep)&&
+			representedStep==0.00088343920651823282&&beginning+representedStep>=pilotEnd,
+			"production event owner rounds the pilot deadline outward and leaves no microscopic step");
+		const double staleStep=static_cast<double>(static_cast<float>(pilotEnd-beginning));
+		Check(beginning+staleStep<pilotEnd,
+			"production event RED reproduces the inward-rounded pilot residue that caused velocity collapse");
 	}
 	if(const char* profileEnvironment=std::getenv("RISE_FIRE_PROFILE")){
 		if(std::strcmp(profileEnvironment,"1")!=0){
@@ -4083,6 +4905,11 @@ int main(int argc,char** argv)
 			probeWorkers=static_cast<unsigned int>(parsed);
 		}
 		RunPersistenceOptions probePersistence;
+		if(const char* productionEnvironment=std::getenv("RISE_FIRE_PRODUCTION_CAPSTONE")){
+			if(std::strcmp(productionEnvironment,"1")!=0){std::fprintf(stderr,
+				"RISE_FIRE_PRODUCTION_CAPSTONE must be exactly 1\n");return 96;}
+			probePersistence.productionMetal=true;
+		}
 		if(const char* checkpointEnvironment=std::getenv("RISE_FIRE_BUDGET_CHECKPOINT")){
 			if(!*checkpointEnvironment){std::fprintf(stderr,
 				"RISE_FIRE_BUDGET_CHECKPOINT is empty\n");return 96;}
