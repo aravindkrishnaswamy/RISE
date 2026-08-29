@@ -521,7 +521,7 @@ namespace
 		const double depth=std::max({static_cast<double>(channel.dimensions[0]),
 			static_cast<double>(channel.dimensions[1]),
 			static_cast<double>(channel.dimensions[2])})*width;
-		const double centerZ=0.18*depth;
+		const double centerZ=0.5*depth;
 		std::filesystem::path stage;
 		const std::string stageStem="rise-temporal-fire-"+
 			std::to_string(static_cast<long>(getpid()))+"-"+
@@ -549,7 +549,7 @@ namespace
 				"\ntype PNG\nbpp 16\ncolor_space sRGB\n"
 				<<"exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
 				<<"pinhole_camera\n{\nname camera\nlocation "<<centerX<<' '<<
-					centerY-0.52*depth<<' '<<centerZ<<"\nlookat "<<centerX<<' '<<centerY<<' '<<
+				centerY-1.25*depth<<' '<<centerZ<<"\nlookat "<<centerX<<' '<<centerY<<' '<<
 					centerZ<<"\nup 0 0 1\nfov 45\nexposure 0.04\nscanning_rate -0.1\n"
 				<<"pixel_rate 0.02\n}\n\nfire_medium\n{\nname sequence_fire\nfidelity_mode preview\n"
 				<<"sequence_manifest "<<manifestPath.string()<<"\nchannel_carbon carbon\n"
