@@ -127,6 +127,7 @@
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Utilities/SurfaceCurvature.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 
@@ -1910,15 +1911,17 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 // inside-origin hit (the sphere, torus, and quadric/ellipsoid
 // intersectors hard-code it; SDFGeometry sets it directly);
 // TriangleMeshGeometry(Indexed)::IntersectRay ignores bComputeExitInfo
-// entirely, so a mesh operand's range2 never reads as exactly 0.  And no
-// analytic geometry populates derivatives.valid (only the two
-// triangle-mesh classes do).  CONCLUSION: with today's geometry set, the
-// dndu/dndv negation inside this branch is UNREACHABLE code (harmlessly
-// guarded by `.valid`).  This test routes through the branch with two
-// NESTED analytic spheres to exercise the reachable half -- the
-// vNormal/vGeomNormal negation -- and confirms derivatives.valid is false
-// here, documenting the unreachability empirically rather than asserting
-// it away.
+// entirely, so a mesh operand's range2 never reads as exactly 0.
+//
+// UPDATED 2026-08-29 (geometry-shading-signals Phase 1): this note used to
+// continue "and no analytic geometry populates derivatives.valid, so the
+// dndu/dndv negation inside this branch is UNREACHABLE code".  The analytic
+// primitives now publish their closed-form Weingarten map at intersection
+// time (design doc 5.4), so the negation is REACHABLE -- and since the
+// geometries that reach this branch are exactly the ones that gained the
+// population, this test's two NESTED analytic spheres now cover BOTH halves:
+// the vNormal/vGeomNormal negation AND the dndu/dndv pairing, with a signed
+// curvature check on top (the carved cavity wall must read concave).
 //
 void TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch()
 {
@@ -1964,8 +1967,45 @@ void TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch()
 
 	// This routing means B is analytic -- derivatives are NEVER valid here.
 	// This is the empirical half of the reachability conclusion above.
-	Check( !ri.geometric.derivatives.valid,
-		"Test18 (P1-A item1): (documents reachability) derivatives.valid is FALSE -- sphere B never populates derivatives, confirming the dndu/dndv negation in this branch is unreachable today" );
+	// UPDATED 2026-08-29 (geometry-shading-signals Phase 1): this assertion
+	// used to read "derivatives.valid is FALSE -- sphere B never populates
+	// derivatives, so the dndu/dndv negation in this branch is unreachable".
+	// The analytic primitives now publish their closed-form Weingarten map at
+	// intersection time (design doc 5.4), so the branch IS reachable with
+	// valid derivatives -- which turns this from a documented gap into real
+	// coverage of the P1-1 negation.
+	Check( refB.geometric.derivatives.valid,
+		"Test18 (P1-A item1): (control) standalone analytic B publishes derivatives" );
+	Check( ri.geometric.derivatives.valid,
+		"Test18 (P1-A item1): composite carries B's derivatives through the entry-flip branch" );
+	if( ri.geometric.derivatives.valid && refB.geometric.derivatives.valid ) {
+		// The reported normal is -B.vNormal, so the derivatives OF that normal
+		// field must be negated with it.  dpdu/dpdv deliberately are NOT (that
+		// would reparameterize the surface -- docs/GEOMETRY_DERIVATIVES.md's
+		// CSG-subtraction exception).
+		Check( VecClose( ri.geometric.derivatives.dndu, -refB.geometric.derivatives.dndu, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- dndu negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dndv, -refB.geometric.derivatives.dndv, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- dndv negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdu, 1e-6 ),
+			"Test18 (P1-A item1): dpdu UNCHANGED (no reparameterization -- the documented CSG exception)" );
+		Check( VecClose( ri.geometric.derivatives.dpdv, refB.geometric.derivatives.dpdv, 1e-6 ),
+			"Test18 (P1-A item1): dpdv UNCHANGED (no reparameterization)" );
+
+		// The user-visible payoff of that pairing: signed mean curvature reads
+		// CONCAVE on the carved cavity wall and CONVEX on the same sphere
+		// standing alone.  Without the negation both would read convex.
+		Scalar Hcavity = 0, Hstandalone = 0;
+		const bool okC = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, Hcavity );
+		const bool okS = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refB.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdv,
+			refB.geometric.derivatives.dndu, refB.geometric.derivatives.dndv, Hstandalone );
+		Check( okC && okS, "Test18 (P1-A item1): curvature well-defined on both records" );
+		Check( okC && Hcavity < 0, "Test18 (P1-A item1): carved cavity wall reads CONCAVE (H < 0)" );
+		Check( okS && Hstandalone > 0, "Test18 (P1-A item1): the same sphere standing alone reads CONVEX (H > 0)" );
+	}
 
 	if( ri.geometric.bHit ) {
 		// MONEY ASSERTIONS: range == B's exit range, range2 == A's own
@@ -1993,9 +2033,10 @@ void TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch()
 //
 // REACHABILITY: same reasoning as Test 18 -- this branch requires
 // riObjB.range2==0 (origin inside B), which only an ANALYTIC B
-// (sphere/torus/quadric/SDF) can report, and no analytic geometry sets
-// derivatives.valid (only the two triangle-mesh classes do).
-// CONCLUSION: the dndu/dndv negation here is UNREACHABLE today under the
+// (sphere/torus/quadric/SDF) can report.  UPDATED 2026-08-29: those
+// geometries now DO publish derivatives at intersection time, so the
+// dndu/dndv negation here is REACHABLE and this test now asserts it
+// directly.  The historical note read: UNREACHABLE today under the
 // same analysis.  This test routes through the branch with an analytic
 // sphere B (nested inside a farther, off-center sphere A) to exercise the
 // reachable vNormal/vGeomNormal-negation half.
@@ -2049,8 +2090,45 @@ void TestSubtraction_InsideBNotA_NormalNegationRoutesThroughBranch()
 	Check( refA.geometric.range2 > refB.geometric.range,
 		"Test19 (P1-A item2): (control) A's exit is AFTER B's exit -- A is not wholly swallowed inside B" );
 
-	Check( !ri.geometric.derivatives.valid,
-		"Test19 (P1-A item2): (documents reachability) derivatives.valid is FALSE -- sphere B never populates derivatives, confirming the dndu/dndv negation in this branch is unreachable today" );
+	// UPDATED 2026-08-29 (geometry-shading-signals Phase 1): this assertion
+	// used to read "derivatives.valid is FALSE -- sphere B never populates
+	// derivatives, so the dndu/dndv negation in this branch is unreachable".
+	// The analytic primitives now publish their closed-form Weingarten map at
+	// intersection time (design doc 5.4), so the branch IS reachable with
+	// valid derivatives -- which turns this from a documented gap into real
+	// coverage of the P1-1 negation.
+	Check( refB.geometric.derivatives.valid,
+		"Test19 (P1-A item2): (control) standalone analytic B publishes derivatives" );
+	Check( ri.geometric.derivatives.valid,
+		"Test19 (P1-A item2): composite carries B's derivatives through the entry-flip branch" );
+	if( ri.geometric.derivatives.valid && refB.geometric.derivatives.valid ) {
+		// The reported normal is -B.vNormal, so the derivatives OF that normal
+		// field must be negated with it.  dpdu/dpdv deliberately are NOT (that
+		// would reparameterize the surface -- docs/GEOMETRY_DERIVATIVES.md's
+		// CSG-subtraction exception).
+		Check( VecClose( ri.geometric.derivatives.dndu, -refB.geometric.derivatives.dndu, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- dndu negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dndv, -refB.geometric.derivatives.dndv, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- dndv negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdu, 1e-6 ),
+			"Test19 (P1-A item2): dpdu UNCHANGED (no reparameterization -- the documented CSG exception)" );
+		Check( VecClose( ri.geometric.derivatives.dpdv, refB.geometric.derivatives.dpdv, 1e-6 ),
+			"Test19 (P1-A item2): dpdv UNCHANGED (no reparameterization)" );
+
+		// The user-visible payoff of that pairing: signed mean curvature reads
+		// CONCAVE on the carved cavity wall and CONVEX on the same sphere
+		// standing alone.  Without the negation both would read convex.
+		Scalar Hcavity = 0, Hstandalone = 0;
+		const bool okC = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, Hcavity );
+		const bool okS = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refB.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdv,
+			refB.geometric.derivatives.dndu, refB.geometric.derivatives.dndv, Hstandalone );
+		Check( okC && okS, "Test19 (P1-A item2): curvature well-defined on both records" );
+		Check( okC && Hcavity < 0, "Test19 (P1-A item2): carved cavity wall reads CONCAVE (H < 0)" );
+		Check( okS && Hstandalone > 0, "Test19 (P1-A item2): the same sphere standing alone reads CONVEX (H > 0)" );
+	}
 
 	if( ri.geometric.bHit ) {
 		// MONEY ASSERTIONS: range == B's exit range (unchanged from the
