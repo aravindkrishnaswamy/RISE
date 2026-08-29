@@ -66,10 +66,15 @@ RISE ASCII SCENE 7
 #                   sweeps hair AROUND the form, which renders as a lateral flare and a part, not as a      #
 #                   sweep down the head.  This was A/B'd on both base kinds during look-dev: comb up,       #
 #                   comb down and no comb all flare; only `gravity` (world -Y, frame-independent) drapes.   #
-#                   `hair_guides` would not help either -- a guide is replayed in the SAME surface frame,   #
-#                   so it can only say what comb can say, more precisely.  Every draped specimen here       #
-#                   gets its fall from `gravity` alone, and S1's asymmetric sweep is comb used FOR what     #
-#                   it actually does (`0.80 0.5 0.5`, an azimuthal push that reads as a side part).         #
+#                   `hair_guides` IS the way out, and S5 is the proof -- CORRECTING what an earlier         #
+#                   draft of this header asserted here.  A guide is indeed replayed in the same surface     #
+#                   frame, but a comb is ONE VECTOR and a guide is a WHOLE CURVE: the frame fixes only      #
+#                   where the curve is aimed, never what shape it has, so an S-bend authored through a      #
+#                   guide's points survives the transport intact and says what no constant comb can.        #
+#                   Every OTHER draped specimen here still gets its fall from `gravity` alone, and S1's     #
+#                   asymmetric sweep is comb used FOR what it actually does (`0.80 0.5 0.5`, an             #
+#                   azimuthal push that reads as a side part).  What the frame DOES still cost a guide      #
+#                   set is written up at S5.                                                                #
 #                                                                                                           #
 #                   THE RIG, and why it is three lights and not one.  A single instrument cannot show a     #
 #                   fibre BCSDF: the R lobe wants a source in front, the TT lobe wants one behind, and      #
@@ -97,11 +102,34 @@ RISE ASCII SCENE 7
 #                   glitter rather than as hair, and the difference between 64 and 256 is the difference    #
 #                   between a texture and a material.                                                       #
 #                                                                                                           #
-#                   COST.  ~1.98 M strands across the nine grooms (S4 the heaviest at 300 k, S8 the         #
-#                   lightest at 14 k -- a bristle brush is SPARSE, and that is the point of it).            #
-#                   1400x1050 at 96 spp is 5 min 40 s on a 14-core Apple Silicon laptop; the committed      #
-#                   256 spp is ~15 min.  Drop to 48 spp for look-dev: composition, groom silhouettes and    #
-#                   the colour ordering all read there.                                                     #
+#                   COST.  ~1.79 M strands across the nine grooms (S2 and S4 tie as the heaviest at         #
+#                   300 k, S8 the lightest at 14 k -- a bristle brush is SPARSE, and that is the point      #
+#                   of it).  1400x1050 at 96 spp is 5 min 12 s on a 14-core Apple Silicon laptop, and       #
+#                   the committed 256 spp scales to ~14 min.  Drop to 48 spp for look-dev: composition,     #
+#                   groom silhouettes and the colour ordering all read there.                               #
+#                                                                                                           #
+#                   WHAT STILL FALLS SHORT.  S2 and S5 were re-worked after the first pass, and this        #
+#                   is where each of them stands now, measured rather than hoped:                           #
+#                                                                                                           #
+#                     S2  IMPROVED, NOT CLOSED.  It reads as a glossy black SHELL now -- a hard white       #
+#                         crown highlight off the rim, and a satin band down the right flank -- where       #
+#                         before it was a matte bell wearing scattered glitter.  But the band is SOFT,      #
+#                         not the hard mirror line real jet-black hair shows, and the reason is             #
+#                         geometric and beyond the groom's reach: for a fibre hanging vertically the        #
+#                         key sits 36.2 deg above that fibre's normal plane and the camera 1.9 deg          #
+#                         below it, so the R lobe misses its mirror condition by 38 deg against a           #
+#                         beta_m of 6.3 deg.  Closing that would take the fibre tilted ~21 deg off          #
+#                         vertical across a wide area, or a cuticle `alpha` near 19 -- five times any       #
+#                         real hair.  What IS on the plate is the part of that condition a draped           #
+#                         shell's own curvature genuinely crosses, and nothing has been faked to            #
+#                         widen it.                                                                         #
+#                                                                                                           #
+#                     S5  FIXED.  The waves are waves, they come from `hair_guides` -- which nothing        #
+#                         else in the repository showcases -- and the featureless luminous mass is          #
+#                         gone.  Residual, honestly: the crown is smoother than the fall, because a         #
+#                         guide's wobble is authored to grow from zero at the root so that no guide         #
+#                         starts inside the block; and S5 is still the brightest thing in the frame,        #
+#                         which is what a 0.15 sigma_a under this key is entitled to be.                    #
 #                                                                                                           #
 #   Author:         RISE contributors                                                                       #
 #   Birthdate:      2026-08-28                                                                              #
@@ -485,12 +513,35 @@ hair_geometry
 # S2 -- JET BLACK STRAIGHT.  The sheen specimen.
 #
 # High eumelanin, no medulla, and the LOWEST roughness pair on the
-# plate (beta_m 0.14 / beta_n 0.13) -- a narrow, hard, anisotropic R
-# lobe, which is what "glossy black hair" means physically.  `alpha`
-# 3.2 tilts the cuticle scales a little further than the human default
-# so the sheen band sits clearly off the specular direction.  Longest
-# groom here (0.175 m) with `gravity` at its ceiling of 1.00, so it
-# falls as a curtain over the shoulders instead of ballooning.
+# plate (beta_m 0.11 / beta_n 0.12, against S8's 0.20 / 0.22 next) --
+# a narrow, hard, anisotropic R lobe, which is what "glossy black
+# hair" means physically.  At this absorption almost everything that
+# enters a fibre stays there, so to a camera in FRONT of the specimen
+# the R lobe is very nearly all of it -- what TT survives shows up only
+# as the red edge the back panel lights, and never on the form itself.
+# The groom below is therefore built for one lobe and one lobe only.
+#
+# WHICH IS WHY IT IS A SHELL AND NOT A MOP.  `frizz` 0.000 and `clump`
+# 0.08 are the two lowest on the plate, and deliberately: a mirror cone
+# is only legible while it stays COHERENT between neighbouring fibres,
+# and jitter of either kind decorrelates it into glitter -- which is
+# precisely what the first pass of this specimen produced.  `gravity`
+# 0.72 rather than the 1.00 that pass used, because a strand which
+# snaps vertical in its first centimetre offers one tangent direction
+# and one only, whereas a slower drape sweeps its tangent smoothly
+# through a range, and the sheen IS the locus where that sweep crosses
+# the mirror condition.  The fibres are widened to 0.17 mm so the lobe
+# has per-fibre area to sit on, and there are 300 k of them so the
+# shell stays opaque enough to read as a surface rather than a cloud.
+#
+# WHERE THE LIGHT ACTUALLY LANDS, measured by switching the other two
+# panels off in a draft copy: the key returns a mean of 3.98/255 over
+# the specimen, concentrated in the right third (7.0 there against 2.7
+# on the left); the fill returns 0.09 and is not a factor at all.  The
+# white patch on the crown is the RIM's R lobe, not the key's -- hair
+# rolling over the top of the dome is the one place on this block
+# whose tangents can answer a source that far behind it.  See the
+# header's WHAT STILL FALLS SHORT for what this specimen does not do.
 ##################################################
 scalar_painter
 {
@@ -509,9 +560,9 @@ hair_material
 	name			mat_s2
 	eumelanin		eu_s2
 	pheomelanin		ph_s2
-	beta_m			0.140
-	beta_n			0.130
-	alpha			3.2
+	beta_m			0.110
+	beta_n			0.120
+	alpha			2.6
 	ior			1.55
 }
 
@@ -519,19 +570,19 @@ hair_geometry
 {
 	name			groom_s2
 	base_geometry		geo_bust
-	count			260000
-	segments		12
-	length			0.175
-	width_root		0.00012
-	width_tip		0.00007
+	count			300000
+	segments		16
+	length			0.185
+	width_root		0.00017
+	width_tip		0.00010
 	base_detail		144
 	seed			23
 	density			pnt_scalp
 	length_painter		pnt_lenbob
-	gravity			1.00
-	frizz			0.03
-	clump			0.45
-	clump_size		0.014
+	gravity			0.72
+	frizz			0.000
+	clump			0.08
+	clump_size		0.030
 }
 
 ##################################################
@@ -649,7 +700,8 @@ hair_geometry
 }
 
 ##################################################
-# S5 -- SILVER-GREY WAVES.  The Tier-2 specimen, and the achromatic one.
+# S5 -- SILVER-GREY WAVES.  The Tier-2 specimen, the achromatic one,
+# and the plate's one GUIDED groom.
 #
 # `sigma_a` binds absorption per RGB channel DIRECTLY, with no melanin
 # model in between -- which is the only way to ask for a genuinely
@@ -658,10 +710,88 @@ hair_geometry
 # is a hair's breadth cool, which is what un-pigmented keratin actually
 # looks like next to a warm key.
 #
-# Same `curl_*` mechanism as S3 with the pitch raised to 0.050 against
-# a 0.150 m strand: one third of a turn over the whole length, i.e. a
-# wave rather than a curl.
+# THE WAVES ARE `hair_guides`, AND THEY HAVE TO BE.  The first pass
+# asked `curl_radius` 0.014 / `curl_step` 0.050 for them and got a
+# luminous featureless mass instead, which is the correct outcome and
+# not a bug: a curl is a HELIX of fixed radius about the strand's own
+# axis, and a wave is a low-frequency undulation OF that axis.  Open
+# the pitch far enough that the helix stops reading as a ringlet and
+# what is left is a straight strand -- there is no setting of the two
+# numbers that is a wave.  `frizz` cannot supply one either; noise is
+# not undulation.  `gd_wave` below states the shape outright.
+#
+# THE GUIDE SET, and why it is shaped the way it is.  37 curves on four
+# rings of the skull (5 at the crown, 10 / 14 over the dome, 8 across
+# the nape, where the hairline field actually grows hair).  Each one is
+# INTEGRATED rather than plotted: it leaves along the local surface
+# normal and turns toward -Y as it goes, so a crown guide arcs OVER the
+# dome instead of diving through it -- an earlier set that simply fell
+# from its root left the crown bare, because on the top of a head
+# "straight down" is "into the block".  On top of that spine rides an
+# S-wave, 1.65 periods of tangential swing and 1.15 of radial, its
+# amplitude ramped from zero at the root so no guide ever starts inside
+# the block.  Phase advances once around the head per ring and is
+# offset between rings, so crests SPIRAL instead of ringing up into
+# hoops.  Then `clump` 0.52 lets neighbouring strands undulate together
+# as locks (0.36 was tried and mushes the crests out; 0.50 with a
+# tighter cell reads as fingers), and the fibre count comes DOWN to
+# 88 k at 0.20 mm -- the fewest strands of any hair specimen here --
+# because a wave is GEOMETRY and geometry needs to be resolvable, not
+# averaged away inside a dense mass.  That drop is also what stopped
+# this specimen clipping: median luminance falls from 183/255 to 143.
+#
+# WHAT THE FRAME COSTS, since the header sends you here.  The transport
+# is rigid in the base's {tangent, bitangent, normal} frame, so a guide
+# authored in WORLD space is not replayed in world space -- it is
+# replayed rotated with the frame.  A version of this set that wobbled
+# every guide along world +X (to get undulation into the silhouette at
+# the left and right edges, where a radial wobble is invisible edge-on)
+# came back MORE homogeneous, not less: azimuthally-rotated copies of
+# one world shape interpolate to mush.  Authoring in the polar frame,
+# as below, is the honest way to talk to a lathe.
 ##################################################
+hair_guides
+{
+	name			gd_wave
+	guide			0.0324 0.2980 0.0062 0.0309 0.3148 0.0277 0.0442 0.3296 0.0027 0.0684 0.3400 -0.0221 0.0961 0.3396 -0.0131 0.1154 0.3267 0.0282 0.1252 0.3087 0.0655 0.1305 0.2893 0.0624 0.1321 0.2695 0.0202 0.1276 0.2496 -0.0206 0.1163 0.2296 -0.0193
+	guide			0.0041 0.2980 0.0327 0.0149 0.3148 0.0324 0.0394 0.3296 0.0483 0.0329 0.3400 0.0764 -0.0005 0.3396 0.1095 -0.0255 0.3267 0.1300 -0.0125 0.3087 0.1308 0.0296 0.2893 0.1182 0.0598 0.2695 0.1053 0.0459 0.2496 0.1031 -0.0006 0.2296 0.1138
+	guide			-0.0299 0.2980 0.0140 -0.0298 0.3148 0.0449 -0.0552 0.3296 0.0421 -0.0893 0.3400 0.0195 -0.1124 0.3396 0.0088 -0.1085 0.3267 0.0291 -0.0876 0.3087 0.0664 -0.0760 0.2893 0.0861 -0.0895 0.2695 0.0679 -0.1203 0.2496 0.0298 -0.1442 0.2296 0.0124
+	guide			-0.0226 0.2980 -0.0241 -0.0424 0.3148 -0.0357 -0.0292 0.3296 -0.0663 -0.0272 0.3400 -0.0813 -0.0518 0.3396 -0.0708 -0.0855 0.3267 -0.0486 -0.1008 0.3087 -0.0451 -0.0882 0.2893 -0.0745 -0.0659 0.2695 -0.1169 -0.0631 0.2496 -0.1372 -0.0891 0.2296 -0.1189
+	guide			0.0159 0.2980 -0.0289 0.0445 0.3148 -0.0310 0.0517 0.3296 -0.0325 0.0314 0.3400 -0.0533 0.0089 0.3396 -0.0849 0.0147 0.3267 -0.1049 0.0544 0.3087 -0.1059 0.0984 0.2893 -0.1010 0.1078 0.2695 -0.1061 0.0739 0.2496 -0.1228 0.0288 0.2296 -0.1350
+	guide			0.0570 0.2810 0.0000 0.0788 0.2912 0.0242 0.0892 0.2974 0.0293 0.1006 0.2978 0.0012 0.1164 0.2911 -0.0336 0.1368 0.2781 -0.0375 0.1589 0.2612 -0.0028 0.1778 0.2425 0.0378 0.1880 0.2229 0.0428 0.1868 0.2030 0.0046 0.1758 0.1830 -0.0405
+	guide			0.0461 0.2810 0.0335 0.0417 0.2912 0.0649 0.0584 0.2974 0.0600 0.0919 0.2978 0.0411 0.1213 0.2911 0.0391 0.1298 0.2781 0.0707 0.1229 0.2612 0.1184 0.1212 0.2425 0.1445 0.1364 0.2229 0.1273 0.1577 0.2030 0.0839 0.1617 0.1830 0.0557
+	guide			0.0176 0.2810 0.0542 0.0003 0.2912 0.0692 0.0306 0.2974 0.0740 0.0646 0.2978 0.0863 0.0693 0.2911 0.1141 0.0421 0.2781 0.1509 0.0152 0.2612 0.1791 0.0217 0.2425 0.1836 0.0601 0.2229 0.1658 0.0935 0.2030 0.1430 0.0862 0.1830 0.1344
+	guide			-0.0176 0.2810 0.0542 -0.0253 0.2912 0.0581 -0.0023 0.2974 0.0858 -0.0002 0.2978 0.1155 -0.0337 0.2911 0.1358 -0.0787 0.2781 0.1459 -0.0944 0.2612 0.1527 -0.0657 0.2425 0.1610 -0.0201 0.2229 0.1666 -0.0028 0.2030 0.1624 -0.0323 0.1830 0.1493
+	guide			-0.0461 0.2810 0.0335 -0.0456 0.2912 0.0469 -0.0525 0.2974 0.0791 -0.0829 0.2978 0.0883 -0.1270 0.2911 0.0742 -0.1567 0.2781 0.0625 -0.1521 0.2612 0.0758 -0.1222 0.2425 0.1079 -0.0978 0.2229 0.1285 -0.1039 0.2030 0.1153 -0.1362 0.1830 0.0799
+	guide			-0.0570 0.2810 0.0000 -0.0696 0.2912 0.0242 -0.0972 0.2974 0.0293 -0.1259 0.2978 0.0012 -0.1477 0.2911 -0.0336 -0.1577 0.2781 -0.0375 -0.1571 0.2612 -0.0028 -0.1522 0.2425 0.0378 -0.1503 0.2229 0.0428 -0.1557 0.2030 0.0046 -0.1679 0.1830 -0.0405
+	guide			-0.0461 0.2810 -0.0335 -0.0784 0.2912 -0.0224 -0.0925 0.2974 -0.0496 -0.0913 0.2978 -0.0921 -0.0924 0.2911 -0.1162 -0.1085 0.2781 -0.1024 -0.1327 0.2612 -0.0673 -0.1457 0.2425 -0.0494 -0.1372 0.2229 -0.0715 -0.1194 0.2030 -0.1174 -0.1164 0.1830 -0.1464
+	guide			-0.0176 0.2810 -0.0542 -0.0456 0.2912 -0.0720 -0.0270 0.2974 -0.1033 -0.0053 0.2978 -0.1291 -0.0123 0.2911 -0.1371 -0.0489 0.2781 -0.1292 -0.0825 0.2612 -0.1214 -0.0803 0.2425 -0.1301 -0.0444 0.2229 -0.1559 -0.0124 0.2030 -0.1828 -0.0200 0.1830 -0.1925
+	guide			0.0176 0.2810 -0.0542 0.0206 0.2912 -0.0831 0.0554 0.2974 -0.0915 0.0698 0.2978 -0.0999 0.0479 0.2911 -0.1154 0.0124 0.2781 -0.1343 0.0032 0.2612 -0.1478 0.0362 0.2425 -0.1528 0.0844 0.2229 -0.1551 0.1031 0.2030 -0.1634 0.0739 0.1830 -0.1776
+	guide			0.0461 0.2810 -0.0335 0.0745 0.2912 -0.0403 0.0984 0.2974 -0.0305 0.1003 0.2978 -0.0448 0.0867 0.2911 -0.0811 0.0816 0.2781 -0.1106 0.1036 0.2612 -0.1099 0.1447 0.2425 -0.0860 0.1758 0.2229 -0.0703 0.1732 0.2030 -0.0861 0.1419 0.1830 -0.1222
+	guide			0.0695 0.2480 0.0223 0.0814 0.2481 0.0172 0.1119 0.2440 0.0016 0.1365 0.2358 0.0169 0.1494 0.2237 0.0591 0.1556 0.2085 0.0925 0.1626 0.1912 0.0851 0.1710 0.1725 0.0433 0.1741 0.1530 0.0082 0.1676 0.1332 0.0161 0.1574 0.1132 0.0614
+	guide			0.0530 0.2480 0.0502 0.0755 0.2481 0.0450 0.1043 0.2440 0.0540 0.1101 0.2358 0.0886 0.0999 0.2237 0.1309 0.0975 0.2085 0.1494 0.1159 0.1912 0.1304 0.1421 0.1725 0.0946 0.1509 0.1530 0.0787 0.1326 0.1332 0.1010 0.1062 0.1132 0.1429
+	guide			0.0259 0.2480 0.0682 0.0566 0.2481 0.0750 0.0667 0.2440 0.1016 0.0467 0.2358 0.1369 0.0232 0.2237 0.1642 0.0281 0.2085 0.1690 0.0632 0.1912 0.1535 0.0964 0.1725 0.1367 0.0941 0.1530 0.1382 0.0573 0.1332 0.1607 0.0235 0.1132 0.1879
+	guide			-0.0062 0.2480 0.0727 0.0198 0.2481 0.0972 0.0041 0.2440 0.1240 -0.0328 0.2358 0.1433 -0.0531 0.2237 0.1539 -0.0333 0.2085 0.1585 0.0094 0.1912 0.1603 0.0320 0.1725 0.1622 0.0091 0.1530 0.1666 -0.0394 0.1332 0.1753 -0.0663 0.1132 0.1878
+	guide			-0.0372 0.2480 0.0628 -0.0299 0.2481 0.0982 -0.0639 0.2440 0.1082 -0.1005 0.2358 0.1074 -0.1074 0.2237 0.1129 -0.0794 0.2085 0.1312 -0.0465 0.1912 0.1514 -0.0459 0.1725 0.1578 -0.0844 0.1530 0.1488 -0.1296 0.1332 0.1402 -0.1408 0.1132 0.1489
+	guide			-0.0608 0.2480 0.0405 -0.0770 0.2481 0.0702 -0.1125 0.2440 0.0576 -0.1363 0.2358 0.0465 -0.1334 0.2237 0.0610 -0.1132 0.2085 0.0957 -0.1024 0.1912 0.1207 -0.1203 0.1725 0.1136 -0.1587 0.1530 0.0846 -0.1888 0.1332 0.0679 -0.1874 0.1132 0.0867
+	guide			-0.0723 0.2480 0.0101 -0.1027 0.2481 0.0184 -0.1253 0.2440 -0.0088 -0.1366 0.2358 -0.0159 -0.1378 0.2237 0.0123 -0.1378 0.2085 0.0515 -0.1466 0.1912 0.0626 -0.1667 0.1725 0.0328 -0.1904 0.1530 -0.0086 -0.2052 0.1332 -0.0184 -0.2040 0.1132 0.0166
+	guide			-0.0695 0.2480 -0.0223 -0.0958 0.2481 -0.0395 -0.1026 0.2440 -0.0670 -0.1127 0.2358 -0.0629 -0.1302 0.2237 -0.0304 -0.1488 0.2085 -0.0050 -0.1607 0.1912 -0.0185 -0.1658 0.1725 -0.0646 -0.1715 0.1530 -0.1025 -0.1827 0.1332 -0.0961 -0.1943 0.1132 -0.0513
+	guide			-0.0530 0.2480 -0.0502 -0.0595 0.2481 -0.0830 -0.0590 0.2440 -0.1009 -0.0798 0.2358 -0.0914 -0.1131 0.2237 -0.0710 -0.1344 0.2085 -0.0705 -0.1305 0.1912 -0.1032 -0.1145 0.1725 -0.1488 -0.1124 0.1530 -0.1709 -0.1343 0.1332 -0.1521 -0.1618 0.1132 -0.1112
+	guide			-0.0259 0.2480 -0.0682 -0.0095 0.2481 -0.0989 -0.0133 0.2440 -0.1089 -0.0462 0.2358 -0.1076 -0.0811 0.2237 -0.1102 -0.0855 0.2085 -0.1298 -0.0574 0.1912 -0.1639 -0.0292 0.1725 -0.1939 -0.0348 0.1530 -0.2010 -0.0733 0.1332 -0.1832 -0.1077 0.1132 -0.1573
+	guide			0.0062 0.2480 -0.0727 0.0357 0.2481 -0.0881 0.0233 0.2440 -0.1003 -0.0104 0.2358 -0.1174 -0.0280 0.2237 -0.1385 -0.0059 0.2085 -0.1600 0.0384 0.1912 -0.1780 0.0622 0.1725 -0.1902 0.0402 0.1530 -0.1949 -0.0079 0.1332 -0.1912 -0.0347 0.1132 -0.1802
+	guide			0.0372 0.2480 -0.0628 0.0648 0.2481 -0.0619 0.0508 0.2440 -0.0855 0.0327 0.2358 -0.1177 0.0421 0.2237 -0.1397 0.0834 0.2085 -0.1438 0.1264 0.1912 -0.1408 0.1342 0.1725 -0.1466 0.1004 0.1530 -0.1634 0.0577 0.1332 -0.1764 0.0473 0.1132 -0.1689
+	guide			0.0608 0.2480 -0.0405 0.0778 0.2481 -0.0330 0.0749 0.2440 -0.0672 0.0814 0.2358 -0.0985 0.1108 0.2237 -0.1017 0.1528 0.2085 -0.0815 0.1802 0.1912 -0.0675 0.1741 0.1725 -0.0825 0.1433 0.1530 -0.1166 0.1174 0.1332 -0.1360 0.1200 0.1132 -0.1180
+	guide			0.0723 0.2480 -0.0101 0.0815 0.2481 -0.0073 0.0977 0.2440 -0.0399 0.1225 0.2358 -0.0521 0.1529 0.2237 -0.0283 0.1787 0.2085 0.0073 0.1896 0.1912 0.0156 0.1836 0.1725 -0.0162 0.1690 0.1530 -0.0589 0.1591 0.1332 -0.0693 0.1618 0.1132 -0.0345
+	guide			-0.0278 0.2060 0.0486 -0.0592 0.1943 0.0545 -0.0663 0.1804 0.0571 -0.0437 0.1648 0.0746 -0.0175 0.1479 0.0985 -0.0214 0.1299 0.1124 -0.0607 0.1111 0.1110 -0.1043 0.0918 0.1057 -0.1130 0.0721 0.1116 -0.0790 0.0522 0.1295 -0.0346 0.0322 0.1422
+	guide			-0.0462 0.2060 0.0317 -0.0750 0.1943 0.0176 -0.0747 0.1804 0.0280 -0.0609 0.1648 0.0604 -0.0575 0.1479 0.0875 -0.0805 0.1299 0.0859 -0.1200 0.1111 0.0620 -0.1475 0.0918 0.0464 -0.1417 0.0721 0.0616 -0.1097 0.0522 0.0963 -0.0807 0.0322 0.1152
+	guide			-0.0553 0.2060 0.0085 -0.0702 0.1943 -0.0157 -0.0741 0.1804 0.0059 -0.0800 0.1648 0.0411 -0.0954 0.1479 0.0527 -0.1198 0.1299 0.0267 -0.1432 0.1111 -0.0111 -0.1537 0.0918 -0.0204 -0.1468 0.0721 0.0120 -0.1295 0.0522 0.0557 -0.1150 0.0322 0.0664
+	guide			-0.0536 0.2060 -0.0163 -0.0548 0.1943 -0.0368 -0.0728 0.1804 -0.0123 -0.0955 0.1648 0.0084 -0.1126 0.1479 -0.0050 -0.1205 0.1299 -0.0477 -0.1243 0.1111 -0.0821 -0.1301 0.0918 -0.0744 -0.1366 0.0721 -0.0306 -0.1360 0.0522 0.0071 -0.1243 0.0322 0.0013
+	guide			-0.0412 0.2060 -0.0379 -0.0393 0.1943 -0.0476 -0.0704 0.1804 -0.0344 -0.0941 0.1648 -0.0374 -0.0942 0.1479 -0.0691 -0.0800 0.1299 -0.1106 -0.0753 0.1111 -0.1283 -0.0922 0.0918 -0.1071 -0.1164 0.0721 -0.0672 -0.1218 0.0522 -0.0466 -0.0990 0.0322 -0.0650
+	guide			-0.0206 0.2060 -0.0521 -0.0264 0.1943 -0.0555 -0.0580 0.1804 -0.0622 -0.0647 0.1648 -0.0831 -0.0407 0.1479 -0.1149 -0.0142 0.1299 -0.1400 -0.0177 0.1111 -0.1420 -0.0525 0.0918 -0.1220 -0.0851 0.0721 -0.0990 -0.0809 0.0522 -0.0940 -0.0415 0.0322 -0.1117
+	guide			0.0040 0.2060 -0.0559 -0.0112 0.1943 -0.0647 -0.0273 0.1804 -0.0869 -0.0092 0.1648 -0.1082 0.0301 0.1479 -0.1233 0.0514 0.1299 -0.1303 0.0306 0.1111 -0.1303 -0.0143 0.0918 -0.1260 -0.0388 0.0721 -0.1207 -0.0165 0.0522 -0.1186 0.0328 0.0322 -0.1228
+	guide			0.0278 0.2060 -0.0486 0.0126 0.1943 -0.0708 0.0197 0.1804 -0.0932 0.0548 0.1648 -0.0975 0.0916 0.1479 -0.0921 0.0964 0.1299 -0.0933 0.0639 0.1111 -0.1067 0.0255 0.0918 -0.1211 0.0203 0.0721 -0.1212 0.0563 0.0522 -0.1069 0.1014 0.0322 -0.0952
+}
+
 scalar_painter
 {
 	name			sig_s5
@@ -685,21 +815,20 @@ hair_geometry
 {
 	name			groom_s5
 	base_geometry		geo_bust
-	count			210000
-	segments		14
-	length			0.150
-	width_root		0.00010
-	width_tip		0.00005
+	count			88000
+	segments		18
+	length			0.300
+	width_root		0.00020
+	width_tip		0.00012
 	base_detail		144
 	seed			71
 	density			pnt_scalp
 	length_painter		pnt_lenjit
-	gravity			0.95
-	frizz			0.05
-	clump			0.25
-	clump_size		0.017
-	curl_radius		0.014
-	curl_step		0.050
+	guides			gd_wave
+	gravity			0.30
+	frizz			0.045
+	clump			0.52
+	clump_size		0.026
 }
 
 ##################################################
