@@ -36,7 +36,8 @@ Object::Object( ) :
   nConsumedBy( 0 ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
-  m_worldAreaScale( 1.0 )
+  m_worldAreaScale( 1.0 ),
+  m_worldLinearScale( 1.0 )
 {
 }
 
@@ -55,7 +56,8 @@ Object::Object( const IGeometry* pGeometry_ ) :
   nConsumedBy( 0 ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
-  m_worldAreaScale( 1.0 )
+  m_worldAreaScale( 1.0 ),
+  m_worldLinearScale( 1.0 )
 {
 	if( pGeometry ) {
 		pGeometry->addref();
@@ -201,6 +203,7 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;
 	dst.m_tangentFrameSign     = m_tangentFrameSign;
 	dst.m_worldAreaScale       = m_worldAreaScale;
+	dst.m_worldLinearScale     = m_worldLinearScale;
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
 	// Copying these is what makes the clone independent: a later
@@ -874,6 +877,37 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			}
 		}
 
+		// WORLD-MEASURE FOLD for the two curvature-facing scalars
+		// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2).  DELIBERATELY OUTSIDE
+		// the `derivatives.valid` gate above: the SDF family sets
+		// `curvatureValid` while leaving `valid` false (an implicit surface has
+		// no natural (u,v) for dndu/dndv), so gating this on `valid` would
+		// leave every SDF hit reporting OBJECT-space curvature.
+		//
+		//  - scaleHint is a LENGTH:    multiply by |det M|^(1/3).
+		//  - curvature is a 1/LENGTH:  divide by the same factor.
+		//
+		// Both are stamped object-space by the geometry, and both are stamped
+		// ONLY when SurfaceCurvatureDemand::Any() -- so on a scene whose
+		// expressions never mention `curv` this block runs on the defaults
+		// (scaleHint 1, curvatureValid false): two predictable branches, no cost.
+		//
+		// A DEGENERATE transform (m_worldLinearScale == 0, i.e. |det| == 0 -- a
+		// collapsed axis) has no world length to fold into, and dividing the
+		// curvature by it would give Inf.  Mark the direct curvature invalid
+		// (the honest-absence path, matching the dndu/dndv guard above) and
+		// leave scaleHint at its object-space value rather than zeroing it: an
+		// object-space characteristic length is still a better normalizer for
+		// the `curv` fallback than 0 would be.
+		if( m_worldLinearScale > Scalar( 0 ) ) {
+			ri.geometric.derivatives.scaleHint *= m_worldLinearScale;
+			if( ri.geometric.derivatives.curvatureValid ) {
+				ri.geometric.derivatives.curvature /= m_worldLinearScale;
+			}
+		} else {
+			ri.geometric.derivatives.curvatureValid = false;
+		}
+
 		// Wireframe view-mode closest-edge point transforms like a
 		// position (forward transform) -- exactly as ptIntersection.
 		if( ri.geometric.bHasWireEdgeInfo ) {
@@ -1154,5 +1188,15 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	const Scalar absDet = fabs( det );
 	m_worldAreaScale = (absDet > Scalar( 0 ))
 		? pow( absDet, Scalar( 2.0 / 3.0 ) )
+		: Scalar( 0 );
+
+	// World-LINEAR scaling, |det|^(1/3) -- the length-measure sibling of the
+	// area Jacobian just above, cached for the same reason (the transform is
+	// immutable during render, and the hit path should be a single multiply).
+	// Consumed by the derivatives block in IntersectRay to put
+	// `derivatives.scaleHint` (a length) and `derivatives.curvature` (a
+	// 1/length) into WORLD measure.  Same degenerate-transform sentinel: 0.
+	m_worldLinearScale = (absDet > Scalar( 0 ))
+		? pow( absDet, Scalar( 1.0 / 3.0 ) )
 		: Scalar( 0 );
 }

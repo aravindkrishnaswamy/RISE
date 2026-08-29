@@ -76,6 +76,21 @@ namespace RISE
 			//! returns.  0 for degenerate (non-invertible) transforms.
 			Scalar											m_worldAreaScale;
 
+			//! World-LINEAR scaling of the transform's linear part,
+			//! |det|^(1/3) -- the length-measure sibling of
+			//! m_worldAreaScale's |det|^(2/3), with the same exactness
+			//! story (exact for rotations / reflections / uniform scales,
+			//! geometric-mean approximation otherwise) and the same 0 for
+			//! a degenerate transform.  Cached by FinalizeTransformations()
+			//! and folded into the hit record's
+			//! `derivatives.scaleHint` (multiplied: a length) and
+			//! `derivatives.curvature` (divided: a 1/length) so the
+			//! expression VM's `curv` / `curvR` are per-instance-correct
+			//! across two instances of one shared geometry at different
+			//! world scales.  See docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+			//! §5.2.
+			Scalar											m_worldLinearScale;
+
 			virtual ~Object( );
 
 			//! Copies this object's mutable snapshot state into `dst` (a

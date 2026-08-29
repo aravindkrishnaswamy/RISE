@@ -545,6 +545,37 @@ namespace
 		}
 
 		AdoptCsgSurfacePayload( dst, probe.geometric );
+
+		// RE-PAIR the adopted normal-derivative fields with the normal field
+		// the CALLER is actually reporting (the geometry-shading-signals arc,
+		// 2026-08-29).  The payload just adopted is the PROBE's, and the probe
+		// reported ITS OWN entry normal at that face; `dst.vNormal` was set by
+		// the calling branch a few lines before this call and is either
+		// `+operand.vNormal2` (the two CSG_UNION inside-an-operand branches) or
+		// `-operand.vNormal2` (the CSG_SUBTRACTION exit-designated branch).
+		// `dndu`/`dndv` -- and the SDF family's direct `curvature` -- are
+		// derivatives OF a normal field, so they are only meaningful paired
+		// with the field that is being reported; a sign mismatch ships a
+		// convex-reading curvature on a concave cavity wall.
+		//
+		// This is the case the P1-1 audit note at the CSG_SUBTRACTION call site
+		// flagged as "would need the same negation IF the probe's own normal
+		// agrees in sign with vNormal2 -- unreachable today because only
+		// triangle meshes populate derivatives".  Analytic primitives now
+		// populate them at intersection time (design doc 5.4), and their normal
+		// field IS direction-independent, so the case is reachable.  Testing the
+		// dot product rather than hard-coding a negation keeps all three call
+		// sites correct without each having to know which way its own branch
+		// flipped: a positive dot is a no-op.
+		if( Vector3Ops::Dot( probe.geometric.vNormal, dst.vNormal ) < Scalar( 0 ) ) {
+			if( dst.derivatives.valid ) {
+				dst.derivatives.dndu = -dst.derivatives.dndu;
+				dst.derivatives.dndv = -dst.derivatives.dndv;
+			}
+			if( dst.derivatives.curvatureValid ) {
+				dst.derivatives.curvature = -dst.derivatives.curvature;
+			}
+		}
 		return true;
 	}
 }
@@ -899,19 +930,34 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// TriangleMeshGeometry(Indexed)::IntersectRay ignores
 					// bComputeExitInfo entirely, leaving a mesh operand's
 					// range2 at its RISE_INFINITY default, which can never
-					// read as exactly 0.  And NO analytic geometry populates
-					// derivatives.valid (only the two triangle-mesh classes
-					// do) -- so no operand can BOTH trip range2==0 AND carry
-					// valid derivatives.  If Torus/Ellipsoid ever gain
-					// intersection-time derivatives (ManifoldSolver's stated
-					// eventual plan), re-audit this branch.  The
-					// dndu/dndv negation below is therefore UNREACHABLE under
-					// today's geometry set (guarded harmlessly by .valid); the
-					// vNormal/vGeomNormal negation above IS reachable (nested
-					// sphere/sphere operands) and IS regression-tested.
+					// read as exactly 0.  SUPERSEDED 2026-08-29
+					// (geometry-shading-signals Phase 1): this note used to
+					// continue "and NO analytic geometry populates
+					// derivatives.valid, so the negation below is UNREACHABLE".
+					// Sphere / Ellipsoid / Torus / Cylinder now DO populate
+					// derivatives at intersection time (design doc 5.4), and
+					// they are exactly the geometries that report range2 == 0
+					// for an inside-origin hit -- so this branch is now
+					// reachable WITH valid derivatives and the negation below
+					// is LIVE, not defensive.  The SDF family reaches it too,
+					// through the direct `curvature` field rather than
+					// dndu/dndv, which is why that negation is gated separately.
 					if( ri.geometric.derivatives.valid ) {
 						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
 						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
+					}
+					// Same re-pairing, for the DIRECT per-hit curvature the SDF
+					// family reports instead of dndu/dndv (design doc 5.4).  It
+					// is signed against the same normal field, so a reported
+					// -vNormal makes a convex operand read as the concave cavity
+					// wall it now is -- which is the physically right answer, and
+					// is exactly what the dndu/dndv negation above achieves for
+					// the geometries that carry the derivative pair.  Its own
+					// `curvatureValid` gate is separate from `valid` (an SDF sets
+					// one and not the other), so this cannot ride inside the
+					// block above.
+					if( ri.geometric.derivatives.curvatureValid ) {
+						ri.geometric.derivatives.curvature = -ri.geometric.derivatives.curvature;
 					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
@@ -933,6 +979,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
 						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
 					}
+					// Same re-pairing, for the DIRECT per-hit curvature the SDF
+					// family reports instead of dndu/dndv (design doc 5.4).  It
+					// is signed against the same normal field, so a reported
+					// -vNormal makes a convex operand read as the concave cavity
+					// wall it now is -- which is the physically right answer, and
+					// is exactly what the dndu/dndv negation above achieves for
+					// the geometries that carry the derivative pair.  Its own
+					// `curvatureValid` gate is separate from `valid` (an SDF sets
+					// one and not the other), so this cannot ride inside the
+					// block above.
+					if( ri.geometric.derivatives.curvatureValid ) {
+						ri.geometric.derivatives.curvature = -ri.geometric.derivatives.curvature;
+					}
 				} else {
 					ri = riObjA;
 				}
@@ -951,16 +1010,29 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// this branch requires riObjB.range2==0 (origin inside B),
 					// which -- same reasoning as the "inside both" branch above
 					// -- only an ANALYTIC B (sphere/torus/quadric/SDF) can
-					// report, and no analytic geometry sets derivatives.valid
-					// (only the two triangle-mesh classes do). The
-					// dndu/dndv negation below is therefore UNREACHABLE under
-					// today's geometry set (guarded harmlessly by .valid); the
-					// vNormal/vGeomNormal negation above IS reachable
-					// (sphere-B nested inside a farther sphere-A boundary) and
-					// IS regression-tested.
+					// report.  UPDATED 2026-08-29 (geometry-shading-signals Phase 1):
+					// those geometries NOW populate derivatives at intersection time
+					// (design doc 5.4), so the negation below is LIVE here -- the
+					// earlier "no analytic geometry sets derivatives.valid, therefore
+					// UNREACHABLE" reading is superseded.  The vNormal/vGeomNormal
+					// negation above was always reachable (sphere-B nested inside a
+					// farther sphere-A boundary) and IS regression-tested.
 					if( ri.geometric.derivatives.valid ) {
 						ri.geometric.derivatives.dndu = -ri.geometric.derivatives.dndu;
 						ri.geometric.derivatives.dndv = -ri.geometric.derivatives.dndv;
+					}
+					// Same re-pairing, for the DIRECT per-hit curvature the SDF
+					// family reports instead of dndu/dndv (design doc 5.4).  It
+					// is signed against the same normal field, so a reported
+					// -vNormal makes a convex operand read as the concave cavity
+					// wall it now is -- which is the physically right answer, and
+					// is exactly what the dndu/dndv negation above achieves for
+					// the geometries that carry the derivative pair.  Its own
+					// `curvatureValid` gate is separate from `valid` (an SDF sets
+					// one and not the other), so this cannot ride inside the
+					// block above.
+					if( ri.geometric.derivatives.curvatureValid ) {
+						ri.geometric.derivatives.curvature = -ri.geometric.derivatives.curvature;
 					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
@@ -1038,37 +1110,23 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						// payload with wire-edge info cleared (it belongs to
 						// the wrong face in that fallback).
 						//
-						// P1-1 audit note (dndu/dndv sign, NOT changed here):
-						// on a probe HIT, AdoptCsgSurfacePayload copies the
-						// probe's own `derivatives` (including dndu/dndv) but
-						// deliberately never touches vNormal -- so those
-						// derivatives are, by construction, derivatives of the
-						// PROBE's own reported shading normal, not of
-						// `ri.geometric.vNormal` as set two lines below
-						// (-riObjB.vNormal2).  If the probe's own normal at
-						// that face agrees in sign with riObjB.vNormal2 (true
-						// for a direction-independent normal field, e.g. a
-						// single-sided surface where the shading normal is a
-						// pure function of surface position), this branch
-						// would need the same dndu/dndv negation as the three
-						// entry-flip branches above.  In practice this is
-						// UNREACHABLE with `derivatives.valid == true` today:
-						// only triangle-mesh geometry ever sets
-						// derivatives.valid, and both mesh IntersectRay
-						// overrides ignore `bComputeExitInfo` entirely
-						// (TriangleMeshGeometry(Indexed)::IntersectRay),
-						// leaving a mesh operand B's range2 at its
-						// RISE_INFINITY default -- which can never satisfy
-						// this branch's `riObjB.geometric.range2 <
-						// riObjA.geometric.range2` guard, so a raw mesh B
-						// never reaches this branch in the first place.  A
-						// NESTED CSG operand B that itself reports a finite
-						// composite range2 while its boundary happens to
-						// inherit valid derivatives from an underlying mesh
-						// sub-operand is a theoretical path this analysis has
-						// NOT verified; treat as an open residual rather than
-						// a confirmed-safe case if that configuration is ever
-						// exercised.
+						// dndu/dndv SIGN, RESOLVED 2026-08-29 (was a disclosed P1-1
+						// residual): the probe's payload carries derivatives of the
+						// PROBE's own reported normal, while this branch reports
+						// -riObjB.vNormal2.  For a direction-independent normal field
+						// (every analytic primitive, and the SDF family) those two
+						// disagree in sign, which would ship a convex-reading curvature
+						// on a concave cavity wall.  That case was UNREACHABLE while only
+						// triangle meshes populated derivatives; analytic primitives now
+						// do (design doc 5.4), so it is live -- and
+						// AdoptCsgExitFacePayloadViaProbe now re-pairs the adopted
+						// dndu/dndv (and the SDF's direct `curvature`) against the
+						// caller's already-set vNormal via a dot-product test.  See that
+						// function's tail.  NOTE the probe-MISS fallback is unchanged and
+						// still leaves B's ENTRY-face derivatives in place for an
+						// EXIT-face boundary; that is a pre-existing, separately-disclosed
+						// residual (the callers clear only bHasWireEdgeInfo), not
+						// something this arc introduced.
 						ri = riObjB;
 						ri.geometric.range = riObjB.geometric.range2;
 						ri.geometric.range2 = riObjA.geometric.range2;
@@ -1274,6 +1332,24 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// rather than divide by ~0.
 				ri.geometric.derivatives.valid = false;
 			}
+		}
+
+		// WORLD-MEASURE FOLD for the two curvature-facing scalars -- the exact
+		// mirror of Object::IntersectRay's block (see it for the full
+		// rationale): scaleHint is a LENGTH (multiply by this level's
+		// |det M|^(1/3)), curvature is a 1/LENGTH (divide by it), both sit
+		// OUTSIDE the `derivatives.valid` gate because an SDF operand sets
+		// `curvatureValid` without setting `valid`.  CSG nesting composes for
+		// the same reason the normal-field promotions above do: each level
+		// applies its OWN factor once to whatever the level below already
+		// promoted.
+		if( m_worldLinearScale > Scalar( 0 ) ) {
+			ri.geometric.derivatives.scaleHint *= m_worldLinearScale;
+			if( ri.geometric.derivatives.curvatureValid ) {
+				ri.geometric.derivatives.curvature /= m_worldLinearScale;
+			}
+		} else {
+			ri.geometric.derivatives.curvatureValid = false;
 		}
 
 		// Compute the intersection in world space
