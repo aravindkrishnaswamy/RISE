@@ -2347,10 +2347,10 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"1022c6ebb987a524e6b7ec75e62d047aa8ca9d06859ecb138441e7997ba5ea7d"&&
+			"a91ec56cc0353502487f7b59ffec94847e7fe48bfa40b93e40db3bdc10000709"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"0febbabcce80aaaaeceaca585a3f8ec372bda8128fd3aa6c7d1158c0e170f767"&&
+			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
 		equalTimeReadmissionEvidence.find("gate_count 152")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find("failure_count 0")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find(
@@ -2407,23 +2407,23 @@ int main()
 	const std::string firstLightFrame5=ReadText(
 		"rendered/fire_production_first_light/r175_preview_tier6/frame5.vdb");
 	const std::array<const char*,8> firstLightFrameHashes={{
-		"1d9f40afc02e62bad3b202f48d640724bdb0d917fbf7527c8709376ae115ab5c",
-		"966a47df8a6f4d026491c9be04a42f0132097b6fb8e0de6815e61d7fd292746d",
-		"2356910c0392e7a5b170b1154a287cc6a7891835682ce8eb701d9052fe6a43e8",
-		"29f90101393c86dcd3be7fac616541aa5077ff3263105740bf214d2fd4fff3fc",
-		"074ea1916a1b6144102350af4eacd5f11cf37672053bd053be6f1230fdc3a335",
-		"8e64d609dbe406950844733a33352e3ac5b12224ffb259e6d290955c581064ea",
-		"77abc9e268375c350b9d9760df2e799d9e78ce81cd38d2fe3d737ff4062ef21e",
-		"8509f3feb6db80dc4b81b98e2504e071415b47c4f4060b1c1592a2bda946f343"}};
+		"90f6a7156ebe12be1e1b5649cb4fd23f195b0c38629700344579a2fdd575c5db",
+		"fc2840d84b0f7c2b3412411d2bc288a01238b91b3217d4778395b4d5019b895e",
+		"f5e127fe3029f5143daead6caca2c4134c73cd3f955baff60ae839d9764a45e8",
+		"413210ec46fe277f55438a6b41608fff7a31dd7989178e06da13465e5a4d9e03",
+		"6de424e9ae5846aac8bf23b7ff72f769945d5becf3fdc279eca734c7ffe3d2b0",
+		"cf6a3ae9f55afb280a38594bd6850ff46af99c595bdc7ec683f110a565fa0ec1",
+		"461a420b874976ab013ad554de817b8e435a5834d2fdb2d38d82a876677998b8",
+		"bf02ffa4d99d435ee4c9dc01829233f763a3ee8a32c3653ea27d9e926e7182c9"}};
 	const std::array<const char*,8> firstLightFrameSidecarHashes={{
-		"ff7f8a31bdf97043a909025b0a027bef8fa55c5eedb0c0aa30b4390af569a762",
-		"e7fd8e3a46cbd09d65f2bfc596a7229c5fbcdf5578a9153864296d02cb1094f7",
-		"0dcd142a2a80f4a225ef03f8198ae48a4fe1521c5d9b2d1dc805c6900c4a6cec",
-		"7b74cca5f9d10cd8e7aa7e787ffe113dc4c5d9c36114b1a36d2d1ed0b0532baa",
-		"cdd4ca2f89a350941b71946deb3c5a9705ae92b0fb99914ed95b6335b1389f93",
-		"93239f3abcdb070d8efe128550c6afa695828c64da2577f06e2eb4384be66186",
-		"94a0e87b568d9abf19ab0fc449ec666366924067cec40e5c42e63cdb8bdcfb87",
-		"fdc545b02b647cdfa653ad246729bfd0cb5ac88ba409156f5306c06405cd102e"}};
+		"aa6e07cdff08e31bb34cec64b739326ef74314e352e5720691b238a231a6ca55",
+		"bd200ed6ca86ad093effca6b507854d639239c69fa7d45a1afc019d70cc0a614",
+		"c9f4202649a243d58e0cdb49b62398474a54c3657517b551ac7e29383a71b348",
+		"033a959a4e154c8dff0c4a4a3bd6a182d50caa43db0f574aff85398f2fce800c",
+		"e7494b633762fc93991c6c1801da631c1d165c1b36d6a1b4a294a7947ff2232b",
+		"cd8d0bcacde00999a1f8f1689884e977678dd77ad7ca1c4cb12f4b7cffb0c96e",
+		"34d7aa6d6473464ddcfc884740c119d4f0bb12db5d768a9246f0b3bff216a91a",
+		"5e6187b90c718300a6000100d93c100b55c00814372a112e6d7d327b6e46b44e"}};
 	bool firstLightFramesBound=true;
 	for(std::size_t frame=0u;frame<8u;++frame){
 		std::ostringstream index;index<<std::setw(4)<<std::setfill('0')<<frame;
@@ -2452,7 +2452,7 @@ int main()
 	Check(!thermoSourceEvidence.empty()&&!thermoSourceRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceEvidence.begin(),thermoSourceEvidence.end()))==
-			"9397d5330ecf1d9c1a9c2aecb83f38fdca9b9d5c2d83db9fc9e8abfe7d0852be"&&
+			"2f7a3dc2ab001d81998274f18781d2f4f5b245e8b89f9fc307dd8a372dd68707"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceRaw.begin(),thermoSourceRaw.end()))==
 			"c9f0188fdfd688e10f0edef4c7ef7e9712e4bf71d7cff19ddcba3b5276553865"&&
@@ -2479,10 +2479,10 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"1022c6ebb987a524e6b7ec75e62d047aa8ca9d06859ecb138441e7997ba5ea7d"&&
+			"a91ec56cc0353502487f7b59ffec94847e7fe48bfa40b93e40db3bdc10000709"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
-			"0febbabcce80aaaaeceaca585a3f8ec372bda8128fd3aa6c7d1158c0e170f767"&&
+			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fileEncoderObserverSource.begin(),fileEncoderObserverSource.end()))==
 			"41e44da6fcb3bceec71e3dae8e6042319d619f33951d7e516e2da76dcbbacc4f"&&
@@ -2497,7 +2497,7 @@ int main()
 			"d81af70fb94b8714b1c4ee7cd9e89ba5f44347a74681bfa82fa266bd9c943625"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightReadme.begin(),firstLightReadme.end()))==
-			"2ab34404d5c479e34050773eabf3ca68c44f2525aae05fe955edffcd46085c99"&&
+			"1e21decd0d76f0654da11cabdb8cd5ffdb8152852646b1942e6c3e1a9436c55a"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightSequenceManifest.begin(),firstLightSequenceManifest.end()))==
 			"a1b708384ce6c4232f43ae8cbbe54334e1b9289c51cdd75714df34cbc27b0455"&&
@@ -2509,10 +2509,10 @@ int main()
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"c4d1b8be0521b8b4e5b7319e6b01772e3d59d356d99d3697892e80b25efb5bc7"&&
+			"3b0cb299957b8bb045632d8b888068399744df81e077702e884b3df60e9f7d34"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"c88bd51c5e08ccf3de60a12d46df7c05524a08fc656fcb8881e1b1e1d457da4b"&&
+			"89439539793100ee45b99985b278dd0a41e2eda4f57ceb775870884a09a9df89"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2534,23 +2534,23 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightEXR.begin(),firstLightEXR.end()))==
-			"8509f3feb6db80dc4b81b98e2504e071415b47c4f4060b1c1592a2bda946f343"&&
+			"bf02ffa4d99d435ee4c9dc01829233f763a3ee8a32c3653ea27d9e926e7182c9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightEXRProvenance.begin(),firstLightEXRProvenance.end()))==
-			"fdc545b02b647cdfa653ad246729bfd0cb5ac88ba409156f5306c06405cd102e"&&
+			"5e6187b90c718300a6000100d93c100b55c00814372a112e6d7d327b6e46b44e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightDisplay.begin(),firstLightDisplay.end()))==
-			"1abab746d3095f47c485194f7b2db51efda1bbd4c52b9f3a47434138b9d6c7ca"&&
+			"53b0cb296e75583fca6d196ca0f701f7032ce7626c0396b2353eedc4f295f3b3"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightDisplayProvenance.begin(),firstLightDisplayProvenance.end()))==
-			"8bd73ee7c7926e568e2929ac05f0f223b3436886a7bc878eb5bdc4f4e4a360f6"&&
+			"53f578f365ed960f7497278f167c860df111bf48a5b0608fd3436039a8e4f5f9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightAnimation.begin(),firstLightAnimation.end()))==
-			"f9c7afe046afc920d2d6c75850809870561b273777fcd372510bffee6cb00291"&&
+			"994a5b1a2910f7da4d5b027469cab55b6fbc2226a9521cdd0312cb951eb277f9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightAnimationProvenance.begin(),
 			firstLightAnimationProvenance.end()))==
-			"b012ab3e46b7eee9d12fabd03e75ca29abb22ee2b2d586a97382965fca3a05ae"&&
+			"a7571ff50151de2da0a857bc76ee7eb1760f4d9d4a1e2ef2c0ad9ac45929ce1a"&&
 		firstLightFramesBound&&firstLightAnimationPayload&&
 		firstLightAnimationPayload->Find("artifact_fidelity")&&
 		firstLightAnimationPayload->Find("artifact_fidelity")->GetText()==
@@ -2565,21 +2565,31 @@ int main()
 		thermoSourceEvidence.find("first_light_animation_format GIF87a_ImageIO_LZW")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("first_light_renderer_source_revision "
-			"fc636edf6a9281ed4aacaacd9dd5412535ff3f59f")!=std::string::npos&&
+			"f3b56b90e8349b0246b39d1d5f601b5afd416e30")!=std::string::npos&&
 		thermoSourceEvidence.find("first_light_renderer_dirty_state dirty")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("first_light_renderer_diff_sha256 "
-			"82b2cef03dd3d4fa171b8ea968bb8be2444face1f579bfe5d5748e4b387d8101")!=
+			"a82c56990355ff463a9b472da1f762982f94f1a1d09e0de3f1d70b841291348c")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("first_light_primary_schedule_content_sha256 "
-			"a1e5207e922a4afb787d249ce2ca5a476671dd6908d7293ef79ac367b66ed567")!=
+			"f5cd5812f0548d97b9522d0135d227585fd2fbe5a104f620e000c0f6dd8059c2")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("first_light_terminal_primary_content_sha256 "
-			"dde35f925dfe4c5b006cc705a9f411c93eda4c97ea23f6c0930fed487323bb66")!=
+			"8eb3820aa8388a720b7d0174161bb033cca101dbda08e4a7dc321f2fa65f33a9")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("first_light_animation_visible_nonzero true")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("first_light_animation_temporal_change true")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("first_light_animation_mode "
+			"terminal_state_camera_orbit_and_dolly")!=std::string::npos&&
+		thermoSourceEvidence.find(
+			"first_light_animation_all_frames_visible_structured_plume true")!=
+			std::string::npos&&
+		thermoSourceEvidence.find(
+			"first_light_animation_adjacent_frames_distinct true")!=std::string::npos&&
+		thermoSourceEvidence.find(
+			"first_light_animation_minimum_lit_area_range one_twentieth")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("tier10_25s_device_hours 0.40872554073287515")!=
 			std::string::npos&&

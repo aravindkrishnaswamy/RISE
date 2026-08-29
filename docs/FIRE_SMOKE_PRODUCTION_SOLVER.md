@@ -4435,12 +4435,12 @@ steps, peaks at `2284.8533 K` with pilot input off, and terminates at
 `1784.60397 K` with `1.27718934e7 W/m3` maximum heat release.  The terminal
 scene-linear primary is
 `rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
-(SHA-256 `8509f3fe...f343`); its canonical provenance sidecar is
-`fdc545b0...102e`.  The animation retains eight FP32 EXR
+(SHA-256 `bf02ffa4...82c9`); its canonical provenance sidecar is
+`5e6187b9...44e`.  The animation retains eight FP32 EXR
 `preview_primary` frames and canonical sidecars.  Their ImageIO-authored,
 looping 8-frame/8-fps display derivative is
-`methane_preview_animation.gif` (`f9c7afe0...0291`); the visible blue-plume
-still is `methane_preview_display.png` (`1abab746...6c7ca`).  The PNG and GIF are
+`methane_preview_animation.gif` (`994a5b1a...77f9`); the visible blue-plume
+still is `methane_preview_display.png` (`53b0cb29...3b3`).  The PNG and GIF are
 explicitly `display_derivative`, never `preview_primary`, and each is linked
 to its primary input.  A +6 EV renderer-owned ACES-to-sRGB view transform
 exposes the preview.  Its preview-only volume spatializes the sealed reaction
@@ -4450,9 +4450,16 @@ primary-radiance contract.  AVFoundation returned `AVErrorCannotEncode` in the h
 authoring process, so the optional MOV derivative was not claimed; ImageIO
 GIF/LZW is the truthful portable derivative while the EXRs own the evidence.
 The committed sidecars identify the authoring binary honestly as source revision
-`fc636edf6a9281ed4aacaacd9dd5412535ff3f59f`, dirty-state digest
-`82b2cef0...8101`; the r175 evidence binds both rather than substituting a
+`f3b56b90e8349b0246b39d1d5f601b5afd416e30`, dirty-state digest
+`a82c5699...348c`; the r175 evidence binds both rather than substituting a
 symbolic rung label for producer provenance.
+
+The animation is a preview camera move over the terminal monitored state, not
+an assertion that eight additional solver timesteps were advanced.  Its sealed
+20-degree orbit and dolly produce eight visible structured blue-plume frames;
+every adjacent decoded frame differs and the lit-area range changes by at least
+five percent.  A synthetic seven-black-frame/one-terminal-plume sequence and a
+visible static sequence both fail the shared classifier.
 
 Publication is fail-closed at the file boundary.  The producer intentionally
 commits sidecar before artifact; a unique staging directory and per-frame

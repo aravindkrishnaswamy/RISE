@@ -4322,11 +4322,11 @@ it was already tried and refuted here.
   steps, with a `2284.8533 K` pilot-off physical peak and a `1784.60397 K`,
   `1.27718934e7 W/m3` terminal state.  The primary EXR is
   `rendered/fire_production_first_light/r175_preview_tier6/methane_preview.exr`
-  (SHA-256 `8509f3fe...f343`), accompanied by canonical CBOR provenance
-  (`fdc545b0...102e`).  Eight scene-linear EXR frames, each with a
+  (SHA-256 `bf02ffa4...82c9`), accompanied by canonical CBOR provenance
+  (`5e6187b9...44e`).  Eight scene-linear EXR frames, each with a
   canonical sidecar, are the animation's `preview_primary` evidence.  The
-  visible blue-plume PNG (`1abab746...6c7ca`) and looping 8-frame/8-fps
-  ImageIO GIF87a (`f9c7afe0...0291`) are correctly classified as
+  visible blue-plume PNG (`53b0cb29...3b3`) and looping 8-frame/8-fps
+  ImageIO GIF87a (`994a5b1a...77f9`) are correctly classified as
   `display_derivative` and
   linked to those primaries.  They use a display-only +6 EV ACES-to-sRGB
   transform.  The preview-only volume spatializes the sealed reaction and
@@ -4337,5 +4337,11 @@ it was already tried and refuted here.
   verifies complete fresh artifact/sidecar pairs in a unique stage for every
   requested frame; the stale-prior identity RED and sidecar-first
   delayed-artifact REDs prevent the former silent-success race.  The committed
-  sidecars record source revision `fc636edf...f59f` and dirty diff
-  `82b2cef0...8101`; evidence binds those exact producer facts.
+  sidecars record source revision `f3b56b90...6e30` and dirty diff
+  `a82c5699...348c`; evidence binds those exact producer facts.
+  The animation is explicitly a preview camera move: the same terminal
+  monitored state is rendered through a sealed 20-degree orbit and dolly.
+  All eight frames contain a bounded blue plume, every adjacent decoded frame
+  differs, and the lit-area range exceeds five percent.  The rejected
+  seven-black-frame/one-plume schedule is retained as a classifier RED; no
+  eight-timestep physical evolution is claimed.

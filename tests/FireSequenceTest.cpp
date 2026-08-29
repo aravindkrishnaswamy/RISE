@@ -74,11 +74,26 @@ namespace
 		provenance=value->GetText();
 		return previousProvenance.empty()||provenance!=previousProvenance;
 	}
+	bool FirstLightAnimatedPlumeMetricsPass(const std::vector<std::string>& digests,
+		const std::vector<bool>& visible,const std::vector<bool>& structured,
+		const std::vector<std::size_t>& litPixels)
+	{
+		if(digests.size()!=8u||visible.size()!=digests.size()||
+			structured.size()!=digests.size()||litPixels.size()!=digests.size())return false;
+		std::size_t minimumLit=std::numeric_limits<std::size_t>::max(),maximumLit=0u;
+		for(std::size_t frame=0u;frame<digests.size();++frame){
+			if(!visible[frame]||!structured[frame]||
+				(frame>0u&&digests[frame]==digests[frame-1u]))return false;
+			minimumLit=std::min(minimumLit,litPixels[frame]);
+			maximumLit=std::max(maximumLit,litPixels[frame]);
+		}
+		return maximumLit-minimumLit>=std::max<std::size_t>(16u,maximumLit/20u);
+	}
 
 #if defined(__APPLE__)
 	bool DecodeFirstLightGIFFrame(CGImageSourceRef source,const std::size_t frame,
 		const unsigned int width,const unsigned int height,std::string& digest,
-		bool& visible,bool& structuredPlume)
+		bool& visible,bool& structuredPlume,std::size_t& litPixelCount)
 	{
 		CGImageRef image=CGImageSourceCreateImageAtIndex(source,frame,nullptr);
 		if(!image||CGImageGetWidth(image)!=width||CGImageGetHeight(image)!=height){
@@ -108,6 +123,7 @@ namespace
 		}
 		structuredPlume=visible&&2u*litPixels<static_cast<std::size_t>(width)*height&&
 			(maxY-minY)>(maxX-minX)&&blueSum>redSum;
+		litPixelCount=litPixels;
 		digest=RISECBOR64::SHA256Hex(pixels);return true;
 	}
 
@@ -132,7 +148,9 @@ namespace
 		if(!source||CGImageSourceGetCount(source)!=frames.size()){
 			if(source)CFRelease(source);error="first-light GIF frame count differs";return false;
 		}
-		std::string firstDigest;bool visible=false,distinct=false,terminalPlume=false;
+		std::vector<std::string> digests;
+		std::vector<bool> visible,structured;
+		std::vector<std::size_t> litCounts;
 		for(std::size_t frame=0u;frame<frames.size();++frame){
 			CFDictionaryRef properties=CGImageSourceCopyPropertiesAtIndex(
 				source,frame,nullptr);
@@ -147,17 +165,18 @@ namespace
 			if(properties)CFRelease(properties);
 			if(!cadence){CFRelease(source);error="first-light GIF cadence differs";return false;}
 			std::string digest;bool frameVisible=false,structuredPlume=false;
+			std::size_t litPixels=0u;
 			if(!DecodeFirstLightGIFFrame(source,frame,width,height,digest,frameVisible,
-				structuredPlume)){
+				structuredPlume,litPixels)){
 				CFRelease(source);error="first-light GIF frame decode failed";return false;
 			}
-			visible=visible||frameVisible;
-			if(frame+1u==frames.size())terminalPlume=structuredPlume;
-			if(frame==0u)firstDigest=digest;else distinct=distinct||digest!=firstDigest;
+			digests.push_back(digest);visible.push_back(frameVisible);
+			structured.push_back(structuredPlume);litCounts.push_back(litPixels);
 		}
 		CFRelease(source);
-		if(!visible||!distinct||!terminalPlume){
-			error="first-light GIF is black, static, or lacks a bounded blue plume";return false;
+		if(!FirstLightAnimatedPlumeMetricsPass(digests,visible,structured,litCounts)){
+			error="first-light GIF lacks eight visible structured and materially changing "
+				"blue-plume frames";return false;
 		}
 		return true;
 	}
@@ -259,7 +278,8 @@ namespace
 		if(stage.empty())return 91;
 		setenv("RISE_MEDIA_PATH",(stage.string()+"/").c_str(),1);
 		const std::filesystem::path scenePath=stage/"first_light.RISEscene";
-		{
+		auto writeScene=[&](const double cameraX,const double cameraY,
+			const double cameraZ)->bool{
 			std::ofstream scene(scenePath);
 			scene << "RISE ASCII SCENE 7\n\nscene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
 				<< "standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
@@ -270,17 +290,26 @@ namespace
 				<< "display_transform none\nexr_compression piz\n}\n\nfile_rasterizeroutput\n{\n"
 				<< "pattern first_light_display\ntype PNG\nbpp 16\ncolor_space sRGB\n"
 				<< "exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
-				<< "pinhole_camera\n{\nname camera\nlocation " << centerX << ' ' << -0.125*depth << ' '
-				<< previewCenterZ << "\nlookat " << centerX << ' ' << centerY << ' ' << previewCenterZ
+				<< "pinhole_camera\n{\nname camera\nlocation " << cameraX << ' ' << cameraY << ' '
+				<< cameraZ << "\nlookat " << centerX << ' ' << centerY << ' ' << previewCenterZ
 				<< "\nup 0 0 1\nfov 45\nexposure 0.04\nscanning_rate -0.1\npixel_rate 0.02\n}\n\n"
 				<< "fire_medium\n{\nname sequence_fire\nfidelity_mode preview\nsequence_manifest "
 				<< manifestPath.string() << "\nchannel_carbon carbon\nchannel_temperature temperature\n"
 				<< "channel_reaction reaction\nchannel_chem_ch chem_CH\nchannel_chem_c2 chem_C2\n"
 				<< "channel_chem_co2 chem_CO2\nchannel_velocity velocity\n}\n\n"
 				<< "global_medium\n{\nmedium sequence_fire\n}\n";
-		}
+			return scene.good();
+		};
+		auto createPreviewJob=[&](const double cameraX,const double cameraY,
+			const double cameraZ,IJobPriv*& result)->bool{
+			result=nullptr;
+			if(!writeScene(cameraX,cameraY,cameraZ)||!RISE_CreateJobPriv(&result)||!result)
+				return false;
+			if(result->LoadAsciiSceneViaCst(scenePath.string().c_str()))return true;
+			result->release();result=nullptr;return false;
+		};
 		IJobPriv* job=nullptr;
-		if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(scenePath.string().c_str())||
+		if(!createPreviewJob(centerX,-0.125*depth,previewCenterZ,job)||
 			!job->RasterizeAnimation(std::nextafter(end,
 				std::numeric_limits<double>::infinity()),std::nextafter(end,
 				std::numeric_limits<double>::infinity()),1u,false,false)){
@@ -325,11 +354,14 @@ namespace
 		std::vector<std::filesystem::path> primaryFrames,displayFrames;
 		std::vector<FireFramePrimary> primaryLinks;
 		bool animationPairs=pairs;
+		job->release();job=nullptr;
 		for(unsigned int frame=0u;frame<8u;++frame){
 			const double fraction=static_cast<double>(frame)/7.0;
-			const double nominalFrameTime=start+(end-start)*fraction;
-			const double frameTime=frame==7u?std::nextafter(end,
-				std::numeric_limits<double>::infinity()):nominalFrameTime;
+			const double angle=(-10.0+20.0*fraction)*3.14159265358979323846/180.0;
+			const double radius=(0.52-0.12*fraction)*depth;
+			const double cameraX=centerX+radius*std::sin(angle);
+			const double cameraY=centerY-radius*std::cos(angle);
+			const double cameraZ=previewCenterZ+(fraction-0.5)*0.035*depth;
 			for(const std::filesystem::path& prior:std::array<std::filesystem::path,4>{
 				stage/"first_light_primary.exr",
 				stage/"first_light_primary.exr.provenance.cbor",
@@ -339,8 +371,10 @@ namespace
 				std::filesystem::remove(prior,removeError);
 				animationPairs=animationPairs&&!removeError;
 			}
-			animationPairs=animationPairs&&job->RasterizeAnimation(frameTime,
-				frameTime,1u,false,false);
+			animationPairs=animationPairs&&createPreviewJob(cameraX,cameraY,cameraZ,job)&&
+				job->RasterizeAnimation(std::nextafter(end,
+					std::numeric_limits<double>::infinity()),std::nextafter(end,
+					std::numeric_limits<double>::infinity()),1u,false,false);
 			std::ostringstream index;index<<std::setw(4)<<std::setfill('0')<<frame;
 			const std::filesystem::path currentPrimary=stage/"first_light_primary.exr";
 			const std::filesystem::path currentDisplay=stage/"first_light_display.png";
@@ -379,8 +413,9 @@ namespace
 					std::filesystem::copy_options::overwrite_existing);
 			}
 			primaryFrames.push_back(primary);displayFrames.push_back(display);
+			if(frame+1u<8u){job->release();job=nullptr;}
 		}
-		const IRasterizer* rasterizer=job->GetRasterizer();
+		const IRasterizer* rasterizer=job?job->GetRasterizer():nullptr;
 		const FrameStore* animationStore=rasterizer?rasterizer->GetFrameStore():nullptr;
 		const FrameStore::Metadata animationMetadata=animationStore?
 			animationStore->Meta():FrameStore::Metadata();
@@ -393,7 +428,7 @@ namespace
 			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
 			temporaryGIF.string(),gifPath.string(),64u,64u,8u,8u,primaryLinks,
 			ValidateFirstLightGIF,error);
-		job->release();
+		if(job)job->release();
 		if(!pairs||!animationPairs||!gifPublished){
 			std::fprintf(stderr,"first-light animation rejected: %s\n",error.c_str());return 93;
 		}
@@ -3903,6 +3938,20 @@ int main(int argc,char** argv)
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==4&&std::strcmp(argv[1],"--fire-first-light-preview")==0)
 		return RunFirstLightPreviewChild(argv[2],argv[3]);
+	{
+		const std::vector<std::string> changing={"a","b","c","d","e","f","g","h"};
+		const std::vector<bool> plume(8u,true);
+		const std::vector<std::size_t> changingArea={640u,665u,690u,720u,750u,785u,820u,855u};
+		Check(FirstLightAnimatedPlumeMetricsPass(changing,plume,plume,changingArea),
+			"first-light animation accepts eight visible structured changing plume frames");
+		std::vector<bool> terminalOnly(8u,false);terminalOnly.back()=true;
+		Check(!FirstLightAnimatedPlumeMetricsPass(changing,terminalOnly,terminalOnly,
+			{0u,0u,0u,0u,0u,0u,0u,855u}),
+			"first-light animation rejects a black prefix followed by one plume still");
+		Check(!FirstLightAnimatedPlumeMetricsPass(std::vector<std::string>(8u,"same"),
+			plume,plume,std::vector<std::size_t>(8u,720u)),
+			"first-light animation rejects a visible but static plume sequence");
+	}
 	if(const char* profileEnvironment=std::getenv("RISE_FIRE_PROFILE")){
 		if(std::strcmp(profileEnvironment,"1")!=0){
 			std::fprintf(stderr,"RISE_FIRE_PROFILE must be exactly 1\n");return 96;

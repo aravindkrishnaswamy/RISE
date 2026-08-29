@@ -1391,7 +1391,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	if [ "$(uname -s)" != 'Darwin' ]; then
 		echo 'PASS (macOS ImageIO authoring route not applicable)'
 	elif [ "$r175_first_light_rc" -eq 0 ] && [ "$r175_first_light_files_ok" -eq 1 ] &&
-		grep -Fq 'FIRST_LIGHT_PREVIEW frames=8 exposure_ev=6 primary_schedule=a1e5207e922a4afb787d249ce2ca5a476671dd6908d7293ef79ac367b66ed567 terminal_primary=dde35f925dfe4c5b006cc705a9f411c93eda4c97ea23f6c0930fed487323bb66 png=1abab746d3095f47c485194f7b2db51efda1bbd4c52b9f3a47434138b9d6c7ca gif=f9c7afe046afc920d2d6c75850809870561b273777fcd372510bffee6cb00291' "$r175_first_light_log"; then
+		grep -Fq 'FIRST_LIGHT_PREVIEW frames=8 exposure_ev=6 primary_schedule=f5cd5812f0548d97b9522d0135d227585fd2fbe5a104f620e000c0f6dd8059c2 terminal_primary=8eb3820aa8388a720b7d0174161bb033cca101dbda08e4a7dc321f2fa65f33a9 png=53b0cb296e75583fca6d196ca0f701f7032ce7626c0396b2353eedc4f295f3b3 gif=994a5b1a2910f7da4d5b027469cab55b6fbc2226a9521cdd0312cb951eb277f9' "$r175_first_light_log"; then
 		echo 'PASS (8 primaries + visible animated derivative)'
 		rm -f "$r175_first_light_log"
 	else
