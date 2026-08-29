@@ -926,6 +926,14 @@ namespace
 		timeStepS=static_cast<double>(represented);return true;
 	}
 
+	bool ProductionPilotCommandCell(const std::size_t cell,const std::size_t bottomPlaneCells,
+		const std::vector<std::uint8_t>& canonicalPilotMask,
+		const std::vector<double>& sourcePattern)
+	{
+		return cell<canonicalPilotMask.size()&&(canonicalPilotMask[cell]!=0u||
+			(cell<bottomPlaneCells&&cell<sourcePattern.size()&&sourcePattern[cell]!=0.0));
+	}
+
 	class CheckpointWriter
 	{
 	public:
@@ -2440,7 +2448,8 @@ namespace
 				for(std::size_t cell=0;cell<shape.CellCount();++cell) {
 					commandOK=commandOK&&(persistence.forceZeroSourceForTest||
 						FireCase::EvaluatePilotSetpointTemperatureK(caseRecord.derived,
-							canonicalPilotMask[cell]!=0u,simulationTimeS,
+							ProductionPilotCommandCell(cell,shape.nx*shape.ny,canonicalPilotMask,
+								sourcePattern),simulationTimeS,
 							simulationTimeS+trialStep,pilotSetpointTemperatureK[cell],error));
 					reactions[cell].deltaTimeS=trialStep;
 					reactions[cell].pilotSetpointTemperatureK=pilotSetpointTemperatureK[cell];
@@ -4799,6 +4808,15 @@ int main(int argc,char** argv)
 		const double staleStep=static_cast<double>(static_cast<float>(pilotEnd-beginning));
 		Check(beginning+staleStep<pilotEnd,
 			"production event RED reproduces the inward-rounded pilot residue that caused velocity collapse");
+	}
+	{
+		const std::vector<std::uint8_t> annulus={0u,1u,0u,0u};
+		const std::vector<double> source={1.0,0.0,0.0};
+		Check(ProductionPilotCommandCell(0u,3u,annulus,source)&&
+			ProductionPilotCommandCell(1u,3u,annulus,source)&&
+			!ProductionPilotCommandCell(2u,3u,annulus,source)&&
+			!ProductionPilotCommandCell(3u,3u,annulus,source),
+			"production pilot command contacts both the canonical annulus and authored fuel surface only");
 	}
 	if(const char* profileEnvironment=std::getenv("RISE_FIRE_PROFILE")){
 		if(std::strcmp(profileEnvironment,"1")!=0){
