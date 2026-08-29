@@ -4873,6 +4873,260 @@ namespace
 		return 0;
 	}
 
+	int RunProductionCheckpointPhysicsDiagnosticChild(
+		const std::filesystem::path& checkpointPath,const std::filesystem::path& outputPath)
+	{
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error))return 90;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();
+		authored.poolDiameterM=CapstonePoolDiameterM;
+		authored.heatReleaseRateKW=CapstoneHeatReleaseRateKW;authored.envelope={{0.0,1.0}};
+		authored.durationS=1.0;authored.quality="dstar";authored.numericDStarTier=10.0;
+		authored.seed=1234;authored.outputFramesPerS=1.0;authored.plumeLaw=true;
+		FireCase::RecordV1 caseRecord;const RISECBOR64::Bytes aerosol=AerosolRecord();
+		const RISECBOR64::Bytes chem=SyntheticChemRecord();
+		if(!FireCase::BuildMethaneV1(authored,fuel,{
+			RISECBOR64::SHA256Hex(fuel.RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationThermochemistryRecord::OpenSubsetV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationTransportRecord::OpenV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireOpticsPreset::PredictiveV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(aerosol),RISECBOR64::SHA256Hex(chem)},caseRecord,error))return 91;
+		PeriodicMACShape shape;shape.nx=caseRecord.derived.nx;shape.ny=caseRecord.derived.ny;
+		shape.nz=caseRecord.derived.nz;shape.cellWidthM=caseRecord.derived.cellWidthM;
+		if(checkpoint.dimensions!=std::array<std::size_t,3>{{shape.nx,shape.ny,shape.nz}}||
+			checkpoint.cellWidthM!=shape.cellWidthM||checkpoint.states.size()!=shape.CellCount())return 92;
+
+		auto canonicalState=[&](const std::vector<double>& fractions,
+			const bool injected,MethaneCellState& state)->bool{
+			if(fractions.size()!=MethaneSpeciesCount)return false;
+			state=MethaneCellState();state.temperatureK=300.0;
+			for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+				state.constituent[species]=fractions[species];
+			double inverseWeight=0.0;
+			for(std::size_t species=0u;species<MethaneCarbon;++species){
+				const FireThermochemistrySpecies* record=fuel.FindSpecies(
+					fuel.SpeciesOrder()[species].c_str());
+				if(record)inverseWeight+=state.constituent[species]/record->molecularWeightKGPerKMol;
+			}
+			const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+				state.temperatureK*inverseWeight);
+			for(double& value:state.constituent)value*=density;
+			state.rhoTotalZ=injected?state.TotalDensity():0.0;
+			return fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(state),
+				state.temperatureK,state.sensibleEnergyJPerM3,&error);
+		};
+		MethaneCellState ambient,injected;
+		if(!canonicalState(fuel.AmbientMassFractions(),false,ambient)||
+			!canonicalState(fuel.InjectedMassFractions(),true,injected))return 93;
+		OpenBoundaryConfig3D boundary;boundary.ambientDensityKGPerM3=ambient.GasDensity();
+		boundary.injectedGasDensityKGPerM3=injected.GasDensity();
+		boundary.ambientState=ToConservativeVector(ambient);
+		boundary.injectedState=ToConservativeVector(injected);
+		boundary.fuelMassFluxKGPerM2S=0.0;
+		const double referenceVelocity=std::sqrt(9.80665*
+			caseRecord.derived.characteristicDiameterM);
+		boundary.velocityToleranceMPerS=1.0e-3*referenceVelocity;
+		boundary.pressureTolerancePa=ambient.GasDensity()*referenceVelocity*
+			boundary.velocityToleranceMPerS;
+		std::vector<double> sourcePattern;
+		std::vector<std::uint8_t> canonicalPilotMask;
+		if(!FireCase::BuildSourcePattern(authored,caseRecord.derived,sourcePattern,error)||
+			!FireCase::BuildPilotMask(authored,caseRecord.derived,canonicalPilotMask,error))return 94;
+		boundary.bottomFuelMask.resize(shape.nx*shape.ny,false);
+		boundary.bottomFuelMassFluxKGPerM2S.resize(shape.nx*shape.ny,0.0);
+		for(std::size_t face=0u;face<sourcePattern.size();++face)if(sourcePattern[face]!=0.0){
+			boundary.bottomFuelMask[face]=true;
+			boundary.bottomFuelMassFluxKGPerM2S[face]=
+				caseRecord.derived.nominalFuelFluxKGPerM2S*sourcePattern[face];
+		}
+
+		double maximumSpeed=0.0;unsigned int maximumSpeedAxis=0u;std::size_t maximumSpeedFace=0u;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			if(checkpoint.velocity.component[axis].size()!=OpenMACFaceCount3D(shape,axis))return 95;
+			for(std::size_t face=0u;face<checkpoint.velocity.component[axis].size();++face){
+				const double speed=std::fabs(checkpoint.velocity.component[axis][face]);
+				if(speed>maximumSpeed){maximumSpeed=speed;maximumSpeedAxis=axis;maximumSpeedFace=face;}
+			}
+		}
+		double minimumGasDensity=std::numeric_limits<double>::infinity(),maximumGasDensity=0.0;
+		double maximumReducedGravity=0.0;std::size_t maximumReducedGravityCell=0u;
+		std::vector<double> deviations;deviations.reserve(checkpoint.states.size());
+		for(std::size_t cell=0u;cell<checkpoint.states.size();++cell){
+			const double density=checkpoint.states[cell].GasDensity();
+			minimumGasDensity=std::min(minimumGasDensity,density);
+			maximumGasDensity=std::max(maximumGasDensity,density);
+			const double reduced=std::max(0.0,9.80665*(ambient.GasDensity()-density)/density);
+			if(reduced>maximumReducedGravity){maximumReducedGravity=reduced;
+				maximumReducedGravityCell=cell;}
+			double ratio=0.0;
+			if(!AcceptedConservativeVolumeRatio(ToConservativeVector(checkpoint.states[cell]),fuel,
+				checkpoint.states[cell].producerPrecision,ratio,&error))return 96;
+			deviations.push_back(std::fabs(ratio-1.0));
+		}
+		std::sort(deviations.begin(),deviations.end());
+		auto quantile=[&](const double fraction){return deviations[static_cast<std::size_t>(
+			fraction*static_cast<double>(deviations.size()-1u))];};
+
+		std::vector<ConservativeVector> conservative(shape.CellCount());
+		std::vector<double> temperature(shape.CellCount());
+		for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+			conservative[cell]=ToConservativeVector(checkpoint.states[cell]);
+			temperature[cell]=checkpoint.states[cell].temperatureK;
+		}
+		OpenMACField3D velocity;velocity.component=checkpoint.velocity.component;
+		std::vector<CellTransportEvaluation> transport;
+		if(!BuildOpenStageTransportEvaluations3D(shape,conservative,temperature,velocity,boundary,
+			false,fuel,FireSimulationTransportRecord::OpenV1(),
+			FireStateProducerPrecision::Binary32,transport,&error,8u))return 97;
+		IgnitionGrid eligibilityGrid;eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;
+		eligibilityGrid.nz=shape.nz;eligibilityGrid.cells=checkpoint.states;
+		eligibilityGrid.pilotMask.resize(shape.CellCount(),false);
+		for(std::size_t cell=0u;cell<shape.CellCount();++cell)
+			eligibilityGrid.pilotMask[cell]=ProductionPilotCommandCell(cell,shape.nx,shape.ny,
+				canonicalPilotMask,sourcePattern);
+		std::vector<bool> eligible;
+		if(!BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
+			FireSimulationTransportRecord::OpenV1(),eligible,&error))return 98;
+		const double step=checkpoint.lastAcceptedStepS;
+		std::vector<MethaneReactionStep> reactions(shape.CellCount());
+		const double pilotEndS=caseRecord.derived.pilotDurationMultiplier*
+			caseRecord.derived.flowThroughTimeS;
+		for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+			reactions[cell].deltaTimeS=step;reactions[cell].maximumAcceptedTemperatureK=
+				caseRecord.derived.maximumAcceptedTemperatureK;
+			reactions[cell].primaryEligible=eligible[cell];reactions[cell].sootOxidationEnabled=true;
+			if(!ComputeMixingTimeS(checkpoint.states[cell],transport[cell],
+				FireSimulationTransportRecord::OpenV1(),shape.cellWidthM,ambient.GasDensity(),
+				9.80665,false,reactions[cell].mixingTimeS,&error)||
+				!FireCase::EvaluatePilotSetpointTemperatureK(caseRecord.derived,
+					ProductionPilotCommandCell(cell,shape.nx,shape.ny,canonicalPilotMask,sourcePattern),
+					checkpoint.simulationTimeS,checkpoint.simulationTimeS+step,
+					reactions[cell].pilotSetpointTemperatureK,error))return 99;
+			reactions[cell].pilotExpansionVolumeRatioCap=
+				reactions[cell].pilotSetpointTemperatureK>0.0?
+				caseRecord.derived.pilotExpansionVolumeRatioCap:0.0;
+		}
+		std::vector<MethaneCellState> packetBeginning=checkpoint.states;
+		const double injectedDensity=injected.GasDensity();
+		const double injectedSpecificEnergy=injected.sensibleEnergyJPerM3/injected.TotalDensity();
+		std::vector<ConservativeVector> staged(shape.CellCount());
+		for(std::size_t cell=0u;cell<shape.CellCount();++cell)staged[cell]=
+			ToConservativeVector(packetBeginning[cell]);
+		for(std::size_t y=0u;y<shape.ny;++y)for(std::size_t x=0u;x<shape.nx;++x){
+			const std::size_t face=y*shape.nx+x;if(sourcePattern[face]==0.0)continue;
+			const double massFlux=caseRecord.derived.nominalFuelFluxKGPerM2S*sourcePattern[face];
+			const double densityDelta=massFlux*step/shape.cellWidthM;const std::size_t cell=face;
+			staged[cell][0]+=densityDelta;
+			for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+				staged[cell][1u+species]+=densityDelta*injected.constituent[species]/injectedDensity;
+			staged[cell][8]+=densityDelta*injectedSpecificEnergy;
+		}
+		for(ConservativeVector& value:staged)for(std::size_t component=0u;
+			component<MethaneConservativeDimension;++component)value[component]=
+			static_cast<double>(static_cast<float>(value[component]));
+		std::vector<double> stagedTemperature;
+		if(!InvertPeriodicTemperaturesWithinBounds(staged,fuel,fuel.TemperatureMinK(),
+			fuel.TemperatureMaxK(),FireStateProducerPrecision::Binary32,stagedTemperature,
+			&error,8u,false))return 100;
+		for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+			MethaneCellState represented=FromConservativeVector(staged[cell],
+				FireStateProducerPrecision::Binary32);represented.temperatureK=stagedTemperature[cell];
+			if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(represented),
+				represented.temperatureK,represented.sensibleEnergyJPerM3,&error))return 100;
+			represented.sensibleEnergyJPerM3=static_cast<double>(static_cast<float>(
+				represented.sensibleEnergyJPerM3));packetBeginning[cell]=represented;
+		}
+		for(std::size_t cell=0u;cell<shape.nx*shape.ny;++cell){
+			bool flameHolder=false;
+			if(!ProductionEstablishedFlameHolderEligible(cell,shape.nx,shape.ny,canonicalPilotMask,
+				sourcePattern,checkpoint.simulationTimeS>=pilotEndS,packetBeginning[cell],fuel,
+				FireSimulationTransportRecord::OpenV1(),flameHolder,&error))return 101;
+			if(flameHolder)reactions[cell].primaryEligible=true;
+		}
+		std::vector<MethaneSourcePacket> packets;RadiationEscapeFactor escape;
+		const double cellVolume=shape.cellWidthM*shape.cellWidthM*shape.cellWidthM;
+		if(!BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
+			std::vector<double>(shape.CellCount(),cellVolume),300.0,
+			caseRecord.derived.referenceHeatReleaseRateW,
+			caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
+			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,8u))return 102;
+		double heatReleaseW=0.0,fuelConsumptionKGPerS=0.0;
+		for(MethaneSourcePacket& packet:packets){
+			RepresentMethaneSourcePacketBinary32(packet);
+			if(!CertifiedBinary32SourcePacket(packet,fuel))return 103;
+			heatReleaseW+=packet.gasHeatReleaseWPerM3*cellVolume;
+			fuelConsumptionKGPerS+=-packet.constituentDelta[MethaneCH4]*cellVolume/step;
+		}
+		const double consumptionHeatReleaseW=fuelConsumptionKGPerS*fuel.LowerHeatingValueJPerKG();
+		const double advectiveStep=maximumSpeed>0.0?0.5*shape.cellWidthM/maximumSpeed:
+			std::numeric_limits<double>::infinity();
+		const double buoyantStep=maximumReducedGravity>0.0?
+			0.5*std::sqrt(2.0*shape.cellWidthM/maximumReducedGravity):
+			std::numeric_limits<double>::infinity();
+		auto historySummary=[](const std::vector<double>& history,double& mean,double& p95,
+			double& maximum)->bool{
+			if(history.empty())return false;std::vector<double> ordered=history;
+			if(std::any_of(ordered.begin(),ordered.end(),[](const double value){
+				return !std::isfinite(value)||value<0.0;}))return false;
+			mean=std::accumulate(ordered.begin(),ordered.end(),0.0)/
+				static_cast<double>(ordered.size());std::sort(ordered.begin(),ordered.end());
+			const std::size_t p95Index=std::min(ordered.size()-1u,
+				static_cast<std::size_t>(std::ceil(0.95*static_cast<double>(ordered.size())))-1u);
+			p95=ordered[p95Index];maximum=ordered.back();return true;
+		};
+		double wallMean=0.0,wallP95=0.0,wallMaximum=0.0;
+		double deviceMean=0.0,deviceP95=0.0,deviceMaximum=0.0;
+		const bool wallHistoryPersisted=historySummary(checkpoint.values.productionWallHistoryMS,
+			wallMean,wallP95,wallMaximum);
+		const bool deviceHistoryPersisted=historySummary(checkpoint.values.productionDeviceHistoryMS,
+			deviceMean,deviceP95,deviceMaximum);
+		std::ofstream output(outputPath,std::ios::trunc);output<<std::setprecision(17)
+			<<"checkpoint_sha256 "<<DigestFile(checkpointPath)<<"\n"
+			<<"accepted_steps "<<checkpoint.acceptedSteps<<"\n"
+			<<"simulation_time_s "<<checkpoint.simulationTimeS<<"\n"
+			<<"last_accepted_dt_s "<<checkpoint.lastAcceptedStepS<<"\n"
+			<<"minimum_accepted_dt_s "<<*std::min_element(
+				checkpoint.values.acceptedTimeStepHistoryS.begin(),
+				checkpoint.values.acceptedTimeStepHistoryS.end())<<"\n"
+			<<"maximum_velocity_m_per_s "<<maximumSpeed<<"\n"
+			<<"maximum_velocity_axis "<<maximumSpeedAxis<<"\n"
+			<<"maximum_velocity_face "<<maximumSpeedFace<<"\n"
+			<<"advective_CFL_candidate_s "<<advectiveStep<<"\n"
+			<<"ambient_gas_density_kg_per_m3 "<<ambient.GasDensity()<<"\n"
+			<<"minimum_gas_density_kg_per_m3 "<<minimumGasDensity<<"\n"
+			<<"maximum_gas_density_kg_per_m3 "<<maximumGasDensity<<"\n"
+			<<"maximum_positive_reduced_gravity_m_per_s2 "<<maximumReducedGravity<<"\n"
+			<<"maximum_positive_reduced_gravity_cell "<<maximumReducedGravityCell<<"\n"
+			<<"buoyant_candidate_s "<<buoyantStep<<"\n"
+			<<"manifold_deviation_max "<<deviations.back()<<"\n"
+			<<"manifold_deviation_p95 "<<quantile(0.95)<<"\n"
+			<<"manifold_deviation_p50 "<<quantile(0.50)<<"\n"
+			<<"source_probe_dt_s "<<step<<"\n"
+			<<"source_probe_realized_HRR_W "<<heatReleaseW<<"\n"
+			<<"source_probe_fuel_consumption_kg_per_s "<<fuelConsumptionKGPerS<<"\n"
+			<<"source_probe_consumption_times_LHV_W "<<consumptionHeatReleaseW<<"\n"
+			<<"source_probe_HRR_relative_ledger_error "<<std::fabs(heatReleaseW-
+				consumptionHeatReleaseW)/std::max(1.0,heatReleaseW)<<"\n"
+			<<"production_wall_history_samples "<<checkpoint.values.productionWallHistoryMS.size()<<"\n"
+			<<"format13_per_step_cost_histories_persisted "
+				<<(wallHistoryPersisted&&deviceHistoryPersisted?"true":"false")<<"\n"
+			<<"production_wall_mean_ms "<<wallMean<<"\n"
+			<<"production_wall_p95_ms "<<wallP95<<"\n"
+			<<"production_wall_maximum_ms "<<wallMaximum<<"\n"
+			<<"production_device_mean_ms "<<deviceMean<<"\n"
+			<<"production_device_p95_ms "<<deviceP95<<"\n"
+			<<"production_device_maximum_ms "<<deviceMaximum<<"\n"
+			<<"format13_retry_counters_persisted false\n";
+		if(!output)return 105;
+		std::fprintf(stderr,"PRODUCTION_CHECKPOINT_PHYSICS_DIAGNOSTIC steps=%llu time=%.17g "
+			"velocity=%.17g dt=%.17g gprime=%.17g HRR=%.17g consumption_LHV=%.17g\n",
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),checkpoint.simulationTimeS,
+			maximumSpeed,checkpoint.lastAcceptedStepS,maximumReducedGravity,heatReleaseW,
+			consumptionHeatReleaseW);return 0;
+	}
+
 	int RunLegacyCheckpointTraceChild(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& snapshotDirectory,const std::filesystem::path& tracePath,
 		const std::filesystem::path& framePath,const std::string& executableDigest)
@@ -5296,6 +5550,8 @@ int main(int argc,char** argv)
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==6&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0)
 		return RunProductionPuffingSpectrumChild(argv[2],argv[3],argv[4],argv[5]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-checkpoint-physics-diagnostic")==0)
+		return RunProductionCheckpointPhysicsDiagnosticChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-frame-write-benchmark")==0)
 		return RunProductionFrameWriteBenchmarkChild(argv[2],argv[3]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-temporal-capstone")==0){

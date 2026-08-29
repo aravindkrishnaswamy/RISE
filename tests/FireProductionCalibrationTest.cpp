@@ -2347,7 +2347,7 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"70afd3bb5eca9b8cd02af93b049379a396fe6d3e57d7502908507cd4602faa7a"&&
+			"f8c63ec59e88e47eee9b7c4cd0aef0f3d6dcfec14dafdc3035bfacc3fbde3575"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2479,7 +2479,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"70afd3bb5eca9b8cd02af93b049379a396fe6d3e57d7502908507cd4602faa7a"&&
+			"f8c63ec59e88e47eee9b7c4cd0aef0f3d6dcfec14dafdc3035bfacc3fbde3575"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2509,10 +2509,10 @@ int main()
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			solverDoc.begin(),solverDoc.end()))==
-			"3ea7ffd815a07b0ad6ed0dcb9abea3f12fdb9ffee48a4e18f6840de1c1d6fb47"&&
+			"fd4e5e2c6468caa664c2861e71731224f17436505a762ae53d95dc17d1563591"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			historyDoc.begin(),historyDoc.end()))==
-			"5df3c3704620a365fd5188de9f68bc36f6fbe780f755a428b128a43529658931"&&
+			"d514d41cb55551b7e33f3ff083c07752ef479ef7494402ab03d73ad8e26bcfd7"&&
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2647,7 +2647,7 @@ int main()
 		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"70afd3bb5eca9b8cd02af93b049379a396fe6d3e57d7502908507cd4602faa7a"&&
+			"f8c63ec59e88e47eee9b7c4cd0aef0f3d6dcfec14dafdc3035bfacc3fbde3575"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
@@ -2659,6 +2659,39 @@ int main()
 			"r176/r177 true temporal tier-6 preview and puffing-spectrum diagnosis")!=
 			std::string::npos,
 		"r177 publishes both tier-6 spectra and corrects tier-10 complete-owner cost");
+	const std::string tier10PhysicsStopEvidence=ReadText(
+		"rendered/fire_production_calibration/r178_tier10_density_velocity_stop/"
+		"tier10_density_velocity_stop_evidence.v1");
+	const std::string tier10PhysicsDiagnostic=ReadText(
+		"rendered/fire_production_calibration/r178_tier10_density_velocity_stop/"
+		"tier10_checkpoint_physics_diagnostic.v1");
+	Check(!tier10PhysicsStopEvidence.empty()&&!tier10PhysicsDiagnostic.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			tier10PhysicsStopEvidence.begin(),tier10PhysicsStopEvidence.end()))==
+			"bf5baab9e374cecd6b2641a283538651622634844ee483c9d194db3a46d8a896"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			tier10PhysicsDiagnostic.begin(),tier10PhysicsDiagnostic.end()))==
+			"fa3a37c9568e66c23bba0f232747418b7223a2680fe86780d012e3492dbfeb0e"&&
+		tier10PhysicsStopEvidence.find(
+			"localization_density_momentum_corruption_drives_advective_CFL true")!=
+			std::string::npos&&
+		tier10PhysicsStopEvidence.find("tier10_spectrum_formable false")!=
+			std::string::npos&&
+		tier10PhysicsStopEvidence.find("tier10_animation_claimed false")!=
+			std::string::npos&&
+		tier10PhysicsDiagnostic.find("maximum_velocity_m_per_s 255.64169311523438")!=
+			std::string::npos&&
+		tier10PhysicsDiagnostic.find(
+			"source_probe_HRR_relative_ledger_error 3.3485973103748931e-07")!=
+			std::string::npos&&
+		tier10PhysicsDiagnostic.find("format13_retry_counters_persisted false")!=
+			std::string::npos&&
+		tier10PhysicsDiagnostic.find(
+			"format13_per_step_cost_histories_persisted false")!=std::string::npos&&
+		solverDoc.find("### 7.56k Tier-10 density/velocity physics stop (r178)")!=
+			std::string::npos&&historyDoc.find(
+			"r178 tier-10 density/velocity physics stop")!=std::string::npos,
+		"r178 stops tier-10 before statistics and localizes density-driven advective collapse");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

@@ -4524,6 +4524,46 @@ microcampaign observation but is retired as a complete production-run claim.
 The tier-10 run proceeds under this explicit cost account; no physics tolerance,
 operator ordering, or checkpoint authority is changed.
 
+### 7.56k Tier-10 density/velocity physics stop (r178)
+
+The tier-10 trajectory is launched at the pinned cadence under the r177
+complete-owner account.  It cannot reach the `5 t_ft` discard boundary.  The
+last recoverable format-13 checkpoint is SHA-256
+`acb53171836660252789379ecdd669da47bd36124d6e78e46244c727019455e5`, at
+step 1,542 and `2.1426204254821641 s`.  Its minimum accepted timestep is
+`3.0300463549792767e-5 s`, already roughly 54 times below the audited CFL
+operating step.
+
+The read-only r178 audit localizes the failure.  Maximum physical velocity is
+`255.64169311523438 m/s`, with an independent advective candidate of
+`4.786874268372288e-5 s`.  Maximum positive reduced gravity is
+`62.179819320204423 m/s2`, but its buoyant candidate is
+`0.01402869021009805 s`; it is not the selector that collapses the step.  Gas
+density ranges from `0.15965474117547274` to `1.2099052290432155 kg/m3`
+against `1.1719579191113527 kg/m3` ambient.  The diagnosed chain is therefore
+density corruption -> momentum/density velocity amplification -> advective CFL
+collapse.  The simultaneous manifold max/p95/p50 is
+`0.11917137460802585 / 0.009886252187254363 /
+1.1382639254042815e-5`.
+
+Heat-release accounting remains tight: the checkpoint source probe gives
+`94466.977979105024 W`, while methane consumption times LHV gives
+`94467.009612291862 W`, only `3.3485973103748931e-7` relative difference.
+Thus the bundle points away from the combustion ledger and away from the
+buoyancy timestep selector, and toward density/momentum consistency in the
+production trajectory.  Since the failure occurs before the statistics
+window, no tier-10 spectrum, empirical rows, or temporal animation are
+claimed.  Continuing would produce neither the requested physics row nor a
+meaningful cost projection, so the run is deliberately stopped.
+
+The checkpoint format does not persist the in-memory retry counters or
+per-step device/wall histories.  r178 records both as unavailable rather than
+reconstructing them from transient console output.  The retained small
+evidence files are under
+`rendered/fire_production_calibration/r178_tier10_density_velocity_stop`; the
+121-MB restart checkpoint remains a local recoverable run product identified
+by the SHA above.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

@@ -4391,3 +4391,30 @@ it was already tried and refuted here.
   before later-state retry cost.  The older `0.6384 h` value measured only a
   resident slice and is retired as a complete-run projection.  The tier-10
   physics run remains authorized, now under this complete-owner cost account.
+- **r178 tier-10 density/velocity physics stop (2026-08-29):** the authorized
+  tier-10 full-window run does not reach its `5 t_ft` discard or statistics
+  interval.  At accepted step 1,542 and `2.1426204254821641 s`, the recoverable
+  format-13 checkpoint records a minimum accepted step of
+  `3.0300463549792767e-5 s`.  A read-only checkpoint audit finds
+  `255.64169311523438 m/s` maximum physical velocity, giving an advective CFL
+  candidate of `4.786874268372288e-5 s`.  The maximum positive reduced gravity
+  is elevated (`62.179819320204423 m/s2`) but its independent buoyant candidate
+  is `0.01402869021009805 s`, so buoyancy selection is not the direct limiter.
+  Gas density spans `0.15965474117547274--1.2099052290432155 kg/m3` around the
+  `1.1719579191113527 kg/m3` ambient value.  Together these identify the causal
+  bundle as density corruption feeding momentum division, producing the
+  255-m/s field and collapsing the advective step.
+
+  The combustion ledger does not explain the failure.  A Binary32 source probe
+  at the checkpoint produces `94466.977979105024 W`; methane consumption times
+  LHV is `94467.009612291862 W`, relative error
+  `3.3485973103748931e-7`.  The manifold distribution is already broad
+  (`max/p95/p50 = 0.11917137460802585 / 0.009886252187254363 /
+  1.1382639254042815e-5`), supplying the requested attribution evidence.
+  Because failure precedes the observation window, no tier-10 puffing spectrum,
+  empirical-row claim, or animation is formable.  The run was stopped rather
+  than extrapolated into a multi-day invalid trajectory.  Format 13 does not
+  persist retry counters or per-step cost histories; r178 records that omission
+  and does not invent later-state wall statistics.  The tier-6 full spectra and
+  r177 complete-owner cost remain valid, but the pre-registered tier-10 branch
+  is the genuine production-physics stop.
