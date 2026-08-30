@@ -13299,6 +13299,102 @@ static void TestCleanRoomBuildElementQuotedNameAndTotalRejection()
 	}
 }
 
+//----------------------------------------------------------------------
+// Expression-diagnostic-sink fix (2026-08-30): end-to-end coverage for the
+// two-part fix that makes a bad expression compile failure legible instead
+// of a generic, indistinguishable "apply failed" fallback.
+//----------------------------------------------------------------------
+
+//! Fix 1 END-TO-END: a bare `insert_chunk` (the same Job::ApplyCstInsertChunk
+//! path build_element's InsertChunks call goes through) on a chunk whose
+//! `expr`/`def` body fails to compile must surface the SPECIFIC compiler
+//! diagnostic through the agent-visible rejection message, in the
+//! "insert rejected: ... head unchanged: <keyword>: <text>" shape
+//! (FoldChunkCode's code-0 branch, AgentSession.cpp) -- not the generic,
+//! indistinguishable "apply failed (e.g. unresolved reference); see log"
+//! that AnalyzeRejectedInsert (which only inspects Reference-kind params)
+//! can never explain for a String-kind expression body.
+static void TestInsertRejectionSurfacesExpressionCompileDiag()
+{
+	std::printf( "S2/expr-diag: insert_chunk on a bad expression_painter surfaces the SPECIFIC compiler diagnostic...\n" );
+	const std::string tmp = TempPath( "agentcrud_exprdiag_insert.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "expr-diag/insert fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+	Agent::AgentChunkResult r = sess->InsertChunk(
+		"expression_painter\n{\n\tname bad_saturate_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}" );
+	Check( !r.applied, "expr-diag/insert the bad expression_painter is rejected, not applied" );
+	Check( r.headVersion.revision == v0.revision, "expr-diag/insert head unchanged on rejection" );
+	Check( r.message.find( "insert rejected:" ) != std::string::npos &&
+	       r.message.find( "head unchanged" ) != std::string::npos,
+	       "expr-diag/insert MONEY ASSERTION: the agent-visible shape is \"insert rejected: ... head unchanged: ...\"" );
+	Check( r.message.find( "apply failed" ) == std::string::npos,
+	       "expr-diag/insert MONEY ASSERTION: the generic apply-failed fallback is GONE" );
+	Check( r.message.find( "unknown function `saturate`" ) != std::string::npos,
+	       "expr-diag/insert MONEY ASSERTION: the SPECIFIC compiler text (unknown function `saturate`) reaches the agent" );
+	Check( r.message.find( "def `wear`" ) != std::string::npos,
+	       "expr-diag/insert and it names the OFFENDING `def`, not just the chunk" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! Fix 2 (kind-changed re-land disclosure): a chunk name rejected under one
+//! kind by the first build_element attempt (an expression_painter whose
+//! `def` fails to compile) that the ONE repair retry re-lands under a
+//! DIFFERENT kind (a plain uniformcolor_painter under the SAME name) must
+//! not read, from `out.landed` alone, as the ORIGINALLY requested chunk
+//! having worked. AgentSession::BuildElement's summary composition
+//! (AgentSession.cpp, the block right after "Not inserted: ") now appends
+//! an explicit NOTE derived from `out.rejected` + `out.chunkResults`.
+static void TestBuildElementDisclosesKindChangedReland()
+{
+	std::printf( "S2/expr-diag: build_element discloses a kind-changed re-land across the repair retry...\n" );
+	const std::string tmp = TempPath( "agentcrud_exprdiag_reland.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "expr-diag/reland fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	// Attempt 1: an expression_painter whose `def` doesn't compile -- rejected
+	// by InsertChunks with the specific Fix-1 diagnostic, kind "expression_painter".
+	const std::string firstBad =
+		"expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n";
+	// Attempt 2 (the one repair retry): the builder gives up on the expression
+	// and answers with a plain uniformcolor_painter under the SAME name --
+	// a legitimate re-land, but under a DIFFERENT kind.
+	const std::string retryDifferentKind =
+		"uniformcolor_painter\n{\n\tname wizard_bronze_pnt\n\tcolor 0.6 0.4 0.2\n}\n";
+
+	int calls = 0;
+	sess->SetTextCompleter( MakeFakeCompleter( { firstBad, retryDifferentKind }, &calls ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "expr-diag/reland the plan files" );
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+
+	Check( calls == 2, "expr-diag/reland the one repair retry ran (2 completions)" );
+	Check( r.ok && r.retryRan && r.retrySucceeded,
+	       "expr-diag/reland the retry landed something -- this is NOT a total rejection" );
+	bool landedUnderName = false;
+	for( std::size_t i = 0; i < r.landed.size(); ++i )
+		if( r.landed[i] == "wizard_bronze_pnt" ) landedUnderName = true;
+	Check( landedUnderName, "expr-diag/reland the name DID land (from the retry's uniformcolor_painter)" );
+	bool sawExpressionRejection = false;
+	for( std::size_t i = 0; i < r.rejected.size(); ++i )
+		if( r.rejected[i].name == "wizard_bronze_pnt" && r.rejected[i].kind == "expression_painter" )
+			sawExpressionRejection = true;
+	Check( sawExpressionRejection,
+	       "expr-diag/reland and the FIRST attempt's rejection (kind expression_painter) is on record" );
+	Check( r.message.find( "NOTE: `wizard_bronze_pnt` re-landed as uniformcolor_painter, not the "
+	                       "originally requested expression_painter." ) != std::string::npos,
+	       "expr-diag/reland MONEY ASSERTION: the summary explicitly discloses the kind-changed re-land, "
+	       "so \"wizard_bronze_pnt\" landing does not read as the originally requested expression_painter "
+	       "having worked" );
+}
+
 //! S2h: the wire shape of both verbs.
 static void TestCleanRoomWireShape()
 {
@@ -19881,6 +19977,8 @@ int main()
 	TestCleanRoomProtocolOff();
 	TestCleanRoomPlaceElement();
 	TestCleanRoomBuildElementQuotedNameAndTotalRejection();
+	TestInsertRejectionSurfacesExpressionCompileDiag();
+	TestBuildElementDisclosesKindChangedReland();
 	TestCleanRoomWireShape();
 	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();

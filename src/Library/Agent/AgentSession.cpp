@@ -20349,6 +20349,27 @@ namespace RISE
 				}
 				m += ".";
 			}
+			// Kind-changed re-land disclosure: `out.landed` above lists chunk
+			// NAMES ONLY, so a name that was rejected under one kind in an
+			// earlier attempt (e.g. an expression_painter whose expression
+			// failed to compile) and then re-landed under a DIFFERENT kind by
+			// the repair retry (e.g. the retry gave up and wrote a plain
+			// uniformcolor_painter under the same name) reads, from the
+			// landed-names list alone, as the originally requested chunk
+			// having worked. Derived entirely from data already in
+			// `out.rejected` / `out.chunkResults` (both populated above,
+			// across both attempts) -- no new state, no re-inspection of the
+			// document.
+			for( const AgentBuildElementRejection& rej : out.rejected ) {
+				if( rej.name.empty() || rej.kind.empty() ) continue;
+				for( const AgentChunkResult& cr : out.chunkResults ) {
+					if( cr.applied && cr.name == rej.name && !cr.kind.empty() && cr.kind != rej.kind ) {
+						m += " NOTE: `" + rej.name + "` re-landed as " + cr.kind +
+							", not the originally requested " + rej.kind + ".";
+						break;
+					}
+				}
+			}
 			if( out.retryRan ) {
 				m += out.retrySucceeded
 					? std::string( " One repair retry ran and inserted more chunks; there is no second "
