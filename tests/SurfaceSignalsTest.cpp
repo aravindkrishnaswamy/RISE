@@ -51,6 +51,10 @@
 //        composite normal (Phase-2 fix round P1) -- a pocket floor reads
 //        occluded and a thin remaining wall reads thin, where pre-fix both
 //        read as if standing on the untouched convex/thick exterior.
+//    (l) a DYNAMIC (computed) radius that lands POSITIVE is genuinely
+//        answered on the SDF family -- the live-evaluation capability
+//        the baked mesh family structurally cannot have.  (d) covers
+//        the computed-and-non-positive case; this covers the common one.
 //
 //  Tabs: 4
 //
@@ -946,6 +950,61 @@ static void TestCsgSubtractionRepairsSignalNormal()
 }
 
 //======================================================================
+// (l) a DYNAMIC (computed) radius that lands positive is really answered
+//     on the SDF family -- the capability the mesh family cannot have
+//======================================================================
+
+static void TestDynamicRadiusAnsweredOnSdf()
+{
+	std::cout << "(l) SDF: a COMPUTED radius is evaluated, not refused" << std::endl;
+
+	// (d) already pins that a computed radius which lands NON-POSITIVE reads
+	// the neutral value.  What was never pinned is the far more common case:
+	// a computed radius that lands positive must be genuinely ANSWERED here.
+	// It matters because it is exactly where the two provider families
+	// diverge -- the SDF evaluates live and can take any expression, while a
+	// baked mesh commits to one radius per table and refuses anything the
+	// compiler did not prove literal (MeshSignalBakeTest (g)).  Without this
+	// check, a regression that made the SDF adopt the mesh's refusal rule
+	// would leave every test green while silently flattening every
+	// expression-driven cavity mask in the wild to 1.
+	SDFGeometry* g = BuildSdfCreasedPair( 0.7 );
+	Object* o = new Object( g );
+	g->release();
+	o->FinalizeTransformations();
+
+	// Prime: the crease hit must publish a provider, or every reading below
+	// would be the (d) no-provider neutral and this test would pass on
+	// nothing at all.
+	RayIntersection riPrime = MkRI( Point3( 0, 30, 0 ), Vector3( 0, -1, 0 ) );
+	Check( HitObject( o, riPrime ), "(l) the crease ray hits" );
+	Check( riPrime.geometric.signals.pProvider != 0,
+		"(l) the crease hit publishes a provider (not the no-provider fallback path)" );
+
+	// `u` at that hit, so the dynamic expression's value is knowable and the
+	// comparison below is against a NUMBER rather than against itself.
+	Scalar uAtHit = -1;
+	Check( EvalAtHit( o, Point3( 0, 30, 0 ), Vector3( 0, -1, 0 ), "u", uAtHit ), "(l) u evaluates at the crease" );
+
+	Scalar aoDynamic = -1;
+	Check( EvalAtHit( o, Point3( 0, 30, 0 ), Vector3( 0, -1, 0 ), "occlusion(u*0.2+0.1)", aoDynamic ),
+		"(l) the dynamic-radius query evaluates" );
+	Check( aoDynamic < Scalar( 0.9 ),
+		"(l) MONEY -- a computed radius gets a REAL occluded answer on an SDF crevice, not the neutral 1" );
+
+	// And it is the answer the SAME radius spelled as a literal gives: the
+	// dynamic path is a different route to one number, not a different
+	// estimator.
+	const Scalar radius = uAtHit * Scalar( 0.2 ) + Scalar( 0.1 );
+	Scalar aoLiteral = -1;
+	Check( EvalAtHit( o, Point3( 0, 30, 0 ), Vector3( 0, -1, 0 ),
+		"occlusion(" + std::to_string( radius ) + ")", aoLiteral ), "(l) the literal-radius twin evaluates" );
+	CheckClose( aoDynamic, aoLiteral, 1e-6, "(l) dynamic and literal spellings of one radius agree" );
+
+	o->release();
+}
+
+//======================================================================
 
 int main()
 {
@@ -962,6 +1021,7 @@ int main()
 	TestRadiusFractionScaleInvariance();
 	TestHeightfieldRefusesSignals();
 	TestCsgSubtractionRepairsSignalNormal();
+	TestDynamicRadiusAnsweredOnSdf();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

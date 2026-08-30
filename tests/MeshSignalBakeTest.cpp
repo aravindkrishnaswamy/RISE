@@ -42,6 +42,16 @@
 //        free-invalidation argument does NOT cover) drops the bakes.
 //    (j) A hit carrying no triangle (a hand-built record, primId -1)
 //        refuses rather than interpolating garbage.
+//    (l) INSTANCING: two objects at different world scales sharing ONE
+//        mesh geometry read the same signal, the mesh-family twin of
+//        SurfaceSignalsTest (i).  This is what makes a geometry-owned
+//        (rather than object-owned) bake correct in the first place.
+//    (m) N threads each asking for a DIFFERENT literal radius converge
+//        on the bounded map: one table per distinct radius, no more.
+//    (n) The drop-and-recreate invalidation of §7.2 through the REAL
+//        `Cst::DeriveToJobIncremental` path -- (d) proves the property
+//        on hand-constructed geometries, this one proves the derive
+//        path actually recreates.
 //
 //  Tabs: 4
 //
@@ -66,6 +76,9 @@
 #include "../src/Library/Painters/ExpressionPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -432,15 +445,23 @@ static void TestThicknessIsQuantitative()
 	Check( ri.geometric.signals.pProvider != 0, "(f) the slab hit publishes a provider" );
 
 	if( ri.geometric.signals.pProvider ) {
-		// R = 2w, so the slab is exactly half the query radius thick.
-		const Scalar R  = 2 * w;
+		// R = 4w, so the slab is a QUARTER of the query radius thick.
+		//
+		// Deliberately NOT the natural-looking w/R = 0.5.  At a half, an
+		// INVERTED convention (reporting `1 - w/R`) reads 0.485 against the
+		// correct 0.515 -- and any tolerance loose enough to admit the
+		// cone's own ~3 % admits that too, so the primary assertion would
+		// pass on a sign error and only the saturation check below would
+		// catch it.  At a quarter the two candidate answers are 0.258 and
+		// 0.742, and this one assertion carries the convention on its own.
+		const Scalar R  = 4 * w;
 		const Scalar rf = R / diag;
 		Scalar th = -1;
 		Check( ri.geometric.signals.pProvider->ComputeThickness(
 			ri.geometric.signals, rf, true, th ), "(f) ComputeThickness answers" );
-		// Expected 0.5, plus the ~3.1 % the 20-degree inward cone adds over
+		// Expected 0.25, plus the ~3.1 % the 20-degree inward cone adds over
 		// a straight-down probe (see MeshSignalBake::kThicknessConeHalfAngle).
-		CheckClose( th, 0.5 * 1.031, 0.04, "(f) MONEY -- thickness reads w/R, not 0 (outward lift) and not 2w/R (hemisphere)" );
+		CheckClose( th, 0.25 * 1.031, 0.04, "(f) MONEY -- thickness reads w/R, not 1-w/R (inverted), not 0 (outward lift) and not 2w/R (hemisphere)" );
 
 		// And it SATURATES: read at a radius smaller than the slab is
 		// thick, the answer is a flat 1 (= thick), matching the SDF
@@ -687,6 +708,236 @@ static void TestCsgCarriesMeshPayload()
 }
 
 //======================================================================
+// (l) INSTANCING: one geometry, two objects at different world scales
+//======================================================================
+
+static void TestInstancesShareOneBake()
+{
+	std::cout << "(l) two instances of ONE mesh geometry share its bake and read identically" << std::endl;
+
+	// The mesh-family twin of SurfaceSignalsTest (i).  It is the reason the
+	// cache is owned by the GEOMETRY: a bake is object-space, so it is
+	// simultaneously correct for every instance, and `occlusion(0.3)` means
+	// "30 % of the object" on each of them no matter what world size they
+	// are drawn at.
+	{
+		TriangleMeshGeometryIndexed* mesh = BuildTrench();
+
+		Object* oA = new Object( mesh );
+		oA->FinalizeTransformations();
+
+		Object* oB = new Object( mesh );
+		oB->SetScale( 4.0 );
+		oB->FinalizeTransformations();
+		mesh->release();
+
+		const unsigned int before = Builds();
+		Scalar aoA = 0, aoB = 0;
+		Check( EvalAtHit( oA, Point3( 0, -0.88, 5 ), Vector3( 0, 0, -1 ), "occlusion(0.3)", aoA ),
+			"(l) instance A corner hit" );
+		Check( Builds() == before + 1, "(l) instance A built the one table" );
+
+		// The corresponding place on the 4x instance: the same object-space
+		// point, four times further out in the world.
+		const unsigned int afterA = Builds();
+		Check( EvalAtHit( oB, Point3( 0, -0.88*4, 20 ), Vector3( 0, 0, -1 ), "occlusion(0.3)", aoB ),
+			"(l) instance B corner hit" );
+		Check( Builds() == afterA,
+			"(l) MONEY -- instance B builds NOTHING: the bake belongs to the geometry, not the object" );
+
+		Check( aoA < Scalar( 0.9 ), "(l) instance A really is occluded (non-vacuous)" );
+		CheckClose( aoB, aoA, 1e-12, "(l) MONEY -- occlusion IDENTICAL at scale 1 and scale 4" );
+
+		oA->release();
+		oB->release();
+	}
+
+	// Thickness too: it is normalized by the same object-space fraction, so
+	// it must be scale-invariant for the same reason.
+	{
+		const Scalar w = 0.2;
+		TriangleMeshGeometryIndexed* mesh = BuildSlab( w );
+
+		Object* oA = new Object( mesh );
+		oA->FinalizeTransformations();
+
+		Object* oB = new Object( mesh );
+		oB->SetScale( 3.0 );
+		oB->FinalizeTransformations();
+		mesh->release();
+
+		Scalar thA = 0, thB = 0;
+		Check( EvalAtHit( oA, Point3( 0.13, -0.07, 5 ), Vector3( 0, 0, -1 ), "thickness(0.14)", thA ),
+			"(l) slab instance A hit" );
+		Check( EvalAtHit( oB, Point3( 0.13*3, -0.07*3, 15 ), Vector3( 0, 0, -1 ), "thickness(0.14)", thB ),
+			"(l) slab instance B hit" );
+		Check( thA > Scalar( 0 ) && thA < Scalar( 1 ),
+			"(l) slab instance A thickness is non-saturated (a saturated 1 would compare constants)" );
+		CheckClose( thB, thA, 1e-12, "(l) MONEY -- thickness IDENTICAL at scale 1 and scale 3" );
+
+		oA->release();
+		oB->release();
+	}
+}
+
+//======================================================================
+// (m) Concurrent DISTINCT radii: the map converges, one table each
+//======================================================================
+
+static void TestConcurrentDistinctRadii()
+{
+	std::cout << "(m) eight threads, eight different radii: exactly eight tables" << std::endl;
+
+	// (c) races threads onto ONE radius and proves they build once.  This is
+	// the other half: threads that each MISS force eight serialized builds
+	// through the same lock, and the map must end up holding exactly the
+	// eight of them -- no duplicate table for a radius another thread was
+	// already building, and no lost insert.
+	TriangleMeshGeometryIndexed* mesh = BuildTrench();
+	Object* o = new Object( mesh );
+	mesh->release();
+	o->FinalizeTransformations();
+
+	// Exactly kMaxTablesPerKind distinct radii, so every one of them is
+	// expected to be ACCEPTED -- a cap refusal here would look like a lost
+	// build and confuse the count.
+	const size_t kThreads = MeshSignalBakeCache::kMaxTablesPerKind;
+	std::vector<Scalar> radii;
+	for( size_t t = 0; t < kThreads; ++t ) {
+		radii.push_back( Scalar( 0.10 ) + Scalar( 0.05 ) * Scalar( t ) );
+	}
+
+	const unsigned int before = Builds();
+	std::atomic<int> answered( 0 );
+	std::atomic<int> mismatched( 0 );
+	std::vector<Scalar> firstAnswer( kThreads, Scalar( -1 ) );
+
+	std::vector<std::thread> threads;
+	for( size_t t = 0; t < kThreads; ++t ) {
+		threads.push_back( std::thread( [o, t, &radii, &answered, &mismatched, &firstAnswer]() {
+			for( int i = 0; i < 20; ++i ) {
+				RayIntersection ri = MkRI( Point3( 0, -0.85, 5 ), Vector3( 0, 0, -1 ) );
+				if( !HitObject( o, ri ) || !ri.geometric.signals.pProvider ) {
+					continue;
+				}
+				Scalar v = -1;
+				if( !ri.geometric.signals.pProvider->ComputeOcclusion(
+						ri.geometric.signals, radii[t], true, v ) ) {
+					continue;
+				}
+				++answered;
+				// Only this thread touches its own slot.
+				if( firstAnswer[t] < Scalar( 0 ) ) {
+					firstAnswer[t] = v;
+				} else if( firstAnswer[t] != v ) {
+					++mismatched;		// one radius answering two ways
+				}
+			}
+		} ) );
+	}
+	for( size_t t = 0; t < threads.size(); ++t ) threads[t].join();
+
+	Check( answered.load() == (int)( kThreads * 20 ), "(m) every concurrent query at every radius answered" );
+	Check( mismatched.load() == 0, "(m) each radius answered consistently across its 20 queries" );
+	Check( Builds() == before + (unsigned int)kThreads,
+		"(m) MONEY -- N concurrent DISTINCT radii build exactly N tables (no duplicate, no lost insert)" );
+
+	// And the map really is full rather than merely N-built: the next
+	// distinct radius is refused by the cap.
+	{
+		RayIntersection ri = MkRI( Point3( 0, -0.85, 5 ), Vector3( 0, 0, -1 ) );
+		Check( HitObject( o, ri ), "(m) the cap-probe ray hits" );
+		if( ri.geometric.signals.pProvider ) {
+			Scalar over = -1;
+			Check( !ri.geometric.signals.pProvider->ComputeOcclusion(
+					ri.geometric.signals, Scalar( 0.77 ), true, over ),
+				"(m) the map is FULL at the cap -- a ninth distinct radius refuses" );
+		}
+	}
+
+	o->release();
+}
+
+//======================================================================
+// (n) Invalidation through the REAL incremental derive path
+//======================================================================
+
+static void TestIncrementalDerivePathRebuilds()
+{
+	std::cout << "(n) a geometry edit through Cst::DeriveToJobIncremental bakes fresh" << std::endl;
+
+	// (d) proves the property on hand-constructed geometries: a second
+	// geometry has its own cache because the cache is a member subobject.
+	// That argument is sound, and it is still an argument about the OBJECTS
+	// -- it says nothing about whether the derive path actually recreates
+	// the geometry rather than mutating one in place.  §7.2's whole
+	// free-invalidation claim rests on it doing so, so this drives a real
+	// edit through the real path and watches the build counter.
+	//
+	// `lathe_geometry` is the mesh chosen because it is authorable inline
+	// (no asset file) and lands on TriangleMeshGeometryIndexed, which is the
+	// family that bakes.
+	const std::string kScene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+		"lambertian_material\n{\nname m\nreflectance p\n}\n"
+		"lathe_geometry\n{\nname g\naxis y\nn_radial 16\nsmooth TRUE\n"
+			"profile_point 0.0 0.0\nprofile_point 0.5 0.0\n"
+			"profile_point 0.5 1.0\nprofile_point 0.0 1.0\n}\n"
+		"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+
+	Cst::Document doc = Cst::ParseToCst( kScene );
+	Job* job = new Job();
+	std::vector<std::string> d0;
+	Cst::DeriveToJob( doc, *job, &d0 );
+
+	IObjectPriv* obj = job->GetObjects() ? job->GetObjects()->GetItem( "o" ) : 0;
+	Check( obj != 0, "(n) the derived scene has the lathe object" );
+
+	Scalar firstValue = -1;
+	if( obj ) {
+		const unsigned int before = Builds();
+		RayIntersection ri = MkRI( Point3( 0, 0.5, 5 ), Vector3( 0, 0, -1 ) );
+		obj->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		Check( ri.geometric.bHit, "(n) the lathe's wall is hit" );
+		Check( ri.geometric.signals.pProvider != 0, "(n) and it publishes a mesh provider" );
+		if( ri.geometric.signals.pProvider ) {
+			Check( ri.geometric.signals.pProvider->ComputeOcclusion(
+				ri.geometric.signals, Scalar( 0.3 ), true, firstValue ), "(n) the first query answers" );
+		}
+		Check( Builds() == before + 1, "(n) the first query built the bake" );
+	}
+
+	// The EDIT: change the lathe's radial resolution, which is a genuine
+	// shape change, and re-apply only that chunk's closure.
+	const Cst::NodeId gId = Cst::DocFindByName( doc, "lathe_geometry/g" );
+	Cst::Document docE = Cst::DocSetParamValue( doc, gId, "n_radial", 0, "24" );
+	std::vector<Cst::NodeId> closure = Cst::DocEditClosure( docE, gId );
+	std::vector<std::string> di;
+	const int applied = Cst::DeriveToJobIncremental( docE, *job, closure, &di );
+	Check( applied > 0 && di.empty(), "(n) the geometry edit applied (not refused)" );
+
+	IObjectPriv* obj2 = job->GetObjects() ? job->GetObjects()->GetItem( "o" ) : 0;
+	Check( obj2 != 0, "(n) the object survives the re-derive" );
+	if( obj2 ) {
+		const unsigned int before = Builds();
+		RayIntersection ri = MkRI( Point3( 0, 0.5, 5 ), Vector3( 0, 0, -1 ) );
+		obj2->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		Check( ri.geometric.bHit, "(n) the re-derived lathe is hit" );
+		if( ri.geometric.signals.pProvider ) {
+			Scalar secondValue = -1;
+			Check( ri.geometric.signals.pProvider->ComputeOcclusion(
+				ri.geometric.signals, Scalar( 0.3 ), true, secondValue ), "(n) the post-edit query answers" );
+			Check( secondValue >= 0 && secondValue <= 1, "(n) ...with a value in range" );
+		}
+		Check( Builds() == before + 1,
+			"(n) MONEY -- the re-derived geometry bakes FRESH (the derive path really does recreate)" );
+	}
+
+	job->release();
+}
+
+//======================================================================
 
 int main()
 {
@@ -702,6 +953,9 @@ int main()
 	TestUpdateVerticesInvalidates();
 	TestNoTriangleRefuses();
 	TestCsgCarriesMeshPayload();
+	TestInstancesShareOneBake();
+	TestConcurrentDistinctRadii();
+	TestIncrementalDerivePathRebuilds();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
