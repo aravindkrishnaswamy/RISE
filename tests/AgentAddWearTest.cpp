@@ -1067,6 +1067,20 @@ static void TestWireSurface()
 //       never flagged (it is an emitter, excluded from the opaque set by
 //       the same rule that excludes it from condition I's), the outer
 //       shell is.
+//   (g) P1 coverage: a genuine sdf_geometry shell (a single sphere part)
+//       with an interior light -> fires, exactly like the analytic-kind
+//       shells above.
+//   (h) THE P1 REGRESSION: a thin, elongated sdf_geometry cylinder part
+//       (radius 0.05, half-height 3) with a light 2 units off its SIDE
+//       (laterally, off the thin radius) -> does NOT fire.  Fails against
+//       the pre-fix SDFGeometryLocalBounds_, which broadcast the part's
+//       isotropic reach radius (~3.0) onto every axis and would have
+//       falsely claimed containment.
+//   (i) SMALLEST-VOLUME TIE-BREAK: two nested opaque box shells both
+//       enclose the light -> the finding names the SMALLER (inner) one,
+//       never the outer.
+//   (j) an analytic-kind shell beyond box_geometry (sphere_geometry) also
+//       fires.
 //----------------------------------------------------------------------
 
 //! `ggx_material` with an explicit (possibly empty) `emissive` binding.
@@ -1091,6 +1105,40 @@ static std::string Box( const std::string& name, double size )
 static std::string OmniAtOrigin( const std::string& name )
 {
 	return "omni_light\n{\n\tname " + name + "\n\tpower 5.0\n\tcolor 1 1 1\n\tposition 0 0 0\n}\n\n";
+}
+
+static std::string OmniAt( const std::string& name, double x, double y, double z )
+{
+	char buf[128];
+	std::snprintf( buf, sizeof( buf ), "%g %g %g", x, y, z );
+	return "omni_light\n{\n\tname " + name + "\n\tpower 5.0\n\tcolor 1 1 1\n\tposition " +
+	       buf + "\n}\n\n";
+}
+
+//! A single-sphere-part sdf_geometry -- a genuine sdf SHELL (as opposed to
+//! SdfBlob's dissolved creature), for condition M's (g) coverage: the local-
+//! bounds reader must handle sdf_geometry as an enclosure candidate exactly
+//! like the analytic allowlist kinds.
+static std::string SdfSphereShell( const std::string& name, double radius )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", radius );
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart sphere union 0   0 0 0   0 0 0   1 1 1   " + buf + " 0 0   0\n}\n\n";
+}
+
+//! P1 regression fixture (review-round M): ONE thin, elongated sdf_geometry
+//! part -- a cylinder of radius 0.05 and half-height 3, axis-aligned along
+//! local Y, no rotation.  The pre-fix SDFGeometryLocalBounds_ broadcast
+//! SDFPartReachRadius_'s ISOTROPIC envelope radius (sqrt(0.05^2+3^2) ~= 3.0)
+//! onto every axis, so a point 2 units off the cylinder's THIN side (radius
+//! 0.05) still fell inside the resulting ~3x3x3 cube -- a false "enclosed"
+//! claim.  The fixed reader keeps radius 0.05 on X/Z and only extends +-3 on
+//! Y, so the same point is correctly outside.
+static std::string SdfThinCylinderShell( const std::string& name )
+{
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart cylinder union 0   0 0 0   0 0 0   1 1 1   0.05 3 0   0\n}\n\n";
 }
 
 static void TestEnclosedLightShellNote()
@@ -1227,6 +1275,88 @@ static void TestEnclosedLightShellNote()
 			Check( d->message.find( "obj_flame" ) == std::string::npos,
 			       "M6 MONEY: ...and never the coincident inner emissive fixture, which IS the light" );
 		}
+	}
+
+	// (g) P1 coverage: a genuine sdf_geometry shell -- a single sphere part
+	//     big enough to enclose the light -- fires exactly like the
+	//     analytic-kind shells above.
+	{
+		std::string body = Preamble();
+		body += SdfSphereShell( "sdf_shell", 2.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "sdf_shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M7: a genuine sdf_geometry shell (a sphere part) encloses the light -- FIRES" );
+		if( d ) {
+			Check( d->message.find( "obj_shell" ) != std::string::npos,
+			       "M7: ...and names the sdf shell object" );
+		}
+	}
+
+	// (h) THE P1 REGRESSION: a thin, elongated sdf cylinder part (radius
+	//     0.05, half-height 3, axis-aligned along Y, unrotated) with a
+	//     light 2 units off its SIDE -- well outside the true radius-0.05
+	//     lateral extent -- must NOT read as enclosed.  Pre-fix,
+	//     SDFGeometryLocalBounds_ broadcast SDFPartReachRadius_'s isotropic
+	//     envelope (sqrt(0.05^2+3^2) ~= 3.0004) onto EVERY axis, so this
+	//     exact light position fell inside the resulting ~3x3x3 cube and
+	//     falsely fired -- verified by reasoning against the pre-fix
+	//     formula above (and confirmed by briefly reverting
+	//     SDFGeometryLocalBounds_ to the old cube-of-SDFPartReachRadius_
+	//     form during development, which flips this Check to fail).
+	{
+		std::string body = Preamble();
+		body += SdfThinCylinderShell( "sdf_thin_cyl" );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "sdf_thin_cyl", "mat_shell", 0 );
+		body += OmniAt( "candle", 2.0, 0.0, 0.0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M8 P1 REGRESSION MONEY: a light 2 units off the SIDE of a thin elongated sdf cylinder "
+		       "(radius 0.05, half-height 3) is NOT enclosed -- the per-axis bound correctly rejects it, "
+		       "where the old isotropic-radius broadcast (reach ~3 on every axis) would have falsely "
+		       "claimed containment" );
+	}
+
+	// (i) SMALLEST-VOLUME TIE-BREAK: two nested opaque box shells both
+	//     enclose the light -- the finding names the SMALLER (inner) one,
+	//     never the outer.
+	{
+		std::string body = Preamble();
+		body += Box( "shell_outer", 6.0 );
+		body += Box( "shell_inner", 2.0 );
+		body += GgxEmissive( "mat_outer", "pnt_bronze", "0.3", "" );
+		body += GgxEmissive( "mat_inner", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_outer", "shell_outer", "mat_outer", 0 );
+		body += Obj( "obj_inner", "shell_inner", "mat_inner", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M9: two nested opaque shells both enclose the light -- fires" );
+		if( d ) {
+			Check( d->message.find( "obj_inner" ) != std::string::npos,
+			       "M9 MONEY: the SMALLER (inner) shell is named..." );
+			Check( d->message.find( "obj_outer" ) == std::string::npos,
+			       "M9 MONEY: ...and the larger outer shell is never named" );
+		}
+	}
+
+	// (j) An analytic-kind shell beyond box_geometry -- sphere_geometry --
+	//     also fires.
+	{
+		std::string body = Preamble();
+		body += "sphere_geometry\n{\n\tname sphere_shell\n\tradius 2.0\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "sphere_shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M10: a sphere_geometry shell (an analytic kind besides box) also fires" );
 	}
 }
 

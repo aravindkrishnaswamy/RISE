@@ -4532,10 +4532,18 @@ namespace RISE
 			//! `position + scale * local`, no rotation.  Deliberately NEVER
 			//! populated for an object that carries `parent` / `source` /
 			//! `count_u` / `count_v` (an arbitrary scene-graph composition or
-			//! instancing multiplier this static scan cannot resolve cheaply)
-			//! or `orientation` / `quaternion` / `matrix` (a rotated local bound
-			//! needs a rotation matrix this scan does not build) -- an object
-			//! failing either test is simply never added, which can only make
+			//! instancing multiplier this static scan cannot resolve cheaply),
+			//! `orientation` / `quaternion` / `matrix` (a rotated local bound
+			//! needs a rotation matrix this scan does not build), or `mirror`
+			//! (P2a, review-round M: `standard_object`'s own local-geometry
+			//! reflection, applied BEFORE `position`/`scale` -- for an
+			//! asymmetric local bound, e.g. an off-centre sdf_geometry part
+			//! list, it moves the true bounds to the opposite side of the
+			//! origin; a no-op for symmetric kinds, but this scan has no way
+			//! to tell those apart without re-deriving the geometry, so it
+			//! disqualifies unconditionally, false-negative-only like every
+			//! other entry in this list) -- an object failing any test is
+			//! simply never added, which can only make
 			//! condition M MISS an enclosure, never invent one.  `csg_object`
 			//! is a DIFFERENT top-level chunk role (category Object, no single
 			//! `geometry` reference) and is likewise never added here -- its
@@ -4639,35 +4647,121 @@ namespace RISE
 				return false;
 			}
 
+			//! P1 fix (review-round M, 2026-08-30): ONE primitive's local
+			//! (object-space-of-the-part, BEFORE scale/rotation/translation)
+			//! per-AXIS half-extents -- a straight port of SDFGeometry.cpp's
+			//! own primLocalAABB (~lines 440-524), NOT SDFPartReachRadius_'s
+			//! isotropic envelope radius.  SDFPartReachRadius_ answers "how
+			//! far can this part reach from `pos` on ANY axis" (a sphere,
+			//! deliberately broadcast to every axis so the blend-scale
+			//! proximity gate never has to know which axis a neighbour sits
+			//! on) -- exactly wrong for a containment box, where an
+			//! elongated part (e.g. a cylinder radius 0.05 half-height 3)
+			//! would inflate to a 3x3x3 cube and read "encloses" a light
+			//! that is nowhere near its thin lateral extent.  This function
+			//! is used ONLY by SDFGeometryLocalBounds_ below; the proximity
+			//! gate keeps using SDFPartReachRadius_ untouched.
+			//!
+			//! Every branch here is bit-for-bit the same formula
+			//! primLocalAABB uses for that primitive (superellipsoid folds
+			//! into the sphere row for the identical reason
+			//! SDFPartEnvelopeRadius_ documents: b/c are shape EXPONENTS,
+			//! not extents).  `round` only widens roundbox, matching
+			//! primLocalAABB's own scope for it.
+			void SDFPartLocalAABB_( const RISE::Implementation::SDFGeometry::Part& pt, double lmin[3], double lmax[3] )
+			{
+				using SDFGeometry = RISE::Implementation::SDFGeometry;
+				if( pt.type == SDFGeometry::ePrimBox || pt.type == SDFGeometry::ePrimRoundBox ) {
+					const Scalar r  = ( pt.type == SDFGeometry::ePrimRoundBox ) ? std::max( pt.round, Scalar( 0 ) ) : Scalar( 0 );
+					const Scalar ex = std::max( pt.a, r ), ey = std::max( pt.b, r ), ez = std::max( pt.c, r );
+					lmin[0] = -ex; lmin[1] = -ey; lmin[2] = -ez;
+					lmax[0] =  ex; lmax[1] =  ey; lmax[2] =  ez;
+					return;
+				}
+				Scalar rx, ry0, ry1, rz;
+				switch( pt.type ) {
+					case SDFGeometry::ePrimSphere:
+					case SDFGeometry::ePrimSuperellipsoid:
+						rx = rz = pt.a; ry0 = -pt.a; ry1 = pt.a;
+						break;
+					case SDFGeometry::ePrimCylinder:
+						rx = rz = pt.a; ry0 = -pt.b; ry1 = pt.b;
+						break;
+					case SDFGeometry::ePrimTorus:
+						rx = rz = pt.a + pt.b; ry0 = -pt.b; ry1 = pt.b;
+						break;
+					case SDFGeometry::ePrimCapsule: {
+						const Scalar hh = std::fabs( pt.b );   // primLocalAABB's own negative-b half-height fix
+						rx = rz = pt.a; ry0 = -( hh + pt.a ); ry1 = hh + pt.a;
+						break;
+					}
+					case SDFGeometry::ePrimRoundCone:
+						rx = rz = std::max( pt.a, pt.b );
+						ry0 = std::min( -pt.a, pt.c - pt.b );
+						ry1 = std::max(  pt.a, pt.c + pt.b );
+						break;
+					default:   // unreachable: every known SDFPrim is handled above
+						rx = rz = pt.a; ry0 = -pt.a; ry1 = pt.a;
+						break;
+				}
+				lmin[0] = -rx; lmin[1] = ry0; lmin[2] = -rz;
+				lmax[0] =  rx; lmax[1] =  ry1; lmax[2] =  rz;
+			}
+
 			//! sdf_geometry's local bound: the union, across every parsed Part,
-			//! of an axis-aligned box centred at that part's own `pos` with
-			//! half-extent SDFPartReachRadius_(part) on every axis -- the SAME
-			//! conservative per-part reach the proximity gate (review-round B/C,
-			//! above) already trusts, just unioned across the whole part list
-			//! instead of compared pairwise.  Deliberately IGNORES each part's
-			//! own rotation (cx/cy/cz): reach is a ROTATION-INVARIANT radius
-			//! around `pos` (rotating a shape about its own centre cannot move
-			//! any of its points farther from that centre than its unrotated
-			//! reach), so the box this produces is always AT LEAST as large as
-			//! the part's true local extent -- conservative in the safe
-			//! direction for an enclosure test.  An empty part list returns the
-			//! zero-initialized (degenerate, origin-only) bound.
+			//! of that part's OWN object-space AABB -- true per-axis extents
+			//! (SDFPartLocalAABB_, the primLocalAABB port above) scaled by the
+			//! part's per-axis `scale` (magnitude only; a negative-scale mirror
+			//! changes which way the part faces, not how far it reaches), then
+			//! rotated through the part's own rotation columns (cx/cy/cz) via
+			//! an 8-corner transform, then translated by `pos` -- the SAME
+			//! corner-transform shape ComputeBounds' own `worldAABB` lambda in
+			//! SDFGeometry.cpp uses (scale -> rotate -> translate), so a
+			//! rotated part gets an EXACT axis-aligned bound of its rotated
+			//! box, not a broadcast radius.  This REPLACES an earlier form
+			//! that unioned a CUBE of half-width SDFPartReachRadius_(part) on
+			//! every axis -- a spherical envelope broadcast to all three axes,
+			//! which massively over-claims containment for any elongated or
+			//! flattened primitive (P1, review-round M: a cylinder radius 0.05
+			//! half-height 3 read "encloses" a light 2 units off its side).
+			//! Still IGNORES op semantics (subtract/intersect can only ever
+			//! shrink the true solid below this per-part union, and a smin
+			//! blend can bulge slightly beyond a lone part's own box) --
+			//! exactly as the pre-fix version did, and exactly the safe
+			//! direction per this struct's own doc: any looseness here can
+			//! only make condition M MISS an enclosure, never invent one, and
+			//! is bounded by ONE part's own extent rather than a whole scene's
+			//! worth of reach.  An empty part list returns the zero-
+			//! initialized (degenerate, origin-only) bound.
 			GeometryLocalBounds_ SDFGeometryLocalBounds_( const std::vector<RISE::Implementation::SDFGeometry::Part>& parts )
 			{
 				GeometryLocalBounds_ out;
 				bool any = false;
 				for( const RISE::Implementation::SDFGeometry::Part& pt : parts ) {
-					const double reach = SDFPartReachRadius_( pt );
-					const double p[3]  = { pt.pos.x, pt.pos.y, pt.pos.z };
-					for( int k = 0; k < 3; ++k ) {
-						const double lo = p[k] - reach, hi = p[k] + reach;
-						if( !any ) { out.lo[k] = lo; out.hi[k] = hi; }
-						else {
-							if( lo < out.lo[k] ) out.lo[k] = lo;
-							if( hi > out.hi[k] ) out.hi[k] = hi;
+					double lmin[3], lmax[3];
+					SDFPartLocalAABB_( pt, lmin, lmax );
+					const double sx = std::fabs( pt.scale.x ), sy = std::fabs( pt.scale.y ), sz = std::fabs( pt.scale.z );
+					const double xs[2] = { lmin[0] * sx, lmax[0] * sx };
+					const double ys[2] = { lmin[1] * sy, lmax[1] * sy };
+					const double zs[2] = { lmin[2] * sz, lmax[2] * sz };
+					for( int ix = 0; ix < 2; ++ix )
+					for( int iy = 0; iy < 2; ++iy )
+					for( int iz = 0; iz < 2; ++iz ) {
+						const double vx = xs[ix], vy = ys[iy], vz = zs[iz];
+						const double w[3] = {
+							pt.cx.x * vx + pt.cy.x * vy + pt.cz.x * vz + pt.pos.x,
+							pt.cx.y * vx + pt.cy.y * vy + pt.cz.y * vz + pt.pos.y,
+							pt.cx.z * vx + pt.cy.z * vy + pt.cz.z * vz + pt.pos.z
+						};
+						for( int k = 0; k < 3; ++k ) {
+							if( !any ) { out.lo[k] = w[k]; out.hi[k] = w[k]; }
+							else {
+								if( w[k] < out.lo[k] ) out.lo[k] = w[k];
+								if( w[k] > out.hi[k] ) out.hi[k] = w[k];
+							}
 						}
+						any = true;
 					}
-					any = true;
 				}
 				return out;
 			}
@@ -5538,7 +5632,8 @@ namespace RISE
 							    nm2 != pm.end() && !nm2->second.empty() &&
 							    !pm.count( "parent" ) && !pm.count( "source" ) &&
 							    !pm.count( "count_u" ) && !pm.count( "count_v" ) &&
-							    !pm.count( "orientation" ) && !pm.count( "quaternion" ) && !pm.count( "matrix" ) ) {
+							    !pm.count( "orientation" ) && !pm.count( "quaternion" ) && !pm.count( "matrix" ) &&
+							    !pm.count( "mirror" ) ) {   // P2a: reflects local geometry pre-transform; would move an asymmetric local bound to the wrong side of the origin
 								EnclosureCandidate_ ec;
 								ec.name         = nm2->second;
 								ec.geometryName = geo->second;
