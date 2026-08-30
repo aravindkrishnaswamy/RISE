@@ -2335,6 +2335,64 @@ bool SDFGeometry::ParsePartLines(
 			}
 		}
 
+		// DEGENERATE-BY-CONSTRUCTION shape params: an authoring slip seen in
+		// the wild is putting a shape's SIZE into <sx sy sz> (the per-part
+		// SCALE, applied on top of the primitive) and leaving <a b c> -- the
+		// primitive's own shape parameters, per primDist's switch above -- at
+		// their default 0 0 0.  A box built that way is a single point (a
+		// 0.002-wide degenerate bbox is the field symptom): wrong bbox feeds
+		// wrong scaleHint/curv/occlusion radii downstream, and GetArea() on an
+		// emissive/SSS part goes to 0.  Checked per-primitive against the
+		// EXACT zero-critical combination that collapses primDist to a point
+		// -- an unused slot (e.g. a sphere's b/c) must never suppress this,
+		// and a combination that primDist maps to a DIFFERENT, still-valid
+		// primitive (roundbox with a=b=c=0 but round>0 is an exact sphere of
+		// radius `round`; torus with a=0 but b>0 is an exact sphere of radius
+		// b -- both via sdRoundBox / sdTorusY's own algebra) must not warn.
+		// WARN, don't fail -- matching the superellipsoid clamp above: the
+		// part still parses and composes (as a point, or not at all), and
+		// failing the whole chunk over one degenerate part would be worse
+		// than the degenerate part itself.
+		{
+			const char* degenerateWhy = 0;
+			switch( prim )
+			{
+			case ePrimSphere:
+				if( a == 0.0 ) { degenerateWhy = "radius `a` is 0"; }
+				break;
+			case ePrimBox:
+				if( a == 0.0 && b == 0.0 && c == 0.0 ) { degenerateWhy = "half-extents <a b c> are all 0"; }
+				break;
+			case ePrimRoundBox:
+				if( a == 0.0 && b == 0.0 && c == 0.0 && rnd == 0.0 ) { degenerateWhy = "half-extents <a b c> and `round` are all 0"; }
+				break;
+			case ePrimCylinder:
+				if( a == 0.0 && b == 0.0 ) { degenerateWhy = "radius `a` and half-height `b` are both 0"; }
+				break;
+			case ePrimTorus:
+				if( a == 0.0 && b == 0.0 ) { degenerateWhy = "ring radius `a` and tube radius `b` are both 0"; }
+				break;
+			case ePrimCapsule:
+				if( a == 0.0 && b == 0.0 ) { degenerateWhy = "radius `a` and half-length `b` are both 0"; }
+				break;
+			case ePrimRoundCone:
+				if( a == 0.0 && b == 0.0 && c == 0.0 ) { degenerateWhy = "base radius `a`, tip radius `b`, and length `c` are all 0"; }
+				break;
+			case ePrimSuperellipsoid:
+				if( a == 0.0 ) { degenerateWhy = "radius `a` is 0"; }
+				break;
+			default:
+				break;
+			}
+			if( degenerateWhy ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SDFGeometry::ParsePartLines:: part %u (`%s`) at line %u of %s has degenerate shape parameters "
+					"(%s) -- the part collapses to a single point.  Did you put the shape's size into the <sx sy sz> "
+					"scale slot instead of <a b c>?  <sx sy sz> is a pre-transform scale, not the shape's size",
+					(unsigned int)out.size(), ts, lineNo, ctx, degenerateWhy );
+			}
+		}
+
 		// The running field starts EMPTY (Map's fold begins at +1e30), so a
 		// first part of `subtract` / `intersect` composes against nothing and
 		// yields an empty always-miss field that would otherwise parse fine.
