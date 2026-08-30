@@ -47,6 +47,10 @@
 //       tie-break decides between two equally-used materials.
 //    B2 A LAMBERTIAN (no microsurface at all) gets the colour half only
 //       -- not a refusal, and no roughness chunk minted.
+//    B4 A material authored with a literal roughness of 0.0 (a perfect
+//       mirror) is a FOUND constant, not an absent one -- both halves
+//       are rewritten, and the emitted band respects VaryBandFor_'s
+//       degenerate-band floor rather than a live/inverted band.
 //    C  DETERMINISM: two runs from the SAME input document produce
 //       BYTE-IDENTICAL output.  No clock, no PRNG state.
 //    D  REFUSALS, each with the document BYTE-IDENTICAL afterwards:
@@ -521,6 +525,64 @@ static void TestLambertianColourOnly()
 	std::remove( tmp.c_str() );
 }
 
+static void TestRoughnessZeroSentinel()
+{
+	std::printf( "B4: a material authored with a literal roughness of 0.0 still gets BOTH halves\n" );
+	std::string body = Preamble();
+	body += SdfBlob( "blob" );
+	body += Ggx( "mat_mirror", "pnt_bronze", "0.0" );
+	body += Obj( "o1", "blob", "mat_mirror", 0 );
+	const std::string tmp = TempPath( "addwear_b4.RISEscene" );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, "B4: fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+	Check( r.ok && r.applied, std::string( "B4: applied -- " ) + r.message );
+	Check( r.material == "mat_mirror" && r.colorSlot == "rd", "B4: it rebound the colour slot" );
+	Check( r.roughnessSlots.size() == 2 &&
+	       r.roughnessSlots[0] == "alphax" && r.roughnessSlots[1] == "alphay",
+	       "B4 MONEY: a material authored with a literal roughness of 0.0 (a perfect mirror) is a "
+	       "FOUND constant, not an absent one -- both ggx roughness slots were rebound, exactly as "
+	       "any other flat-roughness material would be" );
+	Check( !r.roughnessPainter.empty(),
+	       "B4 MONEY: a roughness (scalar_painter) chunk WAS minted -- roughness 0.0 must never be "
+	       "conflated with \"no roughness slot found\", which is what a `roughness > 0.0` found-check "
+	       "would do" );
+	Check( std::fabs( r.previousRoughness - 0.0 ) < 1e-12,
+	       "B4: the result struct reports the authored constant, 0.0" );
+
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "scalar_painter" ) != std::string::npos,
+	       "B4: ...and the scalar_painter chunk really is in the document" );
+
+	bool okBase = false, okLo = false, okHi = false;
+	const double rBase = ParamValueInChunk( doc, r.roughnessPainter, "rough_base", okBase );
+	const double rLo   = ParamValueInChunk( doc, r.roughnessPainter, "rough_polished", okLo );
+	const double rHi   = ParamValueInChunk( doc, r.roughnessPainter, "rough_crusted", okHi );
+	Check( okBase && okLo && okHi, "B4: the three roughness params are readable out of the chunk" );
+	Check( std::fabs( rBase - 0.0 ) < 1e-9, "B4: rough_base is EXACTLY the authored 0.0" );
+	// VaryBandFor_'s own degenerate-band fallback (AgentSession.cpp ~33661-33664):
+	// the primary band collapses to zero width at roughness 0.0 (0.7x and 1.4x of
+	// 0 are both 0), so the function falls back to its floor -- lo=0.001,
+	// hi=0.041 -- rather than emitting an inverted or zero-width band.  This is
+	// the SAME shared rule vary_material uses; pinned numerically so a future
+	// change to it is caught here too.
+	Check( rLo > 0.0 && rHi > rLo,
+	       "B4 MONEY: the emitted band is neither zero-width nor inverted for a roughness-0.0 "
+	       "material -- VaryBandFor_'s floor is doing exactly the job this material needs" );
+	Check( std::fabs( rLo - 0.001 ) < 1e-9 && std::fabs( rHi - 0.041 ) < 1e-9,
+	       "B4: the degenerate-band floor's exact numbers (0.001 .. 0.041), matching VaryBandFor_'s "
+	       "own fallback rule for a roughness of 0.0" );
+
+	Check( pJob->GetScene() != nullptr, "B4: the rewritten document still derives" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 static void TestDeterminism()
 {
 	std::printf( "C: determinism -- two runs from the same input produce byte-identical output\n" );
@@ -987,6 +1049,7 @@ int main()
 	TestQualifySelectRewrite();
 	TestSelection();
 	TestLambertianColourOnly();
+	TestRoughnessZeroSentinel();
 	TestDeterminism();
 	TestRefusals();
 	TestUndo();

@@ -1572,25 +1572,25 @@ namespace RISE
 				}
 
 				// 4b-3b. GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30) add_wear: ONE
-			// atomic mutation, and not a count -- report which material now wears
-			// and which slots it repointed.  Same empty-status-on-refusal shape as
-			// vary_material below, so a refusal ("nothing qualifies", "already
-			// worn", "planar-only geometry") is reported HERE with its reason
-			// rather than reading like a success.
-			if( call.name == "add_wear" ) {
-				if( !result.get( "applied" ).asBool() ) {
-					return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
-				}
-				std::string slots = result.get( "colorSlot" ).asString();
-				const JsonValue& rough = result.get( "roughSlots" );
-				if( rough.isArray() ) {
-					for( std::size_t i = 0; i < rough.size(); ++i ) {
-						if( !slots.empty() ) slots += "+";
-						slots += rough.at( i ).asString();
+				// atomic mutation, and not a count -- report which material now wears
+				// and which slots it repointed.  Same empty-status-on-refusal shape as
+				// vary_material below, so a refusal ("nothing qualifies", "already
+				// worn", "planar-only geometry") is reported HERE with its reason
+				// rather than reading like a success.
+				if( call.name == "add_wear" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
 					}
+					std::string slots = result.get( "colorSlot" ).asString();
+					const JsonValue& rough = result.get( "roughSlots" );
+					if( rough.isArray() ) {
+						for( std::size_t i = 0; i < rough.size(); ++i ) {
+							if( !slots.empty() ) slots += "+";
+							slots += rough.at( i ).asString();
+						}
+					}
+					return "`" + result.get( "material" ).asString() + "` " + slots + " -> wear fields";
 				}
-				return "`" + result.get( "material" ).asString() + "` " + slots + " -> wear fields";
-			}
 
 			// 4b-3. 88 S5 (2026-08-20) vary_material: ONE atomic mutation, and
 				// not a count -- report which material stopped being flat and what

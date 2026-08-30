@@ -3357,6 +3357,13 @@ namespace RISE
 			//! Everything else -- the analytic curved primitives, the SDF family,
 			//! every mesh family, and the generated forms (sweep/lathe/skin/
 			//! displaced/hair/path_instances) -- carries a real normal field.
+			//! NOT barren, but occlusion-neutral: `rawmesh_geometry` (the
+			//! non-indexed legacy loader) has real derivatives, so `curv` reads
+			//! correctly and this predicate does not refuse it -- but it
+			//! publishes no occlusion signal provider, so the composition's
+			//! cavity-deepening `occlusion()` term reads neutral there.  The
+			//! curv half of the wear composition still works; only the cavity
+			//! half is inert.
 			bool CurvBarrenGeometryKind_( const std::string& geometryKind )
 			{
 				return geometryKind == "bezierpatch_geometry"   ||
@@ -6059,11 +6066,18 @@ namespace RISE
 						// the colour half.
 						for( const MicrosurfaceMaterial_& ms : c.constantMicrosurfaceMaterials ) {
 							if( ms.name != pm.name ) continue;
-							if( ms.roughness > 0.0 ) {
-								w.roughnessSlots = ms.roughnessSlots;
-								w.roughness      = ms.roughness;
-								w.hasRoughness   = true;
-							}
+							// Found-ness is the loop's own name match, never a
+							// `roughness > 0.0` proxy: a material authored with a
+							// literal 0.0 roughness (perfect mirror) is still a
+							// found, readable constant, and VaryBandFor_'s 0.02
+							// floor is exactly the mechanism that already knows how
+							// to wear it.  Treating 0.0 as "not found" here would
+							// silently drop the roughness half for that material
+							// while vary_material handles the same value on
+							// purpose.
+							w.roughnessSlots = ms.roughnessSlots;
+							w.roughness      = ms.roughness;
+							w.hasRoughness   = true;
 							break;
 						}
 						c.wearCandidateMaterials.push_back( w );
@@ -6407,7 +6421,12 @@ namespace RISE
 					"with NO ARGUMENTS and it takes `" + materialName + "` (" + materialKind + ", on " +
 					geometryKind + "), adds an `expression_painter` whose edge mask is "
 					"`clamp(curv*k + noise, 0, 1)` and whose crevice mask is `clamp(-curv*k + noise, 0, 1)` "
-					"deepened by `occlusion()`, and mixes an edge tint and a patina tint BANDED AROUND THE "
+					"deepened by `occlusion()`" +
+					( geometryKind == "rawmesh_geometry"
+						? std::string( " (cavity deepening is inert on legacy `rawmesh_geometry` -- the "
+						               "curv half still reads)" )
+						: std::string() ) +
+					", and mixes an edge tint and a patina tint BANDED AROUND THE "
 					"COLOUR ALREADY THERE -- plus a matching roughness field where the material carries "
 					"one. ONE call, ONE undo step, every knob a named `param` with a min/max you can "
 					"retune with propose_patch. Pass `material` to choose a different one. It REFUSES -- "

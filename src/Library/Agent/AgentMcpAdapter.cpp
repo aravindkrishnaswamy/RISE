@@ -1875,7 +1875,9 @@ namespace RISE
 						"on a convex edge, negative in a concave crease, 0 on a flat -- and that is what "
 						"this writes. It adds ONE `expression_painter` whose edge mask is "
 						"`clamp(curv*k + noise, 0, 1)` and whose crevice mask is "
-						"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()`, mixes a lightened "
+						"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()` (inert on legacy "
+						"`rawmesh_geometry`, whose non-indexed loader publishes no occlusion signal -- the "
+						"curv half still works there), mixes a lightened "
 						"edge tint and a darkened patina tint BANDED AROUND THE COLOUR THAT IS ALREADY "
 						"THERE (both tints derived from that colour, so this suits wood, stone and painted "
 						"steel as much as bronze), and rebinds the material's colour slot to it. Where the "
@@ -2396,7 +2398,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 39 tool names this adapter recognizes --
+			//! The list of the 40 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{

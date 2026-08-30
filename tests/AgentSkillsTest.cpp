@@ -1389,9 +1389,9 @@ static JsonValue ParseBody( const std::string& body )
 static void TestChatLoopWiring()
 {
 	// 32 -> 33, doc 90 slice R2 (2026-08-23): `revert_to_revision` joined the
-	// shared kToolDefs table.  34 -> 35, GEOMETRY_SHADING_SIGNALS sec 11
-	// (2026-08-30): `add_wear` joined it too.  33 -> 34, cat plan item 1 (2026-08-25):
-	// `fix_blend_scale` joined it too.  Bumped deliberately, in all three
+	// shared kToolDefs table.  33 -> 34, cat plan item 1 (2026-08-25):
+	// `fix_blend_scale` joined it too.  34 -> 35, GEOMETRY_SHADING_SIGNALS sec 11
+	// (2026-08-30): `add_wear` joined it too.  Bumped deliberately, in all three
 	// provider renderings, because agreement ACROSS them is the property
 	// this pins.
 	std::printf( "S4: chat-loop tool table (thirty-five tools, three providers) + SetSkillIndex...\n" );
