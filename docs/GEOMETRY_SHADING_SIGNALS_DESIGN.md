@@ -519,6 +519,32 @@ answered it, and whether the answer came from a live field evaluation or a
 baked field, is entirely behind the interface. That is what makes "the same
 builtin names" a real portability claim rather than a naming coincidence.
 
+**SHIPPED 2026-08-29** — [`src/Library/Interfaces/ISurfaceSignalProvider.h`](../src/Library/Interfaces/ISurfaceSignalProvider.h).
+Two halves, as sketched:
+
+```cpp
+class ISurfaceSignalProvider {          // per-geometry, stateless, const
+  virtual bool ComputeOcclusion( const Point3& ptObject, const Vector3& nObject,
+                                 Scalar radiusFraction, Scalar& outValue ) const = 0;
+  virtual bool ComputeThickness( ... ) const = 0;   // same signature
+};
+struct SurfaceSignalInfo {              // the per-hit field on the record
+  const ISurfaceSignalProvider* pProvider;   // 0 == this surface publishes none
+  Point3  ptObject;  Vector3 nObject;        // the PROVIDER's own object space
+};
+```
+
+Three properties worth naming because they are what make the channel work
+unchanged for Phase 3: the methods **return bool and may refuse** (which is
+§7.1's mismatch contract, expressible without a second entry point);
+`SurfaceSignalInfo` owns the fallback / clamp / finiteness policy, so no caller
+can invent its own convention; and queries are posed in the **geometry's own
+object space** with a **dimensionless** radius and dimensionless outputs, so
+nothing crosses the transform boundary. `Object::IntersectRay` and
+`CSGObject::IntersectRay` therefore leave the field untransformed — CSG only
+re-adopts it in `AdoptCsgSurfacePayload`, alongside `derivatives`, when the
+algebra credits the reported boundary to the other operand.
+
 ### 6.2 The SDF estimators
 
 Both are **pure `const` evaluations of the distance field** — no rays, no scene
@@ -543,6 +569,34 @@ nothing. This is the inverse of the M1 gating problem: curvature is a context
 variable and must be computed *before* the painter runs, so it needs a
 consumption predicate (§5.4); M2's queries are demand-driven by construction
 and need none.
+
+**SHIPPED 2026-08-29** — `SDFGeometry::ComputeOcclusion` /
+`ComputeThickness`, ~6 and ~O(march) `Map()` evaluations respectively, both
+pure `const`. Two details the sketch above left open, both settled by making
+the arithmetic exact rather than tuned:
+
+- **The cavity taps and weights are a matched pair.** `h_i = R·2^(i−N)`,
+  `w_i = 2^(1−i)` makes every `w_i·h_i` equal, so each octave contributes the
+  same share of the normalizer `Σ w_i·h_i` and the estimator has no preferred
+  scale inside the query radius. That fixes IQ's tuned `3.0·occ` constant into
+  a derived one, and both ends then come out exact: a plane or convex body has
+  `map(p + h·n̂) = h` at every tap and reads **1**; a point whose every tap
+  lands on the surface reads **0**. The sphere-trace band residual `map(p)` is
+  subtracted off each tap — without it, a small radius on a large object reads
+  that residual as occlusion and darkens a perfectly convex surface.
+- **It sees creases, not spherical pits.** Inside a sphere of radius r, a point
+  on the wall moved h toward the centre is at distance `r−h` from it, so the
+  distance to the wall is exactly `h` and the field reports no shortfall: a
+  hemispherical dimple reads unoccluded. Wedges, corners and folds — where the
+  nearest surface is off to the side — are what darken. This is a real property
+  of the estimator and is pinned and explained in the test rather than left to
+  be rediscovered as a bug.
+
+Thickness marches inward through the intersector's own `March()` (whose
+on-surface step-off is what keeps the entry face from being reported as the
+exit) and divides by the query radius. "No far side within the radius" returns
+a saturated **1**, not a refusal — that is a measurement of thickness, not an
+absence.
 
 ---
 
@@ -696,6 +750,22 @@ same `scaleHint` M1 introduces), overridable by an explicit value. That is the
 scene-scale-independent behaviour, and it means `occlusion(0.05)` reads as "5%
 of the object" rather than "5 world units." On the baked mesh path it must
 additionally satisfy the constant-radius precondition of §7.1.
+
+**SHIPPED 2026-08-29, with one refinement: there is no *default* radius.** The
+argument is mandatory (arity 1), because a scene that silently inherits a wrong
+radius is worse than one that fails to compile. The fraction is taken of the
+geometry's own bounding-box diagonal *inside the provider*, in object space, so
+it never depends on `scaleHint` being populated and is instance-scale-invariant
+by construction. A **literal** radius ≤ 0 is a compile error naming what the
+number means; a computed one that lands ≤ 0 is refused at runtime and returns
+the neutral value.
+
+**The neutral values are `occlusion = 1` and `thickness = 1`** — for both, the
+*do-nothing* end of the range, so an absent signal lights nothing up. Occlusion
+is uncontroversial (absent and unoccluded agree). Thickness's choice is argued
+from the use case, not from symmetry: a thickness mask exists to key *thin*
+regions (`1 − thickness(r)` drives translucency, subsurface tint, edge
+scatter), so a neutral 0 would set every unbaked object glowing.
 
 **`samples` is an optional advanced argument only where sampling is
 stochastic** — i.e. the mesh bake. The SDF estimators are **fixed-tap**, so no
@@ -936,6 +1006,60 @@ examples) and the cross-provider census remain.
 multi-thread expression test green); analytic sanity tests (occlusion → 1 on an
 isolated convex sphere, < 1 in a modeled crevice; thickness monotone in a slab's
 width); no measurable cost on scenes whose expressions do not call them.
+
+**AMENDED (2026-08-29) — status of the gate.** Items 1–4 and 6's descriptor
+half are done; `tests/SurfaceSignalsTest.cpp` covers every listed case (116
+checks, all green), and `SurfaceCurvatureTest` (94), `TextureExpressionVMTest`
+(685) and `SDFGeometryTest` (600) stay green. Item 6's *worked-example*
+extension is a later wave, alongside Phase 1's item 8. Five places where what
+shipped differs from the sketch above, all deliberate:
+
+1. **Item 5 (`scaleHint` radius defaulting) is satisfied by construction, not
+   by reading the record.** `radius` is dimensionless — a fraction of the
+   geometry's own bounding-box diagonal — and is applied *inside* the provider,
+   in the geometry's own object space. That is the same characteristic-length
+   convention `scaleHint` encodes, but it never has to cross the transform
+   boundary, so both signals come out transform-invariant with no fold and with
+   no dependence on `SurfaceCurvatureDemand` (which is what controls
+   `scaleHint` population today). There is no *default* radius: the argument is
+   mandatory, so no scene can silently inherit a wrong one.
+2. **The provider install is NOT demand-gated.** §6.2 already argued the
+   estimators are lazy, and that is where the "costs nothing when unused"
+   guarantee comes from; the *stamp* is a pointer plus six scalars with no
+   field evaluation at all, on a path that just finished a sphere trace. A gate
+   there would be unmeasurable and would add a real failure mode — a closed
+   gate silently degrades a live `occlusion()` call to its fallback. Contrast
+   `curv`, whose ~18 extra `Map()` calls per hit genuinely need the counter.
+3. **The neutral fallbacks are occlusion = 1 and thickness = 1**, both the
+   do-nothing end of their range: an absent signal must light *nothing* up.
+   Thickness's choice is the non-obvious one and is argued from the use case —
+   a thickness mask exists to key *thin* regions (`1 - thickness(r)` drives
+   translucency), so a neutral 0 ("thin") would set an unbaked object glowing
+   and read as a feature rather than as an absence.
+4. **`occlusion` sees creases, not spherical pits — and that is a property of
+   the Evans estimator, not a bug.** Inside a sphere, the distance to the wall
+   is *exactly* the tap distance, so the field reports no shortfall and a
+   hemispherical dimple reads unoccluded. Wedges, corners and folds — where the
+   nearest surface is off to the side — are what it darkens, which is what a
+   cavity mask is for. The Phase-2 test uses the crease between two overlapping
+   spheres for exactly this reason, and says so.
+5. **Constant-radius detection is the literal half only** (§7.1's Phase-3
+   scope, honoured): every call site is recorded as
+   `{fn, radiusIsLiteral, radiusLiteral}` on the compiled program
+   (`ExpressionProgram::SurfaceSignalCalls`), with the literal peek widened one
+   token past the `fbm`-octave precedent so a leading sign counts. A
+   `param`/`def` name bound to a constant reports **not proven**, never a
+   guess — which is the safe direction, since Phase 3 must then treat it as
+   dynamic and answer with the neutral fallback rather than substitute the
+   baked radius.
+
+**Known residual, disclosed not fixed:** BDPT/VCM rebuild hit records manually
+via `PathVertexEval.h`'s `PopulateRIGFromVertex`, which carries neither
+`derivatives` nor `signals`, so `curv`, `occlusion` and `thickness` all read
+their neutral values on those connection-time evaluations. This is the same
+gap Phase 1 shipped with (`BDPTVertex` carries no curvature fields either);
+closing it means widening `BDPTVertex`'s surface-state block, and the failure
+mode meanwhile is an honest flat mask, not a wrong one.
 
 ### Phase 3 — mesh bakes behind the same names
 
