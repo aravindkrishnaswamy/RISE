@@ -18,6 +18,7 @@
 #include "../Utilities/Ray.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
 
 namespace RISE
 {
@@ -251,6 +252,22 @@ namespace RISE
 		//! fall back to IGeometry::ComputeSurfaceDerivatives.
 		SurfaceDerivativesInfo		derivatives;
 
+		//! GEOMETRY-DERIVED SHADING SIGNALS, Phase 2 — the typed, `const`
+		//! channel through which the expression VM's `occlusion(radius)` /
+		//! `thickness(radius)` builtins reach the hit geometry
+		//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1).  Stamped by
+		//! geometries that can answer such queries (today: the SDF family)
+		//! inside their own `IntersectRay`, in their own OBJECT space, and
+		//! left untransformed by the layers above — both signals are
+		//! dimensionless, so no frame conversion is needed or wanted.
+		//!
+		//! Default (no provider) is the honest "this surface publishes no
+		//! signals": the builtins then return their documented neutral
+		//! values.  This is the narrow, typed version of the PainterContext
+		//! refactor `pCustom`'s comment above has been asking for — one
+		//! channel, not the whole refactor.
+		SurfaceSignalInfo			signals;
+
 		//! Texture-space footprint at the hit point — Landing 2.  Computed
 		//! at intersection time by projecting the incoming ray's screen-
 		//! space differentials onto the surface UV plane via dpdu / dpdv.
@@ -412,6 +429,7 @@ namespace RISE
 		  glossyFilterWidth( r.glossyFilterWidth ),
 		  ambientIOR( r.ambientIOR ),
 		  derivatives( r.derivatives ),
+		  signals( r.signals ),
 		  txFootprint( r.txFootprint ),
 		  vColor( r.vColor ),
 		  bHasVertexColor( r.bHasVertexColor ),
@@ -446,6 +464,7 @@ namespace RISE
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;
 			derivatives = r.derivatives;
+			signals = r.signals;
 			txFootprint = r.txFootprint;
 			ptIntersection = r.ptIntersection;
 			ptExit = r.ptExit;

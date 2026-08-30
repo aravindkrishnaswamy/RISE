@@ -2496,6 +2496,9 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainter.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISurfaceSignalProvider.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h">
       <Filter>Interfaces</Filter>
     </ClInclude>

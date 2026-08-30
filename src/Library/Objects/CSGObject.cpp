@@ -217,8 +217,9 @@ namespace
 	//! computes explicitly per the CSG algebra.
 	//!
 	//! INVARIANT: the reported boundary surface's auxiliary payload --
-	//! texture coordinates, surface derivatives, texture footprint, vertex
-	//! color, tangent frame, and the object-space intersection point used
+	//! texture coordinates, surface derivatives, geometry-derived signal
+	//! channel, texture footprint, vertex color, tangent frame, and the
+	//! object-space intersection point used
 	//! by solid-texturing consumers -- must come WHOLLY from the operand
 	//! that owns that surface.  CSGObject::IntersectRay starts most
 	//! branches with an efficient whole-record `ri = riObjA` (or `riObjB`)
@@ -275,6 +276,18 @@ namespace
 		dst.ptCoord1 = src.ptCoord1;
 		dst.bHasTexCoord1 = src.bHasTexCoord1;
 		dst.derivatives = src.derivatives;
+		// Phase-2 geometry-derived signals: the same per-surface payload
+		// category as `derivatives` immediately above -- the provider
+		// back-pointer AND the object-space (point, normal) it is to be
+		// queried at were stamped by ONE child geometry for ITS OWN
+		// surface.  Left un-adopted, a boundary the algebra credits to
+		// operand B would ask operand A's field about a point that is not
+		// on it, and `occlusion()` would silently report the wrong solid's
+		// cavities.  Note this deliberately carries the CHILD's own local
+		// frame (like ptObjIntersec below) -- which is exactly the frame
+		// that child's provider expects, since both signals are
+		// dimensionless and never cross the transform boundary.
+		dst.signals = src.signals;
 		dst.txFootprint = src.txFootprint;
 		dst.vColor = src.vColor;
 		dst.bHasVertexColor = src.bHasVertexColor;

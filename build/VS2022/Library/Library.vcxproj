@@ -656,6 +656,7 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainterManager.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISurfaceSignalProvider.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IParametricSurface.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPhotonMap.h" />
