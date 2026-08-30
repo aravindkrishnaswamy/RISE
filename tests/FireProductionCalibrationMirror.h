@@ -103,7 +103,8 @@ namespace FireProductionCalibration
 			computed.force,error)||!FP64::RemapFireProductionCellPalindromeCPU(
 			cell,computed.cell,error))return false;
 		dual.beginningMomentum=computed.force.momentumKGPerM2S;
-		if(!FP64::RemapFireProductionDualMomentumCPU(dual,computed.dual,error))return false;
+		if(!FP64::RemapFireProductionCompatibleDualMomentumCPU(dual,
+			computed.cell.acceptedGasMassDoseKGPerM2,computed.dual,error))return false;
 		computed.conservativeValues=std::move(computed.cell.conservativeValues);
 		if(computed.conservativeValues.size()!=request.cellSourceIncrement.size())return false;
 		for(std::size_t value=0u;value<computed.conservativeValues.size();++value){

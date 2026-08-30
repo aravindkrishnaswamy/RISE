@@ -2124,9 +2124,8 @@ int main()
 		goldenSubdominanceEvidence.find("measurement_fixture_sha256 "
 			"0a91b12c762fa1beadac41c716d9a9d15b200f42bb77dd9b8f4842b477c2a5c8")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			mirrorAdapter.begin(),mirrorAdapter.end()))==
-			"be18f64d518f63c2f2c770be0535532eb6c26b5df65cc00b905d0d809c1e1709"&&
+		// The r171 artifact seals its historical mirror/manifests.  r182 below
+		// binds their compatible-flux successors directly.
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			forceHeader.begin(),forceHeader.end()))==
 			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b"&&
@@ -2139,12 +2138,6 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionHeader.begin(),projectionHeader.end()))==
 			"e657a44dd08b0b26c7674800ff0e15a28b996d1373f7f80cd57359fcd9475e42"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			fp64SourceManifest.begin(),fp64SourceManifest.end()))==
-			"88c66592f87990a4a844acca91d2ba907c96ed0d9b8420726dfd5e6142c4b2a5"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			traceSourceManifest.begin(),traceSourceManifest.end()))==
-			"6befdf70f4e96e6ad836d32722326665551ec0046534e41d603f683fd0948e4e"&&
 		goldenSubdominanceEvidence.find("unix_runner_sha256 "
 			"1cb7c6ca09c69e57ae10da9307af81400e060b796952e317dfddb27ba2b20524")!=
 			std::string::npos&&
@@ -2331,9 +2324,8 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
 			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			dyadicFixture.begin(),dyadicFixture.end()))==
-			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
+		// r174's sealed artifact retains the historical dyadic owner.  The
+		// current owner is bound by r182 after compatible-momentum adoption.
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
@@ -2624,11 +2616,8 @@ int main()
 			std::string::npos&&CountText(tier10SteadyProfile,"FIREPROFSTEP step=")==10u&&
 		CountText(tier6FullSpectrum,"centerline_heat_release,")==257u&&
 		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			dyadicFixture.begin(),dyadicFixture.end()))==
-			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
-		// r177's historic owner hashes remain in its sealed artifact; r181 binds
-		// the current sequence/oracle diagnostic owners.
+		// r177's historic owner hashes remain in its sealed artifact; r182 binds
+		// the current dyadic/sequence diagnostic owners.
 		solverDoc.find("### 7.56j Tier-6 full spectrum and complete-owner cost correction (r177)")!=
 			std::string::npos&&historyDoc.find(
 			"r176/r177 true temporal tier-6 preview and puffing-spectrum diagnosis")!=
@@ -2805,22 +2794,117 @@ int main()
 			std::string::npos&&
 		onsetBudgetEvidence.find("oracle_2p2s_claimed false")!=std::string::npos&&
 		onsetBudgetEvidence.find("tier10_full_window_authorized false")!=std::string::npos&&
-		sourceSHA("tests/FireSequenceTest.cpp")==
-			"a9cc0a463a613ccb5faa654eb024e596f221319daf4932447343ae151a4098a4"&&
+		// The exact r181 artifact above binds its historical owners.  r182
+		// source-binds the compatible-flux successors.
 		sourceSHA("tests/FireSimulationSolverTest.cpp")==
 			"ffabd7edb2e518c313a58721dc48eb24537447461842ef15c4e90928ef750094"&&
 		sourceSHA("tools/fire_simulator_3d_advance.h")==
 			"24ad3b942b637bcb05deae6138d315d8b78414192266846bde7a243f2466a3c4"&&
-		sourceSHA("src/Library/Utilities/FireProductionAdvectionMac.mm")==
-			"35199e7762de3dc15e85ace006f927f55c2175d026c7fdf26ed5e6a865f3b223"&&
-		sourceSHA("tests/FireProductionSolverTest.cpp")==
-			"244dd8da0d082779f89cc6e3dbbd69e7af0402d5c59c30e82816fbe9cf478c2d"&&
 		sourceSHA("tools/generate_fire_production_onset_plot.py")==
 			"ee6689f9518230db539a75a6bb0a0541e2eaeaa8497cd299fbf2d710b936397d"&&
 		solverDoc.find("### 7.56n Runaway-onset and retained-state campaign (r181)")!=
 			std::string::npos&&historyDoc.find("r181 retained onset and resolution diagnosis")!=
 			std::string::npos,
 		"r181 names fine-grid advective focusing, retains the matched oracle budget, and rejects two ineffective reconstruction candidates");
+	const std::string compatibleMomentumEvidence=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"compatible_momentum_flux_evidence.v1");
+	const std::string compatibleTier10=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier10_compatible_replay.raw.csv");
+	const std::string compatibleTier10Column=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier10_compatible_replay.raw.csv.column.csv");
+	const std::string compatibleTier6=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier6_control.raw.csv");
+	const std::string compatibleTier8=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier8_control.raw.csv");
+	const std::string compatibleFromZero=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_velocity_trajectory.csv");
+	const std::string compatibleRetry=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_retry_trajectory.csv");
+	Check(!compatibleMomentumEvidence.empty()&&!compatibleTier10.empty()&&
+		!compatibleTier10Column.empty()&&!compatibleTier6.empty()&&!compatibleTier8.empty()&&
+		!compatibleFromZero.empty()&&!compatibleRetry.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleMomentumEvidence.begin(),compatibleMomentumEvidence.end()))==
+			"7b1835e5bb44e1d76e0a12c1c5d4d6f52f0449c1d3828db06e87d9d4f4130630"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleTier10.begin(),compatibleTier10.end()))==
+			"faba70eccff894a37fe075ae1f0b3dabe709f143580918850863f09cb36cdc35"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleTier10Column.begin(),compatibleTier10Column.end()))==
+			"ec1ffc3b6d5f744f45e2049714ebfdd2769034ba0e378a7eb5770e9e194f9c5a"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleTier6.begin(),compatibleTier6.end()))==
+			"2094bf5fa1364a8db68b1fa17f76f3eb51c9f302d897c32c860b2a365a051ed1"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleTier8.begin(),compatibleTier8.end()))==
+			"0cb0ab72baf0cb8cb6d3c65050ba2733ee15e9bd42623cb07a1bf873e74bbc2b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleFromZero.begin(),compatibleFromZero.end()))==
+			"765e7f76cf87b7bf33b802144807bc6fb4cb5b5ac78fd58683599be5957db300"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleRetry.begin(),compatibleRetry.end()))==
+			"004dad9b1cdb8299ec45188d11d44a845b80223a54c662ebca3924b9c37346f3"&&
+		CountText(compatibleTier10,"\n")==9u&&CountText(compatibleTier10Column,"\n")==1065u&&
+		CountText(compatibleTier6,"\n")==9u&&CountText(compatibleTier8,"\n")==9u&&
+		CountText(compatibleFromZero,"\n")==484u&&CountText(compatibleRetry,"\n")==12u&&
+		compatibleMomentumEvidence.find(
+			"formula K_i=I_i(Phi_hat_g)*(u_i_L+u_i_R)/2")!=std::string::npos&&
+		compatibleMomentumEvidence.find("pre_registered_63_class_advection_success false")!=
+			std::string::npos&&
+		compatibleMomentumEvidence.find("r136_current_trace_digest "
+			"9eb30df0a2df6e19f61ba0093f78a7254f54a8144af1f4f940ad4ed3c172355a")!=
+			std::string::npos&&
+		compatibleMomentumEvidence.find("tier10_replay_column_advection_rate_max "
+			"494.85054257978283")!=std::string::npos&&
+		compatibleMomentumEvidence.find("from_zero_terminal_error "
+			"production_manifold_beginning_deviation_exceeds_dynamics_bound")!=
+			std::string::npos&&
+		compatibleMomentumEvidence.find("r170_shadow_rederived false")!=std::string::npos&&
+		compatibleMomentumEvidence.find("tier10_full_window_authorized false")!=
+			std::string::npos&&
+		compatibleTier10.find("2.1210542431799695,0,0.0014238557778298855")!=
+			std::string::npos&&compatibleTier10.find(",494.85054257978283,")!=std::string::npos&&
+		compatibleFromZero.find("483,0.79304888390470296,0.0010558557696640491,")!=
+			std::string::npos&&
+		compatibleRetry.find("0.79199302813503891,9,0.0010558610083535314")!=
+			std::string::npos&&
+		sourceSHA("src/Library/Utilities/FireProductionTransport.h")==
+			"e40ec52fce23e07ae7e78895ea41de90510565d5bde19b071c05ce5e58a73ad5"&&
+		sourceSHA("src/Library/Utilities/FireProductionTransport.cpp")==
+			"a5196c88b6229c44d953ad7fa59a5b9da0b936419a77181ca3c9c51b554ed18f"&&
+		sourceSHA("src/Library/Utilities/FireProductionAdvectionMac.mm")==
+			"1dcf871ee835998181dff73599d1f31ac62365d560f452942319b5f4fcb6db84"&&
+		sourceSHA("src/Library/Utilities/FireProductionForce.cpp")==
+			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
+		sourceSHA("tests/FireProductionSolverTest.cpp")==
+			"eb92ca6cda01b4e5e53ef0fac9ebb18ac2b816e385cc4c536a88104b7e314136"&&
+		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
+			"662a58bb1a07ec46245364dde0b258d8f1c9ad2886af5239a0065b29eca7286f"&&
+		sourceSHA("tests/FireProductionRoundoffWalker.h")==
+			"5e4805cbff46200fbfb445c84e57f42f2d93cbc01707901974429aac8e25f9a6"&&
+		sourceSHA("tests/FireSequenceTest.cpp")==
+			"1d8e1646aa979e5815bdf9f790bdb1354c5cc2cc7b7e952c67bb2b597a96567d"&&
+		sourceSHA("tests/FireProductionCalibrationMirror.h")==
+			"51a3537b159f42eb5f5d26212dbde3bc72aa4360e03e2aef1bd7a3e358d7eaa9"&&
+		sourceSHA("tests/FireProductionRoundoffTraceAdapter.h")==
+			"4bd6323b0ee8762d5d29a3bb6fe697a1d4c3494d5172454b153d9d5c1e791302"&&
+		sourceSHA("tests/fire_production_fp64/SourceManifest.h")==
+			"1e6dadfae7f69fdf36af18f31a8c3599ff4ef1e5169ba6ca4ffa60c80c7c358f"&&
+		sourceSHA("tests/fire_production_trace/SourceManifest.h")==
+			"0af666f7a34271613511bf17d0d2db316c2a35196b4a80ae1d8fd60c92c30d51"&&
+		compatibleMomentumEvidence.find("ordinary_production_compatible_flux_enabled false")!=
+			std::string::npos&&
+		solverDoc.find("### 7.56o Compatible momentum-flux conformance and measured stop (r182)")!=
+			std::string::npos&&historyDoc.find("r182 §3.7 compatible momentum conformance")!=
+			std::string::npos,
+		"r182 implements the compatible momentum flux and records the failed onset/shadow criteria");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&
@@ -2894,7 +2978,7 @@ int main()
 		walkerSource.find("fire_production_trace")==std::string::npos,
 		"independent topology walker shares neither trace counts nor generated arithmetic code");
 	Check(CountText(tracedTransportSource,"SealCellStageAndReset")==1u&&
-		CountText(tracedTransportSource,"SealDualStageAndReset")==1u&&
+		CountText(tracedTransportSource,"SealDualStageAndReset")==2u&&
 		CountText(tracedTransportSource,"SealStageAndReset")==0u,
 		"generated transport trace owns exactly the cell and dual stage-reset seams");
 	Check(CountText(tracedProjectionSource,"ProjectionInterpolationScope")==1u&&

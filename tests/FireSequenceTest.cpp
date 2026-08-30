@@ -1061,6 +1061,7 @@ namespace
 		std::filesystem::path resumeEquivalenceCertificatePath;
 		bool isolatedEquivalenceProbe=false;
 		std::string isolatedExpectedCheckpointBuildId;
+		std::string isolatedExpectedCheckpointDigest;
 		std::uint64_t stopAfterAdditionalAcceptedSteps=0u;
 		std::filesystem::path equivalenceSnapshotDirectory;
 		bool forceActiveSetIdentityCheckForTest=false;
@@ -2662,6 +2663,13 @@ namespace
 			const bool isolatedProbe=!sameBuild&&persistence.isolatedEquivalenceProbe&&
 				persistence.isolatedExpectedCheckpointBuildId==checkpoint.producerBuildId&&
 				persistence.stopAfterAdditionalAcceptedSteps>=8u;
+			const std::string loadedCheckpointDigest=persistence.isolatedEquivalenceProbe?
+				DigestFile(persistence.checkpointPath):std::string();
+			const bool exactDiagnosticCaseReplay=persistence.isolatedEquivalenceProbe&&
+				persistence.stopAfterAdditionalAcceptedSteps==8u&&
+				persistence.isolatedExpectedCheckpointBuildId==checkpoint.producerBuildId&&
+				!loadedCheckpointDigest.empty()&&
+				persistence.isolatedExpectedCheckpointDigest==loadedCheckpointDigest;
 			ResumeEquivalenceCertificate migration;
 			bool certifiedMigration=false;
 			if(!sameBuild&&!persistence.resumeEquivalenceCertificatePath.empty()&&
@@ -2685,7 +2693,7 @@ namespace
 					checkpoint.values.priorActiveSetAlgorithmVersion==
 						LegacyActiveSetAlgorithmVersion());
 			FireStateProducerPrecision checkpointPrecision=FireStateProducerPrecision::Unknown;
-			if(checkpoint.caseRecordId!=caseRecord.caseRecordId||
+			if((checkpoint.caseRecordId!=caseRecord.caseRecordId&&!exactDiagnosticCaseReplay)||
 				(!sameBuild&&!isolatedProbe&&!certifiedMigration)||
 				checkpoint.values.reductionMode!="fixed_order_tree_v1"||
 				(!currentActiveSetCheckpoint&&!legacyActiveSetCheckpoint)||
@@ -2697,6 +2705,23 @@ namespace
 				checkpoint.centerlineVelocityIntegral.size()!=shape.nz||
 				checkpoint.planeHeatReleaseIntegral.size()!=shape.nz||
 				!HomogeneousStateProducerPrecision(checkpoint.states,checkpointPrecision)){
+				if(persistence.isolatedEquivalenceProbe)std::fprintf(stderr,
+					"ISOLATED_CHECKPOINT_ADMISSION same=%d isolated=%d exact_case=%d "
+					"case=%d reduction=%d active_current=%d "
+					"active_legacy=%d prior=%d shape=%d width=%d states=%d temperature=%d "
+					"velocity=%d heat=%d precision=%d\n",
+					sameBuild?1:0,isolatedProbe?1:0,exactDiagnosticCaseReplay?1:0,
+					checkpoint.caseRecordId==caseRecord.caseRecordId?1:0,
+					checkpoint.values.reductionMode=="fixed_order_tree_v1"?1:0,
+					currentActiveSetCheckpoint?1:0,legacyActiveSetCheckpoint?1:0,
+					priorActiveSetHistoryValid?1:0,
+					checkpoint.dimensions==std::array<std::size_t,3>{{shape.nx,shape.ny,shape.nz}}?1:0,
+					checkpoint.cellWidthM==shape.cellWidthM?1:0,
+					checkpoint.states.size()==shape.CellCount()?1:0,
+					checkpoint.centerlineTemperatureIntegral.size()==shape.nz?1:0,
+					checkpoint.centerlineVelocityIntegral.size()==shape.nz?1:0,
+					checkpoint.planeHeatReleaseIntegral.size()==shape.nz?1:0,
+					HomogeneousStateProducerPrecision(checkpoint.states,checkpointPrecision)?1:0);
 				if(error.empty())error="checkpoint build migration is not certified";
 				values.structuredError="checkpoint_resume_failure:"+error;return values;
 			}
@@ -3290,6 +3315,7 @@ namespace
 							RISE::FireProductionFrozenForceAdvanceResult forceCPU;
 							RISE::FireProductionFrozenForceResult forceFieldsCPU;
 							RISE::FireProductionResidentForceDiagnostics forceAuditDiagnostics;
+							RISE::FireProductionCellPalindromeResult cellCPU;
 							RISE::FireProductionDualMomentumResult dualCPU;
 							std::string physicalOnlyError;
 							const bool requestRetainedPhysicalProjection=
@@ -3402,13 +3428,17 @@ namespace
 							const bool forceFieldsOK=forceScheduleIdentity&&
 								RISE::BuildFireProductionFrozenForceFieldsCPU(
 									request.force,forceFieldsCPU,&physicalOnlyError);
-							auditValid=forceFieldsOK;
+							const bool cellTransportOK=forceFieldsOK&&
+								RISE::RemapFireProductionCellPalindromeCPU(
+									request.cellTransport,cellCPU,&physicalOnlyError);
+							auditValid=cellTransportOK;
 							if(auditValid){
-								auditPhase="CPU dual remap from force-inclusive momentum";
+								auditPhase="CPU compatible dual remap from force-inclusive momentum";
 								RISE::FireProductionDualMomentumRequest forceInclusive=request.dualTransport;
 								forceInclusive.beginningMomentum=forceCPU.momentumKGPerM2S;
-								auditValid=RISE::RemapFireProductionDualMomentumCPU(
-									forceInclusive,dualCPU,&physicalOnlyError);
+								auditValid=RISE::RemapFireProductionCompatibleDualMomentumCPU(
+									forceInclusive,cellCPU.acceptedGasMassDoseKGPerM2,
+									dualCPU,&physicalOnlyError);
 								for(unsigned int axis=0u;axis<3u&&auditValid;++axis){
 									auditValid=dualCPU.momentum[axis].size()==
 										request.momentumSourceIncrement[axis].size();
@@ -3440,7 +3470,8 @@ namespace
 									" force="+(forceComparatorOK?"1":"0")+
 									" diagnostics="+(forceDiagnosticsIdentity?"1":"0")+
 									" schedule="+(forceScheduleIdentity?"1":"0")+
-									" fields="+(forceFieldsOK?"1":"0")+"]"+
+									" fields="+(forceFieldsOK?"1":"0")+
+									" cell="+(cellTransportOK?"1":"0")+"]"+
 									(physicalOnlyError.empty()?"":": "+physicalOnlyError);
 								std::fprintf(stderr,"%s\n",lastAdvanceError.c_str());advancedOK=false;break;
 							}
@@ -6037,11 +6068,13 @@ namespace
 		}
 		persistence.maximumProductionSourceStepS=
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
+		if(setenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL","1",1)!=0)return 92;
 		const auto wallStart=std::chrono::steady_clock::now();
 		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,targetTimeS,1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
+		unsetenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
 		const double wallS=std::chrono::duration<double>(
 			std::chrono::steady_clock::now()-wallStart).count();
 		if(!result.succeeded){std::fprintf(stderr,"production onset campaign failed: %s\n",
@@ -6152,13 +6185,16 @@ namespace
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.isolatedEquivalenceProbe=true;
 		persistence.isolatedExpectedCheckpointBuildId=expectedCheckpointBuildId;
+		persistence.isolatedExpectedCheckpointDigest=DigestFile(checkpointPath);
 		persistence.stopAfterAdditionalAcceptedSteps=8u;
 		persistence.maximumProductionSourceStepS=
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
-		if(setenv("RISE_FIRE_ONSET_BUDGET_REPLAY","1",1)!=0)return 92;
+		if(setenv("RISE_FIRE_ONSET_BUDGET_REPLAY","1",1)!=0||
+			setenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL","1",1)!=0)return 92;
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,0.0,fullTargetS,1.0,
 			replayResolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_ONSET_BUDGET_REPLAY");
+		unsetenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
 		unsetenv("RISE_FIRE_MOMENTUM_AUDIT_PATH");
 		if(!result.succeeded){std::fprintf(stderr,"production momentum replay failed: %s\n",
 			result.structuredError.c_str());return 94;}

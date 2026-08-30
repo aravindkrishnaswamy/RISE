@@ -4512,3 +4512,40 @@ it was already tried and refuted here.
   temperature/Picard-Zeno boundary, so 2.2 s is not claimed.  Spectrum,
   empirical rows, animation, and report remain blocked behind that flux-level
   remedy.
+- **r182 §3.7 compatible momentum conformance and onset stop (2026-08-30):**
+  the retained candidate's five scalar palindrome passes retain the exact accepted
+  Binary32 gas-mass face dose after the shared-alpha limiter.  Momentum and its
+  staggered auxiliary density consume those same Private fields through the
+  boundary-aware MAC restriction, with
+  `K_i=I_i(Phi_hat_g)*(u_i,L+u_i,R)/2`.  This is coefficient-free oracle
+  lineage: momentum inherits the scalar front's limiter dissipation, and the
+  commuting identity preserves a uniform velocity to roundoff.  The old
+  independent high-order momentum reconstruction is the focusing mechanism;
+  r181's scalar-alpha cap and reconstructed velocity-envelope cap remain
+  rejected.  The compatible path is cleanly expressible in the resident dual
+  architecture (one command, 15 logical submaps, zero host transfer), so the
+  fallback alpha-coupled momentum limiter is not selected.
+
+  The pre-registered numerical criterion does not pass.  An exact-SHA-bound
+  eight-step replay from production step 1,433 stays at
+  `8.22707--8.91989 m/s`, eliminating the old 15/30/60-m/s crossing corridor,
+  but its maximum column advection is still `494.85054 kg/(m2 s2)` rather than
+  the matched oracle's `63.33961` class.  This is only 2.19x below r181's first
+  `1081.75857` event and remains 7.81x above the oracle maximum.  Tier-6 and
+  tier-8 checkpoint controls remain plume-scale (`12.72224` and `8.90917 m/s`
+  maxima over eight steps), but the tier-8 shift is material enough that no
+  cold-flow nonperturbation claim is made.
+
+  A from-zero re-derivation then reaches a separate exact-bound stop before the
+  onset time: velocity remains below `4.09585 m/s`, while the scalar tail drives
+  the dynamics deviation to `0.25999284` at `0.79199303 s`.  Ten ordinary
+  drain-aware reductions converge near `1.055861 ms`; the accepted candidate
+  lands at `0.24999988`, and the next beginning fails the unchanged `2^-2`
+  bound at `0.79304888 s`.  No bound is widened and no state is repaired.  The
+  r170 shadow and readmission slices therefore cannot be claimed, and all
+  tier-10 window/spectrum/row/animation/report work remains blocked.  r182 is a
+  measured compatible-flux residual/tail-coupling finding, not a successful
+  remedy claim.  The candidate is retained behind its exact diagnostic
+  activation but is not adopted by ordinary production; the previous admitted
+  remap remains the default.  The immutable r181 crossing transcript remains
+  its unconformed-momentum RED.

@@ -41,6 +41,11 @@ namespace RISE
 	struct FireProductionCellPalindromeResult
 	{
 		std::vector<float> conservativeValues;
+		//! Accepted, timestep-integrated gas-mass flux on the primal faces for
+		//! x/2,y/2,z,y/2,x/2.  Populated for the nine-component production tuple;
+		//! empty for generic comparator tuples that do not contain the six gas
+		//! constituent rows.
+		std::array<std::vector<float>,5> acceptedGasMassDoseKGPerM2;
 		std::uint32_t executedSubmapCount;
 		std::uint32_t privateResidentBufferCount;
 		std::uint32_t sharedBufferCount;
@@ -149,6 +154,7 @@ namespace RISE
 	struct FireProductionMetalCellPalindromeResidentResult
 	{
 		id<MTLBuffer> conservativeValues;
+		std::array<id<MTLBuffer>,5> acceptedGasMassDoseKGPerM2;
 		std::uint32_t executedSubmapCount;
 		std::uint32_t commandCommitCount;
 		std::uint32_t interstageFullGridTransferCount;
@@ -160,7 +166,10 @@ namespace RISE
 		FireProductionMetalCellPalindromeResidentResult() : conservativeValues(nil),
 			executedSubmapCount(0u),commandCommitCount(0u),
 			interstageFullGridTransferCount(0u),actualMetalAllocationBytes(0u),
-			deviceElapsedMS(0.0),deviceStartTimeS(0.0),deviceEndTimeS(0.0) {}
+			deviceElapsedMS(0.0),deviceStartTimeS(0.0),deviceEndTimeS(0.0)
+		{
+			acceptedGasMassDoseKGPerM2.fill(nil);
+		}
 	};
 
 	//! Private-buffer production seam. The host request supplies validation and
@@ -202,6 +211,13 @@ namespace RISE
 		const std::array<FireProductionProjectionBoundary,6>& boundary,
 		std::uint64_t& bytes );
 
+	//! Section 3.7 compatible dual-grid peak.  The five accepted primal gas
+	//! mass-dose fields are already owned by the scalar palindrome; this seam
+	//! counts only the dual ping-pong state and its parameter buffer.
+	bool FireProductionCompatibleDualMomentumResidentWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
 	//! Standalone oracle wrapper around the periodic Private-buffer resident
 	//! dual-grid seam. Boundary uploads and the final tap are outside the
 	//! measured resident interval.
@@ -215,6 +231,25 @@ namespace RISE
 	//! sweeps consume line-resolved ambient tuples through the shared P1 kernel.
 	bool RemapFireProductionDualMomentumCPU(
 		const FireProductionDualMomentumRequest& request,
+		FireProductionDualMomentumResult& result,
+		std::string* error=0 );
+
+	//! Structural preflight for the compatible owner.  Unlike the retired dual
+	//! remap validator, this does not inspect frozen carrier fields or construct
+	//! an independent two-component limiter that the compatible operator never
+	//! consumes.
+	bool ValidateFireProductionCompatibleDualMomentumRequest(
+		const FireProductionDualMomentumRequest& request,
+		std::string* error=0 );
+
+	//! Section 3.7 compatible momentum transport.  Momentum does not own an
+	//! independent reconstruction: every dual-control-volume face receives the
+	//! boundary-aware I_i restriction of the scalar palindrome's already
+	//! shared-alpha-limited gas-mass dose, multiplied by the arithmetic mean of
+	//! the adjacent transported-component velocities.
+	bool RemapFireProductionCompatibleDualMomentumCPU(
+		const FireProductionDualMomentumRequest& request,
+		const std::array<std::vector<float>,5>& acceptedGasMassDoseKGPerM2,
 		FireProductionDualMomentumResult& result,
 		std::string* error=0 );
 
@@ -311,10 +346,14 @@ namespace RISE
 	{
 		id<MTLBuffer> packedFaceDensity;
 		id<MTLBuffer> packedMomentum;
+		std::array<id<MTLBuffer>,5> acceptedGasMassDoseKGPerM2;
 		std::array<std::size_t,3> faceByteOffset;
 
 		FireProductionMetalDualMomentumResidentInput() : packedFaceDensity(nil),
-			packedMomentum(nil) { faceByteOffset.fill(0u); }
+			packedMomentum(nil)
+		{
+			acceptedGasMassDoseKGPerM2.fill(nil);faceByteOffset.fill(0u);
+		}
 	};
 
 	struct FireProductionMetalDualMomentumResidentResult
@@ -348,6 +387,15 @@ namespace RISE
 	bool RemapFireProductionDualMomentumMetalResident(
 		const FireProductionDualMomentumRequest& request,
 		const FireProductionMetalDualMomentumStaticState& staticState,
+		const FireProductionMetalDualMomentumResidentInput& input,
+		FireProductionMetalDualMomentumResidentResult& result,
+		std::string* error=0 );
+
+	//! Private-buffer Section 3.7 owner.  Five accepted primal mass-dose
+	//! buffers are borrowed from the scalar palindrome; five compatible dual
+	//! updates execute without host access or an independent momentum limiter.
+	bool RemapFireProductionCompatibleDualMomentumMetalResident(
+		const FireProductionDualMomentumRequest& request,
 		const FireProductionMetalDualMomentumResidentInput& input,
 		FireProductionMetalDualMomentumResidentResult& result,
 		std::string* error=0 );

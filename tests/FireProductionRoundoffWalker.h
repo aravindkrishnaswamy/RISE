@@ -690,11 +690,17 @@ namespace FireProductionRoundoffWalker
 		for(unsigned int axis=0u;axis<3u;++axis){
 			const unsigned int channel=9u+axis;
 			const unsigned int first=axis?6u+5u*axis:0u;
+			const bool compatiblePassMajor=stages[6].radiusSquareSum[9u]>0.0&&
+				stages[7].radiusSquareSum[10u]>0.0&&
+				stages[8].radiusSquareSum[11u]>0.0&&
+				stages[7].radiusSquareSum[9u]==0.0&&
+				stages[8].radiusSquareSum[9u]==0.0;
 			if(!stages[0].count[channel])return false;
 			certificate.momentumL2PerCellUpper[axis]=Detail::NextUp(std::sqrt(
 				stages[0].radiusSquareSum[channel]/static_cast<double>(cellCount)));
 			for(unsigned int offset=0u;offset<5u;++offset){const unsigned int stage=
-				axis==0u?6u+offset:first+offset;
+				compatiblePassMajor?6u+3u*offset+axis:
+				(axis==0u?6u+offset:first+offset);
 				if(!stages[stage].count[channel])return false;
 				certificate.momentumL2PerCellUpper[axis]=Detail::NextUp(
 					certificate.momentumL2PerCellUpper[axis]+std::sqrt(

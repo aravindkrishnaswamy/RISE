@@ -501,7 +501,7 @@ namespace RISE
 
 		bool ApplyAxis( const FireProductionCellPalindromeRequest& request,
 			unsigned int axis, float timeStepS, std::vector<float>& values,
-			std::string* error )
+			std::vector<float>* acceptedGasMassDoseKGPerM2, std::string* error )
 		{
 			FireProductionRemapRequest lineRequest;
 			lineRequest.lineLength=AxisExtent(request.shape,axis);
@@ -535,6 +535,22 @@ namespace RISE
 			}
 			FireProductionRemapResult lineResult;
 			if( !RemapFireProductionCPU(lineRequest,lineResult,error) ) return false;
+			if( acceptedGasMassDoseKGPerM2 ) {
+				acceptedGasMassDoseKGPerM2->assign(
+					FireProductionProjectionFaceCount(request.shape,axis),0.0f);
+				for( std::size_t line=0;line<lineRequest.lineCount;++line )
+					for( std::size_t face=0;face<=lineRequest.lineLength;++face ) {
+						float gasMassDose=0.0f;
+						for( std::size_t component=1u;component<=6u;++component )
+							gasMassDose+=lineResult.faceFluxes[
+								(component*lineRequest.lineCount+line)*
+								(lineRequest.lineLength+1u)+face];
+						std::size_t x=0u,y=0u,z=0u;
+						AxisCoordinates(request.shape,axis,line,face,x,y,z);
+						(*acceptedGasMassDoseKGPerM2)[FaceIndex(
+							request.shape,axis,x,y,z)]=gasMassDose;
+					}
+			}
 			for( std::size_t line=0;line<lineRequest.lineCount;++line )
 				for( std::size_t coordinate=0;coordinate<lineRequest.lineLength;++coordinate ) {
 					std::size_t x=0u,y=0u,z=0u;
@@ -563,6 +579,8 @@ namespace RISE
 		const std::uint64_t yFaces=static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz;
 		const std::uint64_t zFaces=static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
 		const std::uint64_t allFaces=xFaces+yFaces+zFaces;
+		const std::uint64_t retainedGasFaces=componentCount==9u?
+			2u*xFaces+2u*yFaces+zFaces:0u;
 		const std::uint64_t maximumLineFaces=std::max(xFaces,std::max(yFaces,zFaces));
 		if( componentCount>std::numeric_limits<std::uint64_t>::max()/maximumLineFaces )
 			return false;
@@ -571,7 +589,8 @@ namespace RISE
 		// Caller-owned request/result payloads remain live through publication.
 		if( !AddBytes(values,2u*sizeof(float),total)||
 			!AddBytes(allFaces,sizeof(float),total)||
-			!AddBytes(componentCount,sizeof(float),total) ) return false;
+			!AddBytes(componentCount,sizeof(float),total)||
+			!AddBytes(retainedGasFaces,sizeof(float),total) ) return false;
 		// Eight value-sized Metal buffers: input/output staging, two resident grids,
 		// and four resident line/reconstruction fields.
 		for( unsigned int buffer=0u;buffer<8u;++buffer )
@@ -586,6 +605,8 @@ namespace RISE
 			!AddMetalValueBuffer(componentLineFaces,sizeof(float),total)||
 			!AddMetalValueBuffer(componentLineFaces,sizeof(float),total)||
 			!AddMetalValueBuffer(componentCount,sizeof(float),total) ) return false;
+		if( retainedGasFaces&&!AddMetalValueBuffer(retainedGasFaces,sizeof(float),total) )
+			return false;
 		// Five grid-parameter and five line-parameter resources remain retained by
 		// the one command until its terminal publication completes.
 		for( unsigned int pass=0u;pass<5u;++pass )
@@ -653,8 +674,12 @@ namespace RISE
 			const float halfStep=0.5f*request.timeStepS;
 			const unsigned int axes[]={0u,1u,2u,1u,0u};
 			const float steps[]={halfStep,halfStep,request.timeStepS,halfStep,halfStep};
-			for( unsigned int pass=0u;pass<5u;++pass )
-				if( !ApplyAxis(request,axes[pass],steps[pass],values,error) ) return false;
+			for( unsigned int pass=0u;pass<5u;++pass ) {
+				std::vector<float>* accepted=request.componentCount==9u?
+					&result.acceptedGasMassDoseKGPerM2[pass]:0;
+				if( !ApplyAxis(request,axes[pass],steps[pass],values,accepted,error) )
+					return false;
+			}
 			result.conservativeValues=std::move(values);
 			result.executedSubmapCount=5u;
 			if( error ) error->clear();
@@ -802,6 +827,29 @@ namespace RISE
 		for( unsigned int pass=0u;pass<15u;++pass )
 			if( !AddMetalBufferBytes(sizeof(std::uint32_t)*11u,total)||
 				!AddMetalBufferBytes(sizeof(std::uint32_t)*6u+sizeof(float)*2u,total) )
+				return false;
+		bytes=total;return true;
+	}
+
+	bool FireProductionCompatibleDualMomentumResidentWorkingSetBytes(
+		const FireProductionProjectionShape& shape, std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		const std::uint64_t xFaces=static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz;
+		const std::uint64_t yFaces=static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz;
+		const std::uint64_t zFaces=static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
+		const std::uint64_t allFaces=xFaces+yFaces+zFaces;
+		const std::uint64_t retainedMassDose=2u*xFaces+2u*yFaces+zFaces;
+		std::uint64_t total=0u;
+		// Borrowed beginning density/momentum, two ping-pong output pairs, and
+		// the five accepted primal gas-mass-dose fields.
+		for( unsigned int buffer=0u;buffer<6u;++buffer )
+			if( !AddMetalValueBuffer(allFaces,sizeof(float),total) ) return false;
+		if( !AddMetalValueBuffer(retainedMassDose,sizeof(float),total) ) return false;
+		for( unsigned int pass=0u;pass<5u;++pass )
+			if( !AddMetalBufferBytes(sizeof(std::uint32_t)*10u+sizeof(float),total) )
 				return false;
 		bytes=total;return true;
 	}
@@ -1124,6 +1172,187 @@ namespace RISE
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionDualMomentumResult();
 			FailWithoutThrow(error,"dual momentum allocation failed");
+			return false;
+		}
+	}
+
+	bool ValidateFireProductionCompatibleDualMomentumRequest(
+		const FireProductionDualMomentumRequest& request, std::string* error )
+	{
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				request.timeStepS<0.0f||!std::isfinite(shape.cellWidthM)||
+				!std::isfinite(request.timeStepS) )
+				return Fail(error,"compatible dual momentum shape or schedule is invalid");
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==FireProductionProjectionPeriodic)) )
+					return Fail(error,"compatible dual momentum boundary pairing is invalid");
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.beginningFaceDensity[axis].size()!=faces||
+					request.beginningMomentum[axis].size()!=faces )
+					return Fail(error,"compatible dual momentum face shape is invalid");
+				if( lower==FireProductionProjectionPeriodic&&
+					(!PeriodicFaceSeamEqual(shape,request.beginningFaceDensity[axis],axis)||
+					 !PeriodicFaceSeamEqual(shape,request.beginningMomentum[axis],axis)) )
+					return Fail(error,"compatible dual momentum periodic seam is invalid");
+				for( const float density : request.beginningFaceDensity[axis] )
+					if( !(density>0.0f)||!std::isfinite(density) )
+						return Fail(error,"compatible dual momentum density is invalid");
+				for( const float momentum : request.beginningMomentum[axis] )
+					if( !std::isfinite(momentum) )
+						return Fail(error,"compatible dual momentum is nonfinite");
+			}
+			std::uint64_t bytes=0u;
+			if( !FireProductionCompatibleDualMomentumResidentWorkingSetBytes(shape,bytes)||
+				bytes>(std::uint64_t(2u)<<30u) )
+				return Fail(error,"compatible dual momentum working set exceeds two GiB");
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			FailWithoutThrow(error,"compatible dual momentum validation allocation failed");
+			return false;
+		}
+	}
+
+	bool RemapFireProductionCompatibleDualMomentumCPU(
+		const FireProductionDualMomentumRequest& request,
+		const std::array<std::vector<float>,5>& acceptedGasMassDoseKGPerM2,
+		FireProductionDualMomentumResult& result, std::string* error )
+	{
+		result=FireProductionDualMomentumResult();
+		try {
+			if( !ValidateFireProductionCompatibleDualMomentumRequest(request,error) ) return false;
+			const FireProductionProjectionShape& shape=request.shape;
+			const unsigned int axes[]={0u,1u,2u,1u,0u};
+			for( unsigned int pass=0u;pass<5u;++pass ) {
+				const unsigned int axis=axes[pass];
+				if( acceptedGasMassDoseKGPerM2[pass].size()!=
+					FireProductionProjectionFaceCount(shape,axis) )
+					return Fail(error,"compatible dual momentum mass-dose shape is invalid");
+				for( const float value : acceptedGasMassDoseKGPerM2[pass] )
+					if( !std::isfinite(value) )
+						return Fail(error,"compatible dual momentum mass dose is nonfinite");
+				if( AxisIsPeriodic(request,axis)&&!PeriodicFaceSeamEqual(shape,
+					acceptedGasMassDoseKGPerM2[pass],axis) )
+					return Fail(error,"compatible dual momentum mass-dose seam is invalid");
+			}
+			FireProductionDualMomentumResult computed;
+			computed.auxiliaryFaceDensity=request.beginningFaceDensity;
+			computed.momentum=request.beginningMomentum;
+			for( unsigned int pass=0u;pass<5u;++pass ) {
+				const unsigned int derivative=axes[pass];
+				const std::vector<float>& massDose=acceptedGasMassDoseKGPerM2[pass];
+				auto oldDensity=computed.auxiliaryFaceDensity;
+				auto oldMomentum=computed.momentum;
+				for( unsigned int component=0u;component<3u;++component ) {
+					const std::size_t componentExtent=AxisCoordinateExtent(shape,component);
+					const std::size_t normalCount=componentExtent+1u;
+					const std::size_t firstCount=component==0u?shape.ny:shape.nx;
+					const std::size_t secondCount=component==2u?shape.ny:shape.nz;
+					const bool componentPeriodic=AxisIsPeriodic(request,component);
+					const std::size_t activeNormalCount=componentPeriodic?componentExtent:normalCount;
+					for( std::size_t second=0u;second<secondCount;++second )
+						for( std::size_t first=0u;first<firstCount;++first )
+							for( std::size_t normal=0u;normal<activeNormalCount;++normal ) {
+								std::size_t x=0u,y=0u,z=0u;
+								SetAxisCoordinate(component,normal,x,y,z);
+								SetAxisCoordinate(component==0u?1u:0u,first,x,y,z);
+								SetAxisCoordinate(component==2u?1u:2u,second,x,y,z);
+								const std::size_t componentFace=FaceIndex(shape,component,x,y,z);
+								const bool lowerWall=normal==0u&&request.boundary[2u*component]==
+									FireProductionProjectionWall;
+								const bool upperWall=normal+1u==normalCount&&
+									request.boundary[2u*component+1u]==FireProductionProjectionWall;
+								if( lowerWall||upperWall ) {
+									computed.momentum[component][componentFace]=0.0f;
+									continue;
+								}
+								auto velocityAt=[&](std::size_t vx,std::size_t vy,std::size_t vz) {
+									const std::size_t face=FaceIndex(shape,component,vx,vy,vz);
+									return oldMomentum[component][face]/oldDensity[component][face];
+								};
+								auto massDoseAt=[&](std::size_t fx,std::size_t fy,std::size_t fz) {
+									return massDose[FaceIndex(shape,derivative,fx,fy,fz)];
+								};
+								float upperMass=0.0f,lowerMass=0.0f,upperVelocity=0.0f,
+									lowerVelocity=0.0f;
+								if( derivative==component ) {
+									const std::size_t previous=componentPeriodic?
+										(normal==0u?componentExtent-1u:normal-1u):
+										(normal==0u?0u:normal-1u);
+									const std::size_t next=componentPeriodic?
+										(normal+1u==componentExtent?0u:normal+1u):
+										(normal+1u<normalCount?normal+1u:normal);
+									std::size_t px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+									SetAxisCoordinate(component,previous,px,py,pz);
+									SetAxisCoordinate(component,next,nx,ny,nz);
+									lowerMass=0.5f*(massDoseAt(px,py,pz)+massDoseAt(x,y,z));
+									upperMass=0.5f*(massDoseAt(x,y,z)+massDoseAt(nx,ny,nz));
+									lowerVelocity=0.5f*(velocityAt(px,py,pz)+velocityAt(x,y,z));
+									upperVelocity=0.5f*(velocityAt(x,y,z)+velocityAt(nx,ny,nz));
+									if( !componentPeriodic&&(normal==0u||normal+1u==normalCount) ) {
+										lowerMass*=2.0f;upperMass*=2.0f;
+									}
+								} else {
+									const std::size_t derivativeExtent=AxisCoordinateExtent(shape,derivative);
+									const std::size_t position=AxisCoordinate(derivative,x,y,z);
+									const std::size_t componentLower=componentPeriodic?
+										(normal==0u?componentExtent-1u:normal-1u):
+										(normal==0u?0u:normal-1u);
+									const std::size_t componentUpper=componentPeriodic?normal:
+										std::min(normal,componentExtent-1u);
+									auto restricted=[&](std::size_t boundary) {
+										std::size_t lx=x,ly=y,lz=z,ux=x,uy=y,uz=z;
+										SetAxisCoordinate(component,componentLower,lx,ly,lz);
+										SetAxisCoordinate(component,componentUpper,ux,uy,uz);
+										SetAxisCoordinate(derivative,boundary,lx,ly,lz);
+										SetAxisCoordinate(derivative,boundary,ux,uy,uz);
+										return 0.5f*(massDoseAt(lx,ly,lz)+massDoseAt(ux,uy,uz));
+									};
+									lowerMass=restricted(position);upperMass=restricted(position+1u);
+									if( position==0u&&request.boundary[2u*derivative]==
+										FireProductionProjectionWall ) lowerMass=0.0f;
+									if( position+1u==derivativeExtent&&request.boundary[2u*derivative+1u]==
+										FireProductionProjectionWall ) upperMass=0.0f;
+									const bool derivativePeriodic=AxisIsPeriodic(request,derivative);
+									const std::size_t previous=derivativePeriodic?
+										(position==0u?derivativeExtent-1u:position-1u):
+										(position==0u?0u:position-1u);
+									const std::size_t next=derivativePeriodic?
+										(position+1u==derivativeExtent?0u:position+1u):
+										std::min(position+1u,derivativeExtent-1u);
+									std::size_t px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+									SetAxisCoordinate(derivative,previous,px,py,pz);
+									SetAxisCoordinate(derivative,next,nx,ny,nz);
+									lowerVelocity=0.5f*(velocityAt(px,py,pz)+velocityAt(x,y,z));
+									upperVelocity=0.5f*(velocityAt(x,y,z)+velocityAt(nx,ny,nz));
+								}
+								const float density=oldDensity[component][componentFace]-
+									(upperMass-lowerMass)/shape.cellWidthM;
+								const float momentum=oldMomentum[component][componentFace]-
+									(upperMass*upperVelocity-lowerMass*lowerVelocity)/shape.cellWidthM;
+								if( !(density>0.0f)||!std::isfinite(density)||!std::isfinite(momentum) )
+									return Fail(error,"compatible dual momentum update is inadmissible");
+								computed.auxiliaryFaceDensity[component][componentFace]=density;
+								computed.momentum[component][componentFace]=momentum;
+							}
+					if( componentPeriodic ) PublishPeriodicDualSeam(shape,component,
+						computed.auxiliaryFaceDensity[component],computed.momentum[component],
+						computed.canonicalSeamCopyCount);
+				}
+			}
+			computed.executedSubmapCount=15u;
+			result=std::move(computed);
+			if( error ) error->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionDualMomentumResult();
+			FailWithoutThrow(error,"compatible dual momentum allocation failed");
 			return false;
 		}
 	}

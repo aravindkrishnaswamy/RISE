@@ -432,7 +432,8 @@ namespace FireProductionRoundoffAdapter
 			dual.beginningMomentum[axis]=computed.force.momentumKGPerM2S[axis];
 		{
 			FireProductionRoundoffTrace::Scope scope(counters);
-			if(!Trace::RemapFireProductionDualMomentumCPU(dual,computed.dual,error))return false;
+			if(!Trace::RemapFireProductionCompatibleDualMomentumCPU(dual,
+				computed.cell.acceptedGasMassDoseKGPerM2,computed.dual,error))return false;
 		}
 		AppendStages(computed,counters);
 		computed.conservativeValues=computed.cell.conservativeValues;

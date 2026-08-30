@@ -387,6 +387,13 @@ namespace RISE
 			std::uint32_t lowerComponentWall,upperComponentWall;
 		};
 
+		struct CompatibleDualParams
+		{
+			std::uint32_t nx,ny,nz,derivative;
+			std::uint32_t lowerX,upperX,lowerY,upperY,lowerZ,upperZ;
+			float cellWidthM;
+		};
+
 		thread_local std::uint64_t MetalCommandCommitCount=0u;
 		thread_local std::uint64_t MetalHostBufferReadCount=0u;
 
@@ -641,6 +648,22 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
  if(p.lowerBoundary==0u&&p.upperBoundary==0u&&right==p.n){right=0u;flux[base+p.n]=flux[base];}
  updated[gid]=q[gid]-(flux[base+right]-flux[base+cell])/p.dx;
 }
+kernel void extract_gas_mass_dose(device const float* flux [[buffer(0)]],
+ device float* gasMassDose [[buffer(1)]],constant GridParams& g [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
+ uint faceCount=g.axis==0u?(g.nx+1u)*g.ny*g.nz:
+  (g.axis==1u?g.nx*(g.ny+1u)*g.nz:g.nx*g.ny*(g.nz+1u));
+ if(gid>=faceCount)return;uint x,y,z,line,coordinate,length,lines;
+ if(g.axis==0u){x=gid%(g.nx+1u);uint r=gid/(g.nx+1u);y=r%g.ny;z=r/g.ny;
+  line=z*g.ny+y;coordinate=x;length=g.nx;lines=g.ny*g.nz;
+ }else if(g.axis==1u){x=gid%g.nx;uint r=gid/g.nx;y=r%(g.ny+1u);z=r/(g.ny+1u);
+  line=z*g.nx+x;coordinate=y;length=g.ny;lines=g.nx*g.nz;
+ }else{x=gid%g.nx;uint r=gid/g.nx;y=r%g.ny;z=r/g.ny;
+  line=y*g.nx+x;coordinate=z;length=g.nz;lines=g.nx*g.ny;}
+ float dose=0.0f;for(uint c=1u;c<=6u;++c)
+  dose+=flux[(c*lines+line)*(length+1u)+coordinate];
+ gasMassDose[gid]=dose;
+}
 struct DualParams { uint nx; uint ny; uint nz; uint component; uint sweepAxis; };
 struct DualLineParams { uint nx; uint ny; uint nz; uint component; uint sweepAxis;
  uint n; uint lines; uint componentBeginning; uint componentPeriodic;
@@ -673,6 +696,123 @@ inline void dual_set_coordinate(uint axis,uint value,thread uint& x,thread uint&
  if(axis==0u)x=value;else if(axis==1u)y=value;else z=value;
 }
 inline uint dual_coordinate(uint axis,uint x,uint y,uint z){return axis==0u?x:(axis==1u?y:z);}
+struct CompatibleDualParams { uint nx; uint ny; uint nz; uint derivative;
+ uint lowerX; uint upperX; uint lowerY; uint upperY; uint lowerZ; uint upperZ; float dx; };
+inline uint compatible_extent(constant CompatibleDualParams& p,uint axis){
+ return axis==0u?p.nx:(axis==1u?p.ny:p.nz);}
+inline uint compatible_boundary(constant CompatibleDualParams& p,uint side){
+ if(side==0u)return p.lowerX;if(side==1u)return p.upperX;
+ if(side==2u)return p.lowerY;if(side==3u)return p.upperY;
+ return side==4u?p.lowerZ:p.upperZ;
+}
+inline uint compatible_face_index(constant CompatibleDualParams& p,uint axis,uint x,uint y,uint z){
+ if(axis==0u)return (z*p.ny+y)*(p.nx+1u)+x;
+ if(axis==1u)return (z*(p.ny+1u)+y)*p.nx+x;
+ return (z*p.ny+y)*p.nx+x;
+}
+inline uint compatible_face_count(constant CompatibleDualParams& p,uint axis){
+ return axis==0u?(p.nx+1u)*p.ny*p.nz:
+  (axis==1u?p.nx*(p.ny+1u)*p.nz:p.nx*p.ny*(p.nz+1u));
+}
+inline uint compatible_offset(constant CompatibleDualParams& p,uint component){
+ if(component==0u)return 0u;if(component==1u)return compatible_face_count(p,0u);
+ return compatible_face_count(p,0u)+compatible_face_count(p,1u);
+}
+inline void compatible_face_coordinates(constant CompatibleDualParams& p,uint axis,uint face,
+ thread uint& x,thread uint& y,thread uint& z){
+ if(axis==0u){x=face%(p.nx+1u);uint r=face/(p.nx+1u);y=r%p.ny;z=r/p.ny;return;}
+ if(axis==1u){x=face%p.nx;uint r=face/p.nx;y=r%(p.ny+1u);z=r/(p.ny+1u);return;}
+ x=face%p.nx;uint r=face/p.nx;y=r%p.ny;z=r/p.ny;
+}
+inline void compatible_set_coordinate(uint axis,uint value,thread uint& x,thread uint& y,thread uint& z){
+ if(axis==0u)x=value;else if(axis==1u)y=value;else z=value;
+}
+inline uint compatible_coordinate(uint axis,uint x,uint y,uint z){return axis==0u?x:(axis==1u?y:z);}
+inline float compatible_velocity(device const float* density,device const float* momentum,
+ constant CompatibleDualParams& p,uint component,uint x,uint y,uint z){
+ uint offset=compatible_offset(p,component),face=compatible_face_index(p,component,x,y,z);
+ return momentum[offset+face]/density[offset+face];
+}
+inline float compatible_dose(device const float* massDose,
+ constant CompatibleDualParams& p,uint x,uint y,uint z){
+ return massDose[compatible_face_index(p,p.derivative,x,y,z)];
+}
+inline float compatible_restricted_dose(device const float* massDose,
+ constant CompatibleDualParams& p,uint component,uint componentLower,uint componentUpper,
+ uint boundary,uint x,uint y,uint z){
+ uint lx=x,ly=y,lz=z,ux=x,uy=y,uz=z;
+ compatible_set_coordinate(component,componentLower,lx,ly,lz);
+ compatible_set_coordinate(component,componentUpper,ux,uy,uz);
+ compatible_set_coordinate(p.derivative,boundary,lx,ly,lz);
+ compatible_set_coordinate(p.derivative,boundary,ux,uy,uz);
+ return 0.5f*(compatible_dose(massDose,p,lx,ly,lz)+
+  compatible_dose(massDose,p,ux,uy,uz));
+}
+kernel void compatible_dual_update(device const float* density [[buffer(0)]],
+ device const float* momentum [[buffer(1)]],device const float* massDose [[buffer(2)]],
+ device float* updatedDensity [[buffer(3)]],device float* updatedMomentum [[buffer(4)]],
+ constant CompatibleDualParams& p [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ uint count0=compatible_face_count(p,0u),count1=compatible_face_count(p,1u);
+ uint total=count0+count1+compatible_face_count(p,2u);if(gid>=total)return;
+ uint component=gid<count0?0u:(gid<count0+count1?1u:2u);
+ uint offset=compatible_offset(p,component),local=gid-offset,x,y,z;
+ compatible_face_coordinates(p,component,local,x,y,z);
+ uint componentExtent=compatible_extent(p,component),normal=compatible_coordinate(component,x,y,z);
+ bool componentPeriodic=compatible_boundary(p,2u*component)==0u&&
+  compatible_boundary(p,2u*component+1u)==0u;
+ bool seam=componentPeriodic&&normal==componentExtent;
+ if(seam){normal=0u;compatible_set_coordinate(component,0u,x,y,z);}
+ uint sourceFace=compatible_face_index(p,component,x,y,z),source=offset+sourceFace;
+ bool wall=(normal==0u&&compatible_boundary(p,2u*component)==2u)||
+  (normal==componentExtent&&compatible_boundary(p,2u*component+1u)==2u);
+ if(wall){updatedDensity[gid]=density[source];updatedMomentum[gid]=0.0f;return;}
+ float upperMass=0.0f,lowerMass=0.0f,upperVelocity=0.0f,lowerVelocity=0.0f;
+ if(p.derivative==component){
+  uint previous=componentPeriodic?(normal==0u?componentExtent-1u:normal-1u):
+   (normal==0u?0u:normal-1u);
+  uint next=componentPeriodic?(normal+1u==componentExtent?0u:normal+1u):
+   (normal+1u<componentExtent+1u?normal+1u:normal);
+  uint px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+  compatible_set_coordinate(component,previous,px,py,pz);
+  compatible_set_coordinate(component,next,nx,ny,nz);
+  lowerMass=0.5f*(compatible_dose(massDose,p,px,py,pz)+compatible_dose(massDose,p,x,y,z));
+  upperMass=0.5f*(compatible_dose(massDose,p,x,y,z)+compatible_dose(massDose,p,nx,ny,nz));
+  lowerVelocity=0.5f*(compatible_velocity(density,momentum,p,component,px,py,pz)+
+   compatible_velocity(density,momentum,p,component,x,y,z));
+  upperVelocity=0.5f*(compatible_velocity(density,momentum,p,component,x,y,z)+
+   compatible_velocity(density,momentum,p,component,nx,ny,nz));
+  if(!componentPeriodic&&(normal==0u||normal==componentExtent)){lowerMass*=2.0f;upperMass*=2.0f;}
+ }else{
+  uint derivativeExtent=compatible_extent(p,p.derivative);
+  uint position=compatible_coordinate(p.derivative,x,y,z);
+  uint componentLower=componentPeriodic?(normal==0u?componentExtent-1u:normal-1u):
+   (normal==0u?0u:normal-1u);
+  uint componentUpper=componentPeriodic?normal:min(normal,componentExtent-1u);
+  lowerMass=compatible_restricted_dose(massDose,p,component,componentLower,
+   componentUpper,position,x,y,z);
+  upperMass=compatible_restricted_dose(massDose,p,component,componentLower,
+   componentUpper,position+1u,x,y,z);
+  if(position==0u&&compatible_boundary(p,2u*p.derivative)==2u)lowerMass=0.0f;
+  if(position+1u==derivativeExtent&&
+   compatible_boundary(p,2u*p.derivative+1u)==2u)upperMass=0.0f;
+  bool derivativePeriodic=compatible_boundary(p,2u*p.derivative)==0u&&
+   compatible_boundary(p,2u*p.derivative+1u)==0u;
+  uint previous=derivativePeriodic?(position==0u?derivativeExtent-1u:position-1u):
+   (position==0u?0u:position-1u);
+  uint next=derivativePeriodic?(position+1u==derivativeExtent?0u:position+1u):
+   min(position+1u,derivativeExtent-1u);
+  uint px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+  compatible_set_coordinate(p.derivative,previous,px,py,pz);
+  compatible_set_coordinate(p.derivative,next,nx,ny,nz);
+  lowerVelocity=0.5f*(compatible_velocity(density,momentum,p,component,px,py,pz)+
+   compatible_velocity(density,momentum,p,component,x,y,z));
+  upperVelocity=0.5f*(compatible_velocity(density,momentum,p,component,x,y,z)+
+   compatible_velocity(density,momentum,p,component,nx,ny,nz));
+ }
+ updatedDensity[gid]=density[source]-(upperMass-lowerMass)/p.dx;
+ updatedMomentum[gid]=momentum[source]-(upperMass*upperVelocity-
+  lowerMass*lowerVelocity)/p.dx;
+}
 kernel void gather_periodic_dual_values(device const float* density [[buffer(0)]],
  device const float* momentum [[buffer(1)]],device float* values [[buffer(2)]],
  constant DualParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
@@ -935,6 +1075,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			id<MTLComputePipelineState> scan;
 			id<MTLComputePipelineState> flux;
 			id<MTLComputePipelineState> update;
+			id<MTLComputePipelineState> extractGasMassDose;
+			id<MTLComputePipelineState> compatibleDualUpdate;
 			id<MTLComputePipelineState> gatherValues;
 			id<MTLComputePipelineState> scatterValues;
 			id<MTLComputePipelineState> gatherVelocity;
@@ -956,7 +1098,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			std::string error;
 
 			MetalRemapContext() : device(nil), queue(nil), reconstruct(nil), scan(nil),
-				flux(nil), update(nil),gatherValues(nil),scatterValues(nil),gatherVelocity(nil),
+				flux(nil), update(nil),extractGasMassDose(nil),compatibleDualUpdate(nil),
+				gatherValues(nil),scatterValues(nil),gatherVelocity(nil),
 				gatherPeriodicDualValues(nil),gatherPeriodicDualCarrier(nil),
 				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil),
 				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil),
@@ -985,6 +1128,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					scan=makePipeline("scan_lines");
 					flux=makePipeline("face_flux");
 					update=makePipeline("update_cells");
+					extractGasMassDose=makePipeline("extract_gas_mass_dose");
+					compatibleDualUpdate=makePipeline("compatible_dual_update");
 					gatherValues=makePipeline("gather_grid_values");
 					scatterValues=makePipeline("scatter_grid_values");
 					gatherVelocity=makePipeline("gather_grid_velocity");
@@ -1007,7 +1152,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						"select_methane_manifold_low_bins");
 					foldMethaneAdvectiveAnomalyTarget=
 						makePipeline("fold_methane_advective_anomaly_target");
-					if( !reconstruct||!scan||!flux||!update||!gatherValues||
+					if( !reconstruct||!scan||!flux||!update||!extractGasMassDose||
+						!compatibleDualUpdate||!gatherValues||
 						!scatterValues||!gatherVelocity||!gatherPeriodicDualValues||
 						!gatherPeriodicDualCarrier||!scatterPeriodicDualValues||
 						!publishPeriodicDualSeam||!gatherDualLineValues||
@@ -1026,7 +1172,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 
 			bool Valid() const
 			{
-				return device&&queue&&reconstruct&&scan&&flux&&update&&gatherValues&&
+				return device&&queue&&reconstruct&&scan&&flux&&update&&extractGasMassDose&&
+					compatibleDualUpdate&&gatherValues&&
 					scatterValues&&gatherVelocity&&gatherPeriodicDualValues&&
 					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
 					publishPeriodicDualSeam&&gatherDualLineValues&&scatterDualLineValues&&
@@ -1592,6 +1739,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					alpha=privateBuffer(cells*sizeof(float)),
 					prefix=privateBuffer(maximumFluxCount*sizeof(float)),
 					flux=privateBuffer(maximumFluxCount*sizeof(float));
+				const unsigned int axes[]={0u,1u,2u,1u,0u};
+				std::array<id<MTLBuffer>,5> acceptedGasMassDose;
+				acceptedGasMassDose.fill(nil);
+				if( request.componentCount==9u ) for( unsigned int pass=0u;pass<5u;++pass )
+					acceptedGasMassDose[pass]=privateBuffer(faceCounts[axes[pass]]*sizeof(float));
 				const id<MTLBuffer> privateWork[]={gridA,gridB,lineValues,lineUpdated,left,right,
 					lineVelocity,alpha,prefix,flux};
 				std::uint64_t actualBytes=0u;
@@ -1616,6 +1768,12 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						"production resident palindrome work allocation failed";
 					return false;
 				}
+				if( request.componentCount==9u ) for( id<MTLBuffer> buffer : acceptedGasMassDose )
+					if( !record(buffer,MTLStorageModePrivate) ) {
+						if( structuredError ) *structuredError=
+							"production resident palindrome gas-flux allocation failed";
+						return false;
+					}
 				const std::uint64_t beginningCommandCommitCount=MetalCommandCommitCount;
 				const std::uint64_t beginningHostBufferReadCount=MetalHostBufferReadCount;
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
@@ -1632,7 +1790,6 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				}
 				[blit copyFromBuffer:input.conservativeValues sourceOffset:0 toBuffer:gridA
 					destinationOffset:0 size:valueBytes];[blit endEncoding];
-				const unsigned int axes[]={0u,1u,2u,1u,0u};
 				const float steps[]={0.5f*request.timeStepS,0.5f*request.timeStepS,
 					request.timeStepS,0.5f*request.timeStepS,0.5f*request.timeStepS};
 				auto boundaryValue=[](FireProductionProjectionBoundary boundary) -> std::uint32_t {
@@ -1717,6 +1874,14 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					[encoder setBuffer:lineUpdated offset:0 atIndex:2];
 					[encoder setBuffer:parameterBuffer offset:0 atIndex:3];
 					Dispatch(encoder,context.update,valueCount);[encoder endEncoding];
+					if( request.componentCount==9u ) {
+						encoder=[command computeCommandEncoder];if( !encoder ) return false;
+						[encoder setBuffer:flux offset:0 atIndex:0];
+						[encoder setBuffer:acceptedGasMassDose[pass] offset:0 atIndex:1];
+						[encoder setBuffer:gridParameterBuffer offset:0 atIndex:2];
+						Dispatch(encoder,context.extractGasMassDose,faceCounts[axis]);
+						[encoder endEncoding];
+					}
 					encoder=[command computeCommandEncoder];if( !encoder ) return false;
 					[encoder setBuffer:lineUpdated offset:0 atIndex:0];
 					[encoder setBuffer:gridB offset:0 atIndex:1];
@@ -1743,7 +1908,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					return false;
 				}
 				FireProductionMetalCellPalindromeResidentResult computed;
-				computed.conservativeValues=gridA;computed.executedSubmapCount=5u;
+				computed.conservativeValues=gridA;
+				computed.acceptedGasMassDoseKGPerM2=acceptedGasMassDose;
+				computed.executedSubmapCount=5u;
 				computed.commandCommitCount=1u;computed.interstageFullGridTransferCount=0u;
 				computed.actualMetalAllocationBytes=actualBytes;
 				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
@@ -2463,6 +2630,131 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		}
 	}
 
+	bool RemapFireProductionCompatibleDualMomentumMetalResident(
+		const FireProductionDualMomentumRequest& request,
+		const FireProductionMetalDualMomentumResidentInput& input,
+		FireProductionMetalDualMomentumResidentResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionMetalDualMomentumResidentResult();
+		try {
+			if( !ValidateFireProductionCompatibleDualMomentumRequest(request,structuredError) ) return false;
+			std::uint64_t certifiedBytes=0u;
+			if( !FireProductionCompatibleDualMomentumResidentWorkingSetBytes(
+				request.shape,certifiedBytes)||certifiedBytes>(UINT64_C(1)<<31u) ) {
+				if( structuredError ) *structuredError=
+					"production compatible dual working set exceeds two GiB";
+				return false;
+			}
+			MetalRemapContext& context=Context();
+			if( !context.Valid() ) { if( structuredError ) *structuredError=context.error;return false; }
+			@autoreleasepool {
+				const std::size_t faceCounts[]={
+					FireProductionProjectionFaceCount(request.shape,0u),
+					FireProductionProjectionFaceCount(request.shape,1u),
+					FireProductionProjectionFaceCount(request.shape,2u)};
+				std::array<std::size_t,3> canonicalOffset;
+				canonicalOffset[0]=0u;canonicalOffset[1]=faceCounts[0]*sizeof(float);
+				canonicalOffset[2]=(faceCounts[0]+faceCounts[1])*sizeof(float);
+				const std::size_t allFaces=faceCounts[0]+faceCounts[1]+faceCounts[2];
+				const std::size_t packedBytes=allFaces*sizeof(float);
+				const unsigned int axes[]={0u,1u,2u,1u,0u};
+				if( !input.packedFaceDensity||!input.packedMomentum||
+					[input.packedFaceDensity storageMode]!=MTLStorageModePrivate||
+					[input.packedMomentum storageMode]!=MTLStorageModePrivate||
+					[input.packedFaceDensity length]<packedBytes||
+					[input.packedMomentum length]<packedBytes||
+					input.faceByteOffset!=canonicalOffset ) return false;
+				for( unsigned int pass=0u;pass<5u;++pass ) if(
+					!input.acceptedGasMassDoseKGPerM2[pass]||
+					[input.acceptedGasMassDoseKGPerM2[pass] storageMode]!=MTLStorageModePrivate||
+					[input.acceptedGasMassDoseKGPerM2[pass] length]<
+						faceCounts[axes[pass]]*sizeof(float) ) return false;
+				auto privateBuffer=[&](std::size_t bytes) { return [context.device
+					newBufferWithLength:bytes options:MTLResourceStorageModePrivate]; };
+				id<MTLBuffer> densityA=privateBuffer(packedBytes),momentumA=privateBuffer(packedBytes),
+					densityB=privateBuffer(packedBytes),momentumB=privateBuffer(packedBytes);
+				std::uint64_t actual=0u;
+				auto record=[&](id<MTLBuffer> buffer,MTLStorageMode mode) {
+					if( !buffer||[buffer storageMode]!=mode ) return false;
+					const std::uint64_t bytes=static_cast<std::uint64_t>([buffer allocatedSize]);
+					if( actual>std::numeric_limits<std::uint64_t>::max()-bytes ) return false;
+					actual+=bytes;return true;
+				};
+				if( !record(input.packedFaceDensity,MTLStorageModePrivate)||
+					!record(input.packedMomentum,MTLStorageModePrivate)||
+					!record(densityA,MTLStorageModePrivate)||!record(momentumA,MTLStorageModePrivate)||
+					!record(densityB,MTLStorageModePrivate)||!record(momentumB,MTLStorageModePrivate) )
+					return false;
+				for( id<MTLBuffer> buffer : input.acceptedGasMassDoseKGPerM2 )
+					if( !record(buffer,MTLStorageModePrivate) ) return false;
+				auto boundaryValue=[](FireProductionProjectionBoundary boundary) -> std::uint32_t {
+					return boundary==FireProductionProjectionPeriodic?0u:
+						(boundary==FireProductionProjectionPressureOpen?1u:2u);
+				};
+				id<MTLBuffer> currentDensity=input.packedFaceDensity;
+				id<MTLBuffer> currentMomentum=input.packedMomentum;
+				id<MTLBuffer> nextDensity=densityA,nextMomentum=momentumA;
+				const std::uint64_t beginningCommits=MetalCommandCommitCount;
+				const std::uint64_t beginningReads=MetalHostBufferReadCount;
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				if( !command ) return false;
+				for( unsigned int pass=0u;pass<5u;++pass ) {
+					const CompatibleDualParams parameters={
+						static_cast<std::uint32_t>(request.shape.nx),
+						static_cast<std::uint32_t>(request.shape.ny),
+						static_cast<std::uint32_t>(request.shape.nz),axes[pass],
+						boundaryValue(request.boundary[0]),boundaryValue(request.boundary[1]),
+						boundaryValue(request.boundary[2]),boundaryValue(request.boundary[3]),
+						boundaryValue(request.boundary[4]),boundaryValue(request.boundary[5]),
+						request.shape.cellWidthM};
+					id<MTLBuffer> parameter=[context.device newBufferWithBytes:&parameters
+						length:sizeof(parameters) options:MTLResourceStorageModeShared];
+					if( !record(parameter,MTLStorageModeShared) ) return false;
+					id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+					if( !encoder ) return false;
+					[encoder setBuffer:currentDensity offset:0 atIndex:0];
+					[encoder setBuffer:currentMomentum offset:0 atIndex:1];
+					[encoder setBuffer:input.acceptedGasMassDoseKGPerM2[pass] offset:0 atIndex:2];
+					[encoder setBuffer:nextDensity offset:0 atIndex:3];
+					[encoder setBuffer:nextMomentum offset:0 atIndex:4];
+					[encoder setBuffer:parameter offset:0 atIndex:5];
+					Dispatch(encoder,context.compatibleDualUpdate,allFaces);[encoder endEncoding];
+					currentDensity=nextDensity;currentMomentum=nextMomentum;
+					if( pass==0u ) {nextDensity=densityB;nextMomentum=momentumB;}
+					else if( pass+1u<5u ) {
+						nextDensity=nextDensity==densityA?densityB:densityA;
+						nextMomentum=nextMomentum==momentumA?momentumB:momentumA;
+					}
+				}
+				if( actual>certifiedBytes||actual>(UINT64_C(1)<<31u) ) return false;
+				CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if( [command status]!=MTLCommandBufferStatusCompleted ) return false;
+				const std::uint64_t commits=MetalCommandCommitCount-beginningCommits;
+				const std::uint64_t reads=MetalHostBufferReadCount-beginningReads;
+				if( commits!=1u||reads!=0u ) return false;
+				FireProductionMetalDualMomentumResidentResult computed;
+				computed.packedAuxiliaryFaceDensity=currentDensity;
+				computed.packedMomentum=currentMomentum;
+				computed.faceByteOffset=canonicalOffset;computed.executedSubmapCount=15u;
+				computed.commandCommitCount=1u;computed.interstageFullGridTransferCount=0u;
+				computed.actualMetalAllocationBytes=actual;
+				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				computed.deviceStartTimeS=[command GPUStartTime];
+				computed.deviceEndTimeS=[command GPUEndTime];
+				if( !std::isfinite(computed.deviceElapsedMS) ) return false;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionMetalDualMomentumResidentResult();
+			if( structuredError ) try {
+				*structuredError="production compatible dual allocation failed";
+			} catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
+
 	bool RemapFireProductionDualMomentumMetalResidentComparator(
 		const FireProductionDualMomentumRequest& request,
 		FireProductionDualMomentumResult& result,
@@ -2997,11 +3289,22 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				FireProductionMetalDualMomentumResidentInput dualInput;
 				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
 				dualInput.packedMomentum=force.packedMomentumKGPerM2S;
+				dualInput.acceptedGasMassDoseKGPerM2=cell.acceptedGasMassDoseKGPerM2;
 				dualInput.faceByteOffset=force.faceByteOffset;
 				markPhase("production resident step failed during dual-momentum remap");
 				FireProductionMetalDualMomentumResidentResult dual;
-				if( !RemapFireProductionDualMomentumMetalResident(request.dualTransport,dualStatic,
-					dualInput,dual,structuredError) ) return false;
+				const char* compatibleTrial=std::getenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
+				const bool useCompatibleTrial=compatibleTrial&&std::strcmp(compatibleTrial,"1")==0;
+				if( compatibleTrial&&!useCompatibleTrial ) {
+					if( structuredError ) *structuredError=
+						"production compatible-momentum trial activation is malformed";
+					return false;
+				}
+				if( useCompatibleTrial ?
+					!RemapFireProductionCompatibleDualMomentumMetalResident(
+						request.dualTransport,dualInput,dual,structuredError):
+					!RemapFireProductionDualMomentumMetalResident(request.dualTransport,dualStatic,
+						dualInput,dual,structuredError) ) return false;
 				timestepVelocityAuditDualMS=timestepVelocityAuditMS();
 				id<MTLBuffer> projectedDensity=privateBuffer(cells*sizeof(float));
 				const MetalGridParameters sourceGrid={static_cast<std::uint32_t>(shape.nx),
@@ -3616,9 +3919,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				if( timestepVelocityAuditEnabled||hostResidualProbeEnabled ) {
 					const double completeMS=timestepVelocityAuditMS();
 					if(hostResidualProbeEnabled)std::fprintf(stderr,
-						"HOST_RESIDUAL_PREP dual_static=%.9g force=%.9g cell=%.9g "
-						"parallel=%d\n",preparationWallMS[0u],preparationWallMS[1u],
-						preparationWallMS[2u],serialIndependentPreparation?0:1);
+						"HOST_RESIDUAL_PREP dual_static=%.9g force=%.9g cell=%.9g parallel=%d\n",
+						preparationWallMS[0u],preparationWallMS[1u],preparationWallMS[2u],
+						serialIndependentPreparation?0:1);
 					const char* wallLabel=hostResidualProbeEnabled?
 						"HOST_RESIDUAL_WALL":"TIMESTEP_VELOCITY_WALL";
 					std::fprintf(stderr,"%s preflight=%.9g dual_static=%.9g "
