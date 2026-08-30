@@ -7073,6 +7073,13 @@ namespace RISE
 										// blend before asking must not VACUOUSLY pass
 										// askUserBeforeMutation.
 										"fix_blend_scale",
+										// GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30):
+										// add_wear mutates the document (one composite
+										// swap adding a painter or two and rebinding the
+										// material's slots), so a run that wore a
+										// material before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"add_wear",
 										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
 										// the document (one composite swap restoring an
 										// earlier revision's whole text), so a run that

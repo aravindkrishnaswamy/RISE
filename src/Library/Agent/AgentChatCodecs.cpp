@@ -693,6 +693,43 @@ namespace RISE
 					"}}"
 				},
 				{
+					"add_wear",
+					"WEAR ONE MATERIAL ALONG ITS OWN FORM -- edges rubbed, crevices grimed -- in one call. "
+					"Call this the moment a surface is meant to read as USED: weathered, tarnished, aged, "
+					"dusty, chipped, mossy, salt-crusted, or simply not factory-new. The failure it exists to "
+					"prevent is a mask built from a WORLD AXIS: a `P.z` threshold paints a band of dirt at a "
+					"fixed altitude no matter what the object's shape is, and reads as a stripe. Real wear "
+					"follows CURVATURE -- `curv` is positive on a convex edge, negative in a concave crease, 0 "
+					"on a flat -- and that is what this writes. It adds ONE `expression_painter` whose edge "
+					"mask is `clamp(curv*k + noise, 0, 1)` and whose crevice mask is "
+					"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()`, mixes a lightened edge tint and "
+					"a darkened patina tint BANDED AROUND THE COLOUR THAT IS ALREADY THERE (both tints derived "
+					"from that colour, so this suits wood, stone and painted steel as much as bronze), and "
+					"rebinds the material's colour slot to it. Where the material also carries a constant "
+					"roughness it adds a SECOND chunk reading the SAME masks -- polished on the rubbed edges, "
+					"rougher in the crevices -- so the two agree. ONE headVersion bump, ONE undo step. Pass NO "
+					"ARGUMENTS to take the most prominent qualifying material -- that is the normal way to "
+					"call it, and it is what a DESIGN NOTE about unworn materials is asking for. Pass "
+					"`material` to name a different one. Every knob it writes is a named `param` carrying "
+					"min/max/step/label (edge_wear, crevice_grime, cavity_gain, breakup_amp, base_r/g/b and "
+					"the tint knobs) plus a `seed`, so retuning it afterwards is one propose_patch on a named "
+					"line rather than an edit to expression text -- and that is the idiom to COPY when you "
+					"author wear by hand. It REFUSES, changing nothing and costing only this call, when no "
+					"material is a readable flat colour, when the material is already worn (its slots already "
+					"read curv/occlusion), or when every object bound to it sits on planar or patch geometry, "
+					"where `curv` is 0 everywhere and the mask would render the flat colour it started from. A "
+					"refusal is a real answer: read it rather than retrying. Always pass the headVersion you "
+					"last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to wear. Omit it to take the most prominent material that is still one flat colour on curved geometry -- which is what a DESIGN NOTE about unworn materials is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
 					"remove_chunks",
 					"DELETE SEVERAL entities (whole chunks) in ONE call, ATOMICALLY. Prefer ONE remove_chunks "
 					"call over repeated remove_chunk calls whenever you are deleting more than one chunk: each "

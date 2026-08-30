@@ -1404,6 +1404,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): add_wear is the
+					// SIXTH verb whose commit is one composite whole-document swap
+					// (a painter or two spliced in plus the material's slots
+					// repointed), so it is excluded from IsProposeSafeVerb for
+					// exactly the reason vary_material above is, with the same
+					// message shape.
+					if( m == "add_wear" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; add_wear "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -4247,6 +4261,69 @@ namespace RISE
 						for( const std::string& line : fr.perJointSummary ) arr.push_back( JsonValue::MakeString( line ) );
 						result.set( "perJoint", arr );
 					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// add_wear {material?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,colorSlot,painter,roughPainter,
+				//       roughSlots:[string,...],previousRoughness,baseColor:[r,g,b],
+				//       geometry,qualifying,objects}
+				//   GEOMETRY_SHADING_SIGNALS sec 11 / sec 13 Phase 4 (2026-08-30):
+				//   the VERB half of design-note condition L -- rewrite ONE
+				//   material's colour (and, where it has one, its roughness) into
+				//   the curvature wear composition the 2026-08-29 census proved
+				//   models will not author unprompted.  A pre-commit refusal comes
+				//   back as ok=false with the reason in `message` -- a SUCCESSFUL
+				//   response, not a JSON-RPC error, the same shape vary_material
+				//   uses for its own "nothing qualifies" case.
+				//--------------------------------------------------------------
+				if( m == "add_wear" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentAddWearResult wr =
+						s->AddWear( materialStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( wr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( wr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( wr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( wr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( wr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( wr.headVersion ) );
+					if( !wr.message.empty() )          result.set( "message",      JsonValue::MakeString( wr.message ) );
+					if( !wr.material.empty() )         result.set( "material",     JsonValue::MakeString( wr.material ) );
+					if( !wr.materialKind.empty() )     result.set( "materialKind", JsonValue::MakeString( wr.materialKind ) );
+					if( !wr.colorSlot.empty() )        result.set( "colorSlot",    JsonValue::MakeString( wr.colorSlot ) );
+					if( !wr.colorPainter.empty() )     result.set( "painter",      JsonValue::MakeString( wr.colorPainter ) );
+					if( !wr.roughnessPainter.empty() ) result.set( "roughPainter", JsonValue::MakeString( wr.roughnessPainter ) );
+					if( !wr.roughnessSlots.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : wr.roughnessSlots ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "roughSlots", arr );
+					}
+					if( !wr.geometryKind.empty() )     result.set( "geometry",     JsonValue::MakeString( wr.geometryKind ) );
+					if( !wr.material.empty() ) {
+						result.set( "previousRoughness", JsonValue::MakeNumber( wr.previousRoughness ) );
+						JsonValue rgb = JsonValue::MakeArray();
+						rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
+						rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );
+						rgb.push_back( JsonValue::MakeNumber( wr.baseB ) );
+						result.set( "baseColor", rgb );
+					}
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( wr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( wr.boundObjects ) ) );
 					return MakeSuccess( idValue, result );
 				}
 

@@ -350,6 +350,10 @@ namespace
 		    // document in one call, exactly like vary_material -- same per-call
 		    // leverage, same rate-limit membership.
 		    name == "fix_blend_scale" ||
+		    // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): add_wear rewrites
+		    // the whole document in one call, exactly like vary_material --
+		    // same per-call leverage, same rate-limit membership.
+		    name == "add_wear" ||
 		    // Doc 90 slice R2 (2026-08-23): revert_to_revision replaces the
 		    // whole document in one call, exactly like the three swaps above --
 		    // same per-call leverage, same rate-limit membership.  Metering the

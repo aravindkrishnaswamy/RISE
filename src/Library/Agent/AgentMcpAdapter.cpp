@@ -381,6 +381,21 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): add_wear's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- same
+			//! rationale as kVaryMaterialProposeRefusedNote above (it mutates
+			//! through one composite whole-document swap, splicing one or two
+			//! painters and repointing the material's slots; deliberately
+			//! excluded from AgentRpc.cpp's IsProposeSafeVerb rather than pay
+			//! the "N mutating verbs" prose ripple SourceHygieneTest's
+			//! verb-parity scan pins; refused under Propose exactly like Read;
+			//! deliberately contains neither magic substring the per-note
+			//! counters key on).
+			const std::string kAddWearProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: add_wear is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -1830,6 +1845,59 @@ namespace RISE
 					tools.push_back( MakeTool( "fix_blend_scale", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// add_wear (GEOMETRY_SHADING_SIGNALS sec 11 / sec 13 Phase 4,
+				// 2026-08-30) -- the VERB half of design-note condition L.
+				// Hand-authored HERE and semantically identical to the chat-codec
+				// definition in AgentChatCodecs.cpp's kToolDefs (two texts, one
+				// verb -- a semantic change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to wear. Omit it to take the MOST PROMINENT "
+						"material that is still one flat colour on curved geometry -- which is what a "
+						"DESIGN NOTE about unworn materials is pointing at, so the no-argument call is the "
+						"usual one." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason vary_material is: this
+					// verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kAddWearProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"WEAR ONE MATERIAL ALONG ITS OWN FORM -- edges rubbed, crevices grimed -- in one "
+						"call. Call this the moment a surface is meant to read as USED: weathered, "
+						"tarnished, aged, dusty, chipped, mossy, salt-crusted, or simply not factory-new. "
+						"The failure it exists to prevent is a mask built from a WORLD AXIS: a `P.z` "
+						"threshold paints a band of dirt at a fixed altitude no matter what the object's "
+						"shape is, and reads as a stripe. Real wear follows CURVATURE -- `curv` is positive "
+						"on a convex edge, negative in a concave crease, 0 on a flat -- and that is what "
+						"this writes. It adds ONE `expression_painter` whose edge mask is "
+						"`clamp(curv*k + noise, 0, 1)` and whose crevice mask is "
+						"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()`, mixes a lightened "
+						"edge tint and a darkened patina tint BANDED AROUND THE COLOUR THAT IS ALREADY "
+						"THERE (both tints derived from that colour, so this suits wood, stone and painted "
+						"steel as much as bronze), and rebinds the material's colour slot to it. Where the "
+						"material also carries a constant roughness it adds a SECOND chunk reading the SAME "
+						"masks -- polished on the rubbed edges, rougher in the crevices -- so the two "
+						"agree. ONE headVersion bump, ONE undo step. Pass NO ARGUMENTS to take the most "
+						"prominent qualifying material. Pass `material` to name a different one. Every knob "
+						"is a named `param` carrying min/max/step/label (edge_wear, crevice_grime, "
+						"cavity_gain, breakup_amp, base_r/g/b and the tint knobs) plus a `seed`, so "
+						"retuning it is one propose_patch on a named line -- and that is the idiom to COPY "
+						"when you author wear by hand. It REFUSES, changing nothing and costing only this "
+						"call, when no material is a readable flat colour, when the material is already "
+						"worn (its slots already read curv/occlusion), or when every object bound to it "
+						"sits on planar or patch geometry, where `curv` is 0 everywhere and the mask would "
+						"render the flat colour it started from. Returns {ok,applied,rawCode,status,"
+						"retriable,headVersion,message,material,materialKind,colorSlot,painter,roughPainter,"
+						"roughSlots,previousRoughness,baseColor,geometry,qualifying,objects}. A PRE-COMMIT "
+						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
+						"headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "add_wear", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2359,6 +2427,7 @@ namespace RISE
 					"collapse_to_instances",   // 88 step 2 (2026-08-19): MUTATING, the condition-C rewrite verb
 					"vary_material",           // 88 S5 (2026-08-20): MUTATING, the condition-D rewrite verb
 					"fix_blend_scale",         // cat plan item 1 (2026-08-25): MUTATING, the condition-J rewrite verb
+					"add_wear",                // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): MUTATING, the condition-L rewrite verb
 					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
