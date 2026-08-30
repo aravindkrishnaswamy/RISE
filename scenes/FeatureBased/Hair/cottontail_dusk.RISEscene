@@ -238,7 +238,7 @@ standard_object
 expression_painter
 {
 	name			pnt_skin
-	def			ear smoothstep(0.172, 0.208, Po.y)
+	def			ear smoothstep(0.172, 0.208, Po.y) * smoothstep(0.020, 0.080, Po.z)
 	expr			mix(vec3(0.40,0.27,0.16), vec3(0.44,0.26,0.23), ear)
 }
 
@@ -328,7 +328,7 @@ scalar_painter
 {
 	name			pnt_len
 	def			head smoothstep(0.125, 0.180, Po.z)
-	def			ear  smoothstep(0.170, 0.205, Po.y)
+	def			ear  smoothstep(0.170, 0.205, Po.y) * smoothstep(0.020, 0.080, Po.z)
 	def			low  1.0 - smoothstep(0.020, 0.080, Po.y)
 	def			a    mix(1.0, 0.45, head)
 	def			b    mix(a,   0.28, ear)
@@ -340,7 +340,11 @@ scalar_painter
 scalar_painter
 {
 	name			pnt_den
-	def			ear  smoothstep(0.170, 0.205, Po.y)
+	# ear = high AND forward of the shoulder.  Height alone also catches
+	# the rump (this rabbit's rump tops out ~y 0.21, inside the old ramp)
+	# and bald-patched the top of the back -- the z gate scopes it to the
+	# head end where the ears actually are.
+	def			ear  smoothstep(0.170, 0.205, Po.y) * smoothstep(0.020, 0.080, Po.z)
 	def			n    0.5 + 0.5 * fbm(Po * 46.0, 3.0, 0.5, 2.0)
 	def			base 0.80 + 0.20 * clamp(n, 0.0, 1.0)
 	def			coat mix(base, 0.45, ear)
