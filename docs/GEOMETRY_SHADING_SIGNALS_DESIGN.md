@@ -598,6 +598,18 @@ exit) and divides by the query radius. "No far side within the radius" returns
 a saturated **1**, not a refusal — that is a measurement of thickness, not an
 absence.
 
+**Smooth-blended parts soften the Lipschitz-1 exactness locally (minor,
+unlike the heightfield case below).** The exact-1-on-convex/flat property
+above assumes `map(p + h·n̂) = h`, which holds for a hard union but is only
+*approximately* true within a `smin`/`smooth-subtract` blend radius (`k > 0`):
+the polynomial blend smooths the field's gradient magnitude near the seam, so
+a tap landing inside another part's blend radius reads a slightly softened
+distance rather than the exact one. This is bounded by the blend radius itself
+(negligible once taps clear it) and is a world apart from heightfield mode's
+issue below — a *local*, self-correcting softening near an authored blend,
+not a *global* mis-scaling that misreads an entire flat, unrelated region of
+the field.
+
 ---
 
 ## 7. M3 — baked per-vertex fields for meshes
@@ -1053,13 +1065,65 @@ shipped differs from the sketch above, all deliberate:
    dynamic and answer with the neutral fallback rather than substitute the
    baked radius.
 
-**Known residual, disclosed not fixed:** BDPT/VCM rebuild hit records manually
-via `PathVertexEval.h`'s `PopulateRIGFromVertex`, which carries neither
-`derivatives` nor `signals`, so `curv`, `occlusion` and `thickness` all read
-their neutral values on those connection-time evaluations. This is the same
-gap Phase 1 shipped with (`BDPTVertex` carries no curvature fields either);
-closing it means widening `BDPTVertex`'s surface-state block, and the failure
-mode meanwhile is an honest flat mask, not a wrong one.
+**Known residual, disclosed not fixed — CORRECTED 2026-08-29 (Phase-2 fix
+round; the paragraph below replaces an earlier, narrower draft that
+undercounted both the surface and the severity):**
+
+**(a) Surface.** BDPT/VCM/MLT rebuild hit records manually via
+[`PathVertexEval.h`](../src/Library/Utilities/PathVertexEval.h)'s
+`PopulateRIGFromVertex` (its own contract block, :94-106, names the fields
+that must stay in sync), which carries neither `derivatives` nor `signals` —
+so `curv`, `occlusion` and `thickness` read their neutral values at **every**
+call site downstream of it, not only "connection-time evaluations." That
+includes: the forward walk's own **per-bounce throughput re-evaluation**
+(`BDPTIntegrator.cpp` ~:2645/2647 on the eye subpath, ~:6140/6142 on the
+light subpath — `EvalBSDFAtVertex` called on the vertex the walk just
+extended, to price the very sample it just drew); connection/NEE BSDF
+evaluations; MIS reverse-pdf recomputation (`EvalPdfAtVertex`); OpenPGL
+guiding RIS candidate scoring; the HWSS companion (spectral) evaluations
+alongside every RGB one; VCM merge-radius contribution evaluations; and MLT,
+which drives BDPT's own machinery and so inherits the gap unchanged. This is
+the same gap Phase 1 shipped with (`BDPTVertex` carries no curvature fields
+either); closing it means widening `BDPTVertex`'s surface-state block per the
+contract's own four-step checklist.
+
+**(b) Failure mode.** The earlier description ("an honest flat mask, not a
+wrong one") understated this: because the **forward walk itself** re-evaluates
+the BSDF it already sampled from — with the *true* signal at sample time,
+then the *neutral* signal moments later when pricing that same sample — a
+single material can be evaluated once with the real curvature/occlusion/
+thickness and once without, **within one path**. This is a mixed true/neutral
+evaluation, not a uniformly-flat one, and it can bias both the reported color
+and the sampling-pdf consistency the path's throughput weight depends on —
+not merely render as a flat mask where the signal should have varied.
+
+**(c) A second, independent instance.** [`LightSampler.cpp`](../src/Library/Lights/LightSampler.cpp)
+builds its own minimal `RayIntersectionGeometric` records by hand for NEE
+light samples (~:1949-1956 RGB, ~:2445-2452 spectral) and for photon-emission
+sampling (~:1124) — each stamps only `vNormal`/`vGeomNormal`/`ptCoord`/`onb`,
+omitting `derivatives` and `signals` the same way `PopulateRIGFromVertex`
+does. This reaches **plain PT**, not just BDPT/VCM/MLT: any EMISSIVE
+material whose radiance expression keys on `curv`/`occlusion`/`thickness`
+reads the true signal when the light is hit directly (a camera or BSDF-sampled
+ray intersecting the emitter through the normal shading path) but the neutral
+value when the same light is reached via NEE or found by photon emission —
+a light-shape-dependent, path-technique-dependent inconsistency independent
+of the BDPT/VCM surface above.
+
+**(d) The real fix, deferred.** Both instances share one shape: a hand-built
+`RayIntersectionGeometric` that skips the surface-state fields a *live*
+intersection populates. The principled fix is therefore two-part — widen
+`BDPTVertex`'s surface-state block per `PathVertexEval.h`'s own contract
+(:94-106), **and** extend `LightSampler.cpp`'s NEE/photon-emission records
+the same way — plus sentinel tests on both (mirroring
+`tests/BDPTVertexRIGRebuildTest.cpp`'s existing role for the BDPT side).
+This is tracked as a new item in §14 ("Correctness debts and open items"),
+explicitly deferred: PT is the shipped default rasterizer family and is
+unaffected by (a)/(b), and the LightSampler gap in (c) is a real but narrow
+slice (emissive materials that both key radiance on these signals and are
+reached via NEE/photon emission) — contained enough to defer as a diagnostic
+rather than block on, but no longer safe to describe as "an honest flat
+mask."
 
 ### Phase 3 — mesh bakes behind the same names
 
@@ -1166,6 +1230,29 @@ real scene or user need appears.
    on it.** If vertex animation exists or is added, M3 needs a time key or
    explicit per-frame invalidation; M1 and M2 are unaffected (both evaluate per
    hit from live state).
+11. **BDPT/VCM/MLT + LightSampler neutral-signal gap — deferred, not fixed**
+   (§13 Phase-2 "Known residual," corrected 2026-08-29). Two independent hand-
+   built-record sites read `curv`/`occlusion`/`thickness` as neutral instead
+   of live: (a) every `PathVertexEval.h::PopulateRIGFromVertex` consumer
+   (BDPT/VCM's forward-walk throughput re-evaluation, connection/NEE, MIS
+   reverse-pdf, OpenPGL guiding RIS, the HWSS companion evals, VCM merges, and
+   MLT which drives BDPT's machinery) and (b) `LightSampler.cpp`'s manually-
+   built NEE light-sample records (~:1949-1956, :2445-2452) and photon-
+   emission record (~:1124), which reaches plain PT for emissive materials.
+   The failure mode is a **mixed true/neutral evaluation of one material
+   within one walk** (the forward walk samples with the true signal, then
+   re-prices that same sample with the neutral one moments later) — a bias
+   on color and sampling-pdf consistency, not merely a flat mask. The
+   principled fix is two-part: widen `BDPTVertex`'s surface-state block per
+   `PathVertexEval.h`'s own contract (:94-106), and extend `LightSampler.cpp`'s
+   NEE/photon-emission records the same way, each with a sentinel test
+   (mirroring `tests/BDPTVertexRIGRebuildTest.cpp`). Deferred rather than
+   fixed because PT is the shipped default and unaffected, and a cheap
+   containment diagnostic (a one-time GlobalLog warning when a BDPT/VCM/MLT
+   render begins with a signal-consuming expression live) covers the gap in
+   the interim — see the descriptor text in `ChunkParserRegistry.cpp` for the
+   curv/occlusion/thickness builtins, which now states this limitation
+   directly.
 
 ---
 
