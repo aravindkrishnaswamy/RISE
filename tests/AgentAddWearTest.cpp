@@ -1141,6 +1141,20 @@ static std::string SdfThinCylinderShell( const std::string& name )
 	       "\tpart cylinder union 0   0 0 0   0 0 0   1 1 1   0.05 3 0   0\n}\n\n";
 }
 
+//! P1 regression fixture (convergence round on 49718c7e): a roundcone is the
+//! ONE primitive whose local box is asymmetric about the origin on Y
+//! (ry0 = min(-a, c-b), ry1 = max(a, c+b) -- here [-0.1, 3.1] for
+//! a=b=0.1, c=3), and a NEGATIVE per-part scale component is a legitimate
+//! mirroring construct the parser preserves.  scale = (1,-1,1) reflects the
+//! true bound to [-3.1, 0.1]; an abs()-scale corner transform leaves it at
+//! [-0.1, 3.1] -- shifted to the WRONG side of the origin, capable of a
+//! false "enclosed" claim for a light the mirrored geometry never wraps.
+static std::string SdfMirroredRoundconeShell( const std::string& name )
+{
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart roundcone union 0   0 0 0   0 0 0   1 -1 1   0.1 0.1 3   0\n}\n\n";
+}
+
 static void TestEnclosedLightShellNote()
 {
 	std::printf( "M: the design note -- the emissive-on-opaque-shell translucency fake\n" );
@@ -1319,6 +1333,36 @@ static void TestEnclosedLightShellNote()
 		       "(radius 0.05, half-height 3) is NOT enclosed -- the per-axis bound correctly rejects it, "
 		       "where the old isotropic-radius broadcast (reach ~3 on every axis) would have falsely "
 		       "claimed containment" );
+	}
+
+	// (h2) SIGNED-SCALE REGRESSION (convergence round): a mirrored roundcone
+	//      part (scale 1 -1 1) has its true bound reflected to Y in
+	//      [-3.1, 0.1].  A light at y=+2.5 sits inside the UNMIRRORED
+	//      bound only -- an abs()-scale transform falsely fires here; the
+	//      signed-scale transform correctly does not.  The control at
+	//      y=-2.5 sits inside the true mirrored bound and DOES fire,
+	//      proving the negative direction isn't a vacuous pass.
+	{
+		std::string bodyA = Preamble();
+		bodyA += SdfMirroredRoundconeShell( "sdf_mirrored_cone" );
+		bodyA += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		bodyA += Obj( "obj_shell", "sdf_mirrored_cone", "mat_shell", 0 );
+		bodyA += OmniAt( "candle", 0.0, 2.5, 0.0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( bodyA ), kCode ) == nullptr,
+		       "M8b SIGNED-SCALE MONEY: a light at y=+2.5 beside a scale-(1,-1,1) roundcone "
+		       "(true bound Y in [-3.1, 0.1]) is NOT enclosed -- an abs()-scale corner "
+		       "transform would leave the bound un-mirrored at [-0.1, 3.1] and falsely fire" );
+
+		std::string bodyB = Preamble();
+		bodyB += SdfMirroredRoundconeShell( "sdf_mirrored_cone" );
+		bodyB += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		bodyB += Obj( "obj_shell", "sdf_mirrored_cone", "mat_shell", 0 );
+		bodyB += OmniAt( "candle", 0.0, -2.5, 0.0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( bodyB ), kCode ) != nullptr,
+		       "M8b CONTROL: the same light at y=-2.5 sits inside the true mirrored bound "
+		       "and fires -- the negative case above is not a vacuous pass" );
 	}
 
 	// (i) SMALLEST-VOLUME TIE-BREAK: two nested opaque box shells both

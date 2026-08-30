@@ -4740,7 +4740,17 @@ namespace RISE
 				for( const RISE::Implementation::SDFGeometry::Part& pt : parts ) {
 					double lmin[3], lmax[3];
 					SDFPartLocalAABB_( pt, lmin, lmax );
-					const double sx = std::fabs( pt.scale.x ), sy = std::fabs( pt.scale.y ), sz = std::fabs( pt.scale.z );
+					// SIGNED scale, magnitude-floored -- matching ComputeBounds'
+					// worldAABB lambda (SDFGeometry.cpp).  fabs() here would be a
+					// bug: six primitive boxes are origin-symmetric so sign is a
+					// no-op, but roundcone's is NOT (ry0 != -ry1 when c != 0), and
+					// a negative per-part scale component (legit mirroring; the
+					// parser preserves sign) must reflect the bound to the other
+					// side of the origin.  The min/max fold over the 8 corners
+					// absorbs the sign correctly.
+					const double sx = ( std::fabs( pt.scale.x ) > 1e-9 ) ? pt.scale.x : 1e-9;
+					const double sy = ( std::fabs( pt.scale.y ) > 1e-9 ) ? pt.scale.y : 1e-9;
+					const double sz = ( std::fabs( pt.scale.z ) > 1e-9 ) ? pt.scale.z : 1e-9;
 					const double xs[2] = { lmin[0] * sx, lmax[0] * sx };
 					const double ys[2] = { lmin[1] * sy, lmax[1] * sy };
 					const double zs[2] = { lmin[2] * sz, lmax[2] * sz };
