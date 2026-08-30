@@ -206,8 +206,8 @@ int main()
 		       "SECOND response echoes id==2 (tools/list -- the notification in between produced no line)" );
 		if( ok ) {
 			const JsonValue& tools = env.get( "result" ).get( "tools" );
-			Check( tools.isArray() && tools.size() == 39,
-			       "tools/list response lists exactly the 39 agent verbs" );   // cat plan item 1 (2026-08-25): +fix_blend_scale
+			Check( tools.isArray() && tools.size() == 40,
+			       "tools/list response lists exactly the 40 agent verbs" );   // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): +add_wear
 		}
 	}
 
