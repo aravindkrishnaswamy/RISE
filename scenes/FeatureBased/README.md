@@ -23,6 +23,39 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `Combined/`: scenes that intentionally exercise several subsystems together
 - `EnamelWatch/`: the complete vitreous-enamel watch hero
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
+- `GeometrySignals/`: the canonical showcase for the geometry-derived shading signals
+  (curv/curvR, occlusion(r), thickness(r)) from docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md.
+
+  `weathered_reliquary.RISEscene` is "The Weathered Reliquary" -- a dusk-lit museum
+  tableau on one carved stone plinth, path traced (the signals are fully correct only
+  under PT; BDPT/VCM/MLT evaluate them as their neutral fallback in parts of their
+  transport). Five things, each proving one facet of the design doc: (1) a bronze
+  guardian idol (`skeleton_geometry`, an 18-joint creature SDF) whose base colour,
+  metallic AND roughness are all driven by ONE shared `curv` + `occlusion()` wear
+  field -- bright polished highlights on convex masses, deep patina in genuinely
+  enclosed folds (occlusion, not curv alone, is what tells an armpit crease from a
+  shallow dimple) -- the exactness showcase, since curv is a true differential
+  quantity on an implicit surface, not a mesh-faceted approximation; (2) a carved
+  stone plinth (`sdf_geometry`, box + roundbox CSG subtraction) where soot pools in
+  the recessed panels and grooves via `occlusion()` while the swept flat faces stay
+  clean -- the CSG-subtraction cavity path; (3) an alabaster votive shell
+  (`sdf_geometry`, sphere-minus-offset-sphere) with a genuinely varying wall --
+  thin at the rim, thick at the base -- where `1 - thickness(r)` drives BOTH the
+  reflectance and transmittance of a `translucent_material`, lit from within by a
+  small warm point light, so the thin rim glows and the thick base stays opaque;
+  isolated (light-only, no external key) this renders as an unmistakable bright-top
+  fading-to-dark-bottom gradient -- the thickness showcase and the scene's emotional
+  centerpiece; (4) three scales of the SAME guardian geometry (1.0 / 0.5 / 0.3)
+  sharing one material, proving `curv`'s world-scale fold and `occlusion()`/
+  `thickness()`'s dimensionless object-space radius make the wear pattern land in
+  the same anatomical places at every scale -- corresponding features across the
+  three instances measured within 0.06 of each other; (5) a lathe-turned votive
+  goblet (`lathe_geometry`, baked to a real `ITriangleMeshGeometryIndexed`)
+  exercising the MESH per-vertex signal bake -- edge wear via curv (faceted here,
+  only as good as the vertex normals) and crevice dirt via `occlusion()` at a
+  LITERAL radius (a mesh cannot answer a computed one). Every art-directable number
+  is a `param` with min/max/step/label; the header comment doubles as a reading
+  guide to the five demonstrations.
 - `GlobalIllumination/`: heavyweight GI stress scenes
 - `GuillocheWatch/`: thin-film guilloché watch showcase and authored variants
 - `Hair/`: the hair/fur showcases -- one hero, one variety plate, one macro.

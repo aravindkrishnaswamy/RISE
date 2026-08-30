@@ -1,0 +1,618 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           weathered_reliquary.RISEscene                                                          #
+#   Description:    "The Weathered Reliquary" -- the canonical showcase for the geometry-derived shading   #
+#                   signals (curv/curvR, occlusion(r), thickness(r)) shipped in                             #
+#                   docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md.  A dusk-lit museum tableau on one carved       #
+#                   stone plinth, path traced (signals are fully correct only under PT -- see the           #
+#                   descriptor text on expression_painter/scalar_painter for the BDPT/VCM/MLT residual).    #
+#                                                                                                           #
+#                   Five things to look at:                                                                 #
+#                     1. THE BRONZE GUARDIAN (skeleton_geometry, an SDF): curv drives bright polished-edge  #
+#                        wear on convex ridges and, on the concave side, a deep green-brown patina that     #
+#                        occlusion(r) deepens specifically in the enclosed folds (armpits, groin, the horn  #
+#                        roots) rather than on shallow, open concavities.  Base colour, metallic and        #
+#                        roughness are all driven by ONE shared scalar field -- "wear follows the form",    #
+#                        not a world-axis proxy.  curv is EXACT here (a true differential quantity on an    #
+#                        implicit surface).                                                                 #
+#                     2. THE CARVED STONE PLINTH (sdf_geometry, box + roundbox CSG subtraction): soot and   #
+#                        dust pool in the recessed panels and grooves via occlusion + concave curv; the     #
+#                        swept flat faces stay clean.  This is the CSG-subtraction cavity path.             #
+#                     3. THE ALABASTER VOTIVE SHELL (sdf_geometry, sphere-minus-offset-sphere): a genuinely #
+#                        varying wall -- thin at the rim, thick at the base -- lit from within by a small   #
+#                        warm point.  1-thickness(r) drives BOTH the transmittance and the reflectance of a #
+#                        translucent_material, so the thin rim glows warm and the thick base stays opaque   #
+#                        alabaster.  This is the thickness showcase and the scene's emotional centerpiece.  #
+#                     4. THREE SCALES OF THE SAME GUARDIAN (standard_object at scale 1.0 / 0.5 / 0.3,       #
+#                        sharing one geometry and one material): the wear pattern sits in the SAME places   #
+#                        on the shape at every scale, because curv's scaleHint folds in the object's own    #
+#                        world scale (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 5.2) and              #
+#                        occlusion()/thickness() are already posed in the geometry's own object space with  #
+#                        a dimensionless radius.  The wear field's fbm breakup is keyed on `Po` (OBJECT      #
+#                        position), not `P` (world position), for the same reason -- a world-space noise    #
+#                        field would NOT repeat identically across instances placed at different world      #
+#                        positions even if curv itself is scale-correct.                                    #
+#                     5. THE VOTIVE GOBLET (lathe_geometry -> a baked ITriangleMeshGeometryIndexed): edge    #
+#                        wear via curv (faceted here -- only as good as the vertex normals, per the         #
+#                        design doc's mesh caveat) plus crevice dirt via occlusion() at the stem/knop,      #
+#                        exercising the MESH per-vertex bake path.  The occlusion() radius on this object   #
+#                        is a bare numeric LITERAL (0.05), not a `param` reference -- a mesh answers from a #
+#                        table baked at one fixed radius, and only a literal radius can be proven constant  #
+#                        at parse time.  Watch RISE_Log.txt for the "MeshSignalBake" line the first time    #
+#                        this scene renders; every later render (same radius) reads the cached table.       #
+#                                                                                                           #
+#                   Every art-directable number below is a `param` with min/max/step/label.                #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer -- Path Tracing.  Signals (curv,
+# occlusion, thickness) are fully correct only
+# under PT; BDPT/VCM/MLT evaluate them as their
+# neutral fallback in parts of their transport
+# (design doc Phase-2 known-residual paragraph),
+# so this showcase does NOT use BDPT/VCM.
+##################################################
+
+# Declared before the rasterizer (which references it as `radiance_map`) --
+# a dim, cool gallery ambience so rays that escape the tableau don't fall
+# into a black void or a blown-out white one.
+uniformcolor_painter
+{
+	name		pnt_gallery_ambient
+	color		0.045 0.052 0.068
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					128
+	oidn_denoise			TRUE
+	radiance_map			pnt_gallery_ambient
+	radiance_background		TRUE
+}
+
+# HDR primary -- verbatim radiance, source of truth.
+file_rasterizeroutput
+{
+	pattern				rendered/weathered_reliquary
+	type				EXR
+	color_space			Rec709RGB_Linear
+	exr_compression		piz
+}
+
+# PNG display preview -- ACES rolloff for a normal display.
+file_rasterizeroutput
+{
+	pattern				rendered/weathered_reliquary
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+}
+
+##################################################
+# Film + Camera
+##################################################
+
+film
+{
+	width		800
+	height		600
+}
+
+pinhole_camera
+{
+	location	0.15 1.55 4.40
+	lookat		0.05 0.80 -0.05
+	up			0 1 0
+	fov			44.0
+}
+
+##################################################
+# 1. THE BRONZE GUARDIAN -- skeleton_geometry
+#
+# 18 joints: pelvis/chest/neck/head root chain, two
+# horns, two arms (shoulder-elbow-hand), two legs
+# (hip-knee-foot, thighs/shins flattened with
+# aspect 0.6 per the skill's "flatten a thigh to
+# ~0.6" guidance).  Feet sit at local y=0 by
+# construction, so any standard_object at this
+# geometry with position.y=0 stands flush on
+# whatever surface is at that height, at ANY scale
+# -- this is what makes the three-scale instancing
+# below (section 4) trivial to place correctly.
+##################################################
+
+skeleton_geometry
+{
+	name		geo_guardian
+	blend		0.40
+	joint		pelvis      none        0.00  0.62  0.00   0.190
+	joint		chest       pelvis      0.00  0.90  0.02   0.210
+	joint		neck        chest       0.00  1.05  0.05   0.120
+	joint		head        neck        0.00  1.18  0.09   0.170
+	joint		horn_l      head       -0.09  1.34  0.04   0.045
+	joint		horn_r      head        0.09  1.34  0.04   0.045
+	joint		shoulder_l  chest      -0.23  0.86  0.00   0.100
+	joint		elbow_l     shoulder_l -0.33  0.63  0.06   0.075
+	joint		hand_l      elbow_l    -0.30  0.42  0.12   0.065
+	joint		shoulder_r  chest       0.23  0.86  0.00   0.100
+	joint		elbow_r     shoulder_r  0.33  0.63  0.06   0.075
+	joint		hand_r      elbow_r     0.30  0.42  0.12   0.065
+	joint		hip_l       pelvis     -0.13  0.55  0.00   0.115  0.6
+	joint		knee_l      hip_l      -0.15  0.30  0.04   0.095  0.6
+	joint		foot_l      knee_l     -0.15  0.00  0.14   0.085
+	joint		hip_r       pelvis      0.13  0.55  0.00   0.115  0.6
+	joint		knee_r      hip_r       0.15  0.30  0.04   0.095  0.6
+	joint		foot_r      knee_r      0.15  0.00  0.14   0.085
+}
+
+# THE SHARED WEAR FIELD.  `curv` alone gives fine-scale, radius-free edge
+# detection; adding a `fbm(Po*...)` breakup keeps the mask from reading as
+# an obviously-procedural smooth AO ramp (the tell of a lazy wear pass, per
+# skills/agent/materials-and-media-basics.md), and multiplying the crevice
+# side by an occlusion-derived `cavity_boost` deepens patina specifically in
+# folds that are genuinely ENCLOSED (armpits, the horn roots, where the
+# guardian's own limbs shadow themselves) versus a shallow, open concavity
+# that curv alone would treat identically.  Because `edge_wear` and
+# `crevice` share the SAME `breakup` term, a flat patch with high-frequency
+# breakup bumps both up together and cancels out in the final difference --
+# breakup only matters where curv has already committed to a sign.
+#
+# NOTE: fbm is keyed on `Po` (OBJECT position), not `P` (world position).
+# `curv`, `occlusion()` and `thickness()` are already instance-scale-correct
+# (design doc section 5.2 / section 6.1), but a world-space noise field is
+# NOT -- three placements of this same geometry at different world
+# positions would each see a different slice of a `P`-keyed field even
+# though the underlying shape is identical.  `Po` ties the breakup pattern
+# to the OBJECT's own frame, so it repeats identically across the three
+# scaled instances in section 4.
+expression_painter
+{
+	name		pnt_idol_wear_axis
+	# NOTE ON MAGNITUDE: curv is normalized by the hit geometry's WHOLE
+	# bounding-box diagonal (design doc section 5.2), and this guardian's
+	# individual limbs/joints have a local radius (0.045-0.21) much
+	# smaller than its own ~1.75-unit bbox diagonal -- so curv reads
+	# roughly bboxDiag/localRadius ~= 8-40 on this creature's own convex
+	# masses, not O(1).  Gains below are correspondingly small (< 1, not
+	# the 3-30 that would suit a creature whose limbs are a large
+	# fraction of its own bbox); this is the exact "0.05-unit radius on a
+	# large creature" hazard the design doc's units section names.
+	param		edge_gain    0.16 min 0.02 max 2    step 0.01 label "Edge polish sensitivity"
+	param		crevice_gain 0.20 min 0.02 max 2    step 0.01 label "Crevice patina sensitivity"
+	param		breakup_freq 14.0 min 1    max 60   step 0.5  label "Patina breakup frequency"
+	param		occl_gain    1.6  min 0    max 4    step 0.1  label "Fold occlusion boost"
+	param		occl_radius  0.08 min 0.02 max 0.30 step 0.01 label "Occlusion sample radius (bbox fraction)"
+	def			breakup      0.35 * fbm(Po * breakup_freq, 4, 0.5, 2.0)
+	def			edge_wear    clamp(curv * edge_gain + breakup, 0, 1)
+	def			crevice      clamp(-curv * crevice_gain + breakup, 0, 1)
+	def			cavity_boost 1.0 + occl_gain * (1.0 - occlusion(occl_radius))
+	def			patina       clamp(crevice * cavity_boost, 0, 1)
+	expr		0.5 + 0.5 * clamp(edge_wear - patina, -1, 1)
+}
+
+# Three consumers of the ONE field above, via ramp_painter (a Colour-pipe
+# painter, so it binds cleanly to pbr_metallic_roughness_material's
+# metallic/roughness slots -- those slots resolve through the COLOUR
+# painter manager only; a scalar_painter name there is silently NOT found
+# and synthesizes a zero-valued painter instead of binding (see the
+# resolveOrSynth note on pbr_metallic_roughness_material's `metallic` /
+# `roughness` parameters in ChunkParserRegistry.cpp).  ramp_painter sidesteps
+# that trap entirely.
+ramp_painter
+{
+	name			pnt_idol_basecolor
+	input			pnt_idol_wear_axis
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.045 0.085 0.055
+	stop			0.50  0.420 0.280 0.140
+	stop			1.00  0.880 0.700 0.340
+}
+
+ramp_painter
+{
+	name			pnt_idol_metallic
+	input			pnt_idol_wear_axis
+	channel			R
+	interpolation	linear
+	stop			0.00  0.32 0.32 0.32
+	stop			1.00  0.88 0.88 0.88
+}
+
+ramp_painter
+{
+	name			pnt_idol_roughness
+	input			pnt_idol_wear_axis
+	channel			R
+	interpolation	linear
+	stop			0.00  0.62 0.62 0.62
+	stop			1.00  0.16 0.16 0.16
+}
+
+pbr_metallic_roughness_material
+{
+	name		mat_idol
+	base_color	pnt_idol_basecolor
+	metallic	pnt_idol_metallic
+	roughness	pnt_idol_roughness
+}
+
+##################################################
+# 2. THE CARVED STONE PLINTH -- sdf_geometry
+#
+# One box slab (half-extents 1.10 x 0.18 x 0.78,
+# spanning local y in [0, 0.36] so its TOP sits at
+# object-space y=0.36) with three roundbox recessed
+# panels and two long roundbox grooves subtracted
+# from the front face.  Small subtract `k` gives
+# the recess edges a soft chisel fillet rather than
+# a knife-sharp CSG seam.
+##################################################
+
+sdf_geometry
+{
+	name		geo_reliquary_base
+	part		box      union     0      0.00 0.18 0.00    0 0 0   1 1 1   1.10 0.18 0.78    0
+	part		roundbox subtract  0.02  -0.65 0.18 0.70    0 0 0   1 1 1   0.28 0.09 0.10    0.02
+	part		roundbox subtract  0.02   0.00 0.18 0.70    0 0 0   1 1 1   0.28 0.09 0.10    0.02
+	part		roundbox subtract  0.02   0.65 0.18 0.70    0 0 0   1 1 1   0.28 0.09 0.10    0.02
+	part		roundbox subtract  0.01   0.00 0.32 0.70    0 0 0   1 1 1   1.05 0.018 0.10   0.01
+	part		roundbox subtract  0.01   0.00 0.06 0.70    0 0 0   1 1 1   1.05 0.018 0.10   0.01
+}
+
+# Soot/dust field: concave curv (a fine seam) plus real occlusion (a wide,
+# shallow recessed panel curv alone underrates) -- occlusion is the term
+# that actually lights up the three recessed panels and two grooves; curv
+# only catches their sharp inner corners.
+expression_painter
+{
+	name		pnt_base_grime
+	param		crevice_gain 6.0  min 1    max 20   step 0.5  label "Base crevice sensitivity"
+	param		occl_gain    0.85 min 0    max 2    step 0.05 label "Base soot/occlusion boost"
+	param		occl_radius  0.05 min 0.01 max 0.20 step 0.01 label "Base occlusion sample radius (bbox fraction)"
+	def			crevice clamp(-curv * crevice_gain, 0, 1)
+	def			cavity  clamp(1.0 - occlusion(occl_radius), 0, 1)
+	expr		clamp(crevice * 0.45 + cavity * occl_gain, 0, 1)
+}
+
+ramp_painter
+{
+	name			pnt_base_color
+	input			pnt_base_grime
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.52  0.50  0.46
+	stop			1.00  0.07  0.065 0.06
+}
+
+scalar_painter
+{
+	name		sp_base_rough
+	painter		pnt_base_grime
+	channel		R
+	scale		0.20
+	bias		0.55
+}
+
+uniformcolor_painter
+{
+	name	pnt_base_spec
+	color	0.04 0.04 0.04
+}
+
+ggx_material
+{
+	name			mat_reliquary_base
+	rd				pnt_base_color
+	rs				pnt_base_spec
+	alphax			sp_base_rough
+	alphay			sp_base_rough
+	fresnel_mode	schlick_f0
+}
+
+##################################################
+# 3. THE ALABASTER VOTIVE SHELL -- sdf_geometry
+#
+# Outer sphere (radius 0.50, centered at local
+# origin) minus an inner sphere (radius 0.30,
+# centered 0.15 units HIGHER) -- an off-centre
+# CSG subtraction gives a continuously varying wall
+# thickness: 0.05 at the top pole (thin rim), 0.35
+# at the bottom pole (thick base), ~0.22 at the
+# equator.  A small subtract k=0.015 softens the
+# interior seam without perturbing the estimator
+# enough to matter (design doc section 6.2's "minor,
+# unlike the heightfield case" caveat).
+##################################################
+
+sdf_geometry
+{
+	name		geo_votive_shell
+	part		sphere union    0      0.00 0.00 0.00   0 0 0   1 1 1   0.50 0 0   0
+	part		sphere subtract 0.015  0.00 0.15 0.00   0 0 0   1 1 1   0.30 0 0   0
+}
+
+# thickness(radius) returns [0,1] with 1=thick; 1-thickness is the
+# "thinness" mask a rim-glow wants.  `thick_radius` is a `param`, evaluated
+# LIVE on this SDF (no mesh-bake literal restriction applies here).
+expression_painter
+{
+	name		pnt_shell_thinness
+	param		thick_radius 0.12 min 0.03 max 0.35 step 0.01 label "Thickness sample radius (bbox fraction)"
+	expr		clamp(1.0 - thickness(thick_radius), 0, 1)
+}
+
+# Reflectance DROPS and transmittance RISES together toward the thin rim
+# -- more of the incident light continues on through rather than
+# bouncing back, which is what makes the rim look lit from within instead
+# of merely "less white".  Per-channel sums stay comfortably under 1.0 at
+# both ends (translucent_material's own auto-scale safety net would catch
+# a violation regardless, but only for uniformcolor_painter inputs -- these
+# are ramp_painters, so the by-hand check matters here).
+ramp_painter
+{
+	name			pnt_shell_ref
+	input			pnt_shell_thinness
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.74  0.71  0.64
+	stop			1.00  0.34  0.31  0.27
+}
+
+ramp_painter
+{
+	name			pnt_shell_tau
+	input			pnt_shell_thinness
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.015 0.012 0.008
+	stop			1.00  0.580 0.400 0.200
+}
+
+translucent_material
+{
+	name		mat_votive_shell
+	ref			pnt_shell_ref
+	tau			pnt_shell_tau
+	ext			0.0
+	N			24.0
+	scattering	0.0
+}
+
+##################################################
+# 5. THE VOTIVE GOBLET -- lathe_geometry
+#
+# A turned foot / slender stem / knop / bowl
+# profile, bakes to an ITriangleMeshGeometryIndexed.
+# This is the MESH per-vertex bake exercise: curv
+# is faceted (only as good as the vertex normals)
+# and occlusion()'s radius below is a bare LITERAL
+# (0.05), not a param -- see the header comment for
+# why a mesh cannot accept a computed radius.
+##################################################
+
+lathe_geometry
+{
+	name			geo_goblet
+	axis			y
+	smooth			TRUE
+	profile_point	0.000 0.000
+	profile_point	0.150 0.015
+	profile_point	0.150 0.030
+	profile_point	0.070 0.055
+	profile_point	0.032 0.075
+	profile_point	0.030 0.220
+	profile_point	0.055 0.245
+	profile_point	0.030 0.270
+	profile_point	0.038 0.300
+	profile_point	0.130 0.335
+	profile_point	0.215 0.370
+	profile_point	0.205 0.430
+	profile_point	0.220 0.460
+	profile_point	0.210 0.470
+}
+
+expression_painter
+{
+	name		pnt_goblet_wear_axis
+	param		edge_gain 6.0 min 1   max 20 step 0.5 label "Goblet edge polish sensitivity"
+	param		dirt_gain 3.0 min 0.5 max 10 step 0.5 label "Goblet crevice dirt sensitivity"
+	def			edge_wear clamp(curv * edge_gain, 0, 1)
+	# LITERAL radius (0.05), required: geo_goblet is a triangle mesh, and
+	# occlusion()/thickness() on a mesh answer from a per-vertex field baked
+	# LAZILY at one fixed radius proven constant at PARSE time.  A
+	# `param`-derived radius cannot be proven constant and would silently
+	# read the neutral fallback (occlusion == 1, i.e. no dirt at all) --
+	# see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 7.1.
+	def			crevice_dirt clamp((1.0 - occlusion(0.05)) * dirt_gain, 0, 1)
+	expr		0.5 + 0.5 * clamp(edge_wear - crevice_dirt, -1, 1)
+}
+
+ramp_painter
+{
+	name			pnt_goblet_basecolor
+	input			pnt_goblet_wear_axis
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.050 0.060 0.045
+	stop			0.50  0.400 0.270 0.130
+	stop			1.00  0.900 0.720 0.360
+}
+
+scalar_painter
+{
+	name		sp_goblet_rough
+	painter		pnt_goblet_wear_axis
+	channel		R
+	scale		-0.45
+	bias		0.55
+}
+
+uniformcolor_painter
+{
+	name	pnt_goblet_spec
+	color	0.58 0.50 0.34
+}
+
+ggx_material
+{
+	name		mat_goblet
+	rd			pnt_goblet_basecolor
+	rs			pnt_goblet_spec
+	alphax		sp_goblet_rough
+	alphay		sp_goblet_rough
+	ior			1.18
+	extinction	2.8
+}
+
+##################################################
+# Floor
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.10 0.11 0.13
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+infiniteplane_geometry
+{
+	name	geo_floor
+	xtile	2.0
+	ytile	2.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	geo_floor
+	material	mat_floor
+	position	0 0 0
+	orientation	-90 0 0
+}
+
+##################################################
+# Objects -- everything below rests on top of the
+# plinth (world y=0.36) except the plinth itself
+# (world y=0, standing on the floor) and the floor.
+##################################################
+
+standard_object
+{
+	name		obj_reliquary_base
+	geometry	geo_reliquary_base
+	material	mat_reliquary_base
+	position	0 0 0
+}
+
+# 1. Hero guardian, scale 1.0.
+standard_object
+{
+	name		obj_guardian_hero
+	geometry	geo_guardian
+	material	mat_idol
+	position	0.00 0.36 -0.15
+}
+
+# 4. Two smaller instances of the SAME geometry + material, at scale 0.5
+# and 0.3.  Feet stay at local y=0 regardless of scale (by construction --
+# every joint chain in geo_guardian was authored with the feet at y=0), so
+# position.y=0.36 (the plinth top) is correct for all three without any
+# per-scale offset math.
+standard_object
+{
+	name		obj_guardian_half
+	geometry	geo_guardian
+	material	mat_idol
+	position	-0.75 0.36 0.42
+	scale		0.5 0.5 0.5
+}
+
+standard_object
+{
+	name		obj_guardian_third
+	geometry	geo_guardian
+	material	mat_idol
+	position	0.80 0.36 0.30
+	scale		0.3 0.3 0.3
+}
+
+# 3. Votive shell.  Local bottom pole sits at y=-0.50, so position.y=0.86
+# (plinth top 0.36 + 0.50) rests it flush on the plinth.
+standard_object
+{
+	name		obj_votive_shell
+	geometry	geo_votive_shell
+	material	mat_votive_shell
+	position	-0.55 0.86 -0.20
+}
+
+# 5. Votive goblet.  Local bottom pole is at y=0.000 (the lathe profile's
+# first point), so position.y=0.36 rests its foot flush on the plinth.
+standard_object
+{
+	name		obj_goblet
+	geometry	geo_goblet
+	material	mat_goblet
+	position	0.15 0.36 0.40
+}
+
+##################################################
+# Lighting -- dusk museum key (warm, from front-
+# right-above) + a dim cool fill (the blue hour
+# spilling in from a side window) + the votive's
+# own small interior light.
+##################################################
+
+rect_light
+{
+	name		light_key
+	center		2.00 5.00 6.50
+	size		1.60 1.10
+	facing		-1.95 -4.20 -6.55
+	color		1.00 0.78 0.48
+	exitance	6500
+}
+
+rect_light
+{
+	name		light_dusk_fill
+	center		-2.50 4.50 6.00
+	size		2.20 2.60
+	facing		2.55 -3.70 -6.05
+	color		0.55 0.65 0.90
+	exitance	550
+}
+
+# Interior votive light: concentric with the shell's inner cavity (local
+# offset (0, 0.15, 0) from the shell's own centre), radius 0.09 -- well
+# inside the 0.30 cavity radius, so it never pokes through the wall.
+shape_light
+{
+	name		light_votive
+	shape		sphere
+	center		-0.55 1.01 -0.20
+	size		0.09
+	color		1.00 0.72 0.32
+	exitance	3600
+}
