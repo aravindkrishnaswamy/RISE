@@ -13393,6 +13393,58 @@ static void TestBuildElementDisclosesKindChangedReland()
 	       "expr-diag/reland MONEY ASSERTION: the summary explicitly discloses the kind-changed re-land, "
 	       "so \"wizard_bronze_pnt\" landing does not read as the originally requested expression_painter "
 	       "having worked" );
+
+	// Fix 2 (dedupe): the SAME name rejected TWICE -- both bad chunks in the
+	// FIRST attempt's own answer, both under the SAME kind -- that then
+	// lands ONCE under a different kind on the retry must produce exactly
+	// ONE NOTE, not one per rejection entry.
+	{
+		const std::string tmp2 = TempPath( "agentcrud_exprdiag_reland_dedupe.RISEscene" );
+		Job* pJob2 = LoadScene( kScene, tmp2 );
+		Check( pJob2 != nullptr, "expr-diag/reland-dedupe fixture loads" );
+		if( !pJob2 ) return;
+		std::unique_ptr<Agent::AgentSession> sess2 = WrapJobGateArmed( pJob2 );
+
+		// Attempt 1: the SAME name, TWICE, both bad expression_painters --
+		// two independent rejection entries, both name "wizard_bronze_pnt",
+		// both kind "expression_painter" (neither chunk actually inserts,
+		// so the second is never a name COLLISION against the first -- it
+		// fails to compile on its own terms, same as the first).
+		const std::string twoBad =
+			"expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n"
+			"expression_painter\n{\n\tname wizard_bronze_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n";
+		const std::string retryGood =
+			"uniformcolor_painter\n{\n\tname wizard_bronze_pnt\n\tcolor 0.6 0.4 0.2\n}\n";
+
+		int calls2 = 0;
+		sess2->SetTextCompleter( MakeFakeCompleter( { twoBad, retryGood }, &calls2 ) );
+		Check( sess2->FileBuildPlan( WizardOnlyPlan() ).ok, "expr-diag/reland-dedupe the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r2 = sess2->BuildElement( "wizard", 4.0 );
+
+		Check( calls2 == 2, "expr-diag/reland-dedupe the one repair retry ran (2 completions)" );
+		int rejectedCount = 0;
+		for( std::size_t i = 0; i < r2.rejected.size(); ++i )
+			if( r2.rejected[i].name == "wizard_bronze_pnt" && r2.rejected[i].kind == "expression_painter" )
+				++rejectedCount;
+		Check( rejectedCount == 2,
+		       "expr-diag/reland-dedupe MONEY ASSERTION: the name really was rejected TWICE (both "
+		       "chunks of the first attempt's own answer), so this exercises the dedupe rather than "
+		       "trivially passing with only one rejection on record" );
+		bool landedUnderName2 = false;
+		for( std::size_t i = 0; i < r2.landed.size(); ++i )
+			if( r2.landed[i] == "wizard_bronze_pnt" ) landedUnderName2 = true;
+		Check( landedUnderName2, "expr-diag/reland-dedupe the name DID land once, from the retry" );
+
+		std::size_t noteOccurrences = 0;
+		for( std::size_t pos = r2.message.find( "NOTE: `wizard_bronze_pnt`" ); pos != std::string::npos;
+		     pos = r2.message.find( "NOTE: `wizard_bronze_pnt`", pos + 1 ) )
+			++noteOccurrences;
+		Check( noteOccurrences == 1,
+		       "expr-diag/reland-dedupe MONEY ASSERTION: exactly ONE NOTE, not one per rejection entry "
+		       "-- a name rejected twice under the same kind that lands once under a different kind is "
+		       "one fact, not two" );
+		pJob2->release();
+	}
 }
 
 //! S2h: the wire shape of both verbs.
@@ -15013,6 +15065,67 @@ static void TestLightSceneAdmissibilityAndRetry()
 		       "precondition here and is deliberately absent" );
 		pJob->release();
 	}
+}
+
+//! Kind-changed re-land disclosure, replicated from build_element
+//! (AgentSession.cpp's AppendKindChangedRelandNotes_, shared by build_element,
+//! light_scene, populate_scene, environment_scene and frame_scene): a chunk
+//! name rejected under one kind by the build's first attempt (an
+//! expression_painter whose `def` fails to compile) that the ONE repair retry
+//! re-lands under a DIFFERENT kind (a plain uniformcolor_painter under the
+//! SAME name) must not read, from "Chunks inserted" alone, as the ORIGINALLY
+//! requested chunk having worked.  light_scene is exercised here rather than
+//! populate_scene / environment_scene / frame_scene because it is the sibling
+//! whose existing mock fixtures (A81ComposeSession, kOneSourceEnumeration,
+//! MakeFakeCompleter) most directly parallel build_element's test above; the
+//! other three run the identical loop, reviewed by inspection.
+static void TestLightSceneDisclosesKindChangedReland()
+{
+	std::printf( "A81/reland: light_scene discloses a kind-changed re-land across the repair retry...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81_reland.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A81/reland fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+
+	// Build attempt 1: a lone PAINTER (light_scene's admissibility rule
+	// passes any Category::Painter chunk through unconditionally, so this
+	// needs no accompanying light) whose `def` doesn't compile -- rejected
+	// by InsertChunks with the specific diagnostic, kind "expression_painter".
+	const std::string firstBad =
+		"expression_painter\n{\n\tname lit_glow_pnt\n\tdef wear saturate(u,0.0,1.0)\n\texpr wear\n}\n";
+	// Build attempt 2 (the one repair retry): the builder gives up on the
+	// expression and answers with a plain uniformcolor_painter under the
+	// SAME name -- a legitimate re-land, but under a DIFFERENT kind.
+	const std::string retryDifferentKind =
+		"uniformcolor_painter\n{\n\tname lit_glow_pnt\n\tcolor 0.6 0.4 0.2\n}\n";
+
+	int calls = 0;
+	sess->SetTextCompleter(
+		MakeFakeCompleter( { kOneSourceEnumeration, firstBad, retryDifferentKind }, &calls ) );
+	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+	Check( calls == 3,
+	       "A81/reland one enumeration completion plus the build's one attempt and its one repair "
+	       "retry (3 completions)" );
+	Check( r.ok && r.retryRan && r.retrySucceeded,
+	       "A81/reland the retry landed something -- this is NOT a total rejection" );
+	bool landedUnderName = false;
+	for( std::size_t i = 0; i < r.landed.size(); ++i )
+		if( r.landed[i] == "lit_glow_pnt" ) landedUnderName = true;
+	Check( landedUnderName, "A81/reland the name DID land (from the retry's uniformcolor_painter)" );
+	bool sawExpressionRejection = false;
+	for( std::size_t i = 0; i < r.rejected.size(); ++i )
+		if( r.rejected[i].name == "lit_glow_pnt" && r.rejected[i].kind == "expression_painter" )
+			sawExpressionRejection = true;
+	Check( sawExpressionRejection,
+	       "A81/reland and the FIRST attempt's rejection (kind expression_painter) is on record" );
+	Check( r.message.find( "NOTE: `lit_glow_pnt` re-landed as uniformcolor_painter, not the "
+	                       "originally requested expression_painter." ) != std::string::npos,
+	       "A81/reland MONEY ASSERTION: the summary explicitly discloses the kind-changed re-land, "
+	       "so \"lit_glow_pnt\" landing does not read as the originally requested expression_painter "
+	       "having worked" );
+	pJob->release();
 }
 
 //! A81c: the capability refusal and the per-session spend cap -- the two
@@ -20039,6 +20152,7 @@ int main()
 	// Arc 81 (2026-08-12): the clean-room lighting pass and its gate.
 	TestLightSceneHappyPath();
 	TestLightSceneAdmissibilityAndRetry();
+	TestLightSceneDisclosesKindChangedReland();
 	TestLightSceneCapabilityAndCap();
 	TestComposePhaseFirstLightRefusal();
 	TestPiecesPhaseLightsNeitherRefusedNorDisarming();

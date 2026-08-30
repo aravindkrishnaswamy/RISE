@@ -19987,6 +19987,49 @@ namespace RISE
 				ex += "\n[...truncated...]";
 				return ex;
 			}
+
+			//! Kind-changed re-land disclosure, shared across build_element
+			//! and its four scene-wide siblings (light_scene,
+			//! populate_scene, environment_scene, frame_scene): each verb's
+			//! ONE repair retry can re-land a name that was rejected under
+			//! one kind under a DIFFERENT kind on the retry (e.g. an
+			//! expression_painter whose expression failed to compile,
+			//! re-landed as a plain uniformcolor_painter under the same
+			//! name once the retry gives up on the expression).  Each
+			//! verb's own "Chunks inserted" summary lists NAMES only, so
+			//! that reads as the originally requested chunk having worked
+			//! unless this is appended.  Templated on the rejection type
+			//! because each verb has its own struct
+			//! (AgentBuildElementRejection, AgentLightSceneRejection, ...)
+			//! -- all five share the same name/kind/reason shape but are
+			//! distinct types, so this is the smallest change that avoids
+			//! five copy-pasted loops.  Derived entirely from data already
+			//! in hand (`rejected` + `chunkResults`, both populated across
+			//! every attempt the verb ran) -- no new state, no
+			//! re-inspection of the document.
+			//!
+			//! DEDUPES BY REJECTED NAME: a name rejected twice (e.g. once
+			//! per attempt, same kind both times) that lands once under a
+			//! different kind produces exactly ONE note, not one per
+			//! rejection entry.
+			template <typename RejectionVec>
+			void AppendKindChangedRelandNotes_( std::string& m, const RejectionVec& rejected,
+				const std::vector<AgentChunkResult>& chunkResults )
+			{
+				std::set<std::string> noted;
+				for( const auto& rej : rejected ) {
+					if( rej.name.empty() || rej.kind.empty() ) continue;
+					if( noted.count( rej.name ) ) continue;
+					for( const AgentChunkResult& cr : chunkResults ) {
+						if( cr.applied && cr.name == rej.name && !cr.kind.empty() && cr.kind != rej.kind ) {
+							m += " NOTE: `" + rej.name + "` re-landed as " + cr.kind +
+								", not the originally requested " + rej.kind + ".";
+							noted.insert( rej.name );
+							break;
+						}
+					}
+				}
+			}
 		}
 
 		AgentSession::AgentBuildElementResult AgentSession::BuildElement(
@@ -20359,17 +20402,9 @@ namespace RISE
 			// having worked. Derived entirely from data already in
 			// `out.rejected` / `out.chunkResults` (both populated above,
 			// across both attempts) -- no new state, no re-inspection of the
-			// document.
-			for( const AgentBuildElementRejection& rej : out.rejected ) {
-				if( rej.name.empty() || rej.kind.empty() ) continue;
-				for( const AgentChunkResult& cr : out.chunkResults ) {
-					if( cr.applied && cr.name == rej.name && !cr.kind.empty() && cr.kind != rej.kind ) {
-						m += " NOTE: `" + rej.name + "` re-landed as " + cr.kind +
-							", not the originally requested " + rej.kind + ".";
-						break;
-					}
-				}
-			}
+			// document. Shared with light_scene / populate_scene /
+			// environment_scene / frame_scene via AppendKindChangedRelandNotes_.
+			AppendKindChangedRelandNotes_( m, out.rejected, out.chunkResults );
 			if( out.retryRan ) {
 				m += out.retrySucceeded
 					? std::string( " One repair retry ran and inserted more chunks; there is no second "
@@ -29175,6 +29210,12 @@ namespace RISE
 				}
 				m += ".";
 			}
+			// Kind-changed re-land disclosure (build_element's fix,
+			// replicated): "Chunks inserted" above lists NAMES only, so a
+			// name rejected under one kind in an earlier attempt that the
+			// one repair retry re-lands under a DIFFERENT kind reads as the
+			// originally requested chunk having worked.
+			AppendKindChangedRelandNotes_( m, out.rejected, out.chunkResults );
 			if( out.retryRan ) {
 				m += out.retrySucceeded
 					? std::string( " One repair retry ran and inserted more chunks; there is no second "
@@ -30083,6 +30124,12 @@ namespace RISE
 				}
 				m += ".";
 			}
+			// Kind-changed re-land disclosure (build_element's fix,
+			// replicated): "Objects created" above lists NAMES only, so a
+			// name rejected under one kind in an earlier attempt that the
+			// one repair retry re-lands under a DIFFERENT kind reads as the
+			// originally requested chunk having worked.
+			AppendKindChangedRelandNotes_( m, out.rejected, out.chunkResults );
 			if( out.retryRan ) {
 				m += out.retrySucceeded
 					? std::string( " One repair retry ran and inserted more chunks; there is no second "
@@ -31030,6 +31077,12 @@ namespace RISE
 				}
 				m += ".";
 			}
+			// Kind-changed re-land disclosure (build_element's fix,
+			// replicated): "Chunks inserted" above lists NAMES only, so a
+			// name rejected under one kind in an earlier attempt that the
+			// one repair retry re-lands under a DIFFERENT kind reads as the
+			// originally requested chunk having worked.
+			AppendKindChangedRelandNotes_( m, out.rejected, out.chunkResults );
 			if( out.retryRan ) {
 				m += out.retrySucceeded
 					? std::string( " One repair retry ran and inserted more chunks; there is no second "
@@ -31905,6 +31958,17 @@ namespace RISE
 				}
 				m += ".";
 			}
+			// Kind-changed re-land disclosure (build_element's fix,
+			// replicated): a camera name rejected under one kind in an
+			// earlier attempt that the one repair retry re-lands (via
+			// insert/replace) under a DIFFERENT kind is otherwise left to
+			// the reader to notice across the "Not applied" reason and the
+			// action sentence above -- this states it explicitly from data
+			// already in `out.rejected` / `out.chunkResults`.  A no-op on
+			// the PATCH path, whose rejection `name` field is a PARAMETER
+			// name rather than a chunk name and which never touches
+			// `out.chunkResults`, so it cannot coincidentally match.
+			AppendKindChangedRelandNotes_( m, out.rejected, out.chunkResults );
 			if( out.retryRan ) {
 				m += out.retrySucceeded
 					? std::string( " One repair retry ran and applied the camera; there is no second "
