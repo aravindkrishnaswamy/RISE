@@ -191,8 +191,8 @@ expression_painter
 	# the 3-30 that would suit a creature whose limbs are a large
 	# fraction of its own bbox); this is the exact "0.05-unit radius on a
 	# large creature" hazard the design doc's units section names.
-	param		edge_gain    0.16 min 0.02 max 2    step 0.01 label "Edge polish sensitivity"
-	param		crevice_gain 0.20 min 0.02 max 2    step 0.01 label "Crevice patina sensitivity"
+	param		edge_gain    0.05 min 0.02 max 2    step 0.01 label "Edge polish sensitivity"
+	param		crevice_gain 0.08 min 0.02 max 2    step 0.01 label "Crevice patina sensitivity"
 	param		breakup_freq 14.0 min 1    max 60   step 0.5  label "Patina breakup frequency"
 	param		occl_gain    1.6  min 0    max 4    step 0.1  label "Fold occlusion boost"
 	param		occl_radius  0.08 min 0.02 max 0.30 step 0.01 label "Occlusion sample radius (bbox fraction)"
@@ -218,9 +218,9 @@ ramp_painter
 	input			pnt_idol_wear_axis
 	channel			R
 	interpolation	smooth
-	stop			0.00  0.045 0.085 0.055
-	stop			0.50  0.420 0.280 0.140
-	stop			1.00  0.880 0.700 0.340
+	stop			0.00  0.025 0.050 0.032
+	stop			0.50  0.260 0.165 0.078
+	stop			1.00  0.620 0.470 0.220
 }
 
 ramp_painter
@@ -229,8 +229,8 @@ ramp_painter
 	input			pnt_idol_wear_axis
 	channel			R
 	interpolation	linear
-	stop			0.00  0.32 0.32 0.32
-	stop			1.00  0.88 0.88 0.88
+	stop			0.00  0.22 0.22 0.22
+	stop			1.00  0.92 0.92 0.92
 }
 
 ramp_painter
@@ -239,8 +239,8 @@ ramp_painter
 	input			pnt_idol_wear_axis
 	channel			R
 	interpolation	linear
-	stop			0.00  0.62 0.62 0.62
-	stop			1.00  0.16 0.16 0.16
+	stop			0.00  0.58 0.58 0.58
+	stop			1.00  0.10 0.10 0.10
 }
 
 pbr_metallic_roughness_material
@@ -295,8 +295,8 @@ ramp_painter
 	input			pnt_base_grime
 	channel			R
 	interpolation	smooth
-	stop			0.00  0.52  0.50  0.46
-	stop			1.00  0.07  0.065 0.06
+	stop			0.00  0.19  0.185 0.17
+	stop			1.00  0.022 0.020 0.019
 }
 
 scalar_painter
@@ -369,8 +369,8 @@ ramp_painter
 	input			pnt_shell_thinness
 	channel			R
 	interpolation	smooth
-	stop			0.00  0.74  0.71  0.64
-	stop			1.00  0.34  0.31  0.27
+	stop			0.00  0.42  0.39  0.33
+	stop			1.00  0.06  0.05  0.045
 }
 
 ramp_painter
@@ -380,7 +380,7 @@ ramp_painter
 	channel			R
 	interpolation	smooth
 	stop			0.00  0.015 0.012 0.008
-	stop			1.00  0.580 0.400 0.200
+	stop			1.00  0.400 0.280 0.140
 }
 
 translucent_material
@@ -429,8 +429,8 @@ lathe_geometry
 expression_painter
 {
 	name		pnt_goblet_wear_axis
-	param		edge_gain 6.0 min 1   max 20 step 0.5 label "Goblet edge polish sensitivity"
-	param		dirt_gain 3.0 min 0.5 max 10 step 0.5 label "Goblet crevice dirt sensitivity"
+	param		edge_gain 0.08 min 0.02 max 20  step 0.01 label "Goblet edge polish sensitivity"
+	param		dirt_gain 1.2  min 0.2 max 10  step 0.1  label "Goblet crevice dirt sensitivity"
 	def			edge_wear clamp(curv * edge_gain, 0, 1)
 	# LITERAL radius (0.05), required: geo_goblet is a triangle mesh, and
 	# occlusion()/thickness() on a mesh answer from a per-vertex field baked
@@ -448,9 +448,9 @@ ramp_painter
 	input			pnt_goblet_wear_axis
 	channel			R
 	interpolation	smooth
-	stop			0.00  0.050 0.060 0.045
-	stop			0.50  0.400 0.270 0.130
-	stop			1.00  0.900 0.720 0.360
+	stop			0.00  0.028 0.034 0.024
+	stop			0.50  0.240 0.155 0.070
+	stop			1.00  0.620 0.470 0.200
 }
 
 scalar_painter
@@ -486,7 +486,7 @@ ggx_material
 uniformcolor_painter
 {
 	name	pnt_floor
-	color	0.10 0.11 0.13
+	color	0.045 0.050 0.062
 }
 
 lambertian_material
@@ -587,11 +587,11 @@ standard_object
 rect_light
 {
 	name		light_key
-	center		2.00 5.00 6.50
+	center		1.60 6.60 5.20
 	size		1.60 1.10
-	facing		-1.95 -4.20 -6.55
-	color		1.00 0.78 0.48
-	exitance	6500
+	facing		-1.40 -5.65 -5.25
+	color		0.98 0.86 0.70
+	exitance	380
 }
 
 rect_light
@@ -601,7 +601,7 @@ rect_light
 	size		2.20 2.60
 	facing		2.55 -3.70 -6.05
 	color		0.55 0.65 0.90
-	exitance	550
+	exitance	70
 }
 
 # Interior votive light: concentric with the shell's inner cavity (local
@@ -614,5 +614,5 @@ shape_light
 	center		-0.55 1.01 -0.20
 	size		0.09
 	color		1.00 0.72 0.32
-	exitance	3600
+	exitance	950
 }
