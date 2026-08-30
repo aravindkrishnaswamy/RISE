@@ -91,6 +91,18 @@ namespace RISE
 		return false;
 	}
 
+	bool AttemptFireProductionCompatibleMomentumDiagnosticMetal(
+		const FireProductionResidentStepRequest&,
+		FireProductionResidentStepResult& result,
+		std::string* error )
+	{
+		result=FireProductionResidentStepResult();
+		if( error ) try {
+			*error="production compatible-momentum diagnostic Metal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount()
 	{
 		return 0u;

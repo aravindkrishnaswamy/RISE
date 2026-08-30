@@ -1068,6 +1068,7 @@ namespace
 		bool injectActiveSetIdentityMismatchForTest=false;
 		bool forceZeroSourceForTest=false;
 		bool productionMetal=false;
+		bool compatibleMomentumDiagnostic=false;
 		std::filesystem::path temporalSnapshotDirectory;
 		double temporalSnapshotCadenceS=0.0;
 		double maximumProductionSourceStepS=0.0;
@@ -3203,8 +3204,10 @@ namespace
 						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
 						for(;;){
 							const auto wallStart=std::chrono::steady_clock::now();
-							attemptComputed=RISE::AttemptFireProductionResidentStepMetal(
-								request,production,&error);
+							attemptComputed=persistence.compatibleMomentumDiagnostic?
+								RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
+									request,production,&error):
+								RISE::AttemptFireProductionResidentStepMetal(request,production,&error);
 							wallMS+=std::chrono::duration<double,std::milli>(
 								std::chrono::steady_clock::now()-wallStart).count();
 							if(std::isfinite(production.deviceMakespanMS)&&
@@ -3293,9 +3296,6 @@ namespace
 						std::size_t auditColumnX=38u,auditColumnY=42u;
 						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH"))
 							effectiveMomentumAuditPath=auditPath;
-						if(std::getenv("RISE_FIRE_ONSET_BUDGET_REPLAY")){
-							auditColumnX=attemptMaximumX;auditColumnY=attemptMaximumY;
-						}
 						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
 							!persistence.productionOnsetDiagnosticDirectory.empty())
 							for(std::size_t threshold=0u;threshold<productionOnsetVelocityThresholds.size();
@@ -3320,7 +3320,7 @@ namespace
 							std::string physicalOnlyError;
 							const bool requestRetainedPhysicalProjection=
 								!persistence.productionOnsetDiagnosticDirectory.empty()||
-								std::getenv("RISE_FIRE_ONSET_BUDGET_REPLAY")!=nullptr;
+								persistence.compatibleMomentumDiagnostic;
 							const bool restorationModeClear=
 								std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")==nullptr;
 							const bool retainedPhysicalIsTerminal=requestRetainedPhysicalProjection&&
@@ -3339,8 +3339,11 @@ namespace
 									!production.physicalProjection.velocityMPerS[0].empty();
 							}else if(attemptComputed&&restorationModeClear&&
 								setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed",1)==0){
-								physicalOnlyComputed=RISE::AttemptFireProductionResidentStepMetal(
-									request,physicalOnly,&physicalOnlyError);
+								physicalOnlyComputed=persistence.compatibleMomentumDiagnostic?
+									RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
+										request,physicalOnly,&physicalOnlyError):
+									RISE::AttemptFireProductionResidentStepMetal(
+										request,physicalOnly,&physicalOnlyError);
 								unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
 							}
 							const RISE::FireProductionProjectionResult& physical=useRetainedPhysicalProjection?
@@ -3428,9 +3431,12 @@ namespace
 							const bool forceFieldsOK=forceScheduleIdentity&&
 								RISE::BuildFireProductionFrozenForceFieldsCPU(
 									request.force,forceFieldsCPU,&physicalOnlyError);
+							RISE::FireProductionCellPalindromeRequest auditCellTransport=
+								request.cellTransport;
+							auditCellTransport.retainAcceptedGasMassDose=true;
 							const bool cellTransportOK=forceFieldsOK&&
 								RISE::RemapFireProductionCellPalindromeCPU(
-									request.cellTransport,cellCPU,&physicalOnlyError);
+									auditCellTransport,cellCPU,&physicalOnlyError);
 							auditValid=cellTransportOK;
 							if(auditValid){
 								auditPhase="CPU compatible dual remap from force-inclusive momentum";
@@ -3538,6 +3544,7 @@ namespace
 										stress<<','<<buoyancy<<','<<advection<<','<<source<<','<<pressure<<','<<
 										restoration<<','<<total<<','<<closure<<','<<lowerVreman<<','<<upperVreman<<'\n';
 								}
+								columnAudit.close();
 								if(!columnAudit){lastAdvanceError="production momentum column audit write failed";
 									advancedOK=false;break;}
 								std::error_code sizeError;const bool writeHeader=
@@ -3580,6 +3587,7 @@ namespace
 									(forceInclusiveProvisionalByteIdentity?1:0)<<','<<
 									forceInclusiveProvisionalDifferenceCount<<','<<
 									forceInclusiveProvisionalDifferenceMaximum<<'\n';
+								audit.close();
 								if(!audit){lastAdvanceError="production momentum audit write failed";
 									advancedOK=false;break;}
 								if(onsetThresholdIndex<productionOnsetThresholdCaptured.size()){
@@ -5729,6 +5737,7 @@ namespace
 			deviceMean,deviceP95,deviceMaximum);
 		std::ofstream output(outputPath,std::ios::trunc);output<<std::setprecision(17)
 			<<"checkpoint_sha256 "<<DigestFile(checkpointPath)<<"\n"
+			<<"checkpoint_producer_build_id "<<checkpoint.producerBuildId<<"\n"
 			<<"accepted_steps "<<checkpoint.acceptedSteps<<"\n"
 			<<"simulation_time_s "<<checkpoint.simulationTimeS<<"\n"
 			<<"last_accepted_dt_s "<<checkpoint.lastAcceptedStepS<<"\n"
@@ -6049,6 +6058,7 @@ namespace
 		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
+		persistence.compatibleMomentumDiagnostic=true;
 		persistence.checkpointPath=outputDirectory/"latest.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoints";
@@ -6057,37 +6067,62 @@ namespace
 		persistence.productionOnsetStopVelocityMPerS=60.0;
 		if(const char* resumeCheckpoint=std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")){
 			const char* expectedBuild=std::getenv("RISE_FIRE_ONSET_EXPECTED_BUILD_ID");
-			if(!expectedBuild||std::strlen(expectedBuild)!=64u||
+			const char* expectedDigest=std::getenv("RISE_FIRE_ONSET_EXPECTED_CHECKPOINT_DIGEST");
+			if(!expectedBuild||std::strlen(expectedBuild)!=64u||!expectedDigest||
+				std::strlen(expectedDigest)!=64u||
 				!std::filesystem::exists(resumeCheckpoint))return 91;
 			persistence.checkpointPath=resumeCheckpoint;
 			persistence.resume=true;
 			persistence.isolatedEquivalenceProbe=true;
 			persistence.isolatedExpectedCheckpointBuildId=expectedBuild;
-			persistence.stopAfterAdditionalAcceptedSteps=20u;
+			persistence.isolatedExpectedCheckpointDigest=expectedDigest;
+			persistence.stopAfterAdditionalAcceptedSteps=50u;
 			persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		}
 		persistence.maximumProductionSourceStepS=
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
-		if(setenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL","1",1)!=0)return 92;
+		RISECBOR64::Bytes producerBuildRecord;
+		std::string producerBuildId,producerExecutableDigest,producerIdentityError;
+		if(!CurrentRendererBuildIdentity(producerBuildRecord,producerBuildId)||
+			!CurrentExecutableDigest(producerBuildRecord,producerExecutableDigest,
+				producerIdentityError)||producerBuildId.size()!=64u||
+			producerExecutableDigest.size()!=64u)return 92;
 		const auto wallStart=std::chrono::steady_clock::now();
 		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,targetTimeS,1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
-		unsetenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
 		const double wallS=std::chrono::duration<double>(
 			std::chrono::steady_clock::now()-wallStart).count();
 		if(!result.succeeded){std::fprintf(stderr,"production onset campaign failed: %s\n",
 			result.structuredError.c_str());return 93;}
 		const std::filesystem::path trajectory=outputDirectory/"budgets"/
 			"maximum_velocity_trajectory.csv";
-		std::ofstream summary(outputDirectory/"onset_campaign_summary.v1",std::ios::trunc);
-		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v1\n"
+		const std::filesystem::path retryTrajectory=outputDirectory/"budgets"/
+			"retry_attempt_trajectory.csv";
+		const bool reachedTarget=result.simulatedTimeS>=targetTimeS;
+		const std::filesystem::path summaryPath=outputDirectory/"onset_campaign_summary.v2";
+		std::ofstream summary(summaryPath,std::ios::trunc);
+		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v2\n"
 			<<"resolution_tier "<<resolutionTier<<"\n"
+			<<"operator_mode compatible_momentum_diagnostic\n"
+			<<"compatible_momentum_diagnostic "<<
+				(persistence.compatibleMomentumDiagnostic?1:0)<<"\n"
+			<<"producer_build_id "<<producerBuildId<<"\n"
+			<<"producer_executable_sha256 "<<producerExecutableDigest<<"\n"
+			<<"target_time_s "<<targetTimeS<<"\n"
 			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
+			<<"completed_target "<<(reachedTarget?1:0)<<"\n"
 			<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\n"
 			<<"wall_s "<<wallS<<"\n"
-			<<"trajectory_sha256 "<<DigestFile(trajectory)<<"\n";
+			<<"trajectory_sha256 "<<DigestFile(trajectory)<<"\n"
+			<<"retry_trajectory_sha256 "<<DigestFile(retryTrajectory)<<"\n"
+			<<"stop_velocity_threshold_m_per_s "<<
+				persistence.productionOnsetStopVelocityMPerS<<"\n"
+			<<"stop_reason "<<(reachedTarget?"target_time_reached":
+				"velocity_threshold_crossing")<<"\n"
+			<<"final_checkpoint_sha256 "<<
+				DigestFile(outputDirectory/"final.checkpoint")<<"\n";
 		for(const unsigned int threshold:{15u,30u,60u}){
 			const std::filesystem::path budget=outputDirectory/"budgets"/
 				("threshold_"+std::to_string(threshold)+".raw.csv");
@@ -6098,11 +6133,16 @@ namespace
 				"_column_sha256 "<<DigestFile(budget.string()+".column.csv")<<"\n";
 		}
 		summary.close();
-		if(!summary||DigestFile(trajectory).empty())return 94;
-		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN tier=%.0f time=%.17g steps=%zu "
-			"wall_s=%.17g trajectory=%s\n",resolutionTier,result.simulatedTimeS,
-			result.acceptedTimeStepHistoryS.size(),wallS,DigestFile(trajectory).c_str());
-		return 0;
+		if(!summary||!persistence.compatibleMomentumDiagnostic||DigestFile(trajectory).empty()||
+			DigestFile(retryTrajectory).empty()||
+			DigestFile(outputDirectory/"final.checkpoint").empty())return 94;
+		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN%s tier=%.0f target=%.17g time=%.17g steps=%zu "
+			"wall_s=%.17g operator=compatible_momentum_diagnostic build=%s trajectory=%s "
+			"summary=%s\n",reachedTarget?"":"_STOP",resolutionTier,targetTimeS,
+			result.simulatedTimeS,
+			result.acceptedTimeStepHistoryS.size(),wallS,producerBuildId.c_str(),
+			DigestFile(trajectory).c_str(),DigestFile(summaryPath).c_str());
+		return reachedTarget?0:95;
 #endif
 	}
 
@@ -6147,9 +6187,11 @@ namespace
 	}
 
 	int RunProductionMomentumReplayChild(const std::filesystem::path& checkpointPath,
-		const std::filesystem::path& auditPath,const std::string& expectedCheckpointBuildId)
+		const std::filesystem::path& auditPath,const std::string& expectedCheckpointBuildId,
+		const std::string& expectedCheckpointDigest)
 	{
-		if(expectedCheckpointBuildId.size()!=64u)return 90;
+		if(expectedCheckpointBuildId.size()!=64u||expectedCheckpointDigest.size()!=64u||
+			DigestFile(checkpointPath)!=expectedCheckpointDigest)return 90;
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			checkpoint.producerBuildId!=expectedCheckpointBuildId)return 91;
@@ -6181,27 +6223,24 @@ namespace
 		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;persistence.resume=true;
+		persistence.compatibleMomentumDiagnostic=true;
 		persistence.checkpointPath=checkpointPath;
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.isolatedEquivalenceProbe=true;
 		persistence.isolatedExpectedCheckpointBuildId=expectedCheckpointBuildId;
-		persistence.isolatedExpectedCheckpointDigest=DigestFile(checkpointPath);
-		persistence.stopAfterAdditionalAcceptedSteps=8u;
+		persistence.isolatedExpectedCheckpointDigest=expectedCheckpointDigest;
+		persistence.stopAfterAdditionalAcceptedSteps=28u;
 		persistence.maximumProductionSourceStepS=
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
-		if(setenv("RISE_FIRE_ONSET_BUDGET_REPLAY","1",1)!=0||
-			setenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL","1",1)!=0)return 92;
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,0.0,fullTargetS,1.0,
 			replayResolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
-		unsetenv("RISE_FIRE_ONSET_BUDGET_REPLAY");
-		unsetenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
 		unsetenv("RISE_FIRE_MOMENTUM_AUDIT_PATH");
 		if(!result.succeeded){std::fprintf(stderr,"production momentum replay failed: %s\n",
 			result.structuredError.c_str());return 94;}
 		std::ifstream audit(auditPath);std::string line;std::size_t rows=0u;
 		while(std::getline(audit,line))if(!line.empty())++rows;
-		if(rows<9u)return 95;
-		std::fprintf(stderr,"PRODUCTION_MOMENTUM_REPLAY beginning_step=%llu additional_steps=8 "
+		if(rows<29u)return 95;
+		std::fprintf(stderr,"PRODUCTION_MOMENTUM_REPLAY beginning_step=%llu additional_steps=28 "
 			"audit_rows=%zu\n",static_cast<unsigned long long>(checkpoint.acceptedSteps),rows-1u);
 		return 0;
 	}
@@ -6447,8 +6486,8 @@ int main(int argc,char** argv)
 		double target=0.0;if(!ParsePositiveDoubleArgument(argv[2],target))return 91;
 		return RunOracleRetainedTrajectoryChild(target,argv[3]);
 	}
-	if(argc==5&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
-		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4]);
+	if(argc==6&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
+		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4],argv[5]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-oracle-momentum-replay")==0)
 		return RunOracleMomentumReplayChild(argv[2],argv[3],argv[4]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-temporal-preview")==0)

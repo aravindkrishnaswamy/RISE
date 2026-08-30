@@ -4512,39 +4512,59 @@ it was already tried and refuted here.
   temperature/Picard-Zeno boundary, so 2.2 s is not claimed.  Spectrum,
   empirical rows, animation, and report remain blocked behind that flux-level
   remedy.
-- **r182 §3.7 compatible momentum conformance and onset stop (2026-08-30):**
-  the retained candidate's five scalar palindrome passes retain the exact accepted
-  Binary32 gas-mass face dose after the shared-alpha limiter.  Momentum and its
-  staggered auxiliary density consume those same Private fields through the
-  boundary-aware MAC restriction, with
+- **r182 §3.7 compatible momentum conformance and corrected onset stop (2026-08-30):**
+  the retained diagnostic candidate's five scalar palindrome passes retain the
+  exact accepted Binary32 gas-mass face dose after the shared-alpha limiter.
+  Momentum and its staggered auxiliary density consume those same Private fields
+  through the boundary-aware MAC restriction, with
   `K_i=I_i(Phi_hat_g)*(u_i,L+u_i,R)/2`.  This is coefficient-free oracle
   lineage: momentum inherits the scalar front's limiter dissipation, and the
-  commuting identity preserves a uniform velocity to roundoff.  The old
+  commuting identity preserves a uniform velocity to roundoff.  Pressure-open
+  and wall faces require half of a transverse interior dose because their
+  ambient half is fixed; a new boundary RED closes that restriction and
+  supersedes the erroneous full-dose v1 experiment.  The five retained fields
+  exist only behind an explicit diagnostic API: ordinary production allocates
+  none and no process environment can activate the candidate.  The diagnostic
+  passes the resident request by reference and adds no host-side full-payload
+  copy; its working-set certificate therefore covers the added Private Metal
+  fields without omitting an extra host replica.  The old
   independent high-order momentum reconstruction is the focusing mechanism;
   r181's scalar-alpha cap and reconstructed velocity-envelope cap remain
   rejected.  The compatible path is cleanly expressible in the resident dual
   architecture (one command, 15 logical submaps, zero host transfer), so the
   fallback alpha-coupled momentum limiter is not selected.
 
-  The pre-registered numerical criterion does not pass.  An exact-SHA-bound
-  eight-step replay from production step 1,433 stays at
-  `8.22707--8.91989 m/s`, eliminating the old 15/30/60-m/s crossing corridor,
-  but its maximum column advection is still `494.85054 kg/(m2 s2)` rather than
-  the matched oracle's `63.33961` class.  This is only 2.19x below r181's first
-  `1081.75857` event and remains 7.81x above the oracle maximum.  Tier-6 and
-  tier-8 checkpoint controls remain plume-scale (`12.72224` and `8.90917 m/s`
-  maxima over eight steps), but the tier-8 shift is material enough that no
-  cold-flow nonperturbation claim is made.
+  The original r182 comparison is withdrawn: it followed the moving production
+  maximum rather than the oracle's fixed `(38,42)` column, used a terminal
+  velocity as a trajectory maximum, and carried the bad open-boundary
+  restriction.  Fresh review also proved the first “corrected” from-zero file
+  was byte-identical to r181 ordinary production and its continuation switched
+  operators only after step 1,400; those hybrid claims and files are withdrawn.
+  The replacement run activates the compatible API from the analytic beginning
+  and SHA-binds mode, producer build/executable, trajectory, and final
+  checkpoint.  It crosses 15 m/s at step 885 / `1.3978566413 s`, with aligned
+  advection `914.3010693`.  Step 1,222 is the campaign's configured first
+  accepted `>=60 m/s` stop.  Seven hard-bound retries precede that accepted
+  state, with represented dt `4.21569474e-10 s` and velocity `4,768,055 m/s`;
+  no next-step CFL selection was measured.  Its pressure-gradient and
+  restoration maxima (`1.0998092339e16` and `1.6466909209e15`) dwarf its
+  `282.7749564` advection maximum, so this terminal retry/projection event is
+  not used as an advective-mechanism claim.  It stops at `1.7316493935 s`,
+  short of the sealed `2.2 s` target; the earlier 15 m/s budget and the fixed
+  matched-column comparison carry the compatible-form rejection.
 
-  A from-zero re-derivation then reaches a separate exact-bound stop before the
-  onset time: velocity remains below `4.09585 m/s`, while the scalar tail drives
-  the dynamics deviation to `0.25999284` at `0.79199303 s`.  Ten ordinary
-  drain-aware reductions converge near `1.055861 ms`; the accepted candidate
-  lands at `0.24999988`, and the next beginning fails the unchanged `2^-2`
-  bound at `0.79304888 s`.  No bound is widened and no state is repaired.  The
-  r170 shadow and readmission slices therefore cannot be claimed, and all
+  The full pre-registered criterion still does not pass.  A caller-SHA-bound
+  step-1,400 checkpoint is replayed for 28 steps at the fixed `(38,42)` column.
+  Production at `2.10773021 s` has maximum aligned advection
+  `321.3419554 kg/(m2 s2)`; the nearest retained oracle beginning at
+  `2.10797920 s` has `159.0089232`, a 2.0209x ratio.  The previously cited
+  `63.3396109` sample belongs to `2.11358242 s`, not the claimed matched time.
+  Thus neither oracle-class compatible balance nor sustained onset health is
+  recovered.  The
+  tier-6/tier-8, r170-shadow, and readmission obligations are not
+  promoted from the invalid v1 run, and all
   tier-10 window/spectrum/row/animation/report work remains blocked.  r182 is a
-  measured compatible-flux residual/tail-coupling finding, not a successful
+  measured compatible-flux residual-balance finding, not a successful
   remedy claim.  The candidate is retained behind its exact diagnostic
   activation but is not adopted by ordinary production; the previous admitted
   remap remains the default.  The immutable r181 crossing transcript remains

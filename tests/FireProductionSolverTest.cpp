@@ -2535,6 +2535,7 @@ int main()
 	FireProductionCellPalindromeRequest compatiblePrimal;
 	compatiblePrimal.shape=dualVariable.shape;compatiblePrimal.componentCount=9u;
 	compatiblePrimal.timeStepS=dualVariable.timeStepS;
+	compatiblePrimal.retainAcceptedGasMassDose=true;
 	compatiblePrimal.boundary.fill(FireProductionProjectionPeriodic);
 	compatiblePrimal.frozenVelocityMPerS=dualVariable.frozenVelocityMPerS;
 	compatiblePrimal.conservativeValues.assign(9u*dualVariable.shape.CellCount(),0.0f);
@@ -2612,6 +2613,104 @@ int main()
 		compatibleVelocityError<=2.0e-7f,
 		"Section 3.7 compatible momentum inherits the accepted scalar mass flux and "
 		"commutes with staggered density for a uniform transported velocity");
+	FireProductionCellPalindromeRequest compatibleBoundaryPrimal=compatiblePrimal;
+	compatibleBoundaryPrimal.boundary={FireProductionProjectionWall,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionWall,FireProductionProjectionPressureOpen,
+		FireProductionProjectionPressureOpen};
+	compatibleBoundaryPrimal.ambientValues.assign(9u,0.0f);
+	compatibleBoundaryPrimal.ambientValues[1u]=0.8f;
+	FireProductionCellPalindromeResult compatibleBoundaryPrimalResult;
+	const bool compatibleBoundaryPrimalAdvanced=RemapFireProductionCellPalindromeCPU(
+		compatibleBoundaryPrimal,compatibleBoundaryPrimalResult,&error);
+	auto restrictedBoundaryGasDensity=[&](const std::vector<float>& values,
+		unsigned int axis,std::size_t x,std::size_t y,std::size_t z) {
+		const std::size_t extent=axis==0u?dualVariable.shape.nx:
+			(axis==1u?dualVariable.shape.ny:dualVariable.shape.nz);
+		const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+		std::size_t lx=x,ly=y,lz=z,ux=x,uy=y,uz=z;
+		const std::size_t lower=coordinate==0u?0u:coordinate-1u;
+		const std::size_t upper=coordinate==extent?extent-1u:coordinate;
+		if(axis==0u){lx=lower;ux=upper;}else if(axis==1u){ly=lower;uy=upper;}
+		else{lz=lower;uz=upper;}
+		auto gas=[&](std::size_t cx,std::size_t cy,std::size_t cz) {
+			const std::size_t cell=TransportCellIndex(dualVariable.shape,cx,cy,cz);
+			float density=0.0f;for(std::size_t species=1u;species<=6u;++species)
+				density+=values[species*compatibleCells+cell];
+			return density;
+		};
+		const float lowerDensity=gas(lx,ly,lz);
+		if(coordinate==0u||coordinate==extent)
+			return 0.5f*lowerDensity+0.5f*0.8f;
+		return 0.5f*lowerDensity+0.5f*gas(ux,uy,uz);
+	};
+	FireProductionDualMomentumRequest compatibleBoundaryDual=compatibleDual;
+	compatibleBoundaryDual.ambientDensityKGPerM3=0.8f;
+	compatibleBoundaryDual.boundary=compatibleBoundaryPrimal.boundary;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t xEnd=dualVariable.shape.nx+(axis==0u?1u:0u);
+		const std::size_t yEnd=dualVariable.shape.ny+(axis==1u?1u:0u);
+		const std::size_t zEnd=dualVariable.shape.nz+(axis==2u?1u:0u);
+		for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+			for(std::size_t x=0u;x<xEnd;++x){
+				const std::size_t face=TransportFaceIndex(dualVariable.shape,axis,x,y,z);
+				const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+				const std::size_t extent=axis==0u?dualVariable.shape.nx:
+					(axis==1u?dualVariable.shape.ny:dualVariable.shape.nz);
+				const bool wall=(normal==0u&&compatibleBoundaryDual.boundary[2u*axis]==
+					FireProductionProjectionWall)||(normal==extent&&
+					compatibleBoundaryDual.boundary[2u*axis+1u]==FireProductionProjectionWall);
+				compatibleBoundaryDual.beginningFaceDensity[axis][face]=
+					restrictedBoundaryGasDensity(compatibleBoundaryPrimal.conservativeValues,
+						axis,x,y,z);
+				compatibleBoundaryDual.beginningMomentum[axis][face]=wall?0.0f:
+					compatibleUniformVelocity*compatibleBoundaryDual.beginningFaceDensity[axis][face];
+			}
+	}
+	FireProductionDualMomentumResult compatibleBoundaryResult;
+	bool compatibleBoundaryCommuting=compatibleBoundaryPrimalAdvanced&&
+		RemapFireProductionCompatibleDualMomentumCPU(compatibleBoundaryDual,
+			compatibleBoundaryPrimalResult.acceptedGasMassDoseKGPerM2,
+			compatibleBoundaryResult,&error);
+	float compatibleBoundaryDensityError=0.0f,compatibleBoundaryMomentumError=0.0f;
+	std::size_t compatibleBoundaryOpenFaces=0u,compatibleBoundaryWallFaces=0u;
+	for(unsigned int axis=0u;axis<3u&&compatibleBoundaryCommuting;++axis){
+		const std::size_t xEnd=dualVariable.shape.nx+(axis==0u?1u:0u);
+		const std::size_t yEnd=dualVariable.shape.ny+(axis==1u?1u:0u);
+		const std::size_t zEnd=dualVariable.shape.nz+(axis==2u?1u:0u);
+		for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+			for(std::size_t x=0u;x<xEnd;++x){
+				const std::size_t face=TransportFaceIndex(dualVariable.shape,axis,x,y,z);
+				const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+				const std::size_t extent=axis==0u?dualVariable.shape.nx:
+					(axis==1u?dualVariable.shape.ny:dualVariable.shape.nz);
+				const bool wall=(normal==0u&&compatibleBoundaryDual.boundary[2u*axis]==
+					FireProductionProjectionWall)||(normal==extent&&
+					compatibleBoundaryDual.boundary[2u*axis+1u]==
+						FireProductionProjectionWall);
+				const bool open=(normal==0u&&compatibleBoundaryDual.boundary[2u*axis]==
+					FireProductionProjectionPressureOpen)||(normal==extent&&
+					compatibleBoundaryDual.boundary[2u*axis+1u]==
+						FireProductionProjectionPressureOpen);
+				const float expectedDensity=restrictedBoundaryGasDensity(
+					compatibleBoundaryPrimalResult.conservativeValues,axis,x,y,z);
+				compatibleBoundaryDensityError=std::max(compatibleBoundaryDensityError,
+					std::abs(compatibleBoundaryResult.auxiliaryFaceDensity[axis][face]-
+						expectedDensity));
+				if(wall){++compatibleBoundaryWallFaces;
+					compatibleBoundaryMomentumError=std::max(compatibleBoundaryMomentumError,
+						std::abs(compatibleBoundaryResult.momentum[axis][face]));}
+				else if(open){++compatibleBoundaryOpenFaces;
+					compatibleBoundaryMomentumError=std::max(compatibleBoundaryMomentumError,
+						std::abs(compatibleBoundaryResult.momentum[axis][face]-
+							compatibleUniformVelocity*expectedDensity));}
+			}
+	}
+	Check(compatibleBoundaryCommuting&&compatibleBoundaryOpenFaces>0u&&
+		compatibleBoundaryWallFaces>0u&&compatibleBoundaryDensityError<=4.0e-7f&&
+		compatibleBoundaryMomentumError<=4.0e-7f,
+		"Section 3.7 compatible density and momentum restriction commutes independently "
+		"at pressure-open faces and prescribes zero wall-normal momentum");
 	FireProductionDualMomentumRequest compatibleIgnoresRetiredCarrier=compatibleDual;
 	for(auto& carrier:compatibleIgnoresRetiredCarrier.frozenVelocityMPerS)carrier.clear();
 	FireProductionDualMomentumResult compatibleWithoutCarrier;
@@ -2722,6 +2821,21 @@ int main()
 	for( unsigned int axis=0u;axis<3u;++axis ) {
 		std::fill(composedStep.dualTransport.beginningFaceDensity[axis].begin(),
 			composedStep.dualTransport.beginningFaceDensity[axis].end(),composedGasDensity);
+		const std::size_t xEnd=mixedDual.shape.nx+(axis==0u?1u:0u);
+		const std::size_t yEnd=mixedDual.shape.ny+(axis==1u?1u:0u);
+		const std::size_t zEnd=mixedDual.shape.nz+(axis==2u?1u:0u);
+		const std::size_t extent=axis==0u?mixedDual.shape.nx:
+			(axis==1u?mixedDual.shape.ny:mixedDual.shape.nz);
+		for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+			for(std::size_t x=0u;x<xEnd;++x){
+				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+				if((coordinate==0u&&mixedDual.boundary[2u*axis]!=
+					FireProductionProjectionPeriodic)||(coordinate==extent&&
+					mixedDual.boundary[2u*axis+1u]!=FireProductionProjectionPeriodic))
+					composedStep.dualTransport.beginningFaceDensity[axis][
+						TransportFaceIndex(mixedDual.shape,axis,x,y,z)]=0.5f*(
+							composedGasDensity+mixedDual.ambientDensityKGPerM3);
+			}
 		composedStep.force.faceDensityKGPerM3[axis]=
 			composedStep.dualTransport.beginningFaceDensity[axis];
 	}
@@ -2764,9 +2878,25 @@ int main()
 	FireProductionDualMomentumResult composedDualCPU;
 	FireProductionProjectionRequest composedProjectionRequest;
 	FireProductionProjectionResult composedProjectionCPU;
+	FireProductionResidentStepRequest retainedDoseBypass=composedStep;
+	retainedDoseBypass.cellTransport.retainAcceptedGasMassDose=true;
+	FireProductionResidentStepResult retainedDoseBypassResult;
+	std::string retainedDoseBypassError;
+	const std::uint64_t retainedDoseBypassCommits=
+		FireProductionResidentStepMetalCommandCommitCount();
+	const bool retainedDoseBypassRejected=!AttemptFireProductionResidentStepMetal(
+		retainedDoseBypass,retainedDoseBypassResult,&retainedDoseBypassError)&&
+		retainedDoseBypassError==
+			"production retained gas-mass dose requires the compatible-momentum diagnostic owner"&&
+		retainedDoseBypassResult.conservativeValues.empty()&&
+		FireProductionResidentStepMetalCommandCommitCount()==retainedDoseBypassCommits;
+	Check(retainedDoseBypassRejected,
+		"ordinary production cannot allocate or dispatch retained compatible-momentum doses");
+	FireProductionCellPalindromeRequest composedCellRequest=composedStep.cellTransport;
+	composedCellRequest.retainAcceptedGasMassDose=true;
 	bool composedCPU=composedEnergyBuilt&&AdvanceFireProductionFrozenForceCPU(composedStep.force,0.0f,
 		composedForceCPU,&error)&&RemapFireProductionCellPalindromeCPU(
-			composedStep.cellTransport,composedCellCPU,&error);
+			composedCellRequest,composedCellCPU,&error);
 	if( composedCPU ) {
 		FireProductionDualMomentumRequest afterForce=composedStep.dualTransport;
 		afterForce.beginningMomentum=composedForceCPU.momentumKGPerM2S;
@@ -3067,7 +3197,7 @@ int main()
 	transportUnder.cellWidthM=1.0f;transportOver.cellWidthM=1.0f;
 	std::uint64_t transportUnderBytes=0u,transportOverBytes=0u;
 	Check(FireProductionCellPalindromeWorkingSetBytes(tier10TransportShape,9u,
-		tier10TransportBytes)&&tier10TransportBytes==UINT64_C(505844228)&&
+		tier10TransportBytes)&&tier10TransportBytes==UINT64_C(466364852)&&
 		FireProductionCellPalindromeWorkingSetBytes(transportUnder,12u,
 			transportUnderBytes)&&transportUnderBytes==UINT64_C(2147468400)&&
 		FireProductionCellPalindromeWorkingSetBytes(transportOver,12u,
@@ -4072,13 +4202,12 @@ int main()
 		composedStep.force.shape.CellCount(),0.0);
 	composedStep.enforceManifoldPlateau=false;
 	composedStep.monitorManifoldDiagnostics=false;
-	setenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL","1",1);
-	const bool composedMetal=AdvanceFireProductionResidentStepMetal(
+	const bool composedMetal=AttemptFireProductionCompatibleMomentumDiagnosticMetal(
 		composedStep,composedGPU,&error);
 	if(!composedMetal)std::cerr << "Composed resident rejection: " << error << '\n';
-	const bool composedMetalRepeat=composedMetal&&AdvanceFireProductionResidentStepMetal(
-		composedStep,composedGPURepeat,&error);
-	unsetenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
+	const bool composedMetalRepeat=composedMetal&&
+		AttemptFireProductionCompatibleMomentumDiagnosticMetal(
+			composedStep,composedGPURepeat,&error);
 	bool composedMatches=composedCPU&&composedMetal&&composedMetalRepeat&&
 		composedGPU.cellSubmapCount==5u&&composedGPU.dualSubmapCount==15u&&
 		composedGPU.sourceCommandCommitCount==1u&&
@@ -4095,6 +4224,9 @@ int main()
 		SameFloatVectorsWithin(composedGPU.conservativeValues,
 			composedCellCPU.conservativeValues,1.0e-3f);
 	float composedCommutingDensityError=0.0f;
+	unsigned int composedCommutingDensityAxis=0u;
+	std::size_t composedCommutingDensityFace=0u;
+	float composedCommutingDensityExpected=0.0f,composedCommutingDensityObserved=0.0f;
 	auto composedGasDensityAt=[&](std::size_t x,std::size_t y,std::size_t z){
 		const std::size_t cell=TransportCellIndex(mixedDual.shape,x,y,z);
 		float gas=0.0f;for(std::size_t component=1u;component<=6u;++component)
@@ -4117,19 +4249,28 @@ int main()
 		for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
 			for(std::size_t x=0u;x<xEnd;++x){
 				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
-				if((coordinate==0u&&mixedDual.boundary[2u*axis]==
-					FireProductionProjectionWall)||(coordinate==extent&&
-					mixedDual.boundary[2u*axis+1u]==FireProductionProjectionWall))continue;
 				const std::size_t lower=coordinate==0u?0u:coordinate-1u;
 				const std::size_t upper=coordinate==extent?extent-1u:coordinate;
 				std::size_t lx=x,ly=y,lz=z,ux=x,uy=y,uz=z;
 				if(axis==0u){lx=lower;ux=upper;}else if(axis==1u){ly=lower;uy=upper;}
 				else{lz=lower;uz=upper;}
-				const float expected=0.5f*(composedGasDensityAt(lx,ly,lz)+
+				float expected=0.5f*(composedGasDensityAt(lx,ly,lz)+
 					composedGasDensityAt(ux,uy,uz));
+				if(coordinate==0u&&mixedDual.boundary[2u*axis]!=
+					FireProductionProjectionPeriodic)expected=0.5f*(
+						composedGasDensityAt(ux,uy,uz)+mixedDual.ambientDensityKGPerM3);
+				else if(coordinate==extent&&mixedDual.boundary[2u*axis+1u]!=
+					FireProductionProjectionPeriodic)expected=0.5f*(
+						composedGasDensityAt(lx,ly,lz)+mixedDual.ambientDensityKGPerM3);
 				const std::size_t face=TransportFaceIndex(mixedDual.shape,axis,x,y,z);
-				composedCommutingDensityError=std::max(composedCommutingDensityError,
-					std::abs(composedGPU.transportedDual.auxiliaryFaceDensity[axis][face]-expected));
+				const float observed=composedGPU.transportedDual.auxiliaryFaceDensity[axis][face];
+				const float densityError=std::abs(observed-expected);
+				if(densityError>composedCommutingDensityError){
+					composedCommutingDensityError=densityError;
+					composedCommutingDensityAxis=axis;composedCommutingDensityFace=face;
+					composedCommutingDensityExpected=expected;
+					composedCommutingDensityObserved=observed;
+				}
 			}
 	}
 	composedMatches=composedMatches&&composedCommutingDensityError<=2.0e-6f;
@@ -4139,7 +4280,10 @@ int main()
 		composedGPU.residentProjectionInvocationCount << " transfers=" <<
 		composedGPU.interstageFullGridTransferCount << " terminal_staging=" <<
 		composedGPU.terminalStagingCount << " density_error=" <<
-		composedCommutingDensityError << '\n';
+		composedCommutingDensityError << " density_axis=" << composedCommutingDensityAxis <<
+		" density_face=" << composedCommutingDensityFace << " density_expected=" <<
+		composedCommutingDensityExpected << " density_observed=" <<
+		composedCommutingDensityObserved << '\n';
 	Check(composedMatches,
 		"full resident force, compatible transport, explicit zero-source, and monitored "
 		"single-projection step matches the independent CPU composition and staggered-density "
@@ -4508,9 +4652,9 @@ int main()
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;
-	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=195u;
+	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=202u;
 	fullStepUnderShape.cellWidthM=0.01f;
-	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=196u;
+	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=203u;
 	fullStepOverShape.cellWidthM=0.01f;
 	std::uint64_t fullStepUnderBytes=0u,fullStepOverBytes=0u;
 	const bool fullStepBoundaryQuery=
@@ -4518,8 +4662,8 @@ int main()
 			fullStepAdmissionBoundary,fullStepUnderBytes)&&
 		FireProductionResidentStepWorkingSetBytes(fullStepOverShape,
 			fullStepAdmissionBoundary,fullStepOverBytes)&&
-		fullStepUnderBytes==UINT64_C(2143989176)&&
-		fullStepOverBytes==UINT64_C(2163961736);
+		fullStepUnderBytes==UINT64_C(2140435944)&&
+		fullStepOverBytes==UINT64_C(2149934712);
 	std::cout << "Production resident full-step cap under_bytes=" << fullStepUnderBytes <<
 		" over_bytes=" << fullStepOverBytes << '\n';
 	auto makeEmptyFullStepAdmission=[&](const FireProductionProjectionShape& admissionShape) {
@@ -4691,8 +4835,8 @@ int main()
 			tier10ResidentStepResult.projection.validationPassed&&
 			tier10ResidentStepResult.physicalProjection.executedVCycleCount==0u&&
 			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
-			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1997243768)&&
-			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1261597704)&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1918285016)&&
+			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1241789448)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
 			"tier-10 resident full-step timing trial preserves the exact schedule and resource gate");
@@ -4958,6 +5102,8 @@ int main()
 		"bool RemapFireProductionMetal(");
 	const std::size_t palindromeMetalBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionCellPalindromeMetal(");
+	const std::size_t residentPalindromeImplBeginning=advectionMetalSource.find(
+		"static bool RemapFireProductionCellPalindromeMetalResidentImpl(");
 	const std::size_t residentPalindromeBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionCellPalindromeMetalResident(");
 	const std::size_t residentPalindromeComparatorBeginning=advectionMetalSource.find(
@@ -4971,13 +5117,13 @@ int main()
 		advectionMetalSource.substr(standaloneMetalBeginning,
 			palindromeMetalBeginning-standaloneMetalBeginning);
 	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos||
-		residentPalindromeBeginning==std::string::npos?std::string():
+		residentPalindromeImplBeginning==std::string::npos?std::string():
 		advectionMetalSource.substr(palindromeMetalBeginning,
-			residentPalindromeBeginning-palindromeMetalBeginning);
-	const std::string residentPalindromeBody=residentPalindromeBeginning==std::string::npos||
-		residentPalindromeComparatorBeginning==std::string::npos?std::string():
-		advectionMetalSource.substr(residentPalindromeBeginning,
-			residentPalindromeComparatorBeginning-residentPalindromeBeginning);
+			residentPalindromeImplBeginning-palindromeMetalBeginning);
+	const std::string residentPalindromeBody=residentPalindromeImplBeginning==std::string::npos||
+		residentPalindromeBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentPalindromeImplBeginning,
+			residentPalindromeBeginning-residentPalindromeImplBeginning);
 	const std::string residentPalindromeComparatorBody=
 		residentPalindromeComparatorBeginning==std::string::npos||
 		residentPeriodicDualBeginning==std::string::npos?std::string():
@@ -5010,8 +5156,18 @@ int main()
 			mixedDualComparatorBeginning-residentCompatibleDualBeginning);
 	const std::size_t residentFullStepBeginning=advectionMetalSource.find(
 		"bool AttemptFireProductionResidentStepMetal(");
-	const std::string residentFullStepBody=residentFullStepBeginning==std::string::npos?
-		std::string():advectionMetalSource.substr(residentFullStepBeginning);
+	const std::size_t compatibleDiagnosticBeginning=advectionMetalSource.find(
+		"bool AttemptFireProductionCompatibleMomentumDiagnosticMetal(");
+	const std::size_t advanceFullStepBeginning=advectionMetalSource.find(
+		"bool AdvanceFireProductionResidentStepMetal(");
+	const std::string residentFullStepBody=residentFullStepBeginning==std::string::npos||
+		compatibleDiagnosticBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentFullStepBeginning,
+			compatibleDiagnosticBeginning-residentFullStepBeginning);
+	const std::string compatibleDiagnosticBody=compatibleDiagnosticBeginning==std::string::npos||
+		advanceFullStepBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(compatibleDiagnosticBeginning,
+			advanceFullStepBeginning-compatibleDiagnosticBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string makeFilelist=ReadText("build/make/rise/Filelist");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
@@ -5181,7 +5337,7 @@ int main()
 		residentCompatibleDualBody.find("commits!=1u||reads!=0u")!=std::string::npos,
 		"compatible momentum consumes the five accepted Private primal mass fluxes in one "
 		"resident command with no host transfer");
-	Check(!residentFullStepBody.empty()&&
+	Check(!residentFullStepBody.empty()&&!compatibleDiagnosticBody.empty()&&
 		CountSubstring(residentFullStepBody,"TrackedMetalCommandBuffer(")==5u&&
 		CountSubstring(residentFullStepBody,"CommitTrackedMetalCommand(")==5u&&
 		CountSubstring(residentFullStepBody,"ReadTrackedMetalBuffer(")==2u&&
@@ -5189,7 +5345,14 @@ int main()
 			std::string::npos&&residentFullStepBody.find(
 			"RemapFireProductionCellPalindromeMetalResident(")!=std::string::npos&&
 		residentFullStepBody.find("RemapFireProductionCompatibleDualMomentumMetalResident(")!=
+			std::string::npos&&residentFullStepBody.find("std::getenv(\"RISE_FIRE_COMPATIBLE_")==
+			std::string::npos&&compatibleDiagnosticBody.find(
+			"FireProductionResidentStepRequest diagnostic=request")==std::string::npos&&
+		compatibleDiagnosticBody.find("ScopedDiagnostic")!=std::string::npos&&
+		compatibleDiagnosticBody.find("AttemptFireProductionResidentStepMetal(")!=
 			std::string::npos&&residentFullStepBody.find(
+			"RemapFireProductionCellPalindromeMetalResidentImpl(")!=std::string::npos&&
+		residentFullStepBody.find(
 			"ProjectFireProductionMetalResident(")!=std::string::npos&&
 		residentFullStepBody.find("ProjectFireProductionMetalResidentState(")!=
 			std::string::npos&&residentFullStepBody.find(
@@ -5203,8 +5366,8 @@ int main()
 		residentFullStepBody.find("computed.projection.residentProjectionInvocationCount")!=
 			std::string::npos&&residentFullStepBody.find(
 			"computed.interstageFullGridTransferCount!=0u")!=std::string::npos,
-		"full resident step binds force, predictor/corrector transport, explicit sources, both "
-		"projections, and observed zero-transfer diagnostics");
+		"ordinary full resident step retains the independent operator and zero extra flux work, "
+		"while the isolated diagnostic retains compatible inputs explicitly");
 	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
 		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==3u&&
 		CountSubstring(transportSource,

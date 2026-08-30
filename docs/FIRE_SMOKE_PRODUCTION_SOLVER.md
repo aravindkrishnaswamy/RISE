@@ -4766,48 +4766,74 @@ flux with the boundary-aware arithmetic MAC restriction and advances
 
 > `K_i = I_i(Phi_hat_g) (u_i,L + u_i,R) / 2`.
 
-The staggered auxiliary density uses the same restricted flux.  Consequently a
-uniform velocity keeps `M_i - U I_rho,i rho_g` at roundoff even with spatially
-varying scalar alpha.  The candidate Metal path consumes five Private retained-
-flux buffers in one 15-submap command and performs no interstage host transfer;
-the strict Binary64 and trace mirrors use the same topology.  A CPU/Metal commuting
-RED, malformed retained-flux RED, and old-independent-remap difference RED bind
-the implementation.  The mechanism is the one selected at r181: momentum
+The staggered auxiliary density uses the same restricted flux.  At a pressure-
+open or wall boundary the ambient half of the staggered density is fixed, so a
+transverse interior dose is restricted by one half; the earlier v1 diagnostic
+incorrectly duplicated the full interior dose there.  The corrected periodic
+and pressure-open/wall REDs now keep `M_i - U I_rho,i rho_g` at roundoff for a
+uniform velocity even with spatially varying scalar alpha.  The candidate Metal
+path consumes five Private retained-flux buffers in one 15-submap command and
+performs no interstage host transfer.  Those five retained buffers and every
+candidate dispatch occur only through the explicit diagnostic API; the shared
+Metal context still initializes the retained diagnostic pipeline states once at
+process setup.  Ordinary production retains zero candidate fields, performs no
+candidate dispatch, and cannot activate the experiment through process
+environment.  The diagnostic owner passes its immutable resident request by
+reference and selects retention only on the resident cell task; it does not
+deep-copy the tier-10 host payload, so the certified peak remains the Metal
+resident working set rather than an unreported host duplicate.  A
+CPU/Metal commuting RED, malformed retained-flux RED, and old-independent-remap
+difference RED bind the implementation.  The strict mirrors remain on the
+ordinary admitted operator because the candidate was not adopted.  The
+mechanism is the one selected at r181: momentum
 inherits the scalar limiter's front-adaptive dissipation through its mass flux;
 the removed independent momentum reconstruction had no such local coupling.
 The earlier scalar-alpha cap and reconstructed velocity-envelope cap remain the
 rejected-candidate trail and are not revived.
 
-The pre-registered onset criterion is nevertheless **not met**.  From the
-sealed pre-onset production checkpoint (step 1,433, `2.1196145168505609 s`), an
-eight-step compatible replay stays plume-scale: terminal maxima are
-`8.227067947387695--8.919892311096191 m/s`, and there is no 15/30/60-m/s
-crossing through the old failure time.  But the column's maximum compatible
-advection rate remains `494.85054257978283 kg/(m2 s2)` (the velocity-owning
-aligned samples reach `489.62125699140933`), versus the matched oracle's
-`63.33961` class.  It is only a 2.19x reduction from production's original
-`1081.75857`, and remains 7.81x the retained oracle maximum.  Structural
-conformance arrests the immediate runaway but does not reproduce the oracle's
-onset balance.
+The v1 onset comparison is withdrawn: it followed each production step's moving
+maximum column rather than the oracle's fixed `(38,42)` column, called one
+terminal velocity the trajectory maximum, and contained the pressure-open
+restriction error above.  Fresh review also rejected the first attempted v2
+trajectory: its bytes were the unchanged r181 ordinary trajectory, and its
+step-1,400 continuation switched operators only after resuming.  Those hybrid
+CSV files are removed and none of their `14.06/23.40 m/s` claims survives.
 
-The resolution controls remain physically healthy but are not byte- or
-contract-neutral.  Eight accepted steps from the sealed tier-6 endpoint span
-`11.096123695373535--12.722243309020996 m/s`; the tier-8 control spans
-`8.478752136230469--8.909171104431152 m/s`.  Both stay plume-scale, but the
-tier-8 value is materially below its historical `10.292028427124023 m/s` peak,
-so r182 does not claim the requested cold-flow nonperturbation verdict.
+The replacement run begins at the analytic tier-10 golden state with the
+explicit compatible-momentum API active on every step.  Its summary binds that
+mode, build ID `01c760fe...46bf8`, executable SHA, trajectory SHA, and final
+checkpoint SHA.  The candidate crosses 15 m/s at accepted step 885 / beginning
+time `1.3969225193141028 s` / accepted time `1.3978566413279623 s`; the aligned
+advection rate there is `914.30106927339784 kg/(m2 s2)`.  It reaches the 30 and
+60 m/s classes together at step 1,222, which is the campaign's pre-registered
+first-accepted-`>=60 m/s` stop.  Seven ordinary hard-bound retries precede that
+accepted state, whose represented step is `4.2156947377414156e-10 s` and whose
+recorded maximum is `4,768,055 m/s`; no subsequent CFL selection was run, so
+this is not evidence of a CFL-selector stall.  The late event is also not
+advection-dominated: its maximum pressure-gradient, restoration, and advection
+rates are respectively `1.0998092339304464e16`, `1.6466909209178628e15`, and
+`282.77495636377211 kg/(m2 s2)`.  It is a hard-bound-retry/projection-correction
+event and is recorded separately from the valid early advective-onset result.
+The run stops at `1.731649393462722 s`, before its sealed `2.2 s` target.
 
-The from-zero re-derivation supplies the decisive second stop.  Compatible
-production holds the audited CFL step and remains below `4.0958495140075684
-m/s` through accepted step 483, but at `0.79199302813503891 s` the monitored
-tail reaches `0.25999283790588379`.  The ordinary hard-bound controller makes
-ten informed reductions from `1.64626597 ms` toward `1.05586101 ms`; the next
-accepted candidate lands at `0.24999988079071045`.  The following beginning is
-already above the exact `2^-2` dynamics bound and fails closed at
-`0.79304888390470296 s`.  No stability constant is widened and no state is
-repaired.  Thus the r170 shadow cannot be re-derived under this trajectory,
-and the admitted readmission slices are not rerun after the earlier
-pre-registered onset and shadow obligations have failed.
+The pre-registered matched-column criterion nevertheless **does not pass**.
+A caller-SHA-sealed checkpoint at step 1,400 / `2.0792286795331165 s` is
+replayed for 28 accepted steps with the diagnostic column fixed at `(38,42)`.
+At production beginning time `2.1077302111661993 s`, the column advection-rate
+maximum is `321.34195540099722 kg/(m2 s2)` and the physical velocity maximum is
+`11.123290061950684 m/s`.  The nearest retained oracle beginning is
+`2.1079791976176079 s`, whose column advection-rate maximum is
+`159.00892323854879`, giving a matched ratio of about `2.0209`.  The historical
+`63.339610872283018` oracle sample is at `2.1135824235796083 s`; it was not the
+matched `2.10798 s` value claimed by v1.  The corrected evidence therefore does
+not reuse the moving-column `494.85`, the later unconformed `1081.76`, or the
+unmatched `63.34` as if they were one equal-time comparison.
+
+The candidate fails both the oracle-class aligned-budget criterion and the
+continuous from-zero onset trajectory.  The tier-6/tier-8 controls and
+r170/readmission obligations are consequently not promoted from either invalid
+earlier experiment and must be re-derived only if a later ruling revives this
+candidate.
 
 Because those pre-registered obligations fail, the compatible candidate is not
 adopted by ordinary production; the prior admitted remap remains the default,
@@ -4815,12 +4841,15 @@ while the candidate and its exact diagnostic activation stay retained for
 reproduction and future design work.  This is a rollback of an unsuccessful
 candidate, not a weakening of its acceptance criteria.
 
-The historical r181 unconformed trajectory is the immutable behavioral RED:
+The historical r181 unconformed trajectory remains the immutable behavioral RED:
 it contains the exact `16.1409645 -> 30.4028950 -> 63.6867218 m/s` crossings
 and its source/evidence SHA.  r182 therefore records a genuine measured stop,
 not a successful tier-10 remedy: compatible flux is implemented and retained,
-but the 63-class onset criterion, the healthy-resolution contract-neutrality
-criterion, and the r170 shadow re-derivation do not all hold.  Tier-10 full
+but the matched-column onset criterion is still about 2.02x the equal-time
+oracle balance and the from-zero candidate reaches 15 m/s about `0.733 s`
+before the unconformed r181 crossing, then collapses its step before `2.2 s`.  The
+healthy-resolution/r170/readmission obligations have not been re-derived under
+the corrected operator.  Tier-10 full
 window, spectrum, empirical rows, animation, and capstone report remain
 blocked pending an owner ruling on this residual compatible-flux/tail coupling.
 

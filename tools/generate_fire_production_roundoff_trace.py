@@ -334,14 +334,16 @@ def transform(text: str, name: str, suffix: str) -> str:
     if name == "FireProductionTransport" and suffix == ".cpp":
         cell_loop = ("for( unsigned int pass=0u;pass<5u;++pass ) {\n"
                      "\t\t\t\tstd::vector<FireProductionRoundoffTrace::TraceFloat>* "
-                     "accepted=request.componentCount==9u?\n"
+                     "accepted=request.componentCount==9u&&\n"
+                     "\t\t\t\t\trequest.retainAcceptedGasMassDose?\n"
                      "\t\t\t\t\t&result.acceptedGasMassDoseKGPerM2[pass]:0;\n"
                      "\t\t\t\tif( !ApplyAxis(request,axes[pass],steps[pass],values,accepted,error) )\n"
                      "\t\t\t\t\treturn false;\n"
                      "\t\t\t}")
         traced_cell_loop = ("for( unsigned int pass=0u;pass<5u;++pass ) {\n"
                             "\t\t\t\tstd::vector<FireProductionRoundoffTrace::TraceFloat>* "
-                            "accepted=request.componentCount==9u?\n"
+                            "accepted=request.componentCount==9u&&\n"
+                            "\t\t\t\t\trequest.retainAcceptedGasMassDose?\n"
                             "\t\t\t\t\t&result.acceptedGasMassDoseKGPerM2[pass]:0;\n"
                             "\t\t\t\tif( !ApplyAxis(request,axes[pass],steps[pass],values,accepted,error) )\n"
                             "\t\t\t\t\treturn false;\n"

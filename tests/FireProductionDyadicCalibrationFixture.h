@@ -1920,7 +1920,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="9eb30df0a2df6e19f61ba0093f78a7254f54a8144af1f4f940ad4ed3c172355a"||
+			traceDigest!="30cd8213578eee200e19e2c994ebf531b21f8b3bcf51567d92080b828764f6be"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||
@@ -1959,8 +1959,8 @@ namespace FireProductionDyadicCalibration
 			restoration.nonfiniteMetricOutputRadiusCount[9]!=21600u||
 			restoration.nonfiniteMetricOutputRadiusCount[10]!=21600u||
 			restoration.nonfiniteMetricOutputRadiusCount[11]!=21312u||
-			physical.firstNonfiniteMetricOutputCenter[9]!=0.020602114591298515||
-			restoration.firstNonfiniteMetricOutputCenter[9]!=0.019004502474907332||
+			physical.firstNonfiniteMetricOutputCenter[9]!=0.020628967447918926||
+			restoration.firstNonfiniteMetricOutputCenter[9]!=0.019031353974387526||
 			source.unresolvedBranch||source.invalidDomain||physical.unresolvedBranch||
 			physical.invalidDomain||restoration.unresolvedBranch||
 			restoration.invalidDomain||!projectionCertificatesApplied||
@@ -1969,32 +1969,32 @@ namespace FireProductionDyadicCalibration
 			physicalCertificate.dimensionlessEigenvalueLower!=0.016975308641975297||
 			physicalCertificate.operatorEigenvalueLower!=8.9899266871598034||
 			physicalCertificate.inverseOperatorNormUpper!=0.11123561234690459||
-			physicalCertificate.residualEvaluationRoundingUpper!=1.374763620248156e-7||
-			physicalCertificate.crossPrecisionResidualUpper!=1.9305494377242276e-6||
-			physicalCertificate.fp64ResidualGateUpper!=0.0003433711236240282||
-			physicalCertificate.fp64ResidualEvaluationUpper!=1.1549573892421336e-14||
-			physicalCertificate.fp64TerminalFaceL2PerCellUpper!=5.2724589578058118e-17||
-			physicalCertificate.beginningVelocityRoundingUpper!=1.3680658805238157e-08||
+			physicalCertificate.residualEvaluationRoundingUpper!=1.3748435749320591e-7||
+			physicalCertificate.crossPrecisionResidualUpper!=1.9319781954175433e-6||
+			physicalCertificate.fp64ResidualGateUpper!=0.00034336556400244998||
+			physicalCertificate.fp64ResidualEvaluationUpper!=1.154938723844404e-14||
+			physicalCertificate.fp64TerminalFaceL2PerCellUpper!=5.2704410353592405e-17||
+			physicalCertificate.beginningVelocityRoundingUpper!=1.3680506069591611e-08||
 			physicalCertificate.fp64FeedbackFactor!=0.23426947265986475||
-			physicalCertificate.validationToleranceRoundingUpper!=4.693377804829513e-11||
-			physicalCertificate.validationPredicateMarginLower!=0.00026144905817743582||
-			physicalCertificate.streamingFaceVelocityL2PerCellUpper!=9.7216225216203552e-9||
+			physicalCertificate.validationToleranceRoundingUpper!=4.6932956987791455e-11||
+			physicalCertificate.validationPredicateMarginLower!=0.00026143109675737545||
+			physicalCertificate.streamingFaceVelocityL2PerCellUpper!=9.7212486067771285e-9||
 			physicalCertificate.velocityGainUpper!=0.47780222212961759||
-			physicalCertificate.velocityRMSUpper!=0.00016499562831655441||
-			trace.physicalStreaming.maximumRoundedVelocity!=0.07708662748336792||
+			physicalCertificate.velocityRMSUpper!=0.00016499365420669603||
+			trace.physicalStreaming.maximumRoundedVelocity!=0.077085278928279877||
 			trace.physicalStreaming.maximumRoundedTarget!=0.027697939425706863||
-			restorationCertificate.residualEvaluationRoundingUpper!=1.1240090145651478e-6||
-			restorationCertificate.crossPrecisionResidualUpper!=2.3628867732330913e-5||
-			restorationCertificate.fp64ResidualGateUpper!=0.00046519335364055193||
-			restorationCertificate.fp64ResidualEvaluationUpper!=4.7202137931361355e-14||
-			restorationCertificate.fp64TerminalFaceL2PerCellUpper!=7.22692551172065e-17||
-			restorationCertificate.beginningVelocityRoundingUpper!=1.3784166626731668e-08||
+			restorationCertificate.residualEvaluationRoundingUpper!=1.1240225418597112e-6||
+			restorationCertificate.crossPrecisionResidualUpper!=2.3628878941959103e-5||
+			restorationCertificate.fp64ResidualGateUpper!=0.00046519335364055106||
+			restorationCertificate.fp64ResidualEvaluationUpper!=4.7201289803479115e-14||
+			restorationCertificate.fp64TerminalFaceL2PerCellUpper!=7.2284267210388352e-17||
+			restorationCertificate.beginningVelocityRoundingUpper!=1.3783925480929936e-08||
 			restorationCertificate.fp64FeedbackFactor!=1.5955915929254457e-11||
 			restorationCertificate.validationToleranceRoundingUpper!=2.7727685625741094e-11||
-			restorationCertificate.validationPredicateMarginLower!=0.00044097251932894116||
-			restorationCertificate.streamingFaceVelocityL2PerCellUpper!=1.1190957495848723e-8||
-			restorationCertificate.velocityRMSUpper!=0.00023357153455586744||
-			trace.restorationStreaming.maximumRoundedVelocity!=0.08609626442193985||
+			restorationCertificate.validationPredicateMarginLower!=0.00044094270347925889||
+			restorationCertificate.streamingFaceVelocityL2PerCellUpper!=1.1190657711221316e-8||
+			restorationCertificate.velocityRMSUpper!=0.00023357153961206769||
+			trace.restorationStreaming.maximumRoundedVelocity!=0.086094409227371216||
 			trace.restorationStreaming.maximumRoundedTarget!=0.093038670718669891)return 238;
 		static const std::array<double,9> ExpectedScalar={{
 			0.00032719950722423746,0.00026175964690034235,0.0013965273494462376,
@@ -2004,8 +2004,8 @@ namespace FireProductionDyadicCalibration
 			0.0016507572621071557,0.0013206089346941951,0.0078814363904888378,
 			0.024610816574923065,0.00087872041765648388,0.00074150164355245502,
 			1.152885058045011e-05,2.4223343929965511e-06,8454.3253079109272}};
-		static const std::array<double,3> ExpectedMomentum={{0.00069602001830665154,
-			0.00054771023854340841,5.034302001865171e-05}};
+		static const std::array<double,3> ExpectedMomentum={{0.013505921107054692,
+			0.0012696844714689289,0.00011935802483893404}};
 		FireProductionRoundoffWalker::FullStepAssumptionRefusal proofRefusal;
 		if(fullStepDerived||fullStepCertificate.proofGapBitmap!=0xffu||
 			fullStepCertificate.proofComplete||
@@ -2016,12 +2016,12 @@ namespace FireProductionDyadicCalibration
 			fullStepCertificate.momentumL2PerCellUpper!=ExpectedMomentum||
 			fullStepCertificate.gasDensityRMSUpper!=0.035444612811895516||
 			fullStepCertificate.densityRelativeUpper!=0.036372463891938378||
-			fullStepCertificate.provisionalVelocityL2PerCellUpper!=0.0037141873898269232||
-			fullStepCertificate.openBoundaryInteractionUpper!=0.00011291432223343924||
-			fullStepCertificate.physicalProjectionVelocityUpper!=0.0044703165345649203||
-			fullStepCertificate.finalVelocityRMSUpper!=0.0055216982578806797||
-			trace.physicalStreaming.projectionCorrectionL2PerCell!=0.0050659807793188433||
-			trace.restorationStreaming.projectionCorrectionL2PerCell!=0.012757173673859725||
+			fullStepCertificate.provisionalVelocityL2PerCellUpper!=0.016724925504348544||
+			fullStepCertificate.openBoundaryInteractionUpper!=0.00055034168358969525||
+			fullStepCertificate.physicalProjectionVelocityUpper!=0.018948201018992382||
+			fullStepCertificate.finalVelocityRMSUpper!=0.021145425678289562||
+			trace.physicalStreaming.projectionCorrectionL2PerCell!=0.0050658272508546124||
+			trace.restorationStreaming.projectionCorrectionL2PerCell!=0.012757173692842795||
 			fullStepCertificate.scalarTransportNonexpansive||
 			fullStepCertificate.dualTransportNonexpansive||
 			fullStepCertificate.projectionInteractionsIncluded)return 238;

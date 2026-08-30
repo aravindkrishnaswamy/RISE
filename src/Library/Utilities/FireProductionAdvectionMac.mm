@@ -42,6 +42,7 @@ namespace RISE
 
 	namespace
 	{
+		thread_local bool CompatibleMomentumDiagnosticActive=false;
 		std::uint64_t AvalancheAcceptedDigest(std::uint64_t word)
 		{
 			word^=word>>32u;word*=UINT64_C(0xd6e8feb86659fd93);
@@ -765,7 +766,6 @@ kernel void compatible_dual_update(device const float* density [[buffer(0)]],
  uint sourceFace=compatible_face_index(p,component,x,y,z),source=offset+sourceFace;
  bool wall=(normal==0u&&compatible_boundary(p,2u*component)==2u)||
   (normal==componentExtent&&compatible_boundary(p,2u*component+1u)==2u);
- if(wall){updatedDensity[gid]=density[source];updatedMomentum[gid]=0.0f;return;}
  float upperMass=0.0f,lowerMass=0.0f,upperVelocity=0.0f,lowerVelocity=0.0f;
  if(p.derivative==component){
   uint previous=componentPeriodic?(normal==0u?componentExtent-1u:normal-1u):
@@ -781,7 +781,6 @@ kernel void compatible_dual_update(device const float* density [[buffer(0)]],
    compatible_velocity(density,momentum,p,component,x,y,z));
   upperVelocity=0.5f*(compatible_velocity(density,momentum,p,component,x,y,z)+
    compatible_velocity(density,momentum,p,component,nx,ny,nz));
-  if(!componentPeriodic&&(normal==0u||normal==componentExtent)){lowerMass*=2.0f;upperMass*=2.0f;}
  }else{
   uint derivativeExtent=compatible_extent(p,p.derivative);
   uint position=compatible_coordinate(p.derivative,x,y,z);
@@ -792,6 +791,9 @@ kernel void compatible_dual_update(device const float* density [[buffer(0)]],
    componentUpper,position,x,y,z);
   upperMass=compatible_restricted_dose(massDose,p,component,componentLower,
    componentUpper,position+1u,x,y,z);
+  if(!componentPeriodic&&(normal==0u||normal==componentExtent)){
+   lowerMass*=0.5f;upperMass*=0.5f;
+  }
   if(position==0u&&compatible_boundary(p,2u*p.derivative)==2u)lowerMass=0.0f;
   if(position+1u==derivativeExtent&&
    compatible_boundary(p,2u*p.derivative+1u)==2u)upperMass=0.0f;
@@ -810,7 +812,7 @@ kernel void compatible_dual_update(device const float* density [[buffer(0)]],
    compatible_velocity(density,momentum,p,component,nx,ny,nz));
  }
  updatedDensity[gid]=density[source]-(upperMass-lowerMass)/p.dx;
- updatedMomentum[gid]=momentum[source]-(upperMass*upperVelocity-
+ updatedMomentum[gid]=wall?0.0f:momentum[source]-(upperMass*upperVelocity-
   lowerMass*lowerVelocity)/p.dx;
 }
 kernel void gather_periodic_dual_values(device const float* density [[buffer(0)]],
@@ -1415,7 +1417,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			const std::size_t maximumFluxCount=request.componentCount*maximumLineFaces;
 			std::uint64_t certifiedWorkingSetBytes=0u;
 			if( !FireProductionCellPalindromeWorkingSetBytes(request.shape,
-				request.componentCount,certifiedWorkingSetBytes) ) {
+				request.componentCount,certifiedWorkingSetBytes,
+				request.retainAcceptedGasMassDose) ) {
 				if( structuredError ) *structuredError="production palindrome working-set certificate failed";
 				return false;
 			}
@@ -1686,10 +1689,11 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		}
 	}
 
-	bool RemapFireProductionCellPalindromeMetalResident(
+	static bool RemapFireProductionCellPalindromeMetalResidentImpl(
 		const FireProductionCellPalindromeRequest& request,
 		const FireProductionMetalCellPalindromeResidentInput& input,
 		FireProductionMetalCellPalindromeResidentResult& result,
+		const bool retainAcceptedGasMassDoseOverride,
 		std::string* structuredError )
 	{
 		result=FireProductionMetalCellPalindromeResidentResult();
@@ -1740,9 +1744,12 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					prefix=privateBuffer(maximumFluxCount*sizeof(float)),
 					flux=privateBuffer(maximumFluxCount*sizeof(float));
 				const unsigned int axes[]={0u,1u,2u,1u,0u};
+				const bool retainAcceptedGasMassDose=request.componentCount==9u&&
+					(request.retainAcceptedGasMassDose||retainAcceptedGasMassDoseOverride);
 				std::array<id<MTLBuffer>,5> acceptedGasMassDose;
 				acceptedGasMassDose.fill(nil);
-				if( request.componentCount==9u ) for( unsigned int pass=0u;pass<5u;++pass )
+				if( retainAcceptedGasMassDose )
+					for( unsigned int pass=0u;pass<5u;++pass )
 					acceptedGasMassDose[pass]=privateBuffer(faceCounts[axes[pass]]*sizeof(float));
 				const id<MTLBuffer> privateWork[]={gridA,gridB,lineValues,lineUpdated,left,right,
 					lineVelocity,alpha,prefix,flux};
@@ -1768,7 +1775,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 						"production resident palindrome work allocation failed";
 					return false;
 				}
-				if( request.componentCount==9u ) for( id<MTLBuffer> buffer : acceptedGasMassDose )
+				if( retainAcceptedGasMassDose )
+					for( id<MTLBuffer> buffer : acceptedGasMassDose )
 					if( !record(buffer,MTLStorageModePrivate) ) {
 						if( structuredError ) *structuredError=
 							"production resident palindrome gas-flux allocation failed";
@@ -1874,7 +1882,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					[encoder setBuffer:lineUpdated offset:0 atIndex:2];
 					[encoder setBuffer:parameterBuffer offset:0 atIndex:3];
 					Dispatch(encoder,context.update,valueCount);[encoder endEncoding];
-					if( request.componentCount==9u ) {
+					if( retainAcceptedGasMassDose ) {
 						encoder=[command computeCommandEncoder];if( !encoder ) return false;
 						[encoder setBuffer:flux offset:0 atIndex:0];
 						[encoder setBuffer:acceptedGasMassDose[pass] offset:0 atIndex:1];
@@ -1927,6 +1935,16 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+	}
+
+	bool RemapFireProductionCellPalindromeMetalResident(
+		const FireProductionCellPalindromeRequest& request,
+		const FireProductionMetalCellPalindromeResidentInput& input,
+		FireProductionMetalCellPalindromeResidentResult& result,
+		std::string* structuredError )
+	{
+		return RemapFireProductionCellPalindromeMetalResidentImpl(
+			request,input,result,false,structuredError);
 	}
 
 	bool RemapFireProductionCellPalindromeMetalResidentComparator(
@@ -2004,7 +2022,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					resident.interstageFullGridTransferCount;
 				computed.actualTrackedWorkingSetBytes=resident.actualMetalAllocationBytes;
 				if( !FireProductionCellPalindromeWorkingSetBytes(request.shape,
-					request.componentCount,computed.certifiedWorkingSetBytes) ) return false;
+					request.componentCount,computed.certifiedWorkingSetBytes,
+					request.retainAcceptedGasMassDose) ) return false;
 				computed.deviceElapsedMS=resident.deviceElapsedMS;
 				if( !AllFinite(computed.conservativeValues)||
 					!std::isfinite(computed.deviceElapsedMS) ) return false;
@@ -2839,6 +2858,12 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 		result=FireProductionResidentStepResult();
 		bool plateauRefused=false;
 		try {
+			if( request.cellTransport.retainAcceptedGasMassDose&&
+				!CompatibleMomentumDiagnosticActive ) {
+				if( structuredError ) *structuredError=
+					"production retained gas-mass dose requires the compatible-momentum diagnostic owner";
+				return false;
+			}
 			const char* activeFailurePhase=
 				"production resident step failed during preflight";
 			bool attemptCompleted=false;
@@ -3011,6 +3036,23 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				if( structuredError ) *structuredError=
 					"production resident step working set exceeds two GiB";
 				return false;
+			}
+			if( CompatibleMomentumDiagnosticActive ) {
+				std::uint64_t ordinaryCell=0u,retainedCell=0u;
+				if( !FireProductionCellPalindromeWorkingSetBytes(shape,9u,ordinaryCell)||
+					!FireProductionCellPalindromeWorkingSetBytes(shape,9u,retainedCell,true)||
+					retainedCell<ordinaryCell||certified>
+						std::numeric_limits<std::uint64_t>::max()-(retainedCell-ordinaryCell) ) {
+					if( structuredError ) *structuredError=
+						"compatible-momentum diagnostic working-set certificate failed";
+					return false;
+				}
+				certified+=retainedCell-ordinaryCell;
+				if( certified>(UINT64_C(1)<<31u) ) {
+					if( structuredError ) *structuredError=
+						"compatible-momentum diagnostic working set exceeds two GiB";
+					return false;
+				}
 			}
 			const std::size_t cells=shape.CellCount();
 			if(request.enforceManifoldPlateau&&!request.monitorManifoldDiagnostics){
@@ -3249,6 +3291,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				cellInput.frozenVelocityMPerS=velocityPrivate;cellInput.ambientValues=ambientPrivate;
 				FireProductionMetalFrozenForceResidentState force;
 				FireProductionMetalCellPalindromeResidentResult cell;
+				const bool compatibleMomentumDiagnostic=CompatibleMomentumDiagnosticActive;
 				std::array<bool,3> preparationSucceeded={{false,false,false}};
 				std::array<std::string,3> preparationError;
 				std::array<double,3> preparationWallMS={{0.0,0.0,0.0}};
@@ -3261,8 +3304,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					else if(task==1u)preparationSucceeded[task]=
 						AdvanceFireProductionFrozenForceMetalResidentState(request.force,force,
 							&preparationError[task]);
-					else preparationSucceeded[task]=RemapFireProductionCellPalindromeMetalResident(
-						request.cellTransport,cellInput,cell,&preparationError[task]);
+					else preparationSucceeded[task]=RemapFireProductionCellPalindromeMetalResidentImpl(
+						request.cellTransport,cellInput,cell,compatibleMomentumDiagnostic,
+						&preparationError[task]);
 					preparationWallMS[task]=std::chrono::duration<double,std::milli>(
 						std::chrono::steady_clock::now()-start).count();
 				};
@@ -3289,22 +3333,15 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				FireProductionMetalDualMomentumResidentInput dualInput;
 				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
 				dualInput.packedMomentum=force.packedMomentumKGPerM2S;
-				dualInput.acceptedGasMassDoseKGPerM2=cell.acceptedGasMassDoseKGPerM2;
 				dualInput.faceByteOffset=force.faceByteOffset;
 				markPhase("production resident step failed during dual-momentum remap");
 				FireProductionMetalDualMomentumResidentResult dual;
-				const char* compatibleTrial=std::getenv("RISE_FIRE_COMPATIBLE_MOMENTUM_TRIAL");
-				const bool useCompatibleTrial=compatibleTrial&&std::strcmp(compatibleTrial,"1")==0;
-				if( compatibleTrial&&!useCompatibleTrial ) {
-					if( structuredError ) *structuredError=
-						"production compatible-momentum trial activation is malformed";
-					return false;
-				}
-				if( useCompatibleTrial ?
-					!RemapFireProductionCompatibleDualMomentumMetalResident(
-						request.dualTransport,dualInput,dual,structuredError):
-					!RemapFireProductionDualMomentumMetalResident(request.dualTransport,dualStatic,
-						dualInput,dual,structuredError) ) return false;
+				if( CompatibleMomentumDiagnosticActive ) {
+					dualInput.acceptedGasMassDoseKGPerM2=cell.acceptedGasMassDoseKGPerM2;
+					if( !RemapFireProductionCompatibleDualMomentumMetalResident(
+						request.dualTransport,dualInput,dual,structuredError) ) return false;
+				} else if( !RemapFireProductionDualMomentumMetalResident(
+					request.dualTransport,dualStatic,dualInput,dual,structuredError) ) return false;
 				timestepVelocityAuditDualMS=timestepVelocityAuditMS();
 				id<MTLBuffer> projectedDensity=privateBuffer(cells*sizeof(float));
 				const MetalGridParameters sourceGrid={static_cast<std::uint32_t>(shape.nx),
@@ -3981,6 +4018,25 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				"production resident step allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
+	}
+
+	bool AttemptFireProductionCompatibleMomentumDiagnosticMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionResidentStepResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionResidentStepResult();
+		if( CompatibleMomentumDiagnosticActive ) {
+			if( structuredError ) *structuredError=
+				"compatible-momentum diagnostic recursion is invalid";
+			return false;
+		}
+		struct ScopedDiagnostic
+		{
+			ScopedDiagnostic(){CompatibleMomentumDiagnosticActive=true;}
+			~ScopedDiagnostic(){CompatibleMomentumDiagnosticActive=false;}
+		} scoped;
+		return AttemptFireProductionResidentStepMetal(request,result,structuredError);
 	}
 
 	bool AdvanceFireProductionResidentStepMetal(

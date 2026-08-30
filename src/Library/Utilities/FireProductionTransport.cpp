@@ -567,7 +567,7 @@ namespace RISE
 
 	bool FireProductionCellPalindromeWorkingSetBytes(
 		const FireProductionProjectionShape& shape, std::size_t componentCount,
-		std::uint64_t& bytes )
+		std::uint64_t& bytes, bool retainAcceptedGasMassDose )
 	{
 		bytes=0u;
 		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
@@ -579,7 +579,7 @@ namespace RISE
 		const std::uint64_t yFaces=static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz;
 		const std::uint64_t zFaces=static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
 		const std::uint64_t allFaces=xFaces+yFaces+zFaces;
-		const std::uint64_t retainedGasFaces=componentCount==9u?
+		const std::uint64_t retainedGasFaces=componentCount==9u&&retainAcceptedGasMassDose?
 			2u*xFaces+2u*yFaces+zFaces:0u;
 		const std::uint64_t maximumLineFaces=std::max(xFaces,std::max(yFaces,zFaces));
 		if( componentCount>std::numeric_limits<std::uint64_t>::max()/maximumLineFaces )
@@ -633,7 +633,8 @@ namespace RISE
 			return Fail(error,"production palindrome tuple shape is invalid");
 		std::uint64_t workingBytes=0u;
 		if( !FireProductionCellPalindromeWorkingSetBytes(shape,request.componentCount,
-			workingBytes)||workingBytes>(std::uint64_t(2u)<<30u) )
+			workingBytes,request.retainAcceptedGasMassDose)||
+			workingBytes>(std::uint64_t(2u)<<30u) )
 			return Fail(error,"production palindrome working set exceeds two GiB");
 		if( request.conservativeValues.size()!=request.componentCount*cells||
 			request.ambientValues.size()!=request.componentCount )
@@ -675,7 +676,8 @@ namespace RISE
 			const unsigned int axes[]={0u,1u,2u,1u,0u};
 			const float steps[]={halfStep,halfStep,request.timeStepS,halfStep,halfStep};
 			for( unsigned int pass=0u;pass<5u;++pass ) {
-				std::vector<float>* accepted=request.componentCount==9u?
+				std::vector<float>* accepted=request.componentCount==9u&&
+					request.retainAcceptedGasMassDose?
 					&result.acceptedGasMassDoseKGPerM2[pass]:0;
 				if( !ApplyAxis(request,axes[pass],steps[pass],values,accepted,error) )
 					return false;
@@ -1268,10 +1270,6 @@ namespace RISE
 									FireProductionProjectionWall;
 								const bool upperWall=normal+1u==normalCount&&
 									request.boundary[2u*component+1u]==FireProductionProjectionWall;
-								if( lowerWall||upperWall ) {
-									computed.momentum[component][componentFace]=0.0f;
-									continue;
-								}
 								auto velocityAt=[&](std::size_t vx,std::size_t vy,std::size_t vz) {
 									const std::size_t face=FaceIndex(shape,component,vx,vy,vz);
 									return oldMomentum[component][face]/oldDensity[component][face];
@@ -1295,9 +1293,6 @@ namespace RISE
 									upperMass=0.5f*(massDoseAt(x,y,z)+massDoseAt(nx,ny,nz));
 									lowerVelocity=0.5f*(velocityAt(px,py,pz)+velocityAt(x,y,z));
 									upperVelocity=0.5f*(velocityAt(x,y,z)+velocityAt(nx,ny,nz));
-									if( !componentPeriodic&&(normal==0u||normal+1u==normalCount) ) {
-										lowerMass*=2.0f;upperMass*=2.0f;
-									}
 								} else {
 									const std::size_t derivativeExtent=AxisCoordinateExtent(shape,derivative);
 									const std::size_t position=AxisCoordinate(derivative,x,y,z);
@@ -1312,7 +1307,13 @@ namespace RISE
 										SetAxisCoordinate(component,componentUpper,ux,uy,uz);
 										SetAxisCoordinate(derivative,boundary,lx,ly,lz);
 										SetAxisCoordinate(derivative,boundary,ux,uy,uz);
-										return 0.5f*(massDoseAt(lx,ly,lz)+massDoseAt(ux,uy,uz));
+										const float restricted=0.5f*(massDoseAt(lx,ly,lz)+
+											massDoseAt(ux,uy,uz));
+										// A nonperiodic component-normal face contains one interior
+										// half and one fixed ambient/ghost half.  Only the interior
+										// half receives the transverse scalar dose.
+										return !componentPeriodic&&(normal==0u||normal+1u==normalCount)?
+											0.5f*restricted:restricted;
 									};
 									lowerMass=restricted(position);upperMass=restricted(position+1u);
 									if( position==0u&&request.boundary[2u*derivative]==
@@ -1334,7 +1335,8 @@ namespace RISE
 								}
 								const float density=oldDensity[component][componentFace]-
 									(upperMass-lowerMass)/shape.cellWidthM;
-								const float momentum=oldMomentum[component][componentFace]-
+								const float momentum=(lowerWall||upperWall)?0.0f:
+									oldMomentum[component][componentFace]-
 									(upperMass*upperVelocity-lowerMass*lowerVelocity)/shape.cellWidthM;
 								if( !(density>0.0f)||!std::isfinite(density)||!std::isfinite(momentum) )
 									return Fail(error,"compatible dual momentum update is inadmissible");

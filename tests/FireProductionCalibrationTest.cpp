@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -53,6 +54,24 @@ namespace
 		std::size_t count=0u,position=0u;
 		while((position=text.find(token,position))!=std::string::npos){++count;position+=token.size();}
 		return count;
+	}
+	double CSVColumnMaximum(const std::string& text,const std::size_t column,
+		std::size_t& rows)
+	{
+		rows=0u;double maximum=-std::numeric_limits<double>::infinity();
+		std::istringstream input(text);std::string line;
+		if(!std::getline(input,line))return maximum;
+		while(std::getline(input,line)){
+			if(line.empty())continue;std::istringstream fields(line);std::string field;
+			for(std::size_t index=0u;index<=column;++index)
+				if(!std::getline(fields,field,','))return
+					-std::numeric_limits<double>::infinity();
+			char* end=nullptr;const double value=std::strtod(field.c_str(),&end);
+			if(!end||*end!='\0'||!std::isfinite(value))return
+				-std::numeric_limits<double>::infinity();
+			maximum=std::max(maximum,value);++rows;
+		}
+		return maximum;
 	}
 }
 
@@ -2126,9 +2145,9 @@ int main()
 			std::string::npos&&
 		// The r171 artifact seals its historical mirror/manifests.  r182 below
 		// binds their compatible-flux successors directly.
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			forceHeader.begin(),forceHeader.end()))==
-			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b"&&
+		goldenSubdominanceEvidence.find("force_header_sha256 "
+			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMetal.begin(),projectionMetal.end()))==
 			"9f7356c9c1aa913fe4bfb83b3c9b31f1fdba0ff485183093a9fe42bf3b1edc7a"&&
@@ -2818,18 +2837,77 @@ int main()
 	const std::string compatibleTier6=ReadText(
 		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
 		"tier6_control.raw.csv");
+	const std::string compatibleTier6Column=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier6_control.raw.csv.column.csv");
 	const std::string compatibleTier8=ReadText(
 		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
 		"tier8_control.raw.csv");
+	const std::string compatibleTier8Column=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier8_control.raw.csv.column.csv");
 	const std::string compatibleFromZero=ReadText(
 		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
 		"from_zero_velocity_trajectory.csv");
 	const std::string compatibleRetry=ReadText(
 		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
 		"from_zero_retry_trajectory.csv");
+	const std::string compatibleMomentumEvidenceV2=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"compatible_momentum_flux_evidence.v2");
+	const std::string compatibleFixedColumn=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier10_fixed_column_matched.raw.csv");
+	const std::string compatibleFixedColumnCells=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"tier10_fixed_column_matched.raw.csv.column.csv");
+	const std::string compatibleCorrectedFromZero=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_velocity_trajectory_boundary_corrected.csv");
+	const std::string compatibleCorrectedRetry=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_retry_trajectory_boundary_corrected.csv");
+	const std::string compatibleCorrectedSummary=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_onset_summary.v2");
+	const std::string compatibleCorrectedThreshold15=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_threshold_15.raw.csv");
+	const std::string compatibleCorrectedThreshold15Cells=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_threshold_15.raw.csv.column.csv");
+	const std::string compatibleCorrectedThreshold30=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_threshold_30.raw.csv");
+	const std::string compatibleCorrectedThreshold30Cells=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_threshold_30.raw.csv.column.csv");
+	const std::string compatibleCorrectedThreshold60=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_threshold_60.raw.csv");
+	const std::string compatibleCorrectedThreshold60Cells=ReadText(
+		"rendered/fire_production_calibration/r182_compatible_momentum_flux/"
+		"from_zero_threshold_60.raw.csv.column.csv");
+	std::size_t compatibleFromZeroRows=0u;
+	const double compatibleFromZeroMaximum=CSVColumnMaximum(
+		compatibleFromZero,3u,compatibleFromZeroRows);
+	std::size_t compatibleCorrectedFromZeroRows=0u;
+	const double compatibleCorrectedFromZeroMaximum=CSVColumnMaximum(
+		compatibleCorrectedFromZero,3u,compatibleCorrectedFromZeroRows);
 	Check(!compatibleMomentumEvidence.empty()&&!compatibleTier10.empty()&&
-		!compatibleTier10Column.empty()&&!compatibleTier6.empty()&&!compatibleTier8.empty()&&
+		!compatibleTier10Column.empty()&&!compatibleTier6.empty()&&
+		!compatibleTier6Column.empty()&&!compatibleTier8.empty()&&
+		!compatibleTier8Column.empty()&&
 		!compatibleFromZero.empty()&&!compatibleRetry.empty()&&
+		!compatibleMomentumEvidenceV2.empty()&&!compatibleFixedColumn.empty()&&
+		!compatibleFixedColumnCells.empty()&&!compatibleCorrectedFromZero.empty()&&
+		!compatibleCorrectedRetry.empty()&&!compatibleCorrectedSummary.empty()&&
+		!compatibleCorrectedThreshold15.empty()&&!compatibleCorrectedThreshold15Cells.empty()&&
+		!compatibleCorrectedThreshold30.empty()&&!compatibleCorrectedThreshold30Cells.empty()&&
+		!compatibleCorrectedThreshold60.empty()&&!compatibleCorrectedThreshold60Cells.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleMomentumEvidenceV2.begin(),compatibleMomentumEvidenceV2.end()))==
+			"0698c8ff36d59d18246b89eb39aba352d3e18bf27499772e2f8d400de1abf053"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			compatibleMomentumEvidence.begin(),compatibleMomentumEvidence.end()))==
 			"7b1835e5bb44e1d76e0a12c1c5d4d6f52f0449c1d3828db06e87d9d4f4130630"&&
@@ -2843,17 +2921,75 @@ int main()
 			compatibleTier6.begin(),compatibleTier6.end()))==
 			"2094bf5fa1364a8db68b1fa17f76f3eb51c9f302d897c32c860b2a365a051ed1"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleTier6Column.begin(),compatibleTier6Column.end()))==
+			"24ee90cf1f1a0465b180b94c4070eb2522551ec11cbe95e1fff2851ac1c07d8b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			compatibleTier8.begin(),compatibleTier8.end()))==
 			"0cb0ab72baf0cb8cb6d3c65050ba2733ee15e9bd42623cb07a1bf873e74bbc2b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleTier8Column.begin(),compatibleTier8Column.end()))==
+			"e3a1f95186e343ea3642b50d31232a33f8de698eee5e8e1787eb96f773328641"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			compatibleFromZero.begin(),compatibleFromZero.end()))==
 			"765e7f76cf87b7bf33b802144807bc6fb4cb5b5ac78fd58683599be5957db300"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			compatibleRetry.begin(),compatibleRetry.end()))==
 			"004dad9b1cdb8299ec45188d11d44a845b80223a54c662ebca3924b9c37346f3"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleFixedColumn.begin(),compatibleFixedColumn.end()))==
+			"81fc23a60b59e487379dd6640657e3eaa76a55cf8cdb42df529d106065e86c04"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleFixedColumnCells.begin(),compatibleFixedColumnCells.end()))==
+			"339588f6d61d3bdb60fbfcd23b107af35a7b0ea164b9bc3e5f0b646d77ccdbe6"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedFromZero.begin(),compatibleCorrectedFromZero.end()))==
+			"2e7f8b37256a059fb519256e9a4994716bb7f6f2e80ee1bdfa39cc21e1d39bbf"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedRetry.begin(),compatibleCorrectedRetry.end()))==
+			"ea16647573c564d9e4a8bd8138b1314d335205a00ed56951c202848408a83614"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedSummary.begin(),compatibleCorrectedSummary.end()))==
+			"53f14161fa910e5110d4a4443943635e6b74f12d20e6facbdbf52af4c58bc4f9"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedThreshold15.begin(),compatibleCorrectedThreshold15.end()))==
+			"a258734f6bfd55b77d0617dfe8d091df288e20f2ae9d0342f552e291f21f7eb0"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedThreshold15Cells.begin(),
+			compatibleCorrectedThreshold15Cells.end()))==
+			"865a905ae2ac343a36229241a24c0e45994b0cd92899f20aaf610649613acf3d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedThreshold30.begin(),compatibleCorrectedThreshold30.end()))==
+			"f2dbd2602bb02413b56296b233a443dfebf95a9004ca3c12c8abacc6a7452199"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedThreshold30Cells.begin(),
+			compatibleCorrectedThreshold30Cells.end()))==
+			"e309a234b4c6a6b6c4b4505660a6f454ba587aed2e33a11f3a7b2d5422b905b1"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedThreshold60.begin(),compatibleCorrectedThreshold60.end()))==
+			"f2dbd2602bb02413b56296b233a443dfebf95a9004ca3c12c8abacc6a7452199"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			compatibleCorrectedThreshold60Cells.begin(),
+			compatibleCorrectedThreshold60Cells.end()))==
+			"e309a234b4c6a6b6c4b4505660a6f454ba587aed2e33a11f3a7b2d5422b905b1"&&
 		CountText(compatibleTier10,"\n")==9u&&CountText(compatibleTier10Column,"\n")==1065u&&
-		CountText(compatibleTier6,"\n")==9u&&CountText(compatibleTier8,"\n")==9u&&
+		CountText(compatibleTier6,"\n")==9u&&CountText(compatibleTier6Column,"\n")==649u&&
+		CountText(compatibleTier8,"\n")==9u&&CountText(compatibleTier8Column,"\n")==857u&&
 		CountText(compatibleFromZero,"\n")==484u&&CountText(compatibleRetry,"\n")==12u&&
+		compatibleFromZeroRows==483u&&
+		compatibleFromZeroMaximum==5.340585708618164&&
+		CountText(compatibleFixedColumn,"\n")==29u&&
+		CountText(compatibleFixedColumnCells,"\n")==3725u&&
+		CountText(compatibleCorrectedFromZero,"\n")==1223u&&
+		CountText(compatibleCorrectedRetry,"\n")==26u&&
+		CountText(compatibleCorrectedSummary,"\n")==25u&&
+		CountText(compatibleCorrectedThreshold15,"\n")==2u&&
+		CountText(compatibleCorrectedThreshold15Cells,"\n")==134u&&
+		CountText(compatibleCorrectedThreshold30,"\n")==2u&&
+		CountText(compatibleCorrectedThreshold30Cells,"\n")==134u&&
+		CountText(compatibleCorrectedThreshold60,"\n")==2u&&
+		CountText(compatibleCorrectedThreshold60Cells,"\n")==134u&&
+		compatibleCorrectedFromZeroRows==1222u&&
+		compatibleCorrectedFromZeroMaximum==4768055.0&&
 		compatibleMomentumEvidence.find(
 			"formula K_i=I_i(Phi_hat_g)*(u_i_L+u_i_R)/2")!=std::string::npos&&
 		compatibleMomentumEvidence.find("pre_registered_63_class_advection_success false")!=
@@ -2875,36 +3011,96 @@ int main()
 			std::string::npos&&
 		compatibleRetry.find("0.79199302813503891,9,0.0010558610083535314")!=
 			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"candidate_activation explicit_AttemptFireProductionCompatibleMomentumDiagnosticMetal_API")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"commuting_identity_pressure_open_wall_CPU_RED true")!=std::string::npos&&
+		compatibleMomentumEvidenceV2.find("r136_current_trace_digest "
+			"30cd8213578eee200e19e2c994ebf531b21f8b3bcf51567d92080b828764f6be")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"production_matched_column_advection_rate_max 321.34195540099722")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"oracle_matched_column_advection_rate_max 159.00892323854879")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"candidate_activation_summary_sha256 "
+			"53f14161fa910e5110d4a4443943635e6b74f12d20e6facbdbf52af4c58bc4f9")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"corrected_candidate_from_zero_first_15_m_per_s_time_s 1.3978566413279623")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"corrected_candidate_from_zero_velocity_max_m_per_s 4768055")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"corrected_candidate_from_zero_terminal_represented_dt_s "
+			"4.2156947377414156e-10")!=std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"corrected_candidate_from_zero_stop_reason "
+			"first_accepted_velocity_threshold_crossing")!=std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"corrected_candidate_from_zero_next_step_CFL_not_measured true")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"corrected_candidate_from_zero_terminal_pressure_rate_max "
+			"10998092339304464")!=std::string::npos&&
+		compatibleMomentumEvidenceV2.find(
+			"reviewed_hybrid_continuation_withdrawn true")!=
+			std::string::npos&&
+		compatibleCorrectedSummary.find("operator_mode compatible_momentum_diagnostic")!=
+			std::string::npos&&
+		compatibleCorrectedSummary.find("completed_target 0")!=std::string::npos&&
+		compatibleCorrectedSummary.find("stop_reason velocity_threshold_crossing")!=
+			std::string::npos&&
+		compatibleCorrectedSummary.find("threshold_60_captured 1")!=
+			std::string::npos&&
+		compatibleCorrectedThreshold15.find(
+			"1.3969225193141028,0,0.00093412201385945082")!=std::string::npos&&
+		compatibleCorrectedThreshold30.find(
+			"1.7316493930411525,7,4.2156947377414156e-10")!=std::string::npos&&
+		compatibleMomentumEvidenceV2.find("v1_moving_column_comparison_withdrawn true")!=
+			std::string::npos&&
 		sourceSHA("src/Library/Utilities/FireProductionTransport.h")==
-			"e40ec52fce23e07ae7e78895ea41de90510565d5bde19b071c05ce5e58a73ad5"&&
+			"cb9c127eb014a70605feedac9bd8cb0592b808821d0f2b5b402dfb5b209b0d8f"&&
 		sourceSHA("src/Library/Utilities/FireProductionTransport.cpp")==
-			"a5196c88b6229c44d953ad7fa59a5b9da0b936419a77181ca3c9c51b554ed18f"&&
+			"d2f8236bd8bc9e6f065836a80768f51239efa025104f6ed1ac17c2095d64fb6a"&&
 		sourceSHA("src/Library/Utilities/FireProductionAdvectionMac.mm")==
-			"1dcf871ee835998181dff73599d1f31ac62365d560f452942319b5f4fcb6db84"&&
+			"00aaf43d64939db8c72cf2ba81b136b06d53fa0fba26556524e8dceede0164c0"&&
+		sourceSHA("src/Library/Utilities/FireProductionForce.h")==
+			"0b30618a47a84d0dbabb0e629ea6db39f2339dd55ae10917eb7f97f001bd482f"&&
+		sourceSHA("src/Library/Utilities/FireProductionForceUnsupported.cpp")==
+			"a04589f149c9851265029165b444cd47a7eef5aaa8243686718095e873d66f65"&&
 		sourceSHA("src/Library/Utilities/FireProductionForce.cpp")==
 			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
 		sourceSHA("tests/FireProductionSolverTest.cpp")==
-			"eb92ca6cda01b4e5e53ef0fac9ebb18ac2b816e385cc4c536a88104b7e314136"&&
+			"e1d7ed26757eb858db5af6b8d2ab76e6a4efa953e072e06bd7797cf9beff36b1"&&
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
-			"662a58bb1a07ec46245364dde0b258d8f1c9ad2886af5239a0065b29eca7286f"&&
+			"360468434d2deda9dfa9f54aab7d0cb8329fa574aadd0c66b01968ba9b961452"&&
 		sourceSHA("tests/FireProductionRoundoffWalker.h")==
-			"5e4805cbff46200fbfb445c84e57f42f2d93cbc01707901974429aac8e25f9a6"&&
+			"22259ff8367aeb73ac5b73d8a282b23f18c61d545ca99cad14d856f9e40a4378"&&
 		sourceSHA("tests/FireSequenceTest.cpp")==
-			"1d8e1646aa979e5815bdf9f790bdb1354c5cc2cc7b7e952c67bb2b597a96567d"&&
+			"96dad4db54da84d47803588eff014e88592a463bc3e41335564009a3ba05b122"&&
 		sourceSHA("tests/FireProductionCalibrationMirror.h")==
-			"51a3537b159f42eb5f5d26212dbde3bc72aa4360e03e2aef1bd7a3e358d7eaa9"&&
+			"be18f64d518f63c2f2c770be0535532eb6c26b5df65cc00b905d0d809c1e1709"&&
 		sourceSHA("tests/FireProductionRoundoffTraceAdapter.h")==
-			"4bd6323b0ee8762d5d29a3bb6fe697a1d4c3494d5172454b153d9d5c1e791302"&&
+			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc"&&
 		sourceSHA("tests/fire_production_fp64/SourceManifest.h")==
-			"1e6dadfae7f69fdf36af18f31a8c3599ff4ef1e5169ba6ca4ffa60c80c7c358f"&&
+			"d1372a3d1ca544bc63904e8d5f4f43a39c545f10b7ecd4a8c865fa5753701807"&&
 		sourceSHA("tests/fire_production_trace/SourceManifest.h")==
-			"0af666f7a34271613511bf17d0d2db316c2a35196b4a80ae1d8fd60c92c30d51"&&
+			"efe255934e7edab90404826e45e397f8a50ea7d3b1656865426daa039317e5da"&&
+		sourceSHA("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")==
+			"3ebbce0bf891384f53930e609293dbdefb9c4f2e1388961c677f4ef267c55d84"&&
+		sourceSHA("docs/FIRE_SMOKE_DESIGN_HISTORY.md")==
+			"40577c5c51741da1dd689480e6d0c0a84a46e144cea313027a5bd272b327e65a"&&
 		compatibleMomentumEvidence.find("ordinary_production_compatible_flux_enabled false")!=
 			std::string::npos&&
 		solverDoc.find("### 7.56o Compatible momentum-flux conformance and measured stop (r182)")!=
 			std::string::npos&&historyDoc.find("r182 §3.7 compatible momentum conformance")!=
 			std::string::npos,
-		"r182 implements the compatible momentum flux and records the failed onset/shadow criteria");
+		"r182 retains the compatible momentum diagnostic and records the corrected fixed-column onset stop");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

@@ -608,6 +608,15 @@ namespace RISEFireProductionFP64
 		FireProductionResidentStepResult& rejectedOrAcceptedResult,
 		std::string* error=0 );
 
+	//! Isolated Section 3.7 candidate seam.  Ordinary production never selects
+	//! this operator.  The calibration owner may call it only after independently
+	//! validating the sealed checkpoint/case identity; the request copy retains
+	//! the five accepted primal gas-mass doses needed by the candidate.
+	bool AttemptFireProductionCompatibleMomentumDiagnosticMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionResidentStepResult& rejectedOrAcceptedResult,
+		std::string* error=0 );
+
 	//! Thread-local observed Metal commits, exposed only to bind fail-before-work
 	//! owner gates. Unsupported builds return zero.
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount();

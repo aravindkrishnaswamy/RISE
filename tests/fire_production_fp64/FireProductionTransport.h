@@ -33,8 +33,13 @@ namespace RISEFireProductionFP64
 		std::vector<double> conservativeValues;
 		std::array<std::vector<double>,3> frozenVelocityMPerS;
 		std::vector<double> ambientValues;
+		//! Diagnostic-only retention of the accepted primal gas-mass fluxes used
+		//! by the Section 3.7 compatible-momentum comparator.  Ordinary production
+		//! leaves this false and pays no buffer, kernel, or working-set cost.
+		bool retainAcceptedGasMassDose;
 
-		FireProductionCellPalindromeRequest() : componentCount(0u),timeStepS(0.0)
+		FireProductionCellPalindromeRequest() : componentCount(0u),timeStepS(0.0),
+			retainAcceptedGasMassDose(false)
 		{
 			boundary.fill(FireProductionProjectionWall);
 		}
@@ -115,7 +120,8 @@ namespace RISEFireProductionFP64
 	bool FireProductionCellPalindromeWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::size_t componentCount,
-		std::uint64_t& bytes );
+		std::uint64_t& bytes,
+		bool retainAcceptedGasMassDose=false );
 
 	//! Strict-binary32 five-pass oracle: x/2,y/2,z,y/2,x/2.
 	bool RemapFireProductionCellPalindromeCPU(
