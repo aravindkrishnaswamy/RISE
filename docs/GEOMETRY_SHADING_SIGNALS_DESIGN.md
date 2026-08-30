@@ -631,14 +631,32 @@ pointer" (`RayCaster.cpp:213-221`).
 (§6.1) — the same interface the SDF family implements, so there is exactly one
 channel from the VM to a geometry signal and no second mechanism to keep in
 sync. The mesh provider's `occlusion(radius)` / `thickness(radius)` is a
-handful of lines: read the interpolated per-vertex value, check the radius
-precondition below, return it. **Interpolate at intersection time** rather than
-inside the provider: the triangle and its barycentrics are already in hand at
-the hit, the arithmetic is what the mesh already does for normals and vertex
-colours, and the provider then holds one interpolated scalar per signal instead
-of a back-pointer into mesh storage. This is the `VertexColorPainter` pattern
-(per-vertex data → intersection interpolates into the record → a two-line
-read), applied to a scalar and read through the provider.
+handful of lines: check the radius precondition below, find-or-build the
+table, interpolate, return it.
+
+**Interpolation timing — AMENDED 2026-08-29, at implementation.** This section
+originally said **interpolate at intersection time**, so that the provider held
+one ready scalar per signal instead of a back-pointer into mesh storage — the
+`VertexColorPainter` pattern (per-vertex data → intersection interpolates into
+the record → a two-line read). That sentence predates §7.3's decision to build
+the bake **lazily**, and the two cannot both hold: intersection strictly
+precedes shading, and a lazy bake does not exist until shading first asks for
+it, so on the first-ever query there is by construction nothing to interpolate.
+
+What ships instead keeps the half of that argument that was actually
+load-bearing — *the barycentric arithmetic belongs to the intersector's frame*
+— and moves only the lookup:
+
+- the mesh intersector stamps **where** the hit is: triangle index plus the two
+  barycentric weights it has already computed for normals, UVs and vertex
+  colours (`SurfaceSignalInfo::primId` / `baryA` / `baryB`);
+- the provider interpolates **on demand**, after its find-or-build.
+
+This is strictly *cheaper* at intersection than the original sketch — one int
+and two scalars, no table lookup, and nothing at all for a hit whose material
+never calls the builtins — and the draft-mode guarantee survives intact. The
+SDF family leaves `primId` at its `-1` default and answers positionally, which
+is what makes one record field serve both dispatch styles.
 
 **The radius argument must be a compile-time constant on the baked path.** M2's
 SDF estimators evaluate any expression per hit, but a bake commits to **one**
@@ -666,6 +684,45 @@ The resulting M2/M3 asymmetry is documented, not hidden: on the SDF family
 `radius` is a live knob; on meshes it is a bake parameter the lookup validates
 against.
 
+**What shipped, 2026-08-29 (Phase 3), and the two places it is sharper than
+the sketch above.**
+
+*The proof travels with the call, because it cannot be recovered later.* By the
+time a `Scalar` radius reaches a provider, "0.05 written in the scene text" and
+"the current value of `fbm(P)*0.1`" are the same bit pattern — nothing at the
+provider can tell them apart. So the compiler's per-call-site literal proof is
+**emitted into the instruction**: a signal builtin whose radius was not proven
+literal is emitted as an internal `...DynR` twin id (`ExpressionEval.h`'s
+`kFnOcclusionDynR` / `kFnThicknessDynR`), and `CallFunc` forwards that as the
+`bRadiusIsConstant` argument on the interface. Without it the baked path would
+have to either answer a computed radius from whatever table it had (the silent
+wrong-scale substitution this section forbids) or bake per distinct value —
+unbounded work, and a render whose output depends on which radius arrived
+first, i.e. a reproducibility break. The `param`/`def` constant-resolution work
+the bullet above scopes to Phase 3 was **not** done: an unproven-but-genuinely-
+constant radius such as `0.15*2` is treated as dynamic and refused, which is
+the conservative direction.
+
+*One bake per (geometry, signal, radius), with a bounded map rather than a
+single first-wins table.* Distinct **literal** radii are few and come from the
+scene text, so each gets its own table; the alternative — refusing every radius
+after the first — makes which radius won depend on thread arrival order. The
+lookup matches on a **1e-4 relative tolerance** (two spellings of one literal
+match; 5 % and 5.1 % do not), and the map is capped at **8 tables per signal
+per geometry**, past which further distinct radii are refused with a one-time
+warning. That cap is the one non-determinism in the feature, reachable only by
+a scene that spells more than eight distinct radii of one signal against one
+mesh; unbounded growth was judged the worse failure.
+
+*Scope: `TriangleMeshGeometryIndexed` only.* It is what every mesh path in the
+engine produces — every loader but the legacy RAW one, `TessellateToMesh` for
+analytic primitives and SDFs, and `DisplacedGeometry`'s internal mesh (so a
+`displaced_geometry` wrapping any base answers baked signals for free). The
+non-indexed `TriangleMeshGeometry`, reachable only via
+`RISE_API_CreateTriangleMeshGeometry` / the RAW loader, publishes **no
+provider** and reads the neutral fallback — an honest absence, not a silent
+zero.
+
 ### 7.2 Invalidation is free — with one trap
 
 Geometry edits in the incremental derivation path are **drop-and-recreate**:
@@ -682,6 +739,20 @@ So a cache keyed by `const IObject*` does **not** get free invalidation from a
 geometry swap. The `SubSurfaceScatteringShaderOp` `PointSetMap` is keyed exactly
 that way (`src/Library/Shaders/SSS/SubSurfaceScatteringShaderOp.h:72`) and is
 the cautionary precedent. **Key the bake on the geometry, not the object.**
+
+**A SECOND trap, found at implementation (2026-08-29), which the argument above
+does not cover.** Free invalidation rests on vertex data being immutable for
+the lifetime of an `IGeometry*` — §14 item 10 flagged that assumption and asked
+for it to be *confirmed*. It is **false**:
+`TriangleMeshGeometryIndexed::UpdateVertices` replaces the vertex and normal
+arrays **in place** and refits the BVH (the keyframed-painter
+`DisplacedGeometry::RefreshMeshVertices` path), so one geometry genuinely does
+change shape over time while keeping its address. A bake computed for one frame
+would be carried into every later one. That path — and every other vertex
+mutation site (`BeginIndexedTriangles`, `DoneIndexedTriangles`,
+`ComputeVertexNormals`) — now drops the tables **explicitly**, under the same
+between-frames contract `UpdateVertices` already has. Free invalidation covers
+the *derive* path, not the *animation* one; both are needed.
 
 ### 7.3 Gating, and when the bake actually fires
 
@@ -716,6 +787,32 @@ eager only if the mutex-guarded path complicates the geometry lifetime more
 than it is worth. Either way, the immutability rule (`ARCHITECTURE.md:5-9`)
 must be honoured — a lazy build under `lock_guard` is an exception to it, not
 an exemption from thinking about it.
+
+**Shipped 2026-08-29: lazy, as prescribed** — the fallback was not needed. The
+cache lives on the mesh geometry (`MeshSignalBakeCache`), one `lock_guard`
+spans the whole find-or-build, failures cache a null sentinel, and the
+interpolation runs outside the lock on the now-immutable table. Two additions
+the sketch did not anticipate, both forced by the lazy choice rather than
+optional:
+
+- **The input assembly is itself lazy**, behind an `IInputSource` callback the
+  cache invokes *inside* its lock. A mesh's bake input includes derived state
+  it also builds once (a per-**position** normal array, which its independently
+  indexed `pNormals` cannot supply and which does not exist at all on a
+  face-normal mesh) — so assembling the input is a `mutable` write that must be
+  serialized, and doing it eagerly on every cache *hit* would put the very work
+  the lazy bake exists to avoid back on the per-sample path.
+- **The bake must be deterministic**, which the exception's SSS precedent
+  learned the hard way (its build once captured the winning thread's RNG state
+  and varied run to run). The bakes use a fixed Hammersley pattern with a
+  per-vertex-index golden-ratio rotation — no RNG, no wall clock — so the table
+  is byte-identical no matter which thread built it or when.
+
+`ISurfaceSignalProvider`'s thread-safety contract was widened to say this out
+loud: it previously required implementations to be pure `const` functions with
+"no locks, no caches, no rays," which the mesh family cannot satisfy and which
+would have made the shipped provider look like a violation rather than the
+sanctioned second shape it is.
 
 ---
 
@@ -1146,6 +1243,126 @@ fallback rather than the baked value; bake wall-time measured against a 16-spp
 agent render on a representative mesh and reported as a number; the Phase-1
 worked example ported to a mesh object and rendering equivalently.
 
+#### Phase 3 status — SHIPPED 2026-08-29
+
+Clean build (make + Xcode targets updated for the two new files), no warnings.
+`MeshSignalBakeTest` 61/61, `SurfaceSignalsTest` 148/148, `SurfaceCurvatureTest`
+94/94, `CsgSurfacePayloadTest` 251/251.
+
+Three departures from the plan above, each recorded where it belongs: the
+**stamp + interpolate-on-demand** shape (§7.1, replacing item 2's
+interpolate-at-intersection — the lazy decision makes that one impossible on a
+first query); the **compiler-carried constant-radius proof** and the bounded
+radius map (§7.1); and **explicit invalidation for vertex animation** (§7.2's
+second trap — §14 item 10's assumption turned out to be false). Item 3,
+"consumption gating," is **subsumed rather than implemented**: laziness *is* the
+gate. A table that only exists once a provider is read costs nothing in a scene
+whose materials never call the builtins, so a separate consumption predicate
+would gate work that has already not happened.
+
+**The two bake algorithms**, object space and self-occlusion only (§8), both at
+a fixed **64 rays per vertex** — Substance's own AO-baker default, and a
+compile-time constant rather than a scene parameter (§9 admits a sample count
+only as an advanced argument, and v1 deliberately ships without one: an author
+tuning ray counts is an author handed the renderer's problem):
+
+- **Occlusion** — cosine-weighted directions over the outward hemisphere, max
+  distance `radiusFraction × object-space bbox diagonal`, boolean any-hit
+  against the mesh's own BVH. Cosine weighting makes the plain hit *fraction*
+  the estimator; no per-sample weight is needed.
+- **Thickness** — the same budget cast **inward**, nearest self-hit normalized
+  by the query radius, a miss counting as "at least this thick" (the saturated
+  1, matching the SDF estimator's own convention). The inward cone is **20°**,
+  not the full hemisphere, and that number is load-bearing: a hemisphere's
+  cosine-weighted mean of `1/cos θ` is exactly **2**, so a slab of width `w`
+  would read `2w` against the interface's documented `min(w/R, 1)`. At 20° the
+  same mean is 1.031 — a bounded ~3 % overestimate, in exchange for seeing the
+  nearest wall in a neighbourhood rather than along one degenerate direction.
+  `MeshSignalBakeTest` (f) pins the number (`w/R = 0.5` reads 0.515), which
+  catches both the hemisphere error above and the opposite one: lifting the ray
+  origin *outward* instead of into the solid, which makes every thickness ray
+  re-enter through the face it started on and report ~0 everywhere.
+
+Per-vertex orientations are accumulated from each incident corner's authored
+normal (falling back to the face normal where none is authored), not read from
+`pNormals` directly — that array is indexed independently of positions and is
+empty on a face-normal mesh. A vertex that accumulates to zero is left
+unoriented and written the neutral value rather than traced in an invented
+direction.
+
+**The draft-mode guarantee, proved rather than asserted.** Draft executes no
+material shading, so it evaluates no expression, so it queries no provider, so
+no bake exists to fire — an argument that is only worth as much as its weakest
+link, which is "no bake fires." `MeshSignalBake::BuildCounter()` makes that
+link checkable, and `MeshSignalBakeTest` (a) fires 1,600 intersections at a
+signal-publishing mesh and asserts the counter has not moved, while (b) shows
+the very next painter-driven `occlusion()` moves it by exactly one and (c) that
+eight threads racing the first query still move it by exactly one.
+
+**Bake wall-time, measured** (this machine, single-threaded bake, 256×256 at 16
+spp, the ported patina head below):
+
+| mesh | bake | 16-spp render of the same scene, no signal | ratio |
+|---|---|---|---|
+| 12,028 vertices (`detail 32`) | **78 ms** | 90 ms | **0.87×** |
+| 193,886 vertices (`detail 128`) | **1441 ms** | 280 ms | **5.1×** |
+
+So at the mesh densities an agent actually authors the bake costs about one
+draft render, and at a quarter-million vertices it costs five. Two residuals
+follow from that and are **not** fixed: the bake is single-threaded (the losing
+threads block on the find-or-build mutex for its duration — the SSS precedent
+has exactly the same shape), and it is per (geometry, signal, radius), so a
+scene using both signals on one 200k-vertex mesh pays it twice. Both are
+straightforward to improve if a real scene makes them hurt; neither is a
+correctness issue. Every bake now announces itself with these numbers at
+`eLog_Event`, so the trade is checkable in any render rather than inferred.
+
+**Phase-1 worked example ported to a mesh.** The shipped patina example from
+`skills/agent/materials-and-media-basics.md` (curv-driven crevice mask ×
+`cavity_boost = 1 + occl_gain·(1-occlusion(0.08))` × fbm breakup) rendered with
+its SDF head replaced by `displaced_geometry { base_geometry head_sdf,
+disp_scale 0 }` — the same body, as a 194k-vertex triangle mesh, so every signal
+is answered by the Phase-3 bake instead of the SDF's live field. Mask values
+read out directly (emissive readout, 17×17 patch means, 64 spp):
+
+| patch | `1-occlusion(0.08)` on the MESH | same on the SDF | patina mask, `occl_gain 1.5` | patina mask, `occl_gain 0` |
+|---|---|---|---|---|
+| knot/skull seam (a real fold) | **0.370** | 0.508 | **0.257** | 0.023 |
+| scar dimple (smooth pit) | 0.062 | 0.000 | 0.431 | 0.393 |
+| clean convex body | **0.000** | 0.000 | 0.000 | 0.000 |
+
+The mask still keys on geometry: the occlusion term deepens the fold **11.2×**
+and the smooth dimple only 1.10× (curv already saturates there), while the
+convex body stays at exactly 0 in every variant. Two honest differences from
+the SDF twin, neither a defect: the mesh reads the fold at **73 %** of the SDF's
+magnitude (a ray-traced hemisphere and the Evans field estimator are different
+estimators, and the tessellated seam is slightly rounded), and the mesh reads
+**0.062** in the smooth scar dimple where the SDF reads exactly 0 — the bake
+sees that pit's real self-occlusion within the query radius, which the Evans
+identity `map(p + h·n) = h` cannot (Phase 2 documented that blind spot; here the
+mesh is arguably the more correct of the two). Mesh `curv` was **not** the noisy
+term this port was braced for: it matched the SDF at every patch (scar 0.998 vs
+0.998, body 0.000 vs 0.000).
+
+**One trap worth carrying forward** (it cost a debugging cycle and would cost
+another): the bakes trace through the mesh class's own `IntersectRay` /
+`IntersectRay_IntersectionOnly`, **never `pPtrBVH` directly**, because the
+per-ray mailbox id (`RISE_ENABLE_MAILBOXING`, on by default everywhere) is
+bumped in the former. Reaching past them makes every bake ray after the first
+find all triangles already stamped and skip them — a total loss of hits that
+presents as "this mesh is unoccluded and infinitely thick everywhere," i.e.
+indistinguishable from a correctly-neutral answer.
+
+**CSG.** `AdoptCsgSurfacePayload` copies `signals` as a whole struct, so the new
+`primId` / barycentric fields ride along with the provider pointer and a
+composite reports exactly what the bare mesh reports (pinned by
+`MeshSignalBakeTest` (k)). The Phase-2 subtraction fix negates
+`signals.nObject`, which the mesh provider does not read — its lookup is
+positional in the triangle, not directional — so a subtraction-exposed interior
+answers with the **outward** surface's bake. That is a real limit and a
+different one from the SDF's: a bake describes the mesh's own surface, and a CSG
+cut exposes an interior no bake ever measured.
+
 ### Phase 4 — observed-need gated (may be declined)
 
 Per the project's observed-need rule (the precedent is
@@ -1219,7 +1436,17 @@ real scene or user need appears.
    late-set state must recompute in its setter. The signals proposed here are
    geometry-derived and should not depend on late-set state; verify that
    assumption rather than assume it.
-10. **Deforming geometry would stale a bake — confirm whether it can happen.**
+10. **Deforming geometry would stale a bake — RESOLVED 2026-08-29, and the
+   assumption below was WRONG.** `TriangleMeshGeometryIndexed::UpdateVertices`
+   (the keyframed-painter `DisplacedGeometry::RefreshMeshVertices` path)
+   replaces the vertex and normal arrays **in place** on a live `IGeometry*`
+   and refits the BVH. So vertex-level animation does exist, transform-only
+   timelines are *not* the whole story, and free invalidation does not cover
+   it. Phase 3 drops the bakes explicitly there and at every other vertex
+   mutation site (§7.2's second trap). The grep below missed it because it
+   looked for `EvaluateAtTime`; the mutation arrives through an observer
+   callback instead. Original text follows.
+   **Deforming geometry would stale a bake — confirm whether it can happen.**
    M3's free-invalidation argument (§7.2) rests on vertex data being immutable
    for the lifetime of an `IGeometry*`. That fails under **vertex-level or
    skinned animation**, where one geometry changes shape over time and would
