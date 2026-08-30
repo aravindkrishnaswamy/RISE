@@ -950,6 +950,7 @@ namespace
 	{
 		std::filesystem::path checkpointPath;
 		std::filesystem::path finalCheckpointPath;
+		std::filesystem::path retainedCheckpointDirectory;
 		double checkpointCadenceWallS=0.0;
 		std::uint64_t streamedFrameCountAtStart=0u;
 		bool resume=false;
@@ -966,6 +967,8 @@ namespace
 		std::filesystem::path temporalSnapshotDirectory;
 		double temporalSnapshotCadenceS=0.0;
 		double maximumProductionSourceStepS=0.0;
+		std::filesystem::path productionOnsetDiagnosticDirectory;
+		double productionOnsetStopVelocityMPerS=0.0;
 	};
 
 	bool LimitBinary32ProductionStepToEvent(const double simulationTimeS,
@@ -2636,6 +2639,22 @@ namespace
 				simulationTimeS,persistence.checkpointPath.string().c_str());
 		}
 		auto lastCheckpointWall=std::chrono::steady_clock::now();
+		const std::array<double,3> productionOnsetVelocityThresholds={{15.0,30.0,60.0}};
+		std::array<bool,3> productionOnsetThresholdCaptured={{false,false,false}};
+		bool productionOnsetStopReached=false;
+		if(!persistence.productionOnsetDiagnosticDirectory.empty()){
+			std::error_code onsetDirectoryError;
+			std::filesystem::create_directories(
+				persistence.productionOnsetDiagnosticDirectory,onsetDirectoryError);
+			if(onsetDirectoryError){values.structuredError="production_onset_directory_failure";
+				return values;}
+			std::ofstream trajectory(persistence.productionOnsetDiagnosticDirectory/
+				"maximum_velocity_trajectory.csv",std::ios::trunc);
+			trajectory<<"accepted_step,time_s,dt_s,maximum_velocity_m_per_s,axis,face,x,y,z,"
+				"manifold_max,manifold_p95,manifold_p50,tail_cells,tail_drained_m3\n";
+			if(!trajectory){values.structuredError="production_onset_trajectory_failure";
+				return values;}
+		}
 		std::uint64_t temporalSnapshotIndex=values.streamedFrameCount;
 		double nextTemporalSnapshotS=values.statisticsStartS;
 		if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS)
@@ -2681,7 +2700,8 @@ namespace
 			++temporalSnapshotIndex;++values.streamedFrameCount;return true;
 		};
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
-		while(advancedOK&&(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
+		while(advancedOK&&!productionOnsetStopReached&&
+			(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
 			const auto profileStepStart=std::chrono::steady_clock::now();
 			double profileEligibilityMS=0.0,profileTransportMS=0.0,
 				profileControlMS=0.0,profileSourceMS=0.0,profileTargetMS=0.0,
@@ -3065,7 +3085,58 @@ namespace
 							++values.productionPhysicalProjectionRetryCount;
 							production=RISE::FireProductionResidentStepResult();error.clear();
 						}
-						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH")){
+						unsigned int nextCandidate=0u;double nextTimeStepS=0.0;
+						const RISE::FireProductionResidentStepAttemptDisposition disposition=
+							RISE::ClassifyFireProductionResidentStepAttempt(
+								reduction,production,nextCandidate,nextTimeStepS);
+						double attemptMaximumVelocity=0.0;unsigned int attemptMaximumAxis=0u;
+						std::size_t attemptMaximumFace=0u,attemptMaximumX=0u,
+							attemptMaximumY=0u,attemptMaximumZ=0u;
+						for(unsigned int axis=0u;axis<3u;++axis)
+							for(std::size_t face=0u;face<production.projection.velocityMPerS[axis].size();++face){
+								const double magnitude=std::fabs(static_cast<double>(
+									production.projection.velocityMPerS[axis][face]));
+								if(magnitude>attemptMaximumVelocity){attemptMaximumVelocity=magnitude;
+									attemptMaximumAxis=axis;attemptMaximumFace=face;}
+							}
+						if(attemptMaximumAxis==0u){
+							const std::size_t xExtent=request.force.shape.nx+1u;
+							attemptMaximumX=std::min(attemptMaximumFace%xExtent,
+								request.force.shape.nx-1u);
+							const std::size_t yz=attemptMaximumFace/xExtent;
+							attemptMaximumY=yz%request.force.shape.ny;
+							attemptMaximumZ=yz/request.force.shape.ny;
+						}else if(attemptMaximumAxis==1u){
+							attemptMaximumX=attemptMaximumFace%request.force.shape.nx;
+							const std::size_t yz=attemptMaximumFace/request.force.shape.nx;
+							attemptMaximumY=std::min(yz%(request.force.shape.ny+1u),
+								request.force.shape.ny-1u);
+							attemptMaximumZ=yz/(request.force.shape.ny+1u);
+						}else{
+							attemptMaximumX=attemptMaximumFace%request.force.shape.nx;
+							const std::size_t yz=attemptMaximumFace/request.force.shape.nx;
+							attemptMaximumY=yz%request.force.shape.ny;
+							attemptMaximumZ=std::min(yz/request.force.shape.ny,
+								request.force.shape.nz-1u);
+						}
+						std::filesystem::path effectiveMomentumAuditPath;
+						std::size_t onsetThresholdIndex=productionOnsetVelocityThresholds.size();
+						std::size_t auditColumnX=38u,auditColumnY=42u;
+						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH"))
+							effectiveMomentumAuditPath=auditPath;
+						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
+							!persistence.productionOnsetDiagnosticDirectory.empty())
+							for(std::size_t threshold=0u;threshold<productionOnsetVelocityThresholds.size();
+								++threshold)if(!productionOnsetThresholdCaptured[threshold]&&
+								attemptMaximumVelocity>=productionOnsetVelocityThresholds[threshold]){
+								onsetThresholdIndex=threshold;auditColumnX=attemptMaximumX;
+								auditColumnY=attemptMaximumY;std::ostringstream name;
+								name<<"threshold_"<<static_cast<unsigned int>(
+									productionOnsetVelocityThresholds[threshold])<<".raw.csv";
+								effectiveMomentumAuditPath=
+									persistence.productionOnsetDiagnosticDirectory/name.str();break;
+							}
+						if(!effectiveMomentumAuditPath.empty()){
 							RISE::FireProductionResidentStepResult physicalOnly;
 							RISE::FireProductionFrozenForceAdvanceResult forceCPU;
 							RISE::FireProductionFrozenForceResult forceFieldsCPU;
@@ -3128,7 +3199,7 @@ namespace
 										compatibility);
 								}
 							}
-							const std::size_t columnX=38u,columnY=42u;
+							const std::size_t columnX=auditColumnX,columnY=auditColumnY;
 							std::vector<float> columnPhysicalMomentum(request.force.shape.nz+1u,0.0f);
 							for(std::size_t z=0u;z<columnPhysicalMomentum.size()&&auditValid;++z){
 								const std::size_t face=(z*request.force.shape.ny+columnY)*
@@ -3186,16 +3257,19 @@ namespace
 								double columnStressMaximum=0.0,columnBuoyancyMaximum=0.0,
 									columnAdvectionMaximum=0.0,columnSourceMaximum=0.0,
 									columnPressureMaximum=0.0,columnRestorationMaximum=0.0,
-									columnTotalMaximum=0.0,columnClosureMaximum=0.0;
+									columnTotalMaximum=0.0,columnClosureMaximum=0.0,
+									columnVremanMinimum=std::numeric_limits<double>::infinity(),
+									columnVremanMaximum=0.0;
 								const std::filesystem::path columnPath=
-									std::filesystem::path(auditPath).string()+".column.csv";
+									effectiveMomentumAuditPath.string()+".column.csv";
 								std::error_code columnSizeError;const bool writeColumnHeader=
 									!std::filesystem::exists(columnPath)||
 									std::filesystem::file_size(columnPath,columnSizeError)==0u;
 								std::ofstream columnAudit(columnPath,std::ios::app);
 								if(writeColumnHeader)columnAudit<<"beginning_time_s,candidate,dt_s,x,y,z_face,"
 									"beginning_momentum,stress_rate,buoyancy_rate,advection_rate,source_rate,"
-									"pressure_gradient_rate,restoration_rate,total_rate,closure_residual\n";
+									"pressure_gradient_rate,restoration_rate,total_rate,closure_residual,"
+									"lower_vreman_m2_per_s,upper_vreman_m2_per_s\n";
 								for(std::size_t z=0u;z<=request.force.shape.nz;++z){
 									const std::size_t face=(z*request.force.shape.ny+columnY)*
 										request.force.shape.nx+columnX;
@@ -3216,6 +3290,16 @@ namespace
 									const double total=(production.projection.momentumKGPerM2S[2][face]-beginning)/
 										representedStep;
 									const double closure=total-(stress+buoyancy+advection+source+pressure+restoration);
+									const std::size_t lowerZ=z==0u?0u:z-1u;
+									const std::size_t upperZ=std::min(z,request.force.shape.nz-1u);
+									const std::size_t lowerCell=columnX+request.force.shape.nx*(columnY+
+										request.force.shape.ny*lowerZ);
+									const std::size_t upperCell=columnX+request.force.shape.nx*(columnY+
+										request.force.shape.ny*upperZ);
+									const double lowerVreman=
+										forceFieldsCPU.eddyKinematicViscosityM2PerS[lowerCell];
+									const double upperVreman=
+										forceFieldsCPU.eddyKinematicViscosityM2PerS[upperCell];
 									columnStressMaximum=std::max(columnStressMaximum,std::fabs(stress));
 									columnBuoyancyMaximum=std::max(columnBuoyancyMaximum,std::fabs(buoyancy));
 									columnAdvectionMaximum=std::max(columnAdvectionMaximum,std::fabs(advection));
@@ -3224,17 +3308,19 @@ namespace
 									columnRestorationMaximum=std::max(columnRestorationMaximum,std::fabs(restoration));
 									columnTotalMaximum=std::max(columnTotalMaximum,std::fabs(total));
 									columnClosureMaximum=std::max(columnClosureMaximum,std::fabs(closure));
+									columnVremanMinimum=std::min({columnVremanMinimum,lowerVreman,upperVreman});
+									columnVremanMaximum=std::max({columnVremanMaximum,lowerVreman,upperVreman});
 									columnAudit<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
 										representedStep<<','<<columnX<<','<<columnY<<','<<z<<','<<beginning<<','<<
 										stress<<','<<buoyancy<<','<<advection<<','<<source<<','<<pressure<<','<<
-										restoration<<','<<total<<','<<closure<<'\n';
+										restoration<<','<<total<<','<<closure<<','<<lowerVreman<<','<<upperVreman<<'\n';
 								}
 								if(!columnAudit){lastAdvanceError="production momentum column audit write failed";
 									advancedOK=false;break;}
 								std::error_code sizeError;const bool writeHeader=
-									!std::filesystem::exists(auditPath)||
-									std::filesystem::file_size(auditPath,sizeError)==0u;
-								std::ofstream audit(auditPath,std::ios::app);
+									!std::filesystem::exists(effectiveMomentumAuditPath)||
+									std::filesystem::file_size(effectiveMomentumAuditPath,sizeError)==0u;
+								std::ofstream audit(effectiveMomentumAuditPath,std::ios::app);
 								if(writeHeader)audit<<"beginning_time_s,candidate,dt_s,tail_cells,tail_drained_m3,"
 									"physical_velocity_max_m_per_s,restoration_delta_velocity_max_m_per_s,"
 									"terminal_velocity_max_m_per_s,physical_impulse_max_kg_per_m2_s,"
@@ -3245,6 +3331,9 @@ namespace
 									"compatibility_residual_max,column_stress_rate_max,column_buoyancy_rate_max,"
 									"column_advection_rate_max,column_source_rate_max,column_pressure_rate_max,"
 									"column_restoration_rate_max,column_total_rate_max,column_closure_residual_max,"
+									"column_vreman_min_m2_per_s,column_vreman_max_m2_per_s,"
+									"attempt_velocity_max_m_per_s,attempt_velocity_axis,attempt_velocity_face,"
+									"attempt_velocity_x,attempt_velocity_y,attempt_velocity_z,"
 									"force_inclusive_provisional_byte_identity,force_inclusive_provisional_"
 									"difference_count,force_inclusive_provisional_difference_max\n";
 								audit<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
@@ -3262,19 +3351,41 @@ namespace
 									restorationAxis<<','<<restorationFace<<','<<compatibilityResidualMaximum<<','<<
 									columnStressMaximum<<','<<columnBuoyancyMaximum<<','<<columnAdvectionMaximum<<','<<
 									columnSourceMaximum<<','<<columnPressureMaximum<<','<<columnRestorationMaximum<<','<<
-									columnTotalMaximum<<','<<columnClosureMaximum<<','<<
+									columnTotalMaximum<<','<<columnClosureMaximum<<','<<columnVremanMinimum<<','<<
+									columnVremanMaximum<<','<<attemptMaximumVelocity<<','<<attemptMaximumAxis<<','<<
+									attemptMaximumFace<<','<<attemptMaximumX<<','<<attemptMaximumY<<','<<attemptMaximumZ<<','<<
 									(forceInclusiveProvisionalByteIdentity?1:0)<<','<<
 									forceInclusiveProvisionalDifferenceCount<<','<<
 									forceInclusiveProvisionalDifferenceMaximum<<'\n';
 								if(!audit){lastAdvanceError="production momentum audit write failed";
 									advancedOK=false;break;}
+								if(onsetThresholdIndex<productionOnsetThresholdCaptured.size()){
+									productionOnsetThresholdCaptured[onsetThresholdIndex]=true;
+									for(std::size_t skipped=onsetThresholdIndex+1u;
+										skipped<productionOnsetThresholdCaptured.size()&&attemptMaximumVelocity>=
+											productionOnsetVelocityThresholds[skipped];++skipped){
+										std::ostringstream skippedName;skippedName<<"threshold_"<<
+											static_cast<unsigned int>(productionOnsetVelocityThresholds[skipped])<<
+											".raw.csv";
+										const std::filesystem::path skippedPath=
+											persistence.productionOnsetDiagnosticDirectory/skippedName.str();
+										std::error_code copyError;
+										const bool summaryCopied=std::filesystem::copy_file(
+											effectiveMomentumAuditPath,skippedPath,
+											std::filesystem::copy_options::none,copyError);
+										const bool columnCopied=summaryCopied&&std::filesystem::copy_file(
+											columnPath,skippedPath.string()+".column.csv",
+											std::filesystem::copy_options::none,copyError);
+										if(!columnCopied){lastAdvanceError=
+											"production onset skipped-threshold publication failed";
+											advancedOK=false;break;}
+										productionOnsetThresholdCaptured[skipped]=true;
+									}
+									if(!advancedOK)break;
+								}
 							}
 						}
 						advancedOK=attemptComputed;
-						unsigned int nextCandidate=0u;double nextTimeStepS=0.0;
-						const RISE::FireProductionResidentStepAttemptDisposition disposition=
-							RISE::ClassifyFireProductionResidentStepAttempt(
-								reduction,production,nextCandidate,nextTimeStepS);
 						if(!persistence.temporalSnapshotDirectory.empty()&&
 							disposition!=RISE::FireProductionResidentStepAttemptDisposition::Accepted)
 							std::fprintf(stderr,
@@ -3332,6 +3443,24 @@ namespace
 									production.manifoldTailDrainedVolumeM3);
 								values.productionDeviceHistoryMS.push_back(deviceMS);
 								values.productionWallHistoryMS.push_back(wallMS);
+								if(!persistence.productionOnsetDiagnosticDirectory.empty()){
+									std::ofstream trajectory(persistence.productionOnsetDiagnosticDirectory/
+										"maximum_velocity_trajectory.csv",std::ios::app);
+									trajectory<<std::setprecision(17)<<acceptedSteps+1u<<','<<
+										simulationTimeS+trialStep<<','<<trialStep<<','<<attemptMaximumVelocity<<','<<
+										attemptMaximumAxis<<','<<attemptMaximumFace<<','<<attemptMaximumX<<','<<
+										attemptMaximumY<<','<<attemptMaximumZ<<','<<
+										production.maximumAcceptedManifoldDeviation<<','<<
+										production.acceptedManifoldDeviationP95<<','<<
+										production.acceptedManifoldDeviationP50<<','<<
+										production.manifoldTailCellCount<<','<<
+										production.manifoldTailDrainedVolumeM3<<'\n';
+									if(!trajectory){advancedOK=false;
+										error="production onset trajectory publication failed";}
+									if(advancedOK&&persistence.productionOnsetStopVelocityMPerS>0.0&&
+										attemptMaximumVelocity>=persistence.productionOnsetStopVelocityMPerS)
+										productionOnsetStopReached=true;
+								}
 								if(!persistence.temporalSnapshotDirectory.empty()&&
 									(acceptedSteps+1u)%256u==0u){
 									double maximumVelocity=0.0,maximumTemperature=0.0,
@@ -3731,7 +3860,8 @@ namespace
 				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
 				values.acceptedTimeStepS=reaction.deltaTimeS;
 				values.simulatedTimeS=simulationTimeS;
-				const bool moreWork=acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS;
+				const bool moreWork=!productionOnsetStopReached&&
+					(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS);
 				const double checkpointElapsedS=std::chrono::duration<double>(
 					std::chrono::steady_clock::now()-lastCheckpointWall).count();
 				const bool equivalenceSnapshotDue=
@@ -3785,7 +3915,28 @@ namespace
 							IssueBinary64CheckpointAuthority(checkpoint));
 					const bool checkpointSaved=checkpointAuthorized&&SaveMethaneRunCheckpoint(
 						checkpointOutput,checkpoint,error);
-					if(!checkpointSaved&&(reportCapstoneProgress||
+					bool retainedCheckpointSaved=true;
+					std::filesystem::path retainedCheckpointOutput;
+					if(checkpointSaved&&!persistence.retainedCheckpointDirectory.empty()&&
+						checkpointOutput==persistence.checkpointPath){
+						std::error_code retentionDirectoryError;
+						std::filesystem::create_directories(
+							persistence.retainedCheckpointDirectory,retentionDirectoryError);
+						std::ostringstream retainedName;retainedName<<"step_"<<std::setw(10)<<
+							std::setfill('0')<<acceptedSteps<<".checkpoint";
+						retainedCheckpointOutput=
+							persistence.retainedCheckpointDirectory/retainedName.str();
+						if(retentionDirectoryError){error="cannot create retained checkpoint directory";
+							retainedCheckpointSaved=false;
+						}else if(std::filesystem::exists(retainedCheckpointOutput)){
+							retainedCheckpointSaved=DigestFile(retainedCheckpointOutput)==
+								DigestFile(checkpointOutput);
+							if(!retainedCheckpointSaved)error=
+								"retained checkpoint step identity already has different bytes";
+						}else retainedCheckpointSaved=SaveMethaneRunCheckpoint(
+							retainedCheckpointOutput,checkpoint,error);
+					}
+					if((!checkpointSaved||!retainedCheckpointSaved)&&(reportCapstoneProgress||
 						!persistence.temporalSnapshotDirectory.empty())){
 						std::uint64_t diagnosticStateDigest=0u;
 						const bool stateMatches=checkpoint.productionManifoldObservation.Available()&&
@@ -3804,7 +3955,7 @@ namespace
 					centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
 					centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
 					planeHeatReleaseIntegral=std::move(checkpoint.planeHeatReleaseIntegral);
-					if(!checkpointSaved){
+					if(!checkpointSaved||!retainedCheckpointSaved){
 						advancedOK=false;break;
 					}
 					lastCheckpointWall=std::chrono::steady_clock::now();
@@ -3812,6 +3963,9 @@ namespace
 						"capstone durable checkpoint count=%zu step=%u time=%.17g path=%s\n",
 						values.checkpointStepIndices.size(),acceptedSteps,simulationTimeS,
 						checkpointOutput.string().c_str());
+					if(reportCapstoneProgress&&!retainedCheckpointOutput.empty())std::fprintf(stderr,
+						"capstone retained checkpoint step=%u time=%.17g path=%s\n",acceptedSteps,
+						simulationTimeS,retainedCheckpointOutput.string().c_str());
 					if(persistence.killAfterFirstCheckpoint)HardKillCurrentProcess();
 				}
 				if(reportCapstoneProgress && (acceptedSteps<=4u || acceptedSteps%10u==0u ||
@@ -4929,13 +5083,15 @@ namespace
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
 		if(mode!="baseline"&&mode!="kill"&&mode!="resume"&&mode!="resume-final"&&
-			mode!="resume-one-fp64-reject"&&
+			mode!="resume-one-fp64-reject"&&mode!="retain"&&
 			mode!="syncfail")return 96;
 		forcePostRenameDirectorySyncFailureForTest=mode=="syncfail";
 		RunPersistenceOptions persistence;
 		if(mode!="baseline"){
 			persistence.checkpointPath=checkpointPath;
 			persistence.checkpointCadenceWallS=0.0;
+			if(mode=="retain")persistence.retainedCheckpointDirectory=
+				checkpointPath.parent_path()/"retained";
 			persistence.resume=mode=="resume"||mode=="resume-final"||
 				mode=="resume-one-fp64-reject";
 			if(mode=="resume-final"||mode=="resume-one-fp64-reject")
@@ -5498,6 +5654,7 @@ namespace
 		persistence.productionMetal=true;
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
+		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
 		persistence.checkpointCadenceWallS=300.0;
 		const char* resumeRequested=std::getenv("RISE_FIRE_TEMPORAL_RESUME");
 		if(resumeRequested&&std::strcmp(resumeRequested,"1")==0){
@@ -5632,6 +5789,108 @@ namespace
 			result.acceptedTimeStepHistoryS.size(),frameDigests.size(),wallS,
 			(outputDirectory/"production_capstone_summary.txt").string().c_str());
 		return frameDigests.empty()?97:0;
+#endif
+	}
+
+	int RunProductionOnsetCampaignChild(const double resolutionTier,
+		const std::filesystem::path& outputDirectory)
+	{
+#if !defined(RISE_ENABLE_OPENVDB)
+		(void)resolutionTier;(void)outputDirectory;return 90;
+#else
+		if(resolutionTier!=6.0&&resolutionTier!=10.0)return 91;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
+		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
+		if(directoryError)return 92;
+		double targetTimeS=2.2;
+		if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
+			char* end=nullptr;targetTimeS=std::strtod(target,&end);
+			if(!end||*end!='\0'||!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
+		}
+		RunPersistenceOptions persistence;
+		persistence.productionMetal=true;
+		persistence.checkpointPath=outputDirectory/"latest.checkpoint";
+		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
+		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoints";
+		persistence.checkpointCadenceWallS=120.0;
+		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
+		persistence.productionOnsetStopVelocityMPerS=60.0;
+		persistence.maximumProductionSourceStepS=
+			static_cast<double>(static_cast<float>(0.0016462659696117043));
+		const auto wallStart=std::chrono::steady_clock::now();
+		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,targetTimeS,1.0,
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
+		const double wallS=std::chrono::duration<double>(
+			std::chrono::steady_clock::now()-wallStart).count();
+		if(!result.succeeded){std::fprintf(stderr,"production onset campaign failed: %s\n",
+			result.structuredError.c_str());return 93;}
+		const std::filesystem::path trajectory=outputDirectory/"budgets"/
+			"maximum_velocity_trajectory.csv";
+		std::ofstream summary(outputDirectory/"onset_campaign_summary.v1",std::ios::trunc);
+		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v1\n"
+			<<"resolution_tier "<<resolutionTier<<"\n"
+			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
+			<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\n"
+			<<"wall_s "<<wallS<<"\n"
+			<<"trajectory_sha256 "<<DigestFile(trajectory)<<"\n";
+		for(const unsigned int threshold:{15u,30u,60u}){
+			const std::filesystem::path budget=outputDirectory/"budgets"/
+				("threshold_"+std::to_string(threshold)+".raw.csv");
+			summary<<"threshold_"<<threshold<<"_captured "<<
+				(std::filesystem::exists(budget)?1:0)<<"\n";
+			if(std::filesystem::exists(budget))summary<<"threshold_"<<threshold<<
+				"_summary_sha256 "<<DigestFile(budget)<<"\n"<<"threshold_"<<threshold<<
+				"_column_sha256 "<<DigestFile(budget.string()+".column.csv")<<"\n";
+		}
+		summary.close();
+		if(!summary||DigestFile(trajectory).empty())return 94;
+		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN tier=%.0f time=%.17g steps=%zu "
+			"wall_s=%.17g trajectory=%s\n",resolutionTier,result.simulatedTimeS,
+			result.acceptedTimeStepHistoryS.size(),wallS,DigestFile(trajectory).c_str());
+		return 0;
+#endif
+	}
+
+	int RunOracleRetainedTrajectoryChild(const double targetTimeS,
+		const std::filesystem::path& outputDirectory)
+	{
+#if !defined(RISE_ENABLE_OPENVDB)
+		(void)targetTimeS;(void)outputDirectory;return 90;
+#else
+		if(!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
+		if(directoryError)return 92;
+		RunPersistenceOptions persistence;
+		persistence.checkpointPath=outputDirectory/"latest.checkpoint";
+		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
+		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoints";
+		persistence.checkpointCadenceWallS=900.0;
+		const auto wallStart=std::chrono::steady_clock::now();
+		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,targetTimeS,1.0,
+			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
+		const double wallS=std::chrono::duration<double>(
+			std::chrono::steady_clock::now()-wallStart).count();
+		if(!result.succeeded){std::fprintf(stderr,"oracle retained trajectory failed: %s\n",
+			result.structuredError.c_str());return 93;}
+		std::ofstream summary(outputDirectory/"oracle_regeneration_summary.v1",std::ios::trunc);
+		summary<<std::setprecision(17)<<"schema rise.fire.oracle.retained_trajectory.summary.v1\n"
+			<<"target_time_s "<<targetTimeS<<"\n"
+			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
+			<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\n"
+			<<"wall_s "<<wallS<<"\n"
+			<<"final_checkpoint_sha256 "<<DigestFile(outputDirectory/"final.checkpoint")<<"\n";
+		summary.close();
+		if(!summary||DigestFile(outputDirectory/"final.checkpoint").empty())return 94;
+		std::fprintf(stderr,"ORACLE_RETAINED_TRAJECTORY time=%.17g steps=%zu wall_s=%.17g "
+			"checkpoint=%s\n",result.simulatedTimeS,result.acceptedTimeStepHistoryS.size(),wallS,
+			DigestFile(outputDirectory/"final.checkpoint").c_str());
+		return 0;
 #endif
 	}
 
@@ -5875,6 +6134,14 @@ int main(int argc,char** argv)
 		if(!ParsePositiveDoubleArgument(argv[2],tier)||
 			!ParsePositiveDoubleArgument(argv[3],cadence))return 91;
 		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4]);
+	}
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-onset")==0){
+		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
+		return RunProductionOnsetCampaignChild(tier,argv[3]);
+	}
+	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
+		double target=0.0;if(!ParsePositiveDoubleArgument(argv[2],target))return 91;
+		return RunOracleRetainedTrajectoryChild(target,argv[3]);
 	}
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
 		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4]);
@@ -6203,6 +6470,25 @@ int main(int argc,char** argv)
 	const bool streamedPrefixPublished=baselineCheckpointExit==0&&
 		DurableCopyPublishedFile(baselineCheckpointFrame,streamedPrefixFrame,
 			checkpointFixtureError);
+	const std::filesystem::path retainedCheckpointRoot=checkpointFixture/"retention_run.checkpoint";
+	const std::filesystem::path retainedCheckpointFrame=checkpointFixture/"retention_run.vdb";
+	const int retainedCheckpointExit=RunCheckpointSubprocess(self,"retain",retainedCheckpointRoot,
+		retainedCheckpointFrame,2u);
+	const std::filesystem::path retainedStep1=checkpointFixture/"retained"/
+		"step_0000000001.checkpoint";
+	const std::filesystem::path retainedStep2=checkpointFixture/"retained"/
+		"step_0000000002.checkpoint";
+	MethaneRunCheckpoint retainedStep1Record,retainedStep2Record,retainedCurrentRecord;
+	std::string retainedCheckpointError;
+	Check(retainedCheckpointExit==0&&LoadMethaneRunCheckpoint(retainedStep1,
+		retainedStep1Record,retainedCheckpointError)&&LoadMethaneRunCheckpoint(retainedStep2,
+		retainedStep2Record,retainedCheckpointError)&&LoadMethaneRunCheckpoint(retainedCheckpointRoot,
+		retainedCurrentRecord,retainedCheckpointError)&&retainedStep1Record.acceptedSteps==1u&&
+		retainedStep2Record.acceptedSteps==2u&&retainedCurrentRecord.acceptedSteps==2u&&
+		DigestFile(retainedStep1)!=DigestFile(retainedStep2)&&
+		DigestFile(retainedStep2)==DigestFile(retainedCheckpointRoot)&&
+		!std::filesystem::exists(checkpointFixture/"retained"/"step_0000000003.checkpoint"),
+		"r181 periodic checkpoint retention preserves each completed prior state instead of overwriting it");
 	const std::filesystem::path syncFailureCheckpoint=checkpointFixture/"sync_failure.checkpoint";
 	const std::filesystem::path syncFailureReturnedMarker=checkpointFixture/"sync_failure.returned";
 	const int syncFailureExit=RunCheckpointSubprocess(self,"syncfail",syncFailureCheckpoint,
@@ -7185,6 +7471,8 @@ int main(int argc,char** argv)
 	RunPersistenceOptions capstonePersistence;
 	if(capstoneArtifactRun){
 		capstonePersistence.checkpointPath=capstoneOutputDirectory/"tier10.run.checkpoint";
+		capstonePersistence.retainedCheckpointDirectory=
+			capstoneOutputDirectory/"checkpoint_history";
 		capstonePersistence.checkpointCadenceWallS=900.0;
 		capstonePersistence.streamedFrameCountAtStart=1u;
 		capstonePersistence.resume=true;

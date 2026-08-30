@@ -2347,7 +2347,7 @@ int main()
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"3f7aa5bd0e4e3c3d3933ae14bd81f46db06800bc9d29d7390b5af816ba091730"&&
+			"476669369ffa864e7a10a57644da8da9e52dfa7e996ae6c12b26bf141b220af7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2479,7 +2479,7 @@ int main()
 			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"3f7aa5bd0e4e3c3d3933ae14bd81f46db06800bc9d29d7390b5af816ba091730"&&
+			"476669369ffa864e7a10a57644da8da9e52dfa7e996ae6c12b26bf141b220af7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2647,7 +2647,7 @@ int main()
 		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			sequenceTest.begin(),sequenceTest.end()))==
-			"3f7aa5bd0e4e3c3d3933ae14bd81f46db06800bc9d29d7390b5af816ba091730"&&
+			"476669369ffa864e7a10a57644da8da9e52dfa7e996ae6c12b26bf141b220af7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
@@ -2747,7 +2747,7 @@ int main()
 		!projectionMomentumColumnRaw.empty()&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMomentumBudgetEvidence.begin(),projectionMomentumBudgetEvidence.end()))==
-			"70b991d30ead4a57f3b74c445269c9abcc85f2619a27dcc575b2475702c27da7"&&
+			"bf985132f8f3252211130953124d12424224b8932fefcea3681016119ea480f9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectionMomentumBudgetRaw.begin(),projectionMomentumBudgetRaw.end()))==
 			"d660291c29a51ded842a83ccc6b417a640e66cbc9d136f1f1da49114d887e6d7"&&
