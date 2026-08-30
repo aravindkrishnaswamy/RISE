@@ -444,6 +444,184 @@ directional_light
 }
 ```
 
+## Wear follows the form, not the axis — patina in the crevices, done right
+
+The prior a lot of agents carry is "masks are made of `P.z`" — pick a world
+axis, threshold it, call it grime.  That fakes a rim of dirt at a fixed
+*altitude* no matter what the object's actual shape is.  Real patina
+collects where the FORM traps it — inside a scar, along a seam, in the
+crease where two masses meet — which is a statement about curvature, not
+position.  RISE's `curv` context variable (`expression_painter` /
+`scalar_painter { expression ... }`) is exactly that signal: **positive =
+convex (an edge), negative = concave (a crevice), 0 = flat**, exact on
+`sdf_geometry` / `skeleton_geometry` and the analytic curved primitives.
+`clamp(-curv, 0, 1)` is a crevice mask on ANY scene scale — no per-object
+tuning, because `curv` is already normalized to the hit geometry's own
+size.  Composing it with a second `fbm` field breaks the mask into patchy
+oxidation instead of a smooth, obviously-procedural AO ramp — the tell
+that gives away a lazy wear pass.  As in the roughness example above,
+every art-directable number is a `param` with `min`/`max`/`step`/`label`.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.35 0.40 0.50
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					32
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	256
+	height	256
+}
+
+pinhole_camera
+{
+	location	0 0 3.2
+	lookat		0 0 0
+	up			0 1 0
+	fov			32.0
+}
+
+# THE FIELD.  Scalar-typed crevice mask driven by NEGATIVE curv (concave =
+# crevice, per the sign convention above), broken up by a second fbm so
+# the patina reads as patchy oxidation instead of a flat AO ramp.
+expression_painter
+{
+	name		pnt_wear_field
+	param		crevice_gain 6.0 min 0.5 max 20 step 0.5 label "Crevice sensitivity"
+	param		breakup_freq 10.0 min 1 max 40 step 0.5 label "Breakup frequency"
+	def			crevice_mask clamp(-curv * crevice_gain, 0, 1)
+	def			breakup 0.5 + 0.5 * fbm(P*breakup_freq, 4, 0.5, 2.0)
+	expr		clamp(crevice_mask * breakup, 0, 1)
+}
+
+# CONSUMER 1 -- colour: clean bronze at 0, dark crusted patina at 1.
+ramp_painter
+{
+	name			pnt_patina_color
+	input			pnt_wear_field
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.42 0.28 0.14
+	stop			1.00  0.04 0.07 0.05
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- the PHYSICAL SCALAR, same field, any-painter bridge:
+# roughness 0.10 (polished bronze) .. 0.60 (crusted patina crust).
+scalar_painter
+{
+	name		sp_wear_rough
+	painter		pnt_wear_field
+	channel		R
+	scale		0.50
+	bias		0.10
+}
+
+uniformcolor_painter
+{
+	name	pnt_bronze_spec
+	color	0.55 0.48 0.32
+}
+
+ggx_material
+{
+	name		mat_patina
+	rd			pnt_patina_color
+	rs			pnt_bronze_spec
+	alphax		sp_wear_rough
+	alphay		sp_wear_rough
+	ior			1.18
+	extinction	2.8
+}
+
+# THE CREATURE-LIKE BODY: a round head with a carved scar/dimple
+# (subtract) -- an unambiguous concave crevice (inside the scar) against
+# an unambiguous convex body (the rest of the head), the family curv is
+# EXACT on.
+sdf_geometry
+{
+	name	head
+	part	sphere union 0     0 0 0     0 0 0   1 1 1   0.75 0 0   0
+	part	sphere subtract 0.08   0.35 0.1 0.55   0 0 0   1 1 1   0.42 0 0   0
+}
+
+standard_object
+{
+	name		obj_head
+	geometry	head
+	material	mat_patina
+	position	0 0 0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.30 0.30 0.32
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.9 0
+	orientation	-90 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.2
+	color		1 0.98 0.95
+	direction	0.35 0.6 0.75
+}
+```
+
+Rendering just `pnt_wear_field` in isolation (bind it straight to an
+unlit `exitance` slot and nothing else) makes the geometric keying
+undeniable: the raw mask reads exactly 0 everywhere on the convex body
+and a strong nonzero value the instant a ray lands inside the concave
+scar — the crevice, not an axis, is what turns the field on.  Bind
+`curv` (not `P`) whenever the question is "where does wear collect on
+THIS shape," on an SDF/skeleton body specifically, where the signal is
+exact rather than faceted.  There is no dedicated wear-verb yet;
+`insert_material_scaffold {family:"aged_bronze", wear:...}` gets you a
+comparable patina look in one call today, but through a reaction-diffusion
+field rather than curvature, so it won't specifically hug a crevice the
+way this hand-typed field does.
+
 ## A one-call route to a wired varied material
 
 The four starters above are hand-typed, one painter and one material at

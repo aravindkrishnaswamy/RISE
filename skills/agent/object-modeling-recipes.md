@@ -1895,6 +1895,116 @@ can BE the template -- a row of dimpled pebbles along a path is one
 `displaced_geometry` chunk plus the `path_instances_geometry` that stamps it,
 not N hand-placed copies.
 
+## Recipe 7: edge wear from `curv` -- bright metal where the form is convex
+
+Any convenient geometry works; a rounded box makes the point cleanly
+because its flat faces are exactly `curv == 0` and its filleted edges are
+uniformly convex.  `clamp(curv, 0, 1)` alone (no noise needed for a crisp
+trim look) picks out the edges; the SAME field bridges into a
+`scalar_painter` for roughness so the exposed metal is also the polished
+one -- see `materials-and-media-basics.md`'s patina section for the
+concave twin (`clamp(-curv, 0, 1)`) and the full sign convention.
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	1.5 1.2 1.7
+	lookat		0 0 0
+	up			0 1 0
+	fov			38.0
+}
+
+expression_painter
+{
+	name		pnt_edge_field
+	param		edge_gain 3.0 min 0.5 max 12 step 0.5 label "Edge sensitivity"
+	expr		clamp(curv * edge_gain, 0, 1)
+}
+
+uniformcolor_painter
+{
+	name	pnt_paint
+	color	0.55 0.08 0.06
+}
+
+uniformcolor_painter
+{
+	name	pnt_bare_metal
+	color	0.85 0.85 0.82
+}
+
+blend_painter
+{
+	name	pnt_edge_color
+	colora	pnt_bare_metal
+	colorb	pnt_paint
+	mask	pnt_edge_field
+}
+
+scalar_painter
+{
+	name		sp_edge_rough
+	painter		pnt_edge_field
+	channel		R
+	scale		-0.55
+	bias		0.60
+}
+
+ggx_material
+{
+	name		mat_edge
+	rd			pnt_edge_color
+	rs			pnt_bare_metal
+	alphax		sp_edge_rough
+	alphay		sp_edge_rough
+	ior			1.4
+	extinction	2.2
+}
+
+sdf_geometry
+{
+	name	block
+	part	roundbox union 0   0 0 0   0 0 0   1 1 1   0.5 0.5 0.5   0.08
+}
+
+standard_object
+{
+	name		obj_block
+	geometry	block
+	material	mat_edge
+	position	0 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.2
+	color		1 0.98 0.95
+	direction	0.4 0.6 0.7
+}
+```
+
 ## Traps specific to object modeling
 
 1. **`torus_geometry`'s ring axis is always Y** -- there is no `axis`

@@ -127,6 +127,12 @@ lacunarity)`, `turbulence`, `ridged`, `worley_f1/f2/f2f1/id(p, jitter)`,
 select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
 `vec3()`, `.x/.y/.z`, `dot`, `cross`, `length`, `normalize`.
 
+The body also sees `curv`/`curvR` (surface curvature at the hit: positive
+convex, negative concave, 0 flat) for geometry-driven wear and grime
+masks -- `read_skill {name:"materials-and-media-basics"}`'s patina
+section has the sign convention and a full worked, execution-validated
+example.
+
 Three authoring rules, and the first is a contract, not a style note:
 
 1. **Every art-directable number goes in a `param` with a range, never a
