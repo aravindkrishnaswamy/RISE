@@ -659,12 +659,179 @@ through a reaction-diffusion field rather than curvature or occlusion, so
 it won't specifically hug a crevice or a pocket the way this hand-typed
 field does.
 
-`thickness(radius)` is occlusion's sibling for TRANSLUCENCY rather than
-grime: it returns `[0,1]` with 1 = thick, so `1 - thickness(0.1)` is a
-THIN-region mask — bind it into a subsurface tint or an SSS-style rim
-term and a creature's ears, fins, or a leaf's edge light up first, which
-a curvature-only edge mask cannot do because curv has no notion of wall
-thickness.
+## Glow that dies in thick walls — thickness, not painted emission
+
+The fake: an emissive gradient painted straight onto an opaque shell
+LOOKS like translucency in the one lighting setup the agent happened to
+render, and breaks in every other — it doesn't dim when the wall
+thickens, doesn't react to the interior light being moved or switched
+off, and doesn't tint a cast shadow, because no light is actually
+passing through anything.  It is also the single most-repeated agent
+failure on record: asked for a thin-walled vessel that glows from
+within with the glow dying out where the walls thicken, the agent never
+calls `thickness()` at all — it computes a height-based mask, binds it
+to `exitance`, and calls the shell "translucent" in its summary even
+though the shell is fully opaque.  `thickness(radius)` is occlusion's
+sibling for TRANSLUCENCY rather than grime: it returns `[0,1]` with 1 =
+thick, so `1 - thickness(0.1)` is a THIN-region mask — the correct fix
+binds it into a REAL `translucent_material`'s `ref`/`tau`, not into an
+emission slot, so the glow is light that actually crossed the wall.
+
+The shape to copy, distilled from the votive shell in
+`scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene`
+(that scene's deluxe, plinth-mounted version of this same idiom): an
+off-centre CSG subtraction so the wall genuinely varies in thickness,
+`thickness(radius)` turned into a `thin` mask, and a `ramp_painter` pair
+where reflectance FALLS and transmittance RISES together toward the
+thin end — dropping reflectance is what makes the thin rim read as "lit
+from within" instead of merely "less shiny".  As in every other starter
+in this file, every art-directable number is a `param` with
+`min`/`max`/`step`/`label`.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_dusk
+	color	0.05 0.06 0.09
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					32
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_dusk
+	radiance_background		TRUE
+}
+
+film
+{
+	width	160
+	height	160
+}
+
+pinhole_camera
+{
+	location	0 0.05 1.55
+	lookat		0 0 0
+	up			0 1 0
+	fov			30.0
+}
+
+# THE VESSEL.  Outer sphere (radius 0.40) minus an inner sphere (radius
+# 0.25) offset 0.10 units UP -- the off-centre subtraction is what makes
+# the wall genuinely thin at the top rim (0.40-0.10-0.25=0.05) and thick
+# at the base (0.40+0.10-0.25=0.25), the same recipe as the votive shell
+# in scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene.
+sdf_geometry
+{
+	name	geo_lantern_shell
+	part	sphere union    0     0.00 0.00 0.00   0 0 0   1 1 1   0.40 0 0   0
+	part	sphere subtract 0.02  0.00 0.10 0.00   0 0 0   1 1 1   0.25 0 0   0
+}
+
+# THE POINT OF THIS EXAMPLE.  `thickness(radius)` answers with [0,1],
+# 1=thick -- `1 - thickness(...)` is the THIN mask a rim-glow wants.
+# This is a LIVE query on the SDF (any expression radius is fine here;
+# a mesh would need a literal -- see the descriptor note above).
+expression_painter
+{
+	name	pnt_shell_thinness
+	param	thick_radius 0.10 min 0.03 max 0.30 step 0.01 label "Thickness sample radius (bbox fraction)"
+	def		thin clamp(1.0 - thickness(thick_radius), 0.0, 1.0)
+	expr	thin
+}
+
+# Reflectance FALLS and transmittance RISES together toward the thin
+# rim -- that pairing is what reads as "lit from within" instead of
+# merely "less opaque".  ramp_painter, not a bare uniformcolor_painter,
+# because translucent_material's own energy-conservation auto-scale only
+# guards a uniformcolor_painter's ref+tau -- these are spatially varying,
+# so the by-hand headroom below (0.70+0.02 and 0.30+0.55, both < 1 per
+# channel) is what actually keeps the material physical end to end.
+ramp_painter
+{
+	name			pnt_shell_ref
+	input			pnt_shell_thinness
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.70 0.68 0.62
+	stop			1.00  0.30 0.28 0.24
+}
+
+ramp_painter
+{
+	name			pnt_shell_tau
+	input			pnt_shell_thinness
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.02 0.02 0.02
+	stop			1.00  0.55 0.42 0.24
+}
+
+translucent_material
+{
+	name		mat_lantern_shell
+	ref			pnt_shell_ref
+	tau			pnt_shell_tau
+	ext			0.0
+	N			24.0
+	scattering	0.0
+}
+
+standard_object
+{
+	name		obj_lantern
+	geometry	geo_lantern_shell
+	material	mat_lantern_shell
+	position	0 0 0
+}
+
+# THE LIGHT THAT ACTUALLY MAKES IT GLOW.  A small warm point well inside
+# the 0.25-radius cavity -- nowhere close to the wall -- so every photon
+# reaching the camera through the thin rim genuinely passed through the
+# translucent material's transmittance, not through a hole in the shell.
+shape_light
+{
+	name		light_candle
+	shape		sphere
+	center		0 0.10 0
+	size		0.05
+	color		1.00 0.72 0.32
+	exitance	60
+}
+
+directional_light
+{
+	name		key
+	power		0.6
+	color		0.55 0.62 0.80
+	direction	0.3 0.5 0.85
+}
+```
+
+Rendering this scene and averaging luma (Rec.709 linear, `display_transform
+none` so pixel value IS radiance) over horizontal bands from the rim down
+to the base shows the gradient the geometry promises: mean band luma goes
+65.0 (rim, thickness ≈0.05) → 30.4 → 24.1 → 21.2 → 16.6 (base, thickness
+≈0.25) — monotonically brighter exactly where the wall is thinnest.  The
+control that tells this apart from a painted fake: delete the
+`shape_light` (an `exitance` of exactly 0 refuses to parse — "a light
+that emits nothing is not a light" — so the light has to be genuinely
+absent, not merely zeroed) and render again.  The same bands come back
+14.9 → 20.0 → 19.6 → 16.9 → 12.4 — flat within noise, and the rim is now
+the DARKEST band, not the brightest, because with no interior light to
+transmit, the thin end's own lower reflectance is all that's left.  An
+emissive-gradient fake would keep glowing in both renders, because its
+"glow" was never conditioned on a light existing in the first place.
 
 Both signals are answered by two geometry families, by different means.
 The volumetric SDF family (`sdf_geometry` / `skeleton_geometry`)

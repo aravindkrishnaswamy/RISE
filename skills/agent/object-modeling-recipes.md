@@ -1906,6 +1906,13 @@ one -- see `materials-and-media-basics.md`'s patina section for the
 concave twin (`clamp(-curv, 0, 1)`) and the full sign convention, and for
 `occlusion(radius)`, the crevice-dirt companion signal that deepens grime
 in a genuinely enclosed pocket a fine-scale curvature read underrates.
+For a thin rim, ear, fin, or shell that should glow or tint differently
+where the form is thinnest, reach for `thickness(radius)` instead of
+either -- see `materials-and-media-basics.md`'s "Glow that dies in thick
+walls" section for the worked idiom (a varying-thickness SDF shell + a
+`thin`-driven `translucent_material`), which is the fix for the
+single most-repeated agent failure of faking translucency with a
+painted emissive gradient on an opaque shell.
 
 ```rise
 RISE ASCII SCENE 7

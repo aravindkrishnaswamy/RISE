@@ -691,7 +691,31 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// were execution-validated (parse + derive + render + measured luma
 	// separation between concave and convex regions) before registration.
 	// procedural-textures gets a pointer only (0/6 measured pull rate).
-	Check( totalSnippets == 28, "the seed skills carry the expected 28 ```rise snippets in total (got " +
+	//
+	// The thickness adoption wiring (2026-08-30) took the count 28 -> 29:
+	// two graded gemini trajectories (the altar stress test, pre- and
+	// post-hardening) show the SAME failure -- asked for a thin-walled
+	// porcelain lantern glowing from inside with the glow dying where the
+	// walls thicken, the agent never calls thickness() and instead paints
+	// an emissive height-gradient onto an opaque shell, then overclaims
+	// physical transmission in its summary.  Root cause: thickness was
+	// taught as a one-sentence prose pointer with no worked example.
+	// materials-and-media-basics gains "Glow that dies in thick walls" --
+	// a varying-thickness SDF shell (distilled from the votive shell in
+	// scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene)
+	// with `1 - thickness(radius)` driving a ramp_painter pair into a REAL
+	// translucent_material's ref/tau.  Execution-validated: rendered luma
+	// bands from rim to base come back monotonically brighter at the thin
+	// end (65.0 -> 30.4 -> 24.1 -> 21.2 -> 16.6), and a light-off control
+	// (the interior shape_light deleted, not merely zeroed -- exitance 0
+	// refuses to parse) collapses that gradient to flat-within-noise and
+	// even inverts it (14.9 -> 20.0 -> 19.6 -> 16.9 -> 12.4), proving the
+	// glow is real transmitted light and not a painted fake that would
+	// have kept glowing regardless.  object-modeling-recipes gets a
+	// pointer only, next to the existing curv/occlusion recipe -- no new
+	// fence there, per the same one-worked-example-per-signal economy as
+	// the curv/occlusion ledger entry above.
+	Check( totalSnippets == 29, "the seed skills carry the expected 29 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
