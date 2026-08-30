@@ -1,16 +1,20 @@
 # Geometry-Derived Shading Signals — Curvature, Occlusion/Cavity, Thickness
 
-**Status:** **ACCEPTED — Phase 1 implemented** (user-approved 2026-08-29;
-all phases, in sequence). The §5.5 correctness item landed first, separately
-(commits `3f495c25..da92af3e`, merged to master 2026-08-29, zero-P1 — including
-a sign-pairing bug family in CSG/back-face `dndu/dndv` negation the review loop
-surfaced beyond this doc's scope).  **Phase 1 items 1–7 landed 2026-08-29**
-(`SurfaceCurvature.h`, `curv`/`curvR`, `scaleHint`, analytic-primitive and SDF
-population, the consumption gate, descriptor text, and
-`tests/SurfaceCurvatureTest.cpp`); item 8 (the two skill examples) is a later
-wave.  Where the implementation differs from this document's sketch, the
-amendments are marked **AMENDED (2026-08-29)** in the relevant section.
-**Date:** 2026-08-29 (proposed and accepted same day).
+**Status:** **PHASES 1–3 SHIPPED** (2026-08-29, same day: proposed → accepted →
+implemented; every phase converged zero-P1 through independent review rounds —
+see the per-phase status blocks in §13). The §5.5 correctness item landed first,
+separately (commits `3f495c25..da92af3e`, zero-P1 — including a sign-pairing bug
+family in CSG/back-face `dndu/dndv` negation the review loop surfaced beyond
+this doc's scope). Where the implementation differs from this document's
+sketch, the amendments are marked **AMENDED (2026-08-29)** in the relevant
+section. **Open debts:** the Phase-1 cross-provider census (requires hosted
+provider keys; harness + scenario configs in place, not yet run); the
+BDPT/VCM/MLT neutral-signal transport gap (§14 item 11 — contained by a
+startup diagnostic + honest descriptor text; the real fix is the
+`PathVertexEval.h:94-106` widening contract, plus the `LightSampler`
+NEE/photon-emission records). **Phase 4 remains observed-need gated and
+untouched.**
+**Date:** 2026-08-29.
 **Inputs:** a six-pass source-grounded survey of the RISE tree — the expression
 VM ([ExpressionEval.h](../src/Library/Painters/ExpressionEval.h),
 [ExpressionPainter.cpp](../src/Library/Painters/ExpressionPainter.cpp)), the
