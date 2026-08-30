@@ -1014,6 +1014,40 @@ named so the escalation is cheap: the predicate and scaffold sites in
 pair in `AgentMcpAdapter.cpp` + `AgentChatCodecs.cpp` (the two-name-lists
 lesson, commit `1ed4e7c3`, doc 88 §8 S5).
 
+**CENSUS RUN (2026-08-29)** — `evals/runconfigs/curv_census_gemini_gpt.json`:
+`rich_material_closeup` (the doc-88 S6 instrument — its prompt is a *weathered*
+brass doorknob, wear summoned without naming a mechanism) × 3 repeats ×
+{gemini-3.5-flash, gpt-5.6-terra}, single run by user direction (token-lean).
+Post-hoc over the committed scenes (`evals/runs/curv_census/`):
+
+| | curv | occlusion | position proxy | expression chunks |
+|---|---|---|---|---|
+| gemini r1 | 0 | 0 | 0 | 1 |
+| gemini r2 | **8 refs** | 0 | 1 | 4 |
+| gemini r3 | 0 | 0 | 2 | 2 |
+| gpt r1-r3 | 0 | 0 | 0 | 1/1/0 |
+
+**Reading.** (1) **Delivery worked 6/6** — every trajectory carries the `curv`
+descriptor text via `read_schema`. (2) **Compliance: gemini 1/3, gpt 0/3.**
+The one adopting run is *textbook* — `clamp(curv·k + noise, 0, 1)` edge wear and
+`clamp(-curv·k + noise, 0, 1)` crevice patina coherently driving albedo,
+roughness AND metallic — and it is the only gemini run that pulled
+`materials-and-media-basics` (the patina example's home). gemini r1 skipped
+that skill and did not adopt; gemini r3 read it and still shipped position
+proxies. **gpt read every teaching skill in all three runs — including the
+worked patina example — and produced zero `curv` and near-zero expression
+work**: the C-TYPE prior ("masks are made of positions / materials are
+numbers") holding at full strength against delivered advice + examples,
+exactly the doc-88 profile that preceded the `vary_material` verb. (3)
+**`occlusion`/`thickness`: 0/6, a cross-provider null.** (4) The 0% strict
+pass@1 is **not** a regression — the archived s6 census shows the same
+instrument at 0% pass@1 (`final_text:3`) on the same gemini model; the T10
+gate has never passed here. **Verdict: the descriptor+example levers produce
+real but weak, provider-differentiated adoption for `curv` and none for
+`occlusion`; by the pre-committed escalation rule this is a census miss, and
+the evidence now backs the `add_wear`-class verb (Phase 4) as the next lever.
+Building it stays a user decision.**
+
 ---
 
 ## 12. Cost and invalidation
