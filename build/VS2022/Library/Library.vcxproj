@@ -182,6 +182,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\HairGenerator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\HairGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\MeshSignalBake.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.cpp" />
@@ -589,6 +590,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\HairGenerator.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\HairGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\MeshSignalBake.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.h" />

@@ -234,6 +234,7 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/HairGenerator.cpp						\
 	$(PATHLIBRARY)Geometry/HairGeometry.cpp						\
 	$(PATHLIBRARY)Geometry/InfinitePlaneGeometry.cpp			\
+	$(PATHLIBRARY)Geometry/MeshSignalBake.cpp					\
 	$(PATHLIBRARY)Geometry/SphereGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/SDFGeometry.cpp						\
 	$(PATHLIBRARY)Geometry/SphericalUVGenerator.cpp				\

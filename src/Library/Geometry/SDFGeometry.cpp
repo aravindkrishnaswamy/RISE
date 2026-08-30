@@ -1049,9 +1049,15 @@ namespace
 	const int kOcclusionTaps = 5;
 }
 
-bool SDFGeometry::ComputeOcclusion( const Point3& ptObject, const Vector3& nObject,
-	const Scalar radiusFraction, Scalar& outValue ) const
+bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
 {
+	// A LIVE field answers any radius, constant or computed -- see the
+	// header's note on why this provider ignores the constant-radius flag
+	// the baked mesh family requires.
+	const Point3&  ptObject = hit.ptObject;
+	const Vector3& nObject  = hit.nObject;
+
 	// REFUSE rather than fabricate.  The caller (SurfaceSignalInfo) already
 	// screens a non-finite / non-positive radius; this is the field-side
 	// half: a degenerate bbox has no characteristic length to take a
@@ -1140,9 +1146,12 @@ bool SDFGeometry::ComputeOcclusion( const Point3& ptObject, const Vector3& nObje
 	return true;
 }
 
-bool SDFGeometry::ComputeThickness( const Point3& ptObject, const Vector3& nObject,
-	const Scalar radiusFraction, Scalar& outValue ) const
+bool SDFGeometry::ComputeThickness( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
 {
+	const Point3&  ptObject = hit.ptObject;
+	const Vector3& nObject  = hit.nObject;
+
 	if( !( m_diagonal > Scalar(0) ) || !( radiusFraction > Scalar(0) ) ) {
 		return false;
 	}

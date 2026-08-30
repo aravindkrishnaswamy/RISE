@@ -15,9 +15,13 @@
 		5C57B004000000000000C0DE /* Cst.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
 		5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
 		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
+		5DF0B011000000000000C0DE /* MeshSignalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E021000000000000C0DE /* MeshSignalBake.cpp */; };
 		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
+		5DF0B012000000000000C0DE /* MeshSignalBake.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E022000000000000C0DE /* MeshSignalBake.h */; };
 		5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
+		5DF0B013000000000000C0DE /* MeshSignalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E021000000000000C0DE /* MeshSignalBake.cpp */; };
 		5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
+		5DF0B014000000000000C0DE /* MeshSignalBake.h in Headers */ = {isa = PBXBuildFile; fileRef = 5DF0E022000000000000C0DE /* MeshSignalBake.h */; };
 		5EDAF71C14454D71AD5365FC /* BezierClipping.h in Headers */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
 		638119AC57041C82DB44A5B1 /* PainterChannelScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
@@ -1992,7 +1996,9 @@
 		A1C4E7121B3D5F8092A6C412 /* HairGenerator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HairGenerator.h; sourceTree = "<group>"; };
 		A1C4E7021B3D5F8092A6C402 /* HairGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HairGeometry.h; sourceTree = "<group>"; };
 		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
+		5DF0E021000000000000C0DE /* MeshSignalBake.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MeshSignalBake.cpp; sourceTree = "<group>"; };
 		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
+		5DF0E022000000000000C0DE /* MeshSignalBake.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MeshSignalBake.h; sourceTree = "<group>"; };
 		6A10E004000000000000C0DE /* ProceduralDescriptors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProceduralDescriptors.h; sourceTree = "<group>"; };
 		6A10E005000000000000C0DE /* Function2DColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DColorPainter.h; sourceTree = "<group>"; };
 		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
@@ -3347,6 +3353,8 @@
 				A1C4E7021B3D5F8092A6C402 /* HairGeometry.h */,
 				5DF0E011000000000000C0DE /* SDFGeometry.cpp */,
 				5DF0E012000000000000C0DE /* SDFGeometry.h */,
+				5DF0E021000000000000C0DE /* MeshSignalBake.cpp */,
+				5DF0E022000000000000C0DE /* MeshSignalBake.h */,
 				F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */,
 				F27F083A069C428F0069C9E5 /* SphereGeometry.h */,
 				F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */,
@@ -4515,6 +4523,7 @@
 				F27F0AA3069C42910069C9E5 /* GeometryUtilities.h in Headers */,
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */,
+				5DF0B014000000000000C0DE /* MeshSignalBake.h in Headers */,
 				5C57B004000000000000C0DE /* Cst.h in Headers */,
 				A6E7B011000000000000C0DE /* AgentDiagnostic.h in Headers */,
 				A6E7B013000000000000C0DE /* AgentSession.h in Headers */,
@@ -5263,6 +5272,7 @@
 				F27F0AA2069C42910069C9E5 /* GeometryUtilities.cpp in Sources */,
 				F27F0AA4069C42910069C9E5 /* InfinitePlaneGeometry.cpp in Sources */,
 				5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */,
+				5DF0B013000000000000C0DE /* MeshSignalBake.cpp in Sources */,
 				5C57B003000000000000C0DE /* Cst.cpp in Sources */,
 				A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */,
 				A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
@@ -5693,6 +5703,8 @@
 				F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */,
 				5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */,
 				5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */,
+				5DF0B011000000000000C0DE /* MeshSignalBake.cpp in Sources */,
+				5DF0B012000000000000C0DE /* MeshSignalBake.h in Sources */,
 				5C57B001000000000000C0DE /* Cst.cpp in Sources */,
 				5C57B002000000000000C0DE /* Cst.h in Sources */,
 				A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */,

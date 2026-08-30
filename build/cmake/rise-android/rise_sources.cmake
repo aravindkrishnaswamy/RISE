@@ -183,6 +183,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Geometry/HairGenerator.cpp"
     "${RISE_LIB}/Geometry/HairGeometry.cpp"
     "${RISE_LIB}/Geometry/InfinitePlaneGeometry.cpp"
+    "${RISE_LIB}/Geometry/MeshSignalBake.cpp"
     "${RISE_LIB}/Geometry/SDFGeometry.cpp"
     "${RISE_LIB}/Geometry/SphereGeometry.cpp"
     "${RISE_LIB}/Geometry/SphericalUVGenerator.cpp"

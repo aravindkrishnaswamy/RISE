@@ -78,6 +78,7 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
 #ifdef RISE_ENABLE_MAILBOXING
   , geometryId( s_nextGeometryId.fetch_add(1) )
 #endif
+  , m_signalVertexNormalsBuilt( false )
 {
 }
 
@@ -242,6 +243,12 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
+	// Any bake describes the OLD vertex data.  In practice this runs at
+	// construction, before anything could have queried a signal, but the
+	// invariant "a table always describes the vertices currently in this
+	// geometry" has to hold at every mutation site, not just the plausible
+	// ones.
+	InvalidateSignalBakes();
 }
 
 void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
@@ -370,6 +377,14 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 
 	// Recompute triangle areas + CDF (vertex positions changed).
 	ComputeAreas();
+
+	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
+	// is the one case design doc §7.2's free-invalidation argument does not
+	// cover (§14 item 10 asked whether it could happen; this path is the
+	// answer).  Every per-vertex signal table now describes the previous
+	// frame's geometry, so drop them and let the next production read
+	// rebuild.  Same between-frames contract as the rest of this function.
+	InvalidateSignalBakes();
 
 	// Refit the BVH (bottom-up AABB recompute + filter + BVH4 redo).
 	const unsigned int refitMs = pPtrBVH->Refit();
@@ -552,6 +567,11 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH" );
 
 	ComputeAreas();
+
+	// Vertex arrays and topology are final only now (the block above
+	// re-points every PointerTriangle into pPoints/pNormals), so anything
+	// baked before this call describes storage that no longer exists.
+	InvalidateSignalBakes();
 }
 
 void TriangleMeshGeometryIndexed::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
@@ -1041,6 +1061,9 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );
+	// The bakes' per-position orientations are accumulated from these
+	// normals, so a recompute stales them.
+	InvalidateSignalBakes();
 }
 
 // Derivatives for a triangle in barycentric parameterization.
@@ -1293,4 +1316,239 @@ SurfaceDerivatives TriangleMeshGeometryIndexed::ComputeSurfaceDerivatives( const
 
 	return ComputeTriangleDerivatives( *bestTri, objSpaceNormal, objSpacePoint,
 		bestU, bestV, !bUseFaceNormals );
+}
+
+//////////////////////////////////////////////////////////////////////
+// ISurfaceSignalProvider -- PHASE-3 geometry-derived shading signals
+// on the mesh family (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7).
+//
+// The shape of this, and why it differs from the SDF family's:
+//
+//   * an SDF ANSWERS PER HIT from a live field, so its provider is a
+//     pure const function and any radius is a legal knob;
+//   * a mesh has no field, so it answers from a BAKE -- which commits
+//     to one radius, must be built exactly once, and must not exist at
+//     all until a material actually reads it (draft previews shade no
+//     materials, §7.3).
+//
+// So this half is: validate the radius precondition, find-or-build
+// under the cache's lock, then interpolate the table barycentrically
+// over the hit triangle the intersector stamped.  Everything expensive
+// is behind the find; everything per-sample after the first is three
+// float reads and a lerp.
+//////////////////////////////////////////////////////////////////////
+
+void TriangleMeshGeometryIndexed::InvalidateSignalBakes()
+{
+	m_signalBakes.Invalidate();
+	m_signalVertexNormals.clear();
+	m_signalVertexNormalsBuilt = false;
+}
+
+void TriangleMeshGeometryIndexed::EnsureSignalVertexNormals() const
+{
+	// Called only from inside the bake cache's find-or-build, i.e. under
+	// its lock -- which is what makes writing these two `mutable` members
+	// safe here and nowhere else.
+	if( m_signalVertexNormalsBuilt ) {
+		return;
+	}
+	m_signalVertexNormalsBuilt = true;
+	m_signalVertexNormals.assign( pPoints.size(), Vector3( 0, 0, 0 ) );
+	if( pPoints.empty() ) {
+		return;
+	}
+
+	// ONE orientation per POSITION, accumulated over every incident corner.
+	//
+	// The mesh's own `pNormals` cannot be used directly: it is indexed
+	// INDEPENDENTLY of positions (a position shared by two smoothing groups
+	// carries two normals) and is empty entirely on a face-normal mesh.
+	// Accumulating the AUTHORED corner normal where there is one, and the
+	// face normal where there is not, gives a per-position orientation that
+	// agrees with what the renderer treats as "outward" on this mesh -- which
+	// matters more than any intrinsic definition, because a mesh wound
+	// inward would otherwise have its whole AO bake trace into the solid.
+	const Vertex* pBase = &pPoints[0];
+	for( MyPointerTriangleList::const_iterator it = ptr_polygons.begin(); it != ptr_polygons.end(); ++it ) {
+		const PointerTriangle& tri = *it;
+
+		const Vector3 e1 = Vector3Ops::mkVector3( *tri.pVertices[1], *tri.pVertices[0] );
+		const Vector3 e2 = Vector3Ops::mkVector3( *tri.pVertices[2], *tri.pVertices[0] );
+		// NOT normalized: the cross product's magnitude is twice the
+		// triangle's area, which is exactly the weight a vertex-normal
+		// accumulation wants (a sliver contributes less than the face it
+		// slivers off).
+		const Vector3 faceN = Vector3Ops::Cross( e1, e2 );
+
+		for( int k = 0; k < 3; ++k ) {
+			const size_t idx = (size_t)( tri.pVertices[k] - pBase );
+			if( idx >= m_signalVertexNormals.size() ) {
+				continue;
+			}
+			if( tri.pNormals[k] ) {
+				const Vector3& an = *tri.pNormals[k];
+				m_signalVertexNormals[idx] = m_signalVertexNormals[idx] + an;
+			} else {
+				m_signalVertexNormals[idx] = m_signalVertexNormals[idx] + faceN;
+			}
+		}
+	}
+
+	// Normalize; a vertex that accumulated to zero (opposed contributions,
+	// or no incident triangle at all) is LEFT at zero, which the bake reads
+	// as "unorientable" and answers with the neutral value rather than an
+	// invented direction.
+	for( size_t i = 0; i < m_signalVertexNormals.size(); ++i ) {
+		const Vector3& v = m_signalVertexNormals[i];
+		const Scalar len2 = v.x*v.x + v.y*v.y + v.z*v.z;
+		if( len2 > NEARZERO ) {
+			const Scalar inv = Scalar(1) / std::sqrt( len2 );
+			m_signalVertexNormals[i] = Vector3( v.x*inv, v.y*inv, v.z*inv );
+		} else {
+			m_signalVertexNormals[i] = Vector3( 0, 0, 0 );
+		}
+	}
+}
+
+bool TriangleMeshGeometryIndexed::MakeBakeInput( const Scalar radiusFraction, MeshSignalBake::Input& out ) const
+{
+	// Called by MeshSignalBakeCache::FindOrBuild from inside its lock, and
+	// only on a cache MISS -- which is what makes the mutable write in
+	// EnsureSignalVertexNormals() below safe, and keeps this whole function
+	// off the per-sample path.
+	EnsureSignalVertexNormals();
+
+	if( pPoints.empty() || ptr_polygons.empty() || !pPtrBVH ) {
+		return false;
+	}
+	if( m_signalVertexNormals.size() != pPoints.size() ) {
+		return false;
+	}
+
+	// The radius is a FRACTION of this geometry's own object-space
+	// bounding-box diagonal -- the shared convention `scaleHint` and the SDF
+	// estimators already use (design doc §9).  Because the bake is
+	// geometry-owned it is SHARED by every instance of this mesh, so this
+	// object-space reading is also the only one that can be correct for all
+	// of them: `thickness(0.05)` means "5 % of the object" on each instance,
+	// and the world distance it corresponds to scales with the instance
+	// (§5.2's instancing paragraph).
+	const Scalar diagonal = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+	if( !RISE::IsFiniteDouble( static_cast<double>( diagonal ) ) || !( diagonal > Scalar(0) ) ) {
+		return false;
+	}
+
+	out.pVertices     = &pPoints;
+	out.pNormals      = &m_signalVertexNormals;
+	out.maxDistance   = radiusFraction * diagonal;
+	out.originEpsilon = MeshSignalBake::kOriginEpsilonFraction * diagonal;
+	out.pOccluder     = this;
+	return true;
+}
+
+bool TriangleMeshGeometryIndexed::AnyHitWithin( const Point3& origin, const Vector3& unitDir, const Scalar maxDist ) const
+{
+	if( !pPtrBVH ) {
+		return false;
+	}
+	// BOTH faces.  A bake ray is not a camera ray: an occlusion ray that
+	// grazes the far side of a fold, and every thickness ray (which starts
+	// inside the solid and exits through a back face), would be invisible to
+	// a front-faces-only query.
+	//
+	// THROUGH THIS CLASS'S OWN ENTRY POINT, never `pPtrBVH` directly, and
+	// that is load-bearing under RISE_ENABLE_MAILBOXING (on by default on
+	// every platform): the per-ray mailbox id is bumped in the class's
+	// intersect methods, not in the BVH.  Reaching past them makes every
+	// bake ray share one id, so the SECOND ray onward finds every triangle
+	// already stamped and skips it -- a silent, total loss of hits that
+	// reads as "this mesh is unoccluded and infinitely thick everywhere",
+	// i.e. exactly like a correctly-neutral answer.
+	return IntersectRay_IntersectionOnly( Ray( origin, unitDir ), maxDist, true, true );
+}
+
+bool TriangleMeshGeometryIndexed::NearestHitWithin( const Point3& origin, const Vector3& unitDir,
+	const Scalar maxDist, Scalar& outDist ) const
+{
+	if( !pPtrBVH ) {
+		return false;
+	}
+	// Same mailbox rule as AnyHitWithin: go through this class's own
+	// IntersectRay, which bumps the per-ray mailbox id.  `range` seeded to
+	// maxDist doubles as the closest-hit bound, so the traversal never
+	// considers anything past the query radius.
+	RayIntersectionGeometric ri( Ray( origin, unitDir ), nullRasterizerState );
+	ri.range = maxDist;
+	IntersectRay( ri, true, true, false );
+	if( !ri.bHit || !( ri.range >= Scalar(0) ) || ri.range > maxDist ) {
+		return false;
+	}
+	outDist = ri.range;
+	return true;
+}
+
+bool TriangleMeshGeometryIndexed::LookupBakedSignal(
+	const MeshSignalBake::Kind kind,
+	const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction,
+	const bool bRadiusIsConstant,
+	Scalar& outValue ) const
+{
+	// §7.1's CONSTANT-RADIUS PRECONDITION.  A bake commits to one radius; a
+	// computed one cannot be answered from it, and answering it from the
+	// nearest available table anyway is the silent wrong-scale substitution
+	// the design forbids.  Refuse, and let the caller read the neutral
+	// value -- the mask is then visibly absent rather than plausibly wrong.
+	if( !bRadiusIsConstant ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( static_cast<double>( radiusFraction ) ) || !( radiusFraction > Scalar(0) ) ) {
+		return false;
+	}
+	// No triangle stamped: this hit did not come from a mesh intersector
+	// (a hand-built record, or a provider mismatch).  Nothing honest to
+	// interpolate.
+	if( hit.primId < 0 || (size_t)hit.primId >= ptr_polygons.size() || pPoints.empty() ) {
+		return false;
+	}
+
+	// Find-or-build.  On a HIT this is one lock and a linear scan of at most
+	// eight radii; the input assembly (and with it the per-position normal
+	// build) happens only on a MISS, inside the cache's own lock, via the
+	// IInputSource callback this class implements.
+	const MeshSignalBakeCache::Table* pTable = m_signalBakes.FindOrBuild( kind, radiusFraction, *this );
+	if( !pTable ) {
+		return false;
+	}
+
+	const PointerTriangle& tri = ptr_polygons[ (size_t)hit.primId ];
+	const Vertex* pBase = &pPoints[0];
+	const size_t i0 = (size_t)( tri.pVertices[0] - pBase );
+	const size_t i1 = (size_t)( tri.pVertices[1] - pBase );
+	const size_t i2 = (size_t)( tri.pVertices[2] - pBase );
+
+	Scalar v = Scalar(0);
+	if( !InterpolateMeshSignal( *pTable, i0, i1, i2, hit.baryA, hit.baryB, v ) ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
+		return false;
+	}
+	if( v < Scalar(0) ) v = Scalar(0);
+	if( v > Scalar(1) ) v = Scalar(1);
+	outValue = v;
+	return true;
+}
+
+bool TriangleMeshGeometryIndexed::ComputeOcclusion( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const
+{
+	return LookupBakedSignal( MeshSignalBake::eOcclusion, hit, radiusFraction, bRadiusIsConstant, outValue );
+}
+
+bool TriangleMeshGeometryIndexed::ComputeThickness( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const
+{
+	return LookupBakedSignal( MeshSignalBake::eThickness, hit, radiusFraction, bRadiusIsConstant, outValue );
 }

@@ -33,6 +33,8 @@
 
 namespace RISE
 {
+	struct SurfaceSignalInfo;
+
 	//! A geometry that can answer per-hit AMBIENT-OCCLUSION and THICKNESS
 	//! queries about ITS OWN surface.
 	//!
@@ -75,11 +77,48 @@ namespace RISE
 	//! reads as "5 % of the object", not "5 world units", which is the only
 	//! scene-scale-independent thing it could mean (design doc §9).
 	//!
-	//! THREAD SAFETY.  Implementations MUST be pure `const` functions of
-	//! the geometry's immutable state and the arguments: no locks, no
-	//! caches, no rays, no scene access.  Every render thread calls these
-	//! concurrently on one shared provider (docs/ARCHITECTURE.md's
-	//! scene-immutability rule).
+	//! `bRadiusIsConstant` IS THE BAKED FAMILY'S PRECONDITION, and it is
+	//! carried on the call rather than inferred, because it CANNOT be
+	//! inferred: by the time a `Scalar` radius reaches a provider, "0.05
+	//! written in the scene text" and "the current value of `fbm(P)*0.1`"
+	//! are the same bit pattern.  A live estimator does not care -- the SDF
+	//! family answers any radius per hit and ignores this flag.  A BAKE
+	//! does: it commits to one radius, so a computed radius would either
+	//! be silently answered at the wrong scale (design doc §7.1 forbids
+	//! exactly that) or bake a fresh table per distinct value, which is
+	//! unbounded work AND makes the render depend on which radius happened
+	//! to arrive first -- a reproducibility break, not just a slowdown.
+	//! The expression compiler proves literalness per CALL SITE and emits
+	//! that proof into the instruction (ExpressionEval.h's
+	//! kFnOcclusion / kFnOcclusionDynR pair), so the answer is the same on
+	//! every thread and every run.  FALSE never means "provably not
+	//! constant"; it means "not proven constant here", which the baked path
+	//! must treat as dynamic and refuse.
+	//!
+	//! THREAD SAFETY.  Every render thread calls these concurrently on one
+	//! shared provider, so an implementation must be safe under that and
+	//! must never mutate anything another thread can observe as scene state
+	//! (docs/ARCHITECTURE.md's scene-immutability rule).  Two shapes
+	//! satisfy that, and RISE ships both:
+	//!   * PURE (the SDF family) -- a `const` function of the geometry's
+	//!     immutable state and the arguments; no locks, no caches, no rays.
+	//!   * LAZILY BAKED (the indexed-mesh family) -- a `mutable` cache
+	//!     behind an `RMutex`, find-or-build serialized, the built table
+	//!     immutable from then on.  This is the sanctioned
+	//!     ARCHITECTURE.md §Known Exceptions pattern (the SSS point-set
+	//!     precedent), adopted here for the same structural reason: a mesh
+	//!     bake is far too expensive to run for a preview that will never
+	//!     shade a material, so it must not exist until something reads it
+	//!     (design doc §7.3).  An implementation that takes this route owes
+	//!     the full discipline: lock across the whole find-or-build, a
+	//!     null-sentinel cached on failure so a failed build is not retried
+	//!     per sample, and a DETERMINISTIC build (no wall-clock seeding, no
+	//!     dependence on which thread won the race).
+	//!
+	//! SCENE ACCESS remains forbidden in both shapes: a provider may trace
+	//! against its OWN primitives (that is what a self-occlusion bake is)
+	//! and must never reach the scene, which is what keeps these signals
+	//! object-local and their invalidation free (§8, §7.2).
 	//!
 	//! LIFETIME.  Providers are NOT reference-counted through this
 	//! interface: a provider IS its geometry (SDFGeometry implements it on
@@ -100,9 +139,9 @@ namespace RISE
 		//! \return TRUE and writes outValue, or FALSE (outValue untouched)
 		//!         when this provider cannot answer for this radius.
 		virtual bool ComputeOcclusion(
-			const Point3& ptObject,			///< [in] hit point, geometry object space
-			const Vector3& nObject,			///< [in] OUTWARD unit normal there, same space
+			const SurfaceSignalInfo& hit,	///< [in] the hit, in THIS provider's own object space (see below)
 			const Scalar radiusFraction,	///< [in] query radius as a fraction of the geometry's characteristic size
+			const bool bRadiusIsConstant,	///< [in] did the compiler PROVE this radius a compile-time constant? (see below)
 			Scalar& outValue				///< [out] occlusion in [0,1], 1 = unoccluded
 			) const = 0;
 
@@ -113,9 +152,9 @@ namespace RISE
 		//! \return TRUE and writes outValue, or FALSE (outValue untouched)
 		//!         when this provider cannot answer for this radius.
 		virtual bool ComputeThickness(
-			const Point3& ptObject,			///< [in] hit point, geometry object space
-			const Vector3& nObject,			///< [in] OUTWARD unit normal there, same space
+			const SurfaceSignalInfo& hit,	///< [in] the hit, in THIS provider's own object space
 			const Scalar radiusFraction,	///< [in] query radius as a fraction of the geometry's characteristic size
+			const bool bRadiusIsConstant,	///< [in] did the compiler PROVE this radius a compile-time constant?
 			Scalar& outValue				///< [out] thickness in [0,1], 1 = thick
 			) const = 0;
 	};
@@ -163,8 +202,36 @@ namespace RISE
 		//! Outward unit normal at that point, same space.
 		Vector3							nObject;
 
+		//! WHICH PRIMITIVE was hit, as an index into the provider's own
+		//! primitive array -- a triangle index for the indexed-mesh family;
+		//! -1 (the default) for a provider that answers POSITIONALLY and has
+		//! no primitives to index, which is the SDF family.
+		//!
+		//! WHY THE RECORD CARRIES THIS AT ALL, when design doc §7.1's
+		//! original sketch said "interpolate at intersection time": that
+		//! sketch predates §7.3's decision to build mesh bakes LAZILY, and
+		//! the two cannot both hold.  Intersection happens BEFORE shading,
+		//! and the lazy bake does not exist until shading first asks for it
+		//! -- so at intersection time there is, by construction, nothing to
+		//! interpolate on the first query.  What survives from §7.1 is the
+		//! part that was actually load-bearing: the barycentric arithmetic
+		//! belongs to the intersector's frame, not the provider's.  So the
+		//! intersector stamps WHERE the hit is on the mesh (this int and the
+		//! two weights below -- cheaper than the interpolation it replaces)
+		//! and the provider interpolates ON DEMAND, after its find-or-build.
+		//! Same data, one indirection later, and the draft-mode guarantee
+		//! survives.
+		int								primId;
+		//! Barycentric weights of the hit inside `primId`, in the convention
+		//! the mesh intersector already uses for normals / UVs / vertex
+		//! colours: value = v0 + (v1-v0)*baryA + (v2-v0)*baryB.  Meaningless
+		//! (and untouched) when primId < 0.
+		Scalar							baryA;
+		Scalar							baryB;
+
 		SurfaceSignalInfo() :
-		pProvider( 0 ), ptObject( 0, 0, 0 ), nObject( 0, 0, 0 )
+		pProvider( 0 ), ptObject( 0, 0, 0 ), nObject( 0, 0, 0 ),
+		primId( -1 ), baryA( 0 ), baryB( 0 )
 		{
 		}
 
@@ -197,11 +264,17 @@ namespace RISE
 		//! Occlusion at this hit, or NeutralOcclusion() when there is no
 		//! provider, the radius is unusable, or the provider refuses.
 		//! Always finite, always in [0,1].
-		Scalar Occlusion( const Scalar radiusFraction ) const
+		//!
+		//! `bRadiusIsConstant` is the caller's PROOF that the radius is a
+		//! compile-time constant -- see ISurfaceSignalProvider's own doc for
+		//! why a bake cannot work without it.  It has no default: a caller
+		//! that cannot prove it must say so and take the neutral fallback on
+		//! the baked families, rather than inherit a silently optimistic one.
+		Scalar Occlusion( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
 			Scalar v = Scalar( 0 );
 			if( pProvider && RadiusUsable( radiusFraction ) &&
-			    pProvider->ComputeOcclusion( ptObject, nObject, radiusFraction, v ) &&
+			    pProvider->ComputeOcclusion( *this, radiusFraction, bRadiusIsConstant, v ) &&
 			    RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
 				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
 			}
@@ -211,11 +284,11 @@ namespace RISE
 		//! Thickness at this hit, or NeutralThickness() when there is no
 		//! provider, the radius is unusable, or the provider refuses.
 		//! Always finite, always in [0,1].
-		Scalar Thickness( const Scalar radiusFraction ) const
+		Scalar Thickness( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
 			Scalar v = Scalar( 0 );
 			if( pProvider && RadiusUsable( radiusFraction ) &&
-			    pProvider->ComputeThickness( ptObject, nObject, radiusFraction, v ) &&
+			    pProvider->ComputeThickness( *this, radiusFraction, bRadiusIsConstant, v ) &&
 			    RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
 				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
 			}

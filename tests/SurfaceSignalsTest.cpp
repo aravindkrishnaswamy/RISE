@@ -717,9 +717,13 @@ static void TestHeightfieldRefusesSignals()
 	// query radius that would, pre-fix, read the ridge's global Lipschitz
 	// bound as if it were the local one.
 	Scalar ao = Scalar( 12345 ), th = Scalar( 12345 );
-	Check( !g->ComputeOcclusion( Point3( 0, 0, S ), Vector3( 0, 0, 1 ), Scalar( 0.1 ), ao ),
+	SurfaceSignalInfo hf;
+	hf.pProvider = g;
+	hf.ptObject = Point3( 0, 0, S );
+	hf.nObject = Vector3( 0, 0, 1 );
+	Check( !g->ComputeOcclusion( hf, Scalar( 0.1 ), true, ao ),
 		"(j) ComputeOcclusion REFUSES on a heightfield" );
-	Check( !g->ComputeThickness( Point3( 0, 0, S ), Vector3( 0, 0, 1 ), Scalar( 0.1 ), th ),
+	Check( !g->ComputeThickness( hf, Scalar( 0.1 ), true, th ),
 		"(j) ComputeThickness REFUSES on a heightfield" );
 	Check( ao == Scalar( 12345 ), "(j) ComputeOcclusion leaves outValue untouched on refusal" );
 	Check( th == Scalar( 12345 ), "(j) ComputeThickness leaves outValue untouched on refusal" );
@@ -813,10 +817,10 @@ static void TestCsgSubtractionRepairsSignalNormal()
 		if( riFloor.geometric.signals.pProvider && riConvex.geometric.signals.pProvider ) {
 			Scalar aoFloor = 2, aoConvex = 2;
 			Check( riFloor.geometric.signals.pProvider->ComputeOcclusion(
-				riFloor.geometric.signals.ptObject, riFloor.geometric.signals.nObject, Scalar( 0.2 ), aoFloor ),
+				riFloor.geometric.signals, Scalar( 0.2 ), true, aoFloor ),
 				"(k) occlusion: pocket-floor ComputeOcclusion answers" );
 			Check( riConvex.geometric.signals.pProvider->ComputeOcclusion(
-				riConvex.geometric.signals.ptObject, riConvex.geometric.signals.nObject, Scalar( 0.2 ), aoConvex ),
+				riConvex.geometric.signals, Scalar( 0.2 ), true, aoConvex ),
 				"(k) occlusion: convex-exterior ComputeOcclusion answers" );
 
 			// MONEY ASSERTION: the pocket floor reads (much) more occluded
@@ -839,8 +843,10 @@ static void TestCsgSubtractionRepairsSignalNormal()
 				-riFloor.geometric.signals.nObject.y,
 				-riFloor.geometric.signals.nObject.z );
 			Scalar aoFloorPreFix = 2;
+			SurfaceSignalInfo preFixHit = riFloor.geometric.signals;
+			preFixHit.nObject = preFixN;
 			Check( riFloor.geometric.signals.pProvider->ComputeOcclusion(
-				riFloor.geometric.signals.ptObject, preFixN, Scalar( 0.2 ), aoFloorPreFix ),
+				preFixHit, Scalar( 0.2 ), true, aoFloorPreFix ),
 				"(k) occlusion: pre-fix-simulated ComputeOcclusion answers" );
 			Check( !( aoFloorPreFix < aoConvex - Scalar( 0.5 ) ),
 				"(k) REGRESSION GUARD -- the un-repaired (pre-fix) direction would NOT have satisfied the money assertion" );
@@ -902,10 +908,10 @@ static void TestCsgSubtractionRepairsSignalNormal()
 			const Scalar RF = Scalar( 0.05 );
 			Scalar thThin = 2, thThick = 2;
 			Check( riThin.geometric.signals.pProvider->ComputeThickness(
-				riThin.geometric.signals.ptObject, riThin.geometric.signals.nObject, RF, thThin ),
+				riThin.geometric.signals, RF, true, thThin ),
 				"(k) thickness: membrane ComputeThickness answers" );
 			Check( riThick.geometric.signals.pProvider->ComputeThickness(
-				riThick.geometric.signals.ptObject, riThick.geometric.signals.nObject, RF, thThick ),
+				riThick.geometric.signals, RF, true, thThick ),
 				"(k) thickness: isolated-side ComputeThickness answers" );
 
 			// MONEY ASSERTION: the thin remaining wall reads (much)
@@ -924,8 +930,10 @@ static void TestCsgSubtractionRepairsSignalNormal()
 				-riThin.geometric.signals.nObject.y,
 				-riThin.geometric.signals.nObject.z );
 			Scalar thThinPreFix = 2;
+			SurfaceSignalInfo preFixHit = riThin.geometric.signals;
+			preFixHit.nObject = preFixN;
 			Check( riThin.geometric.signals.pProvider->ComputeThickness(
-				riThin.geometric.signals.ptObject, preFixN, RF, thThinPreFix ),
+				preFixHit, RF, true, thThinPreFix ),
 				"(k) thickness: pre-fix-simulated ComputeThickness answers" );
 			Check( !( thThinPreFix < thThick - Scalar( 0.3 ) ),
 				"(k) REGRESSION GUARD -- the un-repaired (pre-fix) direction would NOT have detected the thin membrane" );

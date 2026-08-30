@@ -266,6 +266,25 @@ namespace RISE
 			//! continue the scalar-returning id band (cellhash = 50).
 			static const int kFnOcclusion   = 51;
 			static const int kFnThickness   = 52;
+			//! INTERNAL twins of the two ids above, emitted in their place
+			//! when the compiler could NOT prove the radius argument a bare
+			//! numeric literal.  They are not builtin NAMES -- nothing in
+			//! the FnSig table maps to them and no scene text can spell
+			//! them; they exist only so the emitted instruction carries the
+			//! compile-time proof down to CallFunc, which forwards it to
+			//! SurfaceSignalInfo::Occlusion / ::Thickness.
+			//!
+			//! Why a second id rather than a flag on the instruction: the
+			//! proof IS part of which operation this call site performs (a
+			//! baked provider answers one and refuses the other), the
+			//! dispatch is already a switch on the id, and this way no
+			//! signature in the evaluator changes -- so no future builtin
+			//! can accidentally inherit a stale "constant" bit from a
+			//! neighbouring field.  See ISurfaceSignalProvider's
+			//! `bRadiusIsConstant` note for why the proof must travel at
+			//! all.
+			static const int kFnOcclusionDynR = 53;
+			static const int kFnThicknessDynR = 54;
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=2..4, Po=5..7, N=8..10, fw=kContextSlotFw(11),
 			//!   time=kContextSlotTime(12), curv=kContextSlotCurv(13),
@@ -1218,7 +1237,18 @@ namespace RISE
 					if( got != sig->nArgs ) { SetError( name + "() expects " + std::to_string(sig->nArgs) + " argument(s)", (ptrdiff_t)nameOff ); return false; }
 					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "()", (ptrdiff_t)CurOff() ); return false; }
 					Advance();
-					EmitFuncCall( sig->id, scalarArity, sig->ret == kVec3 );
+					// A signal builtin whose radius we could NOT prove literal
+					// is emitted as its `...DynR` twin, so the instruction
+					// itself carries the (absence of a) proof down to
+					// CallFunc -- see ExpressionProgram::kFnOcclusionDynR.
+					// Everything else emits its own id unchanged.
+					int emitId = sig->id;
+					if( isSignalFn && !literalRadiusArg ) {
+						emitId = ( sig->id == ExpressionProgram::kFnOcclusion )
+							? ExpressionProgram::kFnOcclusionDynR
+							: ExpressionProgram::kFnThicknessDynR;
+					}
+					EmitFuncCall( emitId, scalarArity, sig->ret == kVec3 );
 					if( isSignalFn ) {
 						// Recorded ONLY here, on the branch that actually
 						// emitted the call -- a body that mentions the name
@@ -1530,10 +1560,20 @@ namespace RISE
 				// conventions.  A null `pSignals` (Eval(u,v), or a hit on
 				// geometry that publishes no provider) yields the neutral
 				// value, exactly like `fw`'s honest 0.
+				//
+				// The `...DynR` twins are the SAME builtin evaluated at a
+				// call site whose radius the compiler could not prove
+				// constant; the only difference is the proof they forward,
+				// which the baked (mesh) providers require and the live
+				// (SDF) ones ignore.
 				case kFnOcclusion:
-					return pSignals ? pSignals->Occlusion( a[0] ) : SurfaceSignalInfo::NeutralOcclusion();
+					return pSignals ? pSignals->Occlusion( a[0], true ) : SurfaceSignalInfo::NeutralOcclusion();
+				case kFnOcclusionDynR:
+					return pSignals ? pSignals->Occlusion( a[0], false ) : SurfaceSignalInfo::NeutralOcclusion();
 				case kFnThickness:
-					return pSignals ? pSignals->Thickness( a[0] ) : SurfaceSignalInfo::NeutralThickness();
+					return pSignals ? pSignals->Thickness( a[0], true ) : SurfaceSignalInfo::NeutralThickness();
+				case kFnThicknessDynR:
+					return pSignals ? pSignals->Thickness( a[0], false ) : SurfaceSignalInfo::NeutralThickness();
 				default: return Scalar(0);
 				}
 			}

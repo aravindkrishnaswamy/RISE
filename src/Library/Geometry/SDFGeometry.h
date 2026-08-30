@@ -299,8 +299,14 @@ namespace RISE
 			//! `radiusFraction` is a fraction of m_diagonal (this geometry's
 			//! bounding-box diagonal), so the answer is invariant across
 			//! instances at different world scales.
-			bool ComputeOcclusion( const Point3& ptObject, const Vector3& nObject,
-				const Scalar radiusFraction, Scalar& outValue ) const override;
+			//!
+			//! `bRadiusIsConstant` is IGNORED here, and that is the whole
+			//! M2/M3 asymmetry in one line: a live field can answer ANY
+			//! radius per hit, so `occlusion(fbm(P)*0.1)` is a legal knob on
+			//! the SDF family and a refusal on the baked mesh family
+			//! (design doc §7.1's closing paragraph).
+			bool ComputeOcclusion( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
 
 			//! ISurfaceSignalProvider -- the `thickness(radius)` builtin.
 			//! Marches INWARD along -n to the far zero crossing and normalizes
@@ -308,8 +314,9 @@ namespace RISE
 			//! min(w/R, 1), and anything at least as thick as the query radius
 			//! reads a flat 1.  The SDF family is the one that has "distance
 			//! to the other side" genuinely in hand.
-			bool ComputeThickness( const Point3& ptObject, const Vector3& nObject,
-				const Scalar radiusFraction, Scalar& outValue ) const override;
+			//! `bRadiusIsConstant` is ignored, as for ComputeOcclusion.
+			bool ComputeThickness( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
 
 			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
 			BoundingBox GenerateBoundingBox() const override;

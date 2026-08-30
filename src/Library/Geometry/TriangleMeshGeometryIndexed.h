@@ -16,7 +16,9 @@
 #define TRIANGLE_MESH_GEOMETRY_INDEXED_
 
 #include "../Interfaces/ITriangleMeshGeometry.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness() dispatch (design doc Phase 3)
 #include "Geometry.h"
+#include "MeshSignalBake.h"
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
 #include <vector>
@@ -25,10 +27,23 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//! Also an ISurfaceSignalProvider and its own bake occluder: the
+		//! `occlusion(r)` / `thickness(r)` expression builtins are answered
+		//! for meshes out of a LAZY per-vertex bake this class owns, traced
+		//! against its own BVH (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7).
+		//!
+		//! The bake is keyed on THIS GEOMETRY -- never on an IObject* --
+		//! which is what makes invalidation free: the incremental derive
+		//! path drops and recreates a geometry on edit (so a fresh instance
+		//! starts with an empty cache), while object chunks are re-pointed
+		//! IN PLACE and would have kept a stale bake (§7.2's named trap).
 		class TriangleMeshGeometryIndexed :
 			public virtual ITriangleMeshGeometryIndexed3,
 			public virtual Geometry,
-			public virtual TreeElementProcessor<const PointerTriangle*>
+			public virtual TreeElementProcessor<const PointerTriangle*>,
+			public ISurfaceSignalProvider,
+			public MeshSignalBake::ISelfOccluder,
+			public MeshSignalBake::IInputSource
 		{
 		protected:
 			virtual ~TriangleMeshGeometryIndexed();
@@ -95,6 +110,65 @@ namespace RISE
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
 
+			//! LAZY per-vertex signal bakes (occlusion / thickness), one
+			//! table per (kind, radius).  `mutable` + the cache's own RMutex
+			//! is the sanctioned ARCHITECTURE.md §Known Exceptions pattern
+			//! (SSS point-set precedent); see MeshSignalBake.h for why the
+			//! build cannot be eager.
+			mutable MeshSignalBakeCache	m_signalBakes;
+
+			//! Per-POSITION normals for the bake, built once alongside the
+			//! first table.  NOT the same array as `pNormals`: that one is
+			//! independently indexed (a position can carry several normals)
+			//! and may be empty on a face-normal mesh, while a per-vertex
+			//! bake needs exactly one orientation per POSITION.  Built by
+			//! accumulating each incident corner's authored normal, or the
+			//! face normal where none is authored.
+			mutable std::vector<Vector3>	m_signalVertexNormals;
+			mutable bool					m_signalVertexNormalsBuilt;
+
+			//! Builds m_signalVertexNormals if it has not been built.  Called
+			//! ONLY from inside the bake cache's find-or-build (i.e. under
+			//! its lock), which is what makes touching these two mutable
+			//! members safe.
+			void EnsureSignalVertexNormals() const;
+
+			//! MeshSignalBake::IInputSource -- assembles the bake input for
+			//! `radiusFraction`, called by the cache from inside its lock on
+			//! a miss.  Object space throughout; the radius is a FRACTION of
+			//! this mesh's own bounding-box diagonal (design doc §9), which
+			//! is what makes a shared bake correct for every instance of
+			//! this geometry.
+			bool MakeBakeInput( const Scalar radiusFraction, MeshSignalBake::Input& out ) const override;
+
+			//! Answers a baked signal at a hit: validate the radius per
+			//! §7.1's constant-radius precondition, find-or-build, then
+			//! barycentrically interpolate.  The shared body of
+			//! ComputeOcclusion / ComputeThickness.
+			//! Drops the lazy bakes and the per-position normals they were
+			//! built from.  Called wherever the vertex data underneath them
+			//! changes -- rebuild (`BeginIndexedTriangles`/
+			//! `DoneIndexedTriangles`), vertex-level animation
+			//! (`UpdateVertices`) and `ComputeVertexNormals`.
+			//!
+			//! §14 item 10 asked whether deforming geometry could stale a
+			//! bake, on the assumption that RISE animates transforms rather
+			//! than vertices.  `UpdateVertices` is the counter-example: the
+			//! keyframed-painter DisplacedGeometry path replaces the vertex
+			//! array IN PLACE, so one IGeometry* genuinely does change shape
+			//! over time.  Free invalidation does not cover it, and this is
+			//! the explicit invalidation it needs instead.  Same contract as
+			//! UpdateVertices itself: between frames, never concurrent with
+			//! rendering.
+			void InvalidateSignalBakes();
+
+			bool LookupBakedSignal(
+				const MeshSignalBake::Kind kind,
+				const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction,
+				const bool bRadiusIsConstant,
+				Scalar& outValue ) const;
+
 		public:
 			TriangleMeshGeometryIndexed(
 				const bool bDoubleSided_,
@@ -121,6 +195,35 @@ namespace RISE
 			Scalar GetArea() const override;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin on
+			//! the mesh family (design doc §7).  Reads the per-vertex AO bake
+			//! for `radiusFraction`, building it on this first call if it
+			//! does not exist yet, and interpolates it barycentrically over
+			//! the hit triangle stamped in `hit`.
+			//!
+			//! REFUSES (neutral fallback) when the radius was not proven a
+			//! compile-time constant, when the hit carries no triangle, or
+			//! when the bake could not be built -- never substitutes a
+			//! different radius's table (§7.1's mismatch contract: a
+			//! wrong-scale mask that looks plausible is worse than a flat one
+			//! that is visibly absent).
+			bool ComputeOcclusion( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
+			//! ISurfaceSignalProvider -- the `thickness(radius)` builtin.
+			//! Same bake / interpolate / refuse structure as ComputeOcclusion.
+			bool ComputeThickness( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
+			//! MeshSignalBake::ISelfOccluder -- boolean any-hit against THIS
+			//! mesh's own triangles, through its own BVH.  Used only during a
+			//! bake build; sees nothing but this mesh (design doc §8).
+			bool AnyHitWithin( const Point3& origin, const Vector3& unitDir, const Scalar maxDist ) const override;
+
+			//! MeshSignalBake::ISelfOccluder -- nearest self-hit distance.
+			bool NearestHitWithin( const Point3& origin, const Vector3& unitDir,
+				const Scalar maxDist, Scalar& outDist ) const override;
 
 			// Functions special to this class
 			// Adds indexed triangle lists

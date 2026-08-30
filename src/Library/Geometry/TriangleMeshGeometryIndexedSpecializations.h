@@ -474,6 +474,39 @@ namespace RISE
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
 
+				// PHASE-3 GEOMETRY-DERIVED SHADING SIGNALS: publish the
+				// query channel (design doc §7).  In THIS geometry's own
+				// object space, and deliberately NOT transformed by
+				// Object::IntersectRay -- both signals are dimensionless and
+				// the provider expects its own frame.
+				//
+				// WHAT IS STAMPED, and why it is not the interpolated value
+				// §7.1 originally described: the bake is LAZY (§7.3), so on
+				// the first-ever query it does not exist yet, and
+				// intersection strictly precedes shading -- there is nothing
+				// here to interpolate.  So we stamp WHERE on the mesh the hit
+				// is (triangle + the two barycentric weights the block above
+				// already computed for normals, UVs and vertex colours) and
+				// let the provider interpolate after its find-or-build.
+				// Strictly CHEAPER than interpolating here: an int and two
+				// scalars, no table lookup, and nothing at all on a hit whose
+				// material never calls the builtins.
+				//
+				// UNGATED, matching the SDF family's stamp and for the same
+				// reason: the expensive half is the bake, which runs only if
+				// an expression actually calls occlusion()/thickness().  A
+				// gate here would buy a few stores and add a real failure
+				// mode (a gate read stale across a mid-session 0->1 demand
+				// transition silently degrades a live call to its fallback).
+				// `shadingNormal` is already computed and normalized above,
+				// so nothing extra is spent on it.
+				ri.signals.pProvider = this;
+				ri.signals.ptObject  = ri.ray.PointAtLength( h.dRange );
+				ri.signals.nObject   = shadingNormal;
+				ri.signals.primId    = (int)( elem - &ptr_polygons[0] );
+				ri.signals.baryA     = a;
+				ri.signals.baryB     = b;
+
 				// Landing 2: project ray differentials onto the surface
 				// UV plane and store the texture-space footprint.  Costs
 				// nothing when ray.hasDifferentials = false (early-out
