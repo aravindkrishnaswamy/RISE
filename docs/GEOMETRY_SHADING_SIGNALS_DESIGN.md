@@ -1058,6 +1058,39 @@ exactly as written; the one addition beyond them is the new design-note
 condition L (`DESIGN_UNWORN_MATERIALS`), which is the "one predicate, two
 consumers" half of the same pattern.
 
+**VERB-EFFECT CENSUS (2026-08-30)** —
+`evals/runconfigs/addwear_census_gemini_gpt.json`: the identical instrument and
+providers as the pre-verb census, so the delta is attributable to the one
+change (the verb + condition L). Results (`evals/runs/addwear_census/`):
+
+| | add_wear called | curv in scene | occlusion in scene | position proxy |
+|---|---|---|---|---|
+| gemini r1 | 0 | 0 | 0 | 0 |
+| gemini r2 | **1** | 4 | 2 | 0 |
+| gemini r3 | **1** | 4 | 2 | 0 |
+| gpt r1 | 0 (note seen) | 0 | 0 | 0 |
+| gpt r2 | 0 (note seen) | 0 | 0 | 0 |
+| gpt r3 | **1** (note seen) | 4 | 2 | 0 |
+
+**Deltas vs the pre-verb baseline:** curv-driven wear **1/6 → 3/6** (every
+adoption now routes through the verb; the minted painters are genuinely bound
+into the material's own slots — `base_color <mat>_wear`, `roughness
+<mat>_wearrough`); **occlusion 0/6 → 3/6** (the verb carries the cavity term
+the advice never moved); **position proxies 3 occurrences → 0/6**; **gpt
+0/3 → 1/3** — its first-ever compliance on this axis, and the causality is
+clean: condition L's note lands at trajectory line 3, the `add_wear` call
+follows at line 97. The provider that read every skill and complied with
+nothing responds to the note+verb pairing — the C-VERB law replicating, though
+at 1/3 rather than `vary_material`'s 3/3 (this scenario's note fires as one
+clause among several; `constant_materials_polish`'s did too, but on a scene
+whose whole task was the polish). Report-level: gpt pass@1 0% → **33.3%**
+(first-ever strict-gate pass on this instrument by any provider),
+spatially_varying_scalar 0.67 → 1.00; gemini meanCkpt 0.698 → 0.746.
+**Verdict: the verb works — every call produced the full composition and
+zero calls produced a refusal or a broken scene; adoption of the signals
+tripled and the position-proxy anti-pattern went to zero. Remaining gap is
+call-rate (3/6), not mechanism.**
+
 ---
 
 ## 12. Cost and invalidation
