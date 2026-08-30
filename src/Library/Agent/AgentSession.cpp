@@ -18863,7 +18863,8 @@ namespace RISE
 			//! only documentation channel guaranteed to reach every agent, and
 			//! the measured record (doc 88 C-ADV / C-READ) says design-note
 			//! prose and unread skills do not.  It is also where the
-			//! curvature context variables (`curv` / `curvR`) are described,
+			//! curvature context variables (`curv` / `curvR`) and the Phase-2
+			//! geometry-signal builtins (`occlusion` / `thickness`) are described,
 			//! and a mask built from a world-axis position proxy instead of
 			//! from geometry is precisely the failure this block is trying to
 			//! stop.  It is the largest entry here; if the builder prompt ever
