@@ -806,6 +806,11 @@ any other setting applies a real conversion and would warp the values.
 - `vary_material` -- zero required arguments; makes the most prominent
   bare-number microsurface in the scene vary, in one call.  Its output is
   a worked example of the `param`-with-a-range contract above.
+- `add_wear` -- zero required arguments; rewrites the most prominent flat
+  colour into the curvature wear composition (edge mask `clamp(curv*k +
+  noise, 0, 1)`, crevice mask `clamp(-curv*k + noise, 0, 1)` deepened by
+  `occlusion()`), banded around the values already there, and adds the
+  matching roughness field -- one call, one undo step.
 - Colour-slot vs scalar-slot wiring, material starters, and the glass /
   metal "needs something to reflect" rule live in
   `read_skill {name:"materials-and-media-basics"}` -- read that one for

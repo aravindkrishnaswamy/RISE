@@ -1048,6 +1048,16 @@ real but weak, provider-differentiated adoption for `curv` and none for
 the evidence now backs the `add_wear`-class verb (Phase 4) as the next lever.
 Building it stays a user decision.**
 
+**ESCALATION TAKEN (2026-08-30).** `add_wear` is BUILT — see §13 Phase 4's
+status block for the qualifying predicate, the emitted composition, the
+refusal contract and the execution-validated evidence. It is the sixth verb
+whose commit is one composite whole-document swap (so it is excluded from
+`IsProposeSafeVerb` alongside the other five) and it is wired on every surface
+`vary_material` is. The hook points named in the paragraph above were used
+exactly as written; the one addition beyond them is the new design-note
+condition L (`DESIGN_UNWORN_MATERIALS`), which is the "one predicate, two
+consumers" half of the same pattern.
+
 ---
 
 ## 12. Cost and invalidation
@@ -1501,7 +1511,84 @@ real scene or user need appears.
 - **Bent normals** — the natural companion output of an AO bake.
 - **Scene-wide (cross-object) AO** — §8.
 - **An `add_wear`-class verb** — the C-VERB escalation if the Phase-1/2 census
-  misses.
+  misses. **BUILT 2026-08-30**, census-driven: the §11 CENSUS RUN block is the
+  evidence that earned it (delivery 6/6, adoption 1/6, position proxies shipped
+  in its place), and the pre-committed escalation rule for a census miss is a
+  verb. Status block below.
+
+#### `add_wear` — BUILT 2026-08-30
+
+A zero-required-argument mutating verb in the exact `vary_material` mould: one
+qualifying predicate feeding **both** a new design-note clause (**condition L**,
+`DESIGN_UNWORN_MATERIALS`) and the callable verb, refuse-on-no-op with a
+byte-identical document, one composite whole-document swap, one head bump, one
+undo step, no staged-proposal form under External authority.
+
+**Qualifies** (`WearMaterial_`, `AgentSession.cpp`) — a material whose
+
+1. kind carries colour-pipe slots, spells at least one out, and where **every**
+   spelled-out colour slot classifies `Constant` (condition H's flat test); and
+2. **primary** colour slot (preference list `base_color` / `reflectance` / `rd` /
+   `albedo` / `diffuse` / `color`, falling back to descriptor order) binds a
+   `uniformcolor_painter` whose RGB is readable in the default Rec.709-linear
+   space — a blackbody, a spectral painter, or a non-default `colorspace` is a
+   base it must not invent; and
+3. is bound by at least one `standard_object` (following `source` links, bounded
+   at 8 hops) whose geometry chunk is **not** curv-barren — the barren set is
+   stated as a negative (`CurvBarrenGeometryKind_`) so a future geometry kind
+   defaults to "assume it curves": `bezierpatch` / `bilinearpatch` (the §13
+   stubs, 0 as *absence*), `infiniteplane` / `clippedplane` / `circulardisk` /
+   `box` / `cartesian_disk` (genuinely planar, 0 is the true answer); and
+4. does not already bind an expression reading `curv` / `curvR` / `occlusion` /
+   `thickness` — a second pass would stack two wear layers, and this clause is
+   what makes the note **self-disarm** as work lands.
+
+**What it writes.** One `expression_painter` (colour), plus — only when the
+material also carries a readable constant microsurface — one
+`scalar_painter` / `expression_painter` (roughness). Both carry the *identical*
+mask prelude, so colour and roughness cannot disagree about where the wear is:
+
+```
+def wear_mask    clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)
+def crevice_raw  clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)
+def cavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))
+def crevice_mask clamp(crevice_raw*cavity_boost, 0, 1)
+expr             mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)
+```
+
+`edge_tint` / `patina_tint` are **derived from `base` inside the expression**
+(desaturate + lift toward white; desaturate + darken), never a hardcoded
+verdigris — so the verb suits wood, stone and painted steel as much as bronze.
+`base_r/g/b` are params carrying the material's own authored colour; the
+roughness band is `VaryBandFor_`, the literal function `vary_material` uses.
+
+**One deliberate exception to the doc-88 "every art-directable number is a
+param" rule**: `occlusion(0.08)`'s radius stays a numeric **literal**.
+`ExpressionEval.h`'s compiler emits the `kFnOcclusionDynR` twin for any radius
+it cannot prove is exactly one numeric literal, and that twin reads the neutral
+fallback on every indexed triangle mesh — a `param`-bound radius would silently
+delete the cavity term across the whole mesh family while still *looking*
+art-directable. The **gain** is a param; the radius is a mechanism constant.
+
+**Refusals**, each byte-identical: nothing qualifies; a named material that is
+not a candidate (message distinguishes "no such chunk" / "no colour slot this
+can read" / the specific clause it tripped); planar-only geometry; already worn;
+already varying; an unreadable base; a name collision; an underivable candidate.
+
+**Verified** by `tests/AgentAddWearTest.cpp` (151 checks, execution-validated,
+not a render-pixel check): three synthetic hits differing **only** in mean
+curvature — same world point, so the `fbm` breakup contributes identically —
+give colour luma convex `0.5098` > flat `0.3053` > concave `0.1049` and
+roughness convex `0.1750` < flat `0.2480` < concave `0.3500`, through
+`IPainter::GetColor` / `IScalarPainter::GetValuesAt` on the live managers; plus
+parse + derive + render + zero-error `validate` on the mutated document.
+
+**Future census plan** (not run): re-run `rich_material_closeup` (the doc-88 S6
+instrument, a *weathered* brass doorknob) × 3 repeats × {gemini, gpt} and count
+(a) `add_wear` calls per run and (b) the resulting `curv` reference count in the
+committed scenes — the same post-hoc reading §11's CENSUS RUN block uses. The
+`vary_material` precedent (census-confirmed 3/3 once it existed as a callable)
+is the comparison to beat.
 
 ---
 

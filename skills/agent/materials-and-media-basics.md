@@ -462,6 +462,12 @@ oxidation instead of a smooth, obviously-procedural AO ramp — the tell
 that gives away a lazy wear pass.  As in the roughness example above,
 every art-directable number is a `param` with `min`/`max`/`step`/`label`.
 
+If you would rather not hand-author it at all, call **`add_wear`** — zero
+required arguments; it finds the material that is still one flat colour on
+geometry that curves, writes exactly this composition banded around the
+colour already there (plus the matching roughness field), and rebinds the
+slots, in one call and one undo step.
+
 ```rise
 RISE ASCII SCENE 7
 
