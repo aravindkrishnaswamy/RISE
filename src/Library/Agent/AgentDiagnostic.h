@@ -326,6 +326,57 @@ namespace RISE
 			//! carries its own targeted anti-churn escape, so no generic
 			//! self-disarm suffix is appended (condition C/D's rule).
 			static const char* const DESIGN_UNWORN_MATERIALS = "DESIGN_UNWORN_MATERIALS";
+			//! Condition M (2026-08-30): the "emissive-on-opaque-shell"
+			//! translucency fake -- the single most-repeated agent failure on
+			//! record (4 graded trajectories: asked for a glowing thin-walled
+			//! lantern, the agent encloses the light in an opaque shell and
+			//! paints an emissive gradient on the OUTSIDE; one run's interior
+			//! candle measured at literally ZERO luminance contribution, since
+			//! a solid, non-transmissive shell blocks every ray the interior
+			//! light casts).
+			//!
+			//! Fires on >= 1 instance (unlike condition L's gate of three --
+			//! one enclosed light already IS the failure) of: a POSITIONAL
+			//! light (`omni_light` / `spot_light` position, `rect_light` /
+			//! `shape_light` unparented center -- `ambient_light`,
+			//! `directional_light` and `hosek_wilkie_skylight` carry no world
+			//! point and are never candidates) whose world position falls
+			//! inside the world-space bounding box of a `standard_object`
+			//! bound to an OPAQUE material.  "Opaque" reuses
+			//! OpaqueReflectionOnlyMaterialKinds_ VERBATIM -- the exact
+			//! classification condition I already owns (no transmission
+			//! marker AND not a genuine emitter) -- so a `translucent_material`
+			//! / dielectric-class shell never fires, and a true luminaire
+			//! "flame" fixture standing in for the light itself is excluded
+			//! from being flagged as the blocking shell for the same reason a
+			//! luminaire is excluded from condition I's opaque set.
+			//!
+			//! The bbox is read STATICALLY off Document text (position/scale,
+			//! no rotation -- a parented, sourced, count_u/count_v-repeated or
+			//! rotated `standard_object`, or a geometry kind outside the small
+			//! analytic allowlist -- box/sphere/ellipsoid/cylinder/torus/
+			//! sdf_geometry -- is simply never added as a candidate, which can
+			//! only make this MISS an enclosure, never invent one).  A
+			//! candidate whose bbox ALSO contains the scene's camera is
+			//! skipped (a room/skybox shell, not a one-light lantern).  When
+			//! more than one opaque candidate contains the light, the
+			//! SMALLEST-volume one is named (the actual shell, not an
+			//! enclosing room). When the winning shell's own material ALSO
+			//! binds a spatially-varying `emissive` painter, a second sentence
+			//! calls out that the painted glow cannot respond to the light it
+			//! is impersonating.
+			//!
+			//! Self-disarming with NO state and NO generic suffix, condition
+			//! J's reason: switching the shell to a transmissive material kind
+			//! or moving the light out makes the predicate itself false --
+			//! this is a physics fact, not a styling judgement, so there is no
+			//! "deliberately simple" reading of a light that cannot escape its
+			//! shell. Severity::Info, matching every other condition in this
+			//! family (a self-disarming design ADVISORY, not a hard render
+			//! refusal). HEDGED as a bounding-box containment test, not a
+			//! watertight-geometry one -- an open or concave shell can
+			//! register as "enclosing" too.
+			static const char* const DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

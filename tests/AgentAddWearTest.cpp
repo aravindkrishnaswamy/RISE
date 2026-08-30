@@ -1043,6 +1043,193 @@ static void TestWireSurface()
 	}
 }
 
+//----------------------------------------------------------------------
+// Condition M (2026-08-30): the "emissive-on-opaque-shell" translucency
+// fake -- DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL.  A sibling design-note
+// condition to L (both ride the SAME ComputeDesignNoteConditionsFromDoc_
+// scan and the same ValidateText/ComputeDesignNote carriers this file
+// already exercises for L), so its coverage lives in this file too even
+// though there is no `add_wear`-style verb for it to test alongside --
+// condition M is note/diagnostic-only.
+//
+// Cases, mirroring condition L's TestNote coverage:
+//   (a) opaque pbr-family shell + interior omni_light + a spatially-
+//       VARYING `emissive` -> fires, BOTH sentences.
+//   (b) same shell + light, no `emissive` bound at all -> fires, first
+//       sentence only.
+//   (c) SELF-DISARM: the shell is `translucent_material` -> silent.
+//   (d) no positional light in the document at all (only the Preamble's
+//       directional key light) -> silent.
+//   (e) the "shell" is a scene-encompassing box that also contains the
+//       camera (a room, not a lantern) -> silent.
+//   (f) a small lambertian_luminaire_material "flame" sits at the SAME
+//       point as the light, inside a bigger opaque shell -> the flame is
+//       never flagged (it is an emitter, excluded from the opaque set by
+//       the same rule that excludes it from condition I's), the outer
+//       shell is.
+//----------------------------------------------------------------------
+
+//! `ggx_material` with an explicit (possibly empty) `emissive` binding.
+static std::string GgxEmissive( const std::string& name, const std::string& rd,
+                                const std::string& alpha, const std::string& emissive )
+{
+	std::string s = "ggx_material\n{\n\tname " + name + "\n\trd " + rd + "\n\trs pnt_spec\n"
+	                "\talphax " + alpha + "\n\talphay " + alpha + "\n\tior 1.5\n\textinction 0.0\n";
+	if( !emissive.empty() ) s += "\temissive " + emissive + "\n";
+	s += "}\n\n";
+	return s;
+}
+
+static std::string Box( const std::string& name, double size )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", size );
+	return "box_geometry\n{\n\tname " + name + "\n\twidth " + buf + "\n\theight " + buf +
+	       "\n\tdepth " + buf + "\n}\n\n";
+}
+
+static std::string OmniAtOrigin( const std::string& name )
+{
+	return "omni_light\n{\n\tname " + name + "\n\tpower 5.0\n\tcolor 1 1 1\n\tposition 0 0 0\n}\n\n";
+}
+
+static void TestEnclosedLightShellNote()
+{
+	std::printf( "M: the design note -- the emissive-on-opaque-shell translucency fake\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCode = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+
+	// (a) Opaque shell + interior light + a VARYING emissive -> fires, BOTH
+	//     sentences: the containment fact, then the impersonation fact.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += "expression_painter\n{\n\tname pnt_glow_varying\n\texpr vec3(u,u,u)\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "pnt_glow_varying" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M1: an omni_light enclosed by an opaque shell FIRES" );
+		if( d ) {
+			Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+			       "M1: it is an Info-severity ADVISORY" );
+			Check( d->message.find( "candle" ) != std::string::npos,
+			       "M1: it NAMES the light" );
+			Check( d->message.find( "obj_shell" ) != std::string::npos,
+			       "M1: ...and the enclosing object" );
+			Check( d->message.find( "mat_shell" ) != std::string::npos,
+			       "M1: ...and its material" );
+			Check( d->message.find( "impersonating" ) != std::string::npos,
+			       "M1 MONEY: the shell's OWN varying `emissive` earns the sharper second sentence" );
+			Check( d->message.find( "materials-and-media-basics" ) != std::string::npos,
+			       "M1: ...and points at the fix (thickness()-driven tau on translucent_material)" );
+			Check( d->message.find( "bounding-box" ) != std::string::npos,
+			       "M1: ...and hedges the geometric claim as a bbox test, not a watertight one" );
+
+			const std::string note = Agent::AgentSession::ComputeDesignNote( body );
+			Check( note.find( d->message ) != std::string::npos,
+			       "M1 MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the render-result "
+			       "note -- one shared formatter, two carriers" );
+		}
+	}
+
+	// (b) Same shell + light, NO `emissive` bound at all -> fires, but only
+	//     the first sentence -- nothing to call "impersonating".
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M2: fires without any `emissive` bound" );
+		if( d ) {
+			Check( d->message.find( "opaque" ) != std::string::npos,
+			       "M2: the containment sentence is still there" );
+			Check( d->message.find( "impersonating" ) == std::string::npos,
+			       "M2 MONEY: ...but the sharper sentence is ABSENT -- there is no painted emissive to "
+			       "call out" );
+		}
+	}
+
+	// (c) SELF-DISARM: the shell is `translucent_material` -- light genuinely
+	//     can transmit, so this is not the failure at all.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += "translucent_material\n{\n\tname mat_shell\n\tref pnt_bronze\n\ttau pnt_bronze\n}\n\n";
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M3 MONEY: a translucent_material shell does NOT fire -- switching the material kind "
+		       "self-disarms the predicate, no state needed" );
+	}
+
+	// (d) No positional light in the document at all (only the Preamble's
+	//     directional key light) -> silent, even with the same opaque shell.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M4 MONEY: a directional-only document never fires -- a direction carries no world "
+		       "point for this condition to place" );
+	}
+
+	// (e) A scene-encompassing box (a room) also contains the CAMERA
+	//     (Preamble's is at 0 2 9) -- the room-box heuristic skips it even
+	//     though it geometrically contains the light too.
+	{
+		std::string body = Preamble();
+		body += Box( "room", 40.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_room", "room", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M5 MONEY: an enclosure that ALSO contains the camera is a room/backdrop, not a "
+		       "one-light shell -- skipped" );
+	}
+
+	// (f) The flame-fixture case: a small lambertian_luminaire_material
+	//     "flame" sits at the SAME point as the light, inside a bigger
+	//     opaque shell.  The flame is never the finding (it is itself an
+	//     emitter, excluded from the opaque set exactly as condition I
+	//     excludes a luminaire from its own); the outer shell is.
+	{
+		std::string body = Preamble();
+		body += "sphere_geometry\n{\n\tname flame_sphere\n\tradius 0.1\n}\n\n";
+		body += Box( "shell", 4.0 );
+		body += "lambertian_luminaire_material\n{\n\tname mat_flame\n\texitance pnt_bronze\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_flame", "flame_sphere", "mat_flame", 0 );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M6: fires (the outer shell still encloses the light)" );
+		if( d ) {
+			Check( d->message.find( "obj_shell" ) != std::string::npos,
+			       "M6 MONEY: it names the OUTER shell..." );
+			Check( d->message.find( "obj_flame" ) == std::string::npos,
+			       "M6 MONEY: ...and never the coincident inner emissive fixture, which IS the light" );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "AgentAddWearTest -- GEOMETRY_SHADING_SIGNALS sec 11: add_wear\n" );
@@ -1056,6 +1243,7 @@ int main()
 	TestAutonomyAndAuthority();
 	TestNote();
 	TestWireSurface();
+	TestEnclosedLightShellNote();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

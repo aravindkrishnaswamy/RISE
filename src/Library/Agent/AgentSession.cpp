@@ -4493,6 +4493,225 @@ namespace RISE
 				return best;
 			}
 
+			//! Forward declaration -- defined much further down this file
+			//! (AgentSession::ElementWorldBounds_'s own anonymous-namespace
+			//! neighbourhood), needed here (and by SimpleGeometryLocalBounds_
+			//! below) before that point in translation order.  ONE unnamed
+			//! namespace spans this whole file regardless of how many times it
+			//! is closed and reopened, so this and that definition are the
+			//! same entity.
+			bool ParseVec3_( const std::string& s, double out[3] );
+
+			//======================================================================
+			// Condition M (2026-08-30): the "emissive-on-opaque-shell" translucency
+			// fake.  See AgentDiagnosticCode::DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL's
+			// own doc for the full failure description and the classification
+			// rules; the structs below are this scan's per-item records.
+			//======================================================================
+
+			//! ONE positional light this static scan can place: a literal
+			//! world-space point read straight off the chunk's own params.
+			//! `omni_light`/`spot_light`'s `position` is documented world-space
+			//! unconditionally; `rect_light`/`shape_light`'s `center` is
+			//! world-space ONLY when unparented (their own descriptor text) --
+			//! a parented one is never added (see the scan site's own comment
+			//! for why resolving an arbitrary parent chain is out of scope
+			//! here).  `ambient_light` (uniform everywhere), `directional_light`
+			//! (a direction, no point) and `hosek_wilkie_skylight` (a global sky
+			//! dome) are never entered at all -- "skip directional/environment"
+			//! from this condition's own spec.
+			struct PositionalLightCandidate_
+			{
+				std::string name;
+				std::string kind;            //!< "omni_light" / "spot_light" / "rect_light" / "shape_light"
+				double      pos[3] = { 0.0, 0.0, 0.0 };
+			};
+
+			//! ONE `standard_object` simple enough for this scan to place its
+			//! local geometry bound in world space with plain arithmetic:
+			//! `position + scale * local`, no rotation.  Deliberately NEVER
+			//! populated for an object that carries `parent` / `source` /
+			//! `count_u` / `count_v` (an arbitrary scene-graph composition or
+			//! instancing multiplier this static scan cannot resolve cheaply)
+			//! or `orientation` / `quaternion` / `matrix` (a rotated local bound
+			//! needs a rotation matrix this scan does not build) -- an object
+			//! failing either test is simply never added, which can only make
+			//! condition M MISS an enclosure, never invent one.  `csg_object`
+			//! is a DIFFERENT top-level chunk role (category Object, no single
+			//! `geometry` reference) and is likewise never added here -- its
+			//! bound is the union/intersection/difference of two further
+			//! objects' own bounds, which is not "cheap" in this scan's sense;
+			//! skipped rather than approximated.
+			struct EnclosureCandidate_
+			{
+				std::string name;
+				std::string geometryName;
+				std::string materialName;
+				double      position[3] = { 0.0, 0.0, 0.0 };
+				double      scale[3]    = { 1.0, 1.0, 1.0 };
+			};
+
+			//! ONE geometry chunk's LOCAL (object-space) axis-aligned bound, for
+			//! the small set of kinds this scan can size without deriving the
+			//! scene.  An ALLOWLIST -- the OPPOSITE of CurvBarrenGeometryKind_'s
+			//! blocklist choice just above -- because a wrong "this shape
+			//! contains the light" claim is a much higher-stakes mistake than a
+			//! wrong "this reads no curvature": every geometry kind NOT handled
+			//! by SimpleGeometryLocalBounds_ / SDFGeometryLocalBounds_ below
+			//! (every mesh family, sweep/lathe/skin/displaced/hair/
+			//! path_instances, the planar/patch stubs) is simply never entered
+			//! into the map that carries this, which again can only make
+			//! condition M MISS an enclosure, never invent one.
+			struct GeometryLocalBounds_
+			{
+				double lo[3] = { 0.0, 0.0, 0.0 };
+				double hi[3] = { 0.0, 0.0, 0.0 };
+			};
+
+			//! Condition M's ONE finding: a positional light enclosed by an
+			//! opaque shell.  `shellHasVaryingEmissive` gates the clause's
+			//! sharper second sentence -- see FormatEnclosedLightClause_.
+			struct EnclosedLightFinding_
+			{
+				std::string lightName;
+				std::string lightKind;
+				std::string shellObjectName;
+				std::string shellMaterialName;
+				bool        shellHasVaryingEmissive = false;
+			};
+
+			//! Local bound reader for the analytic geometry kinds condition M
+			//! supports.  Reads the SAME literal params the real chunk parsers
+			//! do (box_geometry width/height/depth, sphere_geometry radius,
+			//! ellipsoid_geometry radii, cylinder_geometry axis/radius/height,
+			//! torus_geometry majorradius/minorratio); a missing or non-numeric
+			//! param falls back to the parser's own documented default rather
+			//! than refusing, exactly as each Finalize does.  Returns false
+			//! (leaving `out` untouched) for any other kind, INCLUDING
+			//! sdf_geometry -- that one is handled separately by
+			//! SDFGeometryLocalBounds_ below, off the already-parsed Part list
+			//! the blend-scale scan built, rather than re-parsing here.
+			bool SimpleGeometryLocalBounds_( const std::string& kind, const NodeRef& item, GeometryLocalBounds_& out )
+			{
+				auto dbl = [&]( const char* pname, double def ) -> double {
+					const std::string s = ChunkParamString_( item, pname );
+					return ( !s.empty() && LooksNumeric( s ) ) ? std::strtod( s.c_str(), nullptr ) : def;
+				};
+				if( kind == "box_geometry" ) {
+					const double hw = dbl( "width", 1.0 ) * 0.5;
+					const double hh = dbl( "height", 1.0 ) * 0.5;
+					const double hd = dbl( "depth", 1.0 ) * 0.5;
+					out.lo[0] = -hw; out.lo[1] = -hh; out.lo[2] = -hd;
+					out.hi[0] =  hw; out.hi[1] =  hh; out.hi[2] =  hd;
+					return true;
+				}
+				if( kind == "sphere_geometry" ) {
+					const double r = dbl( "radius", 1.0 );
+					for( int k = 0; k < 3; ++k ) { out.lo[k] = -r; out.hi[k] = r; }
+					return true;
+				}
+				if( kind == "ellipsoid_geometry" ) {
+					double radii[3] = { 1.0, 1.0, 1.0 };
+					ParseVec3_( ChunkParamString_( item, "radii" ), radii );
+					for( int k = 0; k < 3; ++k ) { out.lo[k] = -radii[k]; out.hi[k] = radii[k]; }
+					return true;
+				}
+				if( kind == "cylinder_geometry" ) {
+					const double r  = dbl( "radius", 1.0 );
+					const double hh = dbl( "height", 1.0 ) * 0.5;
+					const std::string axisStr = ChunkParamString_( item, "axis" );
+					const char axis = axisStr.empty() ? 'x' : axisStr[0];
+					double half[3] = { r, r, r };
+					if( axis == 'x' ) half[0] = hh;
+					else if( axis == 'y' ) half[1] = hh;
+					else half[2] = hh;
+					for( int k = 0; k < 3; ++k ) { out.lo[k] = -half[k]; out.hi[k] = half[k]; }
+					return true;
+				}
+				if( kind == "torus_geometry" ) {
+					const double majorR = dbl( "majorradius", 1.0 );
+					const double minorR = dbl( "minorratio", 0.3 ) * majorR;
+					const double reach  = majorR + minorR;   // ring in local XZ, around Y -- SDFPrim::ePrimTorus's own comment
+					out.lo[0] = -reach; out.lo[1] = -minorR; out.lo[2] = -reach;
+					out.hi[0] =  reach; out.hi[1] =  minorR; out.hi[2] =  reach;
+					return true;
+				}
+				return false;
+			}
+
+			//! sdf_geometry's local bound: the union, across every parsed Part,
+			//! of an axis-aligned box centred at that part's own `pos` with
+			//! half-extent SDFPartReachRadius_(part) on every axis -- the SAME
+			//! conservative per-part reach the proximity gate (review-round B/C,
+			//! above) already trusts, just unioned across the whole part list
+			//! instead of compared pairwise.  Deliberately IGNORES each part's
+			//! own rotation (cx/cy/cz): reach is a ROTATION-INVARIANT radius
+			//! around `pos` (rotating a shape about its own centre cannot move
+			//! any of its points farther from that centre than its unrotated
+			//! reach), so the box this produces is always AT LEAST as large as
+			//! the part's true local extent -- conservative in the safe
+			//! direction for an enclosure test.  An empty part list returns the
+			//! zero-initialized (degenerate, origin-only) bound.
+			GeometryLocalBounds_ SDFGeometryLocalBounds_( const std::vector<RISE::Implementation::SDFGeometry::Part>& parts )
+			{
+				GeometryLocalBounds_ out;
+				bool any = false;
+				for( const RISE::Implementation::SDFGeometry::Part& pt : parts ) {
+					const double reach = SDFPartReachRadius_( pt );
+					const double p[3]  = { pt.pos.x, pt.pos.y, pt.pos.z };
+					for( int k = 0; k < 3; ++k ) {
+						const double lo = p[k] - reach, hi = p[k] + reach;
+						if( !any ) { out.lo[k] = lo; out.hi[k] = hi; }
+						else {
+							if( lo < out.lo[k] ) out.lo[k] = lo;
+							if( hi > out.hi[k] ) out.hi[k] = hi;
+						}
+					}
+					any = true;
+				}
+				return out;
+			}
+
+			//! Condition M's whole clause, SHARED by the note builder and the
+			//! diagnostic builder, the FormatWearCandidatesClause_ precedent
+			//! exactly.  Names the light, the shell and its material; the
+			//! second sentence only appears when the shell's own material ALSO
+			//! binds a spatially-varying `emissive` (the aggravated case: the
+			//! shell is not just blocking the interior light, it is
+			//! impersonating the glow it blocks -- and it can never respond to
+			//! that light turning off, moving, or changing colour, because
+			//! nothing wires it to that light at all).  Closes with the fix --
+			//! a `thickness()`-driven `tau` on a `translucent_material` lets the
+			//! INTERIOR light itself carry through the shell, which a painted
+			//! emissive can never do -- and the honest hedge: this is a
+			//! bounding-box containment test, not a watertight-surface one.
+			//! `findings` is never empty when this is called (condition M's own
+			//! gate); when it holds more than one, the first (document order)
+			//! is named in full and the rest are counted, the same restraint
+			//! FormatBoundedNameList_'s cap applies to a flat name list.
+			std::string FormatEnclosedLightClause_( const std::vector<EnclosedLightFinding_>& findings )
+			{
+				const EnclosedLightFinding_& f = findings[0];
+				std::string s = "`" + f.lightKind + " " + f.lightName + "` sits inside `" + f.shellObjectName +
+					"`, whose material `" + f.shellMaterialName + "` is opaque -- no light escapes; the glow "
+					"it should produce cannot reach the camera.";
+				if( f.shellHasVaryingEmissive ) {
+					s += " `" + f.shellMaterialName + "`'s painted emissive is impersonating transmitted "
+					     "glow -- it will not respond to the interior light, the walls' thickness, or scene "
+					     "lighting.";
+				}
+				s += " A `thickness()`-driven `tau` on a `translucent_material` lets the interior light "
+				     "itself carry through the shell instead (see \"Glow that dies in thick walls\" -- "
+				     "read_skill {\"name\":\"materials-and-media-basics\"}). This is a bounding-box "
+				     "containment test, not a watertight one -- an open or concave shell can register as "
+				     "enclosing too.";
+				if( findings.size() > 1 ) {
+					s += " (" + std::to_string( findings.size() - 1 ) + " more light" +
+					     ( findings.size() > 2 ? std::string( "s" ) : std::string() ) + " similarly enclosed.)";
+				}
+				return s;
+			}
+
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused (binding-aware as of adoption-polish item 3)
@@ -4507,6 +4726,7 @@ namespace RISE
 				bool conditionJ = false;   //!< the blend-scale law (db9a88a9): an sdf_geometry smin joint whose k dissolves the part it joins
 				bool conditionK = false;   //!< GPT slice item 4: a low-roughness metallic material coexists with a strongly saturated env dome
 				bool conditionL = false;   //!< GEOMETRY_SHADING_SIGNALS sec 11: a flat-colour material on curv-bearing geometry -- `add_wear`'s note half
+				bool conditionM = false;   //!< the emissive-on-opaque-shell translucency fake: a positional light enclosed by an opaque standard_object
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -4660,6 +4880,12 @@ namespace RISE
 				//! reason: wearCandidateMaterials stays in DOCUMENT order because
 				//! SelectMaterialToWear_ and the verb read it that way.
 				std::vector<std::string> wearCandidateNames;
+
+				//! Condition M: every enclosed-light finding, in the LIGHT's
+				//! document order.  Condition M reads it through !empty() --
+				//! ONE enclosed light already IS the failure.  The clause
+				//! formatter reads it whole (FormatEnclosedLightClause_).
+				std::vector<EnclosedLightFinding_> enclosedLightFindings;
 			};
 
 			//! Condition L's gate: how many wear candidates it takes before the
@@ -5152,6 +5378,24 @@ namespace RISE
 				std::map<std::string, std::array<double, 3> > uniformColorPainters;   // name -> RGB
 				std::vector<std::string> metallicCandidateNames;   // pbr_metallic_roughness_material names: literal metallic>=0.7, roughness<0.3
 
+				// -- Condition M accumulators (2026-08-30) -- the emissive-on-
+				// opaque-shell translucency fake.  Collected during the SAME
+				// walk, resolved afterwards for condition L's own reason: a
+				// light and the object that might enclose it can appear in
+				// either document order.
+				std::map<std::string, GeometryLocalBounds_> geometryLocalBoundsByName;   // geometry chunk name -> local AABB (supported kinds only)
+				//! material name -> (kind, full param map).  Unconditional --
+				//! EVERY Material-category chunk, not just the pendingMaterials
+				//! subset (which is filtered to kinds carrying a microsurface/
+				//! scalar/colour slot) -- so an opacity lookup on a shell bound
+				//! to some other Material kind never comes back "unknown" just
+				//! because that kind fell outside pendingMaterials' own filter.
+				std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > > materialByName;
+				std::vector<EnclosureCandidate_>       enclosureCandidates;   // standard_objects simple enough to place in world space; see EnclosureCandidate_'s own doc
+				std::vector<PositionalLightCandidate_> positionalLights;      // omni/spot/unparented-rect/unparented-shape lights with a resolvable world position
+				bool   haveCameraWorldPos = false;
+				double cameraWorldPos[3]  = { 0.0, 0.0, 0.0 };
+
 				// -- Condition C accumulators (88) -------------------------
 				// Keyed by the object's BINDING signature (every param except
 				// `name` and the five transform params), so two objects land in
@@ -5278,6 +5522,32 @@ namespace RISE
 							g.geometry = geo->second;
 							if( !g.distinctTransforms && xform != g.firstTransform ) g.distinctTransforms = true;
 						}
+
+						// (Condition M) A candidate ENCLOSING shell -- only when
+						// this object is simple enough to place in world space
+						// with plain arithmetic; see EnclosureCandidate_'s own
+						// doc for exactly what disqualifies one.  A disqualified
+						// object is simply never added.  Fresh `material`/`name`
+						// lookups: the ones the earlier nested blocks above used
+						// are scoped to those blocks and are not visible here.
+						{
+							const std::map<std::string, std::string>::const_iterator mat2 = pm.find( "material" );
+							const std::map<std::string, std::string>::const_iterator nm2  = pm.find( "name" );
+							if( geo != pm.end() && !geo->second.empty() && geo->second != "none" &&
+							    mat2 != pm.end() && !mat2->second.empty() && mat2->second != "none" &&
+							    nm2 != pm.end() && !nm2->second.empty() &&
+							    !pm.count( "parent" ) && !pm.count( "source" ) &&
+							    !pm.count( "count_u" ) && !pm.count( "count_v" ) &&
+							    !pm.count( "orientation" ) && !pm.count( "quaternion" ) && !pm.count( "matrix" ) ) {
+								EnclosureCandidate_ ec;
+								ec.name         = nm2->second;
+								ec.geometryName = geo->second;
+								ec.materialName = mat2->second;
+								ParseVec3_( ChunkParamString_( item, "position" ), ec.position );   // absent/malformed -> stays the documented (0,0,0) default
+								ParseVec3_( ChunkParamString_( item, "scale" ),    ec.scale );       // absent/malformed -> stays the documented (1,1,1) default
+								enclosureCandidates.push_back( ec );
+							}
+						}
 						continue;
 					}
 					if( role == "scalar_painter" ) {
@@ -5372,6 +5642,35 @@ namespace RISE
 						// pendingMaterials logic every other material kind
 						// does, further down this loop.
 					}
+					// (Condition M) Every POSITIONAL light -- one with a literal
+					// world-space point this static scan can read.  ambient_light
+					// (uniform everywhere), directional_light (a direction, no
+					// position) and hosek_wilkie_skylight (a global sky dome) are
+					// never entered here at all, which IS "skip directional/
+					// environment" from this condition's own spec.
+					if( role == "omni_light" || role == "spot_light" ) {
+						PositionalLightCandidate_ L;
+						L.name = ChunkParamString_( item, "name" );
+						L.kind = role;
+						ParseVec3_( ChunkParamString_( item, "position" ), L.pos );   // absent/malformed -> stays the documented (0,0,0) default
+						if( !L.name.empty() ) positionalLights.push_back( L );
+					} else if( role == "rect_light" || role == "shape_light" ) {
+						// `center` is LOCAL to `parent` when one is bound (their
+						// own descriptor text) -- this static scan has no cheap
+						// way to resolve an arbitrary object's world transform
+						// (the SAME reason a `parent`-bearing standard_object is
+						// never added as an enclosure candidate above), so a
+						// parented area/shape light is skipped rather than tested
+						// against an unresolved local-space point.
+						const std::string parent = ChunkParamString_( item, "parent" );
+						if( parent.empty() || parent == "none" ) {
+							PositionalLightCandidate_ L;
+							L.name = ChunkParamString_( item, "name" );
+							L.kind = role;
+							ParseVec3_( ChunkParamString_( item, "center" ), L.pos );
+							if( !L.name.empty() ) positionalLights.push_back( L );
+						}
+					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
 					// form here for the same reason the other three do -- it
 					// is one of the geometry kinds whose ABSENCE this note
@@ -5443,6 +5742,10 @@ namespace RISE
 									     ScanSdfGeometryBlendScaleOffenders_( geoName, parts ) ) {
 										c.blendScaleOffenders.push_back( off.formattedLine );
 									}
+									// (Condition M) sdf_geometry's own local bound, off
+									// the SAME already-parsed Part list.
+									if( !geoName.empty() )
+										geometryLocalBoundsByName[geoName] = SDFGeometryLocalBounds_( parts );
 								}
 							}
 						}
@@ -5451,12 +5754,38 @@ namespace RISE
 
 					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
 					if( !d ) continue;
+					// (Condition M) The scene's camera world position, off
+					// whichever Camera-category chunk names one (`location` --
+					// AddCameraCommonParams' shared param, world-space when the
+					// camera itself carries no further transform, which none
+					// of this scene language's camera kinds do).  A later
+					// camera wins, matching "last chunk of a kind wins"
+					// elsewhere in this scan; a camera with no parseable
+					// `location` (an administrative `scene_options`/
+					// `camera_defaults` chunk, or a theta/phi-positioned one)
+					// simply leaves the room-box heuristic unavailable rather
+					// than guessing a position.
+					if( d->category == ChunkCategory::Camera ) {
+						double p[3];
+						if( ParseVec3_( ChunkParamString_( item, "location" ), p ) ) {
+							haveCameraWorldPos = true;
+							cameraWorldPos[0] = p[0]; cameraWorldPos[1] = p[1]; cameraWorldPos[2] = p[2];
+						}
+					}
 					if( d->category == ChunkCategory::Geometry ) {
 						++c.geometryCensus[role];
 						// (Condition L) name -> kind; the advanced-geometry branch
 						// above records the same pair for the kinds it intercepts.
 						const std::string gnm = ChunkParamString_( item, "name" );
 						if( !gnm.empty() ) geometryKindByName[gnm] = role;
+						// (Condition M) The analytic kinds' local bound -- see
+						// SimpleGeometryLocalBounds_'s own doc for exactly which
+						// kinds and why every other one is left unentered.
+						if( !gnm.empty() ) {
+							GeometryLocalBounds_ glb;
+							if( SimpleGeometryLocalBounds_( role, item, glb ) )
+								geometryLocalBoundsByName[gnm] = glb;
+						}
 					}
 
 					// (88 S5) Two more per-chunk censuses, both registry-resolved
@@ -5480,28 +5809,39 @@ namespace RISE
 						}
 						continue;
 					}
-					if( d->category == ChunkCategory::Material &&
-					    ( MicrosurfaceSlotsForKind_( role ) != nullptr ||
-					      ScalarMaterialSlotsByKind_().count( role ) != 0 ||
-					      // (Doc 91) condition H needs materials that carry
-					      // ONLY colour-pipe slots too -- lambertian_material
-					      // (no microsurface, no scalar slot at all) is the
-					      // most common example, and without this a scene
-					      // built entirely from it would never have its
-					      // `reflectance` examined by ANY condition.  Adding
-					      // this candidacy is safe for A/D: both re-filter
-					      // pendingMaterials by their OWN kind-specific slot
-					      // lookup and simply skip a kind absent from it,
-					      // exactly as they already do for every other
-					      // colour-only material kind.
-					      ColorMaterialSlotsByKind_().count( role ) != 0 ) ) {
-						PendingMaterial_ pmEntry;
-						pmEntry.itemIndex = i;
-						pmEntry.kind      = role;
-						pmEntry.params    = ChunkParamMap_( item );
-						const std::map<std::string, std::string>::const_iterator nm = pmEntry.params.find( "name" );
-						pmEntry.name = ( nm != pmEntry.params.end() ) ? nm->second : std::string();
-						if( !pmEntry.name.empty() ) pendingMaterials.push_back( pmEntry );
+					if( d->category == ChunkCategory::Material ) {
+						const std::map<std::string, std::string> materialParams = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator mnm = materialParams.find( "name" );
+						// (Condition M) EVERY Material-category chunk's (kind,
+						// params) -- unconditional, unlike pendingMaterials below
+						// (filtered to kinds carrying a microsurface/scalar/
+						// colour slot), so an opacity lookup on a shell bound to
+						// some other Material kind never comes back "unknown"
+						// just because that kind fell outside that filter.
+						if( mnm != materialParams.end() && !mnm->second.empty() )
+							materialByName[mnm->second] = std::make_pair( role, materialParams );
+
+						if( MicrosurfaceSlotsForKind_( role ) != nullptr ||
+						    ScalarMaterialSlotsByKind_().count( role ) != 0 ||
+						    // (Doc 91) condition H needs materials that carry
+						    // ONLY colour-pipe slots too -- lambertian_material
+						    // (no microsurface, no scalar slot at all) is the
+						    // most common example, and without this a scene
+						    // built entirely from it would never have its
+						    // `reflectance` examined by ANY condition.  Adding
+						    // this candidacy is safe for A/D: both re-filter
+						    // pendingMaterials by their OWN kind-specific slot
+						    // lookup and simply skip a kind absent from it,
+						    // exactly as they already do for every other
+						    // colour-only material kind.
+						    ColorMaterialSlotsByKind_().count( role ) != 0 ) {
+							PendingMaterial_ pmEntry;
+							pmEntry.itemIndex = i;
+							pmEntry.kind      = role;
+							pmEntry.params    = materialParams;
+							pmEntry.name      = ( mnm != materialParams.end() ) ? mnm->second : std::string();
+							if( !pmEntry.name.empty() ) pendingMaterials.push_back( pmEntry );
+						}
 					}
 				}
 
@@ -6112,6 +6452,87 @@ namespace RISE
 				// binary "does anything vary anywhere" test lacked.
 				c.conditionL = c.wearCandidateCount >= kWearCandidateGate && !c.addWearName.empty();
 
+				// (2026-08-30) Condition M's resolution pass -- the "emissive-
+				// on-opaque-shell" translucency fake.  For every positional
+				// light, test every enclosure candidate whose geometry has a
+				// known local bound and whose material classifies OPAQUE
+				// (OpaqueReflectionOnlyMaterialKinds_ -- owned by condition I,
+				// reused VERBATIM: no transmission marker AND not a genuine
+				// emitter, exactly "blocks light and is not the fixture
+				// itself" -- a lambertian_luminaire_material "flame" standing
+				// in for the light is excluded here for free, never flagged
+				// as the shell it sits inside).  Every candidate here already
+				// carries no rotation/parent/source/count_u/count_v (see
+				// EnclosureCandidate_'s own doc), so `position + scale *
+				// local` places its bound in world space exactly.
+				for( const PositionalLightCandidate_& L : positionalLights ) {
+					const EnclosureCandidate_* best = nullptr;
+					double bestVolume = 0.0;
+					for( const EnclosureCandidate_& ec : enclosureCandidates ) {
+						const std::map<std::string, GeometryLocalBounds_>::const_iterator gb =
+							geometryLocalBoundsByName.find( ec.geometryName );
+						if( gb == geometryLocalBoundsByName.end() ) continue;   // unsupported geometry kind -- never guess
+
+						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator mat =
+							materialByName.find( ec.materialName );
+						if( mat == materialByName.end() ) continue;
+						if( !OpaqueReflectionOnlyMaterialKinds_().count( mat->second.first ) ) continue;
+
+						double wlo[3], whi[3];
+						for( int k = 0; k < 3; ++k ) {
+							const double a = ec.position[k] + ec.scale[k] * gb->second.lo[k];
+							const double b = ec.position[k] + ec.scale[k] * gb->second.hi[k];
+							wlo[k] = std::min( a, b ); whi[k] = std::max( a, b );
+						}
+						bool inside = true;
+						for( int k = 0; k < 3; ++k )
+							if( L.pos[k] < wlo[k] || L.pos[k] > whi[k] ) { inside = false; break; }
+						if( !inside ) continue;
+
+						// Room-box heuristic: an "enclosure" that also contains
+						// the camera is a scene-encompassing volume (a room
+						// shell, a skybox interior), not the one-light-in-a-
+						// shell failure this condition targets -- skip it
+						// rather than flag the whole set.
+						if( haveCameraWorldPos ) {
+							bool containsCamera = true;
+							for( int k = 0; k < 3; ++k )
+								if( cameraWorldPos[k] < wlo[k] || cameraWorldPos[k] > whi[k] ) { containsCamera = false; break; }
+							if( containsCamera ) continue;
+						}
+
+						// Multiple enclosing objects: the SMALLEST-volume one
+						// wins -- the actual shell, not an outer room or
+						// backdrop that also happens to contain the light.
+						const double volume = ( whi[0] - wlo[0] ) * ( whi[1] - wlo[1] ) * ( whi[2] - wlo[2] );
+						if( !best || volume < bestVolume ) { best = &ec; bestVolume = volume; }
+					}
+					if( !best ) continue;
+
+					EnclosedLightFinding_ f;
+					f.lightName         = L.name;
+					f.lightKind         = L.kind;
+					f.shellObjectName   = best->name;
+					f.shellMaterialName = best->materialName;
+					{
+						// The sharper second sentence: the shell's own material
+						// ALSO binds a spatially-varying `emissive` (the SAME
+						// Constant/varying classifier condition H/L already use
+						// for a colour slot) -- the aggravated case, a painted
+						// glow impersonating the transmitted light it blocks.
+						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator mat =
+							materialByName.find( best->materialName );
+						if( mat != materialByName.end() ) {
+							const std::map<std::string, std::string>::const_iterator ev = mat->second.second.find( "emissive" );
+							if( ev != mat->second.second.end() && !ev->second.empty() && ev->second != "none" &&
+							    ClassifyColorBinding_( ev->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+								f.shellHasVaryingEmissive = true;
+						}
+					}
+					c.enclosedLightFindings.push_back( f );
+				}
+				c.conditionM = !c.enclosedLightFindings.empty();
+
 				// (88) Condition C: the LARGEST qualifying group wins, so the
 				// note names one concrete geometry rather than a list.  The
 				// `distinctTransforms` requirement is what makes the clause's
@@ -6517,7 +6938,8 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL ) return std::string();
+				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
+				    !c.conditionM ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -6600,6 +7022,9 @@ namespace RISE
 					                                          c.addWearName, c.addWearKind,
 					                                          c.addWearGeometryKind );
 				}
+				if( c.conditionM ) {
+					note += " " + FormatEnclosedLightClause_( c.enclosedLightFindings );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -6636,7 +7061,8 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL ) return;
+				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
+				    !c.conditionM ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -6799,6 +7225,19 @@ namespace RISE
 					d.message  = FormatWearCandidatesClause_( c.wearCandidateCount, c.wearCandidateNames,
 					                                         c.addWearName, c.addWearKind,
 					                                         c.addWearGeometryKind );
+					out.push_back( d );
+				}
+				if( c.conditionM ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL;
+					// SHARED formatter -- cannot drift from the note's M clause.
+					// No kSelfDisarm, condition J's reason: this is a physics
+					// fact (a solid, non-transmissive shell blocks every ray
+					// the interior light casts), not a styling judgement --
+					// there is no "deliberately simple" reading of a light
+					// that cannot escape its shell.
+					d.message = FormatEnclosedLightClause_( c.enclosedLightFindings );
 					out.push_back( d );
 				}
 			}
