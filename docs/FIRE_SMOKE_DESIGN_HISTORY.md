@@ -4469,3 +4469,46 @@ it was already tried and refuted here.
   be recovered or regenerated before one term can be named as the cross-solver
   defect.  No production fix, tier-10 continuation, spectrum, empirical row,
   or animation is claimed.
+- **r181 retained onset and resolution diagnosis (2026-08-29):** the production
+  capstone is rerun from zero with an accepted-step max-velocity trajectory,
+  immutable periodic checkpoints, and one-shot `(38,42)` column budgets at the
+  first 15/30/60-m/s crossings.  The campaign itself catches and fixes an
+  instrumentation false stop: the 15-m/s budget had been published before the
+  controller consulted a still-false step acceptance flag.  Budgets are now
+  accepted-attempt-only; resident intermediate projections are compared by one
+  restoration-disabled run through the same Metal path, never a CPU re-solve.
+  With that repair,
+  tier 10 goes `16.1409645 -> 30.4028950 -> 63.6867218 m/s` between
+  `2.1312820005` and `2.1378899626 s`, while represented dt falls
+  `0.870582 -> 0.209345 ms`.  At the same velocity-owning face, advection grows
+  `1.08176e3 -> 3.61668e3 -> 1.46489e4 kg/(m2 s2)`; pressure opposes it at
+  `-0.75252e3 -> -2.57092e3 -> -9.90979e3`, so projection under-response is
+  not the observed class.  Restoration is secondary.  Vreman is nonzero and
+  rises to `0.0166124 m2/s`, but stress remains only 1.38--1.74% of advection.
+  Tier 6 completes 2.2 s with a `13.5221453 m/s` peak.  The optional tier-8
+  control stays below `10.2921 m/s` through `1.82649 s` even while its scalar
+  tail begins dynamics-bound retries; its aligned advection/pressure/
+  restoration rates are `397.969/400.239/-273.497`, separating that policy
+  event from the tier-10 momentum runaway.  This resolution split
+  selects the pre-registered advective-focusing/remap-dissipation class, not a
+  viscosity knob: the r63 `tau` lesson applies equally to a dissipation
+  coefficient chosen to suppress one observed trajectory.  The binary64
+  reference is independently regenerated with retained checkpoints and exact
+  R0/R1 momentum operands.  Immutable step 1,024 at `2.1079791976 s` stays at
+  `4.89--5.06 m/s`; its largest aligned advection is `63.3396`, versus
+  production's `1,081.7586` at the first 16.14-m/s crossing (17.08x), while
+  pressure is active in both.  The oracle velocity face has alpha one, but the
+  same column contains scalar-front alpha cuts down to `0.2337--0.3894`.  A
+  coefficient-free front-coupled dual-remap trial therefore ran from zero.  It
+  delayed onset to `2.14092 s` but still crossed `15.16/32.17/61.40 m/s` by
+  `2.14853 s`; a reconstructed velocity-envelope trial changed the terminal
+  time by only `1.45e-8 s`.  Both candidates are rejected and removed from
+  ordinary production.  The r181 finding is now flux-level: cell-average
+  limiter and ratio caps do not control the tier-10 conservative advective
+  focusing mode.  The next architecture is an onset-derived conservative flux
+  correction or adaptive front/column dissipation, validated against the
+  retained matched oracle state rather than tuned as a viscosity constant.
+  Oracle regeneration stops honestly at `2.15671067 s` / step 1,070 on its
+  temperature/Picard-Zeno boundary, so 2.2 s is not claimed.  Spectrum,
+  empirical rows, animation, and report remain blocked behind that flux-level
+  remedy.

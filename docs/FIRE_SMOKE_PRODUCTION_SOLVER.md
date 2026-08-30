@@ -4654,6 +4654,107 @@ neighborhood is recovered or regenerated.  Tier 10, its spectrum, empirical
 rows, and animation remain blocked; neither proposed projection remedy is
 claimed on a one-sided budget.
 
+### 7.56n Runaway-onset and retained-state campaign (r181)
+
+r180's later-state table is not used to choose a remedy.  The tier-10
+production trajectory is regenerated from zero with one max-velocity record per
+accepted step, immutable step-numbered checkpoints in addition to the atomic
+`latest.checkpoint`, and one-shot column budgets at the first crossings of 15,
+30, and 60 m/s.  The retained-checkpoint writer refuses a duplicate step name
+whose bytes differ.  A threshold-audit controller defect discovered by this
+campaign is also fixed: the audit had completed and published the 15-m/s row,
+then tested the step's not-yet-published acceptance flag and stopped the solver.
+The audit now owns its computed-attempt disposition before it can gate the
+trajectory.  Budgets are written only for accepted attempts.  When targeted
+restoration keeps its physical projection resident, the diagnostic runs one
+restoration-disabled attempt through the same Metal force/remap/projection path
+and requires the transported provisional momentum to match before using that
+physical impulse; it never substitutes a CPU projection.
+
+Tier 6 completes to `2.2000000000116415 s` in 1,339 accepted steps with a
+`13.52214527130127 m/s` maximum.  Tier 10 reaches `14.056404113769531 m/s` at
+step 1,442 and `2.1312820004532114 s`; the corrected continuation then crosses
+`16.140964508056641`, `30.402894973754883`, and
+`63.686721801757812 m/s` in only `0.0066079621465178 s`.  Its represented step
+falls from `0.00087058159988373518` to `0.00020934514759574085 s` over the same
+interval.  The optional tier-8 control remains plume-scale through step 1,123
+and `1.8264868019614369 s` (`9.005696296691895 m/s`, historical peak
+`10.292028427124023 m/s`).  It is deliberately stopped there rather than called
+a completed window: beyond `1.7755 s` it starts the ordinary monitored
+dynamics-bound retry, accumulating 110 refused candidates while velocity
+remains small.  This separates the scalar-tail event from the fine-grid
+momentum runaway.
+
+At the velocity-owning face in each selected column, the signed rates are:
+
+| state | stress | buoyancy | advection | pressure | restoration |
+|---|---:|---:|---:|---:|---:|
+| tier-6 local peak (`11.05 m/s`) | -1.529 | 7.479 | 467.238 | 487.314 | -322.201 |
+| tier-8 pre-bound (`8.86 m/s`) | -0.292 | 8.287 | 397.969 | 400.239 | -273.497 |
+| tier-10 15-m/s crossing | -14.924 | 9.710 | 1,081.759 | -752.522 | 160.928 |
+| tier-10 30-m/s crossing | -55.717 | 9.547 | 3,616.685 | -2,570.920 | 379.546 |
+| tier-10 60-m/s crossing | -255.019 | 9.445 | 14,648.895 | -9,909.792 | 1,221.155 |
+
+The units are `kg/(m2 s2)`.  Pressure responds at the same order as advection
+and opposes it at every tier-10 threshold; the pressure-under-response branch
+is false.  Restoration is secondary and its magnitude/advection ratio falls
+from 0.149 to 0.083 through the three aligned faces.  Vreman is not numerically
+zero: the larger adjacent-cell value grows from `0.0041604521684348583` through
+`0.0078698946163058281` to `0.016612404957413673 m2/s`.  Nevertheless the
+resulting stress remains only 1.38%, 1.54%, and 1.74% of advection.  This is the
+pre-registered dissipation-silent outcome in the dynamical, not bitwise, sense:
+the smooth accelerating column is not controlled by SGS stress, and production
+remap dissipation does not substitute for it at the refined grid.
+
+The resolution controls make the distinction sharper.  The aligned tier-6 and
+tier-8 Vreman maxima are only `0.0007109809666872025` and
+`0.0005931847845204175 m2/s`; their total stress is respectively 0.327% and
+0.073% of advection, yet pressure/restoration keep the velocity plume-scale.
+At tier 10, Vreman and stress rise only after the focusing mode is established;
+they do not prevent its 6.6-ms acceleration corridor.
+
+The onset verdict is therefore advective focusing with resolution dependence.
+It selects the remap/flux-limiting remedy class and rejects both a projection
+tolerance change and an arbitrary viscosity constant.  The r63 `tau`
+lineage applies here: a dissipation coefficient chosen because it suppresses
+this trajectory would be another fitted knob, not a derived production
+contract.  A retained binary64 oracle trajectory is regenerated independently
+through 2.2 s; its diagnostic replay preserves the oracle's exact R0/R1
+buoyancy, stress, source, accepted flux, and final pressure operands.  Immutable
+step 1,024 at `2.1079791976176079 s` supplies the matched comparison.  Across
+its eight-step replay the column stays at `4.88894--5.06229 m/s`.  At the
+largest aligned oracle advection event the signed rates are stress `-1.05823`,
+buoyancy `4.04890`, advection `63.33961`, and pressure
+`-14.62329 kg/(m2 s2)`; the nonpressure split residual is below `1.78e-15`.
+Production's first accepted 16.14-m/s crossing has `1,081.75857` advection,
+17.08 times the oracle aligned maximum, while its pressure response grows to
+`-752.52229`.  Pressure is not missing; it is reacting to a transport mode
+that is already much too large.
+
+The oracle's accepted scalar face alpha is `1` at the velocity-owning face,
+but the minimum elsewhere in the same column falls from `0.85065` to
+`0.23367--0.38942`.  That measurement motivated a coefficient-free diagnostic
+trial coupling the primary nine-component shared alpha into the dual remap.
+It delayed the main onset from `2.13128` to `2.14092 s`, but did not remove it:
+the run still crossed `15.15995`, `32.16662`, and `61.39589 m/s` by
+`2.14853 s`, with aligned advection reaching `1.50922e4 kg/(m2 s2)`.  A second
+candidate bounding reconstructed momentum/density ratios changed the terminal
+time by only `1.45e-8 s`.  Both trials are rejected and removed from ordinary
+production; neither is a claimed remedy.
+
+The stronger result is an architecture finding: a cell-average reconstruction
+cap and a local velocity-envelope cap do not control the compatible conservative
+flux divergence that focuses at tier 10.  The next remedy class must be a
+conservative flux correction or adaptive front/column dissipation derived from
+the onset budget and checked against a matched oracle state—not a viscosity
+constant fitted to this trajectory.  The independent oracle regeneration
+retains step 1,024 for that comparison but stops honestly at `2.15671067 s`
+(step 1,070) on its physical-temperature/Picard-Zeno boundary; it did not reach
+`2.2 s`, and no later checkpoint is represented as matched.  Tier-10 spectrum,
+empirical rows, animation, and the capstone report remain blocked until the new
+flux-level remedy is designed and replays r178, r170, and the admitted cold
+slices.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

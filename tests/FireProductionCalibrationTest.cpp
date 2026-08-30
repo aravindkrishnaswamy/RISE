@@ -1890,9 +1890,8 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
-			"c00fe5b8ba32797087e53b0306bb694d0b70f87e67abb4ea2de2e54e2891d20a"&&
+		// r168's source bytes remain sealed by its immutable artifact.  r181 now
+		// owns the live diagnostic-source binding after adding onset retention.
 		monitoredShadowEvidence.find("golden_fixture_sha256 "
 			"387b6dc930afc92a7d5480ab7b6b55b8024dedd7cc17a796214368406ee58b6c")!=
 			std::string::npos&&
@@ -2046,15 +2045,8 @@ int main()
 		twoDoseEvidence.find("force_header_sha256 "
 			"c06d70891190c2b2626ff82adc395dc404c73d56f5a27ff7ed6fc121907f9970")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			forceSource.begin(),forceSource.end()))==
-			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			advectionMetal.begin(),advectionMetal.end()))==
-			"254b2d8882dcf8cd273ff05dd6fd95bf3cfbf4bad114bac2ed576f17ebfb8b5b"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			productionSolverTest.begin(),productionSolverTest.end()))==
-			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
+		// r170's current-source pins are historical provenance inside the sealed
+		// artifact; r181 binds the superseding live owners.
 		twoDoseEvidence.find("golden_fixture_sha256 "
 			"9938c899642d6b322c9c2cd0cc8bd25292110b4e1c095a2ddc111f77d4759fb2")!=
 			std::string::npos&&
@@ -2345,9 +2337,8 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			calibrationMathSource.begin(),calibrationMathSource.end()))==
 			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"476669369ffa864e7a10a57644da8da9e52dfa7e996ae6c12b26bf141b220af7"&&
+		// The r174 evaluator source is retained by its artifact; r181 binds the
+		// live sequence owner after checkpoint-retention instrumentation.
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2462,24 +2453,16 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
-			"c00fe5b8ba32797087e53b0306bb694d0b70f87e67abb4ea2de2e54e2891d20a"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			advectionMetal.begin(),advectionMetal.end()))==
-			"254b2d8882dcf8cd273ff05dd6fd95bf3cfbf4bad114bac2ed576f17ebfb8b5b"&&
+		// r175's exact simulation/Metal owners are preserved by the sealed
+		// artifact; r181 binds their superseding diagnostic revisions.
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			recordsHeader.begin(),recordsHeader.end()))==
 			"b73382076eafc153c4a2b058ed0fc247e4f14ffa20d9700df0aaa8e4b98b6f5c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			recordsSource.begin(),recordsSource.end()))==
 			"38762e15cde178da70e15f0762b3dbff1c2ebeaa93994ac78348960df6e84b42"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			productionSolverTest.begin(),productionSolverTest.end()))==
-			"e2fd6b51f78a64691135e3576c845a6c57499cbe919cc2789bddafb40a6f07f5"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"476669369ffa864e7a10a57644da8da9e52dfa7e996ae6c12b26bf141b220af7"&&
+		// The r175 solver/sequence sources are likewise historical provenance;
+		// their current successors are source-bound by r181.
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			unixTestDriver.begin(),unixTestDriver.end()))==
 			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
@@ -2507,12 +2490,8 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightFrame5.begin(),firstLightFrame5.end()))==
 			"b9b0dbdb2a58895a299b614d9296b14cf16f224142e1ebf07018794681a5b664"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			solverDoc.begin(),solverDoc.end()))==
-			"b6dd1be20b831f9f2d9915628c63cec20ff7c5fa603b6223202950d34c9bd946"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			historyDoc.begin(),historyDoc.end()))==
-			"ebd4041190c231d53e728e7764e33f42aadf000660af3e9b140af5adf9a42cfd"&&
+		// The exact r175 narrative is artifact-bound; the living documents are
+		// superseded and directly bound by r181.
 		thermoSourceEvidence.find("source_producer_minimum_margin 112.55273459563601")!=
 			std::string::npos&&
 		thermoSourceEvidence.find("binary32_union_factor_epsilon32 960")!=
@@ -2646,14 +2625,10 @@ int main()
 		CountText(tier6FullSpectrum,"centerline_heat_release,")==257u&&
 		CountText(tier6FullSpectrum,"display_lit_area,")==257u&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			sequenceTest.begin(),sequenceTest.end()))==
-			"476669369ffa864e7a10a57644da8da9e52dfa7e996ae6c12b26bf141b220af7"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			dyadicFixture.begin(),dyadicFixture.end()))==
 			"62df75052152af21a1053ea05fdcb61d028abf6e206190045081e0f228b079ee"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			fireSimulator3DAdvance.begin(),fireSimulator3DAdvance.end()))==
-			"c00fe5b8ba32797087e53b0306bb694d0b70f87e67abb4ea2de2e54e2891d20a"&&
+		// r177's historic owner hashes remain in its sealed artifact; r181 binds
+		// the current sequence/oracle diagnostic owners.
 		solverDoc.find("### 7.56j Tier-6 full spectrum and complete-owner cost correction (r177)")!=
 			std::string::npos&&historyDoc.find(
 			"r176/r177 true temporal tier-6 preview and puffing-spectrum diagnosis")!=
@@ -2770,6 +2745,82 @@ int main()
 			std::string::npos&&historyDoc.find("r180 force-inclusive projection budget")!=
 			std::string::npos,
 		"r180 refutes both conditional projection remedies and stops on missing matched oracle state");
+	const std::string onsetBudgetEvidence=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/"
+		"onset_momentum_budget_evidence.v1");
+	const std::string onsetBudgetSummary=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/onset_budget_summary.csv");
+	const std::string onsetBudgetPlot=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/onset_budget.svg");
+	const std::string onsetOracleBudget=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/oracle_tier10/"
+		"matched_2p1s.raw.csv");
+	const std::string onsetOracleColumn=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/oracle_tier10/"
+		"matched_2p1s.raw.csv.column.csv");
+	const std::string onsetFirstCandidate=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/"
+		"tier10_front_coupled_final/onset_campaign_summary.v1");
+	const std::string onsetFirstCandidateReplay=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/"
+		"tier10_front_coupled_resume_final/onset_campaign_summary.v1");
+	const std::string onsetSecondCandidate=ReadText(
+		"rendered/fire_production_calibration/r181_onset_campaign/"
+		"tier10_velocity_envelope_probe2/onset_campaign_summary.v1");
+	auto sourceSHA=[](const char* path){const std::string value=ReadText(path);
+		return RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(value.begin(),value.end()));};
+	Check(!onsetBudgetEvidence.empty()&&!onsetBudgetSummary.empty()&&!onsetBudgetPlot.empty()&&
+		!onsetOracleBudget.empty()&&!onsetOracleColumn.empty()&&!onsetFirstCandidate.empty()&&
+		!onsetFirstCandidateReplay.empty()&&!onsetSecondCandidate.empty()&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetBudgetEvidence.begin(),onsetBudgetEvidence.end()))==
+			"e09c37d72ad453e5d8cb7dded6442941852deed967880871733d3c254b263a19"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetBudgetSummary.begin(),onsetBudgetSummary.end()))==
+			"c067a54d93967070f8ca018f3fdcdb03652eac15c502deba7c5dc6cf52c04dde"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetBudgetPlot.begin(),onsetBudgetPlot.end()))==
+			"eb66d135b1b817785a2b3b7648dad38d310f8ff0f46f94b4a19b54929aa15e26"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetOracleBudget.begin(),onsetOracleBudget.end()))==
+			"c3892692350338ef5da5e0cece9ccc59565e717f9d737f48bebd4e869f8dfdba"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetOracleColumn.begin(),onsetOracleColumn.end()))==
+			"13cace37e4c9ae7e991386de0b969898b98a9b6aba5e7bd5a33dd5c0fde6c506"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetFirstCandidate.begin(),onsetFirstCandidate.end()))==
+			"ae12480aebff94167d29e7acc564e2a1389c8c747b9fc0ff2c18ed0bb481d92c"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetFirstCandidateReplay.begin(),onsetFirstCandidateReplay.end()))==
+			"5c9d39320cd8f3a3119c6b6755238bebdf0bd9f27961d540dac3fc28729b2daf"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			onsetSecondCandidate.begin(),onsetSecondCandidate.end()))==
+			"c9b25f101242c94cbe97a1894e8e2484084d1dc012167342d0b9e74959858ac0"&&
+		onsetBudgetEvidence.find("tier10_advective_focusing_confirmed true")!=
+			std::string::npos&&
+		onsetBudgetEvidence.find("first_candidate_verdict delayed_but_did_not_remove_cell_average_advective_focusing")!=std::string::npos&&
+		onsetBudgetEvidence.find("second_candidate_verdict no_material_change_rejected")!=
+			std::string::npos&&
+		onsetBudgetEvidence.find("failed_candidates_retained_in_production false")!=
+			std::string::npos&&
+		onsetBudgetEvidence.find("oracle_2p2s_claimed false")!=std::string::npos&&
+		onsetBudgetEvidence.find("tier10_full_window_authorized false")!=std::string::npos&&
+		sourceSHA("tests/FireSequenceTest.cpp")==
+			"a9cc0a463a613ccb5faa654eb024e596f221319daf4932447343ae151a4098a4"&&
+		sourceSHA("tests/FireSimulationSolverTest.cpp")==
+			"ffabd7edb2e518c313a58721dc48eb24537447461842ef15c4e90928ef750094"&&
+		sourceSHA("tools/fire_simulator_3d_advance.h")==
+			"24ad3b942b637bcb05deae6138d315d8b78414192266846bde7a243f2466a3c4"&&
+		sourceSHA("src/Library/Utilities/FireProductionAdvectionMac.mm")==
+			"35199e7762de3dc15e85ace006f927f55c2175d026c7fdf26ed5e6a865f3b223"&&
+		sourceSHA("tests/FireProductionSolverTest.cpp")==
+			"244dd8da0d082779f89cc6e3dbbd69e7af0402d5c59c30e82816fbe9cf478c2d"&&
+		sourceSHA("tools/generate_fire_production_onset_plot.py")==
+			"ee6689f9518230db539a75a6bb0a0541e2eaeaa8497cd299fbf2d710b936397d"&&
+		solverDoc.find("### 7.56n Runaway-onset and retained-state campaign (r181)")!=
+			std::string::npos&&historyDoc.find("r181 retained onset and resolution diagnosis")!=
+			std::string::npos,
+		"r181 names fine-grid advective focusing, retains the matched oracle budget, and rejects two ineffective reconstruction candidates");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&

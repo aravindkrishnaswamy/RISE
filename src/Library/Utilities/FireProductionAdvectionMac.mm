@@ -3359,9 +3359,9 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					if(!dynamicsFuel.AcceptedConservativeVolumeRatioByComponentOrder(
 						terminal.data(),terminal.size(),FireStateProducerPrecision::Binary32,
 						ratio,structuredError)){
-						if(structuredError&&structuredError->empty())*structuredError=
-							"production canonical dynamics recheck rejected cell "+
-							std::to_string(cell);
+						if(structuredError){const std::string detail=*structuredError;
+							*structuredError="production canonical dynamics recheck rejected cell "+
+								std::to_string(cell)+(detail.empty()?"":": "+detail);}
 						return false;
 					}
 					const double magnitude=std::fabs(ratio-1.0);

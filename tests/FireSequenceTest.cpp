@@ -946,6 +946,109 @@ namespace
 		double externalFuelMassKG=0.0;
 	};
 
+	bool AppendOracleMomentumBudget(const std::filesystem::path& path,
+		const PeriodicMACShape& shape,const PeriodicMACField& beginningMomentum,
+		const ConservativeAdvance3DConfig& config,const ConservativeAdvance3DResult& advanced,
+		const double beginningTimeS,std::string& error)
+	{
+		if(path.empty()||config.periodicBoundaries||!(config.transport.deltaTimeS>0.0)||
+			shape.nx<=38u||shape.ny<=42u||
+			advanced.r0.openFlux.low[0].empty()||advanced.r1.openFlux.low[0].empty()||
+			advanced.r0.openProjection.velocityMPerS.component[0].empty()||
+			advanced.r1.openProjection.velocityMPerS.component[0].empty()||
+			advanced.r0.openNonpressureMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r1.openNonpressureMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r0.openBuoyancyMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r1.openBuoyancyMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r0.openStressMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r1.openStressMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r0.openPhaseSourceMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.r1.openPhaseSourceMomentumRHS.component[2].size()!=
+				OpenMACFaceCount3D(shape,2u)||
+			advanced.faceAlpha[2].size()!=OpenMACFaceCount3D(shape,2u)){
+			error="oracle momentum diagnostic operands are unavailable";return false;
+		}
+		const OpenMACField3D advection0=OpenCompatibleMomentumFluxDivergence3D(shape,
+			advanced.r0.openFlux,advanced.faceAlpha,
+			advanced.r0.openProjection.velocityMPerS,&config.openBoundary);
+		const OpenMACField3D advection1=OpenCompatibleMomentumFluxDivergence3D(shape,
+			advanced.r1.openFlux,advanced.faceAlpha,
+			advanced.r1.openProjection.velocityMPerS,&config.openBoundary);
+		std::ofstream column(path.string()+".column.csv",std::ios::app);
+		const bool writeHeader=column.tellp()==std::streampos(0);
+		if(writeHeader)column<<"beginning_time_s,dt_s,x,y,z_face,beginning_momentum,"
+			"stress_rate,buoyancy_rate,advection_rate,source_rate,pressure_gradient_rate,"
+			"total_rate,closure_residual,nonpressure_split_residual,"
+			"accepted_scalar_face_alpha\n";
+		if(!column){error="oracle momentum column diagnostic cannot be opened";return false;}
+		double maximumStress=0.0,maximumBuoyancy=0.0,maximumAdvection=0.0,
+			maximumSource=0.0,maximumPressure=0.0,maximumTotal=0.0,maximumClosure=0.0,
+			maximumNonpressureSplitResidual=0.0;
+		double minimumAcceptedAlpha=1.0,maximumAcceptedAlpha=0.0;
+		std::size_t maximumFace=OpenMACFaceIndex3D(shape,2u,38u,42u,0u);
+		for(std::size_t z=0u;z<=shape.nz;++z){
+			const std::size_t face=OpenMACFaceIndex3D(shape,2u,38u,42u,z);
+			const double stress=0.5*(advanced.r0.openStressMomentumRHS.component[2][face]+
+				advanced.r1.openStressMomentumRHS.component[2][face]);
+			const double buoyancy=0.5*(advanced.r0.openBuoyancyMomentumRHS.component[2][face]+
+				advanced.r1.openBuoyancyMomentumRHS.component[2][face]);
+			const double source=0.5*(advanced.r0.openPhaseSourceMomentumRHS.component[2][face]+
+				advanced.r1.openPhaseSourceMomentumRHS.component[2][face]);
+			const double advection=-0.5*(advection0.component[2][face]+advection1.component[2][face]);
+			const double nonpressure=0.5*(advanced.r0.openNonpressureMomentumRHS.component[2][face]+
+				advanced.r1.openNonpressureMomentumRHS.component[2][face]);
+			const double nonpressureSplitResidual=nonpressure-(stress+buoyancy+source);
+			const double provisional=beginningMomentum.component[2][face]+
+				config.transport.deltaTimeS*(nonpressure+advection);
+			const double pressure=(advanced.momentumKGPerM2S.component[2][face]-provisional)/
+				config.transport.deltaTimeS;
+			const double total=stress+buoyancy+advection+source+pressure;
+			const double closure=(advanced.momentumKGPerM2S.component[2][face]-
+				beginningMomentum.component[2][face])/config.transport.deltaTimeS-total;
+			const double acceptedAlpha=advanced.faceAlpha[2][face];
+			if(!std::isfinite(acceptedAlpha)||acceptedAlpha<0.0||acceptedAlpha>1.0){
+				error="oracle momentum diagnostic alpha is invalid";return false;}
+			column<<std::setprecision(17)<<beginningTimeS<<','<<config.transport.deltaTimeS<<
+				",38,42,"<<z<<','<<beginningMomentum.component[2][face]<<','<<stress<<','<<
+				buoyancy<<','<<advection<<','<<source<<','<<pressure<<','<<total<<','<<closure<<','<<
+				nonpressureSplitResidual<<','<<acceptedAlpha<<'\n';
+			minimumAcceptedAlpha=std::min(minimumAcceptedAlpha,acceptedAlpha);
+			maximumAcceptedAlpha=std::max(maximumAcceptedAlpha,acceptedAlpha);
+			auto update=[&](const double value,double& maximum){maximum=std::max(maximum,
+				std::fabs(value));};
+			update(stress,maximumStress);update(buoyancy,maximumBuoyancy);
+			update(advection,maximumAdvection);update(source,maximumSource);
+			update(pressure,maximumPressure);update(total,maximumTotal);update(closure,maximumClosure);
+			update(nonpressureSplitResidual,maximumNonpressureSplitResidual);
+			if(std::fabs(advanced.velocityMPerS.component[2][face])>
+				std::fabs(advanced.velocityMPerS.component[2][maximumFace]))maximumFace=face;
+		}
+		column.close();
+		std::ofstream summary(path,std::ios::app);
+		const bool writeSummaryHeader=summary.tellp()==std::streampos(0);
+		if(writeSummaryHeader)summary<<"beginning_time_s,dt_s,column_x,column_y,maximum_face,"
+			"maximum_vertical_velocity_m_per_s,stress_rate_abs_max,buoyancy_rate_abs_max,"
+			"advection_rate_abs_max,source_rate_abs_max,pressure_rate_abs_max,total_rate_abs_max,"
+			"closure_residual_abs_max,nonpressure_split_residual_abs_max,"
+			"accepted_scalar_face_alpha_min,"
+			"accepted_scalar_face_alpha_max,accepted_scalar_face_alpha_at_velocity_max\n";
+		if(!summary){error="oracle momentum summary diagnostic cannot be opened";return false;}
+		summary<<std::setprecision(17)<<beginningTimeS<<','<<config.transport.deltaTimeS<<
+			",38,42,"<<maximumFace<<','<<advanced.velocityMPerS.component[2][maximumFace]<<','<<
+			maximumStress<<','<<maximumBuoyancy<<','<<maximumAdvection<<','<<maximumSource<<','<<
+			maximumPressure<<','<<maximumTotal<<','<<maximumClosure<<','<<
+			maximumNonpressureSplitResidual<<','<<minimumAcceptedAlpha<<','<<
+			maximumAcceptedAlpha<<','<<advanced.faceAlpha[2][maximumFace]<<'\n';
+		return static_cast<bool>(summary);
+	}
+
 	struct RunPersistenceOptions
 	{
 		std::filesystem::path checkpointPath;
@@ -2464,6 +2567,8 @@ namespace
 			projectionReferenceLengthM;
 		config.dns=false; config.workerCount=workerCount;
 		config.periodicBoundaries=false;
+		config.retainStageDiagnostics=!persistence.productionMetal&&
+			std::getenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH")!=nullptr;
 		config.injectedTemperatureK=300.0;
 		MethaneCellState ambient; ambient.temperatureK=300.0;
 		for(std::size_t i=0;i<MethaneSpeciesCount;++i)
@@ -2654,6 +2759,13 @@ namespace
 				"manifold_max,manifold_p95,manifold_p50,tail_cells,tail_drained_m3\n";
 			if(!trajectory){values.structuredError="production_onset_trajectory_failure";
 				return values;}
+			std::ofstream retries(persistence.productionOnsetDiagnosticDirectory/
+				"retry_attempt_trajectory.csv",std::ios::trunc);
+			retries<<"beginning_time_s,candidate,represented_dt_s,maximum_deviation,p95,tail_cells,"
+				"tail_drained_m3,dynamics_passed,physical_valid,terminal_valid,token,next_available,"
+				"suggested_dt_s,disposition,error\n";
+			if(!retries){values.structuredError="production_onset_retry_trajectory_failure";
+				return values;}
 		}
 		std::uint64_t temporalSnapshotIndex=values.streamedFrameCount;
 		double nextTemporalSnapshotS=values.statisticsStartS;
@@ -2700,8 +2812,10 @@ namespace
 			++temporalSnapshotIndex;++values.streamedFrameCount;return true;
 		};
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
+		const char* solverPhase="initialization";
 		while(advancedOK&&!productionOnsetStopReached&&
 			(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
+			solverPhase="ignition eligibility";
 			const auto profileStepStart=std::chrono::steady_clock::now();
 			double profileEligibilityMS=0.0,profileTransportMS=0.0,
 				profileControlMS=0.0,profileSourceMS=0.0,profileTargetMS=0.0,
@@ -2723,6 +2837,7 @@ namespace
 			profileEligibilityMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-profileStageStart).count();
 			if(!advancedOK) break;
+			solverPhase="transport evaluation";
 			profileStageStart=std::chrono::steady_clock::now();
 			double maximumSpeed=0.0;
 			for(unsigned int axis=0;axis<3;++axis) for(const double velocity:
@@ -2745,6 +2860,7 @@ namespace
 				FireSimulationTransportRecord::OpenV1(),config.transport.producerPrecision,
 				cellTransportEvaluations,&error,workerCount);
 			if(!advancedOK) break;
+			solverPhase="timestep control";
 			profileTransportMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-profileStageStart).count();
 			profileStageStart=std::chrono::steady_clock::now();
@@ -2840,8 +2956,10 @@ namespace
 			std::vector<MethaneCellState> acceptedBeginningStates=states;
 			std::vector<double> acceptedProductionTemperatureK;
 			double acceptedExternalFuelMassKG=0.0;
+			solverPhase="resident step attempt";
 			for(unsigned int reduction=0;
 				reduction<RISE::FireStepRejectionRetryCap&&!advancedOK;++reduction) {
+				solverPhase="step setup";
 				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
 				if(persistence.productionMetal)
 					trialStep=static_cast<double>(static_cast<float>(trialStep));
@@ -2868,6 +2986,7 @@ namespace
 				PeriodicMACField productionVelocity=advanced.velocityMPerS;
 				std::vector<unsigned char> invalidReusableTransport(shape.CellCount(),0u);
 				double externalFuelMassKG=0.0;
+				solverPhase="production source staging";
 				if(persistence.productionMetal&&!persistence.forceZeroSourceForTest){
 					const double injectedGasDensity=injected.GasDensity();
 					const double injectedSpecificEnergy=injected.sensibleEnergyJPerM3/
@@ -2940,6 +3059,7 @@ namespace
 				}
 				profileControlMS=std::chrono::duration<double,std::milli>(
 					std::chrono::steady_clock::now()-profileStageStart).count();
+				solverPhase="production source packet construction";
 				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
 				if(persistence.forceZeroSourceForTest){
 					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
@@ -2957,6 +3077,7 @@ namespace
 				profileSourceMS=std::chrono::duration<double,std::milli>(
 					std::chrono::steady_clock::now()-profileStageStart).count();
 				if(packetOK&&persistence.productionMetal){
+					solverPhase="production tangent-target construction";
 					profileStageStart=std::chrono::steady_clock::now();
 					std::vector<ConservativeVector> stagedConservative(packetBeginning.size());
 					std::vector<ConservativeVector> sourceDelta(packetBeginning.size());
@@ -3040,6 +3161,7 @@ namespace
 							"parallel production request differs from the serial request":serialError;
 					}
 					if(packetOK){
+						solverPhase="production resident request construction";
 						request.physicalOpenProjectionVCycleCount=19u;
 						ParallelFireSlices(shape.CellCount(),workerCount,[&](const std::size_t cell){
 							for(std::size_t component=0u;component<9u;++component){
@@ -3051,6 +3173,7 @@ namespace
 						profileLayoutMS=std::chrono::duration<double,std::milli>(
 							std::chrono::steady_clock::now()-profileStageStart).count();
 						profileStageStart=std::chrono::steady_clock::now();
+						solverPhase="production resident attempt";
 						RISE::FireProductionResidentStepResult production;
 						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
 						for(;;){
@@ -3089,6 +3212,26 @@ namespace
 						const RISE::FireProductionResidentStepAttemptDisposition disposition=
 							RISE::ClassifyFireProductionResidentStepAttempt(
 								reduction,production,nextCandidate,nextTimeStepS);
+						if(!persistence.productionOnsetDiagnosticDirectory.empty()&&
+							disposition!=RISE::FireProductionResidentStepAttemptDisposition::Accepted){
+							std::ofstream retryTrajectory(persistence.productionOnsetDiagnosticDirectory/
+								"retry_attempt_trajectory.csv",std::ios::app);
+							retryTrajectory<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
+								static_cast<double>(production.representedTimeStepS)<<','<<
+								production.maximumAcceptedManifoldDeviation<<','<<
+								production.acceptedManifoldDeviationP95<<','<<
+								production.manifoldTailCellCount<<','<<
+								production.manifoldTailDrainedVolumeM3<<','<<
+								(production.manifoldDynamicsBoundPassed?1:0)<<','<<
+								(production.physicalProjection.validationPassed?1:0)<<','<<
+								(production.projection.validationPassed?1:0)<<','<<
+								(production.HasAcceptedManifoldToken()?1:0)<<','<<
+								(production.manifoldNextTimeStepAvailable?1:0)<<','<<
+								production.suggestedManifoldTimeStepS<<','<<
+								static_cast<unsigned int>(disposition)<<','<<error<<'\n';
+							if(!retryTrajectory){lastAdvanceError=
+								"production onset retry trajectory publication failed";break;}
+						}
 						double attemptMaximumVelocity=0.0;unsigned int attemptMaximumAxis=0u;
 						std::size_t attemptMaximumFace=0u,attemptMaximumX=0u,
 							attemptMaximumY=0u,attemptMaximumZ=0u;
@@ -3118,12 +3261,16 @@ namespace
 							attemptMaximumY=yz%request.force.shape.ny;
 							attemptMaximumZ=std::min(yz/request.force.shape.ny,
 								request.force.shape.nz-1u);
-						}
+								}
+						advancedOK=attemptComputed;
 						std::filesystem::path effectiveMomentumAuditPath;
 						std::size_t onsetThresholdIndex=productionOnsetVelocityThresholds.size();
 						std::size_t auditColumnX=38u,auditColumnY=42u;
 						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH"))
 							effectiveMomentumAuditPath=auditPath;
+						if(std::getenv("RISE_FIRE_ONSET_BUDGET_REPLAY")){
+							auditColumnX=attemptMaximumX;auditColumnY=attemptMaximumY;
+						}
 						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
 							!persistence.productionOnsetDiagnosticDirectory.empty())
 							for(std::size_t threshold=0u;threshold<productionOnsetVelocityThresholds.size();
@@ -3136,23 +3283,43 @@ namespace
 								effectiveMomentumAuditPath=
 									persistence.productionOnsetDiagnosticDirectory/name.str();break;
 							}
-						if(!effectiveMomentumAuditPath.empty()){
+						if(attemptComputed&&
+							disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
+							!effectiveMomentumAuditPath.empty()){
 							RISE::FireProductionResidentStepResult physicalOnly;
 							RISE::FireProductionFrozenForceAdvanceResult forceCPU;
 							RISE::FireProductionFrozenForceResult forceFieldsCPU;
 							RISE::FireProductionResidentForceDiagnostics forceAuditDiagnostics;
 							RISE::FireProductionDualMomentumResult dualCPU;
 							std::string physicalOnlyError;
+							const bool requestRetainedPhysicalProjection=
+								!persistence.productionOnsetDiagnosticDirectory.empty()||
+								std::getenv("RISE_FIRE_ONSET_BUDGET_REPLAY")!=nullptr;
 							const bool restorationModeClear=
 								std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")==nullptr;
+							const bool retainedPhysicalIsTerminal=requestRetainedPhysicalProjection&&
+								!production.manifoldTailRestorationApplied&&
+								production.physicalProjection.velocityMPerS[0].empty();
+							const bool useRetainedPhysicalProjection=requestRetainedPhysicalProjection&&
+								(retainedPhysicalIsTerminal||
+								 !production.physicalProjection.velocityMPerS[0].empty());
 							bool physicalOnlyComputed=false;
-							if(attemptComputed&&restorationModeClear&&
+							if(useRetainedPhysicalProjection){
+								// The accepted attempt already retains the exact on-device physical
+								// projection. Re-solving it on the CPU would measure a different
+								// implementation and, near onset, can move the pressure budget.
+								physicalOnlyComputed=retainedPhysicalIsTerminal?
+									!production.projection.velocityMPerS[0].empty():
+									!production.physicalProjection.velocityMPerS[0].empty();
+							}else if(attemptComputed&&restorationModeClear&&
 								setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed",1)==0){
 								physicalOnlyComputed=RISE::AttemptFireProductionResidentStepMetal(
 									request,physicalOnly,&physicalOnlyError);
 								unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
 							}
-							const RISE::FireProductionProjectionResult& physical=physicalOnly.projection;
+							const RISE::FireProductionProjectionResult& physical=useRetainedPhysicalProjection?
+								(retainedPhysicalIsTerminal?production.projection:
+								 production.physicalProjection):physicalOnly.projection;
 							double physicalVelocityMaximum=0.0,terminalVelocityMaximum=0.0;
 							double restorationVelocityMaximum=0.0,physicalImpulseMaximum=0.0;
 							double restorationImpulseMaximum=0.0,compatibilityResidualMaximum=0.0;
@@ -3162,8 +3329,18 @@ namespace
 							bool forceInclusiveProvisionalByteIdentity=false;
 							double forceInclusiveProvisionalDifferenceMaximum=0.0;
 							std::size_t forceInclusiveProvisionalDifferenceCount=0u;
-							bool auditValid=attemptComputed&&physicalOnlyComputed&&
-								physicalOnly.transportedDual.momentum==production.transportedDual.momentum;
+							const bool attemptPayloadAvailable=
+								!production.projection.velocityMPerS[0].empty();
+							const bool physicalOnlyPayloadAvailable=
+								!physical.velocityMPerS[0].empty();
+							const bool physicalDiagnosticsIdentity=
+								!useRetainedPhysicalProjection||physical.validationPassed;
+							const bool pairedTransportIdentity=attemptPayloadAvailable&&
+								physicalOnlyPayloadAvailable&&physicalDiagnosticsIdentity&&
+								(useRetainedPhysicalProjection||
+								physicalOnly.transportedDual.momentum==production.transportedDual.momentum);
+							bool auditValid=attemptPayloadAvailable&&physicalOnlyPayloadAvailable&&
+								pairedTransportIdentity;
 							for(unsigned int axis=0u;axis<3u&&auditValid;++axis){
 								const std::size_t faces=production.projection.velocityMPerS[axis].size();
 								auditValid=faces>0u&&physical.velocityMPerS[axis].size()==faces&&
@@ -3212,16 +3389,20 @@ namespace
 							const double terminalPhysicalVelocity=auditValid?
 								physical.velocityMPerS[terminalAxis][terminalFace]:0.0;
 							physicalOnly=RISE::FireProductionResidentStepResult();
-							auditPhase="independent resident force-inclusive provisional reconstruction";
-							auditValid=auditValid&&
+							auditPhase="independent resident force reconstruction";
+							const bool forceComparatorOK=auditValid&&
 								RISE::AdvanceFireProductionFrozenForceMetalResidentStateComparator(
-									request.force,forceCPU,forceAuditDiagnostics,&physicalOnlyError)&&
+									request.force,forceCPU,forceAuditDiagnostics,&physicalOnlyError);
+							const bool forceDiagnosticsIdentity=forceComparatorOK&&
 								forceAuditDiagnostics.outwardLambdaPerS==
-									production.forceDiagnostics.outwardLambdaPerS&&
+									production.forceDiagnostics.outwardLambdaPerS;
+							const bool forceScheduleIdentity=forceDiagnosticsIdentity&&
 								forceCPU.schedule.substepCount==production.forceSchedule.substepCount&&
-								forceCPU.schedule.substepTimeS==production.forceSchedule.substepTimeS&&
+								forceCPU.schedule.substepTimeS==production.forceSchedule.substepTimeS;
+							const bool forceFieldsOK=forceScheduleIdentity&&
 								RISE::BuildFireProductionFrozenForceFieldsCPU(
 									request.force,forceFieldsCPU,&physicalOnlyError);
+							auditValid=forceFieldsOK;
 							if(auditValid){
 								auditPhase="CPU dual remap from force-inclusive momentum";
 								RISE::FireProductionDualMomentumRequest forceInclusive=request.dualTransport;
@@ -3237,7 +3418,8 @@ namespace
 								}
 							}
 							auditPhase="force-inclusive provisional comparison";
-							if(auditValid)for(unsigned int axis=0u;axis<3u;++axis)
+							if(auditValid)
+								for(unsigned int axis=0u;axis<3u;++axis)
 								for(std::size_t face=0u;face<dualCPU.momentum[axis].size();++face){
 									const double difference=std::fabs(static_cast<double>(dualCPU.momentum[axis][face])-
 										production.transportedDual.momentum[axis][face]);
@@ -3245,10 +3427,20 @@ namespace
 									forceInclusiveProvisionalDifferenceMaximum=std::max(
 										forceInclusiveProvisionalDifferenceMaximum,difference);
 								}
-							forceInclusiveProvisionalByteIdentity=auditValid&&
+							forceInclusiveProvisionalByteIdentity=
+								auditValid&&
 								forceInclusiveProvisionalDifferenceCount==0u;
 							if(!auditValid){
 								lastAdvanceError=std::string("production momentum audit failed at ")+auditPhase+
+									" [attempt="+(attemptComputed?"1":"0")+
+									" physical_only="+(physicalOnlyComputed?"1":"0")+
+									" attempt_payload="+(attemptPayloadAvailable?"1":"0")+
+									" physical_payload="+(physicalOnlyPayloadAvailable?"1":"0")+
+									" paired_transport="+(pairedTransportIdentity?"1":"0")+
+									" force="+(forceComparatorOK?"1":"0")+
+									" diagnostics="+(forceDiagnosticsIdentity?"1":"0")+
+									" schedule="+(forceScheduleIdentity?"1":"0")+
+									" fields="+(forceFieldsOK?"1":"0")+"]"+
 									(physicalOnlyError.empty()?"":": "+physicalOnlyError);
 								std::fprintf(stderr,"%s\n",lastAdvanceError.c_str());advancedOK=false;break;
 							}
@@ -3372,10 +3564,10 @@ namespace
 										std::error_code copyError;
 										const bool summaryCopied=std::filesystem::copy_file(
 											effectiveMomentumAuditPath,skippedPath,
-											std::filesystem::copy_options::none,copyError);
+											std::filesystem::copy_options::overwrite_existing,copyError);
 										const bool columnCopied=summaryCopied&&std::filesystem::copy_file(
 											columnPath,skippedPath.string()+".column.csv",
-											std::filesystem::copy_options::none,copyError);
+											std::filesystem::copy_options::overwrite_existing,copyError);
 										if(!columnCopied){lastAdvanceError=
 											"production onset skipped-threshold publication failed";
 											advancedOK=false;break;}
@@ -3385,7 +3577,6 @@ namespace
 								}
 							}
 						}
-						advancedOK=attemptComputed;
 						if(!persistence.temporalSnapshotDirectory.empty()&&
 							disposition!=RISE::FireProductionResidentStepAttemptDisposition::Accepted)
 							std::fprintf(stderr,
@@ -3528,8 +3719,15 @@ namespace
 						profileResidentMS=std::chrono::duration<double,std::milli>(
 							std::chrono::steady_clock::now()-profileStageStart).count();
 					}
-				}else advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
-					config,fuel,fuel,FireSimulationTransportRecord::OpenV1(),advanced,&error);
+					}else{
+						advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
+							config,fuel,fuel,FireSimulationTransportRecord::OpenV1(),advanced,&error);
+						if(advancedOK)if(const char* oracleAuditPath=
+							std::getenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH"))
+							advancedOK=AppendOracleMomentumBudget(oracleAuditPath,shape,momentum,
+								config,advanced,simulationTimeS,error);
+					}
+				solverPhase="production accepted-temperature validation";
 				if(advancedOK) {
 					std::vector<double> trialTemperature;
 					if(persistence.productionMetal){
@@ -3547,6 +3745,8 @@ namespace
 					}
 				}
 				if(!advancedOK) {
+					if(error.empty())error=std::string("production owner failed during ")+
+						solverPhase;
 					lastAdvanceError=error;
 					if(reportCapstoneProgress) std::fprintf(stderr,
 						"capstone retry reduction=%u dt=%.9g reason=%s\n",reduction,
@@ -3555,9 +3755,11 @@ namespace
 				}
 			}
 			if(!advancedOK) error=lastAdvanceError;
+			else solverPhase="accepted-state accounting";
 			profileStageStart=std::chrono::steady_clock::now();
 			reaction.deltaTimeS=config.transport.deltaTimeS;
 			if(advancedOK) {
+				solverPhase="thread-identity validation";
 				const bool checkLimiterIdentity=workerCount>1u&&
 					advanced.discontinuousLimiterClassCount>0u&&
 					!values.discontinuousClassThreadIdentityChecked;
@@ -3629,6 +3831,7 @@ namespace
 				values.maximumActiveSetDifferingFaceCount=std::max(
 					values.maximumActiveSetDifferingFaceCount,
 					advanced.maximumActiveSetDifferingFaceCount);
+				solverPhase="pilot-ledger recomputation";
 				double expectedStepPilotEnergyJ=0.0;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell){
 					double pilotEnergyJPerM3=0.0;
@@ -3641,6 +3844,7 @@ namespace
 					expectedStepPilotEnergyJ+=pilotEnergyJPerM3*cellVolume;
 				}
 				if(!advancedOK)break;
+				solverPhase="accepted-state reconstruction";
 				const double priorMaximumTemperatureK=values.maximumTemperatureK;
 				std::vector<double> acceptedTemperature;
 				if(persistence.productionMetal){
@@ -3772,6 +3976,7 @@ namespace
 				profilePostMS=std::chrono::duration<double,std::milli>(
 					std::chrono::steady_clock::now()-profileStageStart).count();
 				profileStageStart=std::chrono::steady_clock::now();
+				solverPhase="accepted-state statistics";
 				momentum=advanced.momentumKGPerM2S;
 				double stepHeatReleaseW=0.0,stepRadiativeLossW=0.0;
 				double stepFuelConsumptionKGPerS=0.0,centerlineHeatReleaseW=0.0;
@@ -3872,6 +4077,7 @@ namespace
 					simulationTimeS>=nextTemporalSnapshotS;
 				const bool finalCheckpointDue=!moreWork&&!persistence.finalCheckpointPath.empty();
 				if(temporalSnapshotDue){
+					solverPhase="temporal-frame publication";
 					if(!writeTemporalFrame()){advancedOK=false;break;}
 					nextTemporalSnapshotS=values.statisticsStartS+
 						static_cast<double>(temporalSnapshotIndex)*
@@ -3882,6 +4088,7 @@ namespace
 						(persistence.checkpointCadenceWallS<=0.0||
 							checkpointElapsedS>=persistence.checkpointCadenceWallS));
 				if(checkpointDue){
+					solverPhase="checkpoint publication";
 					values.checkpointStepIndices.push_back(acceptedSteps);
 					MethaneRunCheckpoint checkpoint;
 					checkpoint.caseRecordId=caseRecord.caseRecordId;
@@ -3995,6 +4202,7 @@ namespace
 			}
 		}
 		if(!advancedOK) {
+			if(error.empty())error=std::string("production solver failed during ")+solverPhase;
 			values.structuredError="solver_failure:"+error;
 			std::fprintf(stderr,"capstone solver diagnostic steps=%u time=%.17g: %s\n",
 				acceptedSteps,simulationTimeS,values.structuredError.c_str());
@@ -5798,7 +6006,7 @@ namespace
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)outputDirectory;return 90;
 #else
-		if(resolutionTier!=6.0&&resolutionTier!=10.0)return 91;
+		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return 91;
 		std::error_code directoryError;
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
@@ -5816,6 +6024,17 @@ namespace
 		persistence.checkpointCadenceWallS=120.0;
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.productionOnsetStopVelocityMPerS=60.0;
+		if(const char* resumeCheckpoint=std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")){
+			const char* expectedBuild=std::getenv("RISE_FIRE_ONSET_EXPECTED_BUILD_ID");
+			if(!expectedBuild||std::strlen(expectedBuild)!=64u||
+				!std::filesystem::exists(resumeCheckpoint))return 91;
+			persistence.checkpointPath=resumeCheckpoint;
+			persistence.resume=true;
+			persistence.isolatedEquivalenceProbe=true;
+			persistence.isolatedExpectedCheckpointBuildId=expectedBuild;
+			persistence.stopAfterAdditionalAcceptedSteps=20u;
+			persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		}
 		persistence.maximumProductionSourceStepS=
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
 		const auto wallStart=std::chrono::steady_clock::now();
@@ -5901,6 +6120,14 @@ namespace
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			checkpoint.producerBuildId!=expectedCheckpointBuildId)return 91;
+		double replayResolutionTier=0.0;
+		if(checkpoint.dimensions==std::array<std::size_t,3>{{52u,52u,80u}})
+			replayResolutionTier=6.0;
+		else if(checkpoint.dimensions==std::array<std::size_t,3>{{69u,69u,106u}})
+			replayResolutionTier=8.0;
+		else if(checkpoint.dimensions==std::array<std::size_t,3>{{86u,86u,132u}})
+			replayResolutionTier=10.0;
+		else return 90;
 		std::ofstream clearAudit(auditPath,std::ios::trunc);clearAudit.close();
 		if(!clearAudit)return 92;
 		std::ofstream clearColumn(std::filesystem::path(auditPath).string()+".column.csv",
@@ -5908,12 +6135,17 @@ namespace
 		if(!clearColumn)return 92;
 		if(setenv("RISE_FIRE_MOMENTUM_AUDIT_PATH",auditPath.string().c_str(),1)!=0)return 92;
 		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
-			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+			replayResolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
 		if(!beginning.succeeded||!(beginning.flowThroughTimeS>0.0))return 93;
 		const double expectedPuffingHz=1.5/std::sqrt(CapstonePoolDiameterM);
 		const double statisticsStartS=5.0*beginning.flowThroughTimeS;
 		const double statisticsDurationS=std::ceil((40.0/expectedPuffingHz)/0.0625)*0.0625;
-		const double fullTargetS=statisticsStartS+statisticsDurationS;
+		double fullTargetS=statisticsStartS+statisticsDurationS;
+		if(const char* replayDuration=std::getenv("RISE_FIRE_MOMENTUM_REPLAY_DURATION_S")){
+			char* end=nullptr;const double parsed=std::strtod(replayDuration,&end);
+			if(!end||*end!='\0'||!std::isfinite(parsed)||!(parsed>checkpoint.simulationTimeS))return 90;
+			fullTargetS=parsed;
+		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;persistence.resume=true;
 		persistence.checkpointPath=checkpointPath;
@@ -5923,8 +6155,10 @@ namespace
 		persistence.stopAfterAdditionalAcceptedSteps=8u;
 		persistence.maximumProductionSourceStepS=
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
+		if(setenv("RISE_FIRE_ONSET_BUDGET_REPLAY","1",1)!=0)return 92;
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,0.0,fullTargetS,1.0,
-			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+			replayResolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		unsetenv("RISE_FIRE_ONSET_BUDGET_REPLAY");
 		unsetenv("RISE_FIRE_MOMENTUM_AUDIT_PATH");
 		if(!result.succeeded){std::fprintf(stderr,"production momentum replay failed: %s\n",
 			result.structuredError.c_str());return 94;}
@@ -5933,6 +6167,40 @@ namespace
 		if(rows<9u)return 95;
 		std::fprintf(stderr,"PRODUCTION_MOMENTUM_REPLAY beginning_step=%llu additional_steps=8 "
 			"audit_rows=%zu\n",static_cast<unsigned long long>(checkpoint.acceptedSteps),rows-1u);
+		return 0;
+	}
+
+	int RunOracleMomentumReplayChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& auditPath,const std::string& expectedCheckpointBuildId)
+	{
+		if(expectedCheckpointBuildId.size()!=64u)return 90;
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			checkpoint.producerBuildId!=expectedCheckpointBuildId||
+			checkpoint.dimensions!=std::array<std::size_t,3>{{86u,86u,132u}})return 91;
+		std::ofstream clearAudit(auditPath,std::ios::trunc);clearAudit.close();
+		std::ofstream clearColumn(auditPath.string()+".column.csv",std::ios::trunc);clearColumn.close();
+		if(!clearAudit||!clearColumn||setenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH",
+			auditPath.string().c_str(),1)!=0)return 92;
+		RunPersistenceOptions persistence;
+		persistence.resume=true;persistence.checkpointPath=checkpointPath;
+		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		persistence.isolatedEquivalenceProbe=true;
+		persistence.isolatedExpectedCheckpointBuildId=expectedCheckpointBuildId;
+		persistence.stopAfterAdditionalAcceptedSteps=8u;
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,0.0,2.2,1.0,10.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		unsetenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH");
+		if(!result.succeeded){std::fprintf(stderr,"oracle momentum replay failed: %s\n",
+			result.structuredError.c_str());return 93;}
+		std::ifstream audit(auditPath);std::string line;std::size_t rows=0u;
+		while(std::getline(audit,line))if(!line.empty())++rows;
+		if(rows!=9u||DigestFile(auditPath).empty()||
+			DigestFile(auditPath.string()+".column.csv").empty())return 94;
+		std::fprintf(stderr,"ORACLE_MOMENTUM_REPLAY beginning_step=%llu additional_steps=8 "
+			"audit_rows=8 audit_sha256=%s\n",
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),
+			DigestFile(auditPath).c_str());
 		return 0;
 	}
 
@@ -6145,6 +6413,8 @@ int main(int argc,char** argv)
 	}
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
 		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-oracle-momentum-replay")==0)
+		return RunOracleMomentumReplayChild(argv[2],argv[3],argv[4]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-temporal-preview")==0)
 		return RunTemporalFirePreviewChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-first-light-preview")==0)

@@ -2888,16 +2888,27 @@ int main()
 	for(std::size_t z=0;z<openShape3D.nz;++z)for(std::size_t y=0;y<openShape3D.ny;++y)
 		phaseSource[openShape3D.Index(0,y,z)][1+MethaneCH4]=
 			2.0*openOwnerConfig.transport.deltaTimeS;
-	OpenMACField3D phaseRHS;
+	OpenMACField3D phaseRHS,phaseBuoyancyDiagnostic,phaseStressDiagnostic,
+		phaseSourceDiagnostic;
 	const bool phaseRestrictionOK=BuildOpenNonpressureMomentumRHS3D(openShape3D,
 		ambientCells3D,phaseProjection,std::vector<double>(openShape3D.CellCount(),0.0),
-		phaseSource,openOwnerConfig,phaseRHS,&error);
+		phaseSource,openOwnerConfig,phaseRHS,&error,&phaseBuoyancyDiagnostic,
+		&phaseStressDiagnostic,&phaseSourceDiagnostic);
 	bool boundaryPhaseHalf=phaseRestrictionOK;
+	double diagnosticDecompositionResidual=0.0;
+	for(unsigned int axis=0u;phaseRestrictionOK&&axis<3u;++axis)
+		for(std::size_t face=0u;face<phaseRHS.component[axis].size();++face)
+			diagnosticDecompositionResidual=std::max(diagnosticDecompositionResidual,std::fabs(
+				phaseRHS.component[axis][face]-phaseBuoyancyDiagnostic.component[axis][face]-
+				phaseStressDiagnostic.component[axis][face]-
+				phaseSourceDiagnostic.component[axis][face]));
 	for(std::size_t z=0;boundaryPhaseHalf&&z<openShape3D.nz;++z)for(std::size_t y=0;
-		y<openShape3D.ny;++y)boundaryPhaseHalf=Near(phaseRHS.component[0][
-		OpenMACFaceIndex3D(openShape3D,0,0,y,z)],0.1,2.0e-14);
-	Check(boundaryPhaseHalf,
-		"V2 open phase momentum uses the same half-cell boundary restriction as I_rho");
+		y<openShape3D.ny;++y){const std::size_t face=OpenMACFaceIndex3D(openShape3D,0,0,y,z);
+		boundaryPhaseHalf=Near(phaseRHS.component[0][face],0.1,2.0e-14)&&
+			Near(phaseSourceDiagnostic.component[0][face],0.1,2.0e-14);}
+	Check(boundaryPhaseHalf&&diagnosticDecompositionResidual<=2.0e-14,
+		"V2 open phase momentum and retained buoyancy/stress/source diagnostics use the same "
+		"half-cell restriction and reconstruct the owner RHS");
 
 	// Exact dual-control-volume oracle: the compatible normal momentum flux
 	// must restrict primal mass fluxes with I_i before differencing.  The

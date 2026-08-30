@@ -1992,6 +1992,15 @@
 			PeriodicFluxPair3D flux;
 			PeriodicMACProjection3DResult projection;
 			PeriodicMACField nonpressureMomentumRHS;
+			// Open-boundary diagnostics are populated only when retainStageDiagnostics
+			// is true. They preserve the exact operands used by the oracle's momentum
+			// tableau without changing the accepted advance.
+			OpenFluxPair3D openFlux;
+			OpenMACProjection3DResult openProjection;
+			OpenMACField3D openNonpressureMomentumRHS;
+			OpenMACField3D openBuoyancyMomentumRHS;
+			OpenMACField3D openStressMomentumRHS;
+			OpenMACField3D openPhaseSourceMomentumRHS;
 			std::array<std::vector<double>,3> faceAlpha;
 			std::vector<double> divergenceTargetPerS;
 			std::vector<double> picardResidualPerS;
@@ -2301,6 +2310,9 @@
 			OpenFluxPair3D flux;
 			OpenMACProjection3DResult projection;
 			OpenMACField3D nonpressureMomentumRHS;
+			OpenMACField3D buoyancyMomentumRHS;
+			OpenMACField3D stressMomentumRHS;
+			OpenMACField3D phaseSourceMomentumRHS;
 			std::array<std::vector<double>,3> faceAlpha;
 			std::vector<double> divergenceTargetPerS;
 			std::vector<double> picardResidualPerS;
@@ -2338,8 +2350,11 @@
 			const std::vector<ConservativeVector>& sourceDelta,
 			const ConservativeAdvance3DConfig& config,
 			OpenMACField3D& result,
-			std::string* error=0
-		)
+			std::string* error=0,
+			OpenMACField3D* buoyancyDiagnostic=0,
+			OpenMACField3D* stressDiagnostic=0,
+			OpenMACField3D* phaseSourceDiagnostic=0
+			)
 		{
 			FireProfileScopedNs profileTimer(FireProfile().nsRHS);
 			const std::size_t expectedCellCount=shape.CellCount();
@@ -2352,6 +2367,9 @@
 				return Fail(error,"fire solver open momentum velocity shape is invalid");
 			if(!BuildRelativeBuoyancyMomentumRate3D(shape,GasDensityFromConservative(state),
 				config.openBoundary,config.gravityMPerS2,result,error)) return false;
+			OpenMACField3D buoyancy;
+			if(buoyancyDiagnostic||stressDiagnostic)buoyancy=result;
+			if(buoyancyDiagnostic)*buoyancyDiagnostic=buoyancy;
 			const std::size_t cellCount=shape.CellCount();
 			if(viscosity.size()!=cellCount) return Fail(error,
 				"fire solver open momentum viscosity shape is invalid");
@@ -2454,6 +2472,16 @@
 					result.component[component][OpenMACFaceIndex3D(shape,component,x,y,z)]+=viscous;
 				}
 			}
+			if(stressDiagnostic){
+				for(unsigned int axis=0;axis<3;++axis){
+					stressDiagnostic->component[axis].resize(result.component[axis].size());
+					for(std::size_t face=0u;face<result.component[axis].size();++face)
+						stressDiagnostic->component[axis][face]=result.component[axis][face]-
+							buoyancy.component[axis][face];
+				}
+			}
+			OpenMACField3D beforePhaseSource;
+			if(phaseSourceDiagnostic)beforePhaseSource=result;
 			for(unsigned int axis=0;axis<3;++axis){
 				const std::size_t normalCount=axis==0?shape.nx+1:(axis==1?shape.ny+1:shape.nz+1);
 				const std::size_t firstCount=axis==0?shape.ny:shape.nx;
@@ -2484,6 +2512,14 @@
 						1.0/static_cast<double>(samples);
 					if(samples) result.component[axis][face]+=
 						projection.velocityMPerS.component[axis][face]*phase*restriction;
+				}
+			}
+			if(phaseSourceDiagnostic){
+				for(unsigned int axis=0;axis<3;++axis){
+					phaseSourceDiagnostic->component[axis].resize(result.component[axis].size());
+					for(std::size_t face=0u;face<result.component[axis].size();++face)
+						phaseSourceDiagnostic->component[axis][face]=result.component[axis][face]-
+							beforePhaseSource.component[axis][face];
 				}
 			}
 			return true;
@@ -2884,7 +2920,10 @@
 					result.conductivityWPerMK=acceptedConductivity;
 					result.dynamicViscosityPaS=acceptedViscosity;
 					const bool rhsOK=BuildOpenNonpressureMomentumRHS3D(shape,state,result.projection,
-						acceptedViscosity,sourceDelta,config,result.nonpressureMomentumRHS,error);
+						acceptedViscosity,sourceDelta,config,result.nonpressureMomentumRHS,error,
+						config.retainStageDiagnostics?&result.buoyancyMomentumRHS:0,
+						config.retainStageDiagnostics?&result.stressMomentumRHS:0,
+						config.retainStageDiagnostics?&result.phaseSourceMomentumRHS:0);
 					if(rhsOK)publishContractionDiagnostic(true);
 					return rhsOK;
 				}
@@ -3254,6 +3293,19 @@
 			candidate.maximumActiveSetDifferingFaceCount=
 				open.maximumActiveSetDifferingFaceCount;
 			if(config.retainStageDiagnostics){
+				candidate.r0.openFlux=open.r0.flux;
+				candidate.r1.openFlux=open.r1.flux;
+				candidate.r0.openProjection=open.r0.projection;
+				candidate.r1.openProjection=open.r1.projection;
+				candidate.r2.openProjection=open.r2.projection;
+				candidate.r0.openNonpressureMomentumRHS=open.r0.nonpressureMomentumRHS;
+				candidate.r1.openNonpressureMomentumRHS=open.r1.nonpressureMomentumRHS;
+				candidate.r0.openBuoyancyMomentumRHS=open.r0.buoyancyMomentumRHS;
+				candidate.r1.openBuoyancyMomentumRHS=open.r1.buoyancyMomentumRHS;
+				candidate.r0.openStressMomentumRHS=open.r0.stressMomentumRHS;
+				candidate.r1.openStressMomentumRHS=open.r1.stressMomentumRHS;
+				candidate.r0.openPhaseSourceMomentumRHS=open.r0.phaseSourceMomentumRHS;
+				candidate.r1.openPhaseSourceMomentumRHS=open.r1.phaseSourceMomentumRHS;
 				candidate.r0.flux.low=std::move(open.r0.flux.low);
 				candidate.r0.flux.high=std::move(open.r0.flux.high);
 				candidate.r0.flux.nonadvectiveMass=std::move(open.r0.flux.nonadvectiveMass);
