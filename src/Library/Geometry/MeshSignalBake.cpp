@@ -230,6 +230,7 @@ bool MeshSignalBakeCache::RadiiMatch( const Scalar a, const Scalar b )
 }
 
 MeshSignalBakeCache::MeshSignalBakeCache()
+  : m_vertexNormalsBuilt( false )
 {
 	for( int k = 0; k < MeshSignalBake::eKindCount; ++k ) {
 		m_warnedCap[k] = false;
@@ -241,28 +242,43 @@ MeshSignalBakeCache::~MeshSignalBakeCache()
 	Invalidate();
 }
 
-void MeshSignalBakeCache::Invalidate()
+bool MeshSignalBakeCache::Invalidate()
 {
+	// ONE acquisition covers the tables AND the per-position normals they
+	// were derived from.  Dropping them in two lock regions -- or, as an
+	// earlier shape had it, dropping the tables under the cache's lock and
+	// then clearing a geometry-owned normal array with no lock at all --
+	// leaves a window in which a concurrent find-or-build reads the array
+	// mid-clear.
 	std::lock_guard<RMutex> guard( m_mutex );
+
+	bool bDroppedSomething = m_vertexNormalsBuilt;
 	for( int k = 0; k < MeshSignalBake::eKindCount; ++k ) {
-		for( size_t i = 0; i < m_entries[k].size(); ++i ) {
-			delete m_entries[k][i].pTable;
+		if( !m_entries[k].empty() ) {
+			bDroppedSomething = true;
 		}
+		// Clearing drops only THIS cache's references.  A table a reader is
+		// still interpolating stays alive until that reader is done with it
+		// (see TableRef): the reader finishes on stale data rather than on
+		// freed data.
 		m_entries[k].clear();
 		m_warnedCap[k] = false;
 	}
+	m_vertexNormals.clear();
+	m_vertexNormalsBuilt = false;
+	return bDroppedSomething;
 }
 
-const MeshSignalBakeCache::Table* MeshSignalBakeCache::FindOrBuild(
+MeshSignalBakeCache::TableRef MeshSignalBakeCache::FindOrBuild(
 	const MeshSignalBake::Kind kind,
 	const Scalar radiusFraction,
 	const MeshSignalBake::IInputSource& src ) const
 {
 	if( kind != MeshSignalBake::eOcclusion && kind != MeshSignalBake::eThickness ) {
-		return 0;
+		return TableRef();
 	}
 	if( !RISE::IsFiniteDouble( static_cast<double>( radiusFraction ) ) || !( radiusFraction > Scalar(0) ) ) {
-		return 0;
+		return TableRef();
 	}
 
 	// ONE guard across the whole find-or-build, unlocking on every exit
@@ -274,7 +290,10 @@ const MeshSignalBakeCache::Table* MeshSignalBakeCache::FindOrBuild(
 	std::vector<Entry>& entries = m_entries[kind];
 	for( size_t i = 0; i < entries.size(); ++i ) {
 		if( RadiiMatch( entries[i].radius, radiusFraction ) ) {
-			return entries[i].pTable;		// may be 0: the cached failure
+			// ONE refcount pair per query: this copy, released when the
+			// caller's local dies.  The interpolation that follows reads
+			// through it without touching the count again.
+			return entries[i].table;		// may be empty: the cached failure
 		}
 	}
 
@@ -285,36 +304,42 @@ const MeshSignalBakeCache::Table* MeshSignalBakeCache::FindOrBuild(
 				"MeshSignalBakeCache:: more than 8 distinct occlusion()/thickness() radii on one mesh; "
 				"further radii read the neutral fallback -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 7.1" );
 		}
-		return 0;
+		return TableRef();
 	}
 
 	// Input assembly happens HERE, under the lock, and only on a genuine
-	// miss -- see IInputSource for why it is a callback.
+	// miss -- see IInputSource for why it is a callback.  The per-position
+	// normals it needs are cache-owned and built at most once per
+	// generation, so the SECOND radius on this mesh reuses them.
+	if( !m_vertexNormalsBuilt ) {
+		m_vertexNormalsBuilt = true;
+		src.BuildVertexNormals( m_vertexNormals );
+	}
+
 	MeshSignalBake::Input in;
 	in.pVertices = 0; in.pNormals = 0; in.maxDistance = Scalar(0);
 	in.originEpsilon = Scalar(0); in.pOccluder = 0;
-	const bool bHaveInput = src.MakeBakeInput( radiusFraction, in );
+	const bool bHaveInput = src.MakeBakeInput( radiusFraction, m_vertexNormals, in );
 
-	Table* pTable = new Table();
+	std::shared_ptr<Table> pTable( new Table() );
 	if( !bHaveInput || !MeshSignalBake::Build( kind, in, *pTable ) ) {
 		// NULL SENTINEL, the SSS pattern: cache the failure so the next
 		// several million samples do not each re-attempt a build that
 		// cannot succeed, and warn exactly once for this (geometry, kind,
 		// radius).
-		delete pTable;
 		Entry e;
 		e.radius = radiusFraction;
-		e.pTable = 0;
+		e.table = TableRef();
 		entries.push_back( e );
 		GlobalLog()->PrintEasyWarning(
 			"MeshSignalBakeCache:: per-vertex signal bake failed on a mesh (no vertices, or no usable "
 			"per-vertex normals); occlusion()/thickness() read their neutral fallback there" );
-		return 0;
+		return TableRef();
 	}
 
 	Entry e;
 	e.radius = radiusFraction;
-	e.pTable = pTable;
+	e.table = TableRef( pTable );		// const-qualified from here on
 	entries.push_back( e );
-	return pTable;
+	return e.table;
 }

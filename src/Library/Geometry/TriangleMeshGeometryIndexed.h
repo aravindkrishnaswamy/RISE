@@ -117,29 +117,30 @@ namespace RISE
 			//! build cannot be eager.
 			mutable MeshSignalBakeCache	m_signalBakes;
 
-			//! Per-POSITION normals for the bake, built once alongside the
-			//! first table.  NOT the same array as `pNormals`: that one is
-			//! independently indexed (a position can carry several normals)
-			//! and may be empty on a face-normal mesh, while a per-vertex
-			//! bake needs exactly one orientation per POSITION.  Built by
-			//! accumulating each incident corner's authored normal, or the
+			//! MeshSignalBake::IInputSource -- writes ONE outward orientation
+			//! per vertex POSITION.  NOT the same array as `pNormals`: that
+			//! one is independently indexed (a position can carry several
+			//! normals) and may be empty on a face-normal mesh, while a
+			//! per-vertex bake needs exactly one orientation per POSITION.
+			//! Accumulates each incident corner's authored normal, or the
 			//! face normal where none is authored.
-			mutable std::vector<Vector3>	m_signalVertexNormals;
-			mutable bool					m_signalVertexNormalsBuilt;
-
-			//! Builds m_signalVertexNormals if it has not been built.  Called
-			//! ONLY from inside the bake cache's find-or-build (i.e. under
-			//! its lock), which is what makes touching these two mutable
-			//! members safe.
-			void EnsureSignalVertexNormals() const;
+			//!
+			//! A PURE function of the current vertex data into the caller's
+			//! array -- it caches nothing here.  The cache owns the result,
+			//! because the result is derived from the same vertices the
+			//! tables are and must die in the same single locked
+			//! invalidation they do.
+			void BuildVertexNormals( std::vector<Vector3>& out ) const override;
 
 			//! MeshSignalBake::IInputSource -- assembles the bake input for
-			//! `radiusFraction`, called by the cache from inside its lock on
-			//! a miss.  Object space throughout; the radius is a FRACTION of
-			//! this mesh's own bounding-box diagonal (design doc §9), which
-			//! is what makes a shared bake correct for every instance of
-			//! this geometry.
-			bool MakeBakeInput( const Scalar radiusFraction, MeshSignalBake::Input& out ) const override;
+			//! `radiusFraction` around the cache-owned normals, called by the
+			//! cache from inside its lock on a miss.  Object space
+			//! throughout; the radius is a FRACTION of this mesh's own
+			//! bounding-box diagonal (design doc §9), which is what makes a
+			//! shared bake correct for every instance of this geometry.
+			bool MakeBakeInput( const Scalar radiusFraction,
+				const std::vector<Vector3>& vertexNormals,
+				MeshSignalBake::Input& out ) const override;
 
 			//! Answers a baked signal at a hit: validate the radius per
 			//! §7.1's constant-radius precondition, find-or-build, then
@@ -159,7 +160,8 @@ namespace RISE
 			//! over time.  Free invalidation does not cover it, and this is
 			//! the explicit invalidation it needs instead.  Same contract as
 			//! UpdateVertices itself: between frames, never concurrent with
-			//! rendering.
+			//! rendering -- asserted in DEBUG whenever there was actually
+			//! something live to drop (see the body).
 			void InvalidateSignalBakes();
 
 			bool LookupBakedSignal(

@@ -39,6 +39,7 @@
 #include "../Utilities/Threads/Threads.h"
 #include <vector>
 #include <atomic>
+#include <memory>
 
 namespace RISE
 {
@@ -136,21 +137,40 @@ namespace RISE
 
 		//! Assembles the Input for one radius, ON DEMAND.
 		//!
-		//! The cache calls this from INSIDE its own lock, and that is the
-		//! whole reason it is a callback rather than a struct the caller
-		//! fills in up front.  A mesh's input includes derived state it also
-		//! builds lazily (a per-POSITION normal array that its independently
-		//! indexed `pNormals` cannot supply), so assembling the input is
-		//! itself a `mutable` write that must be serialized -- and doing it
-		//! eagerly, on every cache HIT, would put the very work the lazy
-		//! bake exists to avoid back on the per-sample path.
+		//! The cache calls both of these from INSIDE its own lock, and that
+		//! is the whole reason they are callbacks rather than a struct the
+		//! caller fills in up front.  A mesh's input includes derived state
+		//! that is built once and reused across radii (a per-POSITION normal
+		//! array that its independently indexed `pNormals` cannot supply);
+		//! building it eagerly, on every cache HIT, would put the very work
+		//! the lazy bake exists to avoid back on the per-sample path.
+		//!
+		//! That derived array is OWNED BY THE CACHE, not by the source, and
+		//! that ownership is load-bearing rather than tidy: it is what lets
+		//! one lock acquisition invalidate the tables AND the state they were
+		//! derived from.  Split across two objects, the tail of an
+		//! invalidation ran unlocked and raced this very build.
 		class IInputSource
 		{
 		public:
 			virtual ~IInputSource() {}
+
+			//! Fills `out` with ONE outward orientation per vertex position,
+			//! sized to the same vertex array `MakeBakeInput` will publish;
+			//! a zero entry marks a position the source could not orient.
+			//! Called at most once per cache generation, on the first miss.
+			virtual void BuildVertexNormals( std::vector<Vector3>& out ) const = 0;
+
+			//! Assembles the rest of the input around the cache-owned
+			//! `vertexNormals` array built above (which the source must
+			//! publish as `out.pNormals` -- it stays alive for the build).
 			//! \return FALSE when this geometry cannot be baked at all (no
-			//!         triangles, no acceleration structure, degenerate box).
-			virtual bool MakeBakeInput( const Scalar radiusFraction, Input& out ) const = 0;
+			//!         triangles, no acceleration structure, degenerate box,
+			//!         or normals that do not match the vertex array).
+			virtual bool MakeBakeInput(
+				const Scalar radiusFraction,
+				const std::vector<Vector3>& vertexNormals,
+				Input& out ) const = 0;
 		};
 
 		//! Builds one per-vertex table.  Deterministic: a fixed Hammersley
@@ -187,16 +207,39 @@ namespace RISE
 	public:
 		typedef std::vector<float> Table;
 
+		//! What a query holds while it interpolates.  A SHARED, COUNTED
+		//! reference, not a raw pointer, and the difference is the one
+		//! use-after-free this design can actually reach.
+		//!
+		//! The cache's contract says invalidation never runs concurrent with
+		//! rendering -- and that contract is VIOLATED today by one documented
+		//! pre-existing path: motion-blur temporal sampling calls
+		//! `IAnimator::EvaluateAtTime` from worker threads
+		//! (ARCHITECTURE.md:68-74), so a keyframed displacement painter drives
+		//! `DisplacedGeometry::RefreshMeshVertices` -> `UpdateVertices` ->
+		//! `InvalidateSignalBakes` on a worker thread.  With a raw `Table*`
+		//! that `delete` could land while another worker was mid-interpolation
+		//! on the very same table.  A `shared_ptr` makes the table outlive the
+		//! cache's reference to it, so the reader finishes on a table that is
+		//! still alive and merely STALE.
+		//!
+		//! What this does NOT fix, said plainly: the same path also mutates
+		//! the vertex array and refits the BVH under traversal.  That race is
+		//! PRE-EXISTING, is what ARCHITECTURE.md documents, and remains.  This
+		//! removes the NEW use-after-free Phase 3 layered on top of it -- it
+		//! does not make vertex mutation from a worker thread safe.
+		typedef std::shared_ptr<const Table> TableRef;
+
 		MeshSignalBakeCache();
 		~MeshSignalBakeCache();
 
 		//! Find-or-build the table for (kind, radiusFraction).
 		//!
-		//! \return the immutable table, or 0 when this (kind, radius) has no
-		//!         bake and never will -- a build that failed (cached null
-		//!         sentinel: warned once, never retried) or a radius past
-		//!         kMaxTablesPerKind.  The caller answers 0 with the
-		//!         signal's neutral fallback.
+		//! \return a reference to the immutable table, or an EMPTY reference
+		//!         when this (kind, radius) has no bake and never will -- a
+		//!         build that failed (cached null sentinel: warned once, never
+		//!         retried) or a radius past kMaxTablesPerKind.  The caller
+		//!         answers empty with the signal's neutral fallback.
 		//!
 		//! Serialization: ONE lock_guard spans the whole find-or-build, the
 		//! SSS discipline exactly.  A double-checked unlocked find() would
@@ -204,20 +247,33 @@ namespace RISE
 		//! undefined behaviour, for a saving of one uncontended lock on a
 		//! path that already costs a barycentric interpolation.  Interpolation
 		//! itself happens OUTSIDE the lock, on the returned immutable table.
-		const Table* FindOrBuild(
+		//!
+		//! COST: exactly ONE refcount pair per query -- the copy taken under
+		//! the lock, released when the caller's local goes out of scope.  The
+		//! caller must hold that one reference across the whole interpolation
+		//! rather than re-copying it per tap.
+		TableRef FindOrBuild(
 			const MeshSignalBake::Kind kind,
 			const Scalar radiusFraction,
 			const MeshSignalBake::IInputSource& src
 			) const;
 
-		//! Drops every table.  Required by vertex-level animation
+		//! Drops every table AND the per-position normals they were derived
+		//! from, in ONE lock acquisition.  Required by vertex-level animation
 		//! (`ITriangleMeshGeometryIndexed::UpdateVertices` replaces the
 		//! vertex array in place, so the geometry OUTLIVES the shape its
 		//! bake describes -- the one hole in §7.2's free-invalidation
 		//! argument, and §14 item 10's "confirm whether it can happen":
 		//! it can).  Must be called between frames, never concurrent with
 		//! rendering, which is the same contract UpdateVertices already has.
-		void Invalidate();
+		//!
+		//! \return TRUE when something was actually live and got dropped.
+		//!         The caller uses that to decide whether a contract-violation
+		//!         assert is warranted: dropping an EMPTY cache (every mesh
+		//!         construction path does) cannot strand a reader, while
+		//!         dropping a populated one during a render is the violation
+		//!         worth failing loudly on.
+		bool Invalidate();
 
 		//! Distinct radii bakeable per signal per geometry.  Only radii the
 		//! expression compiler PROVED literal ever get here, so this set is
@@ -241,12 +297,24 @@ namespace RISE
 	private:
 		struct Entry
 		{
-			Scalar	radius;
-			Table*	pTable;		//!< 0 == the failed-build null sentinel
+			Scalar		radius;
+			TableRef	table;		//!< empty == the failed-build null sentinel
 		};
 
 		mutable std::vector<Entry>	m_entries[ MeshSignalBake::eKindCount ];
 		mutable RMutex				m_mutex;
+
+		//! Per-POSITION orientations the bakes trace along, built once by the
+		//! IInputSource on the first miss and reused by every later radius.
+		//!
+		//! It lives HERE, and not on the geometry, for one reason: it is
+		//! derived from the same vertex data the tables are, so it has to be
+		//! dropped by the same invalidation -- and an invalidation that
+		//! dropped the tables under the lock and then cleared a
+		//! geometry-owned array outside it left a tail that raced this very
+		//! build.  One owner, one lock, one lifetime.
+		mutable std::vector<Vector3>	m_vertexNormals;
+		mutable bool					m_vertexNormalsBuilt;
 		//! One warning per (geometry, kind) when the cap is reached, not one
 		//! per sample.
 		mutable bool				m_warnedCap[ MeshSignalBake::eKindCount ];

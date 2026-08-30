@@ -27,7 +27,9 @@
 // BSP/octree state, only the ability to consume the legacy bytes.
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
+#include "../Utilities/RenderParallelScope.h"
 #include <cmath>
+#include <cassert>
 #ifdef RISE_ENABLE_MAILBOXING
 #include <atomic>
 #include <unordered_map>
@@ -78,7 +80,6 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
 #ifdef RISE_ENABLE_MAILBOXING
   , geometryId( s_nextGeometryId.fetch_add(1) )
 #endif
-  , m_signalVertexNormalsBuilt( false )
 {
 }
 
@@ -341,6 +342,19 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	// Tier 1 §3: refit-not-rebuild path for keyframed-painter-driven
 	// DisplacedGeometry.  Topology (ptr_polygons indices) is preserved;
 	// only vertex positions and normals change.
+
+	// DEBUG contract guard, the same one DisplacedGeometry::Realize() uses:
+	// this function rewrites vertex data and refits the BVH under any
+	// traversal that happens to be running, so it is a BETWEEN-FRAMES
+	// operation and nothing else.  It is asserted rather than trusted because
+	// there is a known way in: motion-blur temporal sampling calls
+	// IAnimator::EvaluateAtTime from worker threads (ARCHITECTURE.md:68-74),
+	// and a keyframed displacement painter's notification reaches here
+	// synchronously through DisplacedGeometry::RefreshMeshVertices.  A DEBUG
+	// build now says so instead of corrupting a traversal quietly.
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"TriangleMeshGeometryIndexed::UpdateVertices() during the parallel render — vertex mutation "
+		"and BVH refit are between-frames operations (docs/ARCHITECTURE.md:68-74)" );
 
 	if( !pPtrBVH ) {
 		GlobalLog()->PrintEasyWarning(
@@ -1340,21 +1354,34 @@ SurfaceDerivatives TriangleMeshGeometryIndexed::ComputeSurfaceDerivatives( const
 
 void TriangleMeshGeometryIndexed::InvalidateSignalBakes()
 {
-	m_signalBakes.Invalidate();
-	m_signalVertexNormals.clear();
-	m_signalVertexNormalsBuilt = false;
+	// EVERYTHING derived from the vertex data -- the tables and the
+	// per-position orientations they were traced along -- is dropped inside
+	// the cache's ONE lock acquisition.  There is deliberately no tail after
+	// this call: an earlier shape cleared a geometry-owned normal array here,
+	// unlocked, where it raced a concurrent find-or-build reading that same
+	// array.
+	const bool bDroppedSomething = m_signalBakes.Invalidate();
+
+	// DEBUG contract guard, the shape DisplacedGeometry::Realize() uses.
+	// Conditioned on having actually dropped something, and that condition is
+	// the point rather than a softening: every mesh CONSTRUCTION path
+	// (BeginIndexedTriangles / DoneIndexedTriangles) invalidates an EMPTY
+	// cache on a geometry no render can reach yet, which is harmless and must
+	// not fire.  Dropping a POPULATED cache mid-render is the real violation
+	// -- a table a worker thread may be interpolating right now.
+	assert( ( !bDroppedSomething || g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 ) &&
+		"TriangleMeshGeometryIndexed::InvalidateSignalBakes() dropped live per-vertex bakes during the "
+		"parallel render — vertex mutation is a between-frames operation" );
+	(void)bDroppedSomething;	// release builds compile the assert out
 }
 
-void TriangleMeshGeometryIndexed::EnsureSignalVertexNormals() const
+void TriangleMeshGeometryIndexed::BuildVertexNormals( std::vector<Vector3>& out ) const
 {
-	// Called only from inside the bake cache's find-or-build, i.e. under
-	// its lock -- which is what makes writing these two `mutable` members
-	// safe here and nowhere else.
-	if( m_signalVertexNormalsBuilt ) {
-		return;
-	}
-	m_signalVertexNormalsBuilt = true;
-	m_signalVertexNormals.assign( pPoints.size(), Vector3( 0, 0, 0 ) );
+	// Called by MeshSignalBakeCache::FindOrBuild from inside its lock, on the
+	// first miss of a cache generation.  Writes into the CACHE's array and
+	// keeps nothing of its own, so there is no second copy of this state for
+	// an invalidation to have to chase.
+	out.assign( pPoints.size(), Vector3( 0, 0, 0 ) );
 	if( pPoints.empty() ) {
 		return;
 	}
@@ -1383,14 +1410,14 @@ void TriangleMeshGeometryIndexed::EnsureSignalVertexNormals() const
 
 		for( int k = 0; k < 3; ++k ) {
 			const size_t idx = (size_t)( tri.pVertices[k] - pBase );
-			if( idx >= m_signalVertexNormals.size() ) {
+			if( idx >= out.size() ) {
 				continue;
 			}
 			if( tri.pNormals[k] ) {
 				const Vector3& an = *tri.pNormals[k];
-				m_signalVertexNormals[idx] = m_signalVertexNormals[idx] + an;
+				out[idx] = out[idx] + an;
 			} else {
-				m_signalVertexNormals[idx] = m_signalVertexNormals[idx] + faceN;
+				out[idx] = out[idx] + faceN;
 			}
 		}
 	}
@@ -1399,30 +1426,29 @@ void TriangleMeshGeometryIndexed::EnsureSignalVertexNormals() const
 	// or no incident triangle at all) is LEFT at zero, which the bake reads
 	// as "unorientable" and answers with the neutral value rather than an
 	// invented direction.
-	for( size_t i = 0; i < m_signalVertexNormals.size(); ++i ) {
-		const Vector3& v = m_signalVertexNormals[i];
+	for( size_t i = 0; i < out.size(); ++i ) {
+		const Vector3& v = out[i];
 		const Scalar len2 = v.x*v.x + v.y*v.y + v.z*v.z;
 		if( len2 > NEARZERO ) {
 			const Scalar inv = Scalar(1) / std::sqrt( len2 );
-			m_signalVertexNormals[i] = Vector3( v.x*inv, v.y*inv, v.z*inv );
+			out[i] = Vector3( v.x*inv, v.y*inv, v.z*inv );
 		} else {
-			m_signalVertexNormals[i] = Vector3( 0, 0, 0 );
+			out[i] = Vector3( 0, 0, 0 );
 		}
 	}
 }
 
-bool TriangleMeshGeometryIndexed::MakeBakeInput( const Scalar radiusFraction, MeshSignalBake::Input& out ) const
+bool TriangleMeshGeometryIndexed::MakeBakeInput( const Scalar radiusFraction,
+	const std::vector<Vector3>& vertexNormals, MeshSignalBake::Input& out ) const
 {
 	// Called by MeshSignalBakeCache::FindOrBuild from inside its lock, and
-	// only on a cache MISS -- which is what makes the mutable write in
-	// EnsureSignalVertexNormals() below safe, and keeps this whole function
-	// off the per-sample path.
-	EnsureSignalVertexNormals();
-
+	// only on a cache MISS -- which keeps this whole function off the
+	// per-sample path.  `vertexNormals` is the cache-owned array
+	// BuildVertexNormals() filled; it outlives the build.
 	if( pPoints.empty() || ptr_polygons.empty() || !pPtrBVH ) {
 		return false;
 	}
-	if( m_signalVertexNormals.size() != pPoints.size() ) {
+	if( vertexNormals.size() != pPoints.size() ) {
 		return false;
 	}
 
@@ -1440,7 +1466,7 @@ bool TriangleMeshGeometryIndexed::MakeBakeInput( const Scalar radiusFraction, Me
 	}
 
 	out.pVertices     = &pPoints;
-	out.pNormals      = &m_signalVertexNormals;
+	out.pNormals      = &vertexNormals;
 	out.maxDistance   = radiusFraction * diagonal;
 	out.originEpsilon = MeshSignalBake::kOriginEpsilonFraction * diagonal;
 	out.pOccluder     = this;
@@ -1517,8 +1543,15 @@ bool TriangleMeshGeometryIndexed::LookupBakedSignal(
 	// eight radii; the input assembly (and with it the per-position normal
 	// build) happens only on a MISS, inside the cache's own lock, via the
 	// IInputSource callback this class implements.
-	const MeshSignalBakeCache::Table* pTable = m_signalBakes.FindOrBuild( kind, radiusFraction, *this );
-	if( !pTable ) {
+	//
+	// ONE shared_ptr copy for the whole query -- taken here, released at
+	// return.  It is what keeps the table alive across the interpolation
+	// below even if another thread invalidates the cache in between (see
+	// MeshSignalBakeCache::TableRef).  Deliberately NOT re-fetched per tap:
+	// the steady-state cost of this feature stays one refcount pair per
+	// provider query, not one per table read.
+	const MeshSignalBakeCache::TableRef table = m_signalBakes.FindOrBuild( kind, radiusFraction, *this );
+	if( !table ) {
 		return false;
 	}
 
@@ -1529,7 +1562,7 @@ bool TriangleMeshGeometryIndexed::LookupBakedSignal(
 	const size_t i2 = (size_t)( tri.pVertices[2] - pBase );
 
 	Scalar v = Scalar(0);
-	if( !InterpolateMeshSignal( *pTable, i0, i1, i2, hit.baryA, hit.baryB, v ) ) {
+	if( !InterpolateMeshSignal( *table, i0, i1, i2, hit.baryA, hit.baryB, v ) ) {
 		return false;
 	}
 	if( !RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
