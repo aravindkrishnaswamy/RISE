@@ -501,16 +501,23 @@ pinhole_camera
 }
 
 # THE FIELD.  Scalar-typed crevice mask driven by NEGATIVE curv (concave =
-# crevice, per the sign convention above), broken up by a second fbm so
-# the patina reads as patchy oxidation instead of a flat AO ramp.
+# crevice, per the sign convention above), DEEPENED by an occlusion-derived
+# boost -- (1-occlusion(0.08)) is 0 where a point is genuinely in the open
+# and grows toward 1 the more enclosed it truly is, and occl_gain turns
+# that into a >=1 multiplier, so curv's own reading is left untouched in
+# the open and pushed harder in a real pocket -- then broken up by a
+# second fbm so the patina reads as patchy oxidation instead of a flat AO
+# ramp.
 expression_painter
 {
 	name		pnt_wear_field
 	param		crevice_gain 6.0 min 0.5 max 20 step 0.5 label "Crevice sensitivity"
 	param		breakup_freq 10.0 min 1 max 40 step 0.5 label "Breakup frequency"
+	param		occl_gain 1.5 min 0 max 4 step 0.1 label "Occlusion boost"
 	def			crevice_mask clamp(-curv * crevice_gain, 0, 1)
+	def			cavity_boost 1.0 + occl_gain * (1.0 - occlusion(0.08))
 	def			breakup 0.5 + 0.5 * fbm(P*breakup_freq, 4, 0.5, 2.0)
-	expr		clamp(crevice_mask * breakup, 0, 1)
+	expr		clamp(crevice_mask * cavity_boost * breakup, 0, 1)
 }
 
 # CONSUMER 1 -- colour: clean bronze at 0, dark crusted patina at 1.
@@ -556,12 +563,21 @@ ggx_material
 # THE CREATURE-LIKE BODY: a round head with a carved scar/dimple
 # (subtract) -- an unambiguous concave crevice (inside the scar) against
 # an unambiguous convex body (the rest of the head), the family curv is
-# EXACT on.
+# EXACT on -- plus a small fused knot (union) on the opposite side.  The
+# knot's own crease reads negative under curv too (a union between two
+# spheres is a genuine concave wedge, not a hemispherical dimple), but it
+# is ALSO genuinely enclosed in a way a subtract-carved scar is not:
+# occlusion(0.08) reads down to roughly 0.68 right at the seam where the
+# knot meets the skull, comfortably below unoccluded, while the scar
+# itself stays close to 1 (occlusion sees creases and folds, not smooth
+# dimples -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md).  That is what
+# cavity_boost is for.
 sdf_geometry
 {
 	name	head
 	part	sphere union 0     0 0 0     0 0 0   1 1 1   0.75 0 0   0
 	part	sphere subtract 0.08   0.35 0.1 0.55   0 0 0   1 1 1   0.42 0 0   0
+	part	sphere union 0     -0.455 0.273 0.727   0 0 0   1 1 1   0.25 0 0   0
 }
 
 standard_object
@@ -613,14 +629,39 @@ Rendering just `pnt_wear_field` in isolation (bind it straight to an
 unlit `exitance` slot and nothing else) makes the geometric keying
 undeniable: the raw mask reads exactly 0 everywhere on the convex body
 and a strong nonzero value the instant a ray lands inside the concave
-scar — the crevice, not an axis, is what turns the field on.  Bind
+scar — the crevice, not an axis, is what turns the field on.  It also
+shows exactly where `cavity_boost` earns its keep and where it does not:
+rendering the field with and without `cavity_boost` (64 spp, PNG output
+at `color_space Rec709RGB_Linear` / `display_transform none` so pixel
+value IS mask value) and averaging over the same 17x17-pixel patch in
+each render, the scar's own peak is UNCHANGED at 0.188 in both and its
+surrounding patch is unchanged at a mean of 0.112 — curv already
+saturates the mask there and `occlusion(0.08)` reads close to 1
+(unoccluded), so `1.0 + occl_gain * (1.0 - occlusion(...))` is close to
+its neutral 1 and multiplies in almost nothing new.  The same comparison
+over the seam where the fused knot meets the skull goes from a mean of
+0.0016 to 0.0041 — a 2.5x deepening — because that seam is a genuine
+fold occlusion sees as enclosed even though its curv reading, on its own,
+was no more dramatic than a lot of other mild creases on the head.  Bind
 `curv` (not `P`) whenever the question is "where does wear collect on
-THIS shape," on an SDF/skeleton body specifically, where the signal is
-exact rather than faceted.  There is no dedicated wear-verb yet;
-`insert_material_scaffold {family:"aged_bronze", wear:...}` gets you a
-comparable patina look in one call today, but through a reaction-diffusion
-field rather than curvature, so it won't specifically hug a crevice the
-way this hand-typed field does.
+THIS shape," and reach for `occlusion(radius)` specifically when some of
+those creases are shallow, WIDE folds that a fine-scale, radius-free
+signal underrates relative to how enclosed they really are.  There is no
+dedicated wear-verb yet; `insert_material_scaffold {family:"aged_bronze",
+wear:...}` gets you a comparable patina look in one call today, but
+through a reaction-diffusion field rather than curvature or occlusion, so
+it won't specifically hug a crevice or a pocket the way this hand-typed
+field does.
+
+`thickness(radius)` is occlusion's sibling for TRANSLUCENCY rather than
+grime: it returns `[0,1]` with 1 = thick, so `1 - thickness(0.1)` is a
+THIN-region mask — bind it into a subsurface tint or an SSS-style rim
+term and a creature's ears, fins, or a leaf's edge light up first, which
+a curvature-only edge mask cannot do because curv has no notion of wall
+thickness.  Like `occlusion`, it is exact only on the volumetric SDF
+family (`sdf_geometry` / `skeleton_geometry`) and reads the neutral 1
+(thick) everywhere else — including a heightfield-mode SDF — so an
+unsupported geometry stays inert rather than lighting up.
 
 ## A one-call route to a wired varied material
 

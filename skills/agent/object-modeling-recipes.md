@@ -1903,7 +1903,9 @@ uniformly convex.  `clamp(curv, 0, 1)` alone (no noise needed for a crisp
 trim look) picks out the edges; the SAME field bridges into a
 `scalar_painter` for roughness so the exposed metal is also the polished
 one -- see `materials-and-media-basics.md`'s patina section for the
-concave twin (`clamp(-curv, 0, 1)`) and the full sign convention.
+concave twin (`clamp(-curv, 0, 1)`) and the full sign convention, and for
+`occlusion(radius)`, the crevice-dirt companion signal that deepens grime
+in a genuinely enclosed pocket a fine-scale curvature read underrates.
 
 ```rise
 RISE ASCII SCENE 7
