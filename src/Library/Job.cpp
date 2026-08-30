@@ -1337,9 +1337,17 @@ bool Job::AddExpressionPainter(
 	// BuildExpressionProgramFromChunkFields's own doc comment
 	// (ExpressionPainter.h) for the false/false expression_function2d
 	// case this parameter pair also now serves.
+	std::string exprErr;
 	if( !Implementation::BuildExpressionProgramFromChunkFields(
 			context, paramLines, defLines, Scalar( seed ), expr ? expr : "", prog, specs,
-			/*enableContextVars=*/true, /*autoRegisterSeed=*/true ) ) {
+			/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr ) ) {
+		// Thread the SPECIFIC compiler diagnostic (already logged above,
+		// via GlobalLog()) into the CST finalize-diag sink -- see
+		// GenericManager.h's contract -- so a bad expression_painter no
+		// longer reads to the agent surface as the generic "apply failed
+		// (e.g. unresolved reference); see log" fallback (Cst.cpp's
+		// DeriveToJob apply loop).
+		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
 		return false;
 	}
 

@@ -349,6 +349,95 @@ int main()
 		j->release();
 	}
 
+	//----------------------------------------------------------------------
+	// [expression-diag-sink] bug-fix wave 2026-08-30: BuildExpressionProgramFromChunkFields
+	// (ExpressionPainter.h) already produced a SPECIFIC compiler diagnostic
+	// (e.g. "expression_painter `name`: def `wear`: unknown function
+	// `saturate`") on a bad `def`/`expr` body, but only via GlobalLog() --
+	// it never populated g_cstFinalizeDiagSink, so DeriveToJob's apply loop
+	// (Cst.cpp) fell through to the GENERIC "<keyword>: apply failed (e.g.
+	// unresolved reference); see log" diagnostic for EVERY expression
+	// compile failure, indistinguishable across unknown-function /
+	// unknown-variable / bad-occlusion-radius. Fixed by threading the
+	// specific text through an optional `outError` out-param at all THREE
+	// call sites (Job::AddExpressionPainter for expression_painter,
+	// ChunkParserRegistry.cpp's scalar_painter{expression} Finalize, and
+	// its expression_function2d Finalize). This block proves each of the
+	// three failure classes reaches `diags` with the SPECIFIC compiler
+	// text, not the generic fallback, for all three chunk kinds that share
+	// the builder.
+	//----------------------------------------------------------------------
+	std::printf( "[expression-diag-sink] a bad expression body's SPECIFIC compiler diagnostic reaches diags, not the generic apply-failed fallback\n" );
+	{
+		// Asserts `diags` holds exactly one entry, that it does NOT contain
+		// the generic apply-failed fallback text, and that it DOES contain
+		// `needle` (the specific compiler text this fix threads through).
+		auto CheckSpecificDiag = [&]( const std::string& scene, const char* needle, const char* what ) {
+			Job* j = new Job(); std::vector<std::string> diags;
+			const int n = DeriveCst( HDR + scene, *j, &diags );
+			bool ok = ( n == 0 ) && diags.size() == 1
+				&& diags[0].find( "apply failed" ) == std::string::npos
+				&& diags[0].find( needle ) != std::string::npos;
+			Check( ok, what );
+			if( !ok ) std::printf( "    diag=[%s]\n", diags.empty() ? "<none>" : diags[0].c_str() );
+			j->release();
+		};
+
+		// expression_painter: unknown function / unknown variable / bad occlusion radius.
+		CheckSpecificDiag(
+			"expression_painter\n{\nname bad_unknownfn_pnt\ndef wear saturate(u,0.0,1.0)\nexpr wear\n}\n",
+			"unknown function `saturate`", "expression_painter: unknown function reaches diags with specific text" );
+		CheckSpecificDiag(
+			"expression_painter\n{\nname bad_unknownvar_pnt\ndef wear nonexistent_var_xyz\nexpr wear\n}\n",
+			"unknown variable `nonexistent_var_xyz`", "expression_painter: unknown variable reaches diags with specific text" );
+		CheckSpecificDiag(
+			"expression_painter\n{\nname bad_occl_pnt\ndef wear occlusion(0)\nexpr wear\n}\n",
+			"occlusion() radius must be > 0", "expression_painter: bad occlusion(0) radius reaches diags with specific text" );
+
+		// scalar_painter { expression ... }: same three, same shared builder.
+		CheckSpecificDiag(
+			"scalar_painter\n{\nname bad_unknownfn_sp\ndef wear saturate(u,0.0,1.0)\nexpression wear\n}\n",
+			"unknown function `saturate`", "scalar_painter{expression}: unknown function reaches diags with specific text" );
+		CheckSpecificDiag(
+			"scalar_painter\n{\nname bad_unknownvar_sp\ndef wear nonexistent_var_xyz\nexpression wear\n}\n",
+			"unknown variable `nonexistent_var_xyz`", "scalar_painter{expression}: unknown variable reaches diags with specific text" );
+		CheckSpecificDiag(
+			"scalar_painter\n{\nname bad_occl_sp\ndef wear occlusion(0)\nexpression wear\n}\n",
+			"occlusion() radius must be > 0", "scalar_painter{expression}: bad occlusion(0) radius reaches diags with specific text" );
+
+		// expression_function2d: unknown function / unknown variable are the
+		// same diagnostics as the two 3D-context surfaces above (the shared
+		// builder doesn't distinguish). occlusion() is DIFFERENT here by
+		// design -- expression_function2d is a frozen UV-only surface (see
+		// ExpressionEval.h's EnableContextVars doc comment) and rejects
+		// occlusion()/thickness() BEFORE the radius is even inspected, with
+		// its own dedicated "needs the 3D surface context" diagnostic
+		// rather than "radius must be > 0" -- still a SPECIFIC compiler
+		// text, not the generic apply-failed fallback, which is what this
+		// block is proving.
+		CheckSpecificDiag(
+			"expression_function2d\n{\nname bad_unknownfn_fn2d\ndef wear saturate(u,0.0,1.0)\nexpr wear\n}\n",
+			"unknown function `saturate`", "expression_function2d: unknown function reaches diags with specific text" );
+		CheckSpecificDiag(
+			"expression_function2d\n{\nname bad_unknownvar_fn2d\ndef wear nonexistent_var_xyz\nexpr wear\n}\n",
+			"unknown variable `nonexistent_var_xyz`", "expression_function2d: unknown variable reaches diags with specific text" );
+		CheckSpecificDiag(
+			"expression_function2d\n{\nname bad_occl_fn2d\ndef wear occlusion(0)\nexpr wear\n}\n",
+			"needs the 3D surface context", "expression_function2d: occlusion() (UV-only surface) reaches diags with specific text" );
+
+		// Self-proving control: the SAME expression_painter shape with a
+		// valid def/expr derives cleanly, so the checks above are not
+		// vacuously passing because every expression chunk fails to parse.
+		{
+			Job* j = new Job(); std::vector<std::string> diags;
+			const int n = DeriveCst(
+				HDR + "expression_painter\n{\nname good_pnt\ndef wear clamp(u,0.0,1.0)\nexpr wear\n}\n",
+				*j, &diags );
+			Check( n == 1 && diags.empty(), "self-proving control: a valid expression_painter derives cleanly" );
+			j->release();
+		}
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

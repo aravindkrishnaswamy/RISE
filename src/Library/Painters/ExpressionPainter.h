@@ -85,6 +85,15 @@ namespace RISE
 		//! -- folding the PARSING glue, not growing the authoring surface).
 		//! `seed` is unused (never read) when `autoRegisterSeed` is false;
 		//! a caller with no seed of its own passes 0.
+		//!
+		//! `outError` (optional, defaults to nullptr -- every pre-existing
+		//! caller is byte-identical): on failure, filled with the EXACT same
+		//! text this function logs via GlobalLog() (built once, used for
+		//! both), so a caller that needs the SPECIFIC compiler diagnostic
+		//! (e.g. to thread it into RISE::g_cstFinalizeDiagSink, see
+		//! GenericManager.h) doesn't have to reconstruct it from the log.
+		//! Left untouched (whatever the caller passed in) when this function
+		//! returns true.
 		inline bool BuildExpressionProgramFromChunkFields(
 			const std::string& context,
 			const std::vector<std::string>& paramLines,
@@ -94,13 +103,24 @@ namespace RISE
 			ExpressionProgram& outProg,
 			std::vector<ParamSpec>& outSpecs,
 			bool enableContextVars,
-			bool autoRegisterSeed )
+			bool autoRegisterSeed,
+			std::string* outError = nullptr )
 		{
 			outSpecs.clear();
 
-			if( finalExpr.empty() ) {
-				GlobalLog()->PrintEx( eLog_Error, "%s: missing the final value expression", context.c_str() );
+			// Builds `msg`, logs it (identical text/format to the pre-outError
+			// code), fills `*outError` if the caller wants it, and returns
+			// false -- the single choke point every failure below goes
+			// through so the logged text and the returned diagnostic can
+			// never drift apart.
+			auto fail = [&]( const std::string& msg ) -> bool {
+				GlobalLog()->PrintEx( eLog_Error, "%s", msg.c_str() );
+				if( outError ) *outError = msg;
 				return false;
+			};
+
+			if( finalExpr.empty() ) {
+				return fail( context + ": missing the final value expression" );
 			}
 
 			ExpressionProgram::Builder builder;
@@ -108,8 +128,7 @@ namespace RISE
 
 			if( autoRegisterSeed ) {
 				if( !builder.AddParam( "seed", seed ) ) {
-					GlobalLog()->PrintEx( eLog_Error, "%s: internal error registering `seed`: %s", context.c_str(), builder.Error().c_str() );
-					return false;
+					return fail( context + ": internal error registering `seed`: " + builder.Error() );
 				}
 			}
 
@@ -118,22 +137,17 @@ namespace RISE
 				std::string err;
 				ptrdiff_t errOff = -1;
 				if( !ParseParamSpecLine( paramLines[i], spec, err, errOff ) ) {
-					GlobalLog()->PrintEx( eLog_Error, "%s: param %u (`%s`): %s",
-						context.c_str(), (unsigned int)i, paramLines[i].c_str(), err.c_str() );
-					return false;
+					return fail( context + ": param " + std::to_string( i ) + " (`" + paramLines[i] + "`): " + err );
 				}
 				if( !ExpressionProgram::IsFinite( spec.value ) ) {
-					GlobalLog()->PrintEx( eLog_Error, "%s: param `%s` must be finite (nan/inf rejected)",
-						context.c_str(), spec.name.c_str() );
-					return false;
+					return fail( context + ": param `" + spec.name + "` must be finite (nan/inf rejected)" );
 				}
 				// P1-A parity: a duplicate name of a DIFFERENT type (incl.
 				// colliding with `seed`, a scalar) is a hard compile error;
 				// same-type is last-wins.  See BuildExpressionProgramFromChunkFields's
 				// doc comment above for why `seed` is registered first.
 				if( !builder.AddParam( spec.name, spec.value ) ) {
-					GlobalLog()->PrintEx( eLog_Error, "%s: param `%s`: %s", context.c_str(), spec.name.c_str(), builder.Error().c_str() );
-					return false;
+					return fail( context + ": param `" + spec.name + "`: " + builder.Error() );
 				}
 				outSpecs.push_back( spec );
 			}
@@ -142,22 +156,18 @@ namespace RISE
 				const std::string& line = defLines[i];
 				const std::size_t sp = line.find_first_of( " \t" );
 				if( sp == std::string::npos ) {
-					GlobalLog()->PrintEx( eLog_Error, "%s: def %u (`%s`) must be `<name> <expression>`",
-						context.c_str(), (unsigned int)i, line.c_str() );
-					return false;
+					return fail( context + ": def " + std::to_string( i ) + " (`" + line + "`) must be `<name> <expression>`" );
 				}
 				const std::string dname = line.substr( 0, sp );
 				const std::string dexpr = line.substr( sp + 1 );
 				if( !builder.AddDef( dname, dexpr ) ) {
-					GlobalLog()->PrintEx( eLog_Error, "%s: def `%s`: %s", context.c_str(), dname.c_str(), builder.Error().c_str() );
-					return false;
+					return fail( context + ": def `" + dname + "`: " + builder.Error() );
 				}
 			}
 
 			outProg = ExpressionProgram::Invalid();
 			if( !builder.Finalize( finalExpr, outProg ) ) {
-				GlobalLog()->PrintEx( eLog_Error, "%s: expr: %s", context.c_str(), builder.Error().c_str() );
-				return false;
+				return fail( context + ": expr: " + builder.Error() );
 			}
 			return true;
 		}

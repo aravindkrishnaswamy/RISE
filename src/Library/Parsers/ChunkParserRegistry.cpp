@@ -1554,9 +1554,14 @@ namespace RISE
 						// this call's ORIGINAL (pre-unification) behavior -- see
 						// BuildExpressionProgramFromChunkFields's own doc comment
 						// (ExpressionPainter.h).
+						std::string exprErr;
 						if( !Implementation::BuildExpressionProgramFromChunkFields(
 								context, params, defs, Scalar( seed ), finalExpr, prog, specs,
-								/*enableContextVars=*/true, /*autoRegisterSeed=*/true ) ) {
+								/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr ) ) {
+							// See Job::AddExpressionPainter's twin site -- thread the
+							// specific compiler diagnostic into the CST sink instead
+							// of leaving the caller with the generic apply-failed text.
+							if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
 							return false;
 						}
 						RISE_API_CreateExpressionScalarPainter( &painter, prog, specs );
@@ -6482,9 +6487,14 @@ namespace RISE
 					Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
 					std::vector<Implementation::ParamSpec> specs;   // discarded -- this surface doesn't carry S4 introspection metadata (frozen, not extended)
 					const std::string context = std::string( "expression_function2d `" ) + name + "`";
+					std::string exprErr;
 					if( !Implementation::BuildExpressionProgramFromChunkFields(
 							context, bag.GetRepeatable( "param" ), bag.GetRepeatable( "def" ), Scalar( 0 ), finalExpr, prog, specs,
-							/*enableContextVars=*/false, /*autoRegisterSeed=*/false ) ) {
+							/*enableContextVars=*/false, /*autoRegisterSeed=*/false, &exprErr ) ) {
+						// See Job::AddExpressionPainter's twin site -- thread the
+						// specific compiler diagnostic into the CST sink instead
+						// of leaving the caller with the generic apply-failed text.
+						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
 						return false;
 					}
 
