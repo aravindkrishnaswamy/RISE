@@ -29,6 +29,8 @@
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/Color/CIE_XYZ.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
+#include "../Interfaces/ILog.h"
 #include <stdint.h>
 
 namespace RISE
@@ -48,6 +50,10 @@ namespace RISE
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 			{
 				PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
+				// Phase-2 fix round containment diagnostic (design doc
+				// §14 item 11) -- see WarnIfNonPTRenderHasLiveSignalConsumer's
+				// own doc comment (ISurfaceSignalProvider.h).
+				WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "BDPT" );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of

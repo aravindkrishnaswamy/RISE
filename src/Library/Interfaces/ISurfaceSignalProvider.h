@@ -27,6 +27,9 @@
 
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/SurfaceCurvature.h"
+#include "ILog.h"
+#include <atomic>
 
 namespace RISE
 {
@@ -219,6 +222,114 @@ namespace RISE
 			return NeutralThickness();
 		}
 	};
+
+	//! DIAGNOSTIC-ONLY consumption gate for `occlusion()` / `thickness()`,
+	//! mirroring SurfaceCurvatureDemand's mechanism (SurfaceCurvature.h)
+	//! exactly, for exactly the reason Phase 1's counter was thread-safe:
+	//! an atomic mutated only at painter construction/destruction (scene
+	//! build/teardown), loaded relaxed from render threads.
+	//!
+	//! UNLIKE SurfaceCurvatureDemand, this gate does NOT control the
+	//! per-hit provider install -- SurfaceSignalInfo's own doc (above) and
+	//! design doc §13 item 2 already settled that the stamp is
+	//! unconditional (a pointer plus six scalars, cheaper to always write
+	//! than to gate).  Its ONLY consumer is the Phase-2 fix-round
+	//! containment diagnostic (design doc §14 item 11): when a BDPT/VCM/
+	//! MLT-family render begins, `Any()` answers "does any live compiled
+	//! expression call occlusion()/thickness() anywhere in the process",
+	//! so the rasterizer can emit one GlobalLog warning naming the
+	//! disclosed neutral-signal gap on those integrator families, without
+	//! doing a real scene-wide painter walk that does not exist (same
+	//! argument as SurfaceCurvatureDemand's own doc comment).  A false
+	//! positive here (a scene from a DIFFERENT job in the same process
+	//! still holding a signal-reading painter alive) means one spurious
+	//! warning line, never a wrong render -- the conservative direction
+	//! for a diagnostic.
+	namespace SurfaceSignalDemand
+	{
+		//! The single counter.  A function-local static inside an inline
+		//! function has exactly one instance across all translation units.
+		inline std::atomic<int>& Counter()
+		{
+			static std::atomic<int> counter( 0 );
+			return counter;
+		}
+
+		//! Is any live consumer asking for occlusion()/thickness() anywhere
+		//! in its compiled program?  One relaxed atomic load.
+		inline bool Any()
+		{
+			return Counter().load( std::memory_order_relaxed ) > 0;
+		}
+
+		//! RAII demand reference -- same shape as
+		//! SurfaceCurvatureDemand::Registration.  `active=false` constructs
+		//! an inert one at zero cost.
+		class Registration
+		{
+		public:
+			explicit Registration( bool active = false ) : m_active( active )
+			{
+				if( m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+			}
+			Registration( const Registration& other ) : m_active( other.m_active )
+			{
+				if( m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+			}
+			Registration& operator=( const Registration& other )
+			{
+				if( this != &other ) {
+					if( other.m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+					if( m_active ) Counter().fetch_sub( 1, std::memory_order_relaxed );
+					m_active = other.m_active;
+				}
+				return *this;
+			}
+			~Registration()
+			{
+				if( m_active ) Counter().fetch_sub( 1, std::memory_order_relaxed );
+			}
+			bool IsActive() const { return m_active; }
+
+		private:
+			bool m_active;
+		};
+	}
+
+	//! Containment diagnostic for the geometry-derived shading signals'
+	//! disclosed BDPT/VCM/MLT gap (design doc §13 Phase-2 "Known residual",
+	//! §14 item 11): `PathVertexEval.h`'s `PopulateRIGFromVertex` -- and
+	//! every evaluation downstream of it (forward-walk throughput
+	//! re-pricing, NEE/connections, MIS reverse-pdf, OpenPGL guiding RIS,
+	//! HWSS companion evals, VCM merges, and MLT which drives BDPT's own
+	//! machinery) -- carries neither `derivatives` nor `signals`, so
+	//! `curv`, `occlusion` and `thickness` read their neutral fallback at
+	//! those sites.  PT is unaffected and evaluates all three fully.
+	//!
+	//! Call once from each BDPT/VCM/MLT-family rasterizer's own
+	//! pre-render hook (never per pixel or per sample) -- see
+	//! BDPTPelRasterizer::PreRenderSetup, BDPTSpectralRasterizer::
+	//! PreRenderSetup, VCMRasterizerBase::PreRenderSetup, and
+	//! MLTRasterizer::RenderFrameOfMLT for the four call sites.  Cheap:
+	//! two relaxed atomic loads (SurfaceCurvatureDemand and
+	//! SurfaceSignalDemand cover `curv` and `occlusion`/`thickness`
+	//! respectively -- an expression can key on either family without
+	//! calling the other), gated so a scene that never mentions any of
+	//! the three signals costs nothing beyond the two loads.
+	//!
+	//! `pLog` may be null (defensive; every call site has a live log in
+	//! practice) -- a null log means "cannot report," not "nothing to
+	//! report," so the check is skipped silently rather than crashing.
+	inline void WarnIfNonPTRenderHasLiveSignalConsumer( ILog* pLog, const char* familyName )
+	{
+		if( !pLog || !familyName ) return;
+		if( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ) {
+			pLog->PrintEx( eLog_Warning,
+				"%s:: curv/occlusion/thickness evaluate as neutral in parts of BDPT/VCM/MLT "
+				"transport; PT renders them fully -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md",
+				familyName );
+		}
+	}
 }
 
 #endif

@@ -189,6 +189,16 @@ namespace RISE
 			//! SurfaceCurvatureDemand for the mechanism and its documented
 			//! process-wide conservatism.
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
+			//! SIGNAL DEMAND, diagnostic-only (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+			//! §14 item 11).  Active iff this painter's compiled body calls
+			//! `occlusion()` / `thickness()` anywhere.  Unlike
+			//! m_curvatureDemand above, this does NOT gate any per-hit work --
+			//! see SurfaceSignalDemand's own doc comment (ISurfaceSignalProvider.h)
+			//! for why the provider install stays unconditional.  Its only job is
+			//! to let a BDPT/VCM/MLT rasterizer ask "is anyone using a signal
+			//! this integrator family evaluates as neutral in parts of its
+			//! transport" at render start, for the one-time containment warning.
+			SurfaceSignalDemand::Registration m_signalDemand;
 
 			virtual ~ExpressionPainter() {}
 
@@ -208,7 +218,8 @@ namespace RISE
 			ExpressionPainter( const ExpressionProgram& prog, const std::vector<ParamSpec>& paramSpecs,
 				const Scalar time, const SpectrumKind kind = eSpectrumKind_Albedo ) :
 				m_prog( prog ), m_paramSpecs( paramSpecs ), m_time( time ), m_kind( kind ),
-				m_curvatureDemand( prog.UsesSurfaceCurvature() )
+				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
+				m_signalDemand( prog.UsesSurfaceSignals() )
 			{}
 
 			//! S4 introspection: full param metadata (min/max/step/label),
@@ -269,6 +280,12 @@ namespace RISE
 			//! signal: `scalar_painter { expression "clamp(-curv,0,1)" }`
 			//! feeding a roughness slot.
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
+			//! See ExpressionPainter::m_signalDemand -- same diagnostic-only
+			//! RAII gate on the physical-scalar pipe.  `scalar_painter {
+			//! expression "occlusion(0.1)" }` feeding a dirt/wear slot is at
+			//! least as likely an authoring shape as the colour pipe's, so
+			//! both must register or the containment diagnostic would miss it.
+			SurfaceSignalDemand::Registration m_signalDemand;
 			virtual ~ExpressionScalarPainter() {}
 
 			static Scalar SafeComp( const Scalar v ) { return ExpressionProgram::IsFinite( v ) ? v : Scalar(0); }
@@ -278,7 +295,8 @@ namespace RISE
 		public:
 			ExpressionScalarPainter( const ExpressionProgram& prog, const std::vector<ParamSpec>& paramSpecs ) :
 				m_prog( prog ), m_paramSpecs( paramSpecs ),
-				m_curvatureDemand( prog.UsesSurfaceCurvature() )
+				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
+				m_signalDemand( prog.UsesSurfaceSignals() )
 			{}
 
 			//! S4 introspection: full param metadata, in `param` line order.
