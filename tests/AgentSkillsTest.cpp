@@ -681,7 +681,17 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// the render contract is what proves a groom example is not black:
 	// hair is thin, sub-pixel, and easy to author into invisibility.
 	// Per-skill split for this file is 2.
-	Check( totalSnippets == 26, "the seed skills carry the expected 26 ```rise snippets in total (got " +
+	//
+	// The curv adoption wiring (2026-08-29, geometry-shading-signals Phase 1)
+	// took the count 26 -> 28, one snippet per proven-pull skill: materials-
+	// and-media-basics gains the patina-in-the-crevices example (a
+	// clamp(-curv,0,1) concave mask over an SDF scar, the direct attack on
+	// the "masks are made of P.z" prior), and object-modeling-recipes gains
+	// Recipe 7, edge wear from clamp(curv,0,1) on a filleted roundbox.  Both
+	// were execution-validated (parse + derive + render + measured luma
+	// separation between concave and convex regions) before registration.
+	// procedural-textures gets a pointer only (0/6 measured pull rate).
+	Check( totalSnippets == 28, "the seed skills carry the expected 28 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
