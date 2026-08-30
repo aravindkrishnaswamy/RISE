@@ -588,6 +588,18 @@ namespace
 			if( dst.derivatives.curvatureValid ) {
 				dst.derivatives.curvature = -dst.derivatives.curvature;
 			}
+			// Same re-pairing for the signal-provider's own normal (Phase 2).
+			// `dst.signals` was just adopted from the probe above, so
+			// `signals.nObject` is the probe's own OUTWARD normal -- paired
+			// with `probe.geometric.vNormal`, not with the flipped
+			// `dst.vNormal` the caller is reporting.  A mismatch here means
+			// the composite is reporting the OPPOSITE face from the one the
+			// provider's normal describes, so occlusion()/thickness() would
+			// march into the wrong side of the surface unless nObject flips
+			// along with dndu/dndv/curvature above.
+			if( dst.signals.pProvider ) {
+				dst.signals.nObject = -dst.signals.nObject;
+			}
 		}
 		return true;
 	}
@@ -972,6 +984,20 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( ri.geometric.derivatives.curvatureValid ) {
 						ri.geometric.derivatives.curvature = -ri.geometric.derivatives.curvature;
 					}
+					// Same re-pairing for the signal-provider's own normal
+					// (design doc §6 / geometry-shading-signals Phase 2).
+					// `ri` is still a whole-record copy of B, so
+					// `signals.nObject` is B's OUTWARD normal (away from B's
+					// own solid) -- but the composite is now a cavity wall,
+					// and the empty region the viewer stands in is B's
+					// INTERIOR, not its exterior.  Leaving nObject un-flipped
+					// would make occlusion()/thickness() march into B's solid
+					// instead of the cavity; negating it re-pairs the query
+					// direction with the flipped vNormal above, exactly as
+					// dndu/dndv and curvature already do.
+					if( ri.geometric.signals.pProvider ) {
+						ri.geometric.signals.nObject = -ri.geometric.signals.nObject;
+					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 				}
@@ -1004,6 +1030,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// block above.
 					if( ri.geometric.derivatives.curvatureValid ) {
 						ri.geometric.derivatives.curvature = -ri.geometric.derivatives.curvature;
+					}
+					// Same re-pairing for the signal-provider's own normal --
+					// see the sibling branch above for the full rationale.
+					if( ri.geometric.signals.pProvider ) {
+						ri.geometric.signals.nObject = -ri.geometric.signals.nObject;
 					}
 				} else {
 					ri = riObjA;
@@ -1046,6 +1077,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// block above.
 					if( ri.geometric.derivatives.curvatureValid ) {
 						ri.geometric.derivatives.curvature = -ri.geometric.derivatives.curvature;
+					}
+					// Same re-pairing for the signal-provider's own normal --
+					// see the first sibling branch above for the full
+					// rationale.
+					if( ri.geometric.signals.pProvider ) {
+						ri.geometric.signals.nObject = -ri.geometric.signals.nObject;
 					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;

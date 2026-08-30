@@ -1060,6 +1060,24 @@ bool SDFGeometry::ComputeOcclusion( const Point3& ptObject, const Vector3& nObje
 		return false;
 	}
 
+	// Heightfield mode divides Map() by a single GLOBAL Lipschitz bound
+	// (m_hfLip, see ComputeHeightfieldLipschitz) so the whole field is a
+	// conservative lower bound everywhere, sized to the field's STEEPEST
+	// slope.  The Evans estimator's identity map(p + h*n_hat) == h (used
+	// above to say "a plane or convex body reads occ = 0") only holds where
+	// the LOCAL slope matches the bound used to derive it -- on a heightfield
+	// that is true only at the single steepest point.  Everywhere flatter,
+	// Map() under-reports the true distance by a factor of m_hfLip, and the
+	// estimator misreads that shortfall as occlusion: a perfectly flat,
+	// unoccluded point next to one steep bump reads ao ~= 1/m_hfLip (e.g.
+	// ~0.15 for a bump steep enough to need m_hfLip ~= 6.5), not 1.  A
+	// locally-normalized estimator (dividing by the LOCAL slope instead of
+	// the global bound) could fix this properly; until one exists, refuse
+	// honestly rather than report a systematically wrong number.
+	if( m_isHeightfield ) {
+		return false;
+	}
+
 	// Query radius in this geometry's own object-space units.  The tap
 	// distances are a fraction OF it, so the whole estimator is
 	// scale-relative and the result is transform-invariant.
@@ -1128,6 +1146,16 @@ bool SDFGeometry::ComputeThickness( const Point3& ptObject, const Vector3& nObje
 	if( !( m_diagonal > Scalar(0) ) || !( radiusFraction > Scalar(0) ) ) {
 		return false;
 	}
+
+	// Same global-vs-local Lipschitz mis-scaling as ComputeOcclusion above:
+	// March() steps through Map(), which on a heightfield is scaled by the
+	// single global m_hfLip rather than the local slope, so the marched
+	// distance-to-exit is systematically wrong everywhere the local slope is
+	// below the global max.  Refuse rather than report it.
+	if( m_isHeightfield ) {
+		return false;
+	}
+
 	const Scalar R = radiusFraction * m_diagonal;
 	if( !RISE::IsFiniteDouble( static_cast<double>( R ) ) || !( R > Scalar(0) ) ) {
 		return false;

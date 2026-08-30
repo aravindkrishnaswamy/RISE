@@ -44,6 +44,13 @@
 //    (i) the RADIUS-FRACTION semantics: two instances of ONE geometry
 //        at different world scales read the SAME occlusion at
 //        corresponding points.
+//    (j) HEIGHTFIELD MODE REFUSES both signals (global-vs-local Lipschitz
+//        bound, Phase-2 fix round P1) rather than reporting the
+//        systematically wrong ~1/m_hfLip on a flat, unoccluded point.
+//    (k) CSG_SUBTRACTION re-pairs signals.nObject with the flipped
+//        composite normal (Phase-2 fix round P1) -- a pocket floor reads
+//        occluded and a thin remaining wall reads thin, where pre-fix both
+//        read as if standing on the untouched convex/thick exterior.
 //
 //  Tabs: 4
 //
@@ -59,8 +66,10 @@
 #include <atomic>
 
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
+#include "../src/Library/Interfaces/IFunction2D.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
@@ -145,6 +154,23 @@ static SDFGeometry* BuildSdfSlab( const Scalar w )
 		Point3( 0, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 5.0, 5.0, w * Scalar(0.5), 0 ) );
 	return new SDFGeometry( parts, 512, Scalar( 1e-5 ) );
 }
+
+//! A heightfield field that is FLAT (f == 0) everywhere except one narrow,
+//! steep ridge near u = 0.85 -- built to reproduce the bug this test guards:
+//! `Map()` in heightfield mode divides by a single GLOBAL Lipschitz bound
+//! (`m_hfLip`, sized to this ridge's steep slope), so a flat point far from
+//! it reads a shortfall the Evans estimator misreads as occlusion, even
+//! though the true field there is perfectly flat and unoccluded.
+class SteepRidgeFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar u, const Scalar /*v*/ ) const
+	{
+		const Scalar d = std::fabs( u - Scalar( 0.85 ) );
+		const Scalar w = Scalar( 0.02 );
+		return d < w ? ( Scalar(1) - d / w ) : Scalar( 0 );
+	}
+};
 
 //! Compile one expression body with the full 3D context enabled -- the
 //! configuration expression_painter / scalar_painter{expression} use.
@@ -672,6 +698,246 @@ static void TestRadiusFractionScaleInvariance()
 }
 
 //======================================================================
+// (j) heightfield mode REFUSES occlusion/thickness (global-vs-local
+//     Lipschitz bound) rather than reporting the systematically wrong
+//     ~1/m_hfLip on a flat, unoccluded point
+//======================================================================
+
+static void TestHeightfieldRefusesSignals()
+{
+	std::cout << "(j) heightfield mode: occlusion/thickness REFUSE rather than fabricate" << std::endl;
+
+	const Scalar R = 2.0, S = 0.5;
+	SteepRidgeFunction2D* field = new SteepRidgeFunction2D();
+	SDFGeometry* g = new SDFGeometry( field, R, S, 512, Scalar( 1e-5 ) );
+	safe_release( field );	// SDFGeometry addref'd its own ref (Reference starts at refcount 1)
+
+	// Direct provider-level refusal, independent of any hit machinery: a
+	// point far from the ridge (u = v = 0.5, the field's flat region) at a
+	// query radius that would, pre-fix, read the ridge's global Lipschitz
+	// bound as if it were the local one.
+	Scalar ao = Scalar( 12345 ), th = Scalar( 12345 );
+	Check( !g->ComputeOcclusion( Point3( 0, 0, S ), Vector3( 0, 0, 1 ), Scalar( 0.1 ), ao ),
+		"(j) ComputeOcclusion REFUSES on a heightfield" );
+	Check( !g->ComputeThickness( Point3( 0, 0, S ), Vector3( 0, 0, 1 ), Scalar( 0.1 ), th ),
+		"(j) ComputeThickness REFUSES on a heightfield" );
+	Check( ao == Scalar( 12345 ), "(j) ComputeOcclusion leaves outValue untouched on refusal" );
+	Check( th == Scalar( 12345 ), "(j) ComputeThickness leaves outValue untouched on refusal" );
+
+	// End-to-end through a real hit + the expression VM: a FLAT point far
+	// from the field's one steep ridge must read the NEUTRAL fallback
+	// exactly (occlusion 1 = unoccluded, thickness 1 = thick), not the
+	// ~1/m_hfLip a global-bound estimator would report on a perfectly flat,
+	// unoccluded point (the reviewer's numerical repro: ~0.15 for a ridge
+	// steep enough to force m_hfLip ~= 6.5).
+	Object* o = new Object( g );
+	g->release();
+	o->FinalizeTransformations();
+
+	Scalar aoHit = 0, thHit = 0;
+	Check( EvalAtHit( o, Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ), "occlusion(0.1)", aoHit ),
+		"(j) heightfield flat-point hit evaluates occlusion" );
+	Check( EvalAtHit( o, Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ), "thickness(0.1)", thHit ),
+		"(j) heightfield flat-point hit evaluates thickness" );
+	CheckClose( aoHit, 1.0, 1e-12, "(j) heightfield occlusion == 1 (refusal -> neutral), not ~1/m_hfLip" );
+	CheckClose( thHit, 1.0, 1e-12, "(j) heightfield thickness == 1 (refusal -> neutral)" );
+
+	// Sanity: the same object DOES publish a provider (heightfield hits
+	// stamp `signals.pProvider` unconditionally -- only the estimators
+	// refuse) -- otherwise this test would vacuously pass via the (d)
+	// no-provider fallback path instead of exercising the m_isHeightfield
+	// refusal this fix adds.
+	RayIntersection riCheck = MkRI( Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ) );
+	Check( HitObject( o, riCheck ), "(j) flat-point hit lands" );
+	Check( riCheck.geometric.signals.pProvider != 0,
+		"(j) heightfield DOES publish a provider (the refusal is in the estimator, not the stamp)" );
+
+	o->release();
+}
+
+//======================================================================
+// (k) CSG_SUBTRACTION re-pairs signals.nObject with the flipped normal --
+//     occlusion/thickness must tap into the EMPTY region the composite's
+//     viewer actually stands in (operand B's interior), not back into B's
+//     own solid.  Two independent cavity shapes, because occlusion's and
+//     thickness's discriminating geometry differ (see the comments below).
+//======================================================================
+
+static void TestCsgSubtractionRepairsSignalNormal()
+{
+	std::cout << "(k) CSG_SUBTRACTION: signals.nObject re-paired with the flipped normal" << std::endl;
+
+	// --- occlusion: a spherical pocket carved out of a big sphere. -------
+	// The pocket FLOOR (deepest point, farthest from the carved-out
+	// sphere's own rim) is where the "inside A, not inside B" branch
+	// reports B's own record: exactly the case Fix 2 repairs.  The
+	// composite's OWN untouched convex exterior (far from the pocket, hit
+	// without ever touching B) is the convex-body control -- same object,
+	// same provider FAMILY, no CSG boundary logic involved at all.
+	{
+		SDFGeometry* gA = BuildSdfSphere( 4.0 );
+		Object* oA = new Object( gA );
+		safe_release( gA );
+		oA->FinalizeTransformations();
+
+		std::vector<SDFGeometry::Part> partsB;
+		partsB.push_back( SDFGeometry::MakePart(
+			SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3( 0, 0, 2.0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.5, 0, 0, 0 ) );
+		SDFGeometry* gB = new SDFGeometry( partsB, 512, Scalar( 1e-5 ) );
+		Object* oB = new Object( gB );
+		safe_release( gB );
+		oB->FinalizeTransformations();
+
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		Check( csg->AssignObjects( oA, oB ), "(k) occlusion: composite takes A(sphere)/B(sphere) operands" );
+		csg->FinalizeTransformations();
+
+		// Origin (0,0,-3): inside A (dist 3 < 4), outside B (dist to B's
+		// centre (0,0,2) is 5 > 1.5) -- the "inside A, not inside B" branch.
+		// Fires straight at B's near (floor) wall at world (0,0,0.5).
+		RayIntersection riFloor = MkRI( Point3( 0, 0, -3.0 ), Vector3( 0, 0, 1 ) );
+		Check( HitObject( csg, riFloor ), "(k) occlusion: pocket-floor ray hits the composite" );
+		CheckClose( riFloor.geometric.range2, 0.0, 1e-9,
+			"(k) occlusion: (sanity) range2 == 0 confirms the \"inside A, not inside B\" branch" );
+		Check( riFloor.geometric.signals.pProvider != 0, "(k) occlusion: pocket-floor hit carries a provider" );
+
+		// The untouched convex exterior, well away from the pocket: never
+		// touches B at all (falls straight to `ri = riObjA`), so it is a
+		// control on the SAME object with none of the CSG re-pairing code
+		// in play.
+		RayIntersection riConvex = MkRI( Point3( 0, 0, 30.0 ), Vector3( 0, 0, -1 ) );
+		Check( HitObject( csg, riConvex ), "(k) occlusion: convex-exterior ray hits the composite" );
+		Check( riConvex.geometric.signals.pProvider != 0, "(k) occlusion: convex-exterior hit carries a provider" );
+
+		if( riFloor.geometric.signals.pProvider && riConvex.geometric.signals.pProvider ) {
+			Scalar aoFloor = 2, aoConvex = 2;
+			Check( riFloor.geometric.signals.pProvider->ComputeOcclusion(
+				riFloor.geometric.signals.ptObject, riFloor.geometric.signals.nObject, Scalar( 0.2 ), aoFloor ),
+				"(k) occlusion: pocket-floor ComputeOcclusion answers" );
+			Check( riConvex.geometric.signals.pProvider->ComputeOcclusion(
+				riConvex.geometric.signals.ptObject, riConvex.geometric.signals.nObject, Scalar( 0.2 ), aoConvex ),
+				"(k) occlusion: convex-exterior ComputeOcclusion answers" );
+
+			// MONEY ASSERTION: the pocket floor reads (much) more occluded
+			// than the untouched convex exterior.
+			Check( aoFloor < aoConvex - Scalar( 0.5 ),
+				"(k) MONEY -- pocket-floor occlusion is well below the convex exterior's" );
+			CheckClose( aoConvex, 1.0, 0.05, "(k) occlusion: convex exterior reads ~unoccluded" );
+
+			// Simulate the PRE-FIX bug directly (negate nObject back to
+			// B's own un-repaired outward direction, exactly what
+			// `ri.geometric.signals = riObjB.geometric.signals` alone would
+			// have left in place) and confirm the money assertion above
+			// would NOT have held: pre-fix, the floor taps away from the
+			// cavity (into B's own claimed "outside"), which is the SAME
+			// direction the untouched convex exterior taps in a plain
+			// (non-CSG) hit -- so the floor reads approximately as
+			// UNOCCLUDED as the convex control, not less.
+			const Vector3 preFixN(
+				-riFloor.geometric.signals.nObject.x,
+				-riFloor.geometric.signals.nObject.y,
+				-riFloor.geometric.signals.nObject.z );
+			Scalar aoFloorPreFix = 2;
+			Check( riFloor.geometric.signals.pProvider->ComputeOcclusion(
+				riFloor.geometric.signals.ptObject, preFixN, Scalar( 0.2 ), aoFloorPreFix ),
+				"(k) occlusion: pre-fix-simulated ComputeOcclusion answers" );
+			Check( !( aoFloorPreFix < aoConvex - Scalar( 0.5 ) ),
+				"(k) REGRESSION GUARD -- the un-repaired (pre-fix) direction would NOT have satisfied the money assertion" );
+		}
+
+		csg->release();
+		oA->release();
+		oB->release();
+	}
+
+	// --- thickness: two adjacent pockets sharing one carving operand B, --
+	// leaving a genuinely thin membrane of the composite's real solid
+	// between them.  This is representable purely from B's own (two-part)
+	// field -- no cross-operand knowledge needed -- because the membrane
+	// sits entirely OUTSIDE both of B's spheres, bounded on both sides by
+	// B's own boundary, exactly like BuildSdfCreasedPair's crease but
+	// approached from the subtraction side.
+	{
+		SDFGeometry* gA = BuildSdfSphere( 5.0 );
+		Object* oA = new Object( gA );
+		safe_release( gA );
+		oA->FinalizeTransformations();
+
+		// Two spheres, radius 1.0, centres 2.1 apart -> a 0.1-wide gap
+		// between them (the membrane), both fully inside A (radius 5).
+		std::vector<SDFGeometry::Part> partsB;
+		partsB.push_back( SDFGeometry::MakePart(
+			SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3( -1.05, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.0, 0, 0, 0 ) );
+		partsB.push_back( SDFGeometry::MakePart(
+			SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3( 1.05, 0, 0 ), 0, 0, 0, Vector3( 1, 1, 1 ), 1.0, 0, 0, 0 ) );
+		SDFGeometry* gB = new SDFGeometry( partsB, 512, Scalar( 1e-5 ) );
+		Object* oB = new Object( gB );
+		safe_release( gB );
+		oB->FinalizeTransformations();
+
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		Check( csg->AssignObjects( oA, oB ), "(k) thickness: composite takes A(sphere)/B(two spheres) operands" );
+		csg->FinalizeTransformations();
+
+		// Origin (0,0,0): inside A, outside both of B's spheres (the gap
+		// between them) -- "inside A, not inside B" again.  Fires at
+		// sphere1's near wall (its side FACING sphere2, world x=-0.05),
+		// where post-fix nObject points back toward sphere1's own pocket,
+		// so the thickness march (-nObject) crosses the membrane TOWARD
+		// sphere2 -- the physically real thin wall.
+		RayIntersection riThin = MkRI( Point3( 0, 0, 0 ), Vector3( -1, 0, 0 ) );
+		Check( HitObject( csg, riThin ), "(k) thickness: membrane-side ray hits the composite" );
+		CheckClose( riThin.geometric.range2, 0.0, 1e-9,
+			"(k) thickness: (sanity) range2 == 0 confirms the \"inside A, not inside B\" branch" );
+
+		// Far side of sphere1 (world x=-2.05), isolated from sphere2 in the
+		// march direction -- the "thick body" control, same operand B.
+		RayIntersection riThick = MkRI( Point3( -4, 0, 0 ), Vector3( 1, 0, 0 ) );
+		Check( HitObject( csg, riThick ), "(k) thickness: isolated-side ray hits the composite" );
+
+		if( riThin.geometric.signals.pProvider && riThick.geometric.signals.pProvider ) {
+			const Scalar RF = Scalar( 0.05 );
+			Scalar thThin = 2, thThick = 2;
+			Check( riThin.geometric.signals.pProvider->ComputeThickness(
+				riThin.geometric.signals.ptObject, riThin.geometric.signals.nObject, RF, thThin ),
+				"(k) thickness: membrane ComputeThickness answers" );
+			Check( riThick.geometric.signals.pProvider->ComputeThickness(
+				riThick.geometric.signals.ptObject, riThick.geometric.signals.nObject, RF, thThick ),
+				"(k) thickness: isolated-side ComputeThickness answers" );
+
+			// MONEY ASSERTION: the thin remaining wall reads (much)
+			// thinner than the thick, isolated body.
+			Check( thThin < thThick - Scalar( 0.3 ),
+				"(k) MONEY -- membrane thickness is well below the isolated body's" );
+			CheckClose( thThick, 1.0, 1e-9, "(k) thickness: isolated side saturates at 1 (thick)" );
+
+			// Pre-fix simulation: the un-repaired direction marches INTO
+			// sphere1's own solid (through its centre, out the FAR side) --
+			// a chord far longer than the query radius, so it saturates to
+			// the SAME 1 the thick-body control reads, entirely missing the
+			// real membrane a few hundredths of a unit away.
+			const Vector3 preFixN(
+				-riThin.geometric.signals.nObject.x,
+				-riThin.geometric.signals.nObject.y,
+				-riThin.geometric.signals.nObject.z );
+			Scalar thThinPreFix = 2;
+			Check( riThin.geometric.signals.pProvider->ComputeThickness(
+				riThin.geometric.signals.ptObject, preFixN, RF, thThinPreFix ),
+				"(k) thickness: pre-fix-simulated ComputeThickness answers" );
+			Check( !( thThinPreFix < thThick - Scalar( 0.3 ) ),
+				"(k) REGRESSION GUARD -- the un-repaired (pre-fix) direction would NOT have detected the thin membrane" );
+		}
+
+		csg->release();
+		oA->release();
+		oB->release();
+	}
+}
+
+//======================================================================
 
 int main()
 {
@@ -686,6 +952,8 @@ int main()
 	TestEndToEndThroughPainter();
 	TestConcurrentEvaluation();
 	TestRadiusFractionScaleInvariance();
+	TestHeightfieldRefusesSignals();
+	TestCsgSubtractionRepairsSignalNormal();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
