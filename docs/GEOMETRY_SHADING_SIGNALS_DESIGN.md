@@ -754,6 +754,14 @@ mutation site (`BeginIndexedTriangles`, `DoneIndexedTriangles`,
 between-frames contract `UpdateVertices` already has. Free invalidation covers
 the *derive* path, not the *animation* one; both are needed.
 
+**And that between-frames contract is itself violated by one pre-existing
+path** — motion blur calls `EvaluateAtTime` from worker threads
+([ARCHITECTURE.md](ARCHITECTURE.md):68-74), which reaches `UpdateVertices`
+through a keyframed displacement painter. The bake tables are reference-counted
+so an invalidation there cannot free one under a reader; the vertex mutation and
+BVH refit underneath still race traversal, and still do after this work. See
+"Phase 3 fix round" below for exactly what was and was not fixed.
+
 ### 7.3 Gating, and when the bake actually fires
 
 Gate the bake on consumption — bake only if some material in the scene actually
@@ -1246,8 +1254,9 @@ worked example ported to a mesh object and rendering equivalently.
 #### Phase 3 status — SHIPPED 2026-08-29
 
 Clean build (make + Xcode targets updated for the two new files), no warnings.
-`MeshSignalBakeTest` 61/61, `SurfaceSignalsTest` 148/148, `SurfaceCurvatureTest`
-94/94, `CsgSurfacePayloadTest` 251/251.
+`MeshSignalBakeTest` 87/87, `SurfaceSignalsTest` 155/155, `SurfaceCurvatureTest`
+94/94, `CsgSurfacePayloadTest` 251/251. (The first two counts are post-fix-round;
+they shipped at 61 and 148 — see "Phase 3 fix round" below.)
 
 Three departures from the plan above, each recorded where it belongs: the
 **stamp + interpolate-on-demand** shape (§7.1, replacing item 2's
@@ -1362,6 +1371,79 @@ positional in the triangle, not directional — so a subtraction-exposed interio
 answers with the **outward** surface's bake. That is a real limit and a
 different one from the SDF's: a bake describes the mesh's own surface, and a CSG
 cut exposes an interior no bake ever measured.
+
+#### Phase 3 fix round — 2026-08-29
+
+Three independent reviews of the shipped work. What they found, and what was
+done about it.
+
+**The cache handed out raw `Table*` pointers, and one path could free one under
+a reader.** `FindOrBuild` returned a bare pointer, `LookupBakedSignal`
+interpolated from it *after* releasing the lock, and `Invalidate()` `delete`d
+it. That is safe exactly as far as the "invalidation never runs concurrent with
+rendering" contract is — and the contract has a documented hole. Motion-blur
+temporal sampling calls `IAnimator::EvaluateAtTime` **from worker threads**
+([ARCHITECTURE.md](ARCHITECTURE.md):68-74), so a keyframed displacement painter
+drives `DisplacedGeometry::RefreshMeshVertices` → `UpdateVertices` →
+`InvalidateSignalBakes` on a worker thread while other workers may be mid-read.
+Tables are now `std::shared_ptr<const Table>`; `FindOrBuild` copies one out
+under the lock and `Invalidate()` drops only the cache's own reference, so a
+reader that loses the race finishes on a table that is **stale rather than
+freed**. Steady-state cost is one refcount pair per provider query — the copy is
+taken once and held across the whole interpolation, never per tap.
+
+**Said plainly, because the fix invites the wrong conclusion:** this removes the
+use-after-free *Phase 3 introduced*. It does **not** fix the race that made it
+reachable. Mutating vertex positions and refitting the BVH from a worker thread,
+under traversal, is **pre-existing**, is what ARCHITECTURE.md documents, and
+**remains** — a reader on that path can still see a half-refit BVH. What is now
+true is only that it will not read freed memory. `UpdateVertices` and
+`InvalidateSignalBakes` carry the DEBUG freeze assert
+`DisplacedGeometry::Realize()` uses, so the violation announces itself in a
+debug build instead of being inferred from a crash. The invalidation one fires
+only when something live was actually dropped, because every mesh *construction*
+path invalidates an empty cache on a geometry no render can reach.
+
+**`InvalidateSignalBakes` had an unlocked tail.** It called the self-locking
+`MeshSignalBakeCache::Invalidate()` and then cleared a *geometry-owned*
+per-position normal array with no lock at all — racing the `MakeBakeInput` that
+reads it from inside the cache's lock. The normals now live **in the cache**, so
+one acquisition drops the tables and the state they were derived from together,
+and the mesh's `BuildVertexNormals()` is a pure function into the cache's array
+with no second copy for an invalidation to chase.
+
+**Three author-facing texts still promised mesh support in the future tense** —
+both `expression`-parameter descriptors in `ChunkParserRegistry.cpp` and the
+thickness passage in `skills/agent/materials-and-media-basics.md` all said the
+builtins were SDF-only with "Mesh support arrives in Phase 3". An agent reading
+any of them would decline to use the builtins on the mesh in front of it. All
+three now describe the shipped split: SDF live-evaluated with a dynamic radius,
+indexed meshes lazily baked and therefore literal-radius-only, everything else
+(analytic primitives, non-indexed meshes, heightfield-mode SDFs) neutral.
+
+**The exit gate above claimed more than the suite tested.** "Verified through
+the incremental derive path" was not true: the invalidation coverage constructed
+geometries by hand, which proves the cache is a member subobject and says nothing
+about whether the derive path *recreates* rather than mutating in place — the
+thing §7.2's free-invalidation argument rests on entirely. `MeshSignalBakeTest`
+(n) now drives a real `lathe_geometry` edit through `ParseToCst` → `DeriveToJob`
+→ `DocSetParamValue` → `DocEditClosure` → `DeriveToJobIncremental` and watches
+the build counter move again on the next query. It does recreate; the gate's
+claim is now earned rather than asserted.
+
+Four smaller test gaps closed at the same time: mesh **instancing** ((l): two
+objects at different scales over one geometry read identically, and the second
+builds *nothing*); **concurrent distinct radii** ((m): eight threads on eight
+radii build exactly eight tables, no duplicate and no lost insert — (c) only
+ever raced them onto *one*); the **thickness convention** ((f) read the slab at
+`w/R = 0.5`, where an inverted convention answers 0.485 against the correct
+0.515, inside any tolerance loose enough to admit the cone's own 3 % — moved to
+`w/R = 0.25`, where the candidates are 0.258 and 0.742); and, on the SDF side,
+`SurfaceSignalsTest` (l), a **computed radius that lands positive** being
+genuinely answered and agreeing with the same radius spelled as a literal. Phase
+2 only ever covered computed-and-*non*-positive, so a regression making the SDF
+adopt the mesh's refusal rule would have left the suite green while flattening
+every expression-driven cavity mask to 1.
 
 ### Phase 4 — observed-need gated (may be declined)
 
